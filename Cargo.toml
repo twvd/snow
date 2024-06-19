@@ -4,3 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+dbg_hex = "0.2.0"
+flate2 = "1.0.30"
+serde = { version = "1.0.203", features = ["serde_derive", "derive"] }
+serde_json = "1.0.117"
