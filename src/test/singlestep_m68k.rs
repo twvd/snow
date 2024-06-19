@@ -1,8 +1,11 @@
 use flate2::read::GzDecoder;
 use serde::Deserialize;
-use serde_json::Value;
 
 use std::fs;
+
+use crate::bus::ADDRESS_MASK;
+use crate::bus::testbus::Testbus;
+use crate::cpu_m68k::cpu::CpuM68k;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -63,7 +66,9 @@ macro_rules! cpu_test {
 
 fn run_testcase(testcase: Testcase) {
     dbg!(&testcase);
-    panic!("");
+    let bus = Testbus::new(ADDRESS_MASK);
+    let mut cpu = CpuM68k::new(bus);
+    cpu.step();
 }
 
 cpu_test!(abcd, "ABCD");
