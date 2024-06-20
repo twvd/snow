@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use serde::{Deserialize, Serialize};
 
 use crate::bus::{Address, Bus};
@@ -11,6 +13,7 @@ pub struct CpuM68k<TBus: Bus<Address>> {
     pub bus: TBus,
     pub regs: RegisterFile,
     pub cycles: Ticks,
+    pub prefetch: VecDeque<u16>,
 }
 
 impl<TBus> CpuM68k<TBus>
@@ -22,10 +25,9 @@ where
             bus,
             regs: RegisterFile::new(),
             cycles: 0,
+            prefetch: VecDeque::with_capacity(2),
         }
     }
 
-    pub fn step(&mut self) {
-        todo!();
-    }
+    pub fn step(&mut self) {}
 }

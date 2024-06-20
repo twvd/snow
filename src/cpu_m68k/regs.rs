@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::bus::Address;
 
+use std::fmt;
+
 bitfield! {
     /// SR register bitfield
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,7 +32,7 @@ bitfield! {
 }
 
 /// Full Motorola 680x0 register file
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct RegisterFile {
     /// Dx
     pub d: [u32; 8],
@@ -61,5 +63,15 @@ impl RegisterFile {
             sr: RegisterSR(0),
             pc: 0,
         }
+    }
+}
+
+impl fmt::Display for RegisterFile {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "A: {:?} D: {:?} USP: {:06X} SSP: {:06X} PC: {:06X} SR: {:?}",
+            self.a, self.d, self.usp, self.ssp, self.pc, self.sr
+        )
     }
 }
