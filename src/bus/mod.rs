@@ -24,27 +24,16 @@ pub trait Bus<T: PrimInt + WrappingAdd>: Tickable {
     fn write(&mut self, addr: T, val: u8);
     fn get_mask(&self) -> T;
 
-    /// Write 16-bits to addr + 1 and addr (specific access order),
-    /// in little endian.
+    /// Write 16-bits, big endian.
     fn write16(&mut self, addr: T, val: u16) {
-        self.write(addr.wrapping_add(&T::one()), (val >> 8) as u8);
-        self.write(addr, val as u8);
+        self.write(addr, (val >> 8) as u8);
+        self.write(addr.wrapping_add(&T::one()), val as u8);
     }
 
-    /// Write 16-bits to addr and addr + 1 (specific access order),
-    /// in little endian.
-    /// This access order is inverted, for operations that
-    /// require that..
-    fn write16_acc_low(&mut self, addr: T, val: u16) {
-        self.write(addr, val as u8);
-        self.write(addr.wrapping_add(&T::one()), (val >> 8) as u8);
-    }
-
-    /// Read 16-bits from addr and addr + 1,
-    /// from little endian.
+    /// Read 16-bits from addr and addr + 1, big endian.
     fn read16(&self, addr: T) -> u16 {
-        let l = self.read(addr);
-        let h = self.read(addr.wrapping_add(&T::one()));
+        let h = self.read(addr);
+        let l = self.read(addr.wrapping_add(&T::one()));
         l as u16 | (h as u16) << 8
     }
 }
@@ -122,8 +111,8 @@ mod tests {
     fn bus_write16() {
         let mut b = testbus();
         b.write16(0x1000, 0x55AA);
-        assert_eq!(b.read(0x1000), 0xAA);
-        assert_eq!(b.read(0x1001), 0x55);
+        assert_eq!(b.read(0x1000), 0x55);
+        assert_eq!(b.read(0x1001), 0xAA);
     }
 
     #[test]
@@ -131,6 +120,6 @@ mod tests {
         let mut b = testbus();
         b.write(0x1000, 0xAA);
         b.write(0x1001, 0x55);
-        assert_eq!(b.read16(0x1000), 0x55AA);
+        assert_eq!(b.read16(0x1000), 0xAA55);
     }
 }

@@ -99,7 +99,20 @@ fn run_testcase(testcase: Testcase) {
     let mut cpu = CpuM68k::new(bus);
     cpu.regs = regs_initial.clone();
     cpu.prefetch = testcase.initial.prefetch.into();
-    cpu.step();
+    if let Err(e) = cpu.step() {
+        dbg!(&testcase);
+        panic!("Test {}: error: {:?}", testcase.name, e);
+    }
+
+    if cpu.prefetch.make_contiguous() != testcase.r#final.prefetch {
+        dbg!(&testcase);
+        panic!(
+            "Test {}: prefetch: expected {:?}, saw {:?}",
+            testcase.name,
+            testcase.r#final.prefetch,
+            cpu.prefetch.make_contiguous()
+        );
+    }
 
     if cpu.regs != regs_final {
         dbg!(&testcase);
@@ -117,16 +130,6 @@ fn run_testcase(testcase: Testcase) {
                 testcase.name, addr, *expected, actual
             );
         }
-    }
-
-    if cpu.prefetch.make_contiguous() != testcase.r#final.prefetch {
-        dbg!(&testcase);
-        panic!(
-            "Test {}: prefetch: expected {:?}, saw {:?}",
-            testcase.name,
-            testcase.r#final.prefetch,
-            cpu.prefetch.make_contiguous()
-        );
     }
 
     if cpu.cycles != testcase.length {
