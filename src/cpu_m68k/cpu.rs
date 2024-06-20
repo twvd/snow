@@ -48,6 +48,8 @@ where
     pub fn step(&mut self) -> Result<()> {
         let raw_instr = self.fetch();
         let instr = Instruction::try_decode(raw_instr)?;
+        // TODO decoded instruction cache
+
         self.execute_instruction(instr)
     }
 
@@ -61,7 +63,22 @@ where
     pub fn execute_instruction(&mut self, instr: Instruction) -> Result<()> {
         match instr.mnemonic {
             InstructionMnemonic::NOP => Ok(()),
+            InstructionMnemonic::SWAP => self.op_swap(&instr),
         }
+    }
+
+    /// SWAP
+    pub fn op_swap(&mut self, instr: &Instruction) -> Result<()> {
+        let v = self.regs.d[instr.get_dr()];
+        let result = (v >> 16) | (v << 16);
+
+        self.regs.d[instr.get_dr()] = result;
+        self.regs.sr.set_v(false);
+        self.regs.sr.set_c(false);
+        self.regs.sr.set_n(result & (1 << 31) != 0);
+        self.regs.sr.set_z(result == 0);
+
+        Ok(())
     }
 }
 
