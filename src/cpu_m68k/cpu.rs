@@ -97,6 +97,8 @@ where
                 let operand = self.read32_ticks(op_ptr, 8)?;
                 Ok(operand)
             }
+            AddressingMode::AbsoluteShort => self.read32_ticks(instr.get_absolute()?, 8),
+            AddressingMode::AbsoluteLong => self.read32_ticks(instr.get_absolute()?, 8),
             _ => todo!(),
         }
     }
@@ -147,6 +149,12 @@ where
         self.regs.sr.set_c(false);
         self.regs.sr.set_n(result & (1 << 31) != 0);
         self.regs.sr.set_z(result == 0);
+
+        // Idle cycles
+        match instr.get_addr_mode()? {
+            AddressingMode::AbsoluteShort | AddressingMode::AbsoluteLong => self.ticks(2)?,
+            _ => (),
+        };
 
         Ok(())
     }

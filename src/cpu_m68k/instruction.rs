@@ -3,6 +3,8 @@ use arrayvec::ArrayVec;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 
+use crate::bus::Address;
+
 /// Instruction mnemonic
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum InstructionMnemonic {
@@ -22,8 +24,8 @@ pub enum AddressingMode {
     IndirectDisplacement,
     PCDisplacement,
     PCIndex,
-    Absolute16,
-    Absolute32,
+    AbsoluteShort,
+    AbsoluteLong,
 }
 
 /// Direction
@@ -78,9 +80,10 @@ impl Instruction {
 
     /// Gets the addressing mode of this instruction
     pub fn get_addr_mode(&self) -> Result<AddressingMode> {
-        match self.data & 0b111_000 {
-            0b000_000 => Ok(AddressingMode::DataRegister),
-            0b101_000 => Ok(AddressingMode::IndirectDisplacement),
+        match ((self.data & 0b111_000) >> 3, self.data & 0b000_111) {
+            (0b000, _) => Ok(AddressingMode::DataRegister),
+            (0b101, _) => Ok(AddressingMode::IndirectDisplacement),
+            (0b111, 0b001) => Ok(AddressingMode::AbsoluteLong),
             _ => Err(anyhow!(
                 "Invalid addressing mode {:06b}",
                 self.data & 0b111_111
@@ -103,6 +106,8 @@ impl Instruction {
     fn get_num_extwords(&self) -> Result<usize> {
         match self.get_addr_mode()? {
             AddressingMode::IndirectDisplacement => Ok(1),
+            AddressingMode::AbsoluteShort => Ok(1),
+            AddressingMode::AbsoluteLong => Ok(2),
             _ => Ok(0),
         }
     }
@@ -132,5 +137,22 @@ impl Instruction {
         debug_assert_eq!(self.extwords.as_ref().unwrap().len(), 1);
 
         *self.extwords.as_ref().unwrap().get(0).unwrap() as i16 as i32
+    }
+
+    pub fn get_absolute(&self) -> Result<Address> {
+        debug_assert!(self.extwords.is_some());
+        match self.get_addr_mode()? {
+            AddressingMode::AbsoluteShort => {
+                debug_assert_eq!(self.extwords.as_ref().unwrap().len(), 1);
+                Ok(*self.extwords.as_ref().unwrap().get(0).unwrap() as i16 as i32 as Address)
+            }
+            AddressingMode::AbsoluteLong => {
+                debug_assert_eq!(self.extwords.as_ref().unwrap().len(), 2);
+                let h = *self.extwords.as_ref().unwrap().get(0).unwrap();
+                let l = *self.extwords.as_ref().unwrap().get(1).unwrap();
+                Ok((Address::from(h) << 16) | Address::from(l))
+            }
+            _ => unreachable!(),
+        }
     }
 }
