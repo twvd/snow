@@ -36,8 +36,32 @@ struct TestcaseState {
     ram: Vec<(Address, u8)>,
 }
 
+/// One transaction entry
 #[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum TestcaseTransaction {
+    Idle(TestcaseTransactionIdle),
+    Rw(TestcaseTransactionRw),
+}
+
+#[derive(Debug, Deserialize)]
+struct TestcaseTransactionRw {
+    action: String,
+    cycles: Ticks,
+    function_code: u8,
+    address: Address,
+    access: String,
+    value: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct TestcaseTransactionIdle {
+    action: String,
+    cycles: Ticks,
+}
+
 /// One (JSON-object) testcase
+#[derive(Debug, Deserialize)]
 struct Testcase {
     /// Testcase name
     name: String,
@@ -50,6 +74,9 @@ struct Testcase {
 
     /// Total amount of cycles
     length: Ticks,
+
+    /// Bus transactions
+    transactions: Vec<TestcaseTransaction>,
 }
 
 macro_rules! cpu_test {
@@ -99,6 +126,7 @@ fn run_testcase(testcase: Testcase) {
     let mut cpu = CpuM68k::new(bus);
     cpu.regs = regs_initial.clone();
     cpu.prefetch = testcase.initial.prefetch.into();
+    cpu.bus.reset_trace();
     if let Err(e) = cpu.step() {
         dbg!(&testcase);
         panic!("Test {}: error: {:?}", testcase.name, e);
@@ -134,6 +162,7 @@ fn run_testcase(testcase: Testcase) {
 
     if cpu.cycles != testcase.length {
         dbg!(&testcase);
+        dbg!(cpu.bus.get_trace());
         panic!(
             "Test {}: expected {} cycles, saw {}",
             testcase.name, testcase.length, cpu.cycles
