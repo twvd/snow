@@ -36,6 +36,35 @@ pub trait Bus<T: PrimInt + WrappingAdd>: Tickable {
         let l = self.read(addr.wrapping_add(&T::one()));
         l as u16 | (h as u16) << 8
     }
+
+    /// Write 32-bits, big endian.
+    fn write32(&mut self, addr: T, val: u32) {
+        let mut addr = addr & self.get_mask();
+
+        self.write(addr, (val >> 24) as u8);
+        addr = addr.wrapping_add(&T::one()) & self.get_mask();
+        self.write(addr, (val >> 16) as u8);
+        addr = addr.wrapping_add(&T::one()) & self.get_mask();
+        self.write(addr, (val >> 8) as u8);
+        addr = addr.wrapping_add(&T::one()) & self.get_mask();
+        self.write(addr, (val >> 0) as u8);
+    }
+
+    /// Read 32-bits from addr and addr + 1, big endian.
+    fn read32(&self, addr: T) -> u32 {
+        let mut result = 0;
+        let mut addr = addr & self.get_mask();
+
+        result = (result << 8) | u32::from(self.read(addr));
+        addr = addr.wrapping_add(&T::one()) & self.get_mask();
+        result = (result << 8) | u32::from(self.read(addr));
+        addr = addr.wrapping_add(&T::one()) & self.get_mask();
+        result = (result << 8) | u32::from(self.read(addr));
+        addr = addr.wrapping_add(&T::one()) & self.get_mask();
+        result = (result << 8) | u32::from(self.read(addr));
+
+        result
+    }
 }
 
 impl<T> core::fmt::Debug for dyn Bus<T> {

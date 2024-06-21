@@ -152,11 +152,11 @@ fn run_testcase(testcase: Testcase) {
 //cpu_test!(addx_b, "ADDX.b");
 //cpu_test!(addx_l, "ADDX.l");
 //cpu_test!(addx_w, "ADDX.w");
-//cpu_test!(and_b, "AND.b");
+cpu_test!(and_b, "AND.b");
 //cpu_test!(anditoccr, "ANDItoCCR");
 //cpu_test!(anditosr, "ANDItoSR");
-//cpu_test!(and_l, "AND.l");
-//cpu_test!(and_w, "AND.w");
+cpu_test!(and_l, "AND.l");
+cpu_test!(and_w, "AND.w");
 //cpu_test!(asl_b, "ASL.b");
 //cpu_test!(asl_l, "ASL.l");
 //cpu_test!(asl_w, "ASL.w");
