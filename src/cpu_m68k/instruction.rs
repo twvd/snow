@@ -11,6 +11,7 @@ pub enum InstructionMnemonic {
     AND,
     NOP,
     SWAP,
+    TRAP,
 }
 
 /// Addressing modes
@@ -116,6 +117,7 @@ impl Instruction {
         (0b1100_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::AND, true),
         (0b0100_1110_0111_0001, 0b1111_1111_1111_1111, InstructionMnemonic::NOP, false),
         (0b0100_1000_0100_0000, 0b1111_1111_1111_1000, InstructionMnemonic::SWAP, false),
+        (0b0100_1110_0100_0000, 0b1111_1111_1111_0000, InstructionMnemonic::TRAP, false),
     ];
 
     /// Attempts to decode an instruction from a fetch input function.
@@ -168,6 +170,12 @@ impl Instruction {
 
     pub fn get_op2(&self) -> usize {
         usize::from(self.data & 0b111)
+    }
+
+    pub fn trap_get_vector(&self) -> u32 {
+        debug_assert_eq!(self.mnemonic, InstructionMnemonic::TRAP);
+
+        u32::from(self.data & 0b1111)
     }
 
     fn get_num_extwords(&self) -> Result<usize> {

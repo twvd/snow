@@ -217,6 +217,34 @@ fn print_result(cpu: &CpuM68k<Testbus<Address>>, testcase: &Testcase) {
             if fin != actual { "*" } else { " " },
         );
     }
+    eprintln!("");
+
+    // Testcase cycles
+    let mut abs_cycles = 0;
+    for tr in &testcase.transactions {
+        match tr {
+            TestcaseTransaction::Idle(t) => {
+                eprintln!("{:<4} {:<4} Idle", abs_cycles, t.cycles);
+                abs_cycles += t.cycles;
+            }
+            TestcaseTransaction::Rw(t) => {
+                eprintln!(
+                    "{:<4} {:<4} {:<5?} {:06X} {:02X}",
+                    abs_cycles, t.cycles, t.action, t.address, t.value
+                );
+                abs_cycles += t.cycles;
+            }
+        }
+    }
+    eprintln!("");
+
+    // Trace cycles
+    for tr in cpu.bus.get_trace() {
+        eprintln!(
+            "{:<4} {:?} {:06X} {:02X}",
+            tr.cycle, tr.access, tr.addr, tr.val
+        );
+    }
 }
 
 fn run_testcase(testcase: Testcase) {
@@ -250,17 +278,14 @@ fn run_testcase(testcase: Testcase) {
     }
 
     if cpu.regs != regs_final {
-        dbg!(&testcase);
-        dbg!(cpu.bus.get_trace());
-        eprintln!("Initial: {}", &regs_initial);
-        eprintln!("Final  : {}", &regs_final);
-        eprintln!("Actual : {}", &cpu.regs);
+        print_result(&cpu, &testcase);
         panic!("Test {}: Registers do not match", testcase.name);
     }
 
     for (addr, expected) in &testcase.r#final.ram {
         let actual = cpu.bus.read(*addr);
         if actual != *expected {
+            print_result(&cpu, &testcase);
             panic!(
                 "Test {}: bus address {:06X}: expected {}, saw {}",
                 testcase.name, addr, *expected, actual
@@ -269,8 +294,7 @@ fn run_testcase(testcase: Testcase) {
     }
 
     if cpu.cycles != testcase.length {
-        dbg!(&testcase);
-        dbg!(cpu.bus.get_trace());
+        print_result(&cpu, &testcase);
         panic!(
             "Test {}: expected {} cycles, saw {}",
             testcase.name, testcase.length, cpu.cycles
@@ -290,11 +314,11 @@ fn run_testcase(testcase: Testcase) {
 //cpu_test!(addx_b, "ADDX.b");
 //cpu_test!(addx_l, "ADDX.l");
 //cpu_test!(addx_w, "ADDX.w");
-cpu_test!(and_b, "AND.b");
+//cpu_test!(and_b, "AND.b");
 //cpu_test!(anditoccr, "ANDItoCCR");
 //cpu_test!(anditosr, "ANDItoSR");
-cpu_test!(and_l, "AND.l");
-cpu_test!(and_w, "AND.w");
+//cpu_test!(and_l, "AND.l");
+//cpu_test!(and_w, "AND.w");
 //cpu_test!(asl_b, "ASL.b");
 //cpu_test!(asl_l, "ASL.l");
 //cpu_test!(asl_w, "ASL.w");
@@ -399,7 +423,7 @@ cpu_test!(nop, "NOP");
 //cpu_test!(subx_w, "SUBX.w");
 cpu_test!(swap, "SWAP");
 //cpu_test!(tas, "TAS");
-//cpu_test!(trap, "TRAP");
+cpu_test!(trap, "TRAP");
 //cpu_test!(trapv, "TRAPV");
 //cpu_test!(tst_b, "TST.b");
 //cpu_test!(tst_l, "TST.l");

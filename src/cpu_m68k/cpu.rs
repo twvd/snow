@@ -31,28 +31,36 @@ where
         }
     }
 
+    /// Re-fills the prefetch queue
+    fn prefetch_refill(&mut self) -> Result<()> {
+        while self.prefetch.len() < 2 {
+            let fetch_addr = ((self.regs.pc & !1) + 4) & ADDRESS_MASK;
+            let new_item = self.read16_ticks(fetch_addr, 4)?;
+            self.prefetch.push_back(new_item);
+            self.regs.pc = (self.regs.pc + 2) & ADDRESS_MASK;
+        }
+        Ok(())
+    }
+
     /// Fetches a 16-bit value, through the prefetch queue
     fn fetch(&mut self) -> Result<u16> {
-        debug_assert_eq!(self.prefetch.len(), 2);
-
-        // Re-fill prefetch queue
-        let fetch_addr = ((self.regs.pc & !1) + 4) & ADDRESS_MASK;
-        let new_item = self.read16_ticks(fetch_addr, 4)?;
-        self.prefetch.push_back(new_item);
-
-        self.regs.pc = (self.regs.pc + 2) & ADDRESS_MASK;
         Ok(self.prefetch.pop_front().unwrap())
     }
 
     /// Executes a single CPU step.
     pub fn step(&mut self) -> Result<()> {
+        debug_assert_eq!(self.prefetch.len(), 2);
+
         let instr = Instruction::try_decode(|| self.fetch())?;
         // TODO decoded instruction cache
 
-        self.execute_instruction(instr)
+        self.execute_instruction(instr)?;
+        self.prefetch_refill()?;
+        Ok(())
     }
 
-    fn ticks(&mut self, ticks: Ticks) -> Result<()> {
+    /// Advances by the given amount of cycles
+    fn advance_cycles(&mut self, ticks: Ticks) -> Result<()> {
         for _ in 0..ticks {
             self.cycles += 1;
             self.bus.tick(1)?;
@@ -61,24 +69,69 @@ where
     }
 
     /// Reads a 16-bit value from the bus and spends ticks.
-    pub fn read16_ticks(&mut self, addr: Address, ticks: Ticks) -> Result<u16> {
-        self.ticks(ticks)?;
+    fn read16_ticks(&mut self, addr: Address, ticks: Ticks) -> Result<u16> {
+        self.advance_cycles(ticks)?;
         Ok(self.bus.read16(addr))
     }
 
+    /// Writes a 16-bit value to the bus and spends ticks.
+    fn write16_ticks(&mut self, addr: Address, value: u16, ticks: Ticks) -> Result<()> {
+        self.advance_cycles(ticks)?;
+        Ok(self.bus.write16(addr, value))
+    }
+
     /// Reads a 32-bit value from the bus and spends ticks.
-    pub fn read32_ticks(&mut self, addr: Address, ticks: Ticks) -> Result<u32> {
+    fn read32_ticks(&mut self, addr: Address, ticks: Ticks) -> Result<u32> {
         if addr & 1 != 0 {
             panic!("Unaligned access");
         }
-        self.ticks(ticks)?;
+        self.advance_cycles(ticks)?;
         Ok(self.bus.read32(addr))
     }
 
     /// Writes a 32-bit value to the bus and spends ticks.
-    pub fn write32_ticks(&mut self, addr: Address, value: u32, ticks: Ticks) -> Result<()> {
-        self.ticks(ticks)?;
+    fn write32_ticks(&mut self, addr: Address, value: u32, ticks: Ticks) -> Result<()> {
+        self.advance_cycles(ticks)?;
         Ok(self.bus.write32(addr, value))
+    }
+
+    /// Pushes 16-bit to supervisor stack
+    fn push16_ss(&mut self, val: u16) -> Result<()> {
+        self.regs.ssp = self.regs.ssp.wrapping_sub(2);
+        self.write16_ticks(self.regs.ssp, val, 4)
+    }
+
+    /// Pushes 32-bit to supervisor stack
+    fn push32_ss(&mut self, val: u32) -> Result<()> {
+        self.regs.ssp = self.regs.ssp.wrapping_sub(4);
+        self.write32_ticks(self.regs.ssp, val, 8)
+    }
+
+    /// Sets the program counter and flushes the prefetch queue
+    fn set_pc(&mut self, pc: Address) -> Result<()> {
+        self.prefetch.clear();
+        self.regs.pc = pc.wrapping_sub(4) & ADDRESS_MASK;
+        self.prefetch_refill()?;
+        Ok(())
+    }
+
+    /// Raises a CPU exception in supervisor mode.
+    fn raise_exception(&mut self, vector: Address) -> Result<()> {
+        // Advance PC beyond the current instruction to
+        // have the right offset for the stack frame.
+        // The current prefetch queue length provides an indication
+        // of the current instruction length.
+        self.regs.pc = self
+            .regs
+            .pc
+            .wrapping_add((2 - (self.prefetch.len() as u32)) * 2);
+
+        self.regs.sr.set_supervisor(true);
+        self.push32_ss(self.regs.pc)?;
+        self.push16_ss(self.regs.sr.0)?;
+
+        let new_pc = self.read32_ticks(vector, 8)?.into();
+        self.set_pc(new_pc)
     }
 
     /// Executes a previously decoded instruction.
@@ -87,6 +140,7 @@ where
             InstructionMnemonic::AND => self.op_and(&instr),
             InstructionMnemonic::NOP => Ok(()),
             InstructionMnemonic::SWAP => self.op_swap(&instr),
+            InstructionMnemonic::TRAP => self.op_trap(&instr),
         }
     }
 
@@ -171,10 +225,20 @@ where
 
         // Idle cycles
         match instr.get_addr_mode()? {
-            AddressingMode::AbsoluteShort | AddressingMode::AbsoluteLong => self.ticks(2)?,
+            AddressingMode::AbsoluteShort | AddressingMode::AbsoluteLong => {
+                self.advance_cycles(2)?
+            }
             _ => (),
         };
 
+        Ok(())
+    }
+
+    /// TRAP
+    pub fn op_trap(&mut self, instr: &Instruction) -> Result<()> {
+        self.advance_cycles(4)?;
+        self.raise_exception(instr.trap_get_vector() * 4 + 0x80)?;
+        self.advance_cycles(2)?;
         Ok(())
     }
 }
