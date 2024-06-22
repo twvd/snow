@@ -134,6 +134,7 @@ fn run_testcase(testcase: Testcase) {
 
     if cpu.prefetch.make_contiguous() != testcase.r#final.prefetch {
         dbg!(&testcase);
+        dbg!(cpu.bus.get_trace());
         panic!(
             "Test {}: prefetch: expected {:?}, saw {:?}",
             testcase.name,
@@ -144,6 +145,7 @@ fn run_testcase(testcase: Testcase) {
 
     if cpu.regs != regs_final {
         dbg!(&testcase);
+        dbg!(cpu.bus.get_trace());
         eprintln!("Initial: {}", &regs_initial);
         eprintln!("Final  : {}", &regs_final);
         eprintln!("Actual : {}", &cpu.regs);

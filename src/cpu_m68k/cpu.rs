@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::bus::{Address, Bus, ADDRESS_MASK};
 use crate::tickable::{Tickable, Ticks};
 
-use super::instruction::{AddressingMode, Direction, Instruction, InstructionMnemonic};
+use super::instruction::{AddressingMode, Direction, Instruction, InstructionMnemonic, Xn};
 use super::regs::RegisterFile;
 
 /// Motorola 680x0
@@ -88,12 +88,28 @@ where
     }
 
     pub fn read_ea(&mut self, instr: &Instruction, ea_in: usize) -> Result<u32> {
+        let read_idx = |(xn, reg)| match xn {
+            Xn::Dn => self.regs.d[reg],
+            Xn::An => self.regs.a[reg],
+        };
+
         match instr.get_addr_mode()? {
             AddressingMode::DataRegister => Ok(self.regs.d[ea_in]),
             AddressingMode::IndirectDisplacement => {
                 let addr = self.regs.a[ea_in];
-                let displacement = instr.get_displacement();
+                let displacement = instr.get_displacement()?;
                 let op_ptr = Address::from(addr.wrapping_add_signed(displacement));
+                let operand = self.read32_ticks(op_ptr, 8)?;
+                Ok(operand)
+            }
+            AddressingMode::PCIndex => {
+                let pc = self.regs.pc;
+                let displacement = instr.get_extword(0)?.brief_get_displacement_signext();
+                let index = read_idx(instr.get_extword(0)?.brief_get_register());
+                let scale = instr.get_extword(0)?.brief_get_scale();
+                let op_ptr = pc
+                    .wrapping_add_signed(displacement)
+                    .wrapping_add(index.wrapping_mul(scale));
                 let operand = self.read32_ticks(op_ptr, 8)?;
                 Ok(operand)
             }
@@ -108,7 +124,7 @@ where
             AddressingMode::DataRegister => Ok(self.regs.d[ea_in] = value),
             AddressingMode::IndirectDisplacement => {
                 let addr = self.regs.a[ea_in];
-                let displacement = instr.get_displacement();
+                let displacement = instr.get_displacement()?;
                 let op_ptr = Address::from(addr.wrapping_add_signed(displacement));
                 self.write32_ticks(op_ptr, value, 8)?;
                 Ok(())
