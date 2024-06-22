@@ -8,6 +8,7 @@ anyhow = "1.0.86"
 arrayvec = { version = "0.7.4", features = ["serde"] }
 dbg_hex = "0.2.0"
 flate2 = "1.0.30"
+itertools = "0.13.0"
 num-derive = "0.4.2"
 num-traits = "0.2.19"
 proc-bitfield = "0.4.0"

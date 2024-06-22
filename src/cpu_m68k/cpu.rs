@@ -68,6 +68,9 @@ where
 
     /// Reads a 32-bit value from the bus and spends ticks.
     pub fn read32_ticks(&mut self, addr: Address, ticks: Ticks) -> Result<u32> {
+        if addr & 1 != 0 {
+            panic!("Unaligned access");
+        }
         self.ticks(ticks)?;
         Ok(self.bus.read32(addr))
     }

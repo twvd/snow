@@ -25,7 +25,7 @@ pub struct TraceEntry<T: PrimInt + WrappingAdd> {
 }
 
 pub struct Testbus<T: PrimInt + WrappingAdd + Hash + Debug> {
-    mem: HashMap<T, u8>,
+    pub mem: HashMap<T, u8>,
     trace: RefCell<Vec<TraceEntry<T>>>,
     cycles: usize,
     trace_enabled: bool,
@@ -45,6 +45,10 @@ where
             trace_enabled: false,
             mask,
         }
+    }
+
+    pub fn get_seen_addresses(&self) -> impl Iterator<Item = T> + '_ {
+        self.mem.keys().copied()
     }
 
     pub fn reset_trace(&mut self) {

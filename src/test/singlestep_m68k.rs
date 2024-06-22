@@ -1,4 +1,5 @@
 use flate2::read::GzDecoder;
+use itertools::Itertools;
 use serde::Deserialize;
 
 use std::fs;
@@ -114,7 +115,113 @@ fn create_regs(state: &TestcaseState) -> RegisterFile {
     }
 }
 
+fn print_reg_diff(initial: &RegisterFile, fin: &RegisterFile, actual: &RegisterFile) {
+    let sdiff = |a, b| if a != b { "*" } else { " " };
+    let pr = |s, i, f, a| {
+        eprintln!(
+            "{:<5} {:08X}  {:08X}{} {:08X}{}",
+            s,
+            i,
+            f,
+            sdiff(i, f),
+            a,
+            sdiff(f, a)
+        )
+    };
+
+    eprintln!("Reg   Initial   Final     Actual");
+
+    for a in 0..7 {
+        pr(format!("A{}", a), initial.a[a], fin.a[a], actual.a[a]);
+    }
+    for d in 0..8 {
+        pr(format!("D{}", d), initial.d[d], fin.d[d], actual.d[d]);
+    }
+    pr(String::from("USP"), initial.usp, fin.usp, actual.usp);
+    pr(String::from("SSP"), initial.ssp, fin.ssp, actual.ssp);
+    pr(String::from("PC"), initial.pc, fin.pc, actual.pc);
+    pr(
+        String::from("SR"),
+        initial.sr.0 as u32,
+        fin.sr.0 as u32,
+        actual.sr.0 as u32,
+    );
+    eprintln!("");
+}
+
+fn print_result(cpu: &CpuM68k<Testbus<Address>>, testcase: &Testcase) {
+    eprintln!("Prefetch initial: {:04X?}", testcase.initial.prefetch);
+    eprintln!("Prefetch final  : {:04X?}", testcase.r#final.prefetch);
+    eprintln!("Prefetch actual : {:04X?}", cpu.prefetch);
+    eprintln!("");
+
+    print_reg_diff(
+        &create_regs(&testcase.initial),
+        &create_regs(&testcase.r#final),
+        &cpu.regs,
+    );
+
+    // RAM differences
+    // Generate a collection of addresses visible in all three sets.
+    let mut ram_addrs = testcase
+        .initial
+        .ram
+        .iter()
+        .copied()
+        .map(|(k, _)| k)
+        .chain(testcase.r#final.ram.iter().copied().map(|(k, _)| k))
+        .chain(cpu.bus.get_seen_addresses())
+        .unique()
+        .collect::<Vec<_>>();
+    ram_addrs.sort();
+
+    eprintln!("Bus addr  Ini Fin Act");
+    for addr in ram_addrs {
+        let initial = testcase
+            .initial
+            .ram
+            .iter()
+            .find(|&&(a, _)| a == addr)
+            .map(|(_, v)| v);
+        let fin = testcase
+            .r#final
+            .ram
+            .iter()
+            .find(|&&(a, _)| a == addr)
+            .map(|(_, v)| v);
+        let actual = cpu
+            .bus
+            .mem
+            .iter()
+            .find(|&(&a, _)| a == addr)
+            .map(|(_, v)| v);
+        eprintln!(
+            "{:06X}    {}  {}{} {}{}",
+            addr,
+            if let Some(v) = initial {
+                format!("{:02X}", v)
+            } else {
+                String::from("--")
+            },
+            if let Some(v) = fin {
+                format!("{:02X}", v)
+            } else {
+                String::from("--")
+            },
+            if initial != fin { "*" } else { " " },
+            if let Some(v) = actual {
+                format!("{:02X}", v)
+            } else {
+                String::from("--")
+            },
+            if fin != actual { "*" } else { " " },
+        );
+    }
+}
+
 fn run_testcase(testcase: Testcase) {
+    eprintln!("--- Testcase: {}", testcase.name);
+
     let regs_initial = create_regs(&testcase.initial);
     let regs_final = create_regs(&testcase.r#final);
 
@@ -128,13 +235,12 @@ fn run_testcase(testcase: Testcase) {
     cpu.prefetch = testcase.initial.prefetch.into();
     cpu.bus.reset_trace();
     if let Err(e) = cpu.step() {
-        dbg!(&testcase);
+        print_result(&cpu, &testcase);
         panic!("Test {}: error: {:?}", testcase.name, e);
     }
 
     if cpu.prefetch.make_contiguous() != testcase.r#final.prefetch {
-        dbg!(&testcase);
-        dbg!(cpu.bus.get_trace());
+        print_result(&cpu, &testcase);
         panic!(
             "Test {}: prefetch: expected {:?}, saw {:?}",
             testcase.name,
@@ -172,6 +278,7 @@ fn run_testcase(testcase: Testcase) {
     }
 
     // TODO transactions
+    eprintln!("Pass!");
 }
 
 //cpu_test!(abcd, "ABCD");
