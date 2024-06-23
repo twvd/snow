@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use crate::bus::{Address, Bus, ADDRESS_MASK};
 use crate::tickable::{Tickable, Ticks};
 
-use super::instruction::{AddressingMode, Direction, Instruction, InstructionMnemonic, Xn};
+use super::instruction::{
+    AddressingMode, Direction, IndexSize, Instruction, InstructionMnemonic, Xn,
+};
 use super::regs::RegisterFile;
 
 /// Motorola 680x0
@@ -31,19 +33,27 @@ where
         }
     }
 
+    fn prefetch_pump(&mut self) -> Result<()> {
+        let fetch_addr = ((self.regs.pc & !1) + 4) & ADDRESS_MASK;
+        let new_item = self.read16_ticks(fetch_addr, 4)?;
+        self.prefetch.push_back(new_item);
+        self.regs.pc = (self.regs.pc + 2) & ADDRESS_MASK;
+        Ok(())
+    }
+
     /// Re-fills the prefetch queue
     fn prefetch_refill(&mut self) -> Result<()> {
         while self.prefetch.len() < 2 {
-            let fetch_addr = ((self.regs.pc & !1) + 4) & ADDRESS_MASK;
-            let new_item = self.read16_ticks(fetch_addr, 4)?;
-            self.prefetch.push_back(new_item);
-            self.regs.pc = (self.regs.pc + 2) & ADDRESS_MASK;
+            self.prefetch_pump()?;
         }
         Ok(())
     }
 
     /// Fetches a 16-bit value, through the prefetch queue
     fn fetch(&mut self) -> Result<u16> {
+        if self.prefetch.len() == 0 {
+            self.prefetch_pump()?;
+        }
         Ok(self.prefetch.pop_front().unwrap())
     }
 
@@ -82,9 +92,6 @@ where
 
     /// Reads a 32-bit value from the bus and spends ticks.
     fn read32_ticks(&mut self, addr: Address, ticks: Ticks) -> Result<u32> {
-        if addr & 1 != 0 {
-            panic!("Unaligned access");
-        }
         self.advance_cycles(ticks)?;
         Ok(self.bus.read32(addr))
     }
@@ -145,28 +152,60 @@ where
     }
 
     pub fn read_ea(&mut self, instr: &Instruction, ea_in: usize) -> Result<u32> {
-        let read_idx = |(xn, reg)| match xn {
-            Xn::Dn => self.regs.d[reg],
-            Xn::An => self.regs.a[reg],
+        let read_idx = |s: &Self, (xn, reg): (Xn, usize), size: IndexSize| {
+            let v = match xn {
+                Xn::Dn => s.regs.read_d(reg),
+                Xn::An => s.regs.read_a(reg),
+            };
+            match size {
+                IndexSize::Word => v as u16 as i16 as i32 as u32,
+                IndexSize::Long => v,
+            }
         };
 
         match instr.get_addr_mode()? {
-            AddressingMode::DataRegister => Ok(self.regs.d[ea_in]),
+            AddressingMode::DataRegister => Ok(self.regs.read_d(ea_in)),
             AddressingMode::IndirectDisplacement => {
-                let addr = self.regs.a[ea_in];
+                let addr = self.regs.read_a(ea_in);
                 let displacement = instr.get_displacement()?;
                 let op_ptr = Address::from(addr.wrapping_add_signed(displacement));
                 let operand = self.read32_ticks(op_ptr, 8)?;
                 Ok(operand)
             }
+            AddressingMode::IndirectIndex => {
+                // 2 idle cycles
+                self.advance_cycles(2)?;
+                self.prefetch_refill()?;
+
+                let extword = instr.get_extword(0)?;
+                let addr = self.regs.read_a(ea_in);
+                let displacement = extword.brief_get_displacement_signext();
+                let index = read_idx(
+                    self,
+                    extword.brief_get_register(),
+                    extword.brief_get_index_size(),
+                );
+                let op_ptr = addr.wrapping_add(displacement).wrapping_add(index);
+                let operand = self.read32_ticks(op_ptr, 8)?;
+                // 2 idle cycles
+                self.advance_cycles(2)?;
+                Ok(operand)
+            }
             AddressingMode::PCIndex => {
-                let pc = self.regs.pc;
-                let displacement = instr.get_extword(0)?.brief_get_displacement_signext();
-                let index = read_idx(instr.get_extword(0)?.brief_get_register());
-                let scale = instr.get_extword(0)?.brief_get_scale();
-                let op_ptr = pc
-                    .wrapping_add_signed(displacement)
-                    .wrapping_add(index.wrapping_mul(scale));
+                todo!();
+                self.prefetch_refill()?;
+                let extword = instr.get_extword(0)?;
+                let pc = self
+                    .regs
+                    .pc
+                    .wrapping_add((2 - (self.prefetch.len() as u32)) * 2);
+                let displacement = extword.brief_get_displacement_signext();
+                let index = read_idx(
+                    self,
+                    extword.brief_get_register(),
+                    extword.brief_get_index_size(),
+                );
+                let op_ptr = pc.wrapping_add(displacement).wrapping_add(index);
                 let operand = self.read32_ticks(op_ptr, 8)?;
                 Ok(operand)
             }
@@ -178,9 +217,9 @@ where
 
     pub fn write_ea(&mut self, instr: &Instruction, ea_in: usize, value: u32) -> Result<()> {
         match instr.get_addr_mode()? {
-            AddressingMode::DataRegister => Ok(self.regs.d[ea_in] = value),
+            AddressingMode::DataRegister => Ok(self.regs.write_d(ea_in, value)),
             AddressingMode::IndirectDisplacement => {
-                let addr = self.regs.a[ea_in];
+                let addr = self.regs.read_a(ea_in);
                 let displacement = instr.get_displacement()?;
                 let op_ptr = Address::from(addr.wrapping_add_signed(displacement));
                 self.write32_ticks(op_ptr, value, 8)?;
@@ -192,10 +231,10 @@ where
 
     /// SWAP
     pub fn op_swap(&mut self, instr: &Instruction) -> Result<()> {
-        let v = self.regs.d[instr.get_op2()];
+        let v = self.regs.read_d(instr.get_op2());
         let result = (v >> 16) | (v << 16);
 
-        self.regs.d[instr.get_op2()] = result;
+        self.regs.write_d(instr.get_op2(), result);
         self.regs.sr.set_v(false);
         self.regs.sr.set_c(false);
         self.regs.sr.set_n(result & (1 << 31) != 0);
@@ -206,7 +245,7 @@ where
 
     /// AND
     pub fn op_and(&mut self, instr: &Instruction) -> Result<()> {
-        let left = self.regs.d[instr.get_op1()];
+        let left = self.regs.read_d(instr.get_op1());
         let right = self.read_ea(instr, instr.get_op2())?;
         let (a, b) = match instr.get_direction() {
             Direction::Right => (left, right),
@@ -215,7 +254,7 @@ where
         let result = a & b;
 
         match instr.get_direction() {
-            Direction::Right => self.regs.d[instr.get_op1()] = result,
+            Direction::Right => self.regs.write_d(instr.get_op1(), result),
             Direction::Left => self.write_ea(instr, instr.get_op2(), result)?,
         }
         self.regs.sr.set_v(false);

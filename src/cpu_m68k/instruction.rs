@@ -23,6 +23,7 @@ pub enum AddressingMode {
     IndirectPostInc,
     IndirectPreDec,
     IndirectDisplacement,
+    IndirectIndex,
     PCDisplacement,
     PCIndex,
     AbsoluteShort,
@@ -47,6 +48,15 @@ pub struct ExtWord {
 pub enum Xn {
     Dn = 0,
     An = 1,
+}
+
+/// Index size (for W/L)
+#[derive(FromPrimitive, Debug, Eq, PartialEq)]
+pub enum IndexSize {
+    /// Sign extended word
+    Word = 0,
+    /// Long
+    Long = 1,
 }
 
 impl From<u16> for ExtWord {
@@ -86,12 +96,8 @@ impl ExtWord {
         Address::from(self.data & 0xFF)
     }
 
-    pub fn brief_get_displacement_signext(&self) -> i32 {
-        self.data as u8 as i8 as i32
-    }
-
-    pub fn brief_get_scale(&self) -> Address {
-        1 << ((Address::from(self.data) >> 9) & 0b11)
+    pub fn brief_get_displacement_signext(&self) -> u32 {
+        self.data as u8 as i8 as i32 as u32
     }
 
     pub fn brief_get_register(&self) -> (Xn, usize) {
@@ -99,6 +105,10 @@ impl ExtWord {
             Xn::from_u16(self.data >> 15).unwrap(),
             usize::from((self.data >> 12) & 0b111),
         )
+    }
+
+    pub fn brief_get_index_size(&self) -> IndexSize {
+        IndexSize::from_u16((self.data >> 11) & 1).unwrap()
     }
 }
 
@@ -151,6 +161,7 @@ impl Instruction {
         match ((self.data & 0b111_000) >> 3, self.data & 0b000_111) {
             (0b000, _) => Ok(AddressingMode::DataRegister),
             (0b101, _) => Ok(AddressingMode::IndirectDisplacement),
+            (0b110, _) => Ok(AddressingMode::IndirectIndex),
             (0b111, 0b001) => Ok(AddressingMode::AbsoluteLong),
             (0b111, 0b011) => Ok(AddressingMode::PCIndex),
             _ => Err(anyhow!(
@@ -181,6 +192,7 @@ impl Instruction {
     fn get_num_extwords(&self) -> Result<usize> {
         match self.get_addr_mode()? {
             AddressingMode::IndirectDisplacement => Ok(1),
+            AddressingMode::IndirectIndex => Ok(1),
             AddressingMode::AbsoluteShort => Ok(1),
             AddressingMode::AbsoluteLong => Ok(2),
             AddressingMode::PCIndex => Ok(1),

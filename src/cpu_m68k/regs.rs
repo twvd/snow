@@ -64,6 +64,38 @@ impl RegisterFile {
             pc: 0,
         }
     }
+
+    pub fn read_a(&self, a: usize) -> u32 {
+        if a == 7 {
+            if self.sr.supervisor() {
+                self.ssp
+            } else {
+                self.usp
+            }
+        } else {
+            self.a[a]
+        }
+    }
+
+    pub fn write_a(&mut self, a: usize, val: u32) {
+        if a == 7 {
+            if self.sr.supervisor() {
+                self.ssp = val
+            } else {
+                self.usp = val
+            }
+        } else {
+            self.a[a] = val
+        }
+    }
+
+    pub fn read_d(&self, d: usize) -> u32 {
+        self.d[d]
+    }
+
+    pub fn write_d(&mut self, d: usize, val: u32) {
+        self.d[d] = val
+    }
 }
 
 impl fmt::Display for RegisterFile {
