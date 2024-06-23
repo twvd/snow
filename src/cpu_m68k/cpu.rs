@@ -193,6 +193,7 @@ where
 
         match instr.get_addr_mode()? {
             AddressingMode::DataRegister => Ok(self.regs.read_d(ea_in)),
+            AddressingMode::Indirect => self.read32_ticks(self.regs.read_a(ea_in)),
             AddressingMode::IndirectPreDec => {
                 self.advance_cycles(2)?; // 2x idle
                 let addr = self.regs.read_a(ea_in).wrapping_sub(4);
@@ -259,6 +260,7 @@ where
     pub fn write_ea(&mut self, instr: &Instruction, ea_in: usize, value: u32) -> Result<()> {
         match instr.get_addr_mode()? {
             AddressingMode::DataRegister => Ok(self.regs.write_d(ea_in, value)),
+            AddressingMode::Indirect => self.write32_ticks_th(self.regs.read_a(ea_in), value),
             AddressingMode::IndirectDisplacement => {
                 let addr = self.regs.read_a(ea_in);
                 let displacement = instr.get_displacement()?;
@@ -306,11 +308,16 @@ where
         self.regs.sr.set_z(result == 0);
 
         // Idle cycles
-        match instr.get_addr_mode()? {
-            AddressingMode::AbsoluteShort
-            | AddressingMode::AbsoluteLong
-            | AddressingMode::IndirectPreDec => self.advance_cycles(2)?,
-            AddressingMode::DataRegister => self.advance_cycles(4)?,
+        match (instr.get_addr_mode()?, instr.get_direction()) {
+            (
+                AddressingMode::AbsoluteShort
+                | AddressingMode::AbsoluteLong
+                | AddressingMode::IndirectPreDec,
+                _,
+            ) => self.advance_cycles(2)?,
+            (AddressingMode::DataRegister, _) => self.advance_cycles(4)?,
+            (AddressingMode::IndirectDisplacement, Direction::Right) => self.advance_cycles(2)?,
+            (AddressingMode::Indirect, Direction::Right) => self.advance_cycles(2)?,
             _ => (),
         };
 
