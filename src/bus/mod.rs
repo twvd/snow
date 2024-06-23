@@ -26,14 +26,14 @@ pub trait Bus<T: PrimInt + WrappingAdd>: Tickable {
 
     /// Write 16-bits, big endian.
     fn write16(&mut self, addr: T, val: u16) {
-        self.write(addr, (val >> 8) as u8);
-        self.write(addr.wrapping_add(&T::one()), val as u8);
+        self.write(addr & self.get_mask(), (val >> 8) as u8);
+        self.write(addr.wrapping_add(&T::one()) & self.get_mask(), val as u8);
     }
 
     /// Read 16-bits from addr and addr + 1, big endian.
     fn read16(&self, addr: T) -> u16 {
-        let h = self.read(addr);
-        let l = self.read(addr.wrapping_add(&T::one()));
+        let h = self.read(addr & self.get_mask());
+        let l = self.read(addr.wrapping_add(&T::one()) & self.get_mask());
         l as u16 | (h as u16) << 8
     }
 
