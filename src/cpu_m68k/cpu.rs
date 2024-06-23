@@ -178,6 +178,7 @@ where
     fn execute_instruction(&mut self, instr: Instruction) -> Result<()> {
         match instr.mnemonic {
             InstructionMnemonic::AND => self.op_and(&instr),
+            InstructionMnemonic::ANDI => self.op_andi(&instr),
             InstructionMnemonic::NOP => Ok(()),
             InstructionMnemonic::SWAP => self.op_swap(&instr),
             InstructionMnemonic::TRAP => self.op_trap(&instr),
@@ -359,6 +360,33 @@ where
                 Direction::Right,
             ) => self.advance_cycles(2)?,
             (AddressingMode::Indirect, Direction::Right) => self.advance_cycles(2)?,
+            _ => (),
+        };
+
+        Ok(())
+    }
+
+    /// ANDI
+    pub fn op_andi(&mut self, instr: &Instruction) -> Result<()> {
+        eprintln!("Addressing mode: {:?}", instr.get_addr_mode()?);
+        let a = {
+            let h = self.fetch_pump()? as u32;
+            let l = self.fetch_pump()? as u32;
+            (h << 16) | l
+        };
+        let b = self.read_ea(instr, instr.get_op2())?;
+        let result = a & b;
+
+        self.prefetch_pump()?;
+        self.write_ea(instr, instr.get_op2(), result)?;
+        self.regs.sr.set_v(false);
+        self.regs.sr.set_c(false);
+        self.regs.sr.set_n(result & (1 << 31) != 0);
+        self.regs.sr.set_z(result == 0);
+
+        // Idle cycles
+        match (instr.get_addr_mode()?, instr.get_direction()) {
+            (AddressingMode::DataRegister, _) => self.advance_cycles(4)?,
             _ => (),
         };
 

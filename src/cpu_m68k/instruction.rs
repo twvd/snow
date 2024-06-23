@@ -11,6 +11,7 @@ use std::cell::RefCell;
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum InstructionMnemonic {
     AND,
+    ANDI,
     NOP,
     SWAP,
     TRAP,
@@ -127,6 +128,7 @@ impl Instruction {
     #[rustfmt::skip]
     const DECODE_TABLE: &'static [(u16, u16, InstructionMnemonic)] = &[
         (0b1100_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::AND),
+        (0b0000_0010_0000_0000, 0b1111_1111_0000_0000, InstructionMnemonic::ANDI),
         (0b0100_1110_0111_0001, 0b1111_1111_1111_1111, InstructionMnemonic::NOP),
         (0b0100_1000_0100_0000, 0b1111_1111_1111_1000, InstructionMnemonic::SWAP),
         (0b0100_1110_0100_0000, 0b1111_1111_1111_0000, InstructionMnemonic::TRAP),
