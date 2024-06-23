@@ -35,7 +35,7 @@ where
 
     fn prefetch_pump(&mut self) -> Result<()> {
         let fetch_addr = ((self.regs.pc & !1) + 4) & ADDRESS_MASK;
-        let new_item = self.read16_ticks(fetch_addr, 4)?;
+        let new_item = self.read16_ticks(fetch_addr)?;
         self.prefetch.push_back(new_item);
         self.regs.pc = (self.regs.pc + 2) & ADDRESS_MASK;
         Ok(())
@@ -79,46 +79,49 @@ where
     }
 
     /// Reads a 16-bit value from the bus and spends ticks.
-    fn read16_ticks(&mut self, addr: Address, ticks: Ticks) -> Result<u16> {
-        self.advance_cycles(ticks)?;
-        Ok(self.bus.read16(addr))
+    fn read16_ticks(&mut self, addr: Address) -> Result<u16> {
+        let v = self.bus.read16(addr);
+        self.advance_cycles(4)?;
+        Ok(v)
     }
 
     /// Writes a 16-bit value to the bus and spends ticks.
-    fn write16_ticks(&mut self, addr: Address, value: u16, ticks: Ticks) -> Result<()> {
-        self.advance_cycles(ticks)?;
-        Ok(self.bus.write16(addr, value))
+    fn write16_ticks(&mut self, addr: Address, value: u16) -> Result<()> {
+        self.bus.write16(addr, value);
+        self.advance_cycles(4)?;
+        Ok(())
     }
 
     /// Reads a 32-bit value from the bus and spends ticks.
-    fn read32_ticks(&mut self, addr: Address, ticks: Ticks) -> Result<u32> {
-        self.advance_cycles(ticks)?;
-        Ok(self.bus.read32(addr))
+    fn read32_ticks(&mut self, addr: Address) -> Result<u32> {
+        let h = self.read16_ticks(addr)? as u32;
+        let l = self.read16_ticks(addr.wrapping_add(2))? as u32;
+        Ok((h << 16) | l)
     }
 
     /// Writes a 32-bit value to the bus and spends ticks.
-    fn write32_ticks(&mut self, addr: Address, value: u32, ticks: Ticks) -> Result<()> {
-        self.advance_cycles(ticks)?;
-        Ok(self.bus.write32(addr, value))
+    fn write32_ticks(&mut self, addr: Address, value: u32) -> Result<()> {
+        self.write16_ticks(addr, (value >> 16) as u16)?;
+        self.write16_ticks(addr.wrapping_add(2), value as u16)?;
+        Ok(())
     }
 
     /// Pushes 16-bit to supervisor stack
     fn push16_ss(&mut self, val: u16) -> Result<()> {
         self.regs.ssp = self.regs.ssp.wrapping_sub(2);
-        self.write16_ticks(self.regs.ssp, val, 4)
+        self.write16_ticks(self.regs.ssp, val)
     }
 
     /// Pushes 32-bit to supervisor stack
     fn push32_ss(&mut self, val: u32) -> Result<()> {
         self.regs.ssp = self.regs.ssp.wrapping_sub(4);
-        self.write32_ticks(self.regs.ssp, val, 8)
+        self.write32_ticks(self.regs.ssp, val)
     }
 
     /// Sets the program counter and flushes the prefetch queue
     fn set_pc(&mut self, pc: Address) -> Result<()> {
         self.prefetch.clear();
         self.regs.pc = pc.wrapping_sub(4) & ADDRESS_MASK;
-        self.prefetch_refill()?;
         Ok(())
     }
 
@@ -134,11 +137,16 @@ where
             .wrapping_add((2 - (self.prefetch.len() as u32)) * 2);
 
         self.regs.sr.set_supervisor(true);
-        self.push32_ss(self.regs.pc)?;
-        self.push16_ss(self.regs.sr.0)?;
+        self.push16_ss(self.regs.pc as u16)?;
+        self.push32_ss(((self.regs.sr.0 as u32) << 16) | (self.regs.pc >> 16))?;
 
-        let new_pc = self.read32_ticks(vector, 8)?.into();
-        self.set_pc(new_pc)
+        let new_pc = self.read32_ticks(vector)?.into();
+        self.set_pc(new_pc)?;
+        self.prefetch_pump()?;
+        self.advance_cycles(2)?; // 2x idle
+        self.prefetch_pump()?;
+
+        Ok(())
     }
 
     /// Executes a previously decoded instruction.
@@ -169,7 +177,7 @@ where
                 let addr = self.regs.read_a(ea_in);
                 let displacement = instr.get_displacement()?;
                 let op_ptr = Address::from(addr.wrapping_add_signed(displacement));
-                let operand = self.read32_ticks(op_ptr, 8)?;
+                let operand = self.read32_ticks(op_ptr)?;
                 Ok(operand)
             }
             AddressingMode::IndirectIndex => {
@@ -186,7 +194,7 @@ where
                     extword.brief_get_index_size(),
                 );
                 let op_ptr = addr.wrapping_add(displacement).wrapping_add(index);
-                let operand = self.read32_ticks(op_ptr, 8)?;
+                let operand = self.read32_ticks(op_ptr)?;
                 // 2 idle cycles
                 self.advance_cycles(2)?;
                 Ok(operand)
@@ -206,11 +214,11 @@ where
                     extword.brief_get_index_size(),
                 );
                 let op_ptr = pc.wrapping_add(displacement).wrapping_add(index);
-                let operand = self.read32_ticks(op_ptr, 8)?;
+                let operand = self.read32_ticks(op_ptr)?;
                 Ok(operand)
             }
-            AddressingMode::AbsoluteShort => self.read32_ticks(instr.get_absolute()?, 8),
-            AddressingMode::AbsoluteLong => self.read32_ticks(instr.get_absolute()?, 8),
+            AddressingMode::AbsoluteShort => self.read32_ticks(instr.get_absolute()?),
+            AddressingMode::AbsoluteLong => self.read32_ticks(instr.get_absolute()?),
             _ => todo!(),
         }
     }
@@ -222,7 +230,7 @@ where
                 let addr = self.regs.read_a(ea_in);
                 let displacement = instr.get_displacement()?;
                 let op_ptr = Address::from(addr.wrapping_add_signed(displacement));
-                self.write32_ticks(op_ptr, value, 8)?;
+                self.write32_ticks(op_ptr, value)?;
                 Ok(())
             }
             _ => todo!(),
@@ -275,9 +283,8 @@ where
 
     /// TRAP
     pub fn op_trap(&mut self, instr: &Instruction) -> Result<()> {
-        self.advance_cycles(4)?;
+        self.advance_cycles(4)?; // idle
         self.raise_exception(instr.trap_get_vector() * 4 + 0x80)?;
-        self.advance_cycles(2)?;
         Ok(())
     }
 }

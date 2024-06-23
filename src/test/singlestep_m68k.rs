@@ -5,7 +5,7 @@ use serde::Deserialize;
 use std::fs;
 use std::path::Path;
 
-use crate::bus::testbus::Testbus;
+use crate::bus::testbus::{Access, Testbus};
 use crate::bus::{Address, Bus, ADDRESS_MASK};
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::cpu_m68k::regs::{RegisterFile, RegisterSR};
@@ -153,6 +153,10 @@ fn print_reg_diff(initial: &RegisterFile, fin: &RegisterFile, actual: &RegisterF
 }
 
 fn print_result(cpu: &CpuM68k<Testbus<Address>>, testcase: &Testcase) {
+    eprintln!(
+        "Cycles expected: {} actual: {}",
+        testcase.length, cpu.cycles
+    );
     eprintln!("Prefetch initial: {:04X?}", testcase.initial.prefetch);
     eprintln!("Prefetch final  : {:04X?}", testcase.r#final.prefetch);
     eprintln!("Prefetch actual : {:04X?}", cpu.prefetch);
@@ -244,7 +248,7 @@ fn print_result(cpu: &CpuM68k<Testbus<Address>>, testcase: &Testcase) {
     // Trace cycles
     for tr in cpu.bus.get_trace() {
         eprintln!(
-            "{:<4} {:?} {:06X} {:02X}",
+            "{:<4} {:?} {:06X} {:04X}",
             tr.cycle, tr.access, tr.addr, tr.val
         );
     }
@@ -310,7 +314,47 @@ fn run_testcase(testcase: Testcase) {
         );
     }
 
-    // TODO transactions
+    print_result(&cpu, &testcase);
+    // Check transactions (kinda best effort with regards to byte access and values)
+    let mut abs_cycles = 0;
+    let trace = cpu.bus.get_trace();
+    for tr in &testcase.transactions {
+        match tr {
+            TestcaseTransaction::Idle(t) => {
+                // Bus must be quiet for length
+                for cycle in abs_cycles..(abs_cycles + t.cycles) {
+                    if trace.iter().find(|&&a| a.cycle == cycle).is_some() {
+                        panic!("Bus not idle at cycle {}", abs_cycles);
+                    }
+                }
+                abs_cycles += t.cycles;
+            }
+            TestcaseTransaction::Rw(t) => {
+                let expected_access = match t.action.as_str() {
+                    "w" => Access::Write,
+                    "r" => Access::Read,
+                    _ => unreachable!(),
+                };
+                let mut found = false;
+                for cycle in abs_cycles..(abs_cycles + t.cycles) {
+                    if trace
+                        .iter()
+                        .find(|&&a| {
+                            a.cycle == cycle && a.addr == t.address && a.access == expected_access
+                        })
+                        .is_some()
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    panic!("Bus access does not match at cycle {}", abs_cycles);
+                }
+                abs_cycles += t.cycles;
+            }
+        }
+    }
     eprintln!("Pass!");
 }
 
