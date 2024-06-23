@@ -34,6 +34,10 @@ where
     }
 
     fn prefetch_pump(&mut self) -> Result<()> {
+        if self.prefetch.len() >= 2 {
+            return Ok(());
+        }
+
         let fetch_addr = ((self.regs.pc & !1) + 4) & ADDRESS_MASK;
         let new_item = self.read16_ticks(fetch_addr)?;
         self.prefetch.push_back(new_item);
@@ -50,6 +54,13 @@ where
     }
 
     /// Fetches a 16-bit value, through the prefetch queue
+    fn fetch_pump(&mut self) -> Result<u16> {
+        let v = self.prefetch.pop_front().unwrap();
+        self.prefetch_pump()?;
+        Ok(v)
+    }
+
+    /// Fetches a 16-bit value from prefetch queue
     fn fetch(&mut self) -> Result<u16> {
         if self.prefetch.len() == 0 {
             self.prefetch_pump()?;
@@ -100,9 +111,18 @@ where
     }
 
     /// Writes a 32-bit value to the bus and spends ticks.
+    /// Writes big endian in low to high.
     fn write32_ticks(&mut self, addr: Address, value: u32) -> Result<()> {
         self.write16_ticks(addr, (value >> 16) as u16)?;
         self.write16_ticks(addr.wrapping_add(2), value as u16)?;
+        Ok(())
+    }
+
+    /// Writes a 32-bit value to the bus and spends ticks.
+    /// Writes big endian in high to low temporal order.
+    fn write32_ticks_th(&mut self, addr: Address, value: u32) -> Result<()> {
+        self.write16_ticks(addr.wrapping_add(2), value as u16)?;
+        self.write16_ticks(addr, (value >> 16) as u16)?;
         Ok(())
     }
 
@@ -183,7 +203,6 @@ where
             AddressingMode::IndirectIndex => {
                 // 2 idle cycles
                 self.advance_cycles(2)?;
-                self.prefetch_refill()?;
 
                 let extword = instr.get_extword(0)?;
                 let addr = self.regs.read_a(ea_in);
@@ -201,7 +220,6 @@ where
             }
             AddressingMode::PCIndex => {
                 todo!();
-                self.prefetch_refill()?;
                 let extword = instr.get_extword(0)?;
                 let pc = self
                     .regs
@@ -217,8 +235,16 @@ where
                 let operand = self.read32_ticks(op_ptr)?;
                 Ok(operand)
             }
-            AddressingMode::AbsoluteShort => self.read32_ticks(instr.get_absolute()?),
-            AddressingMode::AbsoluteLong => self.read32_ticks(instr.get_absolute()?),
+            AddressingMode::AbsoluteShort => {
+                self.advance_cycles(2)?; // 2x idle
+                let v = self.fetch()? as i16 as i32 as u32;
+                self.read32_ticks(v)
+            }
+            AddressingMode::AbsoluteLong => {
+                let h = self.fetch_pump()? as u32;
+                let l = self.fetch_pump()? as u32;
+                self.read32_ticks((h << 16) | l)
+            }
             _ => todo!(),
         }
     }
@@ -230,7 +256,7 @@ where
                 let addr = self.regs.read_a(ea_in);
                 let displacement = instr.get_displacement()?;
                 let op_ptr = Address::from(addr.wrapping_add_signed(displacement));
-                self.write32_ticks(op_ptr, value)?;
+                self.write32_ticks_th(op_ptr, value)?;
                 Ok(())
             }
             _ => todo!(),
@@ -253,6 +279,10 @@ where
 
     /// AND
     pub fn op_and(&mut self, instr: &Instruction) -> Result<()> {
+        eprintln!("Addressing mode: {:?}", instr.get_addr_mode()?);
+        for _ in 0..instr.get_num_extwords()? {
+            self.prefetch_pump()?;
+        }
         let left = self.regs.read_d(instr.get_op1());
         let right = self.read_ea(instr, instr.get_op2())?;
         let (a, b) = match instr.get_direction() {
@@ -261,6 +291,7 @@ where
         };
         let result = a & b;
 
+        self.prefetch_pump()?;
         match instr.get_direction() {
             Direction::Right => self.regs.write_d(instr.get_op1(), result),
             Direction::Left => self.write_ea(instr, instr.get_op2(), result)?,

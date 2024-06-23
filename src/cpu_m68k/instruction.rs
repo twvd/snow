@@ -189,12 +189,10 @@ impl Instruction {
         u32::from(self.data & 0b1111)
     }
 
-    fn get_num_extwords(&self) -> Result<usize> {
+    pub fn get_num_extwords(&self) -> Result<usize> {
         match self.get_addr_mode()? {
             AddressingMode::IndirectDisplacement => Ok(1),
             AddressingMode::IndirectIndex => Ok(1),
-            AddressingMode::AbsoluteShort => Ok(1),
-            AddressingMode::AbsoluteLong => Ok(2),
             AddressingMode::PCIndex => Ok(1),
             _ => Ok(0),
         }
@@ -234,25 +232,5 @@ impl Instruction {
         debug_assert_eq!(self.extwords.as_ref().unwrap().len(), 1);
 
         Ok(self.get_extword(0)?.into())
-    }
-
-    pub fn get_absolute(&self) -> Result<Address> {
-        debug_assert!(self.extwords.is_some());
-
-        match self.get_addr_mode()? {
-            AddressingMode::AbsoluteShort => {
-                debug_assert_eq!(self.extwords.as_ref().unwrap().len(), 1);
-
-                Ok(self.get_extword(0)?.to_address_signext())
-            }
-            AddressingMode::AbsoluteLong => {
-                debug_assert_eq!(self.extwords.as_ref().unwrap().len(), 2);
-
-                let h = self.get_extword(0)?.to_address();
-                let l = self.get_extword(1)?.to_address();
-                Ok((h << 16) | l)
-            }
-            _ => unreachable!(),
-        }
     }
 }
