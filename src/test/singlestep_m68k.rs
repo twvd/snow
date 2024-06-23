@@ -296,8 +296,8 @@ fn run_testcase(testcase: Testcase) {
     }
 
     for (addr, expected) in &testcase.r#final.ram {
-        let actual = cpu.bus.read(*addr);
-        if actual != *expected {
+        let actual = cpu.bus.mem.get(addr).unwrap_or(&0);
+        if actual != expected {
             print_result(&cpu, &testcase);
             panic!(
                 "Test {}: bus address {:06X}: expected {}, saw {}",
