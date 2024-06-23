@@ -194,6 +194,7 @@ where
         match instr.get_addr_mode()? {
             AddressingMode::DataRegister => Ok(self.regs.read_d(ea_in)),
             AddressingMode::IndirectDisplacement => {
+                instr.fetch_extwords(|| self.fetch_pump())?;
                 let addr = self.regs.read_a(ea_in);
                 let displacement = instr.get_displacement()?;
                 let op_ptr = Address::from(addr.wrapping_add_signed(displacement));
@@ -203,6 +204,7 @@ where
             AddressingMode::IndirectIndex => {
                 // 2 idle cycles
                 self.advance_cycles(2)?;
+                instr.fetch_extwords(|| self.fetch_pump())?;
 
                 let extword = instr.get_extword(0)?;
                 let addr = self.regs.read_a(ea_in);
@@ -280,9 +282,6 @@ where
     /// AND
     pub fn op_and(&mut self, instr: &Instruction) -> Result<()> {
         eprintln!("Addressing mode: {:?}", instr.get_addr_mode()?);
-        for _ in 0..instr.get_num_extwords()? {
-            self.prefetch_pump()?;
-        }
         let left = self.regs.read_d(instr.get_op1());
         let right = self.read_ea(instr, instr.get_op2())?;
         let (a, b) = match instr.get_direction() {

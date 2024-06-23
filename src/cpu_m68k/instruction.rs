@@ -5,6 +5,8 @@ use num_traits::FromPrimitive;
 
 use crate::bus::Address;
 
+use std::cell::RefCell;
+
 /// Instruction mnemonic
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum InstructionMnemonic {
@@ -118,16 +120,16 @@ type ExtWords = ArrayVec<ExtWord, 4>;
 pub struct Instruction {
     pub mnemonic: InstructionMnemonic,
     pub data: u16,
-    pub extwords: Option<ExtWords>,
+    pub extwords: RefCell<Option<ExtWords>>,
 }
 
 impl Instruction {
     #[rustfmt::skip]
-    const DECODE_TABLE: &'static [(u16, u16, InstructionMnemonic, bool)] = &[
-        (0b1100_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::AND, true),
-        (0b0100_1110_0111_0001, 0b1111_1111_1111_1111, InstructionMnemonic::NOP, false),
-        (0b0100_1000_0100_0000, 0b1111_1111_1111_1000, InstructionMnemonic::SWAP, false),
-        (0b0100_1110_0100_0000, 0b1111_1111_1111_0000, InstructionMnemonic::TRAP, false),
+    const DECODE_TABLE: &'static [(u16, u16, InstructionMnemonic)] = &[
+        (0b1100_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::AND),
+        (0b0100_1110_0111_0001, 0b1111_1111_1111_1111, InstructionMnemonic::NOP),
+        (0b0100_1000_0100_0000, 0b1111_1111_1111_1000, InstructionMnemonic::SWAP),
+        (0b0100_1110_0100_0000, 0b1111_1111_1111_0000, InstructionMnemonic::TRAP),
     ];
 
     /// Attempts to decode an instruction from a fetch input function.
@@ -136,20 +138,13 @@ impl Instruction {
         F: FnMut() -> Result<u16>,
     {
         let data = fetch()?;
-        for &(val, mask, mnemonic, extwords) in Self::DECODE_TABLE.into_iter() {
+        for &(val, mask, mnemonic) in Self::DECODE_TABLE.into_iter() {
             if data & mask == val {
-                let mut instr = Instruction {
+                return Ok(Instruction {
                     mnemonic,
                     data,
-                    extwords: None,
-                };
-
-                // Can have extension words?
-                if extwords {
-                    // TODO how to deal with this with caching?
-                    instr.fetch_extwords(fetch)?;
-                }
-                return Ok(instr);
+                    extwords: RefCell::new(None),
+                });
             }
         }
 
@@ -198,7 +193,7 @@ impl Instruction {
         }
     }
 
-    fn fetch_extwords<F>(&mut self, mut fetch: F) -> Result<()>
+    pub fn fetch_extwords<F>(&self, mut fetch: F) -> Result<()>
     where
         F: FnMut() -> Result<u16>,
     {
@@ -210,13 +205,14 @@ impl Instruction {
         for _ in 0..self.get_num_extwords()? {
             extwords.push(fetch()?.into());
         }
-        self.extwords = Some(extwords);
+        *self.extwords.borrow_mut() = Some(extwords);
         Ok(())
     }
 
     pub fn get_extword(&self, idx: usize) -> Result<ExtWord> {
         Ok(*self
             .extwords
+            .borrow()
             .as_ref()
             .unwrap() // assuming ext words were fetched
             .get(idx)
@@ -228,8 +224,8 @@ impl Instruction {
             self.get_addr_mode().unwrap(),
             AddressingMode::IndirectDisplacement
         );
-        debug_assert!(self.extwords.is_some());
-        debug_assert_eq!(self.extwords.as_ref().unwrap().len(), 1);
+        debug_assert!(self.extwords.borrow().is_some());
+        debug_assert_eq!(self.extwords.borrow().as_ref().unwrap().len(), 1);
 
         Ok(self.get_extword(0)?.into())
     }
