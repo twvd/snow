@@ -18,6 +18,8 @@ pub struct CpuM68k<TBus: Bus<Address>> {
     pub regs: RegisterFile,
     pub cycles: Ticks,
     pub prefetch: VecDeque<u16>,
+
+    step_ea_addr: Option<Address>,
 }
 
 impl<TBus> CpuM68k<TBus>
@@ -30,6 +32,7 @@ where
             regs: RegisterFile::new(),
             cycles: 0,
             prefetch: VecDeque::with_capacity(3),
+            step_ea_addr: None,
         }
     }
 
@@ -71,6 +74,8 @@ where
     /// Executes a single CPU step.
     pub fn step(&mut self) -> Result<()> {
         debug_assert_eq!(self.prefetch.len(), 2);
+
+        self.step_ea_addr = None;
 
         let instr = Instruction::try_decode(|| self.fetch())?;
         // TODO decoded instruction cache
@@ -170,7 +175,7 @@ where
     }
 
     /// Executes a previously decoded instruction.
-    pub fn execute_instruction(&mut self, instr: Instruction) -> Result<()> {
+    fn execute_instruction(&mut self, instr: Instruction) -> Result<()> {
         match instr.mnemonic {
             InstructionMnemonic::AND => self.op_and(&instr),
             InstructionMnemonic::NOP => Ok(()),
@@ -179,7 +184,14 @@ where
         }
     }
 
-    pub fn read_ea(&mut self, instr: &Instruction, ea_in: usize) -> Result<u32> {
+    /// Calculates address from effective addressing mode
+    /// Happens once per instruction so e.g. postinc/predec only occur once.
+    fn calc_ea_addr(&mut self, instr: &Instruction, ea_in: usize) -> Result<Address> {
+        if let Some(addr) = self.step_ea_addr {
+            // Already done this step
+            return Ok(addr);
+        }
+
         let read_idx = |s: &Self, (xn, reg): (Xn, usize), size: IndexSize| {
             let v = match xn {
                 Xn::Dn => s.regs.read_d(reg),
@@ -190,23 +202,25 @@ where
                 IndexSize::Long => v,
             }
         };
-
-        match instr.get_addr_mode()? {
-            AddressingMode::DataRegister => Ok(self.regs.read_d(ea_in)),
-            AddressingMode::Indirect => self.read32_ticks(self.regs.read_a(ea_in)),
+        let addr = match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => unreachable!(),
+            AddressingMode::Indirect => self.regs.read_a(ea_in),
             AddressingMode::IndirectPreDec => {
                 self.advance_cycles(2)?; // 2x idle
                 let addr = self.regs.read_a(ea_in).wrapping_sub(4);
                 self.regs.write_a(ea_in, addr);
-                self.read32_ticks(addr)
+                addr
+            }
+            AddressingMode::IndirectPostInc => {
+                let addr = self.regs.read_a(ea_in);
+                self.regs.write_a(ea_in, addr.wrapping_add(4));
+                addr
             }
             AddressingMode::IndirectDisplacement => {
                 instr.fetch_extwords(|| self.fetch_pump())?;
                 let addr = self.regs.read_a(ea_in);
                 let displacement = instr.get_displacement()?;
-                let op_ptr = Address::from(addr.wrapping_add_signed(displacement));
-                let operand = self.read32_ticks(op_ptr)?;
-                Ok(operand)
+                Address::from(addr.wrapping_add_signed(displacement))
             }
             AddressingMode::IndirectIndex => {
                 self.advance_cycles(2)?; // 2x idle
@@ -220,11 +234,7 @@ where
                     extword.brief_get_register(),
                     extword.brief_get_index_size(),
                 );
-                let op_ptr = addr.wrapping_add(displacement).wrapping_add(index);
-                let operand = self.read32_ticks(op_ptr)?;
-                // 2 idle cycles
-                self.advance_cycles(2)?;
-                Ok(operand)
+                addr.wrapping_add(displacement).wrapping_add(index)
             }
             AddressingMode::PCIndex => {
                 todo!();
@@ -239,34 +249,61 @@ where
                     extword.brief_get_register(),
                     extword.brief_get_index_size(),
                 );
-                let op_ptr = pc.wrapping_add(displacement).wrapping_add(index);
-                let operand = self.read32_ticks(op_ptr)?;
-                Ok(operand)
+                pc.wrapping_add(displacement).wrapping_add(index)
             }
             AddressingMode::AbsoluteShort => {
                 self.advance_cycles(2)?; // 2x idle
-                let v = self.fetch()? as i16 as i32 as u32;
-                self.read32_ticks(v)
+                self.fetch()? as i16 as i32 as u32
             }
             AddressingMode::AbsoluteLong => {
                 let h = self.fetch_pump()? as u32;
                 let l = self.fetch_pump()? as u32;
-                self.read32_ticks((h << 16) | l)
+                (h << 16) | l
             }
             _ => todo!(),
-        }
+        };
+
+        self.step_ea_addr = Some(addr);
+        Ok(addr)
     }
 
-    pub fn write_ea(&mut self, instr: &Instruction, ea_in: usize, value: u32) -> Result<()> {
+    fn read_ea(&mut self, instr: &Instruction, ea_in: usize) -> Result<u32> {
+        let v = match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => self.regs.read_d(ea_in),
+            AddressingMode::Indirect
+            | AddressingMode::IndirectDisplacement
+            | AddressingMode::IndirectPreDec
+            | AddressingMode::IndirectPostInc
+            | AddressingMode::AbsoluteShort
+            | AddressingMode::AbsoluteLong => {
+                let addr = self.calc_ea_addr(instr, ea_in)?;
+                self.read32_ticks(addr)?
+            }
+            AddressingMode::IndirectIndex | AddressingMode::PCIndex => {
+                let addr = self.calc_ea_addr(instr, ea_in)?;
+                let v = self.read32_ticks(addr)?;
+                v
+            }
+            _ => todo!(),
+        };
+
+        Ok(v)
+    }
+
+    /// Writes a value to the operand (ea_in) using the effective addressing mode specified
+    /// by the instruction, directly or through indirection, depending on the mode.
+    fn write_ea(&mut self, instr: &Instruction, ea_in: usize, value: u32) -> Result<()> {
         match instr.get_addr_mode()? {
             AddressingMode::DataRegister => Ok(self.regs.write_d(ea_in, value)),
-            AddressingMode::Indirect => self.write32_ticks_th(self.regs.read_a(ea_in), value),
-            AddressingMode::IndirectDisplacement => {
-                let addr = self.regs.read_a(ea_in);
-                let displacement = instr.get_displacement()?;
-                let op_ptr = Address::from(addr.wrapping_add_signed(displacement));
-                self.write32_ticks_th(op_ptr, value)?;
-                Ok(())
+            AddressingMode::Indirect
+            | AddressingMode::IndirectDisplacement
+            | AddressingMode::IndirectIndex
+            | AddressingMode::IndirectPreDec
+            | AddressingMode::IndirectPostInc
+            | AddressingMode::AbsoluteShort
+            | AddressingMode::AbsoluteLong => {
+                let addr = self.calc_ea_addr(instr, ea_in)?;
+                self.write32_ticks_th(addr, value)
             }
             _ => todo!(),
         }
@@ -309,14 +346,18 @@ where
 
         // Idle cycles
         match (instr.get_addr_mode()?, instr.get_direction()) {
-            (
-                AddressingMode::AbsoluteShort
-                | AddressingMode::AbsoluteLong
-                | AddressingMode::IndirectPreDec,
-                _,
-            ) => self.advance_cycles(2)?,
+            (AddressingMode::AbsoluteShort | AddressingMode::AbsoluteLong, _) => {
+                self.advance_cycles(2)?
+            }
             (AddressingMode::DataRegister, _) => self.advance_cycles(4)?,
-            (AddressingMode::IndirectDisplacement, Direction::Right) => self.advance_cycles(2)?,
+
+            (
+                AddressingMode::IndirectDisplacement
+                | AddressingMode::IndirectPreDec
+                | AddressingMode::IndirectPostInc
+                | AddressingMode::IndirectIndex,
+                Direction::Right,
+            ) => self.advance_cycles(2)?,
             (AddressingMode::Indirect, Direction::Right) => self.advance_cycles(2)?,
             _ => (),
         };

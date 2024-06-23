@@ -156,6 +156,7 @@ impl Instruction {
         match ((self.data & 0b111_000) >> 3, self.data & 0b000_111) {
             (0b000, _) => Ok(AddressingMode::DataRegister),
             (0b010, _) => Ok(AddressingMode::Indirect),
+            (0b011, _) => Ok(AddressingMode::IndirectPostInc),
             (0b100, _) => Ok(AddressingMode::IndirectPreDec),
             (0b101, _) => Ok(AddressingMode::IndirectDisplacement),
             (0b110, _) => Ok(AddressingMode::IndirectIndex),
