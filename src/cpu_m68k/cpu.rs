@@ -193,6 +193,12 @@ where
 
         match instr.get_addr_mode()? {
             AddressingMode::DataRegister => Ok(self.regs.read_d(ea_in)),
+            AddressingMode::IndirectPreDec => {
+                self.advance_cycles(2)?; // 2x idle
+                let addr = self.regs.read_a(ea_in).wrapping_sub(4);
+                self.regs.write_a(ea_in, addr);
+                self.read32_ticks(addr)
+            }
             AddressingMode::IndirectDisplacement => {
                 instr.fetch_extwords(|| self.fetch_pump())?;
                 let addr = self.regs.read_a(ea_in);
@@ -202,8 +208,7 @@ where
                 Ok(operand)
             }
             AddressingMode::IndirectIndex => {
-                // 2 idle cycles
-                self.advance_cycles(2)?;
+                self.advance_cycles(2)?; // 2x idle
                 instr.fetch_extwords(|| self.fetch_pump())?;
 
                 let extword = instr.get_extword(0)?;
@@ -302,9 +307,10 @@ where
 
         // Idle cycles
         match instr.get_addr_mode()? {
-            AddressingMode::AbsoluteShort | AddressingMode::AbsoluteLong => {
-                self.advance_cycles(2)?
-            }
+            AddressingMode::AbsoluteShort
+            | AddressingMode::AbsoluteLong
+            | AddressingMode::IndirectPreDec => self.advance_cycles(2)?,
+            AddressingMode::DataRegister => self.advance_cycles(4)?,
             _ => (),
         };
 
