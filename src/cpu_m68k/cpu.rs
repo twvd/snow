@@ -190,17 +190,19 @@ where
     /// Executes a previously decoded instruction.
     fn execute_instruction(&mut self, instr: Instruction) -> Result<()> {
         match instr.mnemonic {
-            InstructionMnemonic::AND => self.op_and(&instr),
+            InstructionMnemonic::AND_l => self.op_and::<Long>(&instr),
+            InstructionMnemonic::AND_w => self.op_and::<Word>(&instr),
             InstructionMnemonic::ANDI => self.op_andi(&instr),
             InstructionMnemonic::NOP => Ok(()),
             InstructionMnemonic::SWAP => self.op_swap(&instr),
             InstructionMnemonic::TRAP => self.op_trap(&instr),
+            _ => todo!(),
         }
     }
 
     /// Calculates address from effective addressing mode
     /// Happens once per instruction so e.g. postinc/predec only occur once.
-    fn calc_ea_addr(&mut self, instr: &Instruction, ea_in: usize) -> Result<Address> {
+    fn calc_ea_addr<T: CpuSized>(&mut self, instr: &Instruction, ea_in: usize) -> Result<Address> {
         if let Some(addr) = self.step_ea_addr {
             // Already done this step
             return Ok(addr);
@@ -221,13 +223,17 @@ where
             AddressingMode::Indirect => self.regs.read_a(ea_in),
             AddressingMode::IndirectPreDec => {
                 self.advance_cycles(2)?; // 2x idle
-                let addr = self.regs.read_a::<Address>(ea_in).wrapping_sub(4);
+                let addr = self
+                    .regs
+                    .read_a::<Address>(ea_in)
+                    .wrapping_sub(std::mem::size_of::<T>() as u32);
                 self.regs.write_a(ea_in, addr);
                 addr
             }
             AddressingMode::IndirectPostInc => {
                 let addr = self.regs.read_a::<Address>(ea_in);
-                self.regs.write_a(ea_in, addr.wrapping_add(4));
+                self.regs
+                    .write_a(ea_in, addr.wrapping_add(std::mem::size_of::<T>() as u32));
                 addr
             }
             AddressingMode::IndirectDisplacement => {
@@ -282,14 +288,21 @@ where
         Ok(addr)
     }
 
-    fn read_ea(&mut self, instr: &Instruction, ea_in: usize) -> Result<u32> {
+    /// Reads a value from the operand (ea_in) using the effective addressing mode specified
+    /// by the instruction, directly or through indirection, depending on the mode.
+    fn read_ea<T: CpuSized>(&mut self, instr: &Instruction, ea_in: usize) -> Result<T> {
         let v = match instr.get_addr_mode()? {
             AddressingMode::DataRegister => self.regs.read_d(ea_in),
-            AddressingMode::Immediate => {
-                let h = self.fetch_pump()? as u32;
-                let l = self.fetch_pump()? as u32;
-                (h << 16) | l
-            }
+            AddressingMode::Immediate => match std::mem::size_of::<T>() {
+                1 => todo!(),
+                2 => todo!(),
+                4 => {
+                    let h = self.fetch_pump()? as u32;
+                    let l = self.fetch_pump()? as u32;
+                    T::chop((h << 16) | l)
+                }
+                _ => unreachable!(),
+            },
             AddressingMode::Indirect
             | AddressingMode::IndirectDisplacement
             | AddressingMode::IndirectPreDec
@@ -297,11 +310,11 @@ where
             | AddressingMode::PCDisplacement
             | AddressingMode::AbsoluteShort
             | AddressingMode::AbsoluteLong => {
-                let addr = self.calc_ea_addr(instr, ea_in)?;
+                let addr = self.calc_ea_addr::<T>(instr, ea_in)?;
                 self.read_ticks(addr)?
             }
             AddressingMode::IndirectIndex | AddressingMode::PCIndex => {
-                let addr = self.calc_ea_addr(instr, ea_in)?;
+                let addr = self.calc_ea_addr::<T>(instr, ea_in)?;
                 self.read_ticks(addr)?
             }
             _ => todo!(),
@@ -312,7 +325,7 @@ where
 
     /// Writes a value to the operand (ea_in) using the effective addressing mode specified
     /// by the instruction, directly or through indirection, depending on the mode.
-    fn write_ea(&mut self, instr: &Instruction, ea_in: usize, value: u32) -> Result<()> {
+    fn write_ea<T: CpuSized>(&mut self, instr: &Instruction, ea_in: usize, value: T) -> Result<()> {
         match instr.get_addr_mode()? {
             AddressingMode::DataRegister => Ok(self.regs.write_d(ea_in, value)),
             AddressingMode::Indirect
@@ -322,7 +335,7 @@ where
             | AddressingMode::IndirectPostInc
             | AddressingMode::AbsoluteShort
             | AddressingMode::AbsoluteLong => {
-                let addr = self.calc_ea_addr(instr, ea_in)?;
+                let addr = self.calc_ea_addr::<T>(instr, ea_in)?;
                 self.write_ticks_th(addr, value)
             }
             _ => todo!(),
@@ -344,10 +357,10 @@ where
     }
 
     /// AND
-    pub fn op_and(&mut self, instr: &Instruction) -> Result<()> {
+    pub fn op_and<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         eprintln!("Addressing mode: {:?}", instr.get_addr_mode()?);
-        let left = self.regs.read_d(instr.get_op1());
-        let right = self.read_ea(instr, instr.get_op2())?;
+        let left: T = self.regs.read_d(instr.get_op1());
+        let right: T = self.read_ea(instr, instr.get_op2())?;
         let (a, b) = match instr.get_direction() {
             Direction::Right => (left, right),
             Direction::Left => (right, left),
@@ -361,12 +374,18 @@ where
         }
         self.regs.sr.set_v(false);
         self.regs.sr.set_c(false);
-        self.regs.sr.set_n(result & (1 << 31) != 0);
-        self.regs.sr.set_z(result == 0);
+        self.regs
+            .sr
+            .set_n(result.reverse_bits() & T::one() != T::zero());
+        self.regs.sr.set_z(result == T::zero());
 
         // Idle cycles
-        match (instr.get_addr_mode()?, instr.get_direction()) {
-            (AddressingMode::DataRegister | AddressingMode::Immediate, _) => {
+        match (
+            instr.get_addr_mode()?,
+            instr.get_direction(),
+            std::mem::size_of::<T>(),
+        ) {
+            (AddressingMode::DataRegister | AddressingMode::Immediate, _, 4) => {
                 self.advance_cycles(4)?
             }
 
@@ -380,8 +399,9 @@ where
                 | AddressingMode::AbsoluteShort
                 | AddressingMode::AbsoluteLong,
                 Direction::Right,
+                4,
             ) => self.advance_cycles(2)?,
-            (AddressingMode::Indirect, Direction::Right) => self.advance_cycles(2)?,
+            (AddressingMode::Indirect, Direction::Right, 4) => self.advance_cycles(2)?,
             _ => (),
         };
 
@@ -396,7 +416,7 @@ where
             let l = self.fetch_pump()? as u32;
             (h << 16) | l
         };
-        let b = self.read_ea(instr, instr.get_op2())?;
+        let b: Long = self.read_ea(instr, instr.get_op2())?;
         let result = a & b;
 
         self.prefetch_pump()?;
