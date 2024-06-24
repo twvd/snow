@@ -192,7 +192,8 @@ where
         match instr.mnemonic {
             InstructionMnemonic::AND_l => self.op_and::<Long>(&instr),
             InstructionMnemonic::AND_w => self.op_and::<Word>(&instr),
-            InstructionMnemonic::ANDI => self.op_andi(&instr),
+            InstructionMnemonic::ANDI_l => self.op_andi::<Long>(&instr),
+            InstructionMnemonic::ANDI_w => self.op_andi::<Word>(&instr),
             InstructionMnemonic::NOP => Ok(()),
             InstructionMnemonic::SWAP => self.op_swap(&instr),
             InstructionMnemonic::TRAP => self.op_trap(&instr),
@@ -288,21 +289,25 @@ where
         Ok(addr)
     }
 
+    fn fetch_immediate<T: CpuSized>(&mut self) -> Result<T> {
+        Ok(match std::mem::size_of::<T>() {
+            1 => todo!(),
+            2 => T::chop(self.fetch_pump()?.into()),
+            4 => {
+                let h = self.fetch_pump()? as u32;
+                let l = self.fetch_pump()? as u32;
+                T::chop((h << 16) | l)
+            }
+            _ => unreachable!(),
+        })
+    }
+
     /// Reads a value from the operand (ea_in) using the effective addressing mode specified
     /// by the instruction, directly or through indirection, depending on the mode.
     fn read_ea<T: CpuSized>(&mut self, instr: &Instruction, ea_in: usize) -> Result<T> {
         let v = match instr.get_addr_mode()? {
             AddressingMode::DataRegister => self.regs.read_d(ea_in),
-            AddressingMode::Immediate => match std::mem::size_of::<T>() {
-                1 => todo!(),
-                2 => todo!(),
-                4 => {
-                    let h = self.fetch_pump()? as u32;
-                    let l = self.fetch_pump()? as u32;
-                    T::chop((h << 16) | l)
-                }
-                _ => unreachable!(),
-            },
+            AddressingMode::Immediate => self.fetch_immediate::<T>()?,
             AddressingMode::Indirect
             | AddressingMode::IndirectDisplacement
             | AddressingMode::IndirectPreDec
@@ -409,26 +414,28 @@ where
     }
 
     /// ANDI
-    pub fn op_andi(&mut self, instr: &Instruction) -> Result<()> {
+    pub fn op_andi<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         eprintln!("Addressing mode: {:?}", instr.get_addr_mode()?);
-        let a = {
-            let h = self.fetch_pump()? as u32;
-            let l = self.fetch_pump()? as u32;
-            (h << 16) | l
-        };
-        let b: Long = self.read_ea(instr, instr.get_op2())?;
+        let a: T = self.fetch_immediate()?;
+        let b: T = self.read_ea(instr, instr.get_op2())?;
         let result = a & b;
 
         self.prefetch_pump()?;
         self.write_ea(instr, instr.get_op2(), result)?;
         self.regs.sr.set_v(false);
         self.regs.sr.set_c(false);
-        self.regs.sr.set_n(result & (1 << 31) != 0);
-        self.regs.sr.set_z(result == 0);
+        self.regs
+            .sr
+            .set_n(result.reverse_bits() & T::one() != T::zero());
+        self.regs.sr.set_z(result == T::zero());
 
         // Idle cycles
-        match (instr.get_addr_mode()?, instr.get_direction()) {
-            (AddressingMode::DataRegister, _) => self.advance_cycles(4)?,
+        match (
+            instr.get_addr_mode()?,
+            instr.get_direction(),
+            std::mem::size_of::<T>(),
+        ) {
+            (AddressingMode::DataRegister, _, 4) => self.advance_cycles(4)?,
             _ => (),
         };
 
