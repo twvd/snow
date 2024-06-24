@@ -14,7 +14,9 @@ pub type Long = u32;
 /// Byte (u8)
 /// Word (u16)
 /// Long (u32)
-pub trait CpuSized: PrimInt + FromBytes + ToBytes + WrappingAdd + std::convert::Into<Long> {
+pub trait CpuSized:
+    PrimInt + FromBytes + ToBytes + WrappingAdd + std::convert::Into<Long> + std::convert::From<u8>
+{
     /// Expands the value in the generic to a full register's width
     fn expand(self) -> Long;
 
@@ -32,7 +34,12 @@ pub trait CpuSized: PrimInt + FromBytes + ToBytes + WrappingAdd + std::convert::
 
 impl<T> CpuSized for T
 where
-    T: PrimInt + FromBytes + ToBytes + WrappingAdd + std::convert::Into<Long>,
+    T: PrimInt
+        + FromBytes
+        + ToBytes
+        + WrappingAdd
+        + std::convert::Into<Long>
+        + std::convert::From<u8>,
     Long: LossyInto<T>,
 {
     #[inline(always)]

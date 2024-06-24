@@ -10,7 +10,7 @@ use super::instruction::{
     AddressingMode, Direction, IndexSize, Instruction, InstructionMnemonic, Xn,
 };
 use super::regs::RegisterFile;
-use super::Long;
+use super::{CpuSized, Long, Word};
 
 /// Motorola 680x0
 #[derive(Serialize, Deserialize)]
@@ -43,7 +43,7 @@ where
         }
 
         let fetch_addr = ((self.regs.pc & !1) + 4) & ADDRESS_MASK;
-        let new_item = self.read16_ticks(fetch_addr)?;
+        let new_item = self.read_ticks::<Word>(fetch_addr)?;
         self.prefetch.push_back(new_item);
         self.regs.pc = (self.regs.pc + 2) & ADDRESS_MASK;
         Ok(())
@@ -58,14 +58,14 @@ where
     }
 
     /// Fetches a 16-bit value, through the prefetch queue
-    fn fetch_pump(&mut self) -> Result<u16> {
+    fn fetch_pump(&mut self) -> Result<Word> {
         let v = self.prefetch.pop_front().unwrap();
         self.prefetch_pump()?;
         Ok(v)
     }
 
     /// Fetches a 16-bit value from prefetch queue
-    fn fetch(&mut self) -> Result<u16> {
+    fn fetch(&mut self) -> Result<Word> {
         if self.prefetch.len() == 0 {
             self.prefetch_pump()?;
         }
@@ -95,53 +95,65 @@ where
         Ok(())
     }
 
-    /// Reads a 16-bit value from the bus and spends ticks.
-    fn read16_ticks(&mut self, addr: Address) -> Result<u16> {
-        let v = self.bus.read16(addr);
-        self.advance_cycles(4)?;
-        Ok(v)
+    /// Reads a value from the bus and spends ticks.
+    fn read_ticks<T: CpuSized>(&mut self, addr: Address) -> Result<T> {
+        let mut result: T = T::zero();
+
+        // Below converts from BE -> LE on the fly
+        for a in 0..std::mem::size_of::<T>() {
+            let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
+            let b: T = self.bus.read(byte_addr).into();
+            result = (result << 8) | b;
+
+            self.advance_cycles(2)?;
+        }
+
+        Ok(result)
     }
 
-    /// Writes a 16-bit value to the bus and spends ticks.
-    fn write16_ticks(&mut self, addr: Address, value: u16) -> Result<()> {
-        self.bus.write16(addr, value);
-        self.advance_cycles(4)?;
+    /// Writes a value to the bus (big endian) and spends ticks.
+    fn write_ticks<T: CpuSized>(&mut self, addr: Address, value: T) -> Result<()> {
+        let mut val: Long = value.to_be().into();
+
+        for a in 0..std::mem::size_of::<T>() {
+            let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
+            let b = val as u8;
+            val = val >> 8;
+
+            self.bus.write(byte_addr, b);
+            self.advance_cycles(2)?;
+        }
+
         Ok(())
     }
 
-    /// Reads a 32-bit value from the bus and spends ticks.
-    fn read32_ticks(&mut self, addr: Address) -> Result<u32> {
-        let h = self.read16_ticks(addr)? as u32;
-        let l = self.read16_ticks(addr.wrapping_add(2))? as u32;
-        Ok((h << 16) | l)
-    }
+    /// Writes a value to the bus (big endian) and spends ticks.
+    /// High-to-low temporal order.
+    fn write_ticks_th<T: CpuSized>(&mut self, addr: Address, value: T) -> Result<()> {
+        let mut val: Long = value.into();
 
-    /// Writes a 32-bit value to the bus and spends ticks.
-    /// Writes big endian in low to high.
-    fn write32_ticks(&mut self, addr: Address, value: u32) -> Result<()> {
-        self.write16_ticks(addr, (value >> 16) as u16)?;
-        self.write16_ticks(addr.wrapping_add(2), value as u16)?;
-        Ok(())
-    }
+        for a in (0..std::mem::size_of::<T>()).rev() {
+            let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
+            let b = val as u8;
+            val = val >> 8;
 
-    /// Writes a 32-bit value to the bus and spends ticks.
-    /// Writes big endian in high to low temporal order.
-    fn write32_ticks_th(&mut self, addr: Address, value: u32) -> Result<()> {
-        self.write16_ticks(addr.wrapping_add(2), value as u16)?;
-        self.write16_ticks(addr, (value >> 16) as u16)?;
+            self.bus.write(byte_addr, b);
+            self.advance_cycles(2)?;
+        }
+
         Ok(())
     }
 
     /// Pushes 16-bit to supervisor stack
     fn push16_ss(&mut self, val: u16) -> Result<()> {
         self.regs.ssp = self.regs.ssp.wrapping_sub(2);
-        self.write16_ticks(self.regs.ssp, val)
+        self.write_ticks(self.regs.ssp, val)
     }
 
     /// Pushes 32-bit to supervisor stack
     fn push32_ss(&mut self, val: u32) -> Result<()> {
         self.regs.ssp = self.regs.ssp.wrapping_sub(4);
-        self.write32_ticks(self.regs.ssp, val)
+        self.write_ticks(self.regs.ssp, val)
     }
 
     /// Sets the program counter and flushes the prefetch queue
@@ -166,7 +178,7 @@ where
         self.push16_ss(self.regs.pc as u16)?;
         self.push32_ss(((self.regs.sr.0 as u32) << 16) | (self.regs.pc >> 16))?;
 
-        let new_pc = self.read32_ticks(vector)?.into();
+        let new_pc = self.read_ticks::<Long>(vector)?.into();
         self.set_pc(new_pc)?;
         self.prefetch_pump()?;
         self.advance_cycles(2)?; // 2x idle
@@ -286,12 +298,11 @@ where
             | AddressingMode::AbsoluteShort
             | AddressingMode::AbsoluteLong => {
                 let addr = self.calc_ea_addr(instr, ea_in)?;
-                self.read32_ticks(addr)?
+                self.read_ticks(addr)?
             }
             AddressingMode::IndirectIndex | AddressingMode::PCIndex => {
                 let addr = self.calc_ea_addr(instr, ea_in)?;
-                let v = self.read32_ticks(addr)?;
-                v
+                self.read_ticks(addr)?
             }
             _ => todo!(),
         };
@@ -312,7 +323,7 @@ where
             | AddressingMode::AbsoluteShort
             | AddressingMode::AbsoluteLong => {
                 let addr = self.calc_ea_addr(instr, ea_in)?;
-                self.write32_ticks_th(addr, value)
+                self.write_ticks_th(addr, value)
             }
             _ => todo!(),
         }
