@@ -258,10 +258,7 @@ where
                 );
                 pc.wrapping_add(displacement).wrapping_add(index)
             }
-            AddressingMode::AbsoluteShort => {
-                self.advance_cycles(2)?; // 2x idle
-                self.fetch()? as i16 as i32 as u32
-            }
+            AddressingMode::AbsoluteShort => self.fetch_pump()? as i16 as i32 as u32,
             AddressingMode::AbsoluteLong => {
                 let h = self.fetch_pump()? as u32;
                 let l = self.fetch_pump()? as u32;

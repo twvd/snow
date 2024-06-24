@@ -162,6 +162,7 @@ impl Instruction {
             (0b100, _) => Ok(AddressingMode::IndirectPreDec),
             (0b101, _) => Ok(AddressingMode::IndirectDisplacement),
             (0b110, _) => Ok(AddressingMode::IndirectIndex),
+            (0b111, 0b000) => Ok(AddressingMode::AbsoluteShort),
             (0b111, 0b001) => Ok(AddressingMode::AbsoluteLong),
             (0b111, 0b010) => Ok(AddressingMode::PCDisplacement),
             (0b111, 0b011) => Ok(AddressingMode::PCIndex),
