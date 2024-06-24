@@ -244,12 +244,10 @@ where
                 Address::from(addr.wrapping_add_signed(displacement))
             }
             AddressingMode::PCIndex => {
-                todo!();
+                self.advance_cycles(2)?; // 2x idle
+                instr.fetch_extwords(|| self.fetch_pump())?;
                 let extword = instr.get_extword(0)?;
-                let pc = self
-                    .regs
-                    .pc
-                    .wrapping_add((2 - (self.prefetch.len() as u32)) * 2);
+                let pc = self.regs.pc;
                 let displacement = extword.brief_get_displacement_signext();
                 let index = read_idx(
                     self,
@@ -360,6 +358,7 @@ where
                 | AddressingMode::IndirectPostInc
                 | AddressingMode::IndirectIndex
                 | AddressingMode::PCDisplacement
+                | AddressingMode::PCIndex
                 | AddressingMode::AbsoluteLong,
                 Direction::Right,
             ) => self.advance_cycles(2)?,
