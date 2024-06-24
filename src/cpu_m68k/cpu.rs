@@ -351,9 +351,7 @@ where
 
         // Idle cycles
         match (instr.get_addr_mode()?, instr.get_direction()) {
-            (AddressingMode::AbsoluteShort | AddressingMode::AbsoluteLong, _) => {
-                self.advance_cycles(2)?
-            }
+            (AddressingMode::AbsoluteShort, _) => self.advance_cycles(2)?,
             (AddressingMode::DataRegister, _) => self.advance_cycles(4)?,
 
             (
@@ -361,7 +359,8 @@ where
                 | AddressingMode::IndirectPreDec
                 | AddressingMode::IndirectPostInc
                 | AddressingMode::IndirectIndex
-                | AddressingMode::PCDisplacement,
+                | AddressingMode::PCDisplacement
+                | AddressingMode::AbsoluteLong,
                 Direction::Right,
             ) => self.advance_cycles(2)?,
             (AddressingMode::Indirect, Direction::Right) => self.advance_cycles(2)?,
