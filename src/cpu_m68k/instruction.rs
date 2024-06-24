@@ -31,6 +31,7 @@ pub enum AddressingMode {
     PCIndex,
     AbsoluteShort,
     AbsoluteLong,
+    Immediate,
 }
 
 /// Direction
@@ -166,6 +167,7 @@ impl Instruction {
             (0b111, 0b001) => Ok(AddressingMode::AbsoluteLong),
             (0b111, 0b010) => Ok(AddressingMode::PCDisplacement),
             (0b111, 0b011) => Ok(AddressingMode::PCIndex),
+            (0b111, 0b100) => Ok(AddressingMode::Immediate),
             _ => Err(anyhow!(
                 "Invalid addressing mode {:06b}",
                 self.data & 0b111_111

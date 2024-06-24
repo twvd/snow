@@ -272,6 +272,11 @@ where
     fn read_ea(&mut self, instr: &Instruction, ea_in: usize) -> Result<u32> {
         let v = match instr.get_addr_mode()? {
             AddressingMode::DataRegister => self.regs.read_d(ea_in),
+            AddressingMode::Immediate => {
+                let h = self.fetch_pump()? as u32;
+                let l = self.fetch_pump()? as u32;
+                (h << 16) | l
+            }
             AddressingMode::Indirect
             | AddressingMode::IndirectDisplacement
             | AddressingMode::IndirectPreDec
@@ -349,7 +354,9 @@ where
 
         // Idle cycles
         match (instr.get_addr_mode()?, instr.get_direction()) {
-            (AddressingMode::DataRegister, _) => self.advance_cycles(4)?,
+            (AddressingMode::DataRegister | AddressingMode::Immediate, _) => {
+                self.advance_cycles(4)?
+            }
 
             (
                 AddressingMode::IndirectDisplacement
