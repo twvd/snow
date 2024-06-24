@@ -1,6 +1,7 @@
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
+use super::{CpuSized, Long};
 use crate::bus::Address;
 
 use std::fmt;
@@ -35,10 +36,10 @@ bitfield! {
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct RegisterFile {
     /// Dx
-    pub d: [u32; 8],
+    pub d: [Long; 8],
 
     /// Ax
-    pub a: [u32; 7],
+    pub a: [Long; 7],
 
     /// User Stack Pointer
     pub usp: Address,
@@ -65,8 +66,9 @@ impl RegisterFile {
         }
     }
 
-    pub fn read_a(&self, a: usize) -> u32 {
-        if a == 7 {
+    /// Read an An register
+    pub fn read_a<T: CpuSized>(&self, a: usize) -> T {
+        T::chop(if a == 7 {
             if self.sr.supervisor() {
                 self.ssp
             } else {
@@ -74,27 +76,33 @@ impl RegisterFile {
             }
         } else {
             self.a[a]
-        }
+        })
     }
 
-    pub fn write_a(&mut self, a: usize, val: u32) {
+    /// Write an An register
+    pub fn write_a<T: CpuSized>(&mut self, a: usize, val: T) {
+        // Writes to A as Byte or Word are sign extended
+        let adj_val = val.expand_sign_extend();
+
         if a == 7 {
             if self.sr.supervisor() {
-                self.ssp = val
+                self.ssp = adj_val
             } else {
-                self.usp = val
+                self.usp = adj_val
             }
         } else {
-            self.a[a] = val
+            self.a[a] = adj_val
         }
     }
 
-    pub fn read_d(&self, d: usize) -> u32 {
-        self.d[d]
+    /// Read a Dn register
+    pub fn read_d<T: CpuSized>(&self, d: usize) -> T {
+        T::chop(self.d[d])
     }
 
-    pub fn write_d(&mut self, d: usize, val: u32) {
-        self.d[d] = val
+    /// Write a Dn register
+    pub fn write_d<T: CpuSized>(&mut self, d: usize, val: T) {
+        self.d[d] = val.replace_in(self.d[d])
     }
 }
 
@@ -105,5 +113,86 @@ impl fmt::Display for RegisterFile {
             "A: {:?} D: {:?} USP: {:06X} SSP: {:06X} PC: {:06X} SR: {:?}",
             self.a, self.d, self.usp, self.ssp, self.pc, self.sr
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Byte, Long, Word};
+    use super::*;
+
+    #[test]
+    fn read_d() {
+        let mut r = RegisterFile::new();
+        r.d[0] = 0x11223344;
+
+        assert_eq!(r.read_d::<Byte>(0), 0x44);
+        assert_eq!(r.read_d::<Word>(0), 0x3344);
+        assert_eq!(r.read_d::<Long>(0), 0x11223344);
+    }
+
+    #[test]
+    fn read_a() {
+        let mut r = RegisterFile::new();
+        r.a[0] = 0x11223344;
+
+        assert_eq!(r.read_a::<Byte>(0), 0x44);
+        assert_eq!(r.read_a::<Word>(0), 0x3344);
+        assert_eq!(r.read_a::<Long>(0), 0x11223344);
+    }
+
+    #[test]
+    fn write_a() {
+        let mut r = RegisterFile::new();
+        r.write_a(0, 0x11223344_u32);
+        assert_eq!(r.a[0], 0x11223344);
+        r.write_a(0, 0x3344_u16);
+        assert_eq!(r.a[0], 0xFFFF3344);
+        r.write_a(0, 0x44_u8);
+        assert_eq!(r.a[0], 0xFFFFFF44);
+    }
+
+    #[test]
+    fn write_a7_user() {
+        let mut r = RegisterFile::new();
+        r.sr.set_supervisor(false);
+        r.ssp = 0;
+        r.usp = 0;
+
+        r.write_a(7, 0x11223344_u32);
+        assert_eq!(r.usp, 0x11223344);
+        assert_eq!(r.ssp, 0x00000000);
+    }
+
+    #[test]
+    fn write_a7_supervisor() {
+        let mut r = RegisterFile::new();
+        r.sr.set_supervisor(true);
+        r.ssp = 0;
+        r.usp = 0;
+
+        r.write_a(7, 0x11223344_u32);
+        assert_eq!(r.ssp, 0x11223344);
+        assert_eq!(r.usp, 0x00000000);
+    }
+
+    #[test]
+    fn read_a7_user() {
+        let mut r = RegisterFile::new();
+        r.sr.set_supervisor(false);
+        r.ssp = 0;
+        r.usp = 0x11223344;
+
+        assert_eq!(r.read_a::<Long>(7), 0x11223344_u32);
+    }
+
+    #[test]
+    fn read_a7_supervisor() {
+        let mut r = RegisterFile::new();
+        r.sr.set_supervisor(true);
+        r.usp = 0;
+        r.ssp = 0x11223344;
+
+        assert_eq!(r.read_a::<Long>(7), 0x11223344_u32);
     }
 }

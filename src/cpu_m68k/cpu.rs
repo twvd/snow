@@ -10,6 +10,7 @@ use super::instruction::{
     AddressingMode, Direction, IndexSize, Instruction, InstructionMnemonic, Xn,
 };
 use super::regs::RegisterFile;
+use super::Long;
 
 /// Motorola 680x0
 #[derive(Serialize, Deserialize)]
@@ -208,18 +209,18 @@ where
             AddressingMode::Indirect => self.regs.read_a(ea_in),
             AddressingMode::IndirectPreDec => {
                 self.advance_cycles(2)?; // 2x idle
-                let addr = self.regs.read_a(ea_in).wrapping_sub(4);
+                let addr = self.regs.read_a::<Address>(ea_in).wrapping_sub(4);
                 self.regs.write_a(ea_in, addr);
                 addr
             }
             AddressingMode::IndirectPostInc => {
-                let addr = self.regs.read_a(ea_in);
+                let addr = self.regs.read_a::<Address>(ea_in);
                 self.regs.write_a(ea_in, addr.wrapping_add(4));
                 addr
             }
             AddressingMode::IndirectDisplacement => {
                 instr.fetch_extwords(|| self.fetch_pump())?;
-                let addr = self.regs.read_a(ea_in);
+                let addr = self.regs.read_a::<Address>(ea_in);
                 let displacement = instr.get_displacement()?;
                 Address::from(addr.wrapping_add_signed(displacement))
             }
@@ -228,7 +229,7 @@ where
                 instr.fetch_extwords(|| self.fetch_pump())?;
 
                 let extword = instr.get_extword(0)?;
-                let addr = self.regs.read_a(ea_in);
+                let addr = self.regs.read_a::<Address>(ea_in);
                 let displacement = extword.brief_get_displacement_signext();
                 let index = read_idx(
                     self,
@@ -319,7 +320,7 @@ where
 
     /// SWAP
     pub fn op_swap(&mut self, instr: &Instruction) -> Result<()> {
-        let v = self.regs.read_d(instr.get_op2());
+        let v: Long = self.regs.read_d(instr.get_op2());
         let result = (v >> 16) | (v << 16);
 
         self.regs.write_d(instr.get_op2(), result);
