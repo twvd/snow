@@ -237,6 +237,12 @@ where
                 );
                 addr.wrapping_add(displacement).wrapping_add(index)
             }
+            AddressingMode::PCDisplacement => {
+                instr.fetch_extwords(|| self.fetch_pump())?;
+                let addr = self.regs.pc;
+                let displacement = instr.get_displacement()?;
+                Address::from(addr.wrapping_add_signed(displacement))
+            }
             AddressingMode::PCIndex => {
                 todo!();
                 let extword = instr.get_extword(0)?;
@@ -275,6 +281,7 @@ where
             | AddressingMode::IndirectDisplacement
             | AddressingMode::IndirectPreDec
             | AddressingMode::IndirectPostInc
+            | AddressingMode::PCDisplacement
             | AddressingMode::AbsoluteShort
             | AddressingMode::AbsoluteLong => {
                 let addr = self.calc_ea_addr(instr, ea_in)?;
@@ -356,7 +363,8 @@ where
                 AddressingMode::IndirectDisplacement
                 | AddressingMode::IndirectPreDec
                 | AddressingMode::IndirectPostInc
-                | AddressingMode::IndirectIndex,
+                | AddressingMode::IndirectIndex
+                | AddressingMode::PCDisplacement,
                 Direction::Right,
             ) => self.advance_cycles(2)?,
             (AddressingMode::Indirect, Direction::Right) => self.advance_cycles(2)?,

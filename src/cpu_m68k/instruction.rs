@@ -163,6 +163,7 @@ impl Instruction {
             (0b101, _) => Ok(AddressingMode::IndirectDisplacement),
             (0b110, _) => Ok(AddressingMode::IndirectIndex),
             (0b111, 0b001) => Ok(AddressingMode::AbsoluteLong),
+            (0b111, 0b010) => Ok(AddressingMode::PCDisplacement),
             (0b111, 0b011) => Ok(AddressingMode::PCIndex),
             _ => Err(anyhow!(
                 "Invalid addressing mode {:06b}",
@@ -194,6 +195,7 @@ impl Instruction {
             AddressingMode::IndirectDisplacement => Ok(1),
             AddressingMode::IndirectIndex => Ok(1),
             AddressingMode::PCIndex => Ok(1),
+            AddressingMode::PCDisplacement => Ok(1),
             _ => Ok(0),
         }
     }
@@ -225,9 +227,9 @@ impl Instruction {
     }
 
     pub fn get_displacement(&self) -> Result<i32> {
-        debug_assert_eq!(
-            self.get_addr_mode().unwrap(),
-            AddressingMode::IndirectDisplacement
+        debug_assert!(
+            self.get_addr_mode().unwrap() == AddressingMode::IndirectDisplacement
+                || self.get_addr_mode().unwrap() == AddressingMode::PCDisplacement
         );
         debug_assert!(self.extwords.borrow().is_some());
         debug_assert_eq!(self.extwords.borrow().as_ref().unwrap().len(), 1);
