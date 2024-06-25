@@ -236,8 +236,8 @@ fn print_result(cpu: &CpuM68k<Testbus<Address>>, testcase: &Testcase) {
             }
             TestcaseTransaction::Rw(t) => {
                 eprintln!(
-                    "{:<4} {:<4} {:<5?} {:06X} {:02X}",
-                    abs_cycles, t.cycles, t.action, t.address, t.value
+                    "{:<4} {:<4} {:<5?}/{:<5?} {:06X} {:02X}",
+                    abs_cycles, t.cycles, t.action, t.access, t.address, t.value
                 );
                 abs_cycles += t.cycles;
             }
@@ -367,7 +367,7 @@ fn run_testcase(testcase: Testcase) {
 //cpu_test!(addx_b, "ADDX.b");
 //cpu_test!(addx_l, "ADDX.l");
 //cpu_test!(addx_w, "ADDX.w");
-//cpu_test!(and_b, "AND.b");
+cpu_test!(and_b, "AND.b");
 //cpu_test!(anditoccr, "ANDItoCCR");
 //cpu_test!(anditosr, "ANDItoSR");
 cpu_test!(and_l, "AND.l");

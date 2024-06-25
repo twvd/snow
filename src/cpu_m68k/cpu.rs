@@ -10,7 +10,7 @@ use super::instruction::{
     AddressingMode, Direction, IndexSize, Instruction, InstructionMnemonic, Xn,
 };
 use super::regs::RegisterFile;
-use super::{CpuSized, Long, Word};
+use super::{Byte, CpuSized, Long, Word};
 
 /// Motorola 680x0
 #[derive(Serialize, Deserialize)]
@@ -103,8 +103,13 @@ where
         for a in 0..std::mem::size_of::<T>() {
             let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
             let b: T = self.bus.read(byte_addr).into();
-            result = (result << 8) | b;
+            result = result.wrapping_shl(8) | b;
 
+            self.advance_cycles(2)?;
+        }
+
+        if std::mem::size_of::<T>() == 1 {
+            // Minimum of 4 cycles
             self.advance_cycles(2)?;
         }
 
@@ -124,6 +129,11 @@ where
             self.advance_cycles(2)?;
         }
 
+        if std::mem::size_of::<T>() == 1 {
+            // Minimum of 4 cycles
+            self.advance_cycles(2)?;
+        }
+
         Ok(())
     }
 
@@ -138,6 +148,11 @@ where
             val = val >> 8;
 
             self.bus.write(byte_addr, b);
+            self.advance_cycles(2)?;
+        }
+
+        if std::mem::size_of::<T>() == 1 {
+            // Minimum of 4 cycles
             self.advance_cycles(2)?;
         }
 
@@ -192,8 +207,10 @@ where
         match instr.mnemonic {
             InstructionMnemonic::AND_l => self.op_and::<Long>(&instr),
             InstructionMnemonic::AND_w => self.op_and::<Word>(&instr),
+            InstructionMnemonic::AND_b => self.op_and::<Byte>(&instr),
             InstructionMnemonic::ANDI_l => self.op_andi::<Long>(&instr),
             InstructionMnemonic::ANDI_w => self.op_andi::<Word>(&instr),
+            InstructionMnemonic::ANDI_b => self.op_andi::<Byte>(&instr),
             InstructionMnemonic::NOP => Ok(()),
             InstructionMnemonic::SWAP => self.op_swap(&instr),
             InstructionMnemonic::TRAP => self.op_trap(&instr),
@@ -224,19 +241,11 @@ where
             AddressingMode::Indirect => self.regs.read_a(ea_in),
             AddressingMode::IndirectPreDec => {
                 self.advance_cycles(2)?; // 2x idle
-                let addr = self
-                    .regs
-                    .read_a::<Address>(ea_in)
-                    .wrapping_sub(std::mem::size_of::<T>() as u32);
-                self.regs.write_a(ea_in, addr);
-                addr
+                self.regs.read_a_predec(ea_in, std::mem::size_of::<T>())
             }
-            AddressingMode::IndirectPostInc => {
-                let addr = self.regs.read_a::<Address>(ea_in);
-                self.regs
-                    .write_a(ea_in, addr.wrapping_add(std::mem::size_of::<T>() as u32));
-                addr
-            }
+            AddressingMode::IndirectPostInc => self
+                .regs
+                .read_a_postinc::<Address>(ea_in, std::mem::size_of::<T>()),
             AddressingMode::IndirectDisplacement => {
                 instr.fetch_extwords(|| self.fetch_pump())?;
                 let addr = self.regs.read_a::<Address>(ea_in);
@@ -291,8 +300,7 @@ where
 
     fn fetch_immediate<T: CpuSized>(&mut self) -> Result<T> {
         Ok(match std::mem::size_of::<T>() {
-            1 => todo!(),
-            2 => T::chop(self.fetch_pump()?.into()),
+            1 | 2 => T::chop(self.fetch_pump()?.into()),
             4 => {
                 let h = self.fetch_pump()? as u32;
                 let l = self.fetch_pump()? as u32;

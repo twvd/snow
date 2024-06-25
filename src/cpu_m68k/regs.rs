@@ -79,6 +79,51 @@ impl RegisterFile {
         })
     }
 
+    /// Read an An register and post-increment
+    pub fn read_a_postinc<T: CpuSized>(&mut self, a: usize, adjust: usize) -> T {
+        let adjust = adjust as Long;
+
+        T::chop(if a == 7 {
+            // Byte also adjusts by 2 to keep the stack aligned
+            let adjust = std::cmp::max(2, adjust);
+
+            if self.sr.supervisor() {
+                let result = self.ssp;
+                self.ssp = self.ssp.wrapping_add(adjust);
+                result
+            } else {
+                let result = self.usp;
+                self.usp = self.usp.wrapping_add(adjust);
+                result
+            }
+        } else {
+            let result = self.a[a];
+            self.a[a] = self.a[a].wrapping_add(adjust);
+            result
+        })
+    }
+
+    /// Read an An register and pre-decrement
+    pub fn read_a_predec<T: CpuSized>(&mut self, a: usize, adjust: usize) -> T {
+        let adjust = adjust as Long;
+
+        T::chop(if a == 7 {
+            // Byte also adjusts by 2 to keep the stack aligned
+            let adjust = std::cmp::max(2, adjust);
+
+            if self.sr.supervisor() {
+                self.ssp = self.ssp.wrapping_sub(adjust);
+                self.ssp
+            } else {
+                self.usp = self.usp.wrapping_sub(adjust);
+                self.usp
+            }
+        } else {
+            self.a[a] = self.a[a].wrapping_sub(adjust);
+            self.a[a]
+        })
+    }
+
     /// Write an An register
     pub fn write_a<T: CpuSized>(&mut self, a: usize, val: T) {
         // Writes to A as Byte or Word are sign extended
