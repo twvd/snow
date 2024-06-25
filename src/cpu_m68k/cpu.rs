@@ -214,7 +214,6 @@ where
             InstructionMnemonic::NOP => Ok(()),
             InstructionMnemonic::SWAP => self.op_swap(&instr),
             InstructionMnemonic::TRAP => self.op_trap(&instr),
-            _ => todo!(),
         }
     }
 
@@ -402,19 +401,7 @@ where
                 self.advance_cycles(4)?
             }
 
-            (
-                AddressingMode::IndirectDisplacement
-                | AddressingMode::IndirectPreDec
-                | AddressingMode::IndirectPostInc
-                | AddressingMode::IndirectIndex
-                | AddressingMode::PCDisplacement
-                | AddressingMode::PCIndex
-                | AddressingMode::AbsoluteShort
-                | AddressingMode::AbsoluteLong,
-                Direction::Right,
-                4,
-            ) => self.advance_cycles(2)?,
-            (AddressingMode::Indirect, Direction::Right, 4) => self.advance_cycles(2)?,
+            (_, Direction::Right, 4) => self.advance_cycles(2)?,
             _ => (),
         };
 
