@@ -205,12 +205,24 @@ where
     /// Executes a previously decoded instruction.
     fn execute_instruction(&mut self, instr: Instruction) -> Result<()> {
         match instr.mnemonic {
-            InstructionMnemonic::AND_l => self.op_and::<Long>(&instr),
-            InstructionMnemonic::AND_w => self.op_and::<Word>(&instr),
-            InstructionMnemonic::AND_b => self.op_and::<Byte>(&instr),
-            InstructionMnemonic::ANDI_l => self.op_andi::<Long>(&instr),
-            InstructionMnemonic::ANDI_w => self.op_andi::<Word>(&instr),
-            InstructionMnemonic::ANDI_b => self.op_andi::<Byte>(&instr),
+            InstructionMnemonic::AND_l => self.op_bitwise::<Long>(&instr, |a, b| a & b),
+            InstructionMnemonic::AND_w => self.op_bitwise::<Word>(&instr, |a, b| a & b),
+            InstructionMnemonic::AND_b => self.op_bitwise::<Byte>(&instr, |a, b| a & b),
+            InstructionMnemonic::ANDI_l => self.op_bitwise_immediate::<Long>(&instr, |a, b| a & b),
+            InstructionMnemonic::ANDI_w => self.op_bitwise_immediate::<Word>(&instr, |a, b| a & b),
+            InstructionMnemonic::ANDI_b => self.op_bitwise_immediate::<Byte>(&instr, |a, b| a & b),
+            InstructionMnemonic::EOR_l => self.op_bitwise::<Long>(&instr, |a, b| a ^ b),
+            InstructionMnemonic::EOR_w => self.op_bitwise::<Word>(&instr, |a, b| a ^ b),
+            InstructionMnemonic::EOR_b => self.op_bitwise::<Byte>(&instr, |a, b| a ^ b),
+            InstructionMnemonic::EORI_l => self.op_bitwise_immediate::<Long>(&instr, |a, b| a ^ b),
+            InstructionMnemonic::EORI_w => self.op_bitwise_immediate::<Word>(&instr, |a, b| a ^ b),
+            InstructionMnemonic::EORI_b => self.op_bitwise_immediate::<Byte>(&instr, |a, b| a ^ b),
+            InstructionMnemonic::OR_l => self.op_bitwise::<Long>(&instr, |a, b| a | b),
+            InstructionMnemonic::OR_w => self.op_bitwise::<Word>(&instr, |a, b| a | b),
+            InstructionMnemonic::OR_b => self.op_bitwise::<Byte>(&instr, |a, b| a | b),
+            InstructionMnemonic::ORI_l => self.op_bitwise_immediate::<Long>(&instr, |a, b| a | b),
+            InstructionMnemonic::ORI_w => self.op_bitwise_immediate::<Word>(&instr, |a, b| a | b),
+            InstructionMnemonic::ORI_b => self.op_bitwise_immediate::<Byte>(&instr, |a, b| a | b),
             InstructionMnemonic::NOP => Ok(()),
             InstructionMnemonic::SWAP => self.op_swap(&instr),
             InstructionMnemonic::TRAP => self.op_trap(&instr),
@@ -368,16 +380,19 @@ where
         Ok(())
     }
 
-    /// AND
-    pub fn op_and<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
-        eprintln!("Addressing mode: {:?}", instr.get_addr_mode()?);
+    /// AND/OR
+    pub fn op_bitwise<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        calcfn: fn(T, T) -> T,
+    ) -> Result<()> {
         let left: T = self.regs.read_d(instr.get_op1());
         let right: T = self.read_ea(instr, instr.get_op2())?;
         let (a, b) = match instr.get_direction() {
             Direction::Right => (left, right),
             Direction::Left => (right, left),
         };
-        let result = a & b;
+        let result = calcfn(a, b);
 
         self.prefetch_pump()?;
         match instr.get_direction() {
@@ -408,12 +423,15 @@ where
         Ok(())
     }
 
-    /// ANDI
-    pub fn op_andi<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
-        eprintln!("Addressing mode: {:?}", instr.get_addr_mode()?);
+    /// ANDI/ORI
+    pub fn op_bitwise_immediate<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        calcfn: fn(T, T) -> T,
+    ) -> Result<()> {
         let a: T = self.fetch_immediate()?;
         let b: T = self.read_ea(instr, instr.get_op2())?;
-        let result = a & b;
+        let result = calcfn(a, b);
 
         self.prefetch_pump()?;
         self.write_ea(instr, instr.get_op2(), result)?;
