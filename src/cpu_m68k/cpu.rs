@@ -211,18 +211,25 @@ where
             InstructionMnemonic::ANDI_l => self.op_bitwise_immediate::<Long>(&instr, |a, b| a & b),
             InstructionMnemonic::ANDI_w => self.op_bitwise_immediate::<Word>(&instr, |a, b| a & b),
             InstructionMnemonic::ANDI_b => self.op_bitwise_immediate::<Byte>(&instr, |a, b| a & b),
+            InstructionMnemonic::ANDI_ccr => self.op_bitwise_ccr(&instr, |a, b| a & b),
+            InstructionMnemonic::ANDI_sr => todo!(),
             InstructionMnemonic::EOR_l => self.op_bitwise::<Long>(&instr, |a, b| a ^ b),
             InstructionMnemonic::EOR_w => self.op_bitwise::<Word>(&instr, |a, b| a ^ b),
             InstructionMnemonic::EOR_b => self.op_bitwise::<Byte>(&instr, |a, b| a ^ b),
             InstructionMnemonic::EORI_l => self.op_bitwise_immediate::<Long>(&instr, |a, b| a ^ b),
             InstructionMnemonic::EORI_w => self.op_bitwise_immediate::<Word>(&instr, |a, b| a ^ b),
             InstructionMnemonic::EORI_b => self.op_bitwise_immediate::<Byte>(&instr, |a, b| a ^ b),
+            InstructionMnemonic::EORI_ccr => self.op_bitwise_ccr(&instr, |a, b| a ^ b),
+            InstructionMnemonic::EORI_sr => todo!(),
             InstructionMnemonic::OR_l => self.op_bitwise::<Long>(&instr, |a, b| a | b),
             InstructionMnemonic::OR_w => self.op_bitwise::<Word>(&instr, |a, b| a | b),
             InstructionMnemonic::OR_b => self.op_bitwise::<Byte>(&instr, |a, b| a | b),
             InstructionMnemonic::ORI_l => self.op_bitwise_immediate::<Long>(&instr, |a, b| a | b),
             InstructionMnemonic::ORI_w => self.op_bitwise_immediate::<Word>(&instr, |a, b| a | b),
             InstructionMnemonic::ORI_b => self.op_bitwise_immediate::<Byte>(&instr, |a, b| a | b),
+            InstructionMnemonic::ORI_ccr => self.op_bitwise_ccr(&instr, |a, b| a | b),
+            InstructionMnemonic::ORI_sr => todo!(),
+
             InstructionMnemonic::NOP => Ok(()),
             InstructionMnemonic::SWAP => self.op_swap(&instr),
             InstructionMnemonic::TRAP => self.op_trap(&instr),
@@ -380,7 +387,7 @@ where
         Ok(())
     }
 
-    /// AND/OR
+    /// AND/OR/EOR
     pub fn op_bitwise<T: CpuSized>(
         &mut self,
         instr: &Instruction,
@@ -423,7 +430,7 @@ where
         Ok(())
     }
 
-    /// ANDI/ORI
+    /// ANDI/ORI/EORI
     pub fn op_bitwise_immediate<T: CpuSized>(
         &mut self,
         instr: &Instruction,
@@ -451,6 +458,24 @@ where
             (AddressingMode::DataRegister, _, 4) => self.advance_cycles(4)?,
             _ => (),
         };
+
+        Ok(())
+    }
+
+    /// AND/OR/EOR to CCR
+    pub fn op_bitwise_ccr(
+        &mut self,
+        _instr: &Instruction,
+        calcfn: fn(Byte, Byte) -> Byte,
+    ) -> Result<()> {
+        let a = self.fetch_immediate()?;
+        let b = self.regs.sr.ccr();
+        self.regs.sr.set_ccr(calcfn(a, b));
+
+        // Idle cycles and dummy read
+        self.advance_cycles(8)?;
+        self.read_ticks::<Word>(self.regs.pc.wrapping_add(2) & ADDRESS_MASK)?;
+        self.prefetch_pump()?;
 
         Ok(())
     }
