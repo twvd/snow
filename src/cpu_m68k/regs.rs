@@ -10,6 +10,8 @@ bitfield! {
     /// SR register bitfield
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct RegisterSR(pub u16): Debug, FromRaw, IntoRaw, DerefRaw {
+        /// Full SR (with masking)
+        pub sr: u16 [set_fn (|v| v & 0b1010011100011111)] @ ..,
         /// Condition Code Register
         pub ccr: u8 @ 0..=4,
         /// Carry
