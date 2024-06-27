@@ -260,12 +260,6 @@ fn run_testcase(testcase: Testcase) {
     let regs_initial = create_regs(&testcase.initial);
     let regs_final = create_regs(&testcase.r#final);
 
-    if regs_final.pc == 0x1400 {
-        // TODO addres errors
-        eprintln!("Skipping address error");
-        return;
-    }
-
     let mut bus = Testbus::new(ADDRESS_MASK);
     for (addr, val) in &testcase.initial.ram {
         bus.write(*addr, *val);
@@ -296,6 +290,15 @@ fn run_testcase(testcase: Testcase) {
     }
 
     for (addr, expected) in &testcase.r#final.ram {
+        // If this is an address error exception, ignore the top
+        // of the stack frame (function code etc) for now.
+        // TODO inaccuracy
+        if regs_final.pc == 0x1400
+            && (*addr == regs_final.ssp || *addr == regs_final.ssp.wrapping_add(1))
+        {
+            continue;
+        }
+
         let actual = cpu.bus.mem.get(addr).unwrap_or(&0);
         if actual != expected {
             print_result(&cpu, &testcase);

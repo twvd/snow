@@ -1,7 +1,8 @@
 use std::collections::VecDeque;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::bus::{Address, Bus, ADDRESS_MASK};
 use crate::tickable::{Tickable, Ticks};
@@ -11,6 +12,39 @@ use super::instruction::{
 };
 use super::regs::RegisterFile;
 use super::{Byte, CpuSized, Long, Word};
+
+/// Access error details
+#[derive(Debug, Clone, Copy)]
+struct AccessError {
+    function_code: u8,
+    read: bool,
+    instruction: bool,
+    address: Address,
+    ir: Word,
+}
+
+/// CPU error type to cascade exceptions down
+#[derive(Error, Debug)]
+enum CpuError {
+    /// Access error exception (unaligned address on Word/Long access)
+    #[error("Access error exception")]
+    AccessError(AccessError),
+}
+
+/// M68000 exception groups
+enum ExceptionGroup {
+    Group0,
+    Group1,
+    Group2,
+}
+
+// Exception vectors
+/// Address error exception vector
+const VECTOR_ACCESS_ERROR: Address = 0x00000C;
+/// Privilege violation exception vector
+const VECTOR_PRIVILEGE_VIOLATION: Address = 0x000020;
+/// Trap exception vector offset (15 vectors)
+const VECTOR_TRAP_OFFSET: Address = 0x000080;
 
 /// Motorola 680x0
 #[derive(Serialize, Deserialize)]
@@ -81,7 +115,22 @@ where
         let instr = Instruction::try_decode(|| self.fetch())?;
         // TODO decoded instruction cache
 
-        self.execute_instruction(instr)?;
+        match self.execute_instruction(&instr) {
+            Ok(()) => (),
+            Err(e) => match e.downcast_ref() {
+                Some(CpuError::AccessError(ae)) => {
+                    let mut details = *ae;
+                    details.ir = instr.data;
+                    self.raise_exception(
+                        ExceptionGroup::Group0,
+                        VECTOR_ACCESS_ERROR,
+                        Some(details),
+                    )?
+                }
+                None => return Err(e),
+            },
+        };
+
         self.prefetch_refill()?;
         Ok(())
     }
@@ -97,10 +146,24 @@ where
 
     /// Reads a value from the bus and spends ticks.
     fn read_ticks<T: CpuSized>(&mut self, addr: Address) -> Result<T> {
+        let len = std::mem::size_of::<T>();
         let mut result: T = T::zero();
 
+        if len >= 2 && (addr & 1) != 0 {
+            // Unaligned access
+            bail!(CpuError::AccessError(AccessError {
+                function_code: 0,
+                ir: 0,
+
+                // TODO instruction bit
+                instruction: false,
+                read: true,
+                address: addr
+            }));
+        }
+
         // Below converts from BE -> LE on the fly
-        for a in 0..std::mem::size_of::<T>() {
+        for a in 0..len {
             let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
             let b: T = self.bus.read(byte_addr).into();
             result = result.wrapping_shl(8) | b;
@@ -108,7 +171,7 @@ where
             self.advance_cycles(2)?;
         }
 
-        if std::mem::size_of::<T>() == 1 {
+        if len == 1 {
             // Minimum of 4 cycles
             self.advance_cycles(2)?;
         }
@@ -159,18 +222,6 @@ where
         Ok(())
     }
 
-    /// Pushes 16-bit to supervisor stack
-    fn push16_ss(&mut self, val: u16) -> Result<()> {
-        self.regs.ssp = self.regs.ssp.wrapping_sub(2);
-        self.write_ticks(self.regs.ssp, val)
-    }
-
-    /// Pushes 32-bit to supervisor stack
-    fn push32_ss(&mut self, val: u32) -> Result<()> {
-        self.regs.ssp = self.regs.ssp.wrapping_sub(4);
-        self.write_ticks(self.regs.ssp, val)
-    }
-
     /// Sets the program counter and flushes the prefetch queue
     fn set_pc(&mut self, pc: Address) -> Result<()> {
         self.prefetch.clear();
@@ -179,19 +230,55 @@ where
     }
 
     /// Raises a CPU exception in supervisor mode.
-    fn raise_exception(&mut self, vector: Address) -> Result<()> {
-        // Advance PC beyond the current instruction to
-        // have the right offset for the stack frame.
-        // The current prefetch queue length provides an indication
-        // of the current instruction length.
-        self.regs.pc = self
-            .regs
-            .pc
-            .wrapping_add((2 - (self.prefetch.len() as u32)) * 2);
+    fn raise_exception(
+        &mut self,
+        group: ExceptionGroup,
+        vector: Address,
+        details: Option<AccessError>,
+    ) -> Result<()> {
+        self.advance_cycles(4)?; // idle
 
+        // Resume in supervisor mode
         self.regs.sr.set_supervisor(true);
-        self.push16_ss(self.regs.pc as u16)?;
-        self.push32_ss(((self.regs.sr.0 as u32) << 16) | (self.regs.pc >> 16))?;
+
+        // Write exception stack frame
+        match group {
+            ExceptionGroup::Group0 => {
+                let details = details.expect("Address error details not passed");
+
+                self.regs.ssp = self.regs.ssp.wrapping_sub(14);
+                self.write_ticks(self.regs.ssp.wrapping_add(12), self.regs.pc as u16)?;
+                self.write_ticks(self.regs.ssp.wrapping_add(8), self.regs.sr.sr())?;
+                self.write_ticks(self.regs.ssp.wrapping_add(10), (self.regs.pc >> 16) as u16)?;
+                self.write_ticks(self.regs.ssp.wrapping_add(6), details.ir)?;
+                self.write_ticks(self.regs.ssp.wrapping_add(4), details.address as u16)?;
+                // Function code (3), I/N (1), R/W (1)
+                // TODO I/N, function code..
+                self.write_ticks(
+                    self.regs.ssp.wrapping_add(0),
+                    if details.read { 1_u16 << 4 } else { 0_u16 },
+                )?;
+                self.write_ticks(
+                    self.regs.ssp.wrapping_add(2),
+                    (details.address >> 16) as u16,
+                )?;
+            }
+            ExceptionGroup::Group1 | ExceptionGroup::Group2 => {
+                // Advance PC beyond the current instruction to
+                // have the right offset for the stack frame.
+                // The current prefetch queue length provides an indication
+                // of the current instruction length.
+                self.regs.pc = self
+                    .regs
+                    .pc
+                    .wrapping_add((2 - (self.prefetch.len() as u32)) * 2);
+
+                self.regs.ssp = self.regs.ssp.wrapping_sub(6);
+                self.write_ticks(self.regs.ssp.wrapping_add(4), self.regs.pc as u16)?;
+                self.write_ticks(self.regs.ssp.wrapping_add(0), self.regs.sr.sr())?;
+                self.write_ticks(self.regs.ssp.wrapping_add(2), (self.regs.pc >> 16) as u16)?;
+            }
+        }
 
         let new_pc = self.read_ticks::<Long>(vector)?.into();
         self.set_pc(new_pc)?;
@@ -203,7 +290,7 @@ where
     }
 
     /// Executes a previously decoded instruction.
-    fn execute_instruction(&mut self, instr: Instruction) -> Result<()> {
+    fn execute_instruction(&mut self, instr: &Instruction) -> Result<()> {
         match instr.mnemonic {
             InstructionMnemonic::AND_l => self.op_bitwise::<Long>(&instr, |a, b| a & b),
             InstructionMnemonic::AND_w => self.op_bitwise::<Word>(&instr, |a, b| a & b),
@@ -505,8 +592,11 @@ where
 
     /// TRAP
     pub fn op_trap(&mut self, instr: &Instruction) -> Result<()> {
-        self.advance_cycles(4)?; // idle
-        self.raise_exception(instr.trap_get_vector() * 4 + 0x80)?;
+        self.raise_exception(
+            ExceptionGroup::Group2,
+            instr.trap_get_vector() * 4 + VECTOR_TRAP_OFFSET,
+            None,
+        )?;
         Ok(())
     }
 }
