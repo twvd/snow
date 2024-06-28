@@ -342,6 +342,32 @@ where
                 }
                 self.op_alu_quick::<Byte>(&instr, Self::alu_sub)
             }
+            InstructionMnemonic::ADD_l => self.op_alu::<Long>(&instr, Self::alu_add),
+            InstructionMnemonic::ADD_w => self.op_alu::<Word>(&instr, Self::alu_add),
+            InstructionMnemonic::ADD_b => self.op_alu::<Byte>(&instr, Self::alu_add),
+            InstructionMnemonic::ADDI_l => self.op_alu_immediate::<Long>(&instr, Self::alu_add),
+            InstructionMnemonic::ADDI_w => self.op_alu_immediate::<Word>(&instr, Self::alu_add),
+            InstructionMnemonic::ADDI_b => self.op_alu_immediate::<Byte>(&instr, Self::alu_add),
+            InstructionMnemonic::ADDQ_l => self.op_alu_quick::<Long>(&instr, Self::alu_add),
+            InstructionMnemonic::ADDQ_w => {
+                if instr.get_addr_mode()? == AddressingMode::AddressRegister {
+                    // A word operation on an address register affects the entire 32-bit address.
+                    let res = self.op_alu_quick::<Long>(&instr, Self::alu_add);
+                    if let Ok(_) = res {
+                        // ..and adds extra cycles?
+                        self.advance_cycles(2)?;
+                    }
+                    res
+                } else {
+                    self.op_alu_quick::<Word>(&instr, Self::alu_add)
+                }
+            }
+            InstructionMnemonic::ADDQ_b => {
+                if instr.get_addr_mode()? == AddressingMode::AddressRegister {
+                    panic!("TODO ADD.b Q, An is illegal!");
+                }
+                self.op_alu_quick::<Byte>(&instr, Self::alu_add)
+            }
             InstructionMnemonic::NOP => Ok(()),
             InstructionMnemonic::SWAP => self.op_swap(&instr),
             InstructionMnemonic::TRAP => self.op_trap(&instr),

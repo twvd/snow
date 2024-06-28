@@ -364,9 +364,9 @@ fn run_testcase(testcase: Testcase) {
 //cpu_test!(abcd, "ABCD");
 //cpu_test!(adda_l, "ADDA.l");
 //cpu_test!(adda_w, "ADDA.w");
-//cpu_test!(add_b, "ADD.b");
-//cpu_test!(add_l, "ADD.l");
-//cpu_test!(add_w, "ADD.w");
+cpu_test!(add_b, "ADD.b");
+cpu_test!(add_l, "ADD.l");
+cpu_test!(add_w, "ADD.w");
 //cpu_test!(addx_b, "ADDX.b");
 //cpu_test!(addx_l, "ADDX.l");
 //cpu_test!(addx_w, "ADDX.w");
