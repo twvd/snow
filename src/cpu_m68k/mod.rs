@@ -1,3 +1,4 @@
+pub mod alu;
 pub mod cpu;
 pub mod instruction;
 pub mod regs;
@@ -22,6 +23,7 @@ pub trait CpuSized:
     + std::convert::Into<Long>
     + std::convert::From<u8>
     + WrappingShl
+    + std::fmt::Display
 {
     /// Expands the value in the generic to a full register's width
     fn expand(self) -> Long;
@@ -36,6 +38,9 @@ pub trait CpuSized:
 
     /// Downcasts to T from Long, discarding excess bits.
     fn chop(value: Long) -> Self;
+
+    /// Returns the most significant bit as one
+    fn msb() -> Self;
 }
 
 impl<T> CpuSized for T
@@ -46,7 +51,8 @@ where
         + WrappingAdd
         + std::convert::Into<Long>
         + std::convert::From<u8>
-        + WrappingShl,
+        + WrappingShl
+        + std::fmt::Display,
     Long: LossyInto<T>,
 {
     #[inline(always)]
@@ -78,5 +84,11 @@ where
     #[inline(always)]
     fn chop(value: Long) -> T {
         value.lossy_into()
+    }
+
+    #[inline(always)]
+    fn msb() -> Self {
+        let shift = std::mem::size_of::<T>() * 8 - 1;
+        T::one() << shift
     }
 }

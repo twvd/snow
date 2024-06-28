@@ -15,15 +15,15 @@ bitfield! {
         /// Condition Code Register
         pub ccr: u8 @ 0..=4,
         /// Carry
-        pub c: bool @ 0,
+        pub c: bool @ 0, // 1
         /// Overflow
-        pub v: bool @ 1,
+        pub v: bool @ 1, // 2
         /// Zero
-        pub z: bool @ 2,
+        pub z: bool @ 2, // 4
         /// Negative
-        pub n: bool @ 3,
+        pub n: bool @ 3, // 8
         /// Extend
-        pub x: bool @ 4,
+        pub x: bool @ 4, // 10
 
         /// Interrupt priority mask
         pub int_prio_mask: u8 @ 8..=10,

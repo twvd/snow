@@ -10,7 +10,7 @@ use crate::tickable::{Tickable, Ticks};
 use super::instruction::{
     AddressingMode, Direction, IndexSize, Instruction, InstructionMnemonic, Xn,
 };
-use super::regs::RegisterFile;
+use super::regs::{RegisterFile, RegisterSR};
 use super::{Byte, CpuSized, Long, Word};
 
 /// Access error details
@@ -316,7 +316,32 @@ where
             InstructionMnemonic::ORI_b => self.op_bitwise_immediate::<Byte>(&instr, |a, b| a | b),
             InstructionMnemonic::ORI_ccr => self.op_bitwise_ccr(&instr, |a, b| a | b),
             InstructionMnemonic::ORI_sr => self.op_bitwise_sr(&instr, |a, b| a | b),
-
+            InstructionMnemonic::SUB_l => self.op_alu::<Long>(&instr, Self::alu_sub),
+            InstructionMnemonic::SUB_w => self.op_alu::<Word>(&instr, Self::alu_sub),
+            InstructionMnemonic::SUB_b => self.op_alu::<Byte>(&instr, Self::alu_sub),
+            InstructionMnemonic::SUBI_l => self.op_alu_immediate::<Long>(&instr, Self::alu_sub),
+            InstructionMnemonic::SUBI_w => self.op_alu_immediate::<Word>(&instr, Self::alu_sub),
+            InstructionMnemonic::SUBI_b => self.op_alu_immediate::<Byte>(&instr, Self::alu_sub),
+            InstructionMnemonic::SUBQ_l => self.op_alu_quick::<Long>(&instr, Self::alu_sub),
+            InstructionMnemonic::SUBQ_w => {
+                if instr.get_addr_mode()? == AddressingMode::AddressRegister {
+                    // A word operation on an address register affects the entire 32-bit address.
+                    let res = self.op_alu_quick::<Long>(&instr, Self::alu_sub);
+                    if let Ok(_) = res {
+                        // ..and adds extra cycles?
+                        self.advance_cycles(2)?;
+                    }
+                    res
+                } else {
+                    self.op_alu_quick::<Word>(&instr, Self::alu_sub)
+                }
+            }
+            InstructionMnemonic::SUBQ_b => {
+                if instr.get_addr_mode()? == AddressingMode::AddressRegister {
+                    panic!("TODO SUB.b Q, An is illegal!");
+                }
+                self.op_alu_quick::<Byte>(&instr, Self::alu_sub)
+            }
             InstructionMnemonic::NOP => Ok(()),
             InstructionMnemonic::SWAP => self.op_swap(&instr),
             InstructionMnemonic::TRAP => self.op_trap(&instr),
@@ -343,6 +368,7 @@ where
         };
         let addr = match instr.get_addr_mode()? {
             AddressingMode::DataRegister => unreachable!(),
+            AddressingMode::AddressRegister => unreachable!(),
             AddressingMode::Indirect => self.regs.read_a(ea_in),
             AddressingMode::IndirectPreDec => {
                 self.advance_cycles(2)?; // 2x idle
@@ -420,6 +446,7 @@ where
     fn read_ea<T: CpuSized>(&mut self, instr: &Instruction, ea_in: usize) -> Result<T> {
         let v = match instr.get_addr_mode()? {
             AddressingMode::DataRegister => self.regs.read_d(ea_in),
+            AddressingMode::AddressRegister => self.regs.read_a(ea_in),
             AddressingMode::Immediate => self.fetch_immediate::<T>()?,
             AddressingMode::Indirect
             | AddressingMode::IndirectDisplacement
@@ -446,6 +473,7 @@ where
     fn write_ea<T: CpuSized>(&mut self, instr: &Instruction, ea_in: usize, value: T) -> Result<()> {
         match instr.get_addr_mode()? {
             AddressingMode::DataRegister => Ok(self.regs.write_d(ea_in, value)),
+            AddressingMode::AddressRegister => Ok(self.regs.write_a(ea_in, value)),
             AddressingMode::Indirect
             | AddressingMode::IndirectDisplacement
             | AddressingMode::IndirectIndex
@@ -597,6 +625,107 @@ where
             instr.trap_get_vector() * 4 + VECTOR_TRAP_OFFSET,
             None,
         )?;
+        Ok(())
+    }
+
+    /// ADD/SUB
+    pub fn op_alu<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        calcfn: fn(T, T, RegisterSR) -> (T, u8),
+    ) -> Result<()> {
+        let left: T = self.regs.read_d(instr.get_op1());
+        let right: T = self.read_ea(instr, instr.get_op2())?;
+        let (a, b) = match instr.get_direction() {
+            Direction::Right => (left, right),
+            Direction::Left => (right, left),
+        };
+        let (result, ccr) = calcfn(a, b, self.regs.sr);
+
+        self.prefetch_pump()?;
+        match instr.get_direction() {
+            Direction::Right => self.regs.write_d(instr.get_op1(), result),
+            Direction::Left => self.write_ea(instr, instr.get_op2(), result)?,
+        }
+        self.regs.sr.set_ccr(ccr);
+
+        // Idle cycles
+        match (
+            instr.get_addr_mode()?,
+            instr.get_direction(),
+            std::mem::size_of::<T>(),
+        ) {
+            (AddressingMode::DataRegister | AddressingMode::Immediate, _, 4) => {
+                self.advance_cycles(4)?
+            }
+            (AddressingMode::AddressRegister, _, 4) => self.advance_cycles(4)?,
+
+            (_, Direction::Right, 4) => self.advance_cycles(2)?,
+            _ => (),
+        };
+
+        Ok(())
+    }
+
+    /// ADDI/SUBI
+    pub fn op_alu_immediate<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        calcfn: fn(T, T, RegisterSR) -> (T, u8),
+    ) -> Result<()> {
+        let b: T = self.fetch_immediate()?;
+        let a: T = self.read_ea(instr, instr.get_op2())?;
+        let (result, ccr) = calcfn(a, b, self.regs.sr);
+
+        self.prefetch_pump()?;
+        self.write_ea(instr, instr.get_op2(), result)?;
+        self.regs.sr.set_ccr(ccr);
+
+        // Idle cycles
+        match (
+            instr.get_addr_mode()?,
+            instr.get_direction(),
+            std::mem::size_of::<T>(),
+        ) {
+            (AddressingMode::DataRegister, _, 4) => self.advance_cycles(4)?,
+            _ => (),
+        };
+
+        Ok(())
+    }
+
+    /// ALU 'quick' group of instructions
+    pub fn op_alu_quick<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        calcfn: fn(T, T, RegisterSR) -> (T, u8),
+    ) -> Result<()> {
+        let b: T = instr.get_quick();
+        let a: T = self.read_ea(instr, instr.get_op2())?;
+        let (result, ccr) = calcfn(a, b, self.regs.sr);
+
+        self.prefetch_pump()?;
+        self.write_ea(instr, instr.get_op2(), result)?;
+
+        if instr.get_addr_mode()? == AddressingMode::AddressRegister
+            && std::mem::size_of::<T>() >= 2
+        {
+            // Word and longword operations on address registers do not affect condition codes.
+        } else {
+            self.regs.sr.set_ccr(ccr)
+        }
+
+        // Idle cycles
+        match (
+            instr.get_addr_mode()?,
+            instr.get_direction(),
+            std::mem::size_of::<T>(),
+        ) {
+            (AddressingMode::DataRegister, _, 4) => self.advance_cycles(4)?,
+            (AddressingMode::AddressRegister, _, _) => self.advance_cycles(2)?,
+            _ => (),
+        };
+
         Ok(())
     }
 }

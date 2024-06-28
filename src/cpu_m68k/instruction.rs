@@ -3,6 +3,8 @@ use arrayvec::ArrayVec;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 
+use super::{CpuSized, Long};
+
 use crate::bus::Address;
 
 use std::cell::RefCell;
@@ -36,6 +38,15 @@ pub enum InstructionMnemonic {
     ORI_ccr,
     ORI_sr,
     NOP,
+    SUB_l,
+    SUB_w,
+    SUB_b,
+    SUBI_l,
+    SUBI_w,
+    SUBI_b,
+    SUBQ_l,
+    SUBQ_w,
+    SUBQ_b,
     SWAP,
     TRAP,
 }
@@ -161,6 +172,9 @@ impl Instruction {
         (0b0000_0010_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ANDI_b),
         (0b0000_0010_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ANDI_w),
         (0b0000_0010_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ANDI_l),
+        (0b0000_0100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::SUBI_b),
+        (0b0000_0100_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::SUBI_w),
+        (0b0000_0100_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::SUBI_l),
         (0b0000_1010_0011_1100, 0b1111_1111_1111_1111, InstructionMnemonic::EORI_ccr),
         (0b0000_1010_0111_1100, 0b1111_1111_1111_1111, InstructionMnemonic::EORI_sr),
         (0b0000_1010_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::EORI_b),
@@ -169,6 +183,12 @@ impl Instruction {
         (0b1000_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_b),
         (0b1000_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_w),
         (0b1000_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_l),
+        (0b0101_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_b),
+        (0b0101_0001_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_w),
+        (0b0101_0001_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_l),
+        (0b1001_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::SUB_b),
+        (0b1001_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::SUB_w),
+        (0b1001_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::SUB_l),
         (0b1011_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::EOR_b),
         (0b1011_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::EOR_w),
         (0b1011_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::EOR_l),
@@ -203,6 +223,7 @@ impl Instruction {
     pub fn get_addr_mode(&self) -> Result<AddressingMode> {
         match ((self.data & 0b111_000) >> 3, self.data & 0b000_111) {
             (0b000, _) => Ok(AddressingMode::DataRegister),
+            (0b001, _) => Ok(AddressingMode::AddressRegister),
             (0b010, _) => Ok(AddressingMode::Indirect),
             (0b011, _) => Ok(AddressingMode::IndirectPostInc),
             (0b100, _) => Ok(AddressingMode::IndirectPreDec),
@@ -283,5 +304,15 @@ impl Instruction {
         debug_assert_eq!(self.extwords.borrow().as_ref().unwrap().len(), 1);
 
         Ok(self.get_extword(0)?.into())
+    }
+
+    /// Retrieves the data part of 'quick' instructions
+    pub fn get_quick<T: CpuSized>(&self) -> T {
+        let result = T::chop(((self.data as Long) >> 9) & 0b111);
+        if result == T::zero() {
+            8.into()
+        } else {
+            result
+        }
     }
 }
