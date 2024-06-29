@@ -3,7 +3,7 @@ pub mod cpu;
 pub mod instruction;
 pub mod regs;
 
-use num_traits::{FromBytes, PrimInt, ToBytes, WrappingAdd, WrappingShl};
+use num_traits::{FromBytes, PrimInt, ToBytes, WrappingAdd, WrappingShl, WrappingShr};
 
 use crate::util::lossyinto::LossyInto;
 
@@ -23,6 +23,7 @@ pub trait CpuSized:
     + std::convert::Into<Long>
     + std::convert::From<u8>
     + WrappingShl
+    + WrappingShr
     + std::fmt::Display
 {
     /// Expands the value in the generic to a full register's width
@@ -52,6 +53,7 @@ where
         + std::convert::Into<Long>
         + std::convert::From<u8>
         + WrappingShl
+        + WrappingShr
         + std::fmt::Display,
     Long: LossyInto<T>,
 {

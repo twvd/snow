@@ -344,6 +344,9 @@ where
                 }
                 self.op_alu_quick::<Byte>(&instr, Self::alu_sub)
             }
+            InstructionMnemonic::SUBX_l => self.op_alu_x::<Long>(&instr, Self::alu_sub_x),
+            InstructionMnemonic::SUBX_w => self.op_alu_x::<Word>(&instr, Self::alu_sub_x),
+            InstructionMnemonic::SUBX_b => self.op_alu_x::<Byte>(&instr, Self::alu_sub_x),
             InstructionMnemonic::ADD_l => self.op_alu::<Long>(&instr, Self::alu_add),
             InstructionMnemonic::ADD_w => self.op_alu::<Word>(&instr, Self::alu_add),
             InstructionMnemonic::ADD_b => self.op_alu::<Byte>(&instr, Self::alu_add),
@@ -372,6 +375,9 @@ where
                 }
                 self.op_alu_quick::<Byte>(&instr, Self::alu_add)
             }
+            InstructionMnemonic::ADDX_l => self.op_alu_x::<Long>(&instr, Self::alu_add_x),
+            InstructionMnemonic::ADDX_w => self.op_alu_x::<Word>(&instr, Self::alu_add_x),
+            InstructionMnemonic::ADDX_b => self.op_alu_x::<Byte>(&instr, Self::alu_add_x),
             InstructionMnemonic::CMP_l => self.op_cmp::<Long>(&instr),
             InstructionMnemonic::CMP_w => self.op_cmp::<Word>(&instr),
             InstructionMnemonic::CMP_b => self.op_cmp::<Byte>(&instr),
@@ -384,6 +390,7 @@ where
             InstructionMnemonic::NOP => Ok(()),
             InstructionMnemonic::SWAP => self.op_swap(&instr),
             InstructionMnemonic::TRAP => self.op_trap(&instr),
+            _ => todo!(),
         }
     }
 
@@ -792,6 +799,85 @@ where
             (_, 2) => self.advance_cycles(4)?,
             (_, 4) => self.advance_cycles(2)?,
             _ => unreachable!(),
+        };
+
+        Ok(())
+    }
+
+    /// ALU 'X' group of instructions
+    pub fn op_alu_x<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        calcfn: fn(T, T, RegisterSR) -> (T, u8),
+    ) -> Result<()> {
+        // Skip normal addressing mode processing here, too different.
+        let sz = std::mem::size_of::<T>();
+        let (b, a): (T, T) = match (instr.get_addr_mode_x()?, sz) {
+            (AddressingMode::DataRegister, _) => (
+                self.regs.read_d(instr.get_op2()),
+                self.regs.read_d(instr.get_op1()),
+            ),
+            (AddressingMode::IndirectPreDec, 4) => {
+                self.advance_cycles(2)?;
+                // The order here is very explicit due to the way registers need to be left if
+                // an address error occurs.
+                let a_addr_low = self.regs.read_a_predec(instr.get_op2(), 2);
+                let a_low = self.read_ticks::<Word>(a_addr_low)? as Long;
+                let a_addr_high = self.regs.read_a_predec(instr.get_op2(), 2);
+                let a_high = self.read_ticks::<Word>(a_addr_high)? as Long;
+                let b_addr_low = self.regs.read_a_predec(instr.get_op1(), 2);
+                let b_low = self.read_ticks::<Word>(b_addr_low)? as Long;
+                let b_addr_high = self.regs.read_a_predec(instr.get_op1(), 2);
+                let b_high = self.read_ticks::<Word>(b_addr_high)? as Long;
+                (
+                    T::chop(a_low | (a_high << 16)),
+                    T::chop(b_low | (b_high << 16)),
+                )
+            }
+            (AddressingMode::IndirectPreDec, _) => {
+                self.advance_cycles(2)?;
+                // The order here is very explicit due to the way registers need to be left if
+                // an address error occurs.
+                let a_addr = self.regs.read_a_predec(instr.get_op2(), sz);
+                let a = self.read_ticks(a_addr)?;
+                let b_addr = self.regs.read_a_predec(instr.get_op1(), sz);
+                let b = self.read_ticks(b_addr)?;
+                (a, b)
+            }
+            _ => unreachable!(),
+        };
+
+        let (result, ccr) = calcfn(a, b, self.regs.sr);
+
+        match (instr.get_addr_mode_x()?, sz) {
+            (AddressingMode::DataRegister, _) => {
+                self.prefetch_pump()?;
+                self.regs.write_d(instr.get_op1(), result)
+            }
+            (AddressingMode::IndirectPreDec, 4) => {
+                // This writes in 16-bit steps, with a prefetch in between..
+                let result = result.expand();
+                let addr_low = self.regs.read_a::<Address>(instr.get_op1()).wrapping_add(2);
+                self.write_ticks::<Word>(addr_low, result as Word)?;
+                self.prefetch_pump()?;
+                let addr_high = self.regs.read_a(instr.get_op1());
+                self.write_ticks::<Word>(addr_high, (result >> 16) as Word)?;
+            }
+            (AddressingMode::IndirectPreDec, _) => {
+                self.prefetch_pump()?;
+                let b_addr = self.regs.read_a(instr.get_op1());
+                self.write_ticks(b_addr, result)?
+            }
+            _ => unreachable!(),
+        };
+        self.regs.sr.set_ccr(ccr);
+
+        self.prefetch_pump()?;
+
+        // Idle cycles
+        match (instr.get_addr_mode_x()?, sz) {
+            (AddressingMode::DataRegister, 4) => self.advance_cycles(4)?,
+            _ => (),
         };
 
         Ok(())

@@ -13,6 +13,8 @@ use std::cell::RefCell;
 #[allow(non_camel_case_types)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum InstructionMnemonic {
+    ABCD,
+    SBCD,
     ADD_l,
     ADD_w,
     ADD_b,
@@ -25,6 +27,9 @@ pub enum InstructionMnemonic {
     ADDQ_l,
     ADDQ_w,
     ADDQ_b,
+    ADDX_l,
+    ADDX_w,
+    ADDX_b,
     AND_l,
     AND_w,
     AND_b,
@@ -71,6 +76,9 @@ pub enum InstructionMnemonic {
     SUBQ_l,
     SUBQ_w,
     SUBQ_b,
+    SUBX_l,
+    SUBX_w,
+    SUBX_b,
     SWAP,
     TRAP,
 }
@@ -223,6 +231,9 @@ impl Instruction {
         (0b0101_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_b),
         (0b0101_0001_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_w),
         (0b0101_0001_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_l),
+        (0b1001_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SUBX_b),
+        (0b1001_0001_0100_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SUBX_w),
+        (0b1001_0001_1000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SUBX_l),
         (0b1001_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::SUB_b),
         (0b1001_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::SUB_w),
         (0b1001_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::SUB_l),
@@ -240,6 +251,9 @@ impl Instruction {
         (0b1100_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::AND_b),
         (0b1100_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::AND_w),
         (0b1100_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::AND_l),
+        (0b1101_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::ADDX_b),
+        (0b1101_0001_0100_0000, 0b1111_0001_1111_0000, InstructionMnemonic::ADDX_w),
+        (0b1101_0001_1000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::ADDX_l),
         (0b1101_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::ADD_b),
         (0b1101_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::ADD_w),
         (0b1101_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::ADD_l),
@@ -268,6 +282,18 @@ impl Instruction {
 
     /// Gets the addressing mode of this instruction
     pub fn get_addr_mode(&self) -> Result<AddressingMode> {
+        debug_assert!(match self.mnemonic {
+            InstructionMnemonic::ADDX_l
+            | InstructionMnemonic::ADDX_w
+            | InstructionMnemonic::ADDX_b
+            | InstructionMnemonic::SUBX_l
+            | InstructionMnemonic::SUBX_w
+            | InstructionMnemonic::SUBX_b
+            | InstructionMnemonic::ABCD
+            | InstructionMnemonic::SBCD => false,
+            _ => true,
+        });
+
         match ((self.data & 0b111_000) >> 3, self.data & 0b000_111) {
             (0b000, _) => Ok(AddressingMode::DataRegister),
             (0b001, _) => Ok(AddressingMode::AddressRegister),
@@ -285,6 +311,15 @@ impl Instruction {
                 "Invalid addressing mode {:06b}",
                 self.data & 0b111_111
             )),
+        }
+    }
+
+    /// Gets the addressing mode of this instruction, for xxxX, xBCD instructions
+    pub fn get_addr_mode_x(&self) -> Result<AddressingMode> {
+        if self.data & 0b1000 != 0 {
+            Ok(AddressingMode::IndirectPreDec)
+        } else {
+            Ok(AddressingMode::DataRegister)
         }
     }
 
