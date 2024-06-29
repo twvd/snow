@@ -368,9 +368,19 @@ where
                 }
                 self.op_alu_quick::<Byte>(&instr, Self::alu_add)
             }
+            InstructionMnemonic::CMP_l => self.op_cmp::<Long>(&instr),
+            InstructionMnemonic::CMP_w => self.op_cmp::<Word>(&instr),
+            InstructionMnemonic::CMP_b => self.op_cmp::<Byte>(&instr),
+            InstructionMnemonic::CMPI_l => self.op_cmp_immediate::<Long>(&instr),
+            InstructionMnemonic::CMPI_w => self.op_cmp_immediate::<Word>(&instr),
+            InstructionMnemonic::CMPI_b => self.op_cmp_immediate::<Byte>(&instr),
+            InstructionMnemonic::CMPM_l => self.op_cmpm::<Long>(&instr),
+            InstructionMnemonic::CMPM_w => self.op_cmpm::<Word>(&instr),
+            InstructionMnemonic::CMPM_b => self.op_cmpm::<Byte>(&instr),
             InstructionMnemonic::NOP => Ok(()),
             InstructionMnemonic::SWAP => self.op_swap(&instr),
             InstructionMnemonic::TRAP => self.op_trap(&instr),
+            _ => todo!(),
         }
     }
 
@@ -488,7 +498,6 @@ where
                 let addr = self.calc_ea_addr::<T>(instr, ea_in)?;
                 self.read_ticks(addr)?
             }
-            _ => todo!(),
         };
 
         Ok(v)
@@ -749,6 +758,89 @@ where
         ) {
             (AddressingMode::DataRegister, _, 4) => self.advance_cycles(4)?,
             (AddressingMode::AddressRegister, _, _) => self.advance_cycles(2)?,
+            _ => (),
+        };
+
+        Ok(())
+    }
+
+    /// CMP
+    pub fn op_cmp<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+        let a: T = self.regs.read_d(instr.get_op1());
+        let b: T = self.read_ea(instr, instr.get_op2())?;
+        let (_, ccr) = Self::alu_sub(a, b, self.regs.sr);
+
+        self.prefetch_pump()?;
+        let last_x = self.regs.sr.x();
+        self.regs.sr.set_ccr(ccr);
+        // X is unchanged
+        self.regs.sr.set_x(last_x);
+
+        // Idle cycles
+        match (
+            instr.get_addr_mode()?,
+            instr.get_direction(),
+            std::mem::size_of::<T>(),
+        ) {
+            (AddressingMode::DataRegister | AddressingMode::Immediate, _, 4) => {
+                self.advance_cycles(2)?
+            }
+            (AddressingMode::AddressRegister, _, 4) => self.advance_cycles(2)?,
+
+            (_, Direction::Right, 4) => self.advance_cycles(2)?,
+            _ => (),
+        };
+
+        Ok(())
+    }
+
+    /// CMPI
+    pub fn op_cmp_immediate<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+        let b: T = self.fetch_immediate()?;
+        let a: T = self.read_ea(instr, instr.get_op2())?;
+        let (_, ccr) = Self::alu_sub(a, b, self.regs.sr);
+
+        self.prefetch_pump()?;
+        let last_x = self.regs.sr.x();
+        self.regs.sr.set_ccr(ccr);
+        // X is unchanged
+        self.regs.sr.set_x(last_x);
+
+        // Idle cycles
+        match (
+            instr.get_addr_mode()?,
+            instr.get_direction(),
+            std::mem::size_of::<T>(),
+        ) {
+            (AddressingMode::DataRegister, _, 4) => self.advance_cycles(2)?,
+            _ => (),
+        };
+
+        Ok(())
+    }
+
+    /// CMPM
+    pub fn op_cmpm<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+        let len = std::mem::size_of::<T>();
+        let b_addr = self.regs.read_a_postinc(instr.get_op2(), len);
+        let b: T = self.read_ticks(b_addr)?;
+        let a_addr = self.regs.read_a_postinc(instr.get_op1(), len);
+        let a: T = self.read_ticks(a_addr)?;
+        let (_, ccr) = Self::alu_sub(a, b, self.regs.sr);
+
+        self.prefetch_pump()?;
+        let last_x = self.regs.sr.x();
+        self.regs.sr.set_ccr(ccr);
+        // X is unchanged
+        self.regs.sr.set_x(last_x);
+
+        // Idle cycles
+        match (
+            instr.get_addr_mode()?,
+            instr.get_direction(),
+            std::mem::size_of::<T>(),
+        ) {
+            (AddressingMode::DataRegister, _, 4) => self.advance_cycles(4)?,
             _ => (),
         };
 
