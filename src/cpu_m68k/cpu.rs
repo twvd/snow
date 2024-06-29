@@ -381,6 +381,8 @@ where
             InstructionMnemonic::CMP_l => self.op_cmp::<Long>(&instr),
             InstructionMnemonic::CMP_w => self.op_cmp::<Word>(&instr),
             InstructionMnemonic::CMP_b => self.op_cmp::<Byte>(&instr),
+            InstructionMnemonic::CMPA_l => self.op_cmp_address::<Long>(&instr),
+            InstructionMnemonic::CMPA_w => self.op_cmp_address::<Word>(&instr),
             InstructionMnemonic::CMPI_l => self.op_cmp_immediate::<Long>(&instr),
             InstructionMnemonic::CMPI_w => self.op_cmp_immediate::<Word>(&instr),
             InstructionMnemonic::CMPI_b => self.op_cmp_immediate::<Byte>(&instr),
@@ -967,6 +969,25 @@ where
             (AddressingMode::DataRegister, _, 4) => self.advance_cycles(4)?,
             _ => (),
         };
+
+        Ok(())
+    }
+
+    /// CMPA
+    pub fn op_cmp_address<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+        let b = self
+            .read_ea::<T>(instr, instr.get_op2())?
+            .expand_sign_extend();
+        let a: Long = self.regs.read_a(instr.get_op1());
+
+        let (_, ccr) = Self::alu_sub(a, b, self.regs.sr);
+
+        let old_x = self.regs.sr.x();
+        self.regs.sr.set_ccr(ccr);
+        self.regs.sr.set_x(old_x);
+
+        self.prefetch_pump()?;
+        self.advance_cycles(2)?; // 2x idle
 
         Ok(())
     }
