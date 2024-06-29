@@ -538,11 +538,11 @@ where
         let v: Long = self.regs.read_d(instr.get_op2());
         let result = (v >> 16) | (v << 16);
 
-        self.regs.write_d(instr.get_op2(), result);
         self.regs.sr.set_v(false);
         self.regs.sr.set_c(false);
         self.regs.sr.set_n(result & (1 << 31) != 0);
         self.regs.sr.set_z(result == 0);
+        self.regs.write_d(instr.get_op2(), result);
 
         Ok(())
     }
@@ -561,17 +561,18 @@ where
         };
         let result = calcfn(a, b);
 
-        self.prefetch_pump()?;
-        match instr.get_direction() {
-            Direction::Right => self.regs.write_d(instr.get_op1(), result),
-            Direction::Left => self.write_ea(instr, instr.get_op2(), result)?,
-        }
         self.regs.sr.set_v(false);
         self.regs.sr.set_c(false);
         self.regs
             .sr
             .set_n(result.reverse_bits() & T::one() != T::zero());
         self.regs.sr.set_z(result == T::zero());
+
+        self.prefetch_pump()?;
+        match instr.get_direction() {
+            Direction::Right => self.regs.write_d(instr.get_op1(), result),
+            Direction::Left => self.write_ea(instr, instr.get_op2(), result)?,
+        }
 
         // Idle cycles
         match (
@@ -600,14 +601,15 @@ where
         let b: T = self.read_ea(instr, instr.get_op2())?;
         let result = calcfn(a, b);
 
-        self.prefetch_pump()?;
-        self.write_ea(instr, instr.get_op2(), result)?;
         self.regs.sr.set_v(false);
         self.regs.sr.set_c(false);
         self.regs
             .sr
             .set_n(result.reverse_bits() & T::one() != T::zero());
         self.regs.sr.set_z(result == T::zero());
+
+        self.prefetch_pump()?;
+        self.write_ea(instr, instr.get_op2(), result)?;
 
         // Idle cycles
         match (
@@ -687,12 +689,12 @@ where
         };
         let (result, ccr) = calcfn(a, b, self.regs.sr);
 
+        self.regs.sr.set_ccr(ccr);
         self.prefetch_pump()?;
         match instr.get_direction() {
             Direction::Right => self.regs.write_d(instr.get_op1(), result),
             Direction::Left => self.write_ea(instr, instr.get_op2(), result)?,
         }
-        self.regs.sr.set_ccr(ccr);
 
         // Idle cycles
         match (
@@ -722,9 +724,9 @@ where
         let a: T = self.read_ea(instr, instr.get_op2())?;
         let (result, ccr) = calcfn(a, b, self.regs.sr);
 
+        self.regs.sr.set_ccr(ccr);
         self.prefetch_pump()?;
         self.write_ea(instr, instr.get_op2(), result)?;
-        self.regs.sr.set_ccr(ccr);
 
         // Idle cycles
         match (
@@ -749,9 +751,6 @@ where
         let a: T = self.read_ea(instr, instr.get_op2())?;
         let (result, ccr) = calcfn(a, b, self.regs.sr);
 
-        self.prefetch_pump()?;
-        self.write_ea(instr, instr.get_op2(), result)?;
-
         if instr.get_addr_mode()? == AddressingMode::AddressRegister
             && std::mem::size_of::<T>() >= 2
         {
@@ -759,6 +758,9 @@ where
         } else {
             self.regs.sr.set_ccr(ccr)
         }
+
+        self.prefetch_pump()?;
+        self.write_ea(instr, instr.get_op2(), result)?;
 
         // Idle cycles
         match (
@@ -786,10 +788,9 @@ where
         let a: Long = self.regs.read_a(instr.get_op1());
         let (result, _) = calcfn(a, b, self.regs.sr);
 
+        // Flags are not changed
         self.prefetch_pump()?;
         self.regs.write_a::<Long>(instr.get_op1(), result);
-
-        // Flags are not changed
 
         // Idle cycles
         match (instr.get_addr_mode()?, std::mem::size_of::<T>()) {
@@ -849,6 +850,8 @@ where
 
         let (result, ccr) = calcfn(a, b, self.regs.sr);
 
+        self.regs.sr.set_ccr(ccr);
+
         match (instr.get_addr_mode_x()?, sz) {
             (AddressingMode::DataRegister, _) => {
                 self.prefetch_pump()?;
@@ -859,7 +862,9 @@ where
                 let result = result.expand();
                 let addr_low = self.regs.read_a::<Address>(instr.get_op1()).wrapping_add(2);
                 self.write_ticks::<Word>(addr_low, result as Word)?;
+
                 self.prefetch_pump()?;
+
                 let addr_high = self.regs.read_a(instr.get_op1());
                 self.write_ticks::<Word>(addr_high, (result >> 16) as Word)?;
             }
@@ -870,9 +875,6 @@ where
             }
             _ => unreachable!(),
         };
-        self.regs.sr.set_ccr(ccr);
-
-        self.prefetch_pump()?;
 
         // Idle cycles
         match (instr.get_addr_mode_x()?, sz) {
@@ -889,11 +891,12 @@ where
         let b: T = self.read_ea(instr, instr.get_op2())?;
         let (_, ccr) = Self::alu_sub(a, b, self.regs.sr);
 
-        self.prefetch_pump()?;
         let last_x = self.regs.sr.x();
         self.regs.sr.set_ccr(ccr);
         // X is unchanged
         self.regs.sr.set_x(last_x);
+
+        self.prefetch_pump()?;
 
         // Idle cycles
         match (
@@ -919,11 +922,12 @@ where
         let a: T = self.read_ea(instr, instr.get_op2())?;
         let (_, ccr) = Self::alu_sub(a, b, self.regs.sr);
 
-        self.prefetch_pump()?;
         let last_x = self.regs.sr.x();
         self.regs.sr.set_ccr(ccr);
         // X is unchanged
         self.regs.sr.set_x(last_x);
+
+        self.prefetch_pump()?;
 
         // Idle cycles
         match (
@@ -947,11 +951,12 @@ where
         let a: T = self.read_ticks(a_addr)?;
         let (_, ccr) = Self::alu_sub(a, b, self.regs.sr);
 
-        self.prefetch_pump()?;
         let last_x = self.regs.sr.x();
         self.regs.sr.set_ccr(ccr);
         // X is unchanged
         self.regs.sr.set_x(last_x);
+
+        self.prefetch_pump()?;
 
         // Idle cycles
         match (
