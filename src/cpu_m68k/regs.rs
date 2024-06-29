@@ -144,6 +144,20 @@ impl RegisterFile {
         }
     }
 
+    /// Write an An register, lower word only if not full width
+    pub fn write_a_low<T: CpuSized>(&mut self, a: usize, val: T) {
+        match std::mem::size_of::<T>() {
+            // 1 is illegal
+            2 => {
+                let old: Long = self.read_a(a);
+                let val = old & 0xFFFF0000 | val.expand();
+                self.write_a(a, val)
+            }
+            4 => self.write_a(a, val),
+            _ => unreachable!(),
+        }
+    }
+
     /// Read a Dn register
     pub fn read_d<T: CpuSized>(&self, d: usize) -> T {
         T::chop(self.d[d])
@@ -196,9 +210,13 @@ mod tests {
         r.write_a(0, 0x11223344_u32);
         assert_eq!(r.a[0], 0x11223344);
         r.write_a(0, 0x3344_u16);
-        assert_eq!(r.a[0], 0xFFFF3344);
+        assert_eq!(r.a[0], 0x00003344);
         r.write_a(0, 0x44_u8);
-        assert_eq!(r.a[0], 0xFFFFFF44);
+        assert_eq!(r.a[0], 0x00000044);
+        r.write_a(0, 0xB344_u16);
+        assert_eq!(r.a[0], 0xFFFFB344);
+        r.write_a(0, 0xB4_u8);
+        assert_eq!(r.a[0], 0xFFFFFFB4);
     }
 
     #[test]

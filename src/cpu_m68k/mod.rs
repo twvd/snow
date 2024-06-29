@@ -73,11 +73,16 @@ where
 
     #[inline(always)]
     fn expand_sign_extend(self) -> Long {
-        match std::mem::size_of::<T>() {
-            1 => self.expand() | 0xFFFFFF00,
-            2 => self.expand() | 0xFFFF0000,
-            4 => self.expand(),
-            _ => unreachable!(),
+        let l = self.expand();
+        if l & T::msb().expand() != 0 {
+            match std::mem::size_of::<T>() {
+                1 => l | 0xFFFFFF00,
+                2 => l | 0xFFFF0000,
+                4 => l,
+                _ => unreachable!(),
+            }
+        } else {
+            l
         }
     }
 

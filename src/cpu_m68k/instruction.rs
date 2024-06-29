@@ -16,6 +16,9 @@ pub enum InstructionMnemonic {
     ADD_l,
     ADD_w,
     ADD_b,
+    ADDA_l,
+    ADDA_w,
+    // no ADDA_b
     ADDI_l,
     ADDI_w,
     ADDI_b,
@@ -59,6 +62,9 @@ pub enum InstructionMnemonic {
     SUB_l,
     SUB_w,
     SUB_b,
+    SUBA_l,
+    SUBA_w,
+    // no SUBA_b
     SUBI_l,
     SUBI_w,
     SUBI_b,
@@ -220,6 +226,8 @@ impl Instruction {
         (0b1001_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::SUB_b),
         (0b1001_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::SUB_w),
         (0b1001_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::SUB_l),
+        (0b1001_0000_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBA_w),
+        (0b1001_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBA_l),
         (0b1011_0001_0000_1000, 0b1111_0001_1111_1000, InstructionMnemonic::CMPM_b),
         (0b1011_0001_0100_1000, 0b1111_0001_1111_1000, InstructionMnemonic::CMPM_w),
         (0b1011_0001_1000_1000, 0b1111_0001_1111_1000, InstructionMnemonic::CMPM_l),
@@ -235,6 +243,8 @@ impl Instruction {
         (0b1101_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::ADD_b),
         (0b1101_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::ADD_w),
         (0b1101_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::ADD_l),
+        (0b1101_0000_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::ADDA_w),
+        (0b1101_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::ADDA_l),
     ];
 
     /// Attempts to decode an instruction from a fetch input function.

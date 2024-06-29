@@ -319,6 +319,8 @@ where
             InstructionMnemonic::SUB_l => self.op_alu::<Long>(&instr, Self::alu_sub),
             InstructionMnemonic::SUB_w => self.op_alu::<Word>(&instr, Self::alu_sub),
             InstructionMnemonic::SUB_b => self.op_alu::<Byte>(&instr, Self::alu_sub),
+            InstructionMnemonic::SUBA_l => self.op_alu_a::<Long>(&instr, Self::alu_sub),
+            InstructionMnemonic::SUBA_w => self.op_alu_a::<Word>(&instr, Self::alu_sub),
             InstructionMnemonic::SUBI_l => self.op_alu_immediate::<Long>(&instr, Self::alu_sub),
             InstructionMnemonic::SUBI_w => self.op_alu_immediate::<Word>(&instr, Self::alu_sub),
             InstructionMnemonic::SUBI_b => self.op_alu_immediate::<Byte>(&instr, Self::alu_sub),
@@ -345,6 +347,8 @@ where
             InstructionMnemonic::ADD_l => self.op_alu::<Long>(&instr, Self::alu_add),
             InstructionMnemonic::ADD_w => self.op_alu::<Word>(&instr, Self::alu_add),
             InstructionMnemonic::ADD_b => self.op_alu::<Byte>(&instr, Self::alu_add),
+            InstructionMnemonic::ADDA_l => self.op_alu_a::<Long>(&instr, Self::alu_add),
+            InstructionMnemonic::ADDA_w => self.op_alu_a::<Word>(&instr, Self::alu_add),
             InstructionMnemonic::ADDI_l => self.op_alu_immediate::<Long>(&instr, Self::alu_add),
             InstructionMnemonic::ADDI_w => self.op_alu_immediate::<Word>(&instr, Self::alu_add),
             InstructionMnemonic::ADDI_b => self.op_alu_immediate::<Byte>(&instr, Self::alu_add),
@@ -380,7 +384,6 @@ where
             InstructionMnemonic::NOP => Ok(()),
             InstructionMnemonic::SWAP => self.op_swap(&instr),
             InstructionMnemonic::TRAP => self.op_trap(&instr),
-            _ => todo!(),
         }
     }
 
@@ -759,6 +762,36 @@ where
             (AddressingMode::DataRegister, _, 4) => self.advance_cycles(4)?,
             (AddressingMode::AddressRegister, _, _) => self.advance_cycles(2)?,
             _ => (),
+        };
+
+        Ok(())
+    }
+
+    /// ALU address register group of instructions
+    pub fn op_alu_a<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        calcfn: fn(Long, Long, RegisterSR) -> (Long, u8),
+    ) -> Result<()> {
+        let b = self
+            .read_ea::<T>(instr, instr.get_op2())?
+            .expand_sign_extend();
+        let a: Long = self.regs.read_a(instr.get_op1());
+        let (result, _) = calcfn(a, b, self.regs.sr);
+
+        self.prefetch_pump()?;
+        self.regs.write_a::<Long>(instr.get_op1(), result);
+
+        // Flags are not changed
+
+        // Idle cycles
+        match (instr.get_addr_mode()?, std::mem::size_of::<T>()) {
+            (AddressingMode::AddressRegister, _) => self.advance_cycles(4)?,
+            (AddressingMode::DataRegister, _) => self.advance_cycles(4)?,
+            (AddressingMode::Immediate, _) => self.advance_cycles(4)?,
+            (_, 2) => self.advance_cycles(4)?,
+            (_, 4) => self.advance_cycles(2)?,
+            _ => unreachable!(),
         };
 
         Ok(())

@@ -362,8 +362,8 @@ fn run_testcase(testcase: Testcase) {
 }
 
 //cpu_test!(abcd, "ABCD");
-//cpu_test!(adda_l, "ADDA.l");
-//cpu_test!(adda_w, "ADDA.w");
+cpu_test!(adda_l, "ADDA.l");
+cpu_test!(adda_w, "ADDA.w");
 cpu_test!(add_b, "ADD.b");
 cpu_test!(add_l, "ADD.l");
 cpu_test!(add_w, "ADD.w");
@@ -469,8 +469,8 @@ cpu_test!(or_w, "OR.w");
 //cpu_test!(rts, "RTS");
 //cpu_test!(sbcd, "SBCD");
 //cpu_test!(scc, "Scc");
-//cpu_test!(suba_l, "SUBA.l");
-//cpu_test!(suba_w, "SUBA.w");
+cpu_test!(suba_l, "SUBA.l");
+cpu_test!(suba_w, "SUBA.w");
 cpu_test!(sub_b, "SUB.b");
 cpu_test!(sub_l, "SUB.l");
 cpu_test!(sub_w, "SUB.w");
