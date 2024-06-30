@@ -389,6 +389,8 @@ where
             InstructionMnemonic::CMPM_l => self.op_cmpm::<Long>(&instr),
             InstructionMnemonic::CMPM_w => self.op_cmpm::<Word>(&instr),
             InstructionMnemonic::CMPM_b => self.op_cmpm::<Byte>(&instr),
+            InstructionMnemonic::MULU_w => self.op_mulu(&instr),
+            InstructionMnemonic::MULS_w => self.op_muls(&instr),
             InstructionMnemonic::NOP => Ok(()),
             InstructionMnemonic::SWAP => self.op_swap(&instr),
             InstructionMnemonic::TRAP => self.op_trap(&instr),
@@ -988,6 +990,48 @@ where
 
         self.prefetch_pump()?;
         self.advance_cycles(2)?; // 2x idle
+
+        Ok(())
+    }
+
+    /// MULU
+    pub fn op_mulu(&mut self, instr: &Instruction) -> Result<()> {
+        let a = self.regs.read_d::<Word>(instr.get_op1()) as Long;
+        let b = self.read_ea::<Word>(instr, instr.get_op2())? as Long;
+        let result = a.wrapping_mul(b);
+
+        self.prefetch_pump()?;
+
+        // Computation time
+        self.advance_cycles(34 + (b.count_ones() as Ticks) * 2)?;
+
+        self.regs.sr.set_v(false);
+        self.regs.sr.set_c(false);
+        self.regs.sr.set_n(result & 0x8000_0000 != 0);
+        self.regs.sr.set_z(result == 0);
+
+        self.regs.write_d(instr.get_op1(), result);
+
+        Ok(())
+    }
+
+    /// MULS
+    pub fn op_muls(&mut self, instr: &Instruction) -> Result<()> {
+        let a = self.regs.read_d::<Word>(instr.get_op1()) as i16 as i32;
+        let b = self.read_ea::<Word>(instr, instr.get_op2())? as i16 as i32;
+        let result = a.wrapping_mul(b) as Long;
+
+        self.prefetch_pump()?;
+
+        // Computation time
+        self.advance_cycles(34 + (((b << 1) ^ b).count_ones() as Ticks) * 2)?;
+
+        self.regs.sr.set_v(false);
+        self.regs.sr.set_c(false);
+        self.regs.sr.set_n(result & 0x8000_0000 != 0);
+        self.regs.sr.set_z(result == 0);
+
+        self.regs.write_d(instr.get_op1(), result);
 
         Ok(())
     }
