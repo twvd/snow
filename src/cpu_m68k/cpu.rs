@@ -41,6 +41,8 @@ enum ExceptionGroup {
 // Exception vectors
 /// Address error exception vector
 const VECTOR_ACCESS_ERROR: Address = 0x00000C;
+/// Division by zero exception vector
+const VECTOR_DIV_ZERO: Address = 0x000014;
 /// Privilege violation exception vector
 const VECTOR_PRIVILEGE_VIOLATION: Address = 0x000020;
 /// Trap exception vector offset (15 vectors)
@@ -391,6 +393,8 @@ where
             InstructionMnemonic::CMPM_b => self.op_cmpm::<Byte>(&instr),
             InstructionMnemonic::MULU_w => self.op_mulu(&instr),
             InstructionMnemonic::MULS_w => self.op_muls(&instr),
+            InstructionMnemonic::DIVU_w => self.op_divu(&instr),
+            //InstructionMnemonic::DIVS_w => self.op_divs(&instr),
             InstructionMnemonic::NOP => Ok(()),
             InstructionMnemonic::SWAP => self.op_swap(&instr),
             InstructionMnemonic::TRAP => self.op_trap(&instr),
@@ -1032,6 +1036,66 @@ where
         self.regs.sr.set_z(result == 0);
 
         self.regs.write_d(instr.get_op1(), result);
+
+        Ok(())
+    }
+
+    /// DIVU
+    pub fn op_divu(&mut self, instr: &Instruction) -> Result<()> {
+        let mut dividend = self.regs.read_d::<Long>(instr.get_op1());
+        let mut divisor = self.read_ea::<Word>(instr, instr.get_op2())? as Long;
+
+        if divisor == 0 {
+            // Division by zero
+            self.advance_cycles(4)?;
+            self.regs.sr.set_n(false);
+            self.regs.sr.set_c(false);
+            self.regs.sr.set_z(false);
+            self.regs.sr.set_v(false);
+
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_DIV_ZERO, None);
+        }
+
+        let result = dividend / divisor;
+        let result_rem = dividend % divisor;
+
+        self.regs.sr.set_c(false);
+        self.advance_cycles(6)?;
+        if result > Word::MAX.into() {
+            // Overflow
+            self.regs.sr.set_v(true);
+            self.prefetch_pump()?;
+
+            return Ok(());
+        }
+
+        // Simulate the cycle time
+        self.advance_cycles(6)?;
+        divisor <<= 16;
+        let mut last_msb;
+        for _ in 0..15 {
+            self.advance_cycles(4)?;
+            last_msb = dividend & 0x8000_0000 != 0;
+            dividend <<= 1;
+            if !last_msb {
+                self.advance_cycles(2)?;
+                if dividend < divisor {
+                    self.advance_cycles(2)?;
+                }
+            }
+
+            if last_msb || dividend >= divisor {
+                dividend = dividend.wrapping_sub(divisor);
+            }
+        }
+
+        self.prefetch_pump()?;
+
+        self.regs.sr.set_z(result == 0);
+        self.regs.sr.set_n(result & 0x8000 != 0);
+        self.regs.sr.set_v(false);
+        self.regs
+            .write_d(instr.get_op1(), (result_rem << 16) | result);
 
         Ok(())
     }

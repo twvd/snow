@@ -50,6 +50,10 @@ pub enum InstructionMnemonic {
     CMPM_l,
     CMPM_w,
     CMPM_b,
+    // no DIVS_l, DIVS_b
+    DIVS_w,
+    // no DIVU_l, DIVU_b
+    DIVU_w,
     EOR_l,
     EOR_w,
     EOR_b,
@@ -67,7 +71,9 @@ pub enum InstructionMnemonic {
     ORI_ccr,
     ORI_sr,
     NOP,
+    // no MULU_l, MULU_b
     MULU_w,
+    // no MULS_l, MULS_b
     MULS_w,
     SUB_l,
     SUB_w,
@@ -230,6 +236,8 @@ impl Instruction {
         (0b1000_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_b),
         (0b1000_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_w),
         (0b1000_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_l),
+        (0b1000_0000_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::DIVU_w),
+        (0b1000_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::DIVS_w),
         (0b0101_0000_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::ADDQ_b),
         (0b0101_0000_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::ADDQ_w),
         (0b0101_0000_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::ADDQ_l),
@@ -405,5 +413,10 @@ impl Instruction {
         } else {
             result
         }
+    }
+
+    /// Returns the length in bytes, including extension words.
+    pub fn len(&self) -> Result<usize> {
+        Ok(2 + self.get_num_extwords()? * 2)
     }
 }
