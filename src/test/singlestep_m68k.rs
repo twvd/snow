@@ -404,7 +404,7 @@ cpu_test!(cmp_b, "CMP.b");
 cpu_test!(cmp_l, "CMP.l");
 cpu_test!(cmp_w, "CMP.w");
 //cpu_test!(dbcc, "DBcc");
-//cpu_test!(divs, "DIVS");
+cpu_test!(divs, "DIVS");
 cpu_test!(divu, "DIVU");
 cpu_test!(eor_b, "EOR.b");
 cpu_test!(eoritoccr, "EORItoCCR");

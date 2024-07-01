@@ -394,7 +394,7 @@ where
             InstructionMnemonic::MULU_w => self.op_mulu(&instr),
             InstructionMnemonic::MULS_w => self.op_muls(&instr),
             InstructionMnemonic::DIVU_w => self.op_divu(&instr),
-            //InstructionMnemonic::DIVS_w => self.op_divs(&instr),
+            InstructionMnemonic::DIVS_w => self.op_divs(&instr),
             InstructionMnemonic::NOP => Ok(()),
             InstructionMnemonic::SWAP => self.op_swap(&instr),
             InstructionMnemonic::TRAP => self.op_trap(&instr),
@@ -1096,6 +1096,66 @@ where
         self.regs.sr.set_v(false);
         self.regs
             .write_d(instr.get_op1(), (result_rem << 16) | result);
+
+        Ok(())
+    }
+
+    /// DIVS
+    pub fn op_divs(&mut self, instr: &Instruction) -> Result<()> {
+        let dividend = self.regs.read_d::<Long>(instr.get_op1()) as i32;
+        let divisor = self.read_ea::<Word>(instr, instr.get_op2())? as i16 as i32;
+
+        if divisor == 0 {
+            // Division by zero
+            self.advance_cycles(4)?;
+            self.regs.sr.set_n(false);
+            self.regs.sr.set_c(false);
+            self.regs.sr.set_z(false);
+            self.regs.sr.set_v(false);
+
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_DIV_ZERO, None);
+        }
+
+        let result = dividend / divisor;
+        let result_rem = dividend % divisor;
+        eprintln!("{} / {} = {}", dividend, divisor, result);
+
+        self.regs.sr.set_c(false);
+        self.advance_cycles(8)?;
+        if dividend < 0 {
+            self.advance_cycles(2)?;
+        }
+        if result > i16::MAX.into() || result < i16::MIN.into() {
+            self.advance_cycles(4)?;
+            // Overflow
+            self.regs.sr.set_v(true);
+            self.prefetch_pump()?;
+
+            return Ok(());
+        }
+
+        // Simulate the cycle time
+        if divisor < 0 {
+            // +2 for negative divisor
+            self.advance_cycles(2)?;
+        } else if dividend < 0 {
+            // +4 for positive divisor, negative dividend
+            self.advance_cycles(4)?;
+        }
+
+        // Count zeroes in top 15 most significant bits
+        let zeroes = ((result.wrapping_abs() as u16) | 1).count_zeros() as Ticks;
+        self.advance_cycles(108 + zeroes * 2)?;
+
+        self.prefetch_pump()?;
+
+        self.regs.sr.set_z(result == 0);
+        self.regs.sr.set_n(result & 0x8000 != 0);
+        self.regs.sr.set_v(false);
+        self.regs.write_d(
+            instr.get_op1(),
+            (((result_rem as Long) << 16) & 0xFFFF_0000) | ((result as Long) & 0xFFFF),
+        );
 
         Ok(())
     }
