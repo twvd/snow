@@ -398,11 +398,19 @@ where
             InstructionMnemonic::NOP => Ok(()),
             InstructionMnemonic::SWAP => self.op_swap(&instr),
             InstructionMnemonic::TRAP => self.op_trap(&instr),
+            InstructionMnemonic::BTST_imm => self.op_bit(&instr, None, true),
+            InstructionMnemonic::BSET_imm => self.op_bit(&instr, Some(|v, bit| v | bit), true),
+            InstructionMnemonic::BCLR_imm => self.op_bit(&instr, Some(|v, bit| v & !bit), true),
+            InstructionMnemonic::BCHG_imm => self.op_bit(&instr, Some(|v, bit| v ^ bit), true),
+            InstructionMnemonic::BTST_dn => self.op_bit(&instr, None, false),
+            InstructionMnemonic::BSET_dn => self.op_bit(&instr, Some(|v, bit| v | bit), false),
+            InstructionMnemonic::BCLR_dn => self.op_bit(&instr, Some(|v, bit| v & !bit), false),
+            InstructionMnemonic::BCHG_dn => self.op_bit(&instr, Some(|v, bit| v ^ bit), false),
             _ => todo!(),
         }
     }
 
-    /// Calculates address from effective addressing mode
+    /// Calculates address from effec_immtive addressing mode
     /// Happens once per instruction so e.g. postinc/predec only occur once.
     fn calc_ea_addr<T: CpuSized>(&mut self, instr: &Instruction, ea_in: usize) -> Result<Address> {
         if let Some(addr) = self.step_ea_addr {
@@ -1118,7 +1126,6 @@ where
 
         let result = dividend / divisor;
         let result_rem = dividend % divisor;
-        eprintln!("{} / {} = {}", dividend, divisor, result);
 
         self.regs.sr.set_c(false);
         self.advance_cycles(8)?;
@@ -1156,6 +1163,58 @@ where
             instr.get_op1(),
             (((result_rem as Long) << 16) & 0xFFFF_0000) | ((result as Long) & 0xFFFF),
         );
+
+        Ok(())
+    }
+
+    /// BTST/BSET/BCHG/BCLR
+    pub fn op_bit(
+        &mut self,
+        instr: &Instruction,
+        calcfn: Option<fn(Long, Long) -> Long>,
+        immediate: bool,
+    ) -> Result<()> {
+        let bitnum = if immediate {
+            self.fetch_immediate::<Byte>()?
+        } else {
+            self.regs.read_d(instr.get_op1())
+        };
+
+        match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => {
+                self.prefetch_pump()?;
+                let val: Long = self.read_ea(instr, instr.get_op2())?;
+                let bit = 1_u32 << (bitnum % 32);
+                self.regs.sr.set_z(val & bit == 0);
+                self.advance_cycles(2)?;
+                if let Some(cf) = calcfn {
+                    self.write_ea(instr, instr.get_op2(), cf(val, bit))?;
+                    if bitnum % 32 > 15 {
+                        self.advance_cycles(2)?;
+                    }
+                    if instr.mnemonic == InstructionMnemonic::BCLR_dn
+                        || instr.mnemonic == InstructionMnemonic::BCLR_imm
+                    {
+                        // :'(
+                        self.advance_cycles(2)?;
+                    }
+                }
+            }
+            _ => {
+                let val: Byte = self.read_ea(instr, instr.get_op2())?;
+                let bit = 1_u8 << (bitnum % 8);
+                self.regs.sr.set_z(val & bit == 0);
+                self.prefetch_pump()?;
+                if let Some(cf) = calcfn {
+                    self.write_ea(instr, instr.get_op2(), cf(val as Long, bit.into()) as Byte)?;
+                }
+            }
+        };
+
+        // Idle cycles
+        if instr.get_addr_mode()? == AddressingMode::Immediate {
+            self.advance_cycles(2)?;
+        }
 
         Ok(())
     }
