@@ -556,7 +556,7 @@ where
     }
 
     /// SWAP
-    pub fn op_swap(&mut self, instr: &Instruction) -> Result<()> {
+    fn op_swap(&mut self, instr: &Instruction) -> Result<()> {
         let v: Long = self.regs.read_d(instr.get_op2());
         let result = (v >> 16) | (v << 16);
 
@@ -570,7 +570,7 @@ where
     }
 
     /// AND/OR/EOR
-    pub fn op_bitwise<T: CpuSized>(
+    fn op_bitwise<T: CpuSized>(
         &mut self,
         instr: &Instruction,
         calcfn: fn(T, T) -> T,
@@ -614,7 +614,7 @@ where
     }
 
     /// ANDI/ORI/EORI
-    pub fn op_bitwise_immediate<T: CpuSized>(
+    fn op_bitwise_immediate<T: CpuSized>(
         &mut self,
         instr: &Instruction,
         calcfn: fn(T, T) -> T,
@@ -647,7 +647,7 @@ where
     }
 
     /// AND/OR/EOR to CCR
-    pub fn op_bitwise_ccr(
+    fn op_bitwise_ccr(
         &mut self,
         _instr: &Instruction,
         calcfn: fn(Byte, Byte) -> Byte,
@@ -665,7 +665,7 @@ where
     }
 
     /// AND/OR/EOR to SR
-    pub fn op_bitwise_sr(
+    fn op_bitwise_sr(
         &mut self,
         _instr: &Instruction,
         calcfn: fn(Word, Word) -> Word,
@@ -688,7 +688,7 @@ where
     }
 
     /// TRAP
-    pub fn op_trap(&mut self, instr: &Instruction) -> Result<()> {
+    fn op_trap(&mut self, instr: &Instruction) -> Result<()> {
         self.raise_exception(
             ExceptionGroup::Group2,
             instr.trap_get_vector() * 4 + VECTOR_TRAP_OFFSET,
@@ -698,7 +698,7 @@ where
     }
 
     /// ADD/SUB
-    pub fn op_alu<T: CpuSized>(
+    fn op_alu<T: CpuSized>(
         &mut self,
         instr: &Instruction,
         calcfn: fn(T, T, RegisterSR) -> (T, u8),
@@ -737,7 +737,7 @@ where
     }
 
     /// ADDI/SUBI
-    pub fn op_alu_immediate<T: CpuSized>(
+    fn op_alu_immediate<T: CpuSized>(
         &mut self,
         instr: &Instruction,
         calcfn: fn(T, T, RegisterSR) -> (T, u8),
@@ -764,7 +764,7 @@ where
     }
 
     /// ALU 'quick' group of instructions
-    pub fn op_alu_quick<T: CpuSized>(
+    fn op_alu_quick<T: CpuSized>(
         &mut self,
         instr: &Instruction,
         calcfn: fn(T, T, RegisterSR) -> (T, u8),
@@ -799,7 +799,7 @@ where
     }
 
     /// ALU address register group of instructions
-    pub fn op_alu_a<T: CpuSized>(
+    fn op_alu_a<T: CpuSized>(
         &mut self,
         instr: &Instruction,
         calcfn: fn(Long, Long, RegisterSR) -> (Long, u8),
@@ -828,7 +828,7 @@ where
     }
 
     /// ALU 'X' group of instructions
-    pub fn op_alu_x<T: CpuSized>(
+    fn op_alu_x<T: CpuSized>(
         &mut self,
         instr: &Instruction,
         calcfn: fn(T, T, RegisterSR) -> (T, u8),
@@ -908,7 +908,7 @@ where
     }
 
     /// CMP
-    pub fn op_cmp<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+    fn op_cmp<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         let a: T = self.regs.read_d(instr.get_op1());
         let b: T = self.read_ea(instr, instr.get_op2())?;
         let (_, ccr) = Self::alu_sub(a, b, self.regs.sr);
@@ -939,7 +939,7 @@ where
     }
 
     /// CMPI
-    pub fn op_cmp_immediate<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+    fn op_cmp_immediate<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         let b: T = self.fetch_immediate()?;
         let a: T = self.read_ea(instr, instr.get_op2())?;
         let (_, ccr) = Self::alu_sub(a, b, self.regs.sr);
@@ -965,7 +965,7 @@ where
     }
 
     /// CMPM
-    pub fn op_cmpm<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+    fn op_cmpm<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         let len = std::mem::size_of::<T>();
         let b_addr = self.regs.read_a_postinc(instr.get_op2(), len);
         let b: T = self.read_ticks(b_addr)?;
@@ -994,7 +994,7 @@ where
     }
 
     /// CMPA
-    pub fn op_cmp_address<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+    fn op_cmp_address<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         let b = self
             .read_ea::<T>(instr, instr.get_op2())?
             .expand_sign_extend();
@@ -1013,7 +1013,7 @@ where
     }
 
     /// MULU
-    pub fn op_mulu(&mut self, instr: &Instruction) -> Result<()> {
+    fn op_mulu(&mut self, instr: &Instruction) -> Result<()> {
         let a = self.regs.read_d::<Word>(instr.get_op1()) as Long;
         let b = self.read_ea::<Word>(instr, instr.get_op2())? as Long;
         let result = a.wrapping_mul(b);
@@ -1034,7 +1034,7 @@ where
     }
 
     /// MULS
-    pub fn op_muls(&mut self, instr: &Instruction) -> Result<()> {
+    fn op_muls(&mut self, instr: &Instruction) -> Result<()> {
         let a = self.regs.read_d::<Word>(instr.get_op1()) as i16 as i32;
         let b = self.read_ea::<Word>(instr, instr.get_op2())? as i16 as i32;
         let result = a.wrapping_mul(b) as Long;
@@ -1055,7 +1055,7 @@ where
     }
 
     /// DIVU
-    pub fn op_divu(&mut self, instr: &Instruction) -> Result<()> {
+    fn op_divu(&mut self, instr: &Instruction) -> Result<()> {
         let mut dividend = self.regs.read_d::<Long>(instr.get_op1());
         let mut divisor = self.read_ea::<Word>(instr, instr.get_op2())? as Long;
 
@@ -1115,7 +1115,7 @@ where
     }
 
     /// DIVS
-    pub fn op_divs(&mut self, instr: &Instruction) -> Result<()> {
+    fn op_divs(&mut self, instr: &Instruction) -> Result<()> {
         let dividend = self.regs.read_d::<Long>(instr.get_op1()) as i32;
         let divisor = self.read_ea::<Word>(instr, instr.get_op2())? as i16 as i32;
 
@@ -1174,7 +1174,7 @@ where
     }
 
     /// BTST/BSET/BCHG/BCLR
-    pub fn op_bit<const IMM: bool>(
+    fn op_bit<const IMM: bool>(
         &mut self,
         instr: &Instruction,
         calcfn: Option<fn(Long, Long) -> Long>,
@@ -1225,7 +1225,7 @@ where
     }
 
     /// MOVEP
-    pub fn op_movep<const N: usize, T>(&mut self, instr: &Instruction) -> Result<()>
+    fn op_movep<const N: usize, T>(&mut self, instr: &Instruction) -> Result<()>
     where
         T: FromBytes<Bytes = [u8; N]> + CpuSized,
     {
@@ -1260,7 +1260,7 @@ where
     }
 
     /// MOVEA
-    pub fn op_movea<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+    fn op_movea<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         let value: T = self.read_ea(instr, instr.get_op2())?;
         self.regs.write_a(instr.get_op1(), value);
         Ok(())
