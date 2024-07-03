@@ -410,6 +410,8 @@ where
             InstructionMnemonic::BCHG_dn => self.op_bit::<false>(&instr, Some(|v, bit| v ^ bit)),
             InstructionMnemonic::MOVEP_w => self.op_movep::<2, Word>(&instr),
             InstructionMnemonic::MOVEP_l => self.op_movep::<4, Long>(&instr),
+            InstructionMnemonic::MOVEA_l => self.op_movea::<Long>(&instr),
+            InstructionMnemonic::MOVEA_w => self.op_movea::<Word>(&instr),
             _ => todo!(),
         }
     }
@@ -1254,6 +1256,13 @@ where
                 .write_d::<T>(instr.get_op1(), T::from_be_bytes(&data));
         }
 
+        Ok(())
+    }
+
+    /// MOVEA
+    pub fn op_movea<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+        let value: T = self.read_ea(instr, instr.get_op2())?;
+        self.regs.write_a(instr.get_op1(), value);
         Ok(())
     }
 }

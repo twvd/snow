@@ -79,6 +79,8 @@ pub enum InstructionMnemonic {
     ORI_ccr,
     ORI_sr,
     NOP,
+    MOVEA_w,
+    MOVEA_l,
     MOVEP_w,
     MOVEP_l,
     // no MULU_l, MULU_b
@@ -240,6 +242,8 @@ impl Instruction {
         (0b0000_1100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CMPI_b),
         (0b0000_1100_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CMPI_w),
         (0b0000_1100_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CMPI_l),
+        (0b0011_0000_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::MOVEA_w),
+        (0b0010_0000_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::MOVEA_l),
         (0b0000_0001_0000_1000, 0b1111_0001_0111_1000, InstructionMnemonic::MOVEP_w),
         (0b0000_0001_0100_1000, 0b1111_0001_0111_1000, InstructionMnemonic::MOVEP_l),
         (0b0000_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::BTST_dn),
