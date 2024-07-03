@@ -79,6 +79,8 @@ pub enum InstructionMnemonic {
     ORI_ccr,
     ORI_sr,
     NOP,
+    MOVEP_w,
+    MOVEP_l,
     // no MULU_l, MULU_b
     MULU_w,
     // no MULS_l, MULS_b
@@ -238,6 +240,8 @@ impl Instruction {
         (0b0000_1100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CMPI_b),
         (0b0000_1100_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CMPI_w),
         (0b0000_1100_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CMPI_l),
+        (0b0000_0001_0000_1000, 0b1111_0001_0111_1000, InstructionMnemonic::MOVEP_w),
+        (0b0000_0001_0100_1000, 0b1111_0001_0111_1000, InstructionMnemonic::MOVEP_l),
         (0b0000_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::BTST_dn),
         (0b0000_0001_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::BCHG_dn),
         (0b0000_0001_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::BCLR_dn),
@@ -356,7 +360,21 @@ impl Instruction {
         }
     }
 
+    /// Gets operation direction, for MOVEP
+    pub fn get_direction_movep(&self) -> Direction {
+        debug_assert!(
+            self.mnemonic == InstructionMnemonic::MOVEP_l
+                || self.mnemonic == InstructionMnemonic::MOVEP_w
+        );
+        Direction::from_u16((!self.data >> 7) & 1).unwrap()
+    }
+
+    /// Gets operation direction
     pub fn get_direction(&self) -> Direction {
+        debug_assert!(
+            self.mnemonic != InstructionMnemonic::MOVEP_l
+                && self.mnemonic != InstructionMnemonic::MOVEP_w
+        );
         Direction::from_u16((self.data >> 8) & 1).unwrap()
     }
 
@@ -380,7 +398,11 @@ impl Instruction {
             AddressingMode::IndirectIndex => Ok(1),
             AddressingMode::PCIndex => Ok(1),
             AddressingMode::PCDisplacement => Ok(1),
-            _ => Ok(0),
+            _ => match self.mnemonic {
+                InstructionMnemonic::MOVEP_l => Ok(1),
+                InstructionMnemonic::MOVEP_w => Ok(1),
+                _ => Ok(0),
+            },
         }
     }
 
@@ -414,6 +436,8 @@ impl Instruction {
         debug_assert!(
             self.get_addr_mode().unwrap() == AddressingMode::IndirectDisplacement
                 || self.get_addr_mode().unwrap() == AddressingMode::PCDisplacement
+                || self.mnemonic == InstructionMnemonic::MOVEP_l
+                || self.mnemonic == InstructionMnemonic::MOVEP_w
         );
         debug_assert!(self.extwords.borrow().is_some());
         debug_assert_eq!(self.extwords.borrow().as_ref().unwrap().len(), 1);

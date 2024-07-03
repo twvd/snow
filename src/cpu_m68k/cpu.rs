@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 
 use anyhow::{bail, Result};
+use arrayvec::ArrayVec;
+use num_traits::FromBytes;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -398,19 +400,21 @@ where
             InstructionMnemonic::NOP => Ok(()),
             InstructionMnemonic::SWAP => self.op_swap(&instr),
             InstructionMnemonic::TRAP => self.op_trap(&instr),
-            InstructionMnemonic::BTST_imm => self.op_bit(&instr, None, true),
-            InstructionMnemonic::BSET_imm => self.op_bit(&instr, Some(|v, bit| v | bit), true),
-            InstructionMnemonic::BCLR_imm => self.op_bit(&instr, Some(|v, bit| v & !bit), true),
-            InstructionMnemonic::BCHG_imm => self.op_bit(&instr, Some(|v, bit| v ^ bit), true),
-            InstructionMnemonic::BTST_dn => self.op_bit(&instr, None, false),
-            InstructionMnemonic::BSET_dn => self.op_bit(&instr, Some(|v, bit| v | bit), false),
-            InstructionMnemonic::BCLR_dn => self.op_bit(&instr, Some(|v, bit| v & !bit), false),
-            InstructionMnemonic::BCHG_dn => self.op_bit(&instr, Some(|v, bit| v ^ bit), false),
+            InstructionMnemonic::BTST_imm => self.op_bit::<true>(&instr, None),
+            InstructionMnemonic::BSET_imm => self.op_bit::<true>(&instr, Some(|v, bit| v | bit)),
+            InstructionMnemonic::BCLR_imm => self.op_bit::<true>(&instr, Some(|v, bit| v & !bit)),
+            InstructionMnemonic::BCHG_imm => self.op_bit::<true>(&instr, Some(|v, bit| v ^ bit)),
+            InstructionMnemonic::BTST_dn => self.op_bit::<false>(&instr, None),
+            InstructionMnemonic::BSET_dn => self.op_bit::<false>(&instr, Some(|v, bit| v | bit)),
+            InstructionMnemonic::BCLR_dn => self.op_bit::<false>(&instr, Some(|v, bit| v & !bit)),
+            InstructionMnemonic::BCHG_dn => self.op_bit::<false>(&instr, Some(|v, bit| v ^ bit)),
+            InstructionMnemonic::MOVEP_w => self.op_movep::<2, Word>(&instr),
+            InstructionMnemonic::MOVEP_l => self.op_movep::<4, Long>(&instr),
             _ => todo!(),
         }
     }
 
-    /// Calculates address from effec_immtive addressing mode
+    /// Calculates address from effective addressing mode
     /// Happens once per instruction so e.g. postinc/predec only occur once.
     fn calc_ea_addr<T: CpuSized>(&mut self, instr: &Instruction, ea_in: usize) -> Result<Address> {
         if let Some(addr) = self.step_ea_addr {
@@ -1168,13 +1172,12 @@ where
     }
 
     /// BTST/BSET/BCHG/BCLR
-    pub fn op_bit(
+    pub fn op_bit<const IMM: bool>(
         &mut self,
         instr: &Instruction,
         calcfn: Option<fn(Long, Long) -> Long>,
-        immediate: bool,
     ) -> Result<()> {
-        let bitnum = if immediate {
+        let bitnum = if IMM {
             self.fetch_immediate::<Byte>()?
         } else {
             self.regs.read_d(instr.get_op1())
@@ -1214,6 +1217,41 @@ where
         // Idle cycles
         if instr.get_addr_mode()? == AddressingMode::Immediate {
             self.advance_cycles(2)?;
+        }
+
+        Ok(())
+    }
+
+    /// MOVEP
+    pub fn op_movep<const N: usize, T>(&mut self, instr: &Instruction) -> Result<()>
+    where
+        T: FromBytes<Bytes = [u8; N]> + CpuSized,
+    {
+        instr.fetch_extwords(|| self.fetch_pump())?;
+        let addr: Address = self
+            .regs
+            .read_a::<Address>(instr.get_op2())
+            .wrapping_add_signed(instr.get_displacement()?)
+            & ADDRESS_MASK;
+
+        if instr.get_direction_movep() == Direction::Right {
+            // To bus
+            let data = self.regs.read_d::<T>(instr.get_op1()).to_be_bytes();
+
+            for (i, b) in data.as_ref().iter().cloned().enumerate() {
+                let b_addr = addr.wrapping_add((i * 2) as Address);
+                self.write_ticks::<Byte>(b_addr, b)?;
+            }
+        } else {
+            // From bus
+            let mut data = [0; N];
+            for i in 0..N {
+                let b_addr = addr.wrapping_add((i * 2) as Address);
+                data[i] = self.read_ticks::<Byte>(b_addr)?;
+            }
+
+            self.regs
+                .write_d::<T>(instr.get_op1(), T::from_be_bytes(&data));
         }
 
         Ok(())

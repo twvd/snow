@@ -56,6 +56,8 @@ where
         + WrappingShr
         + std::fmt::Display,
     Long: LossyInto<T>,
+    <T as ToBytes>::Bytes: AsMut<[u8]>,
+    T: FromBytes<Bytes = <T as ToBytes>::Bytes>,
 {
     #[inline(always)]
     fn replace_in(self, value: Long) -> Long {
