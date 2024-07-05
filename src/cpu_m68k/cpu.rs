@@ -1,13 +1,13 @@
 use std::collections::VecDeque;
 
 use anyhow::{bail, Result};
-use arrayvec::ArrayVec;
 use num_traits::FromBytes;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::bus::{Address, Bus, ADDRESS_MASK};
 use crate::tickable::{Tickable, Ticks};
+use crate::util::TemporalOrder;
 
 use super::instruction::{
     AddressingMode, Direction, IndexSize, Instruction, InstructionMnemonic, Xn,
@@ -79,7 +79,10 @@ where
         if self.prefetch.len() >= 2 {
             return Ok(());
         }
+        self.prefetch_pump_force()
+    }
 
+    fn prefetch_pump_force(&mut self) -> Result<()> {
         let fetch_addr = ((self.regs.pc & !1) + 4) & ADDRESS_MASK;
         let new_item = self.read_ticks::<Word>(fetch_addr)?;
         self.prefetch.push_back(new_item);
@@ -97,8 +100,8 @@ where
 
     /// Fetches a 16-bit value, through the prefetch queue
     fn fetch_pump(&mut self) -> Result<Word> {
+        self.prefetch_pump_force()?;
         let v = self.prefetch.pop_front().unwrap();
-        self.prefetch_pump()?;
         Ok(v)
     }
 
@@ -148,12 +151,9 @@ where
         Ok(())
     }
 
-    /// Reads a value from the bus and spends ticks.
-    fn read_ticks<T: CpuSized>(&mut self, addr: Address) -> Result<T> {
-        let len = std::mem::size_of::<T>();
-        let mut result: T = T::zero();
-
-        if len >= 2 && (addr & 1) != 0 {
+    /// Checks if an access needs to fail and raise bus error on alignment errors
+    fn verify_access<T: CpuSized>(&mut self, addr: Address, read: bool) -> Result<()> {
+        if std::mem::size_of::<T>() >= 2 && (addr & 1) != 0 {
             // Unaligned access
             bail!(CpuError::AccessError(AccessError {
                 function_code: 0,
@@ -161,10 +161,19 @@ where
 
                 // TODO instruction bit
                 instruction: false,
-                read: true,
+                read,
                 address: addr
             }));
         }
+        Ok(())
+    }
+
+    /// Reads a value from the bus and spends ticks.
+    fn read_ticks<T: CpuSized>(&mut self, addr: Address) -> Result<T> {
+        let len = std::mem::size_of::<T>();
+        let mut result: T = T::zero();
+
+        self.verify_access::<T>(addr, true)?;
 
         // Below converts from BE -> LE on the fly
         for a in 0..len {
@@ -185,37 +194,42 @@ where
 
     /// Writes a value to the bus (big endian) and spends ticks.
     fn write_ticks<T: CpuSized>(&mut self, addr: Address, value: T) -> Result<()> {
-        let mut val: Long = value.to_be().into();
-
-        for a in 0..std::mem::size_of::<T>() {
-            let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
-            let b = val as u8;
-            val = val >> 8;
-
-            self.bus.write(byte_addr, b);
-            self.advance_cycles(2)?;
-        }
-
-        if std::mem::size_of::<T>() == 1 {
-            // Minimum of 4 cycles
-            self.advance_cycles(2)?;
-        }
-
-        Ok(())
+        self.write_ticks_order(addr, value, TemporalOrder::LowToHigh)
     }
 
-    /// Writes a value to the bus (big endian) and spends ticks.
-    /// High-to-low temporal order.
-    fn write_ticks_th<T: CpuSized>(&mut self, addr: Address, value: T) -> Result<()> {
-        let mut val: Long = value.into();
+    fn write_ticks_order<T: CpuSized>(
+        &mut self,
+        addr: Address,
+        value: T,
+        order: TemporalOrder,
+    ) -> Result<()> {
+        let len = std::mem::size_of::<T>();
 
-        for a in (0..std::mem::size_of::<T>()).rev() {
-            let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
-            let b = val as u8;
-            val = val >> 8;
+        self.verify_access::<T>(addr, false)?;
 
-            self.bus.write(byte_addr, b);
-            self.advance_cycles(2)?;
+        match order {
+            TemporalOrder::LowToHigh => {
+                let mut val: Long = value.to_be().into();
+                for a in 0..std::mem::size_of::<T>() {
+                    let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
+                    let b = val as u8;
+                    val = val >> 8;
+
+                    self.bus.write(byte_addr, b);
+                    self.advance_cycles(2)?;
+                }
+            }
+            TemporalOrder::HighToLow => {
+                let mut val: Long = value.into();
+                for a in (0..std::mem::size_of::<T>()).rev() {
+                    let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
+                    let b = val as u8;
+                    val = val >> 8;
+
+                    self.bus.write(byte_addr, b);
+                    self.advance_cycles(2)?;
+                }
+            }
         }
 
         if std::mem::size_of::<T>() == 1 {
@@ -249,6 +263,10 @@ where
         match group {
             ExceptionGroup::Group0 => {
                 let details = details.expect("Address error details not passed");
+                eprintln!(
+                    "Access error: read = {:?}, address = {:08X} PC = {:06X}",
+                    details.read, details.address, self.regs.pc
+                );
 
                 self.regs.ssp = self.regs.ssp.wrapping_sub(14);
                 self.write_ticks(self.regs.ssp.wrapping_add(12), self.regs.pc as u16)?;
@@ -295,6 +313,7 @@ where
 
     /// Executes a previously decoded instruction.
     fn execute_instruction(&mut self, instr: &Instruction) -> Result<()> {
+        dbg!(instr);
         match instr.mnemonic {
             InstructionMnemonic::AND_l => self.op_bitwise::<Long>(&instr, |a, b| a & b),
             InstructionMnemonic::AND_w => self.op_bitwise::<Word>(&instr, |a, b| a & b),
@@ -412,13 +431,21 @@ where
             InstructionMnemonic::MOVEP_l => self.op_movep::<4, Long>(&instr),
             InstructionMnemonic::MOVEA_l => self.op_movea::<Long>(&instr),
             InstructionMnemonic::MOVEA_w => self.op_movea::<Word>(&instr),
+            InstructionMnemonic::MOVE_l => self.op_move::<Long>(&instr),
+            InstructionMnemonic::MOVE_w => self.op_move::<Word>(&instr),
+            InstructionMnemonic::MOVE_b => self.op_move::<Byte>(&instr),
             _ => todo!(),
         }
     }
 
     /// Calculates address from effective addressing mode
     /// Happens once per instruction so e.g. postinc/predec only occur once.
-    fn calc_ea_addr<T: CpuSized>(&mut self, instr: &Instruction, ea_in: usize) -> Result<Address> {
+    fn calc_ea_addr<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        addrmode: AddressingMode,
+        ea_in: usize,
+    ) -> Result<Address> {
         if let Some(addr) = self.step_ea_addr {
             // Already done this step
             return Ok(addr);
@@ -434,7 +461,7 @@ where
                 IndexSize::Long => v,
             }
         };
-        let addr = match instr.get_addr_mode()? {
+        let addr = match addrmode {
             AddressingMode::DataRegister => unreachable!(),
             AddressingMode::AddressRegister => unreachable!(),
             AddressingMode::Indirect => self.regs.read_a(ea_in),
@@ -446,16 +473,16 @@ where
                 .regs
                 .read_a_postinc::<Address>(ea_in, std::mem::size_of::<T>()),
             AddressingMode::IndirectDisplacement => {
-                instr.fetch_extwords(|| self.fetch_pump())?;
+                instr.fetch_extword(|| self.fetch_pump())?;
                 let addr = self.regs.read_a::<Address>(ea_in);
                 let displacement = instr.get_displacement()?;
                 Address::from(addr.wrapping_add_signed(displacement))
             }
             AddressingMode::IndirectIndex => {
                 self.advance_cycles(2)?; // 2x idle
-                instr.fetch_extwords(|| self.fetch_pump())?;
+                instr.fetch_extword(|| self.fetch_pump())?;
 
-                let extword = instr.get_extword(0)?;
+                let extword = instr.get_extword()?;
                 let addr = self.regs.read_a::<Address>(ea_in);
                 let displacement = extword.brief_get_displacement_signext();
                 let index = read_idx(
@@ -466,15 +493,15 @@ where
                 addr.wrapping_add(displacement).wrapping_add(index)
             }
             AddressingMode::PCDisplacement => {
-                instr.fetch_extwords(|| self.fetch_pump())?;
+                instr.fetch_extword(|| self.fetch_pump())?;
                 let addr = self.regs.pc;
                 let displacement = instr.get_displacement()?;
                 Address::from(addr.wrapping_add_signed(displacement))
             }
             AddressingMode::PCIndex => {
                 self.advance_cycles(2)?; // 2x idle
-                instr.fetch_extwords(|| self.fetch_pump())?;
-                let extword = instr.get_extword(0)?;
+                instr.fetch_extword(|| self.fetch_pump())?;
+                let extword = instr.get_extword()?;
                 let pc = self.regs.pc;
                 let displacement = extword.brief_get_displacement_signext();
                 let index = read_idx(
@@ -512,22 +539,35 @@ where
     /// Reads a value from the operand (ea_in) using the effective addressing mode specified
     /// by the instruction, directly or through indirection, depending on the mode.
     fn read_ea<T: CpuSized>(&mut self, instr: &Instruction, ea_in: usize) -> Result<T> {
-        let v = match instr.get_addr_mode()? {
+        self.read_ea_with(instr, instr.get_addr_mode()?, ea_in)
+    }
+
+    fn read_ea_with<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        addrmode: AddressingMode,
+        ea_in: usize,
+    ) -> Result<T> {
+        let v = match addrmode {
             AddressingMode::DataRegister => self.regs.read_d(ea_in),
             AddressingMode::AddressRegister => self.regs.read_a(ea_in),
             AddressingMode::Immediate => self.fetch_immediate::<T>()?,
             AddressingMode::Indirect
             | AddressingMode::IndirectDisplacement
             | AddressingMode::IndirectPreDec
-            | AddressingMode::IndirectPostInc
             | AddressingMode::PCDisplacement
             | AddressingMode::AbsoluteShort
             | AddressingMode::AbsoluteLong => {
-                let addr = self.calc_ea_addr::<T>(instr, ea_in)?;
+                let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
+                self.read_ticks(addr)?
+            }
+            AddressingMode::IndirectPostInc => {
+                // Check for alignment now so we fail before doing the increment
+                let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
                 self.read_ticks(addr)?
             }
             AddressingMode::IndirectIndex | AddressingMode::PCIndex => {
-                let addr = self.calc_ea_addr::<T>(instr, ea_in)?;
+                let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
                 self.read_ticks(addr)?
             }
         };
@@ -538,18 +578,40 @@ where
     /// Writes a value to the operand (ea_in) using the effective addressing mode specified
     /// by the instruction, directly or through indirection, depending on the mode.
     fn write_ea<T: CpuSized>(&mut self, instr: &Instruction, ea_in: usize, value: T) -> Result<()> {
-        match instr.get_addr_mode()? {
+        self.write_ea_with(
+            instr,
+            instr.get_addr_mode()?,
+            ea_in,
+            value,
+            TemporalOrder::HighToLow,
+        )
+    }
+
+    fn write_ea_with<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        addrmode: AddressingMode,
+        ea_in: usize,
+        value: T,
+        order: TemporalOrder,
+    ) -> Result<()> {
+        match addrmode {
             AddressingMode::DataRegister => Ok(self.regs.write_d(ea_in, value)),
             AddressingMode::AddressRegister => Ok(self.regs.write_a(ea_in, value)),
             AddressingMode::Indirect
             | AddressingMode::IndirectDisplacement
             | AddressingMode::IndirectIndex
             | AddressingMode::IndirectPreDec
-            | AddressingMode::IndirectPostInc
             | AddressingMode::AbsoluteShort
             | AddressingMode::AbsoluteLong => {
-                let addr = self.calc_ea_addr::<T>(instr, ea_in)?;
-                self.write_ticks_th(addr, value)
+                let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
+                self.write_ticks_order(addr, value, order)
+            }
+            AddressingMode::IndirectPostInc => {
+                // Check for alignment now so we fail before doing the increment
+                self.verify_access::<T>(self.regs.read_a(ea_in), false)?;
+                let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
+                self.write_ticks_order(addr, value, order)
             }
             _ => todo!(),
         }
@@ -1229,7 +1291,7 @@ where
     where
         T: FromBytes<Bytes = [u8; N]> + CpuSized,
     {
-        instr.fetch_extwords(|| self.fetch_pump())?;
+        instr.fetch_extword(|| self.fetch_pump())?;
         let addr: Address = self
             .regs
             .read_a::<Address>(instr.get_op2())
@@ -1263,6 +1325,66 @@ where
     fn op_movea<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         let value: T = self.read_ea(instr, instr.get_op2())?;
         self.regs.write_a(instr.get_op1(), value);
+        Ok(())
+    }
+
+    /// MOVE
+    fn op_move<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+        let value: T = self.read_ea_with(instr, instr.get_addr_mode()?, instr.get_op2())?;
+
+        self.regs.sr.set_z(value == T::zero());
+        self.regs.sr.set_n(value & T::msb() != T::zero());
+        self.regs.sr.set_c(false);
+        self.regs.sr.set_v(false);
+
+        // Clear EA cache
+        // TODO this is kinda hacky
+        self.step_ea_addr = None;
+        instr.clear_extword();
+
+        match (instr.get_addr_mode_left()?, instr.get_addr_mode()?) {
+            (AddressingMode::IndirectPreDec, _) => {
+                // MOVE ..., -(An) this mode has a fetch instead of the idle cycles.
+                let addr: Address = self
+                    .regs
+                    .read_a_predec(instr.get_op1(), std::mem::size_of::<T>());
+                self.prefetch_pump()?;
+                self.write_ticks(addr, value)?
+            }
+            (
+                AddressingMode::AbsoluteLong,
+                AddressingMode::Indirect
+                | AddressingMode::IndirectDisplacement
+                | AddressingMode::IndirectIndex
+                | AddressingMode::IndirectPostInc
+                | AddressingMode::IndirectPreDec
+                | AddressingMode::PCIndex
+                | AddressingMode::PCDisplacement
+                | AddressingMode::AbsoluteShort
+                | AddressingMode::AbsoluteLong,
+            ) => {
+                // This is for MOVE ..., (xxx).l, which interleaves the prefetches with the write.
+                // Do the write in between the prefetches, so preload the EA cache manually.
+                let h = self.fetch()? as u32;
+                let l = self.fetch()? as u32;
+                self.step_ea_addr = Some((h << 16) | l);
+                self.write_ea_with(
+                    instr,
+                    instr.get_addr_mode_left()?,
+                    instr.get_op1(),
+                    value,
+                    TemporalOrder::LowToHigh,
+                )?
+            }
+            _ => self.write_ea_with(
+                instr,
+                instr.get_addr_mode_left()?,
+                instr.get_op1(),
+                value,
+                TemporalOrder::LowToHigh,
+            )?,
+        }
+
         Ok(())
     }
 }

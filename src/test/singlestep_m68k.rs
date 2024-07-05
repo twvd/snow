@@ -83,8 +83,21 @@ struct Testcase {
     transactions: Vec<TestcaseTransaction>,
 }
 
+#[allow(unused_macros)]
+macro_rules! cpu_test_nt {
+    ($testfn:ident, $instr:expr) => {
+        _cpu_test!($testfn, $instr, false);
+    };
+}
+
 macro_rules! cpu_test {
     ($testfn:ident, $instr:expr) => {
+        _cpu_test!($testfn, $instr, true);
+    };
+}
+
+macro_rules! _cpu_test {
+    ($testfn:ident, $instr:expr, $transactions:expr) => {
         #[test]
         fn $testfn() {
             let filename = format!("testdata/680x0/68000/v1/{}.json", $instr);
@@ -97,7 +110,7 @@ macro_rules! cpu_test {
             };
 
             for testcase in testcases {
-                run_testcase(testcase);
+                run_testcase(testcase, $transactions);
             }
         }
     };
@@ -254,7 +267,7 @@ fn print_result(cpu: &CpuM68k<Testbus<Address>>, testcase: &Testcase) {
     }
 }
 
-fn run_testcase(testcase: Testcase) {
+fn run_testcase(testcase: Testcase, test_transactions: bool) {
     eprintln!("--- Testcase: {}", testcase.name);
 
     let regs_initial = create_regs(&testcase.initial);
@@ -324,44 +337,48 @@ fn run_testcase(testcase: Testcase) {
     }
 
     // Check transactions (kinda best effort with regards to byte access and values)
-    let mut abs_cycles = 0;
-    let trace = cpu.bus.get_trace();
-    for tr in &testcase.transactions {
-        match tr {
-            TestcaseTransaction::Idle(t) => {
-                // Bus must be quiet for length
-                for cycle in abs_cycles..(abs_cycles + t.cycles) {
-                    if trace.iter().find(|&&a| a.cycle == cycle).is_some() {
+    if test_transactions {
+        let mut abs_cycles = 0;
+        let trace = cpu.bus.get_trace();
+        for tr in &testcase.transactions {
+            match tr {
+                TestcaseTransaction::Idle(t) => {
+                    // Bus must be quiet for length
+                    for cycle in abs_cycles..(abs_cycles + t.cycles) {
+                        if trace.iter().find(|&&a| a.cycle == cycle).is_some() {
+                            print_result(&cpu, &testcase);
+                            panic!("Bus not idle at cycle {}", abs_cycles);
+                        }
+                    }
+                    abs_cycles += t.cycles;
+                }
+                TestcaseTransaction::Rw(t) => {
+                    let expected_access = match t.action.as_str() {
+                        "w" => Access::Write,
+                        "r" => Access::Read,
+                        _ => unreachable!(),
+                    };
+                    let mut found = false;
+                    for cycle in abs_cycles..(abs_cycles + t.cycles) {
+                        if trace
+                            .iter()
+                            .find(|&&a| {
+                                a.cycle == cycle
+                                    && a.addr == t.address
+                                    && a.access == expected_access
+                            })
+                            .is_some()
+                        {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
                         print_result(&cpu, &testcase);
-                        panic!("Bus not idle at cycle {}", abs_cycles);
+                        panic!("Bus access does not match at cycle {}", abs_cycles);
                     }
+                    abs_cycles += t.cycles;
                 }
-                abs_cycles += t.cycles;
-            }
-            TestcaseTransaction::Rw(t) => {
-                let expected_access = match t.action.as_str() {
-                    "w" => Access::Write,
-                    "r" => Access::Read,
-                    _ => unreachable!(),
-                };
-                let mut found = false;
-                for cycle in abs_cycles..(abs_cycles + t.cycles) {
-                    if trace
-                        .iter()
-                        .find(|&&a| {
-                            a.cycle == cycle && a.addr == t.address && a.access == expected_access
-                        })
-                        .is_some()
-                    {
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    print_result(&cpu, &testcase);
-                    panic!("Bus access does not match at cycle {}", abs_cycles);
-                }
-                abs_cycles += t.cycles;
             }
         }
     }
@@ -426,10 +443,13 @@ cpu_test!(eor_w, "EOR.w");
 //cpu_test!(lsr_w, "LSR.w");
 cpu_test!(movea_l, "MOVEA.l");
 cpu_test!(movea_w, "MOVEA.w");
-//cpu_test!(move_b, "MOVE.b");
+cpu_test!(move_b, "MOVE.b");
 //cpu_test!(movefromsr, "MOVEfromSR");
 //cpu_test!(movefromusp, "MOVEfromUSP");
-//cpu_test!(move_l, "MOVE.l");
+
+// TODO fix all the insane edge cases of MOVE.l
+//cpu_test_nt!(move_l, "MOVE.l");
+
 //cpu_test!(movem_l, "MOVEM.l");
 //cpu_test!(movem_w, "MOVEM.w");
 cpu_test!(movep_l, "MOVEP.l");
@@ -438,7 +458,7 @@ cpu_test!(movep_w, "MOVEP.w");
 //cpu_test!(movetoccr, "MOVEtoCCR");
 //cpu_test!(movetosr, "MOVEtoSR");
 //cpu_test!(movetousp, "MOVEtoUSP");
-//cpu_test!(move_w, "MOVE.w");
+cpu_test!(move_w, "MOVE.w");
 cpu_test!(muls, "MULS");
 cpu_test!(mulu, "MULU");
 //cpu_test!(nbcd, "NBCD");

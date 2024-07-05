@@ -1,13 +1,12 @@
 use anyhow::{anyhow, Context, Result};
-use arrayvec::ArrayVec;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 
-use super::{CpuSized, Long};
+use super::{CpuSized, Long, Word};
 
 use crate::bus::Address;
 
-use std::cell::RefCell;
+use std::cell::Cell;
 
 /// Instruction mnemonic
 #[allow(non_camel_case_types)]
@@ -79,6 +78,9 @@ pub enum InstructionMnemonic {
     ORI_ccr,
     ORI_sr,
     NOP,
+    MOVE_w,
+    MOVE_l,
+    MOVE_b,
     MOVEA_w,
     MOVEA_l,
     MOVEP_w,
@@ -107,7 +109,7 @@ pub enum InstructionMnemonic {
 }
 
 /// Addressing modes
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum AddressingMode {
     DataRegister,
     AddressRegister,
@@ -205,14 +207,12 @@ impl ExtWord {
     }
 }
 
-type ExtWords = ArrayVec<ExtWord, 4>;
-
 /// A decoded instruction
 #[derive(Debug)]
 pub struct Instruction {
     pub mnemonic: InstructionMnemonic,
     pub data: u16,
-    pub extwords: RefCell<Option<ExtWords>>,
+    pub extword: Cell<Option<ExtWord>>,
 }
 
 impl Instruction {
@@ -244,6 +244,9 @@ impl Instruction {
         (0b0000_1100_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CMPI_l),
         (0b0011_0000_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::MOVEA_w),
         (0b0010_0000_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::MOVEA_l),
+        (0b0001_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::MOVE_b),
+        (0b0011_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::MOVE_w),
+        (0b0010_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::MOVE_l),
         (0b0000_0001_0000_1000, 0b1111_0001_0111_1000, InstructionMnemonic::MOVEP_w),
         (0b0000_0001_0100_1000, 0b1111_0001_0111_1000, InstructionMnemonic::MOVEP_l),
         (0b0000_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::BTST_dn),
@@ -313,7 +316,7 @@ impl Instruction {
                 return Ok(Instruction {
                     mnemonic,
                     data,
-                    extwords: RefCell::new(None),
+                    extword: Cell::new(None),
                 });
             }
         }
@@ -335,7 +338,28 @@ impl Instruction {
             _ => true,
         });
 
-        match ((self.data & 0b111_000) >> 3, self.data & 0b000_111) {
+        Self::decode_addr_mode((self.data & 0b111_000) >> 3, self.data & 0b000_111)
+    }
+
+    /// Gets the addressing mode on the 'left' side of this instruction
+    /// (for MOVE)
+    pub fn get_addr_mode_left(&self) -> Result<AddressingMode> {
+        debug_assert!(match self.mnemonic {
+            InstructionMnemonic::MOVE_l
+            | InstructionMnemonic::MOVE_w
+            | InstructionMnemonic::MOVE_b => true,
+            _ => false,
+        });
+
+        Self::decode_addr_mode(
+            (self.data & 0b111_000_000) >> 6,
+            (self.data & 0b111_000_000_000) >> 9,
+        )
+    }
+
+    /// Decodes an addressing mode from the mode and Xn fields of an instruction.
+    fn decode_addr_mode(mode: Word, xn: Word) -> Result<AddressingMode> {
+        match (mode, xn) {
             (0b000, _) => Ok(AddressingMode::DataRegister),
             (0b001, _) => Ok(AddressingMode::AddressRegister),
             (0b010, _) => Ok(AddressingMode::Indirect),
@@ -348,10 +372,7 @@ impl Instruction {
             (0b111, 0b010) => Ok(AddressingMode::PCDisplacement),
             (0b111, 0b011) => Ok(AddressingMode::PCIndex),
             (0b111, 0b100) => Ok(AddressingMode::Immediate),
-            _ => Err(anyhow!(
-                "Invalid addressing mode {:06b}",
-                self.data & 0b111_111
-            )),
+            _ => Err(anyhow!("Invalid addressing mode {:03b} {:03b}", mode, xn)),
         }
     }
 
@@ -396,57 +417,45 @@ impl Instruction {
         u32::from(self.data & 0b1111)
     }
 
-    pub fn get_num_extwords(&self) -> Result<usize> {
-        match self.get_addr_mode()? {
-            AddressingMode::IndirectDisplacement => Ok(1),
-            AddressingMode::IndirectIndex => Ok(1),
-            AddressingMode::PCIndex => Ok(1),
-            AddressingMode::PCDisplacement => Ok(1),
-            _ => match self.mnemonic {
-                InstructionMnemonic::MOVEP_l => Ok(1),
-                InstructionMnemonic::MOVEP_w => Ok(1),
-                _ => Ok(0),
-            },
-        }
-    }
-
-    pub fn fetch_extwords<F>(&self, mut fetch: F) -> Result<()>
+    pub fn fetch_extword<F>(&self, mut fetch: F) -> Result<()>
     where
         F: FnMut() -> Result<u16>,
     {
-        if self.get_num_extwords()? == 0 {
-            return Ok(());
+        if !self.has_extword() {
+            // This check is to handle 'MOVE mem, (xxx).L' properly.
+            eprintln!("fetchyfetch");
+            self.extword.set(Some(fetch()?.into()));
         }
-
-        let mut extwords = ExtWords::new();
-        for _ in 0..self.get_num_extwords()? {
-            extwords.push(fetch()?.into());
-        }
-        *self.extwords.borrow_mut() = Some(extwords);
         Ok(())
     }
 
-    pub fn get_extword(&self, idx: usize) -> Result<ExtWord> {
-        Ok(*self
-            .extwords
-            .borrow()
-            .as_ref()
-            .unwrap() // assuming ext words were fetched
-            .get(idx)
-            .context("Extension word missing")?)
+    pub fn clear_extword(&self) {
+        self.extword.set(None)
+    }
+
+    pub fn has_extword(&self) -> bool {
+        self.extword.get().is_some()
+    }
+
+    pub fn get_extword(&self) -> Result<ExtWord> {
+        self.extword.get().context("Ext word not fetched")
     }
 
     pub fn get_displacement(&self) -> Result<i32> {
         debug_assert!(
-            self.get_addr_mode().unwrap() == AddressingMode::IndirectDisplacement
+            (((self.mnemonic == InstructionMnemonic::MOVE_b)
+                || (self.mnemonic == InstructionMnemonic::MOVE_l)
+                || (self.mnemonic == InstructionMnemonic::MOVE_w))
+                && (self.get_addr_mode_left().unwrap() == AddressingMode::IndirectDisplacement
+                    || self.get_addr_mode_left().unwrap() == AddressingMode::PCDisplacement))
+                || self.get_addr_mode().unwrap() == AddressingMode::IndirectDisplacement
                 || self.get_addr_mode().unwrap() == AddressingMode::PCDisplacement
                 || self.mnemonic == InstructionMnemonic::MOVEP_l
                 || self.mnemonic == InstructionMnemonic::MOVEP_w
         );
-        debug_assert!(self.extwords.borrow().is_some());
-        debug_assert_eq!(self.extwords.borrow().as_ref().unwrap().len(), 1);
+        debug_assert!(self.extword.get().is_some());
 
-        Ok(self.get_extword(0)?.into())
+        Ok(self.get_extword()?.into())
     }
 
     /// Retrieves the data part of 'quick' instructions
@@ -457,10 +466,5 @@ impl Instruction {
         } else {
             result
         }
-    }
-
-    /// Returns the length in bytes, including extension words.
-    pub fn len(&self) -> Result<usize> {
-        Ok(2 + self.get_num_extwords()? * 2)
     }
 }
