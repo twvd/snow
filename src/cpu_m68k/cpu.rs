@@ -450,6 +450,8 @@ where
             InstructionMnemonic::NOT_l => self.op_not::<Long>(&instr),
             InstructionMnemonic::NOT_w => self.op_not::<Word>(&instr),
             InstructionMnemonic::NOT_b => self.op_not::<Byte>(&instr),
+            InstructionMnemonic::EXT_l => self.op_ext::<Long, Word>(&instr),
+            InstructionMnemonic::EXT_w => self.op_ext::<Word, Byte>(&instr),
             _ => todo!(),
         }
     }
@@ -1549,6 +1551,20 @@ where
                 _ => (),
             }
         }
+        Ok(())
+    }
+
+    /// EXT
+    fn op_ext<T: CpuSized, U: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+        // T: dest type, U: src type
+        let value: U = self.read_ea(instr, instr.get_op2())?;
+        let result = T::chop(value.expand_sign_extend());
+
+        self.regs.sr.set_n(result & T::msb() != T::zero());
+        self.regs.sr.set_v(false);
+        self.regs.sr.set_c(false);
+        self.regs.sr.set_z(result == T::zero());
+        self.write_ea::<T>(instr, instr.get_op2(), result)?;
         Ok(())
     }
 }
