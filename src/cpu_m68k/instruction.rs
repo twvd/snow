@@ -85,6 +85,11 @@ pub enum InstructionMnemonic {
     MOVEA_l,
     MOVEP_w,
     MOVEP_l,
+    MOVEfromSR,
+    MOVEfromUSP,
+    MOVEtoCCR,
+    MOVEtoSR,
+    MOVEtoUSP,
     // no MULU_l, MULU_b
     MULU_w,
     // no MULS_l, MULS_b
@@ -249,6 +254,11 @@ impl Instruction {
         (0b0010_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::MOVE_l),
         (0b0000_0001_0000_1000, 0b1111_0001_0111_1000, InstructionMnemonic::MOVEP_w),
         (0b0000_0001_0100_1000, 0b1111_0001_0111_1000, InstructionMnemonic::MOVEP_l),
+        (0b0100_0000_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEfromSR),
+        (0b0100_0100_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEtoCCR),
+        (0b0100_0110_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEtoSR),
+        (0b0100_1110_0110_1000, 0b1111_1111_1111_1000, InstructionMnemonic::MOVEfromUSP),
+        (0b0100_1110_0110_0000, 0b1111_1111_1111_1000, InstructionMnemonic::MOVEtoUSP),
         (0b0000_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::BTST_dn),
         (0b0000_0001_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::BCHG_dn),
         (0b0000_0001_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::BCLR_dn),
@@ -423,7 +433,6 @@ impl Instruction {
     {
         if !self.has_extword() {
             // This check is to handle 'MOVE mem, (xxx).L' properly.
-            eprintln!("fetchyfetch");
             self.extword.set(Some(fetch()?.into()));
         }
         Ok(())

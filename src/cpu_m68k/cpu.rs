@@ -313,7 +313,6 @@ where
 
     /// Executes a previously decoded instruction.
     fn execute_instruction(&mut self, instr: &Instruction) -> Result<()> {
-        dbg!(instr);
         match instr.mnemonic {
             InstructionMnemonic::AND_l => self.op_bitwise::<Long>(&instr, |a, b| a & b),
             InstructionMnemonic::AND_w => self.op_bitwise::<Word>(&instr, |a, b| a & b),
@@ -434,6 +433,11 @@ where
             InstructionMnemonic::MOVE_l => self.op_move::<Long>(&instr),
             InstructionMnemonic::MOVE_w => self.op_move::<Word>(&instr),
             InstructionMnemonic::MOVE_b => self.op_move::<Byte>(&instr),
+            InstructionMnemonic::MOVEfromSR => self.op_move_from_sr(&instr),
+            InstructionMnemonic::MOVEtoSR => self.op_move_to_sr(&instr),
+            InstructionMnemonic::MOVEtoCCR => self.op_move_to_ccr(&instr),
+            InstructionMnemonic::MOVEtoUSP => self.op_move_to_usp(&instr),
+            InstructionMnemonic::MOVEfromUSP => self.op_move_from_usp(&instr),
             _ => todo!(),
         }
     }
@@ -1385,6 +1389,78 @@ where
             )?,
         }
 
+        Ok(())
+    }
+
+    /// MOVEfromSR
+    fn op_move_from_sr(&mut self, instr: &Instruction) -> Result<()> {
+        let value = self.regs.sr.sr();
+
+        // Discarded read, prefetch
+        self.read_ea::<Word>(instr, instr.get_op2())?;
+        self.prefetch_pump()?;
+
+        self.write_ea(instr, instr.get_op2(), value)?;
+
+        // Idle cycles
+        match instr.get_addr_mode()? {
+            AddressingMode::DataRegister | AddressingMode::AddressRegister => {
+                self.advance_cycles(2)?
+            }
+            _ => (),
+        }
+
+        Ok(())
+    }
+
+    /// MOVEtoSR
+    fn op_move_to_sr(&mut self, instr: &Instruction) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            return self.raise_exception(ExceptionGroup::Group1, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+        let value: Word = self.read_ea(instr, instr.get_op2())?;
+
+        // Idle cycles and discarded read
+        self.advance_cycles(4)?;
+        self.read_ticks::<Word>(self.regs.pc.wrapping_add(2) & ADDRESS_MASK)?;
+
+        self.regs.sr.set_sr(value);
+        Ok(())
+    }
+
+    /// MOVEtoCCR
+    fn op_move_to_ccr(&mut self, instr: &Instruction) -> Result<()> {
+        let value: Word = self.read_ea(instr, instr.get_op2())?;
+
+        // Idle cycles + discarded read
+        self.advance_cycles(4)?;
+        self.read_ticks::<Word>(self.regs.pc.wrapping_add(2) & ADDRESS_MASK)?;
+        self.prefetch_pump()?;
+
+        self.regs.sr.set_ccr(value as Byte);
+        Ok(())
+    }
+
+    /// MOVEtoUSP
+    fn op_move_to_usp(&mut self, instr: &Instruction) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            return self.raise_exception(ExceptionGroup::Group1, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+        let value: Address = self.regs.read_a(instr.get_op2());
+
+        self.regs.usp = value;
+        Ok(())
+    }
+
+    /// MOVEfromUSP
+    fn op_move_from_usp(&mut self, instr: &Instruction) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            return self.raise_exception(ExceptionGroup::Group1, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+        let value: Address = self.regs.usp;
+
+        // Idle cycles and discarded read
+        self.regs.write_a(instr.get_op2(), value);
         Ok(())
     }
 }

@@ -444,8 +444,8 @@ cpu_test!(eor_w, "EOR.w");
 cpu_test!(movea_l, "MOVEA.l");
 cpu_test!(movea_w, "MOVEA.w");
 cpu_test!(move_b, "MOVE.b");
-//cpu_test!(movefromsr, "MOVEfromSR");
-//cpu_test!(movefromusp, "MOVEfromUSP");
+cpu_test!(movefromsr, "MOVEfromSR");
+cpu_test!(movefromusp, "MOVEfromUSP");
 
 // TODO fix all the insane edge cases of MOVE.l
 //cpu_test_nt!(move_l, "MOVE.l");
@@ -455,9 +455,9 @@ cpu_test!(move_b, "MOVE.b");
 cpu_test!(movep_l, "MOVEP.l");
 cpu_test!(movep_w, "MOVEP.w");
 //cpu_test!(move_q, "MOVE.q");
-//cpu_test!(movetoccr, "MOVEtoCCR");
-//cpu_test!(movetosr, "MOVEtoSR");
-//cpu_test!(movetousp, "MOVEtoUSP");
+cpu_test!(movetoccr, "MOVEtoCCR");
+cpu_test!(movetosr, "MOVEtoSR");
+cpu_test!(movetousp, "MOVEtoUSP");
 cpu_test!(move_w, "MOVE.w");
 cpu_test!(muls, "MULS");
 cpu_test!(mulu, "MULU");
