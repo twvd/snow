@@ -444,6 +444,12 @@ where
             InstructionMnemonic::NEGX_l => self.op_alu_zero::<Long>(&instr, Self::alu_sub_x),
             InstructionMnemonic::NEGX_w => self.op_alu_zero::<Word>(&instr, Self::alu_sub_x),
             InstructionMnemonic::NEGX_b => self.op_alu_zero::<Byte>(&instr, Self::alu_sub_x),
+            InstructionMnemonic::CLR_l => self.op_clr::<Long>(&instr),
+            InstructionMnemonic::CLR_w => self.op_clr::<Word>(&instr),
+            InstructionMnemonic::CLR_b => self.op_clr::<Byte>(&instr),
+            InstructionMnemonic::NOT_l => self.op_not::<Long>(&instr),
+            InstructionMnemonic::NOT_w => self.op_not::<Word>(&instr),
+            InstructionMnemonic::NOT_b => self.op_not::<Byte>(&instr),
             _ => todo!(),
         }
     }
@@ -1494,6 +1500,55 @@ where
 
         // Idle cycles and discarded read
         self.regs.write_a(instr.get_op2(), value);
+        Ok(())
+    }
+
+    /// CLR
+    fn op_clr<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+        self.read_ea::<T>(instr, instr.get_op2())?;
+
+        self.prefetch_pump()?;
+
+        self.regs.sr.set_n(false);
+        self.regs.sr.set_v(false);
+        self.regs.sr.set_c(false);
+        self.regs.sr.set_z(true);
+        self.write_ea(instr, instr.get_op2(), T::zero())?;
+
+        // Idle cycles
+        if std::mem::size_of::<T>() == 4 {
+            match instr.get_addr_mode()? {
+                AddressingMode::DataRegister | AddressingMode::AddressRegister => {
+                    self.advance_cycles(2)?
+                }
+                _ => (),
+            }
+        }
+
+        Ok(())
+    }
+
+    /// NOT
+    fn op_not<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+        let result: T = !self.read_ea(instr, instr.get_op2())?;
+
+        self.prefetch_pump()?;
+
+        self.regs.sr.set_n(result & T::msb() != T::zero());
+        self.regs.sr.set_v(false);
+        self.regs.sr.set_c(false);
+        self.regs.sr.set_z(result == T::zero());
+        self.write_ea(instr, instr.get_op2(), result)?;
+
+        // Idle cycles
+        if std::mem::size_of::<T>() == 4 {
+            match instr.get_addr_mode()? {
+                AddressingMode::DataRegister | AddressingMode::AddressRegister => {
+                    self.advance_cycles(2)?
+                }
+                _ => (),
+            }
+        }
         Ok(())
     }
 }
