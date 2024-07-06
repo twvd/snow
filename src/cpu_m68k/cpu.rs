@@ -18,8 +18,10 @@ use super::{Byte, CpuSized, Long, Word};
 /// Access error details
 #[derive(Debug, Clone, Copy)]
 struct AccessError {
+    #[allow(dead_code)]
     function_code: u8,
     read: bool,
+    #[allow(dead_code)]
     instruction: bool,
     address: Address,
     ir: Word,
@@ -203,8 +205,6 @@ where
         value: T,
         order: TemporalOrder,
     ) -> Result<()> {
-        let len = std::mem::size_of::<T>();
-
         self.verify_access::<T>(addr, false)?;
 
         match order {
@@ -438,6 +438,12 @@ where
             InstructionMnemonic::MOVEtoCCR => self.op_move_to_ccr(&instr),
             InstructionMnemonic::MOVEtoUSP => self.op_move_to_usp(&instr),
             InstructionMnemonic::MOVEfromUSP => self.op_move_from_usp(&instr),
+            InstructionMnemonic::NEG_l => self.op_alu_zero::<Long>(&instr, Self::alu_sub),
+            InstructionMnemonic::NEG_w => self.op_alu_zero::<Word>(&instr, Self::alu_sub),
+            InstructionMnemonic::NEG_b => self.op_alu_zero::<Byte>(&instr, Self::alu_sub),
+            InstructionMnemonic::NEGX_l => self.op_alu_zero::<Long>(&instr, Self::alu_sub_x),
+            InstructionMnemonic::NEGX_w => self.op_alu_zero::<Word>(&instr, Self::alu_sub_x),
+            InstructionMnemonic::NEGX_b => self.op_alu_zero::<Byte>(&instr, Self::alu_sub_x),
             _ => todo!(),
         }
     }
@@ -823,6 +829,33 @@ where
             std::mem::size_of::<T>(),
         ) {
             (AddressingMode::DataRegister, _, 4) => self.advance_cycles(4)?,
+            _ => (),
+        };
+
+        Ok(())
+    }
+
+    /// NEG/NEGX
+    fn op_alu_zero<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        calcfn: fn(T, T, RegisterSR) -> (T, u8),
+    ) -> Result<()> {
+        let b: T = self.read_ea(instr, instr.get_op2())?;
+        let a = T::zero();
+        let (result, ccr) = calcfn(a, b, self.regs.sr);
+
+        self.regs.sr.set_ccr(ccr);
+        self.prefetch_pump()?;
+        self.write_ea(instr, instr.get_op2(), result)?;
+
+        // Idle cycles
+        match (
+            instr.get_addr_mode()?,
+            instr.get_direction(),
+            std::mem::size_of::<T>(),
+        ) {
+            (AddressingMode::DataRegister, _, 4) => self.advance_cycles(2)?,
             _ => (),
         };
 
