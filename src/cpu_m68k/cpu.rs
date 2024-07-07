@@ -452,6 +452,9 @@ where
             InstructionMnemonic::NOT_b => self.op_not::<Byte>(&instr),
             InstructionMnemonic::EXT_l => self.op_ext::<Long, Word>(&instr),
             InstructionMnemonic::EXT_w => self.op_ext::<Word, Byte>(&instr),
+            InstructionMnemonic::SBCD => self.op_sbcd(&instr),
+            InstructionMnemonic::NBCD => self.op_nbcd(&instr),
+            InstructionMnemonic::ABCD => self.op_abcd(&instr),
             _ => todo!(),
         }
     }
@@ -1565,6 +1568,36 @@ where
         self.regs.sr.set_c(false);
         self.regs.sr.set_z(result == T::zero());
         self.write_ea::<T>(instr, instr.get_op2(), result)?;
+        Ok(())
+    }
+
+    /// SBCD
+    fn op_sbcd(&mut self, instr: &Instruction) -> Result<()> {
+        self.op_alu_x::<Byte>(&instr, Self::alu_sub_bcd)?;
+        if instr.get_addr_mode_x()? == AddressingMode::DataRegister {
+            self.advance_cycles(2)?;
+        }
+
+        Ok(())
+    }
+
+    /// ABCD
+    fn op_abcd(&mut self, instr: &Instruction) -> Result<()> {
+        self.op_alu_x::<Byte>(&instr, Self::alu_add_bcd)?;
+        if instr.get_addr_mode_x()? == AddressingMode::DataRegister {
+            self.advance_cycles(2)?;
+        }
+
+        Ok(())
+    }
+
+    /// NBCD
+    fn op_nbcd(&mut self, instr: &Instruction) -> Result<()> {
+        self.op_alu_zero::<Byte>(&instr, Self::alu_sub_bcd)?;
+        if instr.get_addr_mode()? == AddressingMode::DataRegister {
+            self.advance_cycles(2)?;
+        }
+
         Ok(())
     }
 }

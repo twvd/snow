@@ -101,6 +101,7 @@ macro_rules! _cpu_test {
         #[test]
         fn $testfn() {
             let filename = format!("testdata/680x0/68000/v1/{}.json", $instr);
+            //let filename = format!("../m68000/v1/{}.json", $instr);
             let filename_gz = format!("{}.gz", filename);
             let testcases: Vec<Testcase> = if Path::new(&filename).exists() {
                 serde_json::from_reader(fs::File::open(filename).unwrap()).unwrap()
@@ -385,7 +386,7 @@ fn run_testcase(testcase: Testcase, test_transactions: bool) {
     eprintln!("Pass!");
 }
 
-//cpu_test!(abcd, "ABCD");
+cpu_test!(abcd, "ABCD");
 cpu_test!(adda_l, "ADDA.l");
 cpu_test!(adda_w, "ADDA.w");
 cpu_test!(add_b, "ADD.b");
@@ -461,7 +462,7 @@ cpu_test!(movetousp, "MOVEtoUSP");
 cpu_test!(move_w, "MOVE.w");
 cpu_test!(muls, "MULS");
 cpu_test!(mulu, "MULU");
-//cpu_test!(nbcd, "NBCD");
+cpu_test!(nbcd, "NBCD");
 cpu_test!(neg_b, "NEG.b");
 cpu_test!(neg_l, "NEG.l");
 cpu_test!(neg_w, "NEG.w");
@@ -494,7 +495,7 @@ cpu_test!(or_w, "OR.w");
 //cpu_test!(rte, "RTE");
 //cpu_test!(rtr, "RTR");
 //cpu_test!(rts, "RTS");
-//cpu_test!(sbcd, "SBCD");
+cpu_test!(sbcd, "SBCD");
 //cpu_test!(scc, "Scc");
 cpu_test!(suba_l, "SUBA.l");
 cpu_test!(suba_w, "SUBA.w");

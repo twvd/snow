@@ -1,6 +1,6 @@
 use super::cpu::CpuM68k;
 use super::regs::RegisterSR;
-use super::{CpuSized, Long};
+use super::{Byte, CpuSized, Long, Word};
 
 use crate::bus::{Address, Bus};
 
@@ -92,5 +92,84 @@ where
         }
 
         (T::chop(result), new_f.ccr())
+    }
+
+    /// Subtract with extend and BCD correction
+    /// Byte only.
+    pub(super) fn alu_sub_bcd(a: Byte, b: Byte, f: RegisterSR) -> (Byte, u8) {
+        let x = if f.x() { 1 } else { 0 };
+        let a = a as Word;
+        let b = b as Word;
+
+        let oresult: Word = a.wrapping_sub(b).wrapping_sub(x);
+
+        let mut result = oresult;
+        let mut carry = false;
+        let mut overflow = false;
+
+        if (a ^ b ^ oresult) & 0x10 != 0 {
+            // Adjust low nibble
+            result = result.wrapping_sub(0x06);
+            carry = (!oresult & 0x80) & (result & 0x80) != 0;
+            overflow = overflow || ((oresult & 0x80) & (!result & 0x80)) != 0;
+        }
+        if oresult & 0x100 != 0 {
+            // Adjust high nibble
+            let r = result;
+            result = result.wrapping_sub(0x60);
+            carry = true;
+            overflow = overflow || ((r & 0x80) & (!result & 0x80)) != 0;
+        }
+
+        let mut new_f = f;
+        new_f.set_c(carry);
+        new_f.set_x(carry);
+        new_f.set_v(overflow);
+        new_f.set_n(result & 0x80 != 0);
+        if result & 0xFF != 0 {
+            // Flag untouched if result is zero
+            new_f.set_z(false);
+        }
+
+        (result as Byte, new_f.ccr())
+    }
+
+    /// Add with extend and BCD correction
+    /// Byte only.
+    pub(super) fn alu_add_bcd(a: Byte, b: Byte, f: RegisterSR) -> (Byte, u8) {
+        let x = if f.x() { 1 } else { 0 };
+        let a = a as Word;
+        let b = b as Word;
+
+        let oresult: Word = a.wrapping_add(b).wrapping_add(x);
+
+        let mut result = oresult;
+        let mut carry = false;
+        let mut overflow = false;
+
+        if (a ^ b ^ oresult) & 0x10 != 0 || (oresult & 0x0F) >= 0x0A {
+            // Adjust low nibble
+            result = result.wrapping_add(0x06);
+            overflow = overflow || ((!oresult & 0x80) & (result & 0x80)) != 0;
+        }
+        if result >= 0xA0 {
+            // Adjust high nibble
+            let r = result;
+            result = result.wrapping_add(0x60);
+            carry = true;
+            overflow = overflow || ((!r & 0x80) & (result & 0x80)) != 0;
+        }
+
+        let mut new_f = f;
+        new_f.set_c(carry);
+        new_f.set_x(carry);
+        new_f.set_v(overflow);
+        new_f.set_n(result & 0x80 != 0);
+        if result & 0xFF != 0 {
+            // Flag untouched if result is zero
+            new_f.set_z(false);
+        }
+
+        (result as Byte, new_f.ccr())
     }
 }
