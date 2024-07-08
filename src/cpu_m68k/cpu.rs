@@ -455,6 +455,7 @@ where
             InstructionMnemonic::SBCD => self.op_sbcd(&instr),
             InstructionMnemonic::NBCD => self.op_nbcd(&instr),
             InstructionMnemonic::ABCD => self.op_abcd(&instr),
+            InstructionMnemonic::PEA => self.op_pea(&instr),
             _ => todo!(),
         }
     }
@@ -1597,6 +1598,26 @@ where
         if instr.get_addr_mode()? == AddressingMode::DataRegister {
             self.advance_cycles(2)?;
         }
+
+        Ok(())
+    }
+
+    /// PEA
+    fn op_pea(&mut self, instr: &Instruction) -> Result<()> {
+        let value: Long =
+            self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+
+        match instr.get_addr_mode()? {
+            AddressingMode::IndirectIndex | AddressingMode::PCIndex => {
+                self.advance_cycles(2)?;
+                self.prefetch_pump()?;
+            }
+            AddressingMode::AbsoluteShort | AddressingMode::AbsoluteLong => (),
+            _ => self.prefetch_pump()?,
+        }
+
+        let addr = self.regs.read_a_predec(7, std::mem::size_of::<Long>());
+        self.write_ticks(addr, value)?;
 
         Ok(())
     }

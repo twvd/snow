@@ -478,7 +478,7 @@ cpu_test!(oritoccr, "ORItoCCR");
 cpu_test!(oritosr, "ORItoSR");
 cpu_test!(or_l, "OR.l");
 cpu_test!(or_w, "OR.w");
-//cpu_test!(pea, "PEA");
+cpu_test!(pea, "PEA");
 //cpu_test!(reset, "RESET");
 //cpu_test!(rol_b, "ROL.b");
 //cpu_test!(rol_l, "ROL.l");
