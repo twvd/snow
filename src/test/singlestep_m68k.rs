@@ -166,7 +166,7 @@ fn print_reg_diff(initial: &RegisterFile, fin: &RegisterFile, actual: &RegisterF
     eprintln!("");
 }
 
-fn print_result(cpu: &CpuM68k<Testbus<Address>>, testcase: &Testcase) {
+fn print_result(cpu: &CpuM68k<Testbus<Address, u8>>, testcase: &Testcase) {
     eprintln!(
         "Cycles expected: {} actual: {}",
         testcase.length, cpu.cycles

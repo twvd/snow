@@ -17,28 +17,28 @@ pub enum Access {
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct TraceEntry<T: PrimInt + WrappingAdd> {
-    pub addr: T,
+pub struct TraceEntry<TA: PrimInt + WrappingAdd, TD: PrimInt> {
+    pub addr: TA,
     pub access: Access,
-    pub val: u8,
+    pub val: TD,
     pub cycle: usize,
 }
 
-pub struct Testbus<T: PrimInt + WrappingAdd + Hash + Debug> {
-    pub mem: HashMap<T, u8>,
-    trace: RefCell<Vec<TraceEntry<T>>>,
+pub struct Testbus<TA: PrimInt + WrappingAdd + Hash + Debug, TD: PrimInt> {
+    pub mem: HashMap<TA, TD>,
+    trace: RefCell<Vec<TraceEntry<TA, TD>>>,
     cycles: usize,
     trace_enabled: bool,
-    mask: T,
+    mask: TA,
 }
 
-impl<T> Testbus<T>
+impl<TA, TD> Testbus<TA, TD>
 where
-    T: PrimInt + WrappingAdd + Hash + Debug,
+    TA: PrimInt + WrappingAdd + Hash + Debug,
+    TD: PrimInt,
 {
-    pub fn new(mask: T) -> Self {
+    pub fn new(mask: TA) -> Self {
         Testbus {
-            // Need allocation here, too large for stack.
             mem: HashMap::new(),
             trace: RefCell::new(vec![]),
             cycles: 0,
@@ -47,7 +47,7 @@ where
         }
     }
 
-    pub fn get_seen_addresses(&self) -> impl Iterator<Item = T> + '_ {
+    pub fn get_seen_addresses(&self) -> impl Iterator<Item = TA> + '_ {
         self.mem.keys().copied()
     }
 
@@ -56,23 +56,24 @@ where
         self.trace_enabled = true;
     }
 
-    pub fn get_trace(&self) -> Vec<TraceEntry<T>> {
+    pub fn get_trace(&self) -> Vec<TraceEntry<TA, TD>> {
         self.trace.borrow().clone()
     }
 }
 
-impl<T> Bus<T> for Testbus<T>
+impl<TA, TD> Bus<TA, TD> for Testbus<TA, TD>
 where
-    T: PrimInt + WrappingAdd + Hash + Debug,
+    TA: PrimInt + WrappingAdd + Hash + Debug,
+    TD: PrimInt,
 {
-    fn get_mask(&self) -> T {
+    fn get_mask(&self) -> TA {
         self.mask
     }
 
-    fn read(&self, addr: T) -> u8 {
+    fn read(&self, addr: TA) -> TD {
         assert_eq!(addr & self.mask, addr);
 
-        let val = *self.mem.get(&addr).unwrap_or(&0);
+        let val = *self.mem.get(&addr).unwrap_or(&TD::zero());
         if self.trace_enabled {
             self.trace.borrow_mut().push(TraceEntry {
                 addr,
@@ -84,7 +85,7 @@ where
         val
     }
 
-    fn write(&mut self, addr: T, val: u8) {
+    fn write(&mut self, addr: TA, val: TD) {
         assert_eq!(addr & self.mask, addr);
 
         if self.trace_enabled {
@@ -99,9 +100,10 @@ where
     }
 }
 
-impl<T> Tickable for Testbus<T>
+impl<TA, TD> Tickable for Testbus<TA, TD>
 where
-    T: PrimInt + WrappingAdd + Hash + Debug,
+    TA: PrimInt + WrappingAdd + Hash + Debug,
+    TD: PrimInt,
 {
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
         self.cycles += ticks;
@@ -109,9 +111,10 @@ where
     }
 }
 
-impl<T> fmt::Display for Testbus<T>
+impl<TA, TD> fmt::Display for Testbus<TA, TD>
 where
-    T: PrimInt + WrappingAdd + Hash + Debug,
+    TA: PrimInt + WrappingAdd + Hash + Debug,
+    TD: PrimInt,
 {
     fn fmt(&self, _f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Result::Ok(())
@@ -124,7 +127,7 @@ mod tests {
 
     #[test]
     fn testbus() {
-        let mut b = Testbus::<u16>::new(u16::MAX);
+        let mut b = Testbus::<u16, u8>::new(u16::MAX);
 
         for a in 0..=u16::MAX {
             assert_eq!(b.read(a), 0);
@@ -139,7 +142,7 @@ mod tests {
 
     #[test]
     fn in_mask() {
-        let mut b = Testbus::<u16>::new(u8::MAX.into());
+        let mut b = Testbus::<u16, u8>::new(u8::MAX.into());
 
         b.write(0x10, 1);
     }
@@ -147,7 +150,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn out_mask() {
-        let mut b = Testbus::<u16>::new(u8::MAX.into());
+        let mut b = Testbus::<u16, u8>::new(u8::MAX.into());
 
         b.write(0x100, 1);
     }

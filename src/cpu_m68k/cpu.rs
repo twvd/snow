@@ -54,7 +54,7 @@ const VECTOR_TRAP_OFFSET: Address = 0x000080;
 
 /// Motorola 680x0
 #[derive(Serialize, Deserialize)]
-pub struct CpuM68k<TBus: Bus<Address>> {
+pub struct CpuM68k<TBus: Bus<Address, u8>> {
     pub bus: TBus,
     pub regs: RegisterFile,
     pub cycles: Ticks,
@@ -65,7 +65,7 @@ pub struct CpuM68k<TBus: Bus<Address>> {
 
 impl<TBus> CpuM68k<TBus>
 where
-    TBus: Bus<Address>,
+    TBus: Bus<Address, u8>,
 {
     pub fn new(bus: TBus) -> Self {
         Self {
@@ -1625,7 +1625,7 @@ where
 
 impl<TBus> Tickable for CpuM68k<TBus>
 where
-    TBus: Bus<Address>,
+    TBus: Bus<Address, u8>,
 {
     fn tick(&mut self, _ticks: Ticks) -> Result<Ticks> {
         self.step()?;

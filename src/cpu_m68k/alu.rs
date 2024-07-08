@@ -6,7 +6,7 @@ use crate::bus::{Address, Bus};
 
 impl<TBus> CpuM68k<TBus>
 where
-    TBus: Bus<Address>,
+    TBus: Bus<Address, u8>,
 {
     /// Add (a + b = c)
     pub(super) fn alu_add<T: CpuSized>(a: T, b: T, f: RegisterSR) -> (T, u8) {
