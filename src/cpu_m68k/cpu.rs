@@ -465,6 +465,9 @@ where
             InstructionMnemonic::TST_b => self.op_tst::<Byte>(&instr),
             InstructionMnemonic::TST_w => self.op_tst::<Word>(&instr),
             InstructionMnemonic::TST_l => self.op_tst::<Long>(&instr),
+            InstructionMnemonic::LINK => self.op_link(&instr),
+            InstructionMnemonic::UNLINK => self.op_unlink(&instr),
+
             _ => todo!(),
         }
     }
@@ -1652,6 +1655,30 @@ where
         self.regs.sr.set_n(result & T::msb() != T::zero());
         self.regs.sr.set_c(false);
         self.regs.sr.set_v(false);
+        Ok(())
+    }
+
+    /// LINK
+    pub fn op_link(&mut self, instr: &Instruction) -> Result<()> {
+        let sp = self.regs.read_a_predec(7, 4);
+        let addr = self.regs.read_a::<Address>(instr.get_op2());
+
+        instr.fetch_extword(|| self.fetch_pump())?;
+
+        self.write_ticks(sp, addr)?;
+        self.regs.write_a(instr.get_op2(), sp);
+        self.regs
+            .write_a(7, sp.wrapping_add_signed(instr.get_displacement()?));
+
+        Ok(())
+    }
+
+    /// UNLINK
+    pub fn op_unlink(&mut self, instr: &Instruction) -> Result<()> {
+        let addr = self.regs.read_a::<Address>(instr.get_op2());
+        self.regs.write_a(7, addr.wrapping_add(4));
+        let val = self.read_ticks::<Address>(addr)?;
+        self.regs.write_a(instr.get_op2(), val);
         Ok(())
     }
 }

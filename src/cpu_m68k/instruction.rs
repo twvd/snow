@@ -86,6 +86,8 @@ pub enum InstructionMnemonic {
     ORI_ccr,
     ORI_sr,
     NOP,
+    LINK,
+    UNLINK,
     MOVE_w,
     MOVE_l,
     MOVE_b,
@@ -312,6 +314,8 @@ impl Instruction {
         (0b0100_1010_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::TST_w),
         (0b0100_1010_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::TST_l),
         (0b0100_1110_0100_0000, 0b1111_1111_1111_0000, InstructionMnemonic::TRAP),
+        (0b0100_1110_0101_0000, 0b1111_1111_1111_1000, InstructionMnemonic::LINK),
+        (0b0100_1110_0101_1000, 0b1111_1111_1111_1000, InstructionMnemonic::UNLINK),
         (0b0100_1110_0111_0001, 0b1111_1111_1111_1111, InstructionMnemonic::NOP),
         (0b1000_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SBCD),
         (0b1000_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_b),
@@ -506,6 +510,7 @@ impl Instruction {
                 || self.get_addr_mode().unwrap() == AddressingMode::PCDisplacement
                 || self.mnemonic == InstructionMnemonic::MOVEP_l
                 || self.mnemonic == InstructionMnemonic::MOVEP_w
+                || self.mnemonic == InstructionMnemonic::LINK
         );
         debug_assert!(self.extword.get().is_some());
 
