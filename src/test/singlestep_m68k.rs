@@ -355,7 +355,7 @@ fn run_testcase(testcase: Testcase, test_transactions: bool) {
                 }
                 TestcaseTransaction::Rw(t) => {
                     let expected_access = match t.action.as_str() {
-                        "w" => Access::Write,
+                        "t" | "w" => Access::Write,
                         "r" => Access::Read,
                         _ => unreachable!(),
                     };
@@ -506,7 +506,7 @@ cpu_test!(subx_b, "SUBX.b");
 cpu_test!(subx_l, "SUBX.l");
 cpu_test!(subx_w, "SUBX.w");
 cpu_test!(swap, "SWAP");
-//cpu_test!(tas, "TAS");
+cpu_test!(tas, "TAS");
 cpu_test!(trap, "TRAP");
 //cpu_test!(trapv, "TRAPV");
 //cpu_test!(tst_b, "TST.b");

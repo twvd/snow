@@ -461,6 +461,7 @@ where
             InstructionMnemonic::ILLEGAL => {
                 self.raise_exception(ExceptionGroup::Group1, VECTOR_ILLEGAL, None)
             }
+            InstructionMnemonic::TAS => self.op_tas(&instr),
             _ => todo!(),
         }
     }
@@ -1624,6 +1625,20 @@ where
         let addr = self.regs.read_a_predec(7, std::mem::size_of::<Long>());
         self.write_ticks(addr, value)?;
 
+        Ok(())
+    }
+
+    /// TAS
+    pub fn op_tas(&mut self, instr: &Instruction) -> Result<()> {
+        let v = self.read_ea::<Byte>(instr, instr.get_op2())?;
+        if instr.get_addr_mode()? != AddressingMode::DataRegister {
+            self.advance_cycles(2)?;
+        }
+        self.write_ea(instr, instr.get_op2(), v | 0x80)?;
+        self.regs.sr.set_z(v == 0);
+        self.regs.sr.set_n(v & 0x80 != 0);
+        self.regs.sr.set_c(false);
+        self.regs.sr.set_v(false);
         Ok(())
     }
 }
