@@ -45,6 +45,8 @@ enum ExceptionGroup {
 // Exception vectors
 /// Address error exception vector
 const VECTOR_ACCESS_ERROR: Address = 0x00000C;
+/// Illegal instruction exception vector
+const VECTOR_ILLEGAL: Address = 0x000010;
 /// Division by zero exception vector
 const VECTOR_DIV_ZERO: Address = 0x000014;
 /// Privilege violation exception vector
@@ -456,6 +458,9 @@ where
             InstructionMnemonic::NBCD => self.op_nbcd(&instr),
             InstructionMnemonic::ABCD => self.op_abcd(&instr),
             InstructionMnemonic::PEA => self.op_pea(&instr),
+            InstructionMnemonic::ILLEGAL => {
+                self.raise_exception(ExceptionGroup::Group1, VECTOR_ILLEGAL, None)
+            }
             _ => todo!(),
         }
     }
