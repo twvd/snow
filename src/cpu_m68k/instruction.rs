@@ -130,6 +130,9 @@ pub enum InstructionMnemonic {
     SWAP,
     TAS,
     TRAP,
+    TST_l,
+    TST_w,
+    TST_b,
 }
 
 /// Addressing modes
@@ -305,6 +308,9 @@ impl Instruction {
         (0b0100_1000_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::PEA),
         (0b0100_1010_1111_1100, 0b1111_1111_1111_1111, InstructionMnemonic::ILLEGAL),
         (0b0100_1010_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::TAS),
+        (0b0100_1010_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::TST_b),
+        (0b0100_1010_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::TST_w),
+        (0b0100_1010_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::TST_l),
         (0b0100_1110_0100_0000, 0b1111_1111_1111_0000, InstructionMnemonic::TRAP),
         (0b0100_1110_0111_0001, 0b1111_1111_1111_1111, InstructionMnemonic::NOP),
         (0b1000_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SBCD),

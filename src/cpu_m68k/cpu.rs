@@ -462,6 +462,9 @@ where
                 self.raise_exception(ExceptionGroup::Group1, VECTOR_ILLEGAL, None)
             }
             InstructionMnemonic::TAS => self.op_tas(&instr),
+            InstructionMnemonic::TST_b => self.op_tst::<Byte>(&instr),
+            InstructionMnemonic::TST_w => self.op_tst::<Word>(&instr),
+            InstructionMnemonic::TST_l => self.op_tst::<Long>(&instr),
             _ => todo!(),
         }
     }
@@ -1637,6 +1640,16 @@ where
         self.write_ea(instr, instr.get_op2(), v | 0x80)?;
         self.regs.sr.set_z(v == 0);
         self.regs.sr.set_n(v & 0x80 != 0);
+        self.regs.sr.set_c(false);
+        self.regs.sr.set_v(false);
+        Ok(())
+    }
+
+    /// TST
+    fn op_tst<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+        let result: T = self.read_ea(instr, instr.get_op2())?;
+        self.regs.sr.set_z(result == T::zero());
+        self.regs.sr.set_n(result & T::msb() != T::zero());
         self.regs.sr.set_c(false);
         self.regs.sr.set_v(false);
         Ok(())
