@@ -509,7 +509,7 @@ cpu_test!(subx_w, "SUBX.w");
 cpu_test!(swap, "SWAP");
 cpu_test!(tas, "TAS");
 cpu_test!(trap, "TRAP");
-//cpu_test!(trapv, "TRAPV");
+cpu_test!(trapv, "TRAPV");
 cpu_test!(tst_b, "TST.b");
 cpu_test!(tst_l, "TST.l");
 cpu_test!(tst_w, "TST.w");

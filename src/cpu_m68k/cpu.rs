@@ -50,6 +50,8 @@ const VECTOR_ACCESS_ERROR: Address = 0x00000C;
 const VECTOR_ILLEGAL: Address = 0x000010;
 /// Division by zero exception vector
 const VECTOR_DIV_ZERO: Address = 0x000014;
+/// TRAPV exception vector
+const VECTOR_TRAPV: Address = 0x00001C;
 /// Privilege violation exception vector
 const VECTOR_PRIVILEGE_VIOLATION: Address = 0x000020;
 /// Trap exception vector offset (15 vectors)
@@ -289,8 +291,6 @@ where
     ) -> Result<()> {
         self.step_exception = true;
 
-        self.advance_cycles(4)?; // idle
-
         // Resume in supervisor mode
         self.regs.sr.set_supervisor(true);
         self.regs.sr.set_trace(false);
@@ -298,7 +298,7 @@ where
         // Write exception stack frame
         match group {
             ExceptionGroup::Group0 => {
-                self.advance_cycles(4)?; // idle
+                self.advance_cycles(8)?; // idle
                 let details = details.expect("Address error details not passed");
                 eprintln!(
                     "Access error: read = {:?}, address = {:08X} PC = {:06X}",
@@ -501,6 +501,7 @@ where
             InstructionMnemonic::RTS => self.op_rts(&instr),
             InstructionMnemonic::RTR => self.op_rtr(&instr),
             InstructionMnemonic::STOP => panic!("STOP encountered"),
+            InstructionMnemonic::TRAPV => self.op_trapv(&instr),
 
             _ => todo!(),
         }
@@ -864,6 +865,7 @@ where
         calcfn: fn(Word, Word) -> Word,
     ) -> Result<()> {
         if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
         }
 
@@ -881,11 +883,23 @@ where
 
     /// TRAP
     fn op_trap(&mut self, instr: &Instruction) -> Result<()> {
+        self.advance_cycles(4)?;
         self.raise_exception(
             ExceptionGroup::Group2,
             instr.trap_get_vector() * 4 + VECTOR_TRAP_OFFSET,
             None,
         )
+    }
+
+    /// TRAPV
+    fn op_trapv(&mut self, _instr: &Instruction) -> Result<()> {
+        self.prefetch_pump()?;
+
+        if !self.regs.sr.v() {
+            return Ok(());
+        }
+
+        self.raise_exception(ExceptionGroup::Group2, VECTOR_TRAPV, None)
     }
 
     /// ADD/SUB
@@ -1587,6 +1601,7 @@ where
     /// MOVEtoSR
     fn op_move_to_sr(&mut self, instr: &Instruction) -> Result<()> {
         if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
             return self.raise_exception(ExceptionGroup::Group1, VECTOR_PRIVILEGE_VIOLATION, None);
         }
         let value: Word = self.read_ea(instr, instr.get_op2())?;
@@ -1615,6 +1630,7 @@ where
     /// MOVEtoUSP
     fn op_move_to_usp(&mut self, instr: &Instruction) -> Result<()> {
         if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
             return self.raise_exception(ExceptionGroup::Group1, VECTOR_PRIVILEGE_VIOLATION, None);
         }
         let value: Address = self.regs.read_a(instr.get_op2());
@@ -1626,6 +1642,7 @@ where
     /// MOVEfromUSP
     fn op_move_from_usp(&mut self, instr: &Instruction) -> Result<()> {
         if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
             return self.raise_exception(ExceptionGroup::Group1, VECTOR_PRIVILEGE_VIOLATION, None);
         }
         let value: Address = self.regs.usp;
@@ -1800,6 +1817,7 @@ where
     /// RESET
     fn op_reset(&mut self, _instr: &Instruction) -> Result<()> {
         if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
         }
 
@@ -1810,6 +1828,7 @@ where
     /// RTE
     fn op_rte(&mut self, _instr: &Instruction) -> Result<()> {
         if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
         }
 
