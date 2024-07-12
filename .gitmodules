@@ -1,3 +1,3 @@
-[submodule "testdata/680x0"]
-	path = testdata/680x0
-	url = https://github.com/SingleStepTests/680x0.git
+[submodule "testdata/m68000"]
+	path = testdata/m68000
+	url = https://github.com/SingleStepTests/m68000.git

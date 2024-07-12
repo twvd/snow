@@ -19,11 +19,14 @@ jobs:
     - name: Update package repos
       run: sudo apt-get -y update
     - name: Install prerequisites
-      run: sudo apt-get -y install libsdl2-dev
+      run: sudo apt-get -y install libsdl2-dev python3
     - name: Install cargo-llvm-cov
       uses: taiki-e/install-action@cargo-llvm-cov
     - name: Fetch submodules
       run: git submodule update --init --recursive
+    - name: Generate test data
+      working-directory: ./testdata/m68000
+      run: python3 decode.py
     - name: Code formatting check
       run: cargo fmt --check
     - name: Build

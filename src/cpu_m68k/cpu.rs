@@ -57,12 +57,15 @@ const VECTOR_TRAP_OFFSET: Address = 0x000080;
 /// Motorola 680x0
 #[derive(Serialize, Deserialize)]
 pub struct CpuM68k<TBus: Bus<Address, u8>> {
+    /// Exception occured this step
+    pub step_exception: bool,
     pub bus: TBus,
     pub regs: RegisterFile,
     pub cycles: Ticks,
     pub prefetch: VecDeque<u16>,
 
     step_ea_addr: Option<Address>,
+    step_ea_load: Option<(usize, Address)>,
 }
 
 impl<TBus> CpuM68k<TBus>
@@ -76,6 +79,8 @@ where
             cycles: 0,
             prefetch: VecDeque::with_capacity(3),
             step_ea_addr: None,
+            step_exception: false,
+            step_ea_load: None,
         }
     }
 
@@ -122,12 +127,16 @@ where
         debug_assert_eq!(self.prefetch.len(), 2);
 
         self.step_ea_addr = None;
+        self.step_exception = false;
 
         let instr = Instruction::try_decode(|| self.fetch())?;
         // TODO decoded instruction cache
 
         match self.execute_instruction(&instr) {
-            Ok(()) => (),
+            Ok(()) => {
+                // Assert ea_commit() was called
+                debug_assert!(self.step_ea_load.is_none());
+            }
             Err(e) => match e.downcast_ref() {
                 Some(CpuError::AccessError(ae)) => {
                     let mut details = *ae;
@@ -159,6 +168,7 @@ where
     fn verify_access<T: CpuSized>(&mut self, addr: Address, read: bool) -> Result<()> {
         if std::mem::size_of::<T>() >= 2 && (addr & 1) != 0 {
             // Unaligned access
+            eprintln!("Unaligned access: address {:08X}", addr);
             bail!(CpuError::AccessError(AccessError {
                 function_code: 0,
                 ir: 0,
@@ -173,11 +183,10 @@ where
     }
 
     /// Reads a value from the bus and spends ticks.
-    fn read_ticks<T: CpuSized>(&mut self, addr: Address) -> Result<T> {
+    fn read_ticks<T: CpuSized>(&mut self, oaddr: Address) -> Result<T> {
         let len = std::mem::size_of::<T>();
         let mut result: T = T::zero();
-
-        self.verify_access::<T>(addr, true)?;
+        let addr = if len > 1 { oaddr & !1 } else { oaddr };
 
         // Below converts from BE -> LE on the fly
         for a in 0..len {
@@ -186,6 +195,12 @@ where
             result = result.wrapping_shl(8) | b;
 
             self.advance_cycles(2)?;
+
+            if a == 1 {
+                // Address errors occur AFTER the first Word was accessed and not at all if
+                // it is a byte access, so this is the perfect time to check.
+                self.verify_access::<T>(oaddr, true)?;
+            }
         }
 
         if len == 1 {
@@ -203,11 +218,15 @@ where
 
     fn write_ticks_order<T: CpuSized>(
         &mut self,
-        addr: Address,
+        oaddr: Address,
         value: T,
         order: TemporalOrder,
     ) -> Result<()> {
-        self.verify_access::<T>(addr, false)?;
+        let addr = if std::mem::size_of::<T>() > 1 {
+            oaddr & !1
+        } else {
+            oaddr
+        };
 
         match order {
             TemporalOrder::LowToHigh => {
@@ -219,6 +238,11 @@ where
 
                     self.bus.write(byte_addr, b);
                     self.advance_cycles(2)?;
+                    if a == 1 {
+                        // Address errors occur AFTER the first Word was accessed and not at all if
+                        // it is a byte access, so this is the perfect time to check.
+                        self.verify_access::<T>(oaddr, true)?;
+                    }
                 }
             }
             TemporalOrder::HighToLow => {
@@ -230,6 +254,12 @@ where
 
                     self.bus.write(byte_addr, b);
                     self.advance_cycles(2)?;
+
+                    if a == 1 {
+                        // Address errors occur AFTER the first Word was accessed and not at all if
+                        // it is a byte access, so this is the perfect time to check.
+                        self.verify_access::<T>(oaddr, true)?;
+                    }
                 }
             }
         }
@@ -256,14 +286,18 @@ where
         vector: Address,
         details: Option<AccessError>,
     ) -> Result<()> {
+        self.step_exception = true;
+
         self.advance_cycles(4)?; // idle
 
         // Resume in supervisor mode
         self.regs.sr.set_supervisor(true);
+        self.regs.sr.set_trace(false);
 
         // Write exception stack frame
         match group {
             ExceptionGroup::Group0 => {
+                self.advance_cycles(4)?; // idle
                 let details = details.expect("Address error details not passed");
                 eprintln!(
                     "Access error: read = {:?}, address = {:08X} PC = {:06X}",
@@ -352,12 +386,7 @@ where
             InstructionMnemonic::SUBQ_w => {
                 if instr.get_addr_mode()? == AddressingMode::AddressRegister {
                     // A word operation on an address register affects the entire 32-bit address.
-                    let res = self.op_alu_quick::<Long>(&instr, Self::alu_sub);
-                    if let Ok(_) = res {
-                        // ..and adds extra cycles?
-                        self.advance_cycles(2)?;
-                    }
-                    res
+                    self.op_alu_quick::<Long>(&instr, Self::alu_sub)
                 } else {
                     self.op_alu_quick::<Word>(&instr, Self::alu_sub)
                 }
@@ -383,12 +412,7 @@ where
             InstructionMnemonic::ADDQ_w => {
                 if instr.get_addr_mode()? == AddressingMode::AddressRegister {
                     // A word operation on an address register affects the entire 32-bit address.
-                    let res = self.op_alu_quick::<Long>(&instr, Self::alu_add);
-                    if let Ok(_) = res {
-                        // ..and adds extra cycles?
-                        self.advance_cycles(2)?;
-                    }
-                    res
+                    self.op_alu_quick::<Long>(&instr, Self::alu_add)
                 } else {
                     self.op_alu_quick::<Word>(&instr, Self::alu_add)
                 }
@@ -501,11 +525,10 @@ where
             AddressingMode::Indirect => self.regs.read_a(ea_in),
             AddressingMode::IndirectPreDec => {
                 self.advance_cycles(2)?; // 2x idle
-                self.regs.read_a_predec(ea_in, std::mem::size_of::<T>())
+                self.regs
+                    .read_a_predec::<Address>(ea_in, std::mem::size_of::<T>())
             }
-            AddressingMode::IndirectPostInc => self
-                .regs
-                .read_a_postinc::<Address>(ea_in, std::mem::size_of::<T>()),
+            AddressingMode::IndirectPostInc => self.regs.read_a(ea_in),
             AddressingMode::IndirectDisplacement => {
                 instr.fetch_extword(|| self.fetch_pump())?;
                 let addr = self.regs.read_a::<Address>(ea_in);
@@ -570,10 +593,26 @@ where
         })
     }
 
+    /// Commits a postponed 'held' change to address register.
+    fn ea_commit(&mut self) {
+        if let Some((reg, val)) = self.step_ea_load {
+            // Postponed An write from post-increment mode
+            self.regs.write_a(reg, val);
+        }
+        self.step_ea_load = None;
+    }
+
     /// Reads a value from the operand (ea_in) using the effective addressing mode specified
     /// by the instruction, directly or through indirection, depending on the mode.
     fn read_ea<T: CpuSized>(&mut self, instr: &Instruction, ea_in: usize) -> Result<T> {
-        self.read_ea_with(instr, instr.get_addr_mode()?, ea_in)
+        self.read_ea_with(instr, instr.get_addr_mode()?, ea_in, false)
+    }
+
+    /// Reads a value from the operand (ea_in) using the effective addressing mode specified
+    /// by the instruction, directly or through indirection, depending on the mode.
+    /// Holds off on postincrement.
+    fn read_ea_hold<T: CpuSized>(&mut self, instr: &Instruction, ea_in: usize) -> Result<T> {
+        self.read_ea_with(instr, instr.get_addr_mode()?, ea_in, true)
     }
 
     fn read_ea_with<T: CpuSized>(
@@ -581,6 +620,7 @@ where
         instr: &Instruction,
         addrmode: AddressingMode,
         ea_in: usize,
+        hold: bool,
     ) -> Result<T> {
         let v = match addrmode {
             AddressingMode::DataRegister => self.regs.read_d(ea_in),
@@ -588,16 +628,29 @@ where
             AddressingMode::Immediate => self.fetch_immediate::<T>()?,
             AddressingMode::Indirect
             | AddressingMode::IndirectDisplacement
-            | AddressingMode::IndirectPreDec
             | AddressingMode::PCDisplacement
             | AddressingMode::AbsoluteShort
             | AddressingMode::AbsoluteLong => {
                 let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
                 self.read_ticks(addr)?
             }
-            AddressingMode::IndirectPostInc => {
-                // Check for alignment now so we fail before doing the increment
+            AddressingMode::IndirectPreDec => {
                 let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
+                self.read_ticks(addr)?
+            }
+            AddressingMode::IndirectPostInc => {
+                let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
+                let inc_addr = if ea_in == 7 {
+                    // Minimum of 2 for A7
+                    addr.wrapping_add(std::cmp::max(2, std::mem::size_of::<T>() as Address))
+                } else {
+                    addr.wrapping_add(std::mem::size_of::<T>() as Address)
+                };
+                if !hold || std::mem::size_of::<T>() <= 2 {
+                    self.regs.write_a::<Address>(ea_in, inc_addr);
+                } else {
+                    self.step_ea_load = Some((ea_in, inc_addr));
+                }
                 self.read_ticks(addr)?
             }
             AddressingMode::IndirectIndex | AddressingMode::PCIndex => {
@@ -618,6 +671,25 @@ where
             ea_in,
             value,
             TemporalOrder::HighToLow,
+            false,
+        )
+    }
+
+    /// Writes a value to the operand (ea_in) using the effective addressing mode specified
+    /// by the instruction, directly or through indirection, depending on the mode.
+    fn write_ea_hold<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        ea_in: usize,
+        value: T,
+    ) -> Result<()> {
+        self.write_ea_with(
+            instr,
+            instr.get_addr_mode()?,
+            ea_in,
+            value,
+            TemporalOrder::HighToLow,
+            true,
         )
     }
 
@@ -628,6 +700,7 @@ where
         ea_in: usize,
         value: T,
         order: TemporalOrder,
+        hold: bool,
     ) -> Result<()> {
         match addrmode {
             AddressingMode::DataRegister => Ok(self.regs.write_d(ea_in, value)),
@@ -635,16 +708,28 @@ where
             AddressingMode::Indirect
             | AddressingMode::IndirectDisplacement
             | AddressingMode::IndirectIndex
-            | AddressingMode::IndirectPreDec
             | AddressingMode::AbsoluteShort
             | AddressingMode::AbsoluteLong => {
                 let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
                 self.write_ticks_order(addr, value, order)
             }
-            AddressingMode::IndirectPostInc => {
-                // Check for alignment now so we fail before doing the increment
-                self.verify_access::<T>(self.regs.read_a(ea_in), false)?;
+            AddressingMode::IndirectPreDec => {
                 let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
+                self.write_ticks_order(addr, value, order)
+            }
+            AddressingMode::IndirectPostInc => {
+                let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
+                let inc_addr = if ea_in == 7 {
+                    // Minimum of 2 for A7
+                    addr.wrapping_add(std::cmp::max(2, std::mem::size_of::<T>() as Address))
+                } else {
+                    addr.wrapping_add(std::mem::size_of::<T>() as Address)
+                };
+                if !hold {
+                    self.regs.write_a::<Address>(ea_in, inc_addr);
+                } else {
+                    self.step_ea_load = Some((ea_in, inc_addr));
+                }
                 self.write_ticks_order(addr, value, order)
             }
             _ => todo!(),
@@ -672,7 +757,8 @@ where
         calcfn: fn(T, T) -> T,
     ) -> Result<()> {
         let left: T = self.regs.read_d(instr.get_op1());
-        let right: T = self.read_ea(instr, instr.get_op2())?;
+        let right: T = self.read_ea_hold(instr, instr.get_op2())?;
+        self.ea_commit();
         let (a, b) = match instr.get_direction() {
             Direction::Right => (left, right),
             Direction::Left => (right, left),
@@ -716,7 +802,8 @@ where
         calcfn: fn(T, T) -> T,
     ) -> Result<()> {
         let a: T = self.fetch_immediate()?;
-        let b: T = self.read_ea(instr, instr.get_op2())?;
+        let b: T = self.read_ea_hold(instr, instr.get_op2())?;
+        self.ea_commit();
         let result = calcfn(a, b);
 
         self.regs.sr.set_v(false);
@@ -767,8 +854,7 @@ where
         calcfn: fn(Word, Word) -> Word,
     ) -> Result<()> {
         if !self.regs.sr.supervisor() {
-            // + TODO write test for privilege exception
-            panic!("TODO privilege exception");
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
         }
 
         let a = self.fetch_immediate()?;
@@ -789,8 +875,7 @@ where
             ExceptionGroup::Group2,
             instr.trap_get_vector() * 4 + VECTOR_TRAP_OFFSET,
             None,
-        )?;
-        Ok(())
+        )
     }
 
     /// ADD/SUB
@@ -800,7 +885,8 @@ where
         calcfn: fn(T, T, RegisterSR) -> (T, u8),
     ) -> Result<()> {
         let left: T = self.regs.read_d(instr.get_op1());
-        let right: T = self.read_ea(instr, instr.get_op2())?;
+        let right: T = self.read_ea_hold(instr, instr.get_op2())?;
+        self.ea_commit();
         let (a, b) = match instr.get_direction() {
             Direction::Right => (left, right),
             Direction::Left => (right, left),
@@ -839,7 +925,8 @@ where
         calcfn: fn(T, T, RegisterSR) -> (T, u8),
     ) -> Result<()> {
         let b: T = self.fetch_immediate()?;
-        let a: T = self.read_ea(instr, instr.get_op2())?;
+        let a: T = self.read_ea_hold(instr, instr.get_op2())?;
+        self.ea_commit();
         let (result, ccr) = calcfn(a, b, self.regs.sr);
 
         self.regs.sr.set_ccr(ccr);
@@ -853,6 +940,7 @@ where
             std::mem::size_of::<T>(),
         ) {
             (AddressingMode::DataRegister, _, 4) => self.advance_cycles(4)?,
+            (AddressingMode::AddressRegister, _, 4) => self.advance_cycles(2)?,
             _ => (),
         };
 
@@ -893,7 +981,7 @@ where
         calcfn: fn(T, T, RegisterSR) -> (T, u8),
     ) -> Result<()> {
         let b: T = instr.get_quick();
-        let a: T = self.read_ea(instr, instr.get_op2())?;
+        let a: T = self.read_ea_hold(instr, instr.get_op2())?;
         let (result, ccr) = calcfn(a, b, self.regs.sr);
 
         if instr.get_addr_mode()? == AddressingMode::AddressRegister
@@ -906,15 +994,12 @@ where
 
         self.prefetch_pump()?;
         self.write_ea(instr, instr.get_op2(), result)?;
+        self.ea_commit();
 
         // Idle cycles
-        match (
-            instr.get_addr_mode()?,
-            instr.get_direction(),
-            std::mem::size_of::<T>(),
-        ) {
-            (AddressingMode::DataRegister, _, 4) => self.advance_cycles(4)?,
-            (AddressingMode::AddressRegister, _, _) => self.advance_cycles(2)?,
+        match (instr.get_addr_mode()?, std::mem::size_of::<T>()) {
+            (AddressingMode::DataRegister, 4) => self.advance_cycles(4)?,
+            (AddressingMode::AddressRegister, 4) => self.advance_cycles(4)?,
             _ => (),
         };
 
@@ -928,8 +1013,9 @@ where
         calcfn: fn(Long, Long, RegisterSR) -> (Long, u8),
     ) -> Result<()> {
         let b = self
-            .read_ea::<T>(instr, instr.get_op2())?
+            .read_ea_hold::<T>(instr, instr.get_op2())?
             .expand_sign_extend();
+        self.ea_commit();
         let a: Long = self.regs.read_a(instr.get_op1());
         let (result, _) = calcfn(a, b, self.regs.sr);
 
@@ -1090,10 +1176,12 @@ where
     /// CMPM
     fn op_cmpm<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         let len = std::mem::size_of::<T>();
-        let b_addr = self.regs.read_a_postinc(instr.get_op2(), len);
+        let b_addr = self.regs.read_a(instr.get_op2());
+        self.regs.read_a_postinc::<Address>(instr.get_op2(), len);
         let b: T = self.read_ticks(b_addr)?;
-        let a_addr = self.regs.read_a_postinc(instr.get_op1(), len);
+        let a_addr = self.regs.read_a(instr.get_op1());
         let a: T = self.read_ticks(a_addr)?;
+        self.regs.read_a_postinc::<Address>(instr.get_op1(), len);
         let (_, ccr) = Self::alu_sub(a, b, self.regs.sr);
 
         let last_x = self.regs.sr.x();
@@ -1197,10 +1285,12 @@ where
         let result_rem = dividend % divisor;
 
         self.regs.sr.set_c(false);
+        self.regs.sr.set_z(false);
         self.advance_cycles(6)?;
         if result > Word::MAX.into() {
             // Overflow
             self.regs.sr.set_v(true);
+            self.regs.sr.set_n(true);
             self.prefetch_pump()?;
 
             return Ok(());
@@ -1257,14 +1347,17 @@ where
         let result_rem = dividend % divisor;
 
         self.regs.sr.set_c(false);
+        self.regs.sr.set_z(false);
         self.advance_cycles(8)?;
         if dividend < 0 {
             self.advance_cycles(2)?;
         }
-        if result > i16::MAX.into() || result < i16::MIN.into() {
+        if dividend.wrapping_abs() >= (divisor.wrapping_abs() << 16) && divisor != i16::MIN as i32 {
+            // Overflow (detected before calculation)
             self.advance_cycles(4)?;
-            // Overflow
+
             self.regs.sr.set_v(true);
+            self.regs.sr.set_n(true);
             self.prefetch_pump()?;
 
             return Ok(());
@@ -1282,6 +1375,15 @@ where
         // Count zeroes in top 15 most significant bits
         let zeroes = ((result.wrapping_abs() as u16) | 1).count_zeros() as Ticks;
         self.advance_cycles(108 + zeroes * 2)?;
+
+        if result > i16::MAX.into() || result < i16::MIN.into() {
+            // Overflow (detected during calculation)
+            self.regs.sr.set_v(true);
+            self.regs.sr.set_n(true);
+            self.prefetch_pump()?;
+
+            return Ok(());
+        }
 
         self.prefetch_pump()?;
 
@@ -1391,7 +1493,7 @@ where
 
     /// MOVE
     fn op_move<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
-        let value: T = self.read_ea_with(instr, instr.get_addr_mode()?, instr.get_op2())?;
+        let value: T = self.read_ea_with(instr, instr.get_addr_mode()?, instr.get_op2(), false)?;
 
         self.regs.sr.set_z(value == T::zero());
         self.regs.sr.set_n(value & T::msb() != T::zero());
@@ -1435,6 +1537,7 @@ where
                     instr.get_op1(),
                     value,
                     TemporalOrder::LowToHigh,
+                    false,
                 )?
             }
             _ => self.write_ea_with(
@@ -1443,6 +1546,7 @@ where
                 instr.get_op1(),
                 value,
                 TemporalOrder::LowToHigh,
+                false,
             )?,
         }
 
@@ -1660,13 +1764,14 @@ where
 
     /// LINK
     pub fn op_link(&mut self, instr: &Instruction) -> Result<()> {
-        let sp = self.regs.read_a_predec(7, 4);
+        let sp = self.regs.read_a::<Address>(7).wrapping_sub(4);
         let addr = self.regs.read_a::<Address>(instr.get_op2());
 
         instr.fetch_extword(|| self.fetch_pump())?;
 
         self.write_ticks(sp, addr)?;
         self.regs.write_a(instr.get_op2(), sp);
+        self.regs.read_a_predec::<Address>(7, 4);
         self.regs
             .write_a(7, sp.wrapping_add_signed(instr.get_displacement()?));
 
@@ -1676,8 +1781,8 @@ where
     /// UNLINK
     pub fn op_unlink(&mut self, instr: &Instruction) -> Result<()> {
         let addr = self.regs.read_a::<Address>(instr.get_op2());
-        self.regs.write_a(7, addr.wrapping_add(4));
         let val = self.read_ticks::<Address>(addr)?;
+        self.regs.write_a(7, addr.wrapping_add(4));
         self.regs.write_a(instr.get_op2(), val);
         Ok(())
     }

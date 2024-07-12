@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0.86"
+anyhow = { version = "1.0.86", features = ["backtrace"] }
 arrayvec = { version = "0.7.4", features = ["serde"] }
 dbg_hex = "0.2.0"
 flate2 = "1.0.30"
