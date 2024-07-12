@@ -36,6 +36,7 @@ enum CpuError {
 }
 
 /// M68000 exception groups
+#[derive(Debug, Clone, Copy)]
 enum ExceptionGroup {
     Group0,
     Group1,
@@ -92,7 +93,7 @@ where
     }
 
     fn prefetch_pump_force(&mut self) -> Result<()> {
-        let fetch_addr = ((self.regs.pc & !1) + 4) & ADDRESS_MASK;
+        let fetch_addr = self.regs.pc.wrapping_add(4) & ADDRESS_MASK;
         let new_item = self.read_ticks::<Word>(fetch_addr)?;
         self.prefetch.push_back(new_item);
         self.regs.pc = (self.regs.pc + 2) & ADDRESS_MASK;
@@ -322,6 +323,10 @@ where
                 )?;
             }
             ExceptionGroup::Group1 | ExceptionGroup::Group2 => {
+                eprintln!(
+                    "Exception {:?}, vector {:08X} @  PC = {:06X}",
+                    group, vector, self.regs.pc
+                );
                 // Advance PC beyond the current instruction to
                 // have the right offset for the stack frame.
                 // The current prefetch queue length provides an indication
@@ -491,6 +496,11 @@ where
             InstructionMnemonic::TST_l => self.op_tst::<Long>(&instr),
             InstructionMnemonic::LINK => self.op_link(&instr),
             InstructionMnemonic::UNLINK => self.op_unlink(&instr),
+            InstructionMnemonic::RESET => self.op_reset(&instr),
+            InstructionMnemonic::RTE => self.op_rte(&instr),
+            InstructionMnemonic::RTS => self.op_rts(&instr),
+            InstructionMnemonic::RTR => self.op_rtr(&instr),
+            InstructionMnemonic::STOP => panic!("STOP encountered"),
 
             _ => todo!(),
         }
@@ -1763,7 +1773,7 @@ where
     }
 
     /// LINK
-    pub fn op_link(&mut self, instr: &Instruction) -> Result<()> {
+    fn op_link(&mut self, instr: &Instruction) -> Result<()> {
         let sp = self.regs.read_a::<Address>(7).wrapping_sub(4);
         let addr = self.regs.read_a::<Address>(instr.get_op2());
 
@@ -1779,11 +1789,57 @@ where
     }
 
     /// UNLINK
-    pub fn op_unlink(&mut self, instr: &Instruction) -> Result<()> {
+    fn op_unlink(&mut self, instr: &Instruction) -> Result<()> {
         let addr = self.regs.read_a::<Address>(instr.get_op2());
         let val = self.read_ticks::<Address>(addr)?;
         self.regs.write_a(7, addr.wrapping_add(4));
         self.regs.write_a(instr.get_op2(), val);
+        Ok(())
+    }
+
+    /// RESET
+    fn op_reset(&mut self, _instr: &Instruction) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+
+        self.advance_cycles(128)?;
+        Ok(())
+    }
+
+    /// RTE
+    fn op_rte(&mut self, _instr: &Instruction) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+
+        let sr = self.read_ticks(self.regs.ssp.wrapping_add(0))?;
+        let pc = self.read_ticks(self.regs.ssp.wrapping_add(2))?;
+        self.regs.ssp = self.regs.ssp.wrapping_add(6);
+        self.regs.sr.set_sr(sr);
+        self.set_pc(pc)?;
+        self.prefetch_refill()?;
+        Ok(())
+    }
+
+    /// RTS
+    fn op_rts(&mut self, _instr: &Instruction) -> Result<()> {
+        let pc = self.read_ticks(self.regs.read_a(7))?;
+        self.regs.read_a_postinc::<Address>(7, 4);
+        self.set_pc(pc)?;
+        self.prefetch_refill()?;
+        Ok(())
+    }
+
+    /// RTR
+    fn op_rtr(&mut self, _instr: &Instruction) -> Result<()> {
+        let sp = self.regs.read_a::<Address>(7);
+        let ccr = self.read_ticks::<Word>(sp.wrapping_add(0))? as Byte;
+        let pc = self.read_ticks(sp.wrapping_add(2))?;
+        self.regs.read_a_postinc::<Address>(7, 6);
+        self.regs.sr.set_ccr(ccr);
+        self.set_pc(pc)?;
+        self.prefetch_refill()?;
         Ok(())
     }
 }

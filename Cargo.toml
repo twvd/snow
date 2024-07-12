@@ -3,6 +3,10 @@ name = "snow"
 version = "0.1.0"
 edition = "2021"
 
+[profile.test]
+opt-level = 3
+debug = true
+
 [dependencies]
 anyhow = { version = "1.0.86", features = ["backtrace"] }
 arrayvec = { version = "0.7.4", features = ["serde"] }
