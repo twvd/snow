@@ -77,6 +77,8 @@ pub enum InstructionMnemonic {
     EXT_l,
     EXT_w,
     ILLEGAL,
+    JMP,
+    JSR,
     OR_l,
     OR_w,
     OR_b,
@@ -329,6 +331,8 @@ impl Instruction {
         (0b0100_1110_0111_0101, 0b1111_1111_1111_1111, InstructionMnemonic::RTS),
         (0b0100_1110_0111_0110, 0b1111_1111_1111_1111, InstructionMnemonic::TRAPV),
         (0b0100_1110_0111_0111, 0b1111_1111_1111_1111, InstructionMnemonic::RTR),
+        (0b0100_1110_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::JSR),
+        (0b0100_1110_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::JMP),
         (0b1000_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SBCD),
         (0b1000_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_b),
         (0b1000_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_w),
@@ -509,6 +513,16 @@ impl Instruction {
 
     pub fn get_extword(&self) -> Result<ExtWord> {
         self.extword.get().context("Ext word not fetched")
+    }
+
+    pub fn needs_extword(&self) -> bool {
+        match self.get_addr_mode().unwrap() {
+            AddressingMode::IndirectDisplacement
+            | AddressingMode::IndirectIndex
+            | AddressingMode::PCDisplacement
+            | AddressingMode::PCIndex => true,
+            _ => false,
+        }
     }
 
     pub fn get_displacement(&self) -> Result<i32> {

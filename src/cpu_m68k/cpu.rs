@@ -502,6 +502,8 @@ where
             InstructionMnemonic::RTR => self.op_rtr(&instr),
             InstructionMnemonic::STOP => panic!("STOP encountered"),
             InstructionMnemonic::TRAPV => self.op_trapv(&instr),
+            InstructionMnemonic::JSR => self.op_jmp_jsr(&instr),
+            InstructionMnemonic::JMP => self.op_jmp_jsr(&instr),
 
             _ => todo!(),
         }
@@ -1858,6 +1860,70 @@ where
         self.regs.read_a_postinc::<Address>(7, 6);
         self.regs.sr.set_ccr(ccr);
         self.set_pc(pc)?;
+        self.prefetch_refill()?;
+        Ok(())
+    }
+
+    /// JSR
+    fn op_jsr(&mut self, instr: &Instruction) -> Result<()> {
+        // Pre-load extension word from prefetch queue
+        // to avoid reads in calc_ea_addr().
+        instr.fetch_extword(|| self.fetch())?;
+
+        let pc = self.calc_ea_addr::<Address>(&instr, instr.get_addr_mode()?, instr.get_op2())?;
+        self.set_pc(pc)?;
+        self.advance_cycles(2)?; // idle
+        self.prefetch_refill()?;
+        Ok(())
+    }
+
+    /// JMP/JSR
+    fn op_jmp_jsr(&mut self, instr: &Instruction) -> Result<()> {
+        if instr.needs_extword() {
+            // Pre-load extension word from prefetch queue
+            // to avoid reads in calc_ea_addr().
+            instr.fetch_extword(|| self.fetch())?;
+
+            // Advance PC for this last fetch to get the correct value in the PC addressing
+            // modes.
+            self.regs.pc = self.regs.pc.wrapping_add(2) & ADDRESS_MASK;
+        }
+
+        let pc = match instr.get_addr_mode()? {
+            AddressingMode::AbsoluteShort => {
+                self.advance_cycles(2)?;
+                self.regs.pc = self.regs.pc.wrapping_add(2) & ADDRESS_MASK;
+                self.fetch()?.expand_sign_extend()
+            }
+            AddressingMode::AbsoluteLong => {
+                let h = self.fetch()? as Address;
+                let l = self.fetch()? as Address;
+                self.regs.pc = self.regs.pc.wrapping_add(2) & ADDRESS_MASK;
+                (h << 16) | l
+            }
+            _ => self.calc_ea_addr::<Address>(&instr, instr.get_addr_mode()?, instr.get_op2())?,
+        };
+
+        // Idle cycles
+        match instr.get_addr_mode()? {
+            AddressingMode::IndirectDisplacement | AddressingMode::PCDisplacement => {
+                self.advance_cycles(2)?
+            }
+            AddressingMode::IndirectIndex | AddressingMode::PCIndex => self.advance_cycles(4)?,
+            _ => (),
+        };
+
+        // Execute the jump
+        let old_pc = self.regs.pc;
+        self.set_pc(pc)?;
+        self.prefetch_pump()?;
+
+        if instr.mnemonic == InstructionMnemonic::JSR {
+            // Push return address to the stack
+            let sp = self.regs.read_a_predec(7, 4);
+            self.write_ticks(sp, old_pc.wrapping_add(2) & ADDRESS_MASK)?;
+        }
+
         self.prefetch_refill()?;
         Ok(())
     }
