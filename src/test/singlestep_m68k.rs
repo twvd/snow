@@ -435,7 +435,7 @@ cpu_test!(ext_l, "EXT.l");
 cpu_test!(ext_w, "EXT.w");
 cpu_test!(jmp, "JMP");
 cpu_test!(jsr, "JSR");
-//cpu_test!(lea, "LEA");
+cpu_test!(lea, "LEA");
 cpu_test!(link, "LINK");
 //cpu_test!(lsl_b, "LSL.b");
 //cpu_test!(lsl_l, "LSL.l");
