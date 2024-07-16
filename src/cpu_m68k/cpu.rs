@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
 use anyhow::{bail, Result};
+use either::Either;
 use num_traits::FromBytes;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -12,7 +13,7 @@ use crate::util::TemporalOrder;
 use super::instruction::{
     AddressingMode, Direction, IndexSize, Instruction, InstructionMnemonic, Xn,
 };
-use super::regs::{RegisterFile, RegisterSR};
+use super::regs::{Register, RegisterFile, RegisterSR};
 use super::{Byte, CpuSized, Long, Word};
 
 /// Access error details
@@ -56,6 +57,26 @@ const VECTOR_TRAPV: Address = 0x00001C;
 const VECTOR_PRIVILEGE_VIOLATION: Address = 0x000020;
 /// Trap exception vector offset (15 vectors)
 const VECTOR_TRAP_OFFSET: Address = 0x000080;
+
+/// Register mask order for MOVEM
+const MOVEM_REGS: [Register; 16] = [
+    Register::An(7),
+    Register::An(6),
+    Register::An(5),
+    Register::An(4),
+    Register::An(3),
+    Register::An(2),
+    Register::An(1),
+    Register::An(0),
+    Register::Dn(7),
+    Register::Dn(6),
+    Register::Dn(5),
+    Register::Dn(4),
+    Register::Dn(3),
+    Register::Dn(2),
+    Register::Dn(1),
+    Register::Dn(0),
+];
 
 /// Motorola 680x0
 #[derive(Serialize, Deserialize)]
@@ -217,6 +238,19 @@ where
     /// Writes a value to the bus (big endian) and spends ticks.
     fn write_ticks<T: CpuSized>(&mut self, addr: Address, value: T) -> Result<()> {
         self.write_ticks_order(addr, value, TemporalOrder::LowToHigh)
+    }
+
+    /// Writes a value to the bus (big endian) and spends ticks, but writes
+    /// the word in opposite order if the type is Long.
+    fn write_ticks_wflip<T: CpuSized>(&mut self, addr: Address, value: T) -> Result<()> {
+        match std::mem::size_of::<T>() {
+            4 => {
+                let v: Long = value.expand();
+                self.write_ticks_order(addr.wrapping_add(2), v as Word, TemporalOrder::LowToHigh)?;
+                self.write_ticks_order(addr, (v >> 16) as Word, TemporalOrder::LowToHigh)
+            }
+            _ => self.write_ticks_order(addr, value, TemporalOrder::LowToHigh),
+        }
     }
 
     fn write_ticks_order<T: CpuSized>(
@@ -505,6 +539,10 @@ where
             InstructionMnemonic::TRAPV => self.op_trapv(&instr),
             InstructionMnemonic::JSR => self.op_jmp_jsr(&instr),
             InstructionMnemonic::JMP => self.op_jmp_jsr(&instr),
+            InstructionMnemonic::MOVEM_mem_l => self.op_movem_mem::<Long>(&instr),
+            InstructionMnemonic::MOVEM_mem_w => self.op_movem_mem::<Word>(&instr),
+            InstructionMnemonic::MOVEM_reg_l => self.op_movem_reg::<Long>(&instr),
+            InstructionMnemonic::MOVEM_reg_w => self.op_movem_reg::<Word>(&instr),
 
             _ => todo!(),
         }
@@ -533,63 +571,68 @@ where
                 IndexSize::Long => v,
             }
         };
-        let addr = match addrmode {
-            AddressingMode::DataRegister => unreachable!(),
-            AddressingMode::AddressRegister => unreachable!(),
-            AddressingMode::Indirect => self.regs.read_a(ea_in),
-            AddressingMode::IndirectPreDec => {
-                self.advance_cycles(2)?; // 2x idle
-                self.regs
-                    .read_a_predec::<Address>(ea_in, std::mem::size_of::<T>())
-            }
-            AddressingMode::IndirectPostInc => self.regs.read_a(ea_in),
-            AddressingMode::IndirectDisplacement => {
-                instr.fetch_extword(|| self.fetch_pump())?;
-                let addr = self.regs.read_a::<Address>(ea_in);
-                let displacement = instr.get_displacement()?;
-                Address::from(addr.wrapping_add_signed(displacement))
-            }
-            AddressingMode::IndirectIndex => {
-                self.advance_cycles(2)?; // 2x idle
-                instr.fetch_extword(|| self.fetch_pump())?;
+        let addr =
+            match addrmode {
+                AddressingMode::DataRegister => unreachable!(),
+                AddressingMode::AddressRegister => unreachable!(),
+                AddressingMode::Indirect => self.regs.read_a(ea_in),
+                AddressingMode::IndirectPreDec => {
+                    self.advance_cycles(2)?; // 2x idle
+                    self.regs
+                        .read_a_predec::<Address>(ea_in, std::mem::size_of::<T>())
+                }
+                AddressingMode::IndirectPostInc => self.regs.read_a(ea_in),
+                AddressingMode::IndirectDisplacement => {
+                    instr.fetch_extword(|| self.fetch_pump())?;
+                    let addr = self.regs.read_a::<Address>(ea_in);
+                    let displacement = instr.get_displacement()?;
+                    Address::from(addr.wrapping_add_signed(displacement))
+                }
+                AddressingMode::IndirectIndex => {
+                    self.advance_cycles(2)?; // 2x idle
+                    instr.fetch_extword(|| self.fetch_pump())?;
 
-                let extword = instr.get_extword()?;
-                let addr = self.regs.read_a::<Address>(ea_in);
-                let displacement = extword.brief_get_displacement_signext();
-                let index = read_idx(
-                    self,
-                    extword.brief_get_register(),
-                    extword.brief_get_index_size(),
+                    let extword = instr.get_extword()?;
+                    let addr = self.regs.read_a::<Address>(ea_in);
+                    let displacement = extword.brief_get_displacement_signext();
+                    let index = read_idx(
+                        self,
+                        extword.brief_get_register(),
+                        extword.brief_get_index_size(),
+                    );
+                    eprintln!(
+                    "Extword: {:02X} Base: {:08X} displacement: {:08X} index: {:08X} idx reg: {:?}",
+                    extword.data, addr, displacement, index, extword.brief_get_register()
                 );
-                addr.wrapping_add(displacement).wrapping_add(index)
-            }
-            AddressingMode::PCDisplacement => {
-                instr.fetch_extword(|| self.fetch_pump())?;
-                let addr = self.regs.pc;
-                let displacement = instr.get_displacement()?;
-                Address::from(addr.wrapping_add_signed(displacement))
-            }
-            AddressingMode::PCIndex => {
-                self.advance_cycles(2)?; // 2x idle
-                instr.fetch_extword(|| self.fetch_pump())?;
-                let extword = instr.get_extword()?;
-                let pc = self.regs.pc;
-                let displacement = extword.brief_get_displacement_signext();
-                let index = read_idx(
-                    self,
-                    extword.brief_get_register(),
-                    extword.brief_get_index_size(),
-                );
-                pc.wrapping_add(displacement).wrapping_add(index)
-            }
-            AddressingMode::AbsoluteShort => self.fetch_pump()? as i16 as i32 as u32,
-            AddressingMode::AbsoluteLong => {
-                let h = self.fetch_pump()? as u32;
-                let l = self.fetch_pump()? as u32;
-                (h << 16) | l
-            }
-            _ => todo!(),
-        };
+                    addr.wrapping_add(displacement).wrapping_add(index)
+                }
+                AddressingMode::PCDisplacement => {
+                    instr.fetch_extword(|| self.fetch_pump())?;
+                    let addr = self.regs.pc;
+                    let displacement = instr.get_displacement()?;
+                    Address::from(addr.wrapping_add_signed(displacement))
+                }
+                AddressingMode::PCIndex => {
+                    self.advance_cycles(2)?; // 2x idle
+                    instr.fetch_extword(|| self.fetch_pump())?;
+                    let extword = instr.get_extword()?;
+                    let pc = self.regs.pc;
+                    let displacement = extword.brief_get_displacement_signext();
+                    let index = read_idx(
+                        self,
+                        extword.brief_get_register(),
+                        extword.brief_get_index_size(),
+                    );
+                    pc.wrapping_add(displacement).wrapping_add(index)
+                }
+                AddressingMode::AbsoluteShort => self.fetch_pump()? as i16 as i32 as u32,
+                AddressingMode::AbsoluteLong => {
+                    let h = self.fetch_pump()? as u32;
+                    let l = self.fetch_pump()? as u32;
+                    (h << 16) | l
+                }
+                _ => todo!(),
+            };
 
         self.step_ea_addr = Some(addr);
         Ok(addr)
@@ -1919,6 +1962,91 @@ where
         }
 
         self.prefetch_refill()?;
+        Ok(())
+    }
+
+    /// MOVEM memory to register
+    fn op_movem_reg<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+        let mask = self.fetch_pump()?;
+        let mut addr = if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
+            // calc_ea_addr() already decrements the address once, but in this case,
+            // we don't want that.
+            self.regs.read_a(instr.get_op2())
+        } else {
+            self.calc_ea_addr::<T>(instr, instr.get_addr_mode()?, instr.get_op2())?
+        };
+
+        let regs = if instr.get_addr_mode()? != AddressingMode::IndirectPreDec {
+            Either::Left(MOVEM_REGS.iter().rev())
+        } else {
+            Either::Right(MOVEM_REGS.iter())
+        };
+
+        for (_, &reg) in regs.enumerate().filter(|(i, _)| mask & (1 << i) != 0) {
+            if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
+                addr = addr.wrapping_sub(std::mem::size_of::<T>() as Address);
+            }
+
+            let v = self.read_ticks::<T>(addr)?;
+            self.regs.write(reg, v.expand_sign_extend());
+
+            if instr.get_addr_mode()? != AddressingMode::IndirectPreDec {
+                addr = addr.wrapping_add(std::mem::size_of::<T>() as Address);
+            }
+        }
+
+        // Discarded read
+        if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
+            addr = addr.wrapping_sub(std::mem::size_of::<T>() as Address);
+        }
+        self.read_ticks::<Word>(addr)?;
+
+        // Update the EA An register with the final address on predec/postinc
+        match instr.get_addr_mode()? {
+            AddressingMode::IndirectPostInc | AddressingMode::IndirectPreDec => {
+                self.regs.write_a(instr.get_op2(), addr)
+            }
+            _ => (),
+        }
+
+        Ok(())
+    }
+
+    /// MOVEM register to memory
+    fn op_movem_mem<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+        let mask = self.fetch_pump()?;
+        let mut addr = if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
+            // calc_ea_addr() already decrements the address once, but in this case,
+            // we don't want that.
+            self.regs.read_a(instr.get_op2())
+        } else {
+            self.calc_ea_addr::<T>(instr, instr.get_addr_mode()?, instr.get_op2())?
+        };
+
+        let regs = if instr.get_addr_mode()? != AddressingMode::IndirectPreDec {
+            Either::Left(MOVEM_REGS.iter().rev())
+        } else {
+            Either::Right(MOVEM_REGS.iter())
+        };
+
+        for (_, &reg) in regs.enumerate().filter(|(i, _)| mask & (1 << i) != 0) {
+            let mut v = self.regs.read::<T>(reg);
+            if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
+                addr = addr.wrapping_sub(std::mem::size_of::<T>() as Address);
+                self.write_ticks_wflip(addr, v)?;
+            } else {
+                self.write_ticks(addr, v)?;
+                addr = addr.wrapping_add(std::mem::size_of::<T>() as Address);
+            }
+        }
+
+        // Update the EA An register with the final address on predec/postinc
+        match instr.get_addr_mode()? {
+            AddressingMode::IndirectPreDec => self.regs.write_a(instr.get_op2(), addr),
+            AddressingMode::IndirectPostInc => self.regs.write_a(instr.get_op2(), addr),
+            _ => (),
+        }
+
         Ok(())
     }
 }

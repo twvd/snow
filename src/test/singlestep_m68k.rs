@@ -452,8 +452,8 @@ cpu_test!(movefromusp, "MOVEfromUSP");
 // TODO fix all the insane edge cases of MOVE.l
 //cpu_test_nt!(move_l, "MOVE.l");
 
-//cpu_test!(movem_l, "MOVEM.l");
-//cpu_test!(movem_w, "MOVEM.w");
+cpu_test!(movem_l, "MOVEM.l");
+cpu_test!(movem_w, "MOVEM.w");
 cpu_test!(movep_l, "MOVEP.l");
 cpu_test!(movep_w, "MOVEP.w");
 //cpu_test!(move_q, "MOVE.q");

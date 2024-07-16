@@ -11,6 +11,7 @@ debug = true
 anyhow = { version = "1.0.86", features = ["backtrace"] }
 arrayvec = { version = "0.7.4", features = ["serde"] }
 dbg_hex = "0.2.0"
+either = "1.13.0"
 flate2 = "1.0.30"
 itertools = "0.13.0"
 num-derive = "0.4.2"

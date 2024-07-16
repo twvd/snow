@@ -103,6 +103,10 @@ pub enum InstructionMnemonic {
     MOVEtoCCR,
     MOVEtoSR,
     MOVEtoUSP,
+    MOVEM_mem_w,
+    MOVEM_mem_l,
+    MOVEM_reg_w,
+    MOVEM_reg_l,
     // no MULU_l, MULU_b
     MULU_w,
     // no MULS_l, MULS_b
@@ -334,6 +338,10 @@ impl Instruction {
         (0b0100_1110_0111_0111, 0b1111_1111_1111_1111, InstructionMnemonic::RTR),
         (0b0100_1110_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::JSR),
         (0b0100_1110_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::JMP),
+        (0b0100_1000_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEM_mem_w),
+        (0b0100_1000_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEM_mem_l),
+        (0b0100_1100_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEM_reg_w),
+        (0b0100_1100_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEM_reg_l),
         (0b0100_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::LEA),
         (0b1000_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SBCD),
         (0b1000_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_b),

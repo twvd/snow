@@ -6,6 +6,13 @@ use crate::bus::Address;
 
 use std::fmt;
 
+/// Generalization of an address/data register
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum Register {
+    Dn(usize),
+    An(usize),
+}
+
 bitfield! {
     /// SR register bitfield
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,6 +173,22 @@ impl RegisterFile {
     /// Write a Dn register
     pub fn write_d<T: CpuSized>(&mut self, d: usize, val: T) {
         self.d[d] = val.replace_in(self.d[d])
+    }
+
+    /// Write a register, specifying a Register type
+    pub fn write<T: CpuSized>(&mut self, reg: Register, value: T) {
+        match reg {
+            Register::An(r) => self.write_a(r, value),
+            Register::Dn(r) => self.write_d(r, value),
+        }
+    }
+
+    /// Reae a register, specifying a Register type
+    pub fn read<T: CpuSized>(&mut self, reg: Register) -> T {
+        match reg {
+            Register::An(r) => self.read_a(r),
+            Register::Dn(r) => self.read_d(r),
+        }
     }
 }
 
