@@ -66,6 +66,17 @@ struct TestcaseTransactionIdle {
     cycles: Ticks,
 }
 
+/// Level of testing to perform
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+enum TestLevel {
+    /// Only state (no cycles or transactions)
+    StateOnly,
+    /// Only state and cycles (no transactions)
+    StateCycles,
+    /// All
+    All,
+}
+
 /// One (JSON-object) testcase
 #[derive(Debug, Deserialize)]
 struct Testcase {
@@ -85,21 +96,18 @@ struct Testcase {
     transactions: Vec<TestcaseTransaction>,
 }
 
-#[allow(unused_macros)]
-macro_rules! cpu_test_nt {
-    ($testfn:ident, $instr:expr) => {
-        _cpu_test!($testfn, $instr, false);
-    };
-}
-
 macro_rules! cpu_test {
+    ($testfn:ident, $instr:expr, $level:expr) => {
+        _cpu_test!($testfn, $instr, $level);
+    };
+
     ($testfn:ident, $instr:expr) => {
-        _cpu_test!($testfn, $instr, true);
+        _cpu_test!($testfn, $instr, TestLevel::All);
     };
 }
 
 macro_rules! _cpu_test {
-    ($testfn:ident, $instr:expr, $transactions:expr) => {
+    ($testfn:ident, $instr:expr, $level:expr) => {
         #[test]
         fn $testfn() {
             //let filename = format!("testdata/680x0/68000/v1/{}.json", $instr);
@@ -113,7 +121,7 @@ macro_rules! _cpu_test {
             };
 
             for testcase in testcases {
-                run_testcase(testcase, $transactions);
+                run_testcase(testcase, $level);
             }
         }
     };
@@ -270,7 +278,7 @@ fn print_result(cpu: &CpuM68k<Testbus<Address, u8>>, testcase: &Testcase) {
     }
 }
 
-fn run_testcase(testcase: Testcase, test_transactions: bool) {
+fn run_testcase(testcase: Testcase, level: TestLevel) {
     eprintln!("--- Testcase: {}", testcase.name);
 
     let regs_initial = create_regs(&testcase.initial);
@@ -330,7 +338,7 @@ fn run_testcase(testcase: Testcase, test_transactions: bool) {
         }
     }
 
-    if cpu.cycles != testcase.length {
+    if level != TestLevel::StateOnly && cpu.cycles != testcase.length {
         print_result(&cpu, &testcase);
         panic!(
             "Test {}: expected {} cycles, saw {}",
@@ -339,7 +347,7 @@ fn run_testcase(testcase: Testcase, test_transactions: bool) {
     }
 
     // Check transactions (kinda best effort with regards to byte access and values)
-    if test_transactions {
+    if level == TestLevel::All {
         let mut abs_cycles = 0;
         let trace = cpu.bus.get_trace();
         for tr in &testcase.transactions {
@@ -413,7 +421,8 @@ cpu_test!(bclr, "BCLR");
 cpu_test!(bset, "BSET");
 //cpu_test!(bsr, "BSR");
 cpu_test!(btst, "BTST");
-//cpu_test!(chk, "CHK");
+// TODO cycle accuracy
+cpu_test!(chk, "CHK", TestLevel::StateOnly);
 cpu_test!(clr_b, "CLR.b");
 cpu_test!(clr_l, "CLR.l");
 cpu_test!(clr_w, "CLR.w");

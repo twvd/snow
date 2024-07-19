@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 
 use anyhow::{bail, Result};
 use either::Either;
+use itertools::max;
 use num_traits::FromBytes;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -51,6 +52,8 @@ const VECTOR_ACCESS_ERROR: Address = 0x00000C;
 const VECTOR_ILLEGAL: Address = 0x000010;
 /// Division by zero exception vector
 const VECTOR_DIV_ZERO: Address = 0x000014;
+/// CHK exception vector
+const VECTOR_CHK: Address = 0x000018;
 /// TRAPV exception vector
 const VECTOR_TRAPV: Address = 0x00001C;
 /// Privilege violation exception vector
@@ -543,6 +546,7 @@ where
             InstructionMnemonic::MOVEM_mem_w => self.op_movem_mem::<Word>(&instr),
             InstructionMnemonic::MOVEM_reg_l => self.op_movem_reg::<Long>(&instr),
             InstructionMnemonic::MOVEM_reg_w => self.op_movem_reg::<Word>(&instr),
+            InstructionMnemonic::CHK => self.op_chk(&instr),
 
             _ => todo!(),
         }
@@ -571,68 +575,63 @@ where
                 IndexSize::Long => v,
             }
         };
-        let addr =
-            match addrmode {
-                AddressingMode::DataRegister => unreachable!(),
-                AddressingMode::AddressRegister => unreachable!(),
-                AddressingMode::Indirect => self.regs.read_a(ea_in),
-                AddressingMode::IndirectPreDec => {
-                    self.advance_cycles(2)?; // 2x idle
-                    self.regs
-                        .read_a_predec::<Address>(ea_in, std::mem::size_of::<T>())
-                }
-                AddressingMode::IndirectPostInc => self.regs.read_a(ea_in),
-                AddressingMode::IndirectDisplacement => {
-                    instr.fetch_extword(|| self.fetch_pump())?;
-                    let addr = self.regs.read_a::<Address>(ea_in);
-                    let displacement = instr.get_displacement()?;
-                    Address::from(addr.wrapping_add_signed(displacement))
-                }
-                AddressingMode::IndirectIndex => {
-                    self.advance_cycles(2)?; // 2x idle
-                    instr.fetch_extword(|| self.fetch_pump())?;
+        let addr = match addrmode {
+            AddressingMode::DataRegister => unreachable!(),
+            AddressingMode::AddressRegister => unreachable!(),
+            AddressingMode::Indirect => self.regs.read_a(ea_in),
+            AddressingMode::IndirectPreDec => {
+                self.advance_cycles(2)?; // 2x idle
+                self.regs
+                    .read_a_predec::<Address>(ea_in, std::mem::size_of::<T>())
+            }
+            AddressingMode::IndirectPostInc => self.regs.read_a(ea_in),
+            AddressingMode::IndirectDisplacement => {
+                instr.fetch_extword(|| self.fetch_pump())?;
+                let addr = self.regs.read_a::<Address>(ea_in);
+                let displacement = instr.get_displacement()?;
+                Address::from(addr.wrapping_add_signed(displacement))
+            }
+            AddressingMode::IndirectIndex => {
+                self.advance_cycles(2)?; // 2x idle
+                instr.fetch_extword(|| self.fetch_pump())?;
 
-                    let extword = instr.get_extword()?;
-                    let addr = self.regs.read_a::<Address>(ea_in);
-                    let displacement = extword.brief_get_displacement_signext();
-                    let index = read_idx(
-                        self,
-                        extword.brief_get_register(),
-                        extword.brief_get_index_size(),
-                    );
-                    eprintln!(
-                    "Extword: {:02X} Base: {:08X} displacement: {:08X} index: {:08X} idx reg: {:?}",
-                    extword.data, addr, displacement, index, extword.brief_get_register()
+                let extword = instr.get_extword()?;
+                let addr = self.regs.read_a::<Address>(ea_in);
+                let displacement = extword.brief_get_displacement_signext();
+                let index = read_idx(
+                    self,
+                    extword.brief_get_register(),
+                    extword.brief_get_index_size(),
                 );
-                    addr.wrapping_add(displacement).wrapping_add(index)
-                }
-                AddressingMode::PCDisplacement => {
-                    instr.fetch_extword(|| self.fetch_pump())?;
-                    let addr = self.regs.pc;
-                    let displacement = instr.get_displacement()?;
-                    Address::from(addr.wrapping_add_signed(displacement))
-                }
-                AddressingMode::PCIndex => {
-                    self.advance_cycles(2)?; // 2x idle
-                    instr.fetch_extword(|| self.fetch_pump())?;
-                    let extword = instr.get_extword()?;
-                    let pc = self.regs.pc;
-                    let displacement = extword.brief_get_displacement_signext();
-                    let index = read_idx(
-                        self,
-                        extword.brief_get_register(),
-                        extword.brief_get_index_size(),
-                    );
-                    pc.wrapping_add(displacement).wrapping_add(index)
-                }
-                AddressingMode::AbsoluteShort => self.fetch_pump()? as i16 as i32 as u32,
-                AddressingMode::AbsoluteLong => {
-                    let h = self.fetch_pump()? as u32;
-                    let l = self.fetch_pump()? as u32;
-                    (h << 16) | l
-                }
-                _ => todo!(),
-            };
+                addr.wrapping_add(displacement).wrapping_add(index)
+            }
+            AddressingMode::PCDisplacement => {
+                instr.fetch_extword(|| self.fetch_pump())?;
+                let addr = self.regs.pc;
+                let displacement = instr.get_displacement()?;
+                Address::from(addr.wrapping_add_signed(displacement))
+            }
+            AddressingMode::PCIndex => {
+                self.advance_cycles(2)?; // 2x idle
+                instr.fetch_extword(|| self.fetch_pump())?;
+                let extword = instr.get_extword()?;
+                let pc = self.regs.pc;
+                let displacement = extword.brief_get_displacement_signext();
+                let index = read_idx(
+                    self,
+                    extword.brief_get_register(),
+                    extword.brief_get_index_size(),
+                );
+                pc.wrapping_add(displacement).wrapping_add(index)
+            }
+            AddressingMode::AbsoluteShort => self.fetch_pump()? as i16 as i32 as u32,
+            AddressingMode::AbsoluteLong => {
+                let h = self.fetch_pump()? as u32;
+                let l = self.fetch_pump()? as u32;
+                (h << 16) | l
+            }
+            _ => todo!(),
+        };
 
         self.step_ea_addr = Some(addr);
         Ok(addr)
@@ -2047,6 +2046,55 @@ where
             _ => (),
         }
 
+        Ok(())
+    }
+
+    /// CHK
+    fn op_chk(&mut self, instr: &Instruction) -> Result<()> {
+        let max = self
+            .read_ea::<Word>(instr, instr.get_op2())?
+            .expand_sign_extend() as i32;
+        let value = self
+            .regs
+            .read_d::<Word>(instr.get_op1())
+            .expand_sign_extend() as i32;
+        let result = value - max;
+
+        match instr.get_addr_mode()? {
+            AddressingMode::Indirect => self.advance_cycles(2)?,
+            _ => (),
+        }
+
+        self.regs.sr.set_n(value < 0);
+        self.regs.sr.set_z(value as i16 == 0);
+        self.regs.sr.set_c(false);
+        self.regs.sr.set_v(false);
+
+        if value > max {
+            match instr.get_addr_mode()? {
+                AddressingMode::Indirect | AddressingMode::DataRegister => {
+                    self.advance_cycles(6)?
+                }
+                _ => self.advance_cycles(8)?,
+            }
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_CHK, None);
+        }
+
+        //self.regs.sr.set_c(result & 0x10000 != 0);
+        //self.regs.sr.set_v(((value ^ result) & (max ^ value)) < 0);
+
+        if value < 0 {
+            match instr.get_addr_mode()? {
+                AddressingMode::Indirect => self.advance_cycles(8)?,
+                _ => self.advance_cycles(10)?,
+            }
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_CHK, None);
+        }
+
+        match instr.get_addr_mode()? {
+            AddressingMode::Indirect => self.advance_cycles(4)?,
+            _ => self.advance_cycles(4)?,
+        }
         Ok(())
     }
 }
