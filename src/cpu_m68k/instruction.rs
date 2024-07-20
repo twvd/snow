@@ -38,6 +38,7 @@ pub enum InstructionMnemonic {
     ANDI_b,
     ANDI_ccr,
     ANDI_sr,
+    Bcc,
     BCHG_dn,
     BCLR_dn,
     BSET_dn,
@@ -62,6 +63,7 @@ pub enum InstructionMnemonic {
     CMPM_l,
     CMPM_w,
     CMPM_b,
+    DBcc,
     // no DIVS_l, DIVS_b
     DIVS_w,
     // no DIVU_l, DIVU_b
@@ -126,6 +128,7 @@ pub enum InstructionMnemonic {
     RTE,
     RTR,
     RTS,
+    Scc,
     STOP,
     SUB_l,
     SUB_w,
@@ -357,6 +360,9 @@ impl Instruction {
         (0b0101_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_b),
         (0b0101_0001_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_w),
         (0b0101_0001_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_l),
+        (0b0101_0000_1100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::Scc),
+        (0b0101_0000_1100_1000, 0b1111_0000_1111_1000, InstructionMnemonic::DBcc),
+        (0b0110_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::Bcc),
         (0b1001_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SUBX_b),
         (0b1001_0001_0100_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SUBX_w),
         (0b1001_0001_1000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SUBX_l),
@@ -549,10 +555,16 @@ impl Instruction {
                 || self.mnemonic == InstructionMnemonic::MOVEP_l
                 || self.mnemonic == InstructionMnemonic::MOVEP_w
                 || self.mnemonic == InstructionMnemonic::LINK
+                || self.mnemonic == InstructionMnemonic::Bcc
         );
         debug_assert!(self.extword.get().is_some());
 
         Ok(self.get_extword()?.into())
+    }
+
+    /// Displacement as part of the instruction for BRA/BSR/Bcc
+    pub fn get_bxx_displacement(&self) -> i32 {
+        self.data as u8 as i8 as i32
     }
 
     /// Retrieves the data part of 'quick' instructions
@@ -563,5 +575,25 @@ impl Instruction {
         } else {
             result
         }
+    }
+
+    /// Retrieves the condition for a 'cc' instruction
+    pub fn get_cc(&self) -> usize {
+        usize::from((self.data >> 8) & 0b1111)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn displacement_sign() {
+        // BEQ -128, -1
+        let mut v = Vec::<u16>::from([0b110011110000000, 65535]);
+
+        let i = Instruction::try_decode(|| Ok(v.remove(0))).unwrap();
+        i.fetch_extword(|| Ok(v.remove(0))).unwrap();
+        assert_eq!(i.get_displacement().unwrap(), -1_i32);
     }
 }

@@ -2,7 +2,6 @@ use std::collections::VecDeque;
 
 use anyhow::{bail, Result};
 use either::Either;
-use itertools::max;
 use num_traits::FromBytes;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -547,6 +546,9 @@ where
             InstructionMnemonic::MOVEM_reg_l => self.op_movem_reg::<Long>(&instr),
             InstructionMnemonic::MOVEM_reg_w => self.op_movem_reg::<Word>(&instr),
             InstructionMnemonic::CHK => self.op_chk(&instr),
+            InstructionMnemonic::Scc => self.op_scc(&instr),
+            InstructionMnemonic::DBcc => self.op_dbcc(&instr),
+            InstructionMnemonic::Bcc => self.op_bcc(&instr),
 
             _ => todo!(),
         }
@@ -2029,7 +2031,7 @@ where
         };
 
         for (_, &reg) in regs.enumerate().filter(|(i, _)| mask & (1 << i) != 0) {
-            let mut v = self.regs.read::<T>(reg);
+            let v = self.regs.read::<T>(reg);
             if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
                 addr = addr.wrapping_sub(std::mem::size_of::<T>() as Address);
                 self.write_ticks_wflip(addr, v)?;
@@ -2058,7 +2060,7 @@ where
             .regs
             .read_d::<Word>(instr.get_op1())
             .expand_sign_extend() as i32;
-        let result = value - max;
+        let _result = value - max;
 
         match instr.get_addr_mode()? {
             AddressingMode::Indirect => self.advance_cycles(2)?,
@@ -2072,6 +2074,7 @@ where
 
         if value > max {
             match instr.get_addr_mode()? {
+                // TODO fix cycle accuracy, shorter instruction only for address registers?
                 AddressingMode::Indirect | AddressingMode::DataRegister => {
                     self.advance_cycles(6)?
                 }
@@ -2094,6 +2097,98 @@ where
         match instr.get_addr_mode()? {
             AddressingMode::Indirect => self.advance_cycles(4)?,
             _ => self.advance_cycles(4)?,
+        }
+        Ok(())
+    }
+
+    /// Condition test for Scc/DBcc/Bcc
+    fn cc(&self, condition: usize) -> bool {
+        match condition {
+            // True
+            0b0000 => true,
+            // False
+            0b0001 => false,
+            // Higher
+            0b0010 => !self.regs.sr.c() && !self.regs.sr.z(),
+            // Lower or same
+            0b0011 => self.regs.sr.c() || self.regs.sr.z(),
+            // Carry Clear
+            0b0100 => !self.regs.sr.c(),
+            // Carry Set
+            0b0101 => self.regs.sr.c(),
+            // Not Equal
+            0b0110 => !self.regs.sr.z(),
+            // Equal
+            0b0111 => self.regs.sr.z(),
+            // Overflow Clear
+            0b1000 => !self.regs.sr.v(),
+            // Overflow Set
+            0b1001 => self.regs.sr.v(),
+            // Plus
+            0b1010 => !self.regs.sr.n(),
+            // Minus
+            0b1011 => self.regs.sr.n(),
+            // Greater or Equal
+            0b1100 => self.regs.sr.n() == self.regs.sr.v(),
+            // Less Than
+            0b1101 => self.regs.sr.n() != self.regs.sr.v(),
+            // Greater Than
+            0b1110 => self.regs.sr.n() == self.regs.sr.v() && !self.regs.sr.z(),
+            // Less or Equal
+            0b1111 => self.regs.sr.n() != self.regs.sr.v() || self.regs.sr.z(),
+
+            _ => unreachable!(),
+        }
+    }
+
+    /// Scc
+    fn op_scc(&mut self, instr: &Instruction) -> Result<()> {
+        // Discarded read
+        self.read_ea::<Byte>(instr, instr.get_op2())?;
+
+        self.prefetch_pump()?;
+
+        let result = if self.cc(instr.get_cc()) {
+            if instr.get_addr_mode()? == AddressingMode::DataRegister {
+                self.advance_cycles(2)?;
+            }
+            0xFF
+        } else {
+            0
+        };
+
+        self.write_ea::<Byte>(instr, instr.get_op2(), result)?;
+        Ok(())
+    }
+
+    /// DBcc
+    fn op_dbcc(&mut self, instr: &Instruction) -> Result<()> {
+        Ok(())
+    }
+
+    /// Bcc
+    fn op_bcc(&mut self, instr: &Instruction) -> Result<()> {
+        let displacement = if instr.get_bxx_displacement() == 0 {
+            instr.fetch_extword(|| self.fetch())?;
+            instr.get_displacement()?
+        } else {
+            instr.get_bxx_displacement()
+        };
+
+        self.advance_cycles(2)?; // idle
+
+        if self.cc(instr.get_cc()) {
+            let pc = self
+                .regs
+                .pc
+                .wrapping_add_signed(displacement)
+                .wrapping_add(2);
+            self.set_pc(pc)?;
+
+            // Trigger address error now if unaligned..
+            self.prefetch_refill()?;
+        } else {
+            self.advance_cycles(2)?; // idle
         }
         Ok(())
     }

@@ -68,6 +68,7 @@ struct TestcaseTransactionIdle {
 
 /// Level of testing to perform
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[allow(dead_code)]
 enum TestLevel {
     /// Only state (no cycles or transactions)
     StateOnly,
@@ -415,14 +416,16 @@ cpu_test!(and_w, "AND.w");
 //cpu_test!(asr_b, "ASR.b");
 //cpu_test!(asr_l, "ASR.l");
 //cpu_test!(asr_w, "ASR.w");
-//cpu_test!(bcc, "Bcc");
+cpu_test!(bcc, "Bcc");
 cpu_test!(bchg, "BCHG");
 cpu_test!(bclr, "BCLR");
 cpu_test!(bset, "BSET");
 //cpu_test!(bsr, "BSR");
 cpu_test!(btst, "BTST");
+
 // TODO cycle accuracy
 cpu_test!(chk, "CHK", TestLevel::StateOnly);
+
 cpu_test!(clr_b, "CLR.b");
 cpu_test!(clr_l, "CLR.l");
 cpu_test!(clr_w, "CLR.w");
@@ -506,7 +509,7 @@ cpu_test!(rte, "RTE");
 cpu_test!(rtr, "RTR");
 cpu_test!(rts, "RTS");
 cpu_test!(sbcd, "SBCD");
-//cpu_test!(scc, "Scc");
+cpu_test!(scc, "Scc");
 cpu_test!(suba_l, "SUBA.l");
 cpu_test!(suba_w, "SUBA.w");
 cpu_test!(sub_b, "SUB.b");
