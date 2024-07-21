@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use anyhow::{bail, Result};
 use either::Either;
-use num_traits::FromBytes;
+use num_traits::{FromBytes, WrappingAdd};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -549,7 +549,8 @@ where
             InstructionMnemonic::CHK => self.op_chk(&instr),
             InstructionMnemonic::Scc => self.op_scc(&instr),
             InstructionMnemonic::DBcc => self.op_dbcc(&instr),
-            InstructionMnemonic::Bcc => self.op_bcc(&instr),
+            InstructionMnemonic::Bcc => self.op_bcc::<false>(&instr),
+            InstructionMnemonic::BSR => self.op_bcc::<true>(&instr),
 
             _ => todo!(),
         }
@@ -2191,8 +2192,8 @@ where
         Ok(())
     }
 
-    /// Bcc
-    fn op_bcc(&mut self, instr: &Instruction) -> Result<()> {
+    /// Bcc/BSR
+    fn op_bcc<const BSR: bool>(&mut self, instr: &Instruction) -> Result<()> {
         let displacement = if instr.get_bxx_displacement() == 0 {
             instr.fetch_extword(|| self.fetch())?;
             instr.get_displacement()?
@@ -2202,7 +2203,19 @@ where
 
         self.advance_cycles(2)?; // idle
 
-        if self.cc(instr.get_cc()) {
+        if BSR || self.cc(instr.get_cc()) {
+            if BSR {
+                // Push current PC to stack
+                let addr = self.regs.read_a_predec(7, std::mem::size_of::<Long>());
+                let stack_pc = if instr.get_bxx_displacement() == 0 {
+                    // Offset by instruction + displacement word
+                    self.regs.pc.wrapping_add(4)
+                } else {
+                    // Offset by instruction
+                    self.regs.pc.wrapping_add(2)
+                };
+                self.write_ticks(addr, stack_pc)?;
+            }
             let pc = self
                 .regs
                 .pc

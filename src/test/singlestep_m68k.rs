@@ -420,7 +420,7 @@ cpu_test!(bcc, "Bcc");
 cpu_test!(bchg, "BCHG");
 cpu_test!(bclr, "BCLR");
 cpu_test!(bset, "BSET");
-//cpu_test!(bsr, "BSR");
+cpu_test!(bsr, "BSR");
 cpu_test!(btst, "BTST");
 
 // TODO cycle accuracy
