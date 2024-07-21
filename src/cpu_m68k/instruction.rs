@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 
+use super::regs::Register;
 use super::{CpuSized, Long, Word};
 
 use crate::bus::Address;
@@ -391,6 +392,7 @@ impl Instruction {
         (0b1100_0000_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::MULU_w),
         (0b1100_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::MULS_w),
         (0b1100_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::ABCD),
+        (0b1100_0001_0000_0000, 0b1111_0001_0011_0000, InstructionMnemonic::EXG),
         (0b1100_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::AND_b),
         (0b1100_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::AND_w),
         (0b1100_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::AND_l),
@@ -588,6 +590,17 @@ impl Instruction {
     /// Retrieves the condition for a 'cc' instruction
     pub fn get_cc(&self) -> usize {
         usize::from((self.data >> 8) & 0b1111)
+    }
+
+    /// Retrieves left and right operands for EXG
+    pub fn get_exg_ops(&self) -> Result<(Register, Register)> {
+        let mode = (self.data >> 3) & 0b11111;
+        match mode {
+            0b01000 => Ok((Register::Dn(self.get_op1()), Register::Dn(self.get_op2()))),
+            0b01001 => Ok((Register::An(self.get_op1()), Register::An(self.get_op2()))),
+            0b10001 => Ok((Register::Dn(self.get_op1()), Register::An(self.get_op2()))),
+            _ => Err(anyhow!("Invalid EXG mode: {0:b}", mode)),
+        }
     }
 }
 

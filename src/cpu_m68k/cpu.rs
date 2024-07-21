@@ -551,7 +551,7 @@ where
             InstructionMnemonic::Bcc => self.op_bcc::<false>(&instr),
             InstructionMnemonic::BSR => self.op_bcc::<true>(&instr),
             InstructionMnemonic::MOVEQ => self.op_moveq(&instr),
-            InstructionMnemonic::EXG => todo!(),
+            InstructionMnemonic::EXG => self.op_exg(&instr),
         }
     }
 
@@ -2240,6 +2240,21 @@ where
         self.regs.sr.set_v(false);
         self.regs.sr.set_z(value == 0);
         self.regs.sr.set_n(value & Long::msb() != 0);
+
+        Ok(())
+    }
+
+    /// EXG
+    fn op_exg(&mut self, instr: &Instruction) -> Result<()> {
+        let (reg_l, reg_r) = instr.get_exg_ops()?;
+
+        let left = self.regs.read::<Long>(reg_l);
+        let right = self.regs.read::<Long>(reg_r);
+        self.regs.write(reg_l, right);
+        self.regs.write(reg_r, left);
+
+        self.prefetch_pump()?;
+        self.advance_cycles(2)?; // idle
 
         Ok(())
     }

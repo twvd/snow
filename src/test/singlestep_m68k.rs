@@ -442,7 +442,7 @@ cpu_test!(eoritoccr, "EORItoCCR");
 cpu_test!(eoritosr, "EORItoSR");
 cpu_test!(eor_l, "EOR.l");
 cpu_test!(eor_w, "EOR.w");
-//cpu_test!(exg, "EXG");
+cpu_test!(exg, "EXG");
 cpu_test!(ext_l, "EXT.l");
 cpu_test!(ext_w, "EXT.w");
 cpu_test!(jmp, "JMP");
