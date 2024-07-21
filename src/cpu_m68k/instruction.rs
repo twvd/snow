@@ -112,6 +112,7 @@ pub enum InstructionMnemonic {
     MOVEM_mem_l,
     MOVEM_reg_w,
     MOVEM_reg_l,
+    MOVEQ,
     // no MULU_l, MULU_b
     MULU_w,
     // no MULS_l, MULS_b
@@ -367,6 +368,7 @@ impl Instruction {
         // BRA is actually just Bcc with cond = True
         (0b0110_0001_0000_0000, 0b1111_1111_0000_0000, InstructionMnemonic::BSR),
         (0b0110_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::Bcc),
+        (0b0111_0000_0000_0000, 0b1111_0001_0000_0000, InstructionMnemonic::MOVEQ),
         (0b1001_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SUBX_b),
         (0b1001_0001_0100_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SUBX_w),
         (0b1001_0001_1000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SUBX_l),
@@ -573,7 +575,7 @@ impl Instruction {
         self.data as u8 as i8 as i32
     }
 
-    /// Retrieves the data part of 'quick' instructions
+    /// Retrieves the data part of 'quick' instructions (except MOVEQ)
     pub fn get_quick<T: CpuSized>(&self) -> T {
         let result = T::chop(((self.data as Long) >> 9) & 0b111);
         if result == T::zero() {

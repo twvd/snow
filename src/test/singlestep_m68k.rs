@@ -468,7 +468,7 @@ cpu_test!(movem_l, "MOVEM.l");
 cpu_test!(movem_w, "MOVEM.w");
 cpu_test!(movep_l, "MOVEP.l");
 cpu_test!(movep_w, "MOVEP.w");
-//cpu_test!(move_q, "MOVE.q");
+cpu_test!(move_q, "MOVE.q");
 cpu_test!(movetoccr, "MOVEtoCCR");
 cpu_test!(movetosr, "MOVEtoSR");
 cpu_test!(movetousp, "MOVEtoUSP");

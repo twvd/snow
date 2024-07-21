@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use anyhow::{bail, Result};
 use either::Either;
-use num_traits::{FromBytes, WrappingAdd};
+use num_traits::FromBytes;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -390,7 +390,6 @@ where
 
     /// Executes a previously decoded instruction.
     fn execute_instruction(&mut self, instr: &Instruction) -> Result<()> {
-        dbg!(&instr);
         match instr.mnemonic {
             InstructionMnemonic::AND_l => self.op_bitwise::<Long>(&instr, |a, b| a & b),
             InstructionMnemonic::AND_w => self.op_bitwise::<Word>(&instr, |a, b| a & b),
@@ -551,8 +550,8 @@ where
             InstructionMnemonic::DBcc => self.op_dbcc(&instr),
             InstructionMnemonic::Bcc => self.op_bcc::<false>(&instr),
             InstructionMnemonic::BSR => self.op_bcc::<true>(&instr),
-
-            _ => todo!(),
+            InstructionMnemonic::MOVEQ => self.op_moveq(&instr),
+            InstructionMnemonic::EXG => todo!(),
         }
     }
 
@@ -2228,6 +2227,20 @@ where
         } else {
             self.advance_cycles(2)?; // idle
         }
+        Ok(())
+    }
+
+    /// MOVEQ
+    fn op_moveq(&mut self, instr: &Instruction) -> Result<()> {
+        let value: Long = (instr.data as u8).expand_sign_extend();
+
+        self.regs.write_d(instr.get_op1(), value);
+
+        self.regs.sr.set_c(false);
+        self.regs.sr.set_v(false);
+        self.regs.sr.set_z(value == 0);
+        self.regs.sr.set_n(value & Long::msb() != 0);
+
         Ok(())
     }
 }
