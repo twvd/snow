@@ -25,6 +25,9 @@ pub trait CpuSized:
     + WrappingShl
     + WrappingShr
     + std::fmt::Display
+    + std::ops::BitOrAssign
+    + std::ops::ShlAssign
+    + std::ops::ShrAssign
 {
     /// Expands the value in the generic to a full register's width
     fn expand(self) -> Long;
@@ -54,7 +57,10 @@ where
         + std::convert::From<u8>
         + WrappingShl
         + WrappingShr
-        + std::fmt::Display,
+        + std::fmt::Display
+        + std::ops::BitOrAssign
+        + std::ops::ShlAssign
+        + std::ops::ShrAssign,
     Long: LossyInto<T>,
     <T as ToBytes>::Bytes: AsMut<[u8]>,
     T: FromBytes<Bytes = <T as ToBytes>::Bytes>,

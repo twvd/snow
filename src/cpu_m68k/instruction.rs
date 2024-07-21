@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use either::Either;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 
@@ -39,6 +40,14 @@ pub enum InstructionMnemonic {
     ANDI_b,
     ANDI_ccr,
     ANDI_sr,
+    ASL_ea,
+    ASL_b,
+    ASL_w,
+    ASL_l,
+    ASR_b,
+    ASR_w,
+    ASR_l,
+    ASR_ea,
     Bcc,
     BCHG_dn,
     BCLR_dn,
@@ -404,6 +413,14 @@ impl Instruction {
         (0b1101_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::ADD_l),
         (0b1101_0000_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::ADDA_w),
         (0b1101_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::ADDA_l),
+        (0b1110_0000_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ASR_ea),
+        (0b1110_0001_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ASL_ea),
+        (0b1110_0000_0000_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ASR_b),
+        (0b1110_0001_0000_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ASL_b),
+        (0b1110_0000_0100_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ASR_w),
+        (0b1110_0001_0100_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ASL_w),
+        (0b1110_0000_1000_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ASR_l),
+        (0b1110_0001_1000_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ASL_l),
     ];
 
     /// Attempts to decode an instruction from a fetch input function.
@@ -600,6 +617,16 @@ impl Instruction {
             0b01001 => Ok((Register::An(self.get_op1()), Register::An(self.get_op2()))),
             0b10001 => Ok((Register::Dn(self.get_op1()), Register::An(self.get_op2()))),
             _ => Err(anyhow!("Invalid EXG mode: {0:b}", mode)),
+        }
+    }
+
+    /// Retrieves shift count/register for the rotate/shift instructions
+    pub fn get_sh_count(&self) -> Either<Long, Register> {
+        let rotation = (self.data >> 9) & 0b111;
+        match (self.data >> 5) & 1 {
+            0 => Either::Left(if rotation == 0 { 8 } else { rotation.into() }),
+            1 => Either::Right(Register::Dn(rotation.into())),
+            _ => unreachable!(),
         }
     }
 }

@@ -552,6 +552,14 @@ where
             InstructionMnemonic::BSR => self.op_bcc::<true>(&instr),
             InstructionMnemonic::MOVEQ => self.op_moveq(&instr),
             InstructionMnemonic::EXG => self.op_exg(&instr),
+            InstructionMnemonic::ASL_b => self.op_shrot::<Byte>(&instr, Self::alu_asl),
+            InstructionMnemonic::ASL_w => self.op_shrot::<Word>(&instr, Self::alu_asl),
+            InstructionMnemonic::ASL_l => self.op_shrot::<Long>(&instr, Self::alu_asl),
+            InstructionMnemonic::ASR_b => self.op_shrot::<Byte>(&instr, Self::alu_asr),
+            InstructionMnemonic::ASR_w => self.op_shrot::<Word>(&instr, Self::alu_asr),
+            InstructionMnemonic::ASR_l => self.op_shrot::<Long>(&instr, Self::alu_asr),
+            InstructionMnemonic::ASL_ea => self.op_shrot_ea(&instr, Self::alu_asl),
+            InstructionMnemonic::ASR_ea => self.op_shrot_ea(&instr, Self::alu_asr),
         }
     }
 
@@ -2255,6 +2263,51 @@ where
 
         self.prefetch_pump()?;
         self.advance_cycles(2)?; // idle
+
+        Ok(())
+    }
+
+    /// ASd, LSd, ROd, ROXd
+    fn op_shrot<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        calcfn: fn(T, usize, RegisterSR) -> (T, u8),
+    ) -> Result<()> {
+        let count = match instr.get_sh_count() {
+            Either::Left(i) => i as usize,
+            Either::Right(r) => (self.regs.read::<Long>(r) % 64) as usize,
+        };
+
+        self.prefetch_pump()?;
+
+        let value = self.regs.read_d::<T>(instr.get_op2());
+        let (result, ccr) = calcfn(value, count, self.regs.sr);
+        self.regs.write_d(instr.get_op2(), result);
+        self.regs.sr.set_ccr(ccr);
+
+        self.advance_cycles(2 * count)?;
+
+        match std::mem::size_of::<T>() {
+            4 => self.advance_cycles(4)?,
+            _ => self.advance_cycles(2)?,
+        };
+
+        Ok(())
+    }
+
+    /// ASd, LSd, ROd, ROXd (effective address, always Word)
+    fn op_shrot_ea(
+        &mut self,
+        instr: &Instruction,
+        calcfn: fn(Word, usize, RegisterSR) -> (Word, u8),
+    ) -> Result<()> {
+        let value = self.read_ea::<Word>(instr, instr.get_op2())?;
+
+        self.prefetch_pump()?;
+
+        let (result, ccr) = calcfn(value, 1, self.regs.sr);
+        self.write_ea::<Word>(instr, instr.get_op2(), result)?;
+        self.regs.sr.set_ccr(ccr);
 
         Ok(())
     }

@@ -410,12 +410,12 @@ cpu_test!(anditoccr, "ANDItoCCR");
 cpu_test!(anditosr, "ANDItoSR");
 cpu_test!(and_l, "AND.l");
 cpu_test!(and_w, "AND.w");
-//cpu_test!(asl_b, "ASL.b");
-//cpu_test!(asl_l, "ASL.l");
-//cpu_test!(asl_w, "ASL.w");
-//cpu_test!(asr_b, "ASR.b");
-//cpu_test!(asr_l, "ASR.l");
-//cpu_test!(asr_w, "ASR.w");
+cpu_test!(asl_b, "ASL.b");
+cpu_test!(asl_l, "ASL.l");
+cpu_test!(asl_w, "ASL.w");
+cpu_test!(asr_b, "ASR.b");
+cpu_test!(asr_l, "ASR.l");
+cpu_test!(asr_w, "ASR.w");
 cpu_test!(bcc, "Bcc");
 cpu_test!(bchg, "BCHG");
 cpu_test!(bclr, "BCLR");
@@ -462,7 +462,7 @@ cpu_test!(movefromsr, "MOVEfromSR");
 cpu_test!(movefromusp, "MOVEfromUSP");
 
 // TODO fix all the insane edge cases of MOVE.l
-//cpu_test_nt!(move_l, "MOVE.l");
+//cpu_test!(move_l, "MOVE.l", TestLevel::StateOnly);
 
 cpu_test!(movem_l, "MOVEM.l");
 cpu_test!(movem_w, "MOVEM.w");

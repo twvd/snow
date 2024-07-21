@@ -172,4 +172,56 @@ where
 
         (result as Byte, new_f.ccr())
     }
+
+    /// Arithmetic right shift
+    pub(super) fn alu_asr<T: CpuSized>(mut value: T, count: usize, mut f: RegisterSR) -> (T, u8) {
+        let mut overflow = T::zero();
+
+        f.set_c(false);
+
+        for _ in 0..count {
+            let old = value;
+            let msb = value & T::msb() != T::zero();
+
+            f.set_c(value & T::one() != T::zero());
+
+            value >>= T::one();
+            if msb {
+                value |= T::msb();
+            }
+            overflow |= old ^ value;
+        }
+
+        f.set_v(overflow & T::msb() != T::zero());
+        f.set_z(value == T::zero());
+        f.set_n(value & T::msb() != T::zero());
+        if count != 0 {
+            f.set_x(f.c());
+        }
+        (value, f.ccr())
+    }
+
+    /// Arithmetic left shift
+    pub(super) fn alu_asl<T: CpuSized>(mut value: T, count: usize, mut f: RegisterSR) -> (T, u8) {
+        let mut overflow = T::zero();
+
+        f.set_c(false);
+
+        for _ in 0..count {
+            let old = value;
+
+            f.set_c(value & T::msb() != T::zero());
+
+            value <<= T::one();
+            overflow |= old ^ value;
+        }
+
+        f.set_v(overflow & T::msb() != T::zero());
+        f.set_z(value == T::zero());
+        f.set_n(value & T::msb() != T::zero());
+        if count != 0 {
+            f.set_x(f.c());
+        }
+        (value, f.ccr())
+    }
 }
