@@ -360,8 +360,8 @@ impl Instruction {
         (0b0101_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_b),
         (0b0101_0001_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_w),
         (0b0101_0001_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_l),
-        (0b0101_0000_1100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::Scc),
         (0b0101_0000_1100_1000, 0b1111_0000_1111_1000, InstructionMnemonic::DBcc),
+        (0b0101_0000_1100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::Scc),
         (0b0110_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::Bcc),
         (0b1001_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SUBX_b),
         (0b1001_0001_0100_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SUBX_w),
@@ -556,6 +556,7 @@ impl Instruction {
                 || self.mnemonic == InstructionMnemonic::MOVEP_w
                 || self.mnemonic == InstructionMnemonic::LINK
                 || self.mnemonic == InstructionMnemonic::Bcc
+                || self.mnemonic == InstructionMnemonic::DBcc
         );
         debug_assert!(self.extword.get().is_some());
 

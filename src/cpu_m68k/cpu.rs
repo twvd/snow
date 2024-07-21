@@ -390,6 +390,7 @@ where
 
     /// Executes a previously decoded instruction.
     fn execute_instruction(&mut self, instr: &Instruction) -> Result<()> {
+        dbg!(&instr);
         match instr.mnemonic {
             InstructionMnemonic::AND_l => self.op_bitwise::<Long>(&instr, |a, b| a & b),
             InstructionMnemonic::AND_w => self.op_bitwise::<Word>(&instr, |a, b| a & b),
@@ -2163,6 +2164,30 @@ where
 
     /// DBcc
     fn op_dbcc(&mut self, instr: &Instruction) -> Result<()> {
+        instr.fetch_extword(|| self.fetch())?;
+        let displacement = instr.get_displacement()?;
+
+        self.advance_cycles(2)?; // idle
+
+        if !self.cc(instr.get_cc()) {
+            let dn = self.regs.read_d::<Word>(instr.get_op2()).wrapping_sub(1);
+            self.regs.write_d::<Word>(instr.get_op2(), dn);
+
+            if dn != 0xFFFF {
+                let pc = self
+                    .regs
+                    .pc
+                    .wrapping_add_signed(displacement)
+                    .wrapping_add(2);
+                self.set_pc(pc)?;
+
+                // Trigger address error now if unaligned..
+                self.prefetch_refill()?;
+            }
+        } else {
+            self.advance_cycles(2)?; // idle
+        }
+
         Ok(())
     }
 
