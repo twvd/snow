@@ -261,8 +261,8 @@ fn print_result(cpu: &CpuM68k<Testbus<Address, u8>>, testcase: &Testcase) {
             }
             TestcaseTransaction::Rw(t) => {
                 eprintln!(
-                    "{:<4} {:<4} {:<5?}/{:<5?} {:06X} {:02X}",
-                    abs_cycles, t.cycles, t.action, t.access, t.address, t.value
+                    "{:<4} {:<4} {:<5?}/{:<5?} {:06X} {:02X} UDS={} LDS={}",
+                    abs_cycles, t.cycles, t.action, t.access, t.address, t.value, t.uds, t.lds
                 );
                 abs_cycles += t.cycles;
             }
@@ -374,9 +374,20 @@ fn run_testcase(testcase: Testcase, level: TestLevel) {
                         if trace
                             .iter()
                             .find(|&&a| {
-                                a.cycle == cycle
+                                if a.cycle == cycle
                                     && (a.addr & !1) == (t.address & !1)
                                     && a.access == expected_access
+                                {
+                                    if t.lds & t.uds == 0 {
+                                        // Byte access, check lower bit of address
+                                        let lsb = a.addr & 1 != 0;
+                                        (t.lds == 1 && lsb) || (t.uds == 1 && !lsb)
+                                    } else {
+                                        true
+                                    }
+                                } else {
+                                    false
+                                }
                             })
                             .is_some()
                         {
