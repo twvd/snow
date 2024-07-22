@@ -224,4 +224,120 @@ where
         }
         (value, f.ccr())
     }
+
+    /// Logical left shift
+    pub(super) fn alu_lsl<T: CpuSized>(mut value: T, count: usize, mut f: RegisterSR) -> (T, u8) {
+        f.set_c(false);
+        f.set_v(false);
+
+        for _ in 0..count {
+            f.set_c(value & T::msb() != T::zero());
+
+            value <<= T::one();
+        }
+
+        f.set_z(value == T::zero());
+        f.set_n(value & T::msb() != T::zero());
+        if count != 0 {
+            f.set_x(f.c());
+        }
+        (value, f.ccr())
+    }
+
+    /// Logical right shift
+    pub(super) fn alu_lsr<T: CpuSized>(mut value: T, count: usize, mut f: RegisterSR) -> (T, u8) {
+        f.set_c(false);
+        f.set_v(false);
+
+        for _ in 0..count {
+            f.set_c(value & T::one() != T::zero());
+
+            value >>= T::one();
+        }
+
+        f.set_z(value == T::zero());
+        f.set_n(value & T::msb() != T::zero());
+        if count != 0 {
+            f.set_x(f.c());
+        }
+        (value, f.ccr())
+    }
+
+    /// Rotate left
+    pub(super) fn alu_rol<T: CpuSized>(mut value: T, count: usize, mut f: RegisterSR) -> (T, u8) {
+        // For shift count 0, carry is cleared
+        f.set_c(false);
+
+        for _ in 0..count {
+            f.set_c(value & T::msb() != T::zero());
+
+            value <<= T::one();
+            if f.c() {
+                value |= T::one();
+            }
+        }
+
+        f.set_z(value == T::zero());
+        f.set_n(value & T::msb() != T::zero());
+        f.set_v(false);
+        (value, f.ccr())
+    }
+
+    /// Rotate right
+    pub(super) fn alu_ror<T: CpuSized>(mut value: T, count: usize, mut f: RegisterSR) -> (T, u8) {
+        // For shift count 0, carry is cleared
+        f.set_c(false);
+
+        for _ in 0..count {
+            f.set_c(value & T::one() != T::zero());
+
+            value >>= T::one();
+            if f.c() {
+                value |= T::msb();
+            }
+        }
+
+        f.set_z(value == T::zero());
+        f.set_n(value & T::msb() != T::zero());
+        f.set_v(false);
+        (value, f.ccr())
+    }
+
+    /// Rotate left with extend
+    pub(super) fn alu_roxl<T: CpuSized>(mut value: T, count: usize, mut f: RegisterSR) -> (T, u8) {
+        for _ in 0..count {
+            let x = f.x();
+            f.set_x(value & T::msb() != T::zero());
+
+            value <<= T::one();
+            if x {
+                value |= T::one();
+            }
+        }
+
+        f.set_c(f.x());
+        f.set_z(value == T::zero());
+        f.set_n(value & T::msb() != T::zero());
+        f.set_v(false);
+        (value, f.ccr())
+    }
+
+    /// Rotate right with extend
+    pub(super) fn alu_roxr<T: CpuSized>(mut value: T, count: usize, mut f: RegisterSR) -> (T, u8) {
+        for _ in 0..count {
+            let x = f.x();
+            f.set_x(value & T::one() != T::zero());
+
+            value >>= T::one();
+            if x {
+                value |= T::msb();
+            }
+        }
+
+        f.set_c(f.x());
+        f.set_z(value == T::zero());
+        f.set_n(value & T::msb() != T::zero());
+        f.set_v(false);
+        (value, f.ccr())
+    }
 }
