@@ -298,6 +298,17 @@ pub struct Instruction {
     pub extword: Cell<Option<ExtWord>>,
 }
 
+impl Clone for Instruction {
+    fn clone(&self) -> Instruction {
+        // Clone drops the loaded extension word
+        Instruction {
+            mnemonic: self.mnemonic,
+            data: self.data,
+            extword: Cell::new(None),
+        }
+    }
+}
+
 impl Instruction {
     #[rustfmt::skip]
     const DECODE_TABLE: &'static [(u16, u16, InstructionMnemonic)] = &[
@@ -471,12 +482,8 @@ impl Instruction {
         (0b1110_0001_1001_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROL_l),
     ];
 
-    /// Attempts to decode an instruction from a fetch input function.
-    pub fn try_decode<F>(mut fetch: F) -> Result<Instruction>
-    where
-        F: FnMut() -> Result<u16>,
-    {
-        let data = fetch()?;
+    /// Attempts to decode an instruction.
+    pub fn try_decode(data: Word) -> Result<Instruction> {
         for &(val, mask, mnemonic) in Self::DECODE_TABLE.into_iter() {
             if data & mask == val {
                 return Ok(Instruction {
@@ -688,7 +695,7 @@ mod tests {
         // BEQ -128, -1
         let mut v = Vec::<u16>::from([0b110011110000000, 65535]);
 
-        let i = Instruction::try_decode(|| Ok(v.remove(0))).unwrap();
+        let i = Instruction::try_decode(v.remove(0)).unwrap();
         i.fetch_extword(|| Ok(v.remove(0))).unwrap();
         assert_eq!(i.get_displacement().unwrap(), -1_i32);
     }

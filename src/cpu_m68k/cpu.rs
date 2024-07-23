@@ -80,18 +80,41 @@ const MOVEM_REGS: [Register; 16] = [
     Register::Dn(0),
 ];
 
+/// Instruction decode cache. Each opcode (16-bit) has a slot, index = opcode.
+type DecodeCache = Box<[Option<Instruction>; Word::MAX as usize + 1]>;
+
+/// Creates an empty instruction cache
+fn empty_decode_cache() -> DecodeCache {
+    Box::new([const { Option::<Instruction>::None }; Word::MAX as usize + 1])
+}
+
 /// Motorola 680x0
 #[derive(Serialize, Deserialize)]
 pub struct CpuM68k<TBus: Bus<Address, u8>> {
     /// Exception occured this step
     pub step_exception: bool,
+
+    /// External address/data bus
     pub bus: TBus,
+
+    /// Register state
     pub regs: RegisterFile,
+
+    /// Total cycle counter
     pub cycles: Ticks,
+
+    /// Current prefetch queue
     pub prefetch: VecDeque<u16>,
 
+    /// Effective Address cache for this step
     step_ea_addr: Option<Address>,
+
+    /// Value to load to an address register by ea_commit().
     step_ea_load: Option<(usize, Address)>,
+
+    /// Instruction decode cache
+    #[serde(skip, default = "empty_decode_cache")]
+    decode_cache: DecodeCache,
 }
 
 impl<TBus> CpuM68k<TBus>
@@ -107,9 +130,11 @@ where
             step_ea_addr: None,
             step_exception: false,
             step_ea_load: None,
+            decode_cache: empty_decode_cache(),
         }
     }
 
+    /// Pumps the prefetch queue, unless it is already full
     fn prefetch_pump(&mut self) -> Result<()> {
         if self.prefetch.len() >= 2 {
             return Ok(());
@@ -117,6 +142,7 @@ where
         self.prefetch_pump_force()
     }
 
+    /// Pumps a new word into the prefetch queue, regardless of current queue length
     fn prefetch_pump_force(&mut self) -> Result<()> {
         let fetch_addr = self.regs.pc.wrapping_add(4) & ADDRESS_MASK;
         let new_item = self.read_ticks::<Word>(fetch_addr)?;
@@ -155,8 +181,11 @@ where
         self.step_ea_addr = None;
         self.step_exception = false;
 
-        let instr = Instruction::try_decode(|| self.fetch())?;
-        // TODO decoded instruction cache
+        let opcode = self.fetch()?;
+        if self.decode_cache[opcode as usize].is_none() {
+            self.decode_cache[opcode as usize] = Some(Instruction::try_decode(opcode)?);
+        }
+        let instr = self.decode_cache[opcode as usize].clone().unwrap();
 
         match self.execute_instruction(&instr) {
             Ok(()) => {
