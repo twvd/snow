@@ -45,6 +45,10 @@ enum ExceptionGroup {
 }
 
 // Exception vectors
+/// Stack pointer initialization
+const VECTOR_SP: Address = 0x00000000;
+/// Reset vector
+const VECTOR_RESET: Address = 0x00000004;
 /// Address error exception vector
 const VECTOR_ACCESS_ERROR: Address = 0x00000C;
 /// Illegal instruction exception vector
@@ -132,6 +136,21 @@ where
             step_ea_load: None,
             decode_cache: empty_decode_cache(),
         }
+    }
+
+    /// Resets the CPU, loads reset vector and initial SP
+    pub fn reset(&mut self) -> Result<()> {
+        self.regs = RegisterFile::new();
+        self.cycles = 0;
+        let init_ssp = self.read_ticks(VECTOR_SP)?;
+        let init_pc = self.read_ticks(VECTOR_RESET)?;
+
+        println!("Reset - SSP: {:08X}, PC: {:08X}", init_ssp, init_pc);
+        self.regs.ssp = init_ssp;
+        self.regs.sr.set_supervisor(true);
+        self.set_pc(init_pc)?;
+
+        Ok(())
     }
 
     /// Pumps the prefetch queue, unless it is already full
