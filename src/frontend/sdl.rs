@@ -78,11 +78,7 @@ impl Renderer for SDLRenderer {
             let sdls = cell.borrow_mut();
             let video_subsystem = sdls.context.video().map_err(|e| anyhow!(e))?;
             let window = video_subsystem
-                .window(
-                    "Snow",
-                    (width * 2).try_into()?,
-                    (height * 2).try_into()?,
-                )
+                .window("Snow", (width * 2).try_into()?, (height * 2).try_into()?)
                 .position_centered()
                 .build()?;
 

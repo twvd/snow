@@ -5,8 +5,8 @@ use std::fs;
 use std::sync::atomic::Ordering;
 
 use snow::cpu_m68k::cpu::CpuM68k;
-use snow::frontend::Renderer;
 use snow::frontend::sdl::SDLRenderer;
+use snow::frontend::Renderer;
 use snow::mac::bus::MacBus;
 
 const SCREEN_HEIGHT: usize = 512;
@@ -26,8 +26,8 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     // Initialize display
-    //let mut renderer = SDLRenderer::new(SCREEN_HEIGHT, SCREEN_WIDTH)?;
-    
+    let mut renderer = SDLRenderer::new(SCREEN_HEIGHT, SCREEN_WIDTH)?;
+
     // Initialize ROM
     let rom = fs::read(&args.rom_filename)?;
 
@@ -40,23 +40,23 @@ fn main() -> Result<()> {
         //println!("PC: {:08X}", cpu.regs.pc);
         cpu.step()?;
 
-        //if i % 10000 == 0 {
-        //    let buf = renderer.get_buffer();
-        //    for idx in 0..(SCREEN_WIDTH * SCREEN_HEIGHT) {
-        //        let byte = idx / 8;
-        //        let bit = idx % 8;
-        //        if cpu.bus.ram[0x072700 + byte] & (1 << bit) == 0 {
-        //            for i in 0..4 {
-        //                buf[idx * 4 + i].store(0, Ordering::Release);
-        //            }
-        //        } else {
-        //            for i in 0..4 {
-        //                buf[idx * 4 + i].store(0xFF, Ordering::Release);
-        //            }
-        //        }
-        //    }
-        //    renderer.update()?;
-        //}
+        if i % 10000 == 0 {
+            let buf = renderer.get_buffer();
+            for idx in 0..(SCREEN_WIDTH * SCREEN_HEIGHT) {
+                let byte = idx / 8;
+                let bit = idx % 8;
+                if cpu.bus.ram[0 + byte] & (1 << bit) == 0 {
+                    for i in 0..4 {
+                        buf[idx * 4 + i].store(0, Ordering::Release);
+                    }
+                } else {
+                    for i in 0..4 {
+                        buf[idx * 4 + i].store(0xFF, Ordering::Release);
+                    }
+                }
+            }
+            renderer.update()?;
+        }
     }
 
     Ok(())

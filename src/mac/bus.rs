@@ -1,4 +1,5 @@
-use crate::bus::{Address, Bus};
+use super::via::Via;
+use crate::bus::{Address, Bus, BusMember};
 use crate::cpu_m68k::Byte;
 use crate::tickable::{Tickable, Ticks};
 
@@ -7,6 +8,7 @@ use anyhow::Result;
 pub struct MacBus {
     rom: Vec<u8>,
     pub ram: Vec<u8>,
+    via: Via,
 }
 
 impl MacBus {
@@ -19,6 +21,7 @@ impl MacBus {
         Self {
             rom: Vec::from(rom),
             ram: vec![0xFF; Self::RAM_SIZE],
+            via: Via::new(),
         }
     }
 }
@@ -29,24 +32,36 @@ impl Bus<Address, Byte> for MacBus {
     }
 
     fn read(&self, addr: Address) -> Byte {
-        match addr {
+        let val = match addr {
             0x0000_0000..=0x000F_FFFF | 0x0040_0000..=0x004F_FFFF => {
-                self.rom[(addr & 0xFFFF) as usize]
+                Some(self.rom[(addr & 0xFFFF) as usize])
             }
-            0x0060_0000..=0x007F_FFFF => self.ram[addr as usize & (Self::RAM_SIZE - 1)],
+            0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)]),
             // IWD (ignore for now, too spammy)
-            0x00DF_F000..=0x00DF_FFFF => 0xFF,
-            _ => {
-                println!("Read from unimplemented address: {:08X}", addr);
-                0xFF
-            }
+            0x00DF_F000..=0x00DF_FFFF => Some(0xFF),
+            // VIA
+            0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
+
+            _ => None,
+        };
+
+        if let Some(v) = val {
+            v
+        } else {
+            println!("Read from unimplemented address: {:08X}", addr);
+            0xFF
         }
     }
 
     fn write(&mut self, addr: Address, val: Byte) {
-        match addr {
-            0x0060_0000..=0x007F_FFFF => self.ram[addr as usize & (Self::RAM_SIZE - 1)] = val,
-            _ => println!("write: {:08X} {:02X}", addr, val),
+        let written = match addr {
+            0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)] = val),
+            // VIA
+            0x00EF_0000..=0x00EF_FFFF => self.via.write(addr, val),
+            _ => None,
+        };
+        if written.is_none() {
+            println!("write: {:08X} {:02X}", addr, val);
         }
     }
 }
