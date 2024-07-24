@@ -1,5 +1,6 @@
 use super::via::Via;
 use crate::bus::{Address, Bus, BusMember};
+use crate::mac::video::Video;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
@@ -9,6 +10,7 @@ pub struct MacBus {
     rom: Vec<u8>,
     pub ram: Vec<u8>,
     via: Via,
+    video: Video,
 }
 
 impl MacBus {
@@ -22,6 +24,7 @@ impl MacBus {
             rom: Vec::from(rom),
             ram: vec![0xFF; Self::RAM_SIZE],
             via: Via::new(),
+            video: Video::new(),
         }
     }
 }
@@ -68,6 +71,20 @@ impl Bus<Address, Byte> for MacBus {
 
 impl Tickable for MacBus {
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+        assert_eq!(ticks, 1);
+
+        // Pixel clock (15.6672 MHz) is roughly 2x CPU speed
+        self.video.tick(2)?;
+
+        // Sync VIA registers
+        self.via.b.set_h4(self.video.in_hblank());
+
+        // VBlank interrupt
+        if self.video.get_clr_vblank() && self.via.irq_enable.vblank() {
+            println!("Vblank int!");
+            self.via.irq_flag.set_vblank(true);
+        }
+
         Ok(1)
     }
 }

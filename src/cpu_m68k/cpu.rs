@@ -818,6 +818,7 @@ where
 
     /// Writes a value to the operand (ea_in) using the effective addressing mode specified
     /// by the instruction, directly or through indirection, depending on the mode.
+    #[allow(dead_code)]
     fn write_ea_hold<T: CpuSized>(
         &mut self,
         instr: &Instruction,
