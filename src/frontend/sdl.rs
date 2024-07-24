@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::sync::atomic::AtomicU8;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{anyhow, Result};

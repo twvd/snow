@@ -1,8 +1,9 @@
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
-use super::{CpuSized, Long};
+use super::CpuSized;
 use crate::bus::Address;
+use crate::types::Long;
 
 use std::fmt;
 

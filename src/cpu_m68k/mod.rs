@@ -5,11 +5,8 @@ pub mod regs;
 
 use num_traits::{FromBytes, PrimInt, ToBytes, WrappingAdd, WrappingShl, WrappingShr};
 
+use crate::types::Long;
 use crate::util::lossyinto::LossyInto;
-
-pub type Byte = u8;
-pub type Word = u16;
-pub type Long = u32;
 
 /// Trait to deal with the differently sized instructions for:
 /// Byte (u8)

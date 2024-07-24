@@ -1,7 +1,7 @@
 use super::via::Via;
 use crate::bus::{Address, Bus, BusMember};
-use crate::cpu_m68k::Byte;
 use crate::tickable::{Tickable, Ticks};
+use crate::types::Byte;
 
 use anyhow::Result;
 

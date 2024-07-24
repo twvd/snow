@@ -1,8 +1,9 @@
 use super::cpu::CpuM68k;
 use super::regs::RegisterSR;
-use super::{Byte, CpuSized, Long, Word};
+use super::CpuSized;
 
 use crate::bus::{Address, Bus};
+use crate::types::{Byte, Long, Word};
 
 impl<TBus> CpuM68k<TBus>
 where

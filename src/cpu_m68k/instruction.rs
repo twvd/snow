@@ -4,9 +4,10 @@ use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 
 use super::regs::Register;
-use super::{CpuSized, Long, Word};
+use super::CpuSized;
 
 use crate::bus::Address;
+use crate::types::{Long, Word};
 
 use std::cell::Cell;
 

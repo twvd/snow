@@ -1,5 +1,5 @@
 use crate::bus::{Address, BusMember};
-use crate::cpu_m68k::Byte;
+use crate::types::Byte;
 
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
@@ -142,6 +142,12 @@ impl BusMember<Address> for Via {
 
     fn write(&mut self, addr: Address, val: Byte) -> Option<()> {
         match addr & 0xFFFF {
+            // Register B
+            0xE1FE => {
+                self.b.0 = val;
+                dbg!(&self.b);
+                Some(())
+            }
             // Interrupt flag register
             0xFBFE => {
                 self.irq_flag.0 = val;
@@ -152,12 +158,6 @@ impl BusMember<Address> for Via {
             0xFDFE => {
                 self.irq_enable.0 = val;
                 dbg!(&self.irq_enable);
-                Some(())
-            }
-            // Register B
-            0xE1FE => {
-                self.b.0 = val;
-                dbg!(&self.b);
                 Some(())
             }
             // Register A

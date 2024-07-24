@@ -8,13 +8,14 @@ use thiserror::Error;
 
 use crate::bus::{Address, Bus, ADDRESS_MASK};
 use crate::tickable::{Tickable, Ticks};
+use crate::types::{Byte, Long, Word};
 use crate::util::TemporalOrder;
 
 use super::instruction::{
     AddressingMode, Direction, IndexSize, Instruction, InstructionMnemonic, Xn,
 };
 use super::regs::{Register, RegisterFile, RegisterSR};
-use super::{Byte, CpuSized, Long, Word};
+use super::CpuSized;
 
 /// Access error details
 #[derive(Debug, Clone, Copy)]
