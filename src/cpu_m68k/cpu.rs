@@ -149,6 +149,7 @@ where
         self.regs.ssp = init_ssp;
         self.regs.sr.set_supervisor(true);
         self.set_pc(init_pc)?;
+        self.prefetch_refill()?;
 
         Ok(())
     }

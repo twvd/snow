@@ -6,7 +6,7 @@ use anyhow::Result;
 
 pub struct MacBus {
     rom: Vec<u8>,
-    ram: Vec<u8>,
+    pub ram: Vec<u8>,
 }
 
 impl MacBus {
@@ -34,6 +34,8 @@ impl Bus<Address, Byte> for MacBus {
                 self.rom[(addr & 0xFFFF) as usize]
             }
             0x0060_0000..=0x007F_FFFF => self.ram[addr as usize & (Self::RAM_SIZE - 1)],
+            // IWD (ignore for now, too spammy)
+            0x00DF_F000..=0x00DF_FFFF => 0xFF,
             _ => {
                 println!("Read from unimplemented address: {:08X}", addr);
                 0xFF
