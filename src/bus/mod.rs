@@ -57,6 +57,10 @@ impl<'a, TA: PrimInt + WrappingAdd, TD: PrimInt> Iterator for BusIterator<'a, TA
     }
 }
 
+pub trait IrqSource {
+    fn get_irq(&mut self) -> Option<u8>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::testbus::Testbus;

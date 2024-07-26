@@ -1,7 +1,7 @@
 use anyhow::Result;
 use num_traits::{PrimInt, WrappingAdd};
 
-use super::Bus;
+use super::{Bus, IrqSource};
 use crate::tickable::{Tickable, Ticks};
 
 use std::cell::RefCell;
@@ -108,6 +108,16 @@ where
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
         self.cycles += ticks;
         Ok(ticks)
+    }
+}
+
+impl<TA, TD> IrqSource for Testbus<TA, TD>
+where
+    TA: PrimInt + WrappingAdd + Hash + Debug,
+    TD: PrimInt,
+{
+    fn get_irq(&mut self) -> Option<u8> {
+        None
     }
 }
 

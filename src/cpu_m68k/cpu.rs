@@ -6,7 +6,7 @@ use num_traits::FromBytes;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::bus::{Address, Bus, ADDRESS_MASK};
+use crate::bus::{Address, Bus, IrqSource, ADDRESS_MASK};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, Long, Word};
 use crate::util::TemporalOrder;
@@ -97,7 +97,7 @@ fn empty_decode_cache() -> DecodeCache {
 
 /// Motorola 680x0
 #[derive(Serialize, Deserialize)]
-pub struct CpuM68k<TBus: Bus<Address, u8>> {
+pub struct CpuM68k<TBus: Bus<Address, u8> + IrqSource> {
     /// Exception occured this step
     pub step_exception: bool,
 
@@ -122,14 +122,11 @@ pub struct CpuM68k<TBus: Bus<Address, u8>> {
     /// Instruction decode cache
     #[serde(skip, default = "empty_decode_cache")]
     decode_cache: DecodeCache,
-
-    /// Pending autovector IRQ (level)
-    pending_irq_autovector: Option<u8>,
 }
 
 impl<TBus> CpuM68k<TBus>
 where
-    TBus: Bus<Address, u8>,
+    TBus: Bus<Address, u8> + IrqSource,
 {
     pub fn new(bus: TBus) -> Self {
         Self {
@@ -141,7 +138,6 @@ where
             step_exception: false,
             step_ea_load: None,
             decode_cache: empty_decode_cache(),
-            pending_irq_autovector: None,
         }
     }
 
@@ -209,9 +205,10 @@ where
         self.step_ea_addr = None;
         self.step_exception = false;
 
-        if let Some(level) = self.pending_irq_autovector {
-            self.pending_irq_autovector = None;
-            self.raise_irq(level, VECTOR_AUTOVECTOR_OFFSET + (Address::from(level) * 4))?;
+        if let Some(level) = self.bus.get_irq() {
+            if level == 7 || self.regs.sr.int_prio_mask() < level {
+                self.raise_irq(level, VECTOR_AUTOVECTOR_OFFSET + (Address::from(level) * 4))?;
+            }
         }
 
         let opcode = self.fetch()?;
@@ -377,24 +374,6 @@ where
     fn set_pc(&mut self, pc: Address) -> Result<()> {
         self.prefetch.clear();
         self.regs.pc = pc.wrapping_sub(4) & ADDRESS_MASK;
-        Ok(())
-    }
-
-    /// Sets an autovector IRQ pending (if above the requested level)
-    pub fn trigger_irq_autovector(&mut self, level: u8) -> Result<()> {
-        assert!(level <= 7);
-
-        if level != 7 && level <= self.regs.sr.int_prio_mask() {
-            // Masked
-            return Ok(());
-        }
-
-        if let Some(v) = self.pending_irq_autovector {
-            self.pending_irq_autovector = Some(std::cmp::min(v, level));
-        } else {
-            self.pending_irq_autovector = Some(level);
-        }
-
         Ok(())
     }
 
@@ -2457,7 +2436,7 @@ where
 
 impl<TBus> Tickable for CpuM68k<TBus>
 where
-    TBus: Bus<Address, u8>,
+    TBus: Bus<Address, u8> + IrqSource,
 {
     fn tick(&mut self, _ticks: Ticks) -> Result<Ticks> {
         self.step()?;

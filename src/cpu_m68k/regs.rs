@@ -205,8 +205,8 @@ impl fmt::Display for RegisterFile {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{Byte, Long, Word};
     use super::*;
+    use crate::types::{Byte, Long, Word};
 
     #[test]
     fn read_d() {

@@ -1,5 +1,5 @@
 use super::via::Via;
-use crate::bus::{Address, Bus, BusMember};
+use crate::bus::{Address, Bus, BusMember, IrqSource};
 use crate::mac::video::Video;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
@@ -95,5 +95,16 @@ impl Tickable for MacBus {
         }
 
         Ok(1)
+    }
+}
+
+impl IrqSource for MacBus {
+    fn get_irq(&mut self) -> Option<u8> {
+        // VIA IRQs
+        if self.via.irq_flag.0 != 0 {
+            return Some(1);
+        }
+
+        None
     }
 }

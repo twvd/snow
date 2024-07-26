@@ -2,12 +2,12 @@ use super::cpu::CpuM68k;
 use super::regs::RegisterSR;
 use super::CpuSized;
 
-use crate::bus::{Address, Bus};
+use crate::bus::{Address, Bus, IrqSource};
 use crate::types::{Byte, Long, Word};
 
 impl<TBus> CpuM68k<TBus>
 where
-    TBus: Bus<Address, u8>,
+    TBus: Bus<Address, u8> + IrqSource,
 {
     /// Add (a + b = c)
     pub(super) fn alu_add<T: CpuSized>(a: T, b: T, f: RegisterSR) -> (T, u8) {

@@ -43,10 +43,6 @@ fn main() -> Result<()> {
         //println!("PC: {:08X}", cpu.regs.pc);
         cpu.step()?;
 
-        if cpu.bus.via.irq_flag.0 != 0 {
-            cpu.trigger_irq_autovector(1)?;
-        }
-
         // TODO do less frequent/move emulator to its own thread
         while let Some(event) = eventpump.poll() {
             match event {
