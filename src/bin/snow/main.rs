@@ -1,11 +1,13 @@
 use anyhow::Result;
 use clap::Parser;
+use sdl2::event::Event;
+use sdl2::keyboard::Keycode;
 
 use std::fs;
 use std::sync::atomic::Ordering;
 
 use snow::cpu_m68k::cpu::CpuM68k;
-use snow::frontend::sdl::SDLRenderer;
+use snow::frontend::sdl::{SDLEventPump, SDLRenderer};
 use snow::frontend::Renderer;
 use snow::mac::bus::MacBus;
 
@@ -27,6 +29,7 @@ fn main() -> Result<()> {
 
     // Initialize display
     let mut renderer = SDLRenderer::new(SCREEN_HEIGHT, SCREEN_WIDTH)?;
+    let eventpump = SDLEventPump::new();
 
     // Initialize ROM
     let rom = fs::read(&args.rom_filename)?;
@@ -36,12 +39,24 @@ fn main() -> Result<()> {
     let mut cpu = CpuM68k::new(bus);
     cpu.reset()?;
 
-    for i in 0.. {
+    'mainloop: for i in 0.. {
         //println!("PC: {:08X}", cpu.regs.pc);
         cpu.step()?;
 
         if cpu.bus.via.irq_flag.0 != 0 {
             cpu.trigger_irq_autovector(1)?;
+        }
+
+        // TODO do less frequent/move emulator to its own thread
+        while let Some(event) = eventpump.poll() {
+            match event {
+                Event::KeyDown {
+                    keycode: Some(Keycode::Escape),
+                    ..
+                }
+                | Event::Quit { .. } => break 'mainloop,
+                _ => (),
+            }
         }
 
         if i % 10000 == 0 {
