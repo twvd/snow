@@ -184,7 +184,7 @@ impl RegisterFile {
         }
     }
 
-    /// Reae a register, specifying a Register type
+    /// Read a register, specifying a Register type
     pub fn read<T: CpuSized>(&mut self, reg: Register) -> T {
         match reg {
             Register::An(r) => self.read_a(r),

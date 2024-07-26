@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use either::Either;
 use num_traits::FromBytes;
 use serde::{Deserialize, Serialize};
@@ -213,7 +213,10 @@ where
 
         let opcode = self.fetch()?;
         if self.decode_cache[opcode as usize].is_none() {
-            self.decode_cache[opcode as usize] = Some(Instruction::try_decode(opcode)?);
+            self.decode_cache[opcode as usize] = Some(
+                Instruction::try_decode(opcode)
+                    .context(format!("Decode error @ {:08X}", self.regs.pc))?,
+            );
         }
         let instr = self.decode_cache[opcode as usize].clone().unwrap();
 

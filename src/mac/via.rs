@@ -120,7 +120,7 @@ pub struct Via {
 impl Via {
     pub fn new() -> Self {
         Self {
-            a: RegisterA(0),
+            a: RegisterA(1 << 4),
             b: RegisterB(0),
             irq_enable: RegisterIRQ(0),
             irq_flag: RegisterIRQ(0),
@@ -135,7 +135,8 @@ impl BusMember<Address> for Via {
             // Register B
             0xE1FE => {
                 println!("read b");
-                Some(self.b.0)
+                // TODO remove RTC stub
+                Some(self.b.0 & 0xF0)
             }
             // Interrupt flag register
             0xFBFE => {
