@@ -9,7 +9,7 @@ use anyhow::Result;
 pub struct MacBus {
     rom: Vec<u8>,
     pub ram: Vec<u8>,
-    via: Via,
+    pub via: Via,
     video: Video,
 }
 
@@ -58,7 +58,17 @@ impl Bus<Address, Byte> for MacBus {
 
     fn write(&mut self, addr: Address, val: Byte) {
         let written = match addr {
-            0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)] = val),
+            0x0060_0000..=0x007F_FFFF => {
+                if val != 0xFF {
+                    if (0x67_2700..=0x67_7C80).contains(&addr) {
+                        println!("write to primary vram {:08X} = {}", addr, val);
+                    }
+                    if (0x67_A700..=0x67_FC80).contains(&addr) {
+                        println!("write to alt vram {:08X} = {}", addr, val);
+                    }
+                }
+                Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)] = val)
+            }
             // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.write(addr, val),
             _ => None,
@@ -81,7 +91,6 @@ impl Tickable for MacBus {
 
         // VBlank interrupt
         if self.video.get_clr_vblank() && self.via.irq_enable.vblank() {
-            println!("Vblank int!");
             self.via.irq_flag.set_vblank(true);
         }
 

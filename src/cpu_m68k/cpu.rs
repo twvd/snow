@@ -62,6 +62,8 @@ const VECTOR_CHK: Address = 0x000018;
 const VECTOR_TRAPV: Address = 0x00001C;
 /// Privilege violation exception vector
 const VECTOR_PRIVILEGE_VIOLATION: Address = 0x000020;
+/// Auto vector offset (7 vectors)
+const VECTOR_AUTOVECTOR_OFFSET: Address = 0x000064;
 /// Trap exception vector offset (15 vectors)
 const VECTOR_TRAP_OFFSET: Address = 0x000080;
 
@@ -120,6 +122,9 @@ pub struct CpuM68k<TBus: Bus<Address, u8>> {
     /// Instruction decode cache
     #[serde(skip, default = "empty_decode_cache")]
     decode_cache: DecodeCache,
+
+    /// Pending autovector IRQ (level)
+    pending_irq_autovector: Option<u8>,
 }
 
 impl<TBus> CpuM68k<TBus>
@@ -136,6 +141,7 @@ where
             step_exception: false,
             step_ea_load: None,
             decode_cache: empty_decode_cache(),
+            pending_irq_autovector: None,
         }
     }
 
@@ -149,6 +155,7 @@ where
         println!("Reset - SSP: {:08X}, PC: {:08X}", init_ssp, init_pc);
         self.regs.ssp = init_ssp;
         self.regs.sr.set_supervisor(true);
+        self.regs.sr.set_int_prio_mask(7);
         self.set_pc(init_pc)?;
         self.prefetch_refill()?;
 
@@ -201,6 +208,11 @@ where
 
         self.step_ea_addr = None;
         self.step_exception = false;
+
+        if let Some(level) = self.pending_irq_autovector {
+            self.pending_irq_autovector = None;
+            self.raise_irq(level, VECTOR_AUTOVECTOR_OFFSET + (Address::from(level) * 4))?;
+        }
 
         let opcode = self.fetch()?;
         if self.decode_cache[opcode as usize].is_none() {
@@ -368,6 +380,59 @@ where
         Ok(())
     }
 
+    /// Sets an autovector IRQ pending (if above the requested level)
+    pub fn trigger_irq_autovector(&mut self, level: u8) -> Result<()> {
+        assert!(level <= 7);
+
+        if level != 7 && level <= self.regs.sr.int_prio_mask() {
+            // Masked
+            return Ok(());
+        }
+
+        if let Some(v) = self.pending_irq_autovector {
+            self.pending_irq_autovector = Some(std::cmp::min(v, level));
+        } else {
+            self.pending_irq_autovector = Some(level);
+        }
+
+        Ok(())
+    }
+
+    /// Raises an IRQ to be executed next
+    fn raise_irq(&mut self, level: u8, vector: Address) -> Result<()> {
+        println!("IRQ - Level: {}, vector: {:08X}", level, vector);
+        let saved_sr = self.regs.sr.sr();
+
+        // Resume in supervisor mode
+        self.regs.sr.set_supervisor(true);
+        self.regs.sr.set_trace(false);
+
+        // Update mask
+        self.regs.sr.set_int_prio_mask(level);
+
+        self.regs.ssp = self.regs.ssp.wrapping_sub(6);
+        self.write_ticks(self.regs.ssp.wrapping_add(0), saved_sr)?;
+
+        // 6 cycles idle
+        self.advance_cycles(6)?;
+        // Interrupt ack
+        self.advance_cycles(4)?;
+        // 4 cycles idle
+        self.advance_cycles(4)?;
+
+        self.write_ticks(self.regs.ssp.wrapping_add(4), self.regs.pc as u16)?;
+        self.write_ticks(self.regs.ssp.wrapping_add(2), (self.regs.pc >> 16) as u16)?;
+
+        // Jump to vector
+        let new_pc = self.read_ticks::<Long>(vector)?.into();
+        self.set_pc(new_pc)?;
+        self.prefetch_pump()?;
+        self.advance_cycles(2)?; // 2x idle
+        self.prefetch_pump()?;
+
+        Ok(())
+    }
+
     /// Raises a CPU exception in supervisor mode.
     fn raise_exception(
         &mut self,
@@ -376,6 +441,8 @@ where
         details: Option<AccessError>,
     ) -> Result<()> {
         self.step_exception = true;
+
+        let saved_sr = self.regs.sr.sr();
 
         // Resume in supervisor mode
         self.regs.sr.set_supervisor(true);
@@ -393,7 +460,7 @@ where
 
                 self.regs.ssp = self.regs.ssp.wrapping_sub(14);
                 self.write_ticks(self.regs.ssp.wrapping_add(12), self.regs.pc as u16)?;
-                self.write_ticks(self.regs.ssp.wrapping_add(8), self.regs.sr.sr())?;
+                self.write_ticks(self.regs.ssp.wrapping_add(8), saved_sr)?;
                 self.write_ticks(self.regs.ssp.wrapping_add(10), (self.regs.pc >> 16) as u16)?;
                 self.write_ticks(self.regs.ssp.wrapping_add(6), details.ir)?;
                 self.write_ticks(self.regs.ssp.wrapping_add(4), details.address as u16)?;
@@ -424,7 +491,7 @@ where
 
                 self.regs.ssp = self.regs.ssp.wrapping_sub(6);
                 self.write_ticks(self.regs.ssp.wrapping_add(4), self.regs.pc as u16)?;
-                self.write_ticks(self.regs.ssp.wrapping_add(0), self.regs.sr.sr())?;
+                self.write_ticks(self.regs.ssp.wrapping_add(0), saved_sr)?;
                 self.write_ticks(self.regs.ssp.wrapping_add(2), (self.regs.pc >> 16) as u16)?;
             }
         }

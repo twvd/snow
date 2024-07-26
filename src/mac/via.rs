@@ -105,12 +105,6 @@ bitfield! {
 
         /// Timer T1
         pub t1: bool @ 6,
-
-        /// Global IRQ flag (interrupt flag register)
-        pub irq: bool @ 7,
-
-        /// Enable/disable flag (interrupt enable register)
-        pub enable: bool @ 7,
     }
 }
 
@@ -137,7 +131,24 @@ impl Via {
 
 impl BusMember<Address> for Via {
     fn read(&self, addr: Address) -> Option<Byte> {
-        Some(0xFF)
+        match addr & 0xFFFF {
+            // Register B
+            0xE1FE => {
+                println!("read b");
+                Some(self.b.0)
+            }
+            // Interrupt flag register
+            0xFBFE => {
+                let mut val = (self.irq_flag.0 & 0x7F) & self.irq_enable.0;
+                if val > 0 {
+                    val |= 0x80;
+                }
+                Some(val)
+            }
+            // Register A
+            0xFFFE => Some(self.a.0),
+            _ => None,
+        }
     }
 
     fn write(&mut self, addr: Address, val: Byte) -> Option<()> {
@@ -150,13 +161,20 @@ impl BusMember<Address> for Via {
             }
             // Interrupt flag register
             0xFBFE => {
-                self.irq_flag.0 = val;
+                self.irq_flag.0 &= !(val & 0x7F);
+                dbg!(&self.irq_enable);
                 dbg!(&self.irq_flag);
                 Some(())
             }
             // Interrupt enable register
             0xFDFE => {
-                self.irq_enable.0 = val;
+                if val & 0x80 != 0 {
+                    // Enable
+                    self.irq_enable.0 |= val & 0x7F;
+                } else {
+                    // Disable
+                    self.irq_enable.0 &= !(val & 0x7F);
+                }
                 dbg!(&self.irq_enable);
                 Some(())
             }
