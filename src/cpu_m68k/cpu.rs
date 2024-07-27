@@ -62,6 +62,10 @@ const VECTOR_CHK: Address = 0x000018;
 const VECTOR_TRAPV: Address = 0x00001C;
 /// Privilege violation exception vector
 const VECTOR_PRIVILEGE_VIOLATION: Address = 0x000020;
+/// Line 1010 / A
+const VECTOR_LINEA: Address = 0x000028;
+/// Line 1111 / F
+const VECTOR_LINEF: Address = 0x00002C;
 /// Auto vector offset (7 vectors)
 const VECTOR_AUTOVECTOR_OFFSET: Address = 0x000064;
 /// Trap exception vector offset (15 vectors)
@@ -683,6 +687,14 @@ where
             InstructionMnemonic::ROR_l => self.op_shrot::<Long>(&instr, Self::alu_ror),
             InstructionMnemonic::ROL_ea => self.op_shrot_ea(&instr, Self::alu_rol),
             InstructionMnemonic::ROR_ea => self.op_shrot_ea(&instr, Self::alu_ror),
+            InstructionMnemonic::LINEA => {
+                self.advance_cycles(4)?;
+                self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEA, None)
+            }
+            InstructionMnemonic::LINEF => {
+                self.advance_cycles(4)?;
+                self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEF, None)
+            }
         }
     }
 

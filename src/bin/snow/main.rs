@@ -40,7 +40,6 @@ fn main() -> Result<()> {
     cpu.reset()?;
 
     'mainloop: for i in 0.. {
-        //println!("PC: {:08X}", cpu.regs.pc);
         cpu.step()?;
 
         // TODO do less frequent/move emulator to its own thread
@@ -60,13 +59,13 @@ fn main() -> Result<()> {
             for idx in 0..(SCREEN_WIDTH * SCREEN_HEIGHT) {
                 let byte = idx / 8;
                 let bit = idx % 8;
-                if cpu.bus.ram[0x7A700 + byte] & (1 << bit) == 0 {
+                if cpu.bus.ram[0x7A700 + byte] & (1 << (7 - bit)) == 0 {
                     for i in 0..4 {
-                        buf[idx * 4 + i].store(0, Ordering::Release);
+                        buf[idx * 4 + i].store(0xFF, Ordering::Release);
                     }
                 } else {
                     for i in 0..4 {
-                        buf[idx * 4 + i].store(0xFF, Ordering::Release);
+                        buf[idx * 4 + i].store(0, Ordering::Release);
                     }
                 }
             }

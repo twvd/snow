@@ -456,6 +456,8 @@ cpu_test!(eor_w, "EOR.w");
 cpu_test!(exg, "EXG");
 cpu_test!(ext_l, "EXT.l");
 cpu_test!(ext_w, "EXT.w");
+cpu_test!(illegal_linea, "ILLEGAL_LINEA");
+cpu_test!(illegal_linef, "ILLEGAL_LINEF");
 cpu_test!(jmp, "JMP");
 cpu_test!(jsr, "JSR");
 cpu_test!(lea, "LEA");

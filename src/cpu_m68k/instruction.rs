@@ -113,6 +113,8 @@ pub enum InstructionMnemonic {
     ORI_sr,
     NOP,
     LEA,
+    LINEA,
+    LINEF,
     LINK,
     UNLINK,
     MOVE_w,
@@ -423,6 +425,7 @@ impl Instruction {
         (0b1001_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::SUB_l),
         (0b1001_0000_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBA_w),
         (0b1001_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBA_l),
+        (0b1010_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::LINEA),
         (0b1011_0001_0000_1000, 0b1111_0001_1111_1000, InstructionMnemonic::CMPM_b),
         (0b1011_0001_0100_1000, 0b1111_0001_1111_1000, InstructionMnemonic::CMPM_w),
         (0b1011_0001_1000_1000, 0b1111_0001_1111_1000, InstructionMnemonic::CMPM_l),
@@ -481,6 +484,7 @@ impl Instruction {
         (0b1110_0001_0101_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROL_w),
         (0b1110_0000_1001_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROR_l),
         (0b1110_0001_1001_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROL_l),
+        (0b1111_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::LINEF),
     ];
 
     /// Attempts to decode an instruction.
