@@ -1,8 +1,13 @@
 use crate::bus::{Address, BusMember};
+use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
+use anyhow::Result;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
+
+/// Counter at which to trigger the one second interrupt
+const ONESEC_TICKS: Ticks = 7833600;
 
 bitfield! {
     /// VIA Register A (for classic models)
@@ -115,6 +120,9 @@ pub struct Via {
     pub irq_enable: RegisterIRQ,
     pub irq_flag: RegisterIRQ,
     pub acr: RegisterACR,
+
+    /// Counter for the one-second timer
+    onesec: Ticks,
 }
 
 impl Via {
@@ -125,6 +133,8 @@ impl Via {
             irq_enable: RegisterIRQ(0),
             irq_flag: RegisterIRQ(0),
             acr: RegisterACR(0),
+
+            onesec: 0,
         }
     }
 }
@@ -169,13 +179,14 @@ impl BusMember<Address> for Via {
             }
             // Interrupt enable register
             0xFDFE => {
-                if val & 0x80 != 0 {
+                let newflags = if val & 0x80 != 0 {
                     // Enable
-                    self.irq_enable.0 |= val & 0x7F;
+                    RegisterIRQ(self.irq_enable.0 | (val & 0x7F))
                 } else {
                     // Disable
-                    self.irq_enable.0 &= !(val & 0x7F);
-                }
+                    RegisterIRQ(self.irq_enable.0 & !(val & 0x7F))
+                };
+                self.irq_enable = newflags;
                 dbg!(&self.irq_enable);
                 Some(())
             }
@@ -187,5 +198,19 @@ impl BusMember<Address> for Via {
             }
             _ => None,
         }
+    }
+}
+
+impl Tickable for Via {
+    fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+        self.onesec += ticks;
+
+        // One second interrupt
+        if self.onesec >= ONESEC_TICKS {
+            self.onesec -= ONESEC_TICKS;
+            self.irq_flag.set_onesec(true);
+        }
+
+        Ok(ticks)
     }
 }

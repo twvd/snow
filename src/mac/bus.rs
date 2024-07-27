@@ -86,7 +86,7 @@ impl MacBus {
             0x0000_0000..=0x003F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)]),
             0x0040_0000..=0x004F_FFFF => Some(self.rom[(addr & 0xFFFF) as usize]),
             // IWD (ignore for now, too spammy)
-            0x00DF_F000..=0x00DF_FFFF => Some(31),
+            //0x00DF_F000..=0x00DF_FFFF => Some(31),
             // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
 
@@ -131,6 +131,8 @@ impl Tickable for MacBus {
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
         assert_eq!(ticks, 1);
 
+        self.via.tick(1)?;
+
         // Pixel clock (15.6672 MHz) is roughly 2x CPU speed
         self.video.tick(2)?;
 
@@ -150,6 +152,9 @@ impl IrqSource for MacBus {
     fn get_irq(&mut self) -> Option<u8> {
         // VIA IRQs
         if self.via.irq_flag.0 != 0 {
+            if self.via.irq_enable.onesec() {
+                println!("IRQ {:?}", self.via.irq_flag);
+            }
             return Some(1);
         }
 
