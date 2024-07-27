@@ -426,8 +426,6 @@ where
         vector: Address,
         details: Option<AccessError>,
     ) -> Result<()> {
-        self.step_exception = true;
-
         let saved_sr = self.regs.sr.sr();
 
         // Resume in supervisor mode
@@ -437,6 +435,8 @@ where
         // Write exception stack frame
         match group {
             ExceptionGroup::Group0 => {
+                self.step_exception = true;
+
                 self.advance_cycles(8)?; // idle
                 let details = details.expect("Address error details not passed");
                 eprintln!(
@@ -466,14 +466,6 @@ where
                     "Exception {:?}, vector {:08X} @  PC = {:06X}",
                     group, vector, self.regs.pc
                 );
-                // Advance PC beyond the current instruction to
-                // have the right offset for the stack frame.
-                // The current prefetch queue length provides an indication
-                // of the current instruction length.
-                self.regs.pc = self
-                    .regs
-                    .pc
-                    .wrapping_add((2 - (self.prefetch.len() as u32)) * 2);
 
                 self.regs.ssp = self.regs.ssp.wrapping_sub(6);
                 self.write_ticks(self.regs.ssp.wrapping_add(4), self.regs.pc as u16)?;
@@ -1075,6 +1067,9 @@ where
 
     /// TRAP
     fn op_trap(&mut self, instr: &Instruction) -> Result<()> {
+        // Offset PC correctly for exception stack frame for TRAP
+        self.regs.pc = self.regs.pc.wrapping_add(2);
+
         self.advance_cycles(4)?;
         self.raise_exception(
             ExceptionGroup::Group2,

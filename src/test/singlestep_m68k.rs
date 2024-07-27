@@ -298,8 +298,6 @@ fn run_testcase(testcase: Testcase, level: TestLevel) {
         print_result(&cpu, &testcase);
         panic!("Test {}: error: {:?}", testcase.name, e);
     }
-    // Flag for address error during test to skip certain checks
-    let exception_test = regs_initial.ssp.wrapping_sub(regs_final.ssp) >= 10;
 
     if cpu.prefetch.make_contiguous() != testcase.r#final.prefetch {
         print_result(&cpu, &testcase);
@@ -311,7 +309,7 @@ fn run_testcase(testcase: Testcase, level: TestLevel) {
         );
     }
 
-    if cpu.regs != regs_final && !exception_test {
+    if cpu.regs != regs_final && !cpu.step_exception {
         print_result(&cpu, &testcase);
         panic!("Test {}: Registers do not match", testcase.name);
     }
