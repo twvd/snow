@@ -211,7 +211,10 @@ where
 
         if let Some(level) = self.bus.get_irq() {
             if level == 7 || self.regs.sr.int_prio_mask() < level {
-                self.raise_irq(level, VECTOR_AUTOVECTOR_OFFSET + (Address::from(level) * 4))?;
+                self.raise_irq(
+                    level,
+                    VECTOR_AUTOVECTOR_OFFSET + (Address::from(level - 1) * 4),
+                )?;
             }
         }
 
