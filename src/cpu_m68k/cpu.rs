@@ -2223,6 +2223,8 @@ where
                 }
                 _ => self.advance_cycles(8)?,
             }
+            // Offset PC correctly for exception stack frame for CHK
+            self.regs.pc = self.regs.pc.wrapping_add(2);
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_CHK, None);
         }
 
@@ -2234,6 +2236,8 @@ where
                 AddressingMode::Indirect => self.advance_cycles(8)?,
                 _ => self.advance_cycles(10)?,
             }
+            // Offset PC correctly for exception stack frame for CHK
+            self.regs.pc = self.regs.pc.wrapping_add(2);
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_CHK, None);
         }
 
