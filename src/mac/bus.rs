@@ -150,8 +150,8 @@ impl Tickable for MacBus {
         self.via.b.set_h4(self.video.in_hblank());
 
         // VBlank interrupt
-        if self.video.get_clr_vblank() && self.via.irq_enable.vblank() {
-            self.via.irq_flag.set_vblank(true);
+        if self.video.get_clr_vblank() && self.via.ier.vblank() {
+            self.via.ifr.set_vblank(true);
         }
 
         Ok(1)
@@ -161,8 +161,8 @@ impl Tickable for MacBus {
 impl IrqSource for MacBus {
     fn get_irq(&mut self) -> Option<u8> {
         // VIA IRQs
-        if self.via.irq_flag.0 != 0 {
-            if self.via.irq_enable.onesec() {
+        if self.via.ifr.0 != 0 {
+            if self.via.ier.onesec() {
                 //println!("IRQ {:?}", self.via.irq_flag);
             }
             return Some(1);

@@ -7,7 +7,8 @@ use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
 /// Counter at which to trigger the one second interrupt
-const ONESEC_TICKS: Ticks = 7833600;
+/// (counted on the E Clock)
+const ONESEC_TICKS: Ticks = 783360;
 
 bitfield! {
     /// VIA Register A (for classic models)
@@ -115,11 +116,20 @@ bitfield! {
 
 /// Synertek SY6522 Versatile Interface Adapter
 pub struct Via {
+    /// Register A
     pub a: RegisterA,
+
+    /// Register B
     pub b: RegisterB,
-    pub irq_enable: RegisterIRQ,
-    pub irq_flag: RegisterIRQ,
+
+    /// Interrupt Enable Register
+    pub ier: RegisterIRQ,
+
+    /// Interrupt Flag Register
+    pub ifr: RegisterIRQ,
     pub acr: RegisterACR,
+
+    /// Timer 2 Counter
     pub t2cnt: Field16,
 
     /// Counter for the one-second timer
@@ -133,8 +143,8 @@ impl Via {
         Self {
             a: RegisterA(1 << 4),
             b: RegisterB(0),
-            irq_enable: RegisterIRQ(0),
-            irq_flag: RegisterIRQ(0),
+            ier: RegisterIRQ(0),
+            ifr: RegisterIRQ(0),
             acr: RegisterACR(0),
             t2cnt: Field16(0),
             t2_enable: false,
@@ -147,7 +157,9 @@ impl Via {
 impl BusMember<Address> for Via {
     fn read(&self, addr: Address) -> Option<Byte> {
         match addr & 0xFFFF {
+            // Timer 2 counter LSB
             0xF1FE => Some(self.t2cnt.lsb()),
+            // Timer 2 counter MSB
             0xF3FE => Some(self.t2cnt.msb()),
 
             // Register B
@@ -156,16 +168,19 @@ impl BusMember<Address> for Via {
                 // TODO remove RTC stub
                 Some(self.b.0 & 0xF0)
             }
-            // Interrupt flag register
+
+            // Interrupt Flag Register
             0xFBFE => {
-                let mut val = (self.irq_flag.0 & 0x7F) & self.irq_enable.0;
+                let mut val = (self.ifr.0 & 0x7F) & self.ier.0;
                 if val > 0 {
                     val |= 0x80;
                 }
                 Some(val)
             }
-            // Interrupt enable register
-            0xFDFE => Some(self.irq_enable.0 | 0x80),
+
+            // Interrupt Enable Register
+            0xFDFE => Some(self.ier.0 | 0x80),
+
             // Register A
             0xFFFE => Some(self.a.0),
             _ => None,
@@ -174,43 +189,51 @@ impl BusMember<Address> for Via {
 
     fn write(&mut self, addr: Address, val: Byte) -> Option<()> {
         match addr & 0xFFFF {
+            // Timer 2 counter LSB
             0xF1FE => Some(self.t2cnt.set_lsb(val)),
+
+            // Timer 2 counter MSB
             0xF3FE => {
                 self.t2_enable = true;
                 Some(self.t2cnt.set_msb(val))
             }
+
             // Register B
             0xE1FE => {
                 self.b.0 = val;
                 dbg!(&self.b);
                 Some(())
             }
-            // Interrupt flag register
+
+            // Interrupt Flag register
             0xFBFE => {
-                self.irq_flag.0 &= !(val & 0x7F);
-                dbg!(&self.irq_enable);
-                dbg!(&self.irq_flag);
+                self.ifr.0 &= !(val & 0x7F);
+                dbg!(&self.ier);
+                dbg!(&self.ifr);
                 Some(())
             }
-            // Interrupt enable register
+
+            // Interrupt Enable register
             0xFDFE => {
                 let newflags = if val & 0x80 != 0 {
                     // Enable
-                    RegisterIRQ(self.irq_enable.0 | (val & 0x7F))
+                    RegisterIRQ(self.ier.0 | (val & 0x7F))
                 } else {
                     // Disable
-                    RegisterIRQ(self.irq_enable.0 & !(val & 0x7F))
+                    RegisterIRQ(self.ier.0 & !(val & 0x7F))
                 };
-                self.irq_enable = newflags;
-                dbg!(&self.irq_enable);
+                self.ier = newflags;
+                dbg!(&self.ier);
                 Some(())
             }
+
             // Register A
             0xFFFE => {
                 self.a.0 = val;
                 dbg!(&self.a);
                 Some(())
             }
+
             _ => None,
         }
     }
@@ -224,14 +247,14 @@ impl Tickable for Via {
         // One second interrupt
         if self.onesec >= ONESEC_TICKS {
             self.onesec -= ONESEC_TICKS;
-            self.irq_flag.set_onesec(true);
+            self.ifr.set_onesec(true);
         }
 
         // Timer 2
         if self.t2_enable {
             self.t2cnt.0 = self.t2cnt.0.saturating_sub(ticks.try_into()?);
             if self.t2cnt.0 == 0 {
-                self.irq_flag.set_t2(true);
+                self.ifr.set_t2(true);
                 self.t2_enable = false;
             }
         }
