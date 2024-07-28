@@ -1,6 +1,6 @@
 use crate::bus::{Address, BusMember};
 use crate::tickable::{Tickable, Ticks};
-use crate::types::Byte;
+use crate::types::{Byte, Field16};
 
 use anyhow::Result;
 use proc_bitfield::bitfield;
@@ -120,9 +120,12 @@ pub struct Via {
     pub irq_enable: RegisterIRQ,
     pub irq_flag: RegisterIRQ,
     pub acr: RegisterACR,
+    pub t2cnt: Field16,
 
     /// Counter for the one-second timer
     onesec: Ticks,
+
+    t2_enable: bool,
 }
 
 impl Via {
@@ -133,6 +136,8 @@ impl Via {
             irq_enable: RegisterIRQ(0),
             irq_flag: RegisterIRQ(0),
             acr: RegisterACR(0),
+            t2cnt: Field16(0),
+            t2_enable: false,
 
             onesec: 0,
         }
@@ -142,6 +147,9 @@ impl Via {
 impl BusMember<Address> for Via {
     fn read(&self, addr: Address) -> Option<Byte> {
         match addr & 0xFFFF {
+            0xF1FE => Some(self.t2cnt.lsb()),
+            0xF3FE => Some(self.t2cnt.msb()),
+
             // Register B
             0xE1FE => {
                 println!("read b");
@@ -156,6 +164,8 @@ impl BusMember<Address> for Via {
                 }
                 Some(val)
             }
+            // Interrupt enable register
+            0xFDFE => Some(self.irq_enable.0 | 0x80),
             // Register A
             0xFFFE => Some(self.a.0),
             _ => None,
@@ -164,6 +174,11 @@ impl BusMember<Address> for Via {
 
     fn write(&mut self, addr: Address, val: Byte) -> Option<()> {
         match addr & 0xFFFF {
+            0xF1FE => Some(self.t2cnt.set_lsb(val)),
+            0xF3FE => {
+                self.t2_enable = true;
+                Some(self.t2cnt.set_msb(val))
+            }
             // Register B
             0xE1FE => {
                 self.b.0 = val;
@@ -203,12 +218,22 @@ impl BusMember<Address> for Via {
 
 impl Tickable for Via {
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+        // This is ticked on the E Clock
         self.onesec += ticks;
 
         // One second interrupt
         if self.onesec >= ONESEC_TICKS {
             self.onesec -= ONESEC_TICKS;
             self.irq_flag.set_onesec(true);
+        }
+
+        // Timer 2
+        if self.t2_enable {
+            self.t2cnt.0 = self.t2cnt.0.saturating_sub(ticks.try_into()?);
+            if self.t2cnt.0 == 0 {
+                self.irq_flag.set_t2(true);
+                self.t2_enable = false;
+            }
         }
 
         Ok(ticks)

@@ -389,7 +389,6 @@ where
 
     /// Raises an IRQ to be executed next
     fn raise_irq(&mut self, level: u8, vector: Address) -> Result<()> {
-        println!("IRQ - Level: {}, vector: {:08X}", level, vector);
         let saved_sr = self.regs.sr.sr();
 
         // Resume in supervisor mode

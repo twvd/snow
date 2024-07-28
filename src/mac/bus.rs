@@ -11,6 +11,7 @@ pub struct MacBus {
     pub ram: Vec<u8>,
     pub via: Via,
     video: Video,
+    eclock: Ticks,
 }
 
 impl MacBus {
@@ -25,6 +26,7 @@ impl MacBus {
             ram: vec![0xFF; Self::RAM_SIZE],
             via: Via::new(),
             video: Video::new(),
+            eclock: 0,
         }
     }
 
@@ -129,9 +131,17 @@ impl Bus<Address, Byte> for MacBus {
 
 impl Tickable for MacBus {
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+        // This is called from the CPU, at the CPU clock speed
         assert_eq!(ticks, 1);
 
-        self.via.tick(1)?;
+        self.eclock += ticks;
+        while self.eclock >= 10 {
+            // The E Clock is roughly 1/10th of the CPU clock
+            // TODO ticks when VPA is asserted
+            self.eclock -= 10;
+
+            self.via.tick(1)?;
+        }
 
         // Pixel clock (15.6672 MHz) is roughly 2x CPU speed
         self.video.tick(2)?;
@@ -153,7 +163,7 @@ impl IrqSource for MacBus {
         // VIA IRQs
         if self.via.irq_flag.0 != 0 {
             if self.via.irq_enable.onesec() {
-                println!("IRQ {:?}", self.via.irq_flag);
+                //println!("IRQ {:?}", self.via.irq_flag);
             }
             return Some(1);
         }
