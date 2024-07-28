@@ -15,12 +15,12 @@ pub const ADDRESS_SPACE_SIZE: usize = 16 * 1024 * 1024;
 pub const ADDRESS_SPACE: u32 = 16 * 1024 * 1024;
 
 pub trait BusMember<T: PrimInt> {
-    fn read(&self, addr: T) -> Option<u8>;
+    fn read(&mut self, addr: T) -> Option<u8>;
     fn write(&mut self, addr: T, val: u8) -> Option<()>;
 }
 
 pub trait Bus<TA: PrimInt + WrappingAdd, TD: PrimInt>: Tickable {
-    fn read(&self, addr: TA) -> TD;
+    fn read(&mut self, addr: TA) -> TD;
     fn write(&mut self, addr: TA, val: TD);
     fn get_mask(&self) -> TA;
 }
@@ -32,16 +32,16 @@ impl<TA, TD> core::fmt::Debug for dyn Bus<TA, TD> {
 }
 
 pub struct BusIterator<'a, TA: PrimInt + WrappingAdd, TD: PrimInt> {
-    bus: &'a dyn Bus<TA, TD>,
+    bus: &'a mut dyn Bus<TA, TD>,
     next: TA,
 }
 
 impl<'a, TA: PrimInt + WrappingAdd, TD: PrimInt> BusIterator<'a, TA, TD> {
-    pub fn new_from(bus: &'a dyn Bus<TA, TD>, offset: TA) -> Self {
+    pub fn new_from(bus: &'a mut dyn Bus<TA, TD>, offset: TA) -> Self {
         Self { bus, next: offset }
     }
 
-    pub fn new(bus: &'a dyn Bus<TA, TD>) -> Self {
+    pub fn new(bus: &'a mut dyn Bus<TA, TD>) -> Self {
         Self::new_from(bus, TA::zero())
     }
 }
@@ -76,8 +76,8 @@ mod tests {
 
     #[test]
     fn busiterator_new() {
-        let b = testbus();
-        let mut i = BusIterator::new(&b);
+        let mut b = testbus();
+        let mut i = BusIterator::new(&mut b);
 
         for a in 0..=ADDRESS_MASK {
             assert_eq!(i.next(), Some(a as u8));
@@ -88,8 +88,8 @@ mod tests {
 
     #[test]
     fn busiterator_new_from() {
-        let b = testbus();
-        let mut i = BusIterator::new_from(&b, 5);
+        let mut b = testbus();
+        let mut i = BusIterator::new_from(&mut b, 5);
 
         for a in 5..=ADDRESS_MASK {
             assert_eq!(i.next(), Some(a as u8));

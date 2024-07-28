@@ -70,7 +70,7 @@ where
         self.mask
     }
 
-    fn read(&self, addr: TA) -> TD {
+    fn read(&mut self, addr: TA) -> TD {
         assert_eq!(addr & self.mask, addr);
 
         let val = *self.mem.get(&addr).unwrap_or(&TD::zero());

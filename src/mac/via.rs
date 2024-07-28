@@ -92,24 +92,31 @@ bitfield! {
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct RegisterIRQ(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
         /// One-second interrupt
+        /// Cleared on Register A read/write
         pub onesec: bool @ 0,
 
         /// Vertical blank
+        /// Cleared on Register A read/write
         pub vblank: bool @ 1,
 
         /// Keyboard data ready
+        /// Cleared on read/write shift reg
         pub kbdready: bool @ 2,
 
         /// Keyboard data
+        /// Cleared on Register B read/write
         pub kbddata: bool @ 3,
 
         /// Keyboard clock
+        /// Cleared on Register B read/write
         pub kbdclock: bool @ 4,
 
         /// Timer T2
+        /// Cleared on read of T2 counter LSB or write of T2 counter MSB
         pub t2: bool @ 5,
 
         /// Timer T1
+        /// Cleared on read of T1 counter LSB or write of T1 counter MSB
         pub t1: bool @ 6,
     }
 }
@@ -155,16 +162,21 @@ impl Via {
 }
 
 impl BusMember<Address> for Via {
-    fn read(&self, addr: Address) -> Option<Byte> {
+    fn read(&mut self, addr: Address) -> Option<Byte> {
         match addr & 0xFFFF {
             // Timer 2 counter LSB
-            0xF1FE => Some(self.t2cnt.lsb()),
+            0xF1FE => {
+                self.ifr.set_t2(false);
+                Some(self.t2cnt.lsb())
+            }
             // Timer 2 counter MSB
             0xF3FE => Some(self.t2cnt.msb()),
 
             // Register B
             0xE1FE => {
-                println!("read b");
+                self.ifr.set_kbddata(false);
+                self.ifr.set_kbdclock(false);
+
                 // TODO remove RTC stub
                 Some(self.b.0 & 0xF0)
             }
@@ -182,7 +194,12 @@ impl BusMember<Address> for Via {
             0xFDFE => Some(self.ier.0 | 0x80),
 
             // Register A
-            0xFFFE => Some(self.a.0),
+            0xFFFE => {
+                self.ifr.set_vblank(false);
+                self.ifr.set_onesec(false);
+
+                Some(self.a.0)
+            }
             _ => None,
         }
     }
@@ -195,11 +212,15 @@ impl BusMember<Address> for Via {
             // Timer 2 counter MSB
             0xF3FE => {
                 self.t2_enable = true;
+                self.ifr.set_t2(false);
                 Some(self.t2cnt.set_msb(val))
             }
 
             // Register B
             0xE1FE => {
+                self.ifr.set_kbddata(false);
+                self.ifr.set_kbdclock(false);
+
                 self.b.0 = val;
                 dbg!(&self.b);
                 Some(())
@@ -208,8 +229,6 @@ impl BusMember<Address> for Via {
             // Interrupt Flag register
             0xFBFE => {
                 self.ifr.0 &= !(val & 0x7F);
-                dbg!(&self.ier);
-                dbg!(&self.ifr);
                 Some(())
             }
 
@@ -229,6 +248,9 @@ impl BusMember<Address> for Via {
 
             // Register A
             0xFFFE => {
+                self.ifr.set_vblank(false);
+                self.ifr.set_onesec(false);
+
                 self.a.0 = val;
                 dbg!(&self.a);
                 Some(())

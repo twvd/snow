@@ -68,7 +68,7 @@ impl MacBus {
         }
     }
 
-    fn read_overlay(&self, addr: Address) -> Option<Byte> {
+    fn read_overlay(&mut self, addr: Address) -> Option<Byte> {
         match addr {
             0x0000_0000..=0x000F_FFFF | 0x0040_0000..=0x004F_FFFF => {
                 Some(self.rom[(addr & 0xFFFF) as usize])
@@ -83,7 +83,7 @@ impl MacBus {
         }
     }
 
-    fn read_normal(&self, addr: Address) -> Option<Byte> {
+    fn read_normal(&mut self, addr: Address) -> Option<Byte> {
         match addr {
             0x0000_0000..=0x003F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)]),
             0x0040_0000..=0x004F_FFFF => Some(self.rom[(addr & 0xFFFF) as usize]),
@@ -102,7 +102,7 @@ impl Bus<Address, Byte> for MacBus {
         0x00FFFFFF
     }
 
-    fn read(&self, addr: Address) -> Byte {
+    fn read(&mut self, addr: Address) -> Byte {
         let val = if self.via.a.overlay() {
             self.read_overlay(addr)
         } else {
