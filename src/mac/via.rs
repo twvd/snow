@@ -88,6 +88,24 @@ bitfield! {
 }
 
 bitfield! {
+    /// VIA Peripheral Control Register
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct RegisterPCR(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+        /// VBlank
+        pub vblank: bool @ 0,
+
+        /// One second interrupt
+        pub onesec: u8 @ 1..=3,
+
+        /// Keyboard clock
+        pub kbdclk: bool @ 4,
+
+        /// Keyboard bit-shift operation
+        pub kbddata: u8 @ 5..=7,
+    }
+}
+
+bitfield! {
     /// VIA Interrupt flag/enable registers
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct RegisterIRQ(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
@@ -140,6 +158,11 @@ pub struct Via {
 
     /// Interrupt Flag Register
     pub ifr: RegisterIRQ,
+
+    /// Peripheral Control Register
+    pub pcr: RegisterPCR,
+
+    /// Auxiliary Control Register
     pub acr: RegisterACR,
 
     /// Timer 2 Counter
@@ -150,6 +173,8 @@ pub struct Via {
 
     /// Counter for the one-second timer
     onesec: Ticks,
+
+    kbdshift: u8,
 
     t2_enable: bool,
 }
@@ -164,11 +189,14 @@ impl Via {
             ier: RegisterIRQ(0),
             ifr: RegisterIRQ(0),
             acr: RegisterACR(0),
+            pcr: RegisterPCR(0),
+
             t2cnt: Field16(0),
             t2latch: Field16(0),
             t2_enable: false,
 
             onesec: 0,
+            kbdshift: 0,
         }
     }
 }
@@ -199,8 +227,14 @@ impl BusMember<Address> for Via {
             // Register A Data Direction
             0xE7FE => Some(self.ddra.0),
 
+            // Keyboard shift register
+            0xF5FE => Some(self.kbdshift),
+
             // Auxiliary Control Register
             0xF7FE => Some(self.acr.0),
+
+            // Peripheral Control Register
+            0xF9FE => Some(self.pcr.0),
 
             // Interrupt Flag Register
             0xFBFE => {
@@ -245,6 +279,9 @@ impl BusMember<Address> for Via {
                 Some(())
             }
 
+            // Keyboard shift register
+            0xF5FE => Some(self.kbdshift = val),
+
             // Register B
             0xE1FE => {
                 self.ifr.set_kbddata(false);
@@ -262,6 +299,9 @@ impl BusMember<Address> for Via {
 
             // Auxiliary Control Register
             0xF7FE => Some(self.acr.0 = val),
+
+            // Peripheral Control Register
+            0xF9FE => Some(self.pcr.0 = val),
 
             // Interrupt Flag register
             0xFBFE => {

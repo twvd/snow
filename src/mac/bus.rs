@@ -55,7 +55,7 @@ impl MacBus {
 
     fn read_overlay(&mut self, addr: Address) -> Option<Byte> {
         match addr {
-            0x0000_0000..=0x000F_FFFF | 0x0040_0000..=0x004F_FFFF => {
+            0x0000_0000..=0x000F_FFFF | 0x0020_0000..=0x002F_FFFF | 0x0040_0000..=0x004F_FFFF => {
                 Some(self.rom[(addr & 0xFFFF) as usize])
             }
             0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)]),
