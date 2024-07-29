@@ -1,3 +1,4 @@
+use super::scc::Scc;
 use super::via::Via;
 use crate::bus::{Address, Bus, BusMember, IrqSource};
 use crate::mac::video::Video;
@@ -10,6 +11,7 @@ pub struct MacBus {
     rom: Vec<u8>,
     pub ram: Vec<u8>,
     pub via: Via,
+    scc: Scc,
     video: Video,
     eclock: Ticks,
 }
@@ -27,22 +29,14 @@ impl MacBus {
             via: Via::new(),
             video: Video::new(),
             eclock: 0,
+            scc: Scc::new(),
         }
     }
 
     fn write_overlay(&mut self, addr: Address, val: Byte) -> Option<()> {
         match addr {
-            0x0060_0000..=0x007F_FFFF => {
-                if val != 0xFF {
-                    if (0x67_2700..=0x67_7C80).contains(&addr) {
-                        println!("write to primary vram {:08X} = {}", addr, val);
-                    }
-                    if (0x67_A700..=0x67_FC80).contains(&addr) {
-                        println!("write to alt vram {:08X} = {}", addr, val);
-                    }
-                }
-                Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)] = val)
-            }
+            0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)] = val),
+            0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr, val),
             // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.write(addr, val),
             _ => None,
@@ -51,17 +45,8 @@ impl MacBus {
 
     fn write_normal(&mut self, addr: Address, val: Byte) -> Option<()> {
         match addr {
-            0x0000_0000..=0x003F_FFFF => {
-                if val != 0xFF {
-                    if (0x7_2700..=0x7_7C80).contains(&addr) {
-                        println!("write to primary vram {:08X} = {}", addr, val);
-                    }
-                    if (0x7_A700..=0x7_FC80).contains(&addr) {
-                        println!("write to alt vram {:08X} = {}", addr, val);
-                    }
-                }
-                Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)] = val)
-            }
+            0x0000_0000..=0x003F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)] = val),
+            0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr, val),
             // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.write(addr, val),
             _ => None,
@@ -74,6 +59,7 @@ impl MacBus {
                 Some(self.rom[(addr & 0xFFFF) as usize])
             }
             0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)]),
+            0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr),
             // IWD (ignore for now, too spammy)
             0x00DF_F000..=0x00DF_FFFF => Some(31),
             // VIA
@@ -87,8 +73,9 @@ impl MacBus {
         match addr {
             0x0000_0000..=0x003F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)]),
             0x0040_0000..=0x004F_FFFF => Some(self.rom[(addr & 0xFFFF) as usize]),
+            0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr),
             // IWD (ignore for now, too spammy)
-            //0x00DF_F000..=0x00DF_FFFF => Some(31),
+            0x00DF_E000..=0x00DF_FFFF => Some(31),
             // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
 

@@ -126,8 +126,14 @@ pub struct Via {
     /// Register A
     pub a: RegisterA,
 
+    /// Data Direction Register A
+    pub ddra: RegisterA,
+
     /// Register B
     pub b: RegisterB,
+
+    /// Data Direction Register B
+    pub ddrb: RegisterB,
 
     /// Interrupt Enable Register
     pub ier: RegisterIRQ,
@@ -150,6 +156,8 @@ impl Via {
         Self {
             a: RegisterA(1 << 4),
             b: RegisterB(0),
+            ddra: RegisterA(0),
+            ddrb: RegisterB(0),
             ier: RegisterIRQ(0),
             ifr: RegisterIRQ(0),
             acr: RegisterACR(0),
@@ -181,9 +189,18 @@ impl BusMember<Address> for Via {
                 Some(self.b.0 & 0xF0)
             }
 
+            // Register B Data Direction
+            0xE5FE => Some(self.ddrb.0),
+
+            // Register A Data Direction
+            0xE7FE => Some(self.ddra.0),
+
+            // Auxiliary Control Register
+            0xF7FE => Some(self.acr.0),
+
             // Interrupt Flag Register
             0xFBFE => {
-                let mut val = (self.ifr.0 & 0x7F) & self.ier.0;
+                let mut val = self.ifr.0 & 0x7F;
                 if val > 0 {
                     val |= 0x80;
                 }
@@ -222,9 +239,17 @@ impl BusMember<Address> for Via {
                 self.ifr.set_kbdclock(false);
 
                 self.b.0 = val;
-                dbg!(&self.b);
                 Some(())
             }
+
+            // Register B Data Direction
+            0xE5FE => Some(self.ddrb.0 = val),
+
+            // Register A Data Direction
+            0xE7FE => Some(self.ddra.0 = val),
+
+            // Auxiliary Control Register
+            0xF7FE => Some(self.acr.0 = val),
 
             // Interrupt Flag register
             0xFBFE => {
@@ -242,7 +267,6 @@ impl BusMember<Address> for Via {
                     RegisterIRQ(self.ier.0 & !(val & 0x7F))
                 };
                 self.ier = newflags;
-                dbg!(&self.ier);
                 Some(())
             }
 
@@ -252,7 +276,6 @@ impl BusMember<Address> for Via {
                 self.ifr.set_onesec(false);
 
                 self.a.0 = val;
-                dbg!(&self.a);
                 Some(())
             }
 
