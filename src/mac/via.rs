@@ -145,6 +145,9 @@ pub struct Via {
     /// Timer 2 Counter
     pub t2cnt: Field16,
 
+    /// Timer 2 latch
+    pub t2latch: Field16,
+
     /// Counter for the one-second timer
     onesec: Ticks,
 
@@ -162,6 +165,7 @@ impl Via {
             ifr: RegisterIRQ(0),
             acr: RegisterACR(0),
             t2cnt: Field16(0),
+            t2latch: Field16(0),
             t2_enable: false,
 
             onesec: 0,
@@ -224,13 +228,21 @@ impl BusMember<Address> for Via {
     fn write(&mut self, addr: Address, val: Byte) -> Option<()> {
         match addr & 0xFFFF {
             // Timer 2 counter LSB
-            0xF1FE => Some(self.t2cnt.set_lsb(val)),
+            0xF1FE => Some(self.t2latch.set_lsb(val)),
 
             // Timer 2 counter MSB
             0xF3FE => {
+                self.t2latch.set_msb(val);
+
+                if self.ifr.t2() {
+                    // Clear interrupt flag
+                    self.ifr.set_t2(false);
+                }
+
+                // Start timer
                 self.t2_enable = true;
-                self.ifr.set_t2(false);
-                Some(self.t2cnt.set_msb(val))
+                self.t2cnt = self.t2latch;
+                Some(())
             }
 
             // Register B
@@ -297,8 +309,11 @@ impl Tickable for Via {
 
         // Timer 2
         if self.t2_enable {
-            self.t2cnt.0 = self.t2cnt.0.saturating_sub(ticks.try_into()?);
-            if self.t2cnt.0 == 0 {
+            let ovf;
+            let t2ticks = std::cmp::min(ticks.try_into()?, self.t2cnt.0 + 1);
+            (self.t2cnt.0, ovf) = self.t2cnt.0.overflowing_sub(t2ticks);
+
+            if ovf {
                 self.ifr.set_t2(true);
                 self.t2_enable = false;
             }
