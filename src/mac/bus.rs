@@ -6,6 +6,7 @@ use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
 use anyhow::Result;
+use num_traits::{FromPrimitive, PrimInt, ToBytes};
 
 pub struct MacBus {
     rom: Vec<u8>,
@@ -14,11 +15,23 @@ pub struct MacBus {
     scc: Scc,
     video: Video,
     eclock: Ticks,
+    mouse_ready: bool,
 }
 
 impl MacBus {
     const RAM_SIZE: usize = 512 * 1024;
     const ROM_SIZE: usize = 64 * 1024;
+
+    /// MTemp address, Y coordinate (16 bit, signed)
+    const ADDR_MTEMP_Y: Address = 0x0828;
+    /// MTemp address, X coordinate (16 bit, signed)
+    const ADDR_MTEMP_X: Address = 0x082A;
+    /// RawMouse address, Y coordinate (16 bit, signed)
+    const ADDR_RAWMOUSE_Y: Address = 0x082C;
+    /// RawMouse address, Y coordinate (16 bit, signed)
+    const ADDR_RAWMOUSE_X: Address = 0x082E;
+    /// CrsrNew address
+    const ADDR_CRSRNEW: Address = 0x08CE;
 
     pub fn new(rom: &[u8]) -> Self {
         assert_eq!(rom.len(), Self::ROM_SIZE);
@@ -30,7 +43,27 @@ impl MacBus {
             video: Video::new(),
             eclock: 0,
             scc: Scc::new(),
+            mouse_ready: false,
         }
+    }
+
+    fn write_ram<T: ToBytes>(&mut self, addr: Address, val: T) {
+        let addr = addr as usize;
+        let bytes = val.to_be_bytes();
+        for (i, &b) in bytes.as_ref().into_iter().enumerate() {
+            self.ram[addr + i] = b;
+        }
+    }
+
+    fn read_ram<T: PrimInt + FromPrimitive>(&mut self, addr: Address) -> T {
+        let addr = addr as usize;
+        let len = std::mem::size_of::<T>();
+        let end = addr + len;
+
+        assert!(len <= 4);
+        let mut tmp = [0_u8; 4];
+        tmp[4 - len..].copy_from_slice(&self.ram[addr..end]);
+        T::from_u32(u32::from_be_bytes(tmp)).unwrap()
     }
 
     fn write_overlay(&mut self, addr: Address, val: Byte) -> Option<()> {
@@ -75,11 +108,41 @@ impl MacBus {
             0x0040_0000..=0x004F_FFFF => Some(self.rom[(addr & 0xFFFF) as usize]),
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr),
             // IWD (ignore for now, too spammy)
-            0x00DF_E000..=0x00DF_FFFF => Some(31),
+            0x00DF_E000..=0x00DF_FFFF => Some(0),
             // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
 
             _ => None,
+        }
+    }
+
+    /// Updates the mouse position (relative coordinates) and button state
+    pub fn mouse_update(&mut self, relx: i16, rely: i16, button: Option<bool>) {
+        let old_x = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_X);
+        let old_y = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_Y);
+
+        if !self.mouse_ready && (old_x != 15 || old_y != 15) {
+            // Wait until the boot process has initialized the mouse position so we don't
+            // interfere with the memory test.
+            return;
+        }
+        self.mouse_ready = true;
+
+        if relx != 0 || rely != 0 {
+            let new_x = old_x.wrapping_add_signed(relx);
+            let new_y = old_y.wrapping_add_signed(rely);
+
+            // Report updated mouse coordinates to OS
+            self.write_ram(Self::ADDR_MTEMP_X, new_x);
+            self.write_ram(Self::ADDR_MTEMP_Y, new_y);
+            self.write_ram(Self::ADDR_RAWMOUSE_X, new_x);
+            self.write_ram(Self::ADDR_RAWMOUSE_Y, new_y);
+            self.write_ram(Self::ADDR_CRSRNEW, 1_u8);
+        }
+
+        // Mouse button through VIA I/O
+        if let Some(b) = button {
+            self.via.b.set_sw(!b);
         }
     }
 }

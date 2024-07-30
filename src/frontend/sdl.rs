@@ -76,6 +76,9 @@ impl Renderer for SDLRenderer {
     fn new(width: usize, height: usize) -> Result<Self> {
         SDL.with(|cell| {
             let sdls = cell.borrow_mut();
+
+            sdls.context.mouse().show_cursor(false);
+
             let video_subsystem = sdls.context.video().map_err(|e| anyhow!(e))?;
             let window = video_subsystem
                 .window("Snow", (width * 2).try_into()?, (height * 2).try_into()?)

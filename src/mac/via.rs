@@ -49,7 +49,7 @@ bitfield! {
         /// RTC enabled
         pub rtcenb: bool @ 2,
 
-        /// Mouse switch
+        /// Mouse switch (false = down)
         pub sw: bool @ 3,
 
         /// Mouse X2
@@ -183,7 +183,7 @@ impl Via {
     pub fn new() -> Self {
         Self {
             a: RegisterA(1 << 4),
-            b: RegisterB(0),
+            b: RegisterB(1 << 3),
             ddra: RegisterA(0),
             ddrb: RegisterB(0),
             ier: RegisterIRQ(0),
@@ -355,7 +355,6 @@ impl Tickable for Via {
 
             if ovf {
                 self.ifr.set_t2(true);
-                self.t2_enable = false;
             }
         }
 

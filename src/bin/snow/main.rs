@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
+use sdl2::mouse::MouseButton;
 
 use std::fs;
 use std::sync::atomic::Ordering;
@@ -50,6 +51,18 @@ fn main() -> Result<()> {
                     ..
                 }
                 | Event::Quit { .. } => break 'mainloop,
+                Event::MouseMotion { xrel, yrel, .. } => {
+                    cpu.bus
+                        .mouse_update(xrel.try_into()?, yrel.try_into()?, None)
+                }
+                Event::MouseButtonDown {
+                    mouse_btn: MouseButton::Left,
+                    ..
+                } => cpu.bus.mouse_update(0, 0, Some(true)),
+                Event::MouseButtonUp {
+                    mouse_btn: MouseButton::Left,
+                    ..
+                } => cpu.bus.mouse_update(0, 0, Some(false)),
                 _ => (),
             }
         }
@@ -60,13 +73,13 @@ fn main() -> Result<()> {
                 let byte = idx / 8;
                 let bit = idx % 8;
                 if cpu.bus.ram[0x7A700 + byte] & (1 << (7 - bit)) == 0 {
-                    for i in 0..4 {
-                        buf[idx * 4 + i].store(0xFF, Ordering::Release);
-                    }
+                    buf[idx * 4 + 0].store(0xC7, Ordering::Release);
+                    buf[idx * 4 + 1].store(0xF1, Ordering::Release);
+                    buf[idx * 4 + 2].store(0xFB, Ordering::Release);
                 } else {
-                    for i in 0..4 {
-                        buf[idx * 4 + i].store(0, Ordering::Release);
-                    }
+                    buf[idx * 4 + 0].store(0x22, Ordering::Release);
+                    buf[idx * 4 + 1].store(0x22, Ordering::Release);
+                    buf[idx * 4 + 2].store(0x22, Ordering::Release);
                 }
             }
             renderer.update()?;
