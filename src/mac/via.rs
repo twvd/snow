@@ -25,7 +25,7 @@ bitfield! {
         pub overlay: bool @ 4,
 
         /// Disk SEL line
-        pub headsel: bool @ 5,
+        pub sel: bool @ 5,
 
         /// Video page to be used by video circuitry
         /// (true = main, false = alternate)

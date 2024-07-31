@@ -1,6 +1,7 @@
 use super::scc::Scc;
 use super::via::Via;
 use crate::bus::{Address, Bus, BusMember, IrqSource};
+use crate::mac::iwm::Iwm;
 use crate::mac::video::Video;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
@@ -19,6 +20,7 @@ pub struct MacBus {
     video: Video,
     eclock: Ticks,
     mouse_ready: bool,
+    iwm: Iwm,
 }
 
 impl MacBus {
@@ -48,6 +50,7 @@ impl MacBus {
             video: Video::new(),
             eclock: 0,
             scc: Scc::new(),
+            iwm: Iwm::new(),
             mouse_ready: false,
         }
     }
@@ -79,6 +82,7 @@ impl MacBus {
         match addr {
             0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)] = val),
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr, val),
+            0x00DF_E1FF..=0x00DF_FFFF => self.iwm.write(addr, val),
             // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.write(addr, val),
             _ => None,
@@ -93,6 +97,7 @@ impl MacBus {
         match addr {
             0x0000_0000..=0x003F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)] = val),
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr, val),
+            0x00DF_E1FF..=0x00DF_FFFF => self.iwm.write(addr, val),
             // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.write(addr, val),
             _ => None,
@@ -106,9 +111,7 @@ impl MacBus {
             }
             0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)]),
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr),
-            // IWD (ignore for now, too spammy)
-            0x00DF_F000..=0x00DF_FFFF => Some(31),
-            // VIA
+            0x00DF_E1FF..=0x00DF_FFFF => self.iwm.read(addr),
             0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
 
             _ => None,
@@ -125,9 +128,7 @@ impl MacBus {
             0x0000_0000..=0x003F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)]),
             0x0040_0000..=0x004F_FFFF => Some(self.rom[(addr & 0xFFFF) as usize]),
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr),
-            // IWD (ignore for now, too spammy)
-            0x00DF_E000..=0x00DF_FFFF => Some(0),
-            // VIA
+            0x00DF_E1FF..=0x00DF_FFFF => self.iwm.read(addr),
             0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
 
             _ => None,
@@ -176,6 +177,8 @@ impl Bus<Address, Byte> for MacBus {
     }
 
     fn read(&mut self, addr: Address) -> Byte {
+        self.iwm.sel = self.via.a.sel();
+
         let val = if self.via.a.overlay() {
             self.read_overlay(addr)
         } else {
@@ -191,6 +194,8 @@ impl Bus<Address, Byte> for MacBus {
     }
 
     fn write(&mut self, addr: Address, val: Byte) {
+        self.iwm.sel = self.via.a.sel();
+
         let written = if self.via.a.overlay() {
             self.write_overlay(addr, val)
         } else {
