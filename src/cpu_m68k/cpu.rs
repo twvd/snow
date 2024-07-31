@@ -220,10 +220,15 @@ where
 
         let opcode = self.fetch()?;
         if self.decode_cache[opcode as usize].is_none() {
-            self.decode_cache[opcode as usize] = Some(
-                Instruction::try_decode(opcode)
-                    .context(format!("Decode error @ {:08X}", self.regs.pc))?,
-            );
+            let instr = Instruction::try_decode(opcode);
+
+            // Special case for MOVEC which is used to detect 68000/68020 in the Mac Plus
+            if !instr.is_ok() && opcode == 0b0100111001111011 {
+                self.raise_exception(ExceptionGroup::Group1, VECTOR_ILLEGAL, None)?;
+                return Ok(());
+            }
+            self.decode_cache[opcode as usize] =
+                Some(instr.context(format!("Decode error @ {:08X}", self.regs.pc))?);
         }
         let instr = self.decode_cache[opcode as usize].clone().unwrap();
 

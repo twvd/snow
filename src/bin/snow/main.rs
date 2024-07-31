@@ -1,8 +1,10 @@
 use anyhow::Result;
 use clap::Parser;
+use hex_literal::hex;
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::mouse::MouseButton;
+use sha2::{Digest, Sha256};
 
 use std::fs;
 use std::sync::atomic::Ordering;
@@ -29,6 +31,11 @@ struct Args {
     trace: bool,
 }
 
+struct MacModel {
+    ram_size: usize,
+    framebuffer: usize,
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -39,8 +46,36 @@ fn main() -> Result<()> {
     // Initialize ROM
     let rom = fs::read(&args.rom_filename)?;
 
+    // Detect model
+    // TODO Make this nicer
+    let mut hash = Sha256::new();
+    hash.update(&rom);
+    let digest = hash.finalize();
+    let model =
+        if digest[..] == hex!("fe6a1ceff5b3eefe32f20efea967cdf8cd4cada291ede040600e7f6c9e2dfc0e") {
+            // Macintosh 512K
+            MacModel {
+                ram_size: 512 * 1024,
+                framebuffer: 0x7A700,
+            }
+        } else if
+        // Macintosh Plus v1
+        digest[..] == hex!("c5d862605867381af6200dd52f5004cc00304a36ab996531f15e0b1f8a80bc01") ||
+        // Macintosh Plus v2
+    digest[..] == hex!("06f598ff0f64c944e7c347ba55ae60c792824c09c74f4a55a32c0141bf91b8b3") ||
+        // Macintosh Plus v3
+    digest[..] == hex!("dd908e2b65772a6b1f0c859c24e9a0d3dcde17b1c6a24f4abd8955846d7895e7")
+        {
+            MacModel {
+                ram_size: 4096 * 1024,
+                framebuffer: 0x3FA700,
+            }
+        } else {
+            panic!("Cannot determine model from ROM file")
+        };
+
     // Initialize bus and CPU
-    let mut bus = MacBus::new(&rom);
+    let mut bus = MacBus::new(&rom, model.ram_size);
     bus.trace = args.trace;
 
     let mut cpu = CpuM68k::new(bus);
@@ -78,7 +113,7 @@ fn main() -> Result<()> {
             for idx in 0..(SCREEN_WIDTH * SCREEN_HEIGHT) {
                 let byte = idx / 8;
                 let bit = idx % 8;
-                if cpu.bus.ram[0x7A700 + byte] & (1 << (7 - bit)) == 0 {
+                if cpu.bus.ram[model.framebuffer + byte] & (1 << (7 - bit)) == 0 {
                     buf[idx * 4 + 0].store(0xC7, Ordering::Release);
                     buf[idx * 4 + 1].store(0xF1, Ordering::Release);
                     buf[idx * 4 + 2].store(0xFB, Ordering::Release);

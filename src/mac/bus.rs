@@ -21,12 +21,12 @@ pub struct MacBus {
     eclock: Ticks,
     mouse_ready: bool,
     iwm: Iwm,
+
+    ram_mask: usize,
+    rom_mask: usize,
 }
 
 impl MacBus {
-    const RAM_SIZE: usize = 512 * 1024;
-    const ROM_SIZE: usize = 64 * 1024;
-
     /// MTemp address, Y coordinate (16 bit, signed)
     const ADDR_MTEMP_Y: Address = 0x0828;
     /// MTemp address, X coordinate (16 bit, signed)
@@ -38,20 +38,21 @@ impl MacBus {
     /// CrsrNew address
     const ADDR_CRSRNEW: Address = 0x08CE;
 
-    pub fn new(rom: &[u8]) -> Self {
-        assert_eq!(rom.len(), Self::ROM_SIZE);
-
+    pub fn new(rom: &[u8], ram_size: usize) -> Self {
         Self {
             trace: false,
 
             rom: Vec::from(rom),
-            ram: vec![0xFF; Self::RAM_SIZE],
+            ram: vec![0xFF; ram_size],
             via: Via::new(),
             video: Video::new(),
             eclock: 0,
             scc: Scc::new(),
             iwm: Iwm::new(),
             mouse_ready: false,
+
+            ram_mask: (ram_size - 1),
+            rom_mask: rom.len() - 1,
         }
     }
 
@@ -76,11 +77,11 @@ impl MacBus {
 
     fn write_overlay(&mut self, addr: Address, val: Byte) -> Option<()> {
         if self.trace && !(0x0060_0000..=0x007F_FFFF).contains(&addr) {
-            println!("WR {:08X} - {:02X}", addr, val);
+            println!("WRO {:08X} - {:02X}", addr, val);
         }
 
         match addr {
-            0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)] = val),
+            0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & self.ram_mask] = val),
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr, val),
             0x00DF_E1FF..=0x00DF_FFFF => self.iwm.write(addr, val),
             // VIA
@@ -95,7 +96,7 @@ impl MacBus {
         }
 
         match addr {
-            0x0000_0000..=0x003F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)] = val),
+            0x0000_0000..=0x003F_FFFF => Some(self.ram[addr as usize & self.ram_mask] = val),
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr, val),
             0x00DF_E1FF..=0x00DF_FFFF => self.iwm.write(addr, val),
             // VIA
@@ -107,9 +108,9 @@ impl MacBus {
     fn read_overlay(&mut self, addr: Address) -> Option<Byte> {
         let result = match addr {
             0x0000_0000..=0x000F_FFFF | 0x0020_0000..=0x002F_FFFF | 0x0040_0000..=0x004F_FFFF => {
-                Some(self.rom[(addr & 0xFFFF) as usize])
+                Some(self.rom[addr as usize & self.rom_mask])
             }
-            0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)]),
+            0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr),
             0x00DF_E1FF..=0x00DF_FFFF => self.iwm.read(addr),
             0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
@@ -117,7 +118,7 @@ impl MacBus {
             _ => None,
         };
         if self.trace && !(0x0000_0000..=0x007F_FFFF).contains(&addr) {
-            println!("RD {:08X} - {:02X?}", addr, result);
+            println!("RDO {:08X} - {:02X?}", addr, result);
         }
 
         result
@@ -125,8 +126,8 @@ impl MacBus {
 
     fn read_normal(&mut self, addr: Address) -> Option<Byte> {
         let result = match addr {
-            0x0000_0000..=0x003F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)]),
-            0x0040_0000..=0x004F_FFFF => Some(self.rom[(addr & 0xFFFF) as usize]),
+            0x0000_0000..=0x003F_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
+            0x0040_0000..=0x004F_FFFF => Some(self.rom[addr as usize & self.rom_mask]),
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr),
             0x00DF_E1FF..=0x00DF_FFFF => self.iwm.read(addr),
             0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
