@@ -23,6 +23,10 @@ const SCREEN_WIDTH: usize = 342;
 struct Args {
     /// ROM filename to load.
     rom_filename: String,
+
+    /// Trace bus I/O activity
+    #[arg(long)]
+    trace: bool,
 }
 
 fn main() -> Result<()> {
@@ -36,7 +40,9 @@ fn main() -> Result<()> {
     let rom = fs::read(&args.rom_filename)?;
 
     // Initialize bus and CPU
-    let bus = MacBus::new(&rom);
+    let mut bus = MacBus::new(&rom);
+    bus.trace = args.trace;
+
     let mut cpu = CpuM68k::new(bus);
     cpu.reset()?;
 

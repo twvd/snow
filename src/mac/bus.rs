@@ -9,6 +9,9 @@ use anyhow::Result;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
 
 pub struct MacBus {
+    /// Trace non-ROM/RAM access
+    pub trace: bool,
+
     rom: Vec<u8>,
     pub ram: Vec<u8>,
     pub via: Via,
@@ -37,6 +40,8 @@ impl MacBus {
         assert_eq!(rom.len(), Self::ROM_SIZE);
 
         Self {
+            trace: false,
+
             rom: Vec::from(rom),
             ram: vec![0xFF; Self::RAM_SIZE],
             via: Via::new(),
@@ -67,6 +72,10 @@ impl MacBus {
     }
 
     fn write_overlay(&mut self, addr: Address, val: Byte) -> Option<()> {
+        if self.trace && !(0x0060_0000..=0x007F_FFFF).contains(&addr) {
+            println!("WR {:08X} - {:02X}", addr, val);
+        }
+
         match addr {
             0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)] = val),
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr, val),
@@ -77,6 +86,10 @@ impl MacBus {
     }
 
     fn write_normal(&mut self, addr: Address, val: Byte) -> Option<()> {
+        if self.trace && !(0x0000_0000..=0x003F_FFFF).contains(&addr) {
+            println!("WR {:08X} - {:02X}", addr, val);
+        }
+
         match addr {
             0x0000_0000..=0x003F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)] = val),
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr, val),
@@ -87,7 +100,7 @@ impl MacBus {
     }
 
     fn read_overlay(&mut self, addr: Address) -> Option<Byte> {
-        match addr {
+        let result = match addr {
             0x0000_0000..=0x000F_FFFF | 0x0020_0000..=0x002F_FFFF | 0x0040_0000..=0x004F_FFFF => {
                 Some(self.rom[(addr & 0xFFFF) as usize])
             }
@@ -99,11 +112,16 @@ impl MacBus {
             0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
 
             _ => None,
+        };
+        if self.trace && !(0x0000_0000..=0x007F_FFFF).contains(&addr) {
+            println!("RD {:08X} - {:02X?}", addr, result);
         }
+
+        result
     }
 
     fn read_normal(&mut self, addr: Address) -> Option<Byte> {
-        match addr {
+        let result = match addr {
             0x0000_0000..=0x003F_FFFF => Some(self.ram[addr as usize & (Self::RAM_SIZE - 1)]),
             0x0040_0000..=0x004F_FFFF => Some(self.rom[(addr & 0xFFFF) as usize]),
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr),
@@ -113,7 +131,12 @@ impl MacBus {
             0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
 
             _ => None,
+        };
+
+        if self.trace && !(0x0000_0000..=0x004F_FFFF).contains(&addr) {
+            println!("RD {:08X} - {:02X?}", addr, result);
         }
+        result
     }
 
     /// Updates the mouse position (relative coordinates) and button state
