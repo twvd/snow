@@ -219,6 +219,12 @@ where
         }
 
         let opcode = self.fetch()?;
+
+        //eprintln!(
+        //"{} {:08X} {:04X} {}",
+        //self.cycles, self.regs.pc, opcode, self.regs
+        //);
+
         if self.decode_cache[opcode as usize].is_none() {
             let instr = Instruction::try_decode(opcode);
 

@@ -82,11 +82,20 @@ fn main() -> Result<()> {
     cpu.reset()?;
 
     'mainloop: for i in 0.. {
+        cpu.bus.iwm.dbg_pc = cpu.regs.pc;
         cpu.step()?;
 
         // TODO do less frequent/move emulator to its own thread
         while let Some(event) = eventpump.poll() {
             match event {
+                Event::KeyDown {
+                    keycode: Some(Keycode::I),
+                    ..
+                } => cpu.bus.iwm.disk_insert(&[]),
+                Event::KeyDown {
+                    keycode: Some(Keycode::P),
+                    ..
+                } => println!("{:06X}", cpu.regs.pc),
                 Event::KeyDown {
                     keycode: Some(Keycode::Escape),
                     ..

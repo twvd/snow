@@ -20,7 +20,7 @@ pub struct MacBus {
     video: Video,
     eclock: Ticks,
     mouse_ready: bool,
-    iwm: Iwm,
+    pub iwm: Iwm,
 
     ram_mask: usize,
     rom_mask: usize,

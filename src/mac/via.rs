@@ -358,6 +358,10 @@ impl Tickable for Via {
             }
         }
 
+        if self.ier.t1() {
+            panic!("Time to implement T1");
+        }
+
         Ok(ticks)
     }
 }
