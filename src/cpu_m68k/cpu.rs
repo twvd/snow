@@ -475,7 +475,7 @@ where
                 )?;
             }
             ExceptionGroup::Group1 | ExceptionGroup::Group2 => {
-                eprintln!(
+                println!(
                     "Exception {:?}, vector {:08X} @  PC = {:06X}",
                     group, vector, self.regs.pc
                 );
@@ -2339,6 +2339,9 @@ where
 
                 // Trigger address error now if unaligned..
                 self.prefetch_refill()?;
+            } else {
+                // Loop terminated
+                self.advance_cycles(4)?; // idle
             }
         } else {
             self.advance_cycles(2)?; // idle
