@@ -7,7 +7,6 @@ use sdl2::mouse::MouseButton;
 use sha2::{Digest, Sha256};
 
 use std::fs;
-use std::sync::atomic::Ordering;
 
 use snow::cpu_m68k::cpu::CpuM68k;
 use snow::frontend::sdl::{SDLEventPump, SDLRenderer};
@@ -33,14 +32,13 @@ struct Args {
 
 struct MacModel {
     ram_size: usize,
-    framebuffer: usize,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
 
     // Initialize display
-    let mut renderer = SDLRenderer::new(SCREEN_HEIGHT, SCREEN_WIDTH)?;
+    let renderer = SDLRenderer::new(SCREEN_HEIGHT, SCREEN_WIDTH)?;
     let eventpump = SDLEventPump::new();
 
     // Initialize ROM
@@ -56,7 +54,6 @@ fn main() -> Result<()> {
             // Macintosh 512K
             MacModel {
                 ram_size: 512 * 1024,
-                framebuffer: 0x7A700,
             }
         } else if
         // Macintosh Plus v1
@@ -68,20 +65,19 @@ fn main() -> Result<()> {
         {
             MacModel {
                 ram_size: 4096 * 1024,
-                framebuffer: 0x3FA700,
             }
         } else {
             panic!("Cannot determine model from ROM file")
         };
 
     // Initialize bus and CPU
-    let mut bus = MacBus::new(&rom, model.ram_size);
+    let mut bus = MacBus::new(&rom, model.ram_size, renderer);
     bus.trace = args.trace;
 
     let mut cpu = CpuM68k::new(bus);
     cpu.reset()?;
 
-    'mainloop: for i in 0.. {
+    'mainloop: loop {
         cpu.bus.iwm.dbg_pc = cpu.regs.pc;
         cpu.step()?;
 
@@ -115,24 +111,6 @@ fn main() -> Result<()> {
                 } => cpu.bus.mouse_update(0, 0, Some(false)),
                 _ => (),
             }
-        }
-
-        if i % 10000 == 0 {
-            let buf = renderer.get_buffer();
-            for idx in 0..(SCREEN_WIDTH * SCREEN_HEIGHT) {
-                let byte = idx / 8;
-                let bit = idx % 8;
-                if cpu.bus.ram[model.framebuffer + byte] & (1 << (7 - bit)) == 0 {
-                    buf[idx * 4 + 0].store(0xC7, Ordering::Release);
-                    buf[idx * 4 + 1].store(0xF1, Ordering::Release);
-                    buf[idx * 4 + 2].store(0xFB, Ordering::Release);
-                } else {
-                    buf[idx * 4 + 0].store(0x22, Ordering::Release);
-                    buf[idx * 4 + 1].store(0x22, Ordering::Release);
-                    buf[idx * 4 + 2].store(0x22, Ordering::Release);
-                }
-            }
-            renderer.update()?;
         }
     }
 

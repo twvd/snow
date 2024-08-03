@@ -1,6 +1,9 @@
+use std::ops::Range;
+
 use super::scc::Scc;
 use super::via::Via;
 use crate::bus::{Address, Bus, BusMember, IrqSource};
+use crate::frontend::Renderer;
 use crate::mac::iwm::Iwm;
 use crate::mac::video::Video;
 use crate::tickable::{Tickable, Ticks};
@@ -9,7 +12,7 @@ use crate::types::Byte;
 use anyhow::Result;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
 
-pub struct MacBus {
+pub struct MacBus<TRenderer: Renderer> {
     /// Trace non-ROM/RAM access
     pub trace: bool,
 
@@ -17,16 +20,22 @@ pub struct MacBus {
     pub ram: Vec<u8>,
     pub via: Via,
     scc: Scc,
-    video: Video,
+    video: Video<TRenderer>,
     eclock: Ticks,
     mouse_ready: bool,
     pub iwm: Iwm,
 
     ram_mask: usize,
     rom_mask: usize,
+
+    fb_main: Range<Address>,
+    fb_alt: Range<Address>,
 }
 
-impl MacBus {
+impl<TRenderer> MacBus<TRenderer>
+where
+    TRenderer: Renderer,
+{
     /// MTemp address, Y coordinate (16 bit, signed)
     const ADDR_MTEMP_Y: Address = 0x0828;
     /// MTemp address, X coordinate (16 bit, signed)
@@ -38,14 +47,16 @@ impl MacBus {
     /// CrsrNew address
     const ADDR_CRSRNEW: Address = 0x08CE;
 
-    pub fn new(rom: &[u8], ram_size: usize) -> Self {
+    pub fn new(rom: &[u8], ram_size: usize, renderer: TRenderer) -> Self {
+        let fb_alt_start = ram_size as Address - Video::<TRenderer>::FRAMEBUFFER_ALT_OFFSET;
+        let fb_main_start = ram_size as Address - Video::<TRenderer>::FRAMEBUFFER_MAIN_OFFSET;
         Self {
             trace: false,
 
             rom: Vec::from(rom),
             ram: vec![0xFF; ram_size],
             via: Via::new(),
-            video: Video::new(),
+            video: Video::new(renderer),
             eclock: 0,
             scc: Scc::new(),
             iwm: Iwm::new(),
@@ -53,6 +64,10 @@ impl MacBus {
 
             ram_mask: (ram_size - 1),
             rom_mask: rom.len() - 1,
+
+            fb_main: fb_main_start
+                ..(fb_main_start + Video::<TRenderer>::FRAMEBUFFER_SIZE as Address),
+            fb_alt: fb_alt_start..(fb_alt_start + Video::<TRenderer>::FRAMEBUFFER_SIZE as Address),
         }
     }
 
@@ -93,6 +108,17 @@ impl MacBus {
     fn write_normal(&mut self, addr: Address, val: Byte) -> Option<()> {
         if self.trace && !(0x0000_0000..=0x003F_FFFF).contains(&addr) {
             println!("WR {:08X} - {:02X}", addr, val);
+        }
+
+        // Duplicate framebuffers to video component
+        // (writes also go through RAM)
+        if self.fb_main.contains(&addr) {
+            let offset = (addr - self.fb_main.start) as usize;
+            self.video.framebuffers[0][offset] = val;
+        }
+        if self.fb_alt.contains(&addr) {
+            let offset = (addr - self.fb_alt.start) as usize;
+            self.video.framebuffers[1][offset] = val;
         }
 
         match addr {
@@ -172,7 +198,10 @@ impl MacBus {
     }
 }
 
-impl Bus<Address, Byte> for MacBus {
+impl<TRenderer> Bus<Address, Byte> for MacBus<TRenderer>
+where
+    TRenderer: Renderer,
+{
     fn get_mask(&self) -> Address {
         0x00FFFFFF
     }
@@ -195,20 +224,26 @@ impl Bus<Address, Byte> for MacBus {
     }
 
     fn write(&mut self, addr: Address, val: Byte) {
-        self.iwm.sel = self.via.a.sel();
-
         let written = if self.via.a.overlay() {
             self.write_overlay(addr, val)
         } else {
             self.write_normal(addr, val)
         };
+
+        // Sync values that live in multiple places
+        self.iwm.sel = self.via.a.sel();
+        self.video.framebuffer_select = self.via.a.page2();
+
         if written.is_none() {
             println!("write: {:08X} {:02X}", addr, val);
         }
     }
 }
 
-impl Tickable for MacBus {
+impl<TRenderer> Tickable for MacBus<TRenderer>
+where
+    TRenderer: Renderer,
+{
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
         // This is called from the CPU, at the CPU clock speed
         assert_eq!(ticks, 1);
@@ -237,13 +272,13 @@ impl Tickable for MacBus {
     }
 }
 
-impl IrqSource for MacBus {
+impl<TRenderer> IrqSource for MacBus<TRenderer>
+where
+    TRenderer: Renderer,
+{
     fn get_irq(&mut self) -> Option<u8> {
         // VIA IRQs
         if self.via.ifr.0 != 0 {
-            if self.via.ier.onesec() {
-                //println!("IRQ {:?}", self.via.irq_flag);
-            }
             return Some(1);
         }
 

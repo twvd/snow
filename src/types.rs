@@ -13,3 +13,26 @@ bitfield! {
         pub lsb: u8 @ 0..8,
     }
 }
+
+/// A self-clearing latch for events etc.
+pub struct LatchingEvent {
+    val: bool,
+}
+
+impl LatchingEvent {
+    pub fn default() -> Self {
+        Self { val: false }
+    }
+
+    /// Returns the current value and clears the event.
+    pub fn get_clear(&mut self) -> bool {
+        let v = self.val;
+        self.val = false;
+        v
+    }
+
+    /// Sets the event.
+    pub fn set(&mut self) {
+        self.val = true;
+    }
+}
