@@ -5,16 +5,15 @@ use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::mouse::MouseButton;
 use sha2::{Digest, Sha256};
+use snow::emulator::comm::EmulatorCommand;
+use snow::emulator::{Emulator, MacModel};
+use snow::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
+use snow::tickable::Tickable;
 
-use std::fs;
+use std::{fs, thread};
 
-use snow::cpu_m68k::cpu::CpuM68k;
 use snow::frontend::sdl::{SDLEventPump, SDLRenderer};
 use snow::frontend::Renderer;
-use snow::mac::bus::MacBus;
-
-const SCREEN_HEIGHT: usize = 512;
-const SCREEN_WIDTH: usize = 342;
 
 #[derive(Parser)]
 #[command(
@@ -30,15 +29,11 @@ struct Args {
     trace: bool,
 }
 
-struct MacModel {
-    ram_size: usize,
-}
-
 fn main() -> Result<()> {
     let args = Args::parse();
 
     // Initialize display
-    let renderer = SDLRenderer::new(SCREEN_HEIGHT, SCREEN_WIDTH)?;
+    let mut renderer = SDLRenderer::new(SCREEN_HEIGHT, SCREEN_WIDTH)?;
     let eventpump = SDLEventPump::new();
 
     // Initialize ROM
@@ -53,6 +48,7 @@ fn main() -> Result<()> {
         if digest[..] == hex!("fe6a1ceff5b3eefe32f20efea967cdf8cd4cada291ede040600e7f6c9e2dfc0e") {
             // Macintosh 512K
             MacModel {
+                name: &"Macintosh 512K",
                 ram_size: 512 * 1024,
             }
         } else if
@@ -64,55 +60,77 @@ fn main() -> Result<()> {
     digest[..] == hex!("dd908e2b65772a6b1f0c859c24e9a0d3dcde17b1c6a24f4abd8955846d7895e7")
         {
             MacModel {
+                name: &"Macintosh Plus",
                 ram_size: 4096 * 1024,
             }
         } else {
             panic!("Cannot determine model from ROM file")
         };
 
-    // Initialize bus and CPU
-    let mut bus = MacBus::new(&rom, model.ram_size, renderer);
-    bus.trace = args.trace;
+    let (mut emulator, frame_recv) = Emulator::new(&rom, model)?;
+    let cmd = emulator.create_cmd_sender();
 
-    let mut cpu = CpuM68k::new(bus);
-    cpu.reset()?;
+    // Spin up emulator thread
+    let emuthread = thread::spawn(move || loop {
+        match emulator.tick(1) {
+            Ok(0) => break,
+            Ok(_) => (),
+            Err(e) => panic!("Emulator error: {}", e),
+        }
+    });
 
     'mainloop: loop {
-        cpu.bus.iwm.dbg_pc = cpu.regs.pc;
-        cpu.step()?;
+        let frame = frame_recv.recv()?;
+        renderer.update_from(frame)?;
 
-        // TODO do less frequent/move emulator to its own thread
         while let Some(event) = eventpump.poll() {
             match event {
                 Event::KeyDown {
                     keycode: Some(Keycode::I),
                     ..
-                } => cpu.bus.iwm.disk_insert(&[]),
-                Event::KeyDown {
-                    keycode: Some(Keycode::P),
-                    ..
-                } => println!("{:06X}", cpu.regs.pc),
+                } => {
+                    cmd.send(EmulatorCommand::InsertFloppy(Box::new([])))?;
+                }
                 Event::KeyDown {
                     keycode: Some(Keycode::Escape),
                     ..
                 }
-                | Event::Quit { .. } => break 'mainloop,
+                | Event::Quit { .. } => {
+                    break 'mainloop;
+                }
                 Event::MouseMotion { xrel, yrel, .. } => {
-                    cpu.bus
-                        .mouse_update(xrel.try_into()?, yrel.try_into()?, None)
+                    cmd.send(EmulatorCommand::MouseUpdateRelative {
+                        relx: xrel.try_into()?,
+                        rely: yrel.try_into()?,
+                        btn: None,
+                    })?;
                 }
                 Event::MouseButtonDown {
                     mouse_btn: MouseButton::Left,
                     ..
-                } => cpu.bus.mouse_update(0, 0, Some(true)),
+                } => {
+                    cmd.send(EmulatorCommand::MouseUpdateRelative {
+                        relx: 0,
+                        rely: 0,
+                        btn: Some(true),
+                    })?;
+                }
                 Event::MouseButtonUp {
                     mouse_btn: MouseButton::Left,
                     ..
-                } => cpu.bus.mouse_update(0, 0, Some(false)),
+                } => {
+                    cmd.send(EmulatorCommand::MouseUpdateRelative {
+                        relx: 0,
+                        rely: 0,
+                        btn: Some(false),
+                    })?;
+                }
                 _ => (),
             }
         }
     }
 
+    cmd.send(EmulatorCommand::Quit)?;
+    emuthread.join().unwrap();
     Ok(())
 }

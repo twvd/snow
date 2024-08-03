@@ -13,7 +13,7 @@ pub struct ChannelRenderer {
 }
 
 impl ChannelRenderer {
-    pub fn get_receiver(&mut self) -> Receiver<DisplayBuffer> {
+    pub fn get_receiver(&self) -> Receiver<DisplayBuffer> {
         self.receiver.clone()
     }
 }
