@@ -92,11 +92,11 @@ const MOVEM_REGS: [Register; 16] = [
 ];
 
 /// Instruction decode cache. Each opcode (16-bit) has a slot, index = opcode.
-type DecodeCache = Box<[Option<Instruction>; Word::MAX as usize + 1]>;
+type DecodeCache = Vec<Option<Instruction>>;
 
 /// Creates an empty instruction cache
 fn empty_decode_cache() -> DecodeCache {
-    Box::new([const { Option::<Instruction>::None }; Word::MAX as usize + 1])
+    vec![None; Word::MAX as usize + 1]
 }
 
 /// Motorola 680x0
