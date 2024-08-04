@@ -86,6 +86,7 @@ bitfield! {
 
 /// IWM registers
 /// Value bits: CA2 CA1 CA0 SEL
+#[allow(clippy::upper_case_acronyms)]
 #[derive(FromPrimitive, Debug)]
 enum IwmReg {
     /// Head step direction
@@ -131,6 +132,7 @@ enum IwmReg {
 
 /// IWM write registers
 /// Value bits: CA2 CA1 CA0 SEL
+#[allow(clippy::upper_case_acronyms)]
 #[derive(FromPrimitive, Debug)]
 enum IwmWriteReg {
     /// Step to higher track (track++)

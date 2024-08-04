@@ -74,7 +74,7 @@ where
     fn write_ram<T: ToBytes>(&mut self, addr: Address, val: T) {
         let addr = addr as usize;
         let bytes = val.to_be_bytes();
-        for (i, &b) in bytes.as_ref().into_iter().enumerate() {
+        for (i, &b) in bytes.as_ref().iter().enumerate() {
             self.ram[addr + i] = b;
         }
     }

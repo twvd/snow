@@ -15,15 +15,12 @@ bitfield! {
 }
 
 /// A self-clearing latch for events etc.
+#[derive(Default)]
 pub struct LatchingEvent {
     val: bool,
 }
 
 impl LatchingEvent {
-    pub fn default() -> Self {
-        Self { val: false }
-    }
-
     /// Returns the current value and clears the event.
     pub fn get_clear(&mut self) -> bool {
         let v = self.val;

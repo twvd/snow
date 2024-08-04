@@ -49,7 +49,7 @@ impl SDLRenderer {
         // buffer. Worst case is a garbled display.
         let sdl_displaybuffer = unsafe { std::mem::transmute::<&[AtomicU8], &[u8]>(&buffer) };
         self.texture
-            .update(None, &sdl_displaybuffer, self.width * Self::BPP)?;
+            .update(None, sdl_displaybuffer, self.width * Self::BPP)?;
         self.canvas.clear();
         self.canvas
             .copy(&self.texture, None, None)

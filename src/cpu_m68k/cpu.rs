@@ -196,7 +196,7 @@ where
 
     /// Fetches a 16-bit value from prefetch queue
     fn fetch(&mut self) -> Result<Word> {
-        if self.prefetch.len() == 0 {
+        if self.prefetch.is_empty() {
             self.prefetch_pump()?;
         }
         Ok(self.prefetch.pop_front().unwrap())
@@ -229,7 +229,7 @@ where
             let instr = Instruction::try_decode(opcode);
 
             // Special case for MOVEC which is used to detect 68000/68020 in the Mac Plus
-            if !instr.is_ok() && opcode == 0b0100111001111011 {
+            if instr.is_err() && opcode == 0b0100111001111011 {
                 self.raise_exception(ExceptionGroup::Group1, VECTOR_ILLEGAL, None)?;
                 return Ok(());
             }
@@ -353,7 +353,7 @@ where
                 for a in 0..std::mem::size_of::<T>() {
                     let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
                     let b = val as u8;
-                    val = val >> 8;
+                    val >>= 8;
 
                     self.bus.write(byte_addr, b);
                     self.advance_cycles(2)?;
@@ -369,7 +369,7 @@ where
                 for a in (0..std::mem::size_of::<T>()).rev() {
                     let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
                     let b = val as u8;
-                    val = val >> 8;
+                    val >>= 8;
 
                     self.bus.write(byte_addr, b);
                     self.advance_cycles(2)?;
@@ -423,7 +423,7 @@ where
         self.write_ticks(self.regs.ssp.wrapping_add(2), (self.regs.pc >> 16) as u16)?;
 
         // Jump to vector
-        let new_pc = self.read_ticks::<Long>(vector)?.into();
+        let new_pc = self.read_ticks::<Long>(vector)?;
         self.set_pc(new_pc)?;
         self.prefetch_pump()?;
         self.advance_cycles(2)?; // 2x idle
@@ -487,7 +487,7 @@ where
             }
         }
 
-        let new_pc = self.read_ticks::<Long>(vector)?.into();
+        let new_pc = self.read_ticks::<Long>(vector)?;
         self.set_pc(new_pc)?;
         self.prefetch_pump()?;
         self.advance_cycles(2)?; // 2x idle
@@ -499,199 +499,199 @@ where
     /// Executes a previously decoded instruction.
     fn execute_instruction(&mut self, instr: &Instruction) -> Result<()> {
         match instr.mnemonic {
-            InstructionMnemonic::AND_l => self.op_bitwise::<Long>(&instr, |a, b| a & b),
-            InstructionMnemonic::AND_w => self.op_bitwise::<Word>(&instr, |a, b| a & b),
-            InstructionMnemonic::AND_b => self.op_bitwise::<Byte>(&instr, |a, b| a & b),
-            InstructionMnemonic::ANDI_l => self.op_bitwise_immediate::<Long>(&instr, |a, b| a & b),
-            InstructionMnemonic::ANDI_w => self.op_bitwise_immediate::<Word>(&instr, |a, b| a & b),
-            InstructionMnemonic::ANDI_b => self.op_bitwise_immediate::<Byte>(&instr, |a, b| a & b),
-            InstructionMnemonic::ANDI_ccr => self.op_bitwise_ccr(&instr, |a, b| a & b),
-            InstructionMnemonic::ANDI_sr => self.op_bitwise_sr(&instr, |a, b| a & b),
-            InstructionMnemonic::EOR_l => self.op_bitwise::<Long>(&instr, |a, b| a ^ b),
-            InstructionMnemonic::EOR_w => self.op_bitwise::<Word>(&instr, |a, b| a ^ b),
-            InstructionMnemonic::EOR_b => self.op_bitwise::<Byte>(&instr, |a, b| a ^ b),
-            InstructionMnemonic::EORI_l => self.op_bitwise_immediate::<Long>(&instr, |a, b| a ^ b),
-            InstructionMnemonic::EORI_w => self.op_bitwise_immediate::<Word>(&instr, |a, b| a ^ b),
-            InstructionMnemonic::EORI_b => self.op_bitwise_immediate::<Byte>(&instr, |a, b| a ^ b),
-            InstructionMnemonic::EORI_ccr => self.op_bitwise_ccr(&instr, |a, b| a ^ b),
-            InstructionMnemonic::EORI_sr => self.op_bitwise_sr(&instr, |a, b| a ^ b),
-            InstructionMnemonic::OR_l => self.op_bitwise::<Long>(&instr, |a, b| a | b),
-            InstructionMnemonic::OR_w => self.op_bitwise::<Word>(&instr, |a, b| a | b),
-            InstructionMnemonic::OR_b => self.op_bitwise::<Byte>(&instr, |a, b| a | b),
-            InstructionMnemonic::ORI_l => self.op_bitwise_immediate::<Long>(&instr, |a, b| a | b),
-            InstructionMnemonic::ORI_w => self.op_bitwise_immediate::<Word>(&instr, |a, b| a | b),
-            InstructionMnemonic::ORI_b => self.op_bitwise_immediate::<Byte>(&instr, |a, b| a | b),
-            InstructionMnemonic::ORI_ccr => self.op_bitwise_ccr(&instr, |a, b| a | b),
-            InstructionMnemonic::ORI_sr => self.op_bitwise_sr(&instr, |a, b| a | b),
-            InstructionMnemonic::SUB_l => self.op_alu::<Long>(&instr, Self::alu_sub),
-            InstructionMnemonic::SUB_w => self.op_alu::<Word>(&instr, Self::alu_sub),
-            InstructionMnemonic::SUB_b => self.op_alu::<Byte>(&instr, Self::alu_sub),
-            InstructionMnemonic::SUBA_l => self.op_alu_a::<Long>(&instr, Self::alu_sub),
-            InstructionMnemonic::SUBA_w => self.op_alu_a::<Word>(&instr, Self::alu_sub),
-            InstructionMnemonic::SUBI_l => self.op_alu_immediate::<Long>(&instr, Self::alu_sub),
-            InstructionMnemonic::SUBI_w => self.op_alu_immediate::<Word>(&instr, Self::alu_sub),
-            InstructionMnemonic::SUBI_b => self.op_alu_immediate::<Byte>(&instr, Self::alu_sub),
-            InstructionMnemonic::SUBQ_l => self.op_alu_quick::<Long>(&instr, Self::alu_sub),
+            InstructionMnemonic::AND_l => self.op_bitwise::<Long>(instr, |a, b| a & b),
+            InstructionMnemonic::AND_w => self.op_bitwise::<Word>(instr, |a, b| a & b),
+            InstructionMnemonic::AND_b => self.op_bitwise::<Byte>(instr, |a, b| a & b),
+            InstructionMnemonic::ANDI_l => self.op_bitwise_immediate::<Long>(instr, |a, b| a & b),
+            InstructionMnemonic::ANDI_w => self.op_bitwise_immediate::<Word>(instr, |a, b| a & b),
+            InstructionMnemonic::ANDI_b => self.op_bitwise_immediate::<Byte>(instr, |a, b| a & b),
+            InstructionMnemonic::ANDI_ccr => self.op_bitwise_ccr(instr, |a, b| a & b),
+            InstructionMnemonic::ANDI_sr => self.op_bitwise_sr(instr, |a, b| a & b),
+            InstructionMnemonic::EOR_l => self.op_bitwise::<Long>(instr, |a, b| a ^ b),
+            InstructionMnemonic::EOR_w => self.op_bitwise::<Word>(instr, |a, b| a ^ b),
+            InstructionMnemonic::EOR_b => self.op_bitwise::<Byte>(instr, |a, b| a ^ b),
+            InstructionMnemonic::EORI_l => self.op_bitwise_immediate::<Long>(instr, |a, b| a ^ b),
+            InstructionMnemonic::EORI_w => self.op_bitwise_immediate::<Word>(instr, |a, b| a ^ b),
+            InstructionMnemonic::EORI_b => self.op_bitwise_immediate::<Byte>(instr, |a, b| a ^ b),
+            InstructionMnemonic::EORI_ccr => self.op_bitwise_ccr(instr, |a, b| a ^ b),
+            InstructionMnemonic::EORI_sr => self.op_bitwise_sr(instr, |a, b| a ^ b),
+            InstructionMnemonic::OR_l => self.op_bitwise::<Long>(instr, |a, b| a | b),
+            InstructionMnemonic::OR_w => self.op_bitwise::<Word>(instr, |a, b| a | b),
+            InstructionMnemonic::OR_b => self.op_bitwise::<Byte>(instr, |a, b| a | b),
+            InstructionMnemonic::ORI_l => self.op_bitwise_immediate::<Long>(instr, |a, b| a | b),
+            InstructionMnemonic::ORI_w => self.op_bitwise_immediate::<Word>(instr, |a, b| a | b),
+            InstructionMnemonic::ORI_b => self.op_bitwise_immediate::<Byte>(instr, |a, b| a | b),
+            InstructionMnemonic::ORI_ccr => self.op_bitwise_ccr(instr, |a, b| a | b),
+            InstructionMnemonic::ORI_sr => self.op_bitwise_sr(instr, |a, b| a | b),
+            InstructionMnemonic::SUB_l => self.op_alu::<Long>(instr, Self::alu_sub),
+            InstructionMnemonic::SUB_w => self.op_alu::<Word>(instr, Self::alu_sub),
+            InstructionMnemonic::SUB_b => self.op_alu::<Byte>(instr, Self::alu_sub),
+            InstructionMnemonic::SUBA_l => self.op_alu_a::<Long>(instr, Self::alu_sub),
+            InstructionMnemonic::SUBA_w => self.op_alu_a::<Word>(instr, Self::alu_sub),
+            InstructionMnemonic::SUBI_l => self.op_alu_immediate::<Long>(instr, Self::alu_sub),
+            InstructionMnemonic::SUBI_w => self.op_alu_immediate::<Word>(instr, Self::alu_sub),
+            InstructionMnemonic::SUBI_b => self.op_alu_immediate::<Byte>(instr, Self::alu_sub),
+            InstructionMnemonic::SUBQ_l => self.op_alu_quick::<Long>(instr, Self::alu_sub),
             InstructionMnemonic::SUBQ_w => {
                 if instr.get_addr_mode()? == AddressingMode::AddressRegister {
                     // A word operation on an address register affects the entire 32-bit address.
-                    self.op_alu_quick::<Long>(&instr, Self::alu_sub)
+                    self.op_alu_quick::<Long>(instr, Self::alu_sub)
                 } else {
-                    self.op_alu_quick::<Word>(&instr, Self::alu_sub)
+                    self.op_alu_quick::<Word>(instr, Self::alu_sub)
                 }
             }
             InstructionMnemonic::SUBQ_b => {
                 if instr.get_addr_mode()? == AddressingMode::AddressRegister {
                     panic!("TODO SUB.b Q, An is illegal!");
                 }
-                self.op_alu_quick::<Byte>(&instr, Self::alu_sub)
+                self.op_alu_quick::<Byte>(instr, Self::alu_sub)
             }
-            InstructionMnemonic::SUBX_l => self.op_alu_x::<Long>(&instr, Self::alu_sub_x),
-            InstructionMnemonic::SUBX_w => self.op_alu_x::<Word>(&instr, Self::alu_sub_x),
-            InstructionMnemonic::SUBX_b => self.op_alu_x::<Byte>(&instr, Self::alu_sub_x),
-            InstructionMnemonic::ADD_l => self.op_alu::<Long>(&instr, Self::alu_add),
-            InstructionMnemonic::ADD_w => self.op_alu::<Word>(&instr, Self::alu_add),
-            InstructionMnemonic::ADD_b => self.op_alu::<Byte>(&instr, Self::alu_add),
-            InstructionMnemonic::ADDA_l => self.op_alu_a::<Long>(&instr, Self::alu_add),
-            InstructionMnemonic::ADDA_w => self.op_alu_a::<Word>(&instr, Self::alu_add),
-            InstructionMnemonic::ADDI_l => self.op_alu_immediate::<Long>(&instr, Self::alu_add),
-            InstructionMnemonic::ADDI_w => self.op_alu_immediate::<Word>(&instr, Self::alu_add),
-            InstructionMnemonic::ADDI_b => self.op_alu_immediate::<Byte>(&instr, Self::alu_add),
-            InstructionMnemonic::ADDQ_l => self.op_alu_quick::<Long>(&instr, Self::alu_add),
+            InstructionMnemonic::SUBX_l => self.op_alu_x::<Long>(instr, Self::alu_sub_x),
+            InstructionMnemonic::SUBX_w => self.op_alu_x::<Word>(instr, Self::alu_sub_x),
+            InstructionMnemonic::SUBX_b => self.op_alu_x::<Byte>(instr, Self::alu_sub_x),
+            InstructionMnemonic::ADD_l => self.op_alu::<Long>(instr, Self::alu_add),
+            InstructionMnemonic::ADD_w => self.op_alu::<Word>(instr, Self::alu_add),
+            InstructionMnemonic::ADD_b => self.op_alu::<Byte>(instr, Self::alu_add),
+            InstructionMnemonic::ADDA_l => self.op_alu_a::<Long>(instr, Self::alu_add),
+            InstructionMnemonic::ADDA_w => self.op_alu_a::<Word>(instr, Self::alu_add),
+            InstructionMnemonic::ADDI_l => self.op_alu_immediate::<Long>(instr, Self::alu_add),
+            InstructionMnemonic::ADDI_w => self.op_alu_immediate::<Word>(instr, Self::alu_add),
+            InstructionMnemonic::ADDI_b => self.op_alu_immediate::<Byte>(instr, Self::alu_add),
+            InstructionMnemonic::ADDQ_l => self.op_alu_quick::<Long>(instr, Self::alu_add),
             InstructionMnemonic::ADDQ_w => {
                 if instr.get_addr_mode()? == AddressingMode::AddressRegister {
                     // A word operation on an address register affects the entire 32-bit address.
-                    self.op_alu_quick::<Long>(&instr, Self::alu_add)
+                    self.op_alu_quick::<Long>(instr, Self::alu_add)
                 } else {
-                    self.op_alu_quick::<Word>(&instr, Self::alu_add)
+                    self.op_alu_quick::<Word>(instr, Self::alu_add)
                 }
             }
             InstructionMnemonic::ADDQ_b => {
                 if instr.get_addr_mode()? == AddressingMode::AddressRegister {
                     panic!("TODO ADD.b Q, An is illegal!");
                 }
-                self.op_alu_quick::<Byte>(&instr, Self::alu_add)
+                self.op_alu_quick::<Byte>(instr, Self::alu_add)
             }
-            InstructionMnemonic::ADDX_l => self.op_alu_x::<Long>(&instr, Self::alu_add_x),
-            InstructionMnemonic::ADDX_w => self.op_alu_x::<Word>(&instr, Self::alu_add_x),
-            InstructionMnemonic::ADDX_b => self.op_alu_x::<Byte>(&instr, Self::alu_add_x),
-            InstructionMnemonic::CMP_l => self.op_cmp::<Long>(&instr),
-            InstructionMnemonic::CMP_w => self.op_cmp::<Word>(&instr),
-            InstructionMnemonic::CMP_b => self.op_cmp::<Byte>(&instr),
-            InstructionMnemonic::CMPA_l => self.op_cmp_address::<Long>(&instr),
-            InstructionMnemonic::CMPA_w => self.op_cmp_address::<Word>(&instr),
-            InstructionMnemonic::CMPI_l => self.op_cmp_immediate::<Long>(&instr),
-            InstructionMnemonic::CMPI_w => self.op_cmp_immediate::<Word>(&instr),
-            InstructionMnemonic::CMPI_b => self.op_cmp_immediate::<Byte>(&instr),
-            InstructionMnemonic::CMPM_l => self.op_cmpm::<Long>(&instr),
-            InstructionMnemonic::CMPM_w => self.op_cmpm::<Word>(&instr),
-            InstructionMnemonic::CMPM_b => self.op_cmpm::<Byte>(&instr),
-            InstructionMnemonic::MULU_w => self.op_mulu(&instr),
-            InstructionMnemonic::MULS_w => self.op_muls(&instr),
-            InstructionMnemonic::DIVU_w => self.op_divu(&instr),
-            InstructionMnemonic::DIVS_w => self.op_divs(&instr),
+            InstructionMnemonic::ADDX_l => self.op_alu_x::<Long>(instr, Self::alu_add_x),
+            InstructionMnemonic::ADDX_w => self.op_alu_x::<Word>(instr, Self::alu_add_x),
+            InstructionMnemonic::ADDX_b => self.op_alu_x::<Byte>(instr, Self::alu_add_x),
+            InstructionMnemonic::CMP_l => self.op_cmp::<Long>(instr),
+            InstructionMnemonic::CMP_w => self.op_cmp::<Word>(instr),
+            InstructionMnemonic::CMP_b => self.op_cmp::<Byte>(instr),
+            InstructionMnemonic::CMPA_l => self.op_cmp_address::<Long>(instr),
+            InstructionMnemonic::CMPA_w => self.op_cmp_address::<Word>(instr),
+            InstructionMnemonic::CMPI_l => self.op_cmp_immediate::<Long>(instr),
+            InstructionMnemonic::CMPI_w => self.op_cmp_immediate::<Word>(instr),
+            InstructionMnemonic::CMPI_b => self.op_cmp_immediate::<Byte>(instr),
+            InstructionMnemonic::CMPM_l => self.op_cmpm::<Long>(instr),
+            InstructionMnemonic::CMPM_w => self.op_cmpm::<Word>(instr),
+            InstructionMnemonic::CMPM_b => self.op_cmpm::<Byte>(instr),
+            InstructionMnemonic::MULU_w => self.op_mulu(instr),
+            InstructionMnemonic::MULS_w => self.op_muls(instr),
+            InstructionMnemonic::DIVU_w => self.op_divu(instr),
+            InstructionMnemonic::DIVS_w => self.op_divs(instr),
             InstructionMnemonic::NOP => Ok(()),
-            InstructionMnemonic::SWAP => self.op_swap(&instr),
-            InstructionMnemonic::TRAP => self.op_trap(&instr),
-            InstructionMnemonic::BTST_imm => self.op_bit::<true>(&instr, None),
-            InstructionMnemonic::BSET_imm => self.op_bit::<true>(&instr, Some(|v, bit| v | bit)),
-            InstructionMnemonic::BCLR_imm => self.op_bit::<true>(&instr, Some(|v, bit| v & !bit)),
-            InstructionMnemonic::BCHG_imm => self.op_bit::<true>(&instr, Some(|v, bit| v ^ bit)),
-            InstructionMnemonic::BTST_dn => self.op_bit::<false>(&instr, None),
-            InstructionMnemonic::BSET_dn => self.op_bit::<false>(&instr, Some(|v, bit| v | bit)),
-            InstructionMnemonic::BCLR_dn => self.op_bit::<false>(&instr, Some(|v, bit| v & !bit)),
-            InstructionMnemonic::BCHG_dn => self.op_bit::<false>(&instr, Some(|v, bit| v ^ bit)),
-            InstructionMnemonic::MOVEP_w => self.op_movep::<2, Word>(&instr),
-            InstructionMnemonic::MOVEP_l => self.op_movep::<4, Long>(&instr),
-            InstructionMnemonic::MOVEA_l => self.op_movea::<Long>(&instr),
-            InstructionMnemonic::MOVEA_w => self.op_movea::<Word>(&instr),
-            InstructionMnemonic::MOVE_l => self.op_move::<Long>(&instr),
-            InstructionMnemonic::MOVE_w => self.op_move::<Word>(&instr),
-            InstructionMnemonic::MOVE_b => self.op_move::<Byte>(&instr),
-            InstructionMnemonic::MOVEfromSR => self.op_move_from_sr(&instr),
-            InstructionMnemonic::MOVEtoSR => self.op_move_to_sr(&instr),
-            InstructionMnemonic::MOVEtoCCR => self.op_move_to_ccr(&instr),
-            InstructionMnemonic::MOVEtoUSP => self.op_move_to_usp(&instr),
-            InstructionMnemonic::MOVEfromUSP => self.op_move_from_usp(&instr),
-            InstructionMnemonic::NEG_l => self.op_alu_zero::<Long>(&instr, Self::alu_sub),
-            InstructionMnemonic::NEG_w => self.op_alu_zero::<Word>(&instr, Self::alu_sub),
-            InstructionMnemonic::NEG_b => self.op_alu_zero::<Byte>(&instr, Self::alu_sub),
-            InstructionMnemonic::NEGX_l => self.op_alu_zero::<Long>(&instr, Self::alu_sub_x),
-            InstructionMnemonic::NEGX_w => self.op_alu_zero::<Word>(&instr, Self::alu_sub_x),
-            InstructionMnemonic::NEGX_b => self.op_alu_zero::<Byte>(&instr, Self::alu_sub_x),
-            InstructionMnemonic::CLR_l => self.op_clr::<Long>(&instr),
-            InstructionMnemonic::CLR_w => self.op_clr::<Word>(&instr),
-            InstructionMnemonic::CLR_b => self.op_clr::<Byte>(&instr),
-            InstructionMnemonic::NOT_l => self.op_not::<Long>(&instr),
-            InstructionMnemonic::NOT_w => self.op_not::<Word>(&instr),
-            InstructionMnemonic::NOT_b => self.op_not::<Byte>(&instr),
-            InstructionMnemonic::EXT_l => self.op_ext::<Long, Word>(&instr),
-            InstructionMnemonic::EXT_w => self.op_ext::<Word, Byte>(&instr),
-            InstructionMnemonic::SBCD => self.op_sbcd(&instr),
-            InstructionMnemonic::NBCD => self.op_nbcd(&instr),
-            InstructionMnemonic::ABCD => self.op_abcd(&instr),
-            InstructionMnemonic::PEA => self.op_lea_pea(&instr),
-            InstructionMnemonic::LEA => self.op_lea_pea(&instr),
+            InstructionMnemonic::SWAP => self.op_swap(instr),
+            InstructionMnemonic::TRAP => self.op_trap(instr),
+            InstructionMnemonic::BTST_imm => self.op_bit::<true>(instr, None),
+            InstructionMnemonic::BSET_imm => self.op_bit::<true>(instr, Some(|v, bit| v | bit)),
+            InstructionMnemonic::BCLR_imm => self.op_bit::<true>(instr, Some(|v, bit| v & !bit)),
+            InstructionMnemonic::BCHG_imm => self.op_bit::<true>(instr, Some(|v, bit| v ^ bit)),
+            InstructionMnemonic::BTST_dn => self.op_bit::<false>(instr, None),
+            InstructionMnemonic::BSET_dn => self.op_bit::<false>(instr, Some(|v, bit| v | bit)),
+            InstructionMnemonic::BCLR_dn => self.op_bit::<false>(instr, Some(|v, bit| v & !bit)),
+            InstructionMnemonic::BCHG_dn => self.op_bit::<false>(instr, Some(|v, bit| v ^ bit)),
+            InstructionMnemonic::MOVEP_w => self.op_movep::<2, Word>(instr),
+            InstructionMnemonic::MOVEP_l => self.op_movep::<4, Long>(instr),
+            InstructionMnemonic::MOVEA_l => self.op_movea::<Long>(instr),
+            InstructionMnemonic::MOVEA_w => self.op_movea::<Word>(instr),
+            InstructionMnemonic::MOVE_l => self.op_move::<Long>(instr),
+            InstructionMnemonic::MOVE_w => self.op_move::<Word>(instr),
+            InstructionMnemonic::MOVE_b => self.op_move::<Byte>(instr),
+            InstructionMnemonic::MOVEfromSR => self.op_move_from_sr(instr),
+            InstructionMnemonic::MOVEtoSR => self.op_move_to_sr(instr),
+            InstructionMnemonic::MOVEtoCCR => self.op_move_to_ccr(instr),
+            InstructionMnemonic::MOVEtoUSP => self.op_move_to_usp(instr),
+            InstructionMnemonic::MOVEfromUSP => self.op_move_from_usp(instr),
+            InstructionMnemonic::NEG_l => self.op_alu_zero::<Long>(instr, Self::alu_sub),
+            InstructionMnemonic::NEG_w => self.op_alu_zero::<Word>(instr, Self::alu_sub),
+            InstructionMnemonic::NEG_b => self.op_alu_zero::<Byte>(instr, Self::alu_sub),
+            InstructionMnemonic::NEGX_l => self.op_alu_zero::<Long>(instr, Self::alu_sub_x),
+            InstructionMnemonic::NEGX_w => self.op_alu_zero::<Word>(instr, Self::alu_sub_x),
+            InstructionMnemonic::NEGX_b => self.op_alu_zero::<Byte>(instr, Self::alu_sub_x),
+            InstructionMnemonic::CLR_l => self.op_clr::<Long>(instr),
+            InstructionMnemonic::CLR_w => self.op_clr::<Word>(instr),
+            InstructionMnemonic::CLR_b => self.op_clr::<Byte>(instr),
+            InstructionMnemonic::NOT_l => self.op_not::<Long>(instr),
+            InstructionMnemonic::NOT_w => self.op_not::<Word>(instr),
+            InstructionMnemonic::NOT_b => self.op_not::<Byte>(instr),
+            InstructionMnemonic::EXT_l => self.op_ext::<Long, Word>(instr),
+            InstructionMnemonic::EXT_w => self.op_ext::<Word, Byte>(instr),
+            InstructionMnemonic::SBCD => self.op_sbcd(instr),
+            InstructionMnemonic::NBCD => self.op_nbcd(instr),
+            InstructionMnemonic::ABCD => self.op_abcd(instr),
+            InstructionMnemonic::PEA => self.op_lea_pea(instr),
+            InstructionMnemonic::LEA => self.op_lea_pea(instr),
             InstructionMnemonic::ILLEGAL => {
                 self.raise_exception(ExceptionGroup::Group1, VECTOR_ILLEGAL, None)
             }
-            InstructionMnemonic::TAS => self.op_tas(&instr),
-            InstructionMnemonic::TST_b => self.op_tst::<Byte>(&instr),
-            InstructionMnemonic::TST_w => self.op_tst::<Word>(&instr),
-            InstructionMnemonic::TST_l => self.op_tst::<Long>(&instr),
-            InstructionMnemonic::LINK => self.op_link(&instr),
-            InstructionMnemonic::UNLINK => self.op_unlink(&instr),
-            InstructionMnemonic::RESET => self.op_reset(&instr),
-            InstructionMnemonic::RTE => self.op_rte(&instr),
-            InstructionMnemonic::RTS => self.op_rts(&instr),
-            InstructionMnemonic::RTR => self.op_rtr(&instr),
+            InstructionMnemonic::TAS => self.op_tas(instr),
+            InstructionMnemonic::TST_b => self.op_tst::<Byte>(instr),
+            InstructionMnemonic::TST_w => self.op_tst::<Word>(instr),
+            InstructionMnemonic::TST_l => self.op_tst::<Long>(instr),
+            InstructionMnemonic::LINK => self.op_link(instr),
+            InstructionMnemonic::UNLINK => self.op_unlink(instr),
+            InstructionMnemonic::RESET => self.op_reset(instr),
+            InstructionMnemonic::RTE => self.op_rte(instr),
+            InstructionMnemonic::RTS => self.op_rts(instr),
+            InstructionMnemonic::RTR => self.op_rtr(instr),
             InstructionMnemonic::STOP => panic!("STOP encountered"),
-            InstructionMnemonic::TRAPV => self.op_trapv(&instr),
-            InstructionMnemonic::JSR => self.op_jmp_jsr(&instr),
-            InstructionMnemonic::JMP => self.op_jmp_jsr(&instr),
-            InstructionMnemonic::MOVEM_mem_l => self.op_movem_mem::<Long>(&instr),
-            InstructionMnemonic::MOVEM_mem_w => self.op_movem_mem::<Word>(&instr),
-            InstructionMnemonic::MOVEM_reg_l => self.op_movem_reg::<Long>(&instr),
-            InstructionMnemonic::MOVEM_reg_w => self.op_movem_reg::<Word>(&instr),
-            InstructionMnemonic::CHK => self.op_chk(&instr),
-            InstructionMnemonic::Scc => self.op_scc(&instr),
-            InstructionMnemonic::DBcc => self.op_dbcc(&instr),
-            InstructionMnemonic::Bcc => self.op_bcc::<false>(&instr),
-            InstructionMnemonic::BSR => self.op_bcc::<true>(&instr),
-            InstructionMnemonic::MOVEQ => self.op_moveq(&instr),
-            InstructionMnemonic::EXG => self.op_exg(&instr),
-            InstructionMnemonic::ASL_b => self.op_shrot::<Byte>(&instr, Self::alu_asl),
-            InstructionMnemonic::ASL_w => self.op_shrot::<Word>(&instr, Self::alu_asl),
-            InstructionMnemonic::ASL_l => self.op_shrot::<Long>(&instr, Self::alu_asl),
-            InstructionMnemonic::ASR_b => self.op_shrot::<Byte>(&instr, Self::alu_asr),
-            InstructionMnemonic::ASR_w => self.op_shrot::<Word>(&instr, Self::alu_asr),
-            InstructionMnemonic::ASR_l => self.op_shrot::<Long>(&instr, Self::alu_asr),
-            InstructionMnemonic::ASL_ea => self.op_shrot_ea(&instr, Self::alu_asl),
-            InstructionMnemonic::ASR_ea => self.op_shrot_ea(&instr, Self::alu_asr),
-            InstructionMnemonic::LSL_b => self.op_shrot::<Byte>(&instr, Self::alu_lsl),
-            InstructionMnemonic::LSL_w => self.op_shrot::<Word>(&instr, Self::alu_lsl),
-            InstructionMnemonic::LSL_l => self.op_shrot::<Long>(&instr, Self::alu_lsl),
-            InstructionMnemonic::LSR_b => self.op_shrot::<Byte>(&instr, Self::alu_lsr),
-            InstructionMnemonic::LSR_w => self.op_shrot::<Word>(&instr, Self::alu_lsr),
-            InstructionMnemonic::LSR_l => self.op_shrot::<Long>(&instr, Self::alu_lsr),
-            InstructionMnemonic::LSL_ea => self.op_shrot_ea(&instr, Self::alu_lsl),
-            InstructionMnemonic::LSR_ea => self.op_shrot_ea(&instr, Self::alu_lsr),
-            InstructionMnemonic::ROXL_b => self.op_shrot::<Byte>(&instr, Self::alu_roxl),
-            InstructionMnemonic::ROXL_w => self.op_shrot::<Word>(&instr, Self::alu_roxl),
-            InstructionMnemonic::ROXL_l => self.op_shrot::<Long>(&instr, Self::alu_roxl),
-            InstructionMnemonic::ROXR_b => self.op_shrot::<Byte>(&instr, Self::alu_roxr),
-            InstructionMnemonic::ROXR_w => self.op_shrot::<Word>(&instr, Self::alu_roxr),
-            InstructionMnemonic::ROXR_l => self.op_shrot::<Long>(&instr, Self::alu_roxr),
-            InstructionMnemonic::ROXL_ea => self.op_shrot_ea(&instr, Self::alu_roxl),
-            InstructionMnemonic::ROXR_ea => self.op_shrot_ea(&instr, Self::alu_roxr),
-            InstructionMnemonic::ROL_b => self.op_shrot::<Byte>(&instr, Self::alu_rol),
-            InstructionMnemonic::ROL_w => self.op_shrot::<Word>(&instr, Self::alu_rol),
-            InstructionMnemonic::ROL_l => self.op_shrot::<Long>(&instr, Self::alu_rol),
-            InstructionMnemonic::ROR_b => self.op_shrot::<Byte>(&instr, Self::alu_ror),
-            InstructionMnemonic::ROR_w => self.op_shrot::<Word>(&instr, Self::alu_ror),
-            InstructionMnemonic::ROR_l => self.op_shrot::<Long>(&instr, Self::alu_ror),
-            InstructionMnemonic::ROL_ea => self.op_shrot_ea(&instr, Self::alu_rol),
-            InstructionMnemonic::ROR_ea => self.op_shrot_ea(&instr, Self::alu_ror),
+            InstructionMnemonic::TRAPV => self.op_trapv(instr),
+            InstructionMnemonic::JSR => self.op_jmp_jsr(instr),
+            InstructionMnemonic::JMP => self.op_jmp_jsr(instr),
+            InstructionMnemonic::MOVEM_mem_l => self.op_movem_mem::<Long>(instr),
+            InstructionMnemonic::MOVEM_mem_w => self.op_movem_mem::<Word>(instr),
+            InstructionMnemonic::MOVEM_reg_l => self.op_movem_reg::<Long>(instr),
+            InstructionMnemonic::MOVEM_reg_w => self.op_movem_reg::<Word>(instr),
+            InstructionMnemonic::CHK => self.op_chk(instr),
+            InstructionMnemonic::Scc => self.op_scc(instr),
+            InstructionMnemonic::DBcc => self.op_dbcc(instr),
+            InstructionMnemonic::Bcc => self.op_bcc::<false>(instr),
+            InstructionMnemonic::BSR => self.op_bcc::<true>(instr),
+            InstructionMnemonic::MOVEQ => self.op_moveq(instr),
+            InstructionMnemonic::EXG => self.op_exg(instr),
+            InstructionMnemonic::ASL_b => self.op_shrot::<Byte>(instr, Self::alu_asl),
+            InstructionMnemonic::ASL_w => self.op_shrot::<Word>(instr, Self::alu_asl),
+            InstructionMnemonic::ASL_l => self.op_shrot::<Long>(instr, Self::alu_asl),
+            InstructionMnemonic::ASR_b => self.op_shrot::<Byte>(instr, Self::alu_asr),
+            InstructionMnemonic::ASR_w => self.op_shrot::<Word>(instr, Self::alu_asr),
+            InstructionMnemonic::ASR_l => self.op_shrot::<Long>(instr, Self::alu_asr),
+            InstructionMnemonic::ASL_ea => self.op_shrot_ea(instr, Self::alu_asl),
+            InstructionMnemonic::ASR_ea => self.op_shrot_ea(instr, Self::alu_asr),
+            InstructionMnemonic::LSL_b => self.op_shrot::<Byte>(instr, Self::alu_lsl),
+            InstructionMnemonic::LSL_w => self.op_shrot::<Word>(instr, Self::alu_lsl),
+            InstructionMnemonic::LSL_l => self.op_shrot::<Long>(instr, Self::alu_lsl),
+            InstructionMnemonic::LSR_b => self.op_shrot::<Byte>(instr, Self::alu_lsr),
+            InstructionMnemonic::LSR_w => self.op_shrot::<Word>(instr, Self::alu_lsr),
+            InstructionMnemonic::LSR_l => self.op_shrot::<Long>(instr, Self::alu_lsr),
+            InstructionMnemonic::LSL_ea => self.op_shrot_ea(instr, Self::alu_lsl),
+            InstructionMnemonic::LSR_ea => self.op_shrot_ea(instr, Self::alu_lsr),
+            InstructionMnemonic::ROXL_b => self.op_shrot::<Byte>(instr, Self::alu_roxl),
+            InstructionMnemonic::ROXL_w => self.op_shrot::<Word>(instr, Self::alu_roxl),
+            InstructionMnemonic::ROXL_l => self.op_shrot::<Long>(instr, Self::alu_roxl),
+            InstructionMnemonic::ROXR_b => self.op_shrot::<Byte>(instr, Self::alu_roxr),
+            InstructionMnemonic::ROXR_w => self.op_shrot::<Word>(instr, Self::alu_roxr),
+            InstructionMnemonic::ROXR_l => self.op_shrot::<Long>(instr, Self::alu_roxr),
+            InstructionMnemonic::ROXL_ea => self.op_shrot_ea(instr, Self::alu_roxl),
+            InstructionMnemonic::ROXR_ea => self.op_shrot_ea(instr, Self::alu_roxr),
+            InstructionMnemonic::ROL_b => self.op_shrot::<Byte>(instr, Self::alu_rol),
+            InstructionMnemonic::ROL_w => self.op_shrot::<Word>(instr, Self::alu_rol),
+            InstructionMnemonic::ROL_l => self.op_shrot::<Long>(instr, Self::alu_rol),
+            InstructionMnemonic::ROR_b => self.op_shrot::<Byte>(instr, Self::alu_ror),
+            InstructionMnemonic::ROR_w => self.op_shrot::<Word>(instr, Self::alu_ror),
+            InstructionMnemonic::ROR_l => self.op_shrot::<Long>(instr, Self::alu_ror),
+            InstructionMnemonic::ROL_ea => self.op_shrot_ea(instr, Self::alu_rol),
+            InstructionMnemonic::ROR_ea => self.op_shrot_ea(instr, Self::alu_ror),
             InstructionMnemonic::LINEA => {
                 self.advance_cycles(4)?;
                 self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEA, None)
@@ -1696,9 +1696,9 @@ where
         } else {
             // From bus
             let mut data = [0; N];
-            for i in 0..N {
+            for (i, d) in data.iter_mut().enumerate().take(N) {
                 let b_addr = addr.wrapping_add((i * 2) as Address);
-                data[i] = self.read_ticks::<Byte>(b_addr)?;
+                *d = self.read_ticks::<Byte>(b_addr)?;
             }
 
             self.regs
@@ -1917,7 +1917,7 @@ where
 
     /// SBCD
     fn op_sbcd(&mut self, instr: &Instruction) -> Result<()> {
-        self.op_alu_x::<Byte>(&instr, Self::alu_sub_bcd)?;
+        self.op_alu_x::<Byte>(instr, Self::alu_sub_bcd)?;
         if instr.get_addr_mode_x()? == AddressingMode::DataRegister {
             self.advance_cycles(2)?;
         }
@@ -1927,7 +1927,7 @@ where
 
     /// ABCD
     fn op_abcd(&mut self, instr: &Instruction) -> Result<()> {
-        self.op_alu_x::<Byte>(&instr, Self::alu_add_bcd)?;
+        self.op_alu_x::<Byte>(instr, Self::alu_add_bcd)?;
         if instr.get_addr_mode_x()? == AddressingMode::DataRegister {
             self.advance_cycles(2)?;
         }
@@ -1937,7 +1937,7 @@ where
 
     /// NBCD
     fn op_nbcd(&mut self, instr: &Instruction) -> Result<()> {
-        self.op_alu_zero::<Byte>(&instr, Self::alu_sub_bcd)?;
+        self.op_alu_zero::<Byte>(instr, Self::alu_sub_bcd)?;
         if instr.get_addr_mode()? == AddressingMode::DataRegister {
             self.advance_cycles(2)?;
         }
@@ -2092,7 +2092,7 @@ where
                 self.regs.pc = self.regs.pc.wrapping_add(2) & ADDRESS_MASK;
                 (h << 16) | l
             }
-            _ => self.calc_ea_addr::<Address>(&instr, instr.get_addr_mode()?, instr.get_op2())?,
+            _ => self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?,
         };
 
         // Idle cycles

@@ -246,21 +246,21 @@ impl From<u16> for ExtWord {
     }
 }
 
-impl Into<u16> for ExtWord {
-    fn into(self) -> u16 {
-        self.data
+impl From<ExtWord> for u16 {
+    fn from(val: ExtWord) -> Self {
+        val.data
     }
 }
 
-impl Into<u32> for ExtWord {
-    fn into(self) -> u32 {
-        self.data as u32
+impl From<ExtWord> for u32 {
+    fn from(val: ExtWord) -> Self {
+        val.data as u32
     }
 }
 
-impl Into<i32> for ExtWord {
-    fn into(self) -> i32 {
-        self.data as i16 as i32
+impl From<ExtWord> for i32 {
+    fn from(val: ExtWord) -> Self {
+        val.data as i16 as i32
     }
 }
 
@@ -489,7 +489,7 @@ impl Instruction {
 
     /// Attempts to decode an instruction.
     pub fn try_decode(data: Word) -> Result<Instruction> {
-        for &(val, mask, mnemonic) in Self::DECODE_TABLE.into_iter() {
+        for &(val, mask, mnemonic) in Self::DECODE_TABLE.iter() {
             if data & mask == val {
                 return Ok(Instruction {
                     mnemonic,
@@ -504,17 +504,17 @@ impl Instruction {
 
     /// Gets the addressing mode of this instruction
     pub fn get_addr_mode(&self) -> Result<AddressingMode> {
-        debug_assert!(match self.mnemonic {
+        debug_assert!(!matches!(
+            self.mnemonic,
             InstructionMnemonic::ADDX_l
-            | InstructionMnemonic::ADDX_w
-            | InstructionMnemonic::ADDX_b
-            | InstructionMnemonic::SUBX_l
-            | InstructionMnemonic::SUBX_w
-            | InstructionMnemonic::SUBX_b
-            | InstructionMnemonic::ABCD
-            | InstructionMnemonic::SBCD => false,
-            _ => true,
-        });
+                | InstructionMnemonic::ADDX_w
+                | InstructionMnemonic::ADDX_b
+                | InstructionMnemonic::SUBX_l
+                | InstructionMnemonic::SUBX_w
+                | InstructionMnemonic::SUBX_b
+                | InstructionMnemonic::ABCD
+                | InstructionMnemonic::SBCD
+        ));
 
         Self::decode_addr_mode((self.data & 0b111_000) >> 3, self.data & 0b000_111)
     }
@@ -522,12 +522,10 @@ impl Instruction {
     /// Gets the addressing mode on the 'left' side of this instruction
     /// (for MOVE)
     pub fn get_addr_mode_left(&self) -> Result<AddressingMode> {
-        debug_assert!(match self.mnemonic {
-            InstructionMnemonic::MOVE_l
-            | InstructionMnemonic::MOVE_w
-            | InstructionMnemonic::MOVE_b => true,
-            _ => false,
-        });
+        debug_assert!(matches!(
+            self.mnemonic,
+            InstructionMnemonic::MOVE_l | InstructionMnemonic::MOVE_w | InstructionMnemonic::MOVE_b
+        ));
 
         Self::decode_addr_mode(
             (self.data & 0b111_000_000) >> 6,
@@ -619,13 +617,13 @@ impl Instruction {
     }
 
     pub fn needs_extword(&self) -> bool {
-        match self.get_addr_mode().unwrap() {
+        matches!(
+            self.get_addr_mode().unwrap(),
             AddressingMode::IndirectDisplacement
-            | AddressingMode::IndirectIndex
-            | AddressingMode::PCDisplacement
-            | AddressingMode::PCIndex => true,
-            _ => false,
-        }
+                | AddressingMode::IndirectIndex
+                | AddressingMode::PCDisplacement
+                | AddressingMode::PCIndex
+        )
     }
 
     pub fn get_displacement(&self) -> Result<i32> {

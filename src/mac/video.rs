@@ -109,11 +109,11 @@ where
             let byte = idx / 8;
             let bit = idx % 8;
             if fb[byte] & (1 << (7 - bit)) == 0 {
-                buf[idx * 4 + 0].store(0xC7, Ordering::Release);
+                buf[idx * 4].store(0xC7, Ordering::Release);
                 buf[idx * 4 + 1].store(0xF1, Ordering::Release);
                 buf[idx * 4 + 2].store(0xFB, Ordering::Release);
             } else {
-                buf[idx * 4 + 0].store(0x22, Ordering::Release);
+                buf[idx * 4].store(0x22, Ordering::Release);
                 buf[idx * 4 + 1].store(0x22, Ordering::Release);
                 buf[idx * 4 + 2].store(0x22, Ordering::Release);
             }

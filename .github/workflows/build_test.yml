@@ -29,6 +29,8 @@ jobs:
       run: python3 decode.py
     - name: Code formatting check
       run: cargo fmt --check
+    - name: Clippy lint
+      run: cargo clippy --all -- -D warnings
     - name: Build
       run: cargo build --verbose
     - name: Build release

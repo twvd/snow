@@ -34,7 +34,7 @@ impl Emulator {
         let frame_recv = renderer.get_receiver();
 
         // Initialize bus and CPU
-        let bus = MacBus::new(&rom, model.ram_size, renderer);
+        let bus = MacBus::new(rom, model.ram_size, renderer);
         let mut cpu = CpuM68k::new(bus);
 
         cpu.reset()?;

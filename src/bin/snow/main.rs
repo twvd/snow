@@ -37,7 +37,7 @@ fn main() -> Result<()> {
     let eventpump = SDLEventPump::new();
 
     // Initialize ROM
-    let rom = fs::read(&args.rom_filename)?;
+    let rom = fs::read(args.rom_filename)?;
 
     // Detect model
     // TODO Make this nicer
@@ -48,7 +48,7 @@ fn main() -> Result<()> {
         if digest[..] == hex!("fe6a1ceff5b3eefe32f20efea967cdf8cd4cada291ede040600e7f6c9e2dfc0e") {
             // Macintosh 512K
             MacModel {
-                name: &"Macintosh 512K",
+                name: "Macintosh 512K",
                 ram_size: 512 * 1024,
             }
         } else if
@@ -60,7 +60,7 @@ fn main() -> Result<()> {
     digest[..] == hex!("dd908e2b65772a6b1f0c859c24e9a0d3dcde17b1c6a24f4abd8955846d7895e7")
         {
             MacModel {
-                name: &"Macintosh Plus",
+                name: "Macintosh Plus",
                 ram_size: 4096 * 1024,
             }
         } else {
