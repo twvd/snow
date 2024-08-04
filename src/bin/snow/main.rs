@@ -1,3 +1,5 @@
+pub mod ui;
+
 use anyhow::Result;
 use clap::Parser;
 use hex_literal::hex;
@@ -9,6 +11,7 @@ use snow::emulator::comm::EmulatorCommand;
 use snow::emulator::{Emulator, MacModel};
 use snow::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow::tickable::Tickable;
+use ui::UserInterface;
 
 use std::{fs, thread};
 
@@ -32,9 +35,17 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
+    // Initialize logging
+    tui_logger::init_logger(log::LevelFilter::Trace).unwrap();
+    tui_logger::set_default_level(log::LevelFilter::Trace);
+
     // Initialize display
     let mut renderer = SDLRenderer::new(SCREEN_HEIGHT, SCREEN_WIDTH)?;
     let eventpump = SDLEventPump::new();
+
+    // Initialize user interface
+    let mut terminal = UserInterface::init_terminal()?;
+    let mut ui = UserInterface::new()?;
 
     // Initialize ROM
     let rom = fs::read(args.rom_filename)?;
@@ -80,9 +91,17 @@ fn main() -> Result<()> {
     });
 
     'mainloop: loop {
-        let frame = frame_recv.recv()?;
-        renderer.update_from(&frame)?;
+        // Render frame to SDL window
+        if let Ok(frame) = frame_recv.try_recv() {
+            renderer.update_from(&frame)?;
+        }
 
+        // Draw TUI
+        if !ui.run(&mut terminal)? {
+            break 'mainloop;
+        }
+
+        // Process SDL events
         while let Some(event) = eventpump.poll() {
             match event {
                 Event::KeyDown {
@@ -130,7 +149,11 @@ fn main() -> Result<()> {
         }
     }
 
+    // Terminate emulator
     cmd.send(EmulatorCommand::Quit)?;
     emuthread.join().unwrap();
+
+    // Clean up terminal
+    UserInterface::shutdown_terminal(&mut terminal)?;
     Ok(())
 }

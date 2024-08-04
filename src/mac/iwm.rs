@@ -1,3 +1,4 @@
+use log::*;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use proc_bitfield::bitfield;
@@ -194,11 +195,11 @@ impl Iwm {
             }
             8 => {
                 self.enable = false;
-                println!("IWM drive disable ext = {}", self.extdrive);
+                trace!("IWM drive disable ext = {}", self.extdrive);
             }
             9 => {
                 self.enable = true;
-                println!("IWM drive enable ext = {}", self.extdrive);
+                trace!("IWM drive enable ext = {}", self.extdrive);
             }
             10 => self.extdrive = false,
             11 => self.extdrive = true,
@@ -224,7 +225,7 @@ impl Iwm {
             IwmReg::DUNNO => false,
             IwmReg::READY => false,
             _ => {
-                println!(
+                warn!(
                     "Unimplemented register read {:?} {:0b}",
                     reg,
                     self.get_selected_reg()
@@ -233,9 +234,12 @@ impl Iwm {
             }
         };
 
-        println!(
+        trace!(
             "{:08X} IWM reg read {:?} = {} ext = {}",
-            self.dbg_pc, reg, res, self.extdrive
+            self.dbg_pc,
+            reg,
+            res,
+            self.extdrive
         );
 
         res
@@ -243,13 +247,13 @@ impl Iwm {
 
     fn write_reg(&mut self) {
         let reg = IwmWriteReg::from_u8(self.get_selected_reg()).unwrap_or(IwmWriteReg::UNKNOWN);
-        println!("IWM reg write {:?}", reg);
+        trace!("IWM reg write {:?}", reg);
         match reg {
             IwmWriteReg::MOTORON => self.motor = true,
             IwmWriteReg::MOTOROFF => self.motor = false,
             IwmWriteReg::EJECT => self.disk_inserted = false,
             _ => {
-                println!(
+                warn!(
                     "Unimplemented register write {:?} {:0b}",
                     reg,
                     self.get_selected_reg()
@@ -271,7 +275,7 @@ impl Iwm {
             }
             // Status
             (true, false) => {
-                println!("IWM status read");
+                trace!("IWM status read");
                 let sense = self.read_reg();
                 self.status.set_sense(sense);
                 self.status.set_mode_low(self.mode.mode_low());
@@ -280,11 +284,11 @@ impl Iwm {
                 self.status.0
             }
             (false, true) => {
-                println!("IWM handshake read");
+                trace!("IWM handshake read");
                 0xFF
             }
             _ => {
-                println!("IWM unknown read q6 = {:?} q7 = {:?}", self.q6, self.q7);
+                warn!("IWM unknown read q6 = {:?} q7 = {:?}", self.q6, self.q7);
                 0
             }
         }
@@ -308,7 +312,7 @@ impl Iwm {
     }
 
     pub fn disk_insert(&mut self, _data: &[u8]) {
-        println!("Disk inserted");
+        info!("Disk inserted");
         self.disk_inserted = true;
     }
 }
@@ -317,19 +321,19 @@ impl BusMember<Address> for Iwm {
     fn read(&mut self, addr: Address) -> Option<u8> {
         self.access(addr - 0xDFE1FF);
         let result = self.iwm_read();
-        println!("IWM read: {:08X} = {:02X}", addr, result);
+        trace!("IWM read: {:08X} = {:02X}", addr, result);
         Some(result)
     }
 
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
-        println!("IWM write {:08X} {:02X}", addr, val);
+        trace!("IWM write {:08X} {:02X}", addr, val);
         self.access(addr - 0xDFE1FF);
 
         match (self.q6, self.q7, self.enable) {
             (true, true, false) => {
                 // Write MODE
                 self.mode.set_mode(val);
-                println!("IWM mode write: {:02X}", self.mode.mode());
+                trace!("IWM mode write: {:02X}", self.mode.mode());
             }
             _ => (),
         }

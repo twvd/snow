@@ -17,11 +17,14 @@ either = "1.13.0"
 flate2 = "1.0.30"
 hex-literal = "0.4.1"
 itertools = "0.13.0"
+log = { version = "0.4.22", features = ["std"] }
 num-derive = "0.4.2"
 num-traits = "0.2.19"
 proc-bitfield = "0.4.0"
+ratatui = "0.27.0"
 sdl2 = { version = "0.37.0", features = ["unsafe_textures"] }
 serde = { version = "1.0.203", features = ["serde_derive", "derive"] }
 serde_json = "1.0.117"
 sha2 = "0.10.8"
 thiserror = "1.0.61"
+tui-logger = { version = "0.11.2", features = ["crossterm"] }

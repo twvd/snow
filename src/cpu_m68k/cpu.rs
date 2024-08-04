@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 
 use anyhow::{bail, Context, Result};
 use either::Either;
+use log::*;
 use num_traits::FromBytes;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -152,7 +153,7 @@ where
         let init_ssp = self.read_ticks(VECTOR_SP)?;
         let init_pc = self.read_ticks(VECTOR_RESET)?;
 
-        println!("Reset - SSP: {:08X}, PC: {:08X}", init_ssp, init_pc);
+        info!("Reset - SSP: {:08X}, PC: {:08X}", init_ssp, init_pc);
         self.regs.ssp = init_ssp;
         self.regs.sr.set_supervisor(true);
         self.regs.sr.set_int_prio_mask(7);
@@ -220,11 +221,6 @@ where
 
         let opcode = self.fetch()?;
 
-        //eprintln!(
-        //"{} {:08X} {:04X} {}",
-        //self.cycles, self.regs.pc, opcode, self.regs
-        //);
-
         if self.decode_cache[opcode as usize].is_none() {
             let instr = Instruction::try_decode(opcode);
 
@@ -274,7 +270,7 @@ where
     fn verify_access<T: CpuSized>(&self, addr: Address, read: bool) -> Result<()> {
         if std::mem::size_of::<T>() >= 2 && (addr & 1) != 0 {
             // Unaligned access
-            eprintln!("Unaligned access: address {:08X}", addr);
+            error!("Unaligned access: address {:08X}", addr);
             bail!(CpuError::AccessError(AccessError {
                 function_code: 0,
                 ir: 0,
@@ -452,7 +448,7 @@ where
 
                 self.advance_cycles(8)?; // idle
                 let details = details.expect("Address error details not passed");
-                eprintln!(
+                debug!(
                     "Access error: read = {:?}, address = {:08X} PC = {:06X}",
                     details.read, details.address, self.regs.pc
                 );
@@ -475,7 +471,7 @@ where
                 )?;
             }
             ExceptionGroup::Group1 | ExceptionGroup::Group2 => {
-                println!(
+                debug!(
                     "Exception {:?}, vector {:08X} @  PC = {:06X}",
                     group, vector, self.regs.pc
                 );

@@ -10,6 +10,7 @@ use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
 use anyhow::Result;
+use log::*;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
 
 pub struct MacBus<TRenderer: Renderer> {
@@ -93,7 +94,7 @@ where
 
     fn write_overlay(&mut self, addr: Address, val: Byte) -> Option<()> {
         if self.trace && !(0x0060_0000..=0x007F_FFFF).contains(&addr) {
-            println!("WRO {:08X} - {:02X}", addr, val);
+            trace!("WRO {:08X} - {:02X}", addr, val);
         }
 
         match addr {
@@ -108,7 +109,7 @@ where
 
     fn write_normal(&mut self, addr: Address, val: Byte) -> Option<()> {
         if self.trace && !(0x0000_0000..=0x003F_FFFF).contains(&addr) {
-            println!("WR {:08X} - {:02X}", addr, val);
+            trace!("WR {:08X} - {:02X}", addr, val);
         }
 
         // Duplicate framebuffers to video component
@@ -145,7 +146,7 @@ where
             _ => None,
         };
         if self.trace && !(0x0000_0000..=0x007F_FFFF).contains(&addr) {
-            println!("RDO {:08X} - {:02X?}", addr, result);
+            trace!("RDO {:08X} - {:02X?}", addr, result);
         }
 
         result
@@ -163,7 +164,7 @@ where
         };
 
         if self.trace && !(0x0000_0000..=0x004F_FFFF).contains(&addr) {
-            println!("RD {:08X} - {:02X?}", addr, result);
+            trace!("RD {:08X} - {:02X?}", addr, result);
         }
         result
     }
@@ -219,7 +220,7 @@ where
         if let Some(v) = val {
             v
         } else {
-            println!("Read from unimplemented address: {:08X}", addr);
+            warn!("Read from unimplemented address: {:08X}", addr);
             0xFF
         }
     }
@@ -236,7 +237,7 @@ where
         self.video.framebuffer_select = self.via.a.page2();
 
         if written.is_none() {
-            println!("write: {:08X} {:02X}", addr, val);
+            warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
         }
     }
 }

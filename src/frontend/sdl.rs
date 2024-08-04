@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{anyhow, Result};
+use log::*;
 use sdl2::event::Event;
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::{Canvas, Texture};
@@ -59,7 +60,7 @@ impl SDLRenderer {
         self.fps_count += 1;
 
         if self.fps_time.elapsed().as_secs() >= 2 {
-            println!(
+            debug!(
                 "SDL Frame rate: {:0.2} frames/second",
                 self.fps_count as f32 / self.fps_time.elapsed().as_secs_f32()
             );
@@ -86,7 +87,7 @@ impl Renderer for SDLRenderer {
                 .build()?;
 
             let canvas = window.into_canvas().accelerated().build()?;
-            println!("Rendering driver: {:?}", canvas.info().name);
+            info!("Rendering driver: {:?}", canvas.info().name);
             let texture_creator = canvas.texture_creator();
             let texture = texture_creator.create_texture_streaming(
                 PixelFormatEnum::RGB888,
