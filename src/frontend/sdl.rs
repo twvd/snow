@@ -94,7 +94,7 @@ impl Renderer for SDLRenderer {
                 height.try_into()?,
             )?;
 
-            Ok(SDLRenderer {
+            Ok(Self {
                 canvas,
                 texture,
                 displaybuffer: new_displaybuffer(width, height),

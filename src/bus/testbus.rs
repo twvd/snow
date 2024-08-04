@@ -38,7 +38,7 @@ where
     TD: PrimInt,
 {
     pub fn new(mask: TA) -> Self {
-        Testbus {
+        Self {
             mem: HashMap::new(),
             trace: RefCell::new(vec![]),
             cycles: 0,

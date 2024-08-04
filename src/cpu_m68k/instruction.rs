@@ -254,13 +254,13 @@ impl From<ExtWord> for u16 {
 
 impl From<ExtWord> for u32 {
     fn from(val: ExtWord) -> Self {
-        val.data as u32
+        val.data as Self
     }
 }
 
 impl From<ExtWord> for i32 {
     fn from(val: ExtWord) -> Self {
-        val.data as i16 as i32
+        val.data as i16 as Self
     }
 }
 
@@ -302,9 +302,9 @@ pub struct Instruction {
 }
 
 impl Clone for Instruction {
-    fn clone(&self) -> Instruction {
+    fn clone(&self) -> Self {
         // Clone drops the loaded extension word
-        Instruction {
+        Self {
             mnemonic: self.mnemonic,
             data: self.data,
             extword: Cell::new(None),
@@ -488,10 +488,10 @@ impl Instruction {
     ];
 
     /// Attempts to decode an instruction.
-    pub fn try_decode(data: Word) -> Result<Instruction> {
+    pub fn try_decode(data: Word) -> Result<Self> {
         for &(val, mask, mnemonic) in Self::DECODE_TABLE {
             if data & mask == val {
-                return Ok(Instruction {
+                return Ok(Self {
                     mnemonic,
                     data,
                     extword: Cell::new(None),

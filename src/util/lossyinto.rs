@@ -16,8 +16,8 @@ impl LossyInto<u16> for u32 {
     }
 }
 
-impl LossyInto<u32> for u32 {
-    fn lossy_into(self) -> u32 {
+impl LossyInto<Self> for u32 {
+    fn lossy_into(self) -> Self {
         self
     }
 }
