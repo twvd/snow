@@ -44,10 +44,10 @@ pub struct SDLRenderer {
 impl SDLRenderer {
     const BPP: usize = 4;
 
-    pub fn update_from(&mut self, buffer: DisplayBuffer) -> Result<()> {
+    pub fn update_from(&mut self, buffer: &DisplayBuffer) -> Result<()> {
         // This is safe because SDL will only read from the transmuted
         // buffer. Worst case is a garbled display.
-        let sdl_displaybuffer = unsafe { std::mem::transmute::<&[AtomicU8], &[u8]>(&buffer) };
+        let sdl_displaybuffer = unsafe { std::mem::transmute::<&[AtomicU8], &[u8]>(buffer) };
         self.texture
             .update(None, sdl_displaybuffer, self.width * Self::BPP)?;
         self.canvas.clear();
@@ -112,7 +112,7 @@ impl Renderer for SDLRenderer {
 
     /// Renders changes to screen
     fn update(&mut self) -> Result<()> {
-        self.update_from(Arc::clone(&self.displaybuffer))
+        self.update_from(&Arc::clone(&self.displaybuffer))
     }
 }
 

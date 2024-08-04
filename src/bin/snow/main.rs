@@ -81,7 +81,7 @@ fn main() -> Result<()> {
 
     'mainloop: loop {
         let frame = frame_recv.recv()?;
-        renderer.update_from(frame)?;
+        renderer.update_from(&frame)?;
 
         while let Some(event) = eventpump.poll() {
             match event {

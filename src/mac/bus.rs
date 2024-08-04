@@ -71,6 +71,7 @@ where
         }
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     fn write_ram<T: ToBytes>(&mut self, addr: Address, val: T) {
         let addr = addr as usize;
         let bytes = val.to_be_bytes();

@@ -143,12 +143,12 @@ impl RegisterFile {
 
         if a == 7 {
             if self.sr.supervisor() {
-                self.ssp = adj_val
+                self.ssp = adj_val;
             } else {
-                self.usp = adj_val
+                self.usp = adj_val;
             }
         } else {
-            self.a[a] = adj_val
+            self.a[a] = adj_val;
         }
     }
 
@@ -159,7 +159,7 @@ impl RegisterFile {
             2 => {
                 let old: Long = self.read_a(a);
                 let val = old & 0xFFFF0000 | val.expand();
-                self.write_a(a, val)
+                self.write_a(a, val);
             }
             4 => self.write_a(a, val),
             _ => unreachable!(),
@@ -173,7 +173,7 @@ impl RegisterFile {
 
     /// Write a Dn register
     pub fn write_d<T: CpuSized>(&mut self, d: usize, val: T) {
-        self.d[d] = val.replace_in(self.d[d])
+        self.d[d] = val.replace_in(self.d[d]);
     }
 
     /// Write a register, specifying a Register type

@@ -251,7 +251,7 @@ where
                         ExceptionGroup::Group0,
                         VECTOR_ACCESS_ERROR,
                         Some(details),
-                    )?
+                    )?;
                 }
                 None => return Err(e),
             },
@@ -993,7 +993,7 @@ where
             std::mem::size_of::<T>(),
         ) {
             (AddressingMode::DataRegister | AddressingMode::Immediate, _, 4) => {
-                self.advance_cycles(4)?
+                self.advance_cycles(4)?;
             }
 
             (_, Direction::Right, 4) => self.advance_cycles(2)?,
@@ -1131,7 +1131,7 @@ where
             std::mem::size_of::<T>(),
         ) {
             (AddressingMode::DataRegister | AddressingMode::Immediate, _, 4) => {
-                self.advance_cycles(4)?
+                self.advance_cycles(4)?;
             }
             (AddressingMode::AddressRegister, _, 4) => self.advance_cycles(4)?,
 
@@ -1213,7 +1213,7 @@ where
         {
             // Word and longword operations on address registers do not affect condition codes.
         } else {
-            self.regs.sr.set_ccr(ccr)
+            self.regs.sr.set_ccr(ccr);
         }
 
         self.prefetch_pump()?;
@@ -1310,7 +1310,7 @@ where
         match (instr.get_addr_mode_x()?, sz) {
             (AddressingMode::DataRegister, _) => {
                 self.prefetch_pump()?;
-                self.regs.write_d(instr.get_op1(), result)
+                self.regs.write_d(instr.get_op1(), result);
             }
             (AddressingMode::IndirectPreDec, 4) => {
                 // This writes in 16-bit steps, with a prefetch in between..
@@ -1326,7 +1326,7 @@ where
             (AddressingMode::IndirectPreDec, _) => {
                 self.prefetch_pump()?;
                 let b_addr = self.regs.read_a(instr.get_op1());
-                self.write_ticks(b_addr, result)?
+                self.write_ticks(b_addr, result)?;
             }
             _ => unreachable!(),
         };
@@ -1360,7 +1360,7 @@ where
             std::mem::size_of::<T>(),
         ) {
             (AddressingMode::DataRegister | AddressingMode::Immediate, _, 4) => {
-                self.advance_cycles(2)?
+                self.advance_cycles(2)?;
             }
             (AddressingMode::AddressRegister, _, 4) => self.advance_cycles(2)?,
 
@@ -1736,7 +1736,7 @@ where
                     .regs
                     .read_a_predec(instr.get_op1(), std::mem::size_of::<T>());
                 self.prefetch_pump()?;
-                self.write_ticks(addr, value)?
+                self.write_ticks(addr, value)?;
             }
             (
                 AddressingMode::AbsoluteLong,
@@ -1762,7 +1762,7 @@ where
                     value,
                     TemporalOrder::LowToHigh,
                     false,
-                )?
+                )?;
             }
             _ => self.write_ea_with(
                 instr,
@@ -1790,7 +1790,7 @@ where
         // Idle cycles
         match instr.get_addr_mode()? {
             AddressingMode::DataRegister | AddressingMode::AddressRegister => {
-                self.advance_cycles(2)?
+                self.advance_cycles(2)?;
             }
             _ => (),
         }
@@ -1868,7 +1868,7 @@ where
         if std::mem::size_of::<T>() == 4 {
             match instr.get_addr_mode()? {
                 AddressingMode::DataRegister | AddressingMode::AddressRegister => {
-                    self.advance_cycles(2)?
+                    self.advance_cycles(2)?;
                 }
                 _ => (),
             }
@@ -1893,7 +1893,7 @@ where
         if std::mem::size_of::<T>() == 4 {
             match instr.get_addr_mode()? {
                 AddressingMode::DataRegister | AddressingMode::AddressRegister => {
-                    self.advance_cycles(2)?
+                    self.advance_cycles(2)?;
                 }
                 _ => (),
             }
@@ -1964,7 +1964,7 @@ where
             InstructionMnemonic::PEA => {
                 // Push to stack
                 let addr = self.regs.read_a_predec(7, std::mem::size_of::<Long>());
-                self.write_ticks(addr, value)?
+                self.write_ticks(addr, value)?;
             }
             _ => unreachable!(),
         }
@@ -2098,7 +2098,7 @@ where
         // Idle cycles
         match instr.get_addr_mode()? {
             AddressingMode::IndirectDisplacement | AddressingMode::PCDisplacement => {
-                self.advance_cycles(2)?
+                self.advance_cycles(2)?;
             }
             AddressingMode::IndirectIndex | AddressingMode::PCIndex => self.advance_cycles(4)?,
             _ => (),
@@ -2158,7 +2158,7 @@ where
         // Update the EA An register with the final address on predec/postinc
         match instr.get_addr_mode()? {
             AddressingMode::IndirectPostInc | AddressingMode::IndirectPreDec => {
-                self.regs.write_a(instr.get_op2(), addr)
+                self.regs.write_a(instr.get_op2(), addr);
             }
             _ => (),
         }
@@ -2229,7 +2229,7 @@ where
             match instr.get_addr_mode()? {
                 // TODO fix cycle accuracy, shorter instruction only for address registers?
                 AddressingMode::Indirect | AddressingMode::DataRegister => {
-                    self.advance_cycles(6)?
+                    self.advance_cycles(6)?;
                 }
                 _ => self.advance_cycles(8)?,
             }

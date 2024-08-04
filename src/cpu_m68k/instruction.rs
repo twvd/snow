@@ -489,7 +489,7 @@ impl Instruction {
 
     /// Attempts to decode an instruction.
     pub fn try_decode(data: Word) -> Result<Instruction> {
-        for &(val, mask, mnemonic) in Self::DECODE_TABLE.iter() {
+        for &(val, mask, mnemonic) in Self::DECODE_TABLE {
             if data & mask == val {
                 return Ok(Instruction {
                     mnemonic,
@@ -605,7 +605,7 @@ impl Instruction {
     }
 
     pub fn clear_extword(&self) {
-        self.extword.set(None)
+        self.extword.set(None);
     }
 
     pub fn has_extword(&self) -> bool {

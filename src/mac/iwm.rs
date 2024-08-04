@@ -293,16 +293,16 @@ impl Iwm {
     fn get_selected_reg(&self) -> u8 {
         let mut v = 0;
         if self.ca2 {
-            v |= 0b1000
+            v |= 0b1000;
         };
         if self.ca1 {
-            v |= 0b0100
+            v |= 0b0100;
         };
         if self.ca0 {
-            v |= 0b0010
+            v |= 0b0010;
         };
         if self.sel {
-            v |= 0b0001
+            v |= 0b0001;
         };
         v
     }

@@ -11,6 +11,7 @@ use anyhow::Result;
 use comm::{EmulatorCommand, EmulatorCommandSender};
 
 /// Specific properties of a specific Macintosh model
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct MacModel {
     pub name: &'static str,
     pub ram_size: usize,
@@ -59,7 +60,7 @@ impl Tickable for Emulator {
             while let Ok(cmd) = self.command_recv.try_recv() {
                 match cmd {
                     EmulatorCommand::MouseUpdateRelative { relx, rely, btn } => {
-                        self.cpu.bus.mouse_update(relx, rely, btn)
+                        self.cpu.bus.mouse_update(relx, rely, btn);
                     }
                     EmulatorCommand::Quit => return Ok(0),
                     EmulatorCommand::InsertFloppy(image) => self.cpu.bus.iwm.disk_insert(&image),
