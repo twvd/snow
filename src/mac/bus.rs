@@ -80,7 +80,7 @@ where
         }
     }
 
-    fn read_ram<T: PrimInt + FromPrimitive>(&mut self, addr: Address) -> T {
+    fn read_ram<T: PrimInt + FromPrimitive>(&self, addr: Address) -> T {
         let addr = addr as usize;
         let len = std::mem::size_of::<T>();
         let end = addr + len;

@@ -212,7 +212,7 @@ impl Iwm {
         }
     }
 
-    fn read_reg(&mut self) -> bool {
+    fn read_reg(&self) -> bool {
         let reg = IwmReg::from_u8(self.get_selected_reg()).unwrap_or(IwmReg::UNKNOWN);
         let res = match reg {
             IwmReg::CISTN => !self.disk_inserted,

@@ -271,7 +271,7 @@ where
     }
 
     /// Checks if an access needs to fail and raise bus error on alignment errors
-    fn verify_access<T: CpuSized>(&mut self, addr: Address, read: bool) -> Result<()> {
+    fn verify_access<T: CpuSized>(&self, addr: Address, read: bool) -> Result<()> {
         if std::mem::size_of::<T>() >= 2 && (addr & 1) != 0 {
             // Unaligned access
             eprintln!("Unaligned access: address {:08X}", addr);
