@@ -7,21 +7,55 @@ use ratatui::crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::crossterm::{event, ExecutableCommand};
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::{Backend, Color, CrosstermBackend};
-use ratatui::style::Style;
-use ratatui::widgets::Widget;
+use ratatui::style::{Style, Stylize};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Paragraph, Widget};
 use ratatui::Terminal;
+use snow::emulator::comm::{
+    EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver, EmulatorStatus,
+};
+use snow::types::Long;
 use tui_logger::{TuiLoggerLevelOutput, TuiLoggerWidget, TuiWidgetEvent, TuiWidgetState};
 
+enum View {
+    Log,
+    Debugger,
+}
+
 pub struct UserInterface {
+    view: View,
+
+    romfn: String,
+    model: String,
+
+    eventrecv: EmulatorEventReceiver,
+    cmdsender: EmulatorCommandSender,
+    emustatus: EmulatorStatus,
+
     state_log: TuiWidgetState,
 }
 
 impl UserInterface {
-    pub fn new() -> Result<Self> {
+    pub fn new(
+        romfn: &str,
+        model: &str,
+        eventrecv: EmulatorEventReceiver,
+        cmdsender: EmulatorCommandSender,
+    ) -> Result<Self> {
+        let Ok(EmulatorEvent::Status(emustatus)) = eventrecv.try_recv() else {
+            panic!("Initial status message not received")
+        };
         Ok(Self {
+            view: View::Log,
             state_log: TuiWidgetState::default(),
+            romfn: romfn.to_string(),
+            model: model.to_string(),
+            eventrecv,
+            cmdsender,
+
+            emustatus,
         })
     }
 
@@ -44,6 +78,13 @@ impl UserInterface {
     }
 
     pub fn run(&mut self, terminal: &mut Terminal<impl Backend>) -> Result<bool> {
+        // Emulator events
+        while let Ok(event) = self.eventrecv.try_recv() {
+            match event {
+                EmulatorEvent::Status(s) => self.emustatus = s,
+            }
+        }
+
         self.draw(terminal)?;
 
         // TUI events
@@ -54,6 +95,10 @@ impl UserInterface {
                         KeyCode::Char('q') => return Ok(false),
                         KeyCode::PageUp => self.state_log.transition(TuiWidgetEvent::PrevPageKey),
                         KeyCode::PageDown => self.state_log.transition(TuiWidgetEvent::NextPageKey),
+                        KeyCode::F(1) => self.view = View::Log,
+                        KeyCode::F(2) => self.view = View::Debugger,
+                        KeyCode::F(5) => self.cmdsender.send(EmulatorCommand::Run)?,
+                        KeyCode::F(9) => self.cmdsender.send(EmulatorCommand::Step)?,
                         _ => (),
                     }
                 }
@@ -69,23 +114,114 @@ impl UserInterface {
 
         Ok(())
     }
+
+    fn draw_debugger(&mut self, area: Rect, buf: &mut Buffer) {
+        let layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(vec![Constraint::Percentage(100), Constraint::Min(20)])
+            .split(area);
+
+        Paragraph::new("Disassembly here")
+            .block(Block::bordered().title("Disassembly"))
+            .render(layout[0], buf);
+
+        let reg = |name, val| {
+            Line::from(vec![
+                Span::from(format!("{name:<4}")).style(Style::default().blue().bold()),
+                Span::from(format!("{val:08X}")).style(Style::default().white()),
+            ])
+        };
+        Paragraph::new(vec![
+            reg("D0", self.emustatus.regs.read_d::<Long>(0)),
+            reg("D1", self.emustatus.regs.read_d::<Long>(1)),
+            reg("D2", self.emustatus.regs.read_d::<Long>(2)),
+            reg("D3", self.emustatus.regs.read_d::<Long>(3)),
+            reg("D4", self.emustatus.regs.read_d::<Long>(4)),
+            reg("D5", self.emustatus.regs.read_d::<Long>(5)),
+            reg("D6", self.emustatus.regs.read_d::<Long>(6)),
+            reg("D7", self.emustatus.regs.read_d::<Long>(7)),
+            Line::from(""),
+            reg("A0", self.emustatus.regs.read_a::<Long>(0)),
+            reg("A1", self.emustatus.regs.read_a::<Long>(1)),
+            reg("A2", self.emustatus.regs.read_a::<Long>(2)),
+            reg("A3", self.emustatus.regs.read_a::<Long>(3)),
+            reg("A4", self.emustatus.regs.read_a::<Long>(4)),
+            reg("A5", self.emustatus.regs.read_a::<Long>(5)),
+            reg("A6", self.emustatus.regs.read_a::<Long>(6)),
+            reg("A7", self.emustatus.regs.read_a::<Long>(7)),
+            Line::from(""),
+            reg("PC", self.emustatus.regs.pc),
+            Line::from(""),
+            reg("SSP", self.emustatus.regs.ssp),
+            reg("USP", self.emustatus.regs.ssp),
+            Line::from(""),
+            Line::from(vec![
+                Span::from("SR  ").style(Style::default().blue().bold()),
+                Span::from(format!("    {:04X}", self.emustatus.regs.sr.sr()))
+                    .style(Style::default().white()),
+            ]),
+        ])
+        .block(Block::bordered().title("CPU"))
+        .render(layout[1], buf);
+    }
 }
 
 impl Widget for &mut UserInterface {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        TuiLoggerWidget::default()
-            .style_error(Style::default().fg(Color::Red))
-            .style_debug(Style::default().fg(Color::Green))
-            .style_warn(Style::default().fg(Color::Yellow))
-            .style_trace(Style::default().fg(Color::Magenta))
-            .style_info(Style::default().fg(Color::Cyan))
-            .output_separator('|')
-            .output_timestamp(Some("%H:%M:%S".to_string()))
-            .output_level(Some(TuiLoggerLevelOutput::Abbreviated))
-            .output_target(true)
-            .output_file(false)
-            .output_line(false)
-            .state(&self.state_log)
-            .render(area, buf);
+        let layout_main = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(vec![
+                Constraint::Max(1),
+                Constraint::Min(0),
+                Constraint::Max(1),
+            ])
+            .split(area);
+
+        Paragraph::new(Line::from(format!(
+            "Snow - {} ({}) - {}",
+            self.romfn,
+            self.model,
+            if self.emustatus.running {
+                "running"
+            } else {
+                "stopped"
+            }
+        )))
+        .style(Style::new().black().on_blue().bold())
+        .centered()
+        .render(layout_main[0], buf);
+
+        match self.view {
+            View::Log => {
+                TuiLoggerWidget::default()
+                    .style_error(Style::default().fg(Color::Red))
+                    .style_debug(Style::default().fg(Color::Green))
+                    .style_warn(Style::default().fg(Color::Yellow))
+                    .style_trace(Style::default().fg(Color::Magenta))
+                    .style_info(Style::default().fg(Color::Cyan))
+                    .output_separator('|')
+                    .output_timestamp(Some("%H:%M:%S".to_string()))
+                    .output_level(Some(TuiLoggerLevelOutput::Abbreviated))
+                    .output_target(true)
+                    .output_file(false)
+                    .output_line(false)
+                    .state(&self.state_log)
+                    .render(layout_main[1], buf);
+            }
+            View::Debugger => self.draw_debugger(layout_main[1], buf),
+        }
+
+        let mut functions = vec![""; 10];
+        functions[0] = "Log";
+        functions[1] = "Debug";
+        functions[4] = "Run";
+        functions[8] = "Step";
+        let mut fkeys = Vec::with_capacity(10 * 2);
+        for (f, desc) in functions.into_iter().enumerate() {
+            fkeys.push(format!("F{:<2}", f + 1).black().on_blue().bold());
+            fkeys.push(format!("{desc:<5}").blue().on_black().bold());
+        }
+
+        Paragraph::new(Line::from(fkeys)).render(layout_main[2], buf);
     }
 }

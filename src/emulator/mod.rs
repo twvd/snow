@@ -8,7 +8,11 @@ use crate::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use crate::tickable::{Tickable, Ticks};
 
 use anyhow::Result;
-use comm::{EmulatorCommand, EmulatorCommandSender};
+use log::*;
+
+use comm::{
+    EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver, EmulatorStatus,
+};
 
 /// Specific properties of a specific Macintosh model
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -22,6 +26,9 @@ pub struct Emulator {
     cpu: CpuM68k<MacBus<ChannelRenderer>>,
     command_recv: crossbeam_channel::Receiver<EmulatorCommand>,
     command_sender: EmulatorCommandSender,
+    event_sender: crossbeam_channel::Sender<EmulatorEvent>,
+    event_recv: EmulatorEventReceiver,
+    run: bool,
 }
 
 impl Emulator {
@@ -31,6 +38,7 @@ impl Emulator {
     ) -> Result<(Self, crossbeam_channel::Receiver<DisplayBuffer>)> {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
+        let (statuss, statusr) = crossbeam_channel::unbounded();
         let renderer = ChannelRenderer::new(SCREEN_WIDTH, SCREEN_HEIGHT)?;
         let frame_recv = renderer.get_receiver();
 
@@ -39,18 +47,34 @@ impl Emulator {
         let mut cpu = CpuM68k::new(bus);
 
         cpu.reset()?;
-        Ok((
-            Self {
-                cpu,
-                command_recv: cmdr,
-                command_sender: cmds,
-            },
-            frame_recv,
-        ))
+        let emu = Self {
+            cpu,
+            command_recv: cmdr,
+            command_sender: cmds,
+            event_sender: statuss,
+            event_recv: statusr,
+            run: false,
+        };
+        emu.status_update()?;
+
+        Ok((emu, frame_recv))
     }
 
     pub fn create_cmd_sender(&self) -> EmulatorCommandSender {
         self.command_sender.clone()
+    }
+
+    pub fn create_event_recv(&self) -> EmulatorEventReceiver {
+        self.event_recv.clone()
+    }
+
+    fn status_update(&self) -> Result<()> {
+        self.event_sender
+            .send(EmulatorEvent::Status(EmulatorStatus {
+                regs: self.cpu.regs.clone(),
+                running: self.run,
+            }))?;
+        Ok(())
     }
 }
 
@@ -58,16 +82,29 @@ impl Tickable for Emulator {
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
         if !self.command_recv.is_empty() {
             while let Ok(cmd) = self.command_recv.try_recv() {
+                trace!("Emulator command {:?}", cmd);
                 match cmd {
                     EmulatorCommand::MouseUpdateRelative { relx, rely, btn } => {
                         self.cpu.bus.mouse_update(relx, rely, btn);
                     }
                     EmulatorCommand::Quit => return Ok(0),
                     EmulatorCommand::InsertFloppy(image) => self.cpu.bus.iwm.disk_insert(&image),
+                    EmulatorCommand::Run => self.run = true,
+                    EmulatorCommand::Stop => self.run = false,
+                    EmulatorCommand::Step => {
+                        if !self.run {
+                            self.cpu.tick(ticks)?;
+                        }
+                    }
                 }
             }
+            self.status_update()?;
         }
-        self.cpu.tick(ticks)?;
+
+        if self.run {
+            self.cpu.tick(ticks)?;
+        }
+
         Ok(ticks)
     }
 }

@@ -43,12 +43,8 @@ fn main() -> Result<()> {
     let mut renderer = SDLRenderer::new(SCREEN_HEIGHT, SCREEN_WIDTH)?;
     let eventpump = SDLEventPump::new();
 
-    // Initialize user interface
-    let mut terminal = UserInterface::init_terminal()?;
-    let mut ui = UserInterface::new()?;
-
     // Initialize ROM
-    let rom = fs::read(args.rom_filename)?;
+    let rom = fs::read(&args.rom_filename)?;
 
     // Detect model
     // TODO Make this nicer
@@ -78,8 +74,18 @@ fn main() -> Result<()> {
             panic!("Cannot determine model from ROM file")
         };
 
+    // Initialize emulator
     let (mut emulator, frame_recv) = Emulator::new(&rom, model)?;
     let cmd = emulator.create_cmd_sender();
+
+    // Initialize user interface
+    let mut terminal = UserInterface::init_terminal()?;
+    let mut ui = UserInterface::new(
+        &args.rom_filename,
+        model.name,
+        emulator.create_event_recv(),
+        emulator.create_cmd_sender(),
+    )?;
 
     // Spin up emulator thread
     let emuthread = thread::spawn(move || loop {
