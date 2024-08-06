@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Context, Result};
+use crossbeam::atomic::AtomicCell;
 use either::Either;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
+use strum::Display;
 
 use super::regs::Register;
 use super::CpuSized;
@@ -9,11 +11,9 @@ use super::CpuSized;
 use crate::bus::Address;
 use crate::types::{Long, Word};
 
-use std::cell::Cell;
-
 /// Instruction mnemonic
 #[allow(non_camel_case_types)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Display)]
 pub enum InstructionMnemonic {
     ABCD,
     NBCD,
@@ -298,16 +298,17 @@ impl ExtWord {
 pub struct Instruction {
     pub mnemonic: InstructionMnemonic,
     pub data: u16,
-    pub extword: Cell<Option<ExtWord>>,
+    pub extword: AtomicCell<Option<ExtWord>>,
 }
 
 impl Clone for Instruction {
     fn clone(&self) -> Self {
         // Clone drops the loaded extension word
+        // TODO rip the Cell out..
         Self {
             mnemonic: self.mnemonic,
             data: self.data,
-            extword: Cell::new(None),
+            extword: AtomicCell::new(None),
         }
     }
 }
@@ -494,7 +495,7 @@ impl Instruction {
                 return Ok(Self {
                     mnemonic,
                     data,
-                    extword: Cell::new(None),
+                    extword: AtomicCell::new(None),
                 });
             }
         }
@@ -599,21 +600,21 @@ impl Instruction {
     {
         if !self.has_extword() {
             // This check is to handle 'MOVE mem, (xxx).L' properly.
-            self.extword.set(Some(fetch()?.into()));
+            self.extword.store(Some(fetch()?.into()));
         }
         Ok(())
     }
 
     pub fn clear_extword(&self) {
-        self.extword.set(None);
+        self.extword.store(None);
     }
 
     pub fn has_extword(&self) -> bool {
-        self.extword.get().is_some()
+        self.extword.load().is_some()
     }
 
     pub fn get_extword(&self) -> Result<ExtWord> {
-        self.extword.get().context("Ext word not fetched")
+        self.extword.load().context("Ext word not fetched")
     }
 
     pub fn needs_extword(&self) -> bool {
@@ -642,7 +643,7 @@ impl Instruction {
                 || self.mnemonic == InstructionMnemonic::DBcc
                 || self.mnemonic == InstructionMnemonic::BSR
         );
-        debug_assert!(self.extword.get().is_some());
+        debug_assert!(self.extword.load().is_some());
 
         Ok(self.get_extword()?.into())
     }
@@ -686,6 +687,12 @@ impl Instruction {
             1 => Either::Right(Register::Dn(rotation.into())),
             _ => unreachable!(),
         }
+    }
+}
+
+impl std::fmt::Display for Instruction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.mnemonic)
     }
 }
 

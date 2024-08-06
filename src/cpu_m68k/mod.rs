@@ -1,5 +1,6 @@
 pub mod alu;
 pub mod cpu;
+pub mod disassembler;
 pub mod instruction;
 pub mod regs;
 

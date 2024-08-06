@@ -13,11 +13,15 @@ use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Widget};
 use ratatui::Terminal;
+use snow::bus::Address;
+use snow::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
 use snow::emulator::comm::{
     EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver, EmulatorStatus,
 };
 use snow::types::Long;
 use tui_logger::{TuiLoggerLevelOutput, TuiLoggerWidget, TuiWidgetEvent, TuiWidgetState};
+
+type DisassemblyListing = Vec<DisassemblyEntry>;
 
 enum View {
     Log,
@@ -32,7 +36,9 @@ pub struct UserInterface {
 
     eventrecv: EmulatorEventReceiver,
     cmdsender: EmulatorCommandSender,
+
     emustatus: EmulatorStatus,
+    disassembly: DisassemblyListing,
 
     state_log: TuiWidgetState,
 }
@@ -48,7 +54,7 @@ impl UserInterface {
             panic!("Initial status message not received")
         };
         Ok(Self {
-            view: View::Log,
+            view: View::Debugger,
             state_log: TuiWidgetState::default(),
             romfn: romfn.to_string(),
             model: model.to_string(),
@@ -56,6 +62,7 @@ impl UserInterface {
             cmdsender,
 
             emustatus,
+            disassembly: DisassemblyListing::new(),
         })
     }
 
@@ -77,11 +84,18 @@ impl UserInterface {
         Ok(())
     }
 
+    fn generate_disassembly(&mut self, pc: Address, code: Vec<u8>) -> Result<()> {
+        self.disassembly = Vec::from_iter(Disassembler::from(&mut code.into_iter(), pc));
+
+        Ok(())
+    }
+
     pub fn run(&mut self, terminal: &mut Terminal<impl Backend>) -> Result<bool> {
         // Emulator events
         while let Ok(event) = self.eventrecv.try_recv() {
             match event {
                 EmulatorEvent::Status(s) => self.emustatus = s,
+                EmulatorEvent::NextCode((a, i)) => self.generate_disassembly(a, i)?,
             }
         }
 
@@ -121,9 +135,14 @@ impl UserInterface {
             .constraints(vec![Constraint::Percentage(100), Constraint::Min(20)])
             .split(area);
 
-        Paragraph::new("Disassembly here")
-            .block(Block::bordered().title("Disassembly"))
-            .render(layout[0], buf);
+        Paragraph::new(
+            self.disassembly
+                .iter()
+                .map(|e| Line::from(e.to_string()))
+                .collect::<Vec<_>>(),
+        )
+        .block(Block::bordered().title("Disassembly"))
+        .render(layout[0], buf);
 
         let reg = |name, val| {
             Line::from(vec![

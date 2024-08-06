@@ -1,4 +1,4 @@
-use crate::cpu_m68k::regs::RegisterFile;
+use crate::{bus::Address, cpu_m68k::regs::RegisterFile};
 
 pub type EmulatorCommandSender = crossbeam_channel::Sender<EmulatorCommand>;
 pub type EmulatorEventReceiver = crossbeam_channel::Receiver<EmulatorEvent>;
@@ -29,4 +29,5 @@ pub struct EmulatorStatus {
 #[derive(Debug)]
 pub enum EmulatorEvent {
     Status(EmulatorStatus),
+    NextCode((Address, Vec<u8>)),
 }

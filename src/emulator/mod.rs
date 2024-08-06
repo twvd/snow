@@ -1,5 +1,9 @@
 pub mod comm;
 
+use std::thread;
+use std::time::Duration;
+
+use crate::bus::Bus;
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::frontend::channel::ChannelRenderer;
 use crate::frontend::{DisplayBuffer, Renderer};
@@ -47,7 +51,7 @@ impl Emulator {
         let mut cpu = CpuM68k::new(bus);
 
         cpu.reset()?;
-        let emu = Self {
+        let mut emu = Self {
             cpu,
             command_recv: cmdr,
             command_sender: cmds,
@@ -68,12 +72,22 @@ impl Emulator {
         self.event_recv.clone()
     }
 
-    fn status_update(&self) -> Result<()> {
+    fn status_update(&mut self) -> Result<()> {
         self.event_sender
             .send(EmulatorEvent::Status(EmulatorStatus {
                 regs: self.cpu.regs.clone(),
                 running: self.run,
             }))?;
+
+        // Next code stream for disassembly listing
+        let mut ops = Vec::with_capacity(100);
+        for pc in self.cpu.regs.pc..self.cpu.regs.pc.wrapping_add(100) {
+            // TODO deal with read sideeffects
+            ops.push(self.cpu.bus.read(pc));
+        }
+        self.event_sender
+            .send(EmulatorEvent::NextCode((self.cpu.regs.pc, ops)))?;
+
         Ok(())
     }
 }
@@ -103,6 +117,8 @@ impl Tickable for Emulator {
 
         if self.run {
             self.cpu.tick(ticks)?;
+        } else {
+            thread::sleep(Duration::from_millis(10));
         }
 
         Ok(ticks)
