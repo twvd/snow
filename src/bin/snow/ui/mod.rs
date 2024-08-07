@@ -15,6 +15,7 @@ use ratatui::widgets::{Block, Paragraph, Widget};
 use ratatui::Terminal;
 use snow::bus::Address;
 use snow::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
+use snow::cpu_m68k::regs::RegisterFile;
 use snow::emulator::comm::{
     EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver, EmulatorStatus,
 };
@@ -38,6 +39,7 @@ pub struct UserInterface {
     cmdsender: EmulatorCommandSender,
 
     emustatus: EmulatorStatus,
+    lastregs: RegisterFile,
     disassembly: DisassemblyListing,
 
     state_log: TuiWidgetState,
@@ -62,6 +64,7 @@ impl UserInterface {
             cmdsender,
 
             emustatus,
+            lastregs: RegisterFile::new(),
             disassembly: DisassemblyListing::new(),
         })
     }
@@ -94,7 +97,10 @@ impl UserInterface {
         // Emulator events
         while let Ok(event) = self.eventrecv.try_recv() {
             match event {
-                EmulatorEvent::Status(s) => self.emustatus = s,
+                EmulatorEvent::Status(s) => {
+                    self.lastregs = self.emustatus.regs.clone();
+                    self.emustatus = s;
+                }
                 EmulatorEvent::NextCode((a, i)) => self.generate_disassembly(a, i)?,
             }
         }
@@ -138,41 +144,58 @@ impl UserInterface {
         Paragraph::new(
             self.disassembly
                 .iter()
-                .map(|e| Line::from(e.to_string()))
+                .map(|e| {
+                    Line::from(vec![
+                        if e.addr == self.emustatus.regs.pc {
+                            Span::from("► ").style(Style::default().light_green())
+                        } else {
+                            Span::from("  ")
+                        },
+                        Span::from(format!(":{:06X} ", e.addr)),
+                        Span::from(format!("{:<16} ", e.raw_as_string()))
+                            .style(Style::default().dark_gray()),
+                        Span::from(format!("{}", e.str)),
+                    ])
+                })
                 .collect::<Vec<_>>(),
         )
         .block(Block::bordered().title("Disassembly"))
         .render(layout[0], buf);
 
-        let reg = |name, val| {
+        let reg = |name, v: &dyn Fn(&RegisterFile) -> Long| {
+            let style = if v(&self.emustatus.regs) != v(&self.lastregs) {
+                Style::default().light_yellow()
+            } else {
+                Style::default().gray()
+            };
             Line::from(vec![
                 Span::from(format!("{name:<4}")).style(Style::default().blue().bold()),
-                Span::from(format!("{val:08X}")).style(Style::default().white()),
+                Span::from(format!("{:08X}", v(&self.emustatus.regs))).style(style),
             ])
         };
         Paragraph::new(vec![
-            reg("D0", self.emustatus.regs.read_d::<Long>(0)),
-            reg("D1", self.emustatus.regs.read_d::<Long>(1)),
-            reg("D2", self.emustatus.regs.read_d::<Long>(2)),
-            reg("D3", self.emustatus.regs.read_d::<Long>(3)),
-            reg("D4", self.emustatus.regs.read_d::<Long>(4)),
-            reg("D5", self.emustatus.regs.read_d::<Long>(5)),
-            reg("D6", self.emustatus.regs.read_d::<Long>(6)),
-            reg("D7", self.emustatus.regs.read_d::<Long>(7)),
+            reg("D0", &|r: &RegisterFile| r.read_d::<Long>(0)),
+            reg("D1", &|r: &RegisterFile| r.read_d::<Long>(1)),
+            reg("D2", &|r: &RegisterFile| r.read_d::<Long>(2)),
+            reg("D3", &|r: &RegisterFile| r.read_d::<Long>(3)),
+            reg("D4", &|r: &RegisterFile| r.read_d::<Long>(4)),
+            reg("D5", &|r: &RegisterFile| r.read_d::<Long>(5)),
+            reg("D6", &|r: &RegisterFile| r.read_d::<Long>(6)),
+            reg("D7", &|r: &RegisterFile| r.read_d::<Long>(7)),
             Line::from(""),
-            reg("A0", self.emustatus.regs.read_a::<Long>(0)),
-            reg("A1", self.emustatus.regs.read_a::<Long>(1)),
-            reg("A2", self.emustatus.regs.read_a::<Long>(2)),
-            reg("A3", self.emustatus.regs.read_a::<Long>(3)),
-            reg("A4", self.emustatus.regs.read_a::<Long>(4)),
-            reg("A5", self.emustatus.regs.read_a::<Long>(5)),
-            reg("A6", self.emustatus.regs.read_a::<Long>(6)),
-            reg("A7", self.emustatus.regs.read_a::<Long>(7)),
+            reg("A0", &|r: &RegisterFile| r.read_a::<Long>(0)),
+            reg("A1", &|r: &RegisterFile| r.read_a::<Long>(1)),
+            reg("A2", &|r: &RegisterFile| r.read_a::<Long>(2)),
+            reg("A3", &|r: &RegisterFile| r.read_a::<Long>(3)),
+            reg("A4", &|r: &RegisterFile| r.read_a::<Long>(4)),
+            reg("A5", &|r: &RegisterFile| r.read_a::<Long>(5)),
+            reg("A6", &|r: &RegisterFile| r.read_a::<Long>(6)),
+            reg("A7", &|r: &RegisterFile| r.read_a::<Long>(7)),
             Line::from(""),
-            reg("PC", self.emustatus.regs.pc),
+            reg("PC", &|r: &RegisterFile| r.pc),
             Line::from(""),
-            reg("SSP", self.emustatus.regs.ssp),
-            reg("USP", self.emustatus.regs.ssp),
+            reg("SSP", &|r: &RegisterFile| r.ssp),
+            reg("USP", &|r: &RegisterFile| r.usp),
             Line::from(""),
             Line::from(vec![
                 Span::from("SR  ").style(Style::default().blue().bold()),
