@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use arrayvec::ArrayVec;
 use either::Either;
 use itertools::Itertools;
@@ -8,6 +9,7 @@ use crate::bus::Address;
 
 use super::instruction::{AddressingMode, Instruction, InstructionMnemonic};
 
+#[derive(Clone)]
 pub struct DisassemblyEntry {
     addr: Address,
     raw: ArrayVec<u8, 8>,
@@ -25,8 +27,14 @@ impl std::fmt::Display for DisassemblyEntry {
 }
 
 pub struct Disassembler<'a> {
-    addr: Address,
+    /// Input iterator
     iter: &'a mut dyn Iterator<Item = u8>,
+
+    /// Current absolute address
+    addr: Address,
+
+    /// Current entry that is being worked on
+    out: DisassemblyEntry,
 }
 
 impl<'a> Disassembler<'a> {
@@ -40,59 +48,60 @@ impl<'a> Disassembler<'a> {
     ];
 
     pub fn from(iter: &'a mut dyn Iterator<Item = u8>, addr: Address) -> Self {
-        Self { addr, iter }
+        Self {
+            addr,
+            iter,
+            out: DisassemblyEntry {
+                addr,
+                raw: ArrayVec::new(),
+                str: String::default(),
+            },
+        }
     }
 
-    fn ea(&mut self, instr: &Instruction, out: &mut DisassemblyEntry) -> Option<String> {
-        let mut get8 = || {
-            let data = self.iter.next()?;
-            out.raw.push(data);
-            Some(data)
-        };
-        let mut get16 = || {
-            let msb = get8()?;
-            let lsb = get8()?;
-            Some(((msb as u16) << 8) | (lsb as u16))
-        };
-        let mut get32 = || {
-            let upper = get16()?;
-            let lower = get16()?;
-            Some(((upper as u32) << 16) | (lower as u32))
-        };
+    fn get8(&mut self) -> Result<u8> {
+        let data = self.iter.next().context("Premature end of stream")?;
+        self.out.raw.push(data);
+        Ok(data)
+    }
 
-        Some(match instr.get_addr_mode().ok()? {
-            AddressingMode::AbsoluteShort => format!("(${:04X})", get16()?),
-            AddressingMode::AbsoluteLong => format!("(${:08X})", get32()?),
-            _ => format!("{:?}", instr.get_addr_mode().ok()?),
+    fn get16(&mut self) -> Result<u16> {
+        let msb = self.get8()?;
+        let lsb = self.get8()?;
+        Ok(((msb as u16) << 8) | (lsb as u16))
+    }
+    fn get32(&mut self) -> Result<u32> {
+        let upper = self.get16()?;
+        let lower = self.get16()?;
+        Ok(((upper as u32) << 16) | (lower as u32))
+    }
+
+    fn ea(&mut self, instr: &Instruction) -> Result<String> {
+        Ok(match instr.get_addr_mode()? {
+            AddressingMode::Indirect => format!("(A{})", instr.get_op2()),
+            AddressingMode::AbsoluteShort => format!("(${:04X})", self.get16()?),
+            AddressingMode::AbsoluteLong => format!("(${:08X})", self.get32()?),
+            AddressingMode::PCDisplacement => {
+                instr.fetch_extword(|| self.get16())?;
+                format!(
+                    "${:06X}",
+                    self.addr.wrapping_add_signed(instr.get_displacement()? + 2)
+                )
+            }
+            _ => format!("{:?}", instr.get_addr_mode()?),
         })
     }
 
-    fn do_instr(&mut self, instr: &Instruction, out: &mut DisassemblyEntry) -> Option<()> {
+    fn do_instr(&mut self, instr: &Instruction) -> Result<()> {
         let mnemonic = instr
             .mnemonic
             .to_string()
             .chars()
             .take_while(|&c| c != '_')
             .collect::<String>();
-        let sz = instr.mnemonic.to_string().chars().last()?;
+        let sz = instr.mnemonic.to_string().chars().last().unwrap();
 
-        let mut get8 = || {
-            let data = self.iter.next()?;
-            out.raw.push(data);
-            Some(data)
-        };
-        let mut get16 = || {
-            let msb = get8()?;
-            let lsb = get8()?;
-            Some(((msb as u16) << 8) | (lsb as u16))
-        };
-        let mut get32 = || {
-            let upper = get16()?;
-            let lower = get16()?;
-            Some(((upper as u32) << 16) | (lower as u32))
-        };
-
-        out.str = match instr.mnemonic {
+        self.out.str = match instr.mnemonic {
             InstructionMnemonic::ILLEGAL
             | InstructionMnemonic::NOP
             | InstructionMnemonic::STOP
@@ -104,21 +113,26 @@ impl<'a> Disassembler<'a> {
 
             InstructionMnemonic::Bcc => {
                 let displacement = if instr.get_bxx_displacement() == 0 {
-                    get16()? as i16 as i32
+                    self.get16()? as i16 as i32
                 } else {
                     instr.get_bxx_displacement()
                 };
                 format!(
-                    "B{} {:06X}",
+                    "B{}.{} {:06X}",
                     Self::CC[instr.get_cc()],
+                    if instr.get_bxx_displacement() == 0 {
+                        'w'
+                    } else {
+                        'b'
+                    },
                     self.addr.wrapping_add_signed(displacement + 2)
                 )
             }
 
             InstructionMnemonic::MOVEM_reg_w | InstructionMnemonic::MOVEM_reg_l => {
-                let mask = get16()?;
+                let mask = self.get16()?;
 
-                let regs = if instr.get_addr_mode().ok()? != AddressingMode::IndirectPreDec {
+                let regs = if instr.get_addr_mode()? != AddressingMode::IndirectPreDec {
                     Either::Left(Self::MOVEM_REGS.iter().rev())
                 } else {
                     Either::Right(Self::MOVEM_REGS.iter())
@@ -127,7 +141,7 @@ impl<'a> Disassembler<'a> {
                 format!(
                     "MOVEM.{} {}, [{}]",
                     sz,
-                    self.ea(instr, out)?,
+                    self.ea(instr)?,
                     regs.enumerate()
                         .filter(|(i, _)| mask & (1 << i) != 0)
                         .map(|(_, r)| r)
@@ -141,7 +155,7 @@ impl<'a> Disassembler<'a> {
                 "{}.{} {},D{}",
                 mnemonic,
                 sz,
-                self.ea(instr, out)?,
+                self.ea(instr)?,
                 instr.get_op2()
             ),
 
@@ -153,13 +167,33 @@ impl<'a> Disassembler<'a> {
                     mnemonic,
                     sz,
                     match sz {
-                        'l' => format!("#{:08X}", get32()?),
-                        'w' => format!("#{:04X}", get16()?),
-                        'b' => format!("#{:02X}", get8()?),
+                        'l' => format!("#{:08X}", self.get32()?),
+                        'w' => format!("#{:04X}", self.get16()?),
+                        'b' => format!("#{:02X}", self.get8()?),
                         _ => unreachable!(),
                     },
                     instr.get_op2()
                 )
+            }
+
+            InstructionMnemonic::LEA => {
+                format!("{} {},A{}", mnemonic, self.ea(instr)?, instr.get_op2())
+            }
+            InstructionMnemonic::JMP | InstructionMnemonic::JSR => {
+                if instr.needs_extword() {
+                    instr.fetch_extword(|| self.get16())?;
+                }
+
+                let target = match instr.get_addr_mode()? {
+                    AddressingMode::AbsoluteShort => {
+                        format!("${:04X}", self.get16()?)
+                    }
+                    AddressingMode::AbsoluteLong => {
+                        format!("${:08X}", self.get32()?)
+                    }
+                    _ => self.ea(instr)?,
+                };
+                format!("{} {}", mnemonic, target)
             }
 
             InstructionMnemonic::ABCD
@@ -230,8 +264,6 @@ impl<'a> Disassembler<'a> {
             | InstructionMnemonic::EXG
             | InstructionMnemonic::EXT_l
             | InstructionMnemonic::EXT_w
-            | InstructionMnemonic::JMP
-            | InstructionMnemonic::JSR
             | InstructionMnemonic::LSL_ea
             | InstructionMnemonic::LSL_b
             | InstructionMnemonic::LSL_w
@@ -248,7 +280,6 @@ impl<'a> Disassembler<'a> {
             | InstructionMnemonic::ORI_b
             | InstructionMnemonic::ORI_ccr
             | InstructionMnemonic::ORI_sr
-            | InstructionMnemonic::LEA
             | InstructionMnemonic::LINEA
             | InstructionMnemonic::LINEF
             | InstructionMnemonic::LINK
@@ -316,7 +347,7 @@ impl<'a> Disassembler<'a> {
             | InstructionMnemonic::TST_b => format!("TODO {}", instr.mnemonic),
         };
 
-        Some(())
+        Ok(())
     }
 }
 
@@ -324,27 +355,28 @@ impl<'a> Iterator for Disassembler<'a> {
     type Item = DisassemblyEntry;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut result = Self::Item {
+        let op_msb = self.iter.next()?;
+        let op_lsb = self.iter.next()?;
+        let opcode = ((op_msb as u16) << 8) | (op_lsb as u16);
+        self.out.raw.push(op_msb);
+        self.out.raw.push(op_lsb);
+
+        let instr = Instruction::try_decode(opcode);
+
+        if let Ok(i) = instr {
+            self.do_instr(&i).ok()?;
+        } else {
+            self.out.str = format!("Cannot decode {:04X} / {:016b}", opcode, opcode);
+        }
+        self.addr = self.addr.wrapping_add(self.out.raw.len() as Address);
+
+        let out = self.out.clone();
+        self.out = DisassemblyEntry {
             addr: self.addr,
             raw: ArrayVec::new(),
             str: String::default(),
         };
 
-        let op_msb = self.iter.next()?;
-        let op_lsb = self.iter.next()?;
-        let opcode = ((op_msb as u16) << 8) | (op_lsb as u16);
-        result.raw.push(op_msb);
-        result.raw.push(op_lsb);
-
-        let instr = Instruction::try_decode(opcode);
-
-        if let Ok(i) = instr {
-            self.do_instr(&i, &mut result)?;
-        } else {
-            result.str = format!("Cannot decode {:04X} / {:016b}", opcode, opcode);
-        }
-        self.addr = self.addr.wrapping_add(result.raw.len() as Address);
-
-        Some(result)
+        Some(out)
     }
 }
