@@ -5,24 +5,41 @@ use itertools::Itertools;
 
 use std::fmt::Write;
 
-use crate::bus::Address;
+use crate::{
+    bus::Address,
+    cpu_m68k::instruction::{IndexSize, Xn},
+    types::Byte,
+};
 
-use super::instruction::{AddressingMode, Instruction, InstructionMnemonic};
+use super::instruction::{
+    AddressingMode, Direction, Instruction, InstructionMnemonic, InstructionSize,
+};
 
 #[derive(Clone)]
 pub struct DisassemblyEntry {
-    addr: Address,
-    raw: ArrayVec<u8, 8>,
-    str: String,
+    pub addr: Address,
+    pub raw: ArrayVec<u8, 8>,
+    pub str: String,
+}
+
+impl DisassemblyEntry {
+    pub fn raw_as_string(&self) -> String {
+        self.raw.iter().fold(String::new(), |mut output, b| {
+            let _ = write!(output, "{b:02X}");
+            output
+        })
+    }
 }
 
 impl std::fmt::Display for DisassemblyEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let bytes = self.raw.iter().fold(String::new(), |mut output, b| {
-            let _ = write!(output, "{b:02X}");
-            output
-        });
-        write!(f, ":{:06X} {:<16} {}", self.addr, bytes, self.str)
+        write!(
+            f,
+            ":{:06X} {:<16} {}",
+            self.addr,
+            self.raw_as_string(),
+            self.str
+        )
     }
 }
 
@@ -77,8 +94,31 @@ impl<'a> Disassembler<'a> {
     }
 
     fn ea(&mut self, instr: &Instruction) -> Result<String> {
-        Ok(match instr.get_addr_mode()? {
-            AddressingMode::Indirect => format!("(A{})", instr.get_op2()),
+        self.ea_with(instr, instr.get_addr_mode()?, instr.get_op2())
+    }
+
+    fn ea_left(&mut self, instr: &Instruction) -> Result<String> {
+        self.ea_with(instr, instr.get_addr_mode_left()?, instr.get_op1())
+    }
+
+    fn ea_with(&mut self, instr: &Instruction, mode: AddressingMode, op: usize) -> Result<String> {
+        instr.clear_extword();
+        Ok(match mode {
+            AddressingMode::Immediate => match instr.get_size() {
+                InstructionSize::Byte => format!("#${:02X}", self.get16()?),
+                InstructionSize::Word => format!("#${:04X}", self.get16()?),
+                InstructionSize::Long => format!("#${:08X}", self.get32()?),
+                InstructionSize::None => unreachable!(),
+            },
+            AddressingMode::DataRegister => format!("D{}", op),
+            AddressingMode::AddressRegister => format!("A{}", op),
+            AddressingMode::Indirect => format!("(A{})", op),
+            AddressingMode::IndirectPreDec => format!("-(A{})", op),
+            AddressingMode::IndirectPostInc => format!("(A{})+", op),
+            AddressingMode::IndirectDisplacement => {
+                instr.fetch_extword(|| self.get16())?;
+                format!("(${:04X},A{})", instr.get_displacement()?, op)
+            }
             AddressingMode::AbsoluteShort => format!("(${:04X})", self.get16()?),
             AddressingMode::AbsoluteLong => format!("(${:08X})", self.get32()?),
             AddressingMode::PCDisplacement => {
@@ -88,7 +128,27 @@ impl<'a> Disassembler<'a> {
                     self.addr.wrapping_add_signed(instr.get_displacement()? + 2)
                 )
             }
-            _ => format!("{:?}", instr.get_addr_mode()?),
+            AddressingMode::IndirectIndex => {
+                instr.fetch_extword(|| self.get16())?;
+
+                let extword = instr.get_extword()?;
+                let (xn, reg) = extword.brief_get_register();
+                format!(
+                    "(${:04X},A{},{}{}.{})",
+                    extword.brief_get_displacement_signext(),
+                    op,
+                    match xn {
+                        Xn::Dn => "D",
+                        Xn::An => "A",
+                    },
+                    reg,
+                    match extword.brief_get_index_size() {
+                        IndexSize::Word => "w",
+                        IndexSize::Long => "l",
+                    }
+                )
+            }
+            _ => format!("{:?}", mode),
         })
     }
 
@@ -166,10 +226,10 @@ impl<'a> Disassembler<'a> {
                     "{}.{} {},D{}",
                     mnemonic,
                     sz,
-                    match sz {
-                        'l' => format!("#{:08X}", self.get32()?),
-                        'w' => format!("#{:04X}", self.get16()?),
-                        'b' => format!("#{:02X}", self.get8()?),
+                    match instr.get_size() {
+                        InstructionSize::Long => format!("#${:08X}", self.get32()?),
+                        InstructionSize::Word => format!("#${:04X}", self.get16()?),
+                        InstructionSize::Byte => format!("#${:02X}", self.get16()?),
                         _ => unreachable!(),
                     },
                     instr.get_op2()
@@ -196,6 +256,111 @@ impl<'a> Disassembler<'a> {
                 format!("{} {}", mnemonic, target)
             }
 
+            InstructionMnemonic::MOVEtoCCR => format!("MOVE.w {},CCR", self.ea(instr)?),
+            InstructionMnemonic::MOVEtoSR => format!("MOVE.w {},SR", self.ea(instr)?),
+            InstructionMnemonic::MOVEQ => format!(
+                "{} #${:02X},D{}",
+                mnemonic,
+                instr.get_quick::<Byte>(),
+                instr.get_op1()
+            ),
+
+            InstructionMnemonic::TST_l
+            | InstructionMnemonic::TST_w
+            | InstructionMnemonic::TST_b => format!("{}.{} {}", mnemonic, sz, self.ea(instr)?),
+
+            InstructionMnemonic::AND_l
+            | InstructionMnemonic::AND_w
+            | InstructionMnemonic::AND_b
+            | InstructionMnemonic::EOR_l
+            | InstructionMnemonic::EOR_w
+            | InstructionMnemonic::EOR_b
+            | InstructionMnemonic::OR_l
+            | InstructionMnemonic::OR_w
+            | InstructionMnemonic::OR_b
+            | InstructionMnemonic::ADD_l
+            | InstructionMnemonic::ADD_w
+            | InstructionMnemonic::ADD_b
+            | InstructionMnemonic::SUB_l
+            | InstructionMnemonic::SUB_w
+            | InstructionMnemonic::SUB_b => {
+                let left = instr.get_op1();
+                let right = self.ea(instr)?;
+                match instr.get_direction() {
+                    Direction::Left => format!("{}.{} D{},{}", mnemonic, sz, left, right),
+                    Direction::Right => format!("{}.{} {},D{}", mnemonic, sz, right, left),
+                }
+            }
+
+            InstructionMnemonic::ADDA_l
+            | InstructionMnemonic::ADDA_w
+            | InstructionMnemonic::SUBA_l
+            | InstructionMnemonic::SUBA_w => {
+                let left = instr.get_op1();
+                let right = self.ea(instr)?;
+                match instr.get_direction() {
+                    Direction::Left => format!("{}.{} A{},{}", mnemonic, sz, left, right),
+                    Direction::Right => format!("{}.{} {},A{}", mnemonic, sz, right, left),
+                }
+            }
+
+            InstructionMnemonic::ADDI_l
+            | InstructionMnemonic::ADDI_w
+            | InstructionMnemonic::ADDI_b
+            | InstructionMnemonic::ANDI_l
+            | InstructionMnemonic::ANDI_w
+            | InstructionMnemonic::ANDI_b
+            | InstructionMnemonic::EORI_l
+            | InstructionMnemonic::EORI_w
+            | InstructionMnemonic::EORI_b
+            | InstructionMnemonic::ORI_l
+            | InstructionMnemonic::ORI_w
+            | InstructionMnemonic::ORI_b
+            | InstructionMnemonic::SUBI_l
+            | InstructionMnemonic::SUBI_w
+            | InstructionMnemonic::SUBI_b => {
+                format!(
+                    "{}.{} {},{}",
+                    mnemonic,
+                    sz,
+                    match instr.get_size() {
+                        InstructionSize::Long => format!("#${:08X}", self.get32()?),
+                        InstructionSize::Word => format!("#${:04X}", self.get16()?),
+                        InstructionSize::Byte => format!("#${:02X}", self.get16()?),
+                        _ => unreachable!(),
+                    },
+                    self.ea(instr)?
+                )
+            }
+
+            InstructionMnemonic::ADDQ_l
+            | InstructionMnemonic::ADDQ_w
+            | InstructionMnemonic::ADDQ_b
+            | InstructionMnemonic::SUBQ_l
+            | InstructionMnemonic::SUBQ_w
+            | InstructionMnemonic::SUBQ_b => format!(
+                "{}.{} #${:02X},{}",
+                mnemonic,
+                sz,
+                instr.get_quick::<Byte>(),
+                self.ea(instr)?
+            ),
+            InstructionMnemonic::MOVE_w
+            | InstructionMnemonic::MOVE_l
+            | InstructionMnemonic::MOVE_b => {
+                let src = self.ea(instr)?;
+                let dest = self.ea_left(instr)?;
+                format!("{}.{} {},{}", mnemonic, sz, src, dest)
+            }
+
+            InstructionMnemonic::MOVEA_w | InstructionMnemonic::MOVEA_l => format!(
+                "{}.{} {},A{}",
+                mnemonic,
+                sz,
+                self.ea(instr)?,
+                instr.get_op1()
+            ),
+
             InstructionMnemonic::ABCD
             | InstructionMnemonic::MOVEM_mem_w
             | InstructionMnemonic::MOVEM_mem_l
@@ -203,26 +368,9 @@ impl<'a> Disassembler<'a> {
             | InstructionMnemonic::DBcc
             | InstructionMnemonic::NBCD
             | InstructionMnemonic::SBCD
-            | InstructionMnemonic::ADD_l
-            | InstructionMnemonic::ADD_w
-            | InstructionMnemonic::ADD_b
-            | InstructionMnemonic::ADDA_l
-            | InstructionMnemonic::ADDA_w
-            | InstructionMnemonic::ADDI_l
-            | InstructionMnemonic::ADDI_w
-            | InstructionMnemonic::ADDI_b
-            | InstructionMnemonic::ADDQ_l
-            | InstructionMnemonic::ADDQ_w
-            | InstructionMnemonic::ADDQ_b
             | InstructionMnemonic::ADDX_l
             | InstructionMnemonic::ADDX_w
             | InstructionMnemonic::ADDX_b
-            | InstructionMnemonic::AND_l
-            | InstructionMnemonic::AND_w
-            | InstructionMnemonic::AND_b
-            | InstructionMnemonic::ANDI_l
-            | InstructionMnemonic::ANDI_w
-            | InstructionMnemonic::ANDI_b
             | InstructionMnemonic::ANDI_ccr
             | InstructionMnemonic::ANDI_sr
             | InstructionMnemonic::ASL_ea
@@ -253,12 +401,6 @@ impl<'a> Disassembler<'a> {
             | InstructionMnemonic::CMPM_b
             | InstructionMnemonic::DIVS_w
             | InstructionMnemonic::DIVU_w
-            | InstructionMnemonic::EOR_l
-            | InstructionMnemonic::EOR_w
-            | InstructionMnemonic::EOR_b
-            | InstructionMnemonic::EORI_l
-            | InstructionMnemonic::EORI_w
-            | InstructionMnemonic::EORI_b
             | InstructionMnemonic::EORI_ccr
             | InstructionMnemonic::EORI_sr
             | InstructionMnemonic::EXG
@@ -272,31 +414,17 @@ impl<'a> Disassembler<'a> {
             | InstructionMnemonic::LSR_w
             | InstructionMnemonic::LSR_l
             | InstructionMnemonic::LSR_ea
-            | InstructionMnemonic::OR_l
-            | InstructionMnemonic::OR_w
-            | InstructionMnemonic::OR_b
-            | InstructionMnemonic::ORI_l
-            | InstructionMnemonic::ORI_w
-            | InstructionMnemonic::ORI_b
             | InstructionMnemonic::ORI_ccr
             | InstructionMnemonic::ORI_sr
             | InstructionMnemonic::LINEA
             | InstructionMnemonic::LINEF
             | InstructionMnemonic::LINK
             | InstructionMnemonic::UNLINK
-            | InstructionMnemonic::MOVE_w
-            | InstructionMnemonic::MOVE_l
-            | InstructionMnemonic::MOVE_b
-            | InstructionMnemonic::MOVEA_w
-            | InstructionMnemonic::MOVEA_l
             | InstructionMnemonic::MOVEP_w
             | InstructionMnemonic::MOVEP_l
             | InstructionMnemonic::MOVEfromSR
             | InstructionMnemonic::MOVEfromUSP
-            | InstructionMnemonic::MOVEtoCCR
-            | InstructionMnemonic::MOVEtoSR
             | InstructionMnemonic::MOVEtoUSP
-            | InstructionMnemonic::MOVEQ
             | InstructionMnemonic::MULU_w
             | InstructionMnemonic::MULS_w
             | InstructionMnemonic::NEG_l
@@ -325,26 +453,12 @@ impl<'a> Disassembler<'a> {
             | InstructionMnemonic::ROR_w
             | InstructionMnemonic::ROR_l
             | InstructionMnemonic::ROR_ea
-            | InstructionMnemonic::SUB_l
-            | InstructionMnemonic::SUB_w
-            | InstructionMnemonic::SUB_b
-            | InstructionMnemonic::SUBA_l
-            | InstructionMnemonic::SUBA_w
-            | InstructionMnemonic::SUBI_l
-            | InstructionMnemonic::SUBI_w
-            | InstructionMnemonic::SUBI_b
-            | InstructionMnemonic::SUBQ_l
-            | InstructionMnemonic::SUBQ_w
-            | InstructionMnemonic::SUBQ_b
             | InstructionMnemonic::SUBX_l
             | InstructionMnemonic::SUBX_w
             | InstructionMnemonic::SUBX_b
             | InstructionMnemonic::SWAP
             | InstructionMnemonic::TAS
-            | InstructionMnemonic::TRAP
-            | InstructionMnemonic::TST_l
-            | InstructionMnemonic::TST_w
-            | InstructionMnemonic::TST_b => format!("TODO {}", instr.mnemonic),
+            | InstructionMnemonic::TRAP => format!("TODO {}", instr.mnemonic),
         };
 
         Ok(())

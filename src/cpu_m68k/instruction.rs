@@ -11,6 +11,15 @@ use super::CpuSized;
 use crate::bus::Address;
 use crate::types::{Long, Word};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum InstructionSize {
+    Byte,
+    Word,
+    Long,
+
+    None,
+}
+
 /// Instruction mnemonic
 #[allow(non_camel_case_types)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Display)]
@@ -686,6 +695,189 @@ impl Instruction {
             0 => Either::Left(if rotation == 0 { 8 } else { rotation.into() }),
             1 => Either::Right(Register::Dn(rotation.into())),
             _ => unreachable!(),
+        }
+    }
+
+    /// Retrieves the size of the instruction
+    pub const fn get_size(&self) -> InstructionSize {
+        match self.mnemonic {
+            InstructionMnemonic::ADD_l
+            | InstructionMnemonic::ADDA_l
+            | InstructionMnemonic::ADDI_l
+            | InstructionMnemonic::ADDQ_l
+            | InstructionMnemonic::ADDX_l
+            | InstructionMnemonic::AND_l
+            | InstructionMnemonic::ANDI_l
+            | InstructionMnemonic::ASL_l
+            | InstructionMnemonic::ASR_l
+            | InstructionMnemonic::CLR_l
+            | InstructionMnemonic::CMP_l
+            | InstructionMnemonic::CMPA_l
+            | InstructionMnemonic::CMPI_l
+            | InstructionMnemonic::CMPM_l
+            | InstructionMnemonic::EOR_l
+            | InstructionMnemonic::EORI_l
+            | InstructionMnemonic::EXT_l
+            | InstructionMnemonic::LSL_l
+            | InstructionMnemonic::LSR_l
+            | InstructionMnemonic::OR_l
+            | InstructionMnemonic::ORI_l
+            | InstructionMnemonic::MOVE_l
+            | InstructionMnemonic::MOVEA_l
+            | InstructionMnemonic::MOVEP_l
+            | InstructionMnemonic::MOVEM_mem_l
+            | InstructionMnemonic::MOVEM_reg_l
+            | InstructionMnemonic::NEG_l
+            | InstructionMnemonic::NEGX_l
+            | InstructionMnemonic::NOT_l
+            | InstructionMnemonic::ROXL_l
+            | InstructionMnemonic::ROXR_l
+            | InstructionMnemonic::ROL_l
+            | InstructionMnemonic::ROR_l
+            | InstructionMnemonic::SUB_l
+            | InstructionMnemonic::SUBA_l
+            | InstructionMnemonic::SUBI_l
+            | InstructionMnemonic::SUBQ_l
+            | InstructionMnemonic::SUBX_l
+            | InstructionMnemonic::TST_l => InstructionSize::Long,
+
+            InstructionMnemonic::ADD_w
+            | InstructionMnemonic::ADDA_w
+            | InstructionMnemonic::ADDI_w
+            | InstructionMnemonic::ADDQ_w
+            | InstructionMnemonic::ADDX_w
+            | InstructionMnemonic::AND_w
+            | InstructionMnemonic::ANDI_w
+            | InstructionMnemonic::ASL_w
+            | InstructionMnemonic::ASR_w
+            | InstructionMnemonic::CLR_w
+            | InstructionMnemonic::CMP_w
+            | InstructionMnemonic::CMPA_w
+            | InstructionMnemonic::CMPI_w
+            | InstructionMnemonic::CMPM_w
+            | InstructionMnemonic::DIVS_w
+            | InstructionMnemonic::DIVU_w
+            | InstructionMnemonic::EOR_w
+            | InstructionMnemonic::EORI_w
+            | InstructionMnemonic::EXT_w
+            | InstructionMnemonic::LSL_w
+            | InstructionMnemonic::LSR_w
+            | InstructionMnemonic::OR_w
+            | InstructionMnemonic::ORI_w
+            | InstructionMnemonic::MOVE_w
+            | InstructionMnemonic::MOVEA_w
+            | InstructionMnemonic::MOVEP_w
+            | InstructionMnemonic::MOVEM_mem_w
+            | InstructionMnemonic::MOVEM_reg_w
+            | InstructionMnemonic::MULU_w
+            | InstructionMnemonic::MULS_w
+            | InstructionMnemonic::NEG_w
+            | InstructionMnemonic::NEGX_w
+            | InstructionMnemonic::NOT_w
+            | InstructionMnemonic::ROXL_w
+            | InstructionMnemonic::ROXR_w
+            | InstructionMnemonic::ROL_w
+            | InstructionMnemonic::ROR_w
+            | InstructionMnemonic::SUB_w
+            | InstructionMnemonic::SUBA_w
+            | InstructionMnemonic::SUBI_w
+            | InstructionMnemonic::SUBQ_w
+            | InstructionMnemonic::SUBX_w
+            | InstructionMnemonic::TST_w => InstructionSize::Word,
+
+            InstructionMnemonic::ADD_b
+            | InstructionMnemonic::ADDI_b
+            | InstructionMnemonic::ADDQ_b
+            | InstructionMnemonic::ADDX_b
+            | InstructionMnemonic::AND_b
+            | InstructionMnemonic::ANDI_b
+            | InstructionMnemonic::ASL_b
+            | InstructionMnemonic::ASR_b
+            | InstructionMnemonic::CLR_b
+            | InstructionMnemonic::CMP_b
+            | InstructionMnemonic::CMPI_b
+            | InstructionMnemonic::CMPM_b
+            | InstructionMnemonic::EOR_b
+            | InstructionMnemonic::EORI_b
+            | InstructionMnemonic::LSL_b
+            | InstructionMnemonic::LSR_b
+            | InstructionMnemonic::OR_b
+            | InstructionMnemonic::ORI_b
+            | InstructionMnemonic::MOVE_b
+            | InstructionMnemonic::NEG_b
+            | InstructionMnemonic::NEGX_b
+            | InstructionMnemonic::NOT_b
+            | InstructionMnemonic::ROXL_b
+            | InstructionMnemonic::ROXR_b
+            | InstructionMnemonic::ROL_b
+            | InstructionMnemonic::ROR_b
+            | InstructionMnemonic::SUB_b
+            | InstructionMnemonic::SUBI_b
+            | InstructionMnemonic::SUBQ_b
+            | InstructionMnemonic::SUBX_b
+            | InstructionMnemonic::TST_b => InstructionSize::Byte,
+
+            InstructionMnemonic::ABCD | InstructionMnemonic::NBCD | InstructionMnemonic::SBCD => {
+                InstructionSize::Byte
+            }
+
+            InstructionMnemonic::ANDI_ccr
+            | InstructionMnemonic::EORI_ccr
+            | InstructionMnemonic::ORI_ccr
+            | InstructionMnemonic::MOVEtoCCR => InstructionSize::Byte,
+            InstructionMnemonic::ANDI_sr
+            | InstructionMnemonic::ORI_sr
+            | InstructionMnemonic::EORI_sr
+            | InstructionMnemonic::MOVEfromSR
+            | InstructionMnemonic::MOVEtoSR => InstructionSize::Word,
+
+            InstructionMnemonic::MOVEfromUSP | InstructionMnemonic::MOVEtoUSP => {
+                InstructionSize::Long
+            }
+            InstructionMnemonic::ASL_ea
+            | InstructionMnemonic::ASR_ea
+            | InstructionMnemonic::LSL_ea
+            | InstructionMnemonic::LSR_ea
+            | InstructionMnemonic::ROXL_ea
+            | InstructionMnemonic::ROXR_ea
+            | InstructionMnemonic::ROL_ea
+            | InstructionMnemonic::ROR_ea => InstructionSize::Word,
+
+            InstructionMnemonic::BCHG_dn
+            | InstructionMnemonic::BCLR_dn
+            | InstructionMnemonic::BSET_dn
+            | InstructionMnemonic::BTST_dn => InstructionSize::Long,
+            InstructionMnemonic::BCHG_imm
+            | InstructionMnemonic::BCLR_imm
+            | InstructionMnemonic::BSET_imm
+            | InstructionMnemonic::BTST_imm => InstructionSize::Byte,
+
+            InstructionMnemonic::Bcc
+            | InstructionMnemonic::BSR
+            | InstructionMnemonic::CHK
+            | InstructionMnemonic::DBcc
+            | InstructionMnemonic::EXG
+            | InstructionMnemonic::ILLEGAL
+            | InstructionMnemonic::JMP
+            | InstructionMnemonic::JSR
+            | InstructionMnemonic::NOP
+            | InstructionMnemonic::LEA
+            | InstructionMnemonic::LINEA
+            | InstructionMnemonic::LINEF
+            | InstructionMnemonic::LINK
+            | InstructionMnemonic::UNLINK
+            | InstructionMnemonic::MOVEQ
+            | InstructionMnemonic::PEA
+            | InstructionMnemonic::RESET
+            | InstructionMnemonic::RTE
+            | InstructionMnemonic::RTR
+            | InstructionMnemonic::RTS
+            | InstructionMnemonic::Scc
+            | InstructionMnemonic::STOP
+            | InstructionMnemonic::SWAP
+            | InstructionMnemonic::TAS
+            | InstructionMnemonic::TRAP
+            | InstructionMnemonic::TRAPV => InstructionSize::None,
         }
     }
 }

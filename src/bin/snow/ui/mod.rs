@@ -154,7 +154,7 @@ impl UserInterface {
                         Span::from(format!(":{:06X} ", e.addr)),
                         Span::from(format!("{:<16} ", e.raw_as_string()))
                             .style(Style::default().dark_gray()),
-                        Span::from(format!("{}", e.str)),
+                        Span::from(e.str.to_owned()),
                     ])
                 })
                 .collect::<Vec<_>>(),

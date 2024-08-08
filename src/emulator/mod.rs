@@ -80,8 +80,8 @@ impl Emulator {
             }))?;
 
         // Next code stream for disassembly listing
-        let mut ops = Vec::with_capacity(100);
-        for pc in self.cpu.regs.pc..self.cpu.regs.pc.wrapping_add(100) {
+        let mut ops = Vec::with_capacity(200);
+        for pc in self.cpu.regs.pc..self.cpu.regs.pc.wrapping_add(200) {
             // TODO deal with read sideeffects
             ops.push(self.cpu.bus.read(pc));
         }
