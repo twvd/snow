@@ -24,6 +24,7 @@ use tui_logger::{TuiLoggerLevelOutput, TuiLoggerWidget, TuiWidgetEvent, TuiWidge
 
 type DisassemblyListing = Vec<DisassemblyEntry>;
 
+#[derive(Clone, Copy)]
 enum View {
     Log,
     Debugger,
@@ -43,6 +44,8 @@ pub struct UserInterface {
     disassembly: DisassemblyListing,
 
     state_log: TuiWidgetState,
+
+    debug_sel: usize,
 }
 
 impl UserInterface {
@@ -66,6 +69,8 @@ impl UserInterface {
             emustatus,
             lastregs: RegisterFile::new(),
             disassembly: DisassemblyListing::new(),
+
+            debug_sel: 0,
         })
     }
 
@@ -111,14 +116,29 @@ impl UserInterface {
         if event::poll(std::time::Duration::from_millis(16))? {
             if let event::Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('q') => return Ok(false),
-                        KeyCode::PageUp => self.state_log.transition(TuiWidgetEvent::PrevPageKey),
-                        KeyCode::PageDown => self.state_log.transition(TuiWidgetEvent::NextPageKey),
-                        KeyCode::F(1) => self.view = View::Log,
-                        KeyCode::F(2) => self.view = View::Debugger,
-                        KeyCode::F(5) => self.cmdsender.send(EmulatorCommand::Run)?,
-                        KeyCode::F(9) => self.cmdsender.send(EmulatorCommand::Step)?,
+                    match (self.view, key.code) {
+                        (_, KeyCode::F(10)) => return Ok(false),
+                        (_, KeyCode::F(1)) => self.view = View::Log,
+                        (_, KeyCode::F(2)) => self.view = View::Debugger,
+                        (_, KeyCode::F(5)) => self.cmdsender.send(EmulatorCommand::Run)?,
+                        (_, KeyCode::F(9)) => self.cmdsender.send(EmulatorCommand::Step)?,
+                        (View::Log, KeyCode::PageUp) => {
+                            self.state_log.transition(TuiWidgetEvent::PrevPageKey)
+                        }
+                        (View::Log, KeyCode::PageDown) => {
+                            self.state_log.transition(TuiWidgetEvent::NextPageKey)
+                        }
+                        (View::Debugger, KeyCode::Up) => {
+                            self.debug_sel = self.debug_sel.saturating_sub(1)
+                        }
+                        (View::Debugger, KeyCode::Down) => {
+                            self.debug_sel = self.debug_sel.saturating_add(1)
+                        }
+                        (View::Debugger, KeyCode::F(7)) => {
+                            let addr = self.disassembly[self.debug_sel].addr;
+                            self.cmdsender
+                                .send(EmulatorCommand::ToggleBreakpoint(addr))?;
+                        }
                         _ => (),
                     }
                 }
@@ -144,18 +164,28 @@ impl UserInterface {
         Paragraph::new(
             self.disassembly
                 .iter()
-                .map(|e| {
+                .enumerate()
+                .map(|(i, e)| {
+                    let style = if i == self.debug_sel {
+                        Style::default().black().on_white()
+                    } else {
+                        Style::default()
+                    };
+
                     Line::from(vec![
                         if e.addr == self.emustatus.regs.pc {
-                            Span::from("► ").style(Style::default().light_green())
+                            Span::from("► ").style(style.light_green())
+                        } else if self.emustatus.breakpoints.contains(&e.addr) {
+                            Span::from("• ").style(style.red().bold())
                         } else {
                             Span::from("  ")
                         },
                         Span::from(format!(":{:06X} ", e.addr)),
-                        Span::from(format!("{:<16} ", e.raw_as_string()))
-                            .style(Style::default().dark_gray()),
+                        Span::from(format!("{:<16} ", e.raw_as_string())).style(style.dark_gray()),
                         Span::from(e.str.to_owned()),
+                        Span::from(" "),
                     ])
+                    .style(style)
                 })
                 .collect::<Vec<_>>(),
         )
@@ -256,14 +286,25 @@ impl Widget for &mut UserInterface {
         let mut functions = vec![""; 10];
         functions[0] = "Log";
         functions[1] = "Debug";
-        functions[4] = "Run";
-        functions[8] = "Step";
+        functions[9] = "Quit";
+
+        #[allow(clippy::single_match)]
+        match self.view {
+            View::Debugger => {
+                functions[4] = "Run";
+                functions[6] = "Brkpt";
+                functions[8] = "Step";
+            }
+            _ => (),
+        }
         let mut fkeys = Vec::with_capacity(10 * 2);
         for (f, desc) in functions.into_iter().enumerate() {
             fkeys.push(format!("F{:<2}", f + 1).black().on_blue().bold());
             fkeys.push(format!("{desc:<5}").blue().on_black().bold());
         }
 
-        Paragraph::new(Line::from(fkeys)).render(layout_main[2], buf);
+        Paragraph::new(Line::from(fkeys))
+            .style(Style::default().on_black())
+            .render(layout_main[2], buf);
     }
 }

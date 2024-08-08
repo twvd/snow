@@ -3,7 +3,7 @@ pub mod comm;
 use std::thread;
 use std::time::Duration;
 
-use crate::bus::Bus;
+use crate::bus::{Address, Bus};
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::frontend::channel::ChannelRenderer;
 use crate::frontend::{DisplayBuffer, Renderer};
@@ -33,6 +33,7 @@ pub struct Emulator {
     event_sender: crossbeam_channel::Sender<EmulatorEvent>,
     event_recv: EmulatorEventReceiver,
     run: bool,
+    breakpoints: Vec<Address>,
 }
 
 impl Emulator {
@@ -58,6 +59,7 @@ impl Emulator {
             event_sender: statuss,
             event_recv: statusr,
             run: false,
+            breakpoints: vec![],
         };
         emu.status_update()?;
 
@@ -77,6 +79,7 @@ impl Emulator {
             .send(EmulatorEvent::Status(EmulatorStatus {
                 regs: self.cpu.regs.clone(),
                 running: self.run,
+                breakpoints: self.breakpoints.clone(),
             }))?;
 
         // Next code stream for disassembly listing
@@ -88,6 +91,17 @@ impl Emulator {
         self.event_sender
             .send(EmulatorEvent::NextCode((self.cpu.regs.pc, ops)))?;
 
+        Ok(())
+    }
+
+    /// Steps the emulator by one instruction.
+    fn step(&mut self) -> Result<()> {
+        self.cpu.tick(1)?;
+        if self.run && self.breakpoints.contains(&self.cpu.regs.pc) {
+            info!("Stopped at breakpoint: {:06X}", self.cpu.regs.pc);
+            self.status_update()?;
+            self.run = false;
+        }
         Ok(())
     }
 }
@@ -103,11 +117,26 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::Quit => return Ok(0),
                     EmulatorCommand::InsertFloppy(image) => self.cpu.bus.iwm.disk_insert(&image),
-                    EmulatorCommand::Run => self.run = true,
-                    EmulatorCommand::Stop => self.run = false,
+                    EmulatorCommand::Run => {
+                        info!("Running");
+                        self.run = true;
+                    }
+                    EmulatorCommand::Stop => {
+                        info!("Stopped");
+                        self.run = false;
+                    }
                     EmulatorCommand::Step => {
                         if !self.run {
-                            self.cpu.tick(ticks)?;
+                            self.step()?;
+                        }
+                    }
+                    EmulatorCommand::ToggleBreakpoint(addr) => {
+                        if let Some(idx) = self.breakpoints.iter().position(|&v| v == addr) {
+                            self.breakpoints.remove(idx);
+                            info!("Breakpoint removed: ${:06X}", addr);
+                        } else {
+                            self.breakpoints.push(addr);
+                            info!("Breakpoint set: ${:06X}", addr);
                         }
                     }
                 }
@@ -116,7 +145,7 @@ impl Tickable for Emulator {
         }
 
         if self.run {
-            self.cpu.tick(ticks)?;
+            self.step()?;
         } else {
             thread::sleep(Duration::from_millis(10));
         }

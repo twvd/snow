@@ -16,6 +16,7 @@ pub enum EmulatorCommand {
     Run,
     Stop,
     Step,
+    ToggleBreakpoint(Address),
 }
 
 /// Structure with general emulator status
@@ -23,6 +24,7 @@ pub enum EmulatorCommand {
 pub struct EmulatorStatus {
     pub regs: RegisterFile,
     pub running: bool,
+    pub breakpoints: Vec<Address>,
 }
 
 /// A status message/event received from the emulator
