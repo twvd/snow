@@ -60,7 +60,7 @@ impl Emulator {
             event_sender: statuss,
             event_recv: statusr,
             run: false,
-            breakpoints: vec![],
+            breakpoints: vec![0x417FDE],
             last_update: Instant::now(),
         };
         emu.status_update()?;
@@ -100,10 +100,14 @@ impl Emulator {
     /// Steps the emulator by one instruction.
     fn step(&mut self) -> Result<()> {
         self.cpu.tick(1)?;
-        if self.run && self.breakpoints.contains(&self.cpu.regs.pc) {
+        if self.run
+            && (self.breakpoints.contains(&self.cpu.regs.pc)
+                || self.cpu.bus.iwm.dbg_break.get_clear())
+            || self.cpu.bus.dbg_break.get_clear()
+        {
             info!("Stopped at breakpoint: {:06X}", self.cpu.regs.pc);
-            self.status_update()?;
             self.run = false;
+            self.status_update()?;
         }
         Ok(())
     }

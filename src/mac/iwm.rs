@@ -3,8 +3,12 @@ use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
+use strum::Display;
 
-use crate::bus::{Address, BusMember};
+use crate::{
+    bus::{Address, BusMember},
+    types::LatchingEvent,
+};
 
 /// Integrated Woz Machine
 #[derive(Debug)]
@@ -24,8 +28,18 @@ pub struct Iwm {
     mode: IwmMode,
 
     disk_inserted: bool,
+    track: u16,
+    stepdir: StepDirection,
+    tach: bool,
 
     pub dbg_pc: u32,
+    pub dbg_break: LatchingEvent,
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Display)]
+enum StepDirection {
+    Up,
+    Down,
 }
 
 bitfield! {
@@ -88,7 +102,7 @@ bitfield! {
 /// IWM registers
 /// Value bits: CA2 CA1 CA0 SEL
 #[allow(clippy::upper_case_acronyms)]
-#[derive(FromPrimitive, Debug)]
+#[derive(FromPrimitive, Debug, PartialEq, Eq)]
 enum IwmReg {
     /// Head step direction
     /// 0 = track++, 1 = track--
@@ -174,9 +188,14 @@ impl Iwm {
             status: IwmStatus(0),
             mode: IwmMode(0),
 
-            disk_inserted: true,
+            disk_inserted: false,
+            track: 4,
+            stepdir: StepDirection::Up,
+            tach: false,
+
             enable: false,
             dbg_pc: 0,
+            dbg_break: LatchingEvent::default(),
         }
     }
 
@@ -195,11 +214,9 @@ impl Iwm {
             }
             8 => {
                 self.enable = false;
-                trace!("IWM drive disable ext = {}", self.extdrive);
             }
             9 => {
                 self.enable = true;
-                trace!("IWM drive enable ext = {}", self.extdrive);
             }
             10 => self.extdrive = false,
             11 => self.extdrive = true,
@@ -213,10 +230,11 @@ impl Iwm {
         }
     }
 
-    fn read_reg(&self) -> bool {
+    fn read_reg(&mut self) -> bool {
         let reg = IwmReg::from_u8(self.get_selected_reg()).unwrap_or(IwmReg::UNKNOWN);
         let res = match reg {
             IwmReg::CISTN => !self.disk_inserted,
+            IwmReg::DIRTN => self.stepdir == StepDirection::Down,
             IwmReg::SIDES => true,
             IwmReg::MOTORON => !(self.motor && self.disk_inserted),
             IwmReg::DRVIN if self.extdrive => true,
@@ -224,6 +242,12 @@ impl Iwm {
             IwmReg::DUNNO if self.extdrive => true,
             IwmReg::DUNNO => false,
             IwmReg::READY => false,
+            IwmReg::TKO if self.track == 0 => false,
+            IwmReg::TKO => true,
+            IwmReg::TACH => {
+                self.tach = !self.tach;
+                self.tach
+            }
             _ => {
                 warn!(
                     "Unimplemented register read {:?} {:0b}",
@@ -234,15 +258,29 @@ impl Iwm {
             }
         };
 
-        trace!(
-            "{:08X} IWM reg read {:?} = {} ext = {}",
-            self.dbg_pc,
-            reg,
-            res,
-            self.extdrive
-        );
+        if reg != IwmReg::TACH {
+            trace!(
+                "{:08X} IWM reg read {:?} = {} ext = {}",
+                self.dbg_pc,
+                reg,
+                res,
+                self.extdrive
+            );
+        }
 
         res
+    }
+
+    fn step_head(&mut self) {
+        match self.stepdir {
+            StepDirection::Up => {
+                self.track += 1;
+            }
+            StepDirection::Down => {
+                self.track -= 1;
+            }
+        }
+        trace!("Track {}, now: {}", self.stepdir, self.track);
     }
 
     fn write_reg(&mut self) {
@@ -250,8 +288,22 @@ impl Iwm {
         trace!("IWM reg write {:?}", reg);
         match reg {
             IwmWriteReg::MOTORON => self.motor = true,
-            IwmWriteReg::MOTOROFF => self.motor = false,
-            IwmWriteReg::EJECT => self.disk_inserted = false,
+            IwmWriteReg::MOTOROFF => {
+                self.motor = false;
+            }
+            IwmWriteReg::EJECT => {
+                //self.dbg_break.set();
+                self.disk_inserted = false;
+            }
+            IwmWriteReg::TRACKUP => {
+                self.stepdir = StepDirection::Up;
+                self.step_head();
+            }
+            IwmWriteReg::TRACKDN => {
+                self.stepdir = StepDirection::Down;
+                self.step_head();
+            }
+            IwmWriteReg::TRACKSTEP => self.step_head(),
             _ => {
                 warn!(
                     "Unimplemented register write {:?} {:0b}",
@@ -266,16 +318,21 @@ impl Iwm {
         match (self.q6, self.q7) {
             // Data register
             (false, false) => {
+                //trace!(
+                //    "IWM data reg read, tacho = {}, track = {}",
+                //    self.tach,
+                //    self.track
+                //);
                 if !self.enable {
                     0xFF
                 } else {
                     // TODO actual data register
-                    self.dbg_pc as u8
+                    0x80
                 }
             }
             // Status
             (true, false) => {
-                trace!("IWM status read");
+                //trace!("IWM status read");
                 let sense = self.read_reg();
                 self.status.set_sense(sense);
                 self.status.set_mode_low(self.mode.mode_low());
@@ -321,12 +378,12 @@ impl BusMember<Address> for Iwm {
     fn read(&mut self, addr: Address) -> Option<u8> {
         self.access(addr - 0xDFE1FF);
         let result = self.iwm_read();
-        trace!("IWM read: {:08X} = {:02X}", addr, result);
+        //trace!("IWM read: {:08X} = {:02X}", addr, result);
         Some(result)
     }
 
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
-        trace!("IWM write {:08X} {:02X}", addr, val);
+        //trace!("IWM write {:08X} {:02X}", addr, val);
         self.access(addr - 0xDFE1FF);
 
         match (self.q6, self.q7, self.enable) {

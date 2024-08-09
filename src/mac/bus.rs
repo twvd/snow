@@ -7,7 +7,7 @@ use crate::frontend::Renderer;
 use crate::mac::iwm::Iwm;
 use crate::mac::video::Video;
 use crate::tickable::{Tickable, Ticks};
-use crate::types::Byte;
+use crate::types::{Byte, LatchingEvent};
 
 use anyhow::Result;
 use log::*;
@@ -31,6 +31,8 @@ pub struct MacBus<TRenderer: Renderer> {
 
     fb_main: Range<Address>,
     fb_alt: Range<Address>,
+
+    pub dbg_break: LatchingEvent,
 }
 
 impl<TRenderer> MacBus<TRenderer>
@@ -69,6 +71,8 @@ where
             fb_main: fb_main_start
                 ..(fb_main_start + Video::<TRenderer>::FRAMEBUFFER_SIZE as Address),
             fb_alt: fb_alt_start..(fb_alt_start + Video::<TRenderer>::FRAMEBUFFER_SIZE as Address),
+
+            dbg_break: LatchingEvent::default(),
         }
     }
 
@@ -237,6 +241,7 @@ where
         self.video.framebuffer_select = self.via.a.page2();
 
         if written.is_none() {
+            self.dbg_break.set();
             warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
         }
     }

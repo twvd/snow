@@ -113,13 +113,16 @@ impl UserInterface {
         self.draw(terminal)?;
 
         // TUI events
-        if event::poll(std::time::Duration::from_millis(5))? {
+        if event::poll(std::time::Duration::from_millis(50))? {
             if let event::Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     match (self.view, key.code) {
                         (_, KeyCode::F(10)) => return Ok(false),
                         (_, KeyCode::F(1)) => self.view = View::Log,
                         (_, KeyCode::F(2)) => self.view = View::Debugger,
+                        (_, KeyCode::F(3)) => self
+                            .cmdsender
+                            .send(EmulatorCommand::InsertFloppy(Box::new([])))?,
                         (_, KeyCode::F(5)) if self.emustatus.running => {
                             self.cmdsender.send(EmulatorCommand::Stop)?
                         }
