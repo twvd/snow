@@ -280,7 +280,7 @@ where
 {
     fn get_irq(&mut self) -> Option<u8> {
         // VIA IRQs
-        if self.via.ifr.0 != 0 {
+        if self.via.ifr.0 & self.via.ier.0 != 0 {
             return Some(1);
         }
 

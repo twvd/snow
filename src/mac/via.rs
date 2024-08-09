@@ -239,7 +239,7 @@ impl BusMember<Address> for Via {
             // Interrupt Flag Register
             0xFBFE => {
                 let mut val = self.ifr.0 & 0x7F;
-                if val > 0 {
+                if self.ifr.0 & self.ier.0 != 0 {
                     val |= 0x80;
                 }
                 Some(val)
@@ -348,14 +348,13 @@ impl Tickable for Via {
         }
 
         // Timer 2
-        if self.t2_enable {
-            let ovf;
-            let t2ticks = std::cmp::min(ticks.try_into()?, self.t2cnt.0 + 1);
-            (self.t2cnt.0, ovf) = self.t2cnt.0.overflowing_sub(t2ticks);
+        let ovf;
+        let t2ticks = std::cmp::min(ticks.try_into()?, self.t2cnt.0 + 1);
+        (self.t2cnt.0, ovf) = self.t2cnt.0.overflowing_sub(t2ticks);
 
-            if ovf {
-                self.ifr.set_t2(true);
-            }
+        if ovf && self.t2_enable {
+            self.t2_enable = false;
+            self.ifr.set_t2(true);
         }
 
         if self.ier.t1() {
