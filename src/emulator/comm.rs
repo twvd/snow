@@ -1,4 +1,4 @@
-use crate::{bus::Address, cpu_m68k::regs::RegisterFile};
+use crate::{bus::Address, cpu_m68k::regs::RegisterFile, tickable::Ticks};
 
 pub type EmulatorCommandSender = crossbeam_channel::Sender<EmulatorCommand>;
 pub type EmulatorEventReceiver = crossbeam_channel::Receiver<EmulatorEvent>;
@@ -25,6 +25,7 @@ pub struct EmulatorStatus {
     pub regs: RegisterFile,
     pub running: bool,
     pub breakpoints: Vec<Address>,
+    pub cycles: Ticks,
 }
 
 /// A status message/event received from the emulator

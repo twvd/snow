@@ -1,7 +1,7 @@
 pub mod comm;
 
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::bus::{Address, Bus};
 use crate::cpu_m68k::cpu::CpuM68k;
@@ -34,6 +34,7 @@ pub struct Emulator {
     event_recv: EmulatorEventReceiver,
     run: bool,
     breakpoints: Vec<Address>,
+    last_update: Instant,
 }
 
 impl Emulator {
@@ -60,6 +61,7 @@ impl Emulator {
             event_recv: statusr,
             run: false,
             breakpoints: vec![],
+            last_update: Instant::now(),
         };
         emu.status_update()?;
 
@@ -80,6 +82,7 @@ impl Emulator {
                 regs: self.cpu.regs.clone(),
                 running: self.run,
                 breakpoints: self.breakpoints.clone(),
+                cycles: self.cpu.cycles,
             }))?;
 
         // Next code stream for disassembly listing
@@ -145,6 +148,10 @@ impl Tickable for Emulator {
         }
 
         if self.run {
+            if self.last_update.elapsed() > Duration::from_millis(500) {
+                self.last_update = Instant::now();
+                self.status_update()?;
+            }
             self.step()?;
         } else {
             thread::sleep(Duration::from_millis(10));

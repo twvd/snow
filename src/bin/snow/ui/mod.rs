@@ -113,13 +113,16 @@ impl UserInterface {
         self.draw(terminal)?;
 
         // TUI events
-        if event::poll(std::time::Duration::from_millis(16))? {
+        if event::poll(std::time::Duration::from_millis(5))? {
             if let event::Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     match (self.view, key.code) {
                         (_, KeyCode::F(10)) => return Ok(false),
                         (_, KeyCode::F(1)) => self.view = View::Log,
                         (_, KeyCode::F(2)) => self.view = View::Debugger,
+                        (_, KeyCode::F(5)) if self.emustatus.running => {
+                            self.cmdsender.send(EmulatorCommand::Stop)?
+                        }
                         (_, KeyCode::F(5)) => self.cmdsender.send(EmulatorCommand::Run)?,
                         (_, KeyCode::F(9)) => self.cmdsender.send(EmulatorCommand::Step)?,
                         (View::Log, KeyCode::PageUp) => {
@@ -192,6 +195,29 @@ impl UserInterface {
         .block(Block::bordered().title("Disassembly"))
         .render(layout[0], buf);
 
+        let layout_right = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(vec![
+                Constraint::Min(4),
+                Constraint::Percentage(100),
+                Constraint::Min(6),
+            ])
+            .split(layout[1]);
+
+        Paragraph::new(vec![
+            if self.emustatus.running {
+                Line::from("Running").style(Style::default().light_green())
+            } else {
+                Line::from("Stopped").style(Style::default().red())
+            },
+            Line::from(vec![
+                Span::from("Cycles ").style(Style::default().blue().bold()),
+                Span::from(format!("{:>10}", self.emustatus.cycles))
+                    .style(Style::default().white()),
+            ]),
+        ])
+        .block(Block::bordered().title("CPU"))
+        .render(layout_right[0], buf);
         let reg = |name, v: &dyn Fn(&RegisterFile) -> Long| {
             let style = if v(&self.emustatus.regs) != v(&self.lastregs) {
                 Style::default().light_yellow()
@@ -233,8 +259,38 @@ impl UserInterface {
                     .style(Style::default().white()),
             ]),
         ])
-        .block(Block::bordered().title("CPU"))
-        .render(layout[1], buf);
+        .block(Block::bordered().title("Registers"))
+        .render(layout_right[1], buf);
+
+        let flag = |n, v| {
+            Span::from(n).style(if v {
+                Style::default().light_green()
+            } else {
+                Style::default().red()
+            })
+        };
+        Paragraph::new(vec![
+            Line::from(vec![
+                flag("[C]", self.emustatus.regs.sr.c()),
+                flag("[V]", self.emustatus.regs.sr.v()),
+                flag("[Z]", self.emustatus.regs.sr.z()),
+                flag("[N]", self.emustatus.regs.sr.n()),
+                flag("[X]", self.emustatus.regs.sr.x()),
+            ]),
+            Line::from(""),
+            Line::from(format!(
+                "Int mask: {}",
+                self.emustatus.regs.sr.int_prio_mask()
+            )),
+            Line::from(vec![
+                flag("[SV]", self.emustatus.regs.sr.supervisor()),
+                Span::from(" "),
+                flag("[Trace]", self.emustatus.regs.sr.trace()),
+                Span::from(" "),
+            ]),
+        ])
+        .block(Block::bordered().title("Flags"))
+        .render(layout_right[2], buf);
     }
 }
 
@@ -291,9 +347,13 @@ impl Widget for &mut UserInterface {
         #[allow(clippy::single_match)]
         match self.view {
             View::Debugger => {
-                functions[4] = "Run";
-                functions[6] = "Brkpt";
-                functions[8] = "Step";
+                if !self.emustatus.running {
+                    functions[4] = "Run";
+                    functions[6] = "Brkpt";
+                    functions[8] = "Step";
+                } else {
+                    functions[4] = "Stop";
+                }
             }
             _ => (),
         }
