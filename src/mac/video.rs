@@ -1,4 +1,8 @@
-use std::sync::atomic::Ordering;
+use std::{
+    sync::atomic::Ordering,
+    thread,
+    time::{Duration, Instant},
+};
 
 use crate::{
     bus::Address,
@@ -29,6 +33,9 @@ pub struct Video<T: Renderer> {
     /// (true = main, false = alternate)
     /// (lives in VIA, copied here)
     pub framebuffer_select: bool,
+
+    /// Time since last frame
+    last_frame: Instant,
 }
 
 impl<T> Video<T>
@@ -88,6 +95,7 @@ where
                 vec![0; Self::FRAMEBUFFER_SIZE],
             ],
             framebuffer_select: false,
+            last_frame: Instant::now(),
         }
     }
 
@@ -119,6 +127,12 @@ where
             }
         }
         self.renderer.update()?;
+
+        // Sync to ~60 fps
+        thread::sleep(
+            Duration::from_micros(1_000_000 / 60).saturating_sub(self.last_frame.elapsed()),
+        );
+        self.last_frame = Instant::now();
 
         Ok(())
     }

@@ -131,6 +131,15 @@ impl UserInterface {
                         (View::Log, KeyCode::PageDown) => {
                             self.state_log.transition(TuiWidgetEvent::NextPageKey)
                         }
+                        (View::Log, KeyCode::Down) => {
+                            self.state_log.transition(TuiWidgetEvent::DownKey)
+                        }
+                        (View::Log, KeyCode::Up) => {
+                            self.state_log.transition(TuiWidgetEvent::UpKey)
+                        }
+                        (View::Log, KeyCode::End) => {
+                            self.state_log.transition(TuiWidgetEvent::SpaceKey)
+                        }
                         (View::Debugger, KeyCode::Up) => {
                             self.debug_sel = self.debug_sel.saturating_sub(1)
                         }

@@ -154,7 +154,7 @@ impl Tickable for Emulator {
             }
             self.step()?;
         } else {
-            thread::sleep(Duration::from_millis(10));
+            thread::sleep(Duration::from_millis(100));
         }
 
         Ok(ticks)

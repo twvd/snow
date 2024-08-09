@@ -13,6 +13,7 @@ use snow::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow::tickable::Tickable;
 use ui::UserInterface;
 
+use std::time::{Duration, Instant};
 use std::{fs, thread};
 
 use snow::frontend::sdl::{SDLEventPump, SDLRenderer};
@@ -30,6 +31,10 @@ struct Args {
     /// Trace bus I/O activity
     #[arg(long)]
     trace: bool,
+
+    /// Run emulator on start
+    #[arg(short, long)]
+    run: bool,
 }
 
 fn main() -> Result<()> {
@@ -77,6 +82,9 @@ fn main() -> Result<()> {
     // Initialize emulator
     let (mut emulator, frame_recv) = Emulator::new(&rom, model)?;
     let cmd = emulator.create_cmd_sender();
+    if args.run {
+        cmd.send(EmulatorCommand::Run)?;
+    }
 
     // Initialize user interface
     let mut terminal = UserInterface::init_terminal()?;
@@ -97,6 +105,8 @@ fn main() -> Result<()> {
     });
 
     'mainloop: loop {
+        let t_start = Instant::now();
+
         // Render frame to SDL window
         if let Ok(frame) = frame_recv.try_recv() {
             renderer.update_from(&frame)?;
@@ -153,6 +163,9 @@ fn main() -> Result<()> {
                 _ => (),
             }
         }
+
+        // Sync to roughly 120 iterations per second
+        thread::sleep(Duration::from_millis(10).saturating_sub(t_start.elapsed()));
     }
 
     // Terminate emulator

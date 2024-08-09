@@ -15,7 +15,7 @@ bitfield! {
 }
 
 /// A self-clearing latch for events etc.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct LatchingEvent {
     val: bool,
 }
