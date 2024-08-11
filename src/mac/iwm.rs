@@ -1,3 +1,4 @@
+use anyhow::Result;
 use log::*;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -7,12 +8,15 @@ use strum::Display;
 
 use crate::{
     bus::{Address, BusMember},
+    tickable::{Tickable, Ticks, TICKS_PER_SECOND},
     types::LatchingEvent,
 };
 
 /// Integrated Woz Machine
 #[derive(Debug)]
 pub struct Iwm {
+    cycles: Ticks,
+
     ca0: bool,
     ca1: bool,
     ca2: bool,
@@ -28,9 +32,9 @@ pub struct Iwm {
     mode: IwmMode,
 
     disk_inserted: bool,
-    track: u16,
+    track: usize,
     stepdir: StepDirection,
-    tach: bool,
+    data_ready: bool,
 
     pub dbg_pc: u32,
     pub dbg_break: LatchingEvent,
@@ -173,8 +177,22 @@ enum IwmWriteReg {
 }
 
 impl Iwm {
+    /// Disk revolutions/minute at outer track (0)
+    const DISK_RPM_OUTER: Ticks = 390;
+
+    /// Disk revolutions/minute at inner track (79)
+    const DISK_RPM_INNER: Ticks = 605;
+
+    /// Amount of tracks per disk side
+    const DISK_TRACKS: usize = 80;
+
+    /// Tacho pulses/disk revolution
+    const TACHO_SPEED: Ticks = 60;
+
     pub fn new() -> Self {
         Self {
+            cycles: 0,
+
             ca0: false,
             ca1: false,
             ca2: false,
@@ -191,11 +209,12 @@ impl Iwm {
             disk_inserted: false,
             track: 4,
             stepdir: StepDirection::Up,
-            tach: false,
 
             enable: false,
             dbg_pc: 0,
             dbg_break: LatchingEvent::default(),
+
+            data_ready: false,
         }
     }
 
@@ -244,10 +263,7 @@ impl Iwm {
             IwmReg::READY => false,
             IwmReg::TKO if self.track == 0 => false,
             IwmReg::TKO => true,
-            IwmReg::TACH => {
-                self.tach = !self.tach;
-                self.tach
-            }
+            IwmReg::TACH => self.get_tacho(),
             _ => {
                 warn!(
                     "Unimplemented register read {:?} {:0b}",
@@ -327,7 +343,12 @@ impl Iwm {
                     0xFF
                 } else {
                     // TODO actual data register
-                    0x80
+                    if self.data_ready {
+                        self.data_ready = false;
+                        0x88
+                    } else {
+                        0
+                    }
                 }
             }
             // Status
@@ -372,6 +393,25 @@ impl Iwm {
         info!("Disk inserted");
         self.disk_inserted = true;
     }
+
+    pub const fn get_track_rpm(&self) -> Ticks {
+        (((Self::DISK_RPM_INNER - Self::DISK_RPM_OUTER) * self.track) / (Self::DISK_TRACKS - 1))
+            + Self::DISK_RPM_OUTER
+    }
+
+    pub const fn get_tacho(&self) -> bool {
+        if !self.motor {
+            return false;
+        }
+
+        // The disk spins at 390-605rpm
+        // Each rotation produces 60 tacho pulses (= 120 edges)
+        let pulses_per_min = self.get_track_rpm() * Self::TACHO_SPEED;
+        let edges_per_min = pulses_per_min * 2;
+        let ticks_per_min = TICKS_PER_SECOND * 60;
+        let ticks_per_edge = ticks_per_min / edges_per_min;
+        (self.cycles / ticks_per_edge % 2) != 0
+    }
 }
 
 impl BusMember<Address> for Iwm {
@@ -396,5 +436,72 @@ impl BusMember<Address> for Iwm {
         }
 
         Some(())
+    }
+}
+
+impl Tickable for Iwm {
+    fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+        debug_assert_eq!(ticks, 1);
+
+        // This is called at the Macintosh main clock speed (TICKS_PER_SECOND == 8 MHz)
+        self.cycles += ticks;
+
+        if self.cycles % (self.get_track_rpm() / 12) == 0 && self.motor {
+            self.data_ready = true;
+        }
+
+        Ok(ticks)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disk_tacho_outer() {
+        let mut iwm = Iwm::new();
+        iwm.disk_inserted = true;
+        iwm.motor = true;
+        iwm.track = 0;
+
+        assert_eq!(iwm.get_track_rpm(), Iwm::DISK_RPM_OUTER);
+
+        let mut last = false;
+        let mut result = 0;
+
+        for _ in 0..(TICKS_PER_SECOND * 60) {
+            iwm.tick(1).unwrap();
+            if iwm.get_tacho() != last {
+                result += 1;
+                last = iwm.get_tacho();
+            }
+        }
+
+        assert_eq!(result / 10, Iwm::DISK_RPM_OUTER * 120 / 10);
+    }
+
+    #[test]
+    fn disk_tacho_inner() {
+        let mut iwm = Iwm::new();
+        iwm.disk_inserted = true;
+        iwm.motor = true;
+        iwm.track = 79;
+
+        assert_eq!(iwm.get_track_rpm(), Iwm::DISK_RPM_INNER);
+
+        let mut last = false;
+        let mut result = 0;
+
+        for _ in 0..(TICKS_PER_SECOND * 60) {
+            iwm.tick(1).unwrap();
+            if iwm.get_tacho() != last {
+                result += 1;
+                last = iwm.get_tacho();
+            }
+        }
+
+        // Roughly is good enough..
+        assert_eq!(result / 10, Iwm::DISK_RPM_INNER * 120 / 10);
     }
 }
