@@ -60,7 +60,7 @@ impl Emulator {
             event_sender: statuss,
             event_recv: statusr,
             run: false,
-            breakpoints: vec![0x417FDE],
+            breakpoints: vec![],
             last_update: Instant::now(),
         };
         emu.status_update()?;
@@ -106,6 +106,7 @@ impl Emulator {
             || self.cpu.bus.dbg_break.get_clear()
         {
             info!("Stopped at breakpoint: {:06X}", self.cpu.regs.pc);
+            debug!("VIA: {:?}", self.cpu.bus.via);
             self.run = false;
             self.status_update()?;
         }

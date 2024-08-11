@@ -140,6 +140,7 @@ bitfield! {
 }
 
 /// Synertek SY6522 Versatile Interface Adapter
+#[derive(Debug)]
 pub struct Via {
     /// Register A
     pub a: RegisterA,
@@ -250,6 +251,11 @@ impl BusMember<Address> for Via {
 
             // Register A
             0xFFFE => {
+                // The SCC write request bit is used for checking if there's data ready
+                // from the SCC in critical sections where SCC interrupts are disabled.
+                // Reporting 1 signals that there's no data ready.
+                self.a.set_sccwrreq(true);
+
                 self.ifr.set_vblank(false);
                 self.ifr.set_onesec(false);
 
