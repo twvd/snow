@@ -355,8 +355,7 @@ impl Tickable for Via {
 
         // Timer 2
         let ovf;
-        let t2ticks = std::cmp::min(ticks.try_into()?, self.t2cnt.0 + 1);
-        (self.t2cnt.0, ovf) = self.t2cnt.0.overflowing_sub(t2ticks);
+        (self.t2cnt.0, ovf) = self.t2cnt.0.overflowing_sub(ticks.try_into()?);
 
         if ovf && self.t2_enable {
             self.t2_enable = false;
