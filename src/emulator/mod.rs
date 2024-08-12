@@ -1,9 +1,9 @@
 pub mod comm;
 
-use std::thread;
 use std::time::{Duration, Instant};
+use std::thread;
 
-use crate::bus::{Address, Bus};
+use crate::bus::{Address, InspectableBus};
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::frontend::channel::ChannelRenderer;
 use crate::frontend::{DisplayBuffer, Renderer};
@@ -86,11 +86,11 @@ impl Emulator {
             }))?;
 
         // Next code stream for disassembly listing
-        let mut ops = Vec::with_capacity(200);
-        for pc in self.cpu.regs.pc..self.cpu.regs.pc.wrapping_add(200) {
-            // TODO deal with read sideeffects
-            ops.push(self.cpu.bus.read(pc));
-        }
+        let ops = (self.cpu.regs.pc..)
+            .flat_map(|addr| self.cpu.bus.inspect_read(addr))
+            .take(200)
+            .collect::<Vec<_>>();
+
         self.event_sender
             .send(EmulatorEvent::NextCode((self.cpu.regs.pc, ops)))?;
 

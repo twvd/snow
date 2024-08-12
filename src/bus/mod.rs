@@ -25,6 +25,18 @@ pub trait Bus<TA: PrimInt + WrappingAdd, TD: PrimInt>: Tickable {
     fn get_mask(&self) -> TA;
 }
 
+/// Inspectable provides an interface to debugging/memory views.
+/// This view is different from the bus interface exposed to the CPU,
+/// because this view should provide a view that has no read side effects, to
+/// avoid debugging views from tampering peripheral states.
+///
+/// This may also mean that this view on the bus is limited to e.g. ROM/RAM
+/// areas and no peripherals.
+pub trait InspectableBus<TA: PrimInt + WrappingAdd, TD: PrimInt> {
+    fn inspect_read(&mut self, addr: TA) -> Option<TD>;
+    fn inspect_write(&mut self, addr: TA, val: TD) -> Option<()>;
+}
+
 impl<TA, TD> core::fmt::Debug for dyn Bus<TA, TD> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "Bus")

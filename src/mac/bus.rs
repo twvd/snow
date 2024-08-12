@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use super::scc::Scc;
 use super::via::Via;
-use crate::bus::{Address, Bus, BusMember, IrqSource};
+use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::frontend::Renderer;
 use crate::mac::iwm::Iwm;
 use crate::mac::video::Video;
@@ -290,5 +290,32 @@ where
         }
 
         None
+    }
+}
+
+impl<TRenderer> InspectableBus<Address, Byte> for MacBus<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    fn inspect_read(&mut self, addr: Address) -> Option<Byte> {
+        // Everything up to 0x800000 is safe (RAM/ROM only)
+        if addr >= 0x80_0000 {
+            None
+        } else if self.via.a.overlay() {
+            self.read_overlay(addr)
+        } else {
+            self.read_normal(addr)
+        }
+    }
+
+    fn inspect_write(&mut self, addr: Address, val: Byte) -> Option<()> {
+        // Everything up to 0x800000 is safe (RAM/ROM only)
+        if addr >= 0x80_0000 {
+            None
+        } else if self.via.a.overlay() {
+            self.write_overlay(addr, val)
+        } else {
+            self.write_normal(addr, val)
+        }
     }
 }
