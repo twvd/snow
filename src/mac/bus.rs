@@ -241,7 +241,6 @@ where
         self.video.framebuffer_select = self.via.a.page2();
 
         if written.is_none() {
-            self.dbg_break.set();
             warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
         }
     }
@@ -269,6 +268,8 @@ where
 
         // Sync VIA registers
         self.via.b.set_h4(self.video.in_hblank());
+
+        self.iwm.tick(1)?;
 
         // VBlank interrupt
         if self.video.get_clr_vblank() && self.via.ier.vblank() {

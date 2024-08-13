@@ -361,6 +361,12 @@ impl<'a> Disassembler<'a> {
                 instr.get_op1()
             ),
 
+            InstructionMnemonic::DIVS_w | InstructionMnemonic::DIVU_w => {
+                let left = instr.get_op1();
+                let right = self.ea(instr)?;
+                format!("{} {},D{}", mnemonic, right, left)
+            }
+
             InstructionMnemonic::ABCD
             | InstructionMnemonic::MOVEM_mem_w
             | InstructionMnemonic::MOVEM_mem_l
@@ -399,8 +405,6 @@ impl<'a> Disassembler<'a> {
             | InstructionMnemonic::CMPM_l
             | InstructionMnemonic::CMPM_w
             | InstructionMnemonic::CMPM_b
-            | InstructionMnemonic::DIVS_w
-            | InstructionMnemonic::DIVU_w
             | InstructionMnemonic::EORI_ccr
             | InstructionMnemonic::EORI_sr
             | InstructionMnemonic::EXG

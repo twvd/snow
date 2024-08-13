@@ -12,6 +12,12 @@ use crate::{
     types::LatchingEvent,
 };
 
+#[derive(Debug, Default)]
+struct Track {
+    data: Vec<u8>,
+    bits: usize,
+}
+
 /// Integrated Woz Machine
 #[derive(Debug)]
 pub struct Iwm {
@@ -34,7 +40,11 @@ pub struct Iwm {
     disk_inserted: bool,
     track: usize,
     stepdir: StepDirection,
-    data_ready: bool,
+    trackdata: [Track; 80],
+    track_bit: usize,
+    track_byte: usize,
+    shdata: u8,
+    datareg: u8,
 
     pub dbg_pc: u32,
     pub dbg_break: LatchingEvent,
@@ -177,12 +187,6 @@ enum IwmWriteReg {
 }
 
 impl Iwm {
-    /// Disk revolutions/minute at outer track (0)
-    const DISK_RPM_OUTER: Ticks = 390;
-
-    /// Disk revolutions/minute at inner track (79)
-    const DISK_RPM_INNER: Ticks = 605;
-
     /// Amount of tracks per disk side
     const DISK_TRACKS: usize = 80;
 
@@ -209,12 +213,15 @@ impl Iwm {
             disk_inserted: false,
             track: 4,
             stepdir: StepDirection::Up,
+            trackdata: core::array::from_fn(|_| Track::default()),
+            track_bit: 0,
+            track_byte: 0,
+            shdata: 0,
+            datareg: 0,
 
             enable: false,
             dbg_pc: 0,
             dbg_break: LatchingEvent::default(),
-
-            data_ready: false,
         }
     }
 
@@ -249,12 +256,13 @@ impl Iwm {
         }
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn read_reg(&mut self) -> bool {
         let reg = IwmReg::from_u8(self.get_selected_reg()).unwrap_or(IwmReg::UNKNOWN);
         let res = match reg {
             IwmReg::CISTN => !self.disk_inserted,
             IwmReg::DIRTN => self.stepdir == StepDirection::Down,
-            IwmReg::SIDES => true,
+            IwmReg::SIDES => false,
             IwmReg::MOTORON => !(self.motor && self.disk_inserted),
             IwmReg::DRVIN if self.extdrive => true,
             IwmReg::DRVIN => false, // internal drive installed
@@ -263,6 +271,7 @@ impl Iwm {
             IwmReg::READY => false,
             IwmReg::TKO if self.track == 0 => false,
             IwmReg::TKO => true,
+            IwmReg::STEP => true,
             IwmReg::TACH => self.get_tacho(),
             _ => {
                 warn!(
@@ -296,7 +305,15 @@ impl Iwm {
                 self.track -= 1;
             }
         }
-        trace!("Track {}, now: {}", self.stepdir, self.track);
+        trace!(
+            "Track {}, now: {} - byte len: {} bit len: {} rpm: {} cycles/bit: {}",
+            self.stepdir,
+            self.track,
+            self.trackdata[self.track].data.len(),
+            self.trackdata[self.track].bits,
+            self.get_track_rpm(),
+            self.get_cycles_per_bit(),
+        );
     }
 
     fn write_reg(&mut self) {
@@ -334,21 +351,17 @@ impl Iwm {
         match (self.q6, self.q7) {
             // Data register
             (false, false) => {
-                //trace!(
-                //    "IWM data reg read, tacho = {}, track = {}",
-                //    self.tach,
-                //    self.track
-                //);
+                trace!(
+                    "IWM data reg read, data = {:02X}, track = {}, byte = {}, bit = {}",
+                    self.datareg,
+                    self.track,
+                    self.track_byte,
+                    self.track_bit
+                );
                 if !self.enable {
                     0xFF
                 } else {
-                    // TODO actual data register
-                    if self.data_ready {
-                        self.data_ready = false;
-                        0x88
-                    } else {
-                        0
-                    }
+                    std::mem::replace(&mut self.datareg, 0)
                 }
             }
             // Status
@@ -390,13 +403,40 @@ impl Iwm {
     }
 
     pub fn disk_insert(&mut self, _data: &[u8]) {
+        // Parse track data
+        // TODO use iterator, make fancy
+        let data = std::fs::read("system11.bin").unwrap();
+        let mut offset = 0;
+        for tracknum in 0..Self::DISK_TRACKS {
+            let bytes = u32::from_le_bytes(data[offset..(offset + 4)].try_into().unwrap()) as usize;
+            let bits =
+                u32::from_le_bytes(data[(offset + 4)..(offset + 8)].try_into().unwrap()) as usize;
+
+            let track = Track {
+                bits,
+                data: Vec::from(&data[(offset + 8)..(offset + 8 + bytes)]),
+            };
+            self.trackdata[tracknum] = track;
+            offset += 8 + bytes;
+        }
+
         info!("Disk inserted");
         self.disk_inserted = true;
     }
 
     pub const fn get_track_rpm(&self) -> Ticks {
-        (((Self::DISK_RPM_INNER - Self::DISK_RPM_OUTER) * self.track) / (Self::DISK_TRACKS - 1))
-            + Self::DISK_RPM_OUTER
+        match self.track {
+            0..=15 => 402,
+            16..=31 => 438,
+            32..=47 => 482,
+            48..=63 => 536,
+            64..=79 => 603,
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn get_cycles_per_bit(&self) -> Ticks {
+        (TICKS_PER_SECOND * 60) / self.get_track_rpm() / self.trackdata[self.track].bits
     }
 
     pub const fn get_tacho(&self) -> bool {
@@ -446,8 +486,24 @@ impl Tickable for Iwm {
         // This is called at the Macintosh main clock speed (TICKS_PER_SECOND == 8 MHz)
         self.cycles += ticks;
 
-        if self.cycles % (self.get_track_rpm() / 12) == 0 && self.motor {
-            self.data_ready = true;
+        if self.disk_inserted && self.motor && self.cycles % self.get_cycles_per_bit() == 0 {
+            self.shdata <<= 1;
+            self.shdata |=
+                (self.trackdata[self.track].data[self.track_byte] >> (self.track_bit)) & 1;
+            self.track_bit += 1;
+            if self.track_bit >= 8 {
+                self.track_byte += 1;
+                self.track_bit = 0;
+            }
+            if (self.track_byte * 8 + self.track_bit) >= self.trackdata[self.track].bits {
+                self.track_byte = 0;
+                self.track_bit = 0;
+            }
+
+            if self.shdata & 0x80 != 0 {
+                self.datareg = self.shdata;
+                self.shdata = 0;
+            }
         }
 
         Ok(ticks)
@@ -458,6 +514,12 @@ impl Tickable for Iwm {
 mod tests {
     use super::*;
 
+    /// Disk revolutions/minute at outer track (0)
+    const DISK_RPM_OUTER: Ticks = 402;
+
+    /// Disk revolutions/minute at inner track (79)
+    const DISK_RPM_INNER: Ticks = 603;
+
     #[test]
     fn disk_tacho_outer() {
         let mut iwm = Iwm::new();
@@ -465,20 +527,18 @@ mod tests {
         iwm.motor = true;
         iwm.track = 0;
 
-        assert_eq!(iwm.get_track_rpm(), Iwm::DISK_RPM_OUTER);
-
         let mut last = false;
         let mut result = 0;
 
         for _ in 0..(TICKS_PER_SECOND * 60) {
-            iwm.tick(1).unwrap();
+            iwm.cycles += 1;
             if iwm.get_tacho() != last {
                 result += 1;
                 last = iwm.get_tacho();
             }
         }
 
-        assert_eq!(result / 10, Iwm::DISK_RPM_OUTER * 120 / 10);
+        assert_eq!(result / 10, DISK_RPM_OUTER * 120 / 10);
     }
 
     #[test]
@@ -488,13 +548,11 @@ mod tests {
         iwm.motor = true;
         iwm.track = 79;
 
-        assert_eq!(iwm.get_track_rpm(), Iwm::DISK_RPM_INNER);
-
         let mut last = false;
         let mut result = 0;
 
         for _ in 0..(TICKS_PER_SECOND * 60) {
-            iwm.tick(1).unwrap();
+            iwm.cycles += 1;
             if iwm.get_tacho() != last {
                 result += 1;
                 last = iwm.get_tacho();
@@ -502,6 +560,6 @@ mod tests {
         }
 
         // Roughly is good enough..
-        assert_eq!(result / 10, Iwm::DISK_RPM_INNER * 120 / 10);
+        assert_eq!(result / 10, DISK_RPM_INNER * 120 / 10);
     }
 }

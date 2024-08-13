@@ -1,7 +1,7 @@
 pub mod comm;
 
-use std::time::{Duration, Instant};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::bus::{Address, InspectableBus};
 use crate::cpu_m68k::cpu::CpuM68k;
@@ -60,7 +60,7 @@ impl Emulator {
             event_sender: statuss,
             event_recv: statusr,
             run: false,
-            breakpoints: vec![],
+            breakpoints: vec![0x401EC0],
             last_update: Instant::now(),
         };
         emu.status_update()?;
