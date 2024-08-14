@@ -1,6 +1,7 @@
 use std::io::stdout;
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
+use log::*;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEventKind};
 use ratatui::crossterm::terminal::{
@@ -31,6 +32,8 @@ enum View {
 }
 
 pub struct UserInterface {
+    cmd: Option<String>,
+
     view: View,
 
     romfn: String,
@@ -59,6 +62,8 @@ impl UserInterface {
             panic!("Initial status message not received")
         };
         Ok(Self {
+            cmd: None,
+
             view: View::Debugger,
             state_log: TuiWidgetState::default(),
             romfn: romfn.to_string(),
@@ -116,7 +121,24 @@ impl UserInterface {
         if event::poll(std::time::Duration::from_millis(50))? {
             if let event::Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
+                    if self.cmd.is_some() {
+                        match key.code {
+                            KeyCode::Char(c) => self.cmd.as_mut().unwrap().push(c),
+                            KeyCode::Backspace => {
+                                self.cmd.as_mut().unwrap().pop();
+                            }
+                            KeyCode::Enter => {
+                                let cmd = self.cmd.take().unwrap();
+                                if let Err(e) = self.handle_command(&cmd) {
+                                    error!("Command failed: {:?}", e);
+                                }
+                            }
+                            _ => (),
+                        }
+                    }
+
                     match (self.view, key.code) {
+                        (_, KeyCode::Char('/')) => self.cmd = Some("".to_string()),
                         (_, KeyCode::F(10)) => return Ok(false),
                         (_, KeyCode::F(1)) => self.view = View::Log,
                         (_, KeyCode::F(2)) => self.view = View::Debugger,
@@ -304,6 +326,37 @@ impl UserInterface {
         .block(Block::bordered().title("Flags"))
         .render(layout_right[2], buf);
     }
+
+    fn handle_command(&mut self, cmd: &str) -> Result<()> {
+        let tokens = cmd.split(' ').collect::<Vec<_>>();
+        match *tokens.first().context("Empty command")? {
+            "b" => {
+                let addr = Address::from_str_radix(
+                    tokens
+                        .get(1)
+                        .context("Need address")?
+                        .trim_start_matches("0x"),
+                    16,
+                )?;
+                self.cmdsender
+                    .send(EmulatorCommand::ToggleBreakpoint(addr))?;
+                Ok(())
+            }
+            "loadbin" => {
+                let addr = Address::from_str_radix(
+                    tokens
+                        .get(1)
+                        .context("Need address")?
+                        .trim_start_matches("0x"),
+                    16,
+                )?;
+                let data = std::fs::read(tokens[2])?;
+                self.cmdsender.send(EmulatorCommand::BusWrite(addr, data))?;
+                Ok(())
+            }
+            _ => bail!("Unknown command"),
+        }
+    }
 }
 
 impl Widget for &mut UserInterface {
@@ -313,6 +366,7 @@ impl Widget for &mut UserInterface {
             .constraints(vec![
                 Constraint::Max(1),
                 Constraint::Min(0),
+                Constraint::Max(1),
                 Constraint::Max(1),
             ])
             .split(area);
@@ -375,8 +429,18 @@ impl Widget for &mut UserInterface {
             fkeys.push(format!("{desc:<5}").blue().on_black().bold());
         }
 
+        if let Some(s) = &self.cmd {
+            Paragraph::new(Line::from(format!(" > {}", s)))
+                .style(Style::default().on_black())
+                .render(layout_main[2], buf);
+        } else {
+            Paragraph::new(Line::from(" > Type '/' to enter a command"))
+                .style(Style::default().dark_gray().on_black())
+                .render(layout_main[2], buf);
+        }
+
         Paragraph::new(Line::from(fkeys))
             .style(Style::default().on_black())
-            .render(layout_main[2], buf);
+            .render(layout_main[3], buf);
     }
 }

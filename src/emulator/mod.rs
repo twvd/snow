@@ -3,7 +3,7 @@ pub mod comm;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::bus::{Address, InspectableBus};
+use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::frontend::channel::ChannelRenderer;
 use crate::frontend::{DisplayBuffer, Renderer};
@@ -118,7 +118,6 @@ impl Tickable for Emulator {
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
         if !self.command_recv.is_empty() {
             while let Ok(cmd) = self.command_recv.try_recv() {
-                trace!("Emulator command {:?}", cmd);
                 match cmd {
                     EmulatorCommand::MouseUpdateRelative { relx, rely, btn } => {
                         self.cpu.bus.mouse_update(relx, rely, btn);
@@ -145,6 +144,11 @@ impl Tickable for Emulator {
                         } else {
                             self.breakpoints.push(addr);
                             info!("Breakpoint set: ${:06X}", addr);
+                        }
+                    }
+                    EmulatorCommand::BusWrite(start, data) => {
+                        for (i, d) in data.into_iter().enumerate() {
+                            self.cpu.bus.write(start + (i as Address), d);
                         }
                     }
                 }
