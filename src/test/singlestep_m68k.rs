@@ -154,7 +154,7 @@ fn print_reg_diff(initial: &RegisterFile, fin: &RegisterFile, actual: &RegisterF
             sdiff(i, f),
             a,
             sdiff(f, a)
-        )
+        );
     };
 
     eprintln!("Reg   Initial   Final     Actual");
@@ -174,7 +174,7 @@ fn print_reg_diff(initial: &RegisterFile, fin: &RegisterFile, actual: &RegisterF
         fin.sr.0 as u32,
         actual.sr.0 as u32,
     );
-    eprintln!("");
+    eprintln!();
 }
 
 fn print_result(cpu: &CpuM68k<Testbus<Address, u8>>, testcase: &Testcase) {
@@ -185,7 +185,7 @@ fn print_result(cpu: &CpuM68k<Testbus<Address, u8>>, testcase: &Testcase) {
     eprintln!("Prefetch initial: {:04X?}", testcase.initial.prefetch);
     eprintln!("Prefetch final  : {:04X?}", testcase.r#final.prefetch);
     eprintln!("Prefetch actual : {:04X?}", cpu.prefetch);
-    eprintln!("");
+    eprintln!();
 
     print_reg_diff(
         &create_regs(&testcase.initial),
@@ -249,7 +249,7 @@ fn print_result(cpu: &CpuM68k<Testbus<Address, u8>>, testcase: &Testcase) {
             if fin != actual { "*" } else { " " },
         );
     }
-    eprintln!("");
+    eprintln!();
 
     // Testcase cycles
     let mut abs_cycles = 0;
@@ -268,7 +268,7 @@ fn print_result(cpu: &CpuM68k<Testbus<Address, u8>>, testcase: &Testcase) {
             }
         }
     }
-    eprintln!("");
+    eprintln!();
 
     // Trace cycles
     for tr in cpu.bus.get_trace() {
@@ -291,7 +291,7 @@ fn run_testcase(testcase: Testcase, level: TestLevel) {
     }
 
     let mut cpu = CpuM68k::new(bus);
-    cpu.regs = regs_initial.clone();
+    cpu.regs = regs_initial;
     cpu.prefetch = testcase.initial.prefetch.into();
     cpu.bus.reset_trace();
     if let Err(e) = cpu.step() {
@@ -354,7 +354,7 @@ fn run_testcase(testcase: Testcase, level: TestLevel) {
                 TestcaseTransaction::Idle(t) => {
                     // Bus must be quiet for length
                     for cycle in abs_cycles..(abs_cycles + t.cycles) {
-                        if trace.iter().find(|&&a| a.cycle == cycle).is_some() {
+                        if trace.iter().any(|&a| a.cycle == cycle) {
                             print_result(&cpu, &testcase);
                             panic!("Bus not idle at cycle {}", abs_cycles);
                         }
