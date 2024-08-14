@@ -14,6 +14,15 @@ pub enum Register {
     An(usize),
 }
 
+impl std::fmt::Display for Register {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Dn(n) => write!(f, "D{}", n),
+            Self::An(n) => write!(f, "A{}", n),
+        }
+    }
+}
+
 bitfield! {
     /// SR register bitfield
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -60,7 +60,7 @@ impl Emulator {
             event_sender: statuss,
             event_recv: statusr,
             run: false,
-            breakpoints: vec![0x401EC0],
+            breakpoints: vec![],
             last_update: Instant::now(),
         };
         emu.status_update()?;
