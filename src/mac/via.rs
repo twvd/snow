@@ -218,8 +218,11 @@ impl BusMember<Address> for Via {
                 self.ifr.set_kbddata(false);
                 self.ifr.set_kbdclock(false);
 
+                // TODO fix mouse
+                self.b.set_sw(true);
+
                 // TODO remove RTC stub
-                Some(self.b.0 & 0xF0)
+                Some(self.b.0 & 0xF8)
             }
 
             // Register B Data Direction
