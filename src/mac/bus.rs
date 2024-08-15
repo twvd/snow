@@ -57,7 +57,7 @@ where
             trace: false,
 
             rom: Vec::from(rom),
-            ram: vec![0xFF; ram_size],
+            ram: vec![0; ram_size],
             via: Via::new(),
             video: Video::new(renderer),
             eclock: 0,
@@ -213,8 +213,6 @@ where
     }
 
     fn read(&mut self, addr: Address) -> Byte {
-        self.iwm.sel = self.via.a.sel();
-
         let val = if self.via.a.overlay() {
             self.read_overlay(addr)
         } else {
@@ -237,7 +235,7 @@ where
         };
 
         // Sync values that live in multiple places
-        self.iwm.sel = self.via.a.sel();
+        self.iwm.sel = self.via.a.sel() & self.via.ddra.sel();
         self.video.framebuffer_select = self.via.a.page2();
 
         if written.is_none() {

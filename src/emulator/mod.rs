@@ -65,6 +65,8 @@ impl Emulator {
         };
         emu.status_update()?;
 
+        emu.cpu.bus.iwm.disk_insert(&[]);
+
         Ok((emu, frame_recv))
     }
 
@@ -107,6 +109,16 @@ impl Emulator {
         {
             info!("Stopped at breakpoint: {:06X}", self.cpu.regs.pc);
             debug!("VIA: {:?}", self.cpu.bus.via);
+            debug!(
+                "IWM: CS0 {} CS1 {} CS2 {} SEL {} LSTRB {} Q6 {} Q7 {}",
+                self.cpu.bus.iwm.ca0,
+                self.cpu.bus.iwm.ca1,
+                self.cpu.bus.iwm.ca2,
+                self.cpu.bus.iwm.sel,
+                self.cpu.bus.iwm.lstrb,
+                self.cpu.bus.iwm.q6,
+                self.cpu.bus.iwm.q7,
+            );
             self.run = false;
             self.status_update()?;
         }

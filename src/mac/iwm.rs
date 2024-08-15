@@ -23,15 +23,15 @@ struct Track {
 pub struct Iwm {
     cycles: Ticks,
 
-    ca0: bool,
-    ca1: bool,
-    ca2: bool,
-    lstrb: bool,
-    motor: bool,
-    q6: bool,
-    q7: bool,
-    extdrive: bool,
-    enable: bool,
+    pub ca0: bool,
+    pub ca1: bool,
+    pub ca2: bool,
+    pub lstrb: bool,
+    pub motor: bool,
+    pub q6: bool,
+    pub q7: bool,
+    pub extdrive: bool,
+    pub enable: bool,
     pub sel: bool,
 
     status: IwmStatus,
@@ -48,6 +48,8 @@ pub struct Iwm {
 
     pub dbg_pc: u32,
     pub dbg_break: LatchingEvent,
+
+    stepping: usize,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Display)]
@@ -222,6 +224,7 @@ impl Iwm {
             enable: false,
             dbg_pc: 0,
             dbg_break: LatchingEvent::default(),
+            stepping: 0,
         }
     }
 
@@ -271,8 +274,16 @@ impl Iwm {
             IwmReg::READY => false,
             IwmReg::TKO if self.track == 0 => false,
             IwmReg::TKO => true,
-            IwmReg::STEP => true,
+            IwmReg::STEP => {
+                let result = self.stepping > 0;
+                if result {
+                    self.stepping -= 1;
+                }
+                !result
+            }
             IwmReg::TACH => self.get_tacho(),
+            IwmReg::RDDATA0 => self.get_head_bit(),
+            IwmReg::WRTPRT => false,
             _ => {
                 warn!(
                     "Unimplemented register read {:?} {:0b}",
@@ -314,6 +325,7 @@ impl Iwm {
             self.get_track_rpm(),
             self.get_cycles_per_bit(),
         );
+        self.stepping = 1;
     }
 
     fn write_reg(&mut self) {
@@ -405,12 +417,13 @@ impl Iwm {
     pub fn disk_insert(&mut self, _data: &[u8]) {
         // Parse track data
         // TODO use iterator, make fancy
-        let data = std::fs::read("system11.bin").unwrap();
+        let data = std::fs::read("disk.bin").unwrap();
         let mut offset = 0;
         for tracknum in 0..Self::DISK_TRACKS {
             let bytes = u32::from_le_bytes(data[offset..(offset + 4)].try_into().unwrap()) as usize;
             let bits =
                 u32::from_le_bytes(data[(offset + 4)..(offset + 8)].try_into().unwrap()) as usize;
+            assert_eq!(bytes, bits);
 
             let track = Track {
                 bits,
@@ -452,18 +465,31 @@ impl Iwm {
         let ticks_per_edge = ticks_per_min / edges_per_min;
         (self.cycles / ticks_per_edge % 2) != 0
     }
+
+    fn get_head_bit(&self) -> bool {
+        let res = self.trackdata[self.track].data[self.track_byte];
+        assert!([0, 1].contains(&res));
+
+        res != 0
+    }
 }
 
 impl BusMember<Address> for Iwm {
     fn read(&mut self, addr: Address) -> Option<u8> {
+        if addr & 1 == 0 {
+            return None;
+        }
         self.access(addr - 0xDFE1FF);
         let result = self.iwm_read();
-        //trace!("IWM read: {:08X} = {:02X}", addr, result);
+        trace!("IWM read: {:08X} = {:02X}", addr, result);
         Some(result)
     }
 
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
-        //trace!("IWM write {:08X} {:02X}", addr, val);
+        if addr & 1 == 0 {
+            return None;
+        }
+        trace!("IWM write {:08X} {:02X}", addr, val);
         self.access(addr - 0xDFE1FF);
 
         match (self.q6, self.q7, self.enable) {
@@ -488,14 +514,13 @@ impl Tickable for Iwm {
 
         if self.disk_inserted && self.motor && self.cycles % self.get_cycles_per_bit() == 0 {
             self.shdata <<= 1;
-            self.shdata |=
-                (self.trackdata[self.track].data[self.track_byte] >> (self.track_bit)) & 1;
-            self.track_bit += 1;
-            if self.track_bit >= 8 {
-                self.track_byte += 1;
-                self.track_bit = 0;
+            if self.get_head_bit() {
+                self.shdata |= 1;
             }
-            if (self.track_byte * 8 + self.track_bit) >= self.trackdata[self.track].bits {
+
+            self.track_byte += 1;
+            self.track_bit = 0;
+            if self.track_byte >= self.trackdata[self.track].bits {
                 self.track_byte = 0;
                 self.track_bit = 0;
             }
