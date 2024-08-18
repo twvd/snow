@@ -142,14 +142,20 @@ bitfield! {
 /// Synertek SY6522 Versatile Interface Adapter
 #[derive(Debug)]
 pub struct Via {
-    /// Register A
-    pub a: RegisterA,
+    /// Register A, outputs
+    pub a_out: RegisterA,
+
+    /// Register A, inputs
+    pub a_in: RegisterA,
 
     /// Data Direction Register A
     pub ddra: RegisterA,
 
-    /// Register B
-    pub b: RegisterB,
+    /// Register B, outputs
+    pub b_out: RegisterB,
+
+    /// Register B, inputs
+    pub b_in: RegisterB,
 
     /// Data Direction Register B
     pub ddrb: RegisterB,
@@ -183,8 +189,10 @@ pub struct Via {
 impl Via {
     pub fn new() -> Self {
         Self {
-            a: RegisterA(0xF7),
-            b: RegisterB(0xFF),
+            a_out: RegisterA(0xFF),
+            b_out: RegisterB(0xFF),
+            a_in: RegisterA(0xFF),
+            b_in: RegisterB(0xFF),
             ddra: RegisterA(0xFF),
             ddrb: RegisterB(0xFF),
             ier: RegisterIRQ(0),
@@ -219,7 +227,9 @@ impl BusMember<Address> for Via {
                 self.ifr.set_kbdclock(false);
 
                 // TODO remove RTC stub
-                Some(self.b.0 & 0xF8)
+                self.b_in.set_rtcdata(false);
+
+                Some((self.b_in.0 & !self.ddrb.0) | (self.b_out.0 & self.ddrb.0))
             }
 
             // Register B Data Direction
@@ -254,12 +264,12 @@ impl BusMember<Address> for Via {
                 // The SCC write request bit is used for checking if there's data ready
                 // from the SCC in critical sections where SCC interrupts are disabled.
                 // Reporting 1 signals that there's no data ready.
-                self.a.set_sccwrreq(true);
+                self.a_in.set_sccwrreq(true);
 
                 self.ifr.set_vblank(false);
                 self.ifr.set_onesec(false);
 
-                Some(self.a.0)
+                Some((self.a_in.0 & !self.ddra.0) | (self.a_out.0 & self.ddra.0))
             }
             _ => None,
         }
@@ -293,7 +303,7 @@ impl BusMember<Address> for Via {
                 self.ifr.set_kbddata(false);
                 self.ifr.set_kbdclock(false);
 
-                self.b.0 = (val & self.ddrb.0) | (self.b.0 & !self.ddrb.0);
+                self.b_out.0 = val;
                 Some(())
             }
 
@@ -333,7 +343,7 @@ impl BusMember<Address> for Via {
                 self.ifr.set_vblank(false);
                 self.ifr.set_onesec(false);
 
-                self.a.0 = (val & self.ddra.0) | (self.a.0 & !self.ddra.0);
+                self.a_out.0 = val;
                 Some(())
             }
 

@@ -19,7 +19,7 @@ struct Track {
     bits: usize,
 }
 
-/// Integrated Woz Machine
+/// Integrated Woz Machine - floppy drive controller
 #[derive(Debug)]
 pub struct Iwm {
     double_sided: bool,
@@ -344,6 +344,7 @@ impl Iwm {
                 self.motor = false;
             }
             IwmWriteReg::EJECT => {
+                info!("Disk ejected");
                 self.disk_inserted = false;
             }
             IwmWriteReg::TRACKUP => {

@@ -101,7 +101,7 @@ where
     }
 
     fn soundbuf(&mut self) -> &mut [u8] {
-        if self.via.a.sndpg2() {
+        if self.via.a_out.sndpg2() {
             &mut self.ram[self.soundbuf_main.clone()]
         } else {
             &mut self.ram[self.soundbuf_alt.clone()]
@@ -231,7 +231,7 @@ where
 
         // Mouse button through VIA I/O
         if let Some(b) = button {
-            self.via.b.set_sw(!b);
+            self.via.b_in.set_sw(!b);
         }
     }
 }
@@ -245,7 +245,7 @@ where
     }
 
     fn read(&mut self, addr: Address) -> Byte {
-        let val = if self.via.a.overlay() {
+        let val = if self.via.a_out.overlay() {
             self.read_overlay(addr)
         } else {
             self.read_normal(addr)
@@ -260,15 +260,15 @@ where
     }
 
     fn write(&mut self, addr: Address, val: Byte) {
-        let written = if self.via.a.overlay() {
+        let written = if self.via.a_out.overlay() {
             self.write_overlay(addr, val)
         } else {
             self.write_normal(addr, val)
         };
 
         // Sync values that live in multiple places
-        self.iwm.sel = self.via.a.sel() & self.via.ddra.sel();
-        self.video.framebuffer_select = self.via.a.page2();
+        self.iwm.sel = self.via.a_out.sel();
+        self.video.framebuffer_select = self.via.a_out.page2();
 
         if written.is_none() {
             warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
@@ -297,7 +297,7 @@ where
         self.video.tick(2)?;
 
         // Sync VIA registers
-        self.via.b.set_h4(self.video.in_hblank());
+        self.via.b_in.set_h4(self.video.in_hblank());
 
         // VBlank interrupt
         if self.video.get_clr_vblank() && self.via.ier.vblank() {
@@ -343,7 +343,7 @@ where
         // Everything up to 0x800000 is safe (RAM/ROM only)
         if addr >= 0x80_0000 {
             None
-        } else if self.via.a.overlay() {
+        } else if self.via.a_out.overlay() {
             self.read_overlay(addr)
         } else {
             self.read_normal(addr)
@@ -354,7 +354,7 @@ where
         // Everything up to 0x800000 is safe (RAM/ROM only)
         if addr >= 0x80_0000 {
             None
-        } else if self.via.a.overlay() {
+        } else if self.via.a_out.overlay() {
             self.write_overlay(addr, val)
         } else {
             self.write_normal(addr, val)
