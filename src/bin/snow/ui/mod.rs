@@ -354,6 +354,19 @@ impl UserInterface {
                 self.cmdsender.send(EmulatorCommand::BusWrite(addr, data))?;
                 Ok(())
             }
+            "dasm" => {
+                let addr = Address::from_str_radix(
+                    tokens
+                        .get(1)
+                        .context("Need address")?
+                        .trim_start_matches("0x"),
+                    16,
+                )?;
+                let len = tokens[2].parse::<usize>()?;
+                self.cmdsender
+                    .send(EmulatorCommand::Disassemble(addr, len))?;
+                Ok(())
+            }
             _ => bail!("Unknown command"),
         }
     }

@@ -183,8 +183,8 @@ pub struct Via {
 impl Via {
     pub fn new() -> Self {
         Self {
-            a: RegisterA(1 << 4),
-            b: RegisterB(1 << 3),
+            a: RegisterA(0xF7),
+            b: RegisterB(0xFF),
             ddra: RegisterA(0),
             ddrb: RegisterB(0),
             ier: RegisterIRQ(0),
@@ -217,9 +217,6 @@ impl BusMember<Address> for Via {
             0xE1FE => {
                 self.ifr.set_kbddata(false);
                 self.ifr.set_kbdclock(false);
-
-                // TODO fix mouse
-                self.b.set_sw(true);
 
                 // TODO remove RTC stub
                 Some(self.b.0 & 0xF8)
@@ -296,7 +293,7 @@ impl BusMember<Address> for Via {
                 self.ifr.set_kbddata(false);
                 self.ifr.set_kbdclock(false);
 
-                self.b.0 = val;
+                self.b.0 = (val & self.ddrb.0) | (self.b.0 & !self.ddrb.0);
                 Some(())
             }
 
@@ -336,7 +333,7 @@ impl BusMember<Address> for Via {
                 self.ifr.set_vblank(false);
                 self.ifr.set_onesec(false);
 
-                self.a.0 = val;
+                self.a.0 = (val & self.ddra.0) | (self.a.0 & !self.ddra.0);
                 Some(())
             }
 

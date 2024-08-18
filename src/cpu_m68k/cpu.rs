@@ -471,10 +471,10 @@ where
                 )?;
             }
             ExceptionGroup::Group1 | ExceptionGroup::Group2 => {
-                debug!(
-                    "Exception {:?}, vector {:08X} @  PC = {:06X}",
-                    group, vector, self.regs.pc
-                );
+                //debug!(
+                //    "Exception {:?}, vector {:08X} @  PC = {:06X}",
+                //    group, vector, self.regs.pc
+                //);
 
                 self.regs.ssp = self.regs.ssp.wrapping_sub(6);
                 self.write_ticks(self.regs.ssp.wrapping_add(4), self.regs.pc as u16)?;

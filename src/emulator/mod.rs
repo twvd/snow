@@ -21,8 +21,14 @@ use comm::{
 /// Specific properties of a specific Macintosh model
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct MacModel {
+    /// Model name
     pub name: &'static str,
+
+    /// Size of main RAM
     pub ram_size: usize,
+
+    /// Double-sided floppies
+    pub fd_double: bool,
 }
 
 /// Emulator runner
@@ -49,7 +55,7 @@ impl Emulator {
         let frame_recv = renderer.get_receiver();
 
         // Initialize bus and CPU
-        let bus = MacBus::new(rom, model.ram_size, renderer);
+        let bus = MacBus::new(rom, model.ram_size, renderer, model.fd_double);
         let mut cpu = CpuM68k::new(bus);
 
         cpu.reset()?;
@@ -88,25 +94,47 @@ impl Emulator {
             }))?;
 
         // Next code stream for disassembly listing
-        let ops = (self.cpu.regs.pc..)
+        self.disassemble(self.cpu.regs.pc, 200)?;
+
+        Ok(())
+    }
+
+    fn disassemble(&mut self, addr: Address, len: usize) -> Result<()> {
+        let ops = (addr..)
             .flat_map(|addr| self.cpu.bus.inspect_read(addr))
-            .take(200)
+            .take(len)
             .collect::<Vec<_>>();
 
         self.event_sender
-            .send(EmulatorEvent::NextCode((self.cpu.regs.pc, ops)))?;
+            .send(EmulatorEvent::NextCode((addr, ops)))?;
 
         Ok(())
     }
 
     /// Steps the emulator by one instruction.
     fn step(&mut self) -> Result<()> {
+        let mut stop_break = false;
+        self.cpu.bus.iwm.dbg_pc = self.cpu.regs.pc;
         self.cpu.tick(1)?;
+
+        //if self.cpu.regs.pc == 0x402154 {
+        //    debug!(
+        //        "Sony_RdAddr = {}, format: {:02X}, track: {}, sector: {}",
+        //        self.cpu.regs.d[0] as i32,
+        //        self.cpu.regs.d[3] as u8,
+        //        self.cpu.regs.d[1] as u16,
+        //        self.cpu.regs.d[2] as u16,
+        //    );
+        //}
+
         if self.run
             && (self.breakpoints.contains(&self.cpu.regs.pc)
                 || self.cpu.bus.iwm.dbg_break.get_clear())
             || self.cpu.bus.dbg_break.get_clear()
         {
+            stop_break = true;
+        }
+        if stop_break {
             info!("Stopped at breakpoint: {:06X}", self.cpu.regs.pc);
             debug!("VIA: {:?}", self.cpu.bus.via);
             debug!(
@@ -162,6 +190,10 @@ impl Tickable for Emulator {
                         for (i, d) in data.into_iter().enumerate() {
                             self.cpu.bus.write(start + (i as Address), d);
                         }
+                    }
+                    EmulatorCommand::Disassemble(addr, len) => {
+                        self.disassemble(addr, len)?;
+                        return Ok(ticks);
                     }
                 }
             }

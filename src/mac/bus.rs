@@ -29,8 +29,19 @@ pub struct MacBus<TRenderer: Renderer> {
     ram_mask: usize,
     rom_mask: usize,
 
+    /// Main video framebuffer address range
     fb_main: Range<Address>,
+
+    /// Alternate video framebuffer address range
     fb_alt: Range<Address>,
+
+    /// Main sound and disk drive PWM address range
+    /// Sound is in the upper bytes per 16-bit pair, disk PWM in the lower
+    soundbuf_main: Range<usize>,
+
+    /// Alternate sound and disk drive PWM address range
+    /// Sound is in the upper bytes per 16-bit pair, disk PWM in the lower
+    soundbuf_alt: Range<usize>,
 
     pub dbg_break: LatchingEvent,
 }
@@ -39,6 +50,13 @@ impl<TRenderer> MacBus<TRenderer>
 where
     TRenderer: Renderer,
 {
+    /// Main sound buffer offset (from end of RAM)
+    const SOUND_MAIN_OFFSET: usize = 0x0300;
+    /// Alternate sound buffer offset (from end of RAM)
+    const SOUND_ALT_OFFSET: usize = 0x5F00;
+    /// Size of the sound buffer, in bytes
+    const SOUNDBUF_SIZE: usize = 370 * 2;
+
     /// MTemp address, Y coordinate (16 bit, signed)
     const ADDR_MTEMP_Y: Address = 0x0828;
     /// MTemp address, X coordinate (16 bit, signed)
@@ -50,9 +68,12 @@ where
     /// CrsrNew address
     const ADDR_CRSRNEW: Address = 0x08CE;
 
-    pub fn new(rom: &[u8], ram_size: usize, renderer: TRenderer) -> Self {
+    pub fn new(rom: &[u8], ram_size: usize, renderer: TRenderer, fd_double: bool) -> Self {
         let fb_alt_start = ram_size as Address - Video::<TRenderer>::FRAMEBUFFER_ALT_OFFSET;
         let fb_main_start = ram_size as Address - Video::<TRenderer>::FRAMEBUFFER_MAIN_OFFSET;
+        let sound_alt_start = ram_size - Self::SOUND_ALT_OFFSET;
+        let sound_main_start = ram_size - Self::SOUND_MAIN_OFFSET;
+
         Self {
             trace: false,
 
@@ -62,7 +83,7 @@ where
             video: Video::new(renderer),
             eclock: 0,
             scc: Scc::new(),
-            iwm: Iwm::new(),
+            iwm: Iwm::new(fd_double),
             mouse_ready: false,
 
             ram_mask: (ram_size - 1),
@@ -72,7 +93,18 @@ where
                 ..(fb_main_start + Video::<TRenderer>::FRAMEBUFFER_SIZE as Address),
             fb_alt: fb_alt_start..(fb_alt_start + Video::<TRenderer>::FRAMEBUFFER_SIZE as Address),
 
+            soundbuf_main: sound_main_start..(sound_main_start + Self::SOUNDBUF_SIZE),
+            soundbuf_alt: sound_alt_start..(sound_alt_start + Self::SOUNDBUF_SIZE),
+
             dbg_break: LatchingEvent::default(),
+        }
+    }
+
+    fn soundbuf(&mut self) -> &mut [u8] {
+        if self.via.a.sndpg2() {
+            &mut self.ram[self.soundbuf_main.clone()]
+        } else {
+            &mut self.ram[self.soundbuf_alt.clone()]
         }
     }
 
@@ -267,12 +299,23 @@ where
         // Sync VIA registers
         self.via.b.set_h4(self.video.in_hblank());
 
-        self.iwm.tick(1)?;
-
         // VBlank interrupt
         if self.video.get_clr_vblank() && self.via.ier.vblank() {
             self.via.ifr.set_vblank(true);
         }
+
+        // HBlank
+        if self.video.get_clr_hblank() {
+            // Update floppy drive PWM
+            let scanline = self.video.get_scanline();
+            if scanline < (Self::SOUNDBUF_SIZE / 2) {
+                let soundbuf = self.soundbuf();
+                let pwm = soundbuf[scanline * 2 + 1];
+                self.iwm.push_pwm(pwm)?;
+            }
+        }
+
+        self.iwm.tick(1)?;
 
         Ok(1)
     }

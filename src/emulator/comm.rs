@@ -18,6 +18,8 @@ pub enum EmulatorCommand {
     Step,
     ToggleBreakpoint(Address),
     BusWrite(Address, Vec<u8>),
+    //BusDump(Address, usize),
+    Disassemble(Address, usize),
 }
 
 /// Structure with general emulator status

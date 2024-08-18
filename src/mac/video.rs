@@ -26,6 +26,9 @@ pub struct Video<T: Renderer> {
     /// Latch for entered VBlank
     event_vblank: LatchingEvent,
 
+    /// Latch for entered HBlank
+    event_hblank: LatchingEvent,
+
     /// Primary and alternate framebuffer
     pub framebuffers: [Vec<u8>; 2],
 
@@ -85,11 +88,17 @@ where
         self.dots % Self::H_DOTS >= Self::H_VISIBLE_DOTS
     }
 
+    /// Gets the current active scanline
+    pub fn get_scanline(&self) -> usize {
+        self.dots / Self::V_LINES
+    }
+
     pub fn new(renderer: T) -> Self {
         Self {
             renderer,
             dots: 0,
             event_vblank: LatchingEvent::default(),
+            event_hblank: LatchingEvent::default(),
             framebuffers: [
                 vec![0; Self::FRAMEBUFFER_SIZE],
                 vec![0; Self::FRAMEBUFFER_SIZE],
@@ -102,6 +111,11 @@ where
     /// Reads and clears 'entered vblank' latch
     pub fn get_clr_vblank(&mut self) -> bool {
         self.event_vblank.get_clear()
+    }
+
+    /// Reads and clears 'entered hblank' latch
+    pub fn get_clr_hblank(&mut self) -> bool {
+        self.event_hblank.get_clear()
     }
 
     /// Prepares the image and sends it to SDL for rendering
@@ -144,6 +158,7 @@ where
 {
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
         let before_vblank = self.in_vblank();
+        let before_hblank = self.in_hblank();
 
         // Update beam position
         self.dots = (self.dots + ticks) % Self::FRAME_DOTS;
@@ -151,6 +166,11 @@ where
         if !before_vblank && self.in_vblank() {
             // Just entered VBlank
             self.event_vblank.set();
+        }
+
+        if !before_hblank && self.in_hblank() {
+            // Just entered HBlank
+            self.event_hblank.set();
         }
 
         if before_vblank && !self.in_vblank() {

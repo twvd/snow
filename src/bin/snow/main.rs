@@ -56,28 +56,39 @@ fn main() -> Result<()> {
     let mut hash = Sha256::new();
     hash.update(&rom);
     let digest = hash.finalize();
-    let model =
-        if digest[..] == hex!("fe6a1ceff5b3eefe32f20efea967cdf8cd4cada291ede040600e7f6c9e2dfc0e") {
-            // Macintosh 512K
-            MacModel {
-                name: "Macintosh 512K",
-                ram_size: 512 * 1024,
-            }
-        } else if
-        // Macintosh Plus v1
-        digest[..] == hex!("c5d862605867381af6200dd52f5004cc00304a36ab996531f15e0b1f8a80bc01") ||
+    let model = if digest[..]
+        == hex!("13fe8312cf6167a2bb4351297b48cc1ee29c523b788e58270434742bfeda864c")
+    {
+        // Macintosh 128K
+        MacModel {
+            name: "Macintosh 128K",
+            ram_size: 128 * 1024,
+            fd_double: false,
+        }
+    } else if digest[..] == hex!("fe6a1ceff5b3eefe32f20efea967cdf8cd4cada291ede040600e7f6c9e2dfc0e")
+    {
+        // Macintosh 512K
+        MacModel {
+            name: "Macintosh 512K",
+            ram_size: 512 * 1024,
+            fd_double: false,
+        }
+    } else if
+    // Macintosh Plus v1
+    digest[..] == hex!("c5d862605867381af6200dd52f5004cc00304a36ab996531f15e0b1f8a80bc01") ||
         // Macintosh Plus v2
     digest[..] == hex!("06f598ff0f64c944e7c347ba55ae60c792824c09c74f4a55a32c0141bf91b8b3") ||
         // Macintosh Plus v3
     digest[..] == hex!("dd908e2b65772a6b1f0c859c24e9a0d3dcde17b1c6a24f4abd8955846d7895e7")
-        {
-            MacModel {
-                name: "Macintosh Plus",
-                ram_size: 4096 * 1024,
-            }
-        } else {
-            panic!("Cannot determine model from ROM file")
-        };
+    {
+        MacModel {
+            name: "Macintosh Plus",
+            ram_size: 4096 * 1024,
+            fd_double: true,
+        }
+    } else {
+        panic!("Cannot determine model from ROM file")
+    };
 
     // Initialize emulator
     let (mut emulator, frame_recv) = Emulator::new(&rom, model)?;
