@@ -185,8 +185,8 @@ impl Via {
         Self {
             a: RegisterA(0xF7),
             b: RegisterB(0xFF),
-            ddra: RegisterA(0),
-            ddrb: RegisterB(0),
+            ddra: RegisterA(0xFF),
+            ddrb: RegisterB(0xFF),
             ier: RegisterIRQ(0),
             ifr: RegisterIRQ(0),
             acr: RegisterACR(0),
