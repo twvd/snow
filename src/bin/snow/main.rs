@@ -3,6 +3,8 @@ pub mod ui;
 use anyhow::Result;
 use clap::Parser;
 use hex_literal::hex;
+use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::mouse::MouseButton;
@@ -13,6 +15,7 @@ use snow::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow::tickable::Tickable;
 use ui::UserInterface;
 
+use std::panic::{set_hook, take_hook};
 use std::time::{Duration, Instant};
 use std::{fs, thread};
 
@@ -40,7 +43,20 @@ struct Args {
     run: bool,
 }
 
+/// Sets up a panic handler that restores the terminal back to the original state
+/// so any panics are readable and the terminal is usable.
+fn setup_panic_handler() {
+    let original_hook = take_hook();
+    set_hook(Box::new(move |panic_info| {
+        // intentionally ignore errors here since we're already in a panic
+        let _ = disable_raw_mode();
+        let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+        original_hook(panic_info);
+    }));
+}
+
 fn main() -> Result<()> {
+    setup_panic_handler();
     let args = Args::parse();
 
     // Initialize logging
