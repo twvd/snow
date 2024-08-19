@@ -71,8 +71,6 @@ impl Emulator {
         };
         emu.status_update()?;
 
-        emu.cpu.bus.iwm.disk_insert(&[]);
-
         Ok((emu, frame_recv))
     }
 

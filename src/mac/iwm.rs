@@ -43,7 +43,7 @@ pub struct Iwm {
     disk_inserted: bool,
     track: usize,
     stepdir: StepDirection,
-    trackdata: [Track; 80],
+    trackdata: [Track; Self::DISK_TRACKS * Self::DISK_SIDES],
     track_bit: usize,
     track_byte: usize,
     shdata: u8,
@@ -200,6 +200,9 @@ impl Iwm {
     /// Amount of tracks per disk side
     const DISK_TRACKS: usize = 80;
 
+    /// Amount of sides
+    const DISK_SIDES: usize = 2;
+
     /// Tacho pulses/disk revolution
     const TACHO_SPEED: Ticks = 60;
 
@@ -300,7 +303,8 @@ impl Iwm {
             IwmReg::TKO => true,
             IwmReg::STEP => self.stepping == 0,
             IwmReg::TACH => self.get_tacho(),
-            IwmReg::RDDATA0 => self.get_head_bit(),
+            IwmReg::RDDATA0 => self.get_head_bit(0),
+            IwmReg::RDDATA1 => self.get_head_bit(1),
             IwmReg::WRTPRT => false,
             _ => {
                 warn!(
@@ -412,12 +416,12 @@ impl Iwm {
         v
     }
 
-    pub fn disk_insert(&mut self, _data: &[u8]) {
+    pub fn disk_insert(&mut self, data: &[u8]) {
         // Parse track data
         // TODO use iterator, make fancy
-        let data = std::fs::read("disk.bin").unwrap();
         let mut offset = 0;
-        for tracknum in 0..Self::DISK_TRACKS {
+        let mut last = 0;
+        for tracknum in 0.. {
             let bytes = u32::from_le_bytes(data[offset..(offset + 4)].try_into().unwrap()) as usize;
             let bits =
                 u32::from_le_bytes(data[(offset + 4)..(offset + 8)].try_into().unwrap()) as usize;
@@ -429,12 +433,18 @@ impl Iwm {
             };
             self.trackdata[tracknum] = track;
             offset += 8 + bytes;
+
+            if data.len() <= offset {
+                last = tracknum;
+                break;
+            }
         }
 
-        info!("Disk inserted");
+        info!("Disk inserted, {} tracks", last + 1);
         self.disk_inserted = true;
     }
 
+    /// Gets the spindle motor speed in rounds/minute for the currently selected track
     pub const fn get_track_rpm(&self) -> Ticks {
         if !self.double_sided {
             // PWM-driven spindle motor speed control
@@ -467,8 +477,9 @@ impl Iwm {
         }
     }
 
-    pub const fn get_cycles_per_bit(&self) -> Ticks {
-        if self.get_track_rpm() == 0 {
+    /// Gets the amount of ticks a physical bit is under the drive head
+    pub const fn get_ticks_per_bit(&self) -> Ticks {
+        if self.get_track_rpm() == 0 || !self.disk_inserted {
             return Ticks::MAX;
         }
         ((TICKS_PER_SECOND * 60) / self.get_track_rpm() / self.trackdata[self.track].bits) + 1
@@ -488,13 +499,42 @@ impl Iwm {
         (self.cycles / ticks_per_edge % 2) != 0
     }
 
-    fn get_head_bit(&self) -> bool {
-        let res = self.trackdata[self.track].data[self.track_byte];
+    /// Gets the active selected track offset, offset by the active selected head for double-sided disks
+    fn get_active_track(&self) -> usize {
+        if self.get_active_head() == 1 && self.trackdata[self.track + 80].bits != 0 {
+            self.track + 80
+        } else {
+            self.track
+        }
+    }
+
+    /// Gets the active (selected) drive head
+    fn get_active_head(&self) -> usize {
+        if !self.double_sided || !self.sel {
+            0
+        } else {
+            1
+        }
+    }
+
+    /// Gets the physical disk bit currently under a head
+    fn get_head_bit(&self, head: usize) -> bool {
+        debug_assert!(head < Self::DISK_SIDES);
+
+        let track_offset =
+            if self.double_sided && head == 1 && self.trackdata[self.track + 80].bits != 0 {
+                self.track + 80
+            } else {
+                self.track
+            };
+
+        let res = self.trackdata[track_offset].data[self.track_byte];
         assert!([0, 1].contains(&res));
 
         res != 0
     }
 
+    /// Update current drive PWM signal from the sound buffer
     pub fn push_pwm(&mut self, pwm: u8) -> Result<()> {
         const VALUE_TO_LEN: [u8; 64] = [
             0, 1, 59, 2, 60, 40, 54, 3, 61, 32, 49, 41, 55, 19, 35, 4, 62, 52, 30, 33, 50, 12, 14,
@@ -557,22 +597,23 @@ impl Tickable for Iwm {
 
         self.stepping = self.stepping.saturating_sub(ticks);
 
-        if self.disk_inserted && self.motor && self.cycles % self.get_cycles_per_bit() == 0 {
+        if self.disk_inserted && self.motor && self.cycles % self.get_ticks_per_bit() == 0 {
             self.shdata <<= 1;
-            if self.get_head_bit() {
+            if self.get_head_bit(self.get_active_head()) {
                 self.shdata |= 1;
             }
 
             self.track_byte += 1;
             self.track_bit = 0;
-            if self.track_byte >= self.trackdata[self.track].bits {
+            if self.track_byte >= self.trackdata[self.get_active_track()].bits {
                 //trace!(
-                //    "Track at start - track {} len {} rpm {} cyc/bit {} duty {}%",
+                //    "Track at start - track {} len {} rpm {} cyc/bit {} duty {}% head {}",
                 //    self.track,
                 //    self.trackdata[self.track].bits,
                 //    self.get_track_rpm(),
                 //    self.get_cycles_per_bit(),
-                //    self.pwm_dutycycle
+                //    self.pwm_dutycycle,
+                //    self.sel,
                 //);
                 self.track_byte = 0;
                 self.track_bit = 0;
