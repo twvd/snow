@@ -28,6 +28,9 @@ struct Args {
     /// ROM filename to load.
     rom_filename: String,
 
+    /// Initial floppy disk image to load
+    floppy_filename: Option<String>,
+
     /// Trace bus I/O activity
     #[arg(long)]
     trace: bool,
@@ -93,6 +96,11 @@ fn main() -> Result<()> {
     // Initialize emulator
     let (mut emulator, frame_recv) = Emulator::new(&rom, model)?;
     let cmd = emulator.create_cmd_sender();
+    if let Some(floppy_fn) = args.floppy_filename {
+        cmd.send(EmulatorCommand::InsertFloppy(
+            std::fs::read(floppy_fn)?.into_boxed_slice(),
+        ))?;
+    }
     if args.run {
         cmd.send(EmulatorCommand::Run)?;
     }
