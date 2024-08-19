@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use arrayvec::ArrayVec;
 use either::Either;
 use itertools::Itertools;
@@ -108,7 +108,7 @@ impl<'a> Disassembler<'a> {
                 InstructionSize::Byte => format!("#${:02X}", self.get16()?),
                 InstructionSize::Word => format!("#${:04X}", self.get16()?),
                 InstructionSize::Long => format!("#${:08X}", self.get32()?),
-                InstructionSize::None => unreachable!(),
+                InstructionSize::None => bail!("Invalid addr mode"),
             },
             AddressingMode::DataRegister => format!("D{}", op),
             AddressingMode::AddressRegister => format!("A{}", op),

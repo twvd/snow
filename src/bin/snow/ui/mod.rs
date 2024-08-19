@@ -142,9 +142,6 @@ impl UserInterface {
                         (_, KeyCode::F(10)) => return Ok(false),
                         (_, KeyCode::F(1)) => self.view = View::Log,
                         (_, KeyCode::F(2)) => self.view = View::Debugger,
-                        (_, KeyCode::F(3)) => self
-                            .cmdsender
-                            .send(EmulatorCommand::InsertFloppy(Box::new([])))?,
                         (_, KeyCode::F(5)) if self.emustatus.running => {
                             self.cmdsender.send(EmulatorCommand::Stop)?
                         }
@@ -362,9 +359,19 @@ impl UserInterface {
                         .trim_start_matches("0x"),
                     16,
                 )?;
-                let len = tokens[2].parse::<usize>()?;
+                let len = tokens
+                    .get(2)
+                    .context("No length specified")?
+                    .parse::<usize>()?;
                 self.cmdsender
                     .send(EmulatorCommand::Disassemble(addr, len))?;
+                Ok(())
+            }
+            "disk" => {
+                let filename = tokens.get(1).context("No filename specified")?;
+                let data = std::fs::read(filename)?;
+                self.cmdsender
+                    .send(EmulatorCommand::InsertFloppy(data.into_boxed_slice()))?;
                 Ok(())
             }
             _ => bail!("Unknown command"),
