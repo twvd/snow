@@ -159,7 +159,10 @@ impl Tickable for Emulator {
             while let Ok(cmd) = self.command_recv.try_recv() {
                 match cmd {
                     EmulatorCommand::MouseUpdateRelative { relx, rely, btn } => {
-                        self.cpu.bus.mouse_update(relx, rely, btn);
+                        self.cpu.bus.mouse_update_rel(relx, rely, btn);
+                    }
+                    EmulatorCommand::MouseUpdateAbsolute { x, y } => {
+                        self.cpu.bus.mouse_update_abs(x, y);
                     }
                     EmulatorCommand::Quit => return Ok(0),
                     EmulatorCommand::InsertFloppy(image) => self.cpu.bus.iwm.disk_insert(&image),

@@ -22,6 +22,12 @@ use std::{fs, thread};
 use snow::frontend::sdl::{SDLEventPump, SDLRenderer};
 use snow::frontend::Renderer;
 
+#[derive(Eq, PartialEq, Clone, Copy, clap::ValueEnum)]
+enum MouseControl {
+    Absolute,
+    Relative,
+}
+
 #[derive(Parser)]
 #[command(
     about = "Snow - Classic Macintosh emulator",
@@ -41,6 +47,10 @@ struct Args {
     /// Run emulator on start
     #[arg(short, long)]
     run: bool,
+
+    /// Mouse motion control method
+    #[arg(long, value_enum, default_value_t=MouseControl::Absolute)]
+    mouse: MouseControl,
 }
 
 /// Sets up a panic handler that restores the terminal back to the original state
@@ -156,25 +166,25 @@ fn main() -> Result<()> {
         while let Some(event) = eventpump.poll() {
             match event {
                 Event::KeyDown {
-                    keycode: Some(Keycode::I),
-                    ..
-                } => {
-                    cmd.send(EmulatorCommand::InsertFloppy(Box::new([])))?;
-                }
-                Event::KeyDown {
                     keycode: Some(Keycode::Escape),
                     ..
                 }
                 | Event::Quit { .. } => {
                     break 'mainloop;
                 }
-                Event::MouseMotion { xrel, yrel, .. } => {
-                    cmd.send(EmulatorCommand::MouseUpdateRelative {
+                Event::MouseMotion {
+                    x, y, xrel, yrel, ..
+                } => match args.mouse {
+                    MouseControl::Absolute => cmd.send(EmulatorCommand::MouseUpdateAbsolute {
+                        x: x.try_into()?,
+                        y: y.try_into()?,
+                    })?,
+                    MouseControl::Relative => cmd.send(EmulatorCommand::MouseUpdateRelative {
                         relx: xrel.try_into()?,
                         rely: yrel.try_into()?,
                         btn: None,
-                    })?;
-                }
+                    })?,
+                },
                 Event::MouseButtonDown {
                     mouse_btn: MouseButton::Left,
                     ..

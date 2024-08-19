@@ -8,6 +8,10 @@ pub type EmulatorEventReceiver = crossbeam_channel::Receiver<EmulatorEvent>;
 pub enum EmulatorCommand {
     Quit,
     InsertFloppy(Box<[u8]>),
+    MouseUpdateAbsolute {
+        x: u16,
+        y: u16,
+    },
     MouseUpdateRelative {
         relx: i16,
         rely: i16,

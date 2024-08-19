@@ -206,7 +206,7 @@ where
     }
 
     /// Updates the mouse position (relative coordinates) and button state
-    pub fn mouse_update(&mut self, relx: i16, rely: i16, button: Option<bool>) {
+    pub fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) {
         let old_x = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_X);
         let old_y = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_Y);
 
@@ -233,6 +233,26 @@ where
         if let Some(b) = button {
             self.via.b_in.set_sw(!b);
         }
+    }
+
+    /// Updates the mouse position (absolute coordinates)
+    pub fn mouse_update_abs(&mut self, x: u16, y: u16) {
+        let old_x = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_X);
+        let old_y = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_Y);
+
+        if !self.mouse_ready && (old_x != 15 || old_y != 15) {
+            // Wait until the boot process has initialized the mouse position so we don't
+            // interfere with the memory test.
+            return;
+        }
+        self.mouse_ready = true;
+
+        // Report updated mouse coordinates to OS
+        self.write_ram(Self::ADDR_MTEMP_X, x);
+        self.write_ram(Self::ADDR_MTEMP_Y, y);
+        self.write_ram(Self::ADDR_RAWMOUSE_X, x);
+        self.write_ram(Self::ADDR_RAWMOUSE_Y, y);
+        self.write_ram(Self::ADDR_CRSRNEW, 1_u8);
     }
 }
 
