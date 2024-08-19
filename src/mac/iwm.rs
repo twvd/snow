@@ -317,15 +317,31 @@ impl Iwm {
         }
     }
 
+    /// Moves the drive head one step in the selected position
     fn step_head(&mut self) {
         match self.stepdir {
             StepDirection::Up => {
-                self.track += 1;
+                if (self.track + 1) >= Self::DISK_TRACKS {
+                    error!("Disk drive head moving further than track 79!");
+                } else {
+                    self.track += 1;
+                }
             }
             StepDirection::Down => {
-                self.track -= 1;
+                if self.track == 0 {
+                    error!("Disk drive head moving lower than track 0");
+                } else {
+                    self.track -= 1;
+                }
             }
         }
+
+        // Reset track position
+        self.track_byte = 0;
+
+        // Track-to-track stepping time: 30ms
+        self.stepping = TICKS_PER_SECOND / 60_000 * 30;
+
         //trace!(
         //"Track {}, now: {} - byte len: {} bit len: {} rpm: {} cycles/bit: {}",
         //self.stepdir,
@@ -335,9 +351,6 @@ impl Iwm {
         //self.get_track_rpm(),
         //self.get_cycles_per_bit(),
         //);
-
-        // Track-to-track stepping time: 30ms
-        self.stepping = TICKS_PER_SECOND / 60_000 * 30;
     }
 
     fn write_reg(&mut self) {
