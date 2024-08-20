@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use anyhow::Result;
 use log::*;
 use num::clamp;
@@ -58,12 +60,36 @@ pub struct Iwm {
     pwm_avg_sum: i64,
     pwm_avg_count: usize,
     pwm_dutycycle: Ticks,
+
+    write_shift: u8,
+    write_pos: usize,
+    write_buffer: Option<u8>,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Display)]
 enum StepDirection {
     Up,
     Down,
+}
+
+bitfield! {
+    /// IWM handshake register
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct IwmHandshake(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+        /// Write buffer underrun
+        /// 1 = no under-run, 0 = under-run occurred
+        pub underrun: bool @ 6,
+
+        /// Register ready for data
+        /// 1 = ready, 0 = not ready
+        pub ready: bool @ 7,
+    }
+}
+
+impl Default for IwmHandshake {
+    fn default() -> Self {
+        Self(0xFF)
+    }
 }
 
 bitfield! {
@@ -241,6 +267,10 @@ impl Iwm {
             pwm_avg_sum: 0,
             pwm_avg_count: 0,
             pwm_dutycycle: 0,
+
+            write_shift: 0,
+            write_pos: 0,
+            write_buffer: None,
         }
     }
 
@@ -275,6 +305,16 @@ impl Iwm {
         }
     }
 
+    fn dump_tracks(&self) -> Result<()> {
+        let mut f = std::fs::File::create("write.bin")?;
+        for t in 0..(Self::DISK_TRACKS * Self::DISK_SIDES) {
+            f.write_all(&(self.trackdata[t].data.len() as u32).to_le_bytes())?;
+            f.write_all(&(self.trackdata[t].data.len() as u32).to_le_bytes())?;
+            f.write_all(&self.trackdata[t].data)?;
+        }
+        Ok(())
+    }
+
     #[allow(clippy::needless_pass_by_ref_mut)]
     fn read_reg(&mut self) -> bool {
         let reg = IwmReg::from_u8(self.get_selected_reg()).unwrap_or(IwmReg::UNKNOWN);
@@ -305,7 +345,7 @@ impl Iwm {
             IwmReg::TACH => self.get_tacho(),
             IwmReg::RDDATA0 => self.get_head_bit(0),
             IwmReg::RDDATA1 => self.get_head_bit(1),
-            IwmReg::WRTPRT => false,
+            IwmReg::WRTPRT => true,
             _ => {
                 warn!(
                     "Unimplemented register read {:?} {:0b}",
@@ -383,17 +423,16 @@ impl Iwm {
 
     fn iwm_read(&mut self) -> u8 {
         match (self.q6, self.q7) {
-            // Data register
             (false, false) => {
+                // Data register
                 if !self.enable {
                     0xFF
                 } else {
                     std::mem::replace(&mut self.datareg, 0)
                 }
             }
-            // Status
             (true, false) => {
-                //trace!("IWM status read");
+                // Read status register
                 let sense = self.read_reg();
                 self.status.set_sense(sense);
                 self.status.set_mode_low(self.mode.mode_low());
@@ -402,8 +441,11 @@ impl Iwm {
                 self.status.0
             }
             (false, true) => {
-                trace!("IWM handshake read");
-                0xFF
+                // Read handshake register
+                let mut result = IwmHandshake::default();
+                result.set_underrun(!(self.write_pos == 0 && self.write_buffer.is_none()));
+                result.set_ready(self.write_buffer.is_none());
+                result.0
             }
             _ => {
                 warn!("IWM unknown read q6 = {:?} q7 = {:?}", self.q6, self.q7);
@@ -530,6 +572,11 @@ impl Iwm {
         }
     }
 
+    /// Gets the length (in bits) of a track
+    fn get_track_len(&self, track: usize) -> usize {
+        self.trackdata[track].bits
+    }
+
     /// Gets the physical disk bit currently under a head
     fn get_head_bit(&self, head: usize) -> bool {
         debug_assert!(head < Self::DISK_SIDES);
@@ -594,6 +641,20 @@ impl BusMember<Address> for Iwm {
                 // Write MODE
                 self.mode.set_mode(val);
             }
+            (true, true, true) => {
+                // Write data register
+                trace!(
+                    "Write data reg: {:02X}, bit position: {}, track: {}, head: {}",
+                    val,
+                    self.track_byte,
+                    self.get_active_track(),
+                    self.get_active_head()
+                );
+                if self.write_buffer.is_some() {
+                    warn!("Disk write while write buffer not empty");
+                }
+                self.write_buffer = Some(val);
+            }
             _ => (),
         }
 
@@ -618,7 +679,9 @@ impl Tickable for Iwm {
 
             self.track_byte += 1;
             self.track_bit = 0;
-            if self.track_byte >= self.trackdata[self.get_active_track()].bits {
+
+            if self.track_byte >= self.get_track_len(self.get_active_track()) {
+                // Back to start of track
                 //trace!(
                 //    "Track at start - track {} len {} rpm {} cyc/bit {} duty {}% head {}",
                 //    self.track,
@@ -635,6 +698,27 @@ impl Tickable for Iwm {
             if self.shdata & 0x80 != 0 {
                 self.datareg = self.shdata;
                 self.shdata = 0;
+            }
+
+            if self.write_pos == 0 && self.write_buffer.is_some() {
+                // Start writing 8 new bits
+                let Some(v) = self.write_buffer else {
+                    unreachable!()
+                };
+                self.write_shift = v;
+                self.write_pos = 8;
+                self.write_buffer = None;
+            }
+            if self.write_pos > 0 {
+                let bit = self.write_shift & 0x80 != 0;
+                self.write_shift <<= 1;
+                self.write_pos -= 1;
+                self.trackdata[self.get_active_track()].data[self.track_byte] =
+                    if bit { 1 } else { 0 };
+
+                if self.write_pos == 0 && self.write_buffer.is_none() {
+                    self.dump_tracks()?;
+                }
             }
         }
 
