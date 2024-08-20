@@ -176,8 +176,8 @@ fn main() -> Result<()> {
                     x, y, xrel, yrel, ..
                 } => match args.mouse {
                     MouseControl::Absolute => cmd.send(EmulatorCommand::MouseUpdateAbsolute {
-                        x: x.try_into()?,
-                        y: y.try_into()?,
+                        x: x as u16,
+                        y: y as u16,
                     })?,
                     MouseControl::Relative => cmd.send(EmulatorCommand::MouseUpdateRelative {
                         relx: xrel.try_into()?,
