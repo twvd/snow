@@ -56,6 +56,7 @@ pub struct Iwm {
 
     // While > 0, the drive head is moving
     stepping: Ticks,
+    ejecting: Option<Ticks>,
 
     pwm_avg_sum: i64,
     pwm_avg_count: usize,
@@ -186,10 +187,12 @@ enum IwmReg {
     /// 0 = ready, 1 = not ready
     READY = 0b1101,
 
-    DUNNO = 0b1110,
     /// Drive installed
-    /// 0 = drive connected, 1 = no drive connected
-    DRVIN = 0b1111,
+    /// 0 = installed, 1 = not installed
+    INSTALLED = 0b1110,
+
+    /// PRESENT/HD (?)
+    PRESENT = 0b1111,
 
     /// For unknown values
     UNKNOWN,
@@ -262,6 +265,7 @@ impl Iwm {
             dbg_pc: 0,
             dbg_break: LatchingEvent::default(),
             stepping: 0,
+            ejecting: None,
 
             double_sided,
             pwm_avg_sum: 0,
@@ -334,10 +338,10 @@ impl Iwm {
             IwmReg::DIRTN => self.stepdir == StepDirection::Down,
             IwmReg::SIDES => self.double_sided,
             IwmReg::MOTORON => !(self.motor && self.disk_inserted),
-            IwmReg::DRVIN if self.extdrive => true,
-            IwmReg::DRVIN => false, // internal drive installed
-            IwmReg::DUNNO if self.extdrive => true,
-            IwmReg::DUNNO => false,
+            IwmReg::PRESENT if self.extdrive => true,
+            IwmReg::PRESENT => false,
+            IwmReg::INSTALLED if self.extdrive => true,
+            IwmReg::INSTALLED => false,
             IwmReg::READY => false,
             IwmReg::TKO if self.track == 0 => false,
             IwmReg::TKO => true,
@@ -401,8 +405,9 @@ impl Iwm {
                 self.motor = false;
             }
             IwmWriteReg::EJECT => {
-                info!("Disk ejected");
-                self.disk_inserted = false;
+                if self.disk_inserted {
+                    self.ejecting = Some(self.cycles + (TICKS_PER_SECOND / 2));
+                }
             }
             IwmWriteReg::TRACKUP => {
                 self.stepdir = StepDirection::Up;
@@ -669,9 +674,28 @@ impl Tickable for Iwm {
         // This is called at the Macintosh main clock speed (TICKS_PER_SECOND == 8 MHz)
         self.cycles += ticks;
 
+        // When an EJECT command is sent, do not actually eject the disk until eject strobe has been
+        // asserted for at least 500ms. Specifications say a 750ms strobe is required.
+        // For some reason, the Mac Plus ROM gives a very short eject strobe on bootup during drive
+        // enumeration. If we do not ignore that, the Mac Plus always ejects the boot disk.
+        if self.ejecting.is_some() && self.lstrb {
+            let Some(eject_ticks) = self.ejecting else {
+                unreachable!()
+            };
+            if eject_ticks < self.cycles {
+                info!("Disk ejected");
+                self.disk_inserted = false;
+                self.ejecting = None;
+            }
+        } else if !self.lstrb {
+            self.ejecting = None;
+        }
+
+        // Decrement 'head stepping' timer
         self.stepping = self.stepping.saturating_sub(ticks);
 
         if self.disk_inserted && self.motor && self.cycles % self.get_ticks_per_bit() == 0 {
+            // Progress the head over the track
             self.shdata <<= 1;
             if self.get_head_bit(self.get_active_head()) {
                 self.shdata |= 1;
@@ -696,12 +720,15 @@ impl Tickable for Iwm {
             }
 
             if self.shdata & 0x80 != 0 {
+                // Data is moved to the data register when the most significant bit is set.
+                // Because the Mac uses GCR encoding, the most significant bit is always set in
+                // any valid data.
                 self.datareg = self.shdata;
                 self.shdata = 0;
             }
 
             if self.write_pos == 0 && self.write_buffer.is_some() {
-                // Start writing 8 new bits
+                // Write idle and new data in write FIFO, start writing 8 new bits
                 let Some(v) = self.write_buffer else {
                     unreachable!()
                 };
@@ -710,6 +737,7 @@ impl Tickable for Iwm {
                 self.write_buffer = None;
             }
             if self.write_pos > 0 {
+                // Write in progress - write one bit to current head location
                 let bit = self.write_shift & 0x80 != 0;
                 self.write_shift <<= 1;
                 self.write_pos -= 1;

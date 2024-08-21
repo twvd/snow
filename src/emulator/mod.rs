@@ -137,7 +137,8 @@ impl Emulator {
             info!("Stopped at breakpoint: {:06X}", self.cpu.regs.pc);
             debug!("VIA: {:?}", self.cpu.bus.via);
             debug!(
-                "IWM: CS0 {} CS1 {} CS2 {} SEL {} LSTRB {} Q6 {} Q7 {}",
+                "IWM: Enable: {} CS0 {} CS1 {} CS2 {} SEL {} LSTRB {} Q6 {} Q7 {}",
+                self.cpu.bus.iwm.enable,
                 self.cpu.bus.iwm.ca0,
                 self.cpu.bus.iwm.ca1,
                 self.cpu.bus.iwm.ca2,
