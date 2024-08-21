@@ -397,8 +397,9 @@ impl<'a> Disassembler<'a> {
             | InstructionMnemonic::BCLR_imm
             | InstructionMnemonic::BSET_imm
             | InstructionMnemonic::BTST_imm => {
-                let bit = self.get8()?;
-                format!("{} #{},{}", mnemonic, bit, self.ea(instr)?)
+                let bit = self.get16()?;
+                let ea = self.ea(instr)?;
+                format!("{} #{},{}", mnemonic, bit, ea)
             }
 
             InstructionMnemonic::CLR_l
