@@ -44,7 +44,7 @@ pub struct Iwm {
 
     disk_inserted: bool,
     track: usize,
-    stepdir: StepDirection,
+    stepdir: HeadStepDirection,
     trackdata: [Track; Self::DISK_TRACKS * Self::DISK_SIDES],
     track_bit: usize,
     track_byte: usize,
@@ -67,8 +67,9 @@ pub struct Iwm {
     write_buffer: Option<u8>,
 }
 
+/// Direction the drive head is set to step to
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Display)]
-enum StepDirection {
+enum HeadStepDirection {
     Up,
     Down,
 }
@@ -154,7 +155,7 @@ bitfield! {
 /// Value bits: CA2 CA1 CA0 SEL
 #[allow(clippy::upper_case_acronyms)]
 #[derive(FromPrimitive, Debug, PartialEq, Eq)]
-enum IwmReg {
+enum DriveReg {
     /// Head step direction
     /// 0 = track++, 1 = track--
     DIRTN = 0b0000,
@@ -202,7 +203,7 @@ enum IwmReg {
 /// Value bits: CA2 CA1 CA0 SEL
 #[allow(clippy::upper_case_acronyms)]
 #[derive(FromPrimitive, Debug)]
-enum IwmWriteReg {
+enum DriveWriteReg {
     /// Step to higher track (track++)
     TRACKUP = 0b0000,
 
@@ -254,7 +255,7 @@ impl Iwm {
 
             disk_inserted: false,
             track: 4,
-            stepdir: StepDirection::Up,
+            stepdir: HeadStepDirection::Up,
             trackdata: core::array::from_fn(|_| Track::default()),
             track_bit: 0,
             track_byte: 0,
@@ -278,6 +279,7 @@ impl Iwm {
         }
     }
 
+    /// A memory-mapped I/O address was accessed (offset from IWM base address)
     fn access(&mut self, offset: Address) {
         match offset / 512 {
             0 => self.ca0 = false,
@@ -289,7 +291,7 @@ impl Iwm {
             6 => self.lstrb = false,
             7 => {
                 self.lstrb = true;
-                self.write_reg();
+                self.write_drive_reg();
             }
             8 => {
                 self.enable = false;
@@ -319,9 +321,9 @@ impl Iwm {
         Ok(())
     }
 
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    fn read_reg(&mut self) -> bool {
-        let reg = IwmReg::from_u8(self.get_selected_reg()).unwrap_or(IwmReg::UNKNOWN);
+    /// Reads from the currently selected drive register
+    fn read_drive_reg(&self) -> bool {
+        let reg = DriveReg::from_u8(self.get_selected_drive_reg_u8()).unwrap_or(DriveReg::UNKNOWN);
 
         //if reg != IwmReg::TACH {
         //trace!(
@@ -334,27 +336,27 @@ impl Iwm {
         //}
 
         match reg {
-            IwmReg::CISTN => !self.disk_inserted,
-            IwmReg::DIRTN => self.stepdir == StepDirection::Down,
-            IwmReg::SIDES => self.double_sided,
-            IwmReg::MOTORON => !(self.motor && self.disk_inserted),
-            IwmReg::PRESENT if self.extdrive => true,
-            IwmReg::PRESENT => false,
-            IwmReg::INSTALLED if self.extdrive => true,
-            IwmReg::INSTALLED => false,
-            IwmReg::READY => false,
-            IwmReg::TKO if self.track == 0 => false,
-            IwmReg::TKO => true,
-            IwmReg::STEP => self.stepping == 0,
-            IwmReg::TACH => self.get_tacho(),
-            IwmReg::RDDATA0 => self.get_head_bit(0),
-            IwmReg::RDDATA1 => self.get_head_bit(1),
-            IwmReg::WRTPRT => true,
+            DriveReg::CISTN => !self.disk_inserted,
+            DriveReg::DIRTN => self.stepdir == HeadStepDirection::Down,
+            DriveReg::SIDES => self.double_sided,
+            DriveReg::MOTORON => !(self.motor && self.disk_inserted),
+            DriveReg::PRESENT if self.extdrive => true,
+            DriveReg::PRESENT => false,
+            DriveReg::INSTALLED if self.extdrive => true,
+            DriveReg::INSTALLED => false,
+            DriveReg::READY => false,
+            DriveReg::TKO if self.track == 0 => false,
+            DriveReg::TKO => true,
+            DriveReg::STEP => self.stepping == 0,
+            DriveReg::TACH => self.get_tacho(),
+            DriveReg::RDDATA0 => self.get_head_bit(0),
+            DriveReg::RDDATA1 => self.get_head_bit(1),
+            DriveReg::WRTPRT => true,
             _ => {
                 warn!(
                     "Unimplemented register read {:?} {:0b}",
                     reg,
-                    self.get_selected_reg()
+                    self.get_selected_drive_reg_u8()
                 );
                 true
             }
@@ -364,14 +366,14 @@ impl Iwm {
     /// Moves the drive head one step in the selected position
     fn step_head(&mut self) {
         match self.stepdir {
-            StepDirection::Up => {
+            HeadStepDirection::Up => {
                 if (self.track + 1) >= Self::DISK_TRACKS {
                     error!("Disk drive head moving further than track 79!");
                 } else {
                     self.track += 1;
                 }
             }
-            StepDirection::Down => {
+            HeadStepDirection::Down => {
                 if self.track == 0 {
                     error!("Disk drive head moving lower than track 0");
                 } else {
@@ -397,35 +399,38 @@ impl Iwm {
         //);
     }
 
-    fn write_reg(&mut self) {
-        let reg = IwmWriteReg::from_u8(self.get_selected_reg()).unwrap_or(IwmWriteReg::UNKNOWN);
+    /// Writes to the currently selected drive register
+    fn write_drive_reg(&mut self) {
+        let reg = DriveWriteReg::from_u8(self.get_selected_drive_reg_u8())
+            .unwrap_or(DriveWriteReg::UNKNOWN);
         match reg {
-            IwmWriteReg::MOTORON => self.motor = true,
-            IwmWriteReg::MOTOROFF => {
+            DriveWriteReg::MOTORON => self.motor = true,
+            DriveWriteReg::MOTOROFF => {
                 self.motor = false;
             }
-            IwmWriteReg::EJECT => {
+            DriveWriteReg::EJECT => {
                 if self.disk_inserted {
                     self.ejecting = Some(self.cycles + (TICKS_PER_SECOND / 2));
                 }
             }
-            IwmWriteReg::TRACKUP => {
-                self.stepdir = StepDirection::Up;
+            DriveWriteReg::TRACKUP => {
+                self.stepdir = HeadStepDirection::Up;
             }
-            IwmWriteReg::TRACKDN => {
-                self.stepdir = StepDirection::Down;
+            DriveWriteReg::TRACKDN => {
+                self.stepdir = HeadStepDirection::Down;
             }
-            IwmWriteReg::TRACKSTEP => self.step_head(),
+            DriveWriteReg::TRACKSTEP => self.step_head(),
             _ => {
                 warn!(
                     "Unimplemented register write {:?} {:0b}",
                     reg,
-                    self.get_selected_reg()
+                    self.get_selected_drive_reg_u8()
                 );
             }
         }
     }
 
+    /// Reads the currently selected (Q6, Q7) IWM register
     fn iwm_read(&mut self) -> u8 {
         match (self.q6, self.q7) {
             (false, false) => {
@@ -438,7 +443,7 @@ impl Iwm {
             }
             (true, false) => {
                 // Read status register
-                let sense = self.read_reg();
+                let sense = self.read_drive_reg();
                 self.status.set_sense(sense);
                 self.status.set_mode_low(self.mode.mode_low());
                 self.status.set_enable(self.enable);
@@ -459,7 +464,9 @@ impl Iwm {
         }
     }
 
-    fn get_selected_reg(&self) -> u8 {
+    /// Converts the four register selection I/Os to a u8 value which can be used
+    /// to convert to an enum value.
+    fn get_selected_drive_reg_u8(&self) -> u8 {
         let mut v = 0;
         if self.ca2 {
             v |= 0b1000;
@@ -476,6 +483,7 @@ impl Iwm {
         v
     }
 
+    /// Inserts a disk into the disk drive
     pub fn disk_insert(&mut self, data: &[u8]) {
         // Parse track data
         // TODO use iterator, make fancy
@@ -545,6 +553,7 @@ impl Iwm {
         ((TICKS_PER_SECOND * 60) / self.get_track_rpm() / self.trackdata[self.track].bits) + 1
     }
 
+    /// Gets the current state of the TACH (spindle motor tachometer) signal
     pub fn get_tacho(&self) -> bool {
         if !self.motor || self.get_track_rpm() == 0 {
             return false;
@@ -607,6 +616,11 @@ impl Iwm {
             26, 22, 43, 57, 38, 47, 17, 28, 10, 25, 21, 37, 46, 9, 24, 45, 8, 7, 6,
         ];
 
+        if self.double_sided {
+            // Only single-sided drives are PWM controlled
+            return Ok(());
+        }
+
         self.pwm_avg_sum += VALUE_TO_LEN[usize::from(pwm) % VALUE_TO_LEN.len()] as i64;
         self.pwm_avg_count += 1;
         if self.pwm_avg_count >= 100 {
@@ -625,6 +639,8 @@ impl Iwm {
 
 impl BusMember<Address> for Iwm {
     fn read(&mut self, addr: Address) -> Option<u8> {
+        // Only the lower 8-bits of the databus are connected to IWM.
+        // Assume the upper 8 bits are undefined.
         if addr & 1 == 0 {
             return None;
         }
@@ -635,11 +651,8 @@ impl BusMember<Address> for Iwm {
     }
 
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
-        if addr & 1 == 0 {
-            return None;
-        }
-
-        self.access(addr - 0xDFE1FF);
+        // UDS/LDS are not connected to IWM, so ignore the lower address bit here.
+        self.access((addr | 1) - 0xDFE1FF);
 
         match (self.q6, self.q7, self.enable) {
             (true, true, false) => {
