@@ -227,6 +227,26 @@ impl<'a> Disassembler<'a> {
                 )
             }
 
+            InstructionMnemonic::MOVEM_mem_w | InstructionMnemonic::MOVEM_mem_l => {
+                let mask = self.get16()?;
+
+                let regs = if instr.get_addr_mode()? != AddressingMode::IndirectPreDec {
+                    Either::Left(Self::MOVEM_REGS.iter().rev())
+                } else {
+                    Either::Right(Self::MOVEM_REGS.iter())
+                };
+
+                format!(
+                    "MOVEM.{} [{}], {}",
+                    sz,
+                    regs.enumerate()
+                        .filter(|(i, _)| mask & (1 << i) != 0)
+                        .map(|(_, r)| r)
+                        .join("/"),
+                    self.ea(instr)?
+                )
+            }
+
             InstructionMnemonic::CMP_l
             | InstructionMnemonic::CMP_w
             | InstructionMnemonic::CMP_b => format!(
@@ -275,8 +295,11 @@ impl<'a> Disassembler<'a> {
                 format!("{} {}", mnemonic, target)
             }
 
-            InstructionMnemonic::MOVEtoCCR => format!("MOVE.w {},CCR", self.ea(instr)?),
-            InstructionMnemonic::MOVEtoSR => format!("MOVE.w {},SR", self.ea(instr)?),
+            InstructionMnemonic::MOVEtoCCR => format!("MOVE.w CCR,{}", self.ea(instr)?),
+            InstructionMnemonic::MOVEtoSR => format!("MOVE.w SR,{}", self.ea(instr)?),
+            InstructionMnemonic::MOVEfromSR => format!("MOVE.w {},SR", self.ea(instr)?),
+            InstructionMnemonic::MOVEfromUSP => format!("MOVE.l A{},USP", instr.get_op2()),
+            InstructionMnemonic::MOVEtoUSP => format!("MOVE.l USP,A{}", instr.get_op2()),
             InstructionMnemonic::MOVEQ => format!(
                 "{} #${:02X},D{}",
                 mnemonic,
@@ -286,7 +309,10 @@ impl<'a> Disassembler<'a> {
 
             InstructionMnemonic::TST_l
             | InstructionMnemonic::TST_w
-            | InstructionMnemonic::TST_b => format!("{}.{} {}", mnemonic, sz, self.ea(instr)?),
+            | InstructionMnemonic::TST_b
+            | InstructionMnemonic::NOT_l
+            | InstructionMnemonic::NOT_w
+            | InstructionMnemonic::NOT_b => format!("{}.{} {}", mnemonic, sz, self.ea(instr)?),
 
             InstructionMnemonic::AND_l
             | InstructionMnemonic::AND_w
@@ -454,66 +480,100 @@ impl<'a> Disassembler<'a> {
                 }
             }
 
-            InstructionMnemonic::MOVEM_mem_w
-            | InstructionMnemonic::MOVEM_mem_l
-            | InstructionMnemonic::ANDI_ccr
-            | InstructionMnemonic::ANDI_sr
-            | InstructionMnemonic::ASL_ea
-            | InstructionMnemonic::ASL_b
+            InstructionMnemonic::ANDI_ccr
+            | InstructionMnemonic::EORI_ccr
+            | InstructionMnemonic::ORI_ccr => format!("{} #${:02X},CCR", mnemonic, self.get16()?,),
+
+            InstructionMnemonic::ANDI_sr
+            | InstructionMnemonic::EORI_sr
+            | InstructionMnemonic::ORI_sr => format!("{} #${:04X},SR", mnemonic, self.get16()?),
+
+            InstructionMnemonic::ASL_b
             | InstructionMnemonic::ASL_w
             | InstructionMnemonic::ASL_l
             | InstructionMnemonic::ASR_b
             | InstructionMnemonic::ASR_w
             | InstructionMnemonic::ASR_l
-            | InstructionMnemonic::ASR_ea
-            | InstructionMnemonic::CHK
-            | InstructionMnemonic::CMPA_l
-            | InstructionMnemonic::CMPA_w
-            | InstructionMnemonic::CMPM_l
-            | InstructionMnemonic::CMPM_w
-            | InstructionMnemonic::CMPM_b
-            | InstructionMnemonic::EORI_ccr
-            | InstructionMnemonic::EORI_sr
-            | InstructionMnemonic::LSL_ea
             | InstructionMnemonic::LSL_b
             | InstructionMnemonic::LSL_w
             | InstructionMnemonic::LSL_l
             | InstructionMnemonic::LSR_b
             | InstructionMnemonic::LSR_w
             | InstructionMnemonic::LSR_l
-            | InstructionMnemonic::LSR_ea
-            | InstructionMnemonic::ORI_ccr
-            | InstructionMnemonic::ORI_sr
-            | InstructionMnemonic::LINK
-            | InstructionMnemonic::UNLINK
-            | InstructionMnemonic::MOVEfromSR
-            | InstructionMnemonic::MOVEfromUSP
-            | InstructionMnemonic::MOVEtoUSP
-            | InstructionMnemonic::MULU_w
-            | InstructionMnemonic::MULS_w
-            | InstructionMnemonic::NOT_l
-            | InstructionMnemonic::NOT_w
-            | InstructionMnemonic::NOT_b
-            | InstructionMnemonic::PEA
-            | InstructionMnemonic::ROXL_ea
             | InstructionMnemonic::ROXL_b
             | InstructionMnemonic::ROXL_w
             | InstructionMnemonic::ROXL_l
             | InstructionMnemonic::ROXR_b
             | InstructionMnemonic::ROXR_w
             | InstructionMnemonic::ROXR_l
-            | InstructionMnemonic::ROXR_ea
-            | InstructionMnemonic::ROL_ea
             | InstructionMnemonic::ROL_b
             | InstructionMnemonic::ROL_w
             | InstructionMnemonic::ROL_l
             | InstructionMnemonic::ROR_b
             | InstructionMnemonic::ROR_w
-            | InstructionMnemonic::ROR_l
-            | InstructionMnemonic::ROR_ea
-            | InstructionMnemonic::SWAP
-            | InstructionMnemonic::TAS
-            | InstructionMnemonic::TRAP => format!("TODO {}", instr.mnemonic),
+            | InstructionMnemonic::ROR_l => {
+                let count = match instr.get_sh_count() {
+                    Either::Left(i) => format!("#{}", i),
+                    Either::Right(r) => r.to_string(),
+                };
+                format!("{}.{} {},D{}", mnemonic, sz, count, instr.get_op2())
+            }
+
+            InstructionMnemonic::ASL_ea
+            | InstructionMnemonic::ASR_ea
+            | InstructionMnemonic::LSL_ea
+            | InstructionMnemonic::LSR_ea
+            | InstructionMnemonic::ROXL_ea
+            | InstructionMnemonic::ROXR_ea
+            | InstructionMnemonic::ROL_ea
+            | InstructionMnemonic::ROR_ea => format!("{}.w {}", mnemonic, self.ea(instr)?),
+
+            InstructionMnemonic::CHK => {
+                format!("{} {},D{}", mnemonic, self.ea(instr)?, instr.get_op1())
+            }
+
+            InstructionMnemonic::CMPA_l | InstructionMnemonic::CMPA_w => {
+                format!(
+                    "{}.{} {},A{}",
+                    mnemonic,
+                    sz,
+                    self.ea(instr)?,
+                    instr.get_op1()
+                )
+            }
+
+            InstructionMnemonic::CMPM_l
+            | InstructionMnemonic::CMPM_w
+            | InstructionMnemonic::CMPM_b => {
+                let left = self.ea_with(instr, AddressingMode::IndirectPostInc, instr.get_op2())?;
+                let right =
+                    self.ea_with(instr, AddressingMode::IndirectPostInc, instr.get_op1())?;
+                format!("{}.{} {},{}", mnemonic, sz, left, right)
+            }
+
+            InstructionMnemonic::LINK => {
+                instr.fetch_extword(|| self.get16())?;
+                format!(
+                    "{} A{},#{}",
+                    mnemonic,
+                    instr.get_op2(),
+                    instr.get_displacement()?
+                )
+            }
+
+            InstructionMnemonic::UNLINK => format!("{} A{}", mnemonic, instr.get_op2()),
+
+            InstructionMnemonic::PEA | InstructionMnemonic::TAS => {
+                format!("{} {}", mnemonic, self.ea(instr)?)
+            }
+
+            InstructionMnemonic::SWAP => format!("{} D{}", mnemonic, instr.get_op2()),
+
+            InstructionMnemonic::MULU_w | InstructionMnemonic::MULS_w => {
+                format!("{} {},D{}", mnemonic, self.ea(instr)?, instr.get_op1())
+            }
+
+            InstructionMnemonic::TRAP => format!("{} #{}", mnemonic, instr.trap_get_vector()),
         };
 
         Ok(())
