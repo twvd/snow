@@ -657,6 +657,9 @@ impl BusMember<Address> for Iwm {
         match (self.q6, self.q7, self.enable) {
             (true, true, false) => {
                 // Write MODE
+                if val != 0x1F {
+                    warn!("Non-standard IWM mode: {:02X}", val);
+                }
                 self.mode.set_mode(val);
             }
             (true, true, true) => {
