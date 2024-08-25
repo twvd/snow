@@ -12,19 +12,19 @@ use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::mouse::MouseButton;
 use sha2::{Digest, Sha256};
-use snow::emulator::comm::EmulatorCommand;
-use snow::emulator::{Emulator, MacModel};
-use snow::mac::keyboard::{self, Keyboard};
-use snow::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
-use snow::tickable::Tickable;
+use snow_core::emulator::comm::EmulatorCommand;
+use snow_core::emulator::{Emulator, MacModel};
+use snow_core::mac::keyboard::{self, Keyboard};
+use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
+use snow_core::tickable::Tickable;
 use ui::UserInterface;
 
 use std::panic::{set_hook, take_hook};
 use std::time::{Duration, Instant};
 use std::{fs, thread};
 
-use snow::frontend::sdl::{SDLEventPump, SDLRenderer};
-use snow::frontend::Renderer;
+use snow_core::frontend::sdl::{SDLEventPump, SDLRenderer};
+use snow_core::frontend::Renderer;
 
 #[derive(Eq, PartialEq, Clone, Copy, clap::ValueEnum)]
 enum MouseControl {
@@ -207,7 +207,7 @@ fn main() -> Result<()> {
                     };
 
                     cmd.send(EmulatorCommand::KeyEvent(
-                        snow::mac::keyboard::KeyEvent::KeyDown(mac_keycode),
+                        snow_core::mac::keyboard::KeyEvent::KeyDown(mac_keycode),
                     ))?;
                 }
                 Event::KeyUp {
@@ -219,7 +219,7 @@ fn main() -> Result<()> {
                     };
 
                     cmd.send(EmulatorCommand::KeyEvent(
-                        snow::mac::keyboard::KeyEvent::KeyUp(mac_keycode),
+                        snow_core::mac::keyboard::KeyEvent::KeyUp(mac_keycode),
                     ))?;
                 }
                 Event::MouseMotion {

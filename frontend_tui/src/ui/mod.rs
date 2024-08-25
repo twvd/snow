@@ -14,13 +14,13 @@ use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Widget};
 use ratatui::Terminal;
-use snow::bus::Address;
-use snow::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
-use snow::cpu_m68k::regs::RegisterFile;
-use snow::emulator::comm::{
+use snow_core::bus::Address;
+use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
+use snow_core::cpu_m68k::regs::RegisterFile;
+use snow_core::emulator::comm::{
     EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver, EmulatorStatus,
 };
-use snow::types::Long;
+use snow_core::types::Long;
 use tui_logger::{TuiLoggerLevelOutput, TuiLoggerWidget, TuiWidgetEvent, TuiWidgetState};
 
 type DisassemblyListing = Vec<DisassemblyEntry>;

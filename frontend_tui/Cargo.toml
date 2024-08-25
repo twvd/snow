@@ -10,6 +10,6 @@ hex-literal = "0.4.1"
 log = { version = "0.4.22", features = ["std"] }
 ratatui = "0.27.0"
 sdl2 = { version = "0.37.0", features = ["unsafe_textures"] }
-snow = { path = "../core" }
+snow_core = { path = "../core" }
 sha2 = "0.10.8"
 tui-logger = { version = "0.11.2", features = ["crossterm"] }
