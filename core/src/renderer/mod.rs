@@ -1,5 +1,4 @@
 pub mod channel;
-pub mod sdl;
 
 use anyhow::Result;
 
@@ -10,7 +9,7 @@ use std::sync::Arc;
 /// Thread-safe display buffer
 pub type DisplayBuffer = Arc<Vec<AtomicU8>>;
 
-fn new_displaybuffer(width: usize, height: usize) -> DisplayBuffer {
+pub fn new_displaybuffer(width: usize, height: usize) -> DisplayBuffer {
     Arc::new(Vec::from_iter(
         iter::repeat_with(|| AtomicU8::new(0)).take(width * height * 4),
     ))

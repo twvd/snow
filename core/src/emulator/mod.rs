@@ -5,10 +5,10 @@ use std::time::{Duration, Instant};
 
 use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::CpuM68k;
-use crate::frontend::channel::ChannelRenderer;
-use crate::frontend::{DisplayBuffer, Renderer};
 use crate::mac::bus::MacBus;
 use crate::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
+use crate::renderer::channel::ChannelRenderer;
+use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
 
 use anyhow::Result;

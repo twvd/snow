@@ -937,7 +937,6 @@ dependencies = [
  "num-derive",
  "num-traits",
  "proc-bitfield",
- "sdl2",
  "serde",
  "serde_json",
  "strum",

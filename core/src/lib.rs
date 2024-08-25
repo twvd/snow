@@ -1,4 +1,4 @@
-// Clippy confuguration
+// Clippy configuration
 #![warn(clippy::nursery)]
 #![warn(clippy::explicit_iter_loop)]
 #![warn(clippy::large_enum_variant)]
@@ -17,8 +17,8 @@
 pub mod bus;
 pub mod cpu_m68k;
 pub mod emulator;
-pub mod frontend;
 pub mod mac;
+pub mod renderer;
 pub mod tickable;
 pub mod types;
 pub mod util;

@@ -1,6 +1,7 @@
 #![allow(clippy::iter_nth_zero)]
 
-pub mod ui;
+mod renderer_sdl;
+mod ui;
 
 use anyhow::Result;
 use clap::Parser;
@@ -23,8 +24,8 @@ use std::panic::{set_hook, take_hook};
 use std::time::{Duration, Instant};
 use std::{fs, thread};
 
-use snow_core::frontend::sdl::{SDLEventPump, SDLRenderer};
-use snow_core::frontend::Renderer;
+use renderer_sdl::{SDLEventPump, SDLRenderer};
+use snow_core::renderer::Renderer;
 
 #[derive(Eq, PartialEq, Clone, Copy, clap::ValueEnum)]
 enum MouseControl {

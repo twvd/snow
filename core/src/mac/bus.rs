@@ -3,9 +3,9 @@ use std::ops::Range;
 use super::scc::Scc;
 use super::via::Via;
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
-use crate::frontend::Renderer;
 use crate::mac::iwm::Iwm;
 use crate::mac::video::Video;
+use crate::renderer::Renderer;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent};
 

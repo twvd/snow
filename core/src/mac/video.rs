@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     bus::Address,
-    frontend::Renderer,
+    renderer::Renderer,
     tickable::{Tickable, Ticks},
     types::LatchingEvent,
 };
