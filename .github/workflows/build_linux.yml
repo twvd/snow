@@ -1,4 +1,4 @@
-name: Build and test
+name: Build - Linux x64
 
 on:
   workflow_run:
@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Update package repos
       run: sudo apt-get -y update
     - name: Install prerequisites
@@ -27,5 +27,5 @@ jobs:
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: 'snow-linux-gha${{ github.run_number }}'
+        name: 'snow-linux-x64-gha${{ github.run_number }}'
         path: target/release/snow_frontend_tui
