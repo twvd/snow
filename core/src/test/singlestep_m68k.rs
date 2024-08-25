@@ -112,7 +112,7 @@ macro_rules! _cpu_test {
         #[test]
         fn $testfn() {
             //let filename = format!("testdata/680x0/68000/v1/{}.json", $instr);
-            let filename = format!("testdata/m68000/v1/{}.json", $instr);
+            let filename = format!("../testdata/m68000/v1/{}.json", $instr);
             let filename_gz = format!("{}.gz", filename);
             let testcases: Vec<Testcase> = if Path::new(&filename).exists() {
                 serde_json::from_reader(fs::File::open(filename).unwrap()).unwrap()
