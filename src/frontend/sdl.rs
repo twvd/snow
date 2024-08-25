@@ -60,10 +60,6 @@ impl SDLRenderer {
         self.fps_count += 1;
 
         if self.fps_time.elapsed().as_secs() >= 2 {
-            debug!(
-                "SDL Frame rate: {:0.2} frames/second",
-                self.fps_count as f32 / self.fps_time.elapsed().as_secs_f32()
-            );
             self.fps_count = 0;
             self.fps_time = Instant::now();
         }
