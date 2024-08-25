@@ -5,6 +5,26 @@ members = [
     "frontend_tui"
 ]
 
+[workspace.lints.clippy]
+nursery = { level = "deny", priority = -1 }
+
+cast_possible_truncation = "allow"
+doc_markdown = "allow"
+option_if_let_else = "allow"
+missing_const_for_fn = "allow"
+new_without_default = "allow"
+iter_nth_zero = "allow"
+unit_arg = "allow"
+single_match = "allow"
+
+explicit_iter_loop = "deny"
+large_enum_variant = "deny"
+large_types_passed_by_value = "deny"
+large_stack_frames = "deny"
+needless_pass_by_value = "deny"
+semicolon_if_nothing_returned = "deny"
+
+
 [profile.test]
 opt-level = 3
 debug = true

@@ -143,30 +143,30 @@ impl UserInterface {
                         (_, KeyCode::F(1)) => self.view = View::Log,
                         (_, KeyCode::F(2)) => self.view = View::Debugger,
                         (_, KeyCode::F(5)) if self.emustatus.running => {
-                            self.cmdsender.send(EmulatorCommand::Stop)?
+                            self.cmdsender.send(EmulatorCommand::Stop)?;
                         }
                         (_, KeyCode::F(5)) => self.cmdsender.send(EmulatorCommand::Run)?,
                         (_, KeyCode::F(9)) => self.cmdsender.send(EmulatorCommand::Step)?,
                         (View::Log, KeyCode::PageUp) => {
-                            self.state_log.transition(TuiWidgetEvent::PrevPageKey)
+                            self.state_log.transition(TuiWidgetEvent::PrevPageKey);
                         }
                         (View::Log, KeyCode::PageDown) => {
-                            self.state_log.transition(TuiWidgetEvent::NextPageKey)
+                            self.state_log.transition(TuiWidgetEvent::NextPageKey);
                         }
                         (View::Log, KeyCode::Down) => {
-                            self.state_log.transition(TuiWidgetEvent::DownKey)
+                            self.state_log.transition(TuiWidgetEvent::DownKey);
                         }
                         (View::Log, KeyCode::Up) => {
-                            self.state_log.transition(TuiWidgetEvent::UpKey)
+                            self.state_log.transition(TuiWidgetEvent::UpKey);
                         }
                         (View::Log, KeyCode::End) => {
-                            self.state_log.transition(TuiWidgetEvent::SpaceKey)
+                            self.state_log.transition(TuiWidgetEvent::SpaceKey);
                         }
                         (View::Debugger, KeyCode::Up) => {
-                            self.debug_sel = self.debug_sel.saturating_sub(1)
+                            self.debug_sel = self.debug_sel.saturating_sub(1);
                         }
                         (View::Debugger, KeyCode::Down) => {
-                            self.debug_sel = self.debug_sel.saturating_add(1)
+                            self.debug_sel = self.debug_sel.saturating_add(1);
                         }
                         (View::Debugger, KeyCode::F(7)) => {
                             let addr = self.disassembly[self.debug_sel].addr;
@@ -189,7 +189,7 @@ impl UserInterface {
         Ok(())
     }
 
-    fn draw_debugger(&mut self, area: Rect, buf: &mut Buffer) {
+    fn draw_debugger(&self, area: Rect, buf: &mut Buffer) {
         let layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(vec![Constraint::Percentage(100), Constraint::Min(20)])
@@ -324,7 +324,7 @@ impl UserInterface {
         .render(layout_right[2], buf);
     }
 
-    fn handle_command(&mut self, cmd: &str) -> Result<()> {
+    fn handle_command(&self, cmd: &str) -> Result<()> {
         let tokens = cmd.split(' ').collect::<Vec<_>>();
         match *tokens.first().context("Empty command")? {
             "b" => {

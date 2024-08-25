@@ -3,6 +3,9 @@ name = "snow_frontend_tui"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [dependencies]
 anyhow = { version = "1.0.86", features = ["backtrace"] }
 clap = { version = "4.5.10", features = ["derive"] }

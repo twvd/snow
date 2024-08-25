@@ -1,5 +1,3 @@
-#![allow(clippy::iter_nth_zero)]
-
 mod renderer_sdl;
 mod ui;
 
