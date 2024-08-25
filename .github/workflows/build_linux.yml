@@ -1,0 +1,31 @@
+name: Build and test
+
+on:
+  workflow_run:
+    workflows: [Checks and tests]
+    types:
+      - completed
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Update package repos
+      run: sudo apt-get -y update
+    - name: Install prerequisites
+      run: sudo apt-get -y install libsdl2-dev python3
+    - name: Fetch submodules
+      run: git submodule update --init --recursive
+    - name: Build release
+      run: cargo build --verbose --release
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: 'snow-linux-gha${{ github.run_number }}'
+        path: target/release/snow_frontend_tui

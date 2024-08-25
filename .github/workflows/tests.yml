@@ -1,4 +1,4 @@
-name: Build and test
+name: Checks and tests
 
 on:
   push:
@@ -19,22 +19,24 @@ jobs:
     - name: Update package repos
       run: sudo apt-get -y update
     - name: Install prerequisites
-      run: sudo apt-get -y install libsdl2-dev python3
+      run: sudo apt-get -y install libsdl2-dev
     - name: Install cargo-llvm-cov
       uses: taiki-e/install-action@cargo-llvm-cov
     - name: Fetch submodules
       run: git submodule update --init --recursive
-    - name: Generate test data
-      working-directory: ./testdata/m68000
-      run: python3 decode.py
     - name: Code formatting check
       run: cargo fmt --check
     - name: Clippy lint
       run: cargo clippy --all -- -D warnings
-    - name: Build
-      run: cargo build --verbose
-    - name: Build release
-      run: cargo build --verbose --release
-    - name: Run tests
-      run: cargo test --verbose
+    - name: Generate test data
+      working-directory: ./testdata/m68000
+      run: python3 decode.py
+    - name: Generate code coverage
+      run: cargo llvm-cov --workspace --codecov --output-path codecov.json
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: codecov.json
+        fail_ci_if_error: true
 
