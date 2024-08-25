@@ -1,8 +1,11 @@
+#![allow(clippy::iter_nth_zero)]
+
 pub mod ui;
 
 use anyhow::Result;
 use clap::Parser;
 use hex_literal::hex;
+use log::*;
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
 use sdl2::event::Event;
@@ -11,6 +14,7 @@ use sdl2::mouse::MouseButton;
 use sha2::{Digest, Sha256};
 use snow::emulator::comm::EmulatorCommand;
 use snow::emulator::{Emulator, MacModel};
+use snow::mac::keyboard::{self, Keyboard};
 use snow::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow::tickable::Tickable;
 use ui::UserInterface;
@@ -63,6 +67,28 @@ fn setup_panic_handler() {
         let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
         original_hook(panic_info);
     }));
+}
+
+fn map_sdl_keycode(kc: Keycode) -> Option<u8> {
+    match kc {
+        Keycode::BACKSPACE => Some(keyboard::SC_BACKSPACE),
+        Keycode::TAB => Some(keyboard::SC_TAB),
+        Keycode::CAPSLOCK => Some(keyboard::SC_CAPSLOCK),
+        Keycode::RETURN | Keycode::RETURN2 => Some(keyboard::SC_RETURN),
+        Keycode::LSHIFT | Keycode::RSHIFT => Some(keyboard::SC_SHIFT),
+        Keycode::LALT | Keycode::RALT => Some(keyboard::SC_OPTION),
+        Keycode::LCTRL | Keycode::RCTRL => Some(keyboard::SC_APPLE),
+        Keycode::SPACE => Some(keyboard::SC_SPACE),
+        _ => {
+            let name = kc.name();
+            if name.len() == 1 {
+                let sdl_char = name.chars().nth(0)?;
+                Keyboard::char_to_scancode(sdl_char)
+            } else {
+                None
+            }
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -171,6 +197,30 @@ fn main() -> Result<()> {
                 }
                 | Event::Quit { .. } => {
                     break 'mainloop;
+                }
+                Event::KeyDown {
+                    keycode: Some(k), ..
+                } => {
+                    let Some(mac_keycode) = map_sdl_keycode(k) else {
+                        warn!("Unknown SDL keycode: {:?} ({})", k, k.name());
+                        continue;
+                    };
+
+                    cmd.send(EmulatorCommand::KeyEvent(
+                        snow::mac::keyboard::KeyEvent::KeyDown(mac_keycode),
+                    ))?;
+                }
+                Event::KeyUp {
+                    keycode: Some(k), ..
+                } => {
+                    let Some(mac_keycode) = map_sdl_keycode(k) else {
+                        warn!("Unknown SDL keycode: {:?} ({})", k, k.name());
+                        continue;
+                    };
+
+                    cmd.send(EmulatorCommand::KeyEvent(
+                        snow::mac::keyboard::KeyEvent::KeyUp(mac_keycode),
+                    ))?;
                 }
                 Event::MouseMotion {
                     x, y, xrel, yrel, ..

@@ -1,4 +1,5 @@
 use crate::bus::{Address, BusMember};
+use crate::mac::keyboard::Keyboard;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, Field16};
 
@@ -9,6 +10,16 @@ use serde::{Deserialize, Serialize};
 /// Counter at which to trigger the one second interrupt
 /// (counted on the E Clock)
 const ONESEC_TICKS: Ticks = 783360;
+
+/// Time until a keyboard response is created
+///
+/// Time for the host command to be clocked out is:
+/// 840us + (180us [clock low] + 220us [clock high]) * 8 + 80us
+///
+/// Time for the keyboard response to be clocked in:
+/// (160us [clock low] + 180us [clock high]) * 8
+/// = 6840us, roughly 7ms.
+const KEYBOARD_DELAY: Ticks = ONESEC_TICKS * 7 / 1000;
 
 bitfield! {
     /// VIA Register A (for classic models)
@@ -140,7 +151,6 @@ bitfield! {
 }
 
 /// Synertek SY6522 Versatile Interface Adapter
-#[derive(Debug)]
 pub struct Via {
     /// Register A, outputs
     pub a_out: RegisterA,
@@ -181,9 +191,13 @@ pub struct Via {
     /// Counter for the one-second timer
     onesec: Ticks,
 
-    kbdshift: u8,
+    kbdshift_in: u8,
+    kbdshift_out: u8,
+    kbdshift_out_time: Ticks,
 
     t2_enable: bool,
+
+    pub keyboard: Keyboard,
 }
 
 impl Via {
@@ -205,7 +219,11 @@ impl Via {
             t2_enable: false,
 
             onesec: 0,
-            kbdshift: 0,
+            kbdshift_in: 0,
+            kbdshift_out: 0,
+            kbdshift_out_time: 0,
+
+            keyboard: Keyboard::default(),
         }
     }
 }
@@ -239,7 +257,10 @@ impl BusMember<Address> for Via {
             0xE7FE => Some(self.ddra.0),
 
             // Keyboard shift register
-            0xF5FE => Some(self.kbdshift),
+            0xF5FE => {
+                self.ifr.set_kbdready(false);
+                Some(self.kbdshift_in)
+            }
 
             // Auxiliary Control Register
             0xF7FE => Some(self.acr.0),
@@ -296,7 +317,13 @@ impl BusMember<Address> for Via {
             }
 
             // Keyboard shift register
-            0xF5FE => Some(self.kbdshift = val),
+            0xF5FE => {
+                self.ifr.set_kbdready(false);
+
+                self.kbdshift_out = val;
+                self.kbdshift_out_time = KEYBOARD_DELAY;
+                Some(())
+            }
 
             // Register B
             0xE1FE => {
@@ -374,6 +401,16 @@ impl Tickable for Via {
 
         if self.ier.t1() {
             panic!("Time to implement T1");
+        }
+
+        // Keyboard response
+        if self.kbdshift_out_time > 0 {
+            self.kbdshift_out_time = self.kbdshift_out_time.saturating_sub(ticks);
+            if self.kbdshift_out_time == 0 {
+                self.kbdshift_in = self.keyboard.cmd(self.kbdshift_out)?;
+                self.acr.set_kbd(0);
+                self.ifr.set_kbdready(true);
+            }
         }
 
         Ok(ticks)

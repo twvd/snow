@@ -1,10 +1,9 @@
-use crate::{bus::Address, cpu_m68k::regs::RegisterFile, tickable::Ticks};
+use crate::{bus::Address, cpu_m68k::regs::RegisterFile, mac::keyboard::KeyEvent, tickable::Ticks};
 
 pub type EmulatorCommandSender = crossbeam_channel::Sender<EmulatorCommand>;
 pub type EmulatorEventReceiver = crossbeam_channel::Receiver<EmulatorEvent>;
 
 /// A command/event that can be sent to the emulator
-#[derive(Debug)]
 pub enum EmulatorCommand {
     Quit,
     InsertFloppy(Box<[u8]>),
@@ -22,8 +21,8 @@ pub enum EmulatorCommand {
     Step,
     ToggleBreakpoint(Address),
     BusWrite(Address, Vec<u8>),
-    //BusDump(Address, usize),
     Disassemble(Address, usize),
+    KeyEvent(KeyEvent),
 }
 
 /// Structure with general emulator status
