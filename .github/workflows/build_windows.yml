@@ -1,0 +1,42 @@
+name: Build - Windows
+
+on:
+  workflow_run:
+    workflows: [Checks and tests]
+    types:
+      - completed
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    strategy:
+      matrix:
+        environment:
+          - msystem: MINGW64
+            prefix: mingw-w64-x86_64
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Prepare MSYS2 environment
+      uses: msys2/setup-msys2@v2
+      with:
+        release: false
+        update: true
+        msystem: ${{ matrix.environment.msystem }}
+        pacboy: >-
+          rust:p
+          SDL2
+    - name: Build release
+      run: cargo build --verbose --release
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: 'snow-windows-x64-gha${{ github.run_number }}'
+        path: target/release/snow_frontend_tui.exe
