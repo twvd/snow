@@ -19,7 +19,6 @@ use snow_core::tickable::Tickable;
 use ui::UserInterface;
 
 use std::panic::{set_hook, take_hook};
-use std::time::{Duration, Instant};
 use std::{fs, thread};
 
 use renderer_sdl::{SDLEventPump, SDLRenderer};
@@ -175,11 +174,11 @@ fn main() -> Result<()> {
     });
 
     'mainloop: loop {
-        let t_start = Instant::now();
-
         // Render frame to SDL window
-        if let Ok(frame) = frame_recv.try_recv() {
-            renderer.update_from(&frame)?;
+        if !frame_recv.is_empty() {
+            while let Ok(frame) = frame_recv.try_recv() {
+                renderer.update_from(&frame)?;
+            }
         }
 
         // Draw TUI
@@ -188,7 +187,7 @@ fn main() -> Result<()> {
         }
 
         // Process SDL events
-        while let Some(event) = eventpump.poll() {
+        while let Some(event) = eventpump.wait(10) {
             match event {
                 Event::KeyDown {
                     keycode: Some(Keycode::Escape),
@@ -257,9 +256,6 @@ fn main() -> Result<()> {
                 _ => (),
             }
         }
-
-        // Sync to roughly 120 iterations per second
-        thread::sleep(Duration::from_millis(10).saturating_sub(t_start.elapsed()));
     }
 
     // Terminate emulator

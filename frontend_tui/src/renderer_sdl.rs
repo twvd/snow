@@ -119,10 +119,19 @@ impl SDLEventPump {
         Self {}
     }
 
+    #[allow(dead_code)]
     pub fn poll(&self) -> Option<Event> {
         SDL.with(|cell| {
             let mut sdls = cell.borrow_mut();
             sdls.pump.poll_event()
+        })
+    }
+
+    #[allow(dead_code)]
+    pub fn wait(&self, ms: u32) -> Option<Event> {
+        SDL.with(|cell| {
+            let mut sdls = cell.borrow_mut();
+            sdls.pump.wait_event_timeout(ms)
         })
     }
 }

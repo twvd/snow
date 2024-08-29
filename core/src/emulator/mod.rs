@@ -203,7 +203,11 @@ impl Tickable for Emulator {
                 self.last_update = Instant::now();
                 self.status_update()?;
             }
-            self.step()?;
+
+            // Batch 10000 steps for performance reasons
+            for _ in 0..10000 {
+                self.step()?;
+            }
         } else {
             thread::sleep(Duration::from_millis(100));
         }

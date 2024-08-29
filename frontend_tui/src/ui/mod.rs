@@ -118,63 +118,65 @@ impl UserInterface {
         self.draw(terminal)?;
 
         // TUI events
-        if event::poll(std::time::Duration::from_millis(50))? {
-            if let event::Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    if self.cmd.is_some() {
-                        match key.code {
-                            KeyCode::Char(c) => self.cmd.as_mut().unwrap().push(c),
-                            KeyCode::Backspace => {
-                                self.cmd.as_mut().unwrap().pop();
-                            }
-                            KeyCode::Enter => {
-                                let cmd = self.cmd.take().unwrap();
-                                if let Err(e) = self.handle_command(&cmd) {
-                                    error!("Command failed: {:?}", e);
-                                }
-                            }
-                            _ => (),
-                        }
-                    }
+        while event::poll(std::time::Duration::from_millis(0))? {
+            let event::Event::Key(key) = event::read()? else {
+                break;
+            };
 
-                    match (self.view, key.code) {
-                        (_, KeyCode::Char('/')) => self.cmd = Some("".to_string()),
-                        (_, KeyCode::F(10)) => return Ok(false),
-                        (_, KeyCode::F(1)) => self.view = View::Log,
-                        (_, KeyCode::F(2)) => self.view = View::Debugger,
-                        (_, KeyCode::F(5)) if self.emustatus.running => {
-                            self.cmdsender.send(EmulatorCommand::Stop)?;
+            if key.kind == KeyEventKind::Press {
+                if self.cmd.is_some() {
+                    match key.code {
+                        KeyCode::Char(c) => self.cmd.as_mut().unwrap().push(c),
+                        KeyCode::Backspace => {
+                            self.cmd.as_mut().unwrap().pop();
                         }
-                        (_, KeyCode::F(5)) => self.cmdsender.send(EmulatorCommand::Run)?,
-                        (_, KeyCode::F(9)) => self.cmdsender.send(EmulatorCommand::Step)?,
-                        (View::Log, KeyCode::PageUp) => {
-                            self.state_log.transition(TuiWidgetEvent::PrevPageKey);
-                        }
-                        (View::Log, KeyCode::PageDown) => {
-                            self.state_log.transition(TuiWidgetEvent::NextPageKey);
-                        }
-                        (View::Log, KeyCode::Down) => {
-                            self.state_log.transition(TuiWidgetEvent::DownKey);
-                        }
-                        (View::Log, KeyCode::Up) => {
-                            self.state_log.transition(TuiWidgetEvent::UpKey);
-                        }
-                        (View::Log, KeyCode::End) => {
-                            self.state_log.transition(TuiWidgetEvent::SpaceKey);
-                        }
-                        (View::Debugger, KeyCode::Up) => {
-                            self.debug_sel = self.debug_sel.saturating_sub(1);
-                        }
-                        (View::Debugger, KeyCode::Down) => {
-                            self.debug_sel = self.debug_sel.saturating_add(1);
-                        }
-                        (View::Debugger, KeyCode::F(7)) => {
-                            let addr = self.disassembly[self.debug_sel].addr;
-                            self.cmdsender
-                                .send(EmulatorCommand::ToggleBreakpoint(addr))?;
+                        KeyCode::Enter => {
+                            let cmd = self.cmd.take().unwrap();
+                            if let Err(e) = self.handle_command(&cmd) {
+                                error!("Command failed: {:?}", e);
+                            }
                         }
                         _ => (),
                     }
+                }
+
+                match (self.view, key.code) {
+                    (_, KeyCode::Char('/')) => self.cmd = Some("".to_string()),
+                    (_, KeyCode::F(10)) => return Ok(false),
+                    (_, KeyCode::F(1)) => self.view = View::Log,
+                    (_, KeyCode::F(2)) => self.view = View::Debugger,
+                    (_, KeyCode::F(5)) if self.emustatus.running => {
+                        self.cmdsender.send(EmulatorCommand::Stop)?;
+                    }
+                    (_, KeyCode::F(5)) => self.cmdsender.send(EmulatorCommand::Run)?,
+                    (_, KeyCode::F(9)) => self.cmdsender.send(EmulatorCommand::Step)?,
+                    (View::Log, KeyCode::PageUp) => {
+                        self.state_log.transition(TuiWidgetEvent::PrevPageKey);
+                    }
+                    (View::Log, KeyCode::PageDown) => {
+                        self.state_log.transition(TuiWidgetEvent::NextPageKey);
+                    }
+                    (View::Log, KeyCode::Down) => {
+                        self.state_log.transition(TuiWidgetEvent::DownKey);
+                    }
+                    (View::Log, KeyCode::Up) => {
+                        self.state_log.transition(TuiWidgetEvent::UpKey);
+                    }
+                    (View::Log, KeyCode::End) => {
+                        self.state_log.transition(TuiWidgetEvent::SpaceKey);
+                    }
+                    (View::Debugger, KeyCode::Up) => {
+                        self.debug_sel = self.debug_sel.saturating_sub(1);
+                    }
+                    (View::Debugger, KeyCode::Down) => {
+                        self.debug_sel = self.debug_sel.saturating_add(1);
+                    }
+                    (View::Debugger, KeyCode::F(7)) => {
+                        let addr = self.disassembly[self.debug_sel].addr;
+                        self.cmdsender
+                            .send(EmulatorCommand::ToggleBreakpoint(addr))?;
+                    }
+                    _ => (),
                 }
             }
         }
