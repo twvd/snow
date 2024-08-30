@@ -1,5 +1,6 @@
 use crate::bus::{Address, BusMember};
 use crate::mac::keyboard::Keyboard;
+use crate::mac::rtc::Rtc;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, Field16};
 
@@ -198,6 +199,7 @@ pub struct Via {
     t2_enable: bool,
 
     pub keyboard: Keyboard,
+    rtc: Rtc,
 }
 
 impl Via {
@@ -224,6 +226,7 @@ impl Via {
             kbdshift_out_time: 0,
 
             keyboard: Keyboard::default(),
+            rtc: Rtc::default(),
         }
     }
 }
@@ -243,9 +246,6 @@ impl BusMember<Address> for Via {
             0xE1FE => {
                 self.ifr.set_kbddata(false);
                 self.ifr.set_kbdclock(false);
-
-                // TODO remove RTC stub
-                self.b_in.set_rtcdata(false);
 
                 Some((self.b_in.0 & !self.ddrb.0) | (self.b_out.0 & self.ddrb.0))
             }
@@ -331,6 +331,12 @@ impl BusMember<Address> for Via {
                 self.ifr.set_kbdclock(false);
 
                 self.b_out.0 = val;
+                let rtcin = self.rtc.io(
+                    self.b_out.rtcenb(),
+                    self.b_out.rtcclk(),
+                    self.b_out.rtcdata(),
+                );
+                self.b_in.set_rtcdata(rtcin);
                 Some(())
             }
 
@@ -388,6 +394,7 @@ impl Tickable for Via {
         if self.onesec >= ONESEC_TICKS {
             self.onesec -= ONESEC_TICKS;
             self.ifr.set_onesec(true);
+            self.rtc.second();
         }
 
         // Timer 2
