@@ -213,6 +213,9 @@ impl Tickable for Emulator {
 
             // Batch 10000 steps for performance reasons
             for _ in 0..10000 {
+                if !self.run {
+                    break;
+                }
                 self.step()?;
             }
         } else {
