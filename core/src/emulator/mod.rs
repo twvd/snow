@@ -154,18 +154,24 @@ impl Tickable for Emulator {
                         self.cpu.bus.mouse_update_abs(x, y);
                     }
                     EmulatorCommand::Quit => return Ok(0),
-                    EmulatorCommand::InsertFloppy(image) => self.cpu.bus.iwm.disk_insert(&image),
+                    EmulatorCommand::InsertFloppy(image) => {
+                        self.cpu.bus.iwm.disk_insert(&image);
+                        self.status_update()?;
+                    }
                     EmulatorCommand::Run => {
                         info!("Running");
                         self.run = true;
+                        self.status_update()?;
                     }
                     EmulatorCommand::Stop => {
                         info!("Stopped");
                         self.run = false;
+                        self.status_update()?;
                     }
                     EmulatorCommand::Step => {
                         if !self.run {
                             self.step()?;
+                            self.status_update()?;
                         }
                     }
                     EmulatorCommand::ToggleBreakpoint(addr) => {
@@ -176,11 +182,13 @@ impl Tickable for Emulator {
                             self.breakpoints.push(addr);
                             info!("Breakpoint set: ${:06X}", addr);
                         }
+                        self.status_update()?;
                     }
                     EmulatorCommand::BusWrite(start, data) => {
                         for (i, d) in data.into_iter().enumerate() {
                             self.cpu.bus.write(start + (i as Address), d);
                         }
+                        self.status_update()?;
                     }
                     EmulatorCommand::Disassemble(addr, len) => {
                         self.disassemble(addr, len)?;
@@ -195,7 +203,6 @@ impl Tickable for Emulator {
                     }
                 }
             }
-            self.status_update()?;
         }
 
         if self.run {
