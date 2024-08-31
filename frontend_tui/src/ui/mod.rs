@@ -1,6 +1,9 @@
+mod debugger;
+
 use std::io::stdout;
 
 use anyhow::{bail, Context, Result};
+use debugger::{DebuggerWidget, DebuggerWidgetEvent, DebuggerWidgetState};
 use log::*;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEventKind};
@@ -9,10 +12,10 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::crossterm::{event, ExecutableCommand};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::prelude::{Backend, Color, CrosstermBackend};
+use ratatui::prelude::{Backend, Color, CrosstermBackend, StatefulWidget};
 use ratatui::style::{Style, Stylize};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Widget};
+use ratatui::text::Line;
+use ratatui::widgets::{Paragraph, Widget};
 use ratatui::Terminal;
 use snow_core::bus::Address;
 use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
@@ -20,7 +23,6 @@ use snow_core::cpu_m68k::regs::RegisterFile;
 use snow_core::emulator::comm::{
     EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver, EmulatorStatus,
 };
-use snow_core::types::Long;
 use tui_logger::{TuiLoggerLevelOutput, TuiLoggerWidget, TuiWidgetEvent, TuiWidgetState};
 
 type DisassemblyListing = Vec<DisassemblyEntry>;
@@ -47,8 +49,7 @@ pub struct UserInterface {
     disassembly: DisassemblyListing,
 
     state_log: TuiWidgetState,
-
-    debug_sel: usize,
+    state_debugger: DebuggerWidgetState,
 }
 
 impl UserInterface {
@@ -62,10 +63,12 @@ impl UserInterface {
             panic!("Initial status message not received")
         };
         Ok(Self {
+            state_log: TuiWidgetState::default(),
+            state_debugger: DebuggerWidgetState::default(),
+
             cmd: None,
 
             view: View::Debugger,
-            state_log: TuiWidgetState::default(),
             romfn: romfn.to_string(),
             model: model.to_string(),
             eventrecv,
@@ -74,8 +77,6 @@ impl UserInterface {
             emustatus,
             lastregs: RegisterFile::new(),
             disassembly: DisassemblyListing::new(),
-
-            debug_sel: 0,
         })
     }
 
@@ -166,13 +167,14 @@ impl UserInterface {
                         self.state_log.transition(TuiWidgetEvent::SpaceKey);
                     }
                     (View::Debugger, KeyCode::Up) => {
-                        self.debug_sel = self.debug_sel.saturating_sub(1);
+                        self.state_debugger.transition(DebuggerWidgetEvent::LineUp);
                     }
                     (View::Debugger, KeyCode::Down) => {
-                        self.debug_sel = self.debug_sel.saturating_add(1);
+                        self.state_debugger
+                            .transition(DebuggerWidgetEvent::LineDown);
                     }
                     (View::Debugger, KeyCode::F(7)) => {
-                        let addr = self.disassembly[self.debug_sel].addr;
+                        let addr = self.state_debugger.get_selected_address(&self.disassembly);
                         self.cmdsender
                             .send(EmulatorCommand::ToggleBreakpoint(addr))?;
                     }
@@ -189,141 +191,6 @@ impl UserInterface {
         disable_raw_mode()?;
 
         Ok(())
-    }
-
-    fn draw_debugger(&self, area: Rect, buf: &mut Buffer) {
-        let layout = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(vec![Constraint::Percentage(100), Constraint::Min(20)])
-            .split(area);
-
-        Paragraph::new(
-            self.disassembly
-                .iter()
-                .enumerate()
-                .map(|(i, e)| {
-                    let style = if i == self.debug_sel {
-                        Style::default().black().on_white()
-                    } else {
-                        Style::default()
-                    };
-
-                    Line::from(vec![
-                        if e.addr == self.emustatus.regs.pc {
-                            Span::from("► ").style(style.light_green())
-                        } else if self.emustatus.breakpoints.contains(&e.addr) {
-                            Span::from("• ").style(style.red().bold())
-                        } else {
-                            Span::from("  ")
-                        },
-                        Span::from(format!(":{:06X} ", e.addr)),
-                        Span::from(format!("{:<16} ", e.raw_as_string())).style(style.dark_gray()),
-                        Span::from(e.str.to_owned()),
-                        Span::from(" "),
-                    ])
-                    .style(style)
-                })
-                .collect::<Vec<_>>(),
-        )
-        .block(Block::bordered().title("Disassembly"))
-        .render(layout[0], buf);
-
-        let layout_right = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(vec![
-                Constraint::Min(4),
-                Constraint::Percentage(100),
-                Constraint::Min(6),
-            ])
-            .split(layout[1]);
-
-        Paragraph::new(vec![
-            if self.emustatus.running {
-                Line::from("Running").style(Style::default().light_green())
-            } else {
-                Line::from("Stopped").style(Style::default().red())
-            },
-            Line::from(vec![
-                Span::from("Cycles ").style(Style::default().blue().bold()),
-                Span::from(format!("{:>10}", self.emustatus.cycles))
-                    .style(Style::default().white()),
-            ]),
-        ])
-        .block(Block::bordered().title("CPU"))
-        .render(layout_right[0], buf);
-        let reg = |name, v: &dyn Fn(&RegisterFile) -> Long| {
-            let style = if v(&self.emustatus.regs) != v(&self.lastregs) {
-                Style::default().light_yellow()
-            } else {
-                Style::default().gray()
-            };
-            Line::from(vec![
-                Span::from(format!("{name:<4}")).style(Style::default().blue().bold()),
-                Span::from(format!("{:08X}", v(&self.emustatus.regs))).style(style),
-            ])
-        };
-        Paragraph::new(vec![
-            reg("D0", &|r: &RegisterFile| r.read_d::<Long>(0)),
-            reg("D1", &|r: &RegisterFile| r.read_d::<Long>(1)),
-            reg("D2", &|r: &RegisterFile| r.read_d::<Long>(2)),
-            reg("D3", &|r: &RegisterFile| r.read_d::<Long>(3)),
-            reg("D4", &|r: &RegisterFile| r.read_d::<Long>(4)),
-            reg("D5", &|r: &RegisterFile| r.read_d::<Long>(5)),
-            reg("D6", &|r: &RegisterFile| r.read_d::<Long>(6)),
-            reg("D7", &|r: &RegisterFile| r.read_d::<Long>(7)),
-            Line::from(""),
-            reg("A0", &|r: &RegisterFile| r.read_a::<Long>(0)),
-            reg("A1", &|r: &RegisterFile| r.read_a::<Long>(1)),
-            reg("A2", &|r: &RegisterFile| r.read_a::<Long>(2)),
-            reg("A3", &|r: &RegisterFile| r.read_a::<Long>(3)),
-            reg("A4", &|r: &RegisterFile| r.read_a::<Long>(4)),
-            reg("A5", &|r: &RegisterFile| r.read_a::<Long>(5)),
-            reg("A6", &|r: &RegisterFile| r.read_a::<Long>(6)),
-            reg("A7", &|r: &RegisterFile| r.read_a::<Long>(7)),
-            Line::from(""),
-            reg("PC", &|r: &RegisterFile| r.pc),
-            Line::from(""),
-            reg("SSP", &|r: &RegisterFile| r.ssp),
-            reg("USP", &|r: &RegisterFile| r.usp),
-            Line::from(""),
-            Line::from(vec![
-                Span::from("SR  ").style(Style::default().blue().bold()),
-                Span::from(format!("    {:04X}", self.emustatus.regs.sr.sr()))
-                    .style(Style::default().white()),
-            ]),
-        ])
-        .block(Block::bordered().title("Registers"))
-        .render(layout_right[1], buf);
-
-        let flag = |n, v| {
-            Span::from(n).style(if v {
-                Style::default().light_green()
-            } else {
-                Style::default().red()
-            })
-        };
-        Paragraph::new(vec![
-            Line::from(vec![
-                flag("[C]", self.emustatus.regs.sr.c()),
-                flag("[V]", self.emustatus.regs.sr.v()),
-                flag("[Z]", self.emustatus.regs.sr.z()),
-                flag("[N]", self.emustatus.regs.sr.n()),
-                flag("[X]", self.emustatus.regs.sr.x()),
-            ]),
-            Line::from(""),
-            Line::from(format!(
-                "Int mask: {}",
-                self.emustatus.regs.sr.int_prio_mask()
-            )),
-            Line::from(vec![
-                flag("[SV]", self.emustatus.regs.sr.supervisor()),
-                Span::from(" "),
-                flag("[Trace]", self.emustatus.regs.sr.trace()),
-                Span::from(" "),
-            ]),
-        ])
-        .block(Block::bordered().title("Flags"))
-        .render(layout_right[2], buf);
     }
 
     fn handle_command(&self, cmd: &str) -> Result<()> {
@@ -424,7 +291,12 @@ impl Widget for &mut UserInterface {
                     .state(&self.state_log)
                     .render(layout_main[1], buf);
             }
-            View::Debugger => self.draw_debugger(layout_main[1], buf),
+            View::Debugger => DebuggerWidget::new(
+                &self.disassembly,
+                &self.emustatus,
+                &self.lastregs,
+            )
+            .render(layout_main[1], buf, &mut self.state_debugger),
         }
 
         let mut functions = vec![""; 10];
