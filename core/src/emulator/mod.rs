@@ -1,5 +1,6 @@
 pub mod comm;
 
+use snow_floppy::loaders::{Bitfile, FloppyImageLoader, FloppyImageSaver};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -154,8 +155,13 @@ impl Tickable for Emulator {
                         self.cpu.bus.mouse_update_abs(x, y);
                     }
                     EmulatorCommand::Quit => return Ok(0),
-                    EmulatorCommand::InsertFloppy(image) => {
-                        self.cpu.bus.iwm.disk_insert(&image);
+                    EmulatorCommand::InsertFloppy(filename) => {
+                        let image = Bitfile::load_file(&filename)?;
+                        self.cpu.bus.iwm.disk_insert(image)?;
+                        self.status_update()?;
+                    }
+                    EmulatorCommand::SaveFloppy(filename) => {
+                        Bitfile::save_file(&self.cpu.bus.iwm.floppy, &filename)?;
                         self.status_update()?;
                     }
                     EmulatorCommand::Run => {

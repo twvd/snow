@@ -6,7 +6,8 @@ pub type EmulatorEventReceiver = crossbeam_channel::Receiver<EmulatorEvent>;
 /// A command/event that can be sent to the emulator
 pub enum EmulatorCommand {
     Quit,
-    InsertFloppy(Box<[u8]>),
+    InsertFloppy(String),
+    SaveFloppy(String),
     MouseUpdateAbsolute {
         x: u16,
         y: u16,

@@ -942,8 +942,16 @@ dependencies = [
  "proc-bitfield",
  "serde",
  "serde_json",
+ "snow_floppy",
  "strum",
  "thiserror",
+]
+
+[[package]]
+name = "snow_floppy"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
 ]
 
 [[package]]
@@ -958,6 +966,7 @@ dependencies = [
  "sdl2",
  "sha2",
  "snow_core",
+ "snow_floppy",
  "tui-logger",
 ]
 

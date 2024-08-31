@@ -1,5 +1,3 @@
-use std::io::Write;
-
 use anyhow::Result;
 use log::*;
 use num::clamp;
@@ -7,6 +5,7 @@ use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
+use snow_floppy::{Floppy, FloppyImage, FloppyType};
 use strum::Display;
 
 use crate::{
@@ -15,14 +14,7 @@ use crate::{
     types::LatchingEvent,
 };
 
-#[derive(Debug, Default)]
-struct Track {
-    data: Vec<u8>,
-    bits: usize,
-}
-
 /// Integrated Woz Machine - floppy drive controller
-#[derive(Debug)]
 pub struct Iwm {
     double_sided: bool,
 
@@ -42,12 +34,11 @@ pub struct Iwm {
     status: IwmStatus,
     mode: IwmMode,
 
-    disk_inserted: bool,
+    floppy_inserted: bool,
     track: usize,
     stepdir: HeadStepDirection,
-    trackdata: [Track; Self::DISK_TRACKS * Self::DISK_SIDES],
-    track_bit: usize,
-    track_byte: usize,
+    pub floppy: FloppyImage,
+    track_position: usize,
     shdata: u8,
     datareg: u8,
 
@@ -230,9 +221,6 @@ impl Iwm {
     /// Amount of tracks per disk side
     const DISK_TRACKS: usize = 80;
 
-    /// Amount of sides
-    const DISK_SIDES: usize = 2;
-
     /// Tacho pulses/disk revolution
     const TACHO_SPEED: Ticks = 60;
 
@@ -253,12 +241,11 @@ impl Iwm {
             status: IwmStatus(0),
             mode: IwmMode(0),
 
-            disk_inserted: false,
+            floppy_inserted: false,
             track: 4,
             stepdir: HeadStepDirection::Up,
-            trackdata: core::array::from_fn(|_| Track::default()),
-            track_bit: 0,
-            track_byte: 0,
+            floppy: FloppyImage::new(FloppyType::Mac400K),
+            track_position: 0,
             shdata: 0,
             datareg: 0,
 
@@ -311,16 +298,6 @@ impl Iwm {
         }
     }
 
-    fn dump_tracks(&self) -> Result<()> {
-        let mut f = std::fs::File::create("write.bin")?;
-        for t in 0..(Self::DISK_TRACKS * Self::DISK_SIDES) {
-            f.write_all(&(self.trackdata[t].data.len() as u32).to_le_bytes())?;
-            f.write_all(&(self.trackdata[t].data.len() as u32).to_le_bytes())?;
-            f.write_all(&self.trackdata[t].data)?;
-        }
-        Ok(())
-    }
-
     /// Reads from the currently selected drive register
     fn read_drive_reg(&self) -> bool {
         let reg = DriveReg::from_u8(self.get_selected_drive_reg_u8()).unwrap_or(DriveReg::UNKNOWN);
@@ -336,10 +313,10 @@ impl Iwm {
         //}
 
         match reg {
-            DriveReg::CISTN => !self.disk_inserted,
+            DriveReg::CISTN => !self.floppy_inserted,
             DriveReg::DIRTN => self.stepdir == HeadStepDirection::Down,
             DriveReg::SIDES => self.double_sided,
-            DriveReg::MOTORON => !(self.motor && self.disk_inserted),
+            DriveReg::MOTORON => !(self.motor && self.floppy_inserted),
             DriveReg::PRESENT if self.extdrive => true,
             DriveReg::PRESENT => false,
             DriveReg::INSTALLED if self.extdrive => true,
@@ -383,7 +360,7 @@ impl Iwm {
         }
 
         // Reset track position
-        self.track_byte = 0;
+        self.track_position = 0;
 
         // Track-to-track stepping time: 30ms
         self.stepping = TICKS_PER_SECOND / 60_000 * 30;
@@ -409,7 +386,7 @@ impl Iwm {
                 self.motor = false;
             }
             DriveWriteReg::EJECT => {
-                if self.disk_inserted {
+                if self.floppy_inserted {
                     self.ejecting = Some(self.cycles + (TICKS_PER_SECOND / 2));
                 }
             }
@@ -484,32 +461,15 @@ impl Iwm {
     }
 
     /// Inserts a disk into the disk drive
-    pub fn disk_insert(&mut self, data: &[u8]) {
-        // Parse track data
-        // TODO use iterator, make fancy
-        let mut offset = 0;
-        let mut last = 0;
-        for tracknum in 0.. {
-            let bytes = u32::from_le_bytes(data[offset..(offset + 4)].try_into().unwrap()) as usize;
-            let bits =
-                u32::from_le_bytes(data[(offset + 4)..(offset + 8)].try_into().unwrap()) as usize;
-            assert_eq!(bytes, bits);
+    pub fn disk_insert(&mut self, image: FloppyImage) -> Result<()> {
+        self.floppy = image;
 
-            let track = Track {
-                bits,
-                data: Vec::from(&data[(offset + 8)..(offset + 8 + bytes)]),
-            };
-            self.trackdata[tracknum] = track;
-            offset += 8 + bytes;
-
-            if data.len() <= offset {
-                last = tracknum;
-                break;
-            }
-        }
-
-        info!("Disk inserted, {} tracks", last + 1);
-        self.disk_inserted = true;
+        info!(
+            "Disk inserted, {} tracks",
+            self.floppy.get_track_count() * self.floppy.get_side_count()
+        );
+        self.floppy_inserted = true;
+        Ok(())
     }
 
     /// Gets the spindle motor speed in rounds/minute for the currently selected track
@@ -546,11 +506,12 @@ impl Iwm {
     }
 
     /// Gets the amount of ticks a physical bit is under the drive head
-    pub const fn get_ticks_per_bit(&self) -> Ticks {
-        if self.get_track_rpm() == 0 || !self.disk_inserted {
+    pub fn get_ticks_per_bit(&self) -> Ticks {
+        if self.get_track_rpm() == 0 || !self.floppy_inserted {
             return Ticks::MAX;
         }
-        ((TICKS_PER_SECOND * 60) / self.get_track_rpm() / self.trackdata[self.track].bits) + 1
+        ((TICKS_PER_SECOND * 60) / self.get_track_rpm() / self.floppy.get_track_length(self.track))
+            + 1
     }
 
     /// Gets the current state of the TACH (spindle motor tachometer) signal
@@ -568,18 +529,14 @@ impl Iwm {
         (self.cycles / ticks_per_edge % 2) != 0
     }
 
-    /// Gets the active selected track offset, offset by the active selected head for double-sided disks
+    /// Gets the active selected track offset
     fn get_active_track(&self) -> usize {
-        if self.get_active_head() == 1 && self.trackdata[self.track + 80].bits != 0 {
-            self.track + 80
-        } else {
-            self.track
-        }
+        self.track
     }
 
     /// Gets the active (selected) drive head
     fn get_active_head(&self) -> usize {
-        if !self.double_sided || !self.sel {
+        if !self.double_sided || self.floppy.get_side_count() == 1 || !self.sel {
             0
         } else {
             1
@@ -588,24 +545,13 @@ impl Iwm {
 
     /// Gets the length (in bits) of a track
     fn get_track_len(&self, track: usize) -> usize {
-        self.trackdata[track].bits
+        self.floppy.get_track_length(track)
     }
 
     /// Gets the physical disk bit currently under a head
     fn get_head_bit(&self, head: usize) -> bool {
-        debug_assert!(head < Self::DISK_SIDES);
-
-        let track_offset =
-            if self.double_sided && head == 1 && self.trackdata[self.track + 80].bits != 0 {
-                self.track + 80
-            } else {
-                self.track
-            };
-
-        let res = self.trackdata[track_offset].data[self.track_byte];
-        assert!([0, 1].contains(&res));
-
-        res != 0
+        self.floppy
+            .get_track_bit(head, self.get_active_track(), self.track_position)
     }
 
     /// Update current drive PWM signal from the sound buffer
@@ -667,7 +613,7 @@ impl BusMember<Address> for Iwm {
                 trace!(
                     "Write data reg: {:02X}, bit position: {}, track: {}, head: {}",
                     val,
-                    self.track_byte,
+                    self.track_position,
                     self.get_active_track(),
                     self.get_active_head()
                 );
@@ -700,7 +646,7 @@ impl Tickable for Iwm {
             };
             if eject_ticks < self.cycles {
                 info!("Disk ejected");
-                self.disk_inserted = false;
+                self.floppy_inserted = false;
                 self.ejecting = None;
             }
         } else if !self.lstrb {
@@ -710,29 +656,16 @@ impl Tickable for Iwm {
         // Decrement 'head stepping' timer
         self.stepping = self.stepping.saturating_sub(ticks);
 
-        if self.disk_inserted && self.motor && self.cycles % self.get_ticks_per_bit() == 0 {
+        if self.floppy_inserted && self.motor && self.cycles % self.get_ticks_per_bit() == 0 {
             // Progress the head over the track
             self.shdata <<= 1;
             if self.get_head_bit(self.get_active_head()) {
                 self.shdata |= 1;
             }
 
-            self.track_byte += 1;
-            self.track_bit = 0;
-
-            if self.track_byte >= self.get_track_len(self.get_active_track()) {
-                // Back to start of track
-                //trace!(
-                //    "Track at start - track {} len {} rpm {} cyc/bit {} duty {}% head {}",
-                //    self.track,
-                //    self.trackdata[self.track].bits,
-                //    self.get_track_rpm(),
-                //    self.get_cycles_per_bit(),
-                //    self.pwm_dutycycle,
-                //    self.sel,
-                //);
-                self.track_byte = 0;
-                self.track_bit = 0;
+            self.track_position += 1;
+            if self.track_position >= self.get_track_len(self.get_active_track()) {
+                self.track_position = 0;
             }
 
             if self.shdata & 0x80 != 0 {
@@ -757,12 +690,12 @@ impl Tickable for Iwm {
                 let bit = self.write_shift & 0x80 != 0;
                 self.write_shift <<= 1;
                 self.write_pos -= 1;
-                self.trackdata[self.get_active_track()].data[self.track_byte] =
-                    if bit { 1 } else { 0 };
-
-                if self.write_pos == 0 && self.write_buffer.is_none() {
-                    self.dump_tracks()?;
-                }
+                self.floppy.set_track_bit(
+                    self.get_active_head(),
+                    self.get_active_track(),
+                    self.track_position,
+                    bit,
+                );
             }
         }
 
@@ -783,7 +716,7 @@ mod tests {
     #[test]
     fn disk_double_tacho_outer() {
         let mut iwm = Iwm::new(true);
-        iwm.disk_inserted = true;
+        iwm.floppy_inserted = true;
         iwm.motor = true;
         iwm.track = 0;
 
@@ -804,7 +737,7 @@ mod tests {
     #[test]
     fn disk_double_tacho_inner() {
         let mut iwm = Iwm::new(true);
-        iwm.disk_inserted = true;
+        iwm.floppy_inserted = true;
         iwm.motor = true;
         iwm.track = 79;
 

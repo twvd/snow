@@ -237,10 +237,14 @@ impl UserInterface {
                 Ok(())
             }
             "disk" => {
-                let filename = tokens.get(1).context("No filename specified")?;
-                let data = std::fs::read(filename)?;
+                let filename = tokens.get(1).context("No filename specified")?.to_string();
                 self.cmdsender
-                    .send(EmulatorCommand::InsertFloppy(data.into_boxed_slice()))?;
+                    .send(EmulatorCommand::InsertFloppy(filename))?;
+                Ok(())
+            }
+            "writedisk" => {
+                let filename = tokens.get(1).context("No filename specified")?.to_string();
+                self.cmdsender.send(EmulatorCommand::SaveFloppy(filename))?;
                 Ok(())
             }
             _ => bail!("Unknown command"),

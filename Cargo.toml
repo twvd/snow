@@ -1,7 +1,7 @@
 [workspace]
 resolver = '2'
 members = [
-    "core",
+    "core", "floppy",
     "frontend_tui"
 ]
 

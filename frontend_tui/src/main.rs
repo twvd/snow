@@ -147,9 +147,7 @@ fn main() -> Result<()> {
     let (mut emulator, frame_recv) = Emulator::new(&rom, model)?;
     let cmd = emulator.create_cmd_sender();
     if let Some(floppy_fn) = args.floppy_filename {
-        cmd.send(EmulatorCommand::InsertFloppy(
-            std::fs::read(floppy_fn)?.into_boxed_slice(),
-        ))?;
+        cmd.send(EmulatorCommand::InsertFloppy(floppy_fn))?;
     }
     if args.run {
         cmd.send(EmulatorCommand::Run)?;
