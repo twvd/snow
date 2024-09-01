@@ -610,13 +610,13 @@ impl BusMember<Address> for Iwm {
             }
             (true, true, true) => {
                 // Write data register
-                trace!(
-                    "Write data reg: {:02X}, bit position: {}, track: {}, head: {}",
-                    val,
-                    self.track_position,
-                    self.get_active_track(),
-                    self.get_active_head()
-                );
+                //trace!(
+                //    "Write data reg: {:02X}, bit position: {}, track: {}, head: {}",
+                //    val,
+                //    self.track_position,
+                //    self.get_active_track(),
+                //    self.get_active_head()
+                //);
                 if self.write_buffer.is_some() {
                     warn!("Disk write while write buffer not empty");
                 }

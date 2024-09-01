@@ -68,7 +68,7 @@ impl UserInterface {
 
             cmd: None,
 
-            view: View::Debugger,
+            view: View::Log,
             romfn: romfn.to_string(),
             model: model.to_string(),
             eventrecv,

@@ -46,9 +46,9 @@ struct Args {
     #[arg(long)]
     trace: bool,
 
-    /// Run emulator on start
+    /// Do not run emulator on start
     #[arg(short, long)]
-    run: bool,
+    stop: bool,
 
     /// Mouse motion control method
     #[arg(long, value_enum, default_value_t=MouseControl::Absolute)]
@@ -149,7 +149,7 @@ fn main() -> Result<()> {
     if let Some(floppy_fn) = args.floppy_filename {
         cmd.send(EmulatorCommand::InsertFloppy(floppy_fn))?;
     }
-    if args.run {
+    if !args.stop {
         cmd.send(EmulatorCommand::Run)?;
     }
 
