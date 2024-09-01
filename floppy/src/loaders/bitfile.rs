@@ -78,9 +78,9 @@ impl FloppyImageSaver for Bitfile {
     fn write(img: &FloppyImage, w: &mut impl std::io::Write) -> Result<()> {
         for side in 0..img.get_side_count() {
             for track in 0..img.get_track_count() {
-                w.write_all(&(img.get_track_length(track) as u32).to_le_bytes())?;
-                w.write_all(&(img.get_track_length(track) as u32).to_le_bytes())?;
-                for p in 0..img.get_track_length(track) {
+                w.write_all(&(img.get_track_length(side, track) as u32).to_le_bytes())?;
+                w.write_all(&(img.get_track_length(side, track) as u32).to_le_bytes())?;
+                for p in 0..img.get_track_length(side, track) {
                     w.write_all(if img.get_track_bit(side, track, p) {
                         &[1_u8]
                     } else {

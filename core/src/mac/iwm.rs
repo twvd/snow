@@ -510,7 +510,9 @@ impl Iwm {
         if self.get_track_rpm() == 0 || !self.floppy_inserted {
             return Ticks::MAX;
         }
-        ((TICKS_PER_SECOND * 60) / self.get_track_rpm() / self.floppy.get_track_length(self.track))
+        ((TICKS_PER_SECOND * 60)
+            / self.get_track_rpm()
+            / self.floppy.get_type().get_approx_track_length(self.track))
             + 1
     }
 
@@ -544,8 +546,8 @@ impl Iwm {
     }
 
     /// Gets the length (in bits) of a track
-    fn get_track_len(&self, track: usize) -> usize {
-        self.floppy.get_track_length(track)
+    fn get_track_len(&self, side: usize, track: usize) -> usize {
+        self.floppy.get_track_length(side, track)
     }
 
     /// Gets the physical disk bit currently under a head
@@ -664,7 +666,9 @@ impl Tickable for Iwm {
             }
 
             self.track_position += 1;
-            if self.track_position >= self.get_track_len(self.get_active_track()) {
+            if self.track_position
+                >= self.get_track_len(self.get_active_head(), self.get_active_track())
+            {
                 self.track_position = 0;
             }
 

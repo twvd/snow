@@ -1,6 +1,6 @@
 pub mod comm;
 
-use snow_floppy::loaders::{Bitfile, FloppyImageLoader, FloppyImageSaver};
+use snow_floppy::loaders::{Autodetect, Bitfile, FloppyImageLoader, FloppyImageSaver};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -156,8 +156,11 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::Quit => return Ok(0),
                     EmulatorCommand::InsertFloppy(filename) => {
-                        let image = Bitfile::load_file(&filename)?;
-                        self.cpu.bus.iwm.disk_insert(image)?;
+                        let image = Autodetect::load_file(&filename);
+                        match image {
+                            Ok(img) => self.cpu.bus.iwm.disk_insert(img)?,
+                            Err(e) => error!("Cannot load image '{}': {}", filename, e),
+                        }
                         self.status_update()?;
                     }
                     EmulatorCommand::SaveFloppy(filename) => {

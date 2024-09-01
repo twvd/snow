@@ -1,5 +1,7 @@
 pub mod loaders;
 
+use log::*;
+
 /// Types of emulated floppies - 3.5" only
 #[derive(Copy, Clone)]
 pub enum FloppyType {
@@ -10,8 +12,8 @@ pub enum FloppyType {
 }
 
 impl FloppyType {
-    /// Gets the track length in bits
-    pub fn get_track_length(self, track: usize) -> usize {
+    /// Gets the (approximate) track length in bits
+    pub fn get_approx_track_length(self, track: usize) -> usize {
         match self {
             Self::Mac400K | Self::Mac800K => match track {
                 0..=15 => 74640,
@@ -44,7 +46,7 @@ pub trait Floppy {
     fn set_track_bit(&mut self, side: usize, track: usize, position: usize, value: bool);
 
     /// Gets the length of a specific track, in bits
-    fn get_track_length(&self, track: usize) -> usize;
+    fn get_track_length(&self, side: usize, track: usize) -> usize;
 
     /// Gets the amount of sides on the floppy
     fn get_side_count(&self) -> usize;
@@ -58,13 +60,31 @@ pub struct FloppyImage {
 
 impl FloppyImage {
     /// Creates a new, empty image for the specified type
+    /// Tracks are sized to their approximate size
     pub fn new(floppy_type: FloppyType) -> Self {
         Self {
             floppy_type,
             trackdata: core::array::from_fn(|_| {
-                core::array::from_fn(|t| vec![0; floppy_type.get_track_length(t)])
+                core::array::from_fn(|t| vec![0; floppy_type.get_approx_track_length(t)])
             }),
         }
+    }
+
+    /// Resizes the length of a track to the actual size used in the image
+    pub(crate) fn set_actual_track_length(&mut self, side: usize, track: usize, sz: usize) {
+        let old_sz = self.trackdata[side][track].len();
+        let perc_inc = (100
+            - (std::cmp::min(sz as isize, old_sz as isize) * 100)
+                / std::cmp::max(sz as isize, old_sz as isize))
+        .wrapping_abs();
+
+        if perc_inc >= 10 {
+            warn!(
+                "Side {} track {}: length changed by {}% ({} -> {})",
+                side, track, perc_inc, old_sz, sz
+            );
+        }
+        self.trackdata[side][track].resize(sz, 0);
     }
 }
 
@@ -93,8 +113,8 @@ impl Floppy for FloppyImage {
         }
     }
 
-    fn get_track_length(&self, track: usize) -> usize {
-        self.get_type().get_track_length(track)
+    fn get_track_length(&self, side: usize, track: usize) -> usize {
+        self.trackdata[side][track].len()
     }
 
     fn get_side_count(&self) -> usize {

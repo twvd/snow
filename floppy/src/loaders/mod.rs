@@ -1,6 +1,10 @@
+mod auto;
 mod bitfile;
+mod moof;
 
+pub use auto::Autodetect;
 pub use bitfile::Bitfile;
+pub use moof::Moof;
 
 use crate::FloppyImage;
 
