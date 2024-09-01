@@ -27,5 +27,16 @@ To build and run after checking out the source, simply run:
 cargo run --release -- <rom image filename> <floppy image filename>
 ```
 
+## Commands
+
+You can control the TUI using the keys outlined in the interface.
+Additionally, you can enter the following commands: 
+
+ * `/disk <filename>` - mounts the specified disk image and inserts it into the drive.
+ * `/writedisk <filename>` - saves the currently or last inserted, including changes, as file.
+ * `/b <address in hex>` - sets a breakpoint.
+ * `/dasm <address in hex>` - shows a disassembly from the specified address in the debugger.
+ * `/loadbin <address in hex>` - loads the specified file (entirely) into the emulated memory starting from the specified address.
+
 ## Acknowledgements
  * Thanks to raddad772 for the excellent [68000 JSON test suite](https://github.com/SingleStepTests/m68000)
