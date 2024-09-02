@@ -18,7 +18,7 @@ use super::instruction::{
 #[derive(Clone)]
 pub struct DisassemblyEntry {
     pub addr: Address,
-    pub raw: ArrayVec<u8, 8>,
+    pub raw: ArrayVec<u8, 12>,
     pub str: String,
 }
 
