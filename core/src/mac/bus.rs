@@ -13,6 +13,12 @@ use anyhow::Result;
 use log::*;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
 
+#[derive(Eq, PartialEq)]
+pub enum BusType {
+    Early,
+    SE,
+}
+
 pub struct MacBus<TRenderer: Renderer> {
     /// Trace non-ROM/RAM access
     pub trace: bool,
@@ -44,6 +50,9 @@ pub struct MacBus<TRenderer: Renderer> {
     soundbuf_alt: Range<usize>,
 
     pub dbg_break: LatchingEvent,
+
+    bustype: BusType,
+    overlay: bool,
 }
 
 impl<TRenderer> MacBus<TRenderer>
@@ -74,6 +83,12 @@ where
         let sound_alt_start = ram_size - Self::SOUND_ALT_OFFSET;
         let sound_main_start = ram_size - Self::SOUND_MAIN_OFFSET;
 
+        let bustype = if rom.len() > 128 * 1024 {
+            BusType::SE
+        } else {
+            BusType::Early
+        };
+
         Self {
             trace: false,
 
@@ -97,6 +112,8 @@ where
             soundbuf_alt: sound_alt_start..(sound_alt_start + Self::SOUNDBUF_SIZE),
 
             dbg_break: LatchingEvent::default(),
+            bustype,
+            overlay: true,
         }
     }
 
@@ -134,6 +151,10 @@ where
         }
 
         match addr {
+            0x0040_0000..=0x005F_FFFF if self.bustype == BusType::SE => {
+                self.overlay = false;
+                self.write_normal(addr, val)
+            }
             0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & self.ram_mask] = val),
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr, val),
             0x00DF_E1FF..=0x00DF_FFFF => self.iwm.write(addr, val),
@@ -173,6 +194,10 @@ where
         let result = match addr {
             0x0000_0000..=0x000F_FFFF | 0x0020_0000..=0x002F_FFFF | 0x0040_0000..=0x004F_FFFF => {
                 Some(self.rom[addr as usize & self.rom_mask])
+            }
+            0x0040_0000..=0x005F_FFFF if self.bustype == BusType::SE => {
+                self.overlay = false;
+                self.read_normal(addr)
             }
             0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr),
@@ -265,7 +290,7 @@ where
     }
 
     fn read(&mut self, addr: Address) -> Byte {
-        let val = if self.via.a_out.overlay() {
+        let val = if self.overlay {
             self.read_overlay(addr)
         } else {
             self.read_normal(addr)
@@ -280,11 +305,17 @@ where
     }
 
     fn write(&mut self, addr: Address, val: Byte) {
-        let written = if self.via.a_out.overlay() {
+        let written = if self.overlay {
             self.write_overlay(addr, val)
         } else {
             self.write_normal(addr, val)
         };
+
+        if self.overlay {
+            if self.bustype == BusType::Early && !self.via.a_out.overlay() {
+                self.overlay = false;
+            }
+        }
 
         // Sync values that live in multiple places
         self.iwm.sel = self.via.a_out.sel();
@@ -363,7 +394,7 @@ where
         // Everything up to 0x800000 is safe (RAM/ROM only)
         if addr >= 0x80_0000 {
             None
-        } else if self.via.a_out.overlay() {
+        } else if self.overlay {
             self.read_overlay(addr)
         } else {
             self.read_normal(addr)
@@ -374,7 +405,7 @@ where
         // Everything up to 0x800000 is safe (RAM/ROM only)
         if addr >= 0x80_0000 {
             None
-        } else if self.via.a_out.overlay() {
+        } else if self.overlay {
             self.write_overlay(addr, val)
         } else {
             self.write_normal(addr, val)
