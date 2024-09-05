@@ -71,6 +71,10 @@ impl SDLRenderer {
         self.canvas
             .window_mut()
             .set_size(width as u32, height as u32)?;
+        self.canvas.window_mut().set_position(
+            sdl2::video::WindowPos::Centered,
+            sdl2::video::WindowPos::Centered,
+        );
         Ok(())
     }
 }
