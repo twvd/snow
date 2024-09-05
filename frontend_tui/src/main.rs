@@ -7,7 +7,7 @@ use hex_literal::hex;
 use log::*;
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
-use sdl2::event::Event;
+use sdl2::event::{Event, WindowEvent};
 use sdl2::keyboard::Keycode;
 use sdl2::mouse::MouseButton;
 use sha2::{Digest, Sha256};
@@ -53,6 +53,10 @@ struct Args {
     /// Mouse motion control method
     #[arg(long, value_enum, default_value_t=MouseControl::Absolute)]
     mouse: MouseControl,
+
+    /// Scaling factor for the display
+    #[arg(long, default_value_t = 2)]
+    scale: usize,
 }
 
 /// Sets up a panic handler that restores the terminal back to the original state
@@ -98,7 +102,10 @@ fn main() -> Result<()> {
     tui_logger::set_default_level(log::LevelFilter::Trace);
 
     // Initialize display
-    let mut renderer = SDLRenderer::new(SCREEN_HEIGHT, SCREEN_WIDTH)?;
+    let mut disp_win_width = SCREEN_WIDTH * args.scale;
+    let mut disp_win_height = SCREEN_HEIGHT * args.scale;
+    let mut renderer = SDLRenderer::new(SCREEN_WIDTH, SCREEN_HEIGHT)?;
+    renderer.set_window_size(disp_win_width, disp_win_height)?;
     let eventpump = SDLEventPump::new();
 
     // Initialize ROM
@@ -229,8 +236,8 @@ fn main() -> Result<()> {
                     x, y, xrel, yrel, ..
                 } => match args.mouse {
                     MouseControl::Absolute => cmd.send(EmulatorCommand::MouseUpdateAbsolute {
-                        x: x as u16,
-                        y: y as u16,
+                        x: (x as f32 / (disp_win_width as f32 / SCREEN_WIDTH as f32)) as u16,
+                        y: (y as f32 / (disp_win_height as f32 / SCREEN_HEIGHT as f32)) as u16,
                     })?,
                     MouseControl::Relative => cmd.send(EmulatorCommand::MouseUpdateRelative {
                         relx: xrel.try_into()?,
@@ -257,6 +264,13 @@ fn main() -> Result<()> {
                         rely: 0,
                         btn: Some(false),
                     })?;
+                }
+                Event::Window {
+                    win_event: WindowEvent::Resized(w, h),
+                    ..
+                } => {
+                    disp_win_width = w as usize;
+                    disp_win_height = h as usize;
                 }
                 _ => (),
             }

@@ -66,6 +66,13 @@ impl SDLRenderer {
 
         Ok(())
     }
+
+    pub fn set_window_size(&mut self, width: usize, height: usize) -> Result<()> {
+        self.canvas
+            .window_mut()
+            .set_size(width as u32, height as u32)?;
+        Ok(())
+    }
 }
 
 impl Renderer for SDLRenderer {
@@ -74,16 +81,17 @@ impl Renderer for SDLRenderer {
         SDL.with(|cell| {
             let sdls = cell.borrow_mut();
 
-            sdls.context.mouse().show_cursor(false);
-
             let video_subsystem = sdls.context.video().map_err(|e| anyhow!(e))?;
             let window = video_subsystem
-                .window("Snow", (width * 2).try_into()?, (height * 2).try_into()?)
+                .window("Snow", width.try_into()?, height.try_into()?)
                 .position_centered()
                 .build()?;
 
             let canvas = window.into_canvas().accelerated().build()?;
             info!("Rendering driver: {:?}", canvas.info().name);
+
+            sdls.context.mouse().show_cursor(false);
+
             let texture_creator = canvas.texture_creator();
             let texture = texture_creator.create_texture_streaming(
                 PixelFormatEnum::RGB888,

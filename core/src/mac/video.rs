@@ -13,8 +13,8 @@ use crate::{
 
 use anyhow::Result;
 
-pub const SCREEN_HEIGHT: usize = 512;
-pub const SCREEN_WIDTH: usize = 342;
+pub const SCREEN_HEIGHT: usize = 342;
+pub const SCREEN_WIDTH: usize = 512;
 
 /// Video logic
 pub struct Video<T: Renderer> {
