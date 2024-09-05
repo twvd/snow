@@ -192,17 +192,29 @@ where
 
     fn read_overlay(&mut self, addr: Address) -> Option<Byte> {
         let result = match addr {
+            // ROM
             0x0000_0000..=0x000F_FFFF | 0x0020_0000..=0x002F_FFFF | 0x0040_0000..=0x004F_FFFF => {
                 Some(self.rom[addr as usize & self.rom_mask])
             }
+            // Overlay flip for Mac SE
             0x0040_0000..=0x005F_FFFF if self.bustype == BusType::SE => {
                 self.overlay = false;
                 self.read_normal(addr)
             }
+            // RAM
             0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
+            // Phase adjust (ignore)
+            0x009F_FFF7 | 0x009F_FFF9 => Some(0xFF),
+            // SCC
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr),
+            // IWM
             0x00DF_E1FF..=0x00DF_FFFF => self.iwm.read(addr),
+            // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
+            // Phase read (ignore)
+            0x00F0_0000..=0x00F7_FFFF => Some(0xFF),
+            // Test software region (ignore)
+            0x00F8_0000..=0x00F9_FFFF => Some(0xFF),
 
             _ => None,
         };
@@ -215,11 +227,18 @@ where
 
     fn read_normal(&mut self, addr: Address) -> Option<Byte> {
         let result = match addr {
+            // RAM
             0x0000_0000..=0x003F_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
+            // ROM
             0x0040_0000..=0x004F_FFFF => Some(self.rom[addr as usize & self.rom_mask]),
+            // SCC
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr),
+            // IWM
             0x00DF_E1FF..=0x00DF_FFFF => self.iwm.read(addr),
+            // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
+            // Test software region (ignore)
+            0x00F8_0000..=0x00F9_FFFF => Some(0xFF),
 
             _ => None,
         };
