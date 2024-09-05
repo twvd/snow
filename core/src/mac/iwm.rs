@@ -24,7 +24,6 @@ pub struct Iwm {
     pub ca1: bool,
     pub ca2: bool,
     pub lstrb: bool,
-    pub motor: bool,
     pub q6: bool,
     pub q7: bool,
     pub extdrive: bool,
@@ -33,17 +32,31 @@ pub struct Iwm {
 
     status: IwmStatus,
     mode: IwmMode,
+    shdata: u8,
+    datareg: u8,
+    write_shift: u8,
+    write_pos: usize,
+    write_buffer: Option<u8>,
+
+    drives: [IwmDrive; 2],
+
+    pub dbg_pc: u32,
+    pub dbg_break: LatchingEvent,
+}
+
+/// A single disk drive, attached to the drive controller
+struct IwmDrive {
+    idx: usize,
+    cycles: Ticks,
+    double_sided: bool,
+    present: bool,
 
     floppy_inserted: bool,
     track: usize,
     stepdir: HeadStepDirection,
-    pub floppy: FloppyImage,
+    motor: bool,
+    floppy: FloppyImage,
     track_position: usize,
-    shdata: u8,
-    datareg: u8,
-
-    pub dbg_pc: u32,
-    pub dbg_break: LatchingEvent,
 
     // While > 0, the drive head is moving
     stepping: Ticks,
@@ -52,10 +65,6 @@ pub struct Iwm {
     pwm_avg_sum: i64,
     pwm_avg_count: usize,
     pwm_dutycycle: Ticks,
-
-    write_shift: u8,
-    write_pos: usize,
-    write_buffer: Option<u8>,
 }
 
 /// Direction the drive head is set to step to
@@ -217,110 +226,51 @@ enum DriveWriteReg {
     UNKNOWN,
 }
 
-impl Iwm {
+impl IwmDrive {
     /// Amount of tracks per disk side
     const DISK_TRACKS: usize = 80;
 
     /// Tacho pulses/disk revolution
     const TACHO_SPEED: Ticks = 60;
 
-    pub fn new(double_sided: bool) -> Self {
+    pub fn new(idx: usize, present: bool, double_sided: bool) -> Self {
         Self {
+            idx,
             cycles: 0,
-
-            ca0: false,
-            ca1: false,
-            ca2: false,
-            lstrb: false,
-            motor: false,
-            q6: false,
-            q7: false,
-            extdrive: false,
-            sel: false,
-
-            status: IwmStatus(0),
-            mode: IwmMode(0),
-
+            double_sided,
+            present,
             floppy_inserted: false,
             track: 4,
             stepdir: HeadStepDirection::Up,
             floppy: FloppyImage::new(FloppyType::Mac400K),
             track_position: 0,
-            shdata: 0,
-            datareg: 0,
+            motor: false,
 
-            enable: false,
-            dbg_pc: 0,
-            dbg_break: LatchingEvent::default(),
             stepping: 0,
             ejecting: None,
 
-            double_sided,
             pwm_avg_sum: 0,
             pwm_avg_count: 0,
             pwm_dutycycle: 0,
-
-            write_shift: 0,
-            write_pos: 0,
-            write_buffer: None,
         }
     }
 
-    /// A memory-mapped I/O address was accessed (offset from IWM base address)
-    fn access(&mut self, offset: Address) {
-        match offset / 512 {
-            0 => self.ca0 = false,
-            1 => self.ca0 = true,
-            2 => self.ca1 = false,
-            3 => self.ca1 = true,
-            4 => self.ca2 = false,
-            5 => self.ca2 = true,
-            6 => self.lstrb = false,
-            7 => {
-                self.lstrb = true;
-                self.write_drive_reg();
-            }
-            8 => {
-                self.enable = false;
-            }
-            9 => {
-                self.enable = true;
-            }
-            10 => self.extdrive = false,
-            11 => self.extdrive = true,
-            12 => self.q6 = false,
-            13 => self.q6 = true,
-            14 => {
-                self.q7 = false;
-            }
-            15 => self.q7 = true,
-            _ => (),
-        }
+    /// Returns true if drive's spindle motor is running
+    fn is_running(&self) -> bool {
+        self.floppy_inserted && self.motor
     }
 
     /// Reads from the currently selected drive register
-    fn read_drive_reg(&self) -> bool {
-        let reg = DriveReg::from_u8(self.get_selected_drive_reg_u8()).unwrap_or(DriveReg::UNKNOWN);
-
-        //if reg != IwmReg::TACH {
-        //trace!(
-        //"{:08X} IWM reg read {:?} = {} ext = {}",
-        //self.dbg_pc,
-        //reg,
-        //res,
-        //self.extdrive
-        //);
-        //}
+    fn read_sense(&self, regraw: u8) -> bool {
+        let reg = DriveReg::from_u8(regraw).unwrap_or(DriveReg::UNKNOWN);
 
         match reg {
             DriveReg::CISTN => !self.floppy_inserted,
             DriveReg::DIRTN => self.stepdir == HeadStepDirection::Down,
             DriveReg::SIDES => self.double_sided,
             DriveReg::MOTORON => !(self.motor && self.floppy_inserted),
-            DriveReg::PRESENT if self.extdrive => true,
-            DriveReg::PRESENT => false,
-            DriveReg::INSTALLED if self.extdrive => true,
-            DriveReg::INSTALLED => false,
+            DriveReg::PRESENT => !self.present,
+            DriveReg::INSTALLED => !self.present,
             DriveReg::READY => false,
             DriveReg::TKO if self.track == 0 => false,
             DriveReg::TKO => true,
@@ -331,9 +281,8 @@ impl Iwm {
             DriveReg::WRTPRT => true,
             _ => {
                 warn!(
-                    "Unimplemented register read {:?} {:0b}",
-                    reg,
-                    self.get_selected_drive_reg_u8()
+                    "Drive {}: unimplemented register read {:?} {:0b}",
+                    self.idx, reg, regraw
                 );
                 true
             }
@@ -345,14 +294,14 @@ impl Iwm {
         match self.stepdir {
             HeadStepDirection::Up => {
                 if (self.track + 1) >= Self::DISK_TRACKS {
-                    error!("Disk drive head moving further than track 79!");
+                    error!("Drive {}: head moving further than track 79!", self.idx);
                 } else {
                     self.track += 1;
                 }
             }
             HeadStepDirection::Down => {
                 if self.track == 0 {
-                    error!("Disk drive head moving lower than track 0");
+                    error!("Drive {}: head moving lower than track 0", self.idx);
                 } else {
                     self.track -= 1;
                 }
@@ -364,22 +313,12 @@ impl Iwm {
 
         // Track-to-track stepping time: 30ms
         self.stepping = TICKS_PER_SECOND / 60_000 * 30;
-
-        //trace!(
-        //"Track {}, now: {} - byte len: {} bit len: {} rpm: {} cycles/bit: {}",
-        //self.stepdir,
-        //self.track,
-        //self.trackdata[self.track].data.len(),
-        //self.trackdata[self.track].bits,
-        //self.get_track_rpm(),
-        //self.get_cycles_per_bit(),
-        //);
     }
 
     /// Writes to the currently selected drive register
-    fn write_drive_reg(&mut self) {
-        let reg = DriveWriteReg::from_u8(self.get_selected_drive_reg_u8())
-            .unwrap_or(DriveWriteReg::UNKNOWN);
+    fn write_drive_reg(&mut self, regraw: u8, cycles: Ticks) {
+        let reg = DriveWriteReg::from_u8(regraw).unwrap_or(DriveWriteReg::UNKNOWN);
+
         match reg {
             DriveWriteReg::MOTORON => self.motor = true,
             DriveWriteReg::MOTOROFF => {
@@ -387,7 +326,7 @@ impl Iwm {
             }
             DriveWriteReg::EJECT => {
                 if self.floppy_inserted {
-                    self.ejecting = Some(self.cycles + (TICKS_PER_SECOND / 2));
+                    self.ejecting = Some(cycles + (TICKS_PER_SECOND / 2));
                 }
             }
             DriveWriteReg::TRACKUP => {
@@ -398,76 +337,19 @@ impl Iwm {
             }
             DriveWriteReg::TRACKSTEP => self.step_head(),
             _ => {
-                warn!(
-                    "Unimplemented register write {:?} {:0b}",
-                    reg,
-                    self.get_selected_drive_reg_u8()
-                );
+                warn!("Unimplemented register write {:?} {:0b}", reg, regraw);
             }
         }
-    }
-
-    /// Reads the currently selected (Q6, Q7) IWM register
-    fn iwm_read(&mut self) -> u8 {
-        match (self.q6, self.q7) {
-            (false, false) => {
-                // Data register
-                if !self.enable {
-                    0xFF
-                } else {
-                    std::mem::replace(&mut self.datareg, 0)
-                }
-            }
-            (true, false) => {
-                // Read status register
-                let sense = self.read_drive_reg();
-                self.status.set_sense(sense);
-                self.status.set_mode_low(self.mode.mode_low());
-                self.status.set_enable(self.enable);
-
-                self.status.0
-            }
-            (false, true) => {
-                // Read handshake register
-                let mut result = IwmHandshake::default();
-                result.set_underrun(!(self.write_pos == 0 && self.write_buffer.is_none()));
-                result.set_ready(self.write_buffer.is_none());
-                result.0
-            }
-            _ => {
-                warn!("IWM unknown read q6 = {:?} q7 = {:?}", self.q6, self.q7);
-                0
-            }
-        }
-    }
-
-    /// Converts the four register selection I/Os to a u8 value which can be used
-    /// to convert to an enum value.
-    fn get_selected_drive_reg_u8(&self) -> u8 {
-        let mut v = 0;
-        if self.ca2 {
-            v |= 0b1000;
-        };
-        if self.ca1 {
-            v |= 0b0100;
-        };
-        if self.ca0 {
-            v |= 0b0010;
-        };
-        if self.sel {
-            v |= 0b0001;
-        };
-        v
     }
 
     /// Inserts a disk into the disk drive
     pub fn disk_insert(&mut self, image: FloppyImage) -> Result<()> {
-        self.floppy = image;
-
         info!(
-            "Disk inserted, {} tracks",
-            self.floppy.get_track_count() * self.floppy.get_side_count()
+            "Drive {}: disk inserted, {} tracks",
+            self.idx,
+            image.get_track_count() * image.get_side_count()
         );
+        self.floppy = image;
         self.floppy_inserted = true;
         Ok(())
     }
@@ -536,15 +418,6 @@ impl Iwm {
         self.track
     }
 
-    /// Gets the active (selected) drive head
-    fn get_active_head(&self) -> usize {
-        if !self.double_sided || self.floppy.get_side_count() == 1 || !self.sel {
-            0
-        } else {
-            1
-        }
-    }
-
     /// Gets the length (in bits) of a track
     fn get_track_len(&self, side: usize, track: usize) -> usize {
         self.floppy.get_track_length(side, track)
@@ -554,6 +427,183 @@ impl Iwm {
     fn get_head_bit(&self, head: usize) -> bool {
         self.floppy
             .get_track_bit(head, self.get_active_track(), self.track_position)
+    }
+
+    /// Advances to the next bit on the track
+    fn next_bit(&mut self, head: usize) -> bool {
+        self.track_position += 1;
+        if self.track_position >= self.get_track_len(head, self.get_active_track()) {
+            self.track_position = 0;
+        }
+
+        self.get_head_bit(head)
+    }
+
+    /// Writes a bit to the current track position
+    fn write_bit(&mut self, head: usize, bit: bool) {
+        self.floppy
+            .set_track_bit(head, self.track, self.track_position, bit);
+    }
+
+    /// Ejects the disk
+    fn eject(&mut self) {
+        info!("Drive {}: disk ejected", self.idx);
+        self.floppy_inserted = false;
+        self.ejecting = None;
+    }
+}
+
+impl Iwm {
+    pub fn new(double_sided: bool) -> Self {
+        Self {
+            drives: core::array::from_fn(|i| IwmDrive::new(i, true, double_sided)),
+            double_sided,
+            cycles: 0,
+
+            ca0: false,
+            ca1: false,
+            ca2: false,
+            lstrb: false,
+            q6: false,
+            q7: false,
+            extdrive: false,
+            sel: false,
+
+            shdata: 0,
+            datareg: 0,
+            write_shift: 0,
+            write_pos: 0,
+            write_buffer: None,
+
+            status: IwmStatus(0),
+            mode: IwmMode(0),
+
+            enable: false,
+            dbg_pc: 0,
+            dbg_break: LatchingEvent::default(),
+        }
+    }
+
+    fn get_selected_drive_idx(&self) -> usize {
+        if self.extdrive {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn get_selected_drive(&self) -> &IwmDrive {
+        &self.drives[self.get_selected_drive_idx()]
+    }
+
+    fn get_selected_drive_mut(&mut self) -> &mut IwmDrive {
+        &mut self.drives[self.get_selected_drive_idx()]
+    }
+
+    /// A memory-mapped I/O address was accessed (offset from IWM base address)
+    fn access(&mut self, offset: Address) {
+        match offset / 512 {
+            0 => self.ca0 = false,
+            1 => self.ca0 = true,
+            2 => self.ca1 = false,
+            3 => self.ca1 = true,
+            4 => self.ca2 = false,
+            5 => self.ca2 = true,
+            6 => self.lstrb = false,
+            7 => {
+                self.lstrb = true;
+
+                let reg = self.get_selected_drive_reg_u8();
+                let cycles = self.cycles;
+                self.get_selected_drive_mut().write_drive_reg(reg, cycles);
+            }
+            8 => {
+                self.enable = false;
+            }
+            9 => {
+                self.enable = true;
+            }
+            10 => self.extdrive = false,
+            11 => self.extdrive = true,
+            12 => self.q6 = false,
+            13 => self.q6 = true,
+            14 => {
+                self.q7 = false;
+            }
+            15 => self.q7 = true,
+            _ => (),
+        }
+    }
+
+    /// Reads the currently selected (Q6, Q7) IWM register
+    fn iwm_read(&mut self) -> u8 {
+        match (self.q6, self.q7) {
+            (false, false) => {
+                // Data register
+                if !self.enable {
+                    0xFF
+                } else {
+                    std::mem::replace(&mut self.datareg, 0)
+                }
+            }
+            (true, false) => {
+                // Read status register
+                let sense = self
+                    .get_selected_drive()
+                    .read_sense(self.get_selected_drive_reg_u8());
+                self.status.set_sense(sense);
+                self.status.set_mode_low(self.mode.mode_low());
+                self.status.set_enable(self.enable);
+
+                self.status.0
+            }
+            (false, true) => {
+                // Read handshake register
+                let mut result = IwmHandshake::default();
+
+                result.set_underrun(!(self.write_pos == 0 && self.write_buffer.is_none()));
+                result.set_ready(self.write_buffer.is_none());
+                result.0
+            }
+            _ => {
+                warn!("IWM unknown read q6 = {:?} q7 = {:?}", self.q6, self.q7);
+                0
+            }
+        }
+    }
+
+    /// Converts the four register selection I/Os to a u8 value which can be used
+    /// to convert to an enum value.
+    fn get_selected_drive_reg_u8(&self) -> u8 {
+        let mut v = 0;
+        if self.ca2 {
+            v |= 0b1000;
+        };
+        if self.ca1 {
+            v |= 0b0100;
+        };
+        if self.ca0 {
+            v |= 0b0010;
+        };
+        if self.sel {
+            v |= 0b0001;
+        };
+        v
+    }
+
+    /// Inserts a disk into the disk drive
+    pub fn disk_insert(&mut self, drive: usize, image: FloppyImage) -> Result<()> {
+        self.drives[drive].disk_insert(image)
+    }
+
+    /// Gets the active (selected) drive head
+    fn get_active_head(&self) -> usize {
+        if !self.double_sided || self.get_selected_drive().floppy.get_side_count() == 1 || !self.sel
+        {
+            0
+        } else {
+            1
+        }
     }
 
     /// Update current drive PWM signal from the sound buffer
@@ -569,19 +619,25 @@ impl Iwm {
             return Ok(());
         }
 
-        self.pwm_avg_sum += VALUE_TO_LEN[usize::from(pwm) % VALUE_TO_LEN.len()] as i64;
-        self.pwm_avg_count += 1;
-        if self.pwm_avg_count >= 100 {
-            let idx = clamp(
-                self.pwm_avg_sum / (self.pwm_avg_count as i64 / 10) - 11,
-                0,
-                399,
-            );
-            self.pwm_dutycycle = ((idx * 100) / 419).try_into()?;
-            self.pwm_avg_sum = 0;
-            self.pwm_avg_count = 0;
+        for drv in &mut self.drives {
+            drv.pwm_avg_sum += VALUE_TO_LEN[usize::from(pwm) % VALUE_TO_LEN.len()] as i64;
+            drv.pwm_avg_count += 1;
+            if drv.pwm_avg_count >= 100 {
+                let idx = clamp(
+                    drv.pwm_avg_sum / (drv.pwm_avg_count as i64 / 10) - 11,
+                    0,
+                    399,
+                );
+                drv.pwm_dutycycle = ((idx * 100) / 419).try_into()?;
+                drv.pwm_avg_sum = 0;
+                drv.pwm_avg_count = 0;
+            }
         }
         Ok(())
+    }
+
+    pub fn get_active_image(&self, drive: usize) -> &FloppyImage {
+        &self.drives[drive].floppy
     }
 }
 
@@ -611,14 +667,6 @@ impl BusMember<Address> for Iwm {
                 self.mode.set_mode(val);
             }
             (true, true, true) => {
-                // Write data register
-                //trace!(
-                //    "Write data reg: {:02X}, bit position: {}, track: {}, head: {}",
-                //    val,
-                //    self.track_position,
-                //    self.get_active_track(),
-                //    self.get_active_head()
-                //);
                 if self.write_buffer.is_some() {
                     warn!("Disk write while write buffer not empty");
                 }
@@ -637,69 +685,64 @@ impl Tickable for Iwm {
 
         // This is called at the Macintosh main clock speed (TICKS_PER_SECOND == 8 MHz)
         self.cycles += ticks;
+        for drv in &mut self.drives {
+            drv.cycles = self.cycles;
+        }
 
         // When an EJECT command is sent, do not actually eject the disk until eject strobe has been
         // asserted for at least 500ms. Specifications say a 750ms strobe is required.
         // For some reason, the Mac Plus ROM gives a very short eject strobe on bootup during drive
         // enumeration. If we do not ignore that, the Mac Plus always ejects the boot disk.
-        if self.ejecting.is_some() && self.lstrb {
-            let Some(eject_ticks) = self.ejecting else {
+        if self.get_selected_drive().ejecting.is_some() && self.lstrb {
+            let Some(eject_ticks) = self.get_selected_drive().ejecting else {
                 unreachable!()
             };
             if eject_ticks < self.cycles {
-                info!("Disk ejected");
-                self.floppy_inserted = false;
-                self.ejecting = None;
+                self.get_selected_drive_mut().eject();
             }
         } else if !self.lstrb {
-            self.ejecting = None;
+            self.get_selected_drive_mut().ejecting = None;
         }
 
-        // Decrement 'head stepping' timer
-        self.stepping = self.stepping.saturating_sub(ticks);
+        if self.get_selected_drive().is_running() {
+            // Decrement 'head stepping' timer
+            let new_stepping = self.get_selected_drive().stepping.saturating_sub(ticks);
+            self.get_selected_drive_mut().stepping = new_stepping;
 
-        if self.floppy_inserted && self.motor && self.cycles % self.get_ticks_per_bit() == 0 {
-            // Progress the head over the track
-            self.shdata <<= 1;
-            if self.get_head_bit(self.get_active_head()) {
-                self.shdata |= 1;
-            }
+            if self.cycles % self.get_selected_drive().get_ticks_per_bit() == 0 {
+                let head = self.get_active_head();
 
-            self.track_position += 1;
-            if self.track_position
-                >= self.get_track_len(self.get_active_head(), self.get_active_track())
-            {
-                self.track_position = 0;
-            }
+                // Progress the head over the track
+                self.shdata <<= 1;
+                if self.get_selected_drive_mut().next_bit(head) {
+                    self.shdata |= 1;
+                }
 
-            if self.shdata & 0x80 != 0 {
-                // Data is moved to the data register when the most significant bit is set.
-                // Because the Mac uses GCR encoding, the most significant bit is always set in
-                // any valid data.
-                self.datareg = self.shdata;
-                self.shdata = 0;
-            }
+                if self.shdata & 0x80 != 0 {
+                    // Data is moved to the data register when the most significant bit is set.
+                    // Because the Mac uses GCR encoding, the most significant bit is always set in
+                    // any valid data.
+                    self.datareg = self.shdata;
+                    self.shdata = 0;
+                }
 
-            if self.write_pos == 0 && self.write_buffer.is_some() {
-                // Write idle and new data in write FIFO, start writing 8 new bits
-                let Some(v) = self.write_buffer else {
-                    unreachable!()
-                };
-                self.write_shift = v;
-                self.write_pos = 8;
-                self.write_buffer = None;
-            }
-            if self.write_pos > 0 {
-                // Write in progress - write one bit to current head location
-                let bit = self.write_shift & 0x80 != 0;
-                self.write_shift <<= 1;
-                self.write_pos -= 1;
-                self.floppy.set_track_bit(
-                    self.get_active_head(),
-                    self.get_active_track(),
-                    self.track_position,
-                    bit,
-                );
+                if self.write_pos == 0 && self.write_buffer.is_some() {
+                    // Write idle and new data in write FIFO, start writing 8 new bits
+                    let Some(v) = self.write_buffer else {
+                        unreachable!()
+                    };
+                    self.write_shift = v;
+                    self.write_pos = 8;
+                    self.write_buffer = None;
+                }
+                if self.write_pos > 0 {
+                    // Write in progress - write one bit to current head location
+                    let bit = self.write_shift & 0x80 != 0;
+                    let head = self.get_active_head();
+                    self.write_shift <<= 1;
+                    self.write_pos -= 1;
+                    self.get_selected_drive_mut().write_bit(head, bit);
+                }
             }
         }
 
@@ -719,19 +762,19 @@ mod tests {
 
     #[test]
     fn disk_double_tacho_outer() {
-        let mut iwm = Iwm::new(true);
-        iwm.floppy_inserted = true;
-        iwm.motor = true;
-        iwm.track = 0;
+        let mut drv = IwmDrive::new(0, true, true);
+        drv.floppy_inserted = true;
+        drv.motor = true;
+        drv.track = 0;
 
         let mut last = false;
         let mut result = 0;
 
         for _ in 0..(TICKS_PER_SECOND * 60) {
-            iwm.cycles += 1;
-            if iwm.get_tacho() != last {
+            drv.cycles += 1;
+            if drv.get_tacho() != last {
                 result += 1;
-                last = iwm.get_tacho();
+                last = drv.get_tacho();
             }
         }
 
@@ -740,19 +783,19 @@ mod tests {
 
     #[test]
     fn disk_double_tacho_inner() {
-        let mut iwm = Iwm::new(true);
-        iwm.floppy_inserted = true;
-        iwm.motor = true;
-        iwm.track = 79;
+        let mut drv = IwmDrive::new(0, true, true);
+        drv.floppy_inserted = true;
+        drv.motor = true;
+        drv.track = 79;
 
         let mut last = false;
         let mut result = 0;
 
         for _ in 0..(TICKS_PER_SECOND * 60) {
-            iwm.cycles += 1;
-            if iwm.get_tacho() != last {
+            drv.cycles += 1;
+            if drv.get_tacho() != last {
                 result += 1;
-                last = iwm.get_tacho();
+                last = drv.get_tacho();
             }
         }
 

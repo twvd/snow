@@ -311,10 +311,8 @@ where
             self.write_normal(addr, val)
         };
 
-        if self.overlay {
-            if self.bustype == BusType::Early && !self.via.a_out.overlay() {
-                self.overlay = false;
-            }
+        if self.overlay && self.bustype == BusType::Early && !self.via.a_out.overlay() {
+            self.overlay = false;
         }
 
         // Sync values that live in multiple places

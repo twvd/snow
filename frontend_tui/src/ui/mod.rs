@@ -236,15 +236,28 @@ impl UserInterface {
                     .send(EmulatorCommand::Disassemble(addr, len))?;
                 Ok(())
             }
-            "disk" => {
+            "disk" | "disk1" => {
                 let filename = tokens.get(1).context("No filename specified")?.to_string();
                 self.cmdsender
-                    .send(EmulatorCommand::InsertFloppy(filename))?;
+                    .send(EmulatorCommand::InsertFloppy(0, filename))?;
                 Ok(())
             }
-            "writedisk" => {
+            "disk2" => {
                 let filename = tokens.get(1).context("No filename specified")?.to_string();
-                self.cmdsender.send(EmulatorCommand::SaveFloppy(filename))?;
+                self.cmdsender
+                    .send(EmulatorCommand::InsertFloppy(1, filename))?;
+                Ok(())
+            }
+            "writedisk" | "writedisk1" => {
+                let filename = tokens.get(1).context("No filename specified")?.to_string();
+                self.cmdsender
+                    .send(EmulatorCommand::SaveFloppy(0, filename))?;
+                Ok(())
+            }
+            "writedisk2" => {
+                let filename = tokens.get(1).context("No filename specified")?.to_string();
+                self.cmdsender
+                    .send(EmulatorCommand::SaveFloppy(1, filename))?;
                 Ok(())
             }
             _ => bail!("Unknown command"),

@@ -155,16 +155,16 @@ impl Tickable for Emulator {
                         self.cpu.bus.mouse_update_abs(x, y);
                     }
                     EmulatorCommand::Quit => return Ok(0),
-                    EmulatorCommand::InsertFloppy(filename) => {
+                    EmulatorCommand::InsertFloppy(drive, filename) => {
                         let image = Autodetect::load_file(&filename);
                         match image {
-                            Ok(img) => self.cpu.bus.iwm.disk_insert(img)?,
+                            Ok(img) => self.cpu.bus.iwm.disk_insert(drive, img)?,
                             Err(e) => error!("Cannot load image '{}': {}", filename, e),
                         }
                         self.status_update()?;
                     }
-                    EmulatorCommand::SaveFloppy(filename) => {
-                        Bitfile::save_file(&self.cpu.bus.iwm.floppy, &filename)?;
+                    EmulatorCommand::SaveFloppy(drive, filename) => {
+                        Bitfile::save_file(self.cpu.bus.iwm.get_active_image(drive), &filename)?;
                         self.status_update()?;
                     }
                     EmulatorCommand::Run => {
