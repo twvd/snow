@@ -1,6 +1,7 @@
 use std::ops::Range;
 
 use super::scc::Scc;
+use super::scsi::ScsiController;
 use super::via::Via;
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::mac::iwm::Iwm;
@@ -31,6 +32,7 @@ pub struct MacBus<TRenderer: Renderer> {
     eclock: Ticks,
     mouse_ready: bool,
     pub iwm: Iwm,
+    pub scsi: ScsiController,
 
     ram_mask: usize,
     rom_mask: usize,
@@ -102,6 +104,7 @@ where
             eclock: 0,
             scc: Scc::new(),
             iwm: Iwm::new(fd_double),
+            scsi: ScsiController::new(),
             mouse_ready: false,
 
             ram_mask: (ram_size - 1),
@@ -155,12 +158,18 @@ where
         }
 
         match addr {
-            0x0040_0000..=0x005F_FFFF if self.bustype == BusType::SE => {
+            // ROM (disables overlay)
+            0x0040_0000..=0x0057_FFFF if self.bustype == BusType::SE => {
                 self.overlay = false;
                 self.write_normal(addr, val)
             }
+            // SCSI
+            0x0058_0000..=0x005F_FFFF => self.scsi.write(addr, val),
+            // RAM
             0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & self.ram_mask] = val),
+            // SCC
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr, val),
+            // IWM
             0x00DF_E1FF..=0x00DF_FFFF => self.iwm.write(addr, val),
             // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.write(addr, val),
@@ -185,8 +194,13 @@ where
         }
 
         match addr {
+            // RAM
             0x0000_0000..=0x003F_FFFF => Some(self.ram[addr as usize & self.ram_mask] = val),
+            // SCSI
+            0x0058_0000..=0x005F_FFFF => self.scsi.write(addr, val),
+            // SCC
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr, val),
+            // IWM
             0x00DF_E1FF..=0x00DF_FFFF => self.iwm.write(addr, val),
             // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.write(addr, val),
@@ -208,6 +222,8 @@ where
                 self.overlay = false;
                 self.read_normal(addr)
             }
+            // SCSI
+            0x0058_0000..=0x005F_FFFF => self.scsi.read(addr),
             // RAM
             0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
             // Phase adjust (ignore)
@@ -241,6 +257,8 @@ where
             0x0044_0000..=0x004F_FFFF if !self.scsi_enable => {
                 Some(self.rom[addr as usize & self.rom_mask])
             }
+            // SCSI
+            0x0058_0000..=0x005F_FFFF => self.scsi.read(addr),
             // SCC
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr),
             // IWM
