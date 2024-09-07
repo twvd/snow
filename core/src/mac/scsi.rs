@@ -99,17 +99,37 @@ bitfield! {
     }
 }
 
+bitfield! {
+    /// NCR 5380 SCSI Bus Status
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    struct NcrRegCsr(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+        pub dbp: bool @ 0,
+        pub sel: bool @ 1,
+        pub io: bool @ 2,
+        pub cd: bool @ 3,
+        pub msg: bool @ 4,
+        pub req: bool @ 5,
+        pub bsy: bool @ 6,
+        pub rst: bool @ 7,
+    }
+}
+
 /// NCR 5380 SCSI controller
 pub struct ScsiController {
     busphase: ScsiBusPhase,
     reg_mr: NcrRegMr,
     reg_icr: NcrRegIcr,
+    reg_csr: NcrRegCsr,
+    reg_odr: u8,
 
     /// Selected SCSI ID
     sel_id: usize,
 
     /// Selected with attention
     sel_atn: bool,
+
+    /// Command buffer
+    cmdbuf: Vec<u8>,
 }
 
 impl ScsiController {
@@ -118,20 +138,38 @@ impl ScsiController {
             busphase: ScsiBusPhase::Free,
             reg_mr: NcrRegMr(0),
             reg_icr: NcrRegIcr(0),
+            reg_csr: NcrRegCsr(0),
+            reg_odr: 0,
             sel_id: 0,
             sel_atn: false,
+            cmdbuf: vec![],
         }
     }
 
     fn set_phase(&mut self, phase: ScsiBusPhase) {
         trace!("Bus phase: {:?}", phase);
+
         self.busphase = phase;
+        self.reg_csr.0 = 0;
+
         match self.busphase {
             ScsiBusPhase::Arbitration => {
                 self.reg_icr.set_aip(true);
             }
             ScsiBusPhase::Selection => {
                 self.reg_icr.set_aip(false);
+            }
+            ScsiBusPhase::Command => {
+                self.cmdbuf.clear();
+                self.reg_csr.set_bsy(true);
+                self.reg_csr.set_cd(true);
+                self.reg_csr.set_req(true);
+            }
+            ScsiBusPhase::Status => {
+                self.reg_csr.set_bsy(true);
+                self.reg_csr.set_cd(true);
+                self.reg_csr.set_io(true);
+                self.reg_csr.set_req(true);
             }
             _ => (),
         }
@@ -154,7 +192,13 @@ impl BusMember<Address> for ScsiController {
         //}
 
         match reg {
+            NcrReg::MR => Some(self.reg_mr.0),
             NcrReg::ICR => Some(self.reg_icr.0),
+            NcrReg::CSR => Some(self.reg_csr.0),
+            NcrReg::BSR => {
+                // 'phase match'
+                Some(0x08)
+            }
             _ => Some(0),
         }
     }
@@ -174,27 +218,33 @@ impl BusMember<Address> for ScsiController {
 
         match reg {
             NcrReg::CDR_ODR => {
-                match self.busphase {
-                    ScsiBusPhase::Selection => {
-                        self.sel_id = usize::from(val & 0x7F);
-                        self.sel_atn = val & 0x80 != 0;
-                        trace!(
-                            "Selected SCSI ID: {:02X}, attention = {}",
-                            self.sel_id,
-                            self.sel_atn
-                        );
-                    }
-                    _ => (),
-                }
+                self.reg_odr = val;
                 Some(())
             }
             NcrReg::ICR => {
+                let set = NcrRegIcr(val & !self.reg_icr.0);
+                let clr = NcrRegIcr(!val & self.reg_icr.0);
+
                 self.reg_icr.0 = val;
 
                 match self.busphase {
                     ScsiBusPhase::Arbitration => {
-                        if self.reg_icr.assert_sel() {
+                        if set.assert_sel() {
                             self.set_phase(ScsiBusPhase::Selection);
+                        }
+                    }
+                    ScsiBusPhase::Command => {
+                        if set.assert_ack() {
+                            self.reg_csr.set_req(false);
+                        }
+                        if clr.assert_ack() {
+                            self.cmdbuf.push(self.reg_odr);
+                            if self.cmdbuf.len() >= 6 {
+                                trace!("cmd: {:X?}", self.cmdbuf);
+                                self.set_phase(ScsiBusPhase::Status);
+                            } else {
+                                self.reg_csr.set_req(true);
+                            }
                         }
                     }
 
@@ -204,6 +254,7 @@ impl BusMember<Address> for ScsiController {
             }
             NcrReg::MR => {
                 let set = NcrRegMr(val & !self.reg_mr.0);
+                let clr = NcrRegMr(!val & self.reg_mr.0);
                 self.reg_mr.0 = val;
 
                 if set.arbitrate() {
@@ -212,6 +263,22 @@ impl BusMember<Address> for ScsiController {
 
                 match self.busphase {
                     ScsiBusPhase::Free => {}
+                    ScsiBusPhase::Selection => {
+                        if clr.arbitrate() {
+                            self.sel_id = usize::from(self.reg_odr & 0x7F);
+                            self.sel_atn = self.reg_odr & 0x80 != 0;
+
+                            trace!(
+                                "Selected SCSI ID: {:02X}, attention = {}",
+                                self.sel_id,
+                                self.sel_atn
+                            );
+
+                            if self.sel_id == 1 {
+                                self.set_phase(ScsiBusPhase::Command);
+                            }
+                        }
+                    }
                     _ => (),
                 }
                 Some(())
