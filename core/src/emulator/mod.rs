@@ -114,6 +114,7 @@ impl Emulator {
     fn step(&mut self) -> Result<()> {
         let mut stop_break = false;
         self.cpu.bus.iwm.dbg_pc = self.cpu.regs.pc;
+        self.cpu.bus.scsi.dbg_pc = self.cpu.regs.pc;
         self.cpu.tick(1)?;
 
         // Mac 512K: 0x402154, Mac Plus: 0x418CCC

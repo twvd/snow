@@ -20,7 +20,29 @@
 //!     
 //!     StateChange --> Idle: Reset (Release all signals)
 //! ```
+//!
+//! ## Target -> Initiator data transfer flow
+//! ```mermaid
+//! stateDiagram
+//!     [*] --> Selection: Initiator selects Target
+//!     Selection --> Command: Initiator sends READ (6) Command
+//!     Command --> Data: Target enters Data Phase
+//!     Data: Data Phase\n(C/D=0, I/O=1, MSG=0, REQ asserted)
+//!     Data --> REQ_ACK: REQ/ACK Handshake for Data Transfer
+//!     REQ_ACK --> More_Data: Data transfer continues (REQ/ACK Handshake)
+//!     More_Data --> REQ_ACK: Next block of data ready on the bus
+//!     REQ_ACK --> End_Data: All blocks transferred
+//!     End_Data --> Status_Transition: Target changes Phase Signals
+//!     Status_Transition --> Status: Status Phase begins (C/D=1, I/O=1, MSG=0)
+//!     Status --> REQ_ACK_Status: REQ/ACK Handshake for Status Byte
+//!     REQ_ACK_Status --> Message: Status Byte sent, Target enters Message Phase
+//!     Message --> REQ_ACK_Message: REQ/ACK Handshake for Message (Usually 0x00)
+//!     REQ_ACK_Message --> End: Command complete
+//! ```
 
+use std::collections::VecDeque;
+
+use anyhow::Result;
 use log::*;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -29,8 +51,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::bus::{Address, BusMember};
 
+pub const STATUS_GOOD: u8 = 0;
+pub const STATUS_CHECK_CONDITION: u8 = 2;
+
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 /// SCSI bus phases
 enum ScsiBusPhase {
     Free,
@@ -38,7 +63,9 @@ enum ScsiBusPhase {
     Selection,
     Reselection,
     Command,
+    /// Target -> Initiator
     DataIn,
+    /// Initiator -> Target
     DataOut,
     Status,
     MessageIn,
@@ -111,16 +138,46 @@ bitfield! {
         pub req: bool @ 5,
         pub bsy: bool @ 6,
         pub rst: bool @ 7,
+
+        /// Status code
+        pub status: u8 @ 0..=2,
+    }
+}
+
+bitfield! {
+    /// NCR 5380 Bus and Status Register
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    struct NcrRegBsr(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+        /// ACK bus condition
+        pub ack: bool @ 0,
+        /// ATN bus condition
+        pub atn: bool @ 1,
+        /// Busy error (loss of BSY condition)
+        pub busy_err: bool @ 2,
+        /// Phase match
+        pub phase_match: bool @ 3,
+        /// Interrupt request active
+        pub irq: bool @ 4,
+        /// Parity error during transfer
+        pub parity_err: bool @ 5,
+        /// DMA request
+        pub dma_req: bool @ 6,
+        /// End of DMA transfer
+        pub dma_end: bool @ 7,
     }
 }
 
 /// NCR 5380 SCSI controller
 pub struct ScsiController {
+    pub dbg_pc: Address,
     busphase: ScsiBusPhase,
     reg_mr: NcrRegMr,
     reg_icr: NcrRegIcr,
     reg_csr: NcrRegCsr,
+    reg_cdr: u8,
     reg_odr: u8,
+    reg_bsr: NcrRegBsr,
+    status: u8,
 
     /// Selected SCSI ID
     sel_id: usize,
@@ -130,19 +187,31 @@ pub struct ScsiController {
 
     /// Command buffer
     cmdbuf: Vec<u8>,
+
+    /// Active command length
+    cmdlen: usize,
+
+    /// Response buffer
+    responsebuf: VecDeque<u8>,
 }
 
 impl ScsiController {
     pub fn new() -> Self {
         Self {
+            dbg_pc: 0,
             busphase: ScsiBusPhase::Free,
             reg_mr: NcrRegMr(0),
             reg_icr: NcrRegIcr(0),
             reg_csr: NcrRegCsr(0),
+            reg_bsr: NcrRegBsr(0).with_phase_match(true),
+            reg_cdr: 0,
             reg_odr: 0,
             sel_id: 0,
             sel_atn: false,
             cmdbuf: vec![],
+            responsebuf: VecDeque::default(),
+            cmdlen: 0,
+            status: 0,
         }
     }
 
@@ -161,51 +230,142 @@ impl ScsiController {
             }
             ScsiBusPhase::Command => {
                 self.cmdbuf.clear();
+                self.responsebuf.clear();
                 self.reg_csr.set_bsy(true);
                 self.reg_csr.set_cd(true);
                 self.reg_csr.set_req(true);
             }
+            ScsiBusPhase::DataIn => {
+                self.reg_csr.set_bsy(true);
+                self.reg_csr.set_cd(false);
+                self.reg_csr.set_io(true);
+                self.reg_csr.set_req(true);
+                //if self.reg_mr.dma_mode() {
+                self.reg_bsr.set_dma_req(true);
+                //}
+            }
             ScsiBusPhase::Status => {
+                self.reg_csr.set_bsy(true);
+                self.reg_bsr.set_dma_req(false);
+                self.reg_csr.set_cd(true);
+                self.reg_csr.set_io(true);
+                self.reg_csr.set_req(true);
+                self.reg_cdr = self.status;
+                trace!("Status code: {:02X}", 0x00);
+            }
+            ScsiBusPhase::MessageIn => {
                 self.reg_csr.set_bsy(true);
                 self.reg_csr.set_cd(true);
                 self.reg_csr.set_io(true);
                 self.reg_csr.set_req(true);
+                self.reg_csr.set_msg(true);
+                self.reg_cdr = 0;
             }
             _ => (),
         }
+    }
+
+    fn cmd_get_len(&self, cmdnum: u8) -> usize {
+        {
+            warn!("cmd_get_len unknown command: {:02X}", cmdnum);
+            6
+        }
+    }
+
+    fn cmd_run(&mut self) -> Result<Vec<u8>> {
+        let cmd = &self.cmdbuf;
+        let mut result = vec![];
+
+        self.status = STATUS_GOOD;
+        match cmd[0] {
+            0x00 => {
+                // UNIT READY
+            }
+            0x12 => {
+                // INQUIRY
+                result.resize(36, 0);
+
+                // 0 Peripheral qualifier (5-7), peripheral device type (4-0)
+                result[0] = 0; // Magnetic disk
+
+                // 4 Additional length (N-4), min. 32
+                result[4] = result.len() as u8 - 4;
+
+                // 8..16 Vendor identification
+                result[8..(8 + 4)].copy_from_slice(b"SNOW");
+
+                // 16..32 Product identification
+                result[16..(16 + 11)].copy_from_slice(b"VIRTUAL HDD");
+            }
+            0x1A => {
+                // MODE SENSE(6)
+                result.resize(40, 0);
+                result[0] = 0x30;
+                result[1] = 33;
+
+                // The string below has to appear for HD SC Setup and possibly other tools to work.
+                // https://68kmla.org/bb/index.php?threads/apple-rom-hard-disks.44920/post-493863
+                result[14..(14 + 20)].copy_from_slice(b"APPLE COMPUTER, INC.");
+            }
+
+            _ => {
+                error!("Unknown command {:02X}", cmd[0]);
+                result.resize(512, 0xAA);
+                self.status = STATUS_CHECK_CONDITION;
+            }
+        }
+        Ok(result)
     }
 }
 
 impl BusMember<Address> for ScsiController {
     fn read(&mut self, addr: Address) -> Option<u8> {
-        let is_write = addr & 1 != 0;
-        let dack = addr & 0b0010_0000_0000 != 0;
+        let _is_write = addr & 1 != 0;
+        let _dack = addr & 0b0010_0000_0000 != 0;
         let reg = NcrReg::from_u32((addr >> 4) & 0b111).unwrap();
 
         //if reg != NcrReg::CSR {
-        //    trace!(
-        //        "SCSI read: write = {}, dack = {}, reg = {:?}",
-        //        is_write,
-        //        dack,
-        //        reg
-        //    );
+        //trace!(
+        //    "{:06X} SCSI read: write = {}, dack = {}, reg = {:?}",
+        //    self.dbg_pc,
+        //    is_write,
+        //    dack,
+        //    reg
+        //);
         //}
 
         match reg {
+            NcrReg::CDR_ODR => {
+                if self.busphase != ScsiBusPhase::DataIn {
+                    Some(self.reg_cdr)
+                } else if self.reg_mr.dma_mode() {
+                    if let Some(b) = self.responsebuf.pop_front() {
+                        trace!("Byte out: {:02X} ({} left)", b, self.responsebuf.len());
+                        if self.responsebuf.is_empty() {
+                            // Transfer completed
+                            self.set_phase(ScsiBusPhase::Status);
+                        }
+                        Some(b)
+                    } else {
+                        error!("CDR DMA buffer underrun!");
+                        Some(0)
+                    }
+                } else {
+                    error!("CDR read but DMA disabled");
+                    Some(0)
+                }
+            }
             NcrReg::MR => Some(self.reg_mr.0),
             NcrReg::ICR => Some(self.reg_icr.0),
             NcrReg::CSR => Some(self.reg_csr.0),
-            NcrReg::BSR => {
-                // 'phase match'
-                Some(0x08)
-            }
+            NcrReg::BSR => Some(self.reg_bsr.0),
             _ => Some(0),
         }
     }
 
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
-        let is_write = addr & 1 != 0;
-        let dack = addr & 0b0010_0000_0000 != 0;
+        let _is_write = addr & 1 != 0;
+        let _dack = addr & 0b0010_0000_0000 != 0;
         let reg = NcrReg::from_u32((addr >> 4) & 0b111).unwrap();
 
         //trace!(
@@ -238,13 +398,57 @@ impl BusMember<Address> for ScsiController {
                             self.reg_csr.set_req(false);
                         }
                         if clr.assert_ack() {
+                            if self.cmdbuf.is_empty() {
+                                self.cmdlen = self.cmd_get_len(self.reg_odr);
+                            }
                             self.cmdbuf.push(self.reg_odr);
-                            if self.cmdbuf.len() >= 6 {
+                            if self.cmdbuf.len() >= self.cmdlen {
                                 trace!("cmd: {:X?}", self.cmdbuf);
-                                self.set_phase(ScsiBusPhase::Status);
+
+                                match self.cmd_run() {
+                                    Ok(r) => {
+                                        // TODO this might be inefficient
+                                        self.responsebuf = VecDeque::from(r);
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            "SCSI command ({:02X}) error: {}",
+                                            self.cmdbuf[0], e
+                                        );
+                                    }
+                                }
+                                if self.responsebuf.is_empty() {
+                                    self.set_phase(ScsiBusPhase::Status);
+                                } else {
+                                    self.set_phase(ScsiBusPhase::DataIn);
+                                }
                             } else {
                                 self.reg_csr.set_req(true);
                             }
+                        }
+                    }
+                    ScsiBusPhase::Status => {
+                        if set.assert_ack() {
+                            self.reg_csr.set_req(false);
+                        }
+                        if clr.assert_ack() {
+                            self.set_phase(ScsiBusPhase::MessageIn);
+                        }
+                    }
+                    ScsiBusPhase::MessageIn => {
+                        if set.assert_ack() {
+                            self.reg_csr.set_req(false);
+                        }
+                        if clr.assert_ack() {
+                            self.set_phase(ScsiBusPhase::Free);
+                        }
+                    }
+                    ScsiBusPhase::DataIn => {
+                        if set.assert_ack() {
+                            self.reg_csr.set_req(false);
+                        }
+                        if clr.assert_ack() && !self.responsebuf.is_empty() {
+                            self.reg_csr.set_req(true);
                         }
                     }
 
@@ -259,6 +463,7 @@ impl BusMember<Address> for ScsiController {
 
                 if set.arbitrate() {
                     self.set_phase(ScsiBusPhase::Arbitration);
+                    self.reg_cdr = self.reg_odr; // Initiator ID
                 }
 
                 match self.busphase {
