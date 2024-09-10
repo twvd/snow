@@ -196,7 +196,14 @@ pub struct Via {
     kbdshift_out: u8,
     kbdshift_out_time: Ticks,
 
+    t1_enable: bool,
     t2_enable: bool,
+
+    /// Timer 1 Counter
+    pub t1cnt: Field16,
+
+    /// Timer 1 latch
+    pub t1latch: Field16,
 
     pub keyboard: Keyboard,
     rtc: Rtc,
@@ -220,6 +227,10 @@ impl Via {
             t2latch: Field16(0),
             t2_enable: false,
 
+            t1cnt: Field16(0),
+            t1latch: Field16(0),
+            t1_enable: false,
+
             onesec: 0,
             kbdshift_in: 0,
             kbdshift_out: 0,
@@ -241,6 +252,19 @@ impl BusMember<Address> for Via {
             }
             // Timer 2 counter MSB
             0xF3FE => Some(self.t2cnt.msb()),
+
+            // Timer 1 counter LSB
+            0xE9FE => {
+                self.ifr.set_t1(false);
+                Some(self.t1cnt.lsb())
+            }
+            // Timer 1 counter MSB
+            0xEBFE => Some(self.t1cnt.msb()),
+
+            // Timer 1 latch LSB
+            0xEDFE => Some(self.t1latch.lsb()),
+            // Timer 1 latch MSB
+            0xEFFE => Some(self.t1latch.msb()),
 
             // Register B
             0xE1FE => {
@@ -305,14 +329,38 @@ impl BusMember<Address> for Via {
             0xF3FE => {
                 self.t2latch.set_msb(val);
 
-                if self.ifr.t2() {
-                    // Clear interrupt flag
-                    self.ifr.set_t2(false);
-                }
+                // Clear interrupt flag
+                self.ifr.set_t2(false);
 
                 // Start timer
                 self.t2_enable = true;
                 self.t2cnt = self.t2latch;
+                Some(())
+            }
+
+            // Timer 1 counter LSB, Timer 1 latch LSB
+            0xE9FE | 0xEDFE => Some(self.t1latch.set_lsb(val)),
+
+            // Timer 1 latch MSB
+            0xEFFE => {
+                self.t1latch.set_msb(val);
+
+                // Clear interrupt flag
+                self.ifr.set_t1(false);
+
+                Some(())
+            }
+
+            // Timer 1 counter MSB
+            0xEBFE => {
+                self.t1cnt.set_lsb(self.t1latch.lsb());
+                self.t1cnt.set_msb(val);
+
+                // Clear interrupt flag
+                self.ifr.set_t1(false);
+
+                // Start timer
+                self.t1_enable = true;
                 Some(())
             }
 
@@ -397,17 +445,32 @@ impl Tickable for Via {
             self.rtc.second();
         }
 
-        // Timer 2
-        let ovf;
-        (self.t2cnt.0, ovf) = self.t2cnt.0.overflowing_sub(ticks.try_into()?);
+        // Timer 1
+        let t1ovf;
+        (self.t1cnt.0, t1ovf) = self.t1cnt.0.overflowing_sub(ticks.try_into()?);
 
-        if ovf && self.t2_enable {
-            self.t2_enable = false;
-            self.ifr.set_t2(true);
+        if t1ovf && self.t1_enable {
+            self.ifr.set_t1(true);
+            match self.acr.t1() {
+                // Single shot mode
+                0 | 2 => {
+                    self.t1_enable = false;
+                }
+                1 | 3 => {
+                    // Free running mode
+                    self.t1cnt.0 = self.t1latch.0;
+                }
+                _ => unreachable!(),
+            }
         }
 
-        if self.ier.t1() {
-            panic!("Time to implement T1");
+        // Timer 2
+        let t2ovf;
+        (self.t2cnt.0, t2ovf) = self.t2cnt.0.overflowing_sub(ticks.try_into()?);
+
+        if t2ovf && self.t2_enable {
+            self.t2_enable = false;
+            self.ifr.set_t2(true);
         }
 
         // Keyboard response
