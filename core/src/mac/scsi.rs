@@ -266,9 +266,18 @@ impl ScsiController {
     }
 
     fn cmd_get_len(&self, cmdnum: u8) -> usize {
-        {
-            warn!("cmd_get_len unknown command: {:02X}", cmdnum);
-            6
+        match cmdnum {
+                // UNIT READY
+                0x00
+                // MODE SENSE(6)
+                | 0x1A => 6,
+        
+                // READ CAPACITY(10)
+                0x25 => 10,
+            _ => {
+                warn!("cmd_get_len unknown command: {:02X}", cmdnum);
+                6
+            }
         }
     }
 
@@ -280,6 +289,16 @@ impl ScsiController {
         match cmd[0] {
             0x00 => {
                 // UNIT READY
+            }
+            0x08 => {
+                // READ(6)
+                let blocknum = u32::from_be_bytes(cmd[1..5].try_into()?) & 0x1F_FFFF;
+                let blockcnt = if cmd[4] == 0 {
+                    256
+                } else {
+                    cmd[4] as usize
+                };
+                result.resize(512 * (blockcnt as usize), 0);
             }
             0x12 => {
                 // INQUIRY
@@ -306,6 +325,14 @@ impl ScsiController {
                 // The string below has to appear for HD SC Setup and possibly other tools to work.
                 // https://68kmla.org/bb/index.php?threads/apple-rom-hard-disks.44920/post-493863
                 result[14..(14 + 20)].copy_from_slice(b"APPLE COMPUTER, INC.");
+            }
+            0x25 => {
+                // READ CAPACITY(10)
+                result.resize(40, 0);
+                // Amount of blocks
+                result[0..4].copy_from_slice(&40880u32.to_be_bytes());
+                // Block size
+                result[4..8].copy_from_slice(&512u32.to_be_bytes());
             }
 
             _ => {
