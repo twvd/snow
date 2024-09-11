@@ -54,6 +54,9 @@ use crate::bus::{Address, BusMember};
 pub const STATUS_GOOD: u8 = 0;
 pub const STATUS_CHECK_CONDITION: u8 = 2;
 
+pub const DISK_BLOCKS: usize = 40880;
+pub const DISK_BLOCKSIZE: usize = 512;
+
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
 /// SCSI bus phases
@@ -70,6 +73,16 @@ enum ScsiBusPhase {
     Status,
     MessageIn,
     MessageOut,
+}
+
+/// Result of a command
+enum ScsiCmdResult {
+    /// Immediately turn to the Status phase
+    Status(u8),
+    /// Returns data to the initiator
+    DataIn(Vec<u8>),
+    /// Expects data written to target
+    DataOut(usize),
 }
 
 #[allow(non_camel_case_types)]
@@ -191,12 +204,24 @@ pub struct ScsiController {
     /// Active command length
     cmdlen: usize,
 
+    /// DataOut phase length
+    dataout_len: usize,
+
     /// Response buffer
     responsebuf: VecDeque<u8>,
+
+    /// Disk
+    disk: Vec<u8>,
 }
 
 impl ScsiController {
     pub fn new() -> Self {
+        let disk = if let Ok(v) = std::fs::read("hdd.bin") {
+            assert_eq!(v.len(), DISK_BLOCKS * DISK_BLOCKSIZE);
+            v
+        } else {
+            vec![0; DISK_BLOCKS * DISK_BLOCKSIZE]
+        };
         Self {
             dbg_pc: 0,
             busphase: ScsiBusPhase::Free,
@@ -211,12 +236,14 @@ impl ScsiController {
             cmdbuf: vec![],
             responsebuf: VecDeque::default(),
             cmdlen: 0,
+            dataout_len: 0,
             status: 0,
+            disk,
         }
     }
 
     fn set_phase(&mut self, phase: ScsiBusPhase) {
-        trace!("Bus phase: {:?}", phase);
+        //trace!("Bus phase: {:?}", phase);
 
         self.busphase = phase;
         self.reg_csr.0 = 0;
@@ -244,14 +271,23 @@ impl ScsiController {
                 self.reg_bsr.set_dma_req(true);
                 //}
             }
+            ScsiBusPhase::DataOut => {
+                self.reg_csr.set_bsy(true);
+                self.reg_csr.set_cd(false);
+                self.reg_csr.set_io(false);
+                self.reg_csr.set_req(true);
+                //if self.reg_mr.dma_mode() {
+                self.reg_bsr.set_dma_req(true);
+                //}
+            }
             ScsiBusPhase::Status => {
                 self.reg_csr.set_bsy(true);
-                self.reg_bsr.set_dma_req(false);
+                //self.reg_bsr.set_dma_req(false);
                 self.reg_csr.set_cd(true);
                 self.reg_csr.set_io(true);
                 self.reg_csr.set_req(true);
                 self.reg_cdr = self.status;
-                trace!("Status code: {:02X}", 0x00);
+                //trace!("Status code: {:02X}", 0x00);
             }
             ScsiBusPhase::MessageIn => {
                 self.reg_csr.set_bsy(true);
@@ -269,11 +305,26 @@ impl ScsiController {
         match cmdnum {
                 // UNIT READY
                 0x00
+                // REQUEST SENSE
+                | 0x03
+                // FORMAT UNIT
+                | 0x04
+                // READ(6)
+                | 0x08
+                // WRITE(6)
+                | 0x0A
+                // INQUIRY
+                | 0x12
+                // MODE SELECT(6)
+                | 0x15
                 // MODE SENSE(6)
-                | 0x1A => 6,
-        
+                | 0x1A
+                => 6,
                 // READ CAPACITY(10)
-                0x25 => 10,
+                0x25
+                // READ BUFFER(10)
+                | 0x3C
+                => 10,
             _ => {
                 warn!("cmd_get_len unknown command: {:02X}", cmdnum);
                 6
@@ -281,28 +332,62 @@ impl ScsiController {
         }
     }
 
-    fn cmd_run(&mut self) -> Result<Vec<u8>> {
+    fn cmd_run(&mut self, outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
         let cmd = &self.cmdbuf;
-        let mut result = vec![];
 
-        self.status = STATUS_GOOD;
         match cmd[0] {
             0x00 => {
                 // UNIT READY
+                Ok(ScsiCmdResult::Status(STATUS_GOOD))
+            }
+            0x03 => {
+                // REQUEST SENSE
+                let result = vec![0; 13];
+                // 0 = no error
+                Ok(ScsiCmdResult::DataIn(result))
+            }
+            0x04 => {
+                // FORMAT UNIT(6)
+                Ok(ScsiCmdResult::Status(STATUS_GOOD))
             }
             0x08 => {
                 // READ(6)
-                let blocknum = u32::from_be_bytes(cmd[1..5].try_into()?) & 0x1F_FFFF;
-                let blockcnt = if cmd[4] == 0 {
-                    256
+                let blocknum = (u32::from_be_bytes(cmd[0..4].try_into()?) & 0x1F_FFFF) as usize;
+                let blockcnt = if cmd[4] == 0 { 256 } else { cmd[4] as usize };
+
+                if (blocknum + blockcnt) * DISK_BLOCKSIZE > self.disk.len() {
+                    error!("Reading beyond disk");
+                    Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                 } else {
-                    cmd[4] as usize
-                };
-                result.resize(512 * (blockcnt as usize), 0);
+                    Ok(ScsiCmdResult::DataIn(
+                        self.disk
+                            [(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
+                            .to_vec(),
+                    ))
+                }
+            }
+            0x0A => {
+                // WRITE(6)
+                let blocknum = (u32::from_be_bytes(cmd[0..4].try_into()?) & 0x1F_FFFF) as usize;
+                let blockcnt = if cmd[4] == 0 { 256 } else { cmd[4] as usize };
+                if let Some(data) = outdata {
+                    if (blocknum + blockcnt) * DISK_BLOCKSIZE > self.disk.len() {
+                        error!("Writing beyond disk");
+                        Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+                    } else {
+                        self.disk
+                            [(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
+                            .copy_from_slice(data);
+                        std::fs::write("hdd.bin", &self.disk)?;
+                        Ok(ScsiCmdResult::Status(STATUS_GOOD))
+                    }
+                } else {
+                    Ok(ScsiCmdResult::DataOut(blockcnt * DISK_BLOCKSIZE))
+                }
             }
             0x12 => {
                 // INQUIRY
-                result.resize(36, 0);
+                let mut result = vec![0; 36];
 
                 // 0 Peripheral qualifier (5-7), peripheral device type (4-0)
                 result[0] = 0; // Magnetic disk
@@ -315,33 +400,44 @@ impl ScsiController {
 
                 // 16..32 Product identification
                 result[16..(16 + 11)].copy_from_slice(b"VIRTUAL HDD");
+                Ok(ScsiCmdResult::DataIn(result))
+            }
+            0x15 => {
+                // MODE SELECT(6)
+                Ok(ScsiCmdResult::DataIn(vec![0; 40]))
             }
             0x1A => {
                 // MODE SENSE(6)
-                result.resize(40, 0);
+                let mut result = vec![0; 36];
                 result[0] = 0x30;
                 result[1] = 33;
 
                 // The string below has to appear for HD SC Setup and possibly other tools to work.
                 // https://68kmla.org/bb/index.php?threads/apple-rom-hard-disks.44920/post-493863
                 result[14..(14 + 20)].copy_from_slice(b"APPLE COMPUTER, INC.");
+                Ok(ScsiCmdResult::DataIn(result))
             }
             0x25 => {
                 // READ CAPACITY(10)
-                result.resize(40, 0);
+                let mut result = vec![0; 40];
                 // Amount of blocks
-                result[0..4].copy_from_slice(&40880u32.to_be_bytes());
+                result[0..4].copy_from_slice(&((DISK_BLOCKS as u32) - 1).to_be_bytes());
                 // Block size
-                result[4..8].copy_from_slice(&512u32.to_be_bytes());
+                result[4..8].copy_from_slice(&(DISK_BLOCKSIZE as u32).to_be_bytes());
+                Ok(ScsiCmdResult::DataIn(result))
             }
-
+            0x3C => {
+                // READ BUFFER(10)
+                let result = vec![0; 4];
+                // 0 reserved (0)
+                // 1-3 buffer length (0)
+                Ok(ScsiCmdResult::DataIn(result))
+            }
             _ => {
                 error!("Unknown command {:02X}", cmd[0]);
-                result.resize(512, 0xAA);
-                self.status = STATUS_CHECK_CONDITION;
+                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
             }
         }
-        Ok(result)
     }
 }
 
@@ -367,7 +463,6 @@ impl BusMember<Address> for ScsiController {
                     Some(self.reg_cdr)
                 } else if self.reg_mr.dma_mode() {
                     if let Some(b) = self.responsebuf.pop_front() {
-                        trace!("Byte out: {:02X} ({} left)", b, self.responsebuf.len());
                         if self.responsebuf.is_empty() {
                             // Transfer completed
                             self.set_phase(ScsiBusPhase::Status);
@@ -405,6 +500,21 @@ impl BusMember<Address> for ScsiController {
 
         match reg {
             NcrReg::CDR_ODR => {
+                if self.busphase == ScsiBusPhase::DataOut {
+                    self.responsebuf.push_back(val);
+                    self.dataout_len -= 1;
+                    if self.dataout_len == 0 {
+                        // TODO inefficient
+                        let datavec = Vec::from_iter(self.responsebuf.iter().cloned());
+                        if let Ok(ScsiCmdResult::Status(s)) = self.cmd_run(Some(&datavec)) {
+                            self.status = s;
+                            self.set_phase(ScsiBusPhase::Status);
+                        } else {
+                            todo!();
+                        }
+                    }
+                    //}
+                }
                 self.reg_odr = val;
                 Some(())
             }
@@ -430,12 +540,25 @@ impl BusMember<Address> for ScsiController {
                             }
                             self.cmdbuf.push(self.reg_odr);
                             if self.cmdbuf.len() >= self.cmdlen {
-                                trace!("cmd: {:X?}", self.cmdbuf);
+                                //trace!("cmd: {:X?}", self.cmdbuf);
 
-                                match self.cmd_run() {
-                                    Ok(r) => {
-                                        // TODO this might be inefficient
-                                        self.responsebuf = VecDeque::from(r);
+                                match self.cmd_run(None) {
+                                    Ok(ScsiCmdResult::Status(status)) => {
+                                        self.status = status;
+                                        self.set_phase(ScsiBusPhase::Status);
+                                    }
+                                    Ok(ScsiCmdResult::DataIn(data)) => {
+                                        self.status = STATUS_GOOD;
+
+                                        // TODO this is inefficient
+                                        self.responsebuf = VecDeque::from(data);
+
+                                        self.set_phase(ScsiBusPhase::DataIn);
+                                    }
+                                    Ok(ScsiCmdResult::DataOut(len)) => {
+                                        self.dataout_len = len;
+                                        self.responsebuf.clear();
+                                        self.set_phase(ScsiBusPhase::DataOut);
                                     }
                                     Err(e) => {
                                         error!(
@@ -443,11 +566,6 @@ impl BusMember<Address> for ScsiController {
                                             self.cmdbuf[0], e
                                         );
                                     }
-                                }
-                                if self.responsebuf.is_empty() {
-                                    self.set_phase(ScsiBusPhase::Status);
-                                } else {
-                                    self.set_phase(ScsiBusPhase::DataIn);
                                 }
                             } else {
                                 self.reg_csr.set_req(true);
@@ -478,6 +596,14 @@ impl BusMember<Address> for ScsiController {
                             self.reg_csr.set_req(true);
                         }
                     }
+                    ScsiBusPhase::DataOut => {
+                        if set.assert_ack() {
+                            self.reg_csr.set_req(false);
+                        }
+                        if clr.assert_ack() && self.dataout_len > 0 {
+                            self.reg_csr.set_req(true);
+                        }
+                    }
 
                     _ => (),
                 }
@@ -500,11 +626,11 @@ impl BusMember<Address> for ScsiController {
                             self.sel_id = usize::from(self.reg_odr & 0x7F);
                             self.sel_atn = self.reg_odr & 0x80 != 0;
 
-                            trace!(
-                                "Selected SCSI ID: {:02X}, attention = {}",
-                                self.sel_id,
-                                self.sel_atn
-                            );
+                            //trace!(
+                            //    "Selected SCSI ID: {:02X}, attention = {}",
+                            //    self.sel_id,
+                            //    self.sel_atn
+                            //);
 
                             if self.sel_id == 1 {
                                 self.set_phase(ScsiBusPhase::Command);
