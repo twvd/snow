@@ -42,7 +42,7 @@
 
 use std::collections::VecDeque;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use log::*;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -54,7 +54,6 @@ use crate::bus::{Address, BusMember};
 pub const STATUS_GOOD: u8 = 0;
 pub const STATUS_CHECK_CONDITION: u8 = 2;
 
-pub const DISK_BLOCKS: usize = 41820;
 pub const DISK_BLOCKSIZE: usize = 512;
 
 #[allow(dead_code)]
@@ -210,18 +209,29 @@ pub struct ScsiController {
     /// Response buffer
     responsebuf: VecDeque<u8>,
 
-    /// Disk
-    disk: Vec<u8>,
+    /// Disks
+    disks: [Option<Vec<u8>>; Self::MAX_TARGETS],
 }
 
 impl ScsiController {
-    pub fn new() -> Self {
-        let disk = if let Ok(v) = std::fs::read("hdd.bin") {
-            assert_eq!(v.len(), DISK_BLOCKS * DISK_BLOCKSIZE);
-            v
+    const MAX_TARGETS: usize = 7;
+
+    fn load_disk(filename: &str) -> Option<Vec<u8>> {
+        if let Ok(v) = std::fs::read(filename) {
+            if v.len() % DISK_BLOCKSIZE != 0 {
+                warn!(
+                    "Cannot load disk image {}: not multiple of {}",
+                    filename, DISK_BLOCKSIZE
+                );
+                return None;
+            }
+            Some(v)
         } else {
-            vec![0; DISK_BLOCKS * DISK_BLOCKSIZE]
-        };
+            None
+        }
+    }
+
+    pub fn new() -> Self {
         Self {
             dbg_pc: 0,
             busphase: ScsiBusPhase::Free,
@@ -238,8 +248,34 @@ impl ScsiController {
             cmdlen: 0,
             dataout_len: 0,
             status: 0,
-            disk,
+            disks: core::array::from_fn(|n| {
+                let filename = format!("hdd{}.img", n);
+                let r = Self::load_disk(&filename);
+                if r.is_some() {
+                    info!("SCSI ID {}: Enabled: loaded {}", n, filename);
+                } else {
+                    info!(
+                        "SCSI ID {}: Disabled: no image file ({}) found",
+                        n, filename
+                    );
+                }
+                r
+            }),
         }
+    }
+
+    /// Translates a SCSI ID on the bus (bit position) to a numeric ID
+    fn translate_id(mut bitp: u8) -> Result<usize> {
+        if bitp.count_ones() != 1 {
+            bail!("Invalid ID on bus: {:02X}", bitp);
+        }
+        for id in 0..8 {
+            bitp >>= 1;
+            if bitp == 0 {
+                return Ok(id);
+            }
+        }
+        unreachable!()
     }
 
     fn set_phase(&mut self, phase: ScsiBusPhase) {
@@ -356,16 +392,16 @@ impl ScsiController {
             }
             0x08 => {
                 // READ(6)
+                let disk = self.disks[self.sel_id].as_ref().unwrap();
                 let blocknum = (u32::from_be_bytes(cmd[0..4].try_into()?) & 0x1F_FFFF) as usize;
                 let blockcnt = if cmd[4] == 0 { 256 } else { cmd[4] as usize };
 
-                if (blocknum + blockcnt) * DISK_BLOCKSIZE > self.disk.len() {
+                if (blocknum + blockcnt) * DISK_BLOCKSIZE > disk.len() {
                     error!("Reading beyond disk");
                     Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                 } else {
                     Ok(ScsiCmdResult::DataIn(
-                        self.disk
-                            [(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
+                        disk[(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
                             .to_vec(),
                     ))
                 }
@@ -374,15 +410,15 @@ impl ScsiController {
                 // WRITE(6)
                 let blocknum = (u32::from_be_bytes(cmd[0..4].try_into()?) & 0x1F_FFFF) as usize;
                 let blockcnt = if cmd[4] == 0 { 256 } else { cmd[4] as usize };
+
                 if let Some(data) = outdata {
-                    if (blocknum + blockcnt) * DISK_BLOCKSIZE > self.disk.len() {
+                    let disk = self.disks[self.sel_id].as_mut().unwrap();
+                    if (blocknum + blockcnt) * DISK_BLOCKSIZE > disk.len() {
                         error!("Writing beyond disk");
                         Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                     } else {
-                        self.disk
-                            [(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
+                        disk[(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
                             .copy_from_slice(data);
-                        std::fs::write("hdd.bin", &self.disk)?;
                         Ok(ScsiCmdResult::Status(STATUS_GOOD))
                     }
                 } else {
@@ -424,24 +460,26 @@ impl ScsiController {
             0x25 => {
                 // READ CAPACITY(10)
                 let mut result = vec![0; 40];
+                let blocks = self.disks[self.sel_id].as_ref().unwrap().len() / DISK_BLOCKSIZE;
+
                 // Amount of blocks
-                result[0..4].copy_from_slice(&((DISK_BLOCKS as u32) - 1).to_be_bytes());
+                result[0..4].copy_from_slice(&((blocks as u32) - 1).to_be_bytes());
                 // Block size
                 result[4..8].copy_from_slice(&(DISK_BLOCKSIZE as u32).to_be_bytes());
                 Ok(ScsiCmdResult::DataIn(result))
             }
             0x28 => {
                 // READ(10)
+                let disk = self.disks[self.sel_id].as_ref().unwrap();
                 let blocknum = (u32::from_be_bytes(cmd[2..6].try_into()?)) as usize;
                 let blockcnt = (u16::from_be_bytes(cmd[7..9].try_into()?)) as usize;
 
-                if (blocknum + blockcnt) * DISK_BLOCKSIZE > self.disk.len() {
+                if (blocknum + blockcnt) * DISK_BLOCKSIZE > disk.len() {
                     error!("Reading beyond disk");
                     Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                 } else {
                     Ok(ScsiCmdResult::DataIn(
-                        self.disk
-                            [(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
+                        disk[(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
                             .to_vec(),
                     ))
                 }
@@ -452,14 +490,13 @@ impl ScsiController {
                 let blockcnt = (u16::from_be_bytes(cmd[7..9].try_into()?)) as usize;
 
                 if let Some(data) = outdata {
-                    if (blocknum + blockcnt) * DISK_BLOCKSIZE > self.disk.len() {
+                    let disk = self.disks[self.sel_id].as_mut().unwrap();
+                    if (blocknum + blockcnt) * DISK_BLOCKSIZE > disk.len() {
                         error!("Writing beyond disk");
                         Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                     } else {
-                        self.disk
-                            [(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
+                        disk[(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
                             .copy_from_slice(data);
-                        std::fs::write("hdd.bin", &self.disk)?;
                         Ok(ScsiCmdResult::Status(STATUS_GOOD))
                     }
                 } else {
@@ -499,9 +536,7 @@ impl BusMember<Address> for ScsiController {
 
         match reg {
             NcrReg::CDR_ODR => {
-                if self.busphase != ScsiBusPhase::DataIn {
-                    Some(self.reg_cdr)
-                } else if self.reg_mr.dma_mode() {
+                if self.busphase == ScsiBusPhase::DataIn && self.reg_mr.dma_mode() {
                     if let Some(b) = self.responsebuf.pop_front() {
                         if self.responsebuf.is_empty() {
                             // Transfer completed
@@ -513,8 +548,7 @@ impl BusMember<Address> for ScsiController {
                         Some(0)
                     }
                 } else {
-                    error!("CDR read but DMA disabled");
-                    Some(0)
+                    Some(self.reg_cdr)
                 }
             }
             NcrReg::MR => Some(self.reg_mr.0),
@@ -663,7 +697,19 @@ impl BusMember<Address> for ScsiController {
                     ScsiBusPhase::Free => {}
                     ScsiBusPhase::Selection => {
                         if clr.arbitrate() {
-                            self.sel_id = usize::from(self.reg_odr & 0x7F);
+                            let Ok(id) = Self::translate_id(self.reg_odr & 0x7F) else {
+                                error!("Invalid ID on bus! ODR = {:02X}", self.reg_odr);
+                                self.set_phase(ScsiBusPhase::Free);
+                                return Some(());
+                            };
+                            if self.disks[id].is_none() {
+                                // No device present at this ID
+                                self.set_phase(ScsiBusPhase::Free);
+                                return Some(());
+                            }
+
+                            // Select this ID
+                            self.sel_id = id;
                             self.sel_atn = self.reg_odr & 0x80 != 0;
 
                             //trace!(
@@ -672,9 +718,7 @@ impl BusMember<Address> for ScsiController {
                             //    self.sel_atn
                             //);
 
-                            if self.sel_id == 1 {
-                                self.set_phase(ScsiBusPhase::Command);
-                            }
+                            self.set_phase(ScsiBusPhase::Command);
                         }
                     }
                     _ => (),
