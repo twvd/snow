@@ -54,7 +54,7 @@ use crate::bus::{Address, BusMember};
 pub const STATUS_GOOD: u8 = 0;
 pub const STATUS_CHECK_CONDITION: u8 = 2;
 
-pub const DISK_BLOCKS: usize = 40880;
+pub const DISK_BLOCKS: usize = 41820;
 pub const DISK_BLOCKSIZE: usize = 512;
 
 #[allow(dead_code)]
@@ -322,6 +322,10 @@ impl ScsiController {
                 => 6,
                 // READ CAPACITY(10)
                 0x25
+                // READ(10)
+                | 0x28
+                // WRITE(10)
+                | 0x2A
                 // READ BUFFER(10)
                 | 0x3C
                 => 10,
@@ -425,6 +429,42 @@ impl ScsiController {
                 // Block size
                 result[4..8].copy_from_slice(&(DISK_BLOCKSIZE as u32).to_be_bytes());
                 Ok(ScsiCmdResult::DataIn(result))
+            }
+            0x28 => {
+                // READ(10)
+                let blocknum = (u32::from_be_bytes(cmd[2..6].try_into()?)) as usize;
+                let blockcnt = (u16::from_be_bytes(cmd[7..9].try_into()?)) as usize;
+
+                if (blocknum + blockcnt) * DISK_BLOCKSIZE > self.disk.len() {
+                    error!("Reading beyond disk");
+                    Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+                } else {
+                    Ok(ScsiCmdResult::DataIn(
+                        self.disk
+                            [(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
+                            .to_vec(),
+                    ))
+                }
+            }
+            0x2A => {
+                // WRITE(10)
+                let blocknum = (u32::from_be_bytes(cmd[2..6].try_into()?)) as usize;
+                let blockcnt = (u16::from_be_bytes(cmd[7..9].try_into()?)) as usize;
+
+                if let Some(data) = outdata {
+                    if (blocknum + blockcnt) * DISK_BLOCKSIZE > self.disk.len() {
+                        error!("Writing beyond disk");
+                        Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+                    } else {
+                        self.disk
+                            [(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
+                            .copy_from_slice(data);
+                        std::fs::write("hdd.bin", &self.disk)?;
+                        Ok(ScsiCmdResult::Status(STATUS_GOOD))
+                    }
+                } else {
+                    Ok(ScsiCmdResult::DataOut(blockcnt * DISK_BLOCKSIZE))
+                }
             }
             0x3C => {
                 // READ BUFFER(10)
