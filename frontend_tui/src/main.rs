@@ -187,10 +187,8 @@ fn main() -> Result<()> {
 
     'mainloop: loop {
         // Render frame to SDL window
-        if !frame_recv.is_empty() {
-            while let Ok(frame) = frame_recv.try_recv() {
-                renderer.update_from(&frame)?;
-            }
+        if let Ok(frame) = frame_recv.try_recv() {
+            renderer.update_from(&frame)?;
         }
 
         // Draw TUI
