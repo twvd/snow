@@ -943,7 +943,7 @@ where
     /// SWAP
     fn op_swap(&mut self, instr: &Instruction) -> Result<()> {
         let v: Long = self.regs.read_d(instr.get_op2());
-        let result = (v >> 16) | (v << 16);
+        let result = v.rotate_left(16);
 
         self.regs.sr.set_v(false);
         self.regs.sr.set_c(false);
