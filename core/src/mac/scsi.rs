@@ -40,10 +40,12 @@
 //!     REQ_ACK_Message --> End: Command complete
 //! ```
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, fs::OpenOptions};
 
 use anyhow::{bail, Result};
+use fs2::FileExt;
 use log::*;
+use memmap2::MmapMut;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use proc_bitfield::bitfield;
@@ -210,25 +212,44 @@ pub struct ScsiController {
     responsebuf: VecDeque<u8>,
 
     /// Disks
-    disks: [Option<Vec<u8>>; Self::MAX_TARGETS],
+    disks: [Option<MmapMut>; Self::MAX_TARGETS],
 }
 
 impl ScsiController {
     const MAX_TARGETS: usize = 7;
 
-    fn load_disk(filename: &str) -> Option<Vec<u8>> {
-        if let Ok(v) = std::fs::read(filename) {
-            if v.len() % DISK_BLOCKSIZE != 0 {
-                warn!(
-                    "Cannot load disk image {}: not multiple of {}",
-                    filename, DISK_BLOCKSIZE
-                );
-                return None;
-            }
-            Some(v)
-        } else {
-            None
+    /// Try to load a disk image, given the filename of the image.
+    ///
+    /// This locks the file on disk and memory maps the file for use by
+    /// the emulator for fast access and automatic writes back to disk,
+    /// at the discretion of the operating system.
+    fn load_disk(filename: &str) -> Option<MmapMut> {
+        let f = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(filename)
+            .inspect_err(|e| error!("Opening disk image {} failed: {}", filename, e))
+            .ok()?;
+
+        f.lock_exclusive()
+            .inspect_err(|e| error!("Cannot lock disk image {}: {}", filename, e))
+            .ok()?;
+
+        let mmapped = unsafe {
+            MmapMut::map_mut(&f)
+                .inspect_err(|e| error!("Cannot mmap image file {}: {}", filename, e))
+                .ok()?
+        };
+
+        if mmapped.len() % DISK_BLOCKSIZE != 0 {
+            error!(
+                "Cannot load disk image {}: not multiple of {}",
+                filename, DISK_BLOCKSIZE
+            );
+            return None;
         }
+
+        Some(mmapped)
     }
 
     pub fn new() -> Self {
