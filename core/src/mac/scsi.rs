@@ -40,7 +40,7 @@
 //!     REQ_ACK_Message --> End: Command complete
 //! ```
 
-use std::{collections::VecDeque, fs::OpenOptions};
+use std::{collections::VecDeque, fs::OpenOptions, path::Path};
 
 use anyhow::{bail, Result};
 use fs2::FileExt;
@@ -224,6 +224,11 @@ impl ScsiController {
     /// the emulator for fast access and automatic writes back to disk,
     /// at the discretion of the operating system.
     fn load_disk(filename: &str) -> Option<MmapMut> {
+        if !Path::new(filename).exists() {
+            // File not found
+            return None;
+        }
+
         let f = OpenOptions::new()
             .read(true)
             .write(true)
@@ -275,10 +280,7 @@ impl ScsiController {
                 if r.is_some() {
                     info!("SCSI ID {}: Enabled: loaded {}", n, filename);
                 } else {
-                    info!(
-                        "SCSI ID {}: Disabled: no image file ({}) found",
-                        n, filename
-                    );
+                    info!("SCSI ID {}: Disabled: cannot load {}", n, filename);
                 }
                 r
             }),
