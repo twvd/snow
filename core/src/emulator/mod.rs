@@ -211,6 +211,10 @@ impl Tickable for Emulator {
                         }
                         self.cpu.bus.via.keyboard.event(e)?;
                     }
+                    EmulatorCommand::SetFpsLimit(limit) => {
+                        self.cpu.bus.video.fps_limit = limit;
+                        info!("Frame rate limit set to {}", limit);
+                    }
                 }
             }
         }

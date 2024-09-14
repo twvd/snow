@@ -39,6 +39,9 @@ pub struct Video<T: Renderer> {
 
     /// Time since last frame
     last_frame: Instant,
+
+    /// Frame rate limit (0 = disabled)
+    pub fps_limit: u64,
 }
 
 impl<T> Video<T>
@@ -105,6 +108,7 @@ where
             ],
             framebuffer_select: false,
             last_frame: Instant::now(),
+            fps_limit: 60,
         }
     }
 
@@ -142,11 +146,14 @@ where
         }
         self.renderer.update()?;
 
-        // Sync to ~60 fps
-        thread::sleep(
-            Duration::from_micros(1_000_000 / 60).saturating_sub(self.last_frame.elapsed()),
-        );
-        self.last_frame = Instant::now();
+        // Sync to configured framerate
+        if self.fps_limit != 0 {
+            thread::sleep(
+                Duration::from_micros(1_000_000 / self.fps_limit)
+                    .saturating_sub(self.last_frame.elapsed()),
+            );
+            self.last_frame = Instant::now();
+        }
 
         Ok(())
     }

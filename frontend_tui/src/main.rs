@@ -57,6 +57,10 @@ struct Args {
     /// Scaling factor for the display
     #[arg(long, default_value_t = 2)]
     scale: usize,
+
+    /// Override frame rate limit
+    #[arg(long)]
+    fps: Option<u64>,
 }
 
 /// Sets up a panic handler that restores the terminal back to the original state
@@ -162,6 +166,9 @@ fn main() -> Result<()> {
     let cmd = emulator.create_cmd_sender();
     if let Some(floppy_fn) = args.floppy_filename {
         cmd.send(EmulatorCommand::InsertFloppy(0, floppy_fn))?;
+    }
+    if let Some(limit) = args.fps {
+        cmd.send(EmulatorCommand::SetFpsLimit(limit))?;
     }
     if !args.stop {
         cmd.send(EmulatorCommand::Run)?;

@@ -77,6 +77,7 @@ Additionally, you can enter the following commands:
  * `/writedisk2 <filename>` - saves the currently or last inserted disk in the external drive, including changes, as file.
  * `/b <address in hex>` - sets a breakpoint.
  * `/dasm <address in hex>` - shows a disassembly from the specified address in the debugger.
+ * `/fps <number>` - sets the framerate limit, which adjusts the emulation speed. 0 is disabled, 60 is the default.
  * `/loadbin <address in hex>` - loads the specified file (entirely) into the emulated memory starting from the specified address.
 
 ## Acknowledgements
