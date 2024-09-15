@@ -296,14 +296,25 @@ where
             // Report updated mouse coordinates to OS
             self.write_ram(Self::ADDR_MTEMP_X, new_x);
             self.write_ram(Self::ADDR_MTEMP_Y, new_y);
-            self.write_ram(Self::ADDR_RAWMOUSE_X, new_x);
-            self.write_ram(Self::ADDR_RAWMOUSE_Y, new_y);
+            if self.bustype == BusType::SE {
+                // SE+ needs to see even a small difference between the current (RawMouse)
+                // and new (MTemp) position, otherwise the change is ignored.
+                self.write_ram(Self::ADDR_RAWMOUSE_X, new_x - 1);
+                self.write_ram(Self::ADDR_RAWMOUSE_Y, new_y + 1);
+            } else {
+                self.write_ram(Self::ADDR_RAWMOUSE_X, new_x);
+                self.write_ram(Self::ADDR_RAWMOUSE_Y, new_y);
+            }
             self.write_ram(Self::ADDR_CRSRNEW, 1_u8);
         }
 
-        // Mouse button through VIA I/O
         if let Some(b) = button {
-            self.via.b_in.set_sw(!b);
+            if self.bustype == BusType::SE {
+                // TODO ADB
+            } else {
+                // Mouse button through VIA I/O
+                self.via.b_in.set_sw(!b);
+            }
         }
     }
 
@@ -322,8 +333,15 @@ where
         // Report updated mouse coordinates to OS
         self.write_ram(Self::ADDR_MTEMP_X, x);
         self.write_ram(Self::ADDR_MTEMP_Y, y);
-        self.write_ram(Self::ADDR_RAWMOUSE_X, x);
-        self.write_ram(Self::ADDR_RAWMOUSE_Y, y);
+        if self.bustype == BusType::SE {
+            // SE+ needs to see even a small difference between the current (RawMouse)
+            // and new (MTemp) position, otherwise the change is ignored.
+            self.write_ram(Self::ADDR_RAWMOUSE_X, x - 1);
+            self.write_ram(Self::ADDR_RAWMOUSE_Y, y + 1);
+        } else {
+            self.write_ram(Self::ADDR_RAWMOUSE_X, x);
+            self.write_ram(Self::ADDR_RAWMOUSE_Y, y);
+        }
         self.write_ram(Self::ADDR_CRSRNEW, 1_u8);
     }
 }
@@ -393,7 +411,9 @@ where
         self.video.tick(2)?;
 
         // Sync VIA registers
-        self.via.b_in.set_h4(self.video.in_hblank());
+        if self.bustype == BusType::Early {
+            self.via.b_in.set_h4(self.video.in_hblank());
+        }
 
         // VBlank interrupt
         if self.video.get_clr_vblank() && self.via.ier.vblank() {

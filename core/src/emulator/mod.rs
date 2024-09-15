@@ -128,6 +128,11 @@ impl Emulator {
         //    );
         //}
 
+        // TODO remove ADB boot hack
+        if self.cpu.regs.pc == 0x403364 {
+            self.cpu.regs.sr.set_z(true);
+        }
+
         if self.run
             && (self.breakpoints.contains(&self.cpu.regs.pc)
                 || self.cpu.bus.iwm.dbg_break.get_clear())

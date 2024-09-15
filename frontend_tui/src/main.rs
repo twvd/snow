@@ -157,6 +157,13 @@ fn main() -> Result<()> {
             ram_size: 4096 * 1024,
             fd_double: true,
         }
+    } else if digest[..] == hex!("c1c47260bacac2473e21849925fbfdf48e5ab584aaef7c6d54569d0cb6b41cce")
+    {
+        MacModel {
+            name: "Macintosh Classic",
+            ram_size: 4096 * 1024,
+            fd_double: true,
+        }
     } else {
         panic!("Cannot determine model from ROM file")
     };

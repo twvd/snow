@@ -33,8 +33,11 @@ bitfield! {
         /// (true = main, false = alternate)
         pub sndpg2: bool @ 3,
 
-        /// ROM overlay map is used when set
+        /// ROM overlay map is used when set (512K and Plus)
         pub overlay: bool @ 4,
+
+        /// Floppy drive select
+        pub drivesel: bool @ 4,
 
         /// Disk SEL line
         pub sel: bool @ 5,
@@ -61,17 +64,29 @@ bitfield! {
         /// RTC enabled
         pub rtcenb: bool @ 2,
 
-        /// Mouse switch (false = down)
+        /// Mouse switch (false = down) (512K and Plus)
         pub sw: bool @ 3,
 
-        /// Mouse X2
+        /// ADB interrupt (SE+)
+        pub adb_int: bool @ 3,
+
+        /// Mouse X2 (512K and Plus)
         pub x2: bool @ 4,
 
-        /// Mouse Y2
+        /// ADB state input 0 (ST0) (SE+)
+        pub adb_st0: bool @ 4,
+
+        /// Mouse Y2 (512K and Plus)
         pub y2: bool @ 5,
 
-        /// HBlank
+        /// ADB state input 1 (ST1) (SE+)
+        pub adb_st1: bool @ 5,
+
+        /// HBlank (512K and Plus)
         pub h4: bool @ 6,
+
+        /// SCSI interrupt (false = enabled) (SE+)
+        pub scsi_int: bool @ 6,
 
         /// Sound enable
         pub sndenb: bool @ 7,
