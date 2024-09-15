@@ -73,8 +73,10 @@ Additionally, you can enter the following commands:
 
  * `/disk1 <filename>` - mounts the specified disk image and inserts it into the internal drive.
  * `/disk2 <filename>` - mounts the specified disk image and inserts it into the external drive.
+ * `/disk3 <filename>` - mounts the specified disk image and inserts it into the secondary internal drive (if available).
  * `/writedisk1 <filename>` - saves the currently or last inserted disk in the internal drive, including changes, as file.
  * `/writedisk2 <filename>` - saves the currently or last inserted disk in the external drive, including changes, as file.
+ * `/writedisk3 <filename>` - saves the currently or last inserted disk in the secondary internal drive (if available), including changes, as file.
  * `/b <address in hex>` - sets a breakpoint.
  * `/dasm <address in hex>` - shows a disassembly from the specified address in the debugger.
  * `/fps <number>` - sets the framerate limit, which adjusts the emulation speed. 0 is disabled, 60 is the default.

@@ -413,6 +413,8 @@ where
         // Sync VIA registers
         if self.bustype == BusType::Early {
             self.via.b_in.set_h4(self.video.in_hblank());
+        } else {
+            self.iwm.intdrive = self.via.a_out.drivesel();
         }
 
         // VBlank interrupt

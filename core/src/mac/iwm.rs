@@ -30,6 +30,9 @@ pub struct Iwm {
     pub enable: bool,
     pub sel: bool,
 
+    /// Internal drive select for SE
+    pub(crate) intdrive: bool,
+
     status: IwmStatus,
     mode: IwmMode,
     shdata: u8,
@@ -38,7 +41,7 @@ pub struct Iwm {
     write_pos: usize,
     write_buffer: Option<u8>,
 
-    drives: [IwmDrive; 2],
+    drives: [IwmDrive; 3],
 
     pub dbg_pc: u32,
     pub dbg_break: LatchingEvent,
@@ -168,6 +171,9 @@ enum DriveReg {
     /// Disk write protect
     /// 0 = disk write protected, 1 = not write protected
     WRTPRT = 0b0011,
+    /// Disk switched (?)
+    /// 0 = not switched, 1 = switched
+    SWITCHED = 0b0110,
     /// Disk motor running
     /// 0 = running, 1 = off
     MOTORON = 0b0100,
@@ -279,6 +285,7 @@ impl IwmDrive {
             DriveReg::RDDATA0 => self.get_head_bit(0),
             DriveReg::RDDATA1 => self.get_head_bit(1),
             DriveReg::WRTPRT => true,
+            DriveReg::SWITCHED => false,
             _ => {
                 warn!(
                     "Drive {}: unimplemented register read {:?} {:0b}",
@@ -468,6 +475,7 @@ impl Iwm {
             q7: false,
             extdrive: false,
             sel: false,
+            intdrive: false,
 
             shdata: 0,
             datareg: 0,
@@ -487,6 +495,8 @@ impl Iwm {
     fn get_selected_drive_idx(&self) -> usize {
         if self.extdrive {
             1
+        } else if self.intdrive {
+            2
         } else {
             0
         }

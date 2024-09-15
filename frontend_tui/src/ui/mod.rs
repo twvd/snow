@@ -248,6 +248,12 @@ impl UserInterface {
                     .send(EmulatorCommand::InsertFloppy(1, filename))?;
                 Ok(())
             }
+            "disk3" => {
+                let filename = tokens.get(1).context("No filename specified")?.to_string();
+                self.cmdsender
+                    .send(EmulatorCommand::InsertFloppy(2, filename))?;
+                Ok(())
+            }
             "writedisk" | "writedisk1" => {
                 let filename = tokens.get(1).context("No filename specified")?.to_string();
                 self.cmdsender
@@ -258,6 +264,12 @@ impl UserInterface {
                 let filename = tokens.get(1).context("No filename specified")?.to_string();
                 self.cmdsender
                     .send(EmulatorCommand::SaveFloppy(1, filename))?;
+                Ok(())
+            }
+            "writedisk3" => {
+                let filename = tokens.get(1).context("No filename specified")?.to_string();
+                self.cmdsender
+                    .send(EmulatorCommand::SaveFloppy(2, filename))?;
                 Ok(())
             }
             "fps" => {
