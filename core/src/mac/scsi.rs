@@ -218,6 +218,10 @@ pub struct ScsiController {
 impl ScsiController {
     const MAX_TARGETS: usize = 7;
 
+    pub fn get_irq(&self) -> bool {
+        self.reg_bsr.irq()
+    }
+
     /// Try to load a disk image, given the filename of the image.
     ///
     /// This locks the file on disk and memory maps the file for use by
@@ -306,6 +310,7 @@ impl ScsiController {
 
         self.busphase = phase;
         self.reg_csr.0 = 0;
+        self.reg_bsr.set_dma_req(false);
 
         match self.busphase {
             ScsiBusPhase::Arbitration => {
@@ -326,9 +331,10 @@ impl ScsiController {
                 self.reg_csr.set_cd(false);
                 self.reg_csr.set_io(true);
                 self.reg_csr.set_req(true);
-                //if self.reg_mr.dma_mode() {
-                self.reg_bsr.set_dma_req(true);
-                //}
+                self.reg_cdr = self.responsebuf.pop_front().unwrap();
+                if self.reg_mr.dma_mode() {
+                    self.reg_bsr.set_dma_req(true);
+                }
             }
             ScsiBusPhase::DataOut => {
                 self.reg_csr.set_bsy(true);
@@ -341,12 +347,13 @@ impl ScsiController {
             }
             ScsiBusPhase::Status => {
                 self.reg_csr.set_bsy(true);
-                //self.reg_bsr.set_dma_req(false);
                 self.reg_csr.set_cd(true);
                 self.reg_csr.set_io(true);
                 self.reg_csr.set_req(true);
                 self.reg_cdr = self.status;
-                //trace!("Status code: {:02X}", 0x00);
+
+                // Mac Plus needs this?
+                self.reg_bsr.set_dma_req(true);
             }
             ScsiBusPhase::MessageIn => {
                 self.reg_csr.set_bsy(true);
@@ -548,40 +555,42 @@ impl BusMember<Address> for ScsiController {
         let reg = NcrReg::from_u32((addr >> 4) & 0b111).unwrap();
 
         //if reg != NcrReg::CSR {
-        //trace!(
-        //    "{:06X} SCSI read: write = {}, dack = {}, reg = {:?}",
-        //    self.dbg_pc,
-        //    is_write,
-        //    dack,
-        //    reg
-        //);
+        //    trace!(
+        //        "{:06X} SCSI read: write = {}, dack = {}, reg = {:?}",
+        //        self.dbg_pc,
+        //        is_write,
+        //        dack,
+        //        reg
+        //    );
         //}
 
         match reg {
-            NcrReg::CDR_ODR => {
+            NcrReg::CDR_ODR | NcrReg::IDR => {
+                let val = self.reg_cdr;
                 if self.busphase == ScsiBusPhase::DataIn && self.reg_mr.dma_mode() {
+                    // Pump next byte to CDR for next read
                     if let Some(b) = self.responsebuf.pop_front() {
-                        if self.responsebuf.is_empty() {
-                            // Transfer completed
-                            self.set_phase(ScsiBusPhase::Status);
-                        }
-                        Some(b)
+                        self.reg_cdr = b;
                     } else {
-                        error!("CDR DMA buffer underrun!");
-                        Some(0)
+                        // Transfer completed
+                        self.set_phase(ScsiBusPhase::Status);
                     }
-                } else {
-                    Some(self.reg_cdr)
                 }
+                Some(val)
             }
             NcrReg::MR => Some(self.reg_mr.0),
             NcrReg::ICR => Some(self.reg_icr.0),
             NcrReg::CSR => Some(self.reg_csr.0),
             NcrReg::BSR => Some(self.reg_bsr.0),
+            NcrReg::RESET => {
+                self.reg_bsr.set_irq(false);
+                Some(0)
+            }
             _ => Some(0),
         }
     }
 
+    #[allow(clippy::cognitive_complexity)]
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
         let _is_write = addr & 1 != 0;
         let _dack = addr & 0b0010_0000_0000 != 0;
@@ -624,6 +633,7 @@ impl BusMember<Address> for ScsiController {
                 match self.busphase {
                     ScsiBusPhase::Arbitration => {
                         if set.assert_sel() {
+                            self.reg_bsr.set_irq(true);
                             self.set_phase(ScsiBusPhase::Selection);
                         }
                     }
@@ -689,16 +699,27 @@ impl BusMember<Address> for ScsiController {
                         if set.assert_ack() {
                             self.reg_csr.set_req(false);
                         }
-                        if clr.assert_ack() && !self.responsebuf.is_empty() {
-                            self.reg_csr.set_req(true);
+                        if clr.assert_ack() {
+                            if let Some(b) = self.responsebuf.pop_front() {
+                                self.reg_cdr = b;
+                                self.reg_csr.set_req(true);
+                            } else {
+                                // Transfer completed
+                                self.set_phase(ScsiBusPhase::Status);
+                            }
                         }
                     }
                     ScsiBusPhase::DataOut => {
                         if set.assert_ack() {
                             self.reg_csr.set_req(false);
                         }
-                        if clr.assert_ack() && self.dataout_len > 0 {
-                            self.reg_csr.set_req(true);
+                        if clr.assert_ack() {
+                            if self.dataout_len > 0 {
+                                self.reg_csr.set_req(true);
+                            } else {
+                                // Transfer completed
+                                self.set_phase(ScsiBusPhase::Status);
+                            }
                         }
                     }
 
@@ -712,8 +733,18 @@ impl BusMember<Address> for ScsiController {
                 self.reg_mr.0 = val;
 
                 if set.arbitrate() {
+                    // Initiate arbitration
                     self.set_phase(ScsiBusPhase::Arbitration);
                     self.reg_cdr = self.reg_odr; // Initiator ID
+                    return Some(());
+                }
+
+                if set.dma_mode()
+                    && (self.busphase == ScsiBusPhase::DataIn
+                        || self.busphase == ScsiBusPhase::DataOut)
+                {
+                    // Immediately flag DMA ready
+                    self.reg_bsr.set_dma_req(true);
                 }
 
                 match self.busphase {
@@ -748,7 +779,10 @@ impl BusMember<Address> for ScsiController {
                 }
                 Some(())
             }
-            _ => Some(()),
+            _ => {
+                //warn!("Unknown SCSI register write: {:?} = {:02X}", reg, val);
+                Some(())
+            }
         }
     }
 }

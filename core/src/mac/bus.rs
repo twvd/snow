@@ -448,6 +448,10 @@ where
         if self.via.ifr.0 & self.via.ier.0 != 0 {
             return Some(1);
         }
+        // SCSI IRQs
+        if self.bustype == BusType::SE && self.scsi.get_irq() && !self.via.b_out.scsi_int() {
+            return Some(1);
+        }
 
         None
     }
