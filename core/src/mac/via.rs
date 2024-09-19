@@ -8,6 +8,8 @@ use anyhow::Result;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
+use super::MacModel;
+
 /// Counter at which to trigger the one second interrupt
 /// (counted on the E Clock)
 const ONESEC_TICKS: Ticks = 783360;
@@ -168,6 +170,10 @@ bitfield! {
 
 /// Synertek SY6522 Versatile Interface Adapter
 pub struct Via {
+    /// The currently emulated Macintosh model
+    #[allow(dead_code)]
+    model: MacModel,
+
     /// Register A, outputs
     pub a_out: RegisterA,
 
@@ -225,8 +231,9 @@ pub struct Via {
 }
 
 impl Via {
-    pub fn new() -> Self {
+    pub fn new(model: MacModel) -> Self {
         Self {
+            model,
             a_out: RegisterA(0xFF),
             b_out: RegisterB(0xFF),
             a_in: RegisterA(0xFF),

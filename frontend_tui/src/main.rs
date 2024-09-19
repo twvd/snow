@@ -12,9 +12,10 @@ use sdl2::keyboard::Keycode;
 use sdl2::mouse::MouseButton;
 use sha2::{Digest, Sha256};
 use snow_core::emulator::comm::EmulatorCommand;
-use snow_core::emulator::{Emulator, MacModel};
+use snow_core::emulator::Emulator;
 use snow_core::mac::keyboard::{self, Keyboard};
 use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
+use snow_core::mac::MacModel;
 use snow_core::tickable::Tickable;
 use ui::UserInterface;
 
@@ -124,19 +125,11 @@ fn main() -> Result<()> {
         == hex!("13fe8312cf6167a2bb4351297b48cc1ee29c523b788e58270434742bfeda864c")
     {
         // Macintosh 128K
-        MacModel {
-            name: "Macintosh 128K",
-            ram_size: 128 * 1024,
-            fd_double: false,
-        }
+        MacModel::Early128K
     } else if digest[..] == hex!("fe6a1ceff5b3eefe32f20efea967cdf8cd4cada291ede040600e7f6c9e2dfc0e")
     {
         // Macintosh 512K
-        MacModel {
-            name: "Macintosh 512K",
-            ram_size: 512 * 1024,
-            fd_double: false,
-        }
+        MacModel::Early512K
     } else if
     // Macintosh Plus v1
     digest[..] == hex!("c5d862605867381af6200dd52f5004cc00304a36ab996531f15e0b1f8a80bc01") ||
@@ -145,25 +138,13 @@ fn main() -> Result<()> {
         // Macintosh Plus v3
     digest[..] == hex!("dd908e2b65772a6b1f0c859c24e9a0d3dcde17b1c6a24f4abd8955846d7895e7")
     {
-        MacModel {
-            name: "Macintosh Plus",
-            ram_size: 4096 * 1024,
-            fd_double: true,
-        }
+        MacModel::Plus
     } else if digest[..] == hex!("0dea05180e66fddb5f5577c89418de31b97e2d9dc6affe84871b031df8245487")
     {
-        MacModel {
-            name: "Macintosh SE",
-            ram_size: 4096 * 1024,
-            fd_double: true,
-        }
+        MacModel::SE
     } else if digest[..] == hex!("c1c47260bacac2473e21849925fbfdf48e5ab584aaef7c6d54569d0cb6b41cce")
     {
-        MacModel {
-            name: "Macintosh Classic",
-            ram_size: 4096 * 1024,
-            fd_double: true,
-        }
+        MacModel::Classic
     } else {
         panic!("Cannot determine model from ROM file")
     };
@@ -185,7 +166,7 @@ fn main() -> Result<()> {
     let mut terminal = UserInterface::init_terminal()?;
     let mut ui = UserInterface::new(
         &args.rom_filename,
-        model.name,
+        &model.to_string(),
         emulator.create_event_recv(),
         emulator.create_cmd_sender(),
     )?;

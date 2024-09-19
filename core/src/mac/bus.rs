@@ -3,6 +3,7 @@ use std::ops::Range;
 use super::scc::Scc;
 use super::scsi::ScsiController;
 use super::via::Via;
+use super::MacModel;
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::mac::iwm::Iwm;
 use crate::mac::video::Video;
@@ -14,13 +15,10 @@ use anyhow::Result;
 use log::*;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
 
-#[derive(Eq, PartialEq)]
-pub enum BusType {
-    Early,
-    SE,
-}
-
 pub struct MacBus<TRenderer: Renderer> {
+    /// The currently emulated Macintosh model
+    model: MacModel,
+
     /// Trace non-ROM/RAM access
     pub trace: bool,
 
@@ -53,7 +51,6 @@ pub struct MacBus<TRenderer: Renderer> {
 
     pub dbg_break: LatchingEvent,
 
-    bustype: BusType,
     overlay: bool,
 
     /// Toggles ROM mirroring for SCSI support
@@ -82,28 +79,24 @@ where
     /// CrsrNew address
     const ADDR_CRSRNEW: Address = 0x08CE;
 
-    pub fn new(rom: &[u8], ram_size: usize, renderer: TRenderer, fd_double: bool) -> Self {
+    pub fn new(model: MacModel, rom: &[u8], renderer: TRenderer) -> Self {
+        let ram_size = model.ram_size();
         let fb_alt_start = ram_size as Address - Video::<TRenderer>::FRAMEBUFFER_ALT_OFFSET;
         let fb_main_start = ram_size as Address - Video::<TRenderer>::FRAMEBUFFER_MAIN_OFFSET;
         let sound_alt_start = ram_size - Self::SOUND_ALT_OFFSET;
         let sound_main_start = ram_size - Self::SOUND_MAIN_OFFSET;
 
-        let bustype = if rom.len() > 128 * 1024 {
-            BusType::SE
-        } else {
-            BusType::Early
-        };
-
         Self {
+            model,
             trace: false,
 
             rom: Vec::from(rom),
             ram: vec![0; ram_size],
-            via: Via::new(),
+            via: Via::new(model),
             video: Video::new(renderer),
             eclock: 0,
             scc: Scc::new(),
-            iwm: Iwm::new(fd_double),
+            iwm: Iwm::new(model.fdd_double_sided()),
             scsi: ScsiController::new(),
             mouse_ready: false,
 
@@ -118,7 +111,6 @@ where
             soundbuf_alt: sound_alt_start..(sound_alt_start + Self::SOUNDBUF_SIZE),
 
             dbg_break: LatchingEvent::default(),
-            bustype,
             overlay: true,
             scsi_enable: true,
         }
@@ -159,7 +151,7 @@ where
 
         match addr {
             // ROM (disables overlay)
-            0x0040_0000..=0x0057_FFFF if self.bustype == BusType::SE => {
+            0x0040_0000..=0x0057_FFFF if self.model >= MacModel::SE => {
                 self.overlay = false;
                 self.write_normal(addr, val)
             }
@@ -217,8 +209,8 @@ where
             0x0044_0000..=0x004F_FFFF if !self.scsi_enable => {
                 Some(self.rom[addr as usize & self.rom_mask])
             }
-            // Overlay flip for Mac SE
-            0x0040_0000..=0x005F_FFFF if self.bustype == BusType::SE => {
+            // Overlay flip for Mac SE+
+            0x0040_0000..=0x005F_FFFF if self.model >= MacModel::SE => {
                 self.overlay = false;
                 self.read_normal(addr)
             }
@@ -296,7 +288,7 @@ where
             // Report updated mouse coordinates to OS
             self.write_ram(Self::ADDR_MTEMP_X, new_x);
             self.write_ram(Self::ADDR_MTEMP_Y, new_y);
-            if self.bustype == BusType::SE {
+            if self.model >= MacModel::SE {
                 // SE+ needs to see even a small difference between the current (RawMouse)
                 // and new (MTemp) position, otherwise the change is ignored.
                 self.write_ram(Self::ADDR_RAWMOUSE_X, new_x - 1);
@@ -309,7 +301,7 @@ where
         }
 
         if let Some(b) = button {
-            if self.bustype == BusType::SE {
+            if self.model.has_adb() {
                 // TODO ADB
             } else {
                 // Mouse button through VIA I/O
@@ -333,7 +325,7 @@ where
         // Report updated mouse coordinates to OS
         self.write_ram(Self::ADDR_MTEMP_X, x);
         self.write_ram(Self::ADDR_MTEMP_Y, y);
-        if self.bustype == BusType::SE {
+        if self.model >= MacModel::SE {
             // SE+ needs to see even a small difference between the current (RawMouse)
             // and new (MTemp) position, otherwise the change is ignored.
             self.write_ram(Self::ADDR_RAWMOUSE_X, x - 1);
@@ -376,7 +368,7 @@ where
             self.write_normal(addr, val)
         };
 
-        if self.overlay && self.bustype == BusType::Early && !self.via.a_out.overlay() {
+        if self.overlay && self.model <= MacModel::Plus && !self.via.a_out.overlay() {
             self.overlay = false;
         }
 
@@ -411,7 +403,7 @@ where
         self.video.tick(2)?;
 
         // Sync VIA registers
-        if self.bustype == BusType::Early {
+        if self.model <= MacModel::Plus {
             self.via.b_in.set_h4(self.video.in_hblank());
         } else {
             self.iwm.intdrive = self.via.a_out.drivesel();
@@ -449,7 +441,7 @@ where
             return Some(1);
         }
         // SCSI IRQs
-        if self.bustype == BusType::SE && self.scsi.get_irq() && !self.via.b_out.scsi_int() {
+        if self.model >= MacModel::SE && self.scsi.get_irq() && !self.via.b_out.scsi_int() {
             return Some(1);
         }
 

@@ -8,6 +8,7 @@ use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::mac::bus::MacBus;
 use crate::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
+use crate::mac::MacModel;
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
@@ -18,19 +19,6 @@ use log::*;
 use comm::{
     EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver, EmulatorStatus,
 };
-
-/// Specific properties of a specific Macintosh model
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct MacModel {
-    /// Model name
-    pub name: &'static str,
-
-    /// Size of main RAM
-    pub ram_size: usize,
-
-    /// Double-sided floppies
-    pub fd_double: bool,
-}
 
 /// Emulator runner
 pub struct Emulator {
@@ -56,7 +44,7 @@ impl Emulator {
         let frame_recv = renderer.get_receiver();
 
         // Initialize bus and CPU
-        let bus = MacBus::new(rom, model.ram_size, renderer, model.fd_double);
+        let bus = MacBus::new(model, rom, renderer);
         let mut cpu = CpuM68k::new(bus);
 
         cpu.reset()?;
