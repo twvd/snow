@@ -1,5 +1,6 @@
 use std::fmt::Display;
 
+pub mod adb;
 pub mod bus;
 pub mod iwm;
 pub mod keyboard;

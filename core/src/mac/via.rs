@@ -8,6 +8,7 @@ use anyhow::Result;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
+use super::adb::AdbTransceiver;
 use super::MacModel;
 
 /// Counter at which to trigger the one second interrupt
@@ -171,7 +172,6 @@ bitfield! {
 /// Synertek SY6522 Versatile Interface Adapter
 pub struct Via {
     /// The currently emulated Macintosh model
-    #[allow(dead_code)]
     model: MacModel,
 
     /// Register A, outputs
@@ -228,6 +228,8 @@ pub struct Via {
 
     pub keyboard: Keyboard,
     rtc: Rtc,
+
+    adb: AdbTransceiver,
 }
 
 impl Via {
@@ -260,6 +262,7 @@ impl Via {
 
             keyboard: Keyboard::default(),
             rtc: Rtc::default(),
+            adb: AdbTransceiver::default(),
         }
     }
 }
@@ -407,6 +410,14 @@ impl BusMember<Address> for Via {
                     self.b_out.rtcdata(),
                 );
                 self.b_in.set_rtcdata(rtcin);
+
+                if self.model.has_adb() {
+                    if let Some(b) = self.adb.io(self.b_out.adb_st0(), self.b_out.adb_st1()) {
+                        self.kbdshift_in = b;
+                        self.ifr.set_kbdready(true);
+                    }
+                }
+
                 Some(())
             }
 
@@ -495,12 +506,17 @@ impl Tickable for Via {
             self.ifr.set_t2(true);
         }
 
-        // Keyboard response
+        // ADB/Keyboard response
         if self.kbdshift_out_time > 0 {
             self.kbdshift_out_time = self.kbdshift_out_time.saturating_sub(ticks);
             if self.kbdshift_out_time == 0 {
-                self.kbdshift_in = self.keyboard.cmd(self.kbdshift_out)?;
-                self.acr.set_kbd(0);
+                if !self.model.has_adb() {
+                    self.kbdshift_in = self.keyboard.cmd(self.kbdshift_out)?;
+                    self.acr.set_kbd(0);
+                } else {
+                    self.adb.cmd(self.kbdshift_out);
+                    self.kbdshift_in = 0;
+                }
                 self.ifr.set_kbdready(true);
             }
         }
