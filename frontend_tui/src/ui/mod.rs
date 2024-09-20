@@ -281,6 +281,10 @@ impl UserInterface {
                 self.cmdsender.send(EmulatorCommand::SetFpsLimit(limit))?;
                 Ok(())
             }
+            "trace" => {
+                self.cmdsender.send(EmulatorCommand::ToggleBusTrace)?;
+                Ok(())
+            }
             _ => bail!("Unknown command"),
         }
     }

@@ -208,6 +208,7 @@ impl Tickable for Emulator {
                         self.cpu.bus.video.fps_limit = limit;
                         info!("Frame rate limit set to {}", limit);
                     }
+                    EmulatorCommand::ToggleBusTrace => self.cpu.bus.trace = !self.cpu.bus.trace,
                 }
             }
         }

@@ -25,6 +25,7 @@ pub enum EmulatorCommand {
     Disassemble(Address, usize),
     KeyEvent(KeyEvent),
     SetFpsLimit(u64),
+    ToggleBusTrace,
 }
 
 /// Structure with general emulator status
