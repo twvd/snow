@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 
 use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::CpuM68k;
+use crate::mac::adb::mouse::AdbMouseSender;
+use crate::mac::adb::AdbMouse;
 use crate::mac::bus::MacBus;
 use crate::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use crate::mac::MacModel;
@@ -30,6 +32,7 @@ pub struct Emulator {
     run: bool,
     breakpoints: Vec<Address>,
     last_update: Instant,
+    adbmouse_sender: Option<AdbMouseSender>,
 }
 
 impl Emulator {
@@ -47,6 +50,14 @@ impl Emulator {
         let bus = MacBus::new(model, rom, renderer);
         let mut cpu = CpuM68k::new(bus);
 
+        let adbmouse_sender = if model.has_adb() {
+            let (mouse, mouse_sender) = AdbMouse::new();
+            cpu.bus.via.adb.add_device(AdbMouse::ADDRESS, mouse);
+            Some(mouse_sender)
+        } else {
+            None
+        };
+
         cpu.reset()?;
         let mut emu = Self {
             cpu,
@@ -57,6 +68,7 @@ impl Emulator {
             run: false,
             breakpoints: vec![],
             last_update: Instant::now(),
+            adbmouse_sender,
         };
         emu.status_update()?;
 
@@ -138,6 +150,11 @@ impl Tickable for Emulator {
             while let Ok(cmd) = self.command_recv.try_recv() {
                 match cmd {
                     EmulatorCommand::MouseUpdateRelative { relx, rely, btn } => {
+                        if let Some(s) = self.adbmouse_sender.as_ref() {
+                            if let Some(b) = btn {
+                                s.send(b)?;
+                            }
+                        }
                         self.cpu.bus.mouse_update_rel(relx, rely, btn);
                     }
                     EmulatorCommand::MouseUpdateAbsolute { x, y } => {

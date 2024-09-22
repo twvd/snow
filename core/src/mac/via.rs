@@ -229,7 +229,7 @@ pub struct Via {
     pub keyboard: Keyboard,
     rtc: Rtc,
 
-    adb: AdbTransceiver,
+    pub(crate) adb: AdbTransceiver,
 }
 
 impl Via {
@@ -413,6 +413,7 @@ impl BusMember<Address> for Via {
 
                 if self.model.has_adb() {
                     if let Some(b) = self.adb.io(self.b_out.adb_st0(), self.b_out.adb_st1()) {
+                        log::trace!("ADB in: {:02X}", b);
                         self.kbdshift_in = b;
                         self.ifr.set_kbdready(true);
                     }
@@ -512,15 +513,14 @@ impl Tickable for Via {
             if self.kbdshift_out_time == 0 {
                 if !self.model.has_adb() {
                     self.kbdshift_in = self.keyboard.cmd(self.kbdshift_out)?;
-                    self.acr.set_kbd(0);
                 } else {
                     self.adb.cmd(self.kbdshift_out);
-                    self.kbdshift_in = 0;
+                    self.kbdshift_in = 0xFF;
                 }
+                self.acr.set_kbd(0);
                 self.ifr.set_kbdready(true);
             }
         }
-
         Ok(ticks)
     }
 }
