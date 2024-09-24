@@ -1,5 +1,5 @@
 use crate::bus::{Address, BusMember};
-use crate::mac::keyboard::Keyboard;
+use crate::mac::keyboard::PlusKeyboard;
 use crate::mac::rtc::Rtc;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, Field16};
@@ -226,7 +226,7 @@ pub struct Via {
     /// Timer 1 latch
     pub t1latch: Field16,
 
-    pub keyboard: Keyboard,
+    pub keyboard: PlusKeyboard,
     rtc: Rtc,
 
     pub(crate) adb: AdbTransceiver,
@@ -260,7 +260,7 @@ impl Via {
             kbdshift_out: 0,
             kbdshift_out_time: 0,
 
-            keyboard: Keyboard::default(),
+            keyboard: PlusKeyboard::default(),
             rtc: Rtc::default(),
             adb: AdbTransceiver::default(),
         }
@@ -297,7 +297,9 @@ impl BusMember<Address> for Via {
                 self.ifr.set_kbdclock(false);
 
                 // Lazy update ADB Int to current state
-                self.b_in.set_adb_int(!self.adb.get_int());
+                if self.model.has_adb() {
+                    self.b_in.set_adb_int(!self.adb.get_int());
+                }
 
                 Some((self.b_in.0 & !self.ddrb.0) | (self.b_out.0 & self.ddrb.0))
             }
