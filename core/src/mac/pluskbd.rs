@@ -5,9 +5,9 @@ use log::*;
 
 use crate::types::KeyEvent;
 
-/// Apple M0110 keyboard
+/// Apple M0110 keyboard, for the 512K/Plus
 #[derive(Default)]
-pub struct Keyboard {
+pub struct PlusKeyboard {
     event_queue: VecDeque<KeyEvent>,
 }
 
@@ -21,7 +21,7 @@ pub const SC_OPTION: u8 = 0x75;
 pub const SC_APPLE: u8 = 0x6F;
 pub const SC_SPACE: u8 = 0x63;
 
-impl Keyboard {
+impl PlusKeyboard {
     pub fn event(&mut self, ev: KeyEvent) -> Result<()> {
         self.event_queue.push_back(ev);
         Ok(())

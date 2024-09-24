@@ -13,7 +13,7 @@ use sdl2::mouse::MouseButton;
 use sha2::{Digest, Sha256};
 use snow_core::emulator::comm::EmulatorCommand;
 use snow_core::emulator::Emulator;
-use snow_core::mac::keyboard::{self, Keyboard};
+use snow_core::mac::pluskbd::{self, PlusKeyboard};
 use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow_core::mac::MacModel;
 use snow_core::tickable::Tickable;
@@ -78,19 +78,19 @@ fn setup_panic_handler() {
 
 fn map_sdl_keycode(kc: Keycode) -> Option<u8> {
     match kc {
-        Keycode::BACKSPACE => Some(keyboard::SC_BACKSPACE),
-        Keycode::TAB => Some(keyboard::SC_TAB),
-        Keycode::CAPSLOCK => Some(keyboard::SC_CAPSLOCK),
-        Keycode::RETURN | Keycode::RETURN2 => Some(keyboard::SC_RETURN),
-        Keycode::LSHIFT | Keycode::RSHIFT => Some(keyboard::SC_SHIFT),
-        Keycode::LALT | Keycode::RALT => Some(keyboard::SC_OPTION),
-        Keycode::LCTRL | Keycode::RCTRL => Some(keyboard::SC_APPLE),
-        Keycode::SPACE => Some(keyboard::SC_SPACE),
+        Keycode::BACKSPACE => Some(pluskbd::SC_BACKSPACE),
+        Keycode::TAB => Some(pluskbd::SC_TAB),
+        Keycode::CAPSLOCK => Some(pluskbd::SC_CAPSLOCK),
+        Keycode::RETURN | Keycode::RETURN2 => Some(pluskbd::SC_RETURN),
+        Keycode::LSHIFT | Keycode::RSHIFT => Some(pluskbd::SC_SHIFT),
+        Keycode::LALT | Keycode::RALT => Some(pluskbd::SC_OPTION),
+        Keycode::LCTRL | Keycode::RCTRL => Some(pluskbd::SC_APPLE),
+        Keycode::SPACE => Some(pluskbd::SC_SPACE),
         _ => {
             let name = kc.name();
             if name.len() == 1 {
                 let sdl_char = name.chars().nth(0)?;
-                Keyboard::char_to_scancode(sdl_char)
+                PlusKeyboard::char_to_scancode(sdl_char)
             } else {
                 None
             }

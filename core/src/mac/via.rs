@@ -1,5 +1,5 @@
 use crate::bus::{Address, BusMember};
-use crate::mac::keyboard::PlusKeyboard;
+use crate::mac::pluskbd::PlusKeyboard;
 use crate::mac::rtc::Rtc;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, Field16};
