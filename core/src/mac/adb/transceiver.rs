@@ -4,6 +4,7 @@ use super::{AdbDevice, AdbDeviceInstance};
 
 use log::*;
 
+/// ADB Bus/transceiver states
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum AdbBusState {
     /// Send command or data - ST0 = 0, ST1 = 0
@@ -36,9 +37,17 @@ impl Default for AdbBusState {
 /// Apple Desktop Bus transceiver
 #[derive(Default)]
 pub struct AdbTransceiver {
+    /// Current bus state
     state: AdbBusState,
+
+    /// Devices on the ADB bus
     devices: [Option<AdbDeviceInstance>; 16],
+
+    /// Response that is currently being clocked out
     response: AdbDeviceResponse,
+
+    /// Current state of the ADB Int I/O pin
+    int: bool,
 }
 
 impl AdbTransceiver {
@@ -50,25 +59,39 @@ impl AdbTransceiver {
         self.devices[address] = Some(Box::new(device));
     }
 
-    pub fn get_irq(&self) -> bool {
-        false
+    pub fn get_int(&self) -> bool {
+        self.int
     }
 
     pub fn io(&mut self, st0: bool, st1: bool) -> Option<u8> {
         let newstate = AdbBusState::from_io(st0, st1);
 
         if newstate == self.state {
+            // No state change
             return None;
         }
 
+        // Bus state has changed
         self.state = newstate;
-        trace!("ADB state: {:?}", self.state);
+        self.int = false;
+
         match self.state {
-            AdbBusState::Idle => Some(0xFF),
-            AdbBusState::Receive1 | AdbBusState::Receive2 => {
-                Some(self.response.pop_at(0).unwrap_or(0xFF))
+            AdbBusState::Idle => {
+                if self.devices.iter().flatten().any(|d| d.get_srq()) {
+                    // A device has asserted Service Request
+                    self.int = true;
+                }
+
+                Some(0xFF)
             }
-            _ => None,
+            AdbBusState::Transmit => None,
+            AdbBusState::Receive1 | AdbBusState::Receive2 => {
+                if self.response.is_empty() {
+                    // Response finished
+                    self.int = true;
+                }
+                Some(self.response.pop_at(0).unwrap_or(0))
+            }
         }
     }
 
@@ -77,19 +100,18 @@ impl AdbTransceiver {
         let cmd = (data >> 2) & 3;
         let reg = data & 3;
 
-        trace!("ADB address: {:02X} cmd: {:02X}", address, cmd);
-        self.response.clear();
-
         if cmd == 0 {
             // Reset (broadcast)
             for dev in self.devices.iter_mut().flatten() {
                 dev.reset();
             }
+            self.response.clear();
             return;
         }
 
         let Some(device) = self.devices[address].as_mut() else {
             // No device at this address
+            self.response.clear();
             return;
         };
         self.response = match cmd {
@@ -110,9 +132,5 @@ impl AdbTransceiver {
                 AdbDeviceResponse::default()
             }
         };
-    }
-
-    pub fn try_recv(&mut self) -> Option<u8> {
-        self.response.pop_at(0)
     }
 }

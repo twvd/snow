@@ -6,14 +6,14 @@ use std::time::{Duration, Instant};
 
 use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::CpuM68k;
-use crate::mac::adb::mouse::AdbMouseSender;
-use crate::mac::adb::AdbMouse;
+use crate::mac::adb::{AdbKeyboard, AdbMouse};
 use crate::mac::bus::MacBus;
 use crate::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use crate::mac::MacModel;
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
+use crate::types::{ClickEventSender, KeyEventSender};
 
 use anyhow::Result;
 use log::*;
@@ -32,7 +32,8 @@ pub struct Emulator {
     run: bool,
     breakpoints: Vec<Address>,
     last_update: Instant,
-    adbmouse_sender: Option<AdbMouseSender>,
+    adbmouse_sender: Option<ClickEventSender>,
+    adbkeyboard_sender: Option<KeyEventSender>,
 }
 
 impl Emulator {
@@ -50,10 +51,18 @@ impl Emulator {
         let bus = MacBus::new(model, rom, renderer);
         let mut cpu = CpuM68k::new(bus);
 
+        // Initialize input devices
         let adbmouse_sender = if model.has_adb() {
             let (mouse, mouse_sender) = AdbMouse::new();
             cpu.bus.via.adb.add_device(AdbMouse::ADDRESS, mouse);
             Some(mouse_sender)
+        } else {
+            None
+        };
+        let adbkeyboard_sender = if model.has_adb() {
+            let (keyboard, sender) = AdbKeyboard::new();
+            cpu.bus.via.adb.add_device(AdbKeyboard::ADDRESS, keyboard);
+            Some(sender)
         } else {
             None
         };
@@ -69,6 +78,7 @@ impl Emulator {
             breakpoints: vec![],
             last_update: Instant::now(),
             adbmouse_sender,
+            adbkeyboard_sender,
         };
         emu.status_update()?;
 
@@ -213,8 +223,11 @@ impl Tickable for Emulator {
                     EmulatorCommand::KeyEvent(e) => {
                         if !self.run {
                             info!("Ignoring keyboard input while stopped");
+                        } else if let Some(sender) = self.adbkeyboard_sender.as_ref() {
+                            sender.send(e)?;
+                        } else {
+                            self.cpu.bus.via.keyboard.event(e)?;
                         }
-                        self.cpu.bus.via.keyboard.event(e)?;
                     }
                     EmulatorCommand::SetFpsLimit(limit) => {
                         self.cpu.bus.video.fps_limit = limit;

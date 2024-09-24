@@ -210,7 +210,7 @@ fn main() -> Result<()> {
                     };
 
                     cmd.send(EmulatorCommand::KeyEvent(
-                        snow_core::mac::keyboard::KeyEvent::KeyDown(mac_keycode),
+                        snow_core::types::KeyEvent::KeyDown(mac_keycode),
                     ))?;
                 }
                 Event::KeyUp {
@@ -222,7 +222,7 @@ fn main() -> Result<()> {
                     };
 
                     cmd.send(EmulatorCommand::KeyEvent(
-                        snow_core::mac::keyboard::KeyEvent::KeyUp(mac_keycode),
+                        snow_core::types::KeyEvent::KeyUp(mac_keycode),
                     ))?;
                 }
                 Event::MouseMotion {

@@ -296,6 +296,9 @@ impl BusMember<Address> for Via {
                 self.ifr.set_kbddata(false);
                 self.ifr.set_kbdclock(false);
 
+                // Lazy update ADB Int to current state
+                self.b_in.set_adb_int(!self.adb.get_int());
+
                 Some((self.b_in.0 & !self.ddrb.0) | (self.b_out.0 & self.ddrb.0))
             }
 
@@ -413,7 +416,7 @@ impl BusMember<Address> for Via {
 
                 if self.model.has_adb() {
                     if let Some(b) = self.adb.io(self.b_out.adb_st0(), self.b_out.adb_st1()) {
-                        log::trace!("ADB in: {:02X}", b);
+                        //log::trace!("adb out: {:02X}", b);
                         self.kbdshift_in = b;
                         self.ifr.set_kbdready(true);
                     }
@@ -521,6 +524,7 @@ impl Tickable for Via {
                 self.ifr.set_kbdready(true);
             }
         }
+
         Ok(ticks)
     }
 }

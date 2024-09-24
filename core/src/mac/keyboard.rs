@@ -3,11 +3,7 @@ use std::collections::VecDeque;
 use anyhow::Result;
 use log::*;
 
-/// A keyboard event. Inner value is the scancode
-pub enum KeyEvent {
-    KeyDown(u8),
-    KeyUp(u8),
-}
+use crate::types::KeyEvent;
 
 /// Apple M0110 keyboard
 #[derive(Default)]
