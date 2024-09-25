@@ -1,5 +1,7 @@
 use std::fmt::Display;
 
+use crate::keymap::Keymap;
+
 pub mod adb;
 pub mod bus;
 pub mod iwm;
@@ -46,6 +48,13 @@ impl MacModel {
         match self {
             Self::Early128K | Self::Early512K => false,
             _ => true,
+        }
+    }
+
+    pub const fn keymap(self) -> Keymap {
+        match self {
+            Self::Early128K | Self::Early512K | Self::Plus => Keymap::AkM0110,
+            _ => Keymap::AekM0115,
         }
     }
 }

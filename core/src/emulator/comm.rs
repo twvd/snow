@@ -1,6 +1,9 @@
 //! Communication between emulator and frontend
 
-use crate::{bus::Address, cpu_m68k::regs::RegisterFile, tickable::Ticks, types::KeyEvent};
+use crate::bus::Address;
+use crate::cpu_m68k::regs::RegisterFile;
+use crate::keymap::KeyEvent;
+use crate::tickable::Ticks;
 
 pub type EmulatorCommandSender = crossbeam_channel::Sender<EmulatorCommand>;
 pub type EmulatorEventReceiver = crossbeam_channel::Receiver<EmulatorEvent>;

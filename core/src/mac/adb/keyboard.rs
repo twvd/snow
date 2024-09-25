@@ -1,4 +1,5 @@
-use crate::types::{KeyEvent, KeyEventReceiver, KeyEventSender};
+use crate::keymap::KeyEvent;
+use crate::types::{KeyEventReceiver, KeyEventSender};
 
 use super::{AdbDevice, AdbDeviceResponse, AdbReg3};
 
@@ -52,7 +53,7 @@ impl AdbDevice for AdbKeyboard {
                     .with_exceptional(true)
                     .with_srq(true)
                     .with_address(Self::ADDRESS as u8)
-                    .with_handler_id(1)
+                    .with_handler_id(2) // Apple Extended Keyboard M0115
                     .to_be_bytes(),
             ),
             _ => AdbDeviceResponse::default(),

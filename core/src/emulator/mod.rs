@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::CpuM68k;
+use crate::keymap::Keymap;
 use crate::mac::adb::{AdbKeyboard, AdbMouse};
 use crate::mac::bus::MacBus;
 use crate::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
@@ -224,8 +225,10 @@ impl Tickable for Emulator {
                         if !self.run {
                             info!("Ignoring keyboard input while stopped");
                         } else if let Some(sender) = self.adbkeyboard_sender.as_ref() {
-                            sender.send(e)?;
-                        } else {
+                            if let Some(e) = e.translate_scancode(Keymap::AekM0115) {
+                                sender.send(e)?;
+                            }
+                        } else if let Some(e) = e.translate_scancode(Keymap::AkM0110) {
                             self.cpu.bus.via.keyboard.event(e)?;
                         }
                     }

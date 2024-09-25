@@ -1,9 +1,11 @@
+mod keymap_sdl;
 mod renderer_sdl;
 mod ui;
 
 use anyhow::Result;
 use clap::Parser;
 use hex_literal::hex;
+use keymap_sdl::map_sdl_keycode;
 use log::*;
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
@@ -13,7 +15,6 @@ use sdl2::mouse::MouseButton;
 use sha2::{Digest, Sha256};
 use snow_core::emulator::comm::EmulatorCommand;
 use snow_core::emulator::Emulator;
-use snow_core::mac::pluskbd::{self, PlusKeyboard};
 use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow_core::mac::MacModel;
 use snow_core::tickable::Tickable;
@@ -74,28 +75,6 @@ fn setup_panic_handler() {
         let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
         original_hook(panic_info);
     }));
-}
-
-fn map_sdl_keycode(kc: Keycode) -> Option<u8> {
-    match kc {
-        Keycode::BACKSPACE => Some(pluskbd::SC_BACKSPACE),
-        Keycode::TAB => Some(pluskbd::SC_TAB),
-        Keycode::CAPSLOCK => Some(pluskbd::SC_CAPSLOCK),
-        Keycode::RETURN | Keycode::RETURN2 => Some(pluskbd::SC_RETURN),
-        Keycode::LSHIFT | Keycode::RSHIFT => Some(pluskbd::SC_SHIFT),
-        Keycode::LALT | Keycode::RALT => Some(pluskbd::SC_OPTION),
-        Keycode::LCTRL | Keycode::RCTRL => Some(pluskbd::SC_APPLE),
-        Keycode::SPACE => Some(pluskbd::SC_SPACE),
-        _ => {
-            let name = kc.name();
-            if name.len() == 1 {
-                let sdl_char = name.chars().nth(0)?;
-                PlusKeyboard::char_to_scancode(sdl_char)
-            } else {
-                None
-            }
-        }
-    }
 }
 
 fn main() -> Result<()> {
@@ -210,7 +189,7 @@ fn main() -> Result<()> {
                     };
 
                     cmd.send(EmulatorCommand::KeyEvent(
-                        snow_core::types::KeyEvent::KeyDown(mac_keycode),
+                        snow_core::keymap::KeyEvent::KeyDown(mac_keycode),
                     ))?;
                 }
                 Event::KeyUp {
@@ -222,7 +201,7 @@ fn main() -> Result<()> {
                     };
 
                     cmd.send(EmulatorCommand::KeyEvent(
-                        snow_core::types::KeyEvent::KeyUp(mac_keycode),
+                        snow_core::keymap::KeyEvent::KeyUp(mac_keycode),
                     ))?;
                 }
                 Event::MouseMotion {

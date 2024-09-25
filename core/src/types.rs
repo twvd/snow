@@ -1,11 +1,7 @@
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
-/// A keyboard event. Inner value is the scancode
-pub enum KeyEvent {
-    KeyDown(u8),
-    KeyUp(u8),
-}
+use crate::keymap::KeyEvent;
 
 /// Communication channel (sender) for keyboard events to an emulated keyboard
 pub type KeyEventSender = crossbeam_channel::Sender<KeyEvent>;
