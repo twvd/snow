@@ -90,7 +90,7 @@ impl AdbTransceiver {
                     // Response finished
                     self.int = true;
                 }
-                Some(self.response.pop_at(0).unwrap_or(0))
+                Some(self.response.pop_at(0).unwrap_or(0xFF))
             }
         }
     }
