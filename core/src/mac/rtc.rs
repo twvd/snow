@@ -1,3 +1,4 @@
+use arrayvec::ArrayVec;
 use chrono::{Local, NaiveDate};
 use log::*;
 
@@ -6,20 +7,19 @@ pub struct Rtc {
     io_enable: bool,
     io_clk: bool,
 
-    write_cmd: Option<u8>,
+    cmd: ArrayVec<u8, 3>,
+    cmd_len: usize,
     byte_in: u8,
     byte_in_bit: usize,
-    data_out: u8,
-    sending: bool,
+    data_out: Option<u8>,
 
     data: RtcData,
 }
 
-#[derive(Default)]
 pub struct RtcData {
     writeprotect: bool,
     seconds: u32,
-    pram: [u8; 0x14],
+    pram: [u8; 256],
 }
 
 impl Default for Rtc {
@@ -38,15 +38,15 @@ impl Default for Rtc {
         Self {
             io_enable: false,
             io_clk: false,
-            write_cmd: None,
+            cmd: ArrayVec::new(),
+            cmd_len: 0,
             byte_in: 0,
             byte_in_bit: 0,
-            data_out: 0,
-            sending: false,
+            data_out: None,
             data: RtcData {
                 writeprotect: true,
                 seconds,
-                pram: [0; 0x14],
+                pram: [0; 256],
             },
         }
     }
@@ -71,39 +71,59 @@ impl Rtc {
         if !enable && self.io_enable {
             // Reset
             self.io_enable = false;
-            self.data_out = 0;
-            self.write_cmd = None;
+            self.data_out = None;
+            self.cmd.clear();
             self.byte_in = 0;
             self.byte_in_bit = 0;
-            self.sending = false;
         }
 
-        if !self.sending && clk && !self.io_clk {
-            // Receiving command
-            self.byte_in <<= 1;
-            if data {
-                self.byte_in |= 1;
-            }
-            self.byte_in_bit += 1;
-            if self.byte_in_bit >= 8 {
-                if let Some(cmd) = self.write_cmd {
-                    // Second byte of write
-                    self.cmd_write(cmd, self.byte_in);
-                    self.write_cmd = None;
-                } else if self.byte_in & 0x80 == 0 {
-                    // Write - read another byte
-                    self.write_cmd = Some(self.byte_in);
-                } else {
-                    self.data_out = self.cmd_read(self.byte_in);
-                    self.sending = true;
+        if clk && !self.io_clk {
+            // Rising edge, clock bit in/out
+            if self.data_out.is_none() {
+                // Receiving command, clock bit in
+                self.byte_in <<= 1;
+                if data {
+                    self.byte_in |= 1;
                 }
-                self.byte_in = 0;
-                self.byte_in_bit = 0;
+                self.byte_in_bit += 1;
+                if self.byte_in_bit >= 8 {
+                    if self.cmd.is_empty() {
+                        // First byte, determine command length
+                        self.cmd_len = 1;
+                        if self.byte_in & 0b0111_1000 == 0b0011_1000 {
+                            // Extended command
+                            self.cmd_len += 1;
+                        }
+                        if self.byte_in & 0x80 == 0 {
+                            // Write command
+                            self.cmd_len += 1;
+                        }
+                    }
+
+                    self.cmd.push(self.byte_in);
+                    self.byte_in = 0;
+                    self.byte_in_bit = 0;
+
+                    if self.cmd.len() == self.cmd_len {
+                        // Complete
+                        let write = self.cmd[0] & 0x80 == 0;
+                        if self.cmd[0] & 0b0111_1000 == 0b0011_1000 {
+                            // Extended command
+                            self.cmd_ext();
+                        } else if write {
+                            // Write command
+                            self.cmd_write(self.cmd[0], self.cmd[1]);
+                        } else {
+                            // Read command
+                            self.cmd_read(self.cmd[0]);
+                        }
+                    }
+                }
+            } else if let Some(b) = self.data_out.as_mut() {
+                // Sending response, clock bit out
+                res = *b & 0x80 != 0;
+                *b = b.wrapping_shl(1);
             }
-        } else if self.sending && clk && !self.io_clk {
-            // Sending response
-            res = self.data_out & 0x80 != 0;
-            self.data_out = self.data_out.wrapping_shl(1);
         }
 
         self.io_clk = clk;
@@ -146,9 +166,9 @@ impl Rtc {
     }
 
     /// Process a command from the CPU that reads from the RTC
-    fn cmd_read(&self, cmd: u8) -> u8 {
+    fn cmd_read(&mut self, cmd: u8) {
         let scmd = (cmd >> 2) & 0b11111;
-        match scmd {
+        self.data_out = Some(match scmd {
             0x00 | 0x04 => self.data.seconds as u8,
             0x01 | 0x05 => (self.data.seconds >> 8) as u8,
             0x02 | 0x06 => (self.data.seconds >> 16) as u8,
@@ -159,6 +179,19 @@ impl Rtc {
                 warn!("Unknown RTC read command: {:02X} {:08b}", cmd, cmd);
                 0
             }
+        });
+    }
+
+    /// Process an extended command (read or write)
+    fn cmd_ext(&mut self) {
+        let cmd = &self.cmd;
+        let write = cmd[0] & 0x80 == 0;
+        let addr = (((cmd[0] & 0x07) << 5) | ((cmd[1] >> 2) & 0x1F)) as usize;
+
+        if write {
+            self.data.pram[addr] = cmd[2];
+        } else {
+            self.data_out = Some(self.data.pram[addr]);
         }
     }
 }
