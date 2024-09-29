@@ -25,6 +25,8 @@ const ONESEC_TICKS: Ticks = 783360;
 /// = 6840us, roughly 7ms.
 const KEYBOARD_DELAY: Ticks = ONESEC_TICKS * 7 / 1000;
 
+const SHIFT_DELAY: Ticks = ONESEC_TICKS * 3 / 1000;
+
 bitfield! {
     /// VIA Register A (for classic models)
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -399,7 +401,11 @@ impl BusMember<Address> for Via {
                 self.ifr.set_kbdready(false);
 
                 self.kbdshift_out = val;
-                self.kbdshift_out_time = KEYBOARD_DELAY;
+                if self.model.has_adb() {
+                    self.kbdshift_out_time = SHIFT_DELAY;
+                } else {
+                    self.kbdshift_out_time = KEYBOARD_DELAY;
+                }
                 Some(())
             }
 
@@ -418,7 +424,6 @@ impl BusMember<Address> for Via {
 
                 if self.model.has_adb() {
                     if let Some(b) = self.adb.io(self.b_out.adb_st0(), self.b_out.adb_st1()) {
-                        //log::trace!("adb out: {:02X}", b);
                         self.kbdshift_in = b;
                         self.ifr.set_kbdready(true);
                     }
@@ -518,13 +523,17 @@ impl Tickable for Via {
             if self.kbdshift_out_time == 0 {
                 if !self.model.has_adb() {
                     self.kbdshift_in = self.keyboard.cmd(self.kbdshift_out)?;
+                    self.acr.set_kbd(0);
                 } else {
-                    self.adb.cmd(self.kbdshift_out);
+                    self.adb.data_in(self.kbdshift_out);
                     self.kbdshift_in = 0xFF;
                 }
-                self.acr.set_kbd(0);
                 self.ifr.set_kbdready(true);
             }
+        }
+        if self.adb.wakeup() {
+            self.kbdshift_in = 0xFF;
+            self.ifr.set_kbdready(true);
         }
 
         Ok(ticks)

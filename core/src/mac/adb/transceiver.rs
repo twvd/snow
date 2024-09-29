@@ -7,12 +7,12 @@ use log::*;
 /// ADB Bus/transceiver states
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum AdbBusState {
-    /// Send command or data - ST0 = 0, ST1 = 0
-    Transmit,
-    /// Receive data from ADB device - ST0 = 1, ST1 = 0
-    Receive1,
-    /// Receive data from ADB device - ST0 = 0, ST1 = 1
-    Receive2,
+    /// Send command - ST0 = 0, ST1 = 0
+    Command,
+    /// Send/receive data from ADB device - ST0 = 1, ST1 = 0
+    Data1,
+    /// Send/receive data from ADB device - ST0 = 0, ST1 = 1
+    Data2,
     /// Idle - ST0 = 1, ST1 = 1
     Idle,
 }
@@ -20,9 +20,9 @@ enum AdbBusState {
 impl AdbBusState {
     pub fn from_io(st0: bool, st1: bool) -> Self {
         match (st0, st1) {
-            (false, false) => Self::Transmit,
-            (true, false) => Self::Receive1,
-            (false, true) => Self::Receive2,
+            (false, false) => Self::Command,
+            (true, false) => Self::Data1,
+            (false, true) => Self::Data2,
             (true, true) => Self::Idle,
         }
     }
@@ -41,26 +41,33 @@ pub struct AdbTransceiver {
     state: AdbBusState,
 
     /// Devices on the ADB bus
-    devices: [Option<AdbDeviceInstance>; 16],
+    devices: Vec<AdbDeviceInstance>,
 
     /// Response that is currently being clocked out
     response: AdbDeviceResponse,
 
     /// Current state of the ADB Int I/O pin
     int: bool,
+
+    /// Command data being clocked in
+    cmd: Vec<u8>,
 }
 
 impl AdbTransceiver {
-    pub fn add_device<T>(&mut self, address: usize, device: T)
+    pub fn add_device<T>(&mut self, device: T)
     where
         T: AdbDevice + Send + 'static,
     {
-        assert!(self.devices[address].is_none());
-        self.devices[address] = Some(Box::new(device));
+        self.devices.push(Box::new(device));
     }
 
     pub fn get_int(&self) -> bool {
         self.int
+    }
+
+    /// A device has asserted Service Request
+    fn device_has_srq(&self) -> bool {
+        self.devices.iter().any(|d| d.get_srq())
     }
 
     pub fn io(&mut self, st0: bool, st1: bool) -> Option<u8> {
@@ -76,61 +83,97 @@ impl AdbTransceiver {
         self.int = false;
 
         match self.state {
-            AdbBusState::Idle => {
-                if self.devices.iter().flatten().any(|d| d.get_srq()) {
-                    // A device has asserted Service Request
-                    self.int = true;
+            AdbBusState::Idle => None,
+            AdbBusState::Command => {
+                if !self.cmd.is_empty() {
+                    // Finish off a multiple byte command
+                    self.process_cmd(true);
+                    self.cmd.clear();
                 }
 
-                Some(0xFF)
+                self.response.clear();
+                None
             }
-            AdbBusState::Transmit => None,
-            AdbBusState::Receive1 | AdbBusState::Receive2 => {
-                if self.response.is_empty() {
+            AdbBusState::Data1 | AdbBusState::Data2 => {
+                if !self.cmd.is_empty() {
+                    if self.process_cmd(false) {
+                        self.cmd.clear();
+                    } else {
+                        // Wait for command to be clocked out
+                        return None;
+                    }
+                }
+                if self.cmd.is_empty() && self.response.is_empty() {
                     // Response finished
                     self.int = true;
                 }
+
                 Some(self.response.pop_at(0).unwrap_or(0xFF))
             }
         }
     }
 
-    pub fn cmd(&mut self, data: u8) {
-        let address = (data >> 4) as usize;
-        let cmd = (data >> 2) & 3;
-        let reg = data & 3;
+    pub fn data_in(&mut self, data: u8) {
+        self.cmd.push(data);
+    }
+
+    /// Process a received ADB command.
+    ///
+    ///  * `finish` - set if the bus state transitioned out of data in/out.
+    fn process_cmd(&mut self, finish: bool) -> bool {
+        let address = self.cmd[0] >> 4;
+        let cmd = (self.cmd[0] >> 2) & 3;
+        let reg = self.cmd[0] & 3;
+
+        self.response.clear();
 
         if cmd == 0 {
             // Reset (broadcast)
-            for dev in self.devices.iter_mut().flatten() {
+            for dev in &mut self.devices {
                 dev.reset();
             }
-            self.response.clear();
-            return;
+            return true;
         }
 
-        let Some(device) = self.devices[address].as_mut() else {
+        let Some(device) = self.devices.iter_mut().find(|d| d.get_address() == address) else {
             // No device at this address
-            self.response.clear();
-            return;
+            return true;
         };
-        self.response = match cmd {
+
+        match cmd {
             // Flush
             0b01 => {
                 device.flush();
-                AdbDeviceResponse::default()
             }
             // Listen
-            0b10 => device.listen(reg),
+            0b10 => {
+                if finish {
+                    device.listen(reg, &self.cmd[1..]);
+                } else {
+                    // Delay until command is complete
+                    return false;
+                }
+            }
             // Talk
-            0b11 => device.talk(reg),
+            0b11 => {
+                self.response = device.talk(reg);
+            }
             _ => {
                 error!(
                     "Unknown ADB command {:02X} for address {:02X}",
                     address, cmd
                 );
-                AdbDeviceResponse::default()
             }
         };
+        true
+    }
+
+    pub fn wakeup(&mut self) -> bool {
+        if self.state == AdbBusState::Idle && !self.int && self.device_has_srq() {
+            self.int = true;
+            true
+        } else {
+            false
+        }
     }
 }

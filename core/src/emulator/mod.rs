@@ -55,14 +55,14 @@ impl Emulator {
         // Initialize input devices
         let adbmouse_sender = if model.has_adb() {
             let (mouse, mouse_sender) = AdbMouse::new();
-            cpu.bus.via.adb.add_device(AdbMouse::ADDRESS, mouse);
+            cpu.bus.via.adb.add_device(mouse);
             Some(mouse_sender)
         } else {
             None
         };
         let adbkeyboard_sender = if model.has_adb() {
             let (keyboard, sender) = AdbKeyboard::new();
-            cpu.bus.via.adb.add_device(AdbKeyboard::ADDRESS, keyboard);
+            cpu.bus.via.adb.add_device(keyboard);
             Some(sender)
         } else {
             None

@@ -17,8 +17,9 @@ pub trait AdbDevice {
     fn reset(&mut self);
     fn flush(&mut self);
     fn talk(&mut self, reg: u8) -> AdbDeviceResponse;
-    fn listen(&mut self, reg: u8) -> AdbDeviceResponse;
+    fn listen(&mut self, reg: u8, data: &[u8]);
     fn get_srq(&self) -> bool;
+    fn get_address(&self) -> u8;
 }
 
 pub type AdbDeviceInstance = Box<dyn AdbDevice + Send>;
