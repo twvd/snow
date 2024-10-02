@@ -3,6 +3,7 @@ use std::fmt::Display;
 use crate::keymap::Keymap;
 
 pub mod adb;
+pub mod audio;
 pub mod bus;
 pub mod iwm;
 pub mod pluskbd;

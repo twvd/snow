@@ -15,6 +15,9 @@ pub type ClickEventSender = crossbeam_channel::Sender<bool>;
 /// Communication channel (receiver) for click events to an emulated mouse
 pub type ClickEventReceiver = crossbeam_channel::Receiver<bool>;
 
+/// Communication channel (sender) for sending samples to the host audio device.
+pub type AudioSampleSender = crossbeam_channel::Sender<u8>;
+
 pub type Byte = u8;
 pub type Word = u16;
 pub type Long = u32;

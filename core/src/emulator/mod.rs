@@ -8,6 +8,7 @@ use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::keymap::Keymap;
 use crate::mac::adb::{AdbKeyboard, AdbMouse};
+use crate::mac::audio::AudioReceiver;
 use crate::mac::bus::MacBus;
 use crate::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use crate::mac::MacModel;
@@ -153,6 +154,10 @@ impl Emulator {
         }
         Ok(())
     }
+
+    pub fn get_audio(&self) -> AudioReceiver {
+        self.cpu.bus.get_audio_channel()
+    }
 }
 
 impl Tickable for Emulator {
@@ -231,10 +236,6 @@ impl Tickable for Emulator {
                         } else if let Some(e) = e.translate_scancode(Keymap::AkM0110) {
                             self.cpu.bus.via.keyboard.event(e)?;
                         }
-                    }
-                    EmulatorCommand::SetFpsLimit(limit) => {
-                        self.cpu.bus.video.fps_limit = limit;
-                        info!("Frame rate limit set to {}", limit);
                     }
                     EmulatorCommand::ToggleBusTrace => self.cpu.bus.trace = !self.cpu.bus.trace,
                 }

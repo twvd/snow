@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use super::audio::{AudioReceiver, AudioState};
 use super::scc::Scc;
 use super::scsi::ScsiController;
 use super::via::Via;
@@ -27,6 +28,7 @@ pub struct MacBus<TRenderer: Renderer> {
     pub(crate) via: Via,
     scc: Scc,
     pub(crate) video: Video<TRenderer>,
+    pub(crate) audio: AudioState,
     eclock: Ticks,
     mouse_ready: bool,
     pub(crate) iwm: Iwm,
@@ -94,6 +96,7 @@ where
             ram: vec![0; ram_size],
             via: Via::new(model),
             video: Video::new(renderer),
+            audio: AudioState::default(),
             eclock: 0,
             scc: Scc::new(),
             iwm: Iwm::new(model.fdd_double_sided()),
@@ -114,6 +117,10 @@ where
             overlay: true,
             scsi_enable: true,
         }
+    }
+
+    pub(crate) fn get_audio_channel(&self) -> AudioReceiver {
+        self.audio.receiver.clone()
     }
 
     fn soundbuf(&mut self) -> &mut [u8] {
@@ -195,7 +202,11 @@ where
             // IWM
             0x00DF_E1FF..=0x00DF_FFFF => self.iwm.write(addr, val),
             // VIA
-            0x00EF_0000..=0x00EF_FFFF => self.via.write(addr, val),
+            0x00EF_0000..=0x00EF_FFFF => {
+                self.via.write(addr, val);
+
+                Some(())
+            }
             _ => None,
         }
     }
@@ -416,13 +427,17 @@ where
 
         // HBlank
         if self.video.get_clr_hblank() {
-            // Update floppy drive PWM
+            // Update floppy drive PWM and send next audio sample
             let scanline = self.video.get_scanline();
-            if scanline < (Self::SOUNDBUF_SIZE / 2) {
-                let soundbuf = self.soundbuf();
-                let pwm = soundbuf[scanline * 2 + 1];
-                self.iwm.push_pwm(pwm)?;
-            }
+            let soundon = self.via.a_out.sound() > 0 && !self.via.b_out.sndenb();
+            let soundbuf = self.soundbuf();
+            let pwm = soundbuf[scanline * 2 + 1];
+            let audiosample = if soundon { soundbuf[scanline * 2] } else { 0 };
+
+            self.iwm.push_pwm(pwm)?;
+
+            // Emulator will block here to sync to audio frequency
+            self.audio.push(audiosample)?;
         }
 
         self.iwm.tick(1)?;

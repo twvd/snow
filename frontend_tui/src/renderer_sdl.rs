@@ -5,12 +5,14 @@ use std::time::Instant;
 
 use anyhow::{anyhow, Result};
 use log::*;
+use sdl2::audio::{AudioCallback, AudioDevice, AudioSpecDesired};
 use sdl2::event::Event;
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::{Canvas, Texture};
 use sdl2::video::Window;
 use sdl2::{EventPump, Sdl};
 
+use snow_core::mac::audio::{AudioReceiver, AUDIO_BUFFER_SIZE};
 use snow_core::renderer::{new_displaybuffer, DisplayBuffer, Renderer};
 
 pub struct SDLSingleton {
@@ -144,6 +146,46 @@ impl SDLEventPump {
         SDL.with(|cell| {
             let mut sdls = cell.borrow_mut();
             sdls.pump.wait_event_timeout(ms)
+        })
+    }
+}
+
+pub struct SDLAudioSink {
+    recv: AudioReceiver,
+}
+
+impl AudioCallback for SDLAudioSink {
+    type Channel = u8;
+
+    fn callback(&mut self, out: &mut [u8]) {
+        if let Ok(buffer) = self.recv.try_recv() {
+            out.copy_from_slice(&buffer);
+        }
+    }
+}
+
+impl SDLAudioSink {
+    /// Creates a new audiosink
+    pub fn new(audioch: AudioReceiver) -> Result<AudioDevice<Self>> {
+        SDL.with(|cell| {
+            let sdls = cell.borrow_mut();
+            let audio_subsystem = sdls.context.audio().map_err(|e| anyhow!(e))?;
+            let spec = AudioSpecDesired {
+                // Audio sample frequency is tied to monitor's horizontal sync
+                // 370 horizontal lines * 60.147 frames/sec = 22.254 KHz
+                freq: Some(22254),
+                channels: Some(1),
+                samples: Some(AUDIO_BUFFER_SIZE.try_into().unwrap()),
+            };
+
+            let device = audio_subsystem
+                .open_playback(None, &spec, |spec| {
+                    debug!("Audio spec: {:?}", spec);
+                    Self { recv: audioch }
+                })
+                .map_err(|e| anyhow!(e))?;
+            device.resume();
+            Ok(device)
         })
     }
 }

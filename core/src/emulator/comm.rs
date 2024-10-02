@@ -29,7 +29,6 @@ pub enum EmulatorCommand {
     BusWrite(Address, Vec<u8>),
     Disassemble(Address, usize),
     KeyEvent(KeyEvent),
-    SetFpsLimit(u64),
     ToggleBusTrace,
 }
 

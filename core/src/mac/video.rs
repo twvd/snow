@@ -1,8 +1,4 @@
-use std::{
-    sync::atomic::Ordering,
-    thread,
-    time::{Duration, Instant},
-};
+use std::sync::atomic::Ordering;
 
 use crate::{
     bus::Address,
@@ -36,12 +32,6 @@ pub struct Video<T: Renderer> {
     /// (true = main, false = alternate)
     /// (lives in VIA, copied here)
     pub framebuffer_select: bool,
-
-    /// Time since last frame
-    last_frame: Instant,
-
-    /// Frame rate limit (0 = disabled)
-    pub fps_limit: u64,
 }
 
 impl<T> Video<T>
@@ -93,7 +83,7 @@ where
 
     /// Gets the current active scanline
     pub fn get_scanline(&self) -> usize {
-        self.dots / Self::V_LINES
+        self.dots / Self::H_DOTS
     }
 
     pub fn new(renderer: T) -> Self {
@@ -107,8 +97,6 @@ where
                 vec![0; Self::FRAMEBUFFER_SIZE],
             ],
             framebuffer_select: false,
-            last_frame: Instant::now(),
-            fps_limit: 60,
         }
     }
 
@@ -122,7 +110,7 @@ where
         self.event_hblank.get_clear()
     }
 
-    /// Prepares the image and sends it to SDL for rendering
+    /// Prepares the image and sends it to the frontend renderer
     fn render(&mut self) -> Result<()> {
         let fb = if !self.framebuffer_select {
             &self.framebuffers[0]
@@ -145,15 +133,6 @@ where
             }
         }
         self.renderer.update()?;
-
-        // Sync to configured framerate
-        if self.fps_limit != 0 {
-            thread::sleep(
-                Duration::from_micros(1_000_000 / self.fps_limit)
-                    .saturating_sub(self.last_frame.elapsed()),
-            );
-            self.last_frame = Instant::now();
-        }
 
         Ok(())
     }

@@ -272,15 +272,6 @@ impl UserInterface {
                     .send(EmulatorCommand::SaveFloppy(2, filename))?;
                 Ok(())
             }
-            "fps" => {
-                let limit = tokens
-                    .get(1)
-                    .context("No argument specified")?
-                    .parse()
-                    .context("Argument must be integer")?;
-                self.cmdsender.send(EmulatorCommand::SetFpsLimit(limit))?;
-                Ok(())
-            }
             "trace" => {
                 self.cmdsender.send(EmulatorCommand::ToggleBusTrace)?;
                 Ok(())
