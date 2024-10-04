@@ -14,14 +14,25 @@ pub const ADDRESS_MASK: Address = 0x00FFFFFF;
 pub const ADDRESS_SPACE_SIZE: usize = 16 * 1024 * 1024;
 pub const ADDRESS_SPACE: u32 = 16 * 1024 * 1024;
 
+/// Result of a bus read/write
+#[derive(Debug, PartialEq, Eq)]
+pub enum BusResult<TD: PrimInt> {
+    /// Bus access executed ok, result value encapsulated
+    /// (ignore for writes)
+    Ok(TD),
+
+    /// DTACK not asserted, CPU needs to insert wait states and retry
+    WaitState,
+}
+
 pub trait BusMember<T: PrimInt> {
     fn read(&mut self, addr: T) -> Option<u8>;
     fn write(&mut self, addr: T, val: u8) -> Option<()>;
 }
 
 pub trait Bus<TA: PrimInt + WrappingAdd, TD: PrimInt>: Tickable {
-    fn read(&mut self, addr: TA) -> TD;
-    fn write(&mut self, addr: TA, val: TD);
+    fn read(&mut self, addr: TA) -> BusResult<TD>;
+    fn write(&mut self, addr: TA, val: TD) -> BusResult<TD>;
     fn get_mask(&self) -> TA;
 }
 
@@ -65,7 +76,10 @@ impl<'a, TA: PrimInt + WrappingAdd, TD: PrimInt> Iterator for BusIterator<'a, TA
         let curr = self.next;
         self.next = self.next.wrapping_add(&TA::one()) & self.bus.get_mask();
 
-        Some(self.bus.read(curr))
+        let BusResult::Ok(result) = self.bus.read(curr) else {
+            panic!("Bus read failed in BusIterator")
+        };
+        Some(result)
     }
 }
 

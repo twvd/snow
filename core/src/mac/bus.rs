@@ -5,7 +5,7 @@ use super::scc::Scc;
 use super::scsi::ScsiController;
 use super::via::Via;
 use super::MacModel;
-use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
+use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::mac::iwm::Iwm;
 use crate::mac::video::Video;
 use crate::renderer::Renderer;
@@ -17,6 +17,8 @@ use log::*;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
 
 pub struct MacBus<TRenderer: Renderer> {
+    cycles: Ticks,
+
     /// The currently emulated Macintosh model
     model: MacModel,
 
@@ -63,6 +65,9 @@ impl<TRenderer> MacBus<TRenderer>
 where
     TRenderer: Renderer,
 {
+    /// Memory controller interleave timing for shared access between CPU and video circuit
+    const INTERLEAVE_CYCLES: &[bool; 8] = &[true, true, true, true, false, false, false, false];
+
     /// Main sound buffer offset (from end of RAM)
     const SOUND_MAIN_OFFSET: usize = 0x0300;
     /// Alternate sound buffer offset (from end of RAM)
@@ -89,6 +94,7 @@ where
         let sound_main_start = ram_size - Self::SOUND_MAIN_OFFSET;
 
         Self {
+            cycles: 0,
             model,
             trace: false,
 
@@ -357,7 +363,16 @@ where
         0x00FFFFFF
     }
 
-    fn read(&mut self, addr: Address) -> Byte {
+    fn read(&mut self, addr: Address) -> BusResult<Byte> {
+        if (0x0000_0000..=0x003F_FFFF).contains(&addr)
+            && !Self::INTERLEAVE_CYCLES[self.cycles % Self::INTERLEAVE_CYCLES.len()]
+        {
+            // RAM access for CPU currently blocked by memory controller
+            // https://www.bigmessowires.com/2011/08/25/68000-interleaved-memory-controller-design/
+            // TODO interleave pattern correct for SE/Classic?
+            return BusResult::WaitState;
+        }
+
         let val = if self.overlay {
             self.read_overlay(addr)
         } else {
@@ -365,14 +380,23 @@ where
         };
 
         if let Some(v) = val {
-            v
+            BusResult::Ok(v)
         } else {
             warn!("Read from unimplemented address: {:08X}", addr);
-            0xFF
+            BusResult::Ok(0xFF)
         }
     }
 
-    fn write(&mut self, addr: Address, val: Byte) {
+    fn write(&mut self, addr: Address, val: Byte) -> BusResult<Byte> {
+        if (0x0000_0000..=0x003F_FFFF).contains(&addr)
+            && !Self::INTERLEAVE_CYCLES[self.cycles % Self::INTERLEAVE_CYCLES.len()]
+        {
+            // RAM access for CPU currently blocked by memory controller
+            // https://www.bigmessowires.com/2011/08/25/68000-interleaved-memory-controller-design/
+            // TODO interleave pattern correct for SE/Classic?
+            return BusResult::WaitState;
+        }
+
         let written = if self.overlay {
             self.write_overlay(addr, val)
         } else {
@@ -390,6 +414,7 @@ where
         if written.is_none() {
             warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
         }
+        BusResult::Ok(val)
     }
 }
 
@@ -400,6 +425,7 @@ where
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
         // This is called from the CPU, at the CPU clock speed
         assert_eq!(ticks, 1);
+        self.cycles += ticks;
 
         self.eclock += ticks;
         while self.eclock >= 10 {

@@ -7,7 +7,7 @@ use num_traits::FromBytes;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::bus::{Address, Bus, IrqSource, ADDRESS_MASK};
+use crate::bus::{Address, Bus, BusResult, IrqSource, ADDRESS_MASK};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, Long, Word};
 use crate::util::TemporalOrder;
@@ -293,7 +293,15 @@ where
         // Below converts from BE -> LE on the fly
         for a in 0..len {
             let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
-            let b: T = self.bus.read(byte_addr).into();
+            let b: T = loop {
+                match self.bus.read(byte_addr) {
+                    BusResult::Ok(b) => break b.into(),
+                    BusResult::WaitState => {
+                        // Insert wait states until bus access succeeds
+                        self.advance_cycles(2)?;
+                    }
+                }
+            };
             result = result.wrapping_shl(8) | b;
 
             self.advance_cycles(2)?;
@@ -351,7 +359,10 @@ where
                     let b = val as u8;
                     val >>= 8;
 
-                    self.bus.write(byte_addr, b);
+                    while self.bus.write(byte_addr, b) == BusResult::WaitState {
+                        // Insert wait states until bus access succeeds
+                        self.advance_cycles(2)?;
+                    }
                     self.advance_cycles(2)?;
                     if a == 1 {
                         // Address errors occur AFTER the first Word was accessed and not at all if
@@ -367,7 +378,10 @@ where
                     let b = val as u8;
                     val >>= 8;
 
-                    self.bus.write(byte_addr, b);
+                    while self.bus.write(byte_addr, b) == BusResult::WaitState {
+                        // Insert wait states until bus access succeeds
+                        self.advance_cycles(2)?;
+                    }
                     self.advance_cycles(2)?;
 
                     if a == 1 {

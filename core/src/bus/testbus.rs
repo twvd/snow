@@ -2,6 +2,7 @@ use anyhow::Result;
 use num_traits::{PrimInt, WrappingAdd};
 
 use super::{Bus, IrqSource};
+use crate::bus::BusResult;
 use crate::tickable::{Tickable, Ticks};
 
 use std::cell::RefCell;
@@ -70,7 +71,7 @@ where
         self.mask
     }
 
-    fn read(&mut self, addr: TA) -> TD {
+    fn read(&mut self, addr: TA) -> BusResult<TD> {
         assert_eq!(addr & self.mask, addr);
 
         let val = *self.mem.get(&addr).unwrap_or(&TD::zero());
@@ -82,10 +83,10 @@ where
                 cycle: self.cycles,
             });
         }
-        val
+        BusResult::Ok(val)
     }
 
-    fn write(&mut self, addr: TA, val: TD) {
+    fn write(&mut self, addr: TA, val: TD) -> BusResult<TD> {
         assert_eq!(addr & self.mask, addr);
 
         if self.trace_enabled {
@@ -97,6 +98,7 @@ where
             });
         }
         self.mem.insert(addr, val);
+        BusResult::Ok(val)
     }
 }
 
@@ -140,13 +142,13 @@ mod tests {
         let mut b = Testbus::<u16, u8>::new(u16::MAX);
 
         for a in 0..=u16::MAX {
-            assert_eq!(b.read(a), 0);
+            assert_eq!(b.read(a), BusResult::Ok(0));
         }
         for a in 0..=u16::MAX {
             b.write(a, a as u8);
         }
         for a in 0..=u16::MAX {
-            assert_eq!(b.read(a), a as u8);
+            assert_eq!(b.read(a), BusResult::Ok(a as u8));
         }
     }
 
