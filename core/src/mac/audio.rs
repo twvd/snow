@@ -1,8 +1,8 @@
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 
-pub const AUDIO_BUFFER_SIZE: usize = 1000;
-pub const AUDIO_QUEUE_LEN: usize = 3;
+pub const AUDIO_BUFFER_SIZE: usize = 500;
+pub const AUDIO_QUEUE_LEN: usize = 2;
 
 pub type AudioBuffer = Box<[u8]>;
 pub type AudioReceiver = Receiver<Box<[u8]>>;
