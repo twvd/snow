@@ -402,7 +402,7 @@ where
     }
 
     /// Sets the program counter and flushes the prefetch queue
-    fn set_pc(&mut self, pc: Address) -> Result<()> {
+    pub fn set_pc(&mut self, pc: Address) -> Result<()> {
         self.prefetch.clear();
         self.regs.pc = pc.wrapping_sub(4) & ADDRESS_MASK;
         Ok(())

@@ -75,15 +75,19 @@ from Apple.
 You can control the TUI using the keys outlined in the interface.
 Additionally, you can enter the following commands: 
 
+### Media related commands
  * `/disk1 <filename>` - mounts the specified disk image and inserts it into the internal drive.
  * `/disk2 <filename>` - mounts the specified disk image and inserts it into the external drive.
  * `/disk3 <filename>` - mounts the specified disk image and inserts it into the secondary internal drive (if available).
  * `/writedisk1 <filename>` - saves the currently or last inserted disk in the internal drive, including changes, as file.
  * `/writedisk2 <filename>` - saves the currently or last inserted disk in the external drive, including changes, as file.
  * `/writedisk3 <filename>` - saves the currently or last inserted disk in the secondary internal drive (if available), including changes, as file.
+
+### Debugging related commands
  * `/b <address in hex>` - sets a breakpoint.
  * `/dasm <address in hex>` - shows a disassembly from the specified address in the debugger.
  * `/loadbin <address in hex>` - loads the specified file (entirely) into the emulated memory starting from the specified address.
+ * `/setpc <address in hex>` - sets the CPU's program counter to the specified value.
 
 ## Acknowledgements
  * Thanks to raddad772 for the excellent [68000 JSON test suite](https://github.com/SingleStepTests/m68000)

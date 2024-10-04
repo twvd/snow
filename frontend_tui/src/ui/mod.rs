@@ -276,6 +276,17 @@ impl UserInterface {
                 self.cmdsender.send(EmulatorCommand::ToggleBusTrace)?;
                 Ok(())
             }
+            "setpc" => {
+                let val = u32::from_str_radix(
+                    tokens
+                        .get(1)
+                        .context("Need value")?
+                        .trim_start_matches("0x"),
+                    16,
+                )?;
+                self.cmdsender.send(EmulatorCommand::CpuSetPC(val))?;
+                Ok(())
+            }
             _ => bail!("Unknown command"),
         }
     }

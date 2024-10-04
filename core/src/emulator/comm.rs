@@ -30,6 +30,7 @@ pub enum EmulatorCommand {
     Disassemble(Address, usize),
     KeyEvent(KeyEvent),
     ToggleBusTrace,
+    CpuSetPC(u32),
 }
 
 /// Structure with general emulator status
