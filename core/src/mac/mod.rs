@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use crate::keymap::Keymap;
+use crate::{keymap::Keymap, tickable::Ticks};
 
 pub mod adb;
 pub mod audio;
@@ -58,6 +58,17 @@ impl MacModel {
             _ => Keymap::AekM0115,
         }
     }
+
+    /// Memory controller interleave timing for shared access between CPU and video circuit
+    /// Returns true if the CPU has access
+    pub const fn ram_interleave_cpu(self, cycles: Ticks) -> bool {
+        match self {
+            // 50/50 ratio for early macs
+            Self::Early128K | Self::Early512K | Self::Plus => cycles % 8 >= 4,
+            // 75/25 for SE and onwards
+            Self::SE | Self::Classic => cycles % 16 >= 4,
+        }
+    }
 }
 
 impl Display for MacModel {
@@ -73,5 +84,47 @@ impl Display for MacModel {
                 Self::Classic => "Macintosh Classic",
             }
         )
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interleave_early_plus() {
+        for m in &[MacModel::Early128K, MacModel::Early512K, MacModel::Plus] {
+            assert!(!m.ram_interleave_cpu(0));
+            assert!(!m.ram_interleave_cpu(1));
+            assert!(!m.ram_interleave_cpu(2));
+            assert!(!m.ram_interleave_cpu(3));
+            assert!(m.ram_interleave_cpu(4));
+            assert!(m.ram_interleave_cpu(5));
+            assert!(m.ram_interleave_cpu(6));
+            assert!(m.ram_interleave_cpu(7));
+            assert!(!m.ram_interleave_cpu(8));
+        }
+    }
+
+    #[test]
+    fn interleave_se_classic() {
+        for m in &[MacModel::SE, MacModel::Classic] {
+            assert!(!m.ram_interleave_cpu(0));
+            assert!(!m.ram_interleave_cpu(1));
+            assert!(!m.ram_interleave_cpu(2));
+            assert!(!m.ram_interleave_cpu(3));
+            assert!(m.ram_interleave_cpu(4));
+            assert!(m.ram_interleave_cpu(5));
+            assert!(m.ram_interleave_cpu(6));
+            assert!(m.ram_interleave_cpu(7));
+            assert!(m.ram_interleave_cpu(8));
+            assert!(m.ram_interleave_cpu(9));
+            assert!(m.ram_interleave_cpu(10));
+            assert!(m.ram_interleave_cpu(11));
+            assert!(m.ram_interleave_cpu(12));
+            assert!(m.ram_interleave_cpu(13));
+            assert!(m.ram_interleave_cpu(14));
+            assert!(m.ram_interleave_cpu(15));
+            assert!(!m.ram_interleave_cpu(16));
+        }
     }
 }

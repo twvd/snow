@@ -65,9 +65,6 @@ impl<TRenderer> MacBus<TRenderer>
 where
     TRenderer: Renderer,
 {
-    /// Memory controller interleave timing for shared access between CPU and video circuit
-    const INTERLEAVE_CYCLES: &[bool; 8] = &[true, true, true, true, false, false, false, false];
-
     /// Main sound buffer offset (from end of RAM)
     const SOUND_MAIN_OFFSET: usize = 0x0300;
     /// Alternate sound buffer offset (from end of RAM)
@@ -366,11 +363,10 @@ where
     fn read(&mut self, addr: Address) -> BusResult<Byte> {
         if (0x0000_0000..=0x003F_FFFF).contains(&addr)
             && !self.video.in_blanking_period()
-            && !Self::INTERLEAVE_CYCLES[self.cycles % Self::INTERLEAVE_CYCLES.len()]
+            && !self.model.ram_interleave_cpu(self.cycles)
         {
             // RAM access for CPU currently blocked by memory controller
             // https://www.bigmessowires.com/2011/08/25/68000-interleaved-memory-controller-design/
-            // TODO interleave pattern correct for SE/Classic?
             return BusResult::WaitState;
         }
 
@@ -391,11 +387,10 @@ where
     fn write(&mut self, addr: Address, val: Byte) -> BusResult<Byte> {
         if (0x0000_0000..=0x003F_FFFF).contains(&addr)
             && !self.video.in_blanking_period()
-            && !Self::INTERLEAVE_CYCLES[self.cycles % Self::INTERLEAVE_CYCLES.len()]
+            && !self.model.ram_interleave_cpu(self.cycles)
         {
             // RAM access for CPU currently blocked by memory controller
             // https://www.bigmessowires.com/2011/08/25/68000-interleaved-memory-controller-design/
-            // TODO interleave pattern correct for SE/Classic?
             return BusResult::WaitState;
         }
 
