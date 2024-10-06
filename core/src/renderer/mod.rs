@@ -28,10 +28,15 @@ pub trait Renderer {
     fn get_buffer(&mut self) -> DisplayBuffer;
 }
 
-pub struct NullRenderer {}
+pub struct NullRenderer {
+    buffer: DisplayBuffer,
+}
+
 impl Renderer for NullRenderer {
-    fn new(_width: usize, _height: usize) -> Result<Self> {
-        Ok(Self {})
+    fn new(width: usize, height: usize) -> Result<Self> {
+        Ok(Self {
+            buffer: new_displaybuffer(width, height),
+        })
     }
 
     fn update(&mut self) -> Result<()> {
@@ -39,6 +44,6 @@ impl Renderer for NullRenderer {
     }
 
     fn get_buffer(&mut self) -> DisplayBuffer {
-        unreachable!()
+        self.buffer.clone()
     }
 }

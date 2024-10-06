@@ -1,3 +1,59 @@
+//! CRT video handling module
+//!
+//! Code here deals with the timings of the CRTs and video circuitry of the original
+//! compact Macs (128K, 512K, SE, Classic).
+//!
+//! ## Timing
+//! Video runs off a 15.667 MHz pixel clock, which is a multiple of 2 from the CPU
+//! clock.
+//! Many clocks and timings are branched off (with divisors) from the pixel clock
+//! or synced to the blanking periods. For example:
+//!  - A sound sample is loaded on HBlank.
+//!  - Disk drive spindle motor speed PWM is loaded on HBlank.
+//!
+//! The effective screen refresh rate is 60.14 Hz.
+//!
+//! ## Shared RAM access for frame buffer
+//! The video framebuffer lives in main system RAM. This means access to the RAM is
+//! shared between the audio/video circuitry and the main CPU. While the video
+//! circuitry is accessing the RAM, the memory controller de-asserts DTACK if the
+//! CPU accesses RAM, making the CPU insert wait states.
+//!
+//! ## Frame buffer layout
+//! The framebuffer has a simple 1-bit-per-pixel layout. The MSbit is the left-most
+//! pixel. A zero indicates a white pixel, a one indicates a black pixel.
+//!
+//! ## Frame Layout
+//!  - VBlank: 28 lines (0 to 27)
+//!  - Visible Area: 342 lines (28 to 369)
+//!  - Visible dots: 512 dots per scanline (only in the visible area)
+//!  - HBlank: 192 dots per scanline (at the end of each scanline)
+//!
+//! +------------------------------- CRT Frame -------------------------------+
+//! |                              VBlank (28 lines)                          |
+//! |   +------------------------------- Scanline 0 ------------------------+ |
+//! |   |        No Visible Dots (VBlank)        | HBlank (192 dots)        | |
+//! |   +------------------------------- Scanline 1 ------------------------+ |
+//! |   |        No Visible Dots (VBlank)        | HBlank (192 dots)        | |
+//! |   +------------------------------- Scanline 2 ------------------------+ |
+//! |   |        No Visible Dots (VBlank)        | HBlank (192 dots)        | |
+//! |   ... (28 total lines of vertical blanking)                             |
+//! |   +------------------------------- Scanline 27 -----------------------+ |
+//! |   |        No Visible Dots (VBlank)        | HBlank (192 dots)        | |
+//! |                             Visible Area (342 lines)                    |
+//! |   +------------------------------- Scanline 28 -----------------------+ |
+//! |   |      Visible (512 dots)             | HBlank (192 dots)           | |
+//! |   +------------------------------- Scanline 29 -----------------------+ |
+//! |   |      Visible (512 dots)             | HBlank (192 dots)           | |
+//! |   +------------------------------- Scanline 30 -----------------------+ |
+//! |   |      Visible (512 dots)             | HBlank (192 dots)           | |
+//! |                                                                         |
+//! |   ... (repeat for 342 visible lines)                                    |
+//! |                                                                         |
+//! |   +------------------------------- Scanline 369 ----------------------+ |
+//! |   |      Visible (512 dots)             | HBlank (192 dots)           | |
+//! +-------------------------------------------------------------------------+
+
 use std::sync::atomic::Ordering;
 
 use crate::{
@@ -12,7 +68,7 @@ use anyhow::Result;
 pub const SCREEN_HEIGHT: usize = 342;
 pub const SCREEN_WIDTH: usize = 512;
 
-/// Video logic
+/// CRT/video circuitry state
 pub struct Video<T: Renderer> {
     renderer: T,
 
@@ -62,6 +118,9 @@ where
     /// Total visible dots in one frame.
     const FRAME_VISIBLE_DOTS: usize = Self::H_VISIBLE_DOTS * Self::V_VISIBLE_LINES;
 
+    /// Offset in dots of where the visible area begins.
+    const FRAME_VISIBLE_OFFSET: usize = Self::VBLANK_LINES * Self::H_DOTS;
+
     /// Size (in bytes) of a single framebuffer.
     pub const FRAMEBUFFER_SIZE: usize = Self::FRAME_DOTS / 8;
 
@@ -78,10 +137,10 @@ where
 
     /// Tests if currently in VBlank period.
     pub fn in_vblank(&self) -> bool {
-        self.dots >= Self::V_VISIBLE_LINES * Self::H_DOTS
+        self.dots < Self::FRAME_VISIBLE_OFFSET
     }
 
-    /// Tests if currently in HBlank period.
+    /// Tests if currently in HBlank period (also during VBlank)
     pub fn in_hblank(&self) -> bool {
         self.dots % Self::H_DOTS >= Self::H_VISIBLE_DOTS
     }
@@ -89,6 +148,15 @@ where
     /// Gets the current active scanline
     pub fn get_scanline(&self) -> usize {
         self.dots / Self::H_DOTS
+    }
+
+    /// Gets the current scanline, offset from the top of the visible frame.
+    pub fn get_visible_scanline(&self) -> Option<usize> {
+        if self.in_vblank() {
+            None
+        } else {
+            Some(self.get_scanline() - Self::VBLANK_LINES)
+        }
     }
 
     pub fn new(renderer: T) -> Self {
@@ -170,5 +238,61 @@ where
         }
 
         Ok(ticks)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::renderer::NullRenderer;
+
+    use super::*;
+
+    fn video() -> Video<NullRenderer> {
+        Video::new(NullRenderer::new(SCREEN_WIDTH, SCREEN_HEIGHT).unwrap())
+    }
+
+    #[test]
+    fn vblank_period() {
+        let mut v = video();
+
+        // Scanline 0 - 27 is VBlank
+        assert_eq!(v.get_scanline(), 0);
+        assert!(v.in_vblank());
+
+        // Last dot in VBlank
+        v.tick((28 * (512 + 192)) - 1).unwrap();
+        assert!(v.in_vblank());
+        assert_eq!(v.get_scanline(), 27);
+
+        // Exit VBlank
+        v.tick(1).unwrap();
+        assert_eq!(v.get_scanline(), 28);
+        assert!(!v.in_vblank());
+        assert!(!v.get_clr_vblank());
+
+        // Last dot in visible area before next VBlank
+        v.tick((342 * (512 + 192)) - 1).unwrap();
+        assert_eq!(v.get_scanline(), 369);
+        assert!(!v.in_vblank());
+        assert!(!v.get_clr_vblank());
+
+        // Enter VBlank
+        v.tick(1).unwrap();
+        assert_eq!(v.get_scanline(), 0);
+        assert!(v.in_vblank());
+        assert!(v.get_clr_vblank());
+        assert_eq!(v.dots, 0);
+    }
+
+    #[test]
+    fn hblank_period() {
+        let mut v = video();
+
+        for _ in 0..370 {
+            assert!(!v.in_hblank());
+            v.tick(512).unwrap();
+            assert!(v.in_hblank());
+            v.tick(192).unwrap();
+        }
     }
 }
