@@ -365,6 +365,7 @@ where
 
     fn read(&mut self, addr: Address) -> BusResult<Byte> {
         if (0x0000_0000..=0x003F_FFFF).contains(&addr)
+            && !self.video.in_blanking_period()
             && !Self::INTERLEAVE_CYCLES[self.cycles % Self::INTERLEAVE_CYCLES.len()]
         {
             // RAM access for CPU currently blocked by memory controller
@@ -389,6 +390,7 @@ where
 
     fn write(&mut self, addr: Address, val: Byte) -> BusResult<Byte> {
         if (0x0000_0000..=0x003F_FFFF).contains(&addr)
+            && !self.video.in_blanking_period()
             && !Self::INTERLEAVE_CYCLES[self.cycles % Self::INTERLEAVE_CYCLES.len()]
         {
             // RAM access for CPU currently blocked by memory controller

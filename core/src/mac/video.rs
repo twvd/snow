@@ -71,6 +71,11 @@ where
     /// Offset of alternate framebuffer (from END of RAM)
     pub const FRAMEBUFFER_ALT_OFFSET: Address = 0x5900;
 
+    /// Tests if currently in any blanking period.
+    pub fn in_blanking_period(&self) -> bool {
+        self.in_hblank() || self.in_vblank()
+    }
+
     /// Tests if currently in VBlank period.
     pub fn in_vblank(&self) -> bool {
         self.dots >= Self::V_VISIBLE_LINES * Self::H_DOTS
