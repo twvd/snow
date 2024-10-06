@@ -127,7 +127,7 @@ where
     }
 
     fn soundbuf(&mut self) -> &mut [u8] {
-        if self.via.a_out.sndpg2() {
+        if self.model >= MacModel::SE || self.via.a_out.sndpg2() {
             &mut self.ram[self.soundbuf_main.clone()]
         } else {
             &mut self.ram[self.soundbuf_alt.clone()]
