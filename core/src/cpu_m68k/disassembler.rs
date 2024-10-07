@@ -56,7 +56,7 @@ pub struct Disassembler<'a> {
 
 impl<'a> Disassembler<'a> {
     const CC: &'static [&'static str; 16] = &[
-        "RA", "??", "HI", "LS", "CC", "CS", "NE", "EQ", "VC", "VS", "PL", "MI", "GE", "LT", "GT",
+        "T", "F", "HI", "LS", "CC", "CS", "NE", "EQ", "VC", "VS", "PL", "MI", "GE", "LT", "GT",
         "LE",
     ];
     const MOVEM_REGS: &'static [&'static str; 16] = &[
