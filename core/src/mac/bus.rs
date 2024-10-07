@@ -444,7 +444,7 @@ where
         }
 
         // VBlank interrupt
-        if self.video.get_clr_vblank() && self.via.ier.vblank() {
+        if self.video.get_clr_vblank() {
             self.via.ifr.set_vblank(true);
         }
 
