@@ -363,8 +363,8 @@ fn run_testcase(testcase: Testcase, level: TestLevel) {
                 }
                 TestcaseTransaction::Rw(t) => {
                     let expected_access = match t.action.as_str() {
-                        "t" | "w" => Access::Write,
-                        "r" => Access::Read,
+                        "t" | "w" | "we" => Access::Write,
+                        "r" | "re" => Access::Read,
                         _ => unreachable!(),
                     };
                     let mut found = false;
