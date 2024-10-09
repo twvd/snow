@@ -1174,7 +1174,6 @@ where
             std::mem::size_of::<T>(),
         ) {
             (AddressingMode::DataRegister, _, 4) => self.advance_cycles(4)?,
-            (AddressingMode::AddressRegister, _, 4) => self.advance_cycles(2)?,
             _ => (),
         };
 
