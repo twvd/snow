@@ -1425,16 +1425,6 @@ where
 
         self.prefetch_pump()?;
 
-        // Idle cycles
-        match (
-            instr.get_addr_mode()?,
-            instr.get_direction(),
-            std::mem::size_of::<T>(),
-        ) {
-            (AddressingMode::DataRegister, _, 4) => self.advance_cycles(4)?,
-            _ => (),
-        };
-
         Ok(())
     }
 
