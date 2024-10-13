@@ -1,92 +1,209 @@
 //! Applesauce MOOF file format loader
 //! https://applesaucefdc.com/moof-reference/
 
+use std::io::{Seek, SeekFrom};
+
 use super::FloppyImageLoader;
 use crate::{Floppy, FloppyImage, FloppyType};
 
 use anyhow::{bail, Context, Result};
+use binrw::io::Cursor;
+use binrw::{binrw, BinRead};
 use log::*;
 
-pub struct Moof {}
-impl Moof {
-    const HEADER_LEN: usize = 12;
+/// Initial MOOF file header
+#[binrw]
+#[brw(little, magic = b"MOOF\xFF\n\r\n")]
+struct MoofHeader {
+    /// CRC32 of entire file
+    pub crc: u32,
 }
+
+/// Standardized chunk header
+#[binrw]
+#[brw(little)]
+#[derive(Debug)]
+struct MoofChunkHeader {
+    /// ASCII chunk identifier
+    pub id: [u8; 4],
+
+    /// Chunk size in bytes
+    pub size: u32,
+}
+
+/// Disk type
+#[binrw]
+#[derive(Debug, Copy, Clone)]
+enum MoofDiskType {
+    /// SSDD GCR (400K)
+    #[brw(magic = 1u8)]
+    SSDDGCR400k,
+    /// DSDD GCR (800K)
+    #[brw(magic = 2u8)]
+    DSDDGCR800k,
+    /// DSHD MFM (1.44MB)
+    #[brw(magic = 3u8)]
+    DSHDMFM144Mb,
+    /// Twiggy
+    #[brw(magic = 4u8)]
+    Twiggy,
+}
+
+impl std::convert::TryFrom<MoofDiskType> for FloppyType {
+    type Error = anyhow::Error;
+
+    fn try_from(value: MoofDiskType) -> std::result::Result<Self, Self::Error> {
+        match value {
+            MoofDiskType::SSDDGCR400k => Ok(Self::Mac400K),
+            MoofDiskType::DSDDGCR800k => Ok(Self::Mac800K),
+            _ => bail!("Unsupported MOOF disk type {:?}", value),
+        }
+    }
+}
+
+/// INFO chunk (minus header)
+#[binrw]
+#[brw(little)]
+#[derive(Debug)]
+struct MoofChunkInfo {
+    pub version: u8,
+    pub disktype: MoofDiskType,
+    pub writeprotect: u8,
+    pub synchronized: u8,
+    pub optimal_bit_timing: u8,
+
+    #[br(args { count: 32 }, map = |s: Vec<u8>| String::from_utf8_lossy(&s).to_string())]
+    #[bw(map = |s: &String| s.as_bytes().to_vec(), pad_size_to = 32)]
+    pub creator: String,
+
+    pub zero: u8,
+    pub largest_track: u16,
+    pub flux_block: u16,
+    pub flux_longest_track: u16,
+}
+
+/// TMAP/FLUX chunk (minus header)
+#[binrw]
+#[brw(little)]
+struct MoofChunkTmap {
+    pub tracks: [[u8; 2]; 80],
+}
+
+/// FLUX chunk (minus header)
+#[binrw]
+#[brw(little)]
+struct MoofChunkFlux {
+    pub entries: [[u8; 2]; 80],
+}
+
+#[binrw]
+#[brw(little)]
+struct MoofChunkTrks {
+    pub entries: [MoofChunkTrksEntry; 160],
+    // BITS not relevant, will read those straight from the file as
+    // the offsets are absolute anyway.
+}
+
+#[binrw]
+#[brw(little)]
+struct MoofChunkTrksEntry {
+    pub start_blk: u16,
+    pub blocks: u16,
+
+    /// Bits for bitstream track, bytes for flux track
+    pub bits_bytes: u32,
+}
+
+impl MoofChunkTrksEntry {
+    pub fn data_range(&self) -> std::ops::Range<usize> {
+        (self.start_blk as usize * 512)..((self.start_blk as usize + self.blocks as usize) * 512)
+    }
+
+    pub fn bit_range(&self) -> std::ops::Range<usize> {
+        0..(self.bits_bytes as usize)
+    }
+}
+
+/// Applesauce MOOF image file loader
+pub struct Moof {}
 
 impl FloppyImageLoader for Moof {
     fn load(data: &[u8]) -> Result<FloppyImage> {
-        if data[0..8] != *b"MOOF\xFF\n\r\n" {
-            bail!("Not a MOOF file");
-        }
-
+        let mut cursor = Cursor::new(data);
+        let _header = MoofHeader::read(&mut cursor)?;
         // TODO checksum
 
-        let mut image = None;
-        let mut trackmap = None;
+        let mut info = None;
+        let mut tmap = None;
+        let mut trks = None;
+        let mut flux = None;
 
-        let mut offset = Self::HEADER_LEN;
-        while offset < data.len() {
-            let chunk_id = &data[offset..offset + 4];
-            let chunk_len = u32::from_le_bytes(data[offset + 4..offset + 8].try_into()?) as usize;
-            let chunk = &data[offset + 8..offset + 8 + chunk_len];
-            offset += 8 + chunk_len;
+        // Parse chunks from file
+        while let Ok(chunk) = MoofChunkHeader::read(&mut cursor) {
+            let startpos = cursor.position();
 
-            match chunk_id {
-                b"INFO" => {
-                    image = Some(FloppyImage::new(match chunk[1] {
-                        // 1 = SSDD GCR (400K)
-                        1 => FloppyType::Mac400K,
-                        // 2 = DSDD GCR (800K)
-                        2 => FloppyType::Mac800K,
-                        // 3 = DSHD MFM (1.44M)
-                        // 4 = Twiggy
-                        _ => bail!("Unsupported disk type: {:02X}", data[1]),
-                    }));
-                }
-                b"TMAP" => {
-                    trackmap = Some(&chunk[0..160]);
-                }
-                b"FLUX" | b"META" => {
-                    // Ignore
-                }
-                b"TRKS" => {
-                    let img = image.as_mut().context("TRKS section before INFO section")?;
-                    let tmap = trackmap
-                        .as_ref()
-                        .context("TRKS section before TMAP section")?;
-
-                    for track in 0..80 {
-                        for side in 0..2 {
-                            let entry = tmap[track * 2 + side] as usize;
-                            if entry == 255 {
-                                continue;
-                            }
-                            let trk = &chunk[entry * 8..(entry + 1) * 8];
-
-                            let start_block = u16::from_le_bytes(trk[0..2].try_into()?) as usize;
-                            let block_count = u16::from_le_bytes(trk[2..4].try_into()?) as usize;
-                            let bit_count = u32::from_le_bytes(trk[4..8].try_into()?) as usize;
-                            img.set_actual_track_length(side, track, bit_count);
-
-                            let block = &data[start_block * 512..(start_block + block_count) * 512];
-                            for blockbit in 0..bit_count {
-                                let byte = blockbit / 8;
-                                let bit = 7 - blockbit % 8;
-                                img.set_track_bit(
-                                    side,
-                                    track,
-                                    blockbit,
-                                    block[byte] & (1 << bit) != 0,
-                                );
-                            }
-                        }
-                    }
-                }
+            match &chunk.id {
+                b"INFO" => info = Some(MoofChunkInfo::read(&mut cursor)?),
+                b"TMAP" => tmap = Some(MoofChunkTmap::read(&mut cursor)?),
+                b"FLUX" => flux = Some(MoofChunkTmap::read(&mut cursor)?),
+                b"TRKS" => trks = Some(MoofChunkTrks::read(&mut cursor)?),
+                b"META" => (),
                 _ => {
-                    warn!("Unknown chunk ID: {:?}", chunk_id);
+                    warn!(
+                        "Found unsupported chunk '{}' in MOOF file, skipping",
+                        String::from_utf8_lossy(&chunk.id)
+                    );
+                }
+            }
+
+            // Always consume the amount of bytes the chunk header reports
+            cursor.seek(SeekFrom::Start(startpos + u64::from(chunk.size)))?;
+        }
+
+        let info = info.context("No INFO chunk in file")?;
+        let trks = trks.context("No TRKS chunk in file")?;
+
+        let mut img = FloppyImage::new(
+            info.disktype
+                .try_into()
+                .context(format!("Unsupported disk type: {:?}", info.disktype))?,
+        );
+
+        // Fill in tracks
+        for (track, side) in (0..80).flat_map(|t| (0..2).map(move |s| (t, s))) {
+            if let Some(ref flux) = flux {
+                // Flux track takes precedence
+                if flux.tracks[track][side] != 255 {
+                    warn!(
+                        "Flux track on track {} side {}, currently unsupported",
+                        track, side
+                    );
+                    continue;
+                }
+            }
+            if let Some(ref tmap) = tmap {
+                let entry_idx = tmap.tracks[track][side] as usize;
+                if entry_idx == 255 {
+                    continue;
+                }
+                if entry_idx > 160 {
+                    bail!("Encountered invalid TRKS entry index {}", entry_idx);
+                }
+
+                let trk = &trks.entries[entry_idx];
+
+                img.set_actual_track_length(side, track, trk.bits_bytes as usize);
+
+                // Fill track
+                let block = &data[trk.data_range()];
+                for blockbit in trk.bit_range() {
+                    let byte = blockbit / 8;
+                    let bit = 7 - blockbit % 8;
+                    img.set_track_bit(side, track, blockbit, block[byte] & (1 << bit) != 0);
                 }
             }
         }
 
-        image.context("No chunks in image")
+        Ok(img)
     }
 }
