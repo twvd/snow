@@ -1,6 +1,10 @@
+use std::fs::OpenOptions;
+
 use arrayvec::ArrayVec;
 use chrono::{Local, NaiveDate};
+use fs2::FileExt;
 use log::*;
+use memmap2::MmapMut;
 
 /// Macintosh Real-Time Clock
 pub struct Rtc {
@@ -19,7 +23,45 @@ pub struct Rtc {
 pub struct RtcData {
     writeprotect: bool,
     seconds: u32,
-    pram: [u8; 256],
+    pram: MmapMut,
+}
+
+impl RtcData {
+    /// Try to load a PRAM file, given the filename.
+    ///
+    /// This locks the file on PRAM and memory maps the file for use by
+    /// the emulator for fast access and automatic writes back to PRAM,
+    /// at the discretion of the operating system.
+    pub(super) fn load_pram(filename: &str) -> Option<MmapMut> {
+        let f = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(filename)
+            .inspect_err(|e| error!("Opening PRAM {} failed: {}", filename, e))
+            .ok()?;
+
+        f.set_len(256)
+            .inspect_err(|e| error!("Opening PRAM {} failed: {}", filename, e))
+            .ok()?;
+
+        f.lock_exclusive()
+            .inspect_err(|e| error!("Cannot lock PRAM {}: {}", filename, e))
+            .ok()?;
+
+        let mmapped = unsafe {
+            MmapMut::map_mut(&f)
+                .inspect_err(|e| error!("Cannot mmap PRAM file {}: {}", filename, e))
+                .ok()?
+        };
+
+        Some(mmapped)
+    }
+
+    pub(super) fn empty_pram() -> MmapMut {
+        MmapMut::map_anon(512).unwrap()
+    }
 }
 
 impl Default for Rtc {
@@ -46,13 +88,27 @@ impl Default for Rtc {
             data: RtcData {
                 writeprotect: true,
                 seconds,
-                pram: [0; 256],
+                pram: RtcData::empty_pram(),
             },
         }
     }
 }
 
 impl Rtc {
+    /// Loads a data file into PRAM
+    pub fn load_pram(&mut self, filename: &str) {
+        let Some(pram) = RtcData::load_pram(filename) else {
+            warn!(
+                "Cannot load PRAM file {}, PRAM reset and changes will not be saved",
+                filename
+            );
+            return;
+        };
+        info!("Persisting PRAM in {}", filename);
+
+        self.data.pram = pram;
+    }
+
     /// Pokes the RTC that one second has passed
     /// In the emulator, one second interrupt is driven by the VIA for ease.
     pub fn second(&mut self) {

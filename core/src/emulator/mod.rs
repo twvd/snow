@@ -69,6 +69,12 @@ impl Emulator {
             None
         };
 
+        // Initialize RTC
+        cpu.bus
+            .via
+            .rtc
+            .load_pram(&format!("{:?}.pram", model).to_ascii_lowercase());
+
         cpu.reset()?;
         let mut emu = Self {
             cpu,

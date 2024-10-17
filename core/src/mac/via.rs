@@ -229,7 +229,7 @@ pub struct Via {
     pub t1latch: Field16,
 
     pub keyboard: PlusKeyboard,
-    rtc: Rtc,
+    pub(crate) rtc: Rtc,
 
     pub(crate) adb: AdbTransceiver,
 }
