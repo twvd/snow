@@ -231,6 +231,12 @@ impl Rtc {
     fn cmd_read(&mut self, cmd: u8) {
         let scmd = (cmd >> 2) & 0b11111;
         self.data_out = Some(match scmd {
+            // Force AppleTalk to OFF to prevent freezing on the SCC during boot
+            // for System 6.x+
+            // Since this value is cached in RAM, an extra reboot may be required if
+            // PRAM is cleared.
+            0x13 => 0x22,
+
             0x00 | 0x04 => self.data.seconds as u8,
             0x01 | 0x05 => (self.data.seconds >> 8) as u8,
             0x02 | 0x06 => (self.data.seconds >> 16) as u8,
