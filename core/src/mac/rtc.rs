@@ -207,10 +207,16 @@ impl Rtc {
             }
             0x0D => self.data.writeprotect = val & 0x80 != 0,
             0x08..=0x0B => {
-                self.data.pram[usize::from(scmd - 0x08)] = val;
+                let addr = usize::from(scmd);
+                if !self.data.writeprotect {
+                    self.data.pram[addr] = val;
+                }
             }
             0x10..=0x1F => {
-                self.data.pram[usize::from(scmd - 0x10 + 4)] = val;
+                let addr = usize::from(scmd);
+                if !self.data.writeprotect {
+                    self.data.pram[addr] = val;
+                }
             }
             _ => {
                 warn!(
@@ -229,8 +235,8 @@ impl Rtc {
             0x01 | 0x05 => (self.data.seconds >> 8) as u8,
             0x02 | 0x06 => (self.data.seconds >> 16) as u8,
             0x03 | 0x07 => (self.data.seconds >> 24) as u8,
-            0x08..=0x0B => self.data.pram[usize::from(scmd - 0x08)],
-            0x10..=0x1F => self.data.pram[usize::from(scmd - 0x10 + 4)],
+            0x08..=0x0B => self.data.pram[usize::from(scmd)],
+            0x10..=0x1F => self.data.pram[usize::from(scmd)],
             _ => {
                 warn!("Unknown RTC read command: {:02X} {:08b}", cmd, cmd);
                 0
@@ -245,7 +251,9 @@ impl Rtc {
         let addr = (((cmd[0] & 0x07) << 5) | ((cmd[1] >> 2) & 0x1F)) as usize;
 
         if write {
-            self.data.pram[addr] = cmd[2];
+            if !self.data.writeprotect {
+                self.data.pram[addr] = cmd[2];
+            }
         } else {
             self.data_out = Some(self.data.pram[addr]);
         }
