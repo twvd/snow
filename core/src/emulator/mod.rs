@@ -245,6 +245,7 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::ToggleBusTrace => self.cpu.bus.trace = !self.cpu.bus.trace,
                     EmulatorCommand::CpuSetPC(val) => self.cpu.set_pc(val)?,
+                    EmulatorCommand::SetSpeed(s) => self.cpu.bus.set_speed(s),
                 }
             }
         }

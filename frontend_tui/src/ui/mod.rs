@@ -21,7 +21,8 @@ use snow_core::bus::Address;
 use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
 use snow_core::cpu_m68k::regs::RegisterFile;
 use snow_core::emulator::comm::{
-    EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver, EmulatorStatus,
+    EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver, EmulatorSpeed,
+    EmulatorStatus,
 };
 use tui_logger::{TuiLoggerLevelOutput, TuiLoggerWidget, TuiWidgetEvent, TuiWidgetState};
 
@@ -285,6 +286,16 @@ impl UserInterface {
                     16,
                 )?;
                 self.cmdsender.send(EmulatorCommand::CpuSetPC(val))?;
+                Ok(())
+            }
+            "speed" => {
+                let speed = match tokens.get(1).map(|s| s.to_ascii_lowercase()).as_deref() {
+                    Some("accurate") => EmulatorSpeed::Accurate,
+                    Some("dynamic") => EmulatorSpeed::Dynamic,
+                    Some("uncapped") => EmulatorSpeed::Uncapped,
+                    _ => bail!("Requires an argument: accurate, dynamic, uncapped"),
+                };
+                self.cmdsender.send(EmulatorCommand::SetSpeed(speed))?;
                 Ok(())
             }
             _ => bail!("Unknown command"),

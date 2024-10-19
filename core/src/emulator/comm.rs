@@ -31,6 +31,18 @@ pub enum EmulatorCommand {
     KeyEvent(KeyEvent),
     ToggleBusTrace,
     CpuSetPC(u32),
+    SetSpeed(EmulatorSpeed),
+}
+
+/// Emulator speed tweak
+#[derive(Debug)]
+pub enum EmulatorSpeed {
+    /// Actual speed accurate to the real hardware
+    Accurate,
+    /// Actual speed when sound is played, otherwise uncapped
+    Dynamic,
+    /// Uncapped at all times, sound disabled
+    Uncapped,
 }
 
 /// Structure with general emulator status

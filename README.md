@@ -35,6 +35,12 @@ To build and run after checking out the source, simply run:
 cargo run --release -- <rom image filename> [floppy image filename]
 ```
 
+There are other command line options you can pass. To see a full list, run:
+
+```
+cargo run --release -- --help
+```
+
 ## Usage
 
 Snow has a text-based user interface. You can use the F1-F10 keys for various actions, depending on the screen you are on,
@@ -74,6 +80,12 @@ from Apple.
 
 You can control the TUI using the keys outlined in the interface.
 Additionally, you can enter the following commands: 
+
+### Emulator control
+ * `/speed <mode>` - changes emulation speed mode. Possible modes are:
+   * `accurate` - accurate to real hardware,
+   * `dynamic` - accurate when playing sound, otherwise uncapped,
+   * `uncapped` - run as fast as possible (sound is disabled).
 
 ### Media related commands
  * `/disk1 <filename>` - mounts the specified disk image and inserts it into the internal drive.

@@ -6,6 +6,7 @@ use super::scsi::ScsiController;
 use super::via::Via;
 use super::MacModel;
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
+use crate::emulator::comm::EmulatorSpeed;
 use crate::mac::iwm::Iwm;
 use crate::mac::video::Video;
 use crate::renderer::Renderer;
@@ -59,6 +60,12 @@ pub struct MacBus<TRenderer: Renderer> {
 
     /// Toggles ROM mirroring for SCSI support
     scsi_enable: bool,
+
+    /// Emulation speed setting
+    speed: EmulatorSpeed,
+
+    /// Last pushed audio sample
+    last_audiosample: u8,
 }
 
 impl<TRenderer> MacBus<TRenderer>
@@ -119,6 +126,8 @@ where
             dbg_break: LatchingEvent::default(),
             overlay: true,
             scsi_enable: true,
+            speed: EmulatorSpeed::Accurate,
+            last_audiosample: 0,
         }
     }
 
@@ -350,6 +359,12 @@ where
         }
         self.write_ram(Self::ADDR_CRSRNEW, 1_u8);
     }
+
+    /// Configures emulator speed
+    pub fn set_speed(&mut self, speed: EmulatorSpeed) {
+        info!("Emulation speed: {:?}", speed);
+        self.speed = speed;
+    }
 }
 
 impl<TRenderer> Bus<Address, Byte> for MacBus<TRenderer>
@@ -460,7 +475,16 @@ where
             self.iwm.push_pwm(pwm)?;
 
             // Emulator will block here to sync to audio frequency
-            self.audio.push(audiosample)?;
+            match self.speed {
+                EmulatorSpeed::Accurate => self.audio.push(audiosample)?,
+                EmulatorSpeed::Dynamic => {
+                    if !self.audio.is_silent() || audiosample != self.last_audiosample {
+                        self.audio.push(audiosample)?;
+                    }
+                }
+                EmulatorSpeed::Uncapped => (),
+            }
+            self.last_audiosample = audiosample;
         }
 
         self.iwm.tick(1)?;

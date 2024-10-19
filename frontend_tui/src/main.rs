@@ -32,6 +32,27 @@ enum MouseControl {
     Relative,
 }
 
+#[derive(Eq, PartialEq, Clone, Copy, clap::ValueEnum)]
+/// Emulation speed
+enum Speed {
+    /// Actual speed accurate to the real hardware
+    Accurate,
+    /// Actual speed when sound is played, otherwise uncapped
+    Dynamic,
+    /// Uncapped at all times, sound disabled
+    Uncapped,
+}
+
+impl From<Speed> for snow_core::emulator::comm::EmulatorSpeed {
+    fn from(value: Speed) -> Self {
+        match value {
+            Speed::Accurate => Self::Accurate,
+            Speed::Dynamic => Self::Dynamic,
+            Speed::Uncapped => Self::Uncapped,
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(
     about = "Snow - Classic Macintosh emulator",
@@ -59,6 +80,10 @@ struct Args {
     /// Scaling factor for the display
     #[arg(long, default_value_t = 2)]
     scale: usize,
+
+    /// Emulation speed
+    #[arg(long, value_enum, default_value_t=Speed::Accurate)]
+    speed: Speed,
 }
 
 /// Sets up a panic handler that restores the terminal back to the original state
@@ -133,6 +158,7 @@ fn main() -> Result<()> {
     if !args.stop {
         cmd.send(EmulatorCommand::Run)?;
     }
+    cmd.send(EmulatorCommand::SetSpeed(args.speed.into()))?;
 
     // Initialize audio
     let _audiodev = SDLAudioSink::new(emulator.get_audio())?;
