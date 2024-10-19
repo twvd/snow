@@ -478,14 +478,55 @@ impl ScsiController {
             }
             0x1A => {
                 // MODE SENSE(6)
-                let mut result = vec![0; 36];
-                result[0] = 0x30;
-                result[1] = 33;
+                match cmd[2] & 0x3F {
+                    0x01 => {
+                        // Read/write recovery page
+                        let mut result = vec![0; 12];
+                        // Page code
+                        result[0] = 0x01;
+                        // Page length
+                        result[1] = 10;
 
-                // The string below has to appear for HD SC Setup and possibly other tools to work.
-                // https://68kmla.org/bb/index.php?threads/apple-rom-hard-disks.44920/post-493863
-                result[14..(14 + 20)].copy_from_slice(b"APPLE COMPUTER, INC.");
-                Ok(ScsiCmdResult::DataIn(result))
+                        // Error recovery stuff, can remain at 0.
+                        // Also, HD SC Setup doesn't seem to care as long as we respond to this command.
+
+                        Ok(ScsiCmdResult::DataIn(result))
+                    }
+                    0x03 => {
+                        // Format device page
+
+                        let mut result = vec![0; 24];
+                        // Page code
+                        result[0] = 0x03;
+                        // Page length
+                        result[1] = 22;
+
+                        // The remaining bytes can remain at 0 as they indicate information on how many
+                        // sectors/tracks are reserved for defect management.
+                        // Also, HD SC Setup doesn't seem to care as long as we respond to this command.
+
+                        Ok(ScsiCmdResult::DataIn(result))
+                    }
+                    0x30 => {
+                        // ? Non-standard mode page
+
+                        let mut result = vec![0; 36];
+                        // Page code
+                        result[0] = 0x30;
+                        // Page length
+                        result[1] = 34;
+
+                        // The string below has to appear for HD SC Setup and possibly other tools to work.
+                        // https://68kmla.org/bb/index.php?threads/apple-rom-hard-disks.44920/post-493863
+                        result[14..(14 + 20)].copy_from_slice(b"APPLE COMPUTER, INC.");
+
+                        Ok(ScsiCmdResult::DataIn(result))
+                    }
+                    _ => {
+                        warn!("Unknown MODE SENSE page {:02X}", cmd[2]);
+                        Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+                    }
+                }
             }
             0x25 => {
                 // READ CAPACITY(10)
