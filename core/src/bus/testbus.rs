@@ -74,7 +74,9 @@ where
     fn read(&mut self, addr: TA) -> BusResult<TD> {
         assert_eq!(addr & self.mask, addr);
 
+        #[allow(clippy::or_fun_call)]
         let val = *self.mem.get(&addr).unwrap_or(&TD::zero());
+
         if self.trace_enabled {
             self.trace.borrow_mut().push(TraceEntry {
                 addr,

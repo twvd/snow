@@ -37,6 +37,7 @@ pub trait Bus<TA: PrimInt + WrappingAdd, TD: PrimInt>: Tickable {
 }
 
 /// Inspectable provides an interface to debugging/memory views.
+///
 /// This view is different from the bus interface exposed to the CPU,
 /// because this view should provide a view that has no read side effects, to
 /// avoid debugging views from tampering peripheral states.
