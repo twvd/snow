@@ -1,4 +1,5 @@
-//! Applesauce MOOF file format loader
+//! Applesauce MOOF file format
+//! Combined bitstream and flux image format
 //! https://applesaucefdc.com/moof-reference/
 
 use std::io::{Seek, SeekFrom};

@@ -145,6 +145,9 @@ impl Emulator {
         //        self.cpu.regs.d[2] as u16,
         //    );
         //}
+        //if self.cpu.regs.pc == 0x418EBC {
+        //    debug!("Sony_RdData = {}", self.cpu.regs.d[0] as i32);
+        //}
 
         if self.run
             && (self.breakpoints.contains(&self.cpu.regs.pc)

@@ -24,6 +24,7 @@ Currently supported hardware:
  * Audio output (PWM-based models)
 
 Supported floppy image formats:
+ * Apple DiskCopy 4.2
  * Applesauce MOOF
 
 ## Building and running from source

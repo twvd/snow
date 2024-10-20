@@ -1,4 +1,5 @@
 pub mod loaders;
+mod macformat;
 
 use log::*;
 
@@ -23,6 +24,24 @@ impl FloppyType {
                 64..=79 => 49760,
                 _ => unreachable!(),
             },
+        }
+    }
+
+    /// Gets the sector size for this format
+    pub fn get_sector_size(self) -> usize {
+        512
+    }
+
+    /// Gets the amount of sectors for this format
+    pub fn get_sector_count(self) -> usize {
+        self.get_logical_size() / self.get_sector_size()
+    }
+
+    /// Gets the logical size of the total image
+    pub fn get_logical_size(self) -> usize {
+        match self {
+            Self::Mac400K => 409600,
+            Self::Mac800K => 819200,
         }
     }
 }
@@ -70,6 +89,15 @@ impl FloppyImage {
         }
     }
 
+    /// Creates a new, empty image for the specified type
+    /// Tracks are sized to empty so they can be filled
+    pub fn new_empty(floppy_type: FloppyType) -> Self {
+        Self {
+            floppy_type,
+            trackdata: core::array::from_fn(|_| core::array::from_fn(|_| vec![])),
+        }
+    }
+
     /// Resizes the length of a track to the actual size used in the image
     pub(crate) fn set_actual_track_length(&mut self, side: usize, track: usize, sz: usize) {
         let old_sz = self.trackdata[side][track].len();
@@ -85,6 +113,10 @@ impl FloppyImage {
             );
         }
         self.trackdata[side][track].resize(sz, 0);
+    }
+
+    pub(crate) fn push_byte(&mut self, side: usize, track: usize, byte: u8) {
+        self.trackdata[side][track].push(byte);
     }
 }
 
@@ -114,7 +146,7 @@ impl Floppy for FloppyImage {
     }
 
     fn get_track_length(&self, side: usize, track: usize) -> usize {
-        self.trackdata[side][track].len()
+        self.trackdata[side][track].len() * 8
     }
 
     fn get_side_count(&self) -> usize {

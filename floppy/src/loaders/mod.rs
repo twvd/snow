@@ -1,9 +1,11 @@
 mod auto;
 mod bitfile;
+mod diskcopy42;
 mod moof;
 
 pub use auto::Autodetect;
 pub use bitfile::Bitfile;
+pub use diskcopy42::Diskcopy42;
 pub use moof::Moof;
 
 use crate::FloppyImage;

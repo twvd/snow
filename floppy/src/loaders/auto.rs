@@ -1,7 +1,7 @@
 //! Auto-detect image file type and load
 
 use crate::{
-    loaders::{Bitfile, FloppyImageLoader, Moof},
+    loaders::{Bitfile, Diskcopy42, FloppyImageLoader, Moof},
     FloppyImage,
 };
 
@@ -22,6 +22,10 @@ impl FloppyImageLoader for Autodetect {
             && [0, 1].contains(&data[9])
         {
             return Bitfile::load(data);
+        }
+        // Apple DiskCopy 4.2
+        if data[0x52..=0x53] == [0x01, 0x00] {
+            return Diskcopy42::load(data);
         }
 
         bail!("Unsupported image file type");
