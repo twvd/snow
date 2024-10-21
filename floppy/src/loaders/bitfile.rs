@@ -41,7 +41,7 @@ impl Bitfile {
 impl FloppyImageLoader for Bitfile {
     fn load(data: &[u8]) -> Result<FloppyImage> {
         let tracks = Self::count_tracks(data)?;
-        let mut image = FloppyImage::new(match tracks {
+        let mut image = FloppyImage::new_empty(match tracks {
             80 => FloppyType::Mac400K,
             160 => FloppyType::Mac800K,
             _ => bail!("Invalid amount of tracks: {}", tracks),
@@ -55,6 +55,7 @@ impl FloppyImageLoader for Bitfile {
             if bits != bytes {
                 bail!("Length fields not equal");
             }
+            image.set_actual_track_length(tracknum / 80, tracknum % 80, bits);
             offset += 8;
             for p in 0..bytes {
                 image.set_track_bit(

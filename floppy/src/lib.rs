@@ -76,18 +76,24 @@ pub trait Floppy {
 pub struct FloppyImage {
     floppy_type: FloppyType,
     pub(crate) trackdata: [[Vec<u8>; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
+    bitlen: [[usize; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
 }
 
 impl FloppyImage {
     /// Creates a new, empty image for the specified type
     /// Tracks are sized to their approximate size
     pub fn new(floppy_type: FloppyType) -> Self {
-        Self {
-            floppy_type,
-            trackdata: core::array::from_fn(|_| {
-                core::array::from_fn(|t| vec![0; floppy_type.get_approx_track_length(t)])
-            }),
+        let mut img = Self::new_empty(floppy_type);
+        for side in 0..img.get_side_count() {
+            for track in 0..img.get_track_count() {
+                img.set_actual_track_length(
+                    side,
+                    track,
+                    floppy_type.get_approx_track_length(track),
+                );
+            }
         }
+        img
     }
 
     /// Creates a new, empty image for the specified type
@@ -96,27 +102,30 @@ impl FloppyImage {
         Self {
             floppy_type,
             trackdata: core::array::from_fn(|_| core::array::from_fn(|_| vec![])),
+            bitlen: [[0; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
         }
     }
 
     /// Resizes the length of a track to the actual size used in the image
     pub(crate) fn set_actual_track_length(&mut self, side: usize, track: usize, sz: usize) {
-        let old_sz = self.trackdata[side][track].len();
+        let old_sz = self.get_track_length(side, track);
         let perc_inc = (100
             - (std::cmp::min(sz as isize, old_sz as isize) * 100)
                 / std::cmp::max(sz as isize, old_sz as isize))
         .wrapping_abs();
 
-        if perc_inc >= 10 {
+        if old_sz != 0 && perc_inc >= 10 {
             warn!(
                 "Side {} track {}: length changed by {}% ({} -> {})",
                 side, track, perc_inc, old_sz, sz
             );
         }
-        self.trackdata[side][track].resize(sz, 0);
+        self.bitlen[side][track] = sz;
+        self.trackdata[side][track].resize(sz / 8 + 1, 0);
     }
 
     pub(crate) fn push_byte(&mut self, side: usize, track: usize, byte: u8) {
+        self.bitlen[side][track] += 8;
         self.trackdata[side][track].push(byte);
     }
 }
@@ -147,7 +156,7 @@ impl Floppy for FloppyImage {
     }
 
     fn get_track_length(&self, side: usize, track: usize) -> usize {
-        self.trackdata[side][track].len() * 8
+        self.bitlen[side][track]
     }
 
     fn get_side_count(&self) -> usize {

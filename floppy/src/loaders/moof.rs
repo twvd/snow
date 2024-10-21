@@ -164,7 +164,7 @@ impl FloppyImageLoader for Moof {
         let info = info.context("No INFO chunk in file")?;
         let trks = trks.context("No TRKS chunk in file")?;
 
-        let mut img = FloppyImage::new(
+        let mut img = FloppyImage::new_empty(
             info.disktype
                 .try_into()
                 .context(format!("Unsupported disk type: {:?}", info.disktype))?,
