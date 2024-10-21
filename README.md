@@ -26,6 +26,7 @@ Currently supported hardware:
 Supported floppy image formats:
  * Apple DiskCopy 4.2
  * Applesauce MOOF
+ * Raw images
 
 ## Building and running from source
 

@@ -2,9 +2,10 @@ pub mod loaders;
 mod macformat;
 
 use log::*;
+use strum::EnumIter;
 
 /// Types of emulated floppies - 3.5" only
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, EnumIter)]
 pub enum FloppyType {
     /// Macintosh CLV 3.5", single sided
     Mac400K,

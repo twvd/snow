@@ -1002,6 +1002,7 @@ dependencies = [
  "anyhow",
  "binrw",
  "log",
+ "strum",
 ]
 
 [[package]]

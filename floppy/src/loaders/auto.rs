@@ -1,11 +1,12 @@
 //! Auto-detect image file type and load
 
 use crate::{
-    loaders::{Bitfile, Diskcopy42, FloppyImageLoader, Moof},
-    FloppyImage,
+    loaders::{Bitfile, Diskcopy42, FloppyImageLoader, Moof, RawImage},
+    FloppyImage, FloppyType,
 };
 
 use anyhow::{bail, Result};
+use strum::IntoEnumIterator;
 
 pub struct Autodetect {}
 
@@ -26,6 +27,10 @@ impl FloppyImageLoader for Autodetect {
         // Apple DiskCopy 4.2
         if data[0x52..=0x53] == [0x01, 0x00] {
             return Diskcopy42::load(data);
+        }
+        // Raw image
+        if FloppyType::iter().any(|t| t.get_logical_size() == data.len()) {
+            return RawImage::load(data);
         }
 
         bail!("Unsupported image file type");
