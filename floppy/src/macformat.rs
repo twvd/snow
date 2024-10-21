@@ -46,6 +46,18 @@ impl<'a> MacFormatEncoder<'a> {
     /// Full sector size (tag + data), in bytes.
     const SECTOR_SIZE: usize = Self::SECTOR_TAG_SIZE + Self::SECTOR_DATA_SIZE;
 
+    /// Auto sync group
+    const AUTO_SYNC_GROUP: &'static [u8] = &[0xFF, 0x3F, 0xCF, 0xF3, 0xFC, 0xFF];
+
+    /// Address mark
+    const ADDRESS_MARK: &'static [u8] = &[0xD5, 0xAA, 0x96];
+
+    /// Data mark
+    const DATA_MARK: &'static [u8] = &[0xD5, 0xAA, 0xAD];
+
+    /// Bit slip sequence
+    const BIT_SLIP_SEQ: &'static [u8] = &[0xDE, 0xAA, 0xFF, 0xFF];
+
     fn push_physical(&mut self, data: &[u8]) {
         for b in data {
             self.image.push_byte(self.enc_side, self.enc_track, *b);
@@ -148,11 +160,11 @@ impl<'a> MacFormatEncoder<'a> {
         let mut checksum = 0u8;
         // Auto sync groups
         for _ in 0..6 {
-            self.push_physical(&[0xFF, 0x3F, 0xCF, 0xF3, 0xFC, 0xFF]);
+            self.push_physical(Self::AUTO_SYNC_GROUP);
         }
 
         // Address mark
-        self.push_physical(&[0xD5, 0xAA, 0x96]);
+        self.push_physical(Self::ADDRESS_MARK);
 
         // Track number low
         self.push_physical_enc(&[(track as u8) & 0x3F]);
@@ -177,27 +189,29 @@ impl<'a> MacFormatEncoder<'a> {
         self.push_physical_enc(&[checksum]);
 
         // Bit slip sequence
-        self.push_physical(&[0xDE, 0xAA, 0xFF, 0xFF]);
+        self.push_physical(Self::BIT_SLIP_SEQ);
     }
 
     fn push_sector_data(&mut self, id: u8, tag: &[u8], data: &[u8]) {
         // Auto sync group
-        self.push_physical(&[0xFF, 0x3F, 0xCF, 0xF3, 0xFC, 0xFF]);
+        self.push_physical(Self::AUTO_SYNC_GROUP);
 
         // Data mark
-        self.push_physical(&[0xD5, 0xAA, 0xAD]);
+        self.push_physical(Self::DATA_MARK);
 
+        // Sector identifier
         self.push_physical_enc(&[id & 0x1F]);
+
+        // Encode tag + data
         let mut sectordata = Vec::with_capacity(Self::SECTOR_SIZE);
         sectordata.extend(tag);
         sectordata.extend(data);
         assert_eq!(sectordata.len(), Self::SECTOR_SIZE);
-
         let encoded = Self::encode_sector_data(&sectordata);
         self.push_physical_enc(&encoded);
 
         // Bit slip sequence
-        self.push_physical(&[0xDE, 0xAA, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        self.push_physical(Self::BIT_SLIP_SEQ);
     }
 
     /// Encodes logical sectors into a GCR, CLV Macintosh format bitstream
@@ -222,9 +236,10 @@ impl<'a> MacFormatEncoder<'a> {
                 let speedgroup = track / 16;
                 for &tsector in Self::SECTOR_INTERLEAVE[speedgroup] {
                     let sector = sector_offset + tsector;
-                    let data = &self.data[(sector * 512)..((sector + 1) * 512)];
+                    let data = &self.data[(sector * Self::SECTOR_DATA_SIZE)
+                        ..((sector + 1) * Self::SECTOR_DATA_SIZE)];
                     let tag = if let Some(t) = self.tags.as_ref() {
-                        &t[(sector * 12)..((sector + 1) * 12)]
+                        &t[(sector * Self::SECTOR_TAG_SIZE)..((sector + 1) * Self::SECTOR_TAG_SIZE)]
                     } else {
                         &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                     };
@@ -232,13 +247,6 @@ impl<'a> MacFormatEncoder<'a> {
                     self.push_sector_data(tsector as u8, tag, data);
                 }
                 sector_offset += Self::SECTORS_PER_TRACK[speedgroup];
-
-                // Pad the remainder of the track
-                while self.image.get_track_length(side, track)
-                    < self.image.get_type().get_approx_track_length(track)
-                {
-                    self.push_physical(&[0xFF]);
-                }
             }
         }
         Ok(())
