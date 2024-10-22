@@ -70,6 +70,10 @@ pub trait Floppy {
 
     /// Gets the amount of sides on the floppy
     fn get_side_count(&self) -> usize;
+
+    /// A generic, user readable identification of the image
+    /// For example: the title, label or filename
+    fn get_title(&self) -> &str;
 }
 
 /// An in-memory loaded floppy image
@@ -77,13 +81,14 @@ pub struct FloppyImage {
     floppy_type: FloppyType,
     pub(crate) trackdata: [[Vec<u8>; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
     bitlen: [[usize; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
+    title: String,
 }
 
 impl FloppyImage {
     /// Creates a new, empty image for the specified type
     /// Tracks are sized to their approximate size
-    pub fn new(floppy_type: FloppyType) -> Self {
-        let mut img = Self::new_empty(floppy_type);
+    pub fn new(floppy_type: FloppyType, title: &str) -> Self {
+        let mut img = Self::new_empty(floppy_type, title);
         for side in 0..img.get_side_count() {
             for track in 0..img.get_track_count() {
                 img.set_actual_track_length(
@@ -98,11 +103,12 @@ impl FloppyImage {
 
     /// Creates a new, empty image for the specified type
     /// Tracks are sized to empty so they can be filled
-    pub fn new_empty(floppy_type: FloppyType) -> Self {
+    pub fn new_empty(floppy_type: FloppyType, title: &str) -> Self {
         Self {
             floppy_type,
             trackdata: core::array::from_fn(|_| core::array::from_fn(|_| vec![])),
             bitlen: [[0; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
+            title: title.to_owned(),
         }
     }
 
@@ -164,5 +170,9 @@ impl Floppy for FloppyImage {
             FloppyType::Mac400K => 1,
             FloppyType::Mac800K => 2,
         }
+    }
+
+    fn get_title(&self) -> &str {
+        &self.title
     }
 }

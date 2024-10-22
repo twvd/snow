@@ -17,6 +17,6 @@ impl FloppyImageLoader for RawImage {
             bail!("Invalid raw image length: {}", data.len())
         };
 
-        MacFormatEncoder::encode(floppytype, data, None)
+        MacFormatEncoder::encode(floppytype, data, None, "")
     }
 }

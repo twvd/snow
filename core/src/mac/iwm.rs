@@ -248,7 +248,7 @@ impl IwmDrive {
             floppy_inserted: false,
             track: 4,
             stepdir: HeadStepDirection::Up,
-            floppy: FloppyImage::new(FloppyType::Mac400K),
+            floppy: FloppyImage::new(FloppyType::Mac400K, ""),
             track_position: 0,
             motor: false,
 
@@ -352,9 +352,10 @@ impl IwmDrive {
     /// Inserts a disk into the disk drive
     pub fn disk_insert(&mut self, image: FloppyImage) -> Result<()> {
         info!(
-            "Drive {}: disk inserted, {} tracks",
+            "Drive {}: disk inserted, {} tracks, title: '{}'",
             self.idx,
-            image.get_track_count() * image.get_side_count()
+            image.get_track_count() * image.get_side_count(),
+            image.get_title()
         );
         self.floppy = image;
         self.floppy_inserted = true;

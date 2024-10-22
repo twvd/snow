@@ -2,7 +2,8 @@
 //! Combined bitstream and flux image format
 //! https://applesaucefdc.com/moof-reference/
 
-use std::io::{Seek, SeekFrom};
+use std::collections::HashMap;
+use std::io::{Read, Seek, SeekFrom};
 
 use super::FloppyImageLoader;
 use crate::{Floppy, FloppyImage, FloppyType};
@@ -97,6 +98,7 @@ struct MoofChunkFlux {
     pub entries: [[u8; 2]; 80],
 }
 
+/// TRKS chunk (minus header)
 #[binrw]
 #[brw(little)]
 struct MoofChunkTrks {
@@ -128,6 +130,21 @@ impl MoofChunkTrksEntry {
 /// Applesauce MOOF image file loader
 pub struct Moof {}
 
+impl Moof {
+    fn parse_meta(meta: &str) -> HashMap<&str, &str> {
+        let mut result = HashMap::new();
+
+        for l in meta.lines() {
+            let Some((k, v)) = l.split_once('\t') else {
+                continue;
+            };
+            result.insert(k, v);
+        }
+
+        result
+    }
+}
+
 impl FloppyImageLoader for Moof {
     fn load(data: &[u8]) -> Result<FloppyImage> {
         let mut cursor = Cursor::new(data);
@@ -138,6 +155,7 @@ impl FloppyImageLoader for Moof {
         let mut tmap = None;
         let mut trks = None;
         let mut flux = None;
+        let mut meta = String::new();
 
         // Parse chunks from file
         while let Ok(chunk) = MoofChunkHeader::read(&mut cursor) {
@@ -148,7 +166,11 @@ impl FloppyImageLoader for Moof {
                 b"TMAP" => tmap = Some(MoofChunkTmap::read(&mut cursor)?),
                 b"FLUX" => flux = Some(MoofChunkTmap::read(&mut cursor)?),
                 b"TRKS" => trks = Some(MoofChunkTrks::read(&mut cursor)?),
-                b"META" => (),
+                b"META" => {
+                    let mut metaraw = vec![0u8; chunk.size as usize];
+                    cursor.read_exact(&mut metaraw)?;
+                    meta = String::from_utf8_lossy(&metaraw).to_string();
+                }
                 _ => {
                     warn!(
                         "Found unsupported chunk '{}' in MOOF file, skipping",
@@ -163,11 +185,14 @@ impl FloppyImageLoader for Moof {
 
         let info = info.context("No INFO chunk in file")?;
         let trks = trks.context("No TRKS chunk in file")?;
+        let metadata = Self::parse_meta(&meta);
+        let title = metadata.get("title").copied().unwrap_or("?");
 
         let mut img = FloppyImage::new_empty(
             info.disktype
                 .try_into()
                 .context(format!("Unsupported disk type: {:?}", info.disktype))?,
+            title,
         );
 
         // Fill in tracks

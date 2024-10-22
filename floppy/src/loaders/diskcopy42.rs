@@ -9,7 +9,6 @@ use crate::FloppyType;
 use anyhow::{bail, Result};
 use binrw::io::Cursor;
 use binrw::{binrw, BinRead};
-use log::*;
 
 #[binrw]
 #[derive(Debug, Clone, Copy)]
@@ -93,7 +92,6 @@ impl FloppyImageLoader for Diskcopy42 {
     fn load(data: &[u8]) -> anyhow::Result<crate::FloppyImage> {
         let mut cursor = Cursor::new(data);
         let raw = Dc42Raw::read(&mut cursor)?;
-        debug!("Image name: {}", raw.name);
 
         let floppytype = raw.get_type()?;
         if raw.data.len() != floppytype.get_logical_size() {
@@ -104,6 +102,6 @@ impl FloppyImageLoader for Diskcopy42 {
             );
         }
 
-        MacFormatEncoder::encode(floppytype, &raw.data, Some(&raw.tags))
+        MacFormatEncoder::encode(floppytype, &raw.data, Some(&raw.tags), &raw.name)
     }
 }

@@ -41,11 +41,14 @@ impl Bitfile {
 impl FloppyImageLoader for Bitfile {
     fn load(data: &[u8]) -> Result<FloppyImage> {
         let tracks = Self::count_tracks(data)?;
-        let mut image = FloppyImage::new_empty(match tracks {
-            80 => FloppyType::Mac400K,
-            160 => FloppyType::Mac800K,
-            _ => bail!("Invalid amount of tracks: {}", tracks),
-        });
+        let mut image = FloppyImage::new_empty(
+            match tracks {
+                80 => FloppyType::Mac400K,
+                160 => FloppyType::Mac800K,
+                _ => bail!("Invalid amount of tracks: {}", tracks),
+            },
+            "",
+        );
 
         let mut offset = 0;
         for tracknum in 0..tracks {

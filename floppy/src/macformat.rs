@@ -219,8 +219,9 @@ impl<'a> MacFormatEncoder<'a> {
         format: FloppyType,
         data: &'a [u8],
         tags: Option<&'a [u8]>,
+        name: &str,
     ) -> Result<FloppyImage> {
-        let mut encoder = Self::new(format, data, tags)?;
+        let mut encoder = Self::new(format, data, tags, name)?;
         encoder.run()?;
         Ok(encoder.image)
     }
@@ -252,7 +253,12 @@ impl<'a> MacFormatEncoder<'a> {
         Ok(())
     }
 
-    fn new(format: FloppyType, data: &'a [u8], tags: Option<&'a [u8]>) -> Result<Self> {
+    fn new(
+        format: FloppyType,
+        data: &'a [u8],
+        tags: Option<&'a [u8]>,
+        title: &str,
+    ) -> Result<Self> {
         if data.len() != format.get_logical_size() {
             bail!(
                 "Invalid data length: {} (expected {})",
@@ -273,7 +279,7 @@ impl<'a> MacFormatEncoder<'a> {
         Ok(Self {
             data,
             tags,
-            image: FloppyImage::new_empty(format),
+            image: FloppyImage::new_empty(format, title),
             enc_track: 0,
             enc_side: 0,
         })
