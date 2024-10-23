@@ -109,7 +109,7 @@ where
             audio: AudioState::default(),
             eclock: 0,
             scc: Scc::new(),
-            iwm: Iwm::new(model.fdd_double_sided()),
+            iwm: Iwm::new(model.fdd_double_sided(), model.fdd_count()),
             scsi: ScsiController::new(),
             mouse_ready: false,
 

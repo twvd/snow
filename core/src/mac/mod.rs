@@ -52,6 +52,13 @@ impl MacModel {
         }
     }
 
+    pub const fn fdd_count(self) -> usize {
+        match self {
+            Self::SE => 3,
+            _ => 2,
+        }
+    }
+
     pub const fn keymap(self) -> Keymap {
         match self {
             Self::Early128K | Self::Early512K | Self::Plus => Keymap::AkM0110,

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use log::*;
 use num::clamp;
 use num_derive::FromPrimitive;
@@ -462,9 +462,9 @@ impl IwmDrive {
 }
 
 impl Iwm {
-    pub fn new(double_sided: bool) -> Self {
+    pub fn new(double_sided: bool, drives: usize) -> Self {
         Self {
-            drives: core::array::from_fn(|i| IwmDrive::new(i, true, double_sided)),
+            drives: core::array::from_fn(|i| IwmDrive::new(i, i < drives, double_sided)),
             double_sided,
             cycles: 0,
 
@@ -604,6 +604,10 @@ impl Iwm {
 
     /// Inserts a disk into the disk drive
     pub fn disk_insert(&mut self, drive: usize, image: FloppyImage) -> Result<()> {
+        if !self.drives[drive].present {
+            bail!("Drive {} not present", drive);
+        }
+
         self.drives[drive].disk_insert(image)
     }
 

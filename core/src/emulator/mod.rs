@@ -189,7 +189,11 @@ impl Tickable for Emulator {
                     EmulatorCommand::InsertFloppy(drive, filename) => {
                         let image = Autodetect::load_file(&filename);
                         match image {
-                            Ok(img) => self.cpu.bus.iwm.disk_insert(drive, img)?,
+                            Ok(img) => {
+                                if let Err(e) = self.cpu.bus.iwm.disk_insert(drive, img) {
+                                    error!("Cannot insert disk: {}", e);
+                                }
+                            }
                             Err(e) => error!("Cannot load image '{}': {}", filename, e),
                         }
                         self.status_update()?;
