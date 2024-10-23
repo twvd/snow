@@ -1,6 +1,7 @@
 pub mod comm;
 
 use snow_floppy::loaders::{Autodetect, Bitfile, FloppyImageLoader, FloppyImageSaver};
+use snow_floppy::Floppy;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -22,6 +23,7 @@ use log::*;
 
 use comm::{
     EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver, EmulatorStatus,
+    FddStatus,
 };
 
 /// Emulator runner
@@ -36,6 +38,7 @@ pub struct Emulator {
     last_update: Instant,
     adbmouse_sender: Option<ClickEventSender>,
     adbkeyboard_sender: Option<KeyEventSender>,
+    model: MacModel,
 }
 
 impl Emulator {
@@ -87,6 +90,7 @@ impl Emulator {
             last_update: Instant::now(),
             adbmouse_sender,
             adbkeyboard_sender,
+            model,
         };
         emu.status_update()?;
 
@@ -103,12 +107,23 @@ impl Emulator {
 
     fn status_update(&mut self) -> Result<()> {
         self.event_sender
-            .send(EmulatorEvent::Status(EmulatorStatus {
+            .send(EmulatorEvent::Status(Box::new(EmulatorStatus {
                 regs: self.cpu.regs.clone(),
                 running: self.run,
                 breakpoints: self.breakpoints.clone(),
                 cycles: self.cpu.cycles,
-            }))?;
+                fdd: core::array::from_fn(|i| FddStatus {
+                    present: self.cpu.bus.iwm.drives[i].present,
+                    ejected: !self.cpu.bus.iwm.drives[i].floppy_inserted,
+                    motor: self.cpu.bus.iwm.drives[i].motor,
+                    writing: self.cpu.bus.iwm.drives[i].motor && self.cpu.bus.iwm.is_writing(),
+                    track: self.cpu.bus.iwm.drives[i].track,
+                    image_title: self.cpu.bus.iwm.drives[i].floppy.get_title().to_owned(),
+                }),
+                model: self.model,
+                hdd: core::array::from_fn(|i| self.cpu.bus.scsi.get_disk_capacity(i)),
+                speed: self.cpu.bus.speed,
+            })))?;
 
         // Next code stream for disassembly listing
         self.disassemble(self.cpu.regs.pc, 200)?;

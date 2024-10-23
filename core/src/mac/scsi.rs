@@ -222,6 +222,11 @@ impl ScsiController {
         self.reg_bsr.irq()
     }
 
+    /// Returns the capacity of an emulated disk or None if not present.
+    pub fn get_disk_capacity(&self, id: usize) -> Option<usize> {
+        Some(self.disks[id].as_ref()?.len())
+    }
+
     /// Try to load a disk image, given the filename of the image.
     ///
     /// This locks the file on disk and memory maps the file for use by

@@ -1,4 +1,5 @@
 mod debugger;
+mod status;
 
 use std::io::stdout;
 
@@ -24,12 +25,14 @@ use snow_core::emulator::comm::{
     EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver, EmulatorSpeed,
     EmulatorStatus,
 };
+use status::StatusWidget;
 use tui_logger::{TuiLoggerLevelOutput, TuiLoggerWidget, TuiWidgetEvent, TuiWidgetState};
 
 type DisassemblyListing = Vec<DisassemblyEntry>;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum View {
+    Status,
     Log,
     Debugger,
 }
@@ -45,7 +48,7 @@ pub struct UserInterface {
     eventrecv: EmulatorEventReceiver,
     cmdsender: EmulatorCommandSender,
 
-    emustatus: EmulatorStatus,
+    emustatus: Box<EmulatorStatus>,
     lastregs: RegisterFile,
     disassembly: DisassemblyListing,
 
@@ -69,7 +72,7 @@ impl UserInterface {
 
             cmd: None,
 
-            view: View::Log,
+            view: View::Status,
             romfn: romfn.to_string(),
             model: model.to_string(),
             eventrecv,
@@ -145,7 +148,8 @@ impl UserInterface {
                 match (self.view, key.code) {
                     (_, KeyCode::Char('/')) => self.cmd = Some("".to_string()),
                     (_, KeyCode::F(10)) => return Ok(false),
-                    (_, KeyCode::F(1)) => self.view = View::Log,
+                    (View::Status, KeyCode::F(1)) => self.view = View::Log,
+                    (_, KeyCode::F(1)) => self.view = View::Status,
                     (_, KeyCode::F(2)) => self.view = View::Debugger,
                     (_, KeyCode::F(5)) if self.emustatus.running => {
                         self.cmdsender.send(EmulatorCommand::Stop)?;
@@ -352,32 +356,10 @@ impl Widget for &mut UserInterface {
                 &self.lastregs,
             )
             .render(layout_main[1], buf, &mut self.state_debugger),
+            View::Status => StatusWidget::new(&self.emustatus).render(layout_main[1], buf),
         }
 
-        let mut functions = vec![""; 10];
-        functions[0] = "Log";
-        functions[1] = "Debug";
-        functions[9] = "Quit";
-
-        #[allow(clippy::single_match)]
-        match self.view {
-            View::Debugger => {
-                if !self.emustatus.running {
-                    functions[4] = "Run";
-                    functions[6] = "Brkpt";
-                    functions[8] = "Step";
-                } else {
-                    functions[4] = "Stop";
-                }
-            }
-            _ => (),
-        }
-        let mut fkeys = Vec::with_capacity(10 * 2);
-        for (f, desc) in functions.into_iter().enumerate() {
-            fkeys.push(format!("F{:<2}", f + 1).black().on_blue().bold());
-            fkeys.push(format!("{desc:<5}").blue().on_black().bold());
-        }
-
+        // Command prompt
         if let Some(s) = &self.cmd {
             Paragraph::new(Line::from(format!(" > {}", s)))
                 .style(Style::default().on_black())
@@ -386,6 +368,35 @@ impl Widget for &mut UserInterface {
             Paragraph::new(Line::from(" > Type '/' to enter a command"))
                 .style(Style::default().dark_gray().on_black())
                 .render(layout_main[2], buf);
+        }
+
+        // F-key legend
+        let mut functions = vec![""; 10];
+        functions[0] = if self.view != View::Status {
+            "Status"
+        } else {
+            "Log   "
+        };
+        functions[1] = "Debug";
+        functions[4] = if !self.emustatus.running {
+            "Run"
+        } else {
+            "Stop"
+        };
+        functions[9] = "Quit";
+
+        #[allow(clippy::single_match)]
+        match self.view {
+            View::Debugger => {
+                functions[6] = "Brkpt";
+                functions[8] = "Step";
+            }
+            _ => (),
+        }
+        let mut fkeys = Vec::with_capacity(10 * 2);
+        for (f, desc) in functions.into_iter().enumerate() {
+            fkeys.push(format!("F{:<2}", f + 1).black().on_blue().bold());
+            fkeys.push(format!("{desc:<5}").blue().on_black().bold());
         }
 
         Paragraph::new(Line::from(fkeys))

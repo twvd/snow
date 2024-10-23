@@ -3,6 +3,7 @@
 use crate::bus::Address;
 use crate::cpu_m68k::regs::RegisterFile;
 use crate::keymap::KeyEvent;
+use crate::mac::MacModel;
 use crate::tickable::Ticks;
 
 pub type EmulatorCommandSender = crossbeam_channel::Sender<EmulatorCommand>;
@@ -35,7 +36,7 @@ pub enum EmulatorCommand {
 }
 
 /// Emulator speed tweak
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, strum::Display)]
 pub enum EmulatorSpeed {
     /// Actual speed accurate to the real hardware
     Accurate,
@@ -52,11 +53,26 @@ pub struct EmulatorStatus {
     pub running: bool,
     pub breakpoints: Vec<Address>,
     pub cycles: Ticks,
+
+    pub fdd: [FddStatus; 3],
+    pub model: MacModel,
+    pub speed: EmulatorSpeed,
+    pub hdd: [Option<usize>; 7],
+}
+
+#[derive(Debug)]
+pub struct FddStatus {
+    pub present: bool,
+    pub ejected: bool,
+    pub motor: bool,
+    pub writing: bool,
+    pub track: usize,
+    pub image_title: String,
 }
 
 /// A status message/event received from the emulator
 #[derive(Debug)]
 pub enum EmulatorEvent {
-    Status(EmulatorStatus),
+    Status(Box<EmulatorStatus>),
     NextCode((Address, Vec<u8>)),
 }

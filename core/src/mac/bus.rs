@@ -62,7 +62,7 @@ pub struct MacBus<TRenderer: Renderer> {
     scsi_enable: bool,
 
     /// Emulation speed setting
-    speed: EmulatorSpeed,
+    pub(crate) speed: EmulatorSpeed,
 
     /// Last pushed audio sample
     last_audiosample: u8,

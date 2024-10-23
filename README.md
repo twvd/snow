@@ -105,3 +105,5 @@ Additionally, you can enter the following commands:
 
 ## Acknowledgements
  * Thanks to raddad772 for the excellent [68000 JSON test suite](https://github.com/SingleStepTests/m68000)
+ * Thanks to Rubix for the ASCII Mac
+

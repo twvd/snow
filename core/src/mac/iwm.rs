@@ -41,24 +41,24 @@ pub struct Iwm {
     write_pos: usize,
     write_buffer: Option<u8>,
 
-    drives: [IwmDrive; 3],
+    pub(crate) drives: [IwmDrive; 3],
 
     pub dbg_pc: u32,
     pub dbg_break: LatchingEvent,
 }
 
 /// A single disk drive, attached to the drive controller
-struct IwmDrive {
+pub(crate) struct IwmDrive {
     idx: usize,
     cycles: Ticks,
     double_sided: bool,
-    present: bool,
+    pub(crate) present: bool,
 
-    floppy_inserted: bool,
-    track: usize,
+    pub(crate) floppy_inserted: bool,
+    pub(crate) track: usize,
     stepdir: HeadStepDirection,
-    motor: bool,
-    floppy: FloppyImage,
+    pub(crate) motor: bool,
+    pub(crate) floppy: FloppyImage,
     track_position: usize,
 
     // While > 0, the drive head is moving
@@ -501,6 +501,10 @@ impl Iwm {
         } else {
             0
         }
+    }
+
+    pub fn is_writing(&self) -> bool {
+        self.write_buffer.is_some()
     }
 
     fn get_selected_drive(&self) -> &IwmDrive {

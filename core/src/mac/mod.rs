@@ -59,6 +59,13 @@ impl MacModel {
         }
     }
 
+    pub const fn has_scsi(self) -> bool {
+        match self {
+            Self::Early128K | Self::Early512K => false,
+            _ => true,
+        }
+    }
+
     pub const fn keymap(self) -> Keymap {
         match self {
             Self::Early128K | Self::Early512K | Self::Plus => Keymap::AkM0110,
