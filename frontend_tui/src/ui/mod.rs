@@ -1,9 +1,11 @@
+mod browser;
 mod debugger;
 mod status;
 
 use std::io::stdout;
 
 use anyhow::{bail, Context, Result};
+use browser::{BrowserWidget, BrowserWidgetEvent, BrowserWidgetState};
 use debugger::{DebuggerWidget, DebuggerWidgetEvent, DebuggerWidgetState};
 use log::*;
 use ratatui::buffer::Buffer;
@@ -35,6 +37,7 @@ enum View {
     Status,
     Log,
     Debugger,
+    Browser,
 }
 
 pub struct UserInterface {
@@ -54,6 +57,7 @@ pub struct UserInterface {
 
     state_log: TuiWidgetState,
     state_debugger: DebuggerWidgetState,
+    state_browser: BrowserWidgetState,
 }
 
 impl UserInterface {
@@ -69,6 +73,7 @@ impl UserInterface {
         Ok(Self {
             state_log: TuiWidgetState::default(),
             state_debugger: DebuggerWidgetState::default(),
+            state_browser: BrowserWidgetState::default(),
 
             cmd: None,
 
@@ -182,6 +187,36 @@ impl UserInterface {
                         let addr = self.state_debugger.get_selected_address(&self.disassembly);
                         self.cmdsender
                             .send(EmulatorCommand::ToggleBreakpoint(addr))?;
+                    }
+                    (View::Status, KeyCode::Char('1')) if self.emustatus.fdd[0].present => {
+                        self.state_browser = BrowserWidgetState::new(0, "floppies/");
+                        self.view = View::Browser;
+                    }
+                    (View::Status, KeyCode::Char('2')) if self.emustatus.fdd[1].present => {
+                        self.state_browser = BrowserWidgetState::new(1, "floppies/");
+                        self.view = View::Browser;
+                    }
+                    (View::Status, KeyCode::Char('3')) if self.emustatus.fdd[2].present => {
+                        self.state_browser = BrowserWidgetState::new(2, "floppies/");
+                        self.view = View::Browser;
+                    }
+                    (View::Browser, KeyCode::Down) => {
+                        self.state_browser.transition(BrowserWidgetEvent::LineDown);
+                    }
+                    (View::Browser, KeyCode::Up) => {
+                        self.state_browser.transition(BrowserWidgetEvent::LineUp);
+                    }
+                    (View::Browser, KeyCode::Esc) => {
+                        self.view = View::Status;
+                    }
+                    (View::Browser, KeyCode::Enter) => {
+                        if let Some(selection) = self.state_browser.get_selected() {
+                            self.cmdsender.send(EmulatorCommand::InsertFloppy(
+                                self.state_browser.target_drive,
+                                selection.as_os_str().to_string_lossy().to_string(),
+                            ))?;
+                        }
+                        self.view = View::Status;
                     }
                     _ => (),
                 }
@@ -357,6 +392,9 @@ impl Widget for &mut UserInterface {
             )
             .render(layout_main[1], buf, &mut self.state_debugger),
             View::Status => StatusWidget::new(&self.emustatus).render(layout_main[1], buf),
+            View::Browser => {
+                BrowserWidget::new().render(layout_main[1], buf, &mut self.state_browser);
+            }
         }
 
         // Command prompt

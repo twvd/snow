@@ -49,7 +49,8 @@ impl<'a> Widget for StatusWidget<'a> {
             drivep.push(Line::from(vec![
                 Span::from(format!(" #{} ", i + 1)).style(Style::default().blue().bold()),
                 if drive.ejected {
-                    Span::from("no disk").style(Style::default().dark_gray())
+                    Span::from(format!("no disk - press [{}] to load", i + 1))
+                        .style(Style::default().dark_gray())
                 } else {
                     Span::from(if drive.image_title.is_empty() {
                         "<no title>"
