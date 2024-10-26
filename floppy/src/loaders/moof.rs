@@ -195,6 +195,11 @@ impl FloppyImageLoader for Moof {
             title,
         );
 
+        // Fill metadata
+        for (k, v) in metadata {
+            img.set_metadata(k, v);
+        }
+
         // Fill in tracks
         for (track, side) in (0..80).flat_map(|t| (0..2).map(move |s| (t, s))) {
             if let Some(ref flux) = flux {

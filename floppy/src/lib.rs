@@ -1,8 +1,14 @@
 pub mod loaders;
 mod macformat;
 
+use std::collections::HashMap;
+
 use log::*;
 use strum::EnumIter;
+
+/// Key/value collection of floppy metadata.
+/// Loaders should convert keys to lowercase.
+pub type FloppyMetadata = HashMap<String, String>;
 
 /// Types of emulated floppies - 3.5" only
 #[derive(Copy, Clone, EnumIter)]
@@ -47,6 +53,19 @@ impl FloppyType {
     }
 }
 
+impl std::fmt::Display for FloppyType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Mac400K => "Macintosh GCR 400KB",
+                Self::Mac800K => "Macintosh GCR 800KB",
+            }
+        )
+    }
+}
+
 const FLOPPY_MAX_SIDES: usize = 2;
 const FLOPPY_MAX_TRACKS: usize = 80;
 
@@ -74,6 +93,10 @@ pub trait Floppy {
     /// A generic, user readable identification of the image
     /// For example: the title, label or filename
     fn get_title(&self) -> &str;
+
+    /// Gets the metadata of the image as key/value.
+    /// May be empty if the initial format did not support it or there is no metadata.
+    fn get_metadata(&self) -> FloppyMetadata;
 }
 
 /// An in-memory loaded floppy image
@@ -82,6 +105,7 @@ pub struct FloppyImage {
     pub(crate) trackdata: [[Vec<u8>; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
     bitlen: [[usize; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
     title: String,
+    metadata: FloppyMetadata,
 }
 
 impl FloppyImage {
@@ -109,6 +133,7 @@ impl FloppyImage {
             trackdata: core::array::from_fn(|_| core::array::from_fn(|_| vec![])),
             bitlen: [[0; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
             title: title.to_owned(),
+            metadata: FloppyMetadata::from([("title".to_string(), title.to_string())]),
         }
     }
 
@@ -133,6 +158,10 @@ impl FloppyImage {
     pub(crate) fn push_byte(&mut self, side: usize, track: usize, byte: u8) {
         self.bitlen[side][track] += 8;
         self.trackdata[side][track].push(byte);
+    }
+
+    pub(crate) fn set_metadata(&mut self, key: &str, val: &str) {
+        self.metadata.insert(key.to_lowercase(), val.to_string());
     }
 }
 
@@ -174,5 +203,9 @@ impl Floppy for FloppyImage {
 
     fn get_title(&self) -> &str {
         &self.title
+    }
+
+    fn get_metadata(&self) -> FloppyMetadata {
+        self.metadata.clone()
     }
 }

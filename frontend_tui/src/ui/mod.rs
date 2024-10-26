@@ -61,6 +61,8 @@ pub struct UserInterface {
 }
 
 impl UserInterface {
+    const DIR_FLOPPIES: &'static str = "floppies/";
+
     pub fn new(
         romfn: &str,
         model: &str,
@@ -189,15 +191,15 @@ impl UserInterface {
                             .send(EmulatorCommand::ToggleBreakpoint(addr))?;
                     }
                     (View::Status, KeyCode::Char('1')) if self.emustatus.fdd[0].present => {
-                        self.state_browser = BrowserWidgetState::new(0, "floppies/");
+                        self.state_browser = BrowserWidgetState::new(0, Self::DIR_FLOPPIES);
                         self.view = View::Browser;
                     }
                     (View::Status, KeyCode::Char('2')) if self.emustatus.fdd[1].present => {
-                        self.state_browser = BrowserWidgetState::new(1, "floppies/");
+                        self.state_browser = BrowserWidgetState::new(1, Self::DIR_FLOPPIES);
                         self.view = View::Browser;
                     }
                     (View::Status, KeyCode::Char('3')) if self.emustatus.fdd[2].present => {
-                        self.state_browser = BrowserWidgetState::new(2, "floppies/");
+                        self.state_browser = BrowserWidgetState::new(2, Self::DIR_FLOPPIES);
                         self.view = View::Browser;
                     }
                     (View::Browser, KeyCode::Down) => {

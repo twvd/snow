@@ -9,12 +9,23 @@ use anyhow::{bail, Result};
 use strum::{Display, IntoEnumIterator};
 
 /// Types of supported floppy images
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Display)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Display, Copy, Clone)]
 pub enum ImageType {
     MOOF,
     Bitfile,
     DC42,
     Raw,
+}
+
+impl ImageType {
+    pub fn as_friendly_str(&self) -> &'static str {
+        match self {
+            Self::MOOF => "Applesauce MOOF",
+            Self::Bitfile => "Bitfile",
+            Self::DC42 => "Apple DiskCopy 4.2",
+            Self::Raw => "Raw image",
+        }
+    }
 }
 
 pub struct Autodetect {}

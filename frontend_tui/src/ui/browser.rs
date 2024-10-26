@@ -2,12 +2,15 @@ use std::{fs, path::PathBuf};
 
 use ratatui::{
     layout::{Constraint, Direction, Layout},
-    prelude::{Buffer, Rect, StatefulWidget},
+    prelude::{Buffer, Rect, StatefulWidget, Widget},
     style::{Style, Stylize},
-    text::Text,
-    widgets::{Block, Cell, HighlightSpacing, Row, Table, TableState},
+    text::{Line, Span, Text},
+    widgets::{Block, Cell, HighlightSpacing, Paragraph, Row, Table, TableState},
 };
-use snow_floppy::loaders::{Autodetect, ImageType};
+use snow_floppy::{
+    loaders::{Autodetect, FloppyImageLoader, ImageType},
+    Floppy, FloppyMetadata, FloppyType,
+};
 
 pub struct BrowserEntry {
     path: PathBuf,
@@ -25,6 +28,9 @@ pub struct BrowserWidgetState {
     entries: Vec<BrowserEntry>,
     pub target_drive: usize,
     tablestate: TableState,
+    metadata: FloppyMetadata,
+    floppytype: Option<FloppyType>,
+    imagetype: Option<ImageType>,
 }
 
 impl BrowserWidgetState {
@@ -44,11 +50,14 @@ impl BrowserWidgetState {
             vec![]
         };
         entries.sort_unstable_by_key(|e| e.path.file_name().unwrap().to_string_lossy().to_string());
-        Self {
+        let mut result = Self {
             entries,
             target_drive,
             tablestate: TableState::default().with_selected(0),
-        }
+            ..Default::default()
+        };
+        result.update_metadata();
+        result
     }
 
     pub fn get_selected(&self) -> Option<PathBuf> {
@@ -71,6 +80,7 @@ impl BrowserWidgetState {
                     let select = self.tablestate.selected().unwrap_or(0).saturating_sub(1);
                     self.tablestate.select(Some(select));
                 }
+                self.update_metadata();
             }
             BrowserWidgetEvent::LineDown => {
                 if self.entries.is_empty() {
@@ -83,7 +93,24 @@ impl BrowserWidgetState {
                 } else {
                     self.tablestate.select(Some(0));
                 }
+                self.update_metadata();
             }
+        }
+    }
+
+    fn update_metadata(&mut self) {
+        if self.entries.is_empty() {
+            return;
+        }
+
+        self.imagetype = Some(self.entries[self.tablestate.selected().unwrap()].imgtype);
+        let s = self.get_selected().unwrap();
+        if let Ok(img) = Autodetect::load_file(s.as_os_str().to_str().unwrap()) {
+            self.metadata = img.get_metadata();
+            self.floppytype = Some(img.get_type());
+        } else {
+            self.metadata = Default::default();
+            self.floppytype = None;
         }
     }
 }
@@ -110,9 +137,10 @@ impl StatefulWidget for BrowserWidget {
         });
         let layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(vec![Constraint::Percentage(100)])
+            .constraints(vec![Constraint::Percentage(100), Constraint::Min(5)])
             .split(area);
 
+        // Image list table
         StatefulWidget::render(
             Table::new(rows, [Constraint::Percentage(100), Constraint::Min(5)])
                 .header(
@@ -120,7 +148,7 @@ impl StatefulWidget for BrowserWidget {
                         .into_iter()
                         .map(Cell::from)
                         .collect::<Row>()
-                        .style(Style::default().black().on_blue().bold())
+                        .style(Style::default().blue().bold())
                         .height(1),
                 )
                 .highlight_style(Style::default().black().on_gray())
@@ -133,5 +161,44 @@ impl StatefulWidget for BrowserWidget {
             buf,
             &mut state.tablestate,
         );
+
+        // Metadata
+        let layout_meta = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(layout[1]);
+        let meta_key = Style::default().blue().bold();
+        let meta_value = Style::default().gray();
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::from("Title        : ").style(meta_key),
+                Span::from(state.metadata.get("title").map_or("", |v| v)).style(meta_value),
+            ]),
+            Line::from(vec![
+                Span::from("Developer    : ").style(meta_key),
+                Span::from(state.metadata.get("developer").map_or("", |v| v)).style(meta_value),
+            ]),
+            Line::from(vec![
+                Span::from("Publisher    : ").style(meta_key),
+                Span::from(state.metadata.get("publisher").map_or("", |v| v)).style(meta_value),
+            ]),
+        ])
+        .render(layout_meta[0], buf);
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::from("Disk #       : ").style(meta_key),
+                Span::from(state.metadata.get("disk_number").map_or("", |v| v)).style(meta_value),
+            ]),
+            Line::from(vec![
+                Span::from("Disk type    : ").style(meta_key),
+                Span::from(state.floppytype.map_or("".to_string(), |v| v.to_string()))
+                    .style(meta_value),
+            ]),
+            Line::from(vec![
+                Span::from("Image type   : ").style(meta_key),
+                Span::from(state.imagetype.unwrap().as_friendly_str()).style(meta_value),
+            ]),
+        ])
+        .render(layout_meta[1], buf);
     }
 }
