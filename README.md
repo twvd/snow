@@ -58,11 +58,16 @@ peripherals, amount of memory, memory map, etc.
 
 ### Using floppy disks
 
-You can specify an image filename on the command line to have a disk inserted at startup. After you eject the disk in the OS,
-you can insert the same or a different disk using the `/disk1` and `/disk2` commands in the TUI.
+The easiest way to load floppy images is to put them in the 'floppies' directory and us the built-in floppy image browser.
+In the 'Status' screen, press `1`, `2` or `3` to load an image into the respective drive.
+
+You can also specify an image filename on the command line to have a disk inserted at startup. You can also use the
+`/disk1`, `/disk2` and `/disk3` commands to load an image, see below.
 
 Writes to floppy disks are not automatically persisted. You can save a new image with the changes you made using `/writedisk1`
 or `/writedisk2`.
+
+See above for supported image formats.
 
 ### Using hard drives
 

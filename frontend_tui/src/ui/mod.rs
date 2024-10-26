@@ -2,6 +2,7 @@ mod browser;
 mod debugger;
 mod status;
 
+use std::fs;
 use std::io::stdout;
 
 use anyhow::{bail, Context, Result};
@@ -72,6 +73,10 @@ impl UserInterface {
         let Ok(EmulatorEvent::Status(emustatus)) = eventrecv.try_recv() else {
             panic!("Initial status message not received")
         };
+
+        // Make sure floppy image directory exists
+        fs::create_dir_all(Self::DIR_FLOPPIES)?;
+
         Ok(Self {
             state_log: TuiWidgetState::default(),
             state_debugger: DebuggerWidgetState::default(),
