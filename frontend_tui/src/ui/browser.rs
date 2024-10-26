@@ -1,11 +1,14 @@
 use std::{fs, path::PathBuf};
 
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Margin},
     prelude::{Buffer, Rect, StatefulWidget, Widget},
     style::{Style, Stylize},
     text::{Line, Span, Text},
-    widgets::{Block, Cell, HighlightSpacing, Paragraph, Row, Table, TableState},
+    widgets::{
+        Block, Cell, HighlightSpacing, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Table, TableState,
+    },
 };
 use snow_floppy::{
     loaders::{Autodetect, FloppyImageLoader, ImageType},
@@ -31,6 +34,7 @@ pub struct BrowserWidgetState {
     metadata: FloppyMetadata,
     floppytype: Option<FloppyType>,
     imagetype: Option<ImageType>,
+    scrollbar: ScrollbarState,
 }
 
 impl BrowserWidgetState {
@@ -51,6 +55,7 @@ impl BrowserWidgetState {
         };
         entries.sort_unstable_by_key(|e| e.path.file_name().unwrap().to_string_lossy().to_string());
         let mut result = Self {
+            scrollbar: ScrollbarState::new(entries.len() - 1),
             entries,
             target_drive,
             tablestate: TableState::default().with_selected(0),
@@ -95,6 +100,9 @@ impl BrowserWidgetState {
                 }
                 self.update_metadata();
             }
+        }
+        if let Some(select) = self.tablestate.selected() {
+            self.scrollbar = self.scrollbar.position(select);
         }
     }
 
@@ -142,7 +150,7 @@ impl StatefulWidget for BrowserWidget {
 
         // Image list table
         StatefulWidget::render(
-            Table::new(rows, [Constraint::Percentage(100), Constraint::Min(5)])
+            Table::new(rows, [Constraint::Percentage(100), Constraint::Min(10)])
                 .header(
                     ["Filename", "Type"]
                         .into_iter()
@@ -160,6 +168,23 @@ impl StatefulWidget for BrowserWidget {
             layout[0],
             buf,
             &mut state.tablestate,
+        );
+
+        // Scrollbar
+        StatefulWidget::render(
+            Scrollbar::default()
+                .orientation(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_symbol(Some("░"))
+                .track_style(Style::default().blue().on_black().bold())
+                .thumb_style(Style::default().blue().on_blue().not_bold()),
+            layout[0].inner(Margin {
+                vertical: 1,
+                horizontal: 1,
+            }),
+            buf,
+            &mut state.scrollbar,
         );
 
         // Metadata
