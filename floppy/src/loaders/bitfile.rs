@@ -52,6 +52,7 @@ impl FloppyImageLoader for Bitfile {
 
         let mut offset = 0;
         for tracknum in 0..tracks {
+            let mut zeroes = 0;
             let bytes = u32::from_le_bytes(data[offset..(offset + 4)].try_into().unwrap()) as usize;
             let bits =
                 u32::from_le_bytes(data[(offset + 4)..(offset + 8)].try_into().unwrap()) as usize;
@@ -60,18 +61,16 @@ impl FloppyImageLoader for Bitfile {
             }
             image.set_actual_track_length(tracknum / 80, tracknum % 80, bits);
             offset += 8;
-            for p in 0..bytes {
-                image.set_track_bit(
-                    tracknum / 80,
-                    tracknum % 80,
-                    p,
-                    match data[offset] {
-                        0 => false,
-                        1 => true,
-                        _ => bail!("Invalid bit value at offset {}: {}", offset, data[offset]),
-                    },
-                );
+            for _ in 0..bytes {
+                match data[offset] {
+                    0 => zeroes += 1,
+                    1 => image.push(tracknum / 80, tracknum % 80, (zeroes + 1) * 16),
+                    _ => bail!("Invalid bit value at offset {}: {}", offset, data[offset]),
+                };
                 offset += 1;
+            }
+            if zeroes > 0 {
+                image.stitch(tracknum / 80, tracknum % 80, zeroes * 16);
             }
         }
         Ok(image)
@@ -85,11 +84,12 @@ impl FloppyImageSaver for Bitfile {
                 w.write_all(&(img.get_track_length(side, track) as u32).to_le_bytes())?;
                 w.write_all(&(img.get_track_length(side, track) as u32).to_le_bytes())?;
                 for p in 0..img.get_track_length(side, track) {
-                    w.write_all(if img.get_track_bit(side, track, p) {
-                        &[1_u8]
-                    } else {
-                        &[0_u8]
-                    })?;
+                    todo!()
+                    //w.write_all(if img.get_track_bit(side, track, p) {
+                    //    &[1_u8]
+                    //} else {
+                    //    &[0_u8]
+                    //})?;
                 }
             }
         }

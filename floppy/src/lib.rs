@@ -6,6 +6,11 @@ use std::collections::HashMap;
 use log::*;
 use strum::EnumIter;
 
+pub const NS_PER_TICK: i16 = 125;
+
+/// Timing unit, in 125ns increments.
+pub type FloppyTicks = i16;
+
 /// Key/value collection of floppy metadata.
 /// Loaders should convert keys to lowercase.
 pub type FloppyMetadata = HashMap<String, String>;
@@ -78,11 +83,8 @@ pub trait Floppy {
     /// Gets the amount of tracks per side
     fn get_track_count(&self) -> usize;
 
-    /// Gets a specific bit on a track and side
-    fn get_track_bit(&self, side: usize, track: usize, position: usize) -> bool;
-
-    /// Sets a specific bit on a track and side
-    fn set_track_bit(&mut self, side: usize, track: usize, position: usize, value: bool);
+    /// Gets a specific transition on a track and side
+    fn get_track_transition(&self, side: usize, track: usize, position: usize) -> FloppyTicks;
 
     /// Gets the length of a specific track, in bits
     fn get_track_length(&self, side: usize, track: usize) -> usize;
@@ -101,10 +103,16 @@ pub trait Floppy {
 
 /// An in-memory loaded floppy image
 pub struct FloppyImage {
+    /// Type
     floppy_type: FloppyType,
-    pub(crate) trackdata: [[Vec<u8>; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
-    bitlen: [[usize; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
+
+    /// Floppy track data, stored in flux transition time (in ticks)
+    pub(crate) trackdata: [[Vec<FloppyTicks>; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
+
+    /// Some way to represent what is on this floppy (e.g. the label)
     title: String,
+
+    /// Metadata as parsed from the input image, as key/value
     metadata: FloppyMetadata,
 }
 
@@ -131,7 +139,6 @@ impl FloppyImage {
         Self {
             floppy_type,
             trackdata: core::array::from_fn(|_| core::array::from_fn(|_| vec![])),
-            bitlen: [[0; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
             title: title.to_owned(),
             metadata: FloppyMetadata::from([("title".to_string(), title.to_string())]),
         }
@@ -151,15 +158,22 @@ impl FloppyImage {
                 side, track, perc_inc, old_sz, sz
             );
         }
-        self.bitlen[side][track] = sz;
-        self.trackdata[side][track].resize(sz / 8 + 1, 0);
+        self.trackdata[side][track].resize(sz, 0);
     }
 
-    pub(crate) fn push_byte(&mut self, side: usize, track: usize, byte: u8) {
-        self.bitlen[side][track] += 8;
-        self.trackdata[side][track].push(byte);
+    /// Inserts a new transition at the end of the track
+    pub(crate) fn push(&mut self, side: usize, track: usize, time: FloppyTicks) {
+        self.trackdata[side][track].push(time);
     }
 
+    /// Stitches the start and end of a track together if the end of the track ends in
+    /// zeroes.
+    pub(crate) fn stitch(&mut self, side: usize, track: usize, transition: i16) {
+        let front = self.trackdata[side][track].remove(0);
+        self.push(side, track, front + transition);
+    }
+
+    /// Sets a key/value pair in the image metadata
     pub(crate) fn set_metadata(&mut self, key: &str, val: &str) {
         self.metadata.insert(key.to_lowercase(), val.to_string());
     }
@@ -174,24 +188,12 @@ impl Floppy for FloppyImage {
         80
     }
 
-    fn get_track_bit(&self, side: usize, track: usize, position: usize) -> bool {
-        let byte = position / 8;
-        let bit = 7 - position % 8;
-        self.trackdata[side][track][byte] & (1 << bit) != 0
-    }
-
-    fn set_track_bit(&mut self, side: usize, track: usize, position: usize, value: bool) {
-        let byte = position / 8;
-        let bit = 7 - position % 8;
-
-        self.trackdata[side][track][byte] &= !(1 << bit);
-        if value {
-            self.trackdata[side][track][byte] |= 1 << bit;
-        }
+    fn get_track_transition(&self, side: usize, track: usize, position: usize) -> FloppyTicks {
+        self.trackdata[side][track][position]
     }
 
     fn get_track_length(&self, side: usize, track: usize) -> usize {
-        self.bitlen[side][track]
+        self.trackdata[side][track].len()
     }
 
     fn get_side_count(&self) -> usize {

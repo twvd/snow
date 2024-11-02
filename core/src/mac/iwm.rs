@@ -68,6 +68,9 @@ pub(crate) struct IwmDrive {
     pwm_avg_sum: i64,
     pwm_avg_count: usize,
     pwm_dutycycle: Ticks,
+
+    head_bit: [bool; 2],
+    head_ticks: [Ticks; 2],
 }
 
 /// Direction the drive head is set to step to
@@ -258,6 +261,9 @@ impl IwmDrive {
             pwm_avg_sum: 0,
             pwm_avg_count: 0,
             pwm_dutycycle: 0,
+
+            head_bit: [false; 2],
+            head_ticks: [0; 2],
         }
     }
 
@@ -426,15 +432,14 @@ impl IwmDrive {
         self.track
     }
 
-    /// Gets the length (in bits) of a track
+    /// Gets the length (in transitions) of a track
     fn get_track_len(&self, side: usize, track: usize) -> usize {
         self.floppy.get_track_length(side, track)
     }
 
     /// Gets the physical disk bit currently under a head
     fn get_head_bit(&self, head: usize) -> bool {
-        self.floppy
-            .get_track_bit(head, self.get_active_track(), self.track_position)
+        self.head_bit[head]
     }
 
     /// Advances to the next bit on the track
@@ -449,8 +454,8 @@ impl IwmDrive {
 
     /// Writes a bit to the current track position
     fn write_bit(&mut self, head: usize, bit: bool) {
-        self.floppy
-            .set_track_bit(head, self.track, self.track_position, bit);
+        //self.floppy
+        //    .set_track_bit(head, self.track, self.track_position, bit);
     }
 
     /// Ejects the disk
@@ -728,13 +733,27 @@ impl Tickable for Iwm {
             let new_stepping = self.get_selected_drive().stepping.saturating_sub(ticks);
             self.get_selected_drive_mut().stepping = new_stepping;
 
-            if self.cycles % self.get_selected_drive().get_ticks_per_bit() == 0 {
-                let head = self.get_active_head();
+            let head = self.get_active_head();
 
-                // Progress the head over the track
+            self.get_selected_drive_mut().head_ticks[head] =
+                self.get_selected_drive().head_ticks[head].saturating_sub(ticks);
+
+            if self.cycles % 16 == 0 {
                 self.shdata <<= 1;
-                if self.get_selected_drive_mut().next_bit(head) {
+                if self.get_selected_drive().head_ticks[head] == 0 {
+                    // Flux transition occured
                     self.shdata |= 1;
+                    self.get_selected_drive_mut().track_position =
+                        (self.get_selected_drive().track_position + 1)
+                            % self
+                                .get_selected_drive()
+                                .get_track_len(head, self.get_selected_drive().get_active_track());
+                    self.get_selected_drive_mut().head_ticks[head] =
+                        self.get_selected_drive().floppy.get_track_transition(
+                            head,
+                            self.get_selected_drive().get_active_track(),
+                            self.get_selected_drive().track_position,
+                        ) as Ticks;
                 }
 
                 if self.shdata & 0x80 != 0 {
@@ -744,24 +763,24 @@ impl Tickable for Iwm {
                     self.datareg = self.shdata;
                     self.shdata = 0;
                 }
+            }
 
-                if self.write_pos == 0 && self.write_buffer.is_some() {
-                    // Write idle and new data in write FIFO, start writing 8 new bits
-                    let Some(v) = self.write_buffer else {
-                        unreachable!()
-                    };
-                    self.write_shift = v;
-                    self.write_pos = 8;
-                    self.write_buffer = None;
-                }
-                if self.write_pos > 0 {
-                    // Write in progress - write one bit to current head location
-                    let bit = self.write_shift & 0x80 != 0;
-                    let head = self.get_active_head();
-                    self.write_shift <<= 1;
-                    self.write_pos -= 1;
-                    self.get_selected_drive_mut().write_bit(head, bit);
-                }
+            if self.write_pos == 0 && self.write_buffer.is_some() {
+                // Write idle and new data in write FIFO, start writing 8 new bits
+                let Some(v) = self.write_buffer else {
+                    unreachable!()
+                };
+                self.write_shift = v;
+                self.write_pos = 8;
+                self.write_buffer = None;
+            }
+            if self.write_pos > 0 {
+                // Write in progress - write one bit to current head location
+                let bit = self.write_shift & 0x80 != 0;
+                let head = self.get_active_head();
+                self.write_shift <<= 1;
+                self.write_pos -= 1;
+                self.get_selected_drive_mut().write_bit(head, bit);
             }
         }
 

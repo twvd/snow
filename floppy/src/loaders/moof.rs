@@ -223,14 +223,23 @@ impl FloppyImageLoader for Moof {
 
                 let trk = &trks.entries[entry_idx];
 
-                img.set_actual_track_length(side, track, trk.bits_bytes as usize);
+                //img.set_actual_track_length(side, track, trk.bits_bytes as usize);
 
                 // Fill track
                 let block = &data[trk.data_range()];
+                let mut zeroes = 0;
                 for blockbit in trk.bit_range() {
                     let byte = blockbit / 8;
                     let bit = 7 - blockbit % 8;
-                    img.set_track_bit(side, track, blockbit, block[byte] & (1 << bit) != 0);
+                    if block[byte] & (1 << bit) != 0 {
+                        img.push(side, track, (zeroes + 1) * 16);
+                        zeroes = 0;
+                    } else {
+                        zeroes += 1;
+                    }
+                }
+                if zeroes > 0 {
+                    img.stitch(side, track, zeroes * 16);
                 }
             }
         }

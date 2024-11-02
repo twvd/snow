@@ -9,6 +9,7 @@ pub struct MacFormatEncoder<'a> {
 
     enc_track: usize,
     enc_side: usize,
+    enc_zeroes: i16,
 }
 
 impl<'a> MacFormatEncoder<'a> {
@@ -59,18 +60,23 @@ impl<'a> MacFormatEncoder<'a> {
     const BIT_SLIP_SEQ: &'static [u8] = &[0xDE, 0xAA, 0xFF, 0xFF];
 
     fn push_physical(&mut self, data: &[u8]) {
-        for b in data {
-            self.image.push_byte(self.enc_side, self.enc_track, *b);
+        for mut byte in data.iter().copied() {
+            for _ in 0..8 {
+                if byte & (1 << 7) != 0 {
+                    self.image
+                        .push(self.enc_side, self.enc_track, (self.enc_zeroes + 1) * 16);
+                    self.enc_zeroes = 0;
+                } else {
+                    self.enc_zeroes += 1;
+                }
+                byte <<= 1;
+            }
         }
     }
 
     fn push_physical_enc(&mut self, data: &[u8]) {
         for b in data {
-            self.image.push_byte(
-                self.enc_side,
-                self.enc_track,
-                Self::GCR_ENCTABLE[*b as usize],
-            );
+            self.push_physical(&[Self::GCR_ENCTABLE[*b as usize]]);
         }
     }
 
@@ -248,6 +254,12 @@ impl<'a> MacFormatEncoder<'a> {
                     self.push_sector_data(tsector as u8, tag, data);
                 }
                 sector_offset += Self::SECTORS_PER_TRACK[speedgroup];
+
+                if self.enc_zeroes > 0 {
+                    self.image
+                        .stitch(self.enc_side, self.enc_track, self.enc_zeroes * 16);
+                    self.enc_zeroes = 0;
+                }
             }
         }
         Ok(())
@@ -282,6 +294,7 @@ impl<'a> MacFormatEncoder<'a> {
             image: FloppyImage::new_empty(format, title),
             enc_track: 0,
             enc_side: 0,
+            enc_zeroes: 0,
         })
     }
 }
