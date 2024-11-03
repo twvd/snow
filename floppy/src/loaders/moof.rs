@@ -153,8 +153,15 @@ impl Moof {
 impl FloppyImageLoader for Moof {
     fn load(data: &[u8]) -> Result<FloppyImage> {
         let mut cursor = Cursor::new(data);
-        let _header = MoofHeader::read(&mut cursor)?;
-        // TODO checksum
+        let header = MoofHeader::read(&mut cursor)?;
+        let checksum = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC).checksum(&data[12..]);
+        if checksum != header.crc {
+            bail!(
+                "Checksum verification failed - calculated: {:08X}, file: {:08X}",
+                checksum,
+                header.crc
+            );
+        }
 
         let mut info = None;
         let mut tmap = None;
