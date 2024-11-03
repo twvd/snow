@@ -5,7 +5,7 @@ use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
-use snow_floppy::{Floppy, FloppyImage, FloppyType};
+use snow_floppy::{Floppy, FloppyImage, FloppyTicks, FloppyType};
 use strum::Display;
 
 use crate::{
@@ -13,6 +13,52 @@ use crate::{
     tickable::{Tickable, Ticks, TICKS_PER_SECOND},
     types::LatchingEvent,
 };
+
+enum FluxTransitionTime {
+    /// 1
+    Short,
+    /// 01
+    Medium,
+    /// 001
+    Long,
+}
+
+impl FluxTransitionTime {
+    pub fn from_ticks_ex(mut ticks: FloppyTicks, fast: bool, highf: bool) -> Option<Self> {
+        if !fast {
+            ticks *= 2;
+        }
+
+        // Below is from Integrated Woz Machine (IWM) Specification, 1982, rev 19, page 4.
+        match (fast, highf) {
+            (false, false) | (true, false) => match ticks {
+                7..=20 => Some(Self::Short),
+                21..=34 => Some(Self::Medium),
+                35..=48 => Some(Self::Long),
+                _ => None,
+            },
+            (true, true) | (false, true) => match ticks {
+                8..=23 => Some(Self::Short),
+                24..=39 => Some(Self::Medium),
+                40..=55 => Some(Self::Long),
+                _ => None,
+            },
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn from_ticks(ticks: FloppyTicks) -> Option<Self> {
+        Self::from_ticks_ex(ticks, true, true)
+    }
+
+    pub fn into_bits(self) -> &'static [bool] {
+        match self {
+            Self::Short => &[true],
+            Self::Medium => &[false, true],
+            Self::Long => &[false, false, true],
+        }
+    }
+}
 
 /// Integrated Woz Machine - floppy drive controller
 pub struct Iwm {
@@ -70,7 +116,8 @@ pub(crate) struct IwmDrive {
     pwm_dutycycle: Ticks,
 
     head_bit: [bool; 2],
-    head_ticks: [Ticks; 2],
+    head_ticks: [FloppyTicks; 2],
+    head_ticks_left: [FloppyTicks; 2],
 }
 
 /// Direction the drive head is set to step to
@@ -264,6 +311,7 @@ impl IwmDrive {
 
             head_bit: [false; 2],
             head_ticks: [0; 2],
+            head_ticks_left: [0; 2],
         }
     }
 
@@ -663,6 +711,22 @@ impl Iwm {
     pub fn get_active_image(&self, drive: usize) -> &FloppyImage {
         &self.drives[drive].floppy
     }
+
+    /// Shifts a bit into the read data shift register
+    fn shift_bit(&mut self, bit: bool) {
+        self.shdata <<= 1;
+        if bit {
+            self.shdata |= 1;
+        }
+
+        if self.shdata & 0x80 != 0 {
+            // Data is moved to the data register when the most significant bit is set.
+            // Because the Mac uses GCR encoding, the most significant bit is always set in
+            // any valid data.
+            self.datareg = self.shdata;
+            self.shdata = 0;
+        }
+    }
 }
 
 impl BusMember<Address> for Iwm {
@@ -735,34 +799,44 @@ impl Tickable for Iwm {
 
             let head = self.get_active_head();
 
-            self.get_selected_drive_mut().head_ticks[head] =
-                self.get_selected_drive().head_ticks[head].saturating_sub(ticks);
+            self.get_selected_drive_mut().head_ticks_left[head] -= ticks as i16;
 
-            if self.cycles % 16 == 0 {
-                self.shdata <<= 1;
-                if self.get_selected_drive().head_ticks[head] == 0 {
-                    // Flux transition occured
-                    self.shdata |= 1;
-                    self.get_selected_drive_mut().track_position =
-                        (self.get_selected_drive().track_position + 1)
-                            % self
-                                .get_selected_drive()
-                                .get_track_len(head, self.get_selected_drive().get_active_track());
-                    self.get_selected_drive_mut().head_ticks[head] =
-                        self.get_selected_drive().floppy.get_track_transition(
-                            head,
-                            self.get_selected_drive().get_active_track(),
-                            self.get_selected_drive().track_position,
-                        ) as Ticks;
+            if self.get_selected_drive().head_ticks_left[head] <= 0 {
+                // Flux transition occured
+
+                // Introduce some pseudo-random jitter on the timing to emulate
+                // the minor differences introduced by motor RPM instability and
+                // physical movement of the disk donut.
+                let jitter = -2 + (self.cycles % 4) as i16;
+
+                // Check bit cell window
+                // TODO incorporate actual drive speed from PWM on 128K/512K?
+                if let Some(time) = FluxTransitionTime::from_ticks_ex(
+                    self.get_selected_drive().head_ticks[head] + jitter,
+                    self.mode.fast(),
+                    self.mode.speed(),
+                ) {
+                    // Transition occured within the window, shift bits into the
+                    // IWM shift register.
+                    for &b in time.into_bits() {
+                        self.shift_bit(b);
+                    }
                 }
 
-                if self.shdata & 0x80 != 0 {
-                    // Data is moved to the data register when the most significant bit is set.
-                    // Because the Mac uses GCR encoding, the most significant bit is always set in
-                    // any valid data.
-                    self.datareg = self.shdata;
-                    self.shdata = 0;
-                }
+                // Advance image to the next transition
+                self.get_selected_drive_mut().track_position =
+                    (self.get_selected_drive().track_position + 1)
+                        % self
+                            .get_selected_drive()
+                            .get_track_len(head, self.get_selected_drive().get_active_track());
+                self.get_selected_drive_mut().head_ticks[head] =
+                    self.get_selected_drive().floppy.get_track_transition(
+                        head,
+                        self.get_selected_drive().get_active_track(),
+                        self.get_selected_drive().track_position,
+                    );
+                self.get_selected_drive_mut().head_ticks_left[head] =
+                    self.get_selected_drive().head_ticks[head];
             }
 
             if self.write_pos == 0 && self.write_buffer.is_some() {
