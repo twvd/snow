@@ -153,8 +153,10 @@ impl UserInterface {
                                 error!("Command failed: {:?}", e);
                             }
                         }
+                        KeyCode::Esc => self.cmd = None,
                         _ => (),
                     }
+                    continue;
                 }
 
                 match (self.view, key.code) {
