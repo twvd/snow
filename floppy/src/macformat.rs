@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 
-use crate::{Floppy, FloppyImage, FloppyType};
+use crate::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
 
 pub struct MacFormatEncoder<'a> {
     data: &'a [u8],
@@ -260,6 +260,7 @@ impl<'a> MacFormatEncoder<'a> {
                         .stitch(self.enc_side, self.enc_track, self.enc_zeroes * 16);
                     self.enc_zeroes = 0;
                 }
+                self.image.origtracktype[side][track] = OriginalTrackType::Sector;
             }
         }
         Ok(())

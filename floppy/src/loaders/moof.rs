@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 
 use super::FloppyImageLoader;
-use crate::{Floppy, FloppyImage, FloppyType};
+use crate::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
 
 use anyhow::{bail, Context, Result};
 use binrw::io::Cursor;
@@ -213,6 +213,7 @@ impl FloppyImageLoader for Moof {
                     let entry_idx = flux.tracks[track][side] as usize;
                     let trk = &trks.entries[entry_idx];
                     let mut last = 0;
+
                     for &b in &data[trk.flux_range()] {
                         last += b as i16;
                         if b == 255 {
@@ -224,9 +225,12 @@ impl FloppyImageLoader for Moof {
                         img.push(side, track, last);
                         last = 0;
                     }
+
                     if last > 0 {
                         img.push(side, track, last);
                     }
+
+                    img.origtracktype[side][track] = OriginalTrackType::Flux;
                     continue;
                 }
             }
@@ -240,8 +244,6 @@ impl FloppyImageLoader for Moof {
                 }
 
                 let trk = &trks.entries[entry_idx];
-
-                //img.set_actual_track_length(side, track, trk.bits_bytes as usize);
 
                 // Fill track
                 let block = &data[trk.data_range()];
@@ -259,6 +261,7 @@ impl FloppyImageLoader for Moof {
                 if zeroes > 0 {
                     img.stitch(side, track, zeroes * 16);
                 }
+                img.origtracktype[side][track] = OriginalTrackType::Bitstream;
             }
         }
 

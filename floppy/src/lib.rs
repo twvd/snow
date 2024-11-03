@@ -6,9 +6,10 @@ use std::collections::HashMap;
 use log::*;
 use strum::EnumIter;
 
+/// Amount of nanoseconds per FloppyTick
 pub const NS_PER_TICK: i16 = 125;
 
-/// Timing unit, in 125ns increments.
+/// Timing unit, in 125ns (NS_PER_TICK) increments.
 pub type FloppyTicks = i16;
 
 /// Key/value collection of floppy metadata.
@@ -22,6 +23,20 @@ pub enum FloppyType {
     Mac400K,
     /// Macintosh CLV 3.5", double sided
     Mac800K,
+}
+
+/// Type of the original track when loaded from the image
+#[derive(Copy, Clone, EnumIter, Default, Eq, PartialEq)]
+pub enum OriginalTrackType {
+    /// Unknown
+    #[default]
+    Unknown,
+    /// Logical sector data
+    Sector,
+    /// Physical bitstream data
+    Bitstream,
+    /// Flux transitions
+    Flux,
 }
 
 impl FloppyType {
@@ -109,6 +124,9 @@ pub struct FloppyImage {
     /// Floppy track data, stored in flux transition time (in ticks)
     pub(crate) trackdata: [[Vec<FloppyTicks>; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
 
+    /// Original track types at load time
+    pub(crate) origtracktype: [[OriginalTrackType; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
+
     /// Some way to represent what is on this floppy (e.g. the label)
     title: String,
 
@@ -141,6 +159,7 @@ impl FloppyImage {
             trackdata: core::array::from_fn(|_| core::array::from_fn(|_| vec![])),
             title: title.to_owned(),
             metadata: FloppyMetadata::from([("title".to_string(), title.to_string())]),
+            origtracktype: [[Default::default(); FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
         }
     }
 
@@ -176,6 +195,17 @@ impl FloppyImage {
     /// Sets a key/value pair in the image metadata
     pub(crate) fn set_metadata(&mut self, key: &str, val: &str) {
         self.metadata.insert(key.to_lowercase(), val.to_string());
+    }
+
+    /// Gets the original type of a track
+    pub fn get_original_track_type(&self, side: usize, track: usize) -> OriginalTrackType {
+        self.origtracktype[side][track]
+    }
+
+    pub fn count_original_track_type(&self, origtype: OriginalTrackType) -> usize {
+        self.origtracktype
+            .iter()
+            .fold(0, |a, s| a + s.iter().filter(|&&t| t == origtype).count())
     }
 }
 
