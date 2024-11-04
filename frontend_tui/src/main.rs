@@ -95,6 +95,9 @@ fn setup_panic_handler() {
         let _ = disable_raw_mode();
         let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
         original_hook(panic_info);
+
+        // Exit the process in case this doesn't happen on the main thread
+        std::process::exit(1);
     }));
 }
 
@@ -174,6 +177,8 @@ fn main() -> Result<()> {
 
     // Spin up emulator thread
     let emuthread = thread::spawn(move || loop {
+        setup_panic_handler();
+
         match emulator.tick(1) {
             Ok(0) => break,
             Ok(_) => (),
