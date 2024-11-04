@@ -207,6 +207,93 @@ impl FloppyImage {
             .iter()
             .fold(0, |a, s| a + s.iter().filter(|&&t| t == origtype).count())
     }
+
+    pub fn write_flux(
+        &mut self,
+        side: usize,
+        track: usize,
+        startpos: usize,
+        bits: &[bool],
+    ) -> isize {
+        eprintln!("write head {} track {}", side, track);
+        let mut ticks = bits.len() * 16;
+        let origtime = self.trackdata[side][track]
+            .iter()
+            .fold(0, |a, &i| a + (i as usize));
+        // TODO writing past one full revolution?
+
+        let mut transitions: Vec<i16> = vec![];
+        let mut last = 0;
+
+        for &b in bits {
+            last += 16;
+            if b {
+                transitions.push(last);
+                last = 0;
+            }
+        }
+        if last > 0 {
+            // Always end with a 1
+            eprintln!("last was a 0");
+            transitions.push(last);
+        }
+        eprintln!(
+            "startpos: {} - len: {} - transitions len: {}",
+            startpos,
+            self.trackdata[side][track].len(),
+            transitions.len()
+        );
+
+        // Remove time from after the starting position of the write splice
+        eprintln!("start ticks: {}", ticks);
+        let mut elements_removed = 0;
+        while ticks > 0 && self.trackdata[side][track].len() > startpos {
+            if ticks > self.trackdata[side][track][startpos] as usize {
+                // Consume the entire transition
+                ticks -= self.trackdata[side][track].remove(startpos) as usize;
+                elements_removed += 1;
+            } else {
+                // Consume PART of the transition
+                assert!(ticks <= i16::MAX as usize);
+                let new_t = self.trackdata[side][track][startpos] - ticks as i16;
+                self.trackdata[side][track][startpos] = new_t;
+                ticks = 0;
+            }
+        }
+
+        // Insert the newly written flux
+        eprintln!("before insert: {}", ticks);
+        eprintln!("len of new: {}", transitions.len());
+        eprintln!("len before insert: {}", self.trackdata[side][track].len());
+        let elements_added = transitions.len() as isize;
+        self.trackdata[side][track].splice(startpos..startpos, transitions);
+        eprintln!("len after insert: {}", self.trackdata[side][track].len());
+
+        // If we crossed the track rotation point, consume transitions from the front
+        while ticks > 0 {
+            if ticks > self.trackdata[side][track][0] as usize {
+                // Consume the entire transition
+                ticks -= self.trackdata[side][track].remove(0) as usize;
+                elements_removed += 1;
+            } else {
+                // Consume PART of the transition
+                assert!(ticks <= i16::MAX as usize);
+                let new_t = self.trackdata[side][track][0] - ticks as i16;
+                self.trackdata[side][track][0] = new_t;
+                ticks = 0;
+            }
+        }
+
+        // Verify the total rotation time has not changed
+        let newtime = self.trackdata[side][track]
+            .iter()
+            .fold(0, |a, &i| a + (i as usize));
+        assert_eq!(origtime, newtime);
+
+        // Return the correction offset of the active track position
+        eprintln!("removed: {} added: {}", elements_removed, elements_added);
+        elements_removed - elements_added
+    }
 }
 
 impl Floppy for FloppyImage {

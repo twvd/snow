@@ -118,6 +118,12 @@ pub(crate) struct IwmDrive {
     head_bit: [bool; 2],
     head_ticks: [FloppyTicks; 2],
     head_ticks_left: [FloppyTicks; 2],
+
+    /// Track position at which writing has started
+    write_startpos: Option<usize>,
+
+    /// Bits passed to the IWM write data register
+    writes: Vec<bool>,
 }
 
 /// Direction the drive head is set to step to
@@ -312,6 +318,9 @@ impl IwmDrive {
             head_bit: [false; 2],
             head_ticks: [0; 2],
             head_ticks_left: [0; 2],
+
+            write_startpos: None,
+            writes: vec![],
         }
     }
 
@@ -500,10 +509,26 @@ impl IwmDrive {
         self.get_head_bit(head)
     }
 
+    /// Starts a write operation
+    fn write_start(&mut self) {
+        assert!(self.writes.is_empty());
+        assert!(self.write_startpos.is_none());
+        self.write_startpos = Some(self.track_position);
+    }
+
     /// Writes a bit to the current track position
-    fn write_bit(&mut self, head: usize, bit: bool) {
-        //self.floppy
-        //    .set_track_bit(head, self.track, self.track_position, bit);
+    fn write_bit(&mut self, _head: usize, bit: bool) {
+        self.writes.push(bit);
+    }
+
+    /// Commits the write operation to the image
+    fn write_commit(&mut self, head: usize) {
+        let track = self.get_active_track();
+        let offset =
+            self.floppy
+                .write_flux(head, track, self.write_startpos.unwrap(), &self.writes);
+        self.writes.clear();
+        self.write_startpos = None;
     }
 
     /// Ejects the disk
@@ -837,24 +862,31 @@ impl Tickable for Iwm {
                     );
                 self.get_selected_drive_mut().head_ticks_left[head] =
                     self.get_selected_drive().head_ticks[head];
-            }
 
-            if self.write_pos == 0 && self.write_buffer.is_some() {
-                // Write idle and new data in write FIFO, start writing 8 new bits
-                let Some(v) = self.write_buffer else {
-                    unreachable!()
-                };
-                self.write_shift = v;
-                self.write_pos = 8;
-                self.write_buffer = None;
-            }
-            if self.write_pos > 0 {
-                // Write in progress - write one bit to current head location
-                let bit = self.write_shift & 0x80 != 0;
-                let head = self.get_active_head();
-                self.write_shift <<= 1;
-                self.write_pos -= 1;
-                self.get_selected_drive_mut().write_bit(head, bit);
+                if self.write_pos == 0 && self.write_buffer.is_some() {
+                    // Write idle and new data in write FIFO
+                    let Some(v) = self.write_buffer else {
+                        unreachable!()
+                    };
+                    self.write_shift = v;
+                    self.write_pos = 8;
+                    self.write_buffer = None;
+                    if self.get_selected_drive().writes.is_empty() {
+                        self.get_selected_drive_mut().write_start();
+                    }
+                }
+                if self.write_pos > 0 {
+                    // Write in progress - write one bit to current head location
+                    let bit = self.write_shift & 0x80 != 0;
+                    let head = self.get_active_head();
+                    self.write_shift <<= 1;
+                    self.write_pos -= 1;
+                    self.get_selected_drive_mut().write_bit(head, bit);
+                    if !self.is_writing() && self.write_pos == 0 {
+                        // No data in write buffer, commit to image
+                        self.get_selected_drive_mut().write_commit(head);
+                    }
+                }
             }
         }
 
