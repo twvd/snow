@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 
 use super::FloppyImageLoader;
-use crate::{Floppy, FloppyImage, FloppyType};
+use crate::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
 
 use anyhow::{bail, Context, Result};
 use binrw::io::Cursor;
@@ -209,6 +209,8 @@ impl FloppyImageLoader for Moof {
                         "Flux track on track {} side {}, currently unsupported",
                         track, side
                     );
+
+                    img.origtracktype[side][track] = OriginalTrackType::Flux;
                     continue;
                 }
             }
@@ -232,6 +234,7 @@ impl FloppyImageLoader for Moof {
                     let bit = 7 - blockbit % 8;
                     img.set_track_bit(side, track, blockbit, block[byte] & (1 << bit) != 0);
                 }
+                img.origtracktype[side][track] = OriginalTrackType::Bitstream;
             }
         }
 

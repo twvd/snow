@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 
-use crate::{Floppy, FloppyImage, FloppyType};
+use crate::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
 
 pub struct MacFormatEncoder<'a> {
     data: &'a [u8],
@@ -248,6 +248,8 @@ impl<'a> MacFormatEncoder<'a> {
                     self.push_sector_data(tsector as u8, tag, data);
                 }
                 sector_offset += Self::SECTORS_PER_TRACK[speedgroup];
+
+                self.image.origtracktype[side][track] = OriginalTrackType::Sector;
             }
         }
         Ok(())

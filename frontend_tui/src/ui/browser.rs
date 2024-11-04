@@ -12,7 +12,7 @@ use ratatui::{
 };
 use snow_floppy::{
     loaders::{Autodetect, FloppyImageLoader, ImageType},
-    Floppy, FloppyMetadata, FloppyType,
+    Floppy, FloppyMetadata, FloppyType, OriginalTrackType,
 };
 
 pub struct BrowserEntry {
@@ -34,6 +34,7 @@ pub struct BrowserWidgetState {
     metadata: FloppyMetadata,
     floppytype: Option<FloppyType>,
     imagetype: Option<ImageType>,
+    tracks: String,
     scrollbar: ScrollbarState,
 }
 
@@ -116,6 +117,12 @@ impl BrowserWidgetState {
         if let Ok(img) = Autodetect::load_file(s.as_os_str().to_str().unwrap()) {
             self.metadata = img.get_metadata();
             self.floppytype = Some(img.get_type());
+            self.tracks = format!(
+                "{}/{}/{}",
+                img.count_original_track_type(OriginalTrackType::Flux),
+                img.count_original_track_type(OriginalTrackType::Bitstream),
+                img.count_original_track_type(OriginalTrackType::Sector),
+            );
         } else {
             self.metadata = Default::default();
             self.floppytype = None;
@@ -222,6 +229,10 @@ impl StatefulWidget for BrowserWidget {
             Line::from(vec![
                 Span::from("Image type   : ").style(meta_key),
                 Span::from(state.imagetype.unwrap().as_friendly_str()).style(meta_value),
+            ]),
+            Line::from(vec![
+                Span::from("Tracks  F/B/S: ").style(meta_key),
+                Span::from(&state.tracks).style(meta_value),
             ]),
         ])
         .render(layout_meta[1], buf);
