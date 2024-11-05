@@ -201,9 +201,25 @@ impl FloppyImage {
         self.trackdata[side][track].resize(sz / 8 + 1, 0);
     }
 
+    pub fn get_track_type(&mut self, side: usize, track: usize) -> TrackType {
+        if !self.flux_trackdata[side][track].is_empty() {
+            assert!(self.trackdata[side][track].is_empty());
+            TrackType::Flux
+        } else {
+            assert!(self.flux_trackdata[side][track].is_empty());
+            TrackType::Bitstream
+        }
+    }
+
     pub(crate) fn push_byte(&mut self, side: usize, track: usize, byte: u8) {
+        assert!(self.flux_trackdata[side][track].is_empty());
         self.bitlen[side][track] += 8;
         self.trackdata[side][track].push(byte);
+    }
+
+    pub(crate) fn push_flux(&mut self, side: usize, track: usize, transition: FluxTicks) {
+        assert!(self.trackdata[side][track].is_empty());
+        self.flux_trackdata[side][track].push(transition);
     }
 
     pub(crate) fn set_metadata(&mut self, key: &str, val: &str) {

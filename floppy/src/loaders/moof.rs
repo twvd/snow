@@ -122,6 +122,11 @@ impl MoofChunkTrksEntry {
         (self.start_blk as usize * 512)..((self.start_blk as usize + self.blocks as usize) * 512)
     }
 
+    pub fn flux_range(&self) -> std::ops::Range<usize> {
+        (self.start_blk as usize * 512)
+            ..((self.start_blk as usize * 512) + self.bits_bytes as usize)
+    }
+
     pub fn bit_range(&self) -> std::ops::Range<usize> {
         0..(self.bits_bytes as usize)
     }
@@ -212,12 +217,25 @@ impl FloppyImageLoader for Moof {
             if let Some(ref flux) = flux {
                 // Flux track takes precedence
                 if flux.tracks[track][side] != 255 {
-                    warn!(
-                        "Flux track on track {} side {}, currently unsupported",
-                        track, side
-                    );
-
                     img.origtracktype[side][track] = OriginalTrackType::Flux;
+
+                    let entry_idx = flux.tracks[track][side] as usize;
+                    let trk = &trks.entries[entry_idx];
+                    let mut last = 0;
+                    for &b in &data[trk.flux_range()] {
+                        last += b as i16;
+                        if b == 255 {
+                            continue;
+                        }
+                        if last == 0 {
+                            warn!("transition of 0!");
+                        }
+                        img.push_flux(side, track, last);
+                        last = 0;
+                    }
+                    if last > 0 {
+                        img.push_flux(side, track, last);
+                    }
                     continue;
                 }
             }
