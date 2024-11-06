@@ -24,9 +24,9 @@ Currently supported hardware:
  * Audio output (PWM-based models)
 
 Supported floppy image formats:
- * Apple DiskCopy 4.2
- * Applesauce MOOF
- * Raw images
+ * Apple DiskCopy 4.2 (sector-based)
+ * Applesauce MOOF (bitstream and flux)
+ * Raw images (sector-based)
 
 ## Building and running from source
 
@@ -67,7 +67,9 @@ You can also specify an image filename on the command line to have a disk insert
 Writes to floppy disks are not automatically persisted. You can save a new image with the changes you made using `/writedisk1`
 or `/writedisk2`.
 
-See above for supported image formats.
+Snow supports a variety of image formats that are sector-, bitstream- as well as flux-based.
+See above for supported image formats. Writing to images that have tracks with flux accuracy is currently not supported -
+these images will be mounted write protected.
 
 ### Using hard drives
 
