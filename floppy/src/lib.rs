@@ -38,13 +38,20 @@ pub enum OriginalTrackType {
 }
 
 /// Current track type
-#[derive(Copy, Clone, EnumIter, Default, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, EnumIter, Default, Eq, PartialEq)]
 pub enum TrackType {
     /// Physical bitstream data
     #[default]
     Bitstream,
     /// Flux transitions
     Flux,
+}
+
+/// Length of a track in different units
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum TrackLength {
+    Bits(usize),
+    Transitions(usize),
 }
 
 impl FloppyType {
@@ -112,8 +119,8 @@ pub trait Floppy {
     /// Sets a specific bit on a track and side
     fn set_track_bit(&mut self, side: usize, track: usize, position: usize, value: bool);
 
-    /// Gets the length of a specific track, in bits
-    fn get_track_length(&self, side: usize, track: usize) -> usize;
+    /// Gets the length of a specific track
+    fn get_track_length(&self, side: usize, track: usize) -> TrackLength;
 
     /// Gets the amount of sides on the floppy
     fn get_side_count(&self) -> usize;
@@ -185,7 +192,9 @@ impl FloppyImage {
 
     /// Resizes the length of a track to the actual size used in the image
     pub(crate) fn set_actual_track_length(&mut self, side: usize, track: usize, sz: usize) {
-        let old_sz = self.get_track_length(side, track);
+        let TrackLength::Bits(old_sz) = self.get_track_length(side, track) else {
+            panic!("Invalid operation on a flux track")
+        };
         let perc_inc = (100
             - (std::cmp::min(sz as isize, old_sz as isize) * 100)
                 / std::cmp::max(sz as isize, old_sz as isize))
@@ -201,7 +210,7 @@ impl FloppyImage {
         self.trackdata[side][track].resize(sz / 8 + 1, 0);
     }
 
-    pub fn get_track_type(&mut self, side: usize, track: usize) -> TrackType {
+    pub fn get_track_type(&self, side: usize, track: usize) -> TrackType {
         if !self.flux_trackdata[side][track].is_empty() {
             assert!(self.trackdata[side][track].is_empty());
             TrackType::Flux
@@ -237,6 +246,12 @@ impl FloppyImage {
             .iter()
             .fold(0, |a, s| a + s.iter().filter(|&&t| t == origtype).count())
     }
+
+    pub fn get_track_transition(&self, side: usize, track: usize, position: usize) -> FluxTicks {
+        assert_eq!(self.get_track_type(side, track), TrackType::Flux);
+
+        self.flux_trackdata[side][track][position]
+    }
 }
 
 impl Floppy for FloppyImage {
@@ -249,6 +264,8 @@ impl Floppy for FloppyImage {
     }
 
     fn get_track_bit(&self, side: usize, track: usize, position: usize) -> bool {
+        assert_eq!(self.get_track_type(side, track), TrackType::Bitstream);
+
         let byte = position / 8;
         let bit = 7 - position % 8;
         self.trackdata[side][track][byte] & (1 << bit) != 0
@@ -264,8 +281,11 @@ impl Floppy for FloppyImage {
         }
     }
 
-    fn get_track_length(&self, side: usize, track: usize) -> usize {
-        self.bitlen[side][track]
+    fn get_track_length(&self, side: usize, track: usize) -> TrackLength {
+        match self.get_track_type(side, track) {
+            TrackType::Bitstream => TrackLength::Bits(self.bitlen[side][track]),
+            TrackType::Flux => TrackLength::Transitions(self.flux_trackdata[side][track].len()),
+        }
     }
 
     fn get_side_count(&self) -> usize {

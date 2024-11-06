@@ -8,7 +8,7 @@
 //! Supports Mac400K, Mac800k. Mostly for development and testing.
 
 use super::{FloppyImageLoader, FloppyImageSaver};
-use crate::{Floppy, FloppyImage, FloppyType};
+use crate::{Floppy, FloppyImage, FloppyType, TrackLength};
 
 use anyhow::{bail, Result};
 
@@ -82,9 +82,13 @@ impl FloppyImageSaver for Bitfile {
     fn write(img: &FloppyImage, w: &mut impl std::io::Write) -> Result<()> {
         for side in 0..img.get_side_count() {
             for track in 0..img.get_track_count() {
-                w.write_all(&(img.get_track_length(side, track) as u32).to_le_bytes())?;
-                w.write_all(&(img.get_track_length(side, track) as u32).to_le_bytes())?;
-                for p in 0..img.get_track_length(side, track) {
+                let TrackLength::Bits(tracklen) = img.get_track_length(side, track) else {
+                    unreachable!()
+                };
+
+                w.write_all(&(tracklen as u32).to_le_bytes())?;
+                w.write_all(&(tracklen as u32).to_le_bytes())?;
+                for p in 0..tracklen {
                     w.write_all(if img.get_track_bit(side, track, p) {
                         &[1_u8]
                     } else {

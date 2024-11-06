@@ -5,7 +5,7 @@ use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
-use snow_floppy::{Floppy, FloppyImage, FloppyType};
+use snow_floppy::{flux::FluxTicks, Floppy, FloppyImage, FloppyType, TrackLength, TrackType};
 use strum::Display;
 
 use crate::{
@@ -13,6 +13,58 @@ use crate::{
     tickable::{Tickable, Ticks, TICKS_PER_SECOND},
     types::LatchingEvent,
 };
+
+enum FluxTransitionTime {
+    /// 1
+    Short,
+    /// 01
+    Medium,
+    /// 001
+    Long,
+    /// Something else, out of spec.
+    /// Contains the amount of bit cells
+    OutOfSpec(usize),
+}
+
+impl FluxTransitionTime {
+    pub fn from_ticks_ex(mut ticks: FluxTicks, fast: bool, highf: bool) -> Option<Self> {
+        if !fast {
+            ticks *= 2;
+        }
+
+        // Below is from Integrated Woz Machine (IWM) Specification, 1982, rev 19, page 4.
+        match (fast, highf) {
+            (false, false) | (true, false) => match ticks {
+                7..=20 => Some(Self::Short),
+                21..=34 => Some(Self::Medium),
+                35..=48 => Some(Self::Long),
+                56.. => Some(Self::OutOfSpec(ticks as usize / 14)),
+                _ => None,
+            },
+            (true, true) | (false, true) => match ticks {
+                8..=23 => Some(Self::Short),
+                24..=39 => Some(Self::Medium),
+                40..=55 => Some(Self::Long),
+                56.. => Some(Self::OutOfSpec(ticks as usize / 16)),
+                _ => None,
+            },
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn from_ticks(ticks: FluxTicks) -> Option<Self> {
+        Self::from_ticks_ex(ticks, true, true)
+    }
+
+    pub fn get_zeroes(self) -> usize {
+        match self {
+            Self::Short => 0,
+            Self::Medium => 1,
+            Self::Long => 2,
+            Self::OutOfSpec(bc) => bc - 1,
+        }
+    }
+}
 
 /// Integrated Woz Machine - floppy drive controller
 pub struct Iwm {
@@ -64,6 +116,12 @@ pub(crate) struct IwmDrive {
     // While > 0, the drive head is moving
     stepping: Ticks,
     ejecting: Option<Ticks>,
+
+    /// Amount of flux ticks for current transition (for flux tracks)
+    flux_ticks: FluxTicks,
+
+    /// Amount of flux ticks left for current transition (for flux tracks)
+    flux_ticks_left: FluxTicks,
 
     pwm_avg_sum: i64,
     pwm_avg_count: usize,
@@ -255,6 +313,9 @@ impl IwmDrive {
             stepping: 0,
             ejecting: None,
 
+            flux_ticks: 0,
+            flux_ticks_left: 0,
+
             pwm_avg_sum: 0,
             pwm_avg_count: 0,
             pwm_dutycycle: 0,
@@ -317,6 +378,8 @@ impl IwmDrive {
 
         // Reset track position
         self.track_position = 0;
+        self.flux_ticks = 0;
+        self.flux_ticks_left = 0;
 
         // Track-to-track stepping time: 30ms
         self.stepping = TICKS_PER_SECOND / 60_000 * 30;
@@ -426,8 +489,8 @@ impl IwmDrive {
         self.track
     }
 
-    /// Gets the length (in bits) of a track
-    fn get_track_len(&self, side: usize, track: usize) -> usize {
+    /// Gets the length of a track on the loaded floppy
+    fn get_track_len(&self, side: usize, track: usize) -> TrackLength {
         self.floppy.get_track_length(side, track)
     }
 
@@ -437,12 +500,12 @@ impl IwmDrive {
             .get_track_bit(head, self.get_active_track(), self.track_position)
     }
 
-    /// Advances to the next bit on the track
+    /// Advances to the next bit on the track (bitstream tracks)
     fn next_bit(&mut self, head: usize) -> bool {
-        self.track_position += 1;
-        if self.track_position >= self.get_track_len(head, self.get_active_track()) {
-            self.track_position = 0;
-        }
+        let TrackLength::Bits(tracklen) = self.get_track_len(head, self.get_active_track()) else {
+            unreachable!()
+        };
+        self.track_position = (self.track_position + 1) % tracklen;
 
         self.get_head_bit(head)
     }
@@ -658,6 +721,107 @@ impl Iwm {
     pub fn get_active_image(&self, drive: usize) -> &FloppyImage {
         &self.drives[drive].floppy
     }
+
+    fn tick_bitstream(&mut self, ticks: usize) -> Result<()> {
+        assert_eq!(ticks, 1);
+        if self.cycles % self.get_selected_drive().get_ticks_per_bit() != 0 {
+            return Ok(());
+        }
+
+        let head = self.get_active_head();
+
+        // Progress the head over the track
+        let bit = self.get_selected_drive_mut().next_bit(head);
+        self.shift_bit(bit);
+
+        if self.write_pos == 0 && self.write_buffer.is_some() {
+            // Write idle and new data in write FIFO, start writing 8 new bits
+            let Some(v) = self.write_buffer else {
+                unreachable!()
+            };
+            self.write_shift = v;
+            self.write_pos = 8;
+            self.write_buffer = None;
+        }
+        if self.write_pos > 0 {
+            // Write in progress - write one bit to current head location
+            let bit = self.write_shift & 0x80 != 0;
+            let head = self.get_active_head();
+            self.write_shift <<= 1;
+            self.write_pos -= 1;
+            self.get_selected_drive_mut().write_bit(head, bit);
+        }
+
+        Ok(())
+    }
+
+    fn tick_flux(&mut self, ticks: usize) -> Result<()> {
+        let side = self.get_active_head();
+        let track = self.get_selected_drive().get_active_track();
+        self.get_selected_drive_mut().flux_ticks_left -= ticks as i16;
+
+        if self.get_selected_drive().flux_ticks_left <= 0 {
+            // Flux transition occured
+
+            // Introduce some pseudo-random jitter on the timing to emulate
+            // the minor differences introduced by motor RPM instability and
+            // physical movement of the disk donut.
+            let jitter = -2 + (self.cycles % 4) as i16;
+
+            // Check bit cell window
+            // TODO incorporate actual drive speed from PWM on 128K/512K?
+            if let Some(time) = FluxTransitionTime::from_ticks_ex(
+                self.get_selected_drive().flux_ticks + jitter,
+                self.mode.fast(),
+                self.mode.speed(),
+            ) {
+                // Transition occured within the window, shift bits into the
+                // IWM shift register.
+                for _ in 0..(time.get_zeroes()) {
+                    self.shift_bit(false);
+                }
+                self.shift_bit(true);
+            }
+
+            // Advance image to the next transition
+            let TrackLength::Transitions(tlen) =
+                self.get_selected_drive().get_track_len(side, track)
+            else {
+                unreachable!()
+            };
+            self.get_selected_drive_mut().track_position =
+                (self.get_selected_drive().track_position + 1) % tlen;
+            self.get_selected_drive_mut().flux_ticks = self
+                .get_selected_drive()
+                .floppy
+                .get_track_transition(side, track, self.get_selected_drive().track_position);
+            self.get_selected_drive_mut().flux_ticks_left = self.get_selected_drive().flux_ticks;
+        }
+
+        if self.write_pos == 0 && self.write_buffer.is_some() {
+            // Write idle and new data in write FIFO
+            error!("Writing to track {} (flux track) is unsupported!", track);
+            self.write_buffer = None;
+        }
+
+        Ok(())
+    }
+
+    /// Shifts a bit into the read data shift register
+    fn shift_bit(&mut self, bit: bool) {
+        self.shdata <<= 1;
+        if bit {
+            self.shdata |= 1;
+        }
+
+        if self.shdata & 0x80 != 0 {
+            // Data is moved to the data register when the most significant bit is set.
+            // Because the Mac uses GCR encoding, the most significant bit is always set in
+            // any valid data.
+            self.datareg = self.shdata;
+            self.shdata = 0;
+        }
+    }
 }
 
 impl BusMember<Address> for Iwm {
@@ -728,40 +892,13 @@ impl Tickable for Iwm {
             let new_stepping = self.get_selected_drive().stepping.saturating_sub(ticks);
             self.get_selected_drive_mut().stepping = new_stepping;
 
-            if self.cycles % self.get_selected_drive().get_ticks_per_bit() == 0 {
-                let head = self.get_active_head();
-
-                // Progress the head over the track
-                self.shdata <<= 1;
-                if self.get_selected_drive_mut().next_bit(head) {
-                    self.shdata |= 1;
-                }
-
-                if self.shdata & 0x80 != 0 {
-                    // Data is moved to the data register when the most significant bit is set.
-                    // Because the Mac uses GCR encoding, the most significant bit is always set in
-                    // any valid data.
-                    self.datareg = self.shdata;
-                    self.shdata = 0;
-                }
-
-                if self.write_pos == 0 && self.write_buffer.is_some() {
-                    // Write idle and new data in write FIFO, start writing 8 new bits
-                    let Some(v) = self.write_buffer else {
-                        unreachable!()
-                    };
-                    self.write_shift = v;
-                    self.write_pos = 8;
-                    self.write_buffer = None;
-                }
-                if self.write_pos > 0 {
-                    // Write in progress - write one bit to current head location
-                    let bit = self.write_shift & 0x80 != 0;
-                    let head = self.get_active_head();
-                    self.write_shift <<= 1;
-                    self.write_pos -= 1;
-                    self.get_selected_drive_mut().write_bit(head, bit);
-                }
+            // Advance read/write operation
+            match self.get_selected_drive().floppy.get_track_type(
+                self.get_active_head(),
+                self.get_selected_drive().get_active_track(),
+            ) {
+                TrackType::Bitstream => self.tick_bitstream(ticks)?,
+                TrackType::Flux => self.tick_flux(ticks)?,
             }
         }
 
