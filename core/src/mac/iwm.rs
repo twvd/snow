@@ -345,7 +345,7 @@ impl IwmDrive {
             DriveReg::TACH => self.get_tacho(),
             DriveReg::RDDATA0 => self.get_head_bit(0),
             DriveReg::RDDATA1 => self.get_head_bit(1),
-            DriveReg::WRTPRT => true,
+            DriveReg::WRTPRT => !self.floppy.get_write_protect(),
             DriveReg::SWITCHED => false,
             _ => {
                 warn!(

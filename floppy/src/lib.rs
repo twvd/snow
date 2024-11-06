@@ -132,6 +132,9 @@ pub trait Floppy {
     /// Gets the metadata of the image as key/value.
     /// May be empty if the initial format did not support it or there is no metadata.
     fn get_metadata(&self) -> FloppyMetadata;
+
+    /// Gets the write protect status of the medium.
+    fn get_write_protect(&self) -> bool;
 }
 
 /// An in-memory loaded floppy image
@@ -301,5 +304,11 @@ impl Floppy for FloppyImage {
 
     fn get_metadata(&self) -> FloppyMetadata {
         self.metadata.clone()
+    }
+
+    fn get_write_protect(&self) -> bool {
+        self.flux_trackdata
+            .iter()
+            .any(|s| s.iter().any(|t| !t.is_empty()))
     }
 }
