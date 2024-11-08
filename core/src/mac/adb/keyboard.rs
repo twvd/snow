@@ -30,7 +30,7 @@ bitfield! {
 const SC_CAPSLOCK: u8 = 0x39;
 const SC_NUMLOCK: u8 = 0x47;
 const SC_SCROLLOCK: u8 = 0x6B;
-const SC_LCTRL: u8 =0x36;
+const SC_LCTRL: u8 = 0x36;
 const SC_RCTRL: u8 = 0x7D;
 const SC_COMMAND: u8 = 0x37;
 const SC_LOPTION: u8 = 0x3A;
@@ -42,6 +42,7 @@ pub struct AdbKeyboard {
     address: u8,
     key_recv: KeyEventReceiver,
     keystate: [bool; 256],
+    capslock: bool,
 }
 
 impl AdbKeyboard {
@@ -54,6 +55,7 @@ impl AdbKeyboard {
                 key_recv,
                 address: Self::INITIAL_ADDRESS,
                 keystate: [false; 256],
+                capslock: false,
             },
             s,
         )
@@ -85,11 +87,24 @@ impl AdbDevice for AdbKeyboard {
                         match ke {
                             KeyEvent::KeyDown(sc) => {
                                 self.keystate[sc as usize] = true;
-                                response.push(sc);
+                                if sc == SC_CAPSLOCK {
+                                    // Capslock is a mechanical sticking key
+                                    self.capslock = !self.capslock;
+                                    if self.capslock {
+                                        response.push(sc);
+                                    } else {
+                                        response.push(0x80 | sc);
+                                    }
+                                } else {
+                                    // Normal/other keys
+                                    response.push(sc);
+                                }
                             }
                             KeyEvent::KeyUp(sc) => {
                                 self.keystate[sc as usize] = false;
-                                response.push(0x80 | sc);
+                                if sc != SC_CAPSLOCK {
+                                    response.push(0x80 | sc);
+                                }
                             }
                         }
                     }
@@ -99,16 +114,20 @@ impl AdbDevice for AdbKeyboard {
             2 => AdbDeviceResponse::from_iter(
                 AdbKeyboardReg2::default()
                     .with_led_numlock(self.keystate[SC_NUMLOCK as usize])
-                    .with_led_capslock(self.keystate[SC_CAPSLOCK as usize])
+                    .with_led_capslock(self.capslock)
                     .with_led_scrolllock(self.keystate[SC_SCROLLOCK as usize])
                     .with_numlock(self.keystate[SC_NUMLOCK as usize])
-                    .with_capslock(self.keystate[SC_CAPSLOCK as usize])
+                    .with_capslock(self.capslock)
                     .with_scrolllock(self.keystate[SC_SCROLLOCK as usize])
                     .with_cmd(self.keystate[SC_COMMAND as usize])
-                    .with_control(self.keystate[SC_LCTRL as usize] || self.keystate[SC_RCTRL as usize])
-                    .with_option(self.keystate[SC_LOPTION as usize] || self.keystate[SC_ROPTION as usize])
+                    .with_control(
+                        self.keystate[SC_LCTRL as usize] || self.keystate[SC_RCTRL as usize],
+                    )
+                    .with_option(
+                        self.keystate[SC_LOPTION as usize] || self.keystate[SC_ROPTION as usize],
+                    )
                     .with_delete(self.keystate[SC_DELETE as usize])
-                    .to_be_bytes()
+                    .to_be_bytes(),
             ),
             3 => AdbDeviceResponse::from_iter(
                 AdbReg3::default()
