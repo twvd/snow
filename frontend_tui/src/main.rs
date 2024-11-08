@@ -10,7 +10,6 @@ use log::*;
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
 use sdl2::event::{Event, WindowEvent};
-use sdl2::keyboard::Keycode;
 use sdl2::mouse::MouseButton;
 use sha2::{Digest, Sha256};
 use snow_core::emulator::comm::EmulatorCommand;
@@ -200,11 +199,7 @@ fn main() -> Result<()> {
         // Process SDL events
         while let Some(event) = eventpump.wait(10) {
             match event {
-                Event::KeyDown {
-                    keycode: Some(Keycode::Escape),
-                    ..
-                }
-                | Event::Quit { .. } => {
+                Event::Quit { .. } => {
                     break 'mainloop;
                 }
                 Event::KeyDown {
