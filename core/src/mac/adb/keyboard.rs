@@ -4,11 +4,44 @@ use crate::types::{KeyEventReceiver, KeyEventSender};
 use super::{AdbDevice, AdbDeviceResponse, AdbReg3};
 
 use log::*;
+use proc_bitfield::bitfield;
+
+bitfield! {
+    /// Register 2
+    #[derive(Clone, Copy, PartialEq, Eq, Default)]
+    pub struct AdbKeyboardReg2(pub u16): Debug, FromRaw, IntoRaw, DerefRaw {
+        pub led_numlock: bool @ 0,
+        pub led_capslock: bool @ 1,
+        pub led_scrolllock: bool @ 2,
+        // Bit 3-5 reserved
+        pub scrolllock: bool @ 6,
+        pub numlock: bool @ 7,
+        pub cmd: bool @ 8,
+        pub option: bool @ 9,
+        pub shift: bool @ 10,
+        pub control: bool @ 11,
+        pub reset: bool @ 12,
+        pub capslock: bool @ 13,
+        pub delete: bool @ 14,
+        // 15 reserved
+    }
+}
+
+const SC_CAPSLOCK: u8 = 0x39;
+const SC_NUMLOCK: u8 = 0x47;
+const SC_SCROLLOCK: u8 = 0x6B;
+const SC_LCTRL: u8 =0x36;
+const SC_RCTRL: u8 = 0x7D;
+const SC_COMMAND: u8 = 0x37;
+const SC_LOPTION: u8 = 0x3A;
+const SC_ROPTION: u8 = 0x7C;
+const SC_DELETE: u8 = 0x75;
 
 /// Apple Desktop Bus-connected keyboard
 pub struct AdbKeyboard {
     address: u8,
     key_recv: KeyEventReceiver,
+    keystate: [bool; 256],
 }
 
 impl AdbKeyboard {
@@ -20,6 +53,7 @@ impl AdbKeyboard {
             Self {
                 key_recv,
                 address: Self::INITIAL_ADDRESS,
+                keystate: [false; 256],
             },
             s,
         )
@@ -50,9 +84,11 @@ impl AdbDevice for AdbKeyboard {
                     if let Ok(ke) = self.key_recv.try_recv() {
                         match ke {
                             KeyEvent::KeyDown(sc) => {
+                                self.keystate[sc as usize] = true;
                                 response.push(sc);
                             }
                             KeyEvent::KeyUp(sc) => {
+                                self.keystate[sc as usize] = false;
                                 response.push(0x80 | sc);
                             }
                         }
@@ -60,6 +96,20 @@ impl AdbDevice for AdbKeyboard {
                 }
                 response
             }
+            2 => AdbDeviceResponse::from_iter(
+                AdbKeyboardReg2::default()
+                    .with_led_numlock(self.keystate[SC_NUMLOCK as usize])
+                    .with_led_capslock(self.keystate[SC_CAPSLOCK as usize])
+                    .with_led_scrolllock(self.keystate[SC_SCROLLOCK as usize])
+                    .with_numlock(self.keystate[SC_NUMLOCK as usize])
+                    .with_capslock(self.keystate[SC_CAPSLOCK as usize])
+                    .with_scrolllock(self.keystate[SC_SCROLLOCK as usize])
+                    .with_cmd(self.keystate[SC_COMMAND as usize])
+                    .with_control(self.keystate[SC_LCTRL as usize] || self.keystate[SC_RCTRL as usize])
+                    .with_option(self.keystate[SC_LOPTION as usize] || self.keystate[SC_ROPTION as usize])
+                    .with_delete(self.keystate[SC_DELETE as usize])
+                    .to_be_bytes()
+            ),
             3 => AdbDeviceResponse::from_iter(
                 AdbReg3::default()
                     .with_exceptional(true)
@@ -77,6 +127,7 @@ impl AdbDevice for AdbKeyboard {
 
     fn listen(&mut self, reg: u8, data: &[u8]) {
         match reg {
+            2 => (),
             3 => {
                 if data.len() < 2 {
                     error!("Listen reg 3 invalid data length: {:02X?}", data);
