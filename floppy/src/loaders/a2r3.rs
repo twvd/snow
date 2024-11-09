@@ -6,9 +6,9 @@ use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 
 use super::FloppyImageLoader;
-use crate::{FloppyImage, FloppyType};
+use crate::{FloppyImage, FloppyType, OriginalTrackType};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use binrw::io::Cursor;
 use binrw::{binrw, BinRead};
 use log::*;
@@ -153,6 +153,7 @@ impl FloppyImageLoader for A2Rv3 {
 
         let mut info = None;
         let mut meta = String::new();
+        let mut captures = vec![];
 
         // Parse chunks from file
         while let Ok(chunk) = A2RChunkHeader::read(&mut cursor) {
@@ -161,25 +162,27 @@ impl FloppyImageLoader for A2Rv3 {
             match &chunk.id {
                 b"INFO" => info = Some(A2RChunkInfo::read(&mut cursor)?),
                 b"RWCP" => {
-                    let _rwcp = A2RChunkRwcp::read(&mut cursor)?;
-                    loop {
-                        let A2RCaptureEntry::Capture(capture) = A2RCaptureEntry::read(&mut cursor)?
-                        else {
-                            // End of chunk
-                            break;
-                        };
-
+                    let rwcp = A2RChunkRwcp::read(&mut cursor)?;
+                    info!("Resolution: {}", rwcp.resolution);
+                    if rwcp.resolution != 125000 {
+                        bail!("TODO convert to different resolution");
+                    }
+                    while let A2RCaptureEntry::Capture(capture) =
+                        A2RCaptureEntry::read(&mut cursor)?
+                    {
                         if capture.capture_type != A2RCaptureType::Timing {
                             continue;
                         }
 
                         info!(
-                            "Capture type {:?} side {} track {}, len {}",
+                            "Capture type {:?} side {} track {}, len {}, indices {:?}",
                             capture.capture_type,
                             capture.get_side(),
                             capture.get_track(),
-                            capture.capture.len()
+                            capture.capture.len(),
+                            capture.indices,
                         );
+                        captures.push(capture);
                     }
                 }
                 b"META" => {
@@ -203,11 +206,39 @@ impl FloppyImageLoader for A2Rv3 {
         let metadata = Self::parse_meta(&meta);
         let title = metadata.get("title").copied().unwrap_or("?");
 
-        let mut img = FloppyImage::new_empty(FloppyType::Mac800K, title);
+        let mut img = FloppyImage::new_empty(
+            if captures.iter().any(|c| c.get_side() > 0) {
+                FloppyType::Mac800K
+            } else {
+                FloppyType::Mac400K
+            },
+            title,
+        );
 
         // Fill metadata
         for (k, v) in metadata {
             img.set_metadata(k, v);
+        }
+
+        for capture in captures {
+            let side = capture.get_side();
+            let track = capture.get_track();
+            img.origtracktype[side][track] = OriginalTrackType::RawFlux;
+            let mut last = 0;
+            for &b in &capture.capture {
+                last += b as i16;
+                if b == 255 {
+                    continue;
+                }
+                if last == 0 {
+                    warn!("transition of 0!");
+                }
+                img.push_flux(side, track, last);
+                last = 0;
+            }
+            if last > 0 {
+                img.push_flux(side, track, last);
+            }
         }
 
         Ok(img)
