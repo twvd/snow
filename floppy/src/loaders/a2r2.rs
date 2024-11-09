@@ -1,4 +1,4 @@
-//! Applesauce A2R version 3 file format
+//! Applesauce A2R version 2 file format
 //! Raw capture and solved flux format
 //! https://applesaucefdc.com/a2r/
 
@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 
 use super::FloppyImageLoader;
-use crate::{FloppyImage, FloppyType, OriginalTrackType};
+use crate::{Floppy, FloppyImage, FloppyType, OriginalTrackType, TrackLength};
 
 use anyhow::{bail, Context, Result};
 use binrw::io::Cursor;
@@ -15,7 +15,7 @@ use log::*;
 
 /// Initial A2R file header
 #[binrw]
-#[brw(little, magic = b"A2R3\xFF\n\r\n")]
+#[brw(little, magic = b"A2R2\xFF\n\r\n")]
 struct A2RHeader {}
 
 /// Standardized chunk header
@@ -33,31 +33,13 @@ struct A2RChunkHeader {
 /// Disk type
 #[binrw]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-enum A2RDriveType {
-    /// 1 = 5.25″ SS 40trk 0.25 step
+enum A2RDiskType {
+    /// 1 = 5.25″
     #[brw(magic = 1u8)]
-    FiveQSSSD,
-    /// 2 = 3.5″ DS 80trk Apple CLV
+    FiveQ,
+    /// 2 = 3.5"
     #[brw(magic = 2u8)]
-    ThreeHDSSDCLV,
-    /// 3 = 5.25″ DS 80trk
-    #[brw(magic = 3u8)]
-    FiveQDS80,
-    /// 4 = 5.25″ DS 40trk
-    #[brw(magic = 4u8)]
-    FiveQDS40,
-    /// 5 = 3.5″ DS 80trk
-    #[brw(magic = 5u8)]
-    ThreeHDSSD,
-    /// 6 = 8″ DS
-    #[brw(magic = 6u8)]
-    EightDS,
-    /// 7 = 3″ DS 80trk
-    #[brw(magic = 7u8)]
-    ThreeDS80,
-    /// 8 = 3″ DS 40trk
-    #[brw(magic = 8u8)]
-    ThreeDS40,
+    ThreeH,
 }
 
 /// INFO chunk (minus header)
@@ -69,20 +51,10 @@ struct A2RChunkInfo {
     #[br(args { count: 32 }, map = |s: Vec<u8>| String::from_utf8_lossy(&s).to_string())]
     #[bw(map = |s: &String| s.as_bytes().to_vec(), pad_size_to = 32)]
     pub creator: String,
-    pub drivetype: A2RDriveType,
+    pub disktype: A2RDiskType,
     pub writeprotect: u8,
     pub synchronized: u8,
     pub hard_sectors: u8,
-}
-
-/// RWCP chunk (minus header)
-#[binrw]
-#[brw(little)]
-struct A2RChunkRwcp {
-    pub version: u8,
-    pub resolution: u32,
-    pub padding: [u8; 11],
-    // Captures follow
 }
 
 #[binrw]
@@ -99,21 +71,18 @@ enum A2RCaptureType {
 #[binrw]
 #[brw(little)]
 enum A2RCaptureEntry {
-    #[brw(magic = b"C")]
     Capture(A2RCapture),
-    #[brw(magic = b"X")]
+    #[brw(magic = b"\xFF")]
     End,
 }
 
 #[binrw]
 #[brw(little)]
 struct A2RCapture {
+    location: u8,
     capture_type: A2RCaptureType,
-    location: u16,
-    num_indices: u8,
-    #[br(count = num_indices)]
-    indices: Vec<u32>,
     capture_size: u32,
+    loop_point: u32,
     #[br(count = capture_size)]
     capture: Vec<u8>,
 }
@@ -128,10 +97,10 @@ impl A2RCapture {
     }
 }
 
-/// Applesauce A2R v3.x image file loader
-pub struct A2Rv3 {}
+/// Applesauce A2R v2.x image file loader
+pub struct A2Rv2 {}
 
-impl A2Rv3 {
+impl A2Rv2 {
     fn parse_meta(meta: &str) -> HashMap<&str, &str> {
         let mut result = HashMap::new();
 
@@ -146,7 +115,7 @@ impl A2Rv3 {
     }
 }
 
-impl FloppyImageLoader for A2Rv3 {
+impl FloppyImageLoader for A2Rv2 {
     fn load(data: &[u8]) -> Result<FloppyImage> {
         let mut cursor = Cursor::new(data);
         let _header = A2RHeader::read(&mut cursor)?;
@@ -161,11 +130,7 @@ impl FloppyImageLoader for A2Rv3 {
 
             match &chunk.id {
                 b"INFO" => info = Some(A2RChunkInfo::read(&mut cursor)?),
-                b"RWCP" => {
-                    let rwcp = A2RChunkRwcp::read(&mut cursor)?;
-                    if rwcp.resolution != 125000 {
-                        bail!("Unsupported resolution: {}", rwcp.resolution);
-                    }
+                b"STRM" => {
                     while let A2RCaptureEntry::Capture(capture) =
                         A2RCaptureEntry::read(&mut cursor)?
                     {
@@ -194,8 +159,8 @@ impl FloppyImageLoader for A2Rv3 {
         }
 
         let info = info.context("No INFO chunk in file")?;
-        if info.drivetype != A2RDriveType::ThreeHDSSDCLV {
-            bail!("Image is not of a Mac 3.5 inch CLV disk");
+        if info.disktype != A2RDiskType::ThreeH {
+            bail!("Image is not of a 3.5 inch disk");
         }
         let metadata = Self::parse_meta(&meta);
         let title = metadata.get("title").copied().unwrap_or("?");
@@ -217,6 +182,12 @@ impl FloppyImageLoader for A2Rv3 {
         for capture in captures {
             let side = capture.get_side();
             let track = capture.get_track();
+            if let TrackLength::Transitions(t) = img.get_track_length(side, track) {
+                if t > 0 {
+                    // Multiple captures encountered, we just use the first and hope it's good.
+                    continue;
+                }
+            }
             img.origtracktype[side][track] = OriginalTrackType::RawFlux;
             let mut last = 0;
             for &b in &capture.capture {
