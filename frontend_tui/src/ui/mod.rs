@@ -43,6 +43,7 @@ enum View {
 
 pub struct UserInterface {
     cmd: Option<String>,
+    exit: bool,
 
     view: View,
 
@@ -83,6 +84,7 @@ impl UserInterface {
             state_browser: BrowserWidgetState::default(),
 
             cmd: None,
+            exit: false,
 
             view: View::Status,
             romfn: romfn.to_string(),
@@ -121,6 +123,10 @@ impl UserInterface {
     }
 
     pub fn run(&mut self, terminal: &mut Terminal<impl Backend>) -> Result<bool> {
+        if self.exit {
+            return Ok(false);
+        }
+
         // Emulator events
         while let Ok(event) = self.eventrecv.try_recv() {
             match event {
@@ -242,7 +248,7 @@ impl UserInterface {
         Ok(())
     }
 
-    fn handle_command(&self, cmd: &str) -> Result<()> {
+    fn handle_command(&mut self, cmd: &str) -> Result<()> {
         let tokens = cmd.split(' ').collect::<Vec<_>>();
         match *tokens.first().context("Empty command")? {
             "b" => {
@@ -344,6 +350,10 @@ impl UserInterface {
                     _ => bail!("Requires an argument: accurate, dynamic, uncapped"),
                 };
                 self.cmdsender.send(EmulatorCommand::SetSpeed(speed))?;
+                Ok(())
+            }
+            "exit" | "quit" => {
+                self.exit = true;
                 Ok(())
             }
             _ => bail!("Unknown command"),

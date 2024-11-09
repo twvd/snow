@@ -95,6 +95,7 @@ Additionally, you can enter the following commands:
    * `accurate` - accurate to real hardware,
    * `dynamic` - accurate when playing sound, otherwise uncapped,
    * `uncapped` - run as fast as possible (sound is disabled).
+ * `/exit` / `/quit` - terminates the emulator.
 
 ### Media related commands
  * `/disk1 <filename>` - mounts the specified disk image and inserts it into the internal drive.
