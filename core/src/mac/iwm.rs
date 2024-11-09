@@ -27,13 +27,10 @@ enum FluxTransitionTime {
 }
 
 impl FluxTransitionTime {
-    pub fn from_ticks_ex(mut ticks: FluxTicks, fast: bool, highf: bool) -> Option<Self> {
-        if !fast {
-            ticks *= 2;
-        }
-
+    pub fn from_ticks_ex(ticks: FluxTicks, _fast: bool, _highf: bool) -> Option<Self> {
         // Below is from Integrated Woz Machine (IWM) Specification, 1982, rev 19, page 4.
-        match (fast, highf) {
+        // TODO fast/low frequency mode.. The Mac SE sets mode to 0x17, which makes things not work?
+        match (true, true) {
             (false, false) | (true, false) => match ticks {
                 7..=20 => Some(Self::Short),
                 21..=34 => Some(Self::Medium),
