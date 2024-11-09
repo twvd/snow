@@ -123,6 +123,8 @@ pub(crate) struct IwmDrive {
     /// Amount of flux ticks left for current transition (for flux tracks)
     flux_ticks_left: FluxTicks,
 
+    head_bit: [bool; 2],
+
     pwm_avg_sum: i64,
     pwm_avg_count: usize,
     pwm_dutycycle: Ticks,
@@ -316,6 +318,8 @@ impl IwmDrive {
             flux_ticks: 0,
             flux_ticks_left: 0,
 
+            head_bit: [false; 2],
+
             pwm_avg_sum: 0,
             pwm_avg_count: 0,
             pwm_dutycycle: 0,
@@ -496,8 +500,11 @@ impl IwmDrive {
 
     /// Gets the physical disk bit currently under a head
     fn get_head_bit(&self, head: usize) -> bool {
-        self.floppy
-            .get_track_bit(head, self.get_active_track(), self.track_position)
+        let track = self.get_active_track();
+        match self.floppy.get_track_type(head, track) {
+            TrackType::Bitstream => self.floppy.get_track_bit(head, track, self.track_position),
+            TrackType::Flux => self.head_bit[head],
+        }
     }
 
     /// Advances to the next bit on the track (bitstream tracks)
@@ -760,6 +767,11 @@ impl Iwm {
         let track = self.get_selected_drive().get_active_track();
         self.get_selected_drive_mut().flux_ticks_left -= ticks as i16;
 
+        // Not sure how long this should be?
+        if self.get_selected_drive().flux_ticks_left < self.get_selected_drive().flux_ticks - 20 {
+            self.get_selected_drive_mut().head_bit[side] = false;
+        }
+
         if self.get_selected_drive().flux_ticks_left <= 0 {
             // Flux transition occured
 
@@ -781,6 +793,7 @@ impl Iwm {
                     self.shift_bit(false);
                 }
                 self.shift_bit(true);
+                self.get_selected_drive_mut().head_bit[side] = true;
             }
 
             // Advance image to the next transition
