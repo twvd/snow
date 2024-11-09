@@ -1,9 +1,11 @@
+mod a2r3;
 mod auto;
 mod bitfile;
 mod diskcopy42;
 mod moof;
 mod raw;
 
+pub use a2r3::A2Rv3;
 pub use auto::Autodetect;
 pub use auto::ImageType;
 pub use bitfile::Bitfile;

@@ -8,9 +8,12 @@ use crate::{
 use anyhow::{bail, Result};
 use strum::{Display, IntoEnumIterator};
 
+use super::A2Rv3;
+
 /// Types of supported floppy images
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Display, Copy, Clone)]
 pub enum ImageType {
+    A2R3,
     MOOF,
     Bitfile,
     DC42,
@@ -20,6 +23,7 @@ pub enum ImageType {
 impl ImageType {
     pub fn as_friendly_str(&self) -> &'static str {
         match self {
+            Self::A2R3 => "Applesauce A2R v3.x",
             Self::MOOF => "Applesauce MOOF",
             Self::Bitfile => "Bitfile",
             Self::DC42 => "Apple DiskCopy 4.2",
@@ -35,6 +39,10 @@ impl Autodetect {
         // MOOF
         if data.len() >= 8 && data[0..8] == *b"MOOF\xFF\n\r\n" {
             return Ok(ImageType::MOOF);
+        }
+        // A2R v3
+        if data.len() >= 8 && data[0..8] == *b"A2R3\xFF\n\r\n" {
+            return Ok(ImageType::A2R3);
         }
         // Bitfile / 'Dave format'
         if data.len() >= 10
@@ -60,6 +68,7 @@ impl Autodetect {
 impl FloppyImageLoader for Autodetect {
     fn load(data: &[u8]) -> Result<FloppyImage> {
         match Self::detect(data)? {
+            ImageType::A2R3 => A2Rv3::load(data),
             ImageType::MOOF => Moof::load(data),
             ImageType::Bitfile => Bitfile::load(data),
             ImageType::DC42 => Diskcopy42::load(data),
