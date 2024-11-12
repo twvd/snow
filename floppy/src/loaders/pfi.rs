@@ -66,7 +66,7 @@ struct PayloadTrack {
 pub struct PFI {}
 
 impl FloppyImageLoader for PFI {
-    fn load(data: &[u8]) -> Result<FloppyImage> {
+    fn load(data: &[u8], filename: Option<&str>) -> Result<FloppyImage> {
         let mut cursor = Cursor::new(data);
 
         let mut tracks: HashMap<(usize, usize), &[u8]> = HashMap::new();
@@ -139,15 +139,13 @@ impl FloppyImageLoader for PFI {
             cursor.seek(SeekFrom::Start(startpos + u64::from(chunk.size) + 4))?;
         }
 
-        let title = "";
-
         let mut img = FloppyImage::new_empty(
             if tracks.keys().any(|&(s, _t)| s > 0) {
                 FloppyType::Mac800K
             } else {
                 FloppyType::Mac400K
             },
-            title,
+            filename.unwrap_or_default(),
         );
 
         // Fill tracks

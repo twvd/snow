@@ -147,7 +147,7 @@ impl A2Rv3 {
 }
 
 impl FloppyImageLoader for A2Rv3 {
-    fn load(data: &[u8]) -> Result<FloppyImage> {
+    fn load(data: &[u8], filename: Option<&str>) -> Result<FloppyImage> {
         let mut cursor = Cursor::new(data);
         let _header = A2RHeader::read(&mut cursor)?;
 
@@ -198,7 +198,10 @@ impl FloppyImageLoader for A2Rv3 {
             bail!("Image is not of a Mac 3.5 inch CLV disk");
         }
         let metadata = Self::parse_meta(&meta);
-        let title = metadata.get("title").copied().unwrap_or("?");
+        let title = metadata
+            .get("title")
+            .copied()
+            .unwrap_or_else(|| filename.unwrap_or_default());
 
         let mut img = FloppyImage::new_empty(
             if captures.iter().any(|c| c.get_side() > 0) {

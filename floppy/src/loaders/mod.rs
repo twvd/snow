@@ -7,6 +7,8 @@ mod moof;
 mod pfi;
 mod raw;
 
+use std::path::Path;
+
 pub use a2r2::A2Rv2;
 pub use a2r3::A2Rv3;
 pub use auto::Autodetect;
@@ -23,10 +25,13 @@ use anyhow::Result;
 
 /// A loader to read a specific format and transform it into a usable FloppyImage
 pub trait FloppyImageLoader {
-    fn load(data: &[u8]) -> Result<FloppyImage>;
+    fn load(data: &[u8], filename: Option<&str>) -> Result<FloppyImage>;
 
     fn load_file(filename: &str) -> Result<FloppyImage> {
-        Self::load(&std::fs::read(filename)?)
+        Self::load(
+            &std::fs::read(filename)?,
+            Path::new(filename).file_name().and_then(|s| s.to_str()),
+        )
     }
 }
 

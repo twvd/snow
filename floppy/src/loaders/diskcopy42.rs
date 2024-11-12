@@ -4,7 +4,7 @@
 
 use super::FloppyImageLoader;
 use crate::macformat::MacFormatEncoder;
-use crate::FloppyType;
+use crate::{FloppyImage, FloppyType};
 
 use anyhow::{bail, Result};
 use binrw::io::Cursor;
@@ -89,9 +89,14 @@ impl Dc42Raw {
 pub struct Diskcopy42 {}
 
 impl FloppyImageLoader for Diskcopy42 {
-    fn load(data: &[u8]) -> anyhow::Result<crate::FloppyImage> {
+    fn load(data: &[u8], filename: Option<&str>) -> Result<FloppyImage> {
         let mut cursor = Cursor::new(data);
         let raw = Dc42Raw::read(&mut cursor)?;
+        let title = if raw.name.is_empty() {
+            filename.unwrap_or_default()
+        } else {
+            &raw.name
+        };
 
         let floppytype = raw.get_type()?;
         if raw.data.len() != floppytype.get_logical_size() {
@@ -102,6 +107,6 @@ impl FloppyImageLoader for Diskcopy42 {
             );
         }
 
-        MacFormatEncoder::encode(floppytype, &raw.data, Some(&raw.tags), &raw.name)
+        MacFormatEncoder::encode(floppytype, &raw.data, Some(&raw.tags), title)
     }
 }

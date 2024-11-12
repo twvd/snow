@@ -151,7 +151,7 @@ impl Moof {
 }
 
 impl FloppyImageLoader for Moof {
-    fn load(data: &[u8]) -> Result<FloppyImage> {
+    fn load(data: &[u8], filename: Option<&str>) -> Result<FloppyImage> {
         let mut cursor = Cursor::new(data);
         let header = MoofHeader::read(&mut cursor)?;
         let checksum = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC).checksum(&data[12..]);
@@ -198,7 +198,10 @@ impl FloppyImageLoader for Moof {
         let info = info.context("No INFO chunk in file")?;
         let trks = trks.context("No TRKS chunk in file")?;
         let metadata = Self::parse_meta(&meta);
-        let title = metadata.get("title").copied().unwrap_or("?");
+        let title = metadata
+            .get("title")
+            .copied()
+            .unwrap_or_else(|| filename.unwrap_or_default());
 
         let mut img = FloppyImage::new_empty(
             info.disktype

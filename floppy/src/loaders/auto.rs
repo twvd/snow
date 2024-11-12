@@ -79,15 +79,15 @@ impl Autodetect {
 }
 
 impl FloppyImageLoader for Autodetect {
-    fn load(data: &[u8]) -> Result<FloppyImage> {
+    fn load(data: &[u8], filename: Option<&str>) -> Result<FloppyImage> {
         match Self::detect(data)? {
-            ImageType::A2R2 => A2Rv2::load(data),
-            ImageType::A2R3 => A2Rv3::load(data),
-            ImageType::MOOF => Moof::load(data),
-            ImageType::Bitfile => Bitfile::load(data),
-            ImageType::DC42 => Diskcopy42::load(data),
-            ImageType::PFI => PFI::load(data),
-            ImageType::Raw => RawImage::load(data),
+            ImageType::A2R2 => A2Rv2::load(data, filename),
+            ImageType::A2R3 => A2Rv3::load(data, filename),
+            ImageType::MOOF => Moof::load(data, filename),
+            ImageType::Bitfile => Bitfile::load(data, filename),
+            ImageType::DC42 => Diskcopy42::load(data, filename),
+            ImageType::PFI => PFI::load(data, filename),
+            ImageType::Raw => RawImage::load(data, filename),
         }
     }
 }
