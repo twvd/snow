@@ -4,6 +4,7 @@ mod auto;
 mod bitfile;
 mod diskcopy42;
 mod moof;
+mod pfi;
 mod raw;
 
 pub use a2r2::A2Rv2;
@@ -13,6 +14,7 @@ pub use auto::ImageType;
 pub use bitfile::Bitfile;
 pub use diskcopy42::Diskcopy42;
 pub use moof::Moof;
+pub use pfi::PFI;
 pub use raw::RawImage;
 
 use crate::FloppyImage;
