@@ -40,11 +40,16 @@
 //!     REQ_ACK_Message --> End: Command complete
 //! ```
 
-use std::{collections::VecDeque, fs::OpenOptions, path::Path};
+use std::collections::VecDeque;
+#[cfg(feature = "mmap")]
+use std::{fs::OpenOptions, path::Path};
 
 use anyhow::{bail, Result};
+
+#[cfg(feature = "mmap")]
 use fs2::FileExt;
 use log::*;
+#[cfg(feature = "mmap")]
 use memmap2::MmapMut;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -212,7 +217,11 @@ pub struct ScsiController {
     responsebuf: VecDeque<u8>,
 
     /// Disks
+    #[cfg(feature = "mmap")]
     disks: [Option<MmapMut>; Self::MAX_TARGETS],
+
+    #[cfg(not(feature = "mmap"))]
+    disks: [Option<Vec<u8>>; Self::MAX_TARGETS],
 }
 
 impl ScsiController {
@@ -232,6 +241,7 @@ impl ScsiController {
     /// This locks the file on disk and memory maps the file for use by
     /// the emulator for fast access and automatic writes back to disk,
     /// at the discretion of the operating system.
+    #[cfg(feature = "mmap")]
     fn load_disk(filename: &str) -> Option<MmapMut> {
         if !Path::new(filename).exists() {
             // File not found
@@ -264,6 +274,11 @@ impl ScsiController {
         }
 
         Some(mmapped)
+    }
+
+    #[cfg(not(feature = "mmap"))]
+    fn load_disk(_filename: &str) -> Option<Vec<u8>> {
+        None
     }
 
     pub fn new() -> Self {

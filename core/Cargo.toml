@@ -3,6 +3,9 @@ name = "snow_core"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+mmap = ["dep:fs2", "dep:memmap2"]
+
 [lints]
 workspace = true
 
@@ -14,10 +17,10 @@ crossbeam = "0.8.4"
 crossbeam-channel = "0.5.13"
 either = "1.13.0"
 flate2 = "1.0.30"
-fs2 = "0.4.3"
+fs2 = { version = "0.4.3", optional = true }
 itertools = "0.13.0"
 log = { version = "0.4.22", features = ["std"] }
-memmap2 = "0.9.4"
+memmap2 = { version = "0.9.4", optional = true }
 num = "0.4.3"
 num-derive = "0.4.2"
 num-traits = "0.2.19"

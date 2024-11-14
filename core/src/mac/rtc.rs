@@ -1,10 +1,16 @@
+#[cfg(feature = "mmap")]
 use std::fs::OpenOptions;
 
 use arrayvec::ArrayVec;
 use chrono::{Local, NaiveDate};
+
+#[cfg(feature = "mmap")]
 use fs2::FileExt;
 use log::*;
+#[cfg(feature = "mmap")]
 use memmap2::MmapMut;
+
+const PRAM_SIZE: usize = 256;
 
 /// Macintosh Real-Time Clock
 pub struct Rtc {
@@ -23,7 +29,12 @@ pub struct Rtc {
 pub struct RtcData {
     writeprotect: bool,
     seconds: u32,
+
+    #[cfg(feature = "mmap")]
     pram: MmapMut,
+
+    #[cfg(not(feature = "mmap"))]
+    pram: Vec<u8>,
 }
 
 impl RtcData {
@@ -32,6 +43,7 @@ impl RtcData {
     /// This locks the file on PRAM and memory maps the file for use by
     /// the emulator for fast access and automatic writes back to PRAM,
     /// at the discretion of the operating system.
+    #[cfg(feature = "mmap")]
     pub(super) fn load_pram(filename: &str) -> Option<MmapMut> {
         let f = OpenOptions::new()
             .read(true)
@@ -42,7 +54,7 @@ impl RtcData {
             .inspect_err(|e| error!("Opening PRAM {} failed: {}", filename, e))
             .ok()?;
 
-        f.set_len(256)
+        f.set_len(PRAM_SIZE as u64)
             .inspect_err(|e| error!("Opening PRAM {} failed: {}", filename, e))
             .ok()?;
 
@@ -59,8 +71,19 @@ impl RtcData {
         Some(mmapped)
     }
 
+    #[cfg(not(feature = "mmap"))]
+    pub(super) fn load_pram(_filename: &str) -> Option<Vec<u8>> {
+        None
+    }
+
+    #[cfg(feature = "mmap")]
     pub(super) fn empty_pram() -> MmapMut {
-        MmapMut::map_anon(512).unwrap()
+        MmapMut::map_anon(PRAM_SIZE).unwrap()
+    }
+
+    #[cfg(not(feature = "mmap"))]
+    pub(super) fn empty_pram() -> Vec<u8> {
+        vec![0; PRAM_SIZE]
     }
 }
 
