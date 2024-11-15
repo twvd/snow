@@ -5,6 +5,7 @@ mod bitfile;
 mod diskcopy42;
 mod moof;
 mod pfi;
+mod pri;
 mod raw;
 
 use std::path::Path;
@@ -17,6 +18,7 @@ pub use bitfile::Bitfile;
 pub use diskcopy42::Diskcopy42;
 pub use moof::Moof;
 pub use pfi::PFI;
+pub use pri::PRI;
 pub use raw::RawImage;
 
 use crate::FloppyImage;

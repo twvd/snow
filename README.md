@@ -28,6 +28,7 @@ Supported floppy image formats:
  * Applesauce A2R 2.x and 3.x (flux)
  * Applesauce MOOF (bitstream and flux)
  * PCE Flux Image (PFI, flux)
+ * PCE Raw Image (PRI, bitstream)
  * Raw images (sector-based)
 
 ## Building and running from source

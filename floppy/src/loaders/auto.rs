@@ -1,15 +1,12 @@
 //! Auto-detect image file type and load
 
-use crate::loaders::A2Rv2;
 use crate::{
-    loaders::{Bitfile, Diskcopy42, FloppyImageLoader, Moof, RawImage},
+    loaders::{A2Rv2, A2Rv3, Bitfile, Diskcopy42, FloppyImageLoader, Moof, RawImage, PFI, PRI},
     FloppyImage, FloppyType,
 };
 
 use anyhow::{bail, Result};
 use strum::{Display, IntoEnumIterator};
-
-use super::{A2Rv3, PFI};
 
 /// Types of supported floppy images
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Display, Copy, Clone)]
@@ -20,6 +17,7 @@ pub enum ImageType {
     Bitfile,
     DC42,
     PFI,
+    PRI,
     Raw,
 }
 
@@ -32,6 +30,7 @@ impl ImageType {
             Self::Bitfile => "Bitfile",
             Self::DC42 => "Apple DiskCopy 4.2",
             Self::PFI => "PCE PFI",
+            Self::PRI => "PCE PRI",
             Self::Raw => "Raw image",
         }
     }
@@ -56,6 +55,10 @@ impl Autodetect {
         // PFI
         if data.len() >= 4 && data[0..4] == *b"PFI " {
             return Ok(ImageType::PFI);
+        }
+        // PFI
+        if data.len() >= 4 && data[0..4] == *b"PRI " {
+            return Ok(ImageType::PRI);
         }
         // Bitfile / 'Dave format'
         if data.len() >= 10
@@ -87,6 +90,7 @@ impl FloppyImageLoader for Autodetect {
             ImageType::Bitfile => Bitfile::load(data, filename),
             ImageType::DC42 => Diskcopy42::load(data, filename),
             ImageType::PFI => PFI::load(data, filename),
+            ImageType::PRI => PRI::load(data, filename),
             ImageType::Raw => RawImage::load(data, filename),
         }
     }
