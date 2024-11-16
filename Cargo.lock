@@ -1425,6 +1425,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "emscripten_main_loop"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5afad28b2fe4187ba9be5ea0172be678a18d89972722987a5487cd385669b682"
+
+[[package]]
 name = "endi"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1679,6 +1685,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13624c2627564efccf4934284bdd98cbaa14e79b0b5a141218e507b3a823456"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "frontend_web"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossbeam-channel",
+ "emscripten_main_loop",
+ "env_logger",
+ "log",
+ "sdl2",
+ "snow_core",
+ "wasm-bindgen",
 ]
 
 [[package]]
