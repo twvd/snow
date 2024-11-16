@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use crate::{keymap::Keymap, tickable::Ticks};
+use crate::{bus::Address, keymap::Keymap, tickable::Ticks};
 
 pub mod adb;
 pub mod audio;
@@ -81,6 +81,14 @@ impl MacModel {
             Self::Early128K | Self::Early512K | Self::Plus => cycles % 8 >= 4,
             // 75/25 for SE and onwards
             Self::SE | Self::Classic => cycles % 16 >= 4,
+        }
+    }
+
+    pub const fn disable_memtest(self) -> Option<(Address, u32)> {
+        match self {
+            Self::Early128K | Self::Early512K => None,
+            Self::Plus => Some((0x0002AE, 0x0040_0000)),
+            Self::SE | Self::Classic => Some((0x000CFC, 0x574C5343)),
         }
     }
 }

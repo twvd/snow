@@ -97,7 +97,7 @@ where
         let sound_alt_start = ram_size - Self::SOUND_ALT_OFFSET;
         let sound_main_start = ram_size - Self::SOUND_MAIN_OFFSET;
 
-        Self {
+        let mut bus = Self {
             cycles: 0,
             model,
             trace: false,
@@ -128,7 +128,15 @@ where
             scsi_enable: true,
             speed: EmulatorSpeed::Accurate,
             last_audiosample: 0,
+        };
+
+        // Disable memory test
+        if let Some((addr, value)) = model.disable_memtest() {
+            info!("Skipping memory test");
+            bus.write_ram(addr, value);
         }
+
+        bus
     }
 
     pub(crate) fn get_audio_channel(&self) -> AudioReceiver {

@@ -9,6 +9,7 @@ members = [
 nursery = { level = "deny", priority = -1 }
 
 cast_possible_truncation = "allow"
+cognitive_complexity = "allow"
 doc_markdown = "allow"
 option_if_let_else = "allow"
 missing_const_for_fn = "allow"
