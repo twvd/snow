@@ -213,6 +213,18 @@ impl Tickable for Emulator {
                         }
                         self.status_update()?;
                     }
+                    EmulatorCommand::InsertFloppyBuffer(drive, image) => {
+                        let image = Autodetect::load(&image, None);
+                        match image {
+                            Ok(img) => {
+                                if let Err(e) = self.cpu.bus.iwm.disk_insert(drive, img) {
+                                    error!("Cannot insert disk: {}", e);
+                                }
+                            }
+                            Err(e) => error!("Cannot load image: {}", e),
+                        }
+                        self.status_update()?;
+                    }
                     EmulatorCommand::SaveFloppy(drive, filename) => {
                         Bitfile::save_file(self.cpu.bus.iwm.get_active_image(drive), &filename)?;
                         self.status_update()?;

@@ -13,6 +13,7 @@ pub type EmulatorEventReceiver = crossbeam_channel::Receiver<EmulatorEvent>;
 pub enum EmulatorCommand {
     Quit,
     InsertFloppy(usize, String),
+    InsertFloppyBuffer(usize, Vec<u8>),
     SaveFloppy(usize, String),
     MouseUpdateAbsolute {
         x: u16,
