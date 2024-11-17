@@ -7,7 +7,7 @@ use log::*;
 use sdl2::event::{Event, WindowEvent};
 use sdl2::mouse::MouseButton;
 
-use snow_core::emulator::comm::{EmulatorCommand, EmulatorCommandSender, EmulatorSpeed};
+use snow_core::emulator::comm::{EmulatorCommand, EmulatorCommandSender};
 use snow_core::emulator::Emulator;
 use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow_core::mac::MacModel;
@@ -21,7 +21,6 @@ use keymap_sdl::map_sdl_keycode;
 use renderer_sdl::{SDLAudioSink, SDLEventPump, SDLRenderer};
 
 struct EmulatorMain {
-    emulator: Emulator,
     frame_recv: Receiver<DisplayBuffer>,
     renderer: SDLRenderer,
     cmd: EmulatorCommandSender,
@@ -32,13 +31,10 @@ struct EmulatorMain {
 
 impl EmulatorMain {
     fn tick(&mut self) -> Result<bool> {
-        // Run emulator until there's a frame available
-        while self.frame_recv.is_empty() {
-            self.emulator.tick(1)?;
+        // Render frame to SDL window
+        if let Ok(frame) = self.frame_recv.try_recv() {
+            self.renderer.update_from(&frame)?;
         }
-
-        // Render frame to SDL canvas
-        self.renderer.update_from(&self.frame_recv.try_recv()?)?;
 
         // Process SDL events
         while let Some(event) = self.eventpump.wait(10) {
@@ -127,8 +123,8 @@ fn main() -> Result<()> {
 
     // Initialize display
     let scale = 1;
-    let mut disp_win_width = SCREEN_WIDTH * scale;
-    let mut disp_win_height = SCREEN_HEIGHT * scale;
+    let disp_win_width = SCREEN_WIDTH * scale;
+    let disp_win_height = SCREEN_HEIGHT * scale;
     let mut renderer = SDLRenderer::new(SCREEN_WIDTH, SCREEN_HEIGHT)?;
     renderer.set_window_size(disp_win_width, disp_win_height)?;
     let eventpump = SDLEventPump::new();
@@ -141,13 +137,26 @@ fn main() -> Result<()> {
     let cmd = emulator.create_cmd_sender();
     cmd.send(EmulatorCommand::Run)?;
 
-    cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Uncapped))?;
+    let floppy = include_bytes!("../../dc1.moof").to_vec();
+    let floppy2 = include_bytes!("../../dc2.moof").to_vec();
+
+    cmd.send(EmulatorCommand::InsertFloppyBuffer(0, floppy))?;
+    cmd.send(EmulatorCommand::InsertFloppyBuffer(1, floppy2))?;
+
     // Initialize audio
-    //let _audiodev = SDLAudioSink::new(emulator.get_audio())?;
+    let _audiodev = SDLAudioSink::new(emulator.get_audio())?;
+
+    // Spin up emulator thread
+    let _emuthread = thread::spawn(move || loop {
+        match emulator.tick(1) {
+            Ok(0) => break,
+            Ok(_) => (),
+            Err(e) => panic!("Emulator error: {}", e),
+        }
+    });
 
     // Set up emscripten main loop
     let emuloop = EmulatorMain {
-        emulator,
         frame_recv,
         renderer,
         eventpump,
@@ -155,10 +164,6 @@ fn main() -> Result<()> {
         disp_win_width,
         disp_win_height,
     };
-
-    //'mainloop: loop {
-    //    emuloop.tick();
-    //}
 
     emscripten_main_loop::run(emuloop);
 
