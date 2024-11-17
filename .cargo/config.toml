@@ -1,0 +1,6 @@
+[target.wasm32-unknown-emscripten]
+rustflags = [
+  "-C", "link-arg=-s", "-C", "link-arg=USE_SDL=2",
+  "-C", "link-arg=-s", "-C", "link-arg=TOTAL_STACK=64mb",
+  "-C", "link-arg=-s", "-C", "link-arg=ASSERTIONS=1",
+]

@@ -7,7 +7,7 @@ use log::*;
 use sdl2::event::{Event, WindowEvent};
 use sdl2::mouse::MouseButton;
 
-use snow_core::emulator::comm::{EmulatorCommand, EmulatorCommandSender};
+use snow_core::emulator::comm::{EmulatorCommand, EmulatorCommandSender, EmulatorSpeed};
 use snow_core::emulator::Emulator;
 use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow_core::mac::MacModel;
@@ -141,8 +141,9 @@ fn main() -> Result<()> {
     let cmd = emulator.create_cmd_sender();
     cmd.send(EmulatorCommand::Run)?;
 
+    cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Uncapped))?;
     // Initialize audio
-    let _audiodev = SDLAudioSink::new(emulator.get_audio())?;
+    //let _audiodev = SDLAudioSink::new(emulator.get_audio())?;
 
     // Set up emscripten main loop
     let emuloop = EmulatorMain {
