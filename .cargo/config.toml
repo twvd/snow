@@ -1,6 +1,16 @@
 [target.wasm32-unknown-emscripten]
 rustflags = [
-  "-C", "link-arg=-s", "-C", "link-arg=USE_SDL=2",
+  # General
   "-C", "link-arg=-s", "-C", "link-arg=TOTAL_STACK=64mb",
+  "-C", "link-arg=-s", "-C", "link-arg=INITIAL_MEMORY=1024mb",
   "-C", "link-arg=-s", "-C", "link-arg=ASSERTIONS=1",
+
+  # SDL
+  "-C", "link-arg=-s", "-C", "link-arg=USE_SDL=2",
+
+  # Thread support
+  "-C", "link-arg=-pthread",
+  "-C", "link-arg=-s", "-C", "link-arg=PTHREAD_POOL_SIZE=4",
+  "-C", "link-arg=-s", "-C", "link-arg=WASM_WORKERS",
+  "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals",
 ]
