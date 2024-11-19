@@ -36,7 +36,7 @@ pub enum EmulatorCommand {
 }
 
 /// Emulator speed tweak
-#[derive(Debug, Copy, Clone, strum::Display)]
+#[derive(Debug, Copy, Clone, strum::Display, Eq, PartialEq)]
 pub enum EmulatorSpeed {
     /// Actual speed accurate to the real hardware
     Accurate,
@@ -44,6 +44,8 @@ pub enum EmulatorSpeed {
     Dynamic,
     /// Uncapped at all times, sound disabled
     Uncapped,
+    /// Sync to 60 fps video, sound disabled
+    Video,
 }
 
 /// Structure with general emulator status

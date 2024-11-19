@@ -40,6 +40,8 @@ enum Speed {
     Dynamic,
     /// Uncapped at all times, sound disabled
     Uncapped,
+    /// Sync to 60 fps video, sound disabled
+    Video,
 }
 
 impl From<Speed> for snow_core::emulator::comm::EmulatorSpeed {
@@ -48,6 +50,7 @@ impl From<Speed> for snow_core::emulator::comm::EmulatorSpeed {
             Speed::Accurate => Self::Accurate,
             Speed::Dynamic => Self::Dynamic,
             Speed::Uncapped => Self::Uncapped,
+            Speed::Video => Self::Video,
         }
     }
 }

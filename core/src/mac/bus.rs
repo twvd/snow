@@ -1,4 +1,6 @@
 use std::ops::Range;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use super::audio::{AudioReceiver, AudioState};
 use super::scc::Scc;
@@ -66,6 +68,9 @@ pub struct MacBus<TRenderer: Renderer> {
 
     /// Last pushed audio sample
     last_audiosample: u8,
+
+    /// Last vblank time (for syncing to video)
+    vblank_time: Instant,
 }
 
 impl<TRenderer> MacBus<TRenderer>
@@ -128,6 +133,7 @@ where
             scsi_enable: true,
             speed: EmulatorSpeed::Accurate,
             last_audiosample: 0,
+            vblank_time: Instant::now(),
         };
 
         // Disable memory test
@@ -469,6 +475,18 @@ where
         // VBlank interrupt
         if self.video.get_clr_vblank() {
             self.via.ifr.set_vblank(true);
+
+            if self.speed == EmulatorSpeed::Video {
+                // Sync to 60 fps video
+                let frametime = self.vblank_time.elapsed().as_micros() as u64;
+                const DESIRED_FRAMETIME: u64 = 1_000_000 / 60;
+
+                self.vblank_time = Instant::now();
+
+                if frametime < DESIRED_FRAMETIME {
+                    thread::sleep(Duration::from_micros(DESIRED_FRAMETIME - frametime));
+                }
+            }
         }
 
         // HBlank
@@ -491,6 +509,7 @@ where
                     }
                 }
                 EmulatorSpeed::Uncapped => (),
+                EmulatorSpeed::Video => (),
             }
             self.last_audiosample = audiosample;
         }

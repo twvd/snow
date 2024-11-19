@@ -347,6 +347,7 @@ impl UserInterface {
                     Some("accurate") => EmulatorSpeed::Accurate,
                     Some("dynamic") => EmulatorSpeed::Dynamic,
                     Some("uncapped") => EmulatorSpeed::Uncapped,
+                    Some("video") => EmulatorSpeed::Video,
                     _ => bail!("Requires an argument: accurate, dynamic, uncapped"),
                 };
                 self.cmdsender.send(EmulatorCommand::SetSpeed(speed))?;
