@@ -137,11 +137,9 @@ fn main() -> Result<()> {
     let cmd = emulator.create_cmd_sender();
     cmd.send(EmulatorCommand::Run)?;
 
-    let floppy = include_bytes!("../../dc1.moof").to_vec();
-    let floppy2 = include_bytes!("../../dc2.moof").to_vec();
+    let floppy = include_bytes!("../../boot.dsk").to_vec();
 
     cmd.send(EmulatorCommand::InsertFloppyBuffer(0, floppy))?;
-    cmd.send(EmulatorCommand::InsertFloppyBuffer(1, floppy2))?;
 
     // Initialize audio
     let _audiodev = SDLAudioSink::new(emulator.get_audio())?;
