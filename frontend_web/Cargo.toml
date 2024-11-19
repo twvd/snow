@@ -1,5 +1,5 @@
 [package]
-name = "frontend_web"
+name = "snow_frontend_web"
 version = "0.1.0"
 edition = "2021"
 
