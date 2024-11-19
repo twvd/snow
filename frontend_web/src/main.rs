@@ -119,7 +119,10 @@ impl emscripten_main_loop::MainLoop for EmulatorMain {
 
 fn main() -> Result<()> {
     // Initialize logging
-    env_logger::init();
+    env_logger::Builder::new()
+        .target(env_logger::Target::Stdout)
+        .filter(None, LevelFilter::Trace)
+        .init();
 
     // Initialize display
     let scale = 1;
