@@ -41,13 +41,10 @@
 //! ```
 
 use std::collections::VecDeque;
-#[cfg(feature = "mmap")]
-use std::{fs::OpenOptions, path::Path};
+use std::path::Path;
 
 use anyhow::{bail, Result};
 
-#[cfg(feature = "mmap")]
-use fs2::FileExt;
 use log::*;
 #[cfg(feature = "mmap")]
 use memmap2::MmapMut;
@@ -243,6 +240,9 @@ impl ScsiController {
     /// at the discretion of the operating system.
     #[cfg(feature = "mmap")]
     fn load_disk(filename: &str) -> Option<MmapMut> {
+        use fs2::FileExt;
+        use std::fs::OpenOptions;
+
         if !Path::new(filename).exists() {
             // File not found
             return None;
@@ -277,8 +277,31 @@ impl ScsiController {
     }
 
     #[cfg(not(feature = "mmap"))]
-    fn load_disk(_filename: &str) -> Option<Vec<u8>> {
-        None
+    fn load_disk(filename: &str) -> Option<Vec<u8>> {
+        use std::fs;
+
+        if !Path::new(filename).exists() {
+            // File not found
+            return None;
+        }
+
+        let disk = match fs::read(filename) {
+            Ok(d) => d,
+            Err(e) => {
+                error!("Failed to open file: {}", e);
+                return None;
+            }
+        };
+
+        if disk.len() % DISK_BLOCKSIZE != 0 {
+            error!(
+                "Cannot load disk image {}: not multiple of {}",
+                filename, DISK_BLOCKSIZE
+            );
+            return None;
+        }
+
+        Some(disk)
     }
 
     pub fn new() -> Self {
