@@ -154,6 +154,7 @@ impl FloppyImageLoader for A2Rv3 {
         let mut info = None;
         let mut meta = String::new();
         let mut captures = vec![];
+        let mut resolution = None;
 
         // Parse chunks from file
         while let Ok(chunk) = A2RChunkHeader::read(&mut cursor) {
@@ -164,7 +165,8 @@ impl FloppyImageLoader for A2Rv3 {
                 b"RWCP" => {
                     let rwcp = A2RChunkRwcp::read(&mut cursor)?;
                     if rwcp.resolution != 125000 {
-                        bail!("Unsupported resolution: {}", rwcp.resolution);
+                        debug!("Converting resolution: {} -> 125000", rwcp.resolution);
+                        resolution = Some(rwcp.resolution);
                     }
                     while let A2RCaptureEntry::Capture(capture) =
                         A2RCaptureEntry::read(&mut cursor)?
@@ -226,6 +228,11 @@ impl FloppyImageLoader for A2Rv3 {
                 last += b as i16;
                 if b == 255 {
                     continue;
+                }
+                if let Some(res) = resolution {
+                    // Perform conversion
+                    let converted = last as u64 * res as u64 / 125000u64;
+                    last = converted.try_into()?;
                 }
                 img.push_flux(side, track, last);
                 last = 0;
