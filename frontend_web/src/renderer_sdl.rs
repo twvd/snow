@@ -152,6 +152,7 @@ impl SDLEventPump {
 
 pub struct SDLAudioSink {
     recv: AudioReceiver,
+    last_sample: u8,
 }
 
 impl AudioCallback for SDLAudioSink {
@@ -159,7 +160,12 @@ impl AudioCallback for SDLAudioSink {
 
     fn callback(&mut self, out: &mut [u8]) {
         if let Ok(buffer) = self.recv.try_recv() {
+            self.last_sample = buffer.last().copied().unwrap();
             out.copy_from_slice(&buffer);
+        } else {
+            // Audio is late. Continue the last output sample to reduce
+            // pops and other abrupt noises.
+            out.fill(self.last_sample);
         }
     }
 }
@@ -181,7 +187,10 @@ impl SDLAudioSink {
             let device = audio_subsystem
                 .open_playback(None, &spec, |spec| {
                     debug!("Audio spec: {:?}", spec);
-                    Self { recv: audioch }
+                    Self {
+                        recv: audioch,
+                        last_sample: 0,
+                    }
                 })
                 .map_err(|e| anyhow!(e))?;
             device.resume();
