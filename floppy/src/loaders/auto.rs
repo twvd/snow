@@ -69,7 +69,7 @@ impl Autodetect {
             return Ok(ImageType::Bitfile);
         }
         // Apple DiskCopy 4.2
-        if data[0x52..=0x53] == [0x01, 0x00] {
+        if data.len() > 0x53 && data[0x52..=0x53] == [0x01, 0x00] {
             return Ok(ImageType::DC42);
         }
         // Raw image
