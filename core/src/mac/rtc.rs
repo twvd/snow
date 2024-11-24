@@ -72,8 +72,29 @@ impl RtcData {
     }
 
     #[cfg(not(feature = "mmap"))]
-    pub(super) fn load_pram(_filename: &str) -> Option<Vec<u8>> {
-        None
+    pub(super) fn load_pram(filename: &str) -> Option<Vec<u8>> {
+        use std::fs;
+        use std::path::Path;
+
+        if !Path::new(filename).exists() {
+            // File not found
+            return None;
+        }
+
+        let pram = match fs::read(filename) {
+            Ok(d) => d,
+            Err(e) => {
+                error!("Failed to open file: {}", e);
+                return None;
+            }
+        };
+
+        if pram.len() != PRAM_SIZE {
+            error!("Cannot load PRAM {}: not {} bytes", filename, PRAM_SIZE);
+            return None;
+        }
+
+        Some(pram)
     }
 
     #[cfg(feature = "mmap")]
