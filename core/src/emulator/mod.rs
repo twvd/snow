@@ -166,8 +166,8 @@ impl Emulator {
 
         if self.run
             && (self.breakpoints.contains(&self.cpu.regs.pc)
-                || self.cpu.bus.iwm.dbg_break.get_clear())
-            || self.cpu.bus.dbg_break.get_clear()
+                || self.cpu.bus.iwm.dbg_break.get_clear()
+                || self.cpu.bus.dbg_break.get_clear())
         {
             stop_break = true;
         }

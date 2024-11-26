@@ -63,6 +63,8 @@ const VECTOR_CHK: Address = 0x000018;
 const VECTOR_TRAPV: Address = 0x00001C;
 /// Privilege violation exception vector
 const VECTOR_PRIVILEGE_VIOLATION: Address = 0x000020;
+/// Trace exception
+const VECTOR_TRACE: Address = 0x000024;
 /// Line 1010 / A
 const VECTOR_LINEA: Address = 0x000028;
 /// Line 1111 / F
@@ -219,6 +221,11 @@ where
             }
         }
 
+        if self.regs.sr.trace() {
+            self.raise_exception(ExceptionGroup::Group1, VECTOR_TRACE, None)?;
+        }
+
+        let start_pc = self.regs.pc;
         let opcode = self.fetch()?;
 
         if self.decode_cache[opcode as usize].is_none() {
@@ -249,7 +256,14 @@ where
                         Some(details),
                     )?;
                 }
-                None => return Err(e),
+                None => {
+                    bail!(
+                        "PC: {:06X} Instruction: {:?} - error: {}",
+                        start_pc,
+                        instr,
+                        e
+                    );
+                }
             },
         };
 
@@ -950,7 +964,9 @@ where
                 }
                 self.write_ticks_order(addr, value, order)
             }
-            _ => todo!(),
+            _ => {
+                bail!("Unimplemented addressing mode: {:?}", addrmode)
+            }
         }
     }
 
