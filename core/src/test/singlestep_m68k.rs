@@ -291,6 +291,7 @@ fn run_testcase(testcase: Testcase, level: TestLevel) {
     }
 
     let mut cpu = CpuM68k::new(bus);
+    cpu.trace_mask = true;
     cpu.regs = regs_initial;
     cpu.prefetch = testcase.initial.prefetch.into();
     cpu.bus.reset_trace();

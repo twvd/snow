@@ -129,6 +129,9 @@ pub struct CpuM68k<TBus: Bus<Address, u8> + IrqSource> {
     /// Instruction decode cache
     #[serde(skip, default = "empty_decode_cache")]
     decode_cache: DecodeCache,
+
+    /// Mask trace exceptions (for tests)
+    pub trace_mask: bool,
 }
 
 impl<TBus> CpuM68k<TBus>
@@ -145,6 +148,7 @@ where
             step_exception: false,
             step_ea_load: None,
             decode_cache: empty_decode_cache(),
+            trace_mask: false,
         }
     }
 
@@ -221,7 +225,7 @@ where
             }
         }
 
-        if self.regs.sr.trace() {
+        if self.regs.sr.trace() && !self.trace_mask {
             self.raise_exception(ExceptionGroup::Group1, VECTOR_TRACE, None)?;
         }
 
