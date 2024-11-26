@@ -365,8 +365,8 @@ where
         if self.model >= MacModel::SE {
             // SE+ needs to see even a small difference between the current (RawMouse)
             // and new (MTemp) position, otherwise the change is ignored.
-            self.write_ram(Self::ADDR_RAWMOUSE_X, x - 1);
-            self.write_ram(Self::ADDR_RAWMOUSE_Y, y + 1);
+            self.write_ram(Self::ADDR_RAWMOUSE_X, x.wrapping_add_signed(-1));
+            self.write_ram(Self::ADDR_RAWMOUSE_Y, y.wrapping_add_signed(1));
         } else {
             self.write_ram(Self::ADDR_RAWMOUSE_X, x);
             self.write_ram(Self::ADDR_RAWMOUSE_Y, y);
