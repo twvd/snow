@@ -240,7 +240,10 @@ impl Via {
             model,
             a_out: RegisterA(0xFF),
             b_out: RegisterB(0xFF),
-            a_in: RegisterA(0xFF),
+            a_in: RegisterA(0xFF).with_sndpg2(
+                // Mac Classic has a pulldown (R79) as model identifier
+                model != MacModel::Classic,
+            ),
             b_in: RegisterB(0xFF),
             ddra: RegisterA(0xFF),
             ddrb: RegisterB(0xFF),

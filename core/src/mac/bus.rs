@@ -60,9 +60,6 @@ pub struct MacBus<TRenderer: Renderer> {
 
     overlay: bool,
 
-    /// Toggles ROM mirroring for SCSI support
-    scsi_enable: bool,
-
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
 
@@ -130,7 +127,6 @@ where
 
             dbg_break: LatchingEvent::default(),
             overlay: true,
-            scsi_enable: true,
             speed: EmulatorSpeed::Accurate,
             last_audiosample: 0,
             vblank_time: Instant::now(),
@@ -240,11 +236,8 @@ where
     fn read_overlay(&mut self, addr: Address) -> Option<Byte> {
         let result = match addr {
             // ROM
-            0x0000_0000..=0x000F_FFFF | 0x0020_0000..=0x002F_FFFF | 0x0040_0000..=0x0043_FFFF => {
-                Some(self.rom[addr as usize & self.rom_mask])
-            }
-            0x0044_0000..=0x004F_FFFF if !self.scsi_enable => {
-                Some(self.rom[addr as usize & self.rom_mask])
+            0x0000_0000..=0x000F_FFFF | 0x0020_0000..=0x002F_FFFF | 0x0040_0000..=0x004F_FFFF => {
+                Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
             }
             // Overlay flip for Mac SE+
             0x0040_0000..=0x005F_FFFF if self.model >= MacModel::SE => {
@@ -282,9 +275,17 @@ where
             // RAM
             0x0000_0000..=0x003F_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
             // ROM
-            0x0040_0000..=0x0043_FFFF => Some(self.rom[addr as usize & self.rom_mask]),
-            0x0044_0000..=0x004F_FFFF if !self.scsi_enable => {
-                Some(self.rom[addr as usize & self.rom_mask])
+            0x0040_0000..=0x0043_FFFF => {
+                Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
+            }
+            0x0044_0000..=0x004F_FFFF => {
+                if self.model == MacModel::Plus {
+                    // Plus with SCSI has no repeated ROM images above 0x440000 as
+                    // indication of SCSI controller present.
+                    Some(0xFF)
+                } else {
+                    Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
+                }
             }
             // SCSI
             0x0058_0000..=0x005F_FFFF => self.scsi.read(addr),
