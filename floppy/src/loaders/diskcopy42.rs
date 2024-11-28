@@ -112,6 +112,10 @@ impl FloppyImageLoader for Diskcopy42 {
             );
         }
 
-        MacFormatEncoder::encode(floppytype, &raw.data, Some(&raw.tags), title)
+        if raw.tags.is_empty() {
+            MacFormatEncoder::encode(floppytype, &raw.data, None, title)
+        } else {
+            MacFormatEncoder::encode(floppytype, &raw.data, Some(&raw.tags), title)
+        }
     }
 }
