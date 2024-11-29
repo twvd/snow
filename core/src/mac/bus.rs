@@ -447,7 +447,9 @@ where
     fn reset(&mut self) -> Result<()> {
         self.via = Via::new(self.model);
         self.scc = Scc::new();
-        self.overlay = true;
+        if self.model <= MacModel::Plus {
+            self.overlay = true;
+        }
         Ok(())
     }
 }
