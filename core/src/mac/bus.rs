@@ -443,6 +443,13 @@ where
         }
         BusResult::Ok(val)
     }
+
+    fn reset(&mut self) -> Result<()> {
+        self.via = Via::new(self.model);
+        self.scc = Scc::new();
+        self.overlay = true;
+        Ok(())
+    }
 }
 
 impl<TRenderer> Tickable for MacBus<TRenderer>

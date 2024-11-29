@@ -102,6 +102,10 @@ where
         self.mem.insert(addr, val);
         BusResult::Ok(val)
     }
+
+    fn reset(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 impl<TA, TD> Tickable for Testbus<TA, TD>

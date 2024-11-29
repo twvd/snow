@@ -2046,6 +2046,8 @@ where
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
         }
 
+        debug!("RESET instruction");
+        self.bus.reset()?;
         self.advance_cycles(128)?;
         Ok(())
     }

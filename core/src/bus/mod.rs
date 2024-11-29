@@ -2,6 +2,7 @@ pub mod testbus;
 
 use crate::tickable::Tickable;
 
+use anyhow::Result;
 use num_traits::{PrimInt, WrappingAdd};
 
 /// Main CPU address data type (actually 24-bit)
@@ -34,6 +35,9 @@ pub trait Bus<TA: PrimInt + WrappingAdd, TD: PrimInt>: Tickable {
     fn read(&mut self, addr: TA) -> BusResult<TD>;
     fn write(&mut self, addr: TA, val: TD) -> BusResult<TD>;
     fn get_mask(&self) -> TA;
+
+    /// RESET line triggered by 68k RESET instruction
+    fn reset(&mut self) -> Result<()>;
 }
 
 /// Inspectable provides an interface to debugging/memory views.
