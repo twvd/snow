@@ -18,9 +18,9 @@ use super::instruction::{
 use super::regs::{Register, RegisterFile, RegisterSR};
 use super::CpuSized;
 
-/// Access error details
+/// Address error details
 #[derive(Debug, Clone, Copy)]
-struct AccessError {
+struct AddressError {
     #[allow(dead_code)]
     function_code: u8,
     read: bool,
@@ -33,9 +33,9 @@ struct AccessError {
 /// CPU error type to cascade exceptions down
 #[derive(Error, Debug)]
 enum CpuError {
-    /// Access error exception (unaligned address on Word/Long access)
-    #[error("Access error exception")]
-    AccessError(AccessError),
+    /// Address error exception (unaligned address on Word/Long access)
+    #[error("Address error exception")]
+    AddressError(AddressError),
 }
 
 /// M68000 exception groups
@@ -251,7 +251,7 @@ where
                 debug_assert!(self.step_ea_load.is_none());
             }
             Err(e) => match e.downcast_ref() {
-                Some(CpuError::AccessError(ae)) => {
+                Some(CpuError::AddressError(ae)) => {
                     let mut details = *ae;
                     details.ir = instr.data;
                     self.raise_exception(
@@ -289,7 +289,7 @@ where
         if std::mem::size_of::<T>() >= 2 && (addr & 1) != 0 {
             // Unaligned access
             error!("Unaligned access: address {:08X}", addr);
-            bail!(CpuError::AccessError(AccessError {
+            bail!(CpuError::AddressError(AddressError {
                 function_code: 0,
                 ir: 0,
 
@@ -465,7 +465,7 @@ where
         &mut self,
         group: ExceptionGroup,
         vector: Address,
-        details: Option<AccessError>,
+        details: Option<AddressError>,
     ) -> Result<()> {
         let saved_sr = self.regs.sr.sr();
 
@@ -481,7 +481,7 @@ where
                 self.advance_cycles(8)?; // idle
                 let details = details.expect("Address error details not passed");
                 debug!(
-                    "Access error: read = {:?}, address = {:08X} PC = {:06X}",
+                    "Address error: read = {:?}, address = {:08X} PC = {:06X}",
                     details.read, details.address, self.regs.pc
                 );
 
