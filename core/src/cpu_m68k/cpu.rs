@@ -234,12 +234,14 @@ where
 
         if self.decode_cache[opcode as usize].is_none() {
             let instr = Instruction::try_decode(opcode);
-
-            // Special case for MOVEC which is used to detect 68000/68020 in the Mac Plus
-            if instr.is_err() && opcode == 0b0100111001111011 {
-                self.raise_exception(ExceptionGroup::Group1, VECTOR_ILLEGAL, None)?;
-                return Ok(());
+            if instr.is_err() {
+                warn!(
+                    "Illegal instruction {:016b} at PC ${:06X}",
+                    opcode, start_pc
+                );
+                return self.raise_illegal_instruction();
             }
+
             self.decode_cache[opcode as usize] =
                 Some(instr.context(format!("Decode error @ {:08X}", self.regs.pc))?);
         }
@@ -423,6 +425,13 @@ where
     pub fn set_pc(&mut self, pc: Address) -> Result<()> {
         self.prefetch.clear();
         self.regs.pc = pc.wrapping_sub(4) & ADDRESS_MASK;
+        Ok(())
+    }
+
+    /// Raises an illegal instruction exception
+    fn raise_illegal_instruction(&mut self) -> Result<()> {
+        self.advance_cycles(4)?;
+        self.raise_exception(ExceptionGroup::Group1, VECTOR_ILLEGAL, None)?;
         Ok(())
     }
 
@@ -660,9 +669,7 @@ where
             InstructionMnemonic::ABCD => self.op_abcd(instr),
             InstructionMnemonic::PEA => self.op_lea_pea(instr),
             InstructionMnemonic::LEA => self.op_lea_pea(instr),
-            InstructionMnemonic::ILLEGAL => {
-                self.raise_exception(ExceptionGroup::Group1, VECTOR_ILLEGAL, None)
-            }
+            InstructionMnemonic::ILLEGAL => self.raise_illegal_instruction(),
             InstructionMnemonic::TAS => self.op_tas(instr),
             InstructionMnemonic::TST_b => self.op_tst::<Byte>(instr),
             InstructionMnemonic::TST_w => self.op_tst::<Word>(instr),
