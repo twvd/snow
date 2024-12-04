@@ -59,7 +59,7 @@ impl<'a> DebuggerWidget<'a> {
     }
 }
 
-impl<'a> StatefulWidget for DebuggerWidget<'a> {
+impl StatefulWidget for DebuggerWidget<'_> {
     type State = DebuggerWidgetState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {

@@ -74,7 +74,7 @@ impl<'a, TA: PrimInt + WrappingAdd, TD: PrimInt> BusIterator<'a, TA, TD> {
     }
 }
 
-impl<'a, TA: PrimInt + WrappingAdd, TD: PrimInt> Iterator for BusIterator<'a, TA, TD> {
+impl<TA: PrimInt + WrappingAdd, TD: PrimInt> Iterator for BusIterator<'_, TA, TD> {
     type Item = TD;
 
     fn next(&mut self) -> Option<Self::Item> {

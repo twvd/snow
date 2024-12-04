@@ -580,7 +580,7 @@ impl<'a> Disassembler<'a> {
     }
 }
 
-impl<'a> Iterator for Disassembler<'a> {
+impl Iterator for Disassembler<'_> {
     type Item = DisassemblyEntry;
 
     fn next(&mut self) -> Option<Self::Item> {

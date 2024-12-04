@@ -27,7 +27,7 @@ impl<'a> StatusWidget<'a> {
     ];
 }
 
-impl<'a> Widget for StatusWidget<'a> {
+impl Widget for StatusWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let layout = Layout::default()
             .direction(Direction::Vertical)
