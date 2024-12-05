@@ -68,6 +68,9 @@ pub struct MacBus<TRenderer: Renderer> {
 
     /// Last vblank time (for syncing to video)
     vblank_time: Instant,
+
+    /// VPA/E-clock sync in progress
+    vpa_sync: bool,
 }
 
 impl<TRenderer> MacBus<TRenderer>
@@ -130,6 +133,7 @@ where
             speed: EmulatorSpeed::Accurate,
             last_audiosample: 0,
             vblank_time: Instant::now(),
+            vpa_sync: false,
         };
 
         // Disable memory test
@@ -380,6 +384,34 @@ where
         info!("Emulation speed: {:?}", speed);
         self.speed = speed;
     }
+
+    /// Tests for wait states on bus access
+    fn in_waitstate(&mut self, addr: Address) -> bool {
+        // DTACK (only for RAM region)
+        if (0x0000_0000..=0x003F_FFFF).contains(&addr)
+            && !self.video.in_blanking_period()
+            && !self.model.ram_interleave_cpu(self.cycles)
+        {
+            // RAM access for CPU currently blocked by memory controller
+            // https://www.bigmessowires.com/2011/08/25/68000-interleaved-memory-controller-design/
+            return true;
+        }
+
+        // VPA
+        if addr >= 0xE0_0000 {
+            if !self.vpa_sync {
+                // Start E-Clock synchronization, wait for next low edge.
+                self.vpa_sync = true;
+            } else if self.eclock == 0 {
+                // Low edge, synchronized
+                self.vpa_sync = false;
+                return false;
+            }
+            return true;
+        }
+
+        false
+    }
 }
 
 impl<TRenderer> Bus<Address, Byte> for MacBus<TRenderer>
@@ -391,12 +423,7 @@ where
     }
 
     fn read(&mut self, addr: Address) -> BusResult<Byte> {
-        if (0x0000_0000..=0x003F_FFFF).contains(&addr)
-            && !self.video.in_blanking_period()
-            && !self.model.ram_interleave_cpu(self.cycles)
-        {
-            // RAM access for CPU currently blocked by memory controller
-            // https://www.bigmessowires.com/2011/08/25/68000-interleaved-memory-controller-design/
+        if self.in_waitstate(addr) {
             return BusResult::WaitState;
         }
 
@@ -415,12 +442,7 @@ where
     }
 
     fn write(&mut self, addr: Address, val: Byte) -> BusResult<Byte> {
-        if (0x0000_0000..=0x003F_FFFF).contains(&addr)
-            && !self.video.in_blanking_period()
-            && !self.model.ram_interleave_cpu(self.cycles)
-        {
-            // RAM access for CPU currently blocked by memory controller
-            // https://www.bigmessowires.com/2011/08/25/68000-interleaved-memory-controller-design/
+        if self.in_waitstate(addr) {
             return BusResult::WaitState;
         }
 
