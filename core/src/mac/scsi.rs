@@ -435,6 +435,8 @@ impl ScsiController {
                 | 0x28
                 // WRITE(10)
                 | 0x2A
+                // VERIFY(10)
+                | 0x2F
                 // READ BUFFER(10)
                 | 0x3C
                 => 10,
@@ -616,6 +618,10 @@ impl ScsiController {
                 } else {
                     Ok(ScsiCmdResult::DataOut(blockcnt * DISK_BLOCKSIZE))
                 }
+            }
+            0x2F => {
+                // VERIFY(10)
+                Ok(ScsiCmdResult::Status(STATUS_GOOD))
             }
             0x3C => {
                 // READ BUFFER(10)
