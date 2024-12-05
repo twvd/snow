@@ -60,14 +60,6 @@ impl Autodetect {
         if data.len() >= 4 && data[0..4] == *b"PRI " {
             return Ok(ImageType::PRI);
         }
-        // Bitfile / 'Dave format'
-        if data.len() >= 10
-            && data[0..4] == data[4..8]
-            && [0, 1].contains(&data[8])
-            && [0, 1].contains(&data[9])
-        {
-            return Ok(ImageType::Bitfile);
-        }
         // Apple DiskCopy 4.2
         if data.len() > 0x53 && data[0x52..=0x53] == [0x01, 0x00] {
             return Ok(ImageType::DC42);
@@ -75,6 +67,14 @@ impl Autodetect {
         // Raw image
         if FloppyType::iter().any(|t| t.get_logical_size() == data.len()) {
             return Ok(ImageType::Raw);
+        }
+        // Bitfile / 'Dave format'
+        if data.len() >= 10
+            && data[0..4] == data[4..8]
+            && [0, 1].contains(&data[8])
+            && [0, 1].contains(&data[9])
+        {
+            return Ok(ImageType::Bitfile);
         }
 
         bail!("Unsupported image file type");
