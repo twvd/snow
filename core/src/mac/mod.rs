@@ -24,6 +24,8 @@ pub enum MacModel {
     Plus,
     /// Macintosh SE
     SE,
+    /// Macintosh SE (FDHD)
+    SeFdhd,
     /// Macintosh Classic
     Classic,
 }
@@ -41,7 +43,7 @@ impl MacModel {
         match self {
             Self::Early128K => 128 * 1024,
             Self::Early512K => 512 * 1024,
-            Self::Plus | Self::SE | Self::Classic => 4096 * 1024,
+            Self::Plus | Self::SE | Self::SeFdhd | Self::Classic => 4096 * 1024,
         }
     }
 
@@ -54,7 +56,7 @@ impl MacModel {
 
     pub const fn fdd_count(self) -> usize {
         match self {
-            Self::SE => 3,
+            Self::SE | Self::SeFdhd => 3,
             _ => 2,
         }
     }
@@ -88,7 +90,7 @@ impl MacModel {
             // 50/50 ratio for early macs
             Self::Early128K | Self::Early512K | Self::Plus => cycles % 8 >= 4,
             // 75/25 for SE and onwards
-            Self::SE | Self::Classic => cycles % 16 >= 4,
+            Self::SE | Self::SeFdhd | Self::Classic => cycles % 16 >= 4,
         }
     }
 
@@ -96,7 +98,7 @@ impl MacModel {
         match self {
             Self::Early128K | Self::Early512K => None,
             Self::Plus => Some((0x0002AE, 0x0040_0000)),
-            Self::SE | Self::Classic => Some((0x000CFC, 0x574C5343)),
+            Self::SE | Self::SeFdhd | Self::Classic => Some((0x000CFC, 0x574C5343)),
         }
     }
 }
@@ -111,6 +113,7 @@ impl Display for MacModel {
                 Self::Early512K => "Macintosh 512K",
                 Self::Plus => "Macintosh Plus",
                 Self::SE => "Macintosh SE",
+                Self::SeFdhd => "Macintosh SE (FDHD)",
                 Self::Classic => "Macintosh Classic",
             }
         )
