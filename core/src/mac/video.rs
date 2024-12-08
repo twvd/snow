@@ -84,6 +84,9 @@ pub struct Video<T: Renderer> {
     /// Primary and alternate framebuffer
     pub framebuffers: [Vec<u8>; 2],
 
+    /// Video display output
+    pub output: Vec<u8>,
+
     /// Video page to be used by video circuitry
     /// (true = main, false = alternate)
     /// (lives in VIA, copied here)
@@ -169,6 +172,7 @@ where
                 vec![0; Self::FRAMEBUFFER_SIZE],
                 vec![0; Self::FRAMEBUFFER_SIZE],
             ],
+            output: vec![0; Self::FRAMEBUFFER_SIZE],
             framebuffer_select: false,
         }
     }
@@ -185,17 +189,11 @@ where
 
     /// Prepares the image and sends it to the frontend renderer
     fn render(&mut self) -> Result<()> {
-        let fb = if !self.framebuffer_select {
-            &self.framebuffers[0]
-        } else {
-            &self.framebuffers[1]
-        };
-
         let buf = self.renderer.get_buffer();
         for idx in 0..Self::FRAME_VISIBLE_DOTS {
             let byte = idx / 8;
             let bit = idx % 8;
-            if fb[byte] & (1 << (7 - bit)) == 0 {
+            if self.output[byte] & (1 << (7 - bit)) == 0 {
                 buf[idx * 4].store(0xEE, Ordering::Release);
                 buf[idx * 4 + 1].store(0xEE, Ordering::Release);
                 buf[idx * 4 + 2].store(0xEE, Ordering::Release);
@@ -230,6 +228,18 @@ where
         if !before_hblank && self.in_hblank() {
             // Just entered HBlank
             self.event_hblank.set();
+
+            // Copy current scanline to display output
+            if let Some(line) = self.get_visible_scanline() {
+                let offset = line * Self::H_VISIBLE_DOTS / 8;
+                let fb = if !self.framebuffer_select {
+                    &self.framebuffers[0]
+                } else {
+                    &self.framebuffers[1]
+                };
+                self.output[offset..(offset + Self::H_VISIBLE_DOTS / 8)]
+                    .copy_from_slice(&fb[offset..(offset + Self::H_VISIBLE_DOTS / 8)])
+            }
         }
 
         if before_vblank && !self.in_vblank() {
