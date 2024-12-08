@@ -147,6 +147,9 @@ fn main() -> Result<()> {
     } else if digest[..] == hex!("0dea05180e66fddb5f5577c89418de31b97e2d9dc6affe84871b031df8245487")
     {
         MacModel::SE
+    } else if digest[..] == hex!("bb0cb4786e2e004b701dda9bec475598bc82a4f27eb7b11e6b78dfcee1434f71")
+    {
+        MacModel::SeFdhd
     } else if digest[..] == hex!("c1c47260bacac2473e21849925fbfdf48e5ab584aaef7c6d54569d0cb6b41cce")
     {
         MacModel::Classic
