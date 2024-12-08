@@ -59,6 +59,14 @@ impl MacModel {
         }
     }
 
+    /// Supports high-density floppies, implying SWIM controller
+    pub const fn fdd_hd(self) -> bool {
+        match self {
+            Self::Early128K | Self::Early512K | Self::Plus | Self::SE => false,
+            _ => true,
+        }
+    }
+
     pub const fn has_scsi(self) -> bool {
         match self {
             Self::Early128K | Self::Early512K => false,
