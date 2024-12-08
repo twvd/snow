@@ -9,7 +9,7 @@ use super::via::Via;
 use super::MacModel;
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::emulator::comm::EmulatorSpeed;
-use crate::mac::iwm::Iwm;
+use crate::mac::swim::Swim;
 use crate::mac::video::Video;
 use crate::renderer::Renderer;
 use crate::tickable::{Tickable, Ticks};
@@ -36,7 +36,7 @@ pub struct MacBus<TRenderer: Renderer> {
     pub(crate) audio: AudioState,
     eclock: Ticks,
     mouse_ready: bool,
-    pub(crate) iwm: Iwm,
+    pub(crate) swim: Swim,
     pub(crate) scsi: ScsiController,
 
     ram_mask: usize,
@@ -114,7 +114,7 @@ where
             audio: AudioState::default(),
             eclock: 0,
             scc: Scc::new(),
-            iwm: Iwm::new(model.fdd_double_sided(), model.fdd_count()),
+            swim: Swim::new(model.fdd_double_sided(), model.fdd_count(), false),
             scsi: ScsiController::new(),
             mouse_ready: false,
 
@@ -194,8 +194,8 @@ where
             0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & self.ram_mask] = val),
             // SCC
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr, val),
-            // IWM
-            0x00DF_E1FF..=0x00DF_FFFF => self.iwm.write(addr, val),
+            // IWM/SWIM
+            0x00DF_E1FF..=0x00DF_FFFF => self.swim.write(addr, val),
             // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.write(addr, val),
             _ => None,
@@ -225,8 +225,8 @@ where
             0x0058_0000..=0x005F_FFFF => self.scsi.write(addr, val),
             // SCC
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr, val),
-            // IWM
-            0x00DF_E1FF..=0x00DF_FFFF => self.iwm.write(addr, val),
+            // IWM/SWIM
+            0x00DF_E1FF..=0x00DF_FFFF => self.swim.write(addr, val),
             // VIA
             0x00EF_0000..=0x00EF_FFFF => {
                 self.via.write(addr, val);
@@ -256,8 +256,8 @@ where
             0x009F_FFF7 | 0x009F_FFF9 => Some(0xFF),
             // SCC
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr),
-            // IWM
-            0x00DF_E1FF..=0x00DF_FFFF => self.iwm.read(addr),
+            // IWM/SWIM
+            0x00DF_E1FF..=0x00DF_FFFF => self.swim.read(addr),
             // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
             // Phase read (ignore)
@@ -295,8 +295,8 @@ where
             0x0058_0000..=0x005F_FFFF => self.scsi.read(addr),
             // SCC
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr),
-            // IWM
-            0x00DF_E1FF..=0x00DF_FFFF => self.iwm.read(addr),
+            // IWM/SWIM
+            0x00DF_E1FF..=0x00DF_FFFF => self.swim.read(addr),
             // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
             // Test software region (ignore)
@@ -457,7 +457,7 @@ where
         }
 
         // Sync values that live in multiple places
-        self.iwm.sel = self.via.a_out.sel();
+        self.swim.io_headsel(self.via.a_out.sel());
         self.video.framebuffer_select = self.via.a_out.page2();
 
         if written.is_none() {
@@ -501,7 +501,7 @@ where
         if self.model <= MacModel::Plus {
             self.via.b_in.set_h4(self.video.in_hblank());
         } else {
-            self.iwm.intdrive = self.via.a_out.drivesel();
+            self.swim.io_drivesel(self.via.a_out.drivesel());
         }
 
         // VBlank interrupt
@@ -530,7 +530,7 @@ where
             let pwm = soundbuf[scanline * 2 + 1];
             let audiosample = if soundon { soundbuf[scanline * 2] } else { 0 };
 
-            self.iwm.push_pwm(pwm)?;
+            self.swim.push_pwm(pwm)?;
 
             // Emulator will block here to sync to audio frequency
             match self.speed {
@@ -546,7 +546,7 @@ where
             self.last_audiosample = audiosample;
         }
 
-        self.iwm.tick(1)?;
+        self.swim.tick(1)?;
 
         Ok(1)
     }

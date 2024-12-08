@@ -10,6 +10,7 @@ pub mod pluskbd;
 pub mod rtc;
 pub mod scc;
 pub mod scsi;
+pub mod swim;
 pub mod via;
 pub mod video;
 
