@@ -477,7 +477,7 @@ where
 
         // Sync VIA registers
         if self.model <= MacModel::Plus {
-            self.via.b_in.set_h4(self.video.in_hblank());
+            self.via.b_in.set_h4(!self.video.in_blanking_period());
         } else {
             self.iwm.intdrive = self.via.a_out.drivesel();
         }

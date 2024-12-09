@@ -87,7 +87,7 @@ bitfield! {
         /// ADB state input 1 (ST1) (SE+)
         pub adb_st1: bool @ 5,
 
-        /// HBlank (512K and Plus)
+        /// Beam in visible area (512K and Plus)
         pub h4: bool @ 6,
 
         /// SCSI interrupt (false = enabled) (SE+)
