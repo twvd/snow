@@ -13,9 +13,6 @@ pub mod swim;
 pub mod via;
 pub mod video;
 
-// TODO tidy up
-pub use swim::iwm;
-
 /// Differentiation of Macintosh models and their features
 #[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq)]
 pub enum MacModel {

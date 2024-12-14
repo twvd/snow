@@ -113,12 +113,12 @@ impl Emulator {
                 breakpoints: self.breakpoints.clone(),
                 cycles: self.cpu.cycles,
                 fdd: core::array::from_fn(|i| FddStatus {
-                    present: self.cpu.bus.iwm.drives[i].present,
-                    ejected: !self.cpu.bus.iwm.drives[i].floppy_inserted,
-                    motor: self.cpu.bus.iwm.drives[i].motor,
-                    writing: self.cpu.bus.iwm.drives[i].motor && self.cpu.bus.iwm.is_writing(),
-                    track: self.cpu.bus.iwm.drives[i].track,
-                    image_title: self.cpu.bus.iwm.drives[i].floppy.get_title().to_owned(),
+                    present: self.cpu.bus.swim.drives[i].present,
+                    ejected: !self.cpu.bus.swim.drives[i].floppy_inserted,
+                    motor: self.cpu.bus.swim.drives[i].motor,
+                    writing: self.cpu.bus.swim.drives[i].motor && self.cpu.bus.swim.is_writing(),
+                    track: self.cpu.bus.swim.drives[i].track,
+                    image_title: self.cpu.bus.swim.drives[i].floppy.get_title().to_owned(),
                 }),
                 model: self.model,
                 hdd: core::array::from_fn(|i| self.cpu.bus.scsi.get_disk_capacity(i)),
@@ -146,7 +146,7 @@ impl Emulator {
     /// Steps the emulator by one instruction.
     fn step(&mut self) -> Result<()> {
         let mut stop_break = false;
-        self.cpu.bus.iwm.dbg_pc = self.cpu.regs.pc;
+        self.cpu.bus.swim.dbg_pc = self.cpu.regs.pc;
         self.cpu.bus.scsi.dbg_pc = self.cpu.regs.pc;
         self.cpu.tick(1)?;
 
@@ -166,7 +166,7 @@ impl Emulator {
 
         if self.run
             && (self.breakpoints.contains(&self.cpu.regs.pc)
-                || self.cpu.bus.iwm.dbg_break.get_clear()
+                || self.cpu.bus.swim.dbg_break.get_clear()
                 || self.cpu.bus.dbg_break.get_clear())
         {
             stop_break = true;
@@ -205,7 +205,7 @@ impl Tickable for Emulator {
                         let image = Autodetect::load_file(&filename);
                         match image {
                             Ok(img) => {
-                                if let Err(e) = self.cpu.bus.iwm.disk_insert(drive, img) {
+                                if let Err(e) = self.cpu.bus.swim.disk_insert(drive, img) {
                                     error!("Cannot insert disk: {}", e);
                                 }
                             }
@@ -214,7 +214,7 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     EmulatorCommand::SaveFloppy(drive, filename) => {
-                        Bitfile::save_file(self.cpu.bus.iwm.get_active_image(drive), &filename)?;
+                        Bitfile::save_file(self.cpu.bus.swim.get_active_image(drive), &filename)?;
                         self.status_update()?;
                     }
                     EmulatorCommand::Run => {

@@ -362,3 +362,57 @@ impl FloppyDrive {
         self.ejecting = None;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Disk revolutions/minute at outer track (0)
+    const DISK_RPM_OUTER: Ticks = 402;
+
+    /// Disk revolutions/minute at inner track (79)
+    const DISK_RPM_INNER: Ticks = 603;
+
+    #[test]
+    fn disk_double_tacho_outer() {
+        let mut drv = FloppyDrive::new(0, true, true);
+        drv.floppy_inserted = true;
+        drv.motor = true;
+        drv.track = 0;
+
+        let mut last = false;
+        let mut result = 0;
+
+        for _ in 0..(TICKS_PER_SECOND * 60) {
+            drv.cycles += 1;
+            if drv.get_tacho() != last {
+                result += 1;
+                last = drv.get_tacho();
+            }
+        }
+
+        assert_eq!(result / 10, DISK_RPM_OUTER * 120 / 10);
+    }
+
+    #[test]
+    fn disk_double_tacho_inner() {
+        let mut drv = FloppyDrive::new(0, true, true);
+        drv.floppy_inserted = true;
+        drv.motor = true;
+        drv.track = 79;
+
+        let mut last = false;
+        let mut result = 0;
+
+        for _ in 0..(TICKS_PER_SECOND * 60) {
+            drv.cycles += 1;
+            if drv.get_tacho() != last {
+                result += 1;
+                last = drv.get_tacho();
+            }
+        }
+
+        // Roughly is good enough..
+        assert_eq!(result / 10, DISK_RPM_INNER * 120 / 10);
+    }
+}
