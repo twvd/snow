@@ -1,4 +1,6 @@
 use log::*;
+use proc_bitfield::bitfield;
+use serde::{Deserialize, Serialize};
 
 use crate::bus::Address;
 use crate::types::Byte;
@@ -20,6 +22,21 @@ enum IsmRegister {
     Status,
     Error,
     Handshake,
+}
+
+bitfield! {
+    /// ISM mode/status register
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct IsmStatus(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+        pub clear_fifo: bool @ 0,
+        pub drive1_enable: bool @ 1,
+        pub drive2_enable: bool @ 2,
+        pub action: bool @ 3,
+        pub write: bool @ 4,
+        pub hdsel: bool @ 5,
+        pub ism: bool @ 6,
+        pub motor: bool @ 7,
+    }
 }
 
 impl IsmRegister {
@@ -49,10 +66,17 @@ impl Swim {
         let offset = (addr - 0xDFE1FF) >> 8;
         if let Some(reg) = IsmRegister::from(offset, false, false) {
             debug!("ISM read {:?}", reg);
+            match reg {
+                IsmRegister::Status => {
+                    let status = IsmStatus::from(0).with_ism(true);
+                    Some(status.0)
+                }
+                _ => Some(0),
+            }
         } else {
             error!("Unknown ISM register read {:04X}", offset);
+            Some(0)
         }
-        Some(0)
     }
 
     pub(super) fn ism_write(&mut self, addr: Address, value: Byte) {
