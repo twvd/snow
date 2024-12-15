@@ -4,6 +4,7 @@
 //! Integrated Wozniak Machine, Integrated Sander Machine.
 
 pub mod drive;
+pub mod ism;
 pub mod iwm;
 
 use anyhow::{bail, Result};
@@ -67,11 +68,20 @@ impl FluxTransitionTime {
     }
 }
 
+#[derive(Debug, Default)]
+enum SwimMode {
+    #[default]
+    Iwm,
+    Ism,
+}
+
 /// Sander-Wozniak Integrated Machine - floppy drive controller
 pub struct Swim {
     double_sided: bool,
+    ism_available: bool,
 
     cycles: Ticks,
+    mode: SwimMode,
 
     pub ca0: bool,
     pub ca1: bool,
@@ -86,8 +96,8 @@ pub struct Swim {
     /// Internal drive select for SE
     pub(crate) intdrive: bool,
 
-    status: IwmStatus,
-    mode: IwmMode,
+    iwm_status: IwmStatus,
+    iwm_mode: IwmMode,
     shdata: u8,
     datareg: u8,
     write_shift: u8,
@@ -101,11 +111,15 @@ pub struct Swim {
 }
 
 impl Swim {
-    pub fn new(double_sided: bool, drives: usize) -> Self {
+    pub fn new(double_sided: bool, drives: usize, ism_available: bool) -> Self {
         Self {
             drives: core::array::from_fn(|i| FloppyDrive::new(i, i < drives, double_sided)),
             double_sided,
+            ism_available,
+
             cycles: 0,
+            // SWIM boots in IWM mode
+            mode: Default::default(),
 
             ca0: false,
             ca1: false,
@@ -123,8 +137,8 @@ impl Swim {
             write_pos: 0,
             write_buffer: None,
 
-            status: IwmStatus(0),
-            mode: IwmMode(0),
+            iwm_status: IwmStatus(0),
+            iwm_mode: IwmMode(0),
 
             enable: false,
             dbg_pc: 0,
@@ -228,8 +242,8 @@ impl Swim {
             // TODO incorporate actual drive speed from PWM on 128K/512K?
             if let Some(time) = FluxTransitionTime::from_ticks_ex(
                 self.get_selected_drive().flux_ticks + jitter,
-                self.mode.fast(),
-                self.mode.speed(),
+                self.iwm_mode.fast(),
+                self.iwm_mode.speed(),
             ) {
                 // Transition occured within the window, shift bits into the
                 // IWM shift register.
@@ -287,38 +301,17 @@ impl Swim {
 
 impl BusMember<Address> for Swim {
     fn read(&mut self, addr: Address) -> Option<u8> {
-        // Only the lower 8-bits of the databus are connected to IWM.
-        // Assume the upper 8 bits are undefined.
-        if addr & 1 == 0 {
-            return None;
+        match self.mode {
+            SwimMode::Iwm => self.iwm_read(addr),
+            SwimMode::Ism => self.ism_read(addr),
         }
-
-        self.iwm_access(addr - 0xDFE1FF);
-        let result = self.iwm_read();
-        Some(result)
     }
 
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
-        // UDS/LDS are not connected to IWM, so ignore the lower address bit here.
-        self.iwm_access((addr | 1) - 0xDFE1FF);
-
-        match (self.q6, self.q7, self.enable) {
-            (true, true, false) => {
-                // Write MODE
-                if val != 0x1F {
-                    warn!("Non-standard IWM mode: {:02X}", val);
-                }
-                self.mode.set_mode(val);
-            }
-            (true, true, true) => {
-                if self.write_buffer.is_some() {
-                    warn!("Disk write while write buffer not empty");
-                }
-                self.write_buffer = Some(val);
-            }
-            _ => (),
+        match self.mode {
+            SwimMode::Iwm => self.iwm_write(addr, val),
+            SwimMode::Ism => self.ism_write(addr, val),
         }
-
         Some(())
     }
 }

@@ -6,8 +6,8 @@ use num::clamp;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
-use super::Swim;
-use crate::bus::Address;
+use super::{Swim, SwimMode};
+use crate::{bus::Address, types::Byte};
 
 bitfield! {
     /// IWM handshake register
@@ -122,9 +122,17 @@ impl Swim {
         }
     }
 
-    /// Reads the currently selected (Q6, Q7) IWM register
-    pub(super) fn iwm_read(&mut self) -> u8 {
-        match (self.q6, self.q7) {
+    /// Read on the bus
+    pub(super) fn iwm_read(&mut self, addr: Address) -> Option<u8> {
+        // Only the lower 8-bits of the databus are connected to IWM.
+        // Assume the upper 8 bits are undefined.
+        if addr & 1 == 0 {
+            return None;
+        }
+
+        self.iwm_access(addr - 0xDFE1FF);
+
+        let val = match (self.q6, self.q7) {
             (false, false) => {
                 // Data register
                 if !self.enable {
@@ -138,11 +146,11 @@ impl Swim {
                 let sense = self
                     .get_selected_drive()
                     .read_sense(self.get_selected_drive_reg_u8());
-                self.status.set_sense(sense);
-                self.status.set_mode_low(self.mode.mode_low());
-                self.status.set_enable(self.enable);
+                self.iwm_status.set_sense(sense);
+                self.iwm_status.set_mode_low(self.iwm_mode.mode_low());
+                self.iwm_status.set_enable(self.enable);
 
-                self.status.0
+                self.iwm_status.0
             }
             (false, true) => {
                 // Read handshake register
@@ -156,6 +164,34 @@ impl Swim {
                 warn!("IWM unknown read q6 = {:?} q7 = {:?}", self.q6, self.q7);
                 0
             }
+        };
+
+        Some(val)
+    }
+
+    pub(super) fn iwm_write(&mut self, addr: Address, value: Byte) {
+        // UDS/LDS are not connected to IWM, so ignore the lower address bit here.
+        self.iwm_access((addr | 1) - 0xDFE1FF);
+
+        match (self.q6, self.q7, self.enable) {
+            (true, true, false) => {
+                // Write MODE
+                if value == 0xF5 && self.ism_available {
+                    self.mode = SwimMode::Ism;
+                    return;
+                }
+                if value != 0x1F {
+                    warn!("Non-standard IWM mode: {:02X}", value);
+                }
+                self.iwm_mode.set_mode(value);
+            }
+            (true, true, true) => {
+                if self.write_buffer.is_some() {
+                    warn!("Disk write while write buffer not empty");
+                }
+                self.write_buffer = Some(value);
+            }
+            _ => (),
         }
     }
 
