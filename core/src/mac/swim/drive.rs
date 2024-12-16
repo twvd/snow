@@ -167,7 +167,7 @@ impl FloppyDrive {
     pub(super) fn read_sense(&self, regraw: u8) -> bool {
         let reg = DriveReg::from_u8(regraw).unwrap_or(DriveReg::UNKNOWN);
 
-        match reg {
+        let result = match reg {
             DriveReg::CISTN => !self.floppy_inserted,
             DriveReg::DIRTN => self.stepdir == HeadStepDirection::Down,
             DriveReg::SIDES => self.double_sided,
@@ -190,7 +190,10 @@ impl FloppyDrive {
                 );
                 true
             }
-        }
+        };
+
+        debug!("Reg read {:?} {}", reg, result);
+        result
     }
 
     /// Moves the drive head one step in the selected position

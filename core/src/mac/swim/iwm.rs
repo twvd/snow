@@ -195,25 +195,6 @@ impl Swim {
         }
     }
 
-    /// Converts the four register selection I/Os to a u8 value which can be used
-    /// to convert to an enum value.
-    fn get_selected_drive_reg_u8(&self) -> u8 {
-        let mut v = 0;
-        if self.ca2 {
-            v |= 0b1000;
-        };
-        if self.ca1 {
-            v |= 0b0100;
-        };
-        if self.ca0 {
-            v |= 0b0010;
-        };
-        if self.sel {
-            v |= 0b0001;
-        };
-        v
-    }
-
     /// Update current drive PWM signal from the sound buffer
     pub fn push_pwm(&mut self, pwm: u8) -> Result<()> {
         const VALUE_TO_LEN: [u8; 64] = [

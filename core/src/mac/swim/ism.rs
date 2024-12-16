@@ -62,7 +62,7 @@ impl IsmRegister {
 
 impl Swim {
     /// A memory-mapped I/O address was read
-    pub(super) fn ism_read(&mut self, addr: Address) -> Option<Byte> {
+    pub(super) fn ism_read(&self, addr: Address) -> Option<Byte> {
         let offset = (addr - 0xDFE1FF) >> 8;
         if let Some(reg) = IsmRegister::from(offset, false, false) {
             debug!("ISM read {:?}", reg);
@@ -71,6 +71,7 @@ impl Swim {
                     let status = IsmStatus::from(0).with_ism(true);
                     Some(status.0)
                 }
+                IsmRegister::Phase => Some(self.ism_read_phases()),
                 _ => Some(0),
             }
         } else {
@@ -83,8 +84,53 @@ impl Swim {
         let offset = (addr - 0xDFE1FF) >> 8;
         if let Some(reg) = IsmRegister::from(offset, false, true) {
             debug!("ISM write {:?}: {:02X}", reg, value);
+            match reg {
+                IsmRegister::Phase => self.ism_write_phases(value),
+                _ => (),
+            }
         } else {
             error!("Unknown ISM register write {:04X}", offset);
+        }
+    }
+
+    fn ism_read_phases(&self) -> u8 {
+        let mut phases = self.ism_phase_mask & 0xF0;
+        if self.ca0 {
+            phases |= 1 << 0;
+        }
+        if self.ca1 {
+            phases |= 1 << 1;
+        }
+        if self.ca2 {
+            phases |= 1 << 2;
+        }
+        if self.ism_phase_mask & 0x80 == 0 {
+            if self.lstrb {
+                phases |= 1 << 3;
+            }
+        } else if self
+            .get_selected_drive()
+            .read_sense(self.get_selected_drive_reg_u8())
+        {
+            phases |= 1 << 3;
+        }
+
+        phases
+    }
+
+    fn ism_write_phases(&mut self, phases: u8) {
+        self.ism_phase_mask = phases & 0xF0;
+        if self.ism_phase_mask & (1 << 4) == 0 {
+            self.ca0 = phases & (1 << 0) != 0;
+        }
+        if self.ism_phase_mask & (1 << 5) == 0 {
+            self.ca1 = phases & (1 << 1) != 0;
+        }
+        if self.ism_phase_mask & (1 << 6) == 0 {
+            self.ca2 = phases & (1 << 2) != 0;
+        }
+        if self.ism_phase_mask & (1 << 7) == 0 {
+            self.lstrb = phases & (1 << 3) != 0;
         }
     }
 }

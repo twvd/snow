@@ -104,6 +104,8 @@ pub struct Swim {
     write_pos: usize,
     write_buffer: Option<u8>,
 
+    pub(super) ism_phase_mask: u8,
+
     pub(crate) drives: [FloppyDrive; 3],
 
     pub dbg_pc: u32,
@@ -139,6 +141,8 @@ impl Swim {
 
             iwm_status: IwmStatus(0),
             iwm_mode: IwmMode(0),
+
+            ism_phase_mask: 0,
 
             enable: false,
             dbg_pc: 0,
@@ -185,6 +189,25 @@ impl Swim {
         } else {
             1
         }
+    }
+
+    /// Converts the four register selection I/Os to a u8 value which can be used
+    /// to convert to an enum value.
+    fn get_selected_drive_reg_u8(&self) -> u8 {
+        let mut v = 0;
+        if self.ca2 {
+            v |= 0b1000;
+        };
+        if self.ca1 {
+            v |= 0b0100;
+        };
+        if self.ca0 {
+            v |= 0b0010;
+        };
+        if self.sel {
+            v |= 0b0001;
+        };
+        v
     }
 
     fn tick_bitstream(&mut self, ticks: usize) -> Result<()> {
