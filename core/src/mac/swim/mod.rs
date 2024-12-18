@@ -8,6 +8,7 @@ pub mod ism;
 pub mod iwm;
 
 use anyhow::{bail, Result};
+use ism::{IsmError, IsmStatus};
 use log::*;
 
 use drive::FloppyDrive;
@@ -105,6 +106,8 @@ pub struct Swim {
     write_buffer: Option<u8>,
 
     pub(super) ism_phase_mask: u8,
+    pub(super) ism_error: IsmError,
+    pub(super) ism_mode: IsmStatus,
 
     pub(crate) drives: [FloppyDrive; 3],
 
@@ -115,7 +118,7 @@ pub struct Swim {
 impl Swim {
     pub fn new(double_sided: bool, drives: usize, ism_available: bool) -> Self {
         Self {
-            drives: core::array::from_fn(|i| FloppyDrive::new(i, i < drives, double_sided)),
+            drives: core::array::from_fn(|i| FloppyDrive::new(i, i < 1, double_sided)),
             double_sided,
             ism_available,
 
@@ -143,6 +146,8 @@ impl Swim {
             iwm_mode: IwmMode(0),
 
             ism_phase_mask: 0,
+            ism_error: IsmError(0),
+            ism_mode: IsmStatus(0),
 
             enable: false,
             dbg_pc: 0,

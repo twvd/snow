@@ -178,6 +178,7 @@ impl Swim {
                 // Write MODE
                 if value == 0xF5 && self.ism_available {
                     self.mode = SwimMode::Ism;
+                    self.ism_mode.set_ism(true);
                     return;
                 }
                 if value != 0x1F {

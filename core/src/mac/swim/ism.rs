@@ -1,8 +1,11 @@
+use std::mem;
+
 use log::*;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
 use crate::bus::Address;
+use crate::mac::swim::SwimMode;
 use crate::types::Byte;
 
 use super::Swim;
@@ -39,6 +42,20 @@ bitfield! {
     }
 }
 
+bitfield! {
+    /// ISM error register
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct IsmError(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+        pub underrun: bool @ 0,
+        pub mark_from_dr: bool @ 1,
+        pub overrun: bool @ 2,
+        pub correction_err: bool @ 3,
+        pub tr_too_narrow: bool @ 4,
+        pub tr_too_wide: bool @ 5,
+        pub tr_unresolved: bool @ 6,
+    }
+}
+
 impl IsmRegister {
     pub fn from(addr: Address, action: bool, write: bool) -> Option<Self> {
         match (addr & 0b111, action, write) {
@@ -62,18 +79,24 @@ impl IsmRegister {
 
 impl Swim {
     /// A memory-mapped I/O address was read
-    pub(super) fn ism_read(&self, addr: Address) -> Option<Byte> {
+    pub(super) fn ism_read(&mut self, addr: Address) -> Option<Byte> {
         let offset = (addr - 0xDFE1FF) >> 8;
         if let Some(reg) = IsmRegister::from(offset, false, false) {
-            debug!("ISM read {:?}", reg);
-            match reg {
+            let result = match reg {
+                IsmRegister::Correction => {
+                    self.ism_error.set_underrun(true);
+                    Some(0xFF)
+                }
+                IsmRegister::Error => Some(mem::replace(&mut self.ism_error, IsmError(0)).0),
                 IsmRegister::Status => {
                     let status = IsmStatus::from(0).with_ism(true);
                     Some(status.0)
                 }
                 IsmRegister::Phase => Some(self.ism_read_phases()),
                 _ => Some(0),
-            }
+            };
+            debug!("ISM read {:?}: {:02X}", reg, result.unwrap());
+            result
         } else {
             error!("Unknown ISM register read {:04X}", offset);
             Some(0)
@@ -86,6 +109,16 @@ impl Swim {
             debug!("ISM write {:?}: {:02X}", reg, value);
             match reg {
                 IsmRegister::Phase => self.ism_write_phases(value),
+                IsmRegister::ModeZero => {
+                    self.ism_mode.0 &= !value;
+                    if !self.ism_mode.ism() {
+                        debug!("IWM mode");
+                        self.mode = SwimMode::Iwm;
+                    }
+                }
+                IsmRegister::ModeOne => {
+                    self.ism_mode.0 |= value;
+                }
                 _ => (),
             }
         } else {
@@ -104,17 +137,9 @@ impl Swim {
         if self.ca2 {
             phases |= 1 << 2;
         }
-        if self.ism_phase_mask & 0x80 == 0 {
-            if self.lstrb {
-                phases |= 1 << 3;
-            }
-        } else if self
-            .get_selected_drive()
-            .read_sense(self.get_selected_drive_reg_u8())
-        {
+        if self.lstrb {
             phases |= 1 << 3;
         }
-
         phases
     }
 
