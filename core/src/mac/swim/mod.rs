@@ -8,7 +8,7 @@ pub mod ism;
 pub mod iwm;
 
 use anyhow::{bail, Result};
-use ism::{IsmError, IsmStatus};
+use ism::{IsmError, IsmSetup, IsmStatus};
 use log::*;
 
 use drive::FloppyDrive;
@@ -69,7 +69,7 @@ impl FluxTransitionTime {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 enum SwimMode {
     #[default]
     Iwm,
@@ -108,6 +108,9 @@ pub struct Swim {
     pub(super) ism_phase_mask: u8,
     pub(super) ism_error: IsmError,
     pub(super) ism_mode: IsmStatus,
+    pub(super) ism_params: [u8; 16],
+    pub(super) ism_param_idx: usize,
+    pub(super) ism_setup: IsmSetup,
 
     pub(crate) drives: [FloppyDrive; 3],
 
@@ -148,6 +151,9 @@ impl Swim {
             ism_phase_mask: 0,
             ism_error: IsmError(0),
             ism_mode: IsmStatus(0),
+            ism_params: [0; 16],
+            ism_param_idx: 0,
+            ism_setup: IsmSetup(0),
 
             enable: false,
             dbg_pc: 0,
@@ -156,12 +162,24 @@ impl Swim {
     }
 
     fn get_selected_drive_idx(&self) -> usize {
-        if self.extdrive {
-            1
-        } else if self.intdrive {
-            2
+        if self.mode == SwimMode::Iwm {
+            if self.extdrive {
+                1
+            } else if self.intdrive {
+                2
+            } else {
+                0
+            }
         } else {
-            0
+            // ISM
+            if self.ism_mode.drive2_enable() {
+                1
+            } else if self.ism_mode.drive1_enable() {
+                0
+            } else {
+                // ????
+                0
+            }
         }
     }
 

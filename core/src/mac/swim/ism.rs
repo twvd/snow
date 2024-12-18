@@ -56,6 +56,41 @@ bitfield! {
     }
 }
 
+bitfield! {
+    /// ISM handshake register
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct IsmHandshake(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+        pub mark: bool @ 0,
+        pub crc_error: bool @ 1,
+        pub rddata: bool @ 2,
+        pub sense: bool @ 3,
+        pub motoron: bool @ 4,
+        pub error: bool @ 5,
+        pub fifo_two: bool @ 6,
+        pub fifo_one: bool @ 7,
+    }
+}
+
+bitfield! {
+    /// ISM setup register
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct IsmSetup(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+        /// HEADSEL/Q3
+        pub hdsel: bool @ 0,
+        /// 3.5SEL (inverted)
+        pub sel35: bool @ 1,
+        pub gcr: bool @ 2,
+        pub fclk_div2: bool @ 3,
+        pub ecm_enable: bool @ 4,
+        /// If 0, RDDATA/WRDATA is transitions, if 1, it is pulses
+        /// 'IBM/Apple drive'
+        pub pulses: bool @ 5,
+        /// Disable Trans-Space Machine
+        pub tsm_disable: bool @ 6,
+        pub motoron_tmr_enable: bool @ 7,
+    }
+}
+
 impl IsmRegister {
     pub fn from(addr: Address, action: bool, write: bool) -> Option<Self> {
         match (addr & 0b111, action, write) {
@@ -89,11 +124,24 @@ impl Swim {
                     Some(0xFF)
                 }
                 IsmRegister::Error => Some(mem::replace(&mut self.ism_error, IsmError(0)).0),
-                IsmRegister::Status => {
-                    let status = IsmStatus::from(0).with_ism(true);
-                    Some(status.0)
-                }
+                IsmRegister::Status => Some(self.ism_mode.0),
                 IsmRegister::Phase => Some(self.ism_read_phases()),
+                IsmRegister::Handshake => Some(
+                    IsmHandshake(0)
+                        .with_sense(
+                            self.get_selected_drive()
+                                .read_sense(self.get_selected_drive_reg_u8()),
+                        )
+                        .with_motoron(self.get_selected_drive().motor)
+                        .with_error(self.ism_error.0 != 0)
+                        .0,
+                ),
+                IsmRegister::Parameter => {
+                    let value = self.ism_params[self.ism_param_idx];
+                    self.ism_param_idx = (self.ism_param_idx + 1) % self.ism_params.len();
+                    Some(value)
+                }
+                IsmRegister::Setup => Some(self.ism_setup.0),
                 _ => Some(0),
             };
             debug!("ISM read {:?}: {:02X}", reg, result.unwrap());
@@ -112,6 +160,8 @@ impl Swim {
             match reg {
                 IsmRegister::Phase => self.ism_write_phases(value),
                 IsmRegister::ModeZero => {
+                    self.ism_param_idx = 0;
+
                     self.ism_mode.0 &= !value;
                     if !self.ism_mode.ism() {
                         debug!("IWM mode");
@@ -120,6 +170,13 @@ impl Swim {
                 }
                 IsmRegister::ModeOne => {
                     self.ism_mode.0 |= value;
+                }
+                IsmRegister::Parameter => {
+                    self.ism_params[self.ism_param_idx] = value;
+                    self.ism_param_idx = (self.ism_param_idx + 1) % self.ism_params.len();
+                }
+                IsmRegister::Setup => {
+                    self.ism_setup.0 = value;
                 }
                 _ => (),
             }
