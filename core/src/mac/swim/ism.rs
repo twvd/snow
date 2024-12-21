@@ -94,8 +94,8 @@ bitfield! {
 impl IsmRegister {
     pub fn from(addr: Address, action: bool, write: bool) -> Option<Self> {
         match (addr & 0b111, action, write) {
-            (0b000, true, _) => Some(Self::Data),
-            (0b000, false, false) => Some(Self::Correction),
+            (0b000, _, _) => Some(Self::Data),
+            //(0b000, false, false) => Some(Self::Correction),
             (0b001, _, _) => Some(Self::Mark),
             (0b010, true, true) => Some(Self::Crc),
             (0b010, false, true) => Some(Self::IwmConfig),
@@ -119,9 +119,13 @@ impl Swim {
 
         if let Some(reg) = IsmRegister::from(offset, false, false) {
             let result = match reg {
-                IsmRegister::Correction => {
-                    self.ism_error.set_underrun(true);
-                    Some(0xFF)
+                IsmRegister::Data | IsmRegister::Mark => {
+                    if let Some(v) = self.ism_fifo.pop_front() {
+                        Some(v)
+                    } else {
+                        self.ism_error.set_underrun(true);
+                        Some(0xFF)
+                    }
                 }
                 IsmRegister::Error => Some(mem::replace(&mut self.ism_error, IsmError(0)).0),
                 IsmRegister::Status => Some(self.ism_mode.0),
@@ -144,7 +148,7 @@ impl Swim {
                 IsmRegister::Setup => Some(self.ism_setup.0),
                 _ => Some(0),
             };
-            debug!("ISM read {:?}: {:02X}", reg, result.unwrap());
+            debug!("ISM read {:02X} {:?}: {:02X}", offset, reg, result.unwrap());
             result
         } else {
             error!("Unknown ISM register read {:04X}", offset);
@@ -156,8 +160,15 @@ impl Swim {
         let offset = (addr >> 8) & 0x0F;
 
         if let Some(reg) = IsmRegister::from(offset, false, true) {
-            debug!("ISM write {:?}: {:02X}", reg, value);
+            debug!("ISM write {:02X} {:?}: {:02X}", offset, reg, value);
             match reg {
+                IsmRegister::Data | IsmRegister::Mark => {
+                    if self.ism_fifo.len() >= 2 {
+                        self.ism_error.set_overrun(true);
+                    } else {
+                        self.ism_fifo.push_back(value);
+                    }
+                }
                 IsmRegister::Phase => self.ism_write_phases(value),
                 IsmRegister::ModeZero => {
                     self.ism_param_idx = 0;
@@ -186,24 +197,24 @@ impl Swim {
     }
 
     fn ism_read_phases(&self) -> u8 {
-        let mut phases = self.ism_phase_mask & 0xF0;
-        if self.ca0 {
-            phases |= 1 << 0;
-        }
-        if self.ca1 {
-            phases |= 1 << 1;
-        }
-        if self.ca2 {
-            phases |= 1 << 2;
-        }
-        if self.lstrb {
-            phases |= 1 << 3;
-        }
+        let mut phases = self.ism_phase_mask;
+        //if self.ca0 {
+        //    phases |= 1 << 0;
+        //}
+        //if self.ca1 {
+        //    phases |= 1 << 1;
+        //}
+        //if self.ca2 {
+        //    phases |= 1 << 2;
+        //}
+        //if self.lstrb {
+        //    phases |= 1 << 3;
+        //}
         phases
     }
 
     fn ism_write_phases(&mut self, phases: u8) {
-        self.ism_phase_mask = phases & 0xF0;
+        self.ism_phase_mask = phases;
         if self.ism_phase_mask & (1 << 4) == 0 {
             self.ca0 = phases & (1 << 0) != 0;
         }

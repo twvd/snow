@@ -7,6 +7,8 @@ pub mod drive;
 pub mod ism;
 pub mod iwm;
 
+use std::collections::VecDeque;
+
 use anyhow::{bail, Result};
 use ism::{IsmError, IsmSetup, IsmStatus};
 use log::*;
@@ -111,6 +113,8 @@ pub struct Swim {
     pub(super) ism_params: [u8; 16],
     pub(super) ism_param_idx: usize,
     pub(super) ism_setup: IsmSetup,
+    pub(super) ism_switch_ctr: usize,
+    pub(super) ism_fifo: VecDeque<u8>,
 
     pub(crate) drives: [FloppyDrive; 3],
 
@@ -154,6 +158,8 @@ impl Swim {
             ism_params: [0; 16],
             ism_param_idx: 0,
             ism_setup: IsmSetup(0),
+            ism_switch_ctr: 0,
+            ism_fifo: VecDeque::new(),
 
             enable: false,
             dbg_pc: 0,

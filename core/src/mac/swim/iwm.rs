@@ -170,15 +170,24 @@ impl Swim {
     }
 
     pub(super) fn iwm_write(&mut self, addr: Address, value: Byte) {
+        const ISM_SWITCH_PATTERN: [u8; 4] = [0x57, 0x17, 0x57, 0x57];
+
         // UDS/LDS are not connected to IWM, so ignore the lower address bit here.
         self.iwm_access((addr | 1) - 0xDFE1FF);
 
         match (self.q6, self.q7, self.enable) {
             (true, true, false) => {
                 // Write MODE
-                if value == 0xF5 && self.ism_available {
+                if self.ism_available && ISM_SWITCH_PATTERN[self.ism_switch_ctr] == value {
+                    self.ism_switch_ctr += 1;
+                } else {
+                    self.ism_switch_ctr = 0;
+                }
+                if self.ism_switch_ctr == ISM_SWITCH_PATTERN.len() {
+                    debug!("ISM mode");
                     self.mode = SwimMode::Ism;
                     self.ism_mode.set_ism(true);
+                    self.dbg_break.set();
                     return;
                 }
                 if value != 0x1F {
