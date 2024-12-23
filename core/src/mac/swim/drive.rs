@@ -8,6 +8,74 @@ use strum::Display;
 
 use crate::tickable::{Ticks, TICKS_PER_SECOND};
 
+/// Floppy drive types
+///
+/// Identification:
+/// PRESENT, !READY, MFM, RDDATA1
+///    0000 - 400K GCR drive
+///    0001 - 4MB Typhoon drive
+///    x011 - Superdrive (x depends on the HD hole of the inserted disk, if any)
+///    1010 - 800K GCR drive
+///    1110 - HD-20 drive
+///    1111 - No drive (pull-up on the sense line)
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Display)]
+pub enum DriveType {
+    None,
+    GCR400K,
+    GCR800K,
+    SuperDrive,
+}
+
+impl DriveType {
+    pub const fn io_superdrive(self) -> bool {
+        match self {
+            Self::None => true,
+            Self::GCR400K | Self::GCR800K => false,
+            Self::SuperDrive => true,
+        }
+    }
+
+    pub const fn io_present(self) -> bool {
+        match self {
+            Self::None => true,
+            Self::GCR400K => false,
+            Self::GCR800K => true,
+            Self::SuperDrive => unreachable!(),
+        }
+    }
+
+    pub const fn io_mfm(self) -> bool {
+        match self {
+            Self::None => true,
+            Self::GCR400K | Self::GCR800K => false,
+            Self::SuperDrive => true,
+        }
+    }
+
+    pub const fn io_rddata1(self) -> bool {
+        match self {
+            Self::None => true,
+            Self::GCR400K | Self::GCR800K => false,
+            Self::SuperDrive => true,
+        }
+    }
+
+    pub const fn io_ready(self) -> bool {
+        match self {
+            Self::None => true,
+            Self::GCR400K | Self::GCR800K | Self::SuperDrive => false,
+        }
+    }
+
+    pub const fn is_doublesided(self) -> bool {
+        match self {
+            Self::None => true,
+            Self::GCR400K => false,
+            Self::GCR800K | Self::SuperDrive => true,
+        }
+    }
+}
+
 /// Direction the drive head is set to step to
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Display)]
 enum HeadStepDirection {
@@ -48,6 +116,10 @@ enum DriveReg {
     RDDATA0 = 0b1000,
     /// Read data, upper head
     RDDATA1 = 0b1001,
+    /// SuperDrive
+    SUPERDRIVE = 0b1010,
+    /// MFM mode
+    MFM = 0b1011,
     /// Single/double sided drive
     /// 0 = single, 1 = double
     SIDES = 0b1100,
@@ -59,7 +131,7 @@ enum DriveReg {
     /// 0 = installed, 1 = not installed
     INSTALLED = 0b1110,
 
-    /// PRESENT/HD (?)
+    /// REVISED/PRESENT/!HD
     PRESENT = 0b1111,
 
     /// For unknown values
@@ -96,9 +168,8 @@ enum DriveWriteReg {
 /// A single disk drive, attached to the drive controller
 pub(crate) struct FloppyDrive {
     idx: usize,
+    drive_type: DriveType,
     pub(super) cycles: Ticks,
-    double_sided: bool,
-    pub(crate) present: bool,
 
     pub(crate) floppy_inserted: bool,
     pub(crate) track: usize,
@@ -131,12 +202,11 @@ impl FloppyDrive {
     /// Tacho pulses/disk revolution
     const TACHO_SPEED: Ticks = 60;
 
-    pub fn new(idx: usize, present: bool, double_sided: bool) -> Self {
+    pub fn new(idx: usize, drive_type: DriveType) -> Self {
         Self {
             idx,
+            drive_type,
             cycles: 0,
-            double_sided,
-            present,
             floppy_inserted: false,
             track: 4,
             stepdir: HeadStepDirection::Up,
@@ -158,6 +228,11 @@ impl FloppyDrive {
         }
     }
 
+    /// Returns true if drive is present
+    pub fn is_present(&self) -> bool {
+        self.drive_type != DriveType::None
+    }
+
     /// Returns true if drive's spindle motor is running
     pub(super) fn is_running(&self) -> bool {
         self.floppy_inserted && self.motor
@@ -170,17 +245,25 @@ impl FloppyDrive {
         let result = match reg {
             DriveReg::CISTN => !self.floppy_inserted,
             DriveReg::DIRTN => self.stepdir == HeadStepDirection::Down,
-            DriveReg::SIDES => self.double_sided,
+            DriveReg::SIDES => self.drive_type.is_doublesided(),
             DriveReg::MOTORON => !(self.motor && self.floppy_inserted),
-            DriveReg::PRESENT => !self.present,
-            DriveReg::INSTALLED => !self.present,
-            DriveReg::READY => false,
+            DriveReg::PRESENT => self.drive_type.io_present(),
+            DriveReg::INSTALLED => !self.is_present(),
+            DriveReg::READY => self.drive_type.io_ready(),
             DriveReg::TKO if self.track == 0 => false,
             DriveReg::TKO => true,
             DriveReg::STEP => self.stepping == 0,
             DriveReg::TACH => self.get_tacho(),
             DriveReg::RDDATA0 => self.get_head_bit(0),
-            DriveReg::RDDATA1 => self.get_head_bit(1),
+            DriveReg::RDDATA1 => {
+                if self.motor {
+                    self.get_head_bit(1)
+                } else {
+                    self.drive_type.io_rddata1()
+                }
+            }
+            DriveReg::MFM => self.drive_type.io_mfm(),
+            DriveReg::SUPERDRIVE => self.drive_type.io_superdrive(),
             DriveReg::WRTPRT => !self.floppy.get_write_protect(),
             DriveReg::SWITCHED => false,
             _ => {
@@ -192,7 +275,10 @@ impl FloppyDrive {
             }
         };
 
-        debug!("Reg read {:?} {}", reg, result);
+        if reg != DriveReg::CISTN {
+            debug!("Drive {} reg read {:?} = {}", self.idx, reg, result);
+        }
+
         result
     }
 
@@ -227,6 +313,7 @@ impl FloppyDrive {
     /// Writes to the currently selected drive register
     pub(super) fn write_drive_reg(&mut self, regraw: u8, cycles: Ticks) {
         let reg = DriveWriteReg::from_u8(regraw).unwrap_or(DriveWriteReg::UNKNOWN);
+        debug!("Drive {} write reg {:?}", self.idx, reg);
 
         match reg {
             DriveWriteReg::MOTORON => self.motor = true,
@@ -266,7 +353,7 @@ impl FloppyDrive {
 
     /// Gets the spindle motor speed in rounds/minute for the currently selected track
     pub const fn get_track_rpm(&self) -> Ticks {
-        if !self.double_sided {
+        if !self.drive_type.is_doublesided() {
             // PWM-driven spindle motor speed control
 
             // Apple 3.5" single-sided drive specifications
@@ -378,7 +465,7 @@ mod tests {
 
     #[test]
     fn disk_double_tacho_outer() {
-        let mut drv = FloppyDrive::new(0, true, true);
+        let mut drv = FloppyDrive::new(0, DriveType::GCR800K);
         drv.floppy_inserted = true;
         drv.motor = true;
         drv.track = 0;
@@ -399,7 +486,7 @@ mod tests {
 
     #[test]
     fn disk_double_tacho_inner() {
-        let mut drv = FloppyDrive::new(0, true, true);
+        let mut drv = FloppyDrive::new(0, DriveType::GCR800K);
         drv.floppy_inserted = true;
         drv.motor = true;
         drv.track = 79;

@@ -13,7 +13,7 @@ use anyhow::{bail, Result};
 use ism::{IsmError, IsmSetup, IsmStatus};
 use log::*;
 
-use drive::FloppyDrive;
+use drive::{DriveType, FloppyDrive};
 use iwm::{IwmMode, IwmStatus};
 use snow_floppy::flux::FluxTicks;
 use snow_floppy::{Floppy, FloppyImage, TrackLength, TrackType};
@@ -125,7 +125,20 @@ pub struct Swim {
 impl Swim {
     pub fn new(double_sided: bool, drives: usize, ism_available: bool) -> Self {
         Self {
-            drives: core::array::from_fn(|i| FloppyDrive::new(i, i < 1, double_sided)),
+            drives: core::array::from_fn(|i| {
+                FloppyDrive::new(
+                    i,
+                    if i < drives {
+                        if double_sided {
+                            DriveType::GCR800K
+                        } else {
+                            DriveType::GCR400K
+                        }
+                    } else {
+                        DriveType::None
+                    },
+                )
+            }),
             double_sided,
             ism_available,
 
@@ -203,7 +216,7 @@ impl Swim {
 
     /// Inserts a disk into the disk drive
     pub fn disk_insert(&mut self, drive: usize, image: FloppyImage) -> Result<()> {
-        if !self.drives[drive].present {
+        if !self.drives[drive].is_present() {
             bail!("Drive {} not present", drive);
         }
 

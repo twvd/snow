@@ -113,7 +113,7 @@ impl Emulator {
                 breakpoints: self.breakpoints.clone(),
                 cycles: self.cpu.cycles,
                 fdd: core::array::from_fn(|i| FddStatus {
-                    present: self.cpu.bus.swim.drives[i].present,
+                    present: self.cpu.bus.swim.drives[i].is_present(),
                     ejected: !self.cpu.bus.swim.drives[i].floppy_inserted,
                     motor: self.cpu.bus.swim.drives[i].motor,
                     writing: self.cpu.bus.swim.drives[i].motor && self.cpu.bus.swim.is_writing(),

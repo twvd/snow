@@ -133,7 +133,7 @@ impl Swim {
                 IsmRegister::Handshake => Some(
                     IsmHandshake(0)
                         .with_sense(
-                            !self.get_selected_drive().present
+                            !self.get_selected_drive().is_present()
                                 || self
                                     .get_selected_drive()
                                     .read_sense(self.get_selected_drive_reg_u8()),
@@ -208,20 +208,7 @@ impl Swim {
     }
 
     fn ism_read_phases(&self) -> u8 {
-        let mut phases = self.ism_phase_mask;
-        //if self.ca0 {
-        //    phases |= 1 << 0;
-        //}
-        //if self.ca1 {
-        //    phases |= 1 << 1;
-        //}
-        //if self.ca2 {
-        //    phases |= 1 << 2;
-        //}
-        //if self.lstrb {
-        //    phases |= 1 << 3;
-        //}
-        phases
+        self.ism_phase_mask
     }
 
     fn ism_write_phases(&mut self, phases: u8) {
