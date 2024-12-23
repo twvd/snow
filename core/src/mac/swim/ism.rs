@@ -115,7 +115,7 @@ impl IsmRegister {
 impl Swim {
     /// A memory-mapped I/O address was read
     pub(super) fn ism_read(&mut self, addr: Address) -> Option<Byte> {
-        let offset = (addr >> 8) & 0x0F;
+        let offset = (addr - 0xDFE1FF) / 512;
 
         if let Some(reg) = IsmRegister::from(offset, false, false) {
             let result = match reg {
@@ -123,7 +123,7 @@ impl Swim {
                     if let Some(v) = self.ism_fifo.pop_front() {
                         Some(v)
                     } else {
-                        self.ism_error.set_underrun(true);
+                        self.ism_error.set_overrun(true);
                         Some(0xFF)
                     }
                 }
@@ -133,8 +133,10 @@ impl Swim {
                 IsmRegister::Handshake => Some(
                     IsmHandshake(0)
                         .with_sense(
-                            self.get_selected_drive()
-                                .read_sense(self.get_selected_drive_reg_u8()),
+                            !self.get_selected_drive().present
+                                || self
+                                    .get_selected_drive()
+                                    .read_sense(self.get_selected_drive_reg_u8()),
                         )
                         .with_motoron(self.get_selected_drive().motor)
                         .with_error(self.ism_error.0 != 0)
@@ -148,7 +150,13 @@ impl Swim {
                 IsmRegister::Setup => Some(self.ism_setup.0),
                 _ => Some(0),
             };
-            debug!("ISM read {:02X} {:?}: {:02X}", offset, reg, result.unwrap());
+            debug!(
+                "ISM read {:06X} {:02X} {:?}: {:02X}",
+                addr,
+                offset,
+                reg,
+                result.unwrap()
+            );
             result
         } else {
             error!("Unknown ISM register read {:04X}", offset);
@@ -157,10 +165,13 @@ impl Swim {
     }
 
     pub(super) fn ism_write(&mut self, addr: Address, value: Byte) {
-        let offset = (addr >> 8) & 0x0F;
+        let offset = (addr - 0xDFE1FF) / 512;
 
         if let Some(reg) = IsmRegister::from(offset, false, true) {
-            debug!("ISM write {:02X} {:?}: {:02X}", offset, reg, value);
+            debug!(
+                "ISM write {:06X} {:02X} {:?}: {:02X}",
+                addr, offset, reg, value
+            );
             match reg {
                 IsmRegister::Data | IsmRegister::Mark => {
                     if self.ism_fifo.len() >= 2 {

@@ -187,7 +187,7 @@ impl Swim {
                     debug!("ISM mode");
                     self.mode = SwimMode::Ism;
                     self.ism_mode.set_ism(true);
-                    self.dbg_break.set();
+                    self.ism_switch_ctr = 0;
                     return;
                 }
                 if value != 0x1F {
