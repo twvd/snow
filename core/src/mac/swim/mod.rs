@@ -80,7 +80,6 @@ enum SwimMode {
 
 /// Sander-Wozniak Integrated Machine - floppy drive controller
 pub struct Swim {
-    double_sided: bool,
     ism_available: bool,
 
     cycles: Ticks,
@@ -123,23 +122,11 @@ pub struct Swim {
 }
 
 impl Swim {
-    pub fn new(double_sided: bool, drives: usize, ism_available: bool) -> Self {
+    pub fn new(drives: &[DriveType], ism_available: bool) -> Self {
         Self {
             drives: core::array::from_fn(|i| {
-                FloppyDrive::new(
-                    i,
-                    if i < drives {
-                        if double_sided {
-                            DriveType::GCR800K
-                        } else {
-                            DriveType::GCR400K
-                        }
-                    } else {
-                        DriveType::None
-                    },
-                )
+                FloppyDrive::new(i, *drives.get(i).unwrap_or(&DriveType::None))
             }),
-            double_sided,
             ism_available,
 
             cycles: 0,
@@ -225,7 +212,9 @@ impl Swim {
 
     /// Gets the active (selected) drive head
     fn get_active_head(&self) -> usize {
-        if !self.double_sided || self.get_selected_drive().floppy.get_side_count() == 1 || !self.sel
+        if !self.get_selected_drive().drive_type.is_doublesided()
+            || self.get_selected_drive().floppy.get_side_count() == 1
+            || !self.sel
         {
             0
         } else {

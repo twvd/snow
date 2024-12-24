@@ -7,7 +7,7 @@ use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
 use super::{Swim, SwimMode};
-use crate::{bus::Address, types::Byte};
+use crate::{bus::Address, mac::swim::drive::DriveType, types::Byte};
 
 bitfield! {
     /// IWM handshake register
@@ -213,8 +213,8 @@ impl Swim {
             26, 22, 43, 57, 38, 47, 17, 28, 10, 25, 21, 37, 46, 9, 24, 45, 8, 7, 6,
         ];
 
-        if self.double_sided {
-            // Only single-sided drives are PWM controlled
+        if self.get_selected_drive().drive_type != DriveType::GCR400K {
+            // Only 400K drives are PWM controlled
             return Ok(());
         }
 

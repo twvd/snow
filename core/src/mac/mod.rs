@@ -1,5 +1,7 @@
 use std::fmt::Display;
 
+use swim::drive::DriveType;
+
 use crate::{bus::Address, keymap::Keymap, tickable::Ticks};
 
 pub mod adb;
@@ -47,25 +49,26 @@ impl MacModel {
         }
     }
 
-    pub const fn fdd_double_sided(self) -> bool {
-        match self {
-            Self::Early128K | Self::Early512K => false,
-            _ => true,
-        }
-    }
-
-    pub const fn fdd_count(self) -> usize {
-        match self {
-            Self::SE | Self::SeFdhd => 3,
-            _ => 2,
-        }
-    }
-
     /// Supports high-density floppies, implying SWIM controller
     pub const fn fdd_hd(self) -> bool {
         match self {
             Self::Early128K | Self::Early512K | Self::Plus | Self::SE => false,
             _ => true,
+        }
+    }
+
+    /// List of FDD drive types and amount
+    pub const fn fdd_drives(self) -> &'static [DriveType] {
+        match self {
+            Self::Early128K | Self::Early512K => &[DriveType::GCR400K, DriveType::GCR400K],
+            Self::Plus => &[DriveType::GCR800K, DriveType::GCR800K],
+            Self::SE => &[DriveType::GCR800K, DriveType::GCR800K, DriveType::GCR800K],
+            Self::SeFdhd => &[
+                DriveType::SuperDrive,
+                DriveType::SuperDrive,
+                DriveType::SuperDrive,
+            ],
+            Self::Classic => &[DriveType::SuperDrive, DriveType::SuperDrive],
         }
     }
 

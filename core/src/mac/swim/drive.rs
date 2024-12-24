@@ -168,7 +168,7 @@ enum DriveWriteReg {
 /// A single disk drive, attached to the drive controller
 pub(crate) struct FloppyDrive {
     idx: usize,
-    drive_type: DriveType,
+    pub(super) drive_type: DriveType,
     pub(super) cycles: Ticks,
 
     pub(crate) floppy_inserted: bool,
