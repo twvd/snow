@@ -152,8 +152,14 @@ enum DriveWriteReg {
     /// Step in current direction
     TRACKSTEP = 0b0010,
 
+    /// Switch to MFM mode
+    MFMMODE = 0b0011,
+
     /// Drive motor on
     MOTORON = 0b0100,
+
+    /// Switch to GCR mode
+    GCRMODE = 0b1011,
 
     /// Drive motor off
     MOTOROFF = 0b1100,
@@ -177,6 +183,9 @@ pub(crate) struct FloppyDrive {
     pub(crate) motor: bool,
     pub(crate) floppy: FloppyImage,
     pub(super) track_position: usize,
+
+    // In MFM mode (in GCR mode when false)
+    mfm: bool,
 
     // While > 0, the drive head is moving
     pub(super) stepping: Ticks,
@@ -213,6 +222,7 @@ impl FloppyDrive {
             floppy: FloppyImage::new(FloppyType::Mac400K, ""),
             track_position: 0,
             motor: false,
+            mfm: drive_type.io_mfm(),
 
             stepping: 0,
             ejecting: None,
@@ -268,7 +278,7 @@ impl FloppyDrive {
                     self.drive_type.io_rddata1()
                 }
             }
-            DriveReg::MFM => self.drive_type.io_mfm(),
+            DriveReg::MFM => self.mfm,
             DriveReg::SUPERDRIVE => self.drive_type.io_superdrive(),
             DriveReg::WRTPRT => !self.floppy.get_write_protect(),
             DriveReg::SWITCHED => false,
@@ -338,6 +348,14 @@ impl FloppyDrive {
                 self.stepdir = HeadStepDirection::Down;
             }
             DriveWriteReg::TRACKSTEP => self.step_head(),
+            DriveWriteReg::MFMMODE if self.drive_type == DriveType::SuperDrive => {
+                debug!("MFM mode");
+                self.mfm = true;
+            }
+            DriveWriteReg::GCRMODE if self.drive_type == DriveType::SuperDrive => {
+                debug!("GCR mode");
+                self.mfm = false;
+            }
             _ => {
                 warn!("Unimplemented register write {:?} {:0b}", reg, regraw);
             }
@@ -456,6 +474,7 @@ impl FloppyDrive {
         info!("Drive {}: disk ejected", self.idx);
         self.floppy_inserted = false;
         self.ejecting = None;
+        self.mfm = self.drive_type.io_mfm();
     }
 }
 
