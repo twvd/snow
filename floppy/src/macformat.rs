@@ -181,6 +181,7 @@ impl<'a> MacFormatEncoder<'a> {
         let format = match self.image.floppy_type {
             FloppyType::Mac400K => 0x02,
             FloppyType::Mac800K => 0x22,
+            FloppyType::Mfm144M => todo!(),
         };
         self.push_physical_enc(&[format]);
         checksum ^= format;

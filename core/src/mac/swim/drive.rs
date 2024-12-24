@@ -132,7 +132,7 @@ enum DriveReg {
     INSTALLED = 0b1110,
 
     /// REVISED/PRESENT/!HD
-    PRESENT = 0b1111,
+    PRESENTHD = 0b1111,
 
     /// For unknown values
     UNKNOWN,
@@ -247,7 +247,13 @@ impl FloppyDrive {
             DriveReg::DIRTN => self.stepdir == HeadStepDirection::Down,
             DriveReg::SIDES => self.drive_type.is_doublesided(),
             DriveReg::MOTORON => !(self.motor && self.floppy_inserted),
-            DriveReg::PRESENT => self.drive_type.io_present(),
+            DriveReg::PRESENTHD => {
+                if self.drive_type == DriveType::SuperDrive {
+                    !(self.floppy.get_type() == FloppyType::Mfm144M && self.floppy_inserted)
+                } else {
+                    self.drive_type.io_present()
+                }
+            }
             DriveReg::INSTALLED => !self.is_present(),
             DriveReg::READY => self.drive_type.io_ready(),
             DriveReg::TKO if self.track == 0 => false,

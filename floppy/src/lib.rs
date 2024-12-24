@@ -13,12 +13,14 @@ use strum::EnumIter;
 pub type FloppyMetadata = HashMap<String, String>;
 
 /// Types of emulated floppies - 3.5" only
-#[derive(Copy, Clone, EnumIter)]
+#[derive(Copy, Clone, EnumIter, PartialEq, Eq)]
 pub enum FloppyType {
-    /// Macintosh CLV 3.5", single sided
+    /// Macintosh GCR CLV 3.5", single sided
     Mac400K,
-    /// Macintosh CLV 3.5", double sided
+    /// Macintosh GCR CLV 3.5", double sided
     Mac800K,
+    /// MFM CAV 3.5", double sided, high density
+    Mfm144M,
 }
 
 /// Type of the original track when loaded from the image
@@ -66,6 +68,10 @@ impl FloppyType {
                 64..=79 => 49760,
                 _ => unreachable!(),
             },
+            Self::Mfm144M => {
+                // TODO
+                0
+            }
         }
     }
 
@@ -82,8 +88,9 @@ impl FloppyType {
     /// Gets the logical size of the total image
     pub fn get_logical_size(self) -> usize {
         match self {
-            Self::Mac400K => 409600,
-            Self::Mac800K => 819200,
+            Self::Mac400K => 400 * 1024,
+            Self::Mac800K => 800 * 1024,
+            Self::Mfm144M => 1440 * 1024,
         }
     }
 }
@@ -96,6 +103,7 @@ impl std::fmt::Display for FloppyType {
             match self {
                 Self::Mac400K => "Macintosh GCR 400KB",
                 Self::Mac800K => "Macintosh GCR 800KB",
+                Self::Mfm144M => "MFM 1.44MB",
             }
         )
     }
@@ -295,6 +303,7 @@ impl Floppy for FloppyImage {
         match self.floppy_type {
             FloppyType::Mac400K => 1,
             FloppyType::Mac800K => 2,
+            FloppyType::Mfm144M => 2,
         }
     }
 
