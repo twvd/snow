@@ -113,7 +113,19 @@ impl IsmRegister {
     }
 }
 
+pub(super) enum IsmFifoEntry {
+    Marker(u8),
+    Data(u8),
+}
+
 impl Swim {
+    fn ism_fifo_pop(&mut self, expect_marker: bool) -> Option<(bool, u8)> {
+        match self.ism_fifo.pop_front()? {
+            IsmFifoEntry::Data(d) => Some((!expect_marker, d)),
+            IsmFifoEntry::Marker(d) => Some((expect_marker, d)),
+        }
+    }
+
     /// A memory-mapped I/O address was read
     pub(super) fn ism_read(&mut self, addr: Address) -> Option<Byte> {
         let offset = (addr - 0xDFE1FF) / 512;
@@ -121,7 +133,10 @@ impl Swim {
         if let Some(reg) = IsmRegister::from(offset, false, false) {
             let result = match reg {
                 IsmRegister::Data | IsmRegister::Mark => {
-                    if let Some(v) = self.ism_fifo.pop_front() {
+                    if let Some((e, v)) = self.ism_fifo_pop(matches!(reg, IsmRegister::Mark)) {
+                        if e {
+                            self.ism_error.set_mark_from_dr(true);
+                        }
                         Some(v)
                     } else {
                         warn!("ISM FIFO overrun (CPU reading too fast)");
@@ -144,10 +159,11 @@ impl Swim {
                         .with_error(self.ism_error.0 != 0)
                         .with_fifo_two(
                             // TODO write mode
-                            self.ism_fifo.len() >= 2)
+                            self.ism_fifo.len() >= 2,
+                        )
                         .with_fifo_one(
                             // TODO write mode
-                            !self.ism_fifo.is_empty()
+                            !self.ism_fifo.is_empty(),
                         )
                         .0,
                 ),
@@ -182,13 +198,7 @@ impl Swim {
             //    addr, offset, reg, value
             //);
             match reg {
-                IsmRegister::Data | IsmRegister::Mark => {
-                    if self.ism_fifo.len() >= 2 {
-                        self.ism_error.set_overrun(true);
-                    } else {
-                        self.ism_fifo.push_back(value);
-                    }
-                }
+                IsmRegister::Data | IsmRegister::Mark => (),
                 IsmRegister::Phase => self.ism_write_phases(value),
                 IsmRegister::ModeZero => {
                     self.ism_param_idx = 0;
@@ -240,7 +250,7 @@ impl Swim {
         // This is only called when the drive is active and running
         let last = self.get_selected_drive().track_position;
 
-        if self.cycles % 16 == 0 {
+        if self.cycles % (16 * 16) == 0 {
             let head = self.get_active_head();
             let mut mfm = 0;
             let mut data = 0;
@@ -255,15 +265,17 @@ impl Swim {
                     data |= 1 << (7 - (bit_num / 2));
                 }
             }
-            if mfm == 0b10001001_0001001u16 {
-                debug!("{} Looks like an address mark! {:016b} {:016b}", self.get_selected_drive().track_position, mfm, data);
-            }
 
-            if self.ism_fifo.len() < 2 {
-                self.ism_fifo.push_back(data);
+            if mfm == 0b10001001_0001001u16 {
+                debug!("Marker {:02X}", data);
+                self.ism_fifo.push_back(IsmFifoEntry::Marker(data));
             } else {
-                //warn!("ISM read underrun (CPU not reading fast enough)");
+                self.ism_fifo.push_back(IsmFifoEntry::Data(data));
+            }
+            if self.ism_fifo.len() > 2 {
+                warn!("ISM read underrun (CPU not reading fast enough)");
                 self.ism_error.set_underrun(true);
+                self.ism_fifo.pop_front();
             }
         }
 

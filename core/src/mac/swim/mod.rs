@@ -18,6 +18,7 @@ use snow_floppy::flux::FluxTicks;
 use snow_floppy::{Floppy, FloppyImage};
 
 use crate::bus::{Address, BusMember};
+use crate::mac::swim::ism::IsmFifoEntry;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
 
@@ -112,7 +113,7 @@ pub struct Swim {
     pub(super) ism_param_idx: usize,
     pub(super) ism_setup: IsmSetup,
     pub(super) ism_switch_ctr: usize,
-    pub(super) ism_fifo: VecDeque<u8>,
+    pub(super) ism_fifo: VecDeque<IsmFifoEntry>,
 
     pub(crate) drives: [FloppyDrive; 3],
 

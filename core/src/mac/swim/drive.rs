@@ -335,7 +335,7 @@ impl FloppyDrive {
             DriveWriteReg::MOTORON => {
                 self.track_position = 0;
                 self.motor = true;
-            },
+            }
             DriveWriteReg::MOTOROFF => {
                 self.motor = false;
             }
@@ -383,7 +383,7 @@ impl FloppyDrive {
     }
 
     /// Gets the spindle motor speed in rounds/minute for the currently selected track
-    pub const fn get_track_rpm(&self) -> Ticks {
+    pub fn get_track_rpm(&self) -> Ticks {
         if !self.drive_type.is_doublesided() {
             // PWM-driven spindle motor speed control
 
@@ -402,7 +402,7 @@ impl FloppyDrive {
                 / (DUTY_T79 - DUTY_T0))
                 / 100
                 + SPEED_T0
-        } else {
+        } else if self.floppy.get_type() != FloppyType::Mfm144M {
             // Automatic spindle motor speed control
             match self.track {
                 0..=15 => 402,
@@ -412,6 +412,9 @@ impl FloppyDrive {
                 64..=79 => 603,
                 _ => unreachable!(),
             }
+        } else {
+            // MFM
+            300
         }
     }
 
