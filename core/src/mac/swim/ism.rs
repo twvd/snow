@@ -124,6 +124,7 @@ impl Swim {
                     if let Some(v) = self.ism_fifo.pop_front() {
                         Some(v)
                     } else {
+                        warn!("ISM FIFO overrun (CPU reading too fast)");
                         self.ism_error.set_overrun(true);
                         Some(0xFF)
                     }
@@ -141,6 +142,13 @@ impl Swim {
                         )
                         .with_motoron(self.get_selected_drive().motor)
                         .with_error(self.ism_error.0 != 0)
+                        .with_fifo_two(
+                            // TODO write mode
+                            self.ism_fifo.len() >= 2)
+                        .with_fifo_one(
+                            // TODO write mode
+                            !self.ism_fifo.is_empty()
+                        )
                         .0,
                 ),
                 IsmRegister::Parameter => {
@@ -151,13 +159,13 @@ impl Swim {
                 IsmRegister::Setup => Some(self.ism_setup.0),
                 _ => Some(0),
             };
-            debug!(
-                "ISM read {:06X} {:02X} {:?}: {:02X}",
-                addr,
-                offset,
-                reg,
-                result.unwrap()
-            );
+            //debug!(
+            //    "ISM read {:06X} {:02X} {:?}: {:02X}",
+            //    addr,
+            //    offset,
+            //    reg,
+            //    result.unwrap()
+            //);
             result
         } else {
             error!("Unknown ISM register read {:04X}", offset);
@@ -169,10 +177,10 @@ impl Swim {
         let offset = (addr - 0xDFE1FF) / 512;
 
         if let Some(reg) = IsmRegister::from(offset, false, true) {
-            debug!(
-                "ISM write {:06X} {:02X} {:?}: {:02X}",
-                addr, offset, reg, value
-            );
+            //debug!(
+            //    "ISM write {:06X} {:02X} {:?}: {:02X}",
+            //    addr, offset, reg, value
+            //);
             match reg {
                 IsmRegister::Data | IsmRegister::Mark => {
                     if self.ism_fifo.len() >= 2 {
@@ -229,7 +237,42 @@ impl Swim {
     }
 
     pub(super) fn ism_tick(&mut self, ticks: usize) -> Result<()> {
-        debug_assert_eq!(ticks, 1);
+        // This is only called when the drive is active and running
+        let last = self.get_selected_drive().track_position;
+
+        if self.cycles % 16 == 0 {
+            let head = self.get_active_head();
+            let mut mfm = 0;
+            let mut data = 0;
+
+            for bit_num in 0..16 {
+                let bit = self.get_selected_drive_mut().next_bit(head);
+
+                if bit {
+                    mfm |= 1 << (15 - bit_num);
+                }
+                if bit_num % 2 == 1 && bit {
+                    data |= 1 << (7 - (bit_num / 2));
+                }
+            }
+            if mfm == 0b10001001_0001001u16 {
+                debug!("{} Looks like an address mark! {:016b} {:016b}", self.get_selected_drive().track_position, mfm, data);
+            }
+
+            if self.ism_fifo.len() < 2 {
+                self.ism_fifo.push_back(data);
+            } else {
+                //warn!("ISM read underrun (CPU not reading fast enough)");
+                self.ism_error.set_underrun(true);
+            }
+        }
+
+        if last > self.get_selected_drive().track_position {
+            // TODO hacky
+            let head = self.get_active_head();
+            self.get_selected_drive_mut().sync(head, 0x4489);
+        }
+
         Ok(())
     }
 }

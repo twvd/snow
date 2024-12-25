@@ -292,7 +292,7 @@ impl FloppyDrive {
         };
 
         if reg != DriveReg::CISTN {
-            debug!("Drive {} reg read {:?} = {}", self.idx, reg, result);
+            //debug!("Drive {} reg read {:?} = {}", self.idx, reg, result);
         }
 
         result
@@ -329,10 +329,13 @@ impl FloppyDrive {
     /// Writes to the currently selected drive register
     pub(super) fn write_drive_reg(&mut self, regraw: u8, cycles: Ticks) {
         let reg = DriveWriteReg::from_u8(regraw).unwrap_or(DriveWriteReg::UNKNOWN);
-        debug!("Drive {} write reg {:?}", self.idx, reg);
+        //debug!("Drive {} write reg {:?}", self.idx, reg);
 
         match reg {
-            DriveWriteReg::MOTORON => self.motor = true,
+            DriveWriteReg::MOTORON => {
+                self.track_position = 0;
+                self.motor = true;
+            },
             DriveWriteReg::MOTOROFF => {
                 self.motor = false;
             }
@@ -479,6 +482,23 @@ impl FloppyDrive {
         self.floppy_inserted = false;
         self.ejecting = None;
         self.mfm = self.drive_type.io_mfm();
+    }
+
+    /// Syncs image to a marker
+    pub(super) fn sync(&mut self, head: usize, marker: u16) {
+        let mut shreg = 0;
+        self.track_position = 1;
+        while self.track_position != 0 {
+            shreg <<= 1;
+            if self.next_bit(head) {
+                shreg |= 1;
+            }
+            if shreg == marker {
+                warn!("Synced");
+                return;
+            }
+        }
+        warn!("Cannot sync");
     }
 }
 
