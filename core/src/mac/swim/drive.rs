@@ -338,7 +338,11 @@ impl FloppyDrive {
             }
             DriveWriteReg::EJECT => {
                 if self.floppy_inserted {
-                    self.ejecting = Some(cycles + (TICKS_PER_SECOND / 2));
+                    if self.drive_type == DriveType::SuperDrive {
+                        self.ejecting = Some(cycles);
+                    } else {
+                        self.ejecting = Some(cycles + (TICKS_PER_SECOND / 2));
+                    }
                 }
             }
             DriveWriteReg::TRACKUP => {
