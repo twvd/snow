@@ -58,6 +58,7 @@ impl std::convert::TryFrom<MoofDiskType> for FloppyType {
         match value {
             MoofDiskType::SSDDGCR400k => Ok(Self::Mac400K),
             MoofDiskType::DSDDGCR800k => Ok(Self::Mac800K),
+            MoofDiskType::DSHDMFM144Mb => Ok(Self::Mfm144M),
             _ => bail!("Unsupported MOOF disk type {:?}", value),
         }
     }

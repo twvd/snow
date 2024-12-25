@@ -68,10 +68,7 @@ impl FloppyType {
                 64..=79 => 49760,
                 _ => unreachable!(),
             },
-            Self::Mfm144M => {
-                // TODO
-                0
-            }
+            Self::Mfm144M => 192992,
         }
     }
 
