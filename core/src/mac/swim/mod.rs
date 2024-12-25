@@ -11,12 +11,11 @@ use std::collections::VecDeque;
 
 use anyhow::{bail, Result};
 use ism::{IsmError, IsmSetup, IsmStatus};
-use log::*;
 
 use drive::{DriveType, FloppyDrive};
 use iwm::{IwmMode, IwmStatus};
 use snow_floppy::flux::FluxTicks;
-use snow_floppy::{Floppy, FloppyImage, TrackLength, TrackType};
+use snow_floppy::{Floppy, FloppyImage};
 
 use crate::bus::{Address, BusMember};
 use crate::tickable::{Tickable, Ticks};
@@ -241,115 +240,8 @@ impl Swim {
         v
     }
 
-    fn tick_bitstream(&mut self, ticks: usize) -> Result<()> {
-        assert_eq!(ticks, 1);
-        if self.cycles % self.get_selected_drive().get_ticks_per_bit() != 0 {
-            return Ok(());
-        }
-
-        let head = self.get_active_head();
-
-        // Progress the head over the track
-        let bit = self.get_selected_drive_mut().next_bit(head);
-        self.shift_bit(bit);
-
-        if self.write_pos == 0 && self.write_buffer.is_some() {
-            // Write idle and new data in write FIFO, start writing 8 new bits
-            let Some(v) = self.write_buffer else {
-                unreachable!()
-            };
-            self.write_shift = v;
-            self.write_pos = 8;
-            self.write_buffer = None;
-        }
-        if self.write_pos > 0 {
-            // Write in progress - write one bit to current head location
-            let bit = self.write_shift & 0x80 != 0;
-            let head = self.get_active_head();
-            self.write_shift <<= 1;
-            self.write_pos -= 1;
-            self.get_selected_drive_mut().write_bit(head, bit);
-        }
-
-        Ok(())
-    }
-
-    fn tick_flux(&mut self, ticks: usize) -> Result<()> {
-        let side = self.get_active_head();
-        let track = self.get_selected_drive().get_active_track();
-        self.get_selected_drive_mut().flux_ticks_left -= ticks as i16;
-
-        // Not sure how long this should be?
-        if self.get_selected_drive().flux_ticks_left < self.get_selected_drive().flux_ticks - 20 {
-            self.get_selected_drive_mut().head_bit[side] = false;
-        }
-
-        if self.get_selected_drive().flux_ticks_left <= 0 {
-            // Flux transition occured
-
-            // Introduce some pseudo-random jitter on the timing to emulate
-            // the minor differences introduced by motor RPM instability and
-            // physical movement of the disk donut.
-            let jitter = -2 + (self.cycles % 4) as i16;
-
-            // Check bit cell window
-            // TODO incorporate actual drive speed from PWM on 128K/512K?
-            if let Some(time) = FluxTransitionTime::from_ticks_ex(
-                self.get_selected_drive().flux_ticks + jitter,
-                self.iwm_mode.fast(),
-                self.iwm_mode.speed(),
-            ) {
-                // Transition occured within the window, shift bits into the
-                // IWM shift register.
-                for _ in 0..(time.get_zeroes()) {
-                    self.shift_bit(false);
-                }
-                self.shift_bit(true);
-                self.get_selected_drive_mut().head_bit[side] = true;
-            }
-
-            // Advance image to the next transition
-            let TrackLength::Transitions(tlen) =
-                self.get_selected_drive().get_track_len(side, track)
-            else {
-                unreachable!()
-            };
-            self.get_selected_drive_mut().track_position =
-                (self.get_selected_drive().track_position + 1) % tlen;
-            self.get_selected_drive_mut().flux_ticks = self
-                .get_selected_drive()
-                .floppy
-                .get_track_transition(side, track, self.get_selected_drive().track_position);
-            self.get_selected_drive_mut().flux_ticks_left = self.get_selected_drive().flux_ticks;
-        }
-
-        if self.write_pos == 0 && self.write_buffer.is_some() {
-            // Write idle and new data in write FIFO
-            error!("Writing to track {} (flux track) is unsupported!", track);
-            self.write_buffer = None;
-        }
-
-        Ok(())
-    }
-
     pub fn get_active_image(&self, drive: usize) -> &FloppyImage {
         &self.drives[drive].floppy
-    }
-
-    /// Shifts a bit into the read data shift register
-    fn shift_bit(&mut self, bit: bool) {
-        self.shdata <<= 1;
-        if bit {
-            self.shdata |= 1;
-        }
-
-        if self.shdata & 0x80 != 0 {
-            // Data is moved to the data register when the most significant bit is set.
-            // Because the Mac uses GCR encoding, the most significant bit is always set in
-            // any valid data.
-            self.datareg = self.shdata;
-            self.shdata = 0;
-        }
     }
 }
 
@@ -401,12 +293,9 @@ impl Tickable for Swim {
             self.get_selected_drive_mut().stepping = new_stepping;
 
             // Advance read/write operation
-            match self.get_selected_drive().floppy.get_track_type(
-                self.get_active_head(),
-                self.get_selected_drive().get_active_track(),
-            ) {
-                TrackType::Bitstream => self.tick_bitstream(ticks)?,
-                TrackType::Flux => self.tick_flux(ticks)?,
+            match self.mode {
+                SwimMode::Iwm => self.iwm_tick(ticks)?,
+                SwimMode::Ism => self.ism_tick(ticks)?,
             }
         }
 

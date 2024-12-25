@@ -1,5 +1,6 @@
 use std::mem;
 
+use anyhow::Result;
 use log::*;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
@@ -225,5 +226,10 @@ impl Swim {
         if self.ism_phase_mask & (1 << 7) == 0 {
             self.lstrb = phases & (1 << 3) != 0;
         }
+    }
+
+    pub(super) fn ism_tick(&mut self, ticks: usize) -> Result<()> {
+        debug_assert_eq!(ticks, 1);
+        Ok(())
     }
 }
