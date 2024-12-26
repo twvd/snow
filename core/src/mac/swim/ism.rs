@@ -257,8 +257,6 @@ impl Swim {
             return Ok(());
         }
 
-        let last = self.get_selected_drive().track_position;
-
         if self.cycles % (16 * 16) == 0 {
             let head = self.get_active_head();
             let mut mfm = 0;
@@ -286,12 +284,6 @@ impl Swim {
                 self.ism_error.set_underrun(true);
                 self.ism_fifo.pop_front();
             }
-        }
-
-        if last > self.get_selected_drive().track_position {
-            // TODO hacky
-            let head = self.get_active_head();
-            self.get_selected_drive_mut().sync(head, 0x4489);
         }
 
         Ok(())

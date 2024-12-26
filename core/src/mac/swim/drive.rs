@@ -322,6 +322,12 @@ impl FloppyDrive {
         self.flux_ticks = 0;
         self.flux_ticks_left = 0;
 
+        if self.floppy.get_type() == FloppyType::Mfm144M {
+            // Sync bitstream to markers to align to 16 whole bits
+            self.sync(0, 0x4489);
+            self.sync(1, 0x4489);
+        }
+
         // Track-to-track stepping time: 30ms
         self.stepping = TICKS_PER_SECOND / 60_000 * 30;
     }
@@ -329,7 +335,7 @@ impl FloppyDrive {
     /// Writes to the currently selected drive register
     pub(super) fn write_drive_reg(&mut self, regraw: u8, cycles: Ticks) {
         let reg = DriveWriteReg::from_u8(regraw).unwrap_or(DriveWriteReg::UNKNOWN);
-        //debug!("Drive {} write reg {:?}", self.idx, reg);
+        debug!("Drive {} write reg {:?}", self.idx, reg);
 
         match reg {
             DriveWriteReg::MOTORON => {
@@ -489,6 +495,14 @@ impl FloppyDrive {
 
     /// Syncs image to a marker
     pub(super) fn sync(&mut self, head: usize, marker: u16) {
+        assert!(matches!(
+            self.get_track_len(head, self.track),
+            TrackLength::Bits(_)
+        ));
+        if self.get_track_len(head, self.track) == TrackLength::Bits(0) {
+            return;
+        }
+
         let mut shreg = 0;
         self.track_position = 1;
         while self.track_position != 0 {
