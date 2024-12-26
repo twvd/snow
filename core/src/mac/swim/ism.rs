@@ -203,6 +203,11 @@ impl Swim {
                 IsmRegister::ModeZero => {
                     self.ism_param_idx = 0;
 
+                    let clr = IsmStatus(value);
+                    if clr.clear_fifo() && self.ism_mode.clear_fifo() {
+                        self.ism_fifo.clear();
+                    }
+
                     self.ism_mode.0 &= !value;
                     if !self.ism_mode.ism() {
                         debug!("IWM mode");
