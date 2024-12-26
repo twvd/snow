@@ -149,6 +149,10 @@ impl Swim {
                 IsmRegister::Phase => Some(self.ism_read_phases()),
                 IsmRegister::Handshake => Some(
                     IsmHandshake(0)
+                        .with_mark(matches!(
+                            *self.ism_fifo.get(0).unwrap_or(&IsmFifoEntry::Data(0)),
+                            IsmFifoEntry::Marker(_)
+                        ))
                         .with_sense(
                             !self.get_selected_drive().is_present()
                                 || self
