@@ -253,6 +253,10 @@ impl Swim {
 
     pub(super) fn ism_tick(&mut self, _ticks: usize) -> Result<()> {
         // This is only called when the drive is active and running
+        if self.cycles % self.get_selected_drive().get_ticks_per_bit() * 16 != 0 {
+            return Ok(());
+        }
+
         let last = self.get_selected_drive().track_position;
 
         if self.cycles % (16 * 16) == 0 {
