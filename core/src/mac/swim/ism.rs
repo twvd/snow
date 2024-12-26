@@ -121,8 +121,8 @@ pub(super) enum IsmFifoEntry {
 impl Swim {
     fn ism_fifo_pop(&mut self, expect_marker: bool) -> Option<(bool, u8)> {
         match self.ism_fifo.pop_front()? {
-            IsmFifoEntry::Data(d) => Some((!expect_marker, d)),
-            IsmFifoEntry::Marker(d) => Some((expect_marker, d)),
+            IsmFifoEntry::Data(d) => Some((false, d)),
+            IsmFifoEntry::Marker(d) => Some((!expect_marker, d)),
         }
     }
 
@@ -246,7 +246,7 @@ impl Swim {
         }
     }
 
-    pub(super) fn ism_tick(&mut self, ticks: usize) -> Result<()> {
+    pub(super) fn ism_tick(&mut self, _ticks: usize) -> Result<()> {
         // This is only called when the drive is active and running
         let last = self.get_selected_drive().track_position;
 
@@ -267,13 +267,13 @@ impl Swim {
             }
 
             if mfm == 0b10001001_0001001u16 {
-                debug!("Marker {:02X}", data);
+                //debug!("Marker {:02X}", data);
                 self.ism_fifo.push_back(IsmFifoEntry::Marker(data));
             } else {
                 self.ism_fifo.push_back(IsmFifoEntry::Data(data));
             }
             if self.ism_fifo.len() > 2 {
-                warn!("ISM read underrun (CPU not reading fast enough)");
+                //warn!("ISM read underrun (CPU not reading fast enough)");
                 self.ism_error.set_underrun(true);
                 self.ism_fifo.pop_front();
             }
