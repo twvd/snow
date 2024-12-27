@@ -280,7 +280,10 @@ impl FloppyDrive {
             }
             DriveReg::MFM => self.mfm,
             DriveReg::SUPERDRIVE => self.drive_type.io_superdrive(),
-            DriveReg::WRTPRT => !self.floppy.get_write_protect(),
+            DriveReg::WRTPRT => {
+                // TODO write-protected until write is implemented
+                self.floppy.get_type() != FloppyType::Mfm144M && !self.floppy.get_write_protect()
+            }
             DriveReg::SWITCHED => false,
             _ => {
                 warn!(
