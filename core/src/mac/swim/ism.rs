@@ -272,34 +272,32 @@ impl Swim {
             return Ok(());
         }
 
-        if self.cycles % (16 * 16) == 0 {
-            let head = self.get_active_head();
-            let mut mfm = 0;
-            let mut data = 0;
+        let head = self.get_active_head();
+        let mut mfm = 0;
+        let mut data = 0;
 
-            for bit_num in 0..16 {
-                let bit = self.get_selected_drive_mut().next_bit(head);
+        for bit_num in 0..16 {
+            let bit = self.get_selected_drive_mut().next_bit(head);
 
-                if bit {
-                    mfm |= 1 << (15 - bit_num);
-                }
-                if bit_num % 2 == 1 && bit {
-                    data |= 1 << (7 - (bit_num / 2));
-                }
+            if bit {
+                mfm |= 1 << (15 - bit_num);
             }
+            if bit_num % 2 == 1 && bit {
+                data |= 1 << (7 - (bit_num / 2));
+            }
+        }
 
-            if self.ism_mode.action() {
-                if mfm == 0b10001001_0001001u16 {
-                    //debug!("Marker {:02X}", data);
-                    self.ism_fifo.push_back(IsmFifoEntry::Marker(data));
-                } else {
-                    self.ism_fifo.push_back(IsmFifoEntry::Data(data));
-                }
-                if self.ism_fifo.len() > 2 {
-                    warn!("ISM read underrun (CPU not reading fast enough)");
-                    self.ism_error.set_underrun(true);
-                    self.ism_fifo.pop_front();
-                }
+        if self.ism_mode.action() {
+            if mfm == 0b10001001_0001001u16 {
+                //debug!("Marker {:02X}", data);
+                self.ism_fifo.push_back(IsmFifoEntry::Marker(data));
+            } else {
+                self.ism_fifo.push_back(IsmFifoEntry::Data(data));
+            }
+            if self.ism_fifo.len() > 2 {
+                warn!("ISM read underrun (CPU not reading fast enough)");
+                self.ism_error.set_underrun(true);
+                self.ism_fifo.pop_front();
             }
         }
 
