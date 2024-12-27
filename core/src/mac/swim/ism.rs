@@ -133,6 +133,9 @@ impl Swim {
         if let Some(reg) = IsmRegister::from(offset, false, false) {
             let result = match reg {
                 IsmRegister::Data | IsmRegister::Mark => {
+                    if !self.ism_mode.action() {
+                        return Some(0xFF);
+                    }
                     if let Some((e, v)) = self.ism_fifo_pop(matches!(reg, IsmRegister::Mark)) {
                         if e {
                             self.ism_error.set_mark_from_dr(true);
@@ -219,6 +222,14 @@ impl Swim {
                     }
                 }
                 IsmRegister::ModeOne => {
+                    let set = IsmStatus(value);
+                    if set.action() && !self.ism_mode.action() {
+                        if self.ism_mode.write() {
+                            error!("Entered write mode, TODO");
+                        } else {
+                            debug!("Entered read mode {:?} {:?}", self.ism_mode, self.ism_setup);
+                        }
+                    }
                     self.ism_mode.0 |= value;
                 }
                 IsmRegister::Parameter => {
@@ -277,16 +288,18 @@ impl Swim {
                 }
             }
 
-            if mfm == 0b10001001_0001001u16 {
-                //debug!("Marker {:02X}", data);
-                self.ism_fifo.push_back(IsmFifoEntry::Marker(data));
-            } else {
-                self.ism_fifo.push_back(IsmFifoEntry::Data(data));
-            }
-            if self.ism_fifo.len() > 2 {
-                //warn!("ISM read underrun (CPU not reading fast enough)");
-                self.ism_error.set_underrun(true);
-                self.ism_fifo.pop_front();
+            if self.ism_mode.action() {
+                if mfm == 0b10001001_0001001u16 {
+                    //debug!("Marker {:02X}", data);
+                    self.ism_fifo.push_back(IsmFifoEntry::Marker(data));
+                } else {
+                    self.ism_fifo.push_back(IsmFifoEntry::Data(data));
+                }
+                if self.ism_fifo.len() > 2 {
+                    warn!("ISM read underrun (CPU not reading fast enough)");
+                    self.ism_error.set_underrun(true);
+                    self.ism_fifo.pop_front();
+                }
             }
         }
 
