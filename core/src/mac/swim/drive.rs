@@ -387,7 +387,11 @@ impl FloppyDrive {
 
     /// Gets the spindle motor speed in rounds/minute for the currently selected track
     pub fn get_track_rpm(&self) -> Ticks {
-        if !self.drive_type.is_doublesided() {
+        if self.mfm {
+            // SuperDrive in MFM mode, fixed speed (CAV)
+            600
+        } else if !self.drive_type.is_doublesided() {
+            // Macintosh CLV
             // PWM-driven spindle motor speed control
 
             // Apple 3.5" single-sided drive specifications
@@ -405,7 +409,8 @@ impl FloppyDrive {
                 / (DUTY_T79 - DUTY_T0))
                 / 100
                 + SPEED_T0
-        } else if self.floppy.get_type() != FloppyType::Mfm144M {
+        } else {
+            // Macintosh CLV
             // Automatic spindle motor speed control
             match self.track {
                 0..=15 => 402,
@@ -415,9 +420,6 @@ impl FloppyDrive {
                 64..=79 => 603,
                 _ => unreachable!(),
             }
-        } else {
-            // MFM
-            300
         }
     }
 
