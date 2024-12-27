@@ -113,12 +113,26 @@ impl IsmRegister {
     }
 }
 
+#[derive(Debug)]
 pub(super) enum IsmFifoEntry {
     Marker(u8),
     Data(u8),
 }
 
 impl Swim {
+    /// MFM sync marker (0xA1 with dropped clock)
+    const MFM_SYNC_MARKER: u16 = 0b10001001_0001001u16;
+
+    fn ism_mfm_decode(mfm: u16) -> u8 {
+        let mut out = 0;
+        for i in 0..8 {
+            if mfm & 1 << (i * 2) != 0 {
+                out |= 1 << i;
+            }
+        }
+        out
+    }
+
     fn ism_fifo_pop(&mut self, expect_marker: bool) -> Option<(bool, u8)> {
         match self.ism_fifo.pop_front()? {
             IsmFifoEntry::Data(d) => Some((false, d)),
@@ -210,8 +224,8 @@ impl Swim {
                 IsmRegister::ModeZero => {
                     self.ism_param_idx = 0;
 
-                    let clr = IsmStatus(value);
-                    if clr.clear_fifo() && self.ism_mode.clear_fifo() {
+                    let clr = IsmStatus(value & self.ism_mode.0);
+                    if clr.clear_fifo() {
                         self.ism_fifo.clear();
                     }
 
@@ -226,9 +240,12 @@ impl Swim {
                     if set.action() && !self.ism_mode.action() {
                         if self.ism_mode.write() {
                             error!("Entered write mode, TODO");
-                        } else {
-                            debug!("Entered read mode {:?} {:?}", self.ism_mode, self.ism_setup);
                         }
+
+                        // Entered read/write mode, reset sync/shifter
+                        self.ism_synced = false;
+                        self.ism_shreg = 0;
+                        self.ism_shreg_cnt = 0;
                     }
                     self.ism_mode.0 |= value;
                 }
@@ -268,37 +285,49 @@ impl Swim {
 
     pub(super) fn ism_tick(&mut self, _ticks: usize) -> Result<()> {
         // This is only called when the drive is active and running
-        if self.cycles % self.get_selected_drive().get_ticks_per_bit() * 16 != 0 {
+        if !self.ism_mode.action()
+            || self.cycles % self.get_selected_drive().get_ticks_per_bit() != 0
+        {
             return Ok(());
         }
 
         let head = self.get_active_head();
-        let mut mfm = 0;
-        let mut data = 0;
+        let bit = self.get_selected_drive_mut().next_bit(head);
+        self.ism_shreg <<= 1;
+        if bit {
+            self.ism_shreg |= 1;
+        }
+        self.ism_shreg_cnt += 1;
 
-        for bit_num in 0..16 {
-            let bit = self.get_selected_drive_mut().next_bit(head);
+        if !self.ism_synced && self.ism_shreg == Self::MFM_SYNC_MARKER {
+            // Synchronized to the markers now, get ready to clock out bytes
+            self.ism_shreg_cnt = 0;
+            self.ism_shreg = 0;
+            self.ism_synced = true;
 
-            if bit {
-                mfm |= 1 << (15 - bit_num);
-            }
-            if bit_num % 2 == 1 && bit {
-                data |= 1 << (7 - (bit_num / 2));
-            }
+            self.ism_fifo
+                .push_back(IsmFifoEntry::Marker(Self::ism_mfm_decode(
+                    Self::MFM_SYNC_MARKER,
+                )));
         }
 
-        if self.ism_mode.action() {
-            if mfm == 0b10001001_0001001u16 {
-                //debug!("Marker {:02X}", data);
-                self.ism_fifo.push_back(IsmFifoEntry::Marker(data));
+        if self.ism_synced && self.ism_shreg_cnt == 16 {
+            if self.ism_shreg != Self::MFM_SYNC_MARKER {
+                self.ism_fifo
+                    .push_back(IsmFifoEntry::Data(Self::ism_mfm_decode(self.ism_shreg)));
             } else {
-                self.ism_fifo.push_back(IsmFifoEntry::Data(data));
+                self.ism_fifo
+                    .push_back(IsmFifoEntry::Marker(Self::ism_mfm_decode(self.ism_shreg)));
             }
+
             if self.ism_fifo.len() > 2 {
                 warn!("ISM read underrun (CPU not reading fast enough)");
                 self.ism_error.set_underrun(true);
                 self.ism_fifo.pop_front();
             }
+
+            self.ism_shreg = 0;
+            self.ism_shreg_cnt = 0;
         }
 
         Ok(())

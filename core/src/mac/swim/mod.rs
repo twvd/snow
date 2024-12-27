@@ -114,6 +114,9 @@ pub struct Swim {
     pub(super) ism_setup: IsmSetup,
     pub(super) ism_switch_ctr: usize,
     pub(super) ism_fifo: VecDeque<IsmFifoEntry>,
+    pub(super) ism_shreg: u16,
+    pub(super) ism_synced: bool,
+    pub(super) ism_shreg_cnt: usize,
 
     pub(crate) drives: [FloppyDrive; 3],
 
@@ -160,6 +163,9 @@ impl Swim {
             ism_setup: IsmSetup(0),
             ism_switch_ctr: 0,
             ism_fifo: VecDeque::new(),
+            ism_shreg: 0,
+            ism_synced: false,
+            ism_shreg_cnt: 0,
 
             enable: false,
             dbg_pc: 0,
