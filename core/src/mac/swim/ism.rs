@@ -4,6 +4,7 @@ use anyhow::Result;
 use log::*;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
+use snow_floppy::TrackType;
 
 use crate::bus::Address;
 use crate::mac::swim::SwimMode;
@@ -14,6 +15,7 @@ use super::Swim;
 #[derive(Debug)]
 enum IsmRegister {
     Data,
+    #[allow(dead_code)]
     Correction,
     Mark,
     Crc,
@@ -121,7 +123,7 @@ pub(super) enum IsmFifoEntry {
 
 impl Swim {
     /// MFM sync marker (0xA1 with dropped clock)
-    const MFM_SYNC_MARKER: u16 = 0b10001001_0001001u16;
+    const MFM_SYNC_MARKER: u16 = 0b01_00_01_00_10_00_10_01u16;
 
     fn ism_mfm_decode(mfm: u16) -> u8 {
         let mut out = 0;
@@ -167,7 +169,7 @@ impl Swim {
                 IsmRegister::Handshake => Some(
                     IsmHandshake(0)
                         .with_mark(matches!(
-                            *self.ism_fifo.get(0).unwrap_or(&IsmFifoEntry::Data(0)),
+                            *self.ism_fifo.front().unwrap_or(&IsmFifoEntry::Data(0)),
                             IsmFifoEntry::Marker(_)
                         ))
                         .with_sense(
@@ -231,12 +233,11 @@ impl Swim {
                     if clr.clear_fifo() {
                         self.ism_fifo.clear();
                     }
-
-                    self.ism_mode.0 &= !value;
-                    if !self.ism_mode.ism() {
-                        debug!("IWM mode");
+                    if clr.ism() {
                         self.mode = SwimMode::Iwm;
                     }
+
+                    self.ism_mode.0 &= !value;
                 }
                 IsmRegister::ModeOne => {
                     let set = IsmStatus(value & !self.ism_mode.0);
@@ -304,6 +305,15 @@ impl Swim {
         if !self.ism_mode.action()
             || self.cycles % self.get_selected_drive().get_ticks_per_bit() != 0
         {
+            return Ok(());
+        }
+
+        if self.get_selected_drive().floppy.get_track_type(
+            self.get_active_head(),
+            self.get_selected_drive().get_active_track(),
+        ) == TrackType::Flux
+        {
+            error!("TODO flux track on ISM");
             return Ok(());
         }
 

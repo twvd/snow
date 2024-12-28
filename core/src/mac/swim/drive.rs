@@ -332,7 +332,6 @@ impl FloppyDrive {
     /// Writes to the currently selected drive register
     pub(super) fn write_drive_reg(&mut self, regraw: u8, cycles: Ticks) {
         let reg = DriveWriteReg::from_u8(regraw).unwrap_or(DriveWriteReg::UNKNOWN);
-        debug!("Drive {} write reg {:?}", self.idx, reg);
 
         match reg {
             DriveWriteReg::MOTORON => {
@@ -359,11 +358,9 @@ impl FloppyDrive {
             }
             DriveWriteReg::TRACKSTEP => self.step_head(),
             DriveWriteReg::MFMMODE if self.drive_type == DriveType::SuperDrive => {
-                debug!("MFM mode");
                 self.mfm = true;
             }
             DriveWriteReg::GCRMODE if self.drive_type == DriveType::SuperDrive => {
-                debug!("GCR mode");
                 self.mfm = false;
             }
             _ => {

@@ -185,13 +185,12 @@ impl Swim {
                     self.ism_switch_ctr = 0;
                 }
                 if self.ism_switch_ctr == ISM_SWITCH_PATTERN.len() {
-                    debug!("ISM mode");
                     self.mode = SwimMode::Ism;
                     self.ism_mode.set_ism(true);
                     self.ism_switch_ctr = 0;
                     return;
                 }
-                if value != 0x1F {
+                if ![0x17, 0x1F, 0x57].contains(&value) {
                     warn!("Non-standard IWM mode: {:02X}", value);
                 }
                 self.iwm_mode.set_mode(value);

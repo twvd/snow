@@ -12,11 +12,13 @@ to operate and debug the emulated machine. The Macintosh graphical output is ren
 It currently supports the following models:
  * Macintosh 128K/512K
  * Macintosh Plus
- * Macintosh SE (non-FDHD)
+ * Macintosh SE (both non-FDHD and FDHD)
  * Macintosh Classic
 
 Currently supported hardware:
- * 400K/800K floppy disk drives (up to 3 on SE)
+ * IWM and SWIM floppy controllers
+ * GCR 400K/800K floppy disk drives (up to 3 on SE)
+ * GCR/MFM 1.44MB 'SuperDrive' floppy disk drive (currently read-only)
  * SCSI hard disk drives (up to 7)
  * Macintosh Real-Time Clock
  * Macintosh keyboard/mouse
