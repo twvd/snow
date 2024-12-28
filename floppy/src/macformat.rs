@@ -262,6 +262,10 @@ impl<'a> MacFormatEncoder<'a> {
         tags: Option<&'a [u8]>,
         title: &str,
     ) -> Result<Self> {
+        match format {
+            FloppyType::Mac400K | FloppyType::Mac800K => (),
+            _ => bail!("Unsupported disk format: {:?}", format),
+        }
         if data.len() != format.get_logical_size() {
             bail!(
                 "Invalid data length: {} (expected {})",

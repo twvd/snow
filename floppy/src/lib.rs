@@ -13,7 +13,7 @@ use strum::EnumIter;
 pub type FloppyMetadata = HashMap<String, String>;
 
 /// Types of emulated floppies - 3.5" only
-#[derive(Copy, Clone, EnumIter, PartialEq, Eq)]
+#[derive(Copy, Clone, EnumIter, PartialEq, Eq, Debug)]
 pub enum FloppyType {
     /// Macintosh GCR CLV 3.5", single sided
     Mac400K,
