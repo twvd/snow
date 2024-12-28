@@ -155,7 +155,7 @@ impl Swim {
             iwm_status: IwmStatus(0),
             iwm_mode: IwmMode(0),
 
-            ism_phase_mask: 0,
+            ism_phase_mask: 0xF0,
             ism_error: IsmError(0),
             ism_mode: IsmStatus(0),
             ism_params: [0; 16],

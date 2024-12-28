@@ -267,23 +267,36 @@ impl Swim {
     }
 
     fn ism_read_phases(&self) -> u8 {
-        self.ism_phase_mask
+        let mut phases = self.ism_phase_mask & 0xF0;
+        if self.ca0 {
+            phases |= 1 << 0;
+        }
+        if self.ca1 {
+            phases |= 1 << 1;
+        }
+        if self.ca2 {
+            phases |= 1 << 2;
+        }
+        if self.lstrb {
+            phases |= 1 << 3;
+        }
+        phases
     }
 
     fn ism_write_phases(&mut self, phases: u8) {
+        let outputs = (phases >> 4) & (phases & 0x0F);
         self.ism_phase_mask = phases;
-        if self.ism_phase_mask & (1 << 4) == 0 {
-            self.ca0 = phases & (1 << 0) != 0;
+
+        self.ca0 = outputs & (1 << 0) != 0;
+        self.ca1 = outputs & (1 << 1) != 0;
+        self.ca2 = outputs & (1 << 2) != 0;
+        if !self.lstrb && outputs & (1 << 3) != 0 {
+            // Write strobe
+            let reg = self.get_selected_drive_reg_u8();
+            let cycles = self.cycles;
+            self.get_selected_drive_mut().write_drive_reg(reg, cycles);
         }
-        if self.ism_phase_mask & (1 << 5) == 0 {
-            self.ca1 = phases & (1 << 1) != 0;
-        }
-        if self.ism_phase_mask & (1 << 6) == 0 {
-            self.ca2 = phases & (1 << 2) != 0;
-        }
-        if self.ism_phase_mask & (1 << 7) == 0 {
-            self.lstrb = phases & (1 << 3) != 0;
-        }
+        self.lstrb = outputs & (1 << 3) != 0;
     }
 
     pub(super) fn ism_tick(&mut self, _ticks: usize) -> Result<()> {
