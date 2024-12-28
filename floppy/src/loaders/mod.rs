@@ -3,6 +3,10 @@ mod a2r3;
 mod auto;
 mod bitfile;
 mod diskcopy42;
+
+#[cfg(feature = "fluxfox")]
+mod fluxfox;
+
 mod moof;
 mod pfi;
 mod pri;

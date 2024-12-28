@@ -31,6 +31,8 @@ jobs:
     - name: Generate test data
       working-directory: ./testdata/m68000
       run: python3 decode.py
+    - name: Test build with no features
+      run: cargo build --no-default-features
     - name: Generate code coverage
       run: cargo llvm-cov --workspace --codecov --output-path codecov.json
     - name: Upload coverage to Codecov

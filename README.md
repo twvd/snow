@@ -32,6 +32,7 @@ Supported floppy image formats:
  * PCE Flux Image (PFI, flux)
  * PCE Raw Image (PRI, bitstream)
  * Raw images (sector-based)
+ * Any format (Mac 1.44MB or PC) supported by [Fluxfox](https://github.com/dbalsom/fluxfox)
 
 ## Building and running from source
 
@@ -119,4 +120,5 @@ Additionally, you can enter the following commands:
 ## Acknowledgements
  * Thanks to raddad772 for the excellent [68000 JSON test suite](https://github.com/SingleStepTests/m68000)
  * Thanks to Rubix for the ASCII Mac
-
+ * Thanks to Daniel Balsom for the [Fluxfox](https://github.com/dbalsom/fluxfox) library
+ * Thanks to the people of the Emudev and [Applesauce](https://applesaucefdc.com/) communities for their infinite wisdom

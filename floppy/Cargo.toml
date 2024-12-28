@@ -7,8 +7,13 @@ edition = "2021"
 anyhow = "1.0.86"
 binrw = "0.14.0"
 crc = "3.2.1"
+fluxfox = { git = "https://github.com/dbalsom/fluxfox.git", optional = true, rev = "c0557bf3b91ba8331e3e673e86570f029fe6f09f" }
 log = "0.4.22"
 strum = { version = "0.26.3", features = ["derive"] }
+
+[features]
+default = ["fluxfox"]
+fluxfox = ["dep:fluxfox"]
 
 [lints]
 workspace = true

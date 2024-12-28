@@ -1,9 +1,11 @@
 //! Auto-detect image file type and load
 
-use crate::{
-    loaders::{A2Rv2, A2Rv3, Bitfile, Diskcopy42, FloppyImageLoader, Moof, RawImage, PFI, PRI},
-    FloppyImage, FloppyType,
+#[cfg(feature = "fluxfox")]
+use crate::loaders::fluxfox::Fluxfox;
+use crate::loaders::{
+    A2Rv2, A2Rv3, Bitfile, Diskcopy42, FloppyImageLoader, Moof, RawImage, PFI, PRI,
 };
+use crate::{FloppyImage, FloppyType};
 
 use anyhow::{bail, Result};
 use strum::{Display, IntoEnumIterator};
@@ -16,6 +18,7 @@ pub enum ImageType {
     MOOF,
     Bitfile,
     DC42,
+    Fluxfox,
     PFI,
     PRI,
     Raw,
@@ -29,6 +32,7 @@ impl ImageType {
             Self::MOOF => "Applesauce MOOF",
             Self::Bitfile => "Bitfile",
             Self::DC42 => "Apple DiskCopy 4.2",
+            Self::Fluxfox => "Fluxfox",
             Self::PFI => "PCE PFI",
             Self::PRI => "PCE PRI",
             Self::Raw => "Raw image",
@@ -77,6 +81,11 @@ impl Autodetect {
             return Ok(ImageType::Bitfile);
         }
 
+        #[cfg(feature = "fluxfox")]
+        if Fluxfox::detect(data) {
+            return Ok(ImageType::Fluxfox);
+        }
+
         bail!("Unsupported image file type");
     }
 }
@@ -92,6 +101,16 @@ impl FloppyImageLoader for Autodetect {
             ImageType::PFI => PFI::load(data, filename),
             ImageType::PRI => PRI::load(data, filename),
             ImageType::Raw => RawImage::load(data, filename),
+            ImageType::Fluxfox => {
+                #[cfg(feature = "fluxfox")]
+                {
+                    Fluxfox::load(data, filename)
+                }
+                #[cfg(not(feature = "fluxfox"))]
+                {
+                    unreachable!()
+                }
+            }
         }
     }
 }
