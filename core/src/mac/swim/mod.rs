@@ -187,9 +187,13 @@ impl Swim {
             if self.ism_mode.drive2_enable() {
                 1
             } else if self.ism_mode.drive1_enable() {
-                0
+                if self.intdrive {
+                    2
+                } else {
+                    0
+                }
             } else {
-                // ????
+                // ???
                 0
             }
         }

@@ -194,7 +194,10 @@ impl Swim {
                     Some(value)
                 }
                 IsmRegister::Setup => Some(self.ism_setup.0),
-                _ => Some(0),
+                _ => {
+                    warn!("Unimplemented read {:?}", reg);
+                    Some(0)
+                }
             };
             //debug!(
             //    "ISM read {:06X} {:02X} {:?}: {:02X}",
@@ -236,8 +239,8 @@ impl Swim {
                     }
                 }
                 IsmRegister::ModeOne => {
-                    let set = IsmStatus(value);
-                    if set.action() && !self.ism_mode.action() {
+                    let set = IsmStatus(value & !self.ism_mode.0);
+                    if set.action() {
                         if self.ism_mode.write() {
                             error!("Entered write mode, TODO");
                         }
