@@ -1,5 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
+mod app;
+
+use crate::app::SnowGui;
 use eframe::egui;
 
 fn main() -> eframe::Result {
@@ -11,22 +14,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Snow",
         options,
-        Box::new(|_cc| Ok(Box::<SnowGui>::default())),
+        Box::new(|cc| Ok(Box::new(SnowGui::new(cc)))),
     )
-}
-
-struct SnowGui {}
-
-impl Default for SnowGui {
-    fn default() -> Self {
-        Self {}
-    }
-}
-
-impl eframe::App for SnowGui {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Snow");
-        });
-    }
 }
