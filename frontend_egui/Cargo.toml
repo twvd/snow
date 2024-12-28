@@ -1,0 +1,11 @@
+[package]
+name = "snow_frontend_egui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.30.0"
+env_logger = "0.11.6"
+
+[lints]
+workspace = true
