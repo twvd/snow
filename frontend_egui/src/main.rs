@@ -3,10 +3,28 @@
 mod app;
 
 use crate::app::SnowGui;
+use clap::Parser;
 use eframe::egui;
+use log::LevelFilter;
+
+#[derive(Parser)]
+#[command(
+    about = "Snow - Classic Macintosh emulator",
+    author = "Thomas <thomas@thomasw.dev>",
+    long_about = None)]
+struct Args {
+    /// ROM filename to load.
+    rom_filename: String,
+
+    /// Initial floppy disk image to load
+    floppy_filename: Option<String>,
+}
 
 fn main() -> eframe::Result {
-    env_logger::init();
+    env_logger::builder()
+        .filter_level(LevelFilter::Debug)
+        .init();
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default(),
         ..Default::default()
