@@ -99,5 +99,8 @@ impl eframe::App for SnowGui {
             let sized_texture = egui::load::SizedTexture::new(&mut self.viewport_texture, size);
             ui.add(egui::Image::new(sized_texture).fit_to_fraction(Vec2::new(1.0, 1.0)));
         });
+
+        // Re-render as soon as possible to keep the display updating
+        ctx.request_repaint();
     }
 }
