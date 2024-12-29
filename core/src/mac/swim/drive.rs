@@ -386,7 +386,8 @@ impl FloppyDrive {
     pub fn get_track_rpm(&self) -> Ticks {
         if self.mfm {
             // SuperDrive in MFM mode, fixed speed (CAV)
-            600
+            // TODO DD spins at 600rpm!
+            300
         } else if !self.drive_type.is_doublesided() {
             // Macintosh CLV
             // PWM-driven spindle motor speed control
@@ -409,12 +410,14 @@ impl FloppyDrive {
         } else {
             // Macintosh CLV
             // Automatic spindle motor speed control
+            //
+            // Apple 3.5" single-sided drive specifications, appendix B, speed 1.
             match self.track {
-                0..=15 => 402,
-                16..=31 => 438,
-                32..=47 => 482,
-                48..=63 => 536,
-                64..=79 => 603,
+                0..=15 => 394,
+                16..=31 => 429,
+                32..=47 => 472,
+                48..=63 => 525,
+                64..=79 => 590,
                 _ => unreachable!(),
             }
         }
@@ -495,10 +498,10 @@ mod tests {
     use super::*;
 
     /// Disk revolutions/minute at outer track (0)
-    const DISK_RPM_OUTER: Ticks = 402;
+    const DISK_RPM_OUTER: Ticks = 394;
 
     /// Disk revolutions/minute at inner track (79)
-    const DISK_RPM_INNER: Ticks = 603;
+    const DISK_RPM_INNER: Ticks = 590;
 
     #[test]
     fn disk_double_tacho_outer() {
