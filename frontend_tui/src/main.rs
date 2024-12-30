@@ -4,14 +4,12 @@ mod ui;
 
 use anyhow::Result;
 use clap::Parser;
-use hex_literal::hex;
 use keymap_sdl::map_sdl_keycode;
 use log::*;
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
 use sdl2::event::{Event, WindowEvent};
 use sdl2::mouse::MouseButton;
-use sha2::{Digest, Sha256};
 use snow_core::emulator::comm::EmulatorCommand;
 use snow_core::emulator::Emulator;
 use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
@@ -120,42 +118,7 @@ fn main() -> Result<()> {
 
     // Initialize ROM
     let rom = fs::read(&args.rom_filename)?;
-
-    // Detect model
-    // TODO Make this nicer
-    let mut hash = Sha256::new();
-    hash.update(&rom);
-    let digest = hash.finalize();
-    let model = if digest[..]
-        == hex!("13fe8312cf6167a2bb4351297b48cc1ee29c523b788e58270434742bfeda864c")
-    {
-        // Macintosh 128K
-        MacModel::Early128K
-    } else if digest[..] == hex!("fe6a1ceff5b3eefe32f20efea967cdf8cd4cada291ede040600e7f6c9e2dfc0e")
-    {
-        // Macintosh 512K
-        MacModel::Early512K
-    } else if
-    // Macintosh Plus v1
-    digest[..] == hex!("c5d862605867381af6200dd52f5004cc00304a36ab996531f15e0b1f8a80bc01") ||
-        // Macintosh Plus v2
-    digest[..] == hex!("06f598ff0f64c944e7c347ba55ae60c792824c09c74f4a55a32c0141bf91b8b3") ||
-        // Macintosh Plus v3
-    digest[..] == hex!("dd908e2b65772a6b1f0c859c24e9a0d3dcde17b1c6a24f4abd8955846d7895e7")
-    {
-        MacModel::Plus
-    } else if digest[..] == hex!("0dea05180e66fddb5f5577c89418de31b97e2d9dc6affe84871b031df8245487")
-    {
-        MacModel::SE
-    } else if digest[..] == hex!("bb0cb4786e2e004b701dda9bec475598bc82a4f27eb7b11e6b78dfcee1434f71")
-    {
-        MacModel::SeFdhd
-    } else if digest[..] == hex!("c1c47260bacac2473e21849925fbfdf48e5ab584aaef7c6d54569d0cb6b41cce")
-    {
-        MacModel::Classic
-    } else {
-        panic!("Cannot determine model from ROM file")
-    };
+    let model = MacModel::detect_from_rom(&rom).expect("Cannot detect model from ROM file");
 
     // Initialize emulator
     let (mut emulator, frame_recv) = Emulator::new(&rom, model)?;
