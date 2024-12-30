@@ -27,7 +27,7 @@ impl FramebufferWidget {
     }
 
     #[inline(always)]
-    fn convert_framebuffer(framebuffer: DisplayBuffer) -> Vec<egui::Color32> {
+    fn convert_framebuffer(framebuffer: &DisplayBuffer) -> Vec<egui::Color32> {
         // TODO optimize this
         let mut out = Vec::with_capacity(SCREEN_WIDTH * SCREEN_HEIGHT);
 
@@ -54,7 +54,7 @@ impl FramebufferWidget {
                 self.viewport_texture.set(
                     egui::ColorImage {
                         size: [SCREEN_WIDTH, SCREEN_HEIGHT],
-                        pixels: Self::convert_framebuffer(frame),
+                        pixels: Self::convert_framebuffer(&frame),
                     },
                     egui::TextureOptions::NEAREST,
                 );
