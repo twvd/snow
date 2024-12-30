@@ -1,7 +1,8 @@
 use crate::emulator::EmulatorState;
+use crate::keymap::map_egui_keycode;
 use crate::widgets::framebuffer::FramebufferWidget;
 use eframe::egui;
-use eframe::egui::{CursorIcon, PointerButton};
+use eframe::egui::{CursorIcon, Modifiers, PointerButton};
 use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow_core::mac::MacModel;
 
@@ -9,6 +10,7 @@ pub struct SnowGui {
     emu: EmulatorState,
     framebuffer: FramebufferWidget,
     hide_cursor: bool,
+    last_modifiers: Modifiers,
 }
 
 impl SnowGui {
@@ -17,6 +19,7 @@ impl SnowGui {
             emu: Default::default(),
             framebuffer: FramebufferWidget::new(cc),
             hide_cursor: false,
+            last_modifiers: Modifiers::default(),
         }
     }
 }
@@ -74,6 +77,35 @@ impl eframe::App for SnowGui {
                         // Cursor is within framebuffer view area
                         self.hide_cursor = true;
                         self.emu.update_mouse(egui::Pos2::from([x, y]));
+                    }
+                }
+                egui::Event::Key {
+                    key,
+                    pressed,
+                    modifiers,
+                    repeat: false,
+                    ..
+                } => {
+                    // TODO all the missing keys in egui::Key :(
+
+                    if modifiers.alt != self.last_modifiers.alt {
+                        self.emu.update_key(0x3A, modifiers.alt);
+                    }
+                    if modifiers.ctrl != self.last_modifiers.ctrl {
+                        self.emu.update_key(0x36, modifiers.ctrl);
+                    }
+                    if modifiers.shift != self.last_modifiers.shift {
+                        self.emu.update_key(0x38, modifiers.shift);
+                    }
+                    if modifiers.mac_cmd != self.last_modifiers.mac_cmd {
+                        self.emu.update_key(0x37, modifiers.command);
+                    }
+                    self.last_modifiers = *modifiers;
+
+                    if let Some(k) = map_egui_keycode(*key) {
+                        self.emu.update_key(k, *pressed);
+                    } else {
+                        log::warn!("Unknown key {:?}", key);
                     }
                 }
                 _ => (),

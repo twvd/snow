@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod emulator;
+pub mod keymap;
 pub mod widgets;
 
 use crate::app::SnowGui;

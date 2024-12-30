@@ -6,6 +6,7 @@ use eframe::egui;
 use snow_core::emulator::comm::EmulatorCommandSender;
 use snow_core::emulator::comm::{EmulatorCommand, EmulatorSpeed};
 use snow_core::emulator::Emulator;
+use snow_core::keymap::Scancode;
 use snow_core::mac::MacModel;
 use snow_core::renderer::DisplayBuffer;
 use snow_core::tickable::Tickable;
@@ -24,7 +25,7 @@ impl EmulatorState {
         let (mut emulator, frame_recv) = Emulator::new(rom, model)?;
         let cmd = emulator.create_cmd_sender();
         // TODO audio
-        cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Uncapped))?;
+        cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
         cmd.send(EmulatorCommand::Run)?;
 
         // Spin up emulator thread
@@ -62,6 +63,24 @@ impl EmulatorState {
                     btn: Some(state),
                 })
                 .unwrap();
+        }
+    }
+
+    pub fn update_key(&mut self, key: Scancode, pressed: bool) {
+        if let Some(ref sender) = self.cmdsender {
+            if pressed {
+                sender
+                    .send(EmulatorCommand::KeyEvent(
+                        snow_core::keymap::KeyEvent::KeyDown(key),
+                    ))
+                    .unwrap();
+            } else {
+                sender
+                    .send(EmulatorCommand::KeyEvent(
+                        snow_core::keymap::KeyEvent::KeyUp(key),
+                    ))
+                    .unwrap();
+            }
         }
     }
 }
