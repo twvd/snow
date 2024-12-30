@@ -12,6 +12,9 @@ use snow_core::renderer::DisplayBuffer;
 pub struct FramebufferWidget {
     frame_recv: Option<Receiver<DisplayBuffer>>,
     viewport_texture: egui::TextureHandle,
+
+    /// Resulting position of the widget
+    rect: egui::Rect,
 }
 
 impl FramebufferWidget {
@@ -23,6 +26,7 @@ impl FramebufferWidget {
                 egui::ColorImage::example(),
                 egui::TextureOptions::NEAREST,
             ),
+            rect: egui::Rect::from([egui::Pos2::new(0.0, 0.0), egui::Pos2::new(0.0, 0.0)]),
         }
     }
 
@@ -63,6 +67,11 @@ impl FramebufferWidget {
 
         let size = self.viewport_texture.size_vec2();
         let sized_texture = egui::load::SizedTexture::new(&mut self.viewport_texture, size);
-        ui.add(egui::Image::new(sized_texture).fit_to_fraction(Vec2::new(1.0, 1.0)));
+        let response = ui.add(egui::Image::new(sized_texture).fit_to_fraction(Vec2::new(1.0, 1.0)));
+        self.rect = response.rect;
+    }
+
+    pub fn rect(&self) -> egui::Rect {
+        self.rect
     }
 }
