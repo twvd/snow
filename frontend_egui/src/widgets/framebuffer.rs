@@ -67,7 +67,9 @@ impl FramebufferWidget {
 
         let size = self.viewport_texture.size_vec2();
         let sized_texture = egui::load::SizedTexture::new(&mut self.viewport_texture, size);
-        let response = ui.add(egui::Image::new(sized_texture).fit_to_fraction(Vec2::new(1.0, 1.0)));
+        let response = ui
+            .add(egui::Image::new(sized_texture).fit_to_fraction(Vec2::new(1.0, 1.0)))
+            .on_hover_cursor(egui::CursorIcon::None);
         self.rect = response.rect;
     }
 
