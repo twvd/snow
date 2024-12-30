@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use crossbeam_channel::Receiver;
+use eframe::egui;
 use snow_core::emulator::comm::EmulatorCommandSender;
 use snow_core::emulator::comm::{EmulatorCommand, EmulatorSpeed};
 use snow_core::emulator::Emulator;
@@ -23,7 +24,7 @@ impl EmulatorState {
         let (mut emulator, frame_recv) = Emulator::new(rom, model)?;
         let cmd = emulator.create_cmd_sender();
         // TODO audio
-        cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
+        cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Uncapped))?;
         cmd.send(EmulatorCommand::Run)?;
 
         // Spin up emulator thread
@@ -39,5 +40,28 @@ impl EmulatorState {
         self.emuthread = Some(emuthread);
 
         Ok(frame_recv)
+    }
+
+    pub fn update_mouse(&mut self, p: egui::Pos2) {
+        if let Some(ref sender) = self.cmdsender {
+            sender
+                .send(EmulatorCommand::MouseUpdateAbsolute {
+                    x: p.x as u16,
+                    y: p.y as u16,
+                })
+                .unwrap();
+        }
+    }
+
+    pub fn update_mouse_button(&mut self, state: bool) {
+        if let Some(ref sender) = self.cmdsender {
+            sender
+                .send(EmulatorCommand::MouseUpdateRelative {
+                    relx: 0,
+                    rely: 0,
+                    btn: Some(state),
+                })
+                .unwrap();
+        }
     }
 }
