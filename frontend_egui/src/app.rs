@@ -71,8 +71,8 @@ impl eframe::App for SnowGui {
                 } => {
                     self.emu.update_mouse_button(*pressed);
                 }
-                egui::Event::MouseMoved(_) => {
-                    if let Some(mouse_pos) = ctx.pointer_hover_pos() {
+                egui::Event::MouseMoved(_) | egui::Event::PointerMoved(_) => {
+                    if let Some(mouse_pos) = ctx.pointer_latest_pos() {
                         let fbrect = self.framebuffer.rect();
                         let scale = egui::Vec2::from([
                             SCREEN_WIDTH as f32 / fbrect.width(),
