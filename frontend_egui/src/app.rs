@@ -2,23 +2,32 @@ use crate::emulator::EmulatorState;
 use crate::keymap::map_egui_keycode;
 use crate::widgets::framebuffer::FramebufferWidget;
 use eframe::egui;
-use eframe::egui::{CursorIcon, Modifiers, PointerButton};
+use eframe::egui::{Modifiers, PointerButton};
+use egui_file_dialog::FileDialog;
 use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow_core::mac::MacModel;
+use std::sync::Arc;
 
 pub struct SnowGui {
-    emu: EmulatorState,
     framebuffer: FramebufferWidget,
-    hide_cursor: bool,
+    rom_dialog: FileDialog,
+
+    emu: EmulatorState,
     last_modifiers: Modifiers,
 }
 
 impl SnowGui {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         Self {
-            emu: Default::default(),
             framebuffer: FramebufferWidget::new(cc),
-            hide_cursor: false,
+            rom_dialog: FileDialog::new()
+                .add_file_filter(
+                    "Macintosh ROM files (*.ROM)",
+                    Arc::new(|p| p.extension().unwrap_or_default() == "rom"),
+                )
+                .default_file_filter("Macintosh ROM files (*.ROM)"),
+
+            emu: Default::default(),
             last_modifiers: Modifiers::default(),
         }
     }
@@ -28,9 +37,13 @@ impl eframe::App for SnowGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
             if ui.add(egui::Button::new("Start")).clicked() {
+                self.rom_dialog.pick_file();
+            }
+            if let Some(path) = self.rom_dialog.take_picked() {
+                let rom = std::fs::read(path).unwrap();
                 let recv = self
                     .emu
-                    .init(include_bytes!("../../plus3.rom"), MacModel::Plus)
+                    .init(&rom, MacModel::detect_from_rom(&rom).unwrap())
                     .expect("Emulator initialization failed");
                 self.framebuffer.connect_receiver(recv);
             }
@@ -38,9 +51,7 @@ impl eframe::App for SnowGui {
             self.framebuffer.draw(ui);
         });
 
-        if self.hide_cursor {
-            ctx.set_cursor_icon(CursorIcon::None);
-        }
+        self.rom_dialog.update(ctx);
 
         // Re-render as soon as possible to keep the display updating
         ctx.request_repaint();
@@ -75,7 +86,6 @@ impl eframe::App for SnowGui {
                         }
 
                         // Cursor is within framebuffer view area
-                        self.hide_cursor = true;
                         self.emu.update_mouse(egui::Pos2::from([x, y]));
                     }
                 }
