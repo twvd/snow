@@ -57,6 +57,10 @@ impl EmulatorState {
     }
 
     pub fn update_mouse(&mut self, p: egui::Pos2) {
+        if !self.is_running() {
+            return;
+        }
+
         if let Some(ref sender) = self.cmdsender {
             sender
                 .send(EmulatorCommand::MouseUpdateAbsolute {
@@ -68,6 +72,10 @@ impl EmulatorState {
     }
 
     pub fn update_mouse_button(&mut self, state: bool) {
+        if !self.is_running() {
+            return;
+        }
+
         if let Some(ref sender) = self.cmdsender {
             sender
                 .send(EmulatorCommand::MouseUpdateRelative {
@@ -80,6 +88,10 @@ impl EmulatorState {
     }
 
     pub fn update_key(&mut self, key: Scancode, pressed: bool) {
+        if !self.is_running() {
+            return;
+        }
+
         if let Some(ref sender) = self.cmdsender {
             if pressed {
                 sender
