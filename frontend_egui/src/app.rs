@@ -34,12 +34,8 @@ impl SnowGui {
             emu: Default::default(),
         }
     }
-}
 
-impl eframe::App for SnowGui {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.emu.poll();
-
+    fn poll_winit_events(&mut self) {
         if !self.wev_recv.is_empty() {
             while let Ok(wevent) = self.wev_recv.try_recv() {
                 use egui_winit::winit::event::{KeyEvent, WindowEvent};
@@ -66,6 +62,13 @@ impl eframe::App for SnowGui {
                 }
             }
         }
+    }
+}
+
+impl eframe::App for SnowGui {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_winit_events();
+        self.emu.poll();
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
