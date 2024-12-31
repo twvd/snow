@@ -1213,7 +1213,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d72e9c39f6e11a2e922d04a34ec5e7ef522ea3f5a1acfca7a19d16ad5fe50f5"
 dependencies = [
  "bytemuck",
- "emath",
+ "emath 0.30.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "ecolor"
+version = "0.30.0"
+source = "git+https://github.com/twvd/egui.git?branch=patch-0.30.0#856d675c30693d6650a417b1d8443b39d1636171"
+dependencies = [
+ "bytemuck",
+ "emath 0.30.0 (git+https://github.com/twvd/egui.git?branch=patch-0.30.0)",
 ]
 
 [[package]]
@@ -1255,13 +1264,12 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.30.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "252d52224d35be1535d7fd1d6139ce071fb42c9097773e79f7665604f5596b5e"
+source = "git+https://github.com/twvd/egui.git?branch=patch-0.30.0#856d675c30693d6650a417b1d8443b39d1636171"
 dependencies = [
  "accesskit",
  "ahash",
- "emath",
- "epaint",
+ "emath 0.30.0 (git+https://github.com/twvd/egui.git?branch=patch-0.30.0)",
+ "epaint 0.30.0 (git+https://github.com/twvd/egui.git?branch=patch-0.30.0)",
  "log",
  "nohash-hasher",
  "profiling",
@@ -1290,7 +1298,7 @@ dependencies = [
  "bytemuck",
  "document-features",
  "egui",
- "epaint",
+ "epaint 0.30.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "log",
  "profiling",
  "thiserror 1.0.68",
@@ -1303,13 +1311,14 @@ dependencies = [
 [[package]]
 name = "egui-winit"
 version = "0.30.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e84c2919cd9f3a38a91e8f84ac6a245c19251fd95226ed9fae61d5ea564fce3"
+source = "git+https://github.com/twvd/egui.git?branch=patch-0.30.0#856d675c30693d6650a417b1d8443b39d1636171"
 dependencies = [
  "accesskit_winit",
  "ahash",
  "arboard",
+ "crossbeam-channel",
  "egui",
+ "lazy_static",
  "log",
  "profiling",
  "raw-window-handle",
@@ -1348,6 +1357,14 @@ name = "emath"
 version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4fe73c1207b864ee40aa0b0c038d6092af1030744678c60188a05c28553515d"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
+name = "emath"
+version = "0.30.0"
+source = "git+https://github.com/twvd/egui.git?branch=patch-0.30.0#856d675c30693d6650a417b1d8443b39d1636171"
 dependencies = [
  "bytemuck",
 ]
@@ -1411,8 +1428,23 @@ dependencies = [
  "ab_glyph",
  "ahash",
  "bytemuck",
- "ecolor",
- "emath",
+ "ecolor 0.30.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "emath 0.30.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "nohash-hasher",
+ "parking_lot",
+ "profiling",
+]
+
+[[package]]
+name = "epaint"
+version = "0.30.0"
+source = "git+https://github.com/twvd/egui.git?branch=patch-0.30.0#856d675c30693d6650a417b1d8443b39d1636171"
+dependencies = [
+ "ab_glyph",
+ "ahash",
+ "bytemuck",
+ "ecolor 0.30.0 (git+https://github.com/twvd/egui.git?branch=patch-0.30.0)",
+ "emath 0.30.0 (git+https://github.com/twvd/egui.git?branch=patch-0.30.0)",
  "epaint_default_fonts",
  "log",
  "nohash-hasher",
@@ -1423,8 +1455,7 @@ dependencies = [
 [[package]]
 name = "epaint_default_fonts"
 version = "0.30.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66f6ddac3e6ac6fd4c3d48bb8b1943472f8da0f43a4303bcd8a18aa594401c80"
+source = "git+https://github.com/twvd/egui.git?branch=patch-0.30.0#856d675c30693d6650a417b1d8443b39d1636171"
 
 [[package]]
 name = "equivalent"
@@ -3535,6 +3566,7 @@ dependencies = [
  "crossbeam-channel",
  "eframe",
  "egui-file-dialog",
+ "egui-winit",
  "env_logger",
  "log",
  "snow_core",
