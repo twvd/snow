@@ -1,24 +1,28 @@
 use crate::emulator::EmulatorState;
-use crate::keymap::map_egui_keycode;
+use crate::keymap::map_winit_keycode;
 use crate::widgets::framebuffer::FramebufferWidget;
 use eframe::egui;
-use eframe::egui::{Modifiers, PointerButton};
 use egui_file_dialog::FileDialog;
 use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow_core::mac::MacModel;
 use std::sync::Arc;
 
 pub struct SnowGui {
+    wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
+
     framebuffer: FramebufferWidget,
     rom_dialog: FileDialog,
 
     emu: EmulatorState,
-    last_modifiers: Modifiers,
 }
 
 impl SnowGui {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
+    ) -> Self {
         Self {
+            wev_recv,
             framebuffer: FramebufferWidget::new(cc),
             rom_dialog: FileDialog::new()
                 .add_file_filter(
@@ -28,13 +32,39 @@ impl SnowGui {
                 .default_file_filter("Macintosh ROM files (*.ROM)"),
 
             emu: Default::default(),
-            last_modifiers: Modifiers::default(),
         }
     }
 }
 
 impl eframe::App for SnowGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.wev_recv.is_empty() {
+            while let Ok(wevent) = self.wev_recv.try_recv() {
+                use egui_winit::winit::event::{KeyEvent, WindowEvent};
+                use egui_winit::winit::keyboard::PhysicalKey;
+
+                match wevent {
+                    WindowEvent::KeyboardInput {
+                        event:
+                            KeyEvent {
+                                physical_key: PhysicalKey::Code(kc),
+                                state,
+                                repeat: false,
+                                ..
+                            },
+                        ..
+                    } => {
+                        if let Some(k) = map_winit_keycode(kc) {
+                            self.emu.update_key(k, state.is_pressed());
+                        } else {
+                            log::warn!("Unknown key {:?}", kc);
+                        }
+                    }
+                    _ => (),
+                }
+            }
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
             if ui.add(egui::Button::new("Start")).clicked() {
                 self.rom_dialog.pick_file();
@@ -65,7 +95,7 @@ impl eframe::App for SnowGui {
         for event in &raw_input.events {
             match event {
                 egui::Event::PointerButton {
-                    button: PointerButton::Primary,
+                    button: egui::PointerButton::Primary,
                     pressed,
                     ..
                 } => {
@@ -87,35 +117,6 @@ impl eframe::App for SnowGui {
 
                         // Cursor is within framebuffer view area
                         self.emu.update_mouse(egui::Pos2::from([x, y]));
-                    }
-                }
-                egui::Event::Key {
-                    key,
-                    pressed,
-                    modifiers,
-                    repeat: false,
-                    ..
-                } => {
-                    // TODO all the missing keys in egui::Key :(
-
-                    if modifiers.alt != self.last_modifiers.alt {
-                        self.emu.update_key(0x3A, modifiers.alt);
-                    }
-                    if modifiers.ctrl != self.last_modifiers.ctrl {
-                        self.emu.update_key(0x36, modifiers.ctrl);
-                    }
-                    if modifiers.shift != self.last_modifiers.shift {
-                        self.emu.update_key(0x38, modifiers.shift);
-                    }
-                    if modifiers.mac_cmd != self.last_modifiers.mac_cmd {
-                        self.emu.update_key(0x37, modifiers.command);
-                    }
-                    self.last_modifiers = *modifiers;
-
-                    if let Some(k) = map_egui_keycode(*key) {
-                        self.emu.update_key(k, *pressed);
-                    } else {
-                        log::warn!("Unknown key {:?}", key);
                     }
                 }
                 _ => (),

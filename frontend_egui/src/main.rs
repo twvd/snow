@@ -28,6 +28,13 @@ fn main() -> eframe::Result {
         .filter_level(LevelFilter::Debug)
         .init();
 
+    // The egui frontend uses a patched version of egui-winit that allows hooking
+    // into the winit WindowEvent stream in order to capture raw keyboard events.
+    // egui/eframe does not expose all the keys we need, currently.
+    // See also https://github.com/emilk/egui/issues/3653
+    let (s, r) = crossbeam_channel::unbounded();
+    egui_winit::install_windowevent_hook(s);
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default(),
         ..Default::default()
@@ -35,6 +42,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Snow",
         options,
-        Box::new(|cc| Ok(Box::new(SnowGui::new(cc)))),
+        Box::new(|cc| Ok(Box::new(SnowGui::new(cc, r)))),
     )
 }

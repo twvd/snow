@@ -232,7 +232,7 @@ impl FloppyImageLoader for Moof {
                             continue;
                         }
                         if last == 0 {
-                            warn!("transition of 0!");
+                            warn!("{:?} transition of 0!", filename);
                         }
                         img.push_flux(side, track, last);
                         last = 0;
