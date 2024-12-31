@@ -38,6 +38,8 @@ impl SnowGui {
 
 impl eframe::App for SnowGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.emu.poll();
+
         if !self.wev_recv.is_empty() {
             while let Ok(wevent) = self.wev_recv.try_recv() {
                 use egui_winit::winit::event::{KeyEvent, WindowEvent};
@@ -66,9 +68,21 @@ impl eframe::App for SnowGui {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            if ui.add(egui::Button::new("Start")).clicked() {
-                self.rom_dialog.pick_file();
-            }
+            ui.horizontal(|ui| {
+                if ui.add(egui::Button::new("Load ROM")).clicked() {
+                    self.rom_dialog.pick_file();
+                }
+                if self.emu.is_initialized() {
+                    ui.separator();
+
+                    if self.emu.is_running() && ui.add(egui::Button::new("Stop")).clicked() {
+                        self.emu.stop();
+                    } else if !self.emu.is_running() && ui.add(egui::Button::new("Run")).clicked() {
+                        self.emu.run();
+                    }
+                }
+            });
+            ui.separator();
             if let Some(path) = self.rom_dialog.take_picked() {
                 let rom = std::fs::read(path).unwrap();
                 let recv = self

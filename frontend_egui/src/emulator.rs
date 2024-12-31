@@ -3,8 +3,8 @@
 use anyhow::Result;
 use crossbeam_channel::Receiver;
 use eframe::egui;
-use snow_core::emulator::comm::EmulatorCommandSender;
-use snow_core::emulator::comm::{EmulatorCommand, EmulatorSpeed};
+use snow_core::emulator::comm::{EmulatorCommand, EmulatorEvent, EmulatorSpeed};
+use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus};
 use snow_core::emulator::Emulator;
 use snow_core::keymap::Scancode;
 use snow_core::mac::MacModel;
@@ -17,16 +17,29 @@ use std::thread::JoinHandle;
 pub struct EmulatorState {
     emuthread: Option<JoinHandle<()>>,
     cmdsender: Option<EmulatorCommandSender>,
+    eventrecv: Option<EmulatorEventReceiver>,
+    status: Option<EmulatorStatus>,
 }
 
 impl EmulatorState {
     pub fn init(&mut self, rom: &[u8], model: MacModel) -> Result<Receiver<DisplayBuffer>> {
+        if let Some(emu_thread) = self.emuthread.take() {
+            self.cmdsender
+                .as_ref()
+                .unwrap()
+                .send(EmulatorCommand::Quit)
+                .unwrap();
+            emu_thread.join().unwrap();
+        }
+
         // Initialize emulator
         let (mut emulator, frame_recv) = Emulator::new(rom, model)?;
         let cmd = emulator.create_cmd_sender();
         // TODO audio
         cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
         cmd.send(EmulatorCommand::Run)?;
+
+        self.eventrecv = Some(emulator.create_event_recv());
 
         // Spin up emulator thread
         let emuthread = thread::spawn(move || loop {
@@ -81,6 +94,56 @@ impl EmulatorState {
                     ))
                     .unwrap();
             }
+        }
+    }
+
+    pub fn poll(&mut self) {
+        let Some(ref eventrecv) = self.eventrecv else {
+            return;
+        };
+        if eventrecv.is_empty() {
+            return;
+        }
+
+        while let Ok(event) = eventrecv.try_recv() {
+            match event {
+                EmulatorEvent::Status(s) => {
+                    self.status = Some(*s);
+                }
+                EmulatorEvent::NextCode(_) => {}
+            }
+        }
+    }
+
+    pub fn status(&self) -> Option<&EmulatorStatus> {
+        self.status.as_ref()
+    }
+
+    pub fn stop(&mut self) {
+        self.cmdsender
+            .as_ref()
+            .unwrap()
+            .send(EmulatorCommand::Stop)
+            .unwrap();
+    }
+
+    pub fn run(&mut self) {
+        self.cmdsender
+            .as_ref()
+            .unwrap()
+            .send(EmulatorCommand::Run)
+            .unwrap();
+    }
+
+    pub fn is_initialized(&self) -> bool {
+        self.cmdsender.is_some()
+    }
+
+    pub fn is_running(&self) -> bool {
+        if let Some(ref status) = self.status {
+            status.running
+        } else {
+            false
         }
     }
 }
