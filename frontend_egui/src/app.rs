@@ -3,6 +3,7 @@ use crate::keymap::map_winit_keycode;
 use crate::widgets::framebuffer::FramebufferWidget;
 use eframe::egui;
 use egui_file_dialog::FileDialog;
+use itertools::Itertools;
 use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow_core::mac::MacModel;
 use std::sync::Arc;
@@ -12,6 +13,8 @@ pub struct SnowGui {
 
     framebuffer: FramebufferWidget,
     rom_dialog: FileDialog,
+    floppy_dialog: FileDialog,
+    floppy_dialog_driveidx: usize,
 
     emu: EmulatorState,
 }
@@ -21,6 +24,13 @@ impl SnowGui {
         cc: &eframe::CreationContext<'_>,
         wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
     ) -> Self {
+        let floppy_filter_str = format!(
+            "Floppy images ({})",
+            snow_floppy::loaders::ImageType::EXTENSIONS
+                .into_iter()
+                .map(|e| format!("*.{}", e.to_ascii_uppercase()))
+                .join(", ")
+        );
         Self {
             wev_recv,
             framebuffer: FramebufferWidget::new(cc),
@@ -30,6 +40,22 @@ impl SnowGui {
                     Arc::new(|p| p.extension().unwrap_or_default() == "rom"),
                 )
                 .default_file_filter("Macintosh ROM files (*.ROM)"),
+            floppy_dialog: FileDialog::new().add_file_filter(
+                &floppy_filter_str,
+                Arc::new(|p| {
+                    let ext = p
+                        .extension()
+                        .unwrap_or_default()
+                        .to_ascii_lowercase()
+                        .to_string_lossy()
+                        .to_string();
+
+                    snow_floppy::loaders::ImageType::EXTENSIONS
+                        .into_iter()
+                        .any(|s| ext == s)
+                }),
+            ),
+            floppy_dialog_driveidx: 0,
 
             emu: Default::default(),
         }
@@ -99,6 +125,49 @@ impl eframe::App for SnowGui {
                         }
                     }
                 });
+                if self.emu.is_initialized() {
+                    ui.menu_button("Drives", |ui| {
+                        for (i, d) in
+                            (0..3).filter_map(|i| self.emu.get_fdd_status(i).map(|d| (i, d)))
+                        {
+                            if ui
+                                .button(format!(
+                                    "Floppy #{}: {}",
+                                    i + 1,
+                                    if d.ejected {
+                                        "(ejected)"
+                                    } else {
+                                        &d.image_title
+                                    }
+                                ))
+                                .clicked()
+                            {
+                                self.floppy_dialog_driveidx = i;
+                                self.floppy_dialog.pick_file();
+                                ui.close_menu();
+                            }
+                        }
+                        if let Some(hdd) = self.emu.get_hdds() {
+                            ui.separator();
+                            for (i, sz) in hdd.iter().enumerate() {
+                                if ui
+                                    .button(format!(
+                                        "SCSI #{}: {}",
+                                        i,
+                                        if let Some(sz) = sz {
+                                            format!("{:0.2}MB", sz / 1024 / 1024)
+                                        } else {
+                                            "(no disk)".to_string()
+                                        }
+                                    ))
+                                    .clicked()
+                                {
+                                    ui.close_menu();
+                                }
+                            }
+                        }
+                    });
+                }
             });
 
             // Toolbar
@@ -132,6 +201,12 @@ impl eframe::App for SnowGui {
                 .init(&rom, MacModel::detect_from_rom(&rom).unwrap())
                 .expect("Emulator initialization failed");
             self.framebuffer.connect_receiver(recv);
+        }
+
+        // Floppy image picker dialog
+        self.floppy_dialog.update(ctx);
+        if let Some(path) = self.floppy_dialog.take_picked() {
+            self.emu.load_floppy(self.floppy_dialog_driveidx, &path);
         }
 
         // Re-render as soon as possible to keep the display updating

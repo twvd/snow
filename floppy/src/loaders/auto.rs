@@ -25,6 +25,8 @@ pub enum ImageType {
 }
 
 impl ImageType {
+    pub const EXTENSIONS: [&'static str; 7] = ["a2r", "moof", "dc42", "pfi", "pri", "raw", "img"];
+
     pub fn as_friendly_str(&self) -> &'static str {
         match self {
             Self::A2R2 => "Applesauce A2R v2.x",
