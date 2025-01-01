@@ -24,6 +24,8 @@ impl SnowGui {
         cc: &eframe::CreationContext<'_>,
         wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
     ) -> Self {
+        egui_material_icons::initialize(&cc.egui_ctx);
+
         let floppy_filter_str = format!(
             "Floppy images ({})",
             snow_floppy::loaders::ImageType::EXTENSIONS
@@ -189,16 +191,51 @@ impl eframe::App for SnowGui {
             // Toolbar
             ui.separator();
             ui.horizontal(|ui| {
-                if ui.add(egui::Button::new("Load ROM")).clicked() {
+                ui.style_mut().text_styles.insert(
+                    egui::TextStyle::Button,
+                    egui::FontId::new(24.0, eframe::epaint::FontFamily::Proportional),
+                );
+
+                if ui
+                    .add(egui::Button::new(egui_material_icons::icons::ICON_MEMORY))
+                    .clicked()
+                {
                     self.rom_dialog.pick_file();
                 }
                 if self.emu.is_initialized() {
                     ui.separator();
 
-                    if self.emu.is_running() && ui.add(egui::Button::new("Stop")).clicked() {
-                        self.emu.stop();
-                    } else if !self.emu.is_running() && ui.add(egui::Button::new("Run")).clicked() {
-                        self.emu.run();
+                    if self.emu.is_running() {
+                        if ui
+                            .add(egui::Button::new(egui_material_icons::icons::ICON_STOP))
+                            .clicked()
+                        {
+                            self.emu.stop();
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new(egui_material_icons::icons::ICON_FAST_FORWARD)
+                                    .selected(self.emu.is_fastforward()),
+                            )
+                            .clicked()
+                        {
+                            self.emu.toggle_fastforward();
+                        }
+                    } else if !self.emu.is_running() {
+                        if ui
+                            .add(egui::Button::new(
+                                egui_material_icons::icons::ICON_PLAY_ARROW,
+                            ))
+                            .clicked()
+                        {
+                            self.emu.run();
+                        }
+                        if ui
+                            .add(egui::Button::new(egui_material_icons::icons::ICON_STEP))
+                            .clicked()
+                        {
+                            self.emu.step();
+                        }
                     }
                 }
             });

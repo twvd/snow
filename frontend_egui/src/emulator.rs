@@ -212,4 +212,32 @@ impl EmulatorState {
             ))
             .unwrap();
     }
+
+    pub fn is_fastforward(&self) -> bool {
+        let Some(ref status) = self.status else {
+            return false;
+        };
+        status.speed == EmulatorSpeed::Uncapped
+    }
+
+    pub fn toggle_fastforward(&self) {
+        let Some(ref status) = self.status else {
+            return;
+        };
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        if status.speed == EmulatorSpeed::Uncapped {
+            let newspeed = if self.audiosink.is_some() {
+                EmulatorSpeed::Accurate
+            } else {
+                EmulatorSpeed::Video
+            };
+            sender.send(EmulatorCommand::SetSpeed(newspeed)).unwrap();
+        } else {
+            sender
+                .send(EmulatorCommand::SetSpeed(EmulatorSpeed::Uncapped))
+                .unwrap();
+        }
+    }
 }
