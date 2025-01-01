@@ -2,6 +2,7 @@ use eframe::egui;
 use snow_core::keymap::Scancode;
 
 /// Maps an egui keycode to 'Snow universal'
+#[allow(dead_code)]
 pub fn map_egui_keycode(kc: egui::Key) -> Option<Scancode> {
     match kc {
         // ,---.   .---------------. ,---------------. ,---------------. ,-----------.             ,---.

@@ -3,6 +3,8 @@
 use anyhow::Result;
 use crossbeam_channel::Receiver;
 use eframe::egui;
+use log::*;
+use sdl2::audio::AudioDevice;
 use snow_core::emulator::comm::{EmulatorCommand, EmulatorEvent, EmulatorSpeed};
 use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus};
 use snow_core::emulator::Emulator;
@@ -13,16 +15,20 @@ use snow_core::tickable::Tickable;
 use std::thread;
 use std::thread::JoinHandle;
 
+use crate::audio::SDLAudioSink;
+
 #[derive(Default)]
 pub struct EmulatorState {
     emuthread: Option<JoinHandle<()>>,
     cmdsender: Option<EmulatorCommandSender>,
     eventrecv: Option<EmulatorEventReceiver>,
     status: Option<EmulatorStatus>,
+    audiosink: Option<AudioDevice<SDLAudioSink>>,
 }
 
 impl EmulatorState {
     pub fn init(&mut self, rom: &[u8], model: MacModel) -> Result<Receiver<DisplayBuffer>> {
+        // Terminate running emulator (if any)
         if let Some(emu_thread) = self.emuthread.take() {
             self.cmdsender
                 .as_ref()
@@ -35,8 +41,19 @@ impl EmulatorState {
         // Initialize emulator
         let (mut emulator, frame_recv) = Emulator::new(rom, model)?;
         let cmd = emulator.create_cmd_sender();
-        // TODO audio
-        cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
+        if self.audiosink.is_none() {
+            match SDLAudioSink::new(emulator.get_audio()) {
+                Ok(sink) => self.audiosink = Some(sink),
+                Err(e) => {
+                    error!("Failed to initialize audio: {:?}", e);
+                    cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))
+                        .unwrap();
+                }
+            }
+        } else {
+            let mut cb = self.audiosink.as_mut().unwrap().lock();
+            cb.set_receiver(emulator.get_audio());
+        }
         cmd.send(EmulatorCommand::Run)?;
 
         self.eventrecv = Some(emulator.create_event_recv());
@@ -56,7 +73,7 @@ impl EmulatorState {
         Ok(frame_recv)
     }
 
-    pub fn update_mouse(&mut self, p: egui::Pos2) {
+    pub fn update_mouse(&self, p: egui::Pos2) {
         if !self.is_running() {
             return;
         }
@@ -71,7 +88,7 @@ impl EmulatorState {
         }
     }
 
-    pub fn update_mouse_button(&mut self, state: bool) {
+    pub fn update_mouse_button(&self, state: bool) {
         if !self.is_running() {
             return;
         }
@@ -87,7 +104,7 @@ impl EmulatorState {
         }
     }
 
-    pub fn update_key(&mut self, key: Scancode, pressed: bool) {
+    pub fn update_key(&self, key: Scancode, pressed: bool) {
         if !self.is_running() {
             return;
         }
@@ -127,11 +144,7 @@ impl EmulatorState {
         }
     }
 
-    pub fn status(&self) -> Option<&EmulatorStatus> {
-        self.status.as_ref()
-    }
-
-    pub fn stop(&mut self) {
+    pub fn stop(&self) {
         self.cmdsender
             .as_ref()
             .unwrap()
@@ -139,7 +152,7 @@ impl EmulatorState {
             .unwrap();
     }
 
-    pub fn run(&mut self) {
+    pub fn run(&self) {
         self.cmdsender
             .as_ref()
             .unwrap()

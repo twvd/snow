@@ -35,7 +35,7 @@ impl SnowGui {
         }
     }
 
-    fn poll_winit_events(&mut self) {
+    fn poll_winit_events(&self) {
         if !self.wev_recv.is_empty() {
             while let Ok(wevent) = self.wev_recv.try_recv() {
                 use egui_winit::winit::event::{KeyEvent, WindowEvent};

@@ -1,9 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
-pub mod app;
-pub mod emulator;
-pub mod keymap;
-pub mod widgets;
+mod app;
+mod audio;
+mod emulator;
+mod keymap;
+mod widgets;
 
 use crate::app::SnowGui;
 use clap::Parser;
