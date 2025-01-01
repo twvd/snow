@@ -95,7 +95,7 @@ impl eframe::App for SnowGui {
                 self.framebuffer.connect_receiver(recv);
             }
 
-            self.framebuffer.draw(ui);
+            self.framebuffer.draw(ui, self.emu.is_running());
         });
 
         self.rom_dialog.update(ctx);
