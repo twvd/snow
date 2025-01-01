@@ -71,6 +71,38 @@ impl eframe::App for SnowGui {
         self.emu.poll();
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            // Menubar
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("Emulator", |ui| {
+                    if ui.button("Exit").clicked() {
+                        std::process::exit(0);
+                    }
+                });
+                ui.menu_button("Machine", |ui| {
+                    if ui.button("Load ROM").clicked() {
+                        self.rom_dialog.pick_file();
+                        ui.close_menu();
+                    }
+                    if self.emu.is_initialized() {
+                        ui.separator();
+
+                        if self.emu.is_running() && ui.button("Stop").clicked() {
+                            self.emu.stop();
+                            ui.close_menu();
+                        } else if !self.emu.is_running() && ui.button("Run").clicked() {
+                            self.emu.run();
+                            ui.close_menu();
+                        }
+                        if ui.button("Single step").clicked() {
+                            self.emu.step();
+                            ui.close_menu();
+                        }
+                    }
+                });
+            });
+
+            // Toolbar
+            ui.separator();
             ui.horizontal(|ui| {
                 if ui.add(egui::Button::new("Load ROM")).clicked() {
                     self.rom_dialog.pick_file();
@@ -86,19 +118,21 @@ impl eframe::App for SnowGui {
                 }
             });
             ui.separator();
-            if let Some(path) = self.rom_dialog.take_picked() {
-                let rom = std::fs::read(path).unwrap();
-                let recv = self
-                    .emu
-                    .init(&rom, MacModel::detect_from_rom(&rom).unwrap())
-                    .expect("Emulator initialization failed");
-                self.framebuffer.connect_receiver(recv);
-            }
 
+            // Framebuffer display
             self.framebuffer.draw(ui, self.emu.is_running());
         });
 
+        // ROM picker dialog
         self.rom_dialog.update(ctx);
+        if let Some(path) = self.rom_dialog.take_picked() {
+            let rom = std::fs::read(path).unwrap();
+            let recv = self
+                .emu
+                .init(&rom, MacModel::detect_from_rom(&rom).unwrap())
+                .expect("Emulator initialization failed");
+            self.framebuffer.connect_receiver(recv);
+        }
 
         // Re-render as soon as possible to keep the display updating
         ctx.request_repaint();
