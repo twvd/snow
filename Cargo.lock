@@ -3321,6 +3321,7 @@ checksum = "951deab27af08ed9c6068b7b0d05a93c91f0a8eb16b6b816a5e73452a43521d3"
 dependencies = [
  "cfg-if",
  "libc",
+ "pkg-config",
  "version-compare",
 ]
 
@@ -3569,6 +3570,7 @@ dependencies = [
  "egui-winit",
  "env_logger",
  "log",
+ "sdl2",
  "snow_core",
 ]
 
