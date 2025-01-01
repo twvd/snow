@@ -50,7 +50,7 @@ impl FramebufferWidget {
         self.frame_recv = Some(recv);
     }
 
-    pub fn draw(&mut self, ui: &mut egui::Ui, hide_mouse: bool) {
+    pub fn draw(&mut self, ui: &mut egui::Ui) {
         if let Some(ref frame_recv) = self.frame_recv {
             if !frame_recv.is_empty() {
                 let frame = frame_recv.recv().unwrap();
@@ -69,9 +69,6 @@ impl FramebufferWidget {
         let sized_texture = egui::load::SizedTexture::new(&mut self.viewport_texture, size);
         let response = ui.add(egui::Image::new(sized_texture).fit_to_fraction(Vec2::new(1.0, 1.0)));
         self.rect = response.rect;
-        if hide_mouse {
-            response.on_hover_cursor(egui::CursorIcon::None);
-        }
     }
 
     pub fn rect(&self) -> egui::Rect {

@@ -205,7 +205,7 @@ impl eframe::App for SnowGui {
             ui.separator();
 
             // Framebuffer display
-            self.framebuffer.draw(ui, self.emu.is_running());
+            self.framebuffer.draw(ui);
         });
 
         // ROM picker dialog
@@ -223,6 +223,13 @@ impl eframe::App for SnowGui {
         self.floppy_dialog.update(ctx);
         if let Some(path) = self.floppy_dialog.take_picked() {
             self.emu.load_floppy(self.floppy_dialog_driveidx, &path);
+        }
+
+        // Hide mouse over framebuffer
+        // When using 'on_hover_and_drag_cursor' on the widget, the cursor still shows when the
+        // mouse button is down, which is why this is done here.
+        if self.emu.is_running() && self.get_machine_mouse_pos(ctx).is_some() {
+            ctx.set_cursor_icon(egui::CursorIcon::None);
         }
 
         // Re-render as soon as possible to keep the display updating
