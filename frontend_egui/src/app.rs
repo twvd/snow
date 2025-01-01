@@ -89,6 +89,22 @@ impl SnowGui {
             }
         }
     }
+
+    fn get_machine_mouse_pos(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
+        let mouse_pos = ctx.pointer_latest_pos()?;
+        let fbrect = self.framebuffer.rect();
+        let scale = egui::Vec2::from([
+            SCREEN_WIDTH as f32 / fbrect.width(),
+            SCREEN_HEIGHT as f32 / fbrect.height(),
+        ]);
+        let x = (mouse_pos.x - fbrect.left_top().x) * scale.x;
+        let y = (mouse_pos.y - fbrect.left_top().y) * scale.y;
+        if x < 0.0 || y < 0.0 || x > SCREEN_WIDTH as f32 || y > SCREEN_HEIGHT as f32 {
+            None
+        } else {
+            Some(egui::Pos2::from([x, y]))
+        }
+    }
 }
 
 impl eframe::App for SnowGui {
@@ -225,24 +241,15 @@ impl eframe::App for SnowGui {
                     pressed,
                     ..
                 } => {
-                    self.emu.update_mouse_button(*pressed);
+                    if self.get_machine_mouse_pos(ctx).is_some() {
+                        // Cursor is within framebuffer view area
+                        self.emu.update_mouse_button(*pressed);
+                    }
                 }
                 egui::Event::MouseMoved(_) | egui::Event::PointerMoved(_) => {
-                    if let Some(mouse_pos) = ctx.pointer_latest_pos() {
-                        let fbrect = self.framebuffer.rect();
-                        let scale = egui::Vec2::from([
-                            SCREEN_WIDTH as f32 / fbrect.width(),
-                            SCREEN_HEIGHT as f32 / fbrect.height(),
-                        ]);
-                        let x = (mouse_pos.x - fbrect.left_top().x) * scale.x;
-                        let y = (mouse_pos.y - fbrect.left_top().y) * scale.y;
-                        if x < 0.0 || y < 0.0 || x > SCREEN_WIDTH as f32 || y > SCREEN_HEIGHT as f32
-                        {
-                            continue;
-                        }
-
+                    if let Some(mouse_pos) = self.get_machine_mouse_pos(ctx) {
                         // Cursor is within framebuffer view area
-                        self.emu.update_mouse(egui::Pos2::from([x, y]));
+                        self.emu.update_mouse(mouse_pos);
                     }
                 }
                 _ => (),
