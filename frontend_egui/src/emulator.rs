@@ -160,6 +160,14 @@ impl EmulatorState {
             .unwrap();
     }
 
+    pub fn step(&self) {
+        self.cmdsender
+            .as_ref()
+            .unwrap()
+            .send(EmulatorCommand::Step)
+            .unwrap();
+    }
+
     pub fn is_initialized(&self) -> bool {
         self.cmdsender.is_some()
     }
