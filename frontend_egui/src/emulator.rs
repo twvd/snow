@@ -5,13 +5,14 @@ use crossbeam_channel::Receiver;
 use eframe::egui;
 use log::*;
 use sdl2::audio::AudioDevice;
-use snow_core::emulator::comm::{EmulatorCommand, EmulatorEvent, EmulatorSpeed};
+use snow_core::emulator::comm::{EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus};
 use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus};
 use snow_core::emulator::Emulator;
 use snow_core::keymap::Scancode;
 use snow_core::mac::MacModel;
 use snow_core::renderer::DisplayBuffer;
 use snow_core::tickable::Tickable;
+use std::path::Path;
 use std::thread;
 use std::thread::JoinHandle;
 
@@ -168,6 +169,25 @@ impl EmulatorState {
             .unwrap();
     }
 
+    pub fn get_fdd_status(&self, drive: usize) -> Option<&FddStatus> {
+        let status = self.status.as_ref()?;
+        if status.fdd.len() < drive {
+            return None;
+        }
+        if !status.fdd[drive].present {
+            return None;
+        }
+        Some(&status.fdd[drive])
+    }
+
+    pub fn get_hdds(&self) -> Option<&[Option<usize>]> {
+        let status = self.status.as_ref()?;
+        if !status.model.has_scsi() {
+            return None;
+        }
+        Some(&status.hdd)
+    }
+
     pub fn is_initialized(&self) -> bool {
         self.cmdsender.is_some()
     }
@@ -178,5 +198,18 @@ impl EmulatorState {
         } else {
             false
         }
+    }
+
+    pub fn load_floppy(&self, driveidx: usize, path: &Path) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        sender
+            .send(EmulatorCommand::InsertFloppy(
+                driveidx,
+                path.to_string_lossy().to_string(),
+            ))
+            .unwrap();
     }
 }
