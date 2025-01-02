@@ -23,7 +23,7 @@ impl FramebufferWidget {
             frame_recv: None,
             viewport_texture: cc.egui_ctx.load_texture(
                 "viewport",
-                egui::ColorImage::example(),
+                egui::ColorImage::new([SCREEN_WIDTH, SCREEN_HEIGHT], egui::Color32::BLACK),
                 egui::TextureOptions::NEAREST,
             ),
             rect: egui::Rect::from([egui::Pos2::new(0.0, 0.0), egui::Pos2::new(0.0, 0.0)]),
@@ -67,7 +67,15 @@ impl FramebufferWidget {
 
         let size = self.viewport_texture.size_vec2();
         let sized_texture = egui::load::SizedTexture::new(&mut self.viewport_texture, size);
-        let response = ui.add(egui::Image::new(sized_texture).fit_to_fraction(Vec2::new(1.0, 1.0)));
+        let response = ui.add(
+            egui::Image::new(sized_texture)
+                .fit_to_fraction(Vec2::new(1.0, 1.0))
+                .max_size(Vec2::new(
+                    (SCREEN_WIDTH * 2) as f32,
+                    (SCREEN_HEIGHT * 2) as f32,
+                ))
+                .maintain_aspect_ratio(true),
+        );
         self.rect = response.rect;
     }
 

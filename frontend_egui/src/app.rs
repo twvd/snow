@@ -242,7 +242,10 @@ impl eframe::App for SnowGui {
             ui.separator();
 
             // Framebuffer display
-            self.framebuffer.draw(ui);
+            ui.with_layout(
+                egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                |ui| self.framebuffer.draw(ui),
+            );
         });
 
         // ROM picker dialog
