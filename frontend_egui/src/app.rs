@@ -14,6 +14,9 @@ pub struct SnowGui {
     rom_dialog: FileDialog,
     floppy_dialog: FileDialog,
     floppy_dialog_driveidx: usize,
+    error_dialog_open: bool,
+    error_string: String,
+    ui_active: bool,
 
     emu: EmulatorState,
 }
@@ -59,43 +62,59 @@ impl SnowGui {
                 }),
             ),
             floppy_dialog_driveidx: 0,
+            error_dialog_open: false,
+            error_string: String::new(),
+            ui_active: true,
 
             emu: EmulatorState::new(audio_enabled),
         };
 
         if let Some(filename) = initial_rom_file {
-            let recv = app.emu.init_from_rom(Path::new(&filename)).unwrap();
-            app.framebuffer.connect_receiver(recv);
+            match app.emu.init_from_rom(Path::new(&filename)) {
+                Ok(recv) => app.framebuffer.connect_receiver(recv),
+                Err(e) => app.show_error(&e),
+            }
         }
 
         app
     }
 
-    fn poll_winit_events(&self) {
-        if !self.wev_recv.is_empty() {
-            while let Ok(wevent) = self.wev_recv.try_recv() {
-                use egui_winit::winit::event::{KeyEvent, WindowEvent};
-                use egui_winit::winit::keyboard::PhysicalKey;
+    pub fn show_error(&mut self, text: &impl std::fmt::Display) {
+        self.error_dialog_open = true;
+        self.error_string = text.to_string();
+    }
 
-                match wevent {
-                    WindowEvent::KeyboardInput {
-                        event:
-                            KeyEvent {
-                                physical_key: PhysicalKey::Code(kc),
-                                state,
-                                repeat: false,
-                                ..
-                            },
-                        ..
-                    } => {
-                        if let Some(k) = map_winit_keycode(kc) {
-                            self.emu.update_key(k, state.is_pressed());
-                        } else {
-                            log::warn!("Unknown key {:?}", kc);
-                        }
+    fn poll_winit_events(&self) {
+        if self.wev_recv.is_empty() {
+            return;
+        }
+
+        while let Ok(wevent) = self.wev_recv.try_recv() {
+            use egui_winit::winit::event::{KeyEvent, WindowEvent};
+            use egui_winit::winit::keyboard::PhysicalKey;
+
+            if !self.ui_active {
+                continue;
+            }
+
+            match wevent {
+                WindowEvent::KeyboardInput {
+                    event:
+                        KeyEvent {
+                            physical_key: PhysicalKey::Code(kc),
+                            state,
+                            repeat: false,
+                            ..
+                        },
+                    ..
+                } => {
+                    if let Some(k) = map_winit_keycode(kc) {
+                        self.emu.update_key(k, state.is_pressed());
+                    } else {
+                        log::warn!("Unknown key {:?}", kc);
                     }
-                    _ => (),
                 }
+                _ => (),
             }
         }
     }
@@ -122,7 +141,49 @@ impl eframe::App for SnowGui {
         self.poll_winit_events();
         self.emu.poll();
 
+        self.ui_active = true;
+        // Error modal
+        let mut error_open = self.error_dialog_open;
+        egui::Window::new("Error")
+            .open(&mut error_open)
+            .collapsible(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui_material_icons::icons::ICON_WARNING);
+                    ui.label(&self.error_string);
+                });
+                ui.vertical_centered(|ui| {
+                    if ui.button("OK").clicked() {
+                        self.error_dialog_open = false;
+                    }
+                });
+            });
+        self.error_dialog_open &= error_open;
+        self.ui_active &= !self.error_dialog_open;
+
+        // ROM picker dialog
+        self.rom_dialog.update(ctx);
+        if let Some(path) = self.rom_dialog.take_picked() {
+            match self.emu.init_from_rom(&path) {
+                Ok(recv) => self.framebuffer.connect_receiver(recv),
+                Err(e) => self.show_error(&e),
+            }
+        }
+        self.ui_active &= self.rom_dialog.state() != egui_file_dialog::DialogState::Open;
+
+        // Floppy image picker dialog
+        self.floppy_dialog.update(ctx);
+        if let Some(path) = self.floppy_dialog.take_picked() {
+            self.emu.load_floppy(self.floppy_dialog_driveidx, &path);
+        }
+        self.ui_active &= self.floppy_dialog.state() != egui_file_dialog::DialogState::Open;
+
         egui::CentralPanel::default().show(ctx, |ui| {
+            if !self.ui_active {
+                ui.disable();
+            }
+
             // Menubar
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("Emulator", |ui| {
@@ -256,32 +317,21 @@ impl eframe::App for SnowGui {
             );
         });
 
-        // ROM picker dialog
-        self.rom_dialog.update(ctx);
-        if let Some(path) = self.rom_dialog.take_picked() {
-            let recv = self.emu.init_from_rom(&path).unwrap();
-            self.framebuffer.connect_receiver(recv);
-        }
-
-        // Floppy image picker dialog
-        self.floppy_dialog.update(ctx);
-        if let Some(path) = self.floppy_dialog.take_picked() {
-            self.emu.load_floppy(self.floppy_dialog_driveidx, &path);
-        }
-
         // Hide mouse over framebuffer
         // When using 'on_hover_and_drag_cursor' on the widget, the cursor still shows when the
         // mouse button is down, which is why this is done here.
-        if self.emu.is_running() && self.get_machine_mouse_pos(ctx).is_some() {
+        if self.ui_active && self.emu.is_running() && self.get_machine_mouse_pos(ctx).is_some() {
             ctx.set_cursor_icon(egui::CursorIcon::None);
         }
 
         // Re-render as soon as possible to keep the display updating
-        ctx.request_repaint();
+        if self.emu.is_running() {
+            ctx.request_repaint();
+        }
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        if ctx.wants_keyboard_input() {
+        if ctx.wants_keyboard_input() || !self.ui_active {
             return;
         }
 
