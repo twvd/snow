@@ -17,6 +17,7 @@ pub struct SnowGui {
     error_dialog_open: bool,
     error_string: String,
     ui_active: bool,
+    last_running: bool,
 
     emu: EmulatorState,
 }
@@ -46,25 +47,28 @@ impl SnowGui {
                     Arc::new(|p| p.extension().unwrap_or_default() == "rom"),
                 )
                 .default_file_filter("Macintosh ROM files (*.ROM)"),
-            floppy_dialog: FileDialog::new().add_file_filter(
-                &floppy_filter_str,
-                Arc::new(|p| {
-                    let ext = p
-                        .extension()
-                        .unwrap_or_default()
-                        .to_ascii_lowercase()
-                        .to_string_lossy()
-                        .to_string();
+            floppy_dialog: FileDialog::new()
+                .add_file_filter(
+                    &floppy_filter_str,
+                    Arc::new(|p| {
+                        let ext = p
+                            .extension()
+                            .unwrap_or_default()
+                            .to_ascii_lowercase()
+                            .to_string_lossy()
+                            .to_string();
 
-                    snow_floppy::loaders::ImageType::EXTENSIONS
-                        .into_iter()
-                        .any(|s| ext == s)
-                }),
-            ),
+                        snow_floppy::loaders::ImageType::EXTENSIONS
+                            .into_iter()
+                            .any(|s| ext == s)
+                    }),
+                )
+                .default_file_filter(&floppy_filter_str),
             floppy_dialog_driveidx: 0,
             error_dialog_open: false,
             error_string: String::new(),
             ui_active: true,
+            last_running: false,
 
             emu: EmulatorState::new(audio_enabled),
         };
@@ -134,12 +138,34 @@ impl SnowGui {
             Some(egui::Pos2::from([x, y]))
         }
     }
+
+    fn update_titlebar(&self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(
+            if let Some(m) = self.emu.get_model() {
+                format!(
+                    "Snow - {} ({})",
+                    m,
+                    if self.emu.is_running() {
+                        "running"
+                    } else {
+                        "stopped"
+                    }
+                )
+            } else {
+                "Snow".to_string()
+            },
+        ));
+    }
 }
 
 impl eframe::App for SnowGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_winit_events();
         self.emu.poll();
+        if self.last_running != self.emu.is_running() {
+            self.last_running = self.emu.is_running();
+            self.update_titlebar(ctx);
+        }
 
         self.ui_active = true;
         // Error modal
@@ -276,7 +302,7 @@ impl eframe::App for SnowGui {
 
                     if self.emu.is_running() {
                         if ui
-                            .add(egui::Button::new(egui_material_icons::icons::ICON_STOP))
+                            .add(egui::Button::new(egui_material_icons::icons::ICON_PAUSE))
                             .clicked()
                         {
                             self.emu.stop();
