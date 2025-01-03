@@ -1,5 +1,6 @@
 use crate::emulator::EmulatorState;
 use crate::keymap::map_winit_keycode;
+use crate::widgets::disassembly::Disassembly;
 use crate::widgets::framebuffer::FramebufferWidget;
 use eframe::egui;
 use egui_file_dialog::FileDialog;
@@ -124,6 +125,7 @@ impl SnowGui {
     }
 
     fn get_machine_mouse_pos(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
+        return self.framebuffer.hover_pos();
         let mouse_pos = ctx.pointer_latest_pos()?;
         let fbrect = self.framebuffer.rect();
         let scale = egui::Vec2::from([
@@ -341,6 +343,15 @@ impl eframe::App for SnowGui {
                 egui::Layout::centered_and_justified(egui::Direction::TopDown),
                 |ui| self.framebuffer.draw(ui),
             );
+
+            // Disassembly view
+            if self.emu.is_initialized() {
+                egui::Window::new("Disassembly")
+                    .resizable([true, true])
+                    .show(ctx, |ui| {
+                        ui.horizontal(|ui| Disassembly::new(self.emu.get_disassembly()).draw(ui));
+                    });
+            }
         });
 
         // Hide mouse over framebuffer
