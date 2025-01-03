@@ -257,4 +257,11 @@ impl EmulatorState {
                 .unwrap();
         }
     }
+
+    pub fn get_model(&self) -> Option<MacModel> {
+        let Some(ref status) = self.status else {
+            return None;
+        };
+        Some(status.model)
+    }
 }
