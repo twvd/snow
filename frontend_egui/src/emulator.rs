@@ -59,15 +59,13 @@ impl EmulatorState {
         let (mut emulator, frame_recv) = Emulator::new(rom, model)?;
         let cmd = emulator.create_cmd_sender();
         if !self.audio_enabled {
-            cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))
-                .unwrap();
+            cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
         } else if self.audiosink.is_none() {
             match SDLAudioSink::new(emulator.get_audio()) {
                 Ok(sink) => self.audiosink = Some(sink),
                 Err(e) => {
                     error!("Failed to initialize audio: {:?}", e);
-                    cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))
-                        .unwrap();
+                    cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
                 }
             }
         } else {

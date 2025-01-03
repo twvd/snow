@@ -200,7 +200,10 @@ impl Tickable for Emulator {
                     EmulatorCommand::MouseUpdateAbsolute { x, y } => {
                         self.cpu.bus.mouse_update_abs(x, y);
                     }
-                    EmulatorCommand::Quit => return Ok(0),
+                    EmulatorCommand::Quit => {
+                        info!("Emulator terminating");
+                        return Ok(0);
+                    }
                     EmulatorCommand::InsertFloppy(drive, filename) => {
                         let image = Autodetect::load_file(&filename);
                         match image {
