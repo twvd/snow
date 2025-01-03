@@ -1,6 +1,6 @@
 //! Emulator state management
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use crossbeam_channel::Receiver;
 use eframe::egui;
 use log::*;
@@ -25,9 +25,25 @@ pub struct EmulatorState {
     eventrecv: Option<EmulatorEventReceiver>,
     status: Option<EmulatorStatus>,
     audiosink: Option<AudioDevice<SDLAudioSink>>,
+    audio_enabled: bool,
 }
 
 impl EmulatorState {
+    pub fn new(audio_enabled: bool) -> Self {
+        Self {
+            audio_enabled,
+            ..Default::default()
+        }
+    }
+
+    pub fn init_from_rom(&mut self, filename: &Path) -> Result<Receiver<DisplayBuffer>> {
+        let rom = std::fs::read(filename)?;
+        self.init(
+            &rom,
+            MacModel::detect_from_rom(&rom).ok_or_else(|| anyhow!("Unsupported ROM file"))?,
+        )
+    }
+
     pub fn init(&mut self, rom: &[u8], model: MacModel) -> Result<Receiver<DisplayBuffer>> {
         // Terminate running emulator (if any)
         if let Some(emu_thread) = self.emuthread.take() {
@@ -42,7 +58,10 @@ impl EmulatorState {
         // Initialize emulator
         let (mut emulator, frame_recv) = Emulator::new(rom, model)?;
         let cmd = emulator.create_cmd_sender();
-        if self.audiosink.is_none() {
+        if !self.audio_enabled {
+            cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))
+                .unwrap();
+        } else if self.audiosink.is_none() {
             match SDLAudioSink::new(emulator.get_audio()) {
                 Ok(sink) => self.audiosink = Some(sink),
                 Err(e) => {
