@@ -5,8 +5,7 @@ use eframe::egui;
 use egui_file_dialog::FileDialog;
 use itertools::Itertools;
 use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
-use snow_core::mac::MacModel;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 pub struct SnowGui {
     wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
@@ -23,6 +22,8 @@ impl SnowGui {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
+        initial_rom_file: Option<String>,
+        audio_enabled: bool,
     ) -> Self {
         egui_material_icons::initialize(&cc.egui_ctx);
 
@@ -33,7 +34,7 @@ impl SnowGui {
                 .map(|e| format!("*.{}", e.to_ascii_uppercase()))
                 .join(", ")
         );
-        Self {
+        let mut app = Self {
             wev_recv,
             framebuffer: FramebufferWidget::new(cc),
             rom_dialog: FileDialog::new()
@@ -59,8 +60,15 @@ impl SnowGui {
             ),
             floppy_dialog_driveidx: 0,
 
-            emu: Default::default(),
+            emu: EmulatorState::new(audio_enabled),
+        };
+
+        if let Some(filename) = initial_rom_file {
+            let recv = app.emu.init_from_rom(Path::new(&filename)).unwrap();
+            app.framebuffer.connect_receiver(recv);
         }
+
+        app
     }
 
     fn poll_winit_events(&self) {
@@ -251,11 +259,7 @@ impl eframe::App for SnowGui {
         // ROM picker dialog
         self.rom_dialog.update(ctx);
         if let Some(path) = self.rom_dialog.take_picked() {
-            let rom = std::fs::read(path).unwrap();
-            let recv = self
-                .emu
-                .init(&rom, MacModel::detect_from_rom(&rom).unwrap())
-                .expect("Emulator initialization failed");
+            let recv = self.emu.init_from_rom(&path).unwrap();
             self.framebuffer.connect_receiver(recv);
         }
 

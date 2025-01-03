@@ -17,14 +17,17 @@ use log::LevelFilter;
     author = "Thomas <thomas@thomasw.dev>",
     long_about = None)]
 struct Args {
-    /// ROM filename to load.
-    rom_filename: String,
+    /// ROM filename to load on start
+    rom_filename: Option<String>,
 
-    /// Initial floppy disk image to load
-    floppy_filename: Option<String>,
+    /// Disable audio
+    #[arg(long, action)]
+    no_audio: bool,
 }
 
 fn main() -> eframe::Result {
+    let args = Args::parse();
+
     env_logger::builder()
         .filter_level(LevelFilter::Debug)
         .init();
@@ -43,6 +46,13 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Snow",
         options,
-        Box::new(|cc| Ok(Box::new(SnowGui::new(cc, r)))),
+        Box::new(|cc| {
+            Ok(Box::new(SnowGui::new(
+                cc,
+                r,
+                args.rom_filename,
+                !args.no_audio,
+            )))
+        }),
     )
 }
