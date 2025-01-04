@@ -127,6 +127,10 @@ impl SnowGui {
     }
 
     fn get_machine_mouse_pos(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
+        if !self.framebuffer.has_pointer() {
+            return None;
+        }
+
         let mouse_pos = ctx.pointer_latest_pos()?;
         let fbrect = self.framebuffer.rect();
         let scale = egui::Vec2::from([

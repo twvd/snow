@@ -13,8 +13,7 @@ pub struct FramebufferWidget {
     frame_recv: Option<Receiver<DisplayBuffer>>,
     viewport_texture: egui::TextureHandle,
 
-    /// Resulting position of the widget
-    rect: egui::Rect,
+    response: Option<egui::Response>,
 }
 
 impl FramebufferWidget {
@@ -26,7 +25,7 @@ impl FramebufferWidget {
                 egui::ColorImage::new([SCREEN_WIDTH, SCREEN_HEIGHT], egui::Color32::BLACK),
                 egui::TextureOptions::NEAREST,
             ),
-            rect: egui::Rect::from([egui::Pos2::new(0.0, 0.0), egui::Pos2::new(0.0, 0.0)]),
+            response: None,
         }
     }
 
@@ -54,7 +53,7 @@ impl FramebufferWidget {
         self.frame_recv = Some(recv);
     }
 
-    pub fn draw(&mut self, ui: &mut egui::Ui) {
+    pub fn draw(&mut self, ui: &mut egui::Ui) -> egui::Response {
         if let Some(ref frame_recv) = self.frame_recv {
             if !frame_recv.is_empty() {
                 let frame = frame_recv.recv().unwrap();
@@ -80,10 +79,16 @@ impl FramebufferWidget {
                 ))
                 .maintain_aspect_ratio(true),
         );
-        self.rect = response.rect;
+        self.response = Some(response.clone());
+        response
     }
 
     pub fn rect(&self) -> egui::Rect {
-        self.rect
+        self.response.as_ref().unwrap().rect
+    }
+
+    pub fn has_pointer(&self) -> bool {
+        let resp = self.response.as_ref().unwrap();
+        resp.contains_pointer()
     }
 }
