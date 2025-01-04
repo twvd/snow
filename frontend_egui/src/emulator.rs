@@ -1,10 +1,13 @@
 //! Emulator state management
 
+use crate::audio::SDLAudioSink;
 use anyhow::{anyhow, Result};
 use crossbeam_channel::Receiver;
 use eframe::egui;
 use log::*;
 use sdl2::audio::AudioDevice;
+use snow_core::bus::Address;
+use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
 use snow_core::emulator::comm::{EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus};
 use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus};
 use snow_core::emulator::Emulator;
@@ -16,7 +19,7 @@ use std::path::Path;
 use std::thread;
 use std::thread::JoinHandle;
 
-use crate::audio::SDLAudioSink;
+pub type DisassemblyListing = Vec<DisassemblyEntry>;
 
 #[derive(Default)]
 pub struct EmulatorState {
@@ -26,6 +29,8 @@ pub struct EmulatorState {
     status: Option<EmulatorStatus>,
     audiosink: Option<AudioDevice<SDLAudioSink>>,
     audio_enabled: bool,
+    disasm_address: Address,
+    disasm_code: DisassemblyListing,
 }
 
 impl EmulatorState {
@@ -157,7 +162,11 @@ impl EmulatorState {
                 EmulatorEvent::Status(s) => {
                     self.status = Some(*s);
                 }
-                EmulatorEvent::NextCode(_) => {}
+                EmulatorEvent::NextCode((address, code)) => {
+                    self.disasm_address = address;
+                    self.disasm_code =
+                        Vec::from_iter(Disassembler::from(&mut code.into_iter(), address));
+                }
             }
         }
     }
@@ -259,9 +268,16 @@ impl EmulatorState {
     }
 
     pub fn get_model(&self) -> Option<MacModel> {
-        let Some(ref status) = self.status else {
-            return None;
-        };
+        let status = self.status.as_ref()?;
         Some(status.model)
+    }
+
+    pub fn get_disassembly(&self) -> &DisassemblyListing {
+        &self.disasm_code
+    }
+
+    pub fn get_pc(&self) -> Option<Address> {
+        let status = self.status.as_ref()?;
+        Some(status.regs.pc)
     }
 }

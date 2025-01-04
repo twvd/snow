@@ -1,5 +1,6 @@
 use crate::emulator::EmulatorState;
 use crate::keymap::map_winit_keycode;
+use crate::widgets::disassembly::Disassembly;
 use crate::widgets::framebuffer::FramebufferWidget;
 use eframe::egui;
 use egui_file_dialog::FileDialog;
@@ -18,6 +19,7 @@ pub struct SnowGui {
     error_string: String,
     ui_active: bool,
     last_running: bool,
+    disassembly_open: bool,
 
     emu: EmulatorState,
 }
@@ -69,6 +71,7 @@ impl SnowGui {
             error_string: String::new(),
             ui_active: true,
             last_running: false,
+            disassembly_open: false,
 
             emu: EmulatorState::new(audio_enabled),
         };
@@ -281,6 +284,12 @@ impl eframe::App for SnowGui {
                         }
                     });
                 }
+                ui.menu_button("View", |ui| {
+                    if ui.button("Disassembly").clicked() {
+                        self.disassembly_open = !self.disassembly_open;
+                        ui.close_menu();
+                    }
+                });
             });
 
             // Toolbar
@@ -344,6 +353,19 @@ impl eframe::App for SnowGui {
                 }
                 self.framebuffer.draw(ui);
             });
+
+            // Disassembly view
+            if self.emu.is_initialized() {
+                egui::Window::new("Disassembly")
+                    .resizable([true, true])
+                    .open(&mut self.disassembly_open)
+                    .show(ctx, |ui| {
+                        ui.horizontal_top(|ui| {
+                            Disassembly::new(self.emu.get_disassembly(), self.emu.get_pc())
+                                .draw(ui);
+                        });
+                    });
+            }
         });
 
         // Hide mouse over framebuffer
@@ -354,9 +376,7 @@ impl eframe::App for SnowGui {
         }
 
         // Re-render as soon as possible to keep the display updating
-        if self.emu.is_running() {
-            ctx.request_repaint();
-        }
+        ctx.request_repaint();
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
