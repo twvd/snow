@@ -337,10 +337,13 @@ impl eframe::App for SnowGui {
             ui.separator();
 
             // Framebuffer display
-            ui.with_layout(
-                egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                |ui| self.framebuffer.draw(ui),
-            );
+            ui.vertical_centered(|ui| {
+                let padding_height = (ui.available_height() - self.framebuffer.max_height()) / 2.0;
+                if padding_height > 0.0 {
+                    ui.allocate_space(egui::Vec2::from([1.0, padding_height]));
+                }
+                self.framebuffer.draw(ui);
+            });
         });
 
         // Hide mouse over framebuffer

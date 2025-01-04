@@ -30,6 +30,10 @@ impl FramebufferWidget {
         }
     }
 
+    pub fn max_height(&self) -> f32 {
+        SCREEN_HEIGHT as f32 * 2.0
+    }
+
     #[inline(always)]
     fn convert_framebuffer(framebuffer: &DisplayBuffer) -> Vec<egui::Color32> {
         // TODO optimize this
