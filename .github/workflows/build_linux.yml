@@ -1,10 +1,10 @@
 name: Build - Linux x64
 
 on:
-  workflow_run:
-    workflows: [Checks and tests]
-    types:
-      - completed
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
 
 env:
   CARGO_TERM_COLOR: always
