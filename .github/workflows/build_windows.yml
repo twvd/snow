@@ -34,6 +34,7 @@ jobs:
         pacboy: >-
           rust:p
           SDL2:p
+          pkg-config:p
     - name: Build release
       run: cargo build --verbose --release
     - name: Create packaging directory
