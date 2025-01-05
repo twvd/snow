@@ -1,7 +1,7 @@
-use crate::emulator::EmulatorState;
 use crate::keymap::map_winit_keycode;
 use crate::widgets::disassembly::Disassembly;
 use crate::widgets::framebuffer::FramebufferWidget;
+use crate::{emulator::EmulatorState, widgets::registers::RegistersWidget};
 use eframe::egui;
 use egui_file_dialog::FileDialog;
 use itertools::Itertools;
@@ -12,6 +12,7 @@ pub struct SnowGui {
     wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
 
     framebuffer: FramebufferWidget,
+    registers: RegistersWidget,
     rom_dialog: FileDialog,
     floppy_dialog: FileDialog,
     floppy_dialog_driveidx: usize,
@@ -19,7 +20,9 @@ pub struct SnowGui {
     error_string: String,
     ui_active: bool,
     last_running: bool,
+
     disassembly_open: bool,
+    registers_open: bool,
 
     emu: EmulatorState,
 }
@@ -43,6 +46,7 @@ impl SnowGui {
         let mut app = Self {
             wev_recv,
             framebuffer: FramebufferWidget::new(cc),
+            registers: RegistersWidget::new(),
             rom_dialog: FileDialog::new()
                 .add_file_filter(
                     "Macintosh ROM files (*.ROM)",
@@ -71,7 +75,9 @@ impl SnowGui {
             error_string: String::new(),
             ui_active: true,
             last_running: false,
+
             disassembly_open: false,
+            registers_open: false,
 
             emu: EmulatorState::new(audio_enabled),
         };
@@ -168,10 +174,13 @@ impl SnowGui {
 impl eframe::App for SnowGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_winit_events();
-        self.emu.poll();
-        if self.last_running != self.emu.is_running() {
-            self.last_running = self.emu.is_running();
-            self.update_titlebar(ctx);
+        if self.emu.poll() {
+            // Change in emulator state
+            if self.last_running != self.emu.is_running() {
+                self.last_running = self.emu.is_running();
+                self.update_titlebar(ctx);
+            }
+            self.registers.update_regs(self.emu.get_regs().clone());
         }
 
         self.ui_active = true;
@@ -293,6 +302,10 @@ impl eframe::App for SnowGui {
                         self.disassembly_open = !self.disassembly_open;
                         ui.close_menu();
                     }
+                    if ui.button("Registers").clicked() {
+                        self.registers_open = !self.registers_open;
+                        ui.close_menu();
+                    }
                 });
             });
 
@@ -358,7 +371,7 @@ impl eframe::App for SnowGui {
                 self.framebuffer.draw(ui);
             });
 
-            // Disassembly view
+            // Debugger views
             if self.emu.is_initialized() {
                 egui::Window::new("Disassembly")
                     .resizable([true, true])
@@ -367,6 +380,17 @@ impl eframe::App for SnowGui {
                         ui.horizontal_top(|ui| {
                             Disassembly::new(self.emu.get_disassembly(), self.emu.get_pc())
                                 .draw(ui);
+                        });
+                    });
+
+                egui::Window::new("Registers")
+                    .resizable([true, true])
+                    .open(&mut self.registers_open)
+                    .default_width(300.0)
+                    .default_height(1000.0)
+                    .show(ctx, |ui| {
+                        ui.horizontal_top(|ui| {
+                            self.registers.draw(ui);
                         });
                     });
             }

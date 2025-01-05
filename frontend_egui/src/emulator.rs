@@ -8,6 +8,7 @@ use log::*;
 use sdl2::audio::AudioDevice;
 use snow_core::bus::Address;
 use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
+use snow_core::cpu_m68k::regs::RegisterFile;
 use snow_core::emulator::comm::{EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus};
 use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus};
 use snow_core::emulator::Emulator;
@@ -21,6 +22,7 @@ use std::thread::JoinHandle;
 
 pub type DisassemblyListing = Vec<DisassemblyEntry>;
 
+/// Manages the state of the emulator and feeds input to the GUI
 #[derive(Default)]
 pub struct EmulatorState {
     emuthread: Option<JoinHandle<()>>,
@@ -149,12 +151,13 @@ impl EmulatorState {
         }
     }
 
-    pub fn poll(&mut self) {
+    /// Polls and empties the emulator event channel. Returns `true` if events were received.
+    pub fn poll(&mut self) -> bool {
         let Some(ref eventrecv) = self.eventrecv else {
-            return;
+            return false;
         };
         if eventrecv.is_empty() {
-            return;
+            return false;
         }
 
         while let Ok(event) = eventrecv.try_recv() {
@@ -169,8 +172,11 @@ impl EmulatorState {
                 }
             }
         }
+
+        true
     }
 
+    /// Stops emulator execution
     pub fn stop(&self) {
         self.cmdsender
             .as_ref()
@@ -179,6 +185,7 @@ impl EmulatorState {
             .unwrap();
     }
 
+    /// Resumes emulator execution
     pub fn run(&self) {
         self.cmdsender
             .as_ref()
@@ -187,6 +194,7 @@ impl EmulatorState {
             .unwrap();
     }
 
+    /// Executes one CPU step
     pub fn step(&self) {
         self.cmdsender
             .as_ref()
@@ -195,6 +203,7 @@ impl EmulatorState {
             .unwrap();
     }
 
+    /// Returns a reference to floppy drive status for the requested drive.
     pub fn get_fdd_status(&self, drive: usize) -> Option<&FddStatus> {
         let status = self.status.as_ref()?;
         if status.fdd.len() < drive {
@@ -206,6 +215,7 @@ impl EmulatorState {
         Some(&status.fdd[drive])
     }
 
+    /// Gets a reference to the active SCSI hard drive array.
     pub fn get_hdds(&self) -> Option<&[Option<usize>]> {
         let status = self.status.as_ref()?;
         if !status.model.has_scsi() {
@@ -214,10 +224,12 @@ impl EmulatorState {
         Some(&status.hdd)
     }
 
+    /// Returns `true` if the emulator has been instansiated and loaded with a ROM.
     pub fn is_initialized(&self) -> bool {
         self.cmdsender.is_some()
     }
 
+    /// Returns `true` if the emulator is running (executing)
     pub fn is_running(&self) -> bool {
         if let Some(ref status) = self.status {
             status.running
@@ -226,6 +238,7 @@ impl EmulatorState {
         }
     }
 
+    /// Loads a floppy image from the specified path.
     pub fn load_floppy(&self, driveidx: usize, path: &Path) {
         let Some(ref sender) = self.cmdsender else {
             return;
@@ -239,6 +252,7 @@ impl EmulatorState {
             .unwrap();
     }
 
+    /// Returns `true` if emulator in fast-forward mode.
     pub fn is_fastforward(&self) -> bool {
         let Some(ref status) = self.status else {
             return false;
@@ -246,6 +260,7 @@ impl EmulatorState {
         status.speed == EmulatorSpeed::Uncapped
     }
 
+    /// Toggles emulator fast-forward mode.
     pub fn toggle_fastforward(&self) {
         let Some(ref status) = self.status else {
             return;
@@ -267,17 +282,26 @@ impl EmulatorState {
         }
     }
 
+    /// Returns the currently emulated Macintosh model
     pub fn get_model(&self) -> Option<MacModel> {
         let status = self.status.as_ref()?;
         Some(status.model)
     }
 
+    /// Returns current disassembly listing
     pub fn get_disassembly(&self) -> &DisassemblyListing {
         &self.disasm_code
     }
 
+    /// Returns program counter register
     pub fn get_pc(&self) -> Option<Address> {
         let status = self.status.as_ref()?;
         Some(status.regs.pc)
+    }
+
+    /// Returns a reference to current register file.
+    /// Panics if emulator not initialized.
+    pub fn get_regs(&self) -> &RegisterFile {
+        &self.status.as_ref().unwrap().regs
     }
 }
