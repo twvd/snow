@@ -12,6 +12,7 @@ use snow_core::renderer::DisplayBuffer;
 pub struct FramebufferWidget {
     frame_recv: Option<Receiver<DisplayBuffer>>,
     viewport_texture: egui::TextureHandle,
+    pub scale: f32,
 
     response: Option<egui::Response>,
 }
@@ -26,11 +27,12 @@ impl FramebufferWidget {
                 egui::TextureOptions::NEAREST,
             ),
             response: None,
+            scale: 1.5,
         }
     }
 
     pub fn max_height(&self) -> f32 {
-        SCREEN_HEIGHT as f32 * 2.0
+        SCREEN_HEIGHT as f32 * self.scale
     }
 
     #[inline(always)]
@@ -74,8 +76,8 @@ impl FramebufferWidget {
             egui::Image::new(sized_texture)
                 .fit_to_fraction(Vec2::new(1.0, 1.0))
                 .max_size(Vec2::new(
-                    (SCREEN_WIDTH * 2) as f32,
-                    (SCREEN_HEIGHT * 2) as f32,
+                    (SCREEN_WIDTH as f32) * self.scale,
+                    (SCREEN_HEIGHT as f32) * self.scale,
                 ))
                 .maintain_aspect_ratio(true),
         );

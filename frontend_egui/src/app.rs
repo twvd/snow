@@ -298,6 +298,12 @@ impl eframe::App for SnowGui {
                     });
                 }
                 ui.menu_button("View", |ui| {
+                    ui.add(
+                        egui::Slider::new(&mut self.framebuffer.scale, 0.5..=4.0)
+                            .text("Display scale"),
+                    );
+                    ui.separator();
+
                     if ui.button("Disassembly").clicked() {
                         self.disassembly_open = !self.disassembly_open;
                         ui.close_menu();
