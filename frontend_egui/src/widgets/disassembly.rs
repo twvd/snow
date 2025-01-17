@@ -20,13 +20,13 @@ impl<'a> Disassembly<'a> {
         TableBuilder::new(ui)
             .max_scroll_height(available_height)
             .column(Column::exact(20.0))
-            .column(Column::exact(80.0))
-            .column(Column::exact(120.0))
-            .column(Column::remainder().at_least(40.0))
+            .column(Column::exact(70.0))
+            .column(Column::exact(100.0))
+            .column(Column::initial(100.0))
             .striped(true)
             .body(|mut body| {
                 for c in self.code {
-                    body.row(20.0, |mut row| {
+                    body.row(18.0, |mut row| {
                         row.col(|ui| {
                             if self.pc == Some(c.addr) {
                                 ui.label(
