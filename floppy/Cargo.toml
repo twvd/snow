@@ -7,7 +7,7 @@ edition = "2021"
 anyhow = "1.0.86"
 binrw = "0.14.0"
 crc = "3.2.1"
-fluxfox = { git = "https://github.com/dbalsom/fluxfox.git", optional = true, rev = "c0557bf3b91ba8331e3e673e86570f029fe6f09f" }
+fluxfox = { git = "https://github.com/dbalsom/fluxfox.git", optional = true, rev = "6498fe59fd5a5cc4c1f2b7ee5ab795515c52febd", default-features = false, features = ["core", "archives", "viz", "mfi", "flux", "ibm_pc", "macintosh"] }
 log = "0.4.22"
 strum = { version = "0.26.3", features = ["derive"] }
 

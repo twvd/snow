@@ -21,21 +21,19 @@ impl Fluxfox {
 impl FloppyImageLoader for Fluxfox {
     fn load(data: &[u8], filename: Option<&str>) -> Result<FloppyImage> {
         let mut cursor = Cursor::new(data);
-        let mut image = DiskImage::load(&mut cursor, None, None, None)?;
+        let image = DiskImage::load(&mut cursor, None, None, None)?;
 
         let mut img = FloppyImage::new_empty(FloppyType::Mfm144M, filename.unwrap_or_default());
 
         // Fill tracks
-        // Below needs collect() because read_track_raw() borrows the DiskImage mutably
-        #[allow(clippy::needless_collect)]
-        for tch in image.track_ch_iter().collect::<Vec<_>>() {
+        for tch in image.track_ch_iter() {
             if tch.h() > 1 || tch.c() >= 80 {
                 log::warn!("Ignoring out of range tch: {:?}", tch);
                 continue;
             }
             let side = tch.h() as usize;
             let track = tch.c() as usize;
-            let trackdata = image.read_track_raw(tch, None)?;
+            let trackdata = image.track(tch).as_ref().unwrap().read_raw(None)?;
 
             img.origtracktype[side][track] = OriginalTrackType::Bitstream;
             img.set_actual_track_length(side, track, trackdata.read_len_bits);
