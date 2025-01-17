@@ -34,15 +34,26 @@ jobs:
         pacboy: >-
           rust:p
           SDL2:p
+          pkg-config:p
     - name: Build release
       run: cargo build --verbose --release
-    - name: Create packaging directory
-      run: mkdir snow
-    - name: Gather files
-      run: cp 'target/release/snow_frontend_tui.exe' '${{ steps.msys2.outputs.msys2-location }}/mingw64/bin/SDL2.dll' snow/
-    - name: Upload artifact
+    - name: TUI Create packaging directory
+      run: mkdir snow-tui
+    - name: TUI Gather files
+      run: cp 'target/release/snow_frontend_tui.exe' '${{ steps.msys2.outputs.msys2-location }}/mingw64/bin/SDL2.dll' snow-tui/
+    - name: TUI Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: 'snow-windows-x64-gha${{ github.run_number }}'
+        name: 'snow-windows-x64-tui-gha${{ github.run_number }}'
         if-no-files-found: error
-        path: snow/*
+        path: snow-tui/*
+    - name: GUI Create packaging directory
+      run: mkdir snow-gui
+    - name: GUI Gather files
+      run: cp 'target/release/snow_frontend_egui.exe' snow-gui/snow.exe
+    - name: GUI Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: 'snow-windows-x64-gui-gha${{ github.run_number }}'
+        if-no-files-found: error
+        path: snow-gui/*

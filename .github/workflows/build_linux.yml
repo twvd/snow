@@ -24,8 +24,13 @@ jobs:
       run: git submodule update --init --recursive
     - name: Build release
       run: cargo build --verbose --release
-    - name: Upload artifact
+    - name: TUI Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: 'snow-linux-x64-gha${{ github.run_number }}'
+        name: 'snow-linux-x64-tui-gha${{ github.run_number }}'
         path: target/release/snow_frontend_tui
+    - name: GUI Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: 'snow-linux-x64-gui-gha${{ github.run_number }}'
+        path: target/release/snow_frontend_egui

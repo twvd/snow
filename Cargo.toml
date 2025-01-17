@@ -1,7 +1,7 @@
 [workspace]
 resolver = '2'
 members = [
-    "core", "floppy",
+    "core", "floppy", "frontend_egui",
     "frontend_tui"
 ]
 
@@ -25,8 +25,11 @@ large_stack_frames = "deny"
 needless_pass_by_value = "deny"
 semicolon_if_nothing_returned = "deny"
 
-
 [profile.test]
 opt-level = 3
 debug = true
+
+[patch.crates-io]
+egui = { git = "https://github.com/twvd/egui.git", branch = "patch-0.30.0" }
+egui-winit = { git = "https://github.com/twvd/egui.git", branch = "patch-0.30.0" }
 
