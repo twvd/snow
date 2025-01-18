@@ -4,9 +4,10 @@
 use super::FloppyImageLoader;
 use crate::{FloppyImage, FloppyType, OriginalTrackType};
 
+use crate::flux::{FluxTicks, NS_PER_TICK};
 use anyhow::{bail, Context, Result};
 use binrw::io::Cursor;
-use fluxfox::prelude::TrackDataEncoding;
+use fluxfox::prelude::{TrackDataEncoding, TrackDataResolution};
 use fluxfox::types::DiskCh;
 use fluxfox::DiskImage;
 
@@ -54,13 +55,33 @@ impl FloppyImageLoader for Fluxfox {
             }
             let side = tch.h() as usize;
             let track = tch.c() as usize;
-            let trackdata = image.track(tch).as_ref().unwrap().read_raw(None)?;
+            let trackinfo = image.track(tch).as_ref().unwrap().info();
 
-            img.origtracktype[side][track] = OriginalTrackType::Bitstream;
-            img.set_actual_track_length(side, track, trackdata.read_len_bits);
+            match trackinfo.resolution {
+                TrackDataResolution::MetaSector | TrackDataResolution::BitStream => {
+                    let trackdata = image.track(tch).as_ref().unwrap().read_raw(None)?;
+                    img.origtracktype[side][track] = OriginalTrackType::Bitstream;
+                    img.set_actual_track_length(side, track, trackdata.read_len_bits);
+                    img.trackdata[side][track][0..trackdata.read_buf.len()]
+                        .copy_from_slice(&trackdata.read_buf);
+                }
+                TrackDataResolution::FluxStream => {
+                    log::info!("Flux track: {} {}", side, track);
 
-            img.trackdata[side][track][0..trackdata.read_buf.len()]
-                .copy_from_slice(&trackdata.read_buf);
+                    let fluxtrack = image
+                        .track(tch)
+                        .as_ref()
+                        .unwrap()
+                        .as_fluxstream_track()
+                        .unwrap();
+                    img.origtracktype[side][track] = OriginalTrackType::Flux;
+                    for delta in fluxtrack.raw_flux_iter() {
+                        let ticks = ((delta * 1000.0 * 1000.0 * 1000.0) / f64::from(NS_PER_TICK))
+                            as FluxTicks;
+                        img.push_flux(side, track, ticks);
+                    }
+                }
+            }
         }
 
         Ok(img)
