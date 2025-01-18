@@ -4,8 +4,10 @@
 use super::FloppyImageLoader;
 use crate::{FloppyImage, FloppyType, OriginalTrackType};
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use binrw::io::Cursor;
+use fluxfox::prelude::TrackDataEncoding;
+use fluxfox::types::DiskCh;
 use fluxfox::DiskImage;
 
 /// Fluxfox loader
@@ -23,7 +25,26 @@ impl FloppyImageLoader for Fluxfox {
         let mut cursor = Cursor::new(data);
         let image = DiskImage::load(&mut cursor, None, None, None)?;
 
-        let mut img = FloppyImage::new_empty(FloppyType::Mfm144M, filename.unwrap_or_default());
+        // We use track 0's type to determine the disk image type, as Snow still needs this information
+        // (FloppyType) internally. This does possibly prevent images with tracks of different formats
+        // from working, but I haven't encountered these yet (for Mac/PC).
+        let t0info = image
+            .track(DiskCh::new(0, 0))
+            .as_ref()
+            .context("Image has no track 0?")?
+            .info();
+        let floppytype = match (t0info.encoding, image.heads()) {
+            (TrackDataEncoding::Mfm, _) => FloppyType::Mfm144M,
+            (TrackDataEncoding::Gcr, 1) => FloppyType::Mac400K,
+            (TrackDataEncoding::Gcr, 2) => FloppyType::Mac800K,
+            _ => bail!(
+                "Unrecognized image encoding: {} ({} sides)",
+                t0info.encoding,
+                image.heads()
+            ),
+        };
+
+        let mut img = FloppyImage::new_empty(floppytype, filename.unwrap_or_default());
 
         // Fill tracks
         for tch in image.track_ch_iter() {
