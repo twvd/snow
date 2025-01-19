@@ -75,7 +75,7 @@ impl FloppyImageLoader for Fluxfox {
                         .as_fluxstream_track()
                         .unwrap();
                     img.origtracktype[side][track] = OriginalTrackType::Flux;
-                    for delta in fluxtrack.raw_flux_iter() {
+                    for delta in fluxtrack.flux_deltas() {
                         let ticks = ((delta * 1000.0 * 1000.0 * 1000.0) / f64::from(NS_PER_TICK))
                             as FluxTicks;
                         img.push_flux(side, track, ticks);
