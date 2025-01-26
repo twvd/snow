@@ -25,7 +25,8 @@ pub enum ImageType {
 }
 
 impl ImageType {
-    pub const EXTENSIONS: [&'static str; 7] = ["a2r", "moof", "dc42", "pfi", "pri", "raw", "img"];
+    pub const EXTENSIONS: [&'static str; 8] =
+        ["a2r", "moof", "dc42", "dsk", "pfi", "pri", "raw", "img"];
 
     pub fn as_friendly_str(&self) -> &'static str {
         match self {
@@ -47,9 +48,9 @@ pub struct Autodetect {}
 impl Autodetect {
     pub fn detect(data: &[u8]) -> Result<ImageType> {
         // MOOF
-        if data.len() >= 8 && data[0..8] == *b"MOOF\xFF\n\r\n" {
-            return Ok(ImageType::MOOF);
-        }
+        //if data.len() >= 8 && data[0..8] == *b"MOOF\xFF\n\r\n" {
+        //    return Ok(ImageType::MOOF);
+        //}
         // A2R v2
         if data.len() >= 8 && data[0..8] == *b"A2R2\xFF\n\r\n" {
             return Ok(ImageType::A2R2);
