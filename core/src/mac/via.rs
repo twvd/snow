@@ -388,8 +388,8 @@ impl BusMember<Address> for Via {
 
             // Timer 1 counter MSB
             0xEBFE => {
-                self.t1cnt.set_lsb(self.t1latch.lsb());
-                self.t1cnt.set_msb(val);
+                self.t1latch.set_msb(val);
+                self.t1cnt.0 = self.t1latch.0;
 
                 // Clear interrupt flag
                 self.ifr.set_t1(false);
