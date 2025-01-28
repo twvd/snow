@@ -252,6 +252,12 @@ impl eframe::App for SnowGui {
                             self.emu.step();
                             ui.close_menu();
                         }
+
+                        ui.separator();
+                        if ui.button("Programmers key").clicked() {
+                            self.emu.progkey();
+                            ui.close_menu();
+                        }
                     }
                 });
                 if self.emu.is_initialized() {

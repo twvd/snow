@@ -33,6 +33,7 @@ pub enum EmulatorCommand {
     ToggleBusTrace,
     CpuSetPC(u32),
     SetSpeed(EmulatorSpeed),
+    ProgKey,
 }
 
 /// Emulator speed tweak

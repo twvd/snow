@@ -304,4 +304,12 @@ impl EmulatorState {
     pub fn get_regs(&self) -> &RegisterFile {
         &self.status.as_ref().unwrap().regs
     }
+
+    pub fn progkey(&mut self) {
+        self.cmdsender
+            .as_ref()
+            .unwrap()
+            .send(EmulatorCommand::ProgKey)
+            .unwrap();
+    }
 }

@@ -71,6 +71,9 @@ pub struct MacBus<TRenderer: Renderer> {
 
     /// VPA/E-clock sync in progress
     vpa_sync: bool,
+
+    /// Programmer's key pressed
+    progkey_pressed: LatchingEvent,
 }
 
 impl<TRenderer> MacBus<TRenderer>
@@ -134,6 +137,7 @@ where
             last_audiosample: 0,
             vblank_time: Instant::now(),
             vpa_sync: false,
+            progkey_pressed: LatchingEvent::default(),
         };
 
         // Disable memory test
@@ -412,6 +416,11 @@ where
 
         false
     }
+
+    /// Programmer's key pressed
+    pub fn progkey(&mut self) {
+        self.progkey_pressed.set();
+    }
 }
 
 impl<TRenderer> Bus<Address, Byte> for MacBus<TRenderer>
@@ -557,6 +566,10 @@ where
     TRenderer: Renderer,
 {
     fn get_irq(&mut self) -> Option<u8> {
+        // Programmer's key
+        if self.progkey_pressed.get_clear() {
+            return Some(4);
+        }
         // VIA IRQs
         if self.via.ifr.0 & self.via.ier.0 != 0 {
             return Some(1);
