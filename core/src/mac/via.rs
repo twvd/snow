@@ -32,7 +32,7 @@ bitfield! {
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct RegisterA(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
         /// Sound volume
-        pub sound: u8 @ 0..2,
+        pub sound: u8 @ 0..=2,
 
         /// Sound buffer
         /// (true = main, false = alternate)
