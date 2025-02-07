@@ -32,9 +32,9 @@ impl RegistersWidget {
 
         TableBuilder::new(ui)
             .max_scroll_height(available_height)
-            .column(Column::exact(100.0))
-            .column(Column::remainder().at_least(120.0))
-            .column(Column::remainder().at_least(120.0))
+            .column(Column::exact(40.0))
+            .column(Column::remainder().at_least(50.0))
+            .column(Column::remainder().at_least(60.0))
             .striped(true)
             // TODO this gets messed up?
             //.header(20.0, |mut header| {

@@ -26,7 +26,7 @@ impl<'a> Disassembly<'a> {
             .striped(true)
             .body(|mut body| {
                 for c in self.code {
-                    body.row(18.0, |mut row| {
+                    body.row(12.0, |mut row| {
                         row.col(|ui| {
                             if self.pc == Some(c.addr) {
                                 ui.label(
@@ -40,20 +40,23 @@ impl<'a> Disassembly<'a> {
                         row.col(|ui| {
                             ui.label(
                                 egui::RichText::new(format!(":{:06X}", c.addr))
-                                    .family(egui::FontFamily::Monospace),
+                                    .family(egui::FontFamily::Monospace)
+                                    .size(10.0),
                             );
                         });
                         row.col(|ui| {
                             ui.label(
                                 egui::RichText::new(format!("{:<16}", c.raw_as_string()))
                                     .family(egui::FontFamily::Monospace)
+                                    .size(10.0)
                                     .color(egui::Color32::DARK_GRAY),
                             );
                         });
                         row.col(|ui| {
                             ui.label(
                                 egui::RichText::new(c.str.to_owned())
-                                    .family(egui::FontFamily::Monospace),
+                                    .family(egui::FontFamily::Monospace)
+                                    .size(10.0),
                             );
                         });
                     });

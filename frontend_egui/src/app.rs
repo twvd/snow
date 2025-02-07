@@ -23,6 +23,7 @@ pub struct SnowGui {
 
     disassembly_open: bool,
     registers_open: bool,
+    center_viewport_v: bool,
 
     emu: EmulatorState,
 }
@@ -78,6 +79,7 @@ impl SnowGui {
 
             disassembly_open: false,
             registers_open: false,
+            center_viewport_v: false,
 
             emu: EmulatorState::new(audio_enabled),
         };
@@ -308,6 +310,10 @@ impl eframe::App for SnowGui {
                         egui::Slider::new(&mut self.framebuffer.scale, 0.5..=4.0)
                             .text("Display scale"),
                     );
+                    ui.add(egui::Checkbox::new(
+                        &mut self.center_viewport_v,
+                        "Center display vertically",
+                    ));
                     ui.separator();
 
                     if ui.button("Disassembly").clicked() {
@@ -377,7 +383,7 @@ impl eframe::App for SnowGui {
             // Framebuffer display
             ui.vertical_centered(|ui| {
                 let padding_height = (ui.available_height() - self.framebuffer.max_height()) / 2.0;
-                if padding_height > 0.0 {
+                if padding_height > 0.0 && self.center_viewport_v {
                     ui.allocate_space(egui::Vec2::from([1.0, padding_height]));
                 }
                 self.framebuffer.draw(ui);
