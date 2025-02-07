@@ -1,4 +1,5 @@
 [workspace]
+default-members = ["frontend_egui"]
 resolver = '2'
 members = [
     "core", "floppy", "frontend_egui",
