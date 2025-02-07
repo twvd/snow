@@ -305,7 +305,7 @@ impl EmulatorState {
         &self.status.as_ref().unwrap().regs
     }
 
-    pub fn progkey(&mut self) {
+    pub fn progkey(&self) {
         self.cmdsender
             .as_ref()
             .unwrap()
