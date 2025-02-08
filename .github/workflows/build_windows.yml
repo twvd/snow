@@ -36,7 +36,7 @@ jobs:
           SDL2:p
           pkg-config:p
     - name: Build release
-      run: cargo build --verbose --release
+      run: cargo build --verbose --release --all
     - name: TUI Create packaging directory
       run: mkdir snow-tui
     - name: TUI Gather files

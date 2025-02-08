@@ -23,7 +23,7 @@ jobs:
     - name: Fetch submodules
       run: git submodule update --init --recursive
     - name: Build release
-      run: cargo build --verbose --release
+      run: cargo build --verbose --release --all
     - name: TUI Upload artifact
       uses: actions/upload-artifact@v4
       with:
