@@ -220,6 +220,15 @@ impl Tickable for Emulator {
                         }
                         self.status_update()?;
                     }
+                    EmulatorCommand::LoadHddImage(id, filename) => {
+                        match self.load_hdd_image(&filename, id) {
+                            Ok(_) => info!("SCSI ID #{}: image '{}' loaded", id, filename),
+                            Err(e) => {
+                                error!("SCSI ID #{}: cannot load image '{}': {}", id, filename, e);
+                            }
+                        };
+                        self.status_update()?;
+                    }
                     EmulatorCommand::SaveFloppy(drive, filename) => {
                         Bitfile::save_file(self.cpu.bus.swim.get_active_image(drive), &filename)?;
                         self.status_update()?;

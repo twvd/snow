@@ -14,6 +14,8 @@ pub struct SnowGui {
     framebuffer: FramebufferWidget,
     registers: RegistersWidget,
     rom_dialog: FileDialog,
+    hdd_dialog: FileDialog,
+    hdd_dialog_idx: usize,
     floppy_dialog: FileDialog,
     floppy_dialog_driveidx: usize,
     error_dialog_open: bool,
@@ -54,6 +56,13 @@ impl SnowGui {
                     Arc::new(|p| p.extension().unwrap_or_default() == "rom"),
                 )
                 .default_file_filter("Macintosh ROM files (*.ROM)"),
+            hdd_dialog: FileDialog::new()
+                .add_file_filter(
+                    "HDD images (*.IMG)",
+                    Arc::new(|p| p.extension().unwrap_or_default() == "img"),
+                )
+                .default_file_filter("Macintosh ROM files (*.ROM)"),
+            hdd_dialog_idx: 0,
             floppy_dialog: FileDialog::new()
                 .add_file_filter(
                     &floppy_filter_str,
@@ -223,6 +232,13 @@ impl eframe::App for SnowGui {
         }
         self.ui_active &= self.floppy_dialog.state() != egui_file_dialog::DialogState::Open;
 
+        // HDD image picker dialog
+        self.hdd_dialog.update(ctx);
+        if let Some(path) = self.hdd_dialog.take_picked() {
+            self.emu.load_hdd_image(self.hdd_dialog_idx, &path);
+        }
+        self.ui_active &= self.hdd_dialog.state() != egui_file_dialog::DialogState::Open;
+
         egui::CentralPanel::default().show(ctx, |ui| {
             if !self.ui_active {
                 ui.disable();
@@ -292,19 +308,26 @@ impl eframe::App for SnowGui {
                         if let Some(hdd) = self.emu.get_hdds() {
                             ui.separator();
                             for (i, sz) in hdd.iter().enumerate() {
-                                if ui
-                                    .button(format!(
-                                        "SCSI #{}: {}",
-                                        i,
-                                        if let Some(sz) = sz {
-                                            format!("{:0.2}MB", sz / 1024 / 1024)
-                                        } else {
-                                            "(no disk)".to_string()
+                                if let Some(sz) = sz {
+                                    // Disk loaded
+                                    if ui
+                                        .button(format!("SCSI #{}: {:0.2}MB", i, sz / 1024 / 1024))
+                                        .clicked()
+                                    {
+                                        ui.close_menu();
+                                    }
+                                } else {
+                                    // No disk
+                                    ui.menu_button(format!("SCSI #{}: (no disk)", i), |ui| {
+                                        //if ui.button("Create new image...").clicked() {
+                                        //    ui.close_menu();
+                                        //}
+                                        if ui.button("Load disk image...").clicked() {
+                                            self.hdd_dialog_idx = i;
+                                            self.hdd_dialog.pick_file();
+                                            ui.close_menu();
                                         }
-                                    ))
-                                    .clicked()
-                                {
-                                    ui.close_menu();
+                                    });
                                 }
                             }
                         }

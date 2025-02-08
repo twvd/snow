@@ -278,6 +278,20 @@ impl EmulatorState {
             .unwrap();
     }
 
+    /// Loads a SCSI HDD image from the specified path.
+    pub fn load_hdd_image(&self, idx: usize, path: &Path) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        sender
+            .send(EmulatorCommand::LoadHddImage(
+                idx,
+                path.to_string_lossy().to_string(),
+            ))
+            .unwrap();
+    }
+
     /// Returns `true` if emulator in fast-forward mode.
     pub fn is_fastforward(&self) -> bool {
         let Some(ref status) = self.status else {
