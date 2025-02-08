@@ -243,6 +243,14 @@ impl eframe::App for SnowGui {
                     if self.emu.is_initialized() {
                         ui.separator();
 
+                        if ui.button("Reset").clicked() {
+                            match self.emu.reset() {
+                                Ok(recv) => self.framebuffer.connect_receiver(recv),
+                                Err(e) => self.show_error(&e),
+                            }
+                            ui.close_menu();
+                        }
+
                         if self.emu.is_running() && ui.button("Stop").clicked() {
                             self.emu.stop();
                             ui.close_menu();
@@ -345,6 +353,17 @@ impl eframe::App for SnowGui {
                     ui.separator();
 
                     if self.emu.is_running() {
+                        if ui
+                            .add(egui::Button::new(
+                                egui_material_icons::icons::ICON_RESTART_ALT,
+                            ))
+                            .clicked()
+                        {
+                            match self.emu.reset() {
+                                Ok(recv) => self.framebuffer.connect_receiver(recv),
+                                Err(e) => self.show_error(&e),
+                            }
+                        }
                         if ui
                             .add(egui::Button::new(egui_material_icons::icons::ICON_PAUSE))
                             .clicked()

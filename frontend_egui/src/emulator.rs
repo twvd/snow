@@ -25,6 +25,7 @@ pub type DisassemblyListing = Vec<DisassemblyEntry>;
 /// Manages the state of the emulator and feeds input to the GUI
 #[derive(Default)]
 pub struct EmulatorState {
+    last_rom: Vec<u8>,
     emuthread: Option<JoinHandle<()>>,
     cmdsender: Option<EmulatorCommandSender>,
     eventrecv: Option<EmulatorEventReceiver>,
@@ -45,13 +46,10 @@ impl EmulatorState {
 
     pub fn init_from_rom(&mut self, filename: &Path) -> Result<Receiver<DisplayBuffer>> {
         let rom = std::fs::read(filename)?;
-        self.init(
-            &rom,
-            MacModel::detect_from_rom(&rom).ok_or_else(|| anyhow!("Unsupported ROM file"))?,
-        )
+        self.init(&rom)
     }
 
-    pub fn init(&mut self, rom: &[u8], model: MacModel) -> Result<Receiver<DisplayBuffer>> {
+    fn init(&mut self, rom: &[u8]) -> Result<Receiver<DisplayBuffer>> {
         // Terminate running emulator (if any)
         if let Some(emu_thread) = self.emuthread.take() {
             self.cmdsender
@@ -62,7 +60,11 @@ impl EmulatorState {
             emu_thread.join().unwrap();
         }
 
+        self.last_rom = rom.to_vec();
+
         // Initialize emulator
+        let model =
+            MacModel::detect_from_rom(rom).ok_or_else(|| anyhow!("Unsupported ROM file"))?;
         let (mut emulator, frame_recv) = Emulator::new(rom, model)?;
         let cmd = emulator.create_cmd_sender();
         if !self.audio_enabled {
@@ -96,6 +98,12 @@ impl EmulatorState {
         self.emuthread = Some(emuthread);
 
         Ok(frame_recv)
+    }
+
+    pub fn reset(&mut self) -> Result<Receiver<DisplayBuffer>> {
+        assert!(self.is_initialized());
+
+        self.init(&self.last_rom.to_owned())
     }
 
     pub fn update_mouse(&self, p: egui::Pos2) {
