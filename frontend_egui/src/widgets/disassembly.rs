@@ -19,10 +19,11 @@ impl<'a> Disassembly<'a> {
 
         TableBuilder::new(ui)
             .max_scroll_height(available_height)
+            .auto_shrink(false)
             .column(Column::exact(20.0))
             .column(Column::exact(70.0))
             .column(Column::exact(100.0))
-            .column(Column::initial(100.0))
+            .column(Column::initial(120.0))
             .striped(true)
             .body(|mut body| {
                 for c in self.code {
