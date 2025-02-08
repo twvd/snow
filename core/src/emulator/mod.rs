@@ -182,6 +182,10 @@ impl Emulator {
     pub fn get_audio(&self) -> AudioReceiver {
         self.cpu.bus.get_audio_channel()
     }
+
+    pub fn load_hdd_image(&mut self, filename: &str, scsi_id: usize) -> Result<()> {
+        self.cpu.bus.scsi.load_disk_at(filename, scsi_id)
+    }
 }
 
 impl Tickable for Emulator {

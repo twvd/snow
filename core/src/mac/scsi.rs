@@ -43,7 +43,7 @@
 use std::collections::VecDeque;
 use std::path::Path;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use log::*;
 #[cfg(feature = "mmap")]
@@ -321,17 +321,20 @@ impl ScsiController {
             cmdlen: 0,
             dataout_len: 0,
             status: 0,
-            disks: core::array::from_fn(|n| {
-                let filename = format!("hdd{}.img", n);
-                let r = Self::load_disk(&filename);
-                if r.is_some() {
-                    info!("SCSI ID {}: Enabled: loaded {}", n, filename);
-                } else {
-                    info!("SCSI ID {}: Disabled: cannot load {}", n, filename);
-                }
-                r
-            }),
+            disks: core::array::from_fn(|_| None),
         }
+    }
+
+    /// Loads a disk image (filename) at the given SCSI ID
+    pub fn load_disk_at(&mut self, filename: &str, scsi_id: usize) -> Result<()> {
+        if scsi_id >= Self::MAX_TARGETS {
+            bail!("SCSI ID out of range: {}", scsi_id);
+        }
+        if !Path::new(filename).exists() {
+            bail!("File {} does not exist", filename);
+        }
+        self.disks[scsi_id] = Some(Self::load_disk(filename).context("Error loading disk")?);
+        Ok(())
     }
 
     /// Translates a SCSI ID on the bus (bit position) to a numeric ID

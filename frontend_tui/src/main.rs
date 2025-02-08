@@ -131,6 +131,21 @@ fn main() -> Result<()> {
     }
     cmd.send(EmulatorCommand::SetSpeed(args.speed.into()))?;
 
+    // Try to auto-load HDD images
+    if model.has_scsi() {
+        for id in 0..7 {
+            let filename = format!("hdd{}.img", id);
+            match emulator.load_hdd_image(&filename, id) {
+                Ok(_) => {
+                    info!("SCSI ID #{}: auto-loaded image file {}", id, filename);
+                }
+                Err(e) => {
+                    info!("SCSI ID #{}: no image auto-loaded: {}", id, e);
+                }
+            }
+        }
+    }
+
     // Initialize audio
     let _audiodev = SDLAudioSink::new(emulator.get_audio())?;
 
