@@ -25,6 +25,7 @@ pub enum EmulatorCommand {
     },
     Run,
     Stop,
+    Reset,
     Step,
     ToggleBreakpoint(Address),
     BusWrite(Address, Vec<u8>),

@@ -225,6 +225,12 @@ impl Tickable for Emulator {
                         self.run = true;
                         self.status_update()?;
                     }
+                    EmulatorCommand::Reset => {
+                        self.cpu.reset()?;
+                        self.cpu.bus.reset()?;
+                        info!("Emulator reset");
+                        self.status_update()?;
+                    }
                     EmulatorCommand::Stop => {
                         info!("Stopped");
                         self.run = false;

@@ -100,10 +100,10 @@ impl EmulatorState {
         Ok(frame_recv)
     }
 
-    pub fn reset(&mut self) -> Result<Receiver<DisplayBuffer>> {
-        assert!(self.is_initialized());
-
-        self.init(&self.last_rom.to_owned())
+    pub fn reset(&self) {
+        if let Some(ref sender) = self.cmdsender {
+            sender.send(EmulatorCommand::Reset).unwrap();
+        }
     }
 
     pub fn update_mouse(&self, p: egui::Pos2) {
