@@ -28,9 +28,13 @@ struct Args {
 fn main() -> eframe::Result {
     let args = Args::parse();
 
-    env_logger::builder()
-        .filter_level(LevelFilter::Debug)
-        .init();
+    let logger_env = Box::new(
+        env_logger::builder()
+            .filter_level(LevelFilter::Debug)
+            .build(),
+    );
+    let logger_egui = Box::new(egui_logger::builder().max_level(LevelFilter::Debug).build());
+    multi_log::MultiLogger::init(vec![logger_env, logger_egui], log::Level::Debug).unwrap();
 
     // The egui frontend uses a patched version of egui-winit that allows hooking
     // into the winit WindowEvent stream in order to capture raw keyboard events.

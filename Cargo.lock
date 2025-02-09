@@ -1335,6 +1335,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_logger"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3eee84b0b39f308f08b96b9710bb96c04d69eed7c66085fc98084d0e54890b8"
+dependencies = [
+ "chrono",
+ "egui",
+ "hashbrown",
+ "log",
+ "regex",
+]
+
+[[package]]
 name = "egui_material_icons"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2408,6 +2421,15 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys 0.48.0",
+]
+
+[[package]]
+name = "multi_log"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad56bb3c7c7c15b4e25de86c9123e886e5f80a0c03ace219b453b081c2bf20d7"
+dependencies = [
+ "log",
 ]
 
 [[package]]
@@ -3522,10 +3544,12 @@ dependencies = [
  "egui-file-dialog",
  "egui-winit",
  "egui_extras",
+ "egui_logger",
  "egui_material_icons",
  "env_logger",
  "itertools 0.14.0",
  "log",
+ "multi_log",
  "sdl2",
  "snow_core",
  "snow_floppy",

@@ -22,6 +22,7 @@ pub struct SnowGui {
     error_string: String,
     ui_active: bool,
     last_running: bool,
+    log_open: bool,
 
     disassembly_open: bool,
     registers_open: bool,
@@ -85,6 +86,7 @@ impl SnowGui {
             error_string: String::new(),
             ui_active: true,
             last_running: false,
+            log_open: false,
 
             disassembly_open: false,
             registers_open: false,
@@ -215,6 +217,14 @@ impl eframe::App for SnowGui {
         self.error_dialog_open &= error_open;
         self.ui_active &= !self.error_dialog_open;
 
+        // Log window
+        egui::Window::new("Log")
+            .open(&mut self.log_open)
+            .show(ctx, |ui| {
+                egui_logger::logger_ui().show(ui);
+                ui.allocate_space(ui.available_size());
+            });
+
         // ROM picker dialog
         self.rom_dialog.update(ctx);
         if let Some(path) = self.rom_dialog.take_picked() {
@@ -342,8 +352,14 @@ impl eframe::App for SnowGui {
                         &mut self.center_viewport_v,
                         "Center display vertically",
                     ));
-                    ui.separator();
 
+                    ui.separator();
+                    if ui.button("Log").clicked() {
+                        self.log_open = !self.log_open;
+                        ui.close_menu();
+                    }
+
+                    ui.separator();
                     if ui.button("Disassembly").clicked() {
                         self.disassembly_open = !self.disassembly_open;
                         ui.close_menu();
