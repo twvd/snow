@@ -476,11 +476,14 @@ where
     }
 
     fn reset(&mut self) -> Result<()> {
-        self.via = Via::new(self.model);
+        self.ram.fill(0);
+
+        // Take the ADB transceiver out because that contains crossbeam channels..
+        let oldadb = std::mem::replace(&mut self.via, Via::new(self.model)).adb;
+        let _ = std::mem::replace(&mut self.via.adb, oldadb);
+
         self.scc = Scc::new();
-        if self.model <= MacModel::Plus {
-            self.overlay = true;
-        }
+        self.overlay = true;
         Ok(())
     }
 }

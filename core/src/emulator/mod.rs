@@ -239,8 +239,11 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     EmulatorCommand::Reset => {
-                        self.cpu.reset()?;
+                        // Reset bus first so VIA comes back into overlay mode before resetting the CPU
+                        // otherwise the wrong reset vector is loaded.
                         self.cpu.bus.reset()?;
+                        self.cpu.reset()?;
+
                         info!("Emulator reset");
                         self.status_update()?;
                     }

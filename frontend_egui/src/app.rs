@@ -387,16 +387,16 @@ impl eframe::App for SnowGui {
                 }
                 if self.emu.is_initialized() {
                     ui.separator();
+                    if ui
+                        .add(egui::Button::new(
+                            egui_material_icons::icons::ICON_RESTART_ALT,
+                        ))
+                        .clicked()
+                    {
+                        self.emu.reset();
+                    }
 
                     if self.emu.is_running() {
-                        if ui
-                            .add(egui::Button::new(
-                                egui_material_icons::icons::ICON_RESTART_ALT,
-                            ))
-                            .clicked()
-                        {
-                            self.emu.reset();
-                        }
                         if ui
                             .add(egui::Button::new(egui_material_icons::icons::ICON_PAUSE))
                             .clicked()
