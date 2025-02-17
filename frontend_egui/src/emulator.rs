@@ -115,6 +115,11 @@ impl EmulatorState {
         self.cmdsender = Some(cmd);
         self.emuthread = Some(emuthread);
 
+        // Wait for emulator to produce events and then empty the event queue once to update the
+        // GUI status.
+        while !self.poll() {}
+        while self.poll() {}
+
         Ok(frame_recv)
     }
 

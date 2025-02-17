@@ -232,6 +232,7 @@ impl eframe::App for SnowGui {
                 Ok(recv) => self.framebuffer.connect_receiver(recv),
                 Err(e) => self.show_error(&e),
             }
+            self.update_titlebar(ctx);
         }
         self.ui_active &= self.rom_dialog.state() != egui_file_dialog::DialogState::Open;
 
