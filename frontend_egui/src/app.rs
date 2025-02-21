@@ -1,4 +1,5 @@
 use crate::keymap::map_winit_keycode;
+use crate::widgets::breakpoints::BreakpointsWidget;
 use crate::widgets::disassembly::Disassembly;
 use crate::widgets::framebuffer::FramebufferWidget;
 use crate::{emulator::EmulatorState, widgets::registers::RegistersWidget};
@@ -13,6 +14,8 @@ pub struct SnowGui {
 
     framebuffer: FramebufferWidget,
     registers: RegistersWidget,
+    breakpoints: BreakpointsWidget,
+
     rom_dialog: FileDialog,
     hdd_dialog: FileDialog,
     hdd_dialog_idx: usize,
@@ -22,10 +25,12 @@ pub struct SnowGui {
     error_string: String,
     ui_active: bool,
     last_running: bool,
-    log_open: bool,
 
+    log_open: bool,
     disassembly_open: bool,
     registers_open: bool,
+    breakpoints_open: bool,
+
     center_viewport_v: bool,
 
     emu: EmulatorState,
@@ -51,6 +56,8 @@ impl SnowGui {
             wev_recv,
             framebuffer: FramebufferWidget::new(cc),
             registers: RegistersWidget::new(),
+            breakpoints: BreakpointsWidget::new(),
+
             rom_dialog: FileDialog::new()
                 .add_file_filter(
                     "Macintosh ROM files (*.ROM)",
@@ -86,10 +93,12 @@ impl SnowGui {
             error_string: String::new(),
             ui_active: true,
             last_running: false,
-            log_open: false,
 
+            log_open: false,
             disassembly_open: false,
             registers_open: false,
+            breakpoints_open: false,
+
             center_viewport_v: false,
 
             emu: EmulatorState::new(audio_enabled),
@@ -369,6 +378,10 @@ impl eframe::App for SnowGui {
                         self.registers_open = !self.registers_open;
                         ui.close_menu();
                     }
+                    if ui.button("Breakpoints").clicked() {
+                        self.breakpoints_open = !self.breakpoints_open;
+                        ui.close_menu();
+                    }
                 });
             });
 
@@ -449,8 +462,7 @@ impl eframe::App for SnowGui {
                     .open(&mut self.disassembly_open)
                     .show(ctx, |ui| {
                         ui.horizontal_top(|ui| {
-                            Disassembly::new(self.emu.get_disassembly(), self.emu.get_pc())
-                                .draw(ui);
+                            Disassembly::new().draw(ui, &self.emu);
                         });
                     });
 
@@ -462,6 +474,17 @@ impl eframe::App for SnowGui {
                     .show(ctx, |ui| {
                         ui.horizontal_top(|ui| {
                             self.registers.draw(ui);
+                        });
+                    });
+
+                egui::Window::new("Breakpoints")
+                    .resizable([true, true])
+                    .open(&mut self.breakpoints_open)
+                    .default_width(300.0)
+                    .default_height(200.0)
+                    .show(ctx, |ui| {
+                        ui.horizontal_top(|ui| {
+                            self.breakpoints.draw(ui, &self.emu);
                         });
                     });
             }

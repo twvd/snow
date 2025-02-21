@@ -357,4 +357,19 @@ impl EmulatorState {
             .send(EmulatorCommand::ProgKey)
             .unwrap();
     }
+
+    pub fn get_breakpoints(&self) -> &[Address] {
+        let Some(ref status) = self.status else {
+            return &[];
+        };
+        &status.breakpoints
+    }
+
+    pub fn toggle_breakpoint(&self, addr: Address) {
+        self.cmdsender
+            .as_ref()
+            .unwrap()
+            .send(EmulatorCommand::ToggleBreakpoint(addr))
+            .unwrap();
+    }
 }
