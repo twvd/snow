@@ -128,7 +128,7 @@ impl Swim {
     fn ism_mfm_decode(mfm: u16) -> u8 {
         let mut out = 0;
         for i in 0..8 {
-            if mfm & 1 << (i * 2) != 0 {
+            if mfm & (1 << (i * 2)) != 0 {
                 out |= 1 << i;
             }
         }
