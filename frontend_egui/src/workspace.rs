@@ -12,12 +12,14 @@ use serde::{Deserialize, Serialize};
 /// part of it. It can be used to re-construct a previously running
 /// emulator.
 #[derive(Default, Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
 pub struct Workspace {
     pub log_open: bool,
     pub disassembly_open: bool,
     pub registers_open: bool,
     pub breakpoints_open: bool,
     pub center_viewport_v: bool,
+    pub viewport_scale: f32,
 }
 
 impl Workspace {
