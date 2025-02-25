@@ -93,11 +93,11 @@ impl Widget for StatusWidget<'_> {
                 |(i, d)| {
                     Line::from(vec![
                         Span::from(format!(" #{} ", i)).style(Style::default().blue().bold()),
-                        if let Some(capacity) = d {
+                        if let Some(d) = d {
                             Span::from(format!(
-                                "hdd{}.img ({:0.1} MB)",
-                                i,
-                                (*capacity as f64) / 1024.0 / 1024.0
+                                "{} ({:0.1} MB)",
+                                d.image.file_name().unwrap_or_default().to_string_lossy(),
+                                (d.capacity as f64) / 1024.0 / 1024.0
                             ))
                         } else {
                             Span::from("not present").dark_gray()

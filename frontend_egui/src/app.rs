@@ -415,11 +415,19 @@ impl eframe::App for SnowGui {
                         }
                         if let Some(hdd) = self.emu.get_hdds() {
                             ui.separator();
-                            for (i, sz) in hdd.iter().enumerate() {
-                                if let Some(sz) = sz {
+                            for (i, disk) in hdd.iter().enumerate() {
+                                if let Some(disk) = disk {
                                     // Disk loaded
                                     if ui
-                                        .button(format!("SCSI #{}: {:0.2}MB", i, sz / 1024 / 1024))
+                                        .button(format!(
+                                            "SCSI #{}: {} ({:0.2}MB)",
+                                            i,
+                                            disk.image
+                                                .file_name()
+                                                .unwrap_or_default()
+                                                .to_string_lossy(),
+                                            disk.capacity / 1024 / 1024
+                                        ))
                                         .clicked()
                                     {
                                         ui.close_menu();

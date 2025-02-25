@@ -23,7 +23,7 @@ use log::*;
 
 use comm::{
     EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver, EmulatorStatus,
-    FddStatus,
+    FddStatus, HddStatus,
 };
 
 /// Emulator runner
@@ -121,7 +121,16 @@ impl Emulator {
                     image_title: self.cpu.bus.swim.drives[i].floppy.get_title().to_owned(),
                 }),
                 model: self.model,
-                hdd: core::array::from_fn(|i| self.cpu.bus.scsi.get_disk_capacity(i)),
+                hdd: core::array::from_fn(|i| {
+                    self.cpu
+                        .bus
+                        .scsi
+                        .get_disk_capacity(i)
+                        .map(|capacity| HddStatus {
+                            capacity,
+                            image: self.cpu.bus.scsi.get_disk_imagefn(i).unwrap().to_owned(),
+                        })
+                }),
                 speed: self.cpu.bus.speed,
             })))?;
 
