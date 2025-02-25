@@ -201,6 +201,27 @@ impl SnowGui {
             },
         ));
     }
+
+    fn load_rom_from_path(&mut self, path: &Path) {
+        match self.emu.init_from_rom(path) {
+            Ok(recv) => self.framebuffer.connect_receiver(recv),
+            Err(e) => self.show_error(&e),
+        }
+        self.workspace.rom_path = Some(path.to_path_buf());
+    }
+
+    fn load_workspace_from_path(&mut self, path: &Path) {
+        match Workspace::from_file(path) {
+            Ok(ws) => {
+                self.workspace = ws;
+                if let Some(rompath) = &self.workspace.rom_path {
+                    // Needs clone for borrow checker..
+                    self.load_rom_from_path(&rompath.clone());
+                }
+            }
+            Err(e) => self.show_error(&format!("Failed to load workspace: {}", e)),
+        }
+    }
 }
 
 impl eframe::App for SnowGui {
@@ -247,10 +268,7 @@ impl eframe::App for SnowGui {
         // ROM picker dialog
         self.rom_dialog.update(ctx);
         if let Some(path) = self.rom_dialog.take_picked() {
-            match self.emu.init_from_rom(&path) {
-                Ok(recv) => self.framebuffer.connect_receiver(recv),
-                Err(e) => self.show_error(&e),
-            }
+            self.load_rom_from_path(&path);
             self.update_titlebar(ctx);
         }
         self.ui_active &= self.rom_dialog.state() != egui_file_dialog::DialogState::Open;
@@ -275,7 +293,6 @@ impl eframe::App for SnowGui {
             self.workspace_file = Some(path.clone());
             self.workspace_dialog.config_mut().default_file_name =
                 path.to_string_lossy().to_string();
-            self.update_titlebar(ctx);
 
             if self.workspace_dialog.mode() == egui_file_dialog::DialogMode::SaveFile {
                 // 'Save workspace' / 'Save workspace as...'
@@ -296,11 +313,10 @@ impl eframe::App for SnowGui {
                 }
             } else {
                 // 'Load workspace...'
-                match Workspace::from_file(&path) {
-                    Ok(ws) => self.workspace = ws,
-                    Err(e) => self.show_error(&format!("Failed to load workspace: {}", e)),
-                }
+                self.load_workspace_from_path(&path);
             }
+
+            self.update_titlebar(ctx);
         }
         self.ui_active &= self.workspace_dialog.state() != egui_file_dialog::DialogState::Open;
 

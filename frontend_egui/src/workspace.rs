@@ -1,4 +1,6 @@
-use std::{fs::File, io::BufReader, path::Path};
+use std::fs::File;
+use std::io::BufReader;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -20,6 +22,9 @@ pub struct Workspace {
     pub breakpoints_open: bool,
     pub center_viewport_v: bool,
     pub viewport_scale: f32,
+
+    /// Last opened Mac ROM
+    pub rom_path: Option<PathBuf>,
 }
 
 impl Workspace {
