@@ -9,7 +9,9 @@ use sdl2::audio::AudioDevice;
 use snow_core::bus::Address;
 use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
 use snow_core::cpu_m68k::regs::RegisterFile;
-use snow_core::emulator::comm::{EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus};
+use snow_core::emulator::comm::{
+    EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus, HddStatus,
+};
 use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus};
 use snow_core::emulator::Emulator;
 use snow_core::keymap::Scancode;
@@ -247,7 +249,7 @@ impl EmulatorState {
     }
 
     /// Gets a reference to the active SCSI hard drive array.
-    pub fn get_hdds(&self) -> Option<&[Option<usize>]> {
+    pub fn get_hdds(&self) -> Option<&[Option<HddStatus>]> {
         let status = self.status.as_ref()?;
         if !status.model.has_scsi() {
             return None;

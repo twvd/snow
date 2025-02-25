@@ -42,6 +42,7 @@
 
 use std::collections::VecDeque;
 use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 
@@ -219,6 +220,9 @@ pub struct ScsiController {
 
     #[cfg(not(feature = "mmap"))]
     disks: [Option<Vec<u8>>; Self::MAX_TARGETS],
+
+    /// Disk image paths
+    disk_paths: [Option<PathBuf>; Self::MAX_TARGETS],
 }
 
 impl ScsiController {
@@ -231,6 +235,11 @@ impl ScsiController {
     /// Returns the capacity of an emulated disk or None if not present.
     pub fn get_disk_capacity(&self, id: usize) -> Option<usize> {
         Some(self.disks[id].as_ref()?.len())
+    }
+
+    /// Returns the image filename of an emulated disk
+    pub fn get_disk_imagefn(&self, id: usize) -> Option<&Path> {
+        self.disk_paths[id].as_deref()
     }
 
     /// Try to load a disk image, given the filename of the image.
@@ -321,7 +330,10 @@ impl ScsiController {
             cmdlen: 0,
             dataout_len: 0,
             status: 0,
-            disks: core::array::from_fn(|_| None),
+            disks: Default::default(),
+
+            #[cfg(feature = "mmap")]
+            disk_paths: Default::default(),
         }
     }
 
@@ -334,6 +346,7 @@ impl ScsiController {
             bail!("File {} does not exist", filename);
         }
         self.disks[scsi_id] = Some(Self::load_disk(filename).context("Error loading disk")?);
+        self.disk_paths[scsi_id] = Some(PathBuf::from(filename));
         Ok(())
     }
 

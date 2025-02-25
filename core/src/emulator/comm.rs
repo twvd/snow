@@ -1,5 +1,7 @@
 //! Communication between emulator and frontend
 
+use std::path::PathBuf;
+
 use crate::bus::Address;
 use crate::cpu_m68k::regs::RegisterFile;
 use crate::keymap::KeyEvent;
@@ -62,7 +64,13 @@ pub struct EmulatorStatus {
     pub fdd: [FddStatus; 3],
     pub model: MacModel,
     pub speed: EmulatorSpeed,
-    pub hdd: [Option<usize>; 7],
+    pub hdd: [Option<HddStatus>; 7],
+}
+
+#[derive(Debug)]
+pub struct HddStatus {
+    pub image: PathBuf,
+    pub capacity: usize,
 }
 
 #[derive(Debug)]
