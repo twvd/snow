@@ -5,6 +5,7 @@ mod audio;
 mod emulator;
 mod keymap;
 mod widgets;
+mod workspace;
 
 use crate::app::SnowGui;
 use clap::Parser;
