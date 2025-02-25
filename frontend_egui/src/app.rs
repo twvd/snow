@@ -427,7 +427,7 @@ impl eframe::App for SnowGui {
                 }
                 ui.menu_button("View", |ui| {
                     ui.add(
-                        egui::Slider::new(&mut self.framebuffer.scale, 0.5..=4.0)
+                        egui::Slider::new(&mut self.workspace.viewport_scale, 0.5..=4.0)
                             .text("Display scale"),
                     );
                     ui.add(egui::Checkbox::new(
@@ -519,6 +519,7 @@ impl eframe::App for SnowGui {
             ui.separator();
 
             // Framebuffer display
+            self.framebuffer.scale = self.workspace.viewport_scale;
             ui.vertical_centered(|ui| {
                 let padding_height = (ui.available_height() - self.framebuffer.max_height()) / 2.0;
                 if padding_height > 0.0 && self.workspace.center_viewport_v {
