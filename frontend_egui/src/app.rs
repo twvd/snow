@@ -2,14 +2,19 @@ use crate::keymap::map_winit_keycode;
 use crate::widgets::breakpoints::BreakpointsWidget;
 use crate::widgets::disassembly::Disassembly;
 use crate::widgets::framebuffer::FramebufferWidget;
+use crate::workspace::Workspace;
 use crate::{emulator::EmulatorState, widgets::registers::RegistersWidget};
 use eframe::egui;
 use egui_file_dialog::FileDialog;
 use itertools::Itertools;
 use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
-use std::{path::Path, sync::Arc};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub struct SnowGui {
+    workspace: Workspace,
+    workspace_file: Option<PathBuf>,
+
     wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
 
     framebuffer: FramebufferWidget,
@@ -18,6 +23,7 @@ pub struct SnowGui {
 
     rom_dialog: FileDialog,
     hdd_dialog: FileDialog,
+    workspace_dialog: FileDialog,
     hdd_dialog_idx: usize,
     floppy_dialog: FileDialog,
     floppy_dialog_driveidx: usize,
@@ -25,13 +31,6 @@ pub struct SnowGui {
     error_string: String,
     ui_active: bool,
     last_running: bool,
-
-    log_open: bool,
-    disassembly_open: bool,
-    registers_open: bool,
-    breakpoints_open: bool,
-
-    center_viewport_v: bool,
 
     emu: EmulatorState,
 }
@@ -53,6 +52,9 @@ impl SnowGui {
                 .join(", ")
         );
         let mut app = Self {
+            workspace: Default::default(),
+            workspace_file: None,
+
             wev_recv,
             framebuffer: FramebufferWidget::new(cc),
             registers: RegistersWidget::new(),
@@ -89,17 +91,20 @@ impl SnowGui {
                 )
                 .default_file_filter(&floppy_filter_str),
             floppy_dialog_driveidx: 0,
+            workspace_dialog: FileDialog::new()
+                .add_file_filter(
+                    "Snow workspace (*.SNOWW)",
+                    Arc::new(|p| {
+                        p.extension()
+                            .unwrap_or_default()
+                            .eq_ignore_ascii_case("snoww")
+                    }),
+                )
+                .default_file_filter("Snow workspace (*.SNOWW)"),
             error_dialog_open: false,
             error_string: String::new(),
             ui_active: true,
             last_running: false,
-
-            log_open: false,
-            disassembly_open: false,
-            registers_open: false,
-            breakpoints_open: false,
-
-            center_viewport_v: false,
 
             emu: EmulatorState::new(audio_enabled),
         };
@@ -178,7 +183,12 @@ impl SnowGui {
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(
             if let Some(m) = self.emu.get_model() {
                 format!(
-                    "Snow - {} ({})",
+                    "Snow - {} - {} ({})",
+                    self.workspace_file
+                        .as_ref()
+                        .and_then(|v| v.file_stem())
+                        .map(|v| v.to_string_lossy())
+                        .unwrap_or(std::borrow::Cow::Borrowed("Untitled workspace")),
                     m,
                     if self.emu.is_running() {
                         "running"
@@ -228,7 +238,7 @@ impl eframe::App for SnowGui {
 
         // Log window
         egui::Window::new("Log")
-            .open(&mut self.log_open)
+            .open(&mut self.workspace.log_open)
             .show(ctx, |ui| {
                 egui_logger::logger_ui().show(ui);
                 ui.allocate_space(ui.available_size());
@@ -259,6 +269,41 @@ impl eframe::App for SnowGui {
         }
         self.ui_active &= self.hdd_dialog.state() != egui_file_dialog::DialogState::Open;
 
+        // Workspace picker dialog
+        self.workspace_dialog.update(ctx);
+        if let Some(mut path) = self.workspace_dialog.take_picked() {
+            self.workspace_file = Some(path.clone());
+            self.workspace_dialog.config_mut().default_file_name =
+                path.to_string_lossy().to_string();
+            self.update_titlebar(ctx);
+
+            if self.workspace_dialog.mode() == egui_file_dialog::DialogMode::SaveFile {
+                // 'Save workspace' / 'Save workspace as...'
+
+                // Add the extension if the user neglected to add the correct one.
+                // Also see https://github.com/fluxxcode/egui-file-dialog/issues/138
+                if !path
+                    .extension()
+                    .unwrap_or_default()
+                    .eq_ignore_ascii_case("snoww")
+                {
+                    let mut osstr = path.into_os_string();
+                    osstr.push(".snoww");
+                    path = osstr.into();
+                }
+                if let Err(e) = self.workspace.to_file(&path) {
+                    self.show_error(&format!("Failed to save workspace: {}", e));
+                }
+            } else {
+                // 'Load workspace...'
+                match Workspace::from_file(&path) {
+                    Ok(ws) => self.workspace = ws,
+                    Err(e) => self.show_error(&format!("Failed to load workspace: {}", e)),
+                }
+            }
+        }
+        self.ui_active &= self.workspace_dialog.state() != egui_file_dialog::DialogState::Open;
+
         egui::CentralPanel::default().show(ctx, |ui| {
             if !self.ui_active {
                 ui.disable();
@@ -266,7 +311,34 @@ impl eframe::App for SnowGui {
 
             // Menubar
             egui::menu::bar(ui, |ui| {
-                ui.menu_button("Emulator", |ui| {
+                ui.menu_button("Workspace", |ui| {
+                    if ui.button("New workspace").clicked() {
+                        self.workspace = Default::default();
+                        self.workspace_file = None;
+                        self.workspace_dialog.config_mut().default_file_name = String::new();
+                        self.update_titlebar(ctx);
+                        ui.close_menu();
+                    }
+                    if ui.button("Load workspace").clicked() {
+                        self.workspace_dialog.pick_file();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Save workspace").clicked() {
+                        if let Some(path) = self.workspace_file.as_ref() {
+                            if let Err(e) = self.workspace.to_file(path) {
+                                self.show_error(&format!("Failed to save workspace: {}", e));
+                            }
+                        } else {
+                            self.workspace_dialog.save_file();
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.button("Save workspace as...").clicked() {
+                        self.workspace_dialog.save_file();
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     if ui.button("Exit").clicked() {
                         std::process::exit(0);
                     }
@@ -359,27 +431,27 @@ impl eframe::App for SnowGui {
                             .text("Display scale"),
                     );
                     ui.add(egui::Checkbox::new(
-                        &mut self.center_viewport_v,
+                        &mut self.workspace.center_viewport_v,
                         "Center display vertically",
                     ));
 
                     ui.separator();
                     if ui.button("Log").clicked() {
-                        self.log_open = !self.log_open;
+                        self.workspace.log_open = !self.workspace.log_open;
                         ui.close_menu();
                     }
 
                     ui.separator();
                     if ui.button("Disassembly").clicked() {
-                        self.disassembly_open = !self.disassembly_open;
+                        self.workspace.disassembly_open = !self.workspace.disassembly_open;
                         ui.close_menu();
                     }
                     if ui.button("Registers").clicked() {
-                        self.registers_open = !self.registers_open;
+                        self.workspace.registers_open = !self.workspace.registers_open;
                         ui.close_menu();
                     }
                     if ui.button("Breakpoints").clicked() {
-                        self.breakpoints_open = !self.breakpoints_open;
+                        self.workspace.breakpoints_open = !self.workspace.breakpoints_open;
                         ui.close_menu();
                     }
                 });
@@ -449,7 +521,7 @@ impl eframe::App for SnowGui {
             // Framebuffer display
             ui.vertical_centered(|ui| {
                 let padding_height = (ui.available_height() - self.framebuffer.max_height()) / 2.0;
-                if padding_height > 0.0 && self.center_viewport_v {
+                if padding_height > 0.0 && self.workspace.center_viewport_v {
                     ui.allocate_space(egui::Vec2::from([1.0, padding_height]));
                 }
                 self.framebuffer.draw(ui);
@@ -459,7 +531,7 @@ impl eframe::App for SnowGui {
             if self.emu.is_initialized() {
                 egui::Window::new("Disassembly")
                     .resizable([true, true])
-                    .open(&mut self.disassembly_open)
+                    .open(&mut self.workspace.disassembly_open)
                     .show(ctx, |ui| {
                         ui.horizontal_top(|ui| {
                             Disassembly::new().draw(ui, &self.emu);
@@ -468,7 +540,7 @@ impl eframe::App for SnowGui {
 
                 egui::Window::new("Registers")
                     .resizable([true, true])
-                    .open(&mut self.registers_open)
+                    .open(&mut self.workspace.registers_open)
                     .default_width(300.0)
                     .default_height(1000.0)
                     .show(ctx, |ui| {
@@ -479,7 +551,7 @@ impl eframe::App for SnowGui {
 
                 egui::Window::new("Breakpoints")
                     .resizable([true, true])
-                    .open(&mut self.breakpoints_open)
+                    .open(&mut self.workspace.breakpoints_open)
                     .default_width(300.0)
                     .default_height(200.0)
                     .show(ctx, |ui| {
