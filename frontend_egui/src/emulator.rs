@@ -62,14 +62,7 @@ impl EmulatorState {
         disks: Option<[Option<PathBuf>; 7]>,
     ) -> Result<Receiver<DisplayBuffer>> {
         // Terminate running emulator (if any)
-        if let Some(emu_thread) = self.emuthread.take() {
-            self.cmdsender
-                .as_ref()
-                .unwrap()
-                .send(EmulatorCommand::Quit)
-                .unwrap();
-            emu_thread.join().unwrap();
-        }
+        self.deinit();
 
         self.last_rom = rom.to_vec();
 
@@ -140,6 +133,19 @@ impl EmulatorState {
         while self.poll() {}
 
         Ok(frame_recv)
+    }
+
+    pub fn deinit(&mut self) {
+        if let Some(emu_thread) = self.emuthread.take() {
+            self.cmdsender
+                .as_ref()
+                .unwrap()
+                .send(EmulatorCommand::Quit)
+                .unwrap();
+            emu_thread.join().unwrap();
+            self.cmdsender = None;
+            self.eventrecv = None;
+        }
     }
 
     pub fn reset(&self) {

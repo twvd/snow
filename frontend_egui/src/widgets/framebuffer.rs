@@ -58,15 +58,22 @@ impl FramebufferWidget {
     pub fn draw(&mut self, ui: &mut egui::Ui) -> egui::Response {
         if let Some(ref frame_recv) = self.frame_recv {
             if !frame_recv.is_empty() {
-                let frame = frame_recv.recv().unwrap();
-
-                self.viewport_texture.set(
-                    egui::ColorImage {
-                        size: [SCREEN_WIDTH, SCREEN_HEIGHT],
-                        pixels: Self::convert_framebuffer(&frame),
-                    },
-                    egui::TextureOptions::NEAREST,
-                );
+                if let Ok(frame) = frame_recv.try_recv() {
+                    self.viewport_texture.set(
+                        egui::ColorImage {
+                            size: [SCREEN_WIDTH, SCREEN_HEIGHT],
+                            pixels: Self::convert_framebuffer(&frame),
+                        },
+                        egui::TextureOptions::NEAREST,
+                    );
+                } else {
+                    log::debug!("Frame receiver has gone away");
+                    self.frame_recv = None;
+                    self.viewport_texture.set(
+                        egui::ColorImage::new([SCREEN_WIDTH, SCREEN_HEIGHT], egui::Color32::BLACK),
+                        egui::TextureOptions::NEAREST,
+                    );
+                }
             }
         }
 

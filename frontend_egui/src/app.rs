@@ -210,20 +210,26 @@ impl SnowGui {
         self.workspace.rom_path = Some(path.to_path_buf());
     }
 
-    fn load_workspace_from_path(&mut self, path: &Path) {
-        match Workspace::from_file(path) {
-            Ok(ws) => {
-                self.workspace = ws;
-                self.framebuffer.scale = self.workspace.viewport_scale;
-                if let Some(rompath) = &self.workspace.rom_path {
-                    // Needs clone for borrow checker..
-                    self.load_rom_from_path(
-                        &rompath.clone(),
-                        Some(self.workspace.get_disk_paths()),
-                    );
+    fn load_workspace(&mut self, path: Option<&Path>) {
+        if let Some(path) = path {
+            match Workspace::from_file(path) {
+                Ok(ws) => {
+                    self.workspace = ws;
                 }
+                Err(e) => self.show_error(&format!("Failed to load workspace: {}", e)),
             }
-            Err(e) => self.show_error(&format!("Failed to load workspace: {}", e)),
+        } else {
+            // Clean workspace
+            self.workspace = Default::default();
+        }
+
+        // Re-initialize stuff from newly loaded workspace
+        self.framebuffer.scale = self.workspace.viewport_scale;
+        if let Some(rompath) = &self.workspace.rom_path {
+            // Needs clone for borrow checker..
+            self.load_rom_from_path(&rompath.clone(), Some(self.workspace.get_disk_paths()));
+        } else {
+            self.emu.deinit();
         }
     }
 
@@ -323,7 +329,7 @@ impl eframe::App for SnowGui {
                 self.save_workspace(&path);
             } else {
                 // 'Load workspace...'
-                self.load_workspace_from_path(&path);
+                self.load_workspace(Some(&path));
             }
 
             self.update_titlebar(ctx);
@@ -339,7 +345,7 @@ impl eframe::App for SnowGui {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("Workspace", |ui| {
                     if ui.button("New workspace").clicked() {
-                        self.workspace = Default::default();
+                        self.load_workspace(None);
                         self.workspace_file = None;
                         self.workspace_dialog.config_mut().default_file_name = String::new();
                         self.update_titlebar(ctx);
