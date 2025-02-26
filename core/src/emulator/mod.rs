@@ -248,6 +248,10 @@ impl Tickable for Emulator {
                         };
                         self.status_update()?;
                     }
+                    EmulatorCommand::DetachHddImage(id) => {
+                        self.cpu.bus.scsi.detach_disk_at(id);
+                        info!("SCSI ID #{}: disk detached", id);
+                    }
                     EmulatorCommand::SaveFloppy(drive, filename) => {
                         Bitfile::save_file(self.cpu.bus.swim.get_active_image(drive), &filename)?;
                         self.status_update()?;

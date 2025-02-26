@@ -370,6 +370,12 @@ impl ScsiController {
         Ok(())
     }
 
+    /// Detaches a disk image from the given SCSI ID
+    pub fn detach_disk_at(&mut self, scsi_id: usize) {
+        self.disks[scsi_id] = None;
+        self.disk_paths[scsi_id] = None;
+    }
+
     /// Translates a SCSI ID on the bus (bit position) to a numeric ID
     fn translate_id(mut bitp: u8) -> Result<usize> {
         if bitp.count_ones() != 1 {

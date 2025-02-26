@@ -426,8 +426,8 @@ impl eframe::App for SnowGui {
                             for (i, disk) in hdd.iter().enumerate() {
                                 if let Some(disk) = disk {
                                     // Disk loaded
-                                    if ui
-                                        .button(format!(
+                                    ui.menu_button(
+                                        format!(
                                             "SCSI #{}: {} ({:0.2}MB)",
                                             i,
                                             disk.image
@@ -435,11 +435,14 @@ impl eframe::App for SnowGui {
                                                 .unwrap_or_default()
                                                 .to_string_lossy(),
                                             disk.capacity / 1024 / 1024
-                                        ))
-                                        .clicked()
-                                    {
-                                        ui.close_menu();
-                                    }
+                                        ),
+                                        |ui| {
+                                            if ui.button("Detach").clicked() {
+                                                self.emu.detach_hdd(i);
+                                                ui.close_menu();
+                                            }
+                                        },
+                                    );
                                 } else {
                                     // No disk
                                     ui.menu_button(format!("SCSI #{}: (no disk)", i), |ui| {
