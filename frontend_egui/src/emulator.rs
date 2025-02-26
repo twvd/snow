@@ -18,7 +18,7 @@ use snow_core::keymap::Scancode;
 use snow_core::mac::MacModel;
 use snow_core::renderer::DisplayBuffer;
 use snow_core::tickable::Tickable;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::thread::JoinHandle;
 
@@ -46,12 +46,21 @@ impl EmulatorState {
         }
     }
 
-    pub fn init_from_rom(&mut self, filename: &Path) -> Result<Receiver<DisplayBuffer>> {
+    pub fn init_from_rom(
+        &mut self,
+        filename: &Path,
+        disks: Option<[Option<PathBuf>; 7]>,
+    ) -> Result<Receiver<DisplayBuffer>> {
         let rom = std::fs::read(filename)?;
-        self.init(&rom)
+        self.init(&rom, disks)
     }
 
-    fn init(&mut self, rom: &[u8]) -> Result<Receiver<DisplayBuffer>> {
+    #[allow(clippy::needless_pass_by_value)]
+    fn init(
+        &mut self,
+        rom: &[u8],
+        disks: Option<[Option<PathBuf>; 7]>,
+    ) -> Result<Receiver<DisplayBuffer>> {
         // Terminate running emulator (if any)
         if let Some(emu_thread) = self.emuthread.take() {
             self.cmdsender
@@ -86,16 +95,24 @@ impl EmulatorState {
             cb.set_receiver(emulator.get_audio());
         }
 
-        // Try to auto-load HDD images
         if model.has_scsi() {
             for id in 0..7 {
-                let filename = format!("hdd{}.img", id);
-                match emulator.load_hdd_image(&filename, id) {
+                let Some(ref disks) = disks else {
+                    break;
+                };
+                let Some(ref filename) = disks[id] else {
+                    continue;
+                };
+                match emulator.load_hdd_image(filename, id) {
                     Ok(_) => {
-                        info!("SCSI ID #{}: auto-loaded image file {}", id, filename);
+                        info!(
+                            "SCSI ID #{}: loaded image file {}",
+                            id,
+                            filename.to_string_lossy()
+                        );
                     }
                     Err(e) => {
-                        info!("SCSI ID #{}: no image auto-loaded: {}", id, e);
+                        error!("SCSI ID #{}: image load failed: {}", id, e);
                     }
                 }
             }
@@ -257,6 +274,14 @@ impl EmulatorState {
         Some(&status.hdd)
     }
 
+    /// Gets an array of PathBuf of the loaded disk images
+    pub fn get_disk_paths(&self) -> [Option<PathBuf>; 7] {
+        let Some(status) = self.status.as_ref() else {
+            return core::array::from_fn(|_| None);
+        };
+        core::array::from_fn(|i| status.hdd[i].clone().map(|v| v.image))
+    }
+
     /// Returns `true` if the emulator has been instansiated and loaded with a ROM.
     pub fn is_initialized(&self) -> bool {
         self.cmdsender.is_some()
@@ -292,10 +317,7 @@ impl EmulatorState {
         };
 
         sender
-            .send(EmulatorCommand::LoadHddImage(
-                idx,
-                path.to_string_lossy().to_string(),
-            ))
+            .send(EmulatorCommand::LoadHddImage(idx, path.to_path_buf()))
             .unwrap();
     }
 

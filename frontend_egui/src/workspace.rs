@@ -25,6 +25,9 @@ pub struct Workspace {
 
     /// Last opened Mac ROM
     pub rom_path: Option<PathBuf>,
+
+    /// Last loaded disks
+    pub disks: [Option<PathBuf>; 7],
 }
 
 impl Workspace {
@@ -38,5 +41,9 @@ impl Workspace {
     pub fn to_file(&self, path: &Path) -> Result<()> {
         let file = File::create(path)?;
         Ok(serde_json::to_writer_pretty(file, self)?)
+    }
+
+    pub fn get_disk_paths(&self) -> [Option<PathBuf>; 7] {
+        self.disks.clone()
     }
 }

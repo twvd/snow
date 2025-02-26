@@ -110,7 +110,7 @@ impl SnowGui {
         };
 
         if let Some(filename) = initial_rom_file {
-            match app.emu.init_from_rom(Path::new(&filename)) {
+            match app.emu.init_from_rom(Path::new(&filename), None) {
                 Ok(recv) => app.framebuffer.connect_receiver(recv),
                 Err(e) => app.show_error(&e),
             }
@@ -202,8 +202,8 @@ impl SnowGui {
         ));
     }
 
-    fn load_rom_from_path(&mut self, path: &Path) {
-        match self.emu.init_from_rom(path) {
+    fn load_rom_from_path(&mut self, path: &Path, disks: Option<[Option<PathBuf>; 7]>) {
+        match self.emu.init_from_rom(path, disks) {
             Ok(recv) => self.framebuffer.connect_receiver(recv),
             Err(e) => self.show_error(&e),
         }
@@ -214,12 +214,24 @@ impl SnowGui {
         match Workspace::from_file(path) {
             Ok(ws) => {
                 self.workspace = ws;
+                self.framebuffer.scale = self.workspace.viewport_scale;
                 if let Some(rompath) = &self.workspace.rom_path {
                     // Needs clone for borrow checker..
-                    self.load_rom_from_path(&rompath.clone());
+                    self.load_rom_from_path(
+                        &rompath.clone(),
+                        Some(self.workspace.get_disk_paths()),
+                    );
                 }
             }
             Err(e) => self.show_error(&format!("Failed to load workspace: {}", e)),
+        }
+    }
+
+    fn save_workspace(&mut self, path: &Path) {
+        self.workspace.viewport_scale = self.framebuffer.scale;
+        self.workspace.disks = self.emu.get_disk_paths();
+        if let Err(e) = self.workspace.to_file(path) {
+            self.show_error(&format!("Failed to save workspace: {}", e));
         }
     }
 }
@@ -268,7 +280,7 @@ impl eframe::App for SnowGui {
         // ROM picker dialog
         self.rom_dialog.update(ctx);
         if let Some(path) = self.rom_dialog.take_picked() {
-            self.load_rom_from_path(&path);
+            self.load_rom_from_path(&path, Some(self.emu.get_disk_paths()));
             self.update_titlebar(ctx);
         }
         self.ui_active &= self.rom_dialog.state() != egui_file_dialog::DialogState::Open;
@@ -308,9 +320,7 @@ impl eframe::App for SnowGui {
                     osstr.push(".snoww");
                     path = osstr.into();
                 }
-                if let Err(e) = self.workspace.to_file(&path) {
-                    self.show_error(&format!("Failed to save workspace: {}", e));
-                }
+                self.save_workspace(&path);
             } else {
                 // 'Load workspace...'
                 self.load_workspace_from_path(&path);
@@ -341,10 +351,8 @@ impl eframe::App for SnowGui {
                     }
                     ui.separator();
                     if ui.button("Save workspace").clicked() {
-                        if let Some(path) = self.workspace_file.as_ref() {
-                            if let Err(e) = self.workspace.to_file(path) {
-                                self.show_error(&format!("Failed to save workspace: {}", e));
-                            }
+                        if let Some(path) = self.workspace_file.clone() {
+                            self.save_workspace(&path);
                         } else {
                             self.workspace_dialog.save_file();
                         }
@@ -451,7 +459,7 @@ impl eframe::App for SnowGui {
                 }
                 ui.menu_button("View", |ui| {
                     ui.add(
-                        egui::Slider::new(&mut self.workspace.viewport_scale, 0.5..=4.0)
+                        egui::Slider::new(&mut self.framebuffer.scale, 0.5..=4.0)
                             .text("Display scale"),
                     );
                     ui.add(egui::Checkbox::new(
@@ -543,7 +551,6 @@ impl eframe::App for SnowGui {
             ui.separator();
 
             // Framebuffer display
-            self.framebuffer.scale = self.workspace.viewport_scale;
             ui.vertical_centered(|ui| {
                 let padding_height = (ui.available_height() - self.framebuffer.max_height()) / 2.0;
                 if padding_height > 0.0 && self.workspace.center_viewport_v {

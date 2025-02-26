@@ -16,7 +16,7 @@ pub enum EmulatorCommand {
     Quit,
     InsertFloppy(usize, String),
     SaveFloppy(usize, String),
-    LoadHddImage(usize, String),
+    LoadHddImage(usize, PathBuf),
     MouseUpdateAbsolute {
         x: u16,
         y: u16,
@@ -67,7 +67,7 @@ pub struct EmulatorStatus {
     pub hdd: [Option<HddStatus>; 7],
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HddStatus {
     pub image: PathBuf,
     pub capacity: usize,

@@ -248,7 +248,7 @@ impl ScsiController {
     /// the emulator for fast access and automatic writes back to disk,
     /// at the discretion of the operating system.
     #[cfg(feature = "mmap")]
-    fn load_disk(filename: &str) -> Option<MmapMut> {
+    fn load_disk(filename: &Path) -> Option<MmapMut> {
         use fs2::FileExt;
         use std::fs::OpenOptions;
 
@@ -261,23 +261,42 @@ impl ScsiController {
             .read(true)
             .write(true)
             .open(filename)
-            .inspect_err(|e| error!("Opening disk image {} failed: {}", filename, e))
+            .inspect_err(|e| {
+                error!(
+                    "Opening disk image {} failed: {}",
+                    filename.to_string_lossy(),
+                    e
+                );
+            })
             .ok()?;
 
         f.lock_exclusive()
-            .inspect_err(|e| error!("Cannot lock disk image {}: {}", filename, e))
+            .inspect_err(|e| {
+                error!(
+                    "Cannot lock disk image {}: {}",
+                    filename.to_string_lossy(),
+                    e
+                );
+            })
             .ok()?;
 
         let mmapped = unsafe {
             MmapMut::map_mut(&f)
-                .inspect_err(|e| error!("Cannot mmap image file {}: {}", filename, e))
+                .inspect_err(|e| {
+                    error!(
+                        "Cannot mmap image file {}: {}",
+                        filename.to_string_lossy(),
+                        e
+                    );
+                })
                 .ok()?
         };
 
         if mmapped.len() % DISK_BLOCKSIZE != 0 {
             error!(
                 "Cannot load disk image {}: not multiple of {}",
-                filename, DISK_BLOCKSIZE
+                filename.to_string_lossy(),
+                DISK_BLOCKSIZE
             );
             return None;
         }
@@ -286,7 +305,7 @@ impl ScsiController {
     }
 
     #[cfg(not(feature = "mmap"))]
-    fn load_disk(filename: &str) -> Option<Vec<u8>> {
+    fn load_disk(filename: &Path) -> Option<Vec<u8>> {
         use std::fs;
 
         if !Path::new(filename).exists() {
@@ -305,7 +324,8 @@ impl ScsiController {
         if disk.len() % DISK_BLOCKSIZE != 0 {
             error!(
                 "Cannot load disk image {}: not multiple of {}",
-                filename, DISK_BLOCKSIZE
+                filename.to_string_lossy(),
+                DISK_BLOCKSIZE
             );
             return None;
         }
@@ -338,15 +358,15 @@ impl ScsiController {
     }
 
     /// Loads a disk image (filename) at the given SCSI ID
-    pub fn load_disk_at(&mut self, filename: &str, scsi_id: usize) -> Result<()> {
+    pub fn load_disk_at(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {
         if scsi_id >= Self::MAX_TARGETS {
             bail!("SCSI ID out of range: {}", scsi_id);
         }
         if !Path::new(filename).exists() {
-            bail!("File {} does not exist", filename);
+            bail!("File {} does not exist", filename.to_string_lossy());
         }
         self.disks[scsi_id] = Some(Self::load_disk(filename).context("Error loading disk")?);
-        self.disk_paths[scsi_id] = Some(PathBuf::from(filename));
+        self.disk_paths[scsi_id] = Some(filename.to_path_buf());
         Ok(())
     }
 
