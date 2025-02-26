@@ -2,6 +2,7 @@ pub mod comm;
 
 use snow_floppy::loaders::{Autodetect, Bitfile, FloppyImageLoader, FloppyImageSaver};
 use snow_floppy::Floppy;
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -192,7 +193,7 @@ impl Emulator {
         self.cpu.bus.get_audio_channel()
     }
 
-    pub fn load_hdd_image(&mut self, filename: &str, scsi_id: usize) -> Result<()> {
+    pub fn load_hdd_image(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {
         self.cpu.bus.scsi.load_disk_at(filename, scsi_id)
     }
 }
@@ -231,9 +232,18 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::LoadHddImage(id, filename) => {
                         match self.load_hdd_image(&filename, id) {
-                            Ok(_) => info!("SCSI ID #{}: image '{}' loaded", id, filename),
+                            Ok(_) => info!(
+                                "SCSI ID #{}: image '{}' loaded",
+                                id,
+                                filename.to_string_lossy()
+                            ),
                             Err(e) => {
-                                error!("SCSI ID #{}: cannot load image '{}': {}", id, filename, e);
+                                error!(
+                                    "SCSI ID #{}: cannot load image '{}': {}",
+                                    id,
+                                    filename.to_string_lossy(),
+                                    e
+                                );
                             }
                         };
                         self.status_update()?;

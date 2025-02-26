@@ -18,6 +18,7 @@ use snow_core::tickable::Tickable;
 use ui::UserInterface;
 
 use std::panic::{set_hook, take_hook};
+use std::path::Path;
 use std::{fs, thread};
 
 use renderer_sdl::{SDLAudioSink, SDLEventPump, SDLRenderer};
@@ -135,7 +136,7 @@ fn main() -> Result<()> {
     if model.has_scsi() {
         for id in 0..7 {
             let filename = format!("hdd{}.img", id);
-            match emulator.load_hdd_image(&filename, id) {
+            match emulator.load_hdd_image(Path::new(&filename), id) {
                 Ok(_) => {
                     info!("SCSI ID #{}: auto-loaded image file {}", id, filename);
                 }
