@@ -321,6 +321,15 @@ impl EmulatorState {
             .unwrap();
     }
 
+    /// Detach a HDD image from a SCSI ID
+    pub fn detach_hdd(&self, id: usize) {
+        self.cmdsender
+            .as_ref()
+            .unwrap()
+            .send(EmulatorCommand::DetachHddImage(id))
+            .unwrap();
+    }
+
     /// Returns `true` if emulator in fast-forward mode.
     pub fn is_fastforward(&self) -> bool {
         let Some(ref status) = self.status else {
