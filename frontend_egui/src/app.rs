@@ -112,7 +112,7 @@ impl SnowGui {
         if let Some(filename) = initial_rom_file {
             match app.emu.init_from_rom(Path::new(&filename), None) {
                 Ok(recv) => app.framebuffer.connect_receiver(recv),
-                Err(e) => app.show_error(&e),
+                Err(e) => app.show_error(&format!("Failed to load ROM file: {}", e)),
             }
         }
 
@@ -205,7 +205,7 @@ impl SnowGui {
     fn load_rom_from_path(&mut self, path: &Path, disks: Option<[Option<PathBuf>; 7]>) {
         match self.emu.init_from_rom(path, disks) {
             Ok(recv) => self.framebuffer.connect_receiver(recv),
-            Err(e) => self.show_error(&e),
+            Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
         }
         self.workspace.set_rom_path(path);
     }
