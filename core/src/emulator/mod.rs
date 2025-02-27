@@ -216,6 +216,7 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::Quit => {
                         info!("Emulator terminating");
+                        self.cpu.bus.video.blank()?;
                         return Ok(0);
                     }
                     EmulatorCommand::InsertFloppy(drive, filename) => {

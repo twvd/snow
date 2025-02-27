@@ -166,8 +166,8 @@ where
             event_vblank: LatchingEvent::default(),
             event_hblank: LatchingEvent::default(),
             framebuffers: [
-                vec![0; Self::FRAMEBUFFER_SIZE],
-                vec![0; Self::FRAMEBUFFER_SIZE],
+                vec![0xFF; Self::FRAMEBUFFER_SIZE],
+                vec![0xFF; Self::FRAMEBUFFER_SIZE],
             ],
             framebuffer_select: false,
         }
@@ -208,6 +208,12 @@ where
         self.renderer.update()?;
 
         Ok(())
+    }
+
+    /// Blanks the display and sends an update to the renderer.
+    pub fn blank(&mut self) -> Result<()> {
+        self.framebuffers.iter_mut().for_each(|b| b.fill(0xFF));
+        self.render()
     }
 }
 
