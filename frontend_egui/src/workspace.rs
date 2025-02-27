@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// It does not contain the state of the running emulator, but mirrors
 /// part of it. It can be used to re-construct a previously running
 /// emulator.
-#[derive(Default, Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct Workspace {
     pub log_open: bool,
@@ -28,6 +28,21 @@ pub struct Workspace {
 
     /// Last loaded disks
     pub disks: [Option<PathBuf>; 7],
+}
+
+impl Default for Workspace {
+    fn default() -> Self {
+        Self {
+            viewport_scale: 1.5,
+            log_open: false,
+            disassembly_open: false,
+            registers_open: false,
+            breakpoints_open: false,
+            center_viewport_v: false,
+            rom_path: None,
+            disks: core::array::from_fn(|_| None),
+        }
+    }
 }
 
 impl Workspace {
