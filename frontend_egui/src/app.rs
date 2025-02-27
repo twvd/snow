@@ -207,7 +207,7 @@ impl SnowGui {
             Ok(recv) => self.framebuffer.connect_receiver(recv),
             Err(e) => self.show_error(&e),
         }
-        self.workspace.rom_path = Some(path.to_path_buf());
+        self.workspace.set_rom_path(path);
     }
 
     fn load_workspace(&mut self, path: Option<&Path>) {
@@ -225,9 +225,8 @@ impl SnowGui {
 
         // Re-initialize stuff from newly loaded workspace
         self.framebuffer.scale = self.workspace.viewport_scale;
-        if let Some(rompath) = &self.workspace.rom_path {
-            // Needs clone for borrow checker..
-            self.load_rom_from_path(&rompath.clone(), Some(self.workspace.get_disk_paths()));
+        if let Some(rompath) = self.workspace.get_rom_path() {
+            self.load_rom_from_path(&rompath, Some(self.workspace.get_disk_paths()));
         } else {
             self.emu.deinit();
         }
@@ -235,8 +234,8 @@ impl SnowGui {
 
     fn save_workspace(&mut self, path: &Path) {
         self.workspace.viewport_scale = self.framebuffer.scale;
-        self.workspace.disks = self.emu.get_disk_paths();
-        if let Err(e) = self.workspace.to_file(path) {
+        self.workspace.set_disk_paths(&self.emu.get_disk_paths());
+        if let Err(e) = self.workspace.write_file(path) {
             self.show_error(&format!("Failed to save workspace: {}", e));
         }
     }
