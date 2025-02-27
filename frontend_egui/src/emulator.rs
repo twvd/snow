@@ -145,6 +145,7 @@ impl EmulatorState {
             emu_thread.join().unwrap();
             self.cmdsender = None;
             self.eventrecv = None;
+            self.status = None;
         }
     }
 
