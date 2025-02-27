@@ -90,14 +90,14 @@ impl Widget for StatusWidget<'_> {
 
         if self.emustatus.model.has_scsi() {
             Paragraph::new(Vec::from_iter(self.emustatus.hdd.iter().enumerate().map(
-                |(i, &d)| {
+                |(i, d)| {
                     Line::from(vec![
                         Span::from(format!(" #{} ", i)).style(Style::default().blue().bold()),
                         if let Some(capacity) = d {
                             Span::from(format!(
                                 "hdd{}.img ({:0.1} MB)",
                                 i,
-                                (capacity as f64) / 1024.0 / 1024.0
+                                (*capacity as f64) / 1024.0 / 1024.0
                             ))
                         } else {
                             Span::from("not present").dark_gray()
