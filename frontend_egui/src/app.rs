@@ -87,15 +87,23 @@ impl SnowGui {
             rom_dialog: FileDialog::new()
                 .add_file_filter(
                     "Macintosh ROM files (*.ROM)",
-                    Arc::new(|p| p.extension().unwrap_or_default() == "rom"),
+                    Arc::new(|p| {
+                        p.extension()
+                            .unwrap_or_default()
+                            .eq_ignore_ascii_case("rom")
+                    }),
                 )
                 .default_file_filter("Macintosh ROM files (*.ROM)"),
             hdd_dialog: FileDialog::new()
                 .add_file_filter(
                     "HDD images (*.IMG)",
-                    Arc::new(|p| p.extension().unwrap_or_default() == "img"),
+                    Arc::new(|p| {
+                        p.extension()
+                            .unwrap_or_default()
+                            .eq_ignore_ascii_case("img")
+                    }),
                 )
-                .default_file_filter("Macintosh ROM files (*.ROM)"),
+                .default_file_filter("HDD images (*.IMG)"),
             hdd_dialog_idx: 0,
             floppy_dialog: FileDialog::new()
                 .add_file_filter(
@@ -104,13 +112,12 @@ impl SnowGui {
                         let ext = p
                             .extension()
                             .unwrap_or_default()
-                            .to_ascii_lowercase()
                             .to_string_lossy()
                             .to_string();
 
                         snow_floppy::loaders::ImageType::EXTENSIONS
                             .into_iter()
-                            .any(|s| ext == s)
+                            .any(|s| ext.eq_ignore_ascii_case(s))
                     }),
                 )
                 .default_file_filter(&floppy_filter_str),
