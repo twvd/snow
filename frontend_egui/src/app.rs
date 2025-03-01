@@ -8,6 +8,7 @@ use eframe::egui;
 use egui_file_dialog::FileDialog;
 use itertools::Itertools;
 use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
+use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -131,7 +132,8 @@ impl SnowGui {
                             .eq_ignore_ascii_case("snoww")
                     }),
                 )
-                .default_file_filter("Snow workspace (*.SNOWW)"),
+                .default_file_filter("Snow workspace (*.SNOWW)")
+                .initial_directory(dirs::home_dir().unwrap_or_else(|| env::current_dir().unwrap())),
             error_dialog_open: false,
             error_string: String::new(),
             ui_active: true,
@@ -255,6 +257,10 @@ impl SnowGui {
         } else {
             // Clean workspace
             self.workspace = Default::default();
+            self.workspace_file = None;
+            self.workspace_dialog.config_mut().default_file_name = String::new();
+            self.workspace_dialog.config_mut().initial_directory =
+                dirs::home_dir().unwrap_or_else(|| env::current_dir().unwrap());
         }
 
         // Re-initialize stuff from newly loaded workspace
@@ -358,31 +364,40 @@ impl eframe::App for SnowGui {
         // Workspace picker dialog
         self.workspace_dialog.update(ctx);
         if let Some(mut path) = self.workspace_dialog.take_picked() {
-            self.workspace_file = Some(path.clone());
-            self.workspace_dialog.config_mut().default_file_name =
-                path.to_string_lossy().to_string();
-
-            if self.workspace_dialog.mode() == egui_file_dialog::DialogMode::SaveFile {
-                // 'Save workspace' / 'Save workspace as...'
-
-                // Add the extension if the user neglected to add the correct one.
-                // Also see https://github.com/fluxxcode/egui-file-dialog/issues/138
-                if !path
-                    .extension()
-                    .unwrap_or_default()
-                    .eq_ignore_ascii_case("snoww")
-                {
-                    let mut osstr = path.into_os_string();
-                    osstr.push(".snoww");
-                    path = osstr.into();
-                }
-                self.save_workspace(&path);
+            if !path.is_file() {
+                self.show_error(&format!(
+                    "Selected path is not a file: {}",
+                    path.to_string_lossy()
+                ));
             } else {
-                // 'Load workspace...'
-                self.load_workspace(Some(&path));
-            }
+                self.workspace_file = Some(path.clone());
+                self.workspace_dialog.config_mut().initial_directory =
+                    path.parent().unwrap().to_owned();
+                self.workspace_dialog.config_mut().default_file_name =
+                    path.file_name().unwrap().to_string_lossy().to_string();
 
-            self.update_titlebar(ctx);
+                if self.workspace_dialog.mode() == egui_file_dialog::DialogMode::SaveFile {
+                    // 'Save workspace' / 'Save workspace as...'
+
+                    // Add the extension if the user neglected to add the correct one.
+                    // Also see https://github.com/fluxxcode/egui-file-dialog/issues/138
+                    if !path
+                        .extension()
+                        .unwrap_or_default()
+                        .eq_ignore_ascii_case("snoww")
+                    {
+                        let mut osstr = path.into_os_string();
+                        osstr.push(".snoww");
+                        path = osstr.into();
+                    }
+                    self.save_workspace(&path);
+                } else {
+                    // 'Load workspace...'
+                    self.load_workspace(Some(&path));
+                }
+
+                self.update_titlebar(ctx);
+            }
         }
         self.ui_active &= self.workspace_dialog.state() != egui_file_dialog::DialogState::Open;
 
@@ -396,8 +411,6 @@ impl eframe::App for SnowGui {
                 ui.menu_button("Workspace", |ui| {
                     if ui.button("New workspace").clicked() {
                         self.load_workspace(None);
-                        self.workspace_file = None;
-                        self.workspace_dialog.config_mut().default_file_name = String::new();
                         self.update_titlebar(ctx);
                         ui.close_menu();
                     }
