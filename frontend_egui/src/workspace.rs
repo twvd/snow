@@ -131,6 +131,7 @@ impl Workspace {
         Some(self.rom_path.clone()?.to_path(self.basedir()))
     }
 
+    /// Persists a window location
     pub fn save_window(&mut self, name: &str, rect: egui::Rect) {
         self.windows.insert(
             name.to_string(),
@@ -138,11 +139,18 @@ impl Workspace {
         );
     }
 
+    /// Retrieves a persisted window location and size.
+    /// 'None' indicates the default should be used.
     pub fn get_window(&self, name: &str) -> Option<egui::Rect> {
         let r = self.windows.get(name)?;
         Some(egui::Rect {
             min: egui::Pos2 { x: r[0], y: r[1] },
             max: egui::Pos2 { x: r[2], y: r[3] },
         })
+    }
+
+    /// Clears all persisted window locations
+    pub fn reset_windows(&mut self) {
+        self.windows.clear();
     }
 }

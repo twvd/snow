@@ -520,22 +520,32 @@ impl eframe::App for SnowGui {
                     ));
 
                     ui.separator();
-                    if ui.button("Log").clicked() {
-                        self.workspace.log_open = !self.workspace.log_open;
+                    if ui.checkbox(&mut self.workspace.log_open, "Log").clicked() {
+                        ui.close_menu();
+                    }
+                    if ui
+                        .checkbox(&mut self.workspace.disassembly_open, "Disassembly")
+                        .clicked()
+                    {
+                        ui.close_menu();
+                    }
+                    if ui
+                        .checkbox(&mut self.workspace.registers_open, "Registers")
+                        .clicked()
+                    {
+                        ui.close_menu();
+                    }
+                    if ui
+                        .checkbox(&mut self.workspace.breakpoints_open, "Breakpoints")
+                        .clicked()
+                    {
                         ui.close_menu();
                     }
 
                     ui.separator();
-                    if ui.button("Disassembly").clicked() {
-                        self.workspace.disassembly_open = !self.workspace.disassembly_open;
-                        ui.close_menu();
-                    }
-                    if ui.button("Registers").clicked() {
-                        self.workspace.registers_open = !self.workspace.registers_open;
-                        ui.close_menu();
-                    }
-                    if ui.button("Breakpoints").clicked() {
-                        self.workspace.breakpoints_open = !self.workspace.breakpoints_open;
+                    if ui.button("Reset layout").clicked() {
+                        self.workspace.reset_windows();
+                        self.load_windows = true;
                         ui.close_menu();
                     }
                 });
