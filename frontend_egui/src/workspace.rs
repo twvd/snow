@@ -1,9 +1,11 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use eframe::egui;
 use relative_path::{PathExt, RelativePathBuf};
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +37,9 @@ pub struct Workspace {
 
     /// Last loaded disks
     disks: [Option<RelativePathBuf>; 7],
+
+    /// Window positions
+    windows: HashMap<String, [f32; 4]>,
 }
 
 impl Default for Workspace {
@@ -50,11 +55,16 @@ impl Default for Workspace {
             center_viewport_v: false,
             rom_path: None,
             disks: core::array::from_fn(|_| None),
+            windows: HashMap::new(),
         }
     }
 }
 
 impl Workspace {
+    /// Names of windows to serialize position/size of
+    pub const WINDOW_NAMES: &'static [&'static str] =
+        &["Disassembly", "Registers", "Log", "Breakpoints"];
+
     fn basedir(&self) -> PathBuf {
         use std::env::current_dir;
         if let Some(ref p) = *self.file_location.borrow() {
@@ -119,5 +129,20 @@ impl Workspace {
             self.rom_path.clone()?.to_path(self.basedir())
         );
         Some(self.rom_path.clone()?.to_path(self.basedir()))
+    }
+
+    pub fn save_window(&mut self, name: &str, rect: egui::Rect) {
+        self.windows.insert(
+            name.to_string(),
+            [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
+        );
+    }
+
+    pub fn get_window(&self, name: &str) -> Option<egui::Rect> {
+        let r = self.windows.get(name)?;
+        Some(egui::Rect {
+            min: egui::Pos2 { x: r[0], y: r[1] },
+            max: egui::Pos2 { x: r[2], y: r[3] },
+        })
     }
 }

@@ -11,9 +11,32 @@ use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+macro_rules! persistent_window_s {
+    ($gui:expr, $title:expr, $default_size:expr) => {{
+        let mut w = egui::Window::new($title);
+        if let Some(r) = $gui.workspace.get_window($title) {
+            w = w.default_rect(r);
+        } else {
+            w = w.default_size($default_size);
+        }
+        w
+    }};
+}
+
+macro_rules! persistent_window {
+    ($gui:expr, $title:expr) => {{
+        let mut w = egui::Window::new($title);
+        if let Some(r) = $gui.workspace.get_window($title) {
+            w = w.default_rect(r);
+        }
+        w
+    }};
+}
+
 pub struct SnowGui {
     workspace: Workspace,
     workspace_file: Option<PathBuf>,
+    load_windows: bool,
 
     wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
 
@@ -54,6 +77,7 @@ impl SnowGui {
         let mut app = Self {
             workspace: Default::default(),
             workspace_file: None,
+            load_windows: false,
 
             wev_recv,
             framebuffer: FramebufferWidget::new(cc),
@@ -180,15 +204,18 @@ impl SnowGui {
     }
 
     fn update_titlebar(&self, ctx: &egui::Context) {
+        let wsname = self
+            .workspace_file
+            .as_ref()
+            .and_then(|v| v.file_stem())
+            .map(|v| v.to_string_lossy())
+            .unwrap_or(std::borrow::Cow::Borrowed("Untitled workspace"));
+
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(
             if let Some(m) = self.emu.get_model() {
                 format!(
                     "Snow - {} - {} ({})",
-                    self.workspace_file
-                        .as_ref()
-                        .and_then(|v| v.file_stem())
-                        .map(|v| v.to_string_lossy())
-                        .unwrap_or(std::borrow::Cow::Borrowed("Untitled workspace")),
+                    wsname,
                     m,
                     if self.emu.is_running() {
                         "running"
@@ -197,7 +224,7 @@ impl SnowGui {
                     }
                 )
             } else {
-                "Snow".to_string()
+                format!("Snow - {}", wsname)
             },
         ));
     }
@@ -224,6 +251,7 @@ impl SnowGui {
         }
 
         // Re-initialize stuff from newly loaded workspace
+        self.load_windows = true;
         self.framebuffer.scale = self.workspace.viewport_scale;
         if let Some(rompath) = self.workspace.get_rom_path() {
             self.load_rom_from_path(&rompath, Some(self.workspace.get_disk_paths()));
@@ -239,10 +267,26 @@ impl SnowGui {
             self.show_error(&format!("Failed to save workspace: {}", e));
         }
     }
+
+    fn sync_windows(&mut self, ctx: &egui::Context) {
+        if self.load_windows {
+            ctx.memory_mut(|m| m.reset_areas());
+            self.load_windows = false;
+            return;
+        }
+        ctx.memory(|m| {
+            for &n in Workspace::WINDOW_NAMES {
+                if let Some(r) = m.area_rect(egui::Id::from(n)) {
+                    self.workspace.save_window(n, r);
+                }
+            }
+        });
+    }
 }
 
 impl eframe::App for SnowGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.sync_windows(ctx);
         self.poll_winit_events();
         if self.emu.poll() {
             // Change in emulator state
@@ -275,7 +319,7 @@ impl eframe::App for SnowGui {
         self.ui_active &= !self.error_dialog_open;
 
         // Log window
-        egui::Window::new("Log")
+        persistent_window!(&self, "Log")
             .open(&mut self.workspace.log_open)
             .show(ctx, |ui| {
                 egui_logger::logger_ui().show(ui);
@@ -569,7 +613,7 @@ impl eframe::App for SnowGui {
 
             // Debugger views
             if self.emu.is_initialized() {
-                egui::Window::new("Disassembly")
+                persistent_window!(self, "Disassembly")
                     .resizable([true, true])
                     .open(&mut self.workspace.disassembly_open)
                     .show(ctx, |ui| {
@@ -578,22 +622,18 @@ impl eframe::App for SnowGui {
                         });
                     });
 
-                egui::Window::new("Registers")
+                persistent_window_s!(self, "Registers", [300.0, 1000.0])
                     .resizable([true, true])
                     .open(&mut self.workspace.registers_open)
-                    .default_width(300.0)
-                    .default_height(1000.0)
                     .show(ctx, |ui| {
                         ui.horizontal_top(|ui| {
                             self.registers.draw(ui);
                         });
                     });
 
-                egui::Window::new("Breakpoints")
+                persistent_window_s!(self, "Breakpoints", [300.0, 200.0])
                     .resizable([true, true])
                     .open(&mut self.workspace.breakpoints_open)
-                    .default_width(300.0)
-                    .default_height(200.0)
                     .show(ctx, |ui| {
                         ui.horizontal_top(|ui| {
                             self.breakpoints.draw(ui, &self.emu);
