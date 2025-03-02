@@ -1,14 +1,19 @@
+use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
 use crate::keymap::map_winit_keycode;
 use crate::widgets::breakpoints::BreakpointsWidget;
 use crate::widgets::disassembly::Disassembly;
 use crate::widgets::framebuffer::FramebufferWidget;
 use crate::workspace::Workspace;
 use crate::{emulator::EmulatorState, widgets::registers::RegistersWidget};
+
+use anyhow::Result;
 use eframe::egui;
 use egui_file_dialog::FileDialog;
 use itertools::Itertools;
 use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use std::env;
+use std::fs::File;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -51,12 +56,27 @@ pub struct SnowGui {
     hdd_dialog_idx: usize,
     floppy_dialog: FileDialog,
     floppy_dialog_driveidx: usize,
+    create_disk_dialog: DiskImageDialog,
+
     error_dialog_open: bool,
     error_string: String,
     ui_active: bool,
     last_running: bool,
 
     emu: EmulatorState,
+}
+
+impl SnowGui {
+    pub(crate) fn try_create_image(&self, result: &DiskImageDialogResult) -> Result<()> {
+        {
+            let mut file = File::create(result.filename.clone())?;
+            file.seek(SeekFrom::Start(result.size as u64 - 1))?;
+            file.write_all(&[0])?;
+            file.flush()?;
+        }
+        self.emu.load_hdd_image(result.scsi_id, &result.filename);
+        Ok(())
+    }
 }
 
 impl SnowGui {
@@ -133,7 +153,8 @@ impl SnowGui {
                     }),
                 )
                 .default_file_filter("Snow workspace (*.SNOWW)")
-                .initial_directory(dirs::home_dir().unwrap_or_else(|| env::current_dir().unwrap())),
+                .initial_directory(Self::default_dir()),
+            create_disk_dialog: Default::default(),
             error_dialog_open: false,
             error_string: String::new(),
             ui_active: true,
@@ -150,6 +171,17 @@ impl SnowGui {
         }
 
         app
+    }
+
+    fn default_dir() -> PathBuf {
+        dirs::home_dir().unwrap_or_else(|| env::current_dir().unwrap())
+    }
+
+    fn workspace_dir(&self) -> PathBuf {
+        self.workspace_file
+            .clone()
+            .map(|f| f.parent().unwrap().to_path_buf())
+            .unwrap_or_else(Self::default_dir)
     }
 
     pub fn show_error(&mut self, text: &impl std::fmt::Display) {
@@ -259,8 +291,7 @@ impl SnowGui {
             self.workspace = Default::default();
             self.workspace_file = None;
             self.workspace_dialog.config_mut().default_file_name = String::new();
-            self.workspace_dialog.config_mut().initial_directory =
-                dirs::home_dir().unwrap_or_else(|| env::current_dir().unwrap());
+            self.workspace_dialog.config_mut().initial_directory = Self::default_dir();
         }
 
         // Re-initialize stuff from newly loaded workspace
@@ -311,6 +342,7 @@ impl eframe::App for SnowGui {
         }
 
         self.ui_active = true;
+
         // Error modal
         let mut error_open = self.error_dialog_open;
         egui::Window::new("Error")
@@ -330,6 +362,15 @@ impl eframe::App for SnowGui {
             });
         self.error_dialog_open &= error_open;
         self.ui_active &= !self.error_dialog_open;
+
+        // Create disk image dialog
+        self.create_disk_dialog.update(ctx);
+        self.ui_active &= !self.create_disk_dialog.is_open();
+        if let Some(result) = self.create_disk_dialog.take_result() {
+            if let Err(e) = self.try_create_image(&result) {
+                self.show_error(&e);
+            }
+        }
 
         // Log window
         persistent_window!(&self, "Log")
@@ -490,7 +531,10 @@ impl eframe::App for SnowGui {
                                 ui.close_menu();
                             }
                         }
-                        if let Some(hdd) = self.emu.get_hdds() {
+
+                        // Needs cloning for the later borrow to call create_disk_dialog.open()
+                        let hdds = self.emu.get_hdds().map(|d| d.to_owned());
+                        if let Some(hdd) = hdds {
                             ui.separator();
                             for (i, disk) in hdd.iter().enumerate() {
                                 if let Some(disk) = disk {
@@ -515,9 +559,10 @@ impl eframe::App for SnowGui {
                                 } else {
                                     // No disk
                                     ui.menu_button(format!("SCSI #{}: (no disk)", i), |ui| {
-                                        //if ui.button("Create new image...").clicked() {
-                                        //    ui.close_menu();
-                                        //}
+                                        if ui.button("Create new image...").clicked() {
+                                            self.create_disk_dialog.open(i, &self.workspace_dir());
+                                            ui.close_menu();
+                                        }
                                         if ui.button("Load disk image...").clicked() {
                                             self.hdd_dialog_idx = i;
                                             self.hdd_dialog.pick_file();
