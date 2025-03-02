@@ -2,6 +2,7 @@
 
 mod app;
 mod audio;
+mod dialogs;
 mod emulator;
 mod keymap;
 mod widgets;
