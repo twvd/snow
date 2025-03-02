@@ -6,7 +6,7 @@ use crate::widgets::framebuffer::FramebufferWidget;
 use crate::workspace::Workspace;
 use crate::{emulator::EmulatorState, widgets::registers::RegistersWidget};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use eframe::egui;
 use egui_file_dialog::FileDialog;
 use itertools::Itertools;
@@ -67,7 +67,11 @@ pub struct SnowGui {
 }
 
 impl SnowGui {
-    pub(crate) fn try_create_image(&self, result: &DiskImageDialogResult) -> Result<()> {
+    fn try_create_image(&self, result: &DiskImageDialogResult) -> Result<()> {
+        if result.filename.try_exists()? {
+            bail!("Cowardly refusing to overwrite existing file. Delete the file first, or choose a different filename.");
+        }
+
         {
             let mut file = File::create(result.filename.clone())?;
             file.seek(SeekFrom::Start(result.size as u64 - 1))?;
@@ -368,7 +372,7 @@ impl eframe::App for SnowGui {
         self.ui_active &= !self.create_disk_dialog.is_open();
         if let Some(result) = self.create_disk_dialog.take_result() {
             if let Err(e) = self.try_create_image(&result) {
-                self.show_error(&e);
+                self.show_error(&format!("Failed to create image: {}", e));
             }
         }
 
