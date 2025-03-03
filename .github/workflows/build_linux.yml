@@ -28,9 +28,11 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: 'snow-linux-x64-tui-gha${{ github.run_number }}'
+        if-no-files-found: error
         path: target/release/snow_frontend_tui
     - name: GUI Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: 'snow-linux-x64-gui-gha${{ github.run_number }}'
+        if-no-files-found: error
         path: target/release/snow_frontend_egui

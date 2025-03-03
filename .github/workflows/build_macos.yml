@@ -1,0 +1,44 @@
+name: Build - MacOS
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+
+    name: MacOS-binary-${{ matrix.arch }}
+    runs-on: ${{ matrix.arch == 'x86_64' && 'macos-13' || 'macos-latest' }}
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install prerequisites
+      run: brew install sdl2
+    - name: Fetch submodules
+      run: git submodule update --init --recursive
+    - name: Install toolchain
+      run: rustup target add ${{ matrix.arch }}-apple-darwin
+    - name: Build release
+      run: cargo build --verbose --release --target ${{ matrix.arch }}-apple-darwin
+    - name: Install bundle dependencies
+      run: brew install dylibbundler imagemagick
+    - name: Run bundle script
+      run: ./.github/mac-bundle.sh "target/${{ matrix.arch }}-apple-darwin/release/snow_frontend_egui"
+    - name: Sign the App
+      run: codesign --force -s - -vvvv Snow.app
+    - name: Zip it up
+      run: zip -r Snow-${{ matrix.arch }}-gha${{ github.run_number }} Snow.app
+    - name: Upload MacOS App
+      uses: actions/upload-artifact@v4
+      with:
+        name: Snow MacOS App Bundle (${{ matrix.arch }}) GHA ${{ github.run_number }}
+        if-no-files-found: error
+        path: Snow-${{ matrix.arch }}-gha${{ github.run_number }}.zip
