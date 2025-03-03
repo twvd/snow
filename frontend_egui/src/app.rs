@@ -388,6 +388,7 @@ impl eframe::App for SnowGui {
         self.rom_dialog.update(ctx);
         if let Some(path) = self.rom_dialog.take_picked() {
             self.load_rom_from_path(&path, Some(self.emu.get_disk_paths()));
+            self.last_running = false;
             self.update_titlebar(ctx);
         }
         self.ui_active &= self.rom_dialog.state() != egui_file_dialog::DialogState::Open;
