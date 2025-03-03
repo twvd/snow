@@ -50,7 +50,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "Snow",
+        "Snow - Untitled workspace",
         options,
         Box::new(|cc| {
             Ok(Box::new(SnowGui::new(
