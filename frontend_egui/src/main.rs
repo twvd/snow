@@ -13,6 +13,8 @@ use clap::Parser;
 use eframe::egui;
 use log::LevelFilter;
 
+const SNOW_ICON: &[u8] = include_bytes!("../../docs/images/snow_icon.png");
+
 #[derive(Parser)]
 #[command(
     about = "Snow - Classic Macintosh emulator",
@@ -46,7 +48,9 @@ fn main() -> eframe::Result {
     egui_winit::install_windowevent_hook(s);
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default(),
+        viewport: egui::ViewportBuilder::default().with_icon(
+            eframe::icon_data::from_png_bytes(SNOW_ICON).expect("Icon is not valid PNG"),
+        ),
         ..Default::default()
     };
     eframe::run_native(

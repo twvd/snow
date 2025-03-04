@@ -6,16 +6,16 @@ PATH="$PATH:/usr/libexec"
 
 # Construct the app iconset.
 mkdir snow.iconset
-magick docs/images/mac_icon.png -alpha on -background none -units PixelsPerInch -density 72 -resize 16x16 snow.iconset/icon_16x16.png
-magick docs/images/mac_icon.png -alpha on -background none -units PixelsPerInch -density 144 -resize 32x32 snow.iconset/icon_16x16@2x.png
-magick docs/images/mac_icon.png -alpha on -background none -units PixelsPerInch -density 72 -resize 32x32 snow.iconset/icon_32x32.png
-magick docs/images/mac_icon.png -alpha on -background none -units PixelsPerInch -density 144 -resize 64x64 snow.iconset/icon_32x32@2x.png
-magick docs/images/mac_icon.png -alpha on -background none -units PixelsPerInch -density 72 -resize 128x128 snow.iconset/icon_128x128.png
-magick docs/images/mac_icon.png -alpha on -background none -units PixelsPerInch -density 144 -resize 256x256 snow.iconset/icon_128x128@2x.png
-magick docs/images/mac_icon.png -alpha on -background none -units PixelsPerInch -density 72 -resize 256x256 snow.iconset/icon_256x256.png
-magick docs/images/mac_icon.png -alpha on -background none -units PixelsPerInch -density 144 -resize 512x512 snow.iconset/icon_256x256@2x.png
-magick docs/images/mac_icon.png -alpha on -background none -units PixelsPerInch -density 72 -resize 512x512 snow.iconset/icon_512x512.png
-magick docs/images/mac_icon.png -alpha on -background none -units PixelsPerInch -density 144 -resize 1024x1024 snow.iconset/icon_512x512@2x.png
+magick docs/images/snow_icon.png -alpha on -background none -units PixelsPerInch -density 72 -resize 16x16 snow.iconset/icon_16x16.png
+magick docs/images/snow_icon.png -alpha on -background none -units PixelsPerInch -density 144 -resize 32x32 snow.iconset/icon_16x16@2x.png
+magick docs/images/snow_icon.png -alpha on -background none -units PixelsPerInch -density 72 -resize 32x32 snow.iconset/icon_32x32.png
+magick docs/images/snow_icon.png -alpha on -background none -units PixelsPerInch -density 144 -resize 64x64 snow.iconset/icon_32x32@2x.png
+magick docs/images/snow_icon.png -alpha on -background none -units PixelsPerInch -density 72 -resize 128x128 snow.iconset/icon_128x128.png
+magick docs/images/snow_icon.png -alpha on -background none -units PixelsPerInch -density 144 -resize 256x256 snow.iconset/icon_128x128@2x.png
+magick docs/images/snow_icon.png -alpha on -background none -units PixelsPerInch -density 72 -resize 256x256 snow.iconset/icon_256x256.png
+magick docs/images/snow_icon.png -alpha on -background none -units PixelsPerInch -density 144 -resize 512x512 snow.iconset/icon_256x256@2x.png
+magick docs/images/snow_icon.png -alpha on -background none -units PixelsPerInch -density 72 -resize 512x512 snow.iconset/icon_512x512.png
+magick docs/images/snow_icon.png -alpha on -background none -units PixelsPerInch -density 144 -resize 1024x1024 snow.iconset/icon_512x512@2x.png
 iconutil --convert icns snow.iconset
 
 # Set up the .app directory
