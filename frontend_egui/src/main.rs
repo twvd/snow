@@ -9,11 +9,16 @@ mod widgets;
 mod workspace;
 
 use crate::app::SnowGui;
+
 use clap::Parser;
 use eframe::egui;
 use log::LevelFilter;
 
 const SNOW_ICON: &[u8] = include_bytes!("../../docs/images/snow_icon.png");
+
+pub mod built_info {
+    include!(concat!(env!("OUT_DIR"), "/built.rs"));
+}
 
 #[derive(Parser)]
 #[command(
@@ -29,6 +34,19 @@ struct Args {
     no_audio: bool,
 }
 
+pub fn version_string() -> String {
+    format!(
+        "{}-{}{}",
+        built_info::PKG_VERSION,
+        built_info::GIT_COMMIT_HASH_SHORT.expect("Git version unavailable"),
+        if built_info::GIT_DIRTY.expect("Git version unavailable") {
+            "-dirty"
+        } else {
+            ""
+        }
+    )
+}
+
 fn main() -> eframe::Result {
     let args = Args::parse();
 
@@ -39,6 +57,13 @@ fn main() -> eframe::Result {
     );
     let logger_egui = Box::new(egui_logger::builder().max_level(LevelFilter::Debug).build());
     multi_log::MultiLogger::init(vec![logger_env, logger_egui], log::Level::Debug).unwrap();
+
+    log::info!(
+        "Snow v{} ({} {})",
+        version_string(),
+        built_info::TARGET,
+        built_info::PROFILE,
+    );
 
     // The egui frontend uses a patched version of egui-winit that allows hooking
     // into the winit WindowEvent stream in order to capture raw keyboard events.
@@ -54,7 +79,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "Snow - Untitled workspace",
+        &format!("Snow v{} - Untitled workspace", version_string()),
         options,
         Box::new(|cc| {
             Ok(Box::new(SnowGui::new(
