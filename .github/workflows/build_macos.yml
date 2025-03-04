@@ -15,7 +15,7 @@ jobs:
       matrix:
         arch: [x86_64, aarch64]
 
-    name: MacOS-binary-${{ matrix.arch }}
+    name: MacOS-${{ matrix.arch }}
     runs-on: ${{ matrix.arch == 'x86_64' && 'macos-13' || 'macos-latest' }}
 
     steps:
@@ -42,3 +42,37 @@ jobs:
         name: Snow MacOS App Bundle (${{ matrix.arch }}) GHA ${{ github.run_number }}
         if-no-files-found: error
         path: Snow-${{ matrix.arch }}-gha${{ github.run_number }}.zip
+
+  MacOS-Universal:
+    name: MacOS-Universal
+    needs: [build]
+    runs-on: macos-latest
+
+    steps:
+      - name: Download x86_64
+        uses: actions/download-artifact@v4
+        with:
+          name: Snow MacOS App Bundle (x86_64) GHA ${{ github.run_number }}
+          path: x86_64
+      - name: Download ARM64
+        uses: actions/download-artifact@v4
+        with:
+          name: Snow MacOS App Bundle (aarch64) GHA ${{ github.run_number }}
+          path: arm64
+      - name: Combine app bundles
+        shell: bash
+        run: |
+          set -x
+          unzip x86_64/*.zip -d x86_64
+          unzip arm64/*.zip -d arm64
+          lipo {x86_64,arm64}/Snow.app/Contents/MacOS/Snow -create -output Snow
+          cp -v -a arm64/Snow.app Snow.app
+          cp -v Snow Snow.app/Contents/MacOS/Snow
+          codesign --force -s - -vvvv Snow.app
+          zip -r -y Snow-universal-gha${{ github.run_number }}.zip Snow.app
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Snow MacOS App Bundle (universal) GHA ${{ github.run_number }}
+          if-no-files-found: error
+          path: Snow-universal-gha${{ github.run_number }}.zip
