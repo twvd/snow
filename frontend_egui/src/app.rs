@@ -4,7 +4,7 @@ use crate::widgets::breakpoints::BreakpointsWidget;
 use crate::widgets::disassembly::Disassembly;
 use crate::widgets::framebuffer::FramebufferWidget;
 use crate::workspace::Workspace;
-use crate::{emulator::EmulatorState, widgets::registers::RegistersWidget};
+use crate::{emulator::EmulatorState, version_string, widgets::registers::RegistersWidget};
 
 use anyhow::{bail, Result};
 use eframe::egui;
@@ -262,7 +262,8 @@ impl SnowGui {
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(
             if let Some(m) = self.emu.get_model() {
                 format!(
-                    "Snow - {} - {} ({})",
+                    "Snow v{} - {} - {} ({})",
+                    version_string(),
                     wsname,
                     m,
                     if self.emu.is_running() {
@@ -272,7 +273,7 @@ impl SnowGui {
                     }
                 )
             } else {
-                format!("Snow - {}", wsname)
+                format!("Snow v{} - {}", version_string(), wsname)
             },
         ));
     }
