@@ -118,7 +118,8 @@ impl SnowGui {
                             .eq_ignore_ascii_case("rom")
                     }),
                 )
-                .default_file_filter("Macintosh ROM files (*.ROM)"),
+                .default_file_filter("Macintosh ROM files (*.ROM)")
+                .initial_directory(Self::default_dir()),
             hdd_dialog: FileDialog::new()
                 .add_file_filter(
                     "HDD images (*.IMG)",
@@ -128,7 +129,8 @@ impl SnowGui {
                             .eq_ignore_ascii_case("img")
                     }),
                 )
-                .default_file_filter("HDD images (*.IMG)"),
+                .default_file_filter("HDD images (*.IMG)")
+                .initial_directory(Self::default_dir()),
             hdd_dialog_idx: 0,
             floppy_dialog: FileDialog::new()
                 .add_file_filter(
@@ -145,7 +147,8 @@ impl SnowGui {
                             .any(|s| ext.eq_ignore_ascii_case(s))
                     }),
                 )
-                .default_file_filter(&floppy_filter_str),
+                .default_file_filter(&floppy_filter_str)
+                .initial_directory(Self::default_dir()),
             floppy_dialog_driveidx: 0,
             workspace_dialog: FileDialog::new()
                 .add_file_filter(
