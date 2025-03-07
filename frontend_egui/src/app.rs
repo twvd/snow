@@ -107,7 +107,7 @@ impl SnowGui {
             wev_recv,
             framebuffer: FramebufferWidget::new(cc),
             registers: RegistersWidget::new(),
-            breakpoints: BreakpointsWidget::new(),
+            breakpoints: BreakpointsWidget::default(),
 
             rom_dialog: FileDialog::new()
                 .add_file_filter(
@@ -723,6 +723,9 @@ impl eframe::App for SnowGui {
                             self.breakpoints.draw(ui, &self.emu);
                         });
                     });
+                if let Some(a) = self.breakpoints.take_added_bp() {
+                    self.emu.toggle_breakpoint(a);
+                }
             }
         });
 
