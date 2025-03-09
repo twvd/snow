@@ -1,16 +1,40 @@
+use crate::consts::TRAPS;
 use crate::emulator::EmulatorState;
 use eframe::egui;
 use eframe::egui::RichText;
 use snow_core::bus::Address;
 use snow_core::cpu_m68k::cpu::{Breakpoint, BusBreakpoint};
 
-#[derive(Default)]
 pub struct BreakpointsWidget {
     exec_input: String,
     bus_input: String,
+    systrap_input: String,
+    linea_input: String,
+    linef_input: String,
     bus_r: bool,
     bus_w: bool,
     added_bp: Option<Breakpoint>,
+    traps: Vec<String>,
+}
+
+impl Default for BreakpointsWidget {
+    fn default() -> Self {
+        Self {
+            exec_input: String::new(),
+            bus_input: String::new(),
+            systrap_input: String::new(),
+            linea_input: String::new(),
+            linef_input: String::new(),
+            bus_r: true,
+            bus_w: false,
+            added_bp: None,
+            traps: Vec::from_iter(
+                crate::consts::TRAPS
+                    .iter()
+                    .map(|(a, t)| format!("{} (${:04X})", t, a)),
+            ),
+        }
+    }
 }
 
 impl BreakpointsWidget {
@@ -60,7 +84,79 @@ impl BreakpointsWidget {
                             },
                             Address::from_str_radix(&self.bus_input, 16).unwrap(),
                         ));
-                        self.exec_input.clear();
+                        self.bus_input.clear();
+                    }
+                });
+            });
+            ui.collapsing("Add A-line trap (system trap) breakpoint", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("System trap: ");
+                    ui.add(
+                        egui_dropdown::DropDownBox::from_iter(
+                            &self.traps,
+                            "breakpoints_systrap",
+                            &mut self.systrap_input,
+                            |ui, trap| ui.selectable_label(false, trap),
+                        )
+                        .filter_by_input(true)
+                        .select_on_focus(true)
+                        .hint_text("Search system traps"),
+                    );
+
+                    let selected = self
+                        .systrap_input
+                        .chars()
+                        .skip_while(|c| *c != '$')
+                        .skip(1)
+                        .take(4)
+                        .collect::<String>();
+                    if ui
+                        .add_enabled(
+                            u16::from_str_radix(&selected, 16).is_ok(),
+                            egui::Button::new("Add breakpoint"),
+                        )
+                        .clicked()
+                    {
+                        self.added_bp = Some(Breakpoint::LineA(
+                            u16::from_str_radix(&selected, 16).unwrap(),
+                        ));
+                        self.systrap_input.clear();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Opcode (hex, Axxx): ");
+                    ui.text_edit_singleline(&mut self.linea_input);
+                    if ui
+                        .add_enabled(
+                            u16::from_str_radix(&self.linea_input, 16)
+                                .is_ok_and(|a| a & 0xF000 == 0xA000),
+                            egui::Button::new("Add breakpoint"),
+                        )
+                        .clicked()
+                    {
+                        self.added_bp = Some(Breakpoint::LineA(
+                            u16::from_str_radix(&self.linea_input, 16).unwrap(),
+                        ));
+                        self.linea_input.clear();
+                    }
+                });
+            });
+            ui.collapsing("Add F-line trap breakpoint", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Opcode (hex, Fxxx): ");
+                    ui.text_edit_singleline(&mut self.linef_input);
+                    if ui
+                        .add_enabled(
+                            u16::from_str_radix(&self.linef_input, 16)
+                                .is_ok_and(|a| a & 0xF000 == 0xF000),
+                            egui::Button::new("Add breakpoint"),
+                        )
+                        .clicked()
+                    {
+                        self.added_bp = Some(Breakpoint::LineF(
+                            u16::from_str_radix(&self.linef_input, 16).unwrap(),
+                        ));
+                        self.linef_input.clear();
                     }
                 });
             });
@@ -96,8 +192,20 @@ impl BreakpointsWidget {
                                     }
                                     Breakpoint::InterruptLevel(_) => todo!(),
                                     Breakpoint::InterruptVector(_) => todo!(),
-                                    Breakpoint::LineA(_) => todo!(),
-                                    Breakpoint::LineF(_) => todo!(),
+                                    Breakpoint::LineA(i) => {
+                                        format!(
+                                            "LINEA: ${:04X} {}",
+                                            i,
+                                            TRAPS
+                                                .iter()
+                                                .find(|(t, _)| i == *t)
+                                                .map(|s| format!("({})", s.1))
+                                                .unwrap_or_default()
+                                        )
+                                    }
+                                    Breakpoint::LineF(i) => {
+                                        format!("LINEF: ${:04X}", i)
+                                    }
                                 }));
                             });
                         });

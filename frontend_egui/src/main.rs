@@ -2,6 +2,7 @@
 
 mod app;
 mod audio;
+mod consts;
 mod dialogs;
 mod emulator;
 mod keymap;
