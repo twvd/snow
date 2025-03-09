@@ -79,7 +79,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        &format!("Snow v{} - Untitled workspace", version_string()),
+        "Snow",
         options,
         Box::new(|cc| {
             Ok(Box::new(SnowGui::new(

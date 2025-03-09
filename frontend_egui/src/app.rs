@@ -43,6 +43,7 @@ pub struct SnowGui {
     workspace: Workspace,
     workspace_file: Option<PathBuf>,
     load_windows: bool,
+    first_draw: bool,
 
     wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
 
@@ -103,6 +104,7 @@ impl SnowGui {
             workspace: Default::default(),
             workspace_file: None,
             load_windows: false,
+            first_draw: true,
 
             wev_recv,
             framebuffer: FramebufferWidget::new(cc),
@@ -338,6 +340,11 @@ impl SnowGui {
 
 impl eframe::App for SnowGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.first_draw {
+            self.update_titlebar(ctx);
+            self.first_draw = false;
+        }
+
         self.sync_windows(ctx);
         self.poll_winit_events();
         if self.emu.poll() {
