@@ -385,8 +385,8 @@ where
                                 || *bp == Breakpoint::Bus(BusBreakpoint::ReadWrite, byte_addr)
                         }) {
                             info!(
-                                "Breakpoint hit (bus read): ${:06X}, value: ${:02X}",
-                                byte_addr, b
+                                "Breakpoint hit (bus read): ${:06X}, value: ${:02X}, PC: ${:06X}",
+                                byte_addr, b, self.regs.pc,
                             );
                             self.breakpoint_hit.set();
                         }
@@ -467,8 +467,8 @@ where
                             || *bp == Breakpoint::Bus(BusBreakpoint::ReadWrite, byte_addr)
                     }) {
                         info!(
-                            "Breakpoint hit (bus write): ${:06X}, value: ${:02X}",
-                            byte_addr, b
+                            "Breakpoint hit (bus write): ${:06X}, value: ${:02X}, PC: ${:06X}",
+                            byte_addr, b, self.regs.pc
                         );
                         self.breakpoint_hit.set();
                     }
@@ -499,8 +499,8 @@ where
                             || *bp == Breakpoint::Bus(BusBreakpoint::ReadWrite, byte_addr)
                     }) {
                         info!(
-                            "Breakpoint hit (bus write): ${:06X}, value: ${:02X}",
-                            byte_addr, b
+                            "Breakpoint hit (bus write): ${:06X}, value: ${:02X}, PC: ${:06X}",
+                            byte_addr, b, self.regs.pc
                         );
                         self.breakpoint_hit.set();
                     }
@@ -829,10 +829,26 @@ where
             InstructionMnemonic::ROL_ea => self.op_shrot_ea(instr, Self::alu_rol),
             InstructionMnemonic::ROR_ea => self.op_shrot_ea(instr, Self::alu_ror),
             InstructionMnemonic::LINEA => {
+                if self.breakpoints.contains(&Breakpoint::LineA(instr.data)) {
+                    info!(
+                        "Breakpoint hit (LINEA): ${:04X}, PC: ${:06X}",
+                        instr.data, self.regs.pc
+                    );
+                    self.breakpoint_hit.set();
+                }
+
                 self.advance_cycles(4)?;
                 self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEA, None)
             }
             InstructionMnemonic::LINEF => {
+                if self.breakpoints.contains(&Breakpoint::LineF(instr.data)) {
+                    info!(
+                        "Breakpoint hit (LINEF): ${:04X}, PC: ${:06X}",
+                        instr.data, self.regs.pc
+                    );
+                    self.breakpoint_hit.set();
+                }
+
                 self.advance_cycles(4)?;
                 self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEF, None)
             }

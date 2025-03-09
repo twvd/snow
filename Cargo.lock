@@ -1280,6 +1280,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-dropdown"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4960c7f202d7840876a5e169abdd4825ecdb82c2599683043d0e2f74a18179a"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "egui-file-dialog"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3630,6 +3639,7 @@ dependencies = [
  "crossbeam-channel",
  "dirs",
  "eframe",
+ "egui-dropdown",
  "egui-file-dialog",
  "egui-winit",
  "egui_extras",
