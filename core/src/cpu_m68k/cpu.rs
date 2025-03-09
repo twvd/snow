@@ -33,7 +33,7 @@ pub enum Breakpoint {
     /// Breaks when a bus read/write occurs on address
     Bus(BusBreakpoint, Address),
     /// Breaks when an interrupt of specified level occurs
-    InterruptLevel(usize),
+    InterruptLevel(u8),
     /// Breaks when CPU jumps to specified interrupt vector
     InterruptVector(Address),
     /// Breaks on a LINEA instruction of specified opcode
@@ -271,6 +271,17 @@ where
 
         if let Some(level) = self.bus.get_irq() {
             if level == 7 || self.regs.sr.int_prio_mask() < level {
+                if self
+                    .breakpoints
+                    .contains(&Breakpoint::InterruptLevel(level))
+                {
+                    info!(
+                        "Breakpoint hit (interrupt level): {}, PC: ${:06X}",
+                        level, self.regs.pc
+                    );
+                    self.breakpoint_hit.set();
+                }
+
                 self.raise_irq(
                     level,
                     VECTOR_AUTOVECTOR_OFFSET + (Address::from(level - 1) * 4),
@@ -623,6 +634,17 @@ where
                 self.write_ticks(self.regs.ssp.wrapping_add(0), saved_sr)?;
                 self.write_ticks(self.regs.ssp.wrapping_add(2), (self.regs.pc >> 16) as u16)?;
             }
+        }
+
+        if self
+            .breakpoints
+            .contains(&Breakpoint::InterruptVector(vector))
+        {
+            info!(
+                "Breakpoint hit (interrupt vector): {:06X}, PC: ${:06X}",
+                vector, self.regs.pc
+            );
+            self.breakpoint_hit.set();
         }
 
         let new_pc = self.read_ticks::<Long>(vector)?;
