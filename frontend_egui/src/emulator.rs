@@ -10,7 +10,7 @@ use snow_core::bus::Address;
 use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
 use snow_core::cpu_m68k::regs::RegisterFile;
 use snow_core::emulator::comm::{
-    EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus, HddStatus,
+    Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus, HddStatus,
 };
 use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus};
 use snow_core::emulator::Emulator;
@@ -398,18 +398,18 @@ impl EmulatorState {
             .unwrap();
     }
 
-    pub fn get_breakpoints(&self) -> &[Address] {
+    pub fn get_breakpoints(&self) -> &[Breakpoint] {
         let Some(ref status) = self.status else {
             return &[];
         };
         &status.breakpoints
     }
 
-    pub fn toggle_breakpoint(&self, addr: Address) {
+    pub fn toggle_breakpoint(&self, bp: Breakpoint) {
         self.cmdsender
             .as_ref()
             .unwrap()
-            .send(EmulatorCommand::ToggleBreakpoint(addr))
+            .send(EmulatorCommand::ToggleBreakpoint(bp))
             .unwrap();
     }
 }

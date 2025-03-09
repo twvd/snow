@@ -1,5 +1,6 @@
 use crate::emulator::EmulatorState;
 use eframe::egui;
+use snow_core::cpu_m68k::cpu::Breakpoint;
 
 pub struct Disassembly {}
 
@@ -31,7 +32,7 @@ impl Disassembly {
                             if ui
                                 .add(
                                     egui::Label::new(egui::RichText::new(
-                                        if state.get_breakpoints().contains(&c.addr) {
+                                        if state.get_breakpoints().contains(&Breakpoint::Execution(c.addr)) {
                                             egui_material_icons::icons::ICON_RADIO_BUTTON_UNCHECKED
                                         } else {
                                             egui_material_icons::icons::ICON_RADIO_BUTTON_CHECKED
@@ -41,7 +42,7 @@ impl Disassembly {
                                 )
                                 .clicked()
                             {
-                                state.toggle_breakpoint(c.addr);
+                                state.toggle_breakpoint(Breakpoint::Execution(c.addr));
                             }
                             if pc == Some(c.addr) {
                                 ui.label(

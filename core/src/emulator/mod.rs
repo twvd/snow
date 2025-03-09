@@ -35,7 +35,6 @@ pub struct Emulator {
     event_sender: crossbeam_channel::Sender<EmulatorEvent>,
     event_recv: EmulatorEventReceiver,
     run: bool,
-    breakpoints: Vec<Address>,
     last_update: Instant,
     adbmouse_sender: Option<ClickEventSender>,
     adbkeyboard_sender: Option<KeyEventSender>,
@@ -87,7 +86,6 @@ impl Emulator {
             event_sender: statuss,
             event_recv: statusr,
             run: false,
-            breakpoints: vec![],
             last_update: Instant::now(),
             adbmouse_sender,
             adbkeyboard_sender,
@@ -111,7 +109,7 @@ impl Emulator {
             .send(EmulatorEvent::Status(Box::new(EmulatorStatus {
                 regs: self.cpu.regs.clone(),
                 running: self.run,
-                breakpoints: self.breakpoints.clone(),
+                breakpoints: self.cpu.breakpoints().to_vec(),
                 cycles: self.cpu.cycles,
                 fdd: core::array::from_fn(|i| FddStatus {
                     present: self.cpu.bus.swim.drives[i].is_present(),
@@ -174,15 +172,10 @@ impl Emulator {
         //    debug!("Sony_RdData = {}", self.cpu.regs.d[0] as i32);
         //}
 
-        if self.run
-            && (self.breakpoints.contains(&self.cpu.regs.pc)
-                || self.cpu.bus.swim.dbg_break.get_clear()
-                || self.cpu.bus.dbg_break.get_clear())
-        {
+        if self.run && self.cpu.get_clr_breakpoint_hit() {
             stop_break = true;
         }
         if stop_break {
-            info!("Stopped at breakpoint: {:06X}", self.cpu.regs.pc);
             self.run = false;
             self.status_update()?;
         }
@@ -260,6 +253,7 @@ impl Tickable for Emulator {
                     EmulatorCommand::Run => {
                         info!("Running");
                         self.run = true;
+                        self.cpu.get_clr_breakpoint_hit();
                         self.status_update()?;
                     }
                     EmulatorCommand::Reset => {
@@ -282,13 +276,14 @@ impl Tickable for Emulator {
                             self.status_update()?;
                         }
                     }
-                    EmulatorCommand::ToggleBreakpoint(addr) => {
-                        if let Some(idx) = self.breakpoints.iter().position(|&v| v == addr) {
-                            self.breakpoints.remove(idx);
-                            info!("Breakpoint removed: ${:06X}", addr);
+                    EmulatorCommand::ToggleBreakpoint(bp) => {
+                        let exists = self.cpu.breakpoints().contains(&bp);
+                        if exists {
+                            self.cpu.clear_breakpoint(bp);
+                            info!("Breakpoint removed: {:X?}", bp);
                         } else {
-                            self.breakpoints.push(addr);
-                            info!("Breakpoint set: ${:06X}", addr);
+                            self.cpu.set_breakpoint(bp);
+                            info!("Breakpoint set: {:X?}", bp);
                         }
                         self.status_update()?;
                     }

@@ -200,8 +200,9 @@ impl UserInterface {
                     }
                     (View::Debugger, KeyCode::F(7)) => {
                         let addr = self.state_debugger.get_selected_address(&self.disassembly);
-                        self.cmdsender
-                            .send(EmulatorCommand::ToggleBreakpoint(addr))?;
+                        self.cmdsender.send(EmulatorCommand::ToggleBreakpoint(
+                            snow_core::cpu_m68k::cpu::Breakpoint::Execution(addr),
+                        ))?;
                     }
                     (View::Status, KeyCode::Char('1')) if self.emustatus.fdd[0].present => {
                         self.state_browser = BrowserWidgetState::new(0, Self::DIR_FLOPPIES);
@@ -259,8 +260,9 @@ impl UserInterface {
                         .trim_start_matches("0x"),
                     16,
                 )?;
-                self.cmdsender
-                    .send(EmulatorCommand::ToggleBreakpoint(addr))?;
+                self.cmdsender.send(EmulatorCommand::ToggleBreakpoint(
+                    snow_core::cpu_m68k::cpu::Breakpoint::Execution(addr),
+                ))?;
                 Ok(())
             }
             "loadbin" => {
