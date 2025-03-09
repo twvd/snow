@@ -2,11 +2,12 @@ use crate::emulator::EmulatorState;
 use eframe::egui;
 use eframe::egui::RichText;
 use snow_core::bus::Address;
+use snow_core::cpu_m68k::cpu::Breakpoint;
 
 #[derive(Default)]
 pub struct BreakpointsWidget {
     newbp_input: String,
-    added_bp: Option<Address>,
+    added_bp: Option<Breakpoint>,
 }
 
 impl BreakpointsWidget {
@@ -25,7 +26,9 @@ impl BreakpointsWidget {
                     )
                     .clicked()
                 {
-                    self.added_bp = Some(Address::from_str_radix(&self.newbp_input, 16).unwrap());
+                    self.added_bp = Some(Breakpoint::Execution(
+                        Address::from_str_radix(&self.newbp_input, 16).unwrap(),
+                    ));
                     self.newbp_input.clear();
                 }
             });
@@ -38,15 +41,22 @@ impl BreakpointsWidget {
                 .column(Column::exact(100.0))
                 .striped(true)
                 .body(|mut body| {
-                    for &addr in state.get_breakpoints() {
+                    for &bp in state.get_breakpoints() {
                         body.row(18.0, |mut row| {
                             row.col(|ui| {
                                 if ui.button(egui_material_icons::icons::ICON_DELETE).clicked() {
-                                    state.toggle_breakpoint(addr);
+                                    state.toggle_breakpoint(bp);
                                 }
                             });
                             row.col(|ui| {
-                                ui.label(RichText::from(format!("{:06X}", addr)));
+                                ui.label(RichText::from(match bp {
+                                    Breakpoint::Execution(addr) => format!("{:06X}", addr),
+                                    Breakpoint::Bus(_, _) => todo!(),
+                                    Breakpoint::InterruptLevel(_) => todo!(),
+                                    Breakpoint::InterruptVector(_) => todo!(),
+                                    Breakpoint::LineA(_) => todo!(),
+                                    Breakpoint::LineF(_) => todo!(),
+                                }));
                             });
                         });
                     }
@@ -54,7 +64,7 @@ impl BreakpointsWidget {
         });
     }
 
-    pub fn take_added_bp(&mut self) -> Option<Address> {
+    pub fn take_added_bp(&mut self) -> Option<Breakpoint> {
         self.added_bp.take()
     }
 }

@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use crate::bus::{Address, Bus, BusResult, IrqSource, ADDRESS_MASK};
 use crate::tickable::{Tickable, Ticks};
-use crate::types::{Byte, Long, Word};
+use crate::types::{Byte, LatchingEvent, Long, Word};
 use crate::util::TemporalOrder;
 
 use super::instruction::{
@@ -17,6 +17,30 @@ use super::instruction::{
 };
 use super::regs::{Register, RegisterFile, RegisterSR};
 use super::CpuSized;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum BusBreakpoint {
+    Read,
+    Write,
+    ReadWrite,
+}
+
+/// A breakpoint
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub enum Breakpoint {
+    /// Breaks when program counter reaches address
+    Execution(Address),
+    /// Breaks when a bus read/write occurs on address
+    Bus(BusBreakpoint, Address),
+    /// Breaks when an interrupt of specified level occurs
+    InterruptLevel(usize),
+    /// Breaks when CPU jumps to specified interrupt vector
+    InterruptVector(Address),
+    /// Breaks on a LINEA instruction of specified opcode
+    LineA(u16),
+    /// Breaks on a LINEF instruction of specified opcode
+    LineF(u16),
+}
 
 /// Address error details
 #[derive(Debug, Clone, Copy)]
@@ -52,7 +76,7 @@ const VECTOR_SP: Address = 0x00000000;
 /// Reset vector
 const VECTOR_RESET: Address = 0x00000004;
 /// Address error exception vector
-const VECTOR_ACCESS_ERROR: Address = 0x00000C;
+const VECTOR_ADDRESS_ERROR: Address = 0x00000C;
 /// Illegal instruction exception vector
 const VECTOR_ILLEGAL: Address = 0x000010;
 /// Division by zero exception vector
@@ -132,6 +156,13 @@ pub struct CpuM68k<TBus: Bus<Address, u8> + IrqSource> {
 
     /// Mask trace exceptions (for tests)
     pub trace_mask: bool,
+
+    /// Active breakpoints
+    breakpoints: Vec<Breakpoint>,
+
+    /// Breakpoint hit latch
+    #[serde(skip)]
+    breakpoint_hit: LatchingEvent,
 }
 
 impl<TBus> CpuM68k<TBus>
@@ -149,6 +180,8 @@ where
             step_ea_load: None,
             decode_cache: empty_decode_cache(),
             trace_mask: false,
+            breakpoints: vec![],
+            breakpoint_hit: LatchingEvent::default(),
         }
     }
 
@@ -167,6 +200,26 @@ where
         self.prefetch_refill()?;
 
         Ok(())
+    }
+
+    /// Tests if a breakpoint was hit
+    pub fn get_clr_breakpoint_hit(&mut self) -> bool {
+        self.breakpoint_hit.get_clear()
+    }
+
+    /// Reads the active breakpoints
+    pub fn breakpoints(&self) -> &[Breakpoint] {
+        &self.breakpoints
+    }
+
+    /// Sets a breakpoint
+    pub fn set_breakpoint(&mut self, bp: Breakpoint) {
+        self.breakpoints.push(bp);
+    }
+
+    /// Clears a breakpoint
+    pub fn clear_breakpoint(&mut self, bp: Breakpoint) {
+        self.breakpoints.retain(|b| *b != bp);
     }
 
     /// Pumps the prefetch queue, unless it is already full
@@ -258,7 +311,7 @@ where
                     details.ir = instr.data;
                     self.raise_exception(
                         ExceptionGroup::Group0,
-                        VECTOR_ACCESS_ERROR,
+                        VECTOR_ADDRESS_ERROR,
                         Some(details),
                     )?;
                 }
@@ -274,6 +327,16 @@ where
         };
 
         self.prefetch_refill()?;
+
+        // Test breakpoint on next PC location
+        if self
+            .breakpoints
+            .contains(&Breakpoint::Execution(self.regs.pc))
+        {
+            info!("Breakpoint hit (execution): ${:06X}", self.regs.pc);
+            self.breakpoint_hit.set();
+        }
+
         Ok(())
     }
 

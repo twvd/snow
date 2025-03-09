@@ -8,6 +8,8 @@ use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::tickable::Ticks;
 
+pub use crate::cpu_m68k::cpu::{Breakpoint, BusBreakpoint};
+
 pub type EmulatorCommandSender = crossbeam_channel::Sender<EmulatorCommand>;
 pub type EmulatorEventReceiver = crossbeam_channel::Receiver<EmulatorEvent>;
 
@@ -31,7 +33,7 @@ pub enum EmulatorCommand {
     Stop,
     Reset,
     Step,
-    ToggleBreakpoint(Address),
+    ToggleBreakpoint(Breakpoint),
     BusWrite(Address, Vec<u8>),
     Disassemble(Address, usize),
     KeyEvent(KeyEvent),
@@ -59,7 +61,7 @@ pub enum EmulatorSpeed {
 pub struct EmulatorStatus {
     pub regs: RegisterFile,
     pub running: bool,
-    pub breakpoints: Vec<Address>,
+    pub breakpoints: Vec<Breakpoint>,
     pub cycles: Ticks,
 
     pub fdd: [FddStatus; 3],

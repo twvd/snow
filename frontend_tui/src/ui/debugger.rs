@@ -6,7 +6,10 @@ use ratatui::{
     widgets::{Block, Paragraph},
 };
 use snow_core::{
-    bus::Address, cpu_m68k::regs::RegisterFile, emulator::comm::EmulatorStatus, types::Long,
+    bus::Address,
+    cpu_m68k::{cpu::Breakpoint, regs::RegisterFile},
+    emulator::comm::EmulatorStatus,
+    types::Long,
 };
 
 use super::DisassemblyListing;
@@ -82,7 +85,11 @@ impl StatefulWidget for DebuggerWidget<'_> {
                     Line::from(vec![
                         if e.addr == self.emustatus.regs.pc {
                             Span::from("► ").style(style.light_green())
-                        } else if self.emustatus.breakpoints.contains(&e.addr) {
+                        } else if self
+                            .emustatus
+                            .breakpoints
+                            .contains(&Breakpoint::Execution(e.addr))
+                        {
                             Span::from("• ").style(style.red().bold())
                         } else {
                             Span::from("  ")
