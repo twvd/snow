@@ -89,7 +89,10 @@ impl FramebufferWidget {
     }
 
     pub fn has_pointer(&self) -> bool {
-        let resp = self.response.as_ref().unwrap();
-        resp.contains_pointer()
+        if let Some(resp) = self.response.as_ref() {
+            resp.contains_pointer()
+        } else {
+            false
+        }
     }
 }
