@@ -378,7 +378,20 @@ where
             let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
             let b: T = loop {
                 match self.bus.read(byte_addr) {
-                    BusResult::Ok(b) => break b.into(),
+                    BusResult::Ok(b) => {
+                        // Trigger bus access breakpoints
+                        if self.breakpoints.iter().any(|bp| {
+                            *bp == Breakpoint::Bus(BusBreakpoint::Read, byte_addr)
+                                || *bp == Breakpoint::Bus(BusBreakpoint::ReadWrite, byte_addr)
+                        }) {
+                            info!(
+                                "Breakpoint hit (bus read): ${:06X}, value: ${:02X}",
+                                byte_addr, b
+                            );
+                            self.breakpoint_hit.set();
+                        }
+                        break b.into();
+                    }
                     BusResult::WaitState => {
                         // Insert wait states until bus access succeeds
                         self.advance_cycles(2)?;
@@ -447,6 +460,19 @@ where
                         self.advance_cycles(2)?;
                     }
                     self.advance_cycles(2)?;
+
+                    // Trigger bus access breakpoints
+                    if self.breakpoints.iter().any(|bp| {
+                        *bp == Breakpoint::Bus(BusBreakpoint::Write, byte_addr)
+                            || *bp == Breakpoint::Bus(BusBreakpoint::ReadWrite, byte_addr)
+                    }) {
+                        info!(
+                            "Breakpoint hit (bus write): ${:06X}, value: ${:02X}",
+                            byte_addr, b
+                        );
+                        self.breakpoint_hit.set();
+                    }
+
                     if a == 1 {
                         // Address errors occur AFTER the first Word was accessed and not at all if
                         // it is a byte access, so this is the perfect time to check.
@@ -466,6 +492,18 @@ where
                         self.advance_cycles(2)?;
                     }
                     self.advance_cycles(2)?;
+
+                    // Trigger bus access breakpoints
+                    if self.breakpoints.iter().any(|bp| {
+                        *bp == Breakpoint::Bus(BusBreakpoint::Write, byte_addr)
+                            || *bp == Breakpoint::Bus(BusBreakpoint::ReadWrite, byte_addr)
+                    }) {
+                        info!(
+                            "Breakpoint hit (bus write): ${:06X}, value: ${:02X}",
+                            byte_addr, b
+                        );
+                        self.breakpoint_hit.set();
+                    }
 
                     if a == 1 {
                         // Address errors occur AFTER the first Word was accessed and not at all if
