@@ -476,7 +476,13 @@ where
     }
 
     fn reset(&mut self) -> Result<()> {
+        // Clear RAM
         self.ram.fill(0);
+
+        // Disable memory test
+        if let Some((addr, value)) = self.model.disable_memtest() {
+            self.write_ram(addr, value);
+        }
 
         // Take the ADB transceiver out because that contains crossbeam channels..
         let oldadb = std::mem::replace(&mut self.via, Via::new(self.model)).adb;
