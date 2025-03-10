@@ -23,10 +23,19 @@ impl Disassembly {
             .column(Column::exact(40.0))
             .column(Column::exact(70.0))
             .column(Column::exact(100.0))
-            .column(Column::initial(120.0))
+            .column(Column::remainder())
             .striped(true)
             .body(|mut body| {
                 for c in code {
+                    let mut text = c.str.to_string();
+                    if c.raw.len() == 2 && c.raw[0] & 0xF0 == 0xA0 {
+                        // A-line annotation
+                        let opcode = ((c.raw[0] as u16) << 8) | (c.raw[1] as u16);
+                        if let Some((_, s)) = crate::consts::TRAPS.iter().find(|(i, _)| *i == opcode) {
+                            text.push_str(&format!(" ; {}", s));
+                        }
+                    }
+
                     body.row(12.0, |mut row| {
                         row.col(|ui| {
                             if ui
@@ -71,7 +80,7 @@ impl Disassembly {
                         });
                         row.col(|ui| {
                             ui.label(
-                                egui::RichText::new(c.str.to_owned())
+                                egui::RichText::new(text)
                                     .family(egui::FontFamily::Monospace)
                                     .size(10.0),
                             );
