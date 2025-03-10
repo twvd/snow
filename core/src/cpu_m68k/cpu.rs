@@ -34,8 +34,8 @@ pub enum Breakpoint {
     Bus(BusBreakpoint, Address),
     /// Breaks when an interrupt of specified level occurs
     InterruptLevel(u8),
-    /// Breaks when CPU jumps to specified interrupt vector
-    InterruptVector(Address),
+    /// Breaks when CPU jumps to specified exception vector
+    ExceptionVector(Address),
     /// Breaks on a LINEA instruction of specified opcode
     LineA(u16),
     /// Breaks on a LINEF instruction of specified opcode
@@ -571,6 +571,17 @@ where
         self.write_ticks(self.regs.ssp.wrapping_add(4), self.regs.pc as u16)?;
         self.write_ticks(self.regs.ssp.wrapping_add(2), (self.regs.pc >> 16) as u16)?;
 
+        if self
+            .breakpoints
+            .contains(&Breakpoint::ExceptionVector(vector))
+        {
+            info!(
+                "Breakpoint hit (exception vector): {:06X}, PC: ${:06X}",
+                vector, self.regs.pc
+            );
+            self.breakpoint_hit.set();
+        }
+
         // Jump to vector
         let new_pc = self.read_ticks::<Long>(vector)?;
         self.set_pc(new_pc)?;
@@ -638,10 +649,10 @@ where
 
         if self
             .breakpoints
-            .contains(&Breakpoint::InterruptVector(vector))
+            .contains(&Breakpoint::ExceptionVector(vector))
         {
             info!(
-                "Breakpoint hit (interrupt vector): {:06X}, PC: ${:06X}",
+                "Breakpoint hit (exception vector): {:06X}, PC: ${:06X}",
                 vector, self.regs.pc
             );
             self.breakpoint_hit.set();
