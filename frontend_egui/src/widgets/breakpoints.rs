@@ -1,4 +1,4 @@
-use crate::consts::TRAPS;
+use crate::consts::{TRAPS, VECTORS};
 use crate::emulator::EmulatorState;
 use eframe::egui;
 use eframe::egui::RichText;
@@ -11,10 +11,14 @@ pub struct BreakpointsWidget {
     systrap_input: String,
     linea_input: String,
     linef_input: String,
+    vector_input: String,
+    vector_search_input: String,
+    intlevel_input: u8,
     bus_r: bool,
     bus_w: bool,
     added_bp: Option<Breakpoint>,
     traps: Vec<String>,
+    vectors: Vec<String>,
 }
 
 impl Default for BreakpointsWidget {
@@ -25,6 +29,9 @@ impl Default for BreakpointsWidget {
             systrap_input: String::new(),
             linea_input: String::new(),
             linef_input: String::new(),
+            vector_input: String::new(),
+            vector_search_input: String::new(),
+            intlevel_input: 1,
             bus_r: true,
             bus_w: false,
             added_bp: None,
@@ -32,6 +39,11 @@ impl Default for BreakpointsWidget {
                 crate::consts::TRAPS
                     .iter()
                     .map(|(a, t)| format!("{} (${:04X})", t, a)),
+            ),
+            vectors: Vec::from_iter(
+                crate::consts::VECTORS
+                    .iter()
+                    .map(|(a, t)| format!("{} (${:06X})", t, a)),
             ),
         }
     }
@@ -160,6 +172,68 @@ impl BreakpointsWidget {
                     }
                 });
             });
+            ui.collapsing("Add interrupt level breakpoint", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Level: ");
+                    ui.add(egui::Slider::new(&mut self.intlevel_input, 1..=7));
+                    if ui.button("Add breakpoint").clicked() {
+                        self.added_bp = Some(Breakpoint::InterruptLevel(self.intlevel_input));
+                        self.vector_search_input.clear();
+                    }
+                });
+            });
+            ui.collapsing("Add exception vector breakpoint", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Vector: ");
+                    ui.add(
+                        egui_dropdown::DropDownBox::from_iter(
+                            &self.vectors,
+                            "breakpoints_vectors",
+                            &mut self.vector_search_input,
+                            |ui, trap| ui.selectable_label(false, trap),
+                        )
+                        .filter_by_input(true)
+                        .select_on_focus(true)
+                        .hint_text("Search exception vectors"),
+                    );
+
+                    let selected = self
+                        .vector_search_input
+                        .chars()
+                        .skip_while(|c| *c != '$')
+                        .skip(1)
+                        .take(6)
+                        .collect::<String>();
+                    if ui
+                        .add_enabled(
+                            u16::from_str_radix(&selected, 16).is_ok(),
+                            egui::Button::new("Add breakpoint"),
+                        )
+                        .clicked()
+                    {
+                        self.added_bp = Some(Breakpoint::ExceptionVector(
+                            Address::from_str_radix(&selected, 16).unwrap(),
+                        ));
+                        self.vector_search_input.clear();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Vector address (hex): ");
+                    ui.text_edit_singleline(&mut self.vector_input);
+                    if ui
+                        .add_enabled(
+                            Address::from_str_radix(&self.vector_input, 16).is_ok(),
+                            egui::Button::new("Add breakpoint"),
+                        )
+                        .clicked()
+                    {
+                        self.added_bp = Some(Breakpoint::ExceptionVector(
+                            Address::from_str_radix(&self.vector_input, 16).unwrap(),
+                        ));
+                        self.vector_input.clear();
+                    }
+                });
+            });
             ui.separator();
 
             TableBuilder::new(ui)
@@ -190,8 +264,9 @@ impl BreakpointsWidget {
                                     Breakpoint::Bus(BusBreakpoint::ReadWrite, addr) => {
                                         format!("Bus access (R/W): ${:06X}", addr)
                                     }
-                                    Breakpoint::InterruptLevel(_) => todo!(),
-                                    Breakpoint::InterruptVector(_) => todo!(),
+                                    Breakpoint::InterruptLevel(i) => {
+                                        format!("Int level: {}", i)
+                                    }
                                     Breakpoint::LineA(i) => {
                                         format!(
                                             "LINEA: ${:04X} {}",
@@ -205,6 +280,17 @@ impl BreakpointsWidget {
                                     }
                                     Breakpoint::LineF(i) => {
                                         format!("LINEF: ${:04X}", i)
+                                    }
+                                    Breakpoint::ExceptionVector(i) => {
+                                        format!(
+                                            "Vector: ${:06X} {}",
+                                            i,
+                                            VECTORS
+                                                .iter()
+                                                .find(|(t, _)| i == *t)
+                                                .map(|s| format!("({})", s.1))
+                                                .unwrap_or_default()
+                                        )
                                     }
                                 }));
                             });
