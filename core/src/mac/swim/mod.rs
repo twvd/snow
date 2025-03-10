@@ -283,10 +283,6 @@ impl Tickable for Swim {
             drv.cycles = self.cycles;
         }
 
-        // When an EJECT command is sent, do not actually eject the disk until eject strobe has been
-        // asserted for at least 500ms. Specifications say a 750ms strobe is required.
-        // For some reason, the Mac Plus ROM gives a very short eject strobe on bootup during drive
-        // enumeration. If we do not ignore that, the Mac Plus always ejects the boot disk.
         if self.get_selected_drive().ejecting.is_some() && self.lstrb {
             let Some(eject_ticks) = self.get_selected_drive().ejecting else {
                 unreachable!()
@@ -295,7 +291,13 @@ impl Tickable for Swim {
                 self.get_selected_drive_mut().eject();
             }
         } else if !self.lstrb {
-            self.get_selected_drive_mut().ejecting = None;
+            if let Some(eject_ticks) = self.get_selected_drive().ejecting {
+                log::debug!(
+                    "Eject strobe too short ({} cycles)",
+                    eject_ticks - self.cycles
+                );
+                self.get_selected_drive_mut().ejecting = None;
+            }
         }
 
         if self.get_selected_drive().is_running() {
