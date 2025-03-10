@@ -198,7 +198,7 @@ impl SnowGui {
         self.error_string = text.to_string();
     }
 
-    fn poll_winit_events(&self) {
+    fn poll_winit_events(&self, ctx: &egui::Context) {
         if self.wev_recv.is_empty() {
             return;
         }
@@ -222,6 +222,10 @@ impl SnowGui {
                         },
                     ..
                 } => {
+                    if ctx.wants_keyboard_input() {
+                        continue;
+                    }
+
                     if let Some(k) = map_winit_keycode(kc) {
                         self.emu.update_key(k, state.is_pressed());
                     } else {
@@ -346,7 +350,7 @@ impl eframe::App for SnowGui {
         }
 
         self.sync_windows(ctx);
-        self.poll_winit_events();
+        self.poll_winit_events(ctx);
         if self.emu.poll() {
             // Change in emulator state
             if self.last_running != self.emu.is_running() {
