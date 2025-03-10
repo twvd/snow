@@ -158,6 +158,9 @@ enum DriveWriteReg {
     /// Drive motor on
     MOTORON = 0b0100,
 
+    /// Clear SWITCHED
+    CLRSWITCHED = 0b1001,
+
     /// Switch to GCR mode
     GCRMODE = 0b1011,
 
@@ -184,7 +187,10 @@ pub(crate) struct FloppyDrive {
     pub(crate) floppy: FloppyImage,
     pub(super) track_position: usize,
 
-    // In MFM mode (in GCR mode when false)
+    /// True if disk was switched without eject
+    switched: bool,
+
+    /// In MFM mode (in GCR mode when false)
     mfm: bool,
 
     // While > 0, the drive head is moving
@@ -223,6 +229,7 @@ impl FloppyDrive {
             track_position: 0,
             motor: false,
             mfm: drive_type.io_mfm(),
+            switched: false,
 
             stepping: 0,
             ejecting: None,
@@ -284,7 +291,7 @@ impl FloppyDrive {
                 // TODO write-protected until write is implemented
                 self.floppy.get_type() != FloppyType::Mfm144M && !self.floppy.get_write_protect()
             }
-            DriveReg::SWITCHED => false,
+            DriveReg::SWITCHED => self.switched,
             _ => {
                 warn!(
                     "Drive {}: unimplemented register read {:?} {:0b}",
@@ -359,6 +366,9 @@ impl FloppyDrive {
             DriveWriteReg::GCRMODE if self.drive_type == DriveType::SuperDrive => {
                 self.mfm = false;
             }
+            DriveWriteReg::CLRSWITCHED => {
+                self.switched = false;
+            }
             _ => {
                 warn!("Unimplemented register write {:?} {:0b}", reg, regraw);
             }
@@ -375,6 +385,7 @@ impl FloppyDrive {
         );
         self.floppy = image;
         self.floppy_inserted = true;
+        self.switched = true;
         Ok(())
     }
 
