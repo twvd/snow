@@ -2,6 +2,7 @@ pub mod flux;
 pub mod loaders;
 mod macformat;
 
+use rand::Rng;
 use std::collections::HashMap;
 
 use flux::FluxTicks;
@@ -170,10 +171,12 @@ pub struct FloppyImage {
 impl FloppyImage {
     /// Creates a new, empty image for the specified type
     /// Tracks are sized to their approximate size
+    ///
+    /// Image is filled with random noise
     pub fn new(floppy_type: FloppyType, title: &str) -> Self {
-        let mut img = Self::new_empty(floppy_type, title);
-        for side in 0..img.get_side_count() {
-            for track in 0..img.get_track_count() {
+        let mut img = Self::new_internal(floppy_type, title);
+        for side in 0..FLOPPY_MAX_SIDES {
+            for track in 0..FLOPPY_MAX_TRACKS {
                 img.set_actual_track_length(
                     side,
                     track,
@@ -184,9 +187,15 @@ impl FloppyImage {
         img
     }
 
+    /// Legacy function, kept for possible future differentiation to create
+    /// images faster.
+    pub fn new_empty(floppy_type: FloppyType, title: &str) -> Self {
+        Self::new(floppy_type, title)
+    }
+
     /// Creates a new, empty image for the specified type
     /// Tracks are sized to empty so they can be filled
-    pub fn new_empty(floppy_type: FloppyType, title: &str) -> Self {
+    fn new_internal(floppy_type: FloppyType, title: &str) -> Self {
         Self {
             floppy_type,
             trackdata: core::array::from_fn(|_| core::array::from_fn(|_| vec![])),
@@ -215,7 +224,8 @@ impl FloppyImage {
             );
         }
         self.bitlen[side][track] = sz;
-        self.trackdata[side][track].resize(sz / 8 + 1, 0);
+        let mut rng = rand::rng();
+        self.trackdata[side][track].resize_with(sz / 8 + 1, || rng.random());
     }
 
     pub fn get_track_type(&self, side: usize, track: usize) -> TrackType {
