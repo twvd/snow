@@ -5,17 +5,20 @@ use crate::widgets::disassembly::Disassembly;
 use crate::widgets::framebuffer::FramebufferWidget;
 use crate::workspace::Workspace;
 use crate::{emulator::EmulatorState, version_string, widgets::registers::RegistersWidget};
+use snow_floppy::loaders::{FloppyImageLoader, ImageType};
 
 use anyhow::{bail, Result};
 use eframe::egui;
-use egui_file_dialog::FileDialog;
+use egui_file_dialog::{DirectoryEntry, FileDialog};
 use itertools::Itertools;
 use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
-use std::env;
+use snow_core::mac::MacModel;
+use snow_floppy::{Floppy, FloppyImage, OriginalTrackType};
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::{env, fs};
 
 macro_rules! persistent_window_s {
     ($gui:expr, $title:expr, $default_size:expr) => {{
@@ -39,6 +42,13 @@ macro_rules! persistent_window {
     }};
 }
 
+fn truncate(s: &str, max_chars: usize) -> &str {
+    match s.char_indices().nth(max_chars) {
+        None => s,
+        Some((idx, _)) => &s[..idx],
+    }
+}
+
 pub struct SnowGui {
     workspace: Workspace,
     workspace_file: Option<PathBuf>,
@@ -52,10 +62,15 @@ pub struct SnowGui {
     breakpoints: BreakpointsWidget,
 
     rom_dialog: FileDialog,
+    rom_dialog_last: Option<DirectoryEntry>,
+    rom_dialog_last_model: Option<MacModel>,
     hdd_dialog: FileDialog,
     workspace_dialog: FileDialog,
     hdd_dialog_idx: usize,
     floppy_dialog: FileDialog,
+    floppy_dialog_last: Option<DirectoryEntry>,
+    floppy_dialog_last_image: Option<FloppyImage>,
+    floppy_dialog_last_type: Option<ImageType>,
     floppy_dialog_driveidx: usize,
     create_disk_dialog: DiskImageDialog,
 
@@ -122,6 +137,8 @@ impl SnowGui {
                 )
                 .default_file_filter("Macintosh ROM files (*.ROM)")
                 .initial_directory(Self::default_dir()),
+            rom_dialog_last: None,
+            rom_dialog_last_model: None,
             hdd_dialog: FileDialog::new()
                 .add_file_filter(
                     "HDD images (*.IMG)",
@@ -152,6 +169,9 @@ impl SnowGui {
                 .default_file_filter(&floppy_filter_str)
                 .initial_directory(Self::default_dir()),
             floppy_dialog_driveidx: 0,
+            floppy_dialog_last: None,
+            floppy_dialog_last_image: None,
+            floppy_dialog_last_type: None,
             workspace_dialog: FileDialog::new()
                 .add_file_filter(
                     "Snow workspace (*.SNOWW)",
@@ -340,6 +360,41 @@ impl SnowGui {
             }
         });
     }
+
+    fn rom_dialog_side_update(&mut self, d: Option<DirectoryEntry>) -> Result<()> {
+        self.rom_dialog_last = d.clone();
+        self.rom_dialog_last_model = None;
+
+        let Some(d) = d else { return Ok(()) };
+        if !d.is_file() {
+            return Ok(());
+        }
+        if fs::metadata(d.as_path())?.len() > (2 * 1024 * 1024) {
+            return Ok(());
+        }
+        self.rom_dialog_last_model = MacModel::detect_from_rom(&fs::read(d.as_path())?);
+
+        Ok(())
+    }
+
+    fn floppy_dialog_side_update(&mut self, d: Option<DirectoryEntry>) -> Result<()> {
+        self.floppy_dialog_last = d.clone();
+        self.floppy_dialog_last_image = None;
+
+        let Some(d) = d else { return Ok(()) };
+        if !d.is_file() {
+            return Ok(());
+        }
+        if fs::metadata(d.as_path())?.len() > (40 * 1024 * 1024) {
+            return Ok(());
+        }
+        let data = fs::read(d.as_path())?;
+        self.floppy_dialog_last_type = snow_floppy::loaders::Autodetect::detect(&data).ok();
+        self.floppy_dialog_last_image =
+            snow_floppy::loaders::Autodetect::load(&data, Some(d.file_name())).ok();
+
+        Ok(())
+    }
 }
 
 impl eframe::App for SnowGui {
@@ -400,7 +455,22 @@ impl eframe::App for SnowGui {
             });
 
         // ROM picker dialog
-        self.rom_dialog.update(ctx);
+        let mut last = None;
+        self.rom_dialog
+            .update_with_right_panel_ui(ctx, &mut |ui, dia| {
+                if dia.active_entry().is_some() {
+                    last = dia.active_entry().cloned();
+                    if let Some(m) = self.rom_dialog_last_model {
+                        ui.label(format!("Model: {}", m));
+                    }
+                }
+            });
+        if last.clone().map(|d| d.to_path_buf())
+            != self.rom_dialog_last.clone().map(|d| d.to_path_buf())
+        {
+            let _ = self.rom_dialog_side_update(last);
+        }
+
         if let Some(path) = self.rom_dialog.take_picked() {
             self.load_rom_from_path(&path, Some(self.emu.get_disk_paths()));
             self.last_running = false;
@@ -409,7 +479,55 @@ impl eframe::App for SnowGui {
         self.ui_active &= self.rom_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // Floppy image picker dialog
-        self.floppy_dialog.update(ctx);
+        let mut last = None;
+        self.floppy_dialog
+            .update_with_right_panel_ui(ctx, &mut |ui, dia| {
+                if dia.active_entry().is_some() {
+                    last = dia.active_entry().cloned();
+                    if let Some(img) = &self.floppy_dialog_last_image {
+                        let metadata = img.get_metadata();
+                        egui::Grid::new("floppy_dialog_metadata").show(ui, |ui| {
+                            ui.label(egui::RichText::new("Title").strong());
+                            ui.label(metadata.get("title").map_or("", |v| truncate(v, 20)));
+                            ui.end_row();
+                            ui.label(egui::RichText::new("Developer").strong());
+                            ui.label(metadata.get("developer").map_or("", |v| truncate(v, 20)));
+                            ui.end_row();
+                            ui.label(egui::RichText::new("Publisher").strong());
+                            ui.label(metadata.get("publisher").map_or("", |v| truncate(v, 20)));
+                            ui.end_row();
+                            ui.label(egui::RichText::new("Disk #").strong());
+                            ui.label(metadata.get("disk_number").map_or("", |v| truncate(v, 20)));
+                            ui.end_row();
+                            ui.separator();
+                            ui.separator();
+                            ui.end_row();
+                            ui.label(egui::RichText::new("Image type").strong());
+                            ui.label(
+                                self.floppy_dialog_last_type
+                                    .map_or("", |i| i.as_friendly_str()),
+                            );
+                            ui.end_row();
+                            ui.label(egui::RichText::new("Floppy type").strong());
+                            ui.label(img.get_type().to_string());
+                            ui.end_row();
+                            ui.label(egui::RichText::new("Tracks (F/B/S)").strong());
+                            ui.label(format!(
+                                "{}/{}/{}",
+                                img.count_original_track_type(OriginalTrackType::Flux),
+                                img.count_original_track_type(OriginalTrackType::Bitstream),
+                                img.count_original_track_type(OriginalTrackType::Sector),
+                            ));
+                            ui.end_row();
+                        });
+                    }
+                }
+            });
+        if last.clone().map(|d| d.to_path_buf())
+            != self.floppy_dialog_last.clone().map(|d| d.to_path_buf())
+        {
+            let _ = self.floppy_dialog_side_update(last);
+        }
         if let Some(path) = self.floppy_dialog.take_picked() {
             self.emu.load_floppy(self.floppy_dialog_driveidx, &path);
         }
