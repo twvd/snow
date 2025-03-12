@@ -48,9 +48,9 @@ pub struct Autodetect {}
 impl Autodetect {
     pub fn detect(data: &[u8]) -> Result<ImageType> {
         // MOOF
-        //if data.len() >= 8 && data[0..8] == *b"MOOF\xFF\n\r\n" {
-        //    return Ok(ImageType::MOOF);
-        //}
+        if data.len() >= 8 && data[0..8] == *b"MOOF\xFF\n\r\n" {
+            return Ok(ImageType::MOOF);
+        }
         // A2R v2
         if data.len() >= 8 && data[0..8] == *b"A2R2\xFF\n\r\n" {
             return Ok(ImageType::A2R2);
