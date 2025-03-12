@@ -407,7 +407,7 @@ impl FloppyDrive {
             const DUTY_T79: Ticks = 91;
             const SPEED_T79: Ticks = (625 + 780) / 2;
 
-            if self.pwm_dutycycle == 0 {
+            if self.pwm_dutycycle < DUTY_T0 {
                 return 0;
             }
             ((self.pwm_dutycycle - DUTY_T0) * (SPEED_T79 * 100 + SPEED_T0 * 100)
@@ -470,7 +470,15 @@ impl FloppyDrive {
     fn get_head_bit(&self, head: usize) -> bool {
         let track = self.get_active_track();
         match self.floppy.get_track_type(head, track) {
-            TrackType::Bitstream => self.floppy.get_track_bit(head, track, self.track_position),
+            TrackType::Bitstream => {
+                let TrackLength::Bits(tracklen) = self.get_track_len(head, track) else {
+                    unreachable!()
+                };
+                // Extra modulus here because RDDATAx can be read while the controller is currently
+                // has the other side selected.
+                self.floppy
+                    .get_track_bit(head, track, self.track_position % tracklen)
+            }
             TrackType::Flux => self.head_bit[head],
         }
     }
