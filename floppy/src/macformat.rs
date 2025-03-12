@@ -235,6 +235,9 @@ impl<'a> MacFormatEncoder<'a> {
             for side in 0..self.image.get_side_count() {
                 self.enc_side = side;
 
+                // Clear the track
+                self.image.set_actual_track_length(side, track, 0);
+
                 let speedgroup = track / 16;
                 for &tsector in Self::SECTOR_INTERLEAVE[speedgroup] {
                     let sector = sector_offset + tsector;
