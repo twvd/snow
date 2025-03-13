@@ -9,7 +9,8 @@ use snow_floppy::loaders::{FloppyImageLoader, ImageType};
 
 use anyhow::{bail, Result};
 use eframe::egui;
-use egui_file_dialog::{DirectoryEntry, FileDialog};
+use egui_file_dialog::{DialogMode, DirectoryEntry, FileDialog};
+use egui_toast::{Toast, ToastOptions};
 use itertools::Itertools;
 use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow_core::mac::MacModel;
@@ -571,7 +572,34 @@ impl eframe::App for SnowGui {
             let _ = self.floppy_dialog_side_update(last);
         }
         if let Some(path) = self.floppy_dialog.take_picked() {
-            self.emu.load_floppy(self.floppy_dialog_driveidx, &path);
+            match self.floppy_dialog.mode() {
+                DialogMode::SelectFile => self.emu.load_floppy(self.floppy_dialog_driveidx, &path),
+                DialogMode::SaveFile => {
+                    if !path
+                        .extension()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .eq_ignore_ascii_case("moof")
+                    {
+                        self.show_error(&"Saved floppy image must have .MOOF extension");
+                    } else {
+                        self.emu.save_floppy(self.floppy_dialog_driveidx, &path);
+                        self.toasts.add(
+                            Toast::default()
+                                .text(format!(
+                                    "Saved floppy image as '{}'",
+                                    path.file_name().unwrap().to_string_lossy()
+                                ))
+                                .options(
+                                    ToastOptions::default()
+                                        .duration(Self::TOAST_DURATION)
+                                        .show_progress(true),
+                                ),
+                        );
+                    }
+                }
+                _ => unreachable!(),
+            }
         }
         self.ui_active &= self.floppy_dialog.state() != egui_file_dialog::DialogState::Open;
 
@@ -694,8 +722,8 @@ impl eframe::App for SnowGui {
                         for (i, d) in
                             (0..3).filter_map(|i| self.emu.get_fdd_status(i).map(|d| (i, d)))
                         {
-                            if ui
-                                .button(format!(
+                            ui.menu_button(
+                                format!(
                                     "Floppy #{}: {}",
                                     i + 1,
                                     if d.ejected {
@@ -703,13 +731,23 @@ impl eframe::App for SnowGui {
                                     } else {
                                         &d.image_title
                                     }
-                                ))
-                                .clicked()
-                            {
-                                self.floppy_dialog_driveidx = i;
-                                self.floppy_dialog.pick_file();
-                                ui.close_menu();
-                            }
+                                ),
+                                |ui| {
+                                    if ui.button("Load image").clicked() {
+                                        self.floppy_dialog_driveidx = i;
+                                        self.floppy_dialog.pick_file();
+                                        ui.close_menu();
+                                    }
+                                    if ui
+                                        .add_enabled(!d.ejected, egui::Button::new("Save image..."))
+                                        .clicked()
+                                    {
+                                        self.floppy_dialog_driveidx = i;
+                                        self.floppy_dialog.save_file();
+                                        ui.close_menu();
+                                    }
+                                },
+                            );
                         }
 
                         // Needs cloning for the later borrow to call create_disk_dialog.open()

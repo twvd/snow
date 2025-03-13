@@ -1,6 +1,6 @@
 pub mod comm;
 
-use snow_floppy::loaders::{Autodetect, Bitfile, FloppyImageLoader, FloppyImageSaver};
+use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof};
 use snow_floppy::Floppy;
 use std::path::Path;
 use std::thread;
@@ -247,7 +247,7 @@ impl Tickable for Emulator {
                         info!("SCSI ID #{}: disk detached", id);
                     }
                     EmulatorCommand::SaveFloppy(drive, filename) => {
-                        Bitfile::save_file(self.cpu.bus.swim.get_active_image(drive), &filename)?;
+                        Moof::save_file(self.cpu.bus.swim.get_active_image(drive), &filename)?;
                         self.status_update()?;
                     }
                     EmulatorCommand::Run => {

@@ -317,6 +317,20 @@ impl EmulatorState {
             .unwrap();
     }
 
+    /// Saves a floppy image to the specified path.
+    pub fn save_floppy(&self, driveidx: usize, path: &Path) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        sender
+            .send(EmulatorCommand::SaveFloppy(
+                driveidx,
+                path.to_string_lossy().to_string(),
+            ))
+            .unwrap();
+    }
+
     /// Loads a SCSI HDD image from the specified path.
     pub fn load_hdd_image(&self, idx: usize, path: &Path) {
         let Some(ref sender) = self.cmdsender else {

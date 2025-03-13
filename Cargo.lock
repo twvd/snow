@@ -3674,8 +3674,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "binrw",
+ "built",
  "crc",
  "fluxfox",
+ "itertools 0.14.0",
  "log",
  "rand 0.9.0",
  "strum",

@@ -3,14 +3,18 @@
 //! https://applesaucefdc.com/moof-reference/
 
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 
-use super::FloppyImageLoader;
-use crate::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
+use super::{FloppyImageLoader, FloppyImageSaver};
+use crate::{
+    built_info, Floppy, FloppyImage, FloppyType, OriginalTrackType, TrackLength, TrackType,
+    FLOPPY_MAX_SIDES, FLOPPY_MAX_TRACKS,
+};
 
 use anyhow::{bail, Context, Result};
 use binrw::io::Cursor;
-use binrw::{binrw, BinRead};
+use binrw::{binrw, BinRead, BinWrite};
+use itertools::Itertools;
 use log::*;
 
 /// Initial MOOF file header
@@ -60,6 +64,16 @@ impl TryFrom<MoofDiskType> for FloppyType {
             MoofDiskType::DSDDGCR800k => Ok(Self::Mac800K),
             MoofDiskType::DSHDMFM144Mb => Ok(Self::Mfm144M),
             _ => bail!("Unsupported MOOF disk type {:?}", value),
+        }
+    }
+}
+
+impl std::convert::From<FloppyType> for MoofDiskType {
+    fn from(value: FloppyType) -> Self {
+        match value {
+            FloppyType::Mac400K => Self::SSDDGCR400k,
+            FloppyType::Mac800K => Self::DSDDGCR800k,
+            FloppyType::Mfm144M => Self::DSHDMFM144Mb,
         }
     }
 }
@@ -137,6 +151,8 @@ impl MoofChunkTrksEntry {
 pub struct Moof {}
 
 impl Moof {
+    const CHECKSUM: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
+
     fn parse_meta(meta: &str) -> HashMap<&str, &str> {
         let mut result = HashMap::new();
 
@@ -155,7 +171,7 @@ impl FloppyImageLoader for Moof {
     fn load(data: &[u8], filename: Option<&str>) -> Result<FloppyImage> {
         let mut cursor = Cursor::new(data);
         let header = MoofHeader::read(&mut cursor)?;
-        let checksum = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC).checksum(&data[12..]);
+        let checksum = Self::CHECKSUM.checksum(&data[12..]);
         if checksum != header.crc {
             bail!(
                 "Checksum verification failed - calculated: {:08X}, file: {:08X}",
@@ -268,5 +284,148 @@ impl FloppyImageLoader for Moof {
         }
 
         Ok(img)
+    }
+}
+
+impl FloppyImageSaver for Moof {
+    fn write(img: &FloppyImage, w: &mut impl std::io::Write) -> Result<()> {
+        let mut out = vec![];
+        let mut cursor = Cursor::new(&mut out);
+
+        if (0..FLOPPY_MAX_SIDES)
+            .cartesian_product(0..FLOPPY_MAX_TRACKS)
+            .any(|(s, t)| img.get_track_type(s, t) != TrackType::Bitstream)
+        {
+            bail!("Unsupported track type present in image");
+        }
+
+        // Header
+        MoofHeader { crc: 0xAAAA }.write(&mut cursor)?;
+
+        // Info chunk
+        MoofChunkHeader {
+            id: *b"INFO",
+            size: 60,
+        }
+        .write(&mut cursor)?;
+        MoofChunkInfo {
+            version: 1,
+            disktype: img.get_type().into(),
+            writeprotect: 0,
+            synchronized: 0,
+            optimal_bit_timing: if img.get_type() == FloppyType::Mfm144M {
+                8
+            } else {
+                16
+            },
+            creator: format!(
+                "Snow {}-{}{}",
+                built_info::PKG_VERSION,
+                built_info::GIT_COMMIT_HASH_SHORT.expect("Git version unavailable"),
+                if built_info::GIT_DIRTY.expect("Git version unavailable") {
+                    "-dirty"
+                } else {
+                    ""
+                }
+            ),
+            zero: 0,
+            largest_track: img
+                .trackdata
+                .iter()
+                .flat_map(|s| s.iter())
+                .map(|t| t.len())
+                .max()
+                .unwrap_or(0)
+                .try_into()?,
+            flux_block: 0, // TODO for flux
+            flux_longest_track: 0,
+        }
+        .write(&mut cursor)?;
+
+        // Padding
+        cursor.write_all(&vec![0; 60 - (size_of::<MoofChunkInfo>() + 4)])?;
+
+        MoofChunkHeader {
+            id: *b"TMAP",
+            size: 160,
+        }
+        .write(&mut cursor)?;
+        MoofChunkTmap {
+            tracks: (0..80)
+                .map(|i| {
+                    let start = (i * 2) as u8;
+                    [start, start.wrapping_add(1)]
+                })
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        }
+        .write(&mut cursor)?;
+
+        // Write the tracks
+        let mut tracks = vec![];
+        let mut block_offsets = [[0; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES];
+        #[allow(clippy::needless_range_loop)]
+        for track in 0..FLOPPY_MAX_TRACKS {
+            for side in 0..FLOPPY_MAX_SIDES {
+                assert_eq!(tracks.len() % 512, 0);
+                block_offsets[side][track] = tracks.len() / 512;
+                tracks.extend(&img.trackdata[side][track]);
+
+                // Padding to a block
+                tracks.resize(tracks.len() + 512 - tracks.len() % 512, 0);
+            }
+        }
+
+        // Calculate base block offset, size of TRKS plus padding to align to 512
+        let base_offset_aligned = (cursor.position() as usize)
+            + size_of::<MoofChunkHeader>()
+            + size_of::<MoofChunkTrks>();
+        assert_eq!(base_offset_aligned % 512, 0);
+        let base_block_offset = base_offset_aligned / 512;
+
+        MoofChunkHeader {
+            id: *b"TRKS",
+            size: (size_of::<MoofChunkTrksEntry>() * FLOPPY_MAX_SIDES * FLOPPY_MAX_TRACKS
+                + tracks.len()) as u32,
+        }
+        .write(&mut cursor)?;
+        MoofChunkTrks {
+            entries: core::array::from_fn(|i| {
+                let side = i % 2;
+                let track = i / 2;
+                let TrackLength::Bits(tracklen) = img.get_track_length(side, track) else {
+                    unreachable!()
+                };
+                MoofChunkTrksEntry {
+                    start_blk: (base_block_offset + block_offsets[side][track]) as u16,
+                    blocks: ((tracklen / 8 / 512) + 1).try_into().unwrap(),
+                    bits_bytes: tracklen.try_into().unwrap(),
+                }
+            }),
+        }
+        .write(&mut cursor)?;
+        while cursor.position() % 512 != 0 {
+            cursor.write_all(&[0])?;
+        }
+        cursor.write_all(&tracks)?;
+
+        let metadata = img
+            .get_metadata()
+            .into_iter()
+            .fold(String::new(), |s, (k, v)| format!("{}{}\t{}\n", s, k, v));
+        MoofChunkHeader {
+            id: *b"META",
+            size: metadata.len() as u32,
+        }
+        .write(&mut cursor)?;
+        cursor.write_all(metadata.as_bytes())?;
+
+        // Insert checksum
+        let checksum = Self::CHECKSUM.checksum(&out[12..]);
+        out[8..12].copy_from_slice(&checksum.to_le_bytes());
+
+        w.write_all(&out)?;
+        Ok(())
     }
 }

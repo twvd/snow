@@ -9,6 +9,10 @@ use flux::FluxTicks;
 use log::*;
 use strum::EnumIter;
 
+pub mod built_info {
+    include!(concat!(env!("OUT_DIR"), "/built.rs"));
+}
+
 /// Key/value collection of floppy metadata.
 /// Loaders should convert keys to lowercase.
 pub type FloppyMetadata = HashMap<String, String>;
