@@ -11,6 +11,7 @@ use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
 use snow_core::cpu_m68k::regs::RegisterFile;
 use snow_core::emulator::comm::{
     Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus, HddStatus,
+    UserMessageType,
 };
 use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus};
 use snow_core::emulator::Emulator;
@@ -18,6 +19,7 @@ use snow_core::keymap::Scancode;
 use snow_core::mac::MacModel;
 use snow_core::renderer::DisplayBuffer;
 use snow_core::tickable::Tickable;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::thread::JoinHandle;
@@ -36,6 +38,7 @@ pub struct EmulatorState {
     audio_enabled: bool,
     disasm_address: Address,
     disasm_code: DisassemblyListing,
+    messages: VecDeque<(UserMessageType, String)>,
 }
 
 impl EmulatorState {
@@ -227,6 +230,7 @@ impl EmulatorState {
                     self.disasm_code =
                         Vec::from_iter(Disassembler::from(&mut code.into_iter(), address));
                 }
+                EmulatorEvent::UserMessage(t, s) => self.messages.push_back((t, s)),
             }
         }
 
@@ -324,10 +328,7 @@ impl EmulatorState {
         };
 
         sender
-            .send(EmulatorCommand::SaveFloppy(
-                driveidx,
-                path.to_string_lossy().to_string(),
-            ))
+            .send(EmulatorCommand::SaveFloppy(driveidx, path.to_path_buf()))
             .unwrap();
     }
 
@@ -425,5 +426,9 @@ impl EmulatorState {
             .unwrap()
             .send(EmulatorCommand::ToggleBreakpoint(bp))
             .unwrap();
+    }
+
+    pub fn take_message(&mut self) -> Option<(UserMessageType, String)> {
+        self.messages.pop_front()
     }
 }

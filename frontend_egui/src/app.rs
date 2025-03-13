@@ -10,8 +10,9 @@ use snow_floppy::loaders::{FloppyImageLoader, ImageType};
 use anyhow::{bail, Result};
 use eframe::egui;
 use egui_file_dialog::{DialogMode, DirectoryEntry, FileDialog};
-use egui_toast::{Toast, ToastOptions};
+use egui_toast::{Toast, ToastKind, ToastOptions};
 use itertools::Itertools;
+use snow_core::emulator::comm::UserMessageType;
 use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow_core::mac::MacModel;
 use snow_floppy::{Floppy, FloppyImage, OriginalTrackType};
@@ -86,7 +87,7 @@ pub struct SnowGui {
 }
 
 impl SnowGui {
-    const TOAST_DURATION: Duration = Duration::from_secs(2);
+    const TOAST_DURATION: Duration = Duration::from_secs(3);
 
     fn try_create_image(&self, result: &DiskImageDialogResult) -> Result<()> {
         if result.filename.try_exists()? {
@@ -442,6 +443,39 @@ impl eframe::App for SnowGui {
                 self.update_titlebar(ctx);
             }
             self.registers.update_regs(self.emu.get_regs().clone());
+
+            while let Some((t, msg)) = self.emu.take_message() {
+                self.toasts.add(match t {
+                    UserMessageType::Success => Toast::default()
+                        .options(
+                            ToastOptions::default()
+                                .show_progress(true)
+                                .duration(Self::TOAST_DURATION),
+                        )
+                        .text(msg)
+                        .kind(ToastKind::Success),
+                    UserMessageType::Notice => Toast::default()
+                        .options(
+                            ToastOptions::default()
+                                .show_progress(true)
+                                .duration(Self::TOAST_DURATION),
+                        )
+                        .text(msg)
+                        .kind(ToastKind::Info),
+                    UserMessageType::Warning => Toast::default()
+                        .options(
+                            ToastOptions::default()
+                                .show_progress(true)
+                                .duration_in_seconds(5.0),
+                        )
+                        .text(msg)
+                        .kind(ToastKind::Warning),
+                    UserMessageType::Error => Toast::default()
+                        .options(ToastOptions::default())
+                        .text(msg)
+                        .kind(ToastKind::Error),
+                });
+            }
         }
 
         self.toasts.show(ctx);
@@ -584,18 +618,6 @@ impl eframe::App for SnowGui {
                         self.show_error(&"Saved floppy image must have .MOOF extension");
                     } else {
                         self.emu.save_floppy(self.floppy_dialog_driveidx, &path);
-                        self.toasts.add(
-                            Toast::default()
-                                .text(format!(
-                                    "Saved floppy image as '{}'",
-                                    path.file_name().unwrap().to_string_lossy()
-                                ))
-                                .options(
-                                    ToastOptions::default()
-                                        .duration(Self::TOAST_DURATION)
-                                        .show_progress(true),
-                                ),
-                        );
                     }
                 }
                 _ => unreachable!(),

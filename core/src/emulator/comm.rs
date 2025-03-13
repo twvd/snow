@@ -17,7 +17,7 @@ pub type EmulatorEventReceiver = crossbeam_channel::Receiver<EmulatorEvent>;
 pub enum EmulatorCommand {
     Quit,
     InsertFloppy(usize, String),
-    SaveFloppy(usize, String),
+    SaveFloppy(usize, PathBuf),
     LoadHddImage(usize, PathBuf),
     DetachHddImage(usize),
     MouseUpdateAbsolute {
@@ -86,9 +86,19 @@ pub struct FddStatus {
     pub image_title: String,
 }
 
+/// A friendly message ready for display to a user
+#[derive(Debug)]
+pub enum UserMessageType {
+    Success,
+    Notice,
+    Warning,
+    Error,
+}
+
 /// A status message/event received from the emulator
 #[derive(Debug)]
 pub enum EmulatorEvent {
     Status(Box<EmulatorStatus>),
     NextCode((Address, Vec<u8>)),
+    UserMessage(UserMessageType, String),
 }

@@ -2,9 +2,6 @@ mod browser;
 mod debugger;
 mod status;
 
-use std::fs;
-use std::io::stdout;
-
 use anyhow::{bail, Context, Result};
 use browser::{BrowserWidget, BrowserWidgetEvent, BrowserWidgetState};
 use debugger::{DebuggerWidget, DebuggerWidgetEvent, DebuggerWidgetState};
@@ -29,6 +26,9 @@ use snow_core::emulator::comm::{
     EmulatorStatus,
 };
 use status::StatusWidget;
+use std::fs;
+use std::io::stdout;
+use std::path::PathBuf;
 use tui_logger::{TuiLoggerLevelOutput, TuiLoggerWidget, TuiWidgetEvent, TuiWidgetState};
 
 type DisassemblyListing = Vec<DisassemblyEntry>;
@@ -135,6 +135,7 @@ impl UserInterface {
                     self.emustatus = s;
                 }
                 EmulatorEvent::NextCode((a, i)) => self.generate_disassembly(a, i)?,
+                EmulatorEvent::UserMessage(_, _) => (),
             }
         }
 
@@ -314,19 +315,19 @@ impl UserInterface {
             "writedisk" | "writedisk1" => {
                 let filename = tokens.get(1).context("No filename specified")?.to_string();
                 self.cmdsender
-                    .send(EmulatorCommand::SaveFloppy(0, filename))?;
+                    .send(EmulatorCommand::SaveFloppy(0, PathBuf::from(filename)))?;
                 Ok(())
             }
             "writedisk2" => {
                 let filename = tokens.get(1).context("No filename specified")?.to_string();
                 self.cmdsender
-                    .send(EmulatorCommand::SaveFloppy(1, filename))?;
+                    .send(EmulatorCommand::SaveFloppy(1, PathBuf::from(filename)))?;
                 Ok(())
             }
             "writedisk3" => {
                 let filename = tokens.get(1).context("No filename specified")?.to_string();
                 self.cmdsender
-                    .send(EmulatorCommand::SaveFloppy(2, filename))?;
+                    .send(EmulatorCommand::SaveFloppy(2, PathBuf::from(filename)))?;
                 Ok(())
             }
             "trace" => {

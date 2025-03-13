@@ -22,6 +22,7 @@ use crate::types::{ClickEventSender, KeyEventSender};
 use anyhow::Result;
 use log::*;
 
+use crate::emulator::comm::UserMessageType;
 use comm::{
     EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver, EmulatorStatus,
     FddStatus, HddStatus,
@@ -189,6 +190,48 @@ impl Emulator {
     pub fn load_hdd_image(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {
         self.cpu.bus.scsi.load_disk_at(filename, scsi_id)
     }
+
+    fn user_error(&self, msg: &str) {
+        self.event_sender
+            .send(EmulatorEvent::UserMessage(
+                UserMessageType::Error,
+                msg.to_owned(),
+            ))
+            .unwrap();
+        error!("{}", msg);
+    }
+
+    #[allow(dead_code)]
+    fn user_warning(&self, msg: &str) {
+        self.event_sender
+            .send(EmulatorEvent::UserMessage(
+                UserMessageType::Warning,
+                msg.to_owned(),
+            ))
+            .unwrap();
+        warn!("{}", msg);
+    }
+
+    #[allow(dead_code)]
+    fn user_notice(&self, msg: &str) {
+        self.event_sender
+            .send(EmulatorEvent::UserMessage(
+                UserMessageType::Notice,
+                msg.to_owned(),
+            ))
+            .unwrap();
+        info!("{}", msg);
+    }
+
+    fn user_success(&self, msg: &str) {
+        self.event_sender
+            .send(EmulatorEvent::UserMessage(
+                UserMessageType::Success,
+                msg.to_owned(),
+            ))
+            .unwrap();
+        info!("{}", msg);
+    }
 }
 
 impl Tickable for Emulator {
@@ -247,7 +290,21 @@ impl Tickable for Emulator {
                         info!("SCSI ID #{}: disk detached", id);
                     }
                     EmulatorCommand::SaveFloppy(drive, filename) => {
-                        Moof::save_file(self.cpu.bus.swim.get_active_image(drive), &filename)?;
+                        if let Err(e) = Moof::save_file(
+                            self.cpu.bus.swim.get_active_image(drive),
+                            &filename.to_string_lossy(),
+                        ) {
+                            self.user_error(&format!(
+                                "Cannot save file '{}': {}",
+                                filename.file_name().unwrap_or_default().to_string_lossy(),
+                                e
+                            ));
+                        } else {
+                            self.user_success(&format!(
+                                "Saved floppy image as '{}'",
+                                filename.file_name().unwrap_or_default().to_string_lossy()
+                            ));
+                        }
                         self.status_update()?;
                     }
                     EmulatorCommand::Run => {
