@@ -51,7 +51,7 @@ enum MoofDiskType {
     Twiggy,
 }
 
-impl std::convert::TryFrom<MoofDiskType> for FloppyType {
+impl TryFrom<MoofDiskType> for FloppyType {
     type Error = anyhow::Error;
 
     fn try_from(value: MoofDiskType) -> std::result::Result<Self, Self::Error> {
