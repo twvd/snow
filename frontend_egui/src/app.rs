@@ -490,11 +490,22 @@ impl eframe::App for SnowGui {
                             ui.label(egui::RichText::new("Title").strong());
                             ui.label(metadata.get("title").map_or("", |v| truncate(v, 20)));
                             ui.end_row();
+                            ui.label(egui::RichText::new("Subtitle").strong());
+                            ui.label(metadata.get("subtitle").map_or("", |v| truncate(v, 20)));
+                            ui.end_row();
                             ui.label(egui::RichText::new("Developer").strong());
                             ui.label(metadata.get("developer").map_or("", |v| truncate(v, 20)));
                             ui.end_row();
                             ui.label(egui::RichText::new("Publisher").strong());
                             ui.label(metadata.get("publisher").map_or("", |v| truncate(v, 20)));
+                            ui.end_row();
+                            ui.label(egui::RichText::new("Version").strong());
+                            ui.label(metadata.get("version").map_or("", |v| truncate(v, 20)));
+                            ui.end_row();
+                            ui.label("");
+                            ui.end_row();
+                            ui.label(egui::RichText::new("Disk name").strong());
+                            ui.label(metadata.get("disk_name").map_or("", |v| truncate(v, 20)));
                             ui.end_row();
                             ui.label(egui::RichText::new("Disk #").strong());
                             ui.label(metadata.get("disk_number").map_or("", |v| truncate(v, 20)));
@@ -511,9 +522,10 @@ impl eframe::App for SnowGui {
                             ui.label(egui::RichText::new("Floppy type").strong());
                             ui.label(img.get_type().to_string());
                             ui.end_row();
-                            ui.label(egui::RichText::new("Tracks (F/B/S)").strong());
+                            ui.label(egui::RichText::new("Tracks (RF/F/B/S)").strong());
                             ui.label(format!(
-                                "{}/{}/{}",
+                                "{}/{}/{}/{}",
+                                img.count_original_track_type(OriginalTrackType::RawFlux),
                                 img.count_original_track_type(OriginalTrackType::Flux),
                                 img.count_original_track_type(OriginalTrackType::Bitstream),
                                 img.count_original_track_type(OriginalTrackType::Sector),
