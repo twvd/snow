@@ -204,6 +204,7 @@ where
                 buf[idx * 4 + 1].store(0x22, Ordering::Release);
                 buf[idx * 4 + 2].store(0x22, Ordering::Release);
             }
+            buf[idx * 4 + 3].store(0xFF, Ordering::Release);
         }
         self.renderer.update()?;
 

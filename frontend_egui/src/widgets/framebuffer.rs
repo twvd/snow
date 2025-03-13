@@ -1,8 +1,11 @@
 //! Widget that receives frames from the emulator and draws them to a
 //! GPU texture-backed image widget.
 
+use std::fs::File;
+use std::path::Path;
 use std::sync::atomic::Ordering;
 
+use anyhow::{bail, Result};
 use crossbeam_channel::Receiver;
 use eframe::egui;
 use eframe::egui::Vec2;
@@ -10,6 +13,7 @@ use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow_core::renderer::DisplayBuffer;
 
 pub struct FramebufferWidget {
+    frame: Option<DisplayBuffer>,
     frame_recv: Option<Receiver<DisplayBuffer>>,
     viewport_texture: egui::TextureHandle,
     pub scale: f32,
@@ -20,6 +24,7 @@ pub struct FramebufferWidget {
 impl FramebufferWidget {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         Self {
+            frame: None,
             frame_recv: None,
             viewport_texture: cc.egui_ctx.load_texture(
                 "viewport",
@@ -58,11 +63,11 @@ impl FramebufferWidget {
     pub fn draw(&mut self, ui: &mut egui::Ui) -> egui::Response {
         if let Some(ref frame_recv) = self.frame_recv {
             if !frame_recv.is_empty() {
-                let frame = frame_recv.recv().unwrap();
+                self.frame = Some(frame_recv.recv().unwrap());
                 self.viewport_texture.set(
                     egui::ColorImage {
                         size: [SCREEN_WIDTH, SCREEN_HEIGHT],
-                        pixels: Self::convert_framebuffer(&frame),
+                        pixels: Self::convert_framebuffer(self.frame.as_ref().unwrap()),
                     },
                     egui::TextureOptions::NEAREST,
                 );
@@ -82,6 +87,28 @@ impl FramebufferWidget {
         );
         self.response = Some(response.clone());
         response
+    }
+
+    pub fn write_screenshot(&self, path: &Path) -> Result<()> {
+        let Some(frame) = self.frame.as_ref() else {
+            bail!("No framebuffer available");
+        };
+        let mut encoder = png::Encoder::new(
+            File::create(path)?,
+            SCREEN_WIDTH as u32,
+            SCREEN_HEIGHT as u32,
+        );
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header()?;
+        writer.write_image_data(
+            &frame
+                .iter()
+                .map(|b| b.load(Ordering::Relaxed))
+                .collect::<Vec<_>>(),
+        )?;
+
+        Ok(())
     }
 
     pub fn rect(&self) -> egui::Rect {

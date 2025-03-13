@@ -18,6 +18,7 @@ use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use std::{env, fs};
 
 macro_rules! persistent_window_s {
@@ -57,6 +58,7 @@ pub struct SnowGui {
 
     wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
 
+    toasts: egui_toast::Toasts,
     framebuffer: FramebufferWidget,
     registers: RegistersWidget,
     breakpoints: BreakpointsWidget,
@@ -83,6 +85,8 @@ pub struct SnowGui {
 }
 
 impl SnowGui {
+    const TOAST_DURATION: Duration = Duration::from_secs(2);
+
     fn try_create_image(&self, result: &DiskImageDialogResult) -> Result<()> {
         if result.filename.try_exists()? {
             bail!("Cowardly refusing to overwrite existing file. Delete the file first, or choose a different filename.");
@@ -122,6 +126,9 @@ impl SnowGui {
             first_draw: true,
 
             wev_recv,
+            toasts: egui_toast::Toasts::new()
+                .anchor(egui::Align2::CENTER_BOTTOM, (0.0, -30.0))
+                .direction(egui::Direction::BottomUp),
             framebuffer: FramebufferWidget::new(cc),
             registers: RegistersWidget::new(),
             breakpoints: BreakpointsWidget::default(),
@@ -395,6 +402,27 @@ impl SnowGui {
 
         Ok(())
     }
+
+    fn screenshot(&mut self) {
+        let mut p = dirs::desktop_dir().unwrap();
+        let filename = format!(
+            "Snow screenshot {}.png",
+            chrono::Local::now().format("%Y-%m-%d %H-%M-%S")
+        );
+        p.push(&filename);
+        if let Err(e) = self.framebuffer.write_screenshot(&p) {
+            self.show_error(&format!("Failed to write screenshot: {}", e));
+        }
+        self.toasts.add(
+            egui_toast::Toast::default()
+                .text(format!("Saved screenshot to desktop as '{}'", filename))
+                .options(
+                    egui_toast::ToastOptions::default()
+                        .duration(Self::TOAST_DURATION)
+                        .show_progress(true),
+                ),
+        );
+    }
 }
 
 impl eframe::App for SnowGui {
@@ -414,6 +442,8 @@ impl eframe::App for SnowGui {
             }
             self.registers.update_regs(self.emu.get_regs().clone());
         }
+
+        self.toasts.show(ctx);
 
         self.ui_active = true;
 
@@ -724,6 +754,18 @@ impl eframe::App for SnowGui {
                         }
                     });
                 }
+                ui.menu_button("Tools", |ui| {
+                    if ui
+                        .add_enabled(
+                            self.emu.is_initialized(),
+                            egui::Button::new("Take screenshot"),
+                        )
+                        .clicked()
+                    {
+                        self.screenshot();
+                        ui.close_menu();
+                    }
+                });
                 ui.menu_button("View", |ui| {
                     ui.add(
                         egui::Slider::new(&mut self.framebuffer.scale, 0.5..=4.0)
@@ -822,6 +864,16 @@ impl eframe::App for SnowGui {
                         {
                             self.emu.step();
                         }
+                    }
+
+                    ui.separator();
+                    if ui
+                        .add(egui::Button::new(
+                            egui_material_icons::icons::ICON_PHOTO_CAMERA,
+                        ))
+                        .clicked()
+                    {
+                        self.screenshot();
                     }
                 }
             });

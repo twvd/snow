@@ -10,12 +10,14 @@ built = { version = "0.7.7", features = ["git2"] }
 [dependencies]
 anyhow = "1.0.95"
 built = { version = "0.7.7", features = ["git2"] }
+chrono = "0.4.40"
 clap = { version = "4.5.23", features = ["derive"] }
 crossbeam-channel = "0.5.14"
 dirs = "6.0.0"
 eframe = "0.30.0"
 egui-dropdown = "0.12.0"
 egui-file-dialog = "0.8.0"
+egui-toast = "0.16.0"
 egui-winit = "0.30.0"
 egui_extras = "0.30.0"
 egui_logger = "0.6.2"
@@ -24,6 +26,7 @@ env_logger = "0.11.6"
 itertools = "0.14.0"
 log = "0.4.22"
 multi_log = "0.1.2"
+png = "0.17.16"
 relative-path = { version = "1.9.3", features = ["serde"] }
 sdl2 = { version = "0.37.0", features = ["static-link", "use-pkgconfig"] }
 serde = { version = "1.0.218", features = ["derive"] }

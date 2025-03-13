@@ -784,16 +784,16 @@ dependencies = [
 
 [[package]]
 name = "chrono"
-version = "0.4.39"
+version = "0.4.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e36cc9d416881d2e24f9a963be5fb1cd90966419ac844274161d10488b3e825"
+checksum = "1a7964611d71df112cb1730f2ee67324fcf4d0fc6606acbbe9bfe06df124637c"
 dependencies = [
  "android-tzdata",
  "iana-time-zone",
  "js-sys",
  "num-traits",
  "wasm-bindgen",
- "windows-targets 0.52.6",
+ "windows-link",
 ]
 
 [[package]]
@@ -1299,6 +1299,15 @@ dependencies = [
  "egui",
  "serde",
  "sysinfo",
+]
+
+[[package]]
+name = "egui-toast"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2531762f801556e7b8c445feee7b5a790aca1d5bf4d4e09a66c73b807058816"
+dependencies = [
+ "egui",
 ]
 
 [[package]]
@@ -3678,12 +3687,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "built",
+ "chrono",
  "clap",
  "crossbeam-channel",
  "dirs",
  "eframe",
  "egui-dropdown",
  "egui-file-dialog",
+ "egui-toast",
  "egui-winit",
  "egui_extras",
  "egui_logger",
@@ -3692,6 +3703,7 @@ dependencies = [
  "itertools 0.14.0",
  "log",
  "multi_log",
+ "png",
  "relative-path",
  "sdl2",
  "serde",
@@ -4605,6 +4617,12 @@ dependencies = [
  "quote",
  "syn 2.0.96",
 ]
+
+[[package]]
+name = "windows-link"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6dccfd733ce2b1753b03b6d3c65edf020262ea35e20ccdf3e288043e6dd620e3"
 
 [[package]]
 name = "windows-result"
