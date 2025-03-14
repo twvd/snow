@@ -88,6 +88,7 @@ pub struct SnowGui {
 
 impl SnowGui {
     const TOAST_DURATION: Duration = Duration::from_secs(3);
+    const ZOOM_FACTORS: [f32; 8] = [0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0];
 
     fn try_create_image(&self, result: &DiskImageDialogResult) -> Result<()> {
         if result.filename.try_exists()? {
@@ -111,8 +112,10 @@ impl SnowGui {
         wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
         initial_rom_file: Option<String>,
         audio_enabled: bool,
+        zoom_factor: f32,
     ) -> Self {
         egui_material_icons::initialize(&cc.egui_ctx);
+        cc.egui_ctx.set_zoom_factor(zoom_factor);
 
         let floppy_filter_str = format!(
             "Floppy images ({})",
@@ -827,6 +830,14 @@ impl eframe::App for SnowGui {
                     }
                 });
                 ui.menu_button("View", |ui| {
+                    ui.menu_button("UI scale", |ui| {
+                        for z in Self::ZOOM_FACTORS {
+                            if ui.button(format!("{:0.2}", z)).clicked() {
+                                ctx.set_zoom_factor(z);
+                                ui.close_menu();
+                            }
+                        }
+                    });
                     ui.add(
                         egui::Slider::new(&mut self.framebuffer.scale, 0.5..=4.0)
                             .text("Display scale"),

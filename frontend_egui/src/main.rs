@@ -33,6 +33,10 @@ struct Args {
     /// Disable audio
     #[arg(long, action)]
     no_audio: bool,
+
+    /// UI scale
+    #[arg(long, default_value_t = 1.0)]
+    ui_scale: f32,
 }
 
 pub fn version_string() -> String {
@@ -88,6 +92,7 @@ fn main() -> eframe::Result {
                 r,
                 args.rom_filename,
                 !args.no_audio,
+                args.ui_scale,
             )))
         }),
     )
