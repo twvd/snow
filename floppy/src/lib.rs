@@ -249,6 +249,7 @@ impl FloppyImage {
     }
 
     pub(crate) fn push_flux(&mut self, side: usize, track: usize, transition: FluxTicks) {
+        self.trackdata[side][track].clear();
         self.flux_trackdata[side][track].push(transition);
     }
 
