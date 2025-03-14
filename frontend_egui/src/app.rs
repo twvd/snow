@@ -638,7 +638,7 @@ impl eframe::App for SnowGui {
         // Workspace picker dialog
         self.workspace_dialog.update(ctx);
         if let Some(mut path) = self.workspace_dialog.take_picked() {
-            if !path.is_file() {
+            if path.exists() && !path.is_file() {
                 self.show_error(&format!(
                     "Selected path is not a file: {}",
                     path.to_string_lossy()
