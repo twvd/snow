@@ -4,6 +4,7 @@ use anyhow::Result;
 use log::*;
 use num::clamp;
 use proc_bitfield::bitfield;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use snow_floppy::{TrackLength, TrackType};
 
@@ -239,7 +240,23 @@ impl Swim {
     fn iwm_shift_bit(&mut self, bit: bool) {
         self.shdata <<= 1;
         if bit {
+            // 1 coming off the disk
+            self.iwm_zeroes = 0;
             self.shdata |= 1;
+        } else {
+            // 0 coming off the disk (no transition within the bit cell window)
+            //
+            // If this happens more than twice (valid sequences are 1, 01, 001),
+            // meaning there are no flux transitions for a period beyond the drive/IWM
+            // specs, the analogue characteristics (automatic gain control) of the
+            // drive will cause it to start picking up more noise and generate spurious
+            // transitions at random intervals.
+            // This is sometimes called 'weak bits'. Some copy protection schemes rely on
+            // this phenomenon.
+            self.iwm_zeroes += 1;
+            if self.iwm_zeroes > 2 && rand::rng().random() {
+                self.shdata |= 1;
+            }
         }
 
         if self.shdata & 0x80 != 0 {

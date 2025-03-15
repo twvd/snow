@@ -102,6 +102,7 @@ pub struct Swim {
     iwm_mode: IwmMode,
     shdata: u8,
     datareg: u8,
+    iwm_zeroes: usize,
     write_shift: u8,
     write_pos: usize,
     write_buffer: Option<u8>,
@@ -148,6 +149,7 @@ impl Swim {
 
             shdata: 0,
             datareg: 0,
+            iwm_zeroes: 0,
             write_shift: 0,
             write_pos: 0,
             write_buffer: None,

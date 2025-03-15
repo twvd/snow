@@ -3660,6 +3660,7 @@ dependencies = [
  "num-derive",
  "num-traits",
  "proc-bitfield",
+ "rand 0.9.0",
  "serde",
  "serde_json",
  "sha2",
