@@ -1,4 +1,9 @@
 # Prerequisites
+Snow is written in the [Rust](https://www.rust-lang.org/) programming language. To install the official Rust toolchain,
+simply follow the steps on [rustup.rs](https://rustup.rs/).
+
+Snow uses a `rust-toolchain.toml` file to specify the version of the Rust toolchain it requires.
+Cargo will download and install this version automatically (if needed) when you build.
 
 Building Snow depends on having [SDL2](https://libsdl.org/) available on your system as well as `pkg-config` to find the
 library.
