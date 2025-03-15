@@ -2,6 +2,8 @@
 //! Sector-based image format
 //! https://www.discferret.com/wiki/Apple_DiskCopy_4.2
 
+#[cfg(feature = "fluxfox")]
+use super::fluxfox::Fluxfox;
 use super::FloppyImageLoader;
 use crate::macformat::MacFormatEncoder;
 use crate::{FloppyImage, FloppyType};
@@ -81,6 +83,7 @@ impl Dc42Raw {
                 warn!("Image header says format is Prodos800K? Proceeding anyway..");
                 Ok(FloppyType::Mac800K)
             }
+            (Dc42Encoding::MfmCavDsHd, _) => Ok(FloppyType::Mfm144M),
             _ => bail!(
                 "Unknown type, encoding: {:?} format: {:?}",
                 self.encoding,
@@ -112,7 +115,17 @@ impl FloppyImageLoader for Diskcopy42 {
             );
         }
 
-        if raw.tags.is_empty() {
+        if raw.get_type()? == FloppyType::Mfm144M {
+            #[cfg(feature = "fluxfox")]
+            {
+                // Hand-off to Fluxfox
+                Fluxfox::load(&raw.data, filename)
+            }
+            #[cfg(not(feature = "fluxfox"))]
+            {
+                bail!("Requires fluxfox feature");
+            }
+        } else if raw.tags.is_empty() {
             MacFormatEncoder::encode(floppytype, &raw.data, None, title)
         } else {
             MacFormatEncoder::encode(floppytype, &raw.data, Some(&raw.tags), title)

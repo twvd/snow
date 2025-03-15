@@ -1,6 +1,8 @@
 //! Raw, sector-based image format
 
 use super::FloppyImageLoader;
+#[cfg(feature = "fluxfox")]
+use crate::loaders::fluxfox::Fluxfox;
 use crate::FloppyType;
 use crate::{macformat::MacFormatEncoder, FloppyImage};
 
@@ -17,6 +19,18 @@ impl FloppyImageLoader for RawImage {
             bail!("Invalid raw image length: {}", data.len())
         };
 
-        MacFormatEncoder::encode(floppytype, data, None, filename.unwrap_or_default())
+        if floppytype == FloppyType::Mfm144M {
+            #[cfg(feature = "fluxfox")]
+            {
+                // Hand-off to Fluxfox
+                Fluxfox::load(data, filename)
+            }
+            #[cfg(not(feature = "fluxfox"))]
+            {
+                bail!("Requires fluxfox feature");
+            }
+        } else {
+            MacFormatEncoder::encode(floppytype, data, None, filename.unwrap_or_default())
+        }
     }
 }
