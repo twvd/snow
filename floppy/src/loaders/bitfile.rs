@@ -61,7 +61,7 @@ impl FloppyImageLoader for Bitfile {
             image.set_actual_track_length(tracknum / 80, tracknum % 80, bits);
             offset += 8;
             for p in 0..bytes {
-                image.set_track_bit(
+                image.push_track_bit(
                     tracknum / 80,
                     tracknum % 80,
                     p,
