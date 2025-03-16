@@ -32,5 +32,6 @@ debug = true
 
 [patch.crates-io]
 egui = { git = "https://github.com/twvd/egui.git", branch = "patch-0.30.0" }
+egui-file-dialog = { git = "https://github.com/twvd/snow-egui-file-dialog.git", rev = "fb922619f570fce44ba3236a6fd3bc437d890ab5" }
 egui-winit = { git = "https://github.com/twvd/egui.git", branch = "patch-0.30.0" }
 
