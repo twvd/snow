@@ -145,6 +145,10 @@ impl Swim {
             }
             (true, false) => {
                 // Read status register
+
+                // Clear the shifter
+                self.shdata = 0;
+
                 let sense = self
                     .get_selected_drive()
                     .read_sense(self.get_selected_drive_reg_u8());
