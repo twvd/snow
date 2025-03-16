@@ -148,6 +148,7 @@ impl SnowGui {
                     }),
                 )
                 .default_file_filter("Macintosh ROM files (*.ROM)")
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir()),
             rom_dialog_last: None,
             rom_dialog_last_model: None,
@@ -161,6 +162,7 @@ impl SnowGui {
                     }),
                 )
                 .default_file_filter("HDD images (*.IMG)")
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir()),
             hdd_dialog_idx: 0,
             floppy_dialog: FileDialog::new()
@@ -179,6 +181,7 @@ impl SnowGui {
                     }),
                 )
                 .default_file_filter(&floppy_filter_str)
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir()),
             floppy_dialog_driveidx: 0,
             floppy_dialog_last: None,
@@ -194,6 +197,7 @@ impl SnowGui {
                     }),
                 )
                 .default_file_filter("Snow workspace (*.SNOWW)")
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir()),
             create_disk_dialog: Default::default(),
             error_dialog_open: false,
