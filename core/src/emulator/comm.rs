@@ -84,6 +84,7 @@ pub struct FddStatus {
     pub writing: bool,
     pub track: usize,
     pub image_title: String,
+    pub dirty: bool,
 }
 
 /// A friendly message ready for display to a user

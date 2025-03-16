@@ -753,7 +753,14 @@ impl eframe::App for SnowGui {
                         {
                             ui.menu_button(
                                 format!(
-                                    "Floppy #{}: {}",
+                                    "{} Floppy #{}: {}",
+                                    if d.ejected {
+                                        egui_material_icons::icons::ICON_EJECT
+                                    } else if !d.ejected && d.dirty {
+                                        egui_material_icons::icons::ICON_SAVE_AS
+                                    } else {
+                                        egui_material_icons::icons::ICON_SAVE
+                                    },
                                     i + 1,
                                     if d.ejected {
                                         "(ejected)"
@@ -768,7 +775,10 @@ impl eframe::App for SnowGui {
                                         ui.close_menu();
                                     }
                                     if ui
-                                        .add_enabled(!d.ejected, egui::Button::new("Save image..."))
+                                        .add_enabled(
+                                            !d.ejected && d.dirty,
+                                            egui::Button::new("Save image..."),
+                                        )
                                         .clicked()
                                     {
                                         self.floppy_dialog_driveidx = i;

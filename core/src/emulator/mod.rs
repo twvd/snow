@@ -119,6 +119,7 @@ impl Emulator {
                     writing: self.cpu.bus.swim.drives[i].motor && self.cpu.bus.swim.is_writing(),
                     track: self.cpu.bus.swim.drives[i].track,
                     image_title: self.cpu.bus.swim.drives[i].floppy.get_title().to_owned(),
+                    dirty: self.cpu.bus.swim.drives[i].floppy.is_dirty(),
                 }),
                 model: self.model,
                 hdd: core::array::from_fn(|i| {

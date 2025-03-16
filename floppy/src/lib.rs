@@ -170,6 +170,9 @@ pub struct FloppyImage {
 
     /// Key/value store of metadata
     metadata: FloppyMetadata,
+
+    /// Floppy has been written to and not saved since
+    dirty: bool,
 }
 
 impl FloppyImage {
@@ -208,6 +211,7 @@ impl FloppyImage {
             title: title.to_owned(),
             metadata: FloppyMetadata::from([("title".to_string(), title.to_string())]),
             origtracktype: [[Default::default(); FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
+            dirty: false,
         }
     }
 
@@ -274,6 +278,27 @@ impl FloppyImage {
 
         self.flux_trackdata[side][track][position]
     }
+
+    /// Check if image was written to
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    pub(crate) fn push_track_bit(
+        &mut self,
+        side: usize,
+        track: usize,
+        position: usize,
+        value: bool,
+    ) {
+        let byte = position / 8;
+        let bit = 7 - position % 8;
+
+        self.trackdata[side][track][byte] &= !(1 << bit);
+        if value {
+            self.trackdata[side][track][byte] |= 1 << bit;
+        }
+    }
 }
 
 impl Floppy for FloppyImage {
@@ -294,13 +319,9 @@ impl Floppy for FloppyImage {
     }
 
     fn set_track_bit(&mut self, side: usize, track: usize, position: usize, value: bool) {
-        let byte = position / 8;
-        let bit = 7 - position % 8;
+        self.push_track_bit(side, track, position, value);
 
-        self.trackdata[side][track][byte] &= !(1 << bit);
-        if value {
-            self.trackdata[side][track][byte] |= 1 << bit;
-        }
+        self.dirty = true;
     }
 
     fn get_track_length(&self, side: usize, track: usize) -> TrackLength {

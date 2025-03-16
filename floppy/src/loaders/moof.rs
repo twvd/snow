@@ -277,7 +277,7 @@ impl FloppyImageLoader for Moof {
                 for blockbit in trk.bit_range() {
                     let byte = blockbit / 8;
                     let bit = 7 - blockbit % 8;
-                    img.set_track_bit(side, track, blockbit, block[byte] & (1 << bit) != 0);
+                    img.push_track_bit(side, track, blockbit, block[byte] & (1 << bit) != 0);
                 }
                 img.origtracktype[side][track] = OriginalTrackType::Bitstream;
             }
