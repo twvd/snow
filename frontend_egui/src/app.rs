@@ -526,8 +526,8 @@ impl eframe::App for SnowGui {
         let mut last = None;
         self.rom_dialog
             .update_with_right_panel_ui(ctx, &mut |ui, dia| {
-                if dia.active_entry().is_some() {
-                    last = dia.active_entry().cloned();
+                if dia.selected_entry().is_some() {
+                    last = dia.selected_entry().cloned();
                     if let Some(m) = self.rom_dialog_last_model {
                         ui.label(format!("Model: {}", m));
                     }
@@ -550,8 +550,8 @@ impl eframe::App for SnowGui {
         let mut last = None;
         self.floppy_dialog
             .update_with_right_panel_ui(ctx, &mut |ui, dia| {
-                if dia.active_entry().is_some() {
-                    last = dia.active_entry().cloned();
+                if dia.selected_entry().is_some() {
+                    last = dia.selected_entry().cloned();
                     if let Some(img) = &self.floppy_dialog_last_image {
                         let metadata = img.get_metadata();
                         egui::Grid::new("floppy_dialog_metadata").show(ui, |ui| {
@@ -610,7 +610,7 @@ impl eframe::App for SnowGui {
         }
         if let Some(path) = self.floppy_dialog.take_picked() {
             match self.floppy_dialog.mode() {
-                DialogMode::SelectFile => self.emu.load_floppy(self.floppy_dialog_driveidx, &path),
+                DialogMode::PickFile => self.emu.load_floppy(self.floppy_dialog_driveidx, &path),
                 DialogMode::SaveFile => {
                     if !path
                         .extension()
