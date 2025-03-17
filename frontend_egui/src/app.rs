@@ -15,7 +15,7 @@ use itertools::Itertools;
 use snow_core::emulator::comm::UserMessageType;
 use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow_core::mac::MacModel;
-use snow_floppy::{Floppy, FloppyImage, OriginalTrackType};
+use snow_floppy::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -769,6 +769,22 @@ impl eframe::App for SnowGui {
                                     }
                                 ),
                                 |ui| {
+                                    if ui.button("Insert blank 400/800K floppy").clicked() {
+                                        self.emu.insert_blank_floppy(i, FloppyType::Mac800K);
+                                        ui.close_menu();
+                                    }
+                                    // TODO write support on ISM
+                                    //if ui
+                                    //    .add_enabled(
+                                    //        self.emu.get_model().unwrap().fdd_hd(),
+                                    //        egui::Button::new("Insert blank 1.44MB floppy"),
+                                    //    )
+                                    //    .clicked()
+                                    //{
+                                    //    self.emu.insert_blank_floppy(i, FloppyType::Mfm144M);
+                                    //    ui.close_menu();
+                                    //}
+                                    ui.separator();
                                     if ui.button("Load image...").clicked() {
                                         self.floppy_dialog_driveidx = i;
                                         self.floppy_dialog.pick_file();

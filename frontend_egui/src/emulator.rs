@@ -19,7 +19,7 @@ use snow_core::keymap::Scancode;
 use snow_core::mac::MacModel;
 use snow_core::renderer::DisplayBuffer;
 use snow_core::tickable::Tickable;
-use snow_floppy::{Floppy, FloppyImage};
+use snow_floppy::{Floppy, FloppyImage, FloppyType};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -341,6 +341,20 @@ impl EmulatorState {
             .send(EmulatorCommand::InsertFloppyImage(
                 driveidx,
                 self.last_images[driveidx].borrow_mut().take().unwrap(),
+            ))
+            .unwrap();
+    }
+
+    /// Inserts a blank floppy
+    pub fn insert_blank_floppy(&self, driveidx: usize, t: FloppyType) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        sender
+            .send(EmulatorCommand::InsertFloppyImage(
+                driveidx,
+                Box::new(FloppyImage::new(t, "Blank")),
             ))
             .unwrap();
     }
