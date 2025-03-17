@@ -769,11 +769,22 @@ impl eframe::App for SnowGui {
                                     }
                                 ),
                                 |ui| {
-                                    if ui.button("Load image").clicked() {
+                                    if ui.button("Load image...").clicked() {
                                         self.floppy_dialog_driveidx = i;
                                         self.floppy_dialog.pick_file();
                                         ui.close_menu();
                                     }
+                                    if ui
+                                        .add_enabled(
+                                            self.emu.last_images[i].borrow().is_some(),
+                                            egui::Button::new("Reload last ejected floppy"),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.emu.reload_floppy(i);
+                                        ui.close_menu();
+                                    }
+                                    ui.separator();
                                     if ui
                                         .add_enabled(
                                             !d.ejected && d.dirty,
