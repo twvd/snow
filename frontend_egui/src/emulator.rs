@@ -19,7 +19,8 @@ use snow_core::keymap::Scancode;
 use snow_core::mac::MacModel;
 use snow_core::renderer::DisplayBuffer;
 use snow_core::tickable::Tickable;
-use snow_floppy::Floppy;
+use snow_floppy::{Floppy, FloppyImage};
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -40,6 +41,7 @@ pub struct EmulatorState {
     disasm_address: Address,
     disasm_code: DisassemblyListing,
     messages: VecDeque<(UserMessageType, String)>,
+    pub last_images: [RefCell<Option<Box<FloppyImage>>>; 3],
 }
 
 impl EmulatorState {
@@ -231,10 +233,13 @@ impl EmulatorState {
                     self.disasm_code =
                         Vec::from_iter(Disassembler::from(&mut code.into_iter(), address));
                 }
-                EmulatorEvent::FloppyEjected(idx, img) => self.messages.push_back((
-                    UserMessageType::Notice,
-                    format!("Floppy #{} ejected ({})", idx + 1, img.get_title()),
-                )),
+                EmulatorEvent::FloppyEjected(idx, img) => {
+                    self.messages.push_back((
+                        UserMessageType::Notice,
+                        format!("Floppy #{} ejected ({})", idx + 1, img.get_title()),
+                    ));
+                    *self.last_images[idx].borrow_mut() = Some(img);
+                }
                 EmulatorEvent::UserMessage(t, s) => self.messages.push_back((t, s)),
             }
         }
@@ -322,6 +327,20 @@ impl EmulatorState {
             .send(EmulatorCommand::InsertFloppy(
                 driveidx,
                 path.to_string_lossy().to_string(),
+            ))
+            .unwrap();
+    }
+
+    /// Reloads last ejected floppy
+    pub fn reload_floppy(&self, driveidx: usize) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        sender
+            .send(EmulatorCommand::InsertFloppyImage(
+                driveidx,
+                self.last_images[driveidx].borrow_mut().take().unwrap(),
             ))
             .unwrap();
     }
