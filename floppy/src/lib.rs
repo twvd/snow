@@ -148,6 +148,7 @@ pub trait Floppy {
 }
 
 /// An in-memory loaded floppy image
+#[derive(Clone)]
 pub struct FloppyImage {
     floppy_type: FloppyType,
 

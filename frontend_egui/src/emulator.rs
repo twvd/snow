@@ -19,6 +19,7 @@ use snow_core::keymap::Scancode;
 use snow_core::mac::MacModel;
 use snow_core::renderer::DisplayBuffer;
 use snow_core::tickable::Tickable;
+use snow_floppy::Floppy;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -230,6 +231,10 @@ impl EmulatorState {
                     self.disasm_code =
                         Vec::from_iter(Disassembler::from(&mut code.into_iter(), address));
                 }
+                EmulatorEvent::FloppyEjected(idx, img) => self.messages.push_back((
+                    UserMessageType::Notice,
+                    format!("Floppy #{} ejected ({})", idx + 1, img.get_title()),
+                )),
                 EmulatorEvent::UserMessage(t, s) => self.messages.push_back((t, s)),
             }
         }

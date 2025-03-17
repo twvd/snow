@@ -135,7 +135,7 @@ impl UserInterface {
                     self.emustatus = s;
                 }
                 EmulatorEvent::NextCode((a, i)) => self.generate_disassembly(a, i)?,
-                EmulatorEvent::UserMessage(_, _) => (),
+                _ => (),
             }
         }
 

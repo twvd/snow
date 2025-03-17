@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use snow_floppy::FloppyImage;
+
 use crate::bus::Address;
 use crate::cpu_m68k::regs::RegisterFile;
 use crate::keymap::KeyEvent;
@@ -97,9 +99,9 @@ pub enum UserMessageType {
 }
 
 /// A status message/event received from the emulator
-#[derive(Debug)]
 pub enum EmulatorEvent {
     Status(Box<EmulatorStatus>),
     NextCode((Address, Vec<u8>)),
     UserMessage(UserMessageType, String),
+    FloppyEjected(usize, Box<FloppyImage>),
 }
