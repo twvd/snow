@@ -106,6 +106,13 @@ impl Emulator {
     }
 
     fn status_update(&mut self) -> Result<()> {
+        for (i, drive) in self.cpu.bus.swim.drives.iter_mut().enumerate() {
+            if let Some(img) = drive.take_ejected_image() {
+                self.event_sender
+                    .send(EmulatorEvent::FloppyEjected(i, img))?;
+            }
+        }
+
         self.event_sender
             .send(EmulatorEvent::Status(Box::new(EmulatorStatus {
                 regs: self.cpu.regs.clone(),

@@ -185,6 +185,9 @@ pub(crate) struct FloppyDrive {
     stepdir: HeadStepDirection,
     pub(crate) motor: bool,
     pub(crate) floppy: FloppyImage,
+
+    /// Copy of last ejected floppy image
+    pub(crate) floppy_ejected: Option<Box<FloppyImage>>,
     pub(super) track_position: usize,
 
     /// True if disk was switched without eject
@@ -223,6 +226,7 @@ impl FloppyDrive {
             drive_type,
             cycles: 0,
             floppy_inserted: false,
+            floppy_ejected: None,
             track: 4,
             stepdir: HeadStepDirection::Up,
             floppy: FloppyImage::new(FloppyType::Mac400K, ""),
@@ -505,6 +509,13 @@ impl FloppyDrive {
         self.floppy_inserted = false;
         self.ejecting = None;
         self.mfm = self.drive_type.io_mfm();
+
+        // TODO inefficient (memory)
+        self.floppy_ejected = Some(Box::new(self.floppy.clone()));
+    }
+
+    pub(crate) fn take_ejected_image(&mut self) -> Option<Box<FloppyImage>> {
+        self.floppy_ejected.take()
     }
 }
 
