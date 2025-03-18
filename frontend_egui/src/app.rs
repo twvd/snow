@@ -5,7 +5,7 @@ use crate::widgets::disassembly::Disassembly;
 use crate::widgets::framebuffer::FramebufferWidget;
 use crate::workspace::Workspace;
 use crate::{emulator::EmulatorState, version_string, widgets::registers::RegistersWidget};
-use snow_floppy::loaders::{FloppyImageLoader, ImageType};
+use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
 
 use anyhow::{bail, Result};
 use eframe::egui;
@@ -52,6 +52,13 @@ fn truncate(s: &str, max_chars: usize) -> &str {
     }
 }
 
+enum FloppyDialogTarget {
+    /// Insert disk into a drive / save an image from a drive to a file
+    Drive(usize),
+    /// Save this image to a file (invalid on load)
+    Image(Box<FloppyImage>),
+}
+
 pub struct SnowGui {
     workspace: Workspace,
     workspace_file: Option<PathBuf>,
@@ -75,7 +82,7 @@ pub struct SnowGui {
     floppy_dialog_last: Option<DirectoryEntry>,
     floppy_dialog_last_image: Option<FloppyImage>,
     floppy_dialog_last_type: Option<ImageType>,
-    floppy_dialog_driveidx: usize,
+    floppy_dialog_target: FloppyDialogTarget,
     create_disk_dialog: DiskImageDialog,
 
     error_dialog_open: bool,
@@ -183,7 +190,7 @@ impl SnowGui {
                 .default_file_filter(&floppy_filter_str)
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir()),
-            floppy_dialog_driveidx: 0,
+            floppy_dialog_target: FloppyDialogTarget::Drive(0),
             floppy_dialog_last: None,
             floppy_dialog_last_image: None,
             floppy_dialog_last_type: None,
@@ -614,7 +621,12 @@ impl eframe::App for SnowGui {
         }
         if let Some(path) = self.floppy_dialog.take_picked() {
             match self.floppy_dialog.mode() {
-                DialogMode::PickFile => self.emu.load_floppy(self.floppy_dialog_driveidx, &path),
+                DialogMode::PickFile => {
+                    let FloppyDialogTarget::Drive(driveidx) = self.floppy_dialog_target else {
+                        unreachable!()
+                    };
+                    self.emu.load_floppy(driveidx, &path);
+                }
                 DialogMode::SaveFile => {
                     if !path
                         .extension()
@@ -624,7 +636,19 @@ impl eframe::App for SnowGui {
                     {
                         self.show_error(&"Saved floppy image must have .MOOF extension");
                     } else {
-                        self.emu.save_floppy(self.floppy_dialog_driveidx, &path);
+                        match &self.floppy_dialog_target {
+                            FloppyDialogTarget::Drive(driveidx) => {
+                                self.emu.save_floppy(*driveidx, &path);
+                            }
+                            FloppyDialogTarget::Image(img) => {
+                                if let Err(e) = snow_floppy::loaders::Moof::save_file(
+                                    img,
+                                    &path.to_string_lossy(),
+                                ) {
+                                    self.show_error(&format!("Failed to save image: {}", e));
+                                }
+                            }
+                        }
                     }
                 }
                 _ => unreachable!(),
@@ -786,14 +810,14 @@ impl eframe::App for SnowGui {
                                     //}
                                     ui.separator();
                                     if ui.button("Load image...").clicked() {
-                                        self.floppy_dialog_driveidx = i;
+                                        self.floppy_dialog_target = FloppyDialogTarget::Drive(i);
                                         self.floppy_dialog.pick_file();
                                         ui.close_menu();
                                     }
                                     if ui
                                         .add_enabled(
                                             self.emu.last_images[i].borrow().is_some(),
-                                            egui::Button::new("Reload last ejected floppy"),
+                                            egui::Button::new("Re-insert last ejected floppy"),
                                         )
                                         .clicked()
                                     {
@@ -808,7 +832,19 @@ impl eframe::App for SnowGui {
                                         )
                                         .clicked()
                                     {
-                                        self.floppy_dialog_driveidx = i;
+                                        self.floppy_dialog_target = FloppyDialogTarget::Drive(i);
+                                        self.floppy_dialog.save_file();
+                                        ui.close_menu();
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            self.emu.last_images[i].borrow().is_some(),
+                                            egui::Button::new("Save last ejected image..."),
+                                        )
+                                        .clicked()
+                                    {
+                                        let img = self.emu.last_images[i].borrow().clone().unwrap();
+                                        self.floppy_dialog_target = FloppyDialogTarget::Image(img);
                                         self.floppy_dialog.save_file();
                                         ui.close_menu();
                                     }
