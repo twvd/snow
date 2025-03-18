@@ -469,4 +469,12 @@ impl EmulatorState {
     pub fn take_message(&mut self) -> Option<(UserMessageType, String)> {
         self.messages.pop_front()
     }
+
+    pub fn force_eject(&self, driveidx: usize) {
+        self.cmdsender
+            .as_ref()
+            .unwrap()
+            .send(EmulatorCommand::EjectFloppy(driveidx))
+            .unwrap();
+    }
 }

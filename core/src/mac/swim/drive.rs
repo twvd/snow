@@ -504,13 +504,13 @@ impl FloppyDrive {
     }
 
     /// Ejects the disk
-    pub(super) fn eject(&mut self) {
+    pub fn eject(&mut self) {
         info!("Drive {}: disk ejected", self.idx);
+        self.switched = true;
         self.floppy_inserted = false;
         self.ejecting = None;
         self.mfm = self.drive_type.io_mfm();
 
-        // TODO inefficient (memory)
         self.floppy_ejected = Some(Box::new(self.floppy.clone()));
     }
 
