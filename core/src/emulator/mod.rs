@@ -286,6 +286,9 @@ impl Tickable for Emulator {
                         }
                         self.status_update()?;
                     }
+                    EmulatorCommand::EjectFloppy(drive) => {
+                        self.cpu.bus.swim.drives[drive].eject();
+                    }
                     EmulatorCommand::LoadHddImage(id, filename) => {
                         match self.load_hdd_image(&filename, id) {
                             Ok(_) => info!(

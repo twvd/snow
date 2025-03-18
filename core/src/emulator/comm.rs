@@ -21,6 +21,7 @@ pub enum EmulatorCommand {
     InsertFloppy(usize, String),
     InsertFloppyImage(usize, Box<FloppyImage>),
     SaveFloppy(usize, PathBuf),
+    EjectFloppy(usize),
     LoadHddImage(usize, PathBuf),
     DetachHddImage(usize),
     MouseUpdateAbsolute {

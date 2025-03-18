@@ -848,6 +848,14 @@ impl eframe::App for SnowGui {
                                         self.floppy_dialog.save_file();
                                         ui.close_menu();
                                     }
+                                    ui.separator();
+                                    if ui
+                                        .add_enabled(!d.ejected, egui::Button::new("Force eject"))
+                                        .clicked()
+                                    {
+                                        self.emu.force_eject(i);
+                                        ui.close_menu();
+                                    }
                                 },
                             );
                         }
