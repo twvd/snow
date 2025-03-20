@@ -3,6 +3,7 @@ use crate::keymap::map_winit_keycode;
 use crate::widgets::breakpoints::BreakpointsWidget;
 use crate::widgets::disassembly::Disassembly;
 use crate::widgets::framebuffer::FramebufferWidget;
+use crate::widgets::memory::MemoryViewerWidget;
 use crate::workspace::Workspace;
 use crate::{emulator::EmulatorState, version_string, widgets::registers::RegistersWidget};
 use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
@@ -71,6 +72,7 @@ pub struct SnowGui {
     framebuffer: FramebufferWidget,
     registers: RegistersWidget,
     breakpoints: BreakpointsWidget,
+    memory: MemoryViewerWidget,
 
     rom_dialog: FileDialog,
     rom_dialog_last: Option<DirectoryEntry>,
@@ -144,6 +146,7 @@ impl SnowGui {
             framebuffer: FramebufferWidget::new(cc),
             registers: RegistersWidget::new(),
             breakpoints: BreakpointsWidget::default(),
+            memory: MemoryViewerWidget::default(),
 
             rom_dialog: FileDialog::new()
                 .add_file_filter(
@@ -489,6 +492,9 @@ impl eframe::App for SnowGui {
                         .text(msg)
                         .kind(ToastKind::Error),
                 });
+            }
+            if let Some(mem) = self.emu.take_mem_update() {
+                self.memory.update_memory(mem);
             }
         }
 
@@ -954,6 +960,12 @@ impl eframe::App for SnowGui {
                     {
                         ui.close_menu();
                     }
+                    if ui
+                        .checkbox(&mut self.workspace.memory_open, "Memory")
+                        .clicked()
+                    {
+                        ui.close_menu();
+                    }
 
                     ui.separator();
                     if ui.button("Reset layout").clicked() {
@@ -1074,6 +1086,16 @@ impl eframe::App for SnowGui {
                     });
                 if let Some(a) = self.breakpoints.take_added_bp() {
                     self.emu.toggle_breakpoint(a);
+                }
+
+                persistent_window_s!(self, "Memory", [300.0, 200.0])
+                    .resizable([true, true])
+                    .open(&mut self.workspace.memory_open)
+                    .show(ctx, |ui| {
+                        self.memory.draw(ui);
+                    });
+                if let Some((addr, value)) = self.memory.take_edited() {
+                    self.emu.write_bus(addr, value);
                 }
             }
         });

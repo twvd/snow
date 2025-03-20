@@ -106,4 +106,5 @@ pub enum EmulatorEvent {
     NextCode((Address, Vec<u8>)),
     UserMessage(UserMessageType, String),
     FloppyEjected(usize, Box<FloppyImage>),
+    Memory((Address, Vec<u8>)),
 }

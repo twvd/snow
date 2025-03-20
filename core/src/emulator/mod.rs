@@ -145,6 +145,12 @@ impl Emulator {
         // Next code stream for disassembly listing
         self.disassemble(self.cpu.regs.pc, 200)?;
 
+        // Memory contents
+        if self.cpu.bus.ram_written.get_clear() {
+            self.event_sender
+                .send(EmulatorEvent::Memory((0, self.cpu.bus.ram.clone())))?;
+        }
+
         Ok(())
     }
 

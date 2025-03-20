@@ -30,6 +30,11 @@ pub struct MacBus<TRenderer: Renderer> {
 
     rom: Vec<u8>,
     pub(crate) ram: Vec<u8>,
+
+    /// Indicator flag used to determine whether we need to
+    /// ship the contents of the RAM at emulator status update.
+    pub(crate) ram_written: LatchingEvent,
+
     pub(crate) via: Via,
     scc: Scc,
     pub(crate) video: Video<TRenderer>,
@@ -112,6 +117,7 @@ where
 
             rom: Vec::from(rom),
             ram: vec![0; ram_size],
+            ram_written: LatchingEvent::default(),
             via: Via::new(model),
             video: Video::new(renderer),
             audio: AudioState::default(),
@@ -168,6 +174,7 @@ where
         for (i, &b) in bytes.as_ref().iter().enumerate() {
             self.ram[addr + i] = b;
         }
+        self.ram_written.set();
     }
 
     fn read_ram<T: PrimInt + FromPrimitive>(&self, addr: Address) -> T {
@@ -195,7 +202,10 @@ where
             // SCSI
             0x0058_0000..=0x005F_FFFF => self.scsi.write(addr, val),
             // RAM
-            0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & self.ram_mask] = val),
+            0x0060_0000..=0x007F_FFFF => {
+                self.ram_written.set();
+                Some(self.ram[addr as usize & self.ram_mask] = val)
+            }
             // SCC
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr, val),
             // IWM
@@ -224,7 +234,10 @@ where
 
         match addr {
             // RAM
-            0x0000_0000..=0x003F_FFFF => Some(self.ram[addr as usize & self.ram_mask] = val),
+            0x0000_0000..=0x003F_FFFF => {
+                self.ram_written.set();
+                Some(self.ram[addr as usize & self.ram_mask] = val)
+            }
             // SCSI
             0x0058_0000..=0x005F_FFFF => self.scsi.write(addr, val),
             // SCC

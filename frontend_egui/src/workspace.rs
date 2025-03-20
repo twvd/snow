@@ -29,6 +29,7 @@ pub struct Workspace {
     pub disassembly_open: bool,
     pub registers_open: bool,
     pub breakpoints_open: bool,
+    pub memory_open: bool,
     pub center_viewport_v: bool,
     pub viewport_scale: f32,
 
@@ -52,6 +53,7 @@ impl Default for Workspace {
             disassembly_open: false,
             registers_open: false,
             breakpoints_open: false,
+            memory_open: false,
             center_viewport_v: false,
             rom_path: None,
             disks: core::array::from_fn(|_| None),
@@ -63,7 +65,7 @@ impl Default for Workspace {
 impl Workspace {
     /// Names of windows to serialize position/size of
     pub const WINDOW_NAMES: &'static [&'static str] =
-        &["Disassembly", "Registers", "Log", "Breakpoints"];
+        &["Disassembly", "Registers", "Log", "Breakpoints", "Memory"];
 
     fn basedir(&self) -> PathBuf {
         use std::env::current_dir;

@@ -42,6 +42,7 @@ pub struct EmulatorState {
     disasm_code: DisassemblyListing,
     messages: VecDeque<(UserMessageType, String)>,
     pub last_images: [RefCell<Option<Box<FloppyImage>>>; 3],
+    ram_update: Option<Vec<u8>>,
 }
 
 impl EmulatorState {
@@ -241,6 +242,10 @@ impl EmulatorState {
                     *self.last_images[idx].borrow_mut() = Some(img);
                 }
                 EmulatorEvent::UserMessage(t, s) => self.messages.push_back((t, s)),
+                EmulatorEvent::Memory((addr, mem)) => {
+                    assert_eq!(addr, 0);
+                    self.ram_update = Some(mem);
+                }
             }
         }
 
@@ -459,11 +464,10 @@ impl EmulatorState {
     }
 
     pub fn toggle_breakpoint(&self, bp: Breakpoint) {
-        self.cmdsender
-            .as_ref()
-            .unwrap()
-            .send(EmulatorCommand::ToggleBreakpoint(bp))
-            .unwrap();
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender.send(EmulatorCommand::ToggleBreakpoint(bp)).unwrap();
     }
 
     pub fn take_message(&mut self) -> Option<(UserMessageType, String)> {
@@ -475,6 +479,19 @@ impl EmulatorState {
             .as_ref()
             .unwrap()
             .send(EmulatorCommand::EjectFloppy(driveidx))
+            .unwrap();
+    }
+
+    pub fn take_mem_update(&mut self) -> Option<Vec<u8>> {
+        self.ram_update.take()
+    }
+
+    pub fn write_bus(&self, addr: Address, value: u8) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender
+            .send(EmulatorCommand::BusWrite(addr, vec![value]))
             .unwrap();
     }
 }
