@@ -1,26 +1,27 @@
 use eframe::egui;
-use egui_extras::{Column, TableBuilder};
+use eframe::egui::Ui;
 use snow_core::bus::Address;
 
 #[derive(Default)]
 pub struct MemoryViewerWidget {
     /// The memory data to display
     memory: Vec<u8>,
-    /// The base address to display from
-    start_address: u32,
     /// Address input field for jumping to a specific address
     address_input: String,
     /// Currently editing byte
     editing: Option<(usize, String)>,
     /// Last edited byte
     edited: Option<(Address, u8)>,
+    /// Scroll to a row
+    scroll_to_row: Option<usize>,
+    /// Current top row
+    top_row: usize,
 }
 
 impl MemoryViewerWidget {
     /// Update the memory data to display
     pub fn update_memory(&mut self, memory: Vec<u8>) {
         self.memory = memory;
-        self.start_address = std::cmp::min(self.start_address, (self.memory.len() - 1) as u32);
     }
 
     /// Get a reference to the current memory buffer
@@ -37,16 +38,14 @@ impl MemoryViewerWidget {
 
     /// Jump to a specific address
     pub fn go_to_address(&mut self, address: u32) {
-        self.start_address = address;
-        self.start_address = std::cmp::min(self.start_address, (self.memory.len() - 1) as u32);
+        self.scroll_to_row = Some((address / 16) as usize);
     }
 
     pub fn draw(&mut self, ui: &mut egui::Ui) {
-        // Address select
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
-                    self.start_address > 0,
+                    self.top_row > 0,
                     egui::Button::new(format!(
                         "{} 1000",
                         egui_material_icons::icons::ICON_ARROW_BACK_IOS
@@ -54,11 +53,11 @@ impl MemoryViewerWidget {
                 )
                 .clicked()
             {
-                self.start_address = self.start_address.saturating_sub(0x1000);
+                self.scroll_to_row = Some(self.top_row.saturating_sub(0x1000 / 16));
             }
             if ui
                 .add_enabled(
-                    self.start_address > 0,
+                    self.top_row > 0,
                     egui::Button::new(format!(
                         "{} 100",
                         egui_material_icons::icons::ICON_ARROW_BACK_IOS
@@ -66,8 +65,10 @@ impl MemoryViewerWidget {
                 )
                 .clicked()
             {
-                self.start_address = self.start_address.saturating_sub(0x100);
+                self.scroll_to_row = Some(self.top_row.saturating_sub(0x100 / 16));
             }
+
+            // Address select
             ui.text_edit_singleline(&mut self.address_input);
             if ui
                 .add_enabled(
@@ -80,9 +81,10 @@ impl MemoryViewerWidget {
                 self.go_to_address(addr & !0x0F);
                 self.address_input.clear();
             }
+
             if ui
                 .add_enabled(
-                    self.start_address != self.memory.len() as u32,
+                    true,
                     egui::Button::new(format!(
                         "100 {}",
                         egui_material_icons::icons::ICON_ARROW_FORWARD_IOS
@@ -90,12 +92,11 @@ impl MemoryViewerWidget {
                 )
                 .clicked()
             {
-                self.start_address =
-                    std::cmp::min(self.memory.len() as u32, self.start_address + 0x100);
+                self.scroll_to_row = Some(self.top_row + 0x100 / 16);
             }
             if ui
                 .add_enabled(
-                    self.start_address != self.memory.len() as u32,
+                    true,
                     egui::Button::new(format!(
                         "1000 {}",
                         egui_material_icons::icons::ICON_ARROW_FORWARD_IOS
@@ -103,8 +104,7 @@ impl MemoryViewerWidget {
                 )
                 .clicked()
             {
-                self.start_address =
-                    std::cmp::min(self.memory.len() as u32, self.start_address + 0x1000);
+                self.scroll_to_row = Some(self.top_row + 0x1000 / 16);
             }
         });
 
@@ -121,121 +121,121 @@ impl MemoryViewerWidget {
         }
 
         // Calculate number of rows needed
-        //let rows = (self.memory.len() + 15) / 16;
-        let visible_rows = (available_height / 20.0).ceil() as usize;
+        let row_height = 20.0;
+        let rows = (self.memory.len() + 15) / 16;
 
-        TableBuilder::new(ui)
-            .max_scroll_height(available_height)
-            .auto_shrink(false)
-            .column(Column::exact(60.0)) // Address column
-            .column(Column::exact(430.0)) // Hex bytes column
-            .column(Column::remainder()) // ASCII column
-            .striped(true)
-            .body(|mut body| {
-                for row in 0..visible_rows {
-                    let row_addr = self.start_address + (row * 16) as u32;
-                    let row_start = row_addr as usize;
-                    let row_end = std::cmp::min(row_start + 16, self.memory.len());
+        // Create a scroll area with row-based virtualization
+        let mut scroll_area = egui::ScrollArea::vertical()
+            .auto_shrink([false; 2])
+            .max_height(available_height);
 
-                    body.row(20.0, |mut row| {
-                        // Address column
-                        row.col(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(format!("{:06X}", row_addr))
-                                        .family(egui::FontFamily::Monospace)
-                                        .size(10.0),
-                                )
-                            });
-                        });
+        // Handle scroll to row request
+        if let Some(row) = self.scroll_to_row.take() {
+            scroll_area = scroll_area
+                .vertical_scroll_offset(row as f32 * (row_height + ui.spacing().item_spacing.y));
+        }
 
-                        // Hex bytes column
-                        row.col(|ui| {
-                            ui.horizontal(|ui| {
-                                for i in row_start..row_end {
-                                    // Check if this byte is being edited
-                                    if let Some((edit_offset, ref mut edit_value)) = self.editing {
-                                        if edit_offset == i {
-                                            // This byte is being edited, show text field
-                                            let edit_response = ui.add(
-                                                egui::TextEdit::singleline(edit_value)
-                                                    .desired_width(20.0)
-                                                    .font(egui::TextStyle::Monospace),
-                                            );
+        scroll_area.show_rows(ui, row_height, rows, |ui, row_range| {
+            self.top_row = row_range.start;
+            for row in row_range {
+                let row_addr = (row * 16) as Address;
+                let row_start = row_addr as usize;
+                let row_end = std::cmp::min(row_start + 16, self.memory.len());
 
-                                            // Process result of editing
-                                            if edit_response.lost_focus() {
-                                                if let Ok(value) =
-                                                    u8::from_str_radix(edit_value, 16)
-                                                {
-                                                    // Valid hex value, update memory
-                                                    if i < self.memory.len() {
-                                                        self.memory[i] = value;
-                                                        self.edited = Some((i as Address, value));
-                                                    }
-                                                }
-                                                // Clear editing state
-                                                self.editing = None;
-                                            }
+                ui.horizontal(|ui| {
+                    // Address
+                    ui.add_sized(
+                        [60.0, row_height],
+                        egui::Label::new(
+                            egui::RichText::new(format!(":{:06X}", row_addr))
+                                .family(egui::FontFamily::Monospace)
+                                .size(10.0),
+                        ),
+                    );
+                    // Hex bytes column
+                    self.draw_hex(row_start, row_end, ui);
+                    // ASCII column
+                    self.draw_ascii(row_start, row_end, ui);
+                });
+            }
+        });
+    }
 
-                                            continue;
-                                        }
-                                    }
+    fn draw_hex(&mut self, row_start: usize, row_end: usize, ui: &mut Ui) {
+        for i in row_start..row_end {
+            // Check if this byte is being edited
+            if let Some((edit_offset, ref mut edit_value)) = self.editing {
+                if edit_offset == i {
+                    // This byte is being edited, show text field
+                    let edit_response = ui.add(
+                        egui::TextEdit::singleline(edit_value)
+                            .desired_width(20.0)
+                            .font(egui::TextStyle::Monospace),
+                    );
 
-                                    // Regular byte display with click to edit
-                                    let byte_text = format!("{:02X}", self.memory[i]);
-                                    let response = ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(byte_text)
-                                                .family(egui::FontFamily::Monospace)
-                                                .size(10.0),
-                                        )
-                                        .sense(egui::Sense::click()),
-                                    );
-                                    ui.add_space(4.0);
+                    // Process result of editing
+                    if edit_response.lost_focus() {
+                        if let Ok(value) = u8::from_str_radix(edit_value, 16) {
+                            // Valid hex value, update memory
+                            if i < self.memory.len() {
+                                self.memory[i] = value;
+                                self.edited = Some((i as Address, value));
+                            }
+                        }
+                        // Clear editing state
+                        self.editing = None;
+                    }
 
-                                    // If clicked, start editing this byte
-                                    if response.clicked() {
-                                        self.editing = Some((i, format!("{:02X}", self.memory[i])));
-                                    }
-                                }
-
-                                // Pad with spaces for incomplete rows
-                                for _ in row_end..row_start + 16 {
-                                    ui.label(
-                                        egui::RichText::new("  ")
-                                            .family(egui::FontFamily::Monospace)
-                                            .size(10.0),
-                                    );
-                                    ui.add_space(4.0);
-                                }
-                            });
-                        });
-
-                        // ASCII column
-                        row.col(|ui| {
-                            ui.horizontal(|ui| {
-                                let mut ascii_str = String::new();
-                                for i in row_start..row_end {
-                                    let byte = self.memory[i];
-                                    if (32..=126).contains(&byte) {
-                                        // Printable ASCII
-                                        ascii_str.push(byte as char);
-                                    } else {
-                                        // Non-printable
-                                        ascii_str.push('.');
-                                    }
-                                }
-                                ui.label(
-                                    egui::RichText::new(ascii_str)
-                                        .family(egui::FontFamily::Monospace)
-                                        .size(10.0),
-                                );
-                            });
-                        });
-                    });
+                    continue;
                 }
-            });
+            }
+
+            // Regular byte display with click to edit
+            let byte_text = format!("{:02X}", self.memory[i]);
+            let response = ui.add(
+                egui::Label::new(
+                    egui::RichText::new(byte_text)
+                        .family(egui::FontFamily::Monospace)
+                        .size(10.0),
+                )
+                .sense(egui::Sense::click()),
+            );
+            ui.add_space(4.0);
+
+            // If clicked, start editing this byte
+            if response.clicked() {
+                self.editing = Some((i, format!("{:02X}", self.memory[i])));
+            }
+        }
+
+        // Pad with spaces for incomplete rows
+        for _ in row_end..row_start + 16 {
+            ui.label(
+                egui::RichText::new("  ")
+                    .family(egui::FontFamily::Monospace)
+                    .size(10.0),
+            );
+            ui.add_space(4.0);
+        }
+    }
+
+    fn draw_ascii(&self, row_start: usize, row_end: usize, ui: &mut Ui) {
+        let mut ascii_str = String::new();
+        for i in row_start..row_end {
+            let byte = self.memory[i];
+            if (32..=126).contains(&byte) {
+                // Printable ASCII
+                ascii_str.push(byte as char);
+            } else {
+                // Non-printable
+                ascii_str.push('.');
+            }
+        }
+        ui.label(
+            egui::RichText::new(ascii_str)
+                .family(egui::FontFamily::Monospace)
+                .size(10.0),
+        );
     }
 
     pub fn take_edited(&mut self) -> Option<(Address, u8)> {
