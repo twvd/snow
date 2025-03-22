@@ -18,6 +18,8 @@ pub struct MemoryViewerWidget {
     top_row: usize,
     /// String search input box
     stringsearch_input: String,
+    /// Hex search input box
+    hexsearch_input: String,
     /// Current search highlight
     highlight: Vec<u8>,
 }
@@ -127,7 +129,19 @@ impl MemoryViewerWidget {
 
         ui.separator();
 
-        // String search
+        ui.horizontal(|ui| {
+            ui.label("Search for (hex): ");
+            ui.text_edit_singleline(&mut self.hexsearch_input);
+            if ui
+                .add_enabled(
+                    !self.hexsearch_input.is_empty() && hex::decode(&self.hexsearch_input).is_ok(),
+                    egui::Button::new("Search next"),
+                )
+                .clicked()
+            {
+                self.search(hex::decode(&self.hexsearch_input).unwrap());
+            }
+        });
         ui.horizontal(|ui| {
             ui.label("String search: ");
             ui.text_edit_singleline(&mut self.stringsearch_input);
@@ -138,14 +152,7 @@ impl MemoryViewerWidget {
                 )
                 .clicked()
             {
-                let start_addr = ((self.top_row + 1) * 16) % self.memory.len();
-                let needle = self.stringsearch_input.as_bytes();
-
-                self.scroll_to_row = self.memory[start_addr..]
-                    .windows(needle.len())
-                    .position(|w| w == needle)
-                    .map(|p| (start_addr + p) / 16);
-                self.highlight = needle.to_vec();
+                self.search(self.stringsearch_input.as_bytes().to_vec());
             }
         });
 
@@ -203,6 +210,16 @@ impl MemoryViewerWidget {
                 });
             }
         });
+    }
+
+    fn search(&mut self, needle: Vec<u8>) {
+        let start_addr = ((self.top_row + 1) * 16) % self.memory.len();
+
+        self.scroll_to_row = self.memory[start_addr..]
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .map(|p| (start_addr + p) / 16);
+        self.highlight = needle;
     }
 
     fn draw_hex(&mut self, row_start: usize, row_end: usize, ui: &mut Ui, hl_left: &mut usize) {
