@@ -42,7 +42,7 @@ pub struct EmulatorState {
     disasm_code: DisassemblyListing,
     messages: VecDeque<(UserMessageType, String)>,
     pub last_images: [RefCell<Option<Box<FloppyImage>>>; 3],
-    ram_update: Option<Vec<u8>>,
+    ram_update: VecDeque<(Address, Vec<u8>)>,
 }
 
 impl EmulatorState {
@@ -242,9 +242,8 @@ impl EmulatorState {
                     *self.last_images[idx].borrow_mut() = Some(img);
                 }
                 EmulatorEvent::UserMessage(t, s) => self.messages.push_back((t, s)),
-                EmulatorEvent::Memory((addr, mem)) => {
-                    assert_eq!(addr, 0);
-                    self.ram_update = Some(mem);
+                EmulatorEvent::Memory(update) => {
+                    self.ram_update.push_back(update);
                 }
             }
         }
@@ -482,8 +481,8 @@ impl EmulatorState {
             .unwrap();
     }
 
-    pub fn take_mem_update(&mut self) -> Option<Vec<u8>> {
-        self.ram_update.take()
+    pub fn take_mem_update(&mut self) -> Option<(Address, Vec<u8>)> {
+        self.ram_update.pop_front()
     }
 
     pub fn write_bus(&self, addr: Address, value: u8) {

@@ -493,8 +493,8 @@ impl eframe::App for SnowGui {
                         .kind(ToastKind::Error),
                 });
             }
-            if let Some(mem) = self.emu.take_mem_update() {
-                self.memory.update_memory(mem);
+            while let Some((addr, data)) = self.emu.take_mem_update() {
+                self.memory.update_memory(addr, &data);
             }
         }
 

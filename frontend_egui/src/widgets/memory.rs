@@ -22,8 +22,12 @@ pub struct MemoryViewerWidget {
 
 impl MemoryViewerWidget {
     /// Update the memory data to display
-    pub fn update_memory(&mut self, memory: Vec<u8>) {
-        self.memory = memory;
+    pub fn update_memory(&mut self, addr: Address, data: &[u8]) {
+        let sz = addr as usize + data.len();
+        if self.memory.len() < sz {
+            self.memory.resize(sz, 0);
+        }
+        self.memory[(addr as usize)..sz].copy_from_slice(data);
     }
 
     /// Get a reference to the current memory buffer

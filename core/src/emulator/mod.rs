@@ -11,7 +11,7 @@ use crate::cpu_m68k::cpu::CpuM68k;
 use crate::keymap::Keymap;
 use crate::mac::adb::{AdbKeyboard, AdbMouse};
 use crate::mac::audio::AudioReceiver;
-use crate::mac::bus::MacBus;
+use crate::mac::bus::{MacBus, RAM_DIRTY_PAGESIZE};
 use crate::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use crate::mac::MacModel;
 use crate::renderer::channel::ChannelRenderer;
@@ -146,10 +146,14 @@ impl Emulator {
         self.disassemble(self.cpu.regs.pc, 200)?;
 
         // Memory contents
-        if self.cpu.bus.ram_written.get_clear() {
-            self.event_sender
-                .send(EmulatorEvent::Memory((0, self.cpu.bus.ram.clone())))?;
+        for page in &self.cpu.bus.ram_dirty {
+            let r = (page * RAM_DIRTY_PAGESIZE)..((page + 1) * RAM_DIRTY_PAGESIZE);
+            self.event_sender.send(EmulatorEvent::Memory((
+                r.start as Address,
+                self.cpu.bus.ram[r].to_vec(),
+            )))?;
         }
+        self.cpu.bus.ram_dirty.clear();
 
         Ok(())
     }

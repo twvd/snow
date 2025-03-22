@@ -16,8 +16,12 @@ use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent};
 
 use anyhow::Result;
+use bit_set::BitSet;
 use log::*;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
+
+/// Size of a RAM page in MacBus::ram_dirty
+pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
 pub struct MacBus<TRenderer: Renderer> {
     cycles: Ticks,
@@ -31,9 +35,8 @@ pub struct MacBus<TRenderer: Renderer> {
     rom: Vec<u8>,
     pub(crate) ram: Vec<u8>,
 
-    /// Indicator flag used to determine whether we need to
-    /// ship the contents of the RAM at emulator status update.
-    pub(crate) ram_written: LatchingEvent,
+    /// RAM pages (RAM_DIRTY_PAGESIZE bytes) written
+    pub(crate) ram_dirty: BitSet,
 
     pub(crate) via: Via,
     scc: Scc,
@@ -117,7 +120,7 @@ where
 
             rom: Vec::from(rom),
             ram: vec![0; ram_size],
-            ram_written: LatchingEvent::default(),
+            ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             via: Via::new(model),
             video: Video::new(renderer),
             audio: AudioState::default(),
@@ -173,8 +176,8 @@ where
         let bytes = val.to_be_bytes();
         for (i, &b) in bytes.as_ref().iter().enumerate() {
             self.ram[addr + i] = b;
+            self.ram_dirty.insert((addr + i) / RAM_DIRTY_PAGESIZE);
         }
-        self.ram_written.set();
     }
 
     fn read_ram<T: PrimInt + FromPrimitive>(&self, addr: Address) -> T {
@@ -203,8 +206,9 @@ where
             0x0058_0000..=0x005F_FFFF => self.scsi.write(addr, val),
             // RAM
             0x0060_0000..=0x007F_FFFF => {
-                self.ram_written.set();
-                Some(self.ram[addr as usize & self.ram_mask] = val)
+                let idx = ((addr as usize) - 0x60_0000) & self.ram_mask;
+                self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
+                Some(self.ram[idx] = val)
             }
             // SCC
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr, val),
@@ -235,8 +239,9 @@ where
         match addr {
             // RAM
             0x0000_0000..=0x003F_FFFF => {
-                self.ram_written.set();
-                Some(self.ram[addr as usize & self.ram_mask] = val)
+                let idx = addr as usize & self.ram_mask;
+                self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
+                Some(self.ram[idx] = val)
             }
             // SCSI
             0x0058_0000..=0x005F_FFFF => self.scsi.write(addr, val),
