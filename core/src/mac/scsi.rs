@@ -351,8 +351,6 @@ impl ScsiController {
             dataout_len: 0,
             status: 0,
             disks: Default::default(),
-
-            #[cfg(feature = "mmap")]
             disk_paths: Default::default(),
         }
     }
