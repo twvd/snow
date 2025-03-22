@@ -423,7 +423,11 @@ impl SnowGui {
     }
 
     fn screenshot(&mut self) {
-        let mut p = dirs::desktop_dir().unwrap();
+        let Some(mut p) = dirs::desktop_dir().or_else(|| std::env::current_dir().ok()) else {
+            self.show_error(&"Failed finding screenshot directory");
+            return;
+        };
+
         let filename = format!(
             "Snow screenshot {}.png",
             chrono::Local::now().format("%Y-%m-%d %H-%M-%S")
