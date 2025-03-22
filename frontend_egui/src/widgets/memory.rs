@@ -16,6 +16,8 @@ pub struct MemoryViewerWidget {
     scroll_to_row: Option<usize>,
     /// Current top row
     top_row: usize,
+    /// String search input box
+    stringsearch_input: String,
 }
 
 impl MemoryViewerWidget {
@@ -43,6 +45,15 @@ impl MemoryViewerWidget {
 
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    self.top_row > 0,
+                    egui::Button::new(egui_material_icons::icons::ICON_SKIP_PREVIOUS),
+                )
+                .clicked()
+            {
+                self.scroll_to_row = Some(0);
+            }
             if ui
                 .add_enabled(
                     self.top_row > 0,
@@ -105,6 +116,29 @@ impl MemoryViewerWidget {
                 .clicked()
             {
                 self.scroll_to_row = Some(self.top_row + 0x1000 / 16);
+            }
+        });
+
+        ui.separator();
+
+        // String search
+        ui.horizontal(|ui| {
+            ui.label("String search: ");
+            ui.text_edit_singleline(&mut self.stringsearch_input);
+            if ui
+                .add_enabled(
+                    !self.stringsearch_input.is_empty() && self.stringsearch_input.is_ascii(),
+                    egui::Button::new("Search next"),
+                )
+                .clicked()
+            {
+                let start_addr = ((self.top_row + 1) * 16) % self.memory.len();
+                let needle = self.stringsearch_input.as_bytes();
+
+                self.scroll_to_row = self.memory[start_addr..]
+                    .windows(needle.len())
+                    .position(|w| w == needle)
+                    .map(|p| (start_addr + p) / 16);
             }
         });
 
