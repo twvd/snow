@@ -18,6 +18,8 @@ pub struct MemoryViewerWidget {
     top_row: usize,
     /// String search input box
     stringsearch_input: String,
+    /// Current search highlight
+    highlight: Vec<u8>,
 }
 
 impl MemoryViewerWidget {
@@ -143,6 +145,7 @@ impl MemoryViewerWidget {
                     .windows(needle.len())
                     .position(|w| w == needle)
                     .map(|p| (start_addr + p) / 16);
+                self.highlight = needle.to_vec();
             }
         });
 
@@ -174,6 +177,9 @@ impl MemoryViewerWidget {
         }
 
         scroll_area.show_rows(ui, row_height, rows, |ui, row_range| {
+            let mut hl_hex = 0;
+            let mut hl_ascii = 0;
+
             self.top_row = row_range.start;
             for row in row_range {
                 let row_addr = (row * 16) as Address;
@@ -191,16 +197,25 @@ impl MemoryViewerWidget {
                         ),
                     );
                     // Hex bytes column
-                    self.draw_hex(row_start, row_end, ui);
+                    self.draw_hex(row_start, row_end, ui, &mut hl_hex);
                     // ASCII column
-                    self.draw_ascii(row_start, row_end, ui);
+                    self.draw_ascii(row_start, row_end, ui, &mut hl_ascii);
                 });
             }
         });
     }
 
-    fn draw_hex(&mut self, row_start: usize, row_end: usize, ui: &mut Ui) {
+    fn draw_hex(&mut self, row_start: usize, row_end: usize, ui: &mut Ui, hl_left: &mut usize) {
         for i in row_start..row_end {
+            // Search highlighting
+            if !self.highlight.is_empty()
+                && self.memory[i..(i + self.highlight.len())] == self.highlight
+            {
+                *hl_left = self.highlight.len();
+            }
+            let highlighted = *hl_left > 0;
+            *hl_left = hl_left.saturating_sub(1);
+
             // Check if this byte is being edited
             if let Some((edit_offset, ref mut edit_value)) = self.editing {
                 if edit_offset == i {
@@ -230,14 +245,15 @@ impl MemoryViewerWidget {
 
             // Regular byte display with click to edit
             let byte_text = format!("{:02X}", self.memory[i]);
-            let response = ui.add(
-                egui::Label::new(
-                    egui::RichText::new(byte_text)
-                        .family(egui::FontFamily::Monospace)
-                        .size(10.0),
-                )
-                .sense(egui::Sense::click()),
-            );
+            let mut text = egui::RichText::new(byte_text)
+                .family(egui::FontFamily::Monospace)
+                .size(10.0);
+            if highlighted {
+                text = text
+                    .background_color(egui::Color32::YELLOW)
+                    .color(egui::Color32::BLACK);
+            }
+            let response = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
             ui.add_space(4.0);
 
             // If clicked, start editing this byte
@@ -257,23 +273,41 @@ impl MemoryViewerWidget {
         }
     }
 
-    fn draw_ascii(&self, row_start: usize, row_end: usize, ui: &mut Ui) {
-        let mut ascii_str = String::new();
+    fn draw_ascii(&self, row_start: usize, row_end: usize, ui: &mut Ui, hl_left: &mut usize) {
+        let oldspacing = ui.spacing().item_spacing;
+        ui.spacing_mut().item_spacing.x = 0.0;
+
         for i in row_start..row_end {
+            // Search highlighting
+            if !self.highlight.is_empty()
+                && self.memory[i..(i + self.highlight.len())] == self.highlight
+            {
+                *hl_left = self.highlight.len();
+            }
+            let highlighted = *hl_left > 0;
+            *hl_left = hl_left.saturating_sub(1);
+
             let byte = self.memory[i];
-            if (32..=126).contains(&byte) {
+            let byte_text = if (32..=126).contains(&byte) {
                 // Printable ASCII
-                ascii_str.push(byte as char);
+                byte as char
             } else {
                 // Non-printable
-                ascii_str.push('.');
-            }
-        }
-        ui.label(
-            egui::RichText::new(ascii_str)
+                '.'
+            };
+
+            let mut text = egui::RichText::new(byte_text)
                 .family(egui::FontFamily::Monospace)
-                .size(10.0),
-        );
+                .size(10.0);
+            if highlighted {
+                text = text
+                    .background_color(egui::Color32::YELLOW)
+                    .color(egui::Color32::BLACK);
+            }
+            ui.label(text);
+        }
+
+        ui.spacing_mut().item_spacing = oldspacing;
     }
 
     pub fn take_edited(&mut self) -> Option<(Address, u8)> {
