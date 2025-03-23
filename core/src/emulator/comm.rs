@@ -19,6 +19,7 @@ pub type EmulatorEventReceiver = crossbeam_channel::Receiver<EmulatorEvent>;
 pub enum EmulatorCommand {
     Quit,
     InsertFloppy(usize, String),
+    InsertFloppyWriteProtected(usize, String),
     InsertFloppyImage(usize, Box<FloppyImage>),
     SaveFloppy(usize, PathBuf),
     EjectFloppy(usize),

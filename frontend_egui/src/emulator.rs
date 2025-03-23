@@ -322,17 +322,26 @@ impl EmulatorState {
     }
 
     /// Loads a floppy image from the specified path.
-    pub fn load_floppy(&self, driveidx: usize, path: &Path) {
+    pub fn load_floppy(&self, driveidx: usize, path: &Path, wp: bool) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
-        sender
-            .send(EmulatorCommand::InsertFloppy(
-                driveidx,
-                path.to_string_lossy().to_string(),
-            ))
-            .unwrap();
+        if wp {
+            sender
+                .send(EmulatorCommand::InsertFloppyWriteProtected(
+                    driveidx,
+                    path.to_string_lossy().to_string(),
+                ))
+                .unwrap();
+        } else {
+            sender
+                .send(EmulatorCommand::InsertFloppy(
+                    driveidx,
+                    path.to_string_lossy().to_string(),
+                ))
+                .unwrap();
+        }
     }
 
     /// Reloads last ejected floppy

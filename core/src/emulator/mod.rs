@@ -290,6 +290,24 @@ impl Tickable for Emulator {
                         }
                         self.status_update()?;
                     }
+                    EmulatorCommand::InsertFloppyWriteProtected(drive, filename) => {
+                        let image = Autodetect::load_file(&filename);
+                        match image {
+                            Ok(mut img) => {
+                                img.set_force_wp();
+                                if let Err(e) = self.cpu.bus.swim.disk_insert(drive, img) {
+                                    self.user_error(&format!("Cannot insert disk: {}", e));
+                                }
+                            }
+                            Err(e) => {
+                                self.user_error(&format!(
+                                    "Cannot load image '{}': {}",
+                                    filename, e
+                                ));
+                            }
+                        }
+                        self.status_update()?;
+                    }
                     EmulatorCommand::InsertFloppyImage(drive, img) => {
                         if let Err(e) = self.cpu.bus.swim.disk_insert(drive, *img) {
                             self.user_error(&format!("Cannot insert disk: {}", e));

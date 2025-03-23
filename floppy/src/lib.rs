@@ -174,6 +174,9 @@ pub struct FloppyImage {
 
     /// Floppy has been written to and not saved since
     dirty: bool,
+
+    /// Force floppy read-only
+    force_wp: bool,
 }
 
 impl FloppyImage {
@@ -213,6 +216,7 @@ impl FloppyImage {
             metadata: FloppyMetadata::from([("title".to_string(), title.to_string())]),
             origtracktype: [[Default::default(); FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
             dirty: false,
+            force_wp: false,
         }
     }
 
@@ -285,6 +289,11 @@ impl FloppyImage {
         self.dirty
     }
 
+    /// Forces floppy to be write-protected
+    pub fn set_force_wp(&mut self) {
+        self.force_wp = true;
+    }
+
     pub(crate) fn push_track_bit(
         &mut self,
         side: usize,
@@ -349,8 +358,13 @@ impl Floppy for FloppyImage {
     }
 
     fn get_write_protect(&self) -> bool {
-        self.flux_trackdata
-            .iter()
-            .any(|s| s.iter().any(|t| !t.is_empty()))
+        // TODO write-protected until write is implemented for flux
+        // and SuperDrive
+        self.force_wp
+            || self.get_type() == FloppyType::Mfm144M
+            || self
+                .flux_trackdata
+                .iter()
+                .any(|s| s.iter().any(|t| !t.is_empty()))
     }
 }

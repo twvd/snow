@@ -85,6 +85,7 @@ pub struct SnowGui {
     floppy_dialog_last_image: Option<FloppyImage>,
     floppy_dialog_last_type: Option<ImageType>,
     floppy_dialog_target: FloppyDialogTarget,
+    floppy_dialog_wp: bool,
     create_disk_dialog: DiskImageDialog,
 
     error_dialog_open: bool,
@@ -197,6 +198,7 @@ impl SnowGui {
             floppy_dialog_last: None,
             floppy_dialog_last_image: None,
             floppy_dialog_last_type: None,
+            floppy_dialog_wp: false,
             workspace_dialog: FileDialog::new()
                 .add_file_filter(
                     "Snow workspace (*.SNOWW)",
@@ -418,6 +420,9 @@ impl SnowGui {
         self.floppy_dialog_last_type = snow_floppy::loaders::Autodetect::detect(&data).ok();
         self.floppy_dialog_last_image =
             snow_floppy::loaders::Autodetect::load(&data, Some(d.file_name())).ok();
+        if let Some(img) = self.floppy_dialog_last_image.as_ref() {
+            self.floppy_dialog_wp = img.get_write_protect();
+        }
 
         Ok(())
     }
@@ -621,6 +626,15 @@ impl eframe::App for SnowGui {
                             ));
                             ui.end_row();
                         });
+
+                        ui.separator();
+                        ui.add_enabled(
+                            !img.get_write_protect(),
+                            egui::Checkbox::new(
+                                &mut self.floppy_dialog_wp,
+                                "Mount write-protected",
+                            ),
+                        );
                     }
                 }
             });
@@ -635,7 +649,7 @@ impl eframe::App for SnowGui {
                     let FloppyDialogTarget::Drive(driveidx) = self.floppy_dialog_target else {
                         unreachable!()
                     };
-                    self.emu.load_floppy(driveidx, &path);
+                    self.emu.load_floppy(driveidx, &path, self.floppy_dialog_wp);
                 }
                 DialogMode::SaveFile => {
                     if !path
