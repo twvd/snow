@@ -18,7 +18,7 @@ use snow_core::emulator::Emulator;
 use snow_core::keymap::Scancode;
 use snow_core::mac::MacModel;
 use snow_core::renderer::DisplayBuffer;
-use snow_core::tickable::Tickable;
+use snow_core::tickable::{Tickable, Ticks};
 use snow_floppy::{Floppy, FloppyImage, FloppyType};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -501,5 +501,9 @@ impl EmulatorState {
         sender
             .send(EmulatorCommand::BusWrite(addr, vec![value]))
             .unwrap();
+    }
+
+    pub fn get_cycles(&self) -> Ticks {
+        self.status.as_ref().unwrap().cycles
     }
 }

@@ -3,3 +3,4 @@ pub mod disassembly;
 pub mod framebuffer;
 pub mod memory;
 pub mod registers;
+pub mod watchpoints;

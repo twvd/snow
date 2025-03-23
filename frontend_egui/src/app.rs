@@ -4,6 +4,7 @@ use crate::widgets::breakpoints::BreakpointsWidget;
 use crate::widgets::disassembly::Disassembly;
 use crate::widgets::framebuffer::FramebufferWidget;
 use crate::widgets::memory::MemoryViewerWidget;
+use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::Workspace;
 use crate::{emulator::EmulatorState, version_string, widgets::registers::RegistersWidget};
 use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
@@ -73,6 +74,7 @@ pub struct SnowGui {
     registers: RegistersWidget,
     breakpoints: BreakpointsWidget,
     memory: MemoryViewerWidget,
+    watchpoints: WatchpointsWidget,
 
     rom_dialog: FileDialog,
     rom_dialog_last: Option<DirectoryEntry>,
@@ -148,6 +150,7 @@ impl SnowGui {
             registers: RegistersWidget::new(),
             breakpoints: BreakpointsWidget::default(),
             memory: MemoryViewerWidget::default(),
+            watchpoints: WatchpointsWidget::default(),
 
             rom_dialog: FileDialog::new()
                 .add_file_filter(
@@ -984,6 +987,12 @@ impl eframe::App for SnowGui {
                     {
                         ui.close_menu();
                     }
+                    if ui
+                        .checkbox(&mut self.workspace.watchpoints_open, "Watchpoints")
+                        .clicked()
+                    {
+                        ui.close_menu();
+                    }
 
                     ui.separator();
                     if ui.button("Reset layout").clicked() {
@@ -1115,6 +1124,14 @@ impl eframe::App for SnowGui {
                 if let Some((addr, value)) = self.memory.take_edited() {
                     self.emu.write_bus(addr, value);
                 }
+
+                persistent_window_s!(self, "Watchpoints", [800.0, 300.0])
+                    .resizable([true, true])
+                    .open(&mut self.workspace.watchpoints_open)
+                    .show(ctx, |ui| {
+                        self.watchpoints
+                            .draw(ui, self.memory.get_memory(), self.emu.get_cycles());
+                    });
             }
         });
 
