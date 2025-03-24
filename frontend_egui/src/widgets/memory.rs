@@ -1,4 +1,7 @@
+use std::time::{Duration, Instant};
+
 use eframe::egui;
+use eframe::egui::ahash::HashMap;
 use eframe::egui::Ui;
 use snow_core::bus::Address;
 
@@ -22,16 +25,32 @@ pub struct MemoryViewerWidget {
     hexsearch_input: String,
     /// Current search highlight
     highlight: Vec<u8>,
+    /// Changed addresses for highlighting
+    changes: HashMap<Address, Instant>,
 }
 
 impl MemoryViewerWidget {
     /// Update the memory data to display
     pub fn update_memory(&mut self, addr: Address, data: &[u8]) {
-        let sz = addr as usize + data.len();
-        if self.memory.len() < sz {
-            self.memory.resize(sz, 0);
+        let addr = addr as usize;
+        let end = addr + data.len();
+
+        if self.memory.len() < end {
+            self.memory.resize(end, 0);
         }
-        self.memory[(addr as usize)..sz].copy_from_slice(data);
+
+        // Update change highlights
+        let expires = Instant::now() + Duration::from_secs(1);
+        self.memory[addr..end]
+            .iter()
+            .zip(data)
+            .enumerate()
+            .filter(|(_, (a, b))| a != b)
+            .for_each(|(i, _)| {
+                self.changes.insert((addr + i) as Address, expires);
+            });
+
+        self.memory[addr..end].copy_from_slice(data);
     }
 
     /// Get a reference to the current memory buffer
@@ -40,18 +59,17 @@ impl MemoryViewerWidget {
         &self.memory
     }
 
-    /// Get a mutable reference to the current memory buffer
-    #[allow(dead_code)]
-    pub fn get_memory_mut(&mut self) -> &mut Vec<u8> {
-        &mut self.memory
-    }
-
     /// Jump to a specific address
     pub fn go_to_address(&mut self, address: u32) {
         self.scroll_to_row = Some((address / 16) as usize);
     }
 
     pub fn draw(&mut self, ui: &mut egui::Ui) {
+        // Discard expired change highlights
+        let now = Instant::now();
+        self.changes.retain(|_, v| *v > now);
+
+        // Address navigation controls
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
@@ -129,6 +147,7 @@ impl MemoryViewerWidget {
 
         ui.separator();
 
+        // Search features
         ui.horizontal(|ui| {
             ui.label("Search for (hex): ");
             ui.text_edit_singleline(&mut self.hexsearch_input);
@@ -261,14 +280,23 @@ impl MemoryViewerWidget {
             }
 
             // Regular byte display with click to edit
+            let changed_recently = self.changes.contains_key(&(i as Address));
             let byte_text = format!("{:02X}", self.memory[i]);
             let mut text = egui::RichText::new(byte_text)
                 .family(egui::FontFamily::Monospace)
                 .size(10.0);
             if highlighted {
-                text = text
-                    .background_color(egui::Color32::YELLOW)
-                    .color(egui::Color32::BLACK);
+                if changed_recently {
+                    text = text
+                        .background_color(egui::Color32::YELLOW)
+                        .color(egui::Color32::BLACK);
+                } else {
+                    text = text
+                        .background_color(egui::Color32::WHITE)
+                        .color(egui::Color32::BLACK);
+                }
+            } else if changed_recently {
+                text = text.color(egui::Color32::YELLOW);
             }
             let response = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
             ui.add_space(4.0);
@@ -304,6 +332,8 @@ impl MemoryViewerWidget {
             let highlighted = *hl_left > 0;
             *hl_left = hl_left.saturating_sub(1);
 
+            let changed_recently = self.changes.contains_key(&(i as Address));
+
             let byte = self.memory[i];
             let byte_text = if (32..=126).contains(&byte) {
                 // Printable ASCII
@@ -317,9 +347,17 @@ impl MemoryViewerWidget {
                 .family(egui::FontFamily::Monospace)
                 .size(10.0);
             if highlighted {
-                text = text
-                    .background_color(egui::Color32::YELLOW)
-                    .color(egui::Color32::BLACK);
+                if changed_recently {
+                    text = text
+                        .background_color(egui::Color32::YELLOW)
+                        .color(egui::Color32::BLACK);
+                } else {
+                    text = text
+                        .background_color(egui::Color32::WHITE)
+                        .color(egui::Color32::BLACK);
+                }
+            } else if changed_recently {
+                text = text.color(egui::Color32::YELLOW);
             }
             ui.label(text);
         }
