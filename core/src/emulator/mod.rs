@@ -250,6 +250,18 @@ impl Emulator {
             .unwrap();
         info!("{}", msg);
     }
+
+    #[inline(always)]
+    fn try_step(&mut self) {
+        if let Err(e) = self.step() {
+            self.run = false;
+            self.user_error(&format!(
+                "Emulator halted: Uncaught CPU stepping error at PC {:06X}: {}",
+                self.cpu.regs.pc, e
+            ));
+            let _ = self.status_update();
+        }
+    }
 }
 
 impl Tickable for Emulator {
@@ -379,7 +391,7 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::Step => {
                         if !self.run {
-                            self.step()?;
+                            self.try_step();
                             self.status_update()?;
                         }
                     }
@@ -435,7 +447,7 @@ impl Tickable for Emulator {
                 if !self.run {
                     break;
                 }
-                self.step()?;
+                self.try_step();
             }
         } else {
             thread::sleep(Duration::from_millis(100));

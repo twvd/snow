@@ -299,10 +299,6 @@ where
         if self.decode_cache[opcode as usize].is_none() {
             let instr = Instruction::try_decode(opcode);
             if instr.is_err() {
-                warn!(
-                    "Illegal instruction {:016b} at PC ${:06X}",
-                    opcode, start_pc
-                );
                 return self.raise_illegal_instruction();
             }
 
@@ -542,6 +538,7 @@ where
 
     /// Raises an illegal instruction exception
     fn raise_illegal_instruction(&mut self) -> Result<()> {
+        warn!("Illegal instruction at PC ${:06X}", self.regs.pc);
         self.advance_cycles(4)?;
         self.raise_exception(ExceptionGroup::Group1, VECTOR_ILLEGAL, None)?;
         Ok(())
@@ -713,7 +710,7 @@ where
             }
             InstructionMnemonic::SUBQ_b => {
                 if instr.get_addr_mode()? == AddressingMode::AddressRegister {
-                    panic!("TODO SUB.b Q, An is illegal!");
+                    return self.raise_illegal_instruction();
                 }
                 self.op_alu_quick::<Byte>(instr, Self::alu_sub)
             }
@@ -739,7 +736,7 @@ where
             }
             InstructionMnemonic::ADDQ_b => {
                 if instr.get_addr_mode()? == AddressingMode::AddressRegister {
-                    panic!("TODO ADD.b Q, An is illegal!");
+                    return self.raise_illegal_instruction();
                 }
                 self.op_alu_quick::<Byte>(instr, Self::alu_add)
             }
@@ -814,7 +811,7 @@ where
             InstructionMnemonic::RTE => self.op_rte(instr),
             InstructionMnemonic::RTS => self.op_rts(instr),
             InstructionMnemonic::RTR => self.op_rtr(instr),
-            InstructionMnemonic::STOP => panic!("STOP encountered"),
+            InstructionMnemonic::STOP => bail!("STOP instruction encountered"),
             InstructionMnemonic::TRAPV => self.op_trapv(instr),
             InstructionMnemonic::JSR => self.op_jmp_jsr(instr),
             InstructionMnemonic::JMP => self.op_jmp_jsr(instr),
