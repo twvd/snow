@@ -880,6 +880,11 @@ impl Instruction {
             | InstructionMnemonic::TRAPV => InstructionSize::None,
         }
     }
+
+    /// Is this considered a branch instruction?
+    pub fn is_branch(&self) -> bool {
+        self.mnemonic == InstructionMnemonic::JSR || self.mnemonic == InstructionMnemonic::BSR
+    }
 }
 
 impl std::fmt::Display for Instruction {

@@ -49,4 +49,9 @@ impl LatchingEvent {
     pub fn set(&mut self) {
         self.val = true;
     }
+
+    /// Peeks at the event without clearing it
+    pub fn peek(&self) -> bool {
+        self.val
+    }
 }

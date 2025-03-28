@@ -789,6 +789,14 @@ impl eframe::App for SnowGui {
                             self.emu.step();
                             ui.close_menu();
                         }
+                        if ui.button("Step over").clicked() {
+                            self.emu.step_over();
+                            ui.close_menu();
+                        }
+                        if ui.button("Step out").clicked() {
+                            self.emu.step_out();
+                            ui.close_menu();
+                        }
 
                         ui.separator();
                         if ui.button("Programmers key").clicked() {
@@ -1054,10 +1062,26 @@ impl eframe::App for SnowGui {
                             self.emu.run();
                         }
                         if ui
-                            .add(egui::Button::new(egui_material_icons::icons::ICON_STEP))
+                            .add(egui::Button::new(
+                                egui_material_icons::icons::ICON_STEP_INTO,
+                            ))
                             .clicked()
                         {
                             self.emu.step();
+                        }
+                        if ui
+                            .add(egui::Button::new(
+                                egui_material_icons::icons::ICON_STEP_OVER,
+                            ))
+                            .clicked()
+                        {
+                            self.emu.step_over();
+                        }
+                        if ui
+                            .add(egui::Button::new(egui_material_icons::icons::ICON_STEP_OUT))
+                            .clicked()
+                        {
+                            self.emu.step_out();
                         }
                     }
 

@@ -24,8 +24,8 @@ use log::*;
 
 use crate::emulator::comm::UserMessageType;
 use comm::{
-    EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver, EmulatorStatus,
-    FddStatus, HddStatus,
+    Breakpoint, EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver,
+    EmulatorStatus, FddStatus, HddStatus,
 };
 
 /// Emulator runner
@@ -373,6 +373,9 @@ impl Tickable for Emulator {
                         info!("Running");
                         self.run = true;
                         self.cpu.get_clr_breakpoint_hit();
+                        self.cpu.breakpoints_mut().retain(|bp| {
+                            !matches!(bp, Breakpoint::StepOver(_) | Breakpoint::StepOut(_))
+                        });
                         self.status_update()?;
                     }
                     EmulatorCommand::Reset => {
@@ -387,11 +390,32 @@ impl Tickable for Emulator {
                     EmulatorCommand::Stop => {
                         info!("Stopped");
                         self.run = false;
+                        self.cpu.breakpoints_mut().retain(|bp| {
+                            !matches!(bp, Breakpoint::StepOver(_) | Breakpoint::StepOut(_))
+                        });
                         self.status_update()?;
                     }
                     EmulatorCommand::Step => {
                         if !self.run {
                             self.try_step();
+                            self.status_update()?;
+                        }
+                    }
+                    EmulatorCommand::StepOut => {
+                        if !self.run {
+                            self.cpu
+                                .set_breakpoint(Breakpoint::StepOut(self.cpu.regs.read_a(7)));
+                            self.run = true;
+                            self.status_update()?;
+                        }
+                    }
+                    EmulatorCommand::StepOver => {
+                        if !self.run {
+                            self.try_step();
+                            if let Some(addr) = self.cpu.get_step_over() {
+                                self.cpu.set_breakpoint(Breakpoint::StepOver(addr));
+                                self.run = true;
+                            }
                             self.status_update()?;
                         }
                     }

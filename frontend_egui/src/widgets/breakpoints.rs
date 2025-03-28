@@ -243,7 +243,9 @@ impl BreakpointsWidget {
                 .column(Column::remainder())
                 .striped(true)
                 .body(|mut body| {
-                    for &bp in state.get_breakpoints() {
+                    for &bp in state.get_breakpoints().iter().filter(|&&bp| {
+                        !matches!(bp, Breakpoint::StepOut(_) | Breakpoint::StepOver(_))
+                    }) {
                         body.row(18.0, |mut row| {
                             row.col(|ui| {
                                 if ui.button(egui_material_icons::icons::ICON_DELETE).clicked() {
@@ -292,6 +294,8 @@ impl BreakpointsWidget {
                                                 .unwrap_or_default()
                                         )
                                     }
+                                    Breakpoint::StepOver(_) => unreachable!(),
+                                    Breakpoint::StepOut(_) => unreachable!(),
                                 }));
                             });
                         });

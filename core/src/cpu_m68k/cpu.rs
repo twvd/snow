@@ -40,6 +40,11 @@ pub enum Breakpoint {
     LineA(u16),
     /// Breaks on a LINEF instruction of specified opcode
     LineF(u16),
+    /// Breakpoint for step over (self-clearing)
+    StepOver(Address),
+    /// Breakpoint for step out
+    /// Address is stack pointer
+    StepOut(Address),
 }
 
 /// Address error details
@@ -163,6 +168,9 @@ pub struct CpuM68k<TBus: Bus<Address, u8> + IrqSource> {
     /// Breakpoint hit latch
     #[serde(skip)]
     breakpoint_hit: LatchingEvent,
+
+    /// Next address to jump to for step over
+    step_over_addr: Option<Address>,
 }
 
 impl<TBus> CpuM68k<TBus>
@@ -182,6 +190,7 @@ where
             trace_mask: false,
             breakpoints: vec![],
             breakpoint_hit: LatchingEvent::default(),
+            step_over_addr: None,
         }
     }
 
@@ -212,6 +221,11 @@ where
         &self.breakpoints
     }
 
+    /// Reads the active breakpoints (mutable)
+    pub fn breakpoints_mut(&mut self) -> &mut Vec<Breakpoint> {
+        &mut self.breakpoints
+    }
+
     /// Sets a breakpoint
     pub fn set_breakpoint(&mut self, bp: Breakpoint) {
         self.breakpoints.push(bp);
@@ -220,6 +234,11 @@ where
     /// Clears a breakpoint
     pub fn clear_breakpoint(&mut self, bp: Breakpoint) {
         self.breakpoints.retain(|b| *b != bp);
+    }
+
+    /// Gets 'step over' target address from last instruction (if branched)
+    pub fn get_step_over(&self) -> Option<Address> {
+        self.step_over_addr
     }
 
     /// Pumps the prefetch queue, unless it is already full
@@ -268,6 +287,7 @@ where
 
         self.step_ea_addr = None;
         self.step_exception = false;
+        self.step_over_addr = None;
 
         if let Some(level) = self.bus.get_irq() {
             if level == 7 || self.regs.sr.int_prio_mask() < level {
@@ -343,8 +363,36 @@ where
             info!("Breakpoint hit (execution): ${:06X}", self.regs.pc);
             self.breakpoint_hit.set();
         }
+        if self
+            .breakpoints
+            .contains(&Breakpoint::StepOver(self.regs.pc))
+        {
+            self.breakpoint_hit.set();
+            self.clear_breakpoint(Breakpoint::StepOver(self.regs.pc));
+        }
 
         Ok(())
+    }
+
+    /// Tests if we should stop due to 'step out' debugger action
+    fn test_step_out(&mut self) {
+        let mut bp_hit = false;
+        let sp = self.regs.read_a::<Address>(7);
+        self.breakpoints.retain(|bp| {
+            if let Breakpoint::StepOut(addr) = bp {
+                if *addr < sp {
+                    bp_hit = true;
+                    false
+                } else {
+                    true
+                }
+            } else {
+                true
+            }
+        });
+        if bp_hit {
+            self.breakpoint_hit.set();
+        }
     }
 
     /// Advances by the given amount of cycles
@@ -534,6 +582,13 @@ where
         self.prefetch.clear();
         self.regs.pc = pc.wrapping_sub(4) & ADDRESS_MASK;
         Ok(())
+    }
+
+    /// Gets the location where the next fetch() would occur from,
+    /// regardless of the prefetch queue.
+    fn get_fetch_addr(&self) -> Address {
+        let prefetch_offset = (2 - self.prefetch.len()) as Address;
+        self.regs.pc.wrapping_add(prefetch_offset * 2) & ADDRESS_MASK
     }
 
     /// Raises an illegal instruction exception
@@ -2219,6 +2274,9 @@ where
         self.regs.sr.set_sr(sr);
         self.set_pc(pc)?;
         self.prefetch_refill()?;
+
+        self.test_step_out();
+
         Ok(())
     }
 
@@ -2228,6 +2286,9 @@ where
         self.regs.read_a_postinc::<Address>(7, 4);
         self.set_pc(pc)?;
         self.prefetch_refill()?;
+
+        self.test_step_out();
+
         Ok(())
     }
 
@@ -2278,6 +2339,8 @@ where
             AddressingMode::IndirectIndex | AddressingMode::PCIndex => self.advance_cycles(4)?,
             _ => (),
         };
+
+        self.step_over_addr = Some(self.get_fetch_addr());
 
         // Execute the jump
         let old_pc = self.regs.pc;
@@ -2548,6 +2611,8 @@ where
                     self.regs.pc.wrapping_add(2)
                 };
                 self.write_ticks(addr, stack_pc)?;
+
+                self.step_over_addr = Some(self.get_fetch_addr());
             }
             let pc = self
                 .regs

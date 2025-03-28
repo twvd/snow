@@ -278,6 +278,24 @@ impl EmulatorState {
             .unwrap();
     }
 
+    /// Execute step out
+    pub fn step_out(&self) {
+        self.cmdsender
+            .as_ref()
+            .unwrap()
+            .send(EmulatorCommand::StepOut)
+            .unwrap();
+    }
+
+    /// Execute step over
+    pub fn step_over(&self) {
+        self.cmdsender
+            .as_ref()
+            .unwrap()
+            .send(EmulatorCommand::StepOver)
+            .unwrap();
+    }
+
     /// Returns a reference to floppy drive status for the requested drive.
     pub fn get_fdd_status(&self, drive: usize) -> Option<&FddStatus> {
         let status = self.status.as_ref()?;
