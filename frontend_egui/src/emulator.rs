@@ -413,12 +413,16 @@ impl EmulatorState {
     }
 
     /// Detach a HDD image from a SCSI ID
-    pub fn detach_hdd(&self, id: usize) {
+    pub fn detach_hdd(&mut self, id: usize) {
         self.cmdsender
             .as_ref()
             .unwrap()
             .send(EmulatorCommand::DetachHddImage(id))
             .unwrap();
+        self.messages.push_back((
+            UserMessageType::Notice,
+            format!("SCSI HDD #{} detached. System should be restarted.", id),
+        ));
     }
 
     /// Returns `true` if emulator in fast-forward mode.

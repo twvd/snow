@@ -337,12 +337,12 @@ impl Tickable for Emulator {
                                 filename.to_string_lossy()
                             ),
                             Err(e) => {
-                                error!(
+                                self.user_error(&format!(
                                     "SCSI ID #{}: cannot load image '{}': {}",
                                     id,
                                     filename.to_string_lossy(),
                                     e
-                                );
+                                ));
                             }
                         };
                         self.status_update()?;
