@@ -281,7 +281,8 @@ impl MemoryViewerWidget {
 
             // Regular byte display with click to edit
             let changed_recently = self.changes.contains_key(&(i as Address));
-            let byte_text = format!("{:02X}", self.memory[i]);
+            let byte = self.memory[i];
+            let byte_text = format!("{:02X}", byte);
             let mut text = egui::RichText::new(byte_text)
                 .family(egui::FontFamily::Monospace)
                 .size(10.0);
@@ -297,6 +298,8 @@ impl MemoryViewerWidget {
                 }
             } else if changed_recently {
                 text = text.color(egui::Color32::YELLOW);
+            } else if byte == 0 {
+                text = text.color(egui::Color32::DARK_GRAY);
             }
             let response = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
             ui.add_space(4.0);
@@ -358,6 +361,8 @@ impl MemoryViewerWidget {
                 }
             } else if changed_recently {
                 text = text.color(egui::Color32::YELLOW);
+            } else if byte == 0 {
+                text = text.color(egui::Color32::DARK_GRAY);
             }
             ui.label(text);
         }
