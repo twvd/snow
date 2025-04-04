@@ -8,7 +8,7 @@ use log::*;
 use sdl2::audio::AudioDevice;
 use snow_core::bus::Address;
 use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
-use snow_core::cpu_m68k::regs::RegisterFile;
+use snow_core::cpu_m68k::regs::{Register, RegisterFile};
 use snow_core::emulator::comm::{
     Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus, HddStatus,
     UserMessageType,
@@ -527,5 +527,14 @@ impl EmulatorState {
 
     pub fn get_cycles(&self) -> Ticks {
         self.status.as_ref().unwrap().cycles
+    }
+
+    pub fn write_register(&self, reg: Register, value: u32) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender
+            .send(EmulatorCommand::WriteRegister(reg, value))
+            .unwrap();
     }
 }

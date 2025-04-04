@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use snow_floppy::FloppyImage;
 
 use crate::bus::Address;
-use crate::cpu_m68k::regs::RegisterFile;
+use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::tickable::Ticks;
@@ -48,6 +48,7 @@ pub enum EmulatorCommand {
     CpuSetPC(u32),
     SetSpeed(EmulatorSpeed),
     ProgKey,
+    WriteRegister(Register, u32),
 }
 
 /// Emulator speed tweak

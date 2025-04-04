@@ -12,6 +12,10 @@ use std::fmt;
 pub enum Register {
     Dn(usize),
     An(usize),
+    USP,
+    SSP,
+    PC,
+    SR,
 }
 
 impl std::fmt::Display for Register {
@@ -19,6 +23,10 @@ impl std::fmt::Display for Register {
         match self {
             Self::Dn(n) => write!(f, "D{}", n),
             Self::An(n) => write!(f, "A{}", n),
+            Self::USP => write!(f, "USP"),
+            Self::SSP => write!(f, "SSP"),
+            Self::PC => write!(f, "PC"),
+            Self::SR => write!(f, "SR"),
         }
     }
 }
@@ -190,6 +198,10 @@ impl RegisterFile {
         match reg {
             Register::An(r) => self.write_a(r, value),
             Register::Dn(r) => self.write_d(r, value),
+            Register::USP => self.usp = value.expand(),
+            Register::SSP => self.ssp = value.expand(),
+            Register::PC => panic!("Must be written through CpuM68k::set_pc"),
+            Register::SR => self.sr.set_sr(value.expand() as u16),
         }
     }
 
@@ -198,6 +210,10 @@ impl RegisterFile {
         match reg {
             Register::An(r) => self.read_a(r),
             Register::Dn(r) => self.read_d(r),
+            Register::USP => T::chop(self.usp),
+            Register::SSP => T::chop(self.ssp),
+            Register::PC => T::chop(self.pc),
+            Register::SR => T::chop(self.sr.sr().into()),
         }
     }
 }

@@ -1126,6 +1126,9 @@ impl eframe::App for SnowGui {
                             self.registers.draw(ui);
                         });
                     });
+                if let Some((reg, value)) = self.registers.take_edited_register() {
+                    self.emu.write_register(reg, value);
+                }
 
                 persistent_window_s!(self, "Breakpoints", [300.0, 200.0])
                     .resizable([true, true])

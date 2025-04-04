@@ -22,6 +22,7 @@ use crate::types::{ClickEventSender, KeyEventSender};
 use anyhow::Result;
 use log::*;
 
+use crate::cpu_m68k::regs::Register;
 use crate::emulator::comm::UserMessageType;
 use comm::{
     Breakpoint, EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver,
@@ -456,6 +457,10 @@ impl Tickable for Emulator {
                     EmulatorCommand::CpuSetPC(val) => self.cpu.set_pc(val)?,
                     EmulatorCommand::SetSpeed(s) => self.cpu.bus.set_speed(s),
                     EmulatorCommand::ProgKey => self.cpu.bus.progkey(),
+                    EmulatorCommand::WriteRegister(reg, val) => match reg {
+                        Register::PC => self.cpu.set_pc(val)?,
+                        _ => self.cpu.regs.write(reg, val),
+                    },
                 }
             }
         }

@@ -1,11 +1,16 @@
+// In frontend_egui/src/widgets/registers.rs
+
 use eframe::egui;
-use snow_core::cpu_m68k::regs::RegisterFile;
+use snow_core::cpu_m68k::regs::{Register, RegisterFile};
 use snow_core::types::Long;
 
 /// egui widget to display Motorola 68000 register state
 pub struct RegistersWidget {
     regs: RegisterFile,
     lastregs: RegisterFile,
+    // Track editing state using the CpuRegister enum
+    editing: Option<(Register, String)>, // (register, current_edit_value)
+    edited: Option<(Register, Long)>,    // (register, new_value) - when edit is completed
 }
 
 impl RegistersWidget {
@@ -16,6 +21,8 @@ impl RegistersWidget {
         Self {
             regs: RegisterFile::new(),
             lastregs: RegisterFile::new(),
+            editing: None,
+            edited: None,
         }
     }
 
@@ -25,7 +32,12 @@ impl RegistersWidget {
         self.lastregs = std::mem::replace(&mut self.regs, regs);
     }
 
-    pub fn draw(&self, ui: &mut egui::Ui) {
+    /// Takes the most recently edited register value, if any
+    pub fn take_edited_register(&mut self) -> Option<(Register, Long)> {
+        self.edited.take()
+    }
+
+    pub fn draw(&mut self, ui: &mut egui::Ui) {
         use egui_extras::{Column, TableBuilder};
 
         let available_height = ui.available_height();
@@ -36,79 +48,151 @@ impl RegistersWidget {
             .column(Column::remainder().at_least(50.0))
             .column(Column::remainder().at_least(60.0))
             .striped(true)
-            // TODO this gets messed up?
-            //.header(20.0, |mut header| {
-            //    header.col(|ui| {
-            //        ui.heading("Register");
-            //    });
-            //    header.col(|ui| {
-            //        ui.heading("Hexadecimal");
-            //    });
-            //    header.col(|ui| {
-            //        ui.heading("Decimal");
-            //    });
-            //})
             .body(|mut body| {
-                let mut reg = |name, v: &dyn Fn(&RegisterFile) -> Long| {
-                    let color = if v(&self.regs) != v(&self.lastregs) {
+                // Helper function for displaying register rows
+                let mut register_row = |reg: Register, value_fn: &dyn Fn(&RegisterFile) -> Long| {
+                    let name = reg.to_string();
+                    let changed = value_fn(&self.regs) != value_fn(&self.lastregs);
+                    let color = if changed {
                         Self::COLOR_CHANGED
                     } else {
                         Self::COLOR_VALUE
                     };
+
                     body.row(20.0, |mut row| {
+                        // Register name
                         row.col(|ui| {
-                            ui.label(egui::RichText::new(name));
+                            ui.label(egui::RichText::new(&name));
                         });
+
+                        // Check if this register is being edited
+                        if let Some((edit_reg, ref mut edit_value)) = &mut self.editing {
+                            let mut clear_editing = false;
+
+                            if *edit_reg == reg {
+                                // This register is being edited, show text input
+                                row.col(|ui| {
+                                    let response = ui.text_edit_singleline(edit_value);
+
+                                    if response.lost_focus()
+                                        || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                    {
+                                        // Try to parse the value
+                                        if let Ok(new_value) = Long::from_str_radix(edit_value, 16)
+                                        {
+                                            self.edited = Some((reg, new_value));
+                                        }
+                                        clear_editing = true;
+                                    }
+                                });
+
+                                if clear_editing {
+                                    self.editing = None;
+                                }
+
+                                // Skip the decimal column while editing
+                                row.col(|_| {});
+                                return;
+                            }
+                        }
+
+                        // Normal display (not editing)
+                        row.col(|ui| {
+                            let text = egui::RichText::new(format!("{:08X}", value_fn(&self.regs)))
+                                .family(egui::FontFamily::Monospace)
+                                .color(color);
+
+                            let response =
+                                ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+
+                            if response.clicked() {
+                                // Start editing this register
+                                self.editing = Some((reg, format!("{:08X}", value_fn(&self.regs))));
+                            }
+                        });
+
+                        // Decimal representation
                         row.col(|ui| {
                             ui.label(
-                                egui::RichText::new(format!("{:08X}", v(&self.regs)))
+                                egui::RichText::new(format!("{}", value_fn(&self.regs)))
                                     .family(egui::FontFamily::Monospace)
                                     .color(color),
-                            );
-                        });
-                        row.col(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!("{}", v(&self.regs)))
-                                    .family(egui::FontFamily::Monospace)
-                                    .color(color),
-                            );
+                            )
+                            .on_hover_cursor(egui::CursorIcon::Default);
                         });
                     });
                 };
-                reg("D0", &|r: &RegisterFile| r.read_d::<Long>(0));
-                reg("D1", &|r: &RegisterFile| r.read_d::<Long>(1));
-                reg("D2", &|r: &RegisterFile| r.read_d::<Long>(2));
-                reg("D3", &|r: &RegisterFile| r.read_d::<Long>(3));
-                reg("D4", &|r: &RegisterFile| r.read_d::<Long>(4));
-                reg("D5", &|r: &RegisterFile| r.read_d::<Long>(5));
-                reg("D6", &|r: &RegisterFile| r.read_d::<Long>(6));
-                reg("D7", &|r: &RegisterFile| r.read_d::<Long>(7));
-                reg("A0", &|r: &RegisterFile| r.read_a::<Long>(0));
-                reg("A1", &|r: &RegisterFile| r.read_a::<Long>(1));
-                reg("A2", &|r: &RegisterFile| r.read_a::<Long>(2));
-                reg("A3", &|r: &RegisterFile| r.read_a::<Long>(3));
-                reg("A4", &|r: &RegisterFile| r.read_a::<Long>(4));
-                reg("A5", &|r: &RegisterFile| r.read_a::<Long>(5));
-                reg("A6", &|r: &RegisterFile| r.read_a::<Long>(6));
-                reg("A7", &|r: &RegisterFile| r.read_a::<Long>(7));
-                reg("PC", &|r: &RegisterFile| r.pc);
-                reg("SSP", &|r: &RegisterFile| r.ssp);
-                reg("USP", &|r: &RegisterFile| r.usp);
+
+                // Display all data registers D0-D7
+                for i in 0..8 {
+                    let reg = Register::Dn(i);
+                    let index = i; // Capture for closure
+                    register_row(reg, &move |r: &RegisterFile| r.read_d::<Long>(index));
+                }
+
+                // Display all address registers A0-A7
+                for i in 0..8 {
+                    let reg = Register::An(i);
+                    let index = i; // Capture for closure
+                    register_row(reg, &move |r: &RegisterFile| r.read_a::<Long>(index));
+                }
+
+                // Display special registers
+                register_row(Register::PC, &|r: &RegisterFile| r.pc);
+                register_row(Register::SSP, &|r: &RegisterFile| r.ssp);
+                register_row(Register::USP, &|r: &RegisterFile| r.usp);
+
+                // SR register is handled separately since it's a 16-bit value
                 body.row(20.0, |mut row| {
                     row.col(|ui| {
                         ui.label(egui::RichText::new("SR"));
                     });
+
+                    // Check if SR is being edited
+                    if let Some((edit_reg, ref mut edit_value)) = &mut self.editing {
+                        if *edit_reg == Register::SR {
+                            let mut clear_editing = false;
+                            row.col(|ui| {
+                                let response = ui.text_edit_singleline(edit_value);
+
+                                if response.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                {
+                                    if let Ok(new_value) = u16::from_str_radix(edit_value, 16) {
+                                        self.edited = Some((Register::SR, new_value as Long));
+                                    }
+                                    clear_editing = true;
+                                }
+                            });
+
+                            if clear_editing {
+                                self.editing = None;
+                            }
+
+                            row.col(|_| {});
+                            return;
+                        }
+                    }
+
+                    // Normal display (not editing)
                     row.col(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!("{:04X}", self.regs.sr.sr()))
-                                .family(egui::FontFamily::Monospace)
-                                .color(if self.regs.sr == self.lastregs.sr {
-                                    Self::COLOR_VALUE
-                                } else {
-                                    Self::COLOR_CHANGED
-                                }),
-                        );
+                        let text = egui::RichText::new(format!("{:04X}", self.regs.sr.sr()))
+                            .family(egui::FontFamily::Monospace)
+                            .color(if self.regs.sr == self.lastregs.sr {
+                                Self::COLOR_VALUE
+                            } else {
+                                Self::COLOR_CHANGED
+                            });
+
+                        let response = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+
+                        if response.clicked() {
+                            self.editing =
+                                Some((Register::SR, format!("{:04X}", self.regs.sr.sr())));
+                        }
                     });
+
+                    // Flags display
                     row.col(|ui| {
                         ui.vertical(|ui| {
                             let mut flag = |n, v| {
