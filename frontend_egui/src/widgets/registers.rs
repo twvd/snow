@@ -74,7 +74,10 @@ impl RegistersWidget {
                                 row.col(|ui| {
                                     let response = ui.text_edit_singleline(edit_value);
 
-                                    if response.lost_focus()
+                                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                        // Escape is cancel
+                                        clear_editing = true;
+                                    } else if response.lost_focus()
                                         || ui.input(|i| i.key_pressed(egui::Key::Enter))
                                     {
                                         // Try to parse the value
