@@ -457,10 +457,16 @@ impl Tickable for Emulator {
                     EmulatorCommand::CpuSetPC(val) => self.cpu.set_pc(val)?,
                     EmulatorCommand::SetSpeed(s) => self.cpu.bus.set_speed(s),
                     EmulatorCommand::ProgKey => self.cpu.bus.progkey(),
-                    EmulatorCommand::WriteRegister(reg, val) => match reg {
-                        Register::PC => self.cpu.set_pc(val)?,
-                        _ => self.cpu.regs.write(reg, val),
-                    },
+                    EmulatorCommand::WriteRegister(reg, val) => {
+                        match reg {
+                            Register::PC => {
+                                self.cpu.set_pc(val)?;
+                                self.cpu.prefetch_refill()?;
+                            }
+                            _ => self.cpu.regs.write(reg, val),
+                        };
+                        self.status_update()?;
+                    }
                 }
             }
         }

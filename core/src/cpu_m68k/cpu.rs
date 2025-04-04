@@ -259,7 +259,7 @@ where
     }
 
     /// Re-fills the prefetch queue
-    fn prefetch_refill(&mut self) -> Result<()> {
+    pub fn prefetch_refill(&mut self) -> Result<()> {
         while self.prefetch.len() < 2 {
             self.prefetch_pump()?;
         }
