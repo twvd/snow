@@ -1,5 +1,3 @@
-// In frontend_egui/src/widgets/registers.rs
-
 use eframe::egui;
 use snow_core::cpu_m68k::regs::{Register, RegisterFile};
 use snow_core::types::Long;
@@ -129,14 +127,14 @@ impl RegistersWidget {
                 // Display all data registers D0-D7
                 for i in 0..8 {
                     let reg = Register::Dn(i);
-                    let index = i; // Capture for closure
+                    let index = i;
                     register_row(reg, &move |r: &RegisterFile| r.read_d::<Long>(index));
                 }
 
                 // Display all address registers A0-A7
                 for i in 0..8 {
                     let reg = Register::An(i);
-                    let index = i; // Capture for closure
+                    let index = i;
                     register_row(reg, &move |r: &RegisterFile| r.read_a::<Long>(index));
                 }
 
@@ -173,6 +171,7 @@ impl RegistersWidget {
                             }
 
                             row.col(|_| {});
+                            // Skip the flags when editing
                             return;
                         }
                     }

@@ -730,8 +730,10 @@ impl eframe::App for SnowGui {
         }
         self.ui_active &= self.workspace_dialog.state() != egui_file_dialog::DialogState::Open;
 
+        // Actual UI
         egui::CentralPanel::default().show(ctx, |ui| {
             if !self.ui_active {
+                // Deactivate UI if a modal is showing
                 ui.disable();
             }
 
