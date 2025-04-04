@@ -460,8 +460,12 @@ impl Tickable for Emulator {
                     EmulatorCommand::WriteRegister(reg, val) => {
                         match reg {
                             Register::PC => {
-                                self.cpu.set_pc(val)?;
-                                self.cpu.prefetch_refill()?;
+                                if val & 1 != 0 {
+                                    self.user_error("Program Counter must be aligned");
+                                } else {
+                                    self.cpu.set_pc(val)?;
+                                    self.cpu.prefetch_refill()?;
+                                }
                             }
                             _ => self.cpu.regs.write(reg, val),
                         };
