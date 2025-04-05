@@ -1,0 +1,15 @@
+[package]
+name = "testrunner"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.97"
+clap = { version = "4.5.35", features = ["derive"] }
+env_logger = "0.11.8"
+log = "0.4.27"
+png = "0.17.16"
+snow_core = { version = "0.1.0", path = "../core" }
+
+[lints]
+workspace = true

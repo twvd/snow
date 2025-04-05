@@ -263,6 +263,10 @@ impl Emulator {
             let _ = self.status_update();
         }
     }
+
+    pub fn get_cycles(&self) -> Ticks {
+        self.cpu.cycles
+    }
 }
 
 impl Tickable for Emulator {

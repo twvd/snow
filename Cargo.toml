@@ -4,7 +4,7 @@ resolver = '2'
 members = [
     "core", "floppy", "frontend_egui",
     "frontend_tui"
-]
+, "testrunner"]
 
 [workspace.lints.clippy]
 nursery = { level = "deny", priority = -1 }
