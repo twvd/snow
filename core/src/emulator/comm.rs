@@ -105,6 +105,7 @@ pub enum UserMessageType {
 }
 
 /// A status message/event received from the emulator
+#[derive(strum::Display)]
 pub enum EmulatorEvent {
     Status(Box<EmulatorStatus>),
     NextCode((Address, Vec<u8>)),
