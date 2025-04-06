@@ -74,6 +74,19 @@ impl DriveType {
             Self::GCR800K | Self::SuperDrive => true,
         }
     }
+
+    pub const fn compatible_floppies(self) -> &'static [FloppyType] {
+        match self {
+            Self::None => &[],
+            Self::GCR400K => &[FloppyType::Mac400K],
+            Self::GCR800K => &[FloppyType::Mac400K, FloppyType::Mac800K],
+            Self::SuperDrive => &[
+                FloppyType::Mac400K,
+                FloppyType::Mac800K,
+                FloppyType::Mfm144M,
+            ],
+        }
+    }
 }
 
 /// Direction the drive head is set to step to
