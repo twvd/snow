@@ -16,6 +16,7 @@ struct Args {
     floppy: Option<String>,
     cycles: Ticks,
     final_screenshot: String,
+    frame_file: String,
 }
 
 fn main() -> Result<()> {
@@ -59,6 +60,13 @@ fn main() -> Result<()> {
         emulator.tick(1)?;
     }
 
+    let frame = &last_frame
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|b| b.load(std::sync::atomic::Ordering::Relaxed))
+        .collect::<Vec<_>>();
+
     let mut encoder = png::Encoder::new(
         File::create(args.final_screenshot)?,
         SCREEN_WIDTH as u32,
@@ -67,14 +75,8 @@ fn main() -> Result<()> {
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header()?;
-    writer.write_image_data(
-        &last_frame
-            .as_ref()
-            .unwrap()
-            .iter()
-            .map(|b| b.load(std::sync::atomic::Ordering::Relaxed))
-            .collect::<Vec<_>>(),
-    )?;
+    writer.write_image_data(frame)?;
+    fs::write(args.frame_file, frame)?;
 
     Ok(())
 }
