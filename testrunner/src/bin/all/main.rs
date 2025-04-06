@@ -75,7 +75,7 @@ fn main() -> Result<()> {
         let model = MacModel::detect_from_rom(&fs::read(rom)?).context("Cannot detect ROM")?;
 
         for floppy in &floppies {
-            let imgdata = fs::read(&floppy)?;
+            let imgdata = fs::read(floppy)?;
             let Ok(imgtype) = snow_floppy::loaders::Autodetect::detect(&imgdata) else {
                 error!("Cannot load floppy: {}", floppy.to_string_lossy());
                 continue;
@@ -88,12 +88,22 @@ fn main() -> Result<()> {
                 continue;
             };
 
+            if !model.fdd_drives()[0]
+                .compatible_floppies()
+                .contains(&img.get_type())
+            {
+                continue;
+            }
+
             tests.push(Test {
                 name: img.get_title().to_string(),
                 rom: rom.clone(),
                 model,
                 floppy: Some(floppy.clone()),
-                cycles: 160_000_000,
+                cycles: match model {
+                    MacModel::Early128K | MacModel::Early512K => 320_000_000,
+                    _ => 800_000_000,
+                },
                 floppy_type: Some(imgtype.to_string()),
             });
         }
