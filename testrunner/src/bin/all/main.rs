@@ -31,12 +31,18 @@ impl std::fmt::Display for Test {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{}-{}",
+            "{}-{}-{}",
             self.rom.file_stem().unwrap().to_string_lossy(),
             self.floppy
                 .as_ref()
                 .unwrap()
                 .file_stem()
+                .unwrap()
+                .to_string_lossy(),
+            self.floppy
+                .as_ref()
+                .unwrap()
+                .extension()
                 .unwrap()
                 .to_string_lossy()
         )
@@ -95,15 +101,22 @@ fn main() -> Result<()> {
                 continue;
             }
 
+            let mut cycle_fn = floppy.to_path_buf();
+            cycle_fn.push(".cycles");
+            let cycles = fs::read_to_string(cycle_fn)
+                .ok()
+                .and_then(|i| i.parse::<usize>().ok())
+                .unwrap_or(40_000_000);
             tests.push(Test {
                 name: img.get_title().to_string(),
                 rom: rom.clone(),
                 model,
                 floppy: Some(floppy.clone()),
                 cycles: match model {
-                    MacModel::Early128K | MacModel::Early512K => 320_000_000,
-                    _ => 800_000_000,
-                },
+                    MacModel::Early128K | MacModel::Early512K => 128_000_000,
+                    _ => 0,
+                } + 156_000_000
+                    + cycles,
                 floppy_type: Some(imgtype.to_string()),
             });
         }
@@ -116,7 +129,10 @@ fn main() -> Result<()> {
 
     info!("Collected {} tests", tests.len());
     for test in tests {
-        info!("Running {} on {} ({})...", test.name, test.model, test);
+        info!(
+            "Running {} on {} ({}) for {} cycles...",
+            test.name, test.model, test, test.cycles
+        );
 
         let output = Command::new(&single_bin)
             .env("RUST_LOG_STYLE", "never")

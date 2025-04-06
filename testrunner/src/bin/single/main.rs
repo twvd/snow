@@ -1,6 +1,6 @@
 use std::fs::{self, File};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::Parser;
 use log::*;
 
@@ -47,7 +47,12 @@ fn main() -> Result<()> {
         while let Ok(event) = event_recv.try_recv() {
             match event {
                 EmulatorEvent::Memory(_) => (),
-                EmulatorEvent::Status(s) => info!("Event: Status: {:?}", s),
+                EmulatorEvent::Status(s) => {
+                    info!("Event: Status: {:?}", s);
+                    if !s.running && s.cycles > 100 {
+                        bail!("Emulator stopped");
+                    }
+                }
                 _ => info!("Event: {}", event),
             }
         }
