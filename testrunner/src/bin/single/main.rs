@@ -74,6 +74,7 @@ fn main() -> Result<()> {
     );
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::Best);
     let mut writer = encoder.write_header()?;
     writer.write_image_data(frame)?;
     fs::write(args.frame_file, frame)?;
