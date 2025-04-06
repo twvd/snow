@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use std::{env, fs};
 
 use anyhow::{Context, Result};
@@ -16,6 +18,9 @@ struct Args {
     rom_dir: String,
     floppy_dir: String,
     output_dir: String,
+
+    #[arg(short('j'), default_value_t = 1)]
+    parallel: usize,
 }
 
 struct Test {
@@ -127,7 +132,7 @@ fn main() -> Result<()> {
                     MacModel::Early128K | MacModel::Early512K => 128_000_000,
                     MacModel::Plus => 12_000_000,
                     _ => 0,
-                } + 144_000_000
+                } + 156_000_000
                     + cycles,
                 floppy_type: Some(imgtype.to_string()),
             });
@@ -137,52 +142,67 @@ fn main() -> Result<()> {
     let single_bin = get_binary_path("single");
     assert!(single_bin.exists());
 
-    let mut report = TestReport::default();
+    let report = Arc::new(Mutex::new(TestReport::default()));
 
-    info!("Collected {} tests", tests.len());
+    info!(
+        "Collected {} tests, running {} tests in parallel",
+        tests.len(),
+        args.parallel
+    );
+    let pool = rusty_pool::ThreadPool::new(args.parallel, args.parallel, Duration::from_secs(60));
+    let start_time = Instant::now();
+
     for test in tests {
-        info!(
-            "Running {} on {} ({}) for {} cycles...",
-            test.name, test.model, test, test.cycles
-        );
+        let t_report = Arc::clone(&report);
+        let t_single_bin = single_bin.clone();
+        let t_output_dir = args.output_dir.clone();
 
-        let out_frame_fn = PathBuf::from(format!("{}/{}.frame", args.output_dir, test));
-        let output = Command::new(&single_bin)
-            .env("RUST_LOG_STYLE", "never")
-            .args([
-                test.rom.to_string_lossy().to_string(),
-                test.floppy.as_ref().unwrap().to_string_lossy().to_string(),
-                test.cycles.to_string(),
-                format!("{}/{}.png", args.output_dir, test),
-                out_frame_fn.to_string_lossy().to_string(),
-            ])
-            .output()
-            .expect("Failed to execute command");
-        fs::write(format!("{}/{}.log", args.output_dir, test), output.stderr)?;
+        pool.execute(move || {
+            info!(
+                "Running {} on {} ({}) for {} cycles...",
+                test.name, test.model, test, test.cycles
+            );
 
-        report.tests.push(TestReportTest {
-            name: test.name.clone(),
-            model: test.model.to_string(),
-            img_type: test.floppy_type.as_ref().unwrap().to_string(),
-            fn_prefix: test.to_string(),
-            result: if output.status.success() {
-                let mut frame_fn = test.floppy.clone().unwrap();
-                frame_fn.set_extension("frame");
-                if compare_frames(&frame_fn, &out_frame_fn) {
-                    TestResult::Pass
+            let out_frame_fn = PathBuf::from(format!("{}/{}.frame", t_output_dir, test));
+            let output = Command::new(&t_single_bin)
+                .env("RUST_LOG_STYLE", "never")
+                .args([
+                    test.rom.to_string_lossy().to_string(),
+                    test.floppy.as_ref().unwrap().to_string_lossy().to_string(),
+                    test.cycles.to_string(),
+                    format!("{}/{}.png", t_output_dir, test),
+                    out_frame_fn.to_string_lossy().to_string(),
+                ])
+                .output()
+                .expect("Failed to execute command");
+            fs::write(format!("{}/{}.log", t_output_dir, test), output.stderr).unwrap();
+
+            t_report.lock().unwrap().tests.push(TestReportTest {
+                name: test.name.clone(),
+                model: test.model.to_string(),
+                img_type: test.floppy_type.as_ref().unwrap().to_string(),
+                fn_prefix: test.to_string(),
+                result: if output.status.success() {
+                    let mut frame_fn = test.floppy.clone().unwrap();
+                    frame_fn.set_extension("frame");
+                    if compare_frames(&frame_fn, &out_frame_fn) {
+                        TestResult::Pass
+                    } else {
+                        TestResult::Inconclusive
+                    }
                 } else {
-                    TestResult::Inconclusive
-                }
-            } else {
-                TestResult::Failed(TestFailure::ExitCode(output.status.code().unwrap()))
-            },
+                    TestResult::Failed(TestFailure::ExitCode(output.status.code().unwrap()))
+                },
+            });
         });
     }
+    pool.shutdown_join();
 
     fs::write(
         format!("{}/report.json", args.output_dir),
-        serde_json::to_string(&report)?,
+        serde_json::to_string(&*report.as_ref().lock().unwrap())?,
     )?;
+    info!("Tests completed in {:?}", Instant::now() - start_time);
 
     Ok(())
 }
