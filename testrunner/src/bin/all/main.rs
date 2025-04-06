@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{env, fs};
 
@@ -63,6 +63,18 @@ fn get_binary_path(binary_name: &str) -> PathBuf {
     bin_dir.join(binary_name)
 }
 
+fn compare_frames(one: &Path, two: &Path) -> bool {
+    let Ok(a) = fs::read(one) else {
+        error!("Cannot read {}", one.display());
+        return false;
+    };
+    let Ok(b) = fs::read(two) else {
+        error!("Cannot read {}", two.display());
+        return false;
+    };
+    a == b
+}
+
 fn main() -> Result<()> {
     env_logger::builder()
         .filter_level(log::LevelFilter::Debug)
@@ -83,7 +95,6 @@ fn main() -> Result<()> {
         for floppy in &floppies {
             let imgdata = fs::read(floppy)?;
             let Ok(imgtype) = snow_floppy::loaders::Autodetect::detect(&imgdata) else {
-                error!("Cannot load floppy: {}", floppy.to_string_lossy());
                 continue;
             };
             let Ok(img) = snow_floppy::loaders::Autodetect::load(
@@ -102,10 +113,10 @@ fn main() -> Result<()> {
             }
 
             let mut cycle_fn = floppy.to_path_buf();
-            cycle_fn.push(".cycles");
+            cycle_fn.set_extension("cycles");
             let cycles = fs::read_to_string(cycle_fn)
                 .ok()
-                .and_then(|i| i.parse::<usize>().ok())
+                .and_then(|i| i.trim().parse::<usize>().ok())
                 .unwrap_or(40_000_000);
             tests.push(Test {
                 name: img.get_title().to_string(),
@@ -114,8 +125,9 @@ fn main() -> Result<()> {
                 floppy: Some(floppy.clone()),
                 cycles: match model {
                     MacModel::Early128K | MacModel::Early512K => 128_000_000,
+                    MacModel::Plus => 12_000_000,
                     _ => 0,
-                } + 156_000_000
+                } + 144_000_000
                     + cycles,
                 floppy_type: Some(imgtype.to_string()),
             });
@@ -134,6 +146,7 @@ fn main() -> Result<()> {
             test.name, test.model, test, test.cycles
         );
 
+        let out_frame_fn = PathBuf::from(format!("{}/{}.frame", args.output_dir, test));
         let output = Command::new(&single_bin)
             .env("RUST_LOG_STYLE", "never")
             .args([
@@ -141,6 +154,7 @@ fn main() -> Result<()> {
                 test.floppy.as_ref().unwrap().to_string_lossy().to_string(),
                 test.cycles.to_string(),
                 format!("{}/{}.png", args.output_dir, test),
+                out_frame_fn.to_string_lossy().to_string(),
             ])
             .output()
             .expect("Failed to execute command");
@@ -152,7 +166,13 @@ fn main() -> Result<()> {
             img_type: test.floppy_type.as_ref().unwrap().to_string(),
             fn_prefix: test.to_string(),
             result: if output.status.success() {
-                TestResult::Inconclusive
+                let mut frame_fn = test.floppy.clone().unwrap();
+                frame_fn.set_extension("frame");
+                if compare_frames(&frame_fn, &out_frame_fn) {
+                    TestResult::Pass
+                } else {
+                    TestResult::Inconclusive
+                }
             } else {
                 TestResult::Failed(TestFailure::ExitCode(output.status.code().unwrap()))
             },
