@@ -2,9 +2,14 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::{env, fs};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use log::*;
+use snow_core::mac::MacModel;
+use snow_floppy::loaders::FloppyImageLoader;
+
+use snow_floppy::Floppy;
+use testrunner::{TestFailure, TestReport, TestReportTest, TestResult};
 
 #[derive(Parser)]
 struct Args {
@@ -14,8 +19,11 @@ struct Args {
 }
 
 struct Test {
+    name: String,
+    model: MacModel,
     rom: PathBuf,
     floppy: Option<PathBuf>,
+    floppy_type: Option<String>,
     cycles: usize,
 }
 
@@ -64,11 +72,29 @@ fn main() -> Result<()> {
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, std::io::Error>>()?;
     for rom in &roms {
+        let model = MacModel::detect_from_rom(&fs::read(rom)?).context("Cannot detect ROM")?;
+
         for floppy in &floppies {
+            let imgdata = fs::read(&floppy)?;
+            let Ok(imgtype) = snow_floppy::loaders::Autodetect::detect(&imgdata) else {
+                error!("Cannot load floppy: {}", floppy.to_string_lossy());
+                continue;
+            };
+            let Ok(img) = snow_floppy::loaders::Autodetect::load(
+                &imgdata,
+                Some(&floppy.file_name().unwrap().to_string_lossy()),
+            ) else {
+                error!("Cannot load floppy: {}", floppy.to_string_lossy());
+                continue;
+            };
+
             tests.push(Test {
+                name: img.get_title().to_string(),
                 rom: rom.clone(),
+                model,
                 floppy: Some(floppy.clone()),
-                cycles: 20_000_000,
+                cycles: 160_000_000,
+                floppy_type: Some(imgtype.to_string()),
             });
         }
     }
@@ -76,9 +102,11 @@ fn main() -> Result<()> {
     let single_bin = get_binary_path("single");
     assert!(single_bin.exists());
 
+    let mut report = TestReport::default();
+
     info!("Collected {} tests", tests.len());
     for test in tests {
-        info!("Running {}...", test);
+        info!("Running {} on {} ({})...", test.name, test.model, test);
 
         let output = Command::new(&single_bin)
             .env("RUST_LOG_STYLE", "never")
@@ -91,7 +119,24 @@ fn main() -> Result<()> {
             .output()
             .expect("Failed to execute command");
         fs::write(format!("{}/{}.log", args.output_dir, test), output.stderr)?;
+
+        report.tests.push(TestReportTest {
+            name: test.name.clone(),
+            model: test.model.to_string(),
+            img_type: test.floppy_type.as_ref().unwrap().to_string(),
+            fn_prefix: test.to_string(),
+            result: if output.status.success() {
+                TestResult::Inconclusive
+            } else {
+                TestResult::Failed(TestFailure::ExitCode(output.status.code().unwrap()))
+            },
+        });
     }
+
+    fs::write(
+        format!("{}/report.json", args.output_dir),
+        serde_json::to_string(&report)?,
+    )?;
 
     Ok(())
 }
