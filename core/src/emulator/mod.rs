@@ -26,7 +26,7 @@ use crate::cpu_m68k::regs::Register;
 use crate::emulator::comm::UserMessageType;
 use comm::{
     Breakpoint, EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver,
-    EmulatorStatus, FddStatus, HddStatus,
+    EmulatorStatus, FddStatus, HddStatus, InputRecording,
 };
 
 /// Emulator runner
@@ -41,6 +41,7 @@ pub struct Emulator {
     adbmouse_sender: Option<ClickEventSender>,
     adbkeyboard_sender: Option<KeyEventSender>,
     model: MacModel,
+    record_input: Option<InputRecording>,
 }
 
 impl Emulator {
@@ -92,6 +93,7 @@ impl Emulator {
             adbmouse_sender,
             adbkeyboard_sender,
             model,
+            record_input: None,
         };
         emu.status_update()?;
 
@@ -273,8 +275,14 @@ impl Tickable for Emulator {
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
         if !self.command_recv.is_empty() {
             while let Ok(cmd) = self.command_recv.try_recv() {
+                let cycles = self.get_cycles();
+
                 match cmd {
                     EmulatorCommand::MouseUpdateRelative { relx, rely, btn } => {
+                        if let Some(r) = self.record_input.as_mut() {
+                            r.push((cycles, cmd));
+                        }
+
                         if let Some(s) = self.adbmouse_sender.as_ref() {
                             if let Some(b) = btn {
                                 s.send(b)?;
@@ -283,6 +291,10 @@ impl Tickable for Emulator {
                         self.cpu.bus.mouse_update_rel(relx, rely, btn);
                     }
                     EmulatorCommand::MouseUpdateAbsolute { x, y } => {
+                        if let Some(r) = self.record_input.as_mut() {
+                            r.push((cycles, cmd));
+                        }
+
                         self.cpu.bus.mouse_update_abs(x, y);
                     }
                     EmulatorCommand::Quit => {
@@ -447,6 +459,10 @@ impl Tickable for Emulator {
                         return Ok(ticks);
                     }
                     EmulatorCommand::KeyEvent(e) => {
+                        if let Some(r) = self.record_input.as_mut() {
+                            r.push((cycles, cmd));
+                        }
+
                         if !self.run {
                             info!("Ignoring keyboard input while stopped");
                         } else if let Some(sender) = self.adbkeyboard_sender.as_ref() {
@@ -474,6 +490,14 @@ impl Tickable for Emulator {
                             _ => self.cpu.regs.write(reg, val),
                         };
                         self.status_update()?;
+                    }
+                    EmulatorCommand::StartRecordingInput => {
+                        self.record_input = Some(InputRecording::default());
+                    }
+                    EmulatorCommand::EndRecordingInput => {
+                        self.event_sender.send(EmulatorEvent::RecordedInput(
+                            self.record_input.take().expect("Recording was not active"),
+                        ))?;
                     }
                 }
             }

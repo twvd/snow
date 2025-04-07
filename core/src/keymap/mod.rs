@@ -6,6 +6,8 @@
 //! A frontend will need to translate its own native scancodes (e.g. SDL) to the Snow universal
 //! keymap.
 
+use serde::{Deserialize, Serialize};
+
 mod aekm0115;
 mod akm0110;
 
@@ -13,6 +15,7 @@ mod akm0110;
 pub type Scancode = u8;
 
 /// A keyboard event. Inner value is the scancode
+#[derive(Serialize, Deserialize, Copy, Clone)]
 pub enum KeyEvent {
     KeyDown(u8),
     KeyUp(u8),

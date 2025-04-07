@@ -89,6 +89,7 @@ pub struct SnowGui {
     floppy_dialog_target: FloppyDialogTarget,
     floppy_dialog_wp: bool,
     create_disk_dialog: DiskImageDialog,
+    record_dialog: FileDialog,
 
     error_dialog_open: bool,
     error_string: String,
@@ -195,6 +196,12 @@ impl SnowGui {
                     }),
                 )
                 .default_file_filter(&floppy_filter_str)
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
+                .initial_directory(Self::default_dir()),
+            record_dialog: FileDialog::new()
+                .allow_path_edit_to_save_file_without_extension(false)
+                .add_save_extension("Snow recording (*.snowr)", "snowr")
+                .default_save_extension("Snow recording (*.snowr)")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir()),
             floppy_dialog_target: FloppyDialogTarget::Drive(0),
@@ -730,6 +737,19 @@ impl eframe::App for SnowGui {
         }
         self.ui_active &= self.workspace_dialog.state() != egui_file_dialog::DialogState::Open;
 
+        // Record input dialog
+        self.record_dialog.update(ctx);
+        if let Some(path) = self.record_dialog.take_picked() {
+            if path.exists() && !path.is_file() {
+                self.show_error(&format!(
+                    "Selected path is not a file: {}",
+                    path.to_string_lossy()
+                ));
+            }
+            self.emu.record_input(&path);
+        }
+        self.ui_active &= self.record_dialog.state() != egui_file_dialog::DialogState::Open;
+
         // Actual UI
         egui::CentralPanel::default().show(ctx, |ui| {
             if !self.ui_active {
@@ -948,6 +968,21 @@ impl eframe::App for SnowGui {
                         .clicked()
                     {
                         self.screenshot();
+                        ui.close_menu();
+                    }
+                    if !self.emu.is_recording_input() {
+                        if ui
+                            .add_enabled(
+                                self.emu.is_initialized(),
+                                egui::Button::new("Record input..."),
+                            )
+                            .clicked()
+                        {
+                            self.record_dialog.save_file();
+                            ui.close_menu();
+                        }
+                    } else if ui.button("Stop recording").clicked() {
+                        self.emu.record_input_end();
                         ui.close_menu();
                     }
                 });
