@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
 use snow_floppy::FloppyImage;
 
 use crate::bus::Address;
@@ -15,11 +16,15 @@ pub use crate::cpu_m68k::cpu::{Breakpoint, BusBreakpoint};
 pub type EmulatorCommandSender = crossbeam_channel::Sender<EmulatorCommand>;
 pub type EmulatorEventReceiver = crossbeam_channel::Receiver<EmulatorEvent>;
 
+pub type InputRecording = Vec<(Ticks, EmulatorCommand)>;
+
 /// A command/event that can be sent to the emulator
+#[derive(Serialize, Deserialize)]
 pub enum EmulatorCommand {
     Quit,
     InsertFloppy(usize, String),
     InsertFloppyWriteProtected(usize, String),
+    #[serde(skip)]
     InsertFloppyImage(usize, Box<FloppyImage>),
     SaveFloppy(usize, PathBuf),
     EjectFloppy(usize),
@@ -46,9 +51,13 @@ pub enum EmulatorCommand {
     KeyEvent(KeyEvent),
     ToggleBusTrace,
     CpuSetPC(u32),
+    #[serde(skip)]
     SetSpeed(EmulatorSpeed),
     ProgKey,
+    #[serde(skip)]
     WriteRegister(Register, u32),
+    StartRecordingInput,
+    EndRecordingInput,
 }
 
 /// Emulator speed tweak
@@ -112,4 +121,5 @@ pub enum EmulatorEvent {
     UserMessage(UserMessageType, String),
     FloppyEjected(usize, Box<FloppyImage>),
     Memory((Address, Vec<u8>)),
+    RecordedInput(InputRecording),
 }

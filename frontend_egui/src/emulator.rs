@@ -43,6 +43,7 @@ pub struct EmulatorState {
     messages: VecDeque<(UserMessageType, String)>,
     pub last_images: [RefCell<Option<Box<FloppyImage>>>; 3],
     ram_update: VecDeque<(Address, Vec<u8>)>,
+    record_input_path: Option<PathBuf>,
 }
 
 impl EmulatorState {
@@ -153,6 +154,7 @@ impl EmulatorState {
             self.cmdsender = None;
             self.eventrecv = None;
             self.status = None;
+            self.record_input_path = None;
         }
     }
 
@@ -244,6 +246,17 @@ impl EmulatorState {
                 EmulatorEvent::UserMessage(t, s) => self.messages.push_back((t, s)),
                 EmulatorEvent::Memory(update) => {
                     self.ram_update.push_back(update);
+                }
+                EmulatorEvent::RecordedInput(i) => {
+                    if let Err(e) = std::fs::write(
+                        self.record_input_path.take().unwrap(),
+                        serde_json::to_string(&i).unwrap(),
+                    ) {
+                        self.messages.push_back((
+                            UserMessageType::Error,
+                            format!("Cannot save recording: {}", e),
+                        ));
+                    }
                 }
             }
         }
@@ -536,5 +549,26 @@ impl EmulatorState {
         sender
             .send(EmulatorCommand::WriteRegister(reg, value))
             .unwrap();
+    }
+
+    pub fn record_input(&mut self, file: &Path) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        assert!(self.record_input_path.is_none());
+        sender.send(EmulatorCommand::StartRecordingInput).unwrap();
+        self.record_input_path = Some(file.to_path_buf());
+    }
+
+    pub fn record_input_end(&self) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        assert!(self.record_input_path.is_some());
+        sender.send(EmulatorCommand::EndRecordingInput).unwrap();
+    }
+
+    pub fn is_recording_input(&self) -> bool {
+        self.record_input_path.is_some()
     }
 }
