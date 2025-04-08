@@ -2,6 +2,7 @@ pub mod comm;
 
 use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof};
 use snow_floppy::Floppy;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -42,6 +43,7 @@ pub struct Emulator {
     adbkeyboard_sender: Option<KeyEventSender>,
     model: MacModel,
     record_input: Option<InputRecording>,
+    replay_input: VecDeque<(Ticks, EmulatorCommand)>,
 }
 
 impl Emulator {
@@ -94,6 +96,7 @@ impl Emulator {
             adbkeyboard_sender,
             model,
             record_input: None,
+            replay_input: VecDeque::default(),
         };
         emu.status_update()?;
 
@@ -499,6 +502,26 @@ impl Tickable for Emulator {
                             self.record_input.take().expect("Recording was not active"),
                         ))?;
                     }
+                    EmulatorCommand::ReplayInputRecording(rec, immediately) => {
+                        let cycles = self.get_cycles();
+                        if rec.is_empty() {
+                            break;
+                        }
+
+                        // On 'immediately', we skip the delay before the first step and
+                        // then continue with the relative cycle delays.
+                        //
+                        // This is useful if you want to replay a recording once the
+                        // system has already been running.
+                        let recording_offset = if immediately { rec[0].0 } else { 0 };
+
+                        self.replay_input = VecDeque::from_iter(
+                            rec.into_iter()
+                                // Offset by current cycles so we can just compare to absolute
+                                // cycles later.
+                                .map(|(t, c)| (t - recording_offset + cycles, c)),
+                        );
+                    }
                 }
             }
         }
@@ -507,6 +530,14 @@ impl Tickable for Emulator {
             if self.last_update.elapsed() > Duration::from_millis(500) {
                 self.last_update = Instant::now();
                 self.status_update()?;
+            }
+
+            // Replay next step in recording if currently replaying
+            if let Some((t, c)) = self.replay_input.front() {
+                if *t <= self.get_cycles() {
+                    self.command_sender.send(c.clone()).unwrap();
+                    self.replay_input.pop_front().unwrap();
+                }
             }
 
             // Batch 10000 steps for performance reasons

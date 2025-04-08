@@ -19,7 +19,7 @@ pub type EmulatorEventReceiver = crossbeam_channel::Receiver<EmulatorEvent>;
 pub type InputRecording = Vec<(Ticks, EmulatorCommand)>;
 
 /// A command/event that can be sent to the emulator
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub enum EmulatorCommand {
     Quit,
     InsertFloppy(usize, String),
@@ -58,6 +58,7 @@ pub enum EmulatorCommand {
     WriteRegister(Register, u32),
     StartRecordingInput,
     EndRecordingInput,
+    ReplayInputRecording(InputRecording, bool),
 }
 
 /// Emulator speed tweak
