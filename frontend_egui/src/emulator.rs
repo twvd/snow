@@ -23,8 +23,8 @@ use snow_floppy::{Floppy, FloppyImage, FloppyType};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::thread;
 use std::thread::JoinHandle;
+use std::{fs, thread};
 
 pub type DisassemblyListing = Vec<DisassemblyEntry>;
 
@@ -570,5 +570,14 @@ impl EmulatorState {
 
     pub fn is_recording_input(&self) -> bool {
         self.record_input_path.is_some()
+    }
+
+    pub fn replay_input(&self, file: &Path) -> Result<()> {
+        let Some(ref sender) = self.cmdsender else {
+            return Ok(());
+        };
+        let recording = serde_json::from_reader(fs::File::open(file)?)?;
+        sender.send(EmulatorCommand::ReplayInputRecording(recording, true))?;
+        Ok(())
     }
 }

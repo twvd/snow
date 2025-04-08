@@ -202,6 +202,15 @@ impl SnowGui {
                 .allow_path_edit_to_save_file_without_extension(false)
                 .add_save_extension("Snow recording (*.snowr)", "snowr")
                 .default_save_extension("Snow recording (*.snowr)")
+                .add_file_filter(
+                    "Snow recording (*.snowr)",
+                    Arc::new(|p| {
+                        p.extension()
+                            .unwrap_or_default()
+                            .eq_ignore_ascii_case("snowr")
+                    }),
+                )
+                .default_file_filter("Snow recording (*.snowr)")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir()),
             floppy_dialog_target: FloppyDialogTarget::Drive(0),
@@ -746,7 +755,11 @@ impl eframe::App for SnowGui {
                     path.to_string_lossy()
                 ));
             }
-            self.emu.record_input(&path);
+            if self.record_dialog.mode() == egui_file_dialog::DialogMode::SaveFile {
+                self.emu.record_input(&path);
+            } else if let Err(e) = self.emu.replay_input(&path) {
+                self.show_error(&e);
+            }
         }
         self.ui_active &= self.record_dialog.state() != egui_file_dialog::DialogState::Open;
 
@@ -970,6 +983,7 @@ impl eframe::App for SnowGui {
                         self.screenshot();
                         ui.close_menu();
                     }
+                    ui.separator();
                     if !self.emu.is_recording_input() {
                         if ui
                             .add_enabled(
@@ -979,6 +993,16 @@ impl eframe::App for SnowGui {
                             .clicked()
                         {
                             self.record_dialog.save_file();
+                            ui.close_menu();
+                        }
+                        if ui
+                            .add_enabled(
+                                self.emu.is_initialized(),
+                                egui::Button::new("Replay recording..."),
+                            )
+                            .clicked()
+                        {
+                            self.record_dialog.pick_file();
                             ui.close_menu();
                         }
                     } else if ui.button("Stop recording").clicked() {
