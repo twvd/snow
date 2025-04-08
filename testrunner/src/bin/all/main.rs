@@ -97,7 +97,10 @@ fn main() -> Result<()> {
     for rom in &roms {
         let model = MacModel::detect_from_rom(&fs::read(rom)?).context("Cannot detect ROM")?;
 
-        for floppy in &floppies {
+        for floppy in floppies
+            .iter()
+            .filter(|&f| !f.extension().unwrap().to_string_lossy().ends_with("_2"))
+        {
             let imgdata = fs::read(floppy)?;
             let Ok(imgtype) = snow_floppy::loaders::Autodetect::detect(&imgdata) else {
                 continue;

@@ -38,8 +38,19 @@ fn main() -> Result<()> {
     if let Some(floppy_fn) = args.floppy {
         let mut replay_fn = PathBuf::from_str(&floppy_fn)?;
         replay_fn.set_extension("snowr");
+        let mut secondary_fn = PathBuf::from_str(&floppy_fn)?;
+        secondary_fn.set_extension(format!(
+            "{}_2",
+            secondary_fn.extension().unwrap().to_string_lossy()
+        ));
 
         cmd.send(EmulatorCommand::InsertFloppy(0, floppy_fn))?;
+        if secondary_fn.exists() {
+            cmd.send(EmulatorCommand::InsertFloppy(
+                1,
+                secondary_fn.to_string_lossy().to_string(),
+            ))?;
+        }
 
         // See if there's a replay file
         if replay_fn.exists() {
