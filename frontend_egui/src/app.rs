@@ -155,28 +155,28 @@ impl SnowGui {
 
             rom_dialog: FileDialog::new()
                 .add_file_filter(
-                    "Macintosh ROM files (*.ROM)",
+                    "Macintosh ROM files (*.rom)",
                     Arc::new(|p| {
                         p.extension()
                             .unwrap_or_default()
                             .eq_ignore_ascii_case("rom")
                     }),
                 )
-                .default_file_filter("Macintosh ROM files (*.ROM)")
+                .default_file_filter("Macintosh ROM files (*.rom)")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir()),
             rom_dialog_last: None,
             rom_dialog_last_model: None,
             hdd_dialog: FileDialog::new()
                 .add_file_filter(
-                    "HDD images (*.IMG)",
+                    "HDD images (*.img)",
                     Arc::new(|p| {
                         p.extension()
                             .unwrap_or_default()
                             .eq_ignore_ascii_case("img")
                     }),
                 )
-                .default_file_filter("HDD images (*.IMG)")
+                .default_file_filter("HDD images (*.img)")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir()),
             hdd_dialog_idx: 0,
@@ -196,12 +196,14 @@ impl SnowGui {
                     }),
                 )
                 .default_file_filter(&floppy_filter_str)
+                .add_save_extension("Applesauce MOOF", "moof")
+                .default_save_extension("Applesauce MOOF")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir()),
             record_dialog: FileDialog::new()
                 .allow_path_edit_to_save_file_without_extension(false)
-                .add_save_extension("Snow recording (*.snowr)", "snowr")
-                .default_save_extension("Snow recording (*.snowr)")
+                .add_save_extension("Snow recording", "snowr")
+                .default_save_extension("Snow recording")
                 .add_file_filter(
                     "Snow recording (*.snowr)",
                     Arc::new(|p| {
@@ -220,14 +222,16 @@ impl SnowGui {
             floppy_dialog_wp: false,
             workspace_dialog: FileDialog::new()
                 .add_file_filter(
-                    "Snow workspace (*.SNOWW)",
+                    "Snow workspace (*.snoww)",
                     Arc::new(|p| {
                         p.extension()
                             .unwrap_or_default()
                             .eq_ignore_ascii_case("snoww")
                     }),
                 )
-                .default_file_filter("Snow workspace (*.SNOWW)")
+                .default_file_filter("Snow workspace (*.snoww)")
+                .add_save_extension("Snow workspace", "snoww")
+                .default_save_extension("Snow workspace")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir()),
             create_disk_dialog: Default::default(),
