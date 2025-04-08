@@ -1,4 +1,6 @@
 use std::fs::{self, File};
+use std::path::PathBuf;
+use std::str::FromStr;
 
 use anyhow::{bail, Result};
 use clap::Parser;
@@ -34,7 +36,17 @@ fn main() -> Result<()> {
     let cmd = emulator.create_cmd_sender();
     let event_recv = emulator.create_event_recv();
     if let Some(floppy_fn) = args.floppy {
+        let mut replay_fn = PathBuf::from_str(&floppy_fn)?;
+        replay_fn.set_extension("snowr");
+
         cmd.send(EmulatorCommand::InsertFloppy(0, floppy_fn))?;
+
+        // See if there's a replay file
+        if replay_fn.exists() {
+            let recording = serde_json::from_reader(fs::File::open(&replay_fn)?)?;
+            cmd.send(EmulatorCommand::ReplayInputRecording(recording, false))?;
+            info!("Loaded recording file '{}'", replay_fn.to_string_lossy());
+        }
     }
     cmd.send(EmulatorCommand::Run)?;
     cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Uncapped))?;
