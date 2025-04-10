@@ -189,7 +189,11 @@ fn main() -> Result<()> {
                 result: if output.status.success() {
                     let mut frame_fn = test.floppy.clone().unwrap();
                     frame_fn.set_extension("frame");
-                    if compare_frames(&frame_fn, &out_frame_fn) {
+                    let mut model_frame_fn = test.floppy.clone().unwrap();
+                    model_frame_fn.set_file_name(format!("{}.frame", test));
+                    if compare_frames(&model_frame_fn, &out_frame_fn)
+                        || compare_frames(&frame_fn, &out_frame_fn)
+                    {
                         TestResult::Pass
                     } else {
                         TestResult::Inconclusive
