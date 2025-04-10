@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::{bail, Result};
@@ -17,8 +17,8 @@ struct Args {
     rom: String,
     floppy: Option<String>,
     cycles: Ticks,
-    final_screenshot: String,
-    frame_file: String,
+    fn_prefix: String,
+    out_dir: String,
 }
 
 fn main() -> Result<()> {
@@ -36,8 +36,15 @@ fn main() -> Result<()> {
     let cmd = emulator.create_cmd_sender();
     let event_recv = emulator.create_event_recv();
     if let Some(floppy_fn) = args.floppy {
+        // Model-specific replay file
+        let mut model_replay_fn = PathBuf::from_str(&floppy_fn)?;
+        model_replay_fn.set_file_name(&args.fn_prefix);
+        model_replay_fn.set_extension("snowr");
+        // Generic replay file
         let mut replay_fn = PathBuf::from_str(&floppy_fn)?;
         replay_fn.set_extension("snowr");
+
+        // Secondary floppy disk
         let mut secondary_fn = PathBuf::from_str(&floppy_fn)?;
         secondary_fn.set_extension(format!(
             "{}_2",
@@ -53,10 +60,22 @@ fn main() -> Result<()> {
         }
 
         // See if there's a replay file
-        if replay_fn.exists() {
-            let recording = serde_json::from_reader(fs::File::open(&replay_fn)?)?;
-            cmd.send(EmulatorCommand::ReplayInputRecording(recording, false))?;
-            info!("Loaded recording file '{}'", replay_fn.to_string_lossy());
+        let try_replay = |replay_fn: &Path| -> Result<bool> {
+            if replay_fn.exists() {
+                let recording = serde_json::from_reader(fs::File::open(replay_fn)?)?;
+                cmd.send(EmulatorCommand::ReplayInputRecording(recording, false))?;
+                info!("Loaded recording file '{}'", replay_fn.display());
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        };
+
+        #[allow(clippy::if_same_then_else)]
+        if try_replay(&model_replay_fn)? {
+        } else if try_replay(&replay_fn)? {
+        } else {
+            info!("No replay file found");
         }
     }
     cmd.send(EmulatorCommand::Run)?;
@@ -91,7 +110,7 @@ fn main() -> Result<()> {
         .collect::<Vec<_>>();
 
     let mut encoder = png::Encoder::new(
-        File::create(args.final_screenshot)?,
+        File::create(format!("{}/{}.png", args.out_dir, args.fn_prefix))?,
         SCREEN_WIDTH as u32,
         SCREEN_HEIGHT as u32,
     );
@@ -100,7 +119,7 @@ fn main() -> Result<()> {
     encoder.set_compression(png::Compression::Best);
     let mut writer = encoder.write_header()?;
     writer.write_image_data(frame)?;
-    fs::write(args.frame_file, frame)?;
+    fs::write(format!("{}/{}.frame", args.out_dir, args.fn_prefix), frame)?;
 
     Ok(())
 }

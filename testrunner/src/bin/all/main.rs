@@ -117,6 +117,7 @@ fn main() -> Result<()> {
                 .compatible_floppies()
                 .contains(&img.get_type())
             {
+                // Floppy image incompatible with drive
                 continue;
             }
 
@@ -173,8 +174,8 @@ fn main() -> Result<()> {
                     test.rom.to_string_lossy().to_string(),
                     test.floppy.as_ref().unwrap().to_string_lossy().to_string(),
                     test.cycles.to_string(),
-                    format!("{}/{}.png", t_output_dir, test),
-                    out_frame_fn.to_string_lossy().to_string(),
+                    test.to_string(),
+                    t_output_dir.clone(),
                 ])
                 .output()
                 .expect("Failed to execute command");
