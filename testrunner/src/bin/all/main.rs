@@ -128,7 +128,7 @@ fn main() -> Result<()> {
                 .and_then(|i| i.trim().parse::<usize>().ok())
                 .unwrap_or(40_000_000);
             tests.push(Test {
-                name: img.get_title().to_string(),
+                name: floppy.file_stem().unwrap().to_string_lossy().to_string(),
                 rom: rom.clone(),
                 model,
                 floppy: Some(floppy.clone()),
@@ -136,7 +136,7 @@ fn main() -> Result<()> {
                     MacModel::Early128K | MacModel::Early512K => 128_000_000,
                     MacModel::Plus => 12_000_000,
                     _ => 0,
-                } + 156_000_000
+                } + 172_000_000
                     + cycles,
                 floppy_type: Some(imgtype.to_string()),
             });

@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -81,11 +82,19 @@ fn main() -> Result<()> {
     cmd.send(EmulatorCommand::Run)?;
     cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Uncapped))?;
 
-    let mut last_frame = None;
+    let mut frames = VecDeque::<Vec<u8>>::new();
     info!("Starting");
     while emulator.get_cycles() < args.cycles {
         while let Ok(frame) = frame_recv.try_recv() {
-            last_frame = Some(frame);
+            while frames.len() >= 30 {
+                frames.pop_front();
+            }
+            frames.push_back(
+                frame
+                    .iter()
+                    .map(|b| b.load(std::sync::atomic::Ordering::Relaxed))
+                    .collect::<Vec<_>>(),
+            );
         }
         while let Ok(event) = event_recv.try_recv() {
             match event {
@@ -102,24 +111,40 @@ fn main() -> Result<()> {
         emulator.tick(1)?;
     }
 
-    let frame = &last_frame
-        .as_ref()
-        .unwrap()
-        .iter()
-        .map(|b| b.load(std::sync::atomic::Ordering::Relaxed))
-        .collect::<Vec<_>>();
+    if !frames.is_empty() {
+        // Write still screenshot
+        let frame = frames.back().unwrap();
+        let mut encoder = png::Encoder::new(
+            File::create(format!("{}/{}.png", args.out_dir, args.fn_prefix))?,
+            SCREEN_WIDTH as u32,
+            SCREEN_HEIGHT as u32,
+        );
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(png::Compression::Best);
+        let mut writer = encoder.write_header()?;
+        writer.write_image_data(frame)?;
+        fs::write(format!("{}/{}.frame", args.out_dir, args.fn_prefix), frame)?;
 
-    let mut encoder = png::Encoder::new(
-        File::create(format!("{}/{}.png", args.out_dir, args.fn_prefix))?,
-        SCREEN_WIDTH as u32,
-        SCREEN_HEIGHT as u32,
-    );
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    encoder.set_compression(png::Compression::Best);
-    let mut writer = encoder.write_header()?;
-    writer.write_image_data(frame)?;
-    fs::write(format!("{}/{}.frame", args.out_dir, args.fn_prefix), frame)?;
+        // Write animated GIF
+        let gifout = File::create(format!("{}/{}.gif", args.out_dir, args.fn_prefix))?;
+        let mut gifencoder = gif::Encoder::new(
+            gifout,
+            SCREEN_WIDTH.try_into()?,
+            SCREEN_HEIGHT.try_into()?,
+            &[],
+        )?;
+        gifencoder.set_repeat(gif::Repeat::Infinite)?;
+        while let Some(mut frame) = frames.pop_front() {
+            let mut gframe = gif::Frame::from_rgba(
+                SCREEN_WIDTH.try_into()?,
+                SCREEN_HEIGHT.try_into()?,
+                &mut frame,
+            );
+            gframe.delay = 1;
+            gifencoder.write_frame(&gframe)?;
+        }
+    }
 
     Ok(())
 }
