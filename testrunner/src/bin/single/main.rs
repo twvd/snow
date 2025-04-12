@@ -5,6 +5,7 @@ use std::str::FromStr;
 
 use anyhow::{bail, Result};
 use clap::Parser;
+use itertools::Itertools;
 use log::*;
 
 use snow_core::emulator::comm::{EmulatorCommand, EmulatorEvent, EmulatorSpeed};
@@ -21,6 +22,14 @@ struct Args {
     fn_prefix: String,
     control_frame: String,
     out_dir: String,
+}
+
+fn deduplicate_with_counts<T: Clone + Eq>(arr: &[T]) -> Vec<(T, usize)> {
+    arr.iter()
+        .chunk_by(|&x| x.clone())
+        .into_iter()
+        .map(|(key, group)| (key, group.count()))
+        .collect()
 }
 
 fn main() -> Result<()> {
@@ -95,7 +104,16 @@ fn main() -> Result<()> {
         );
     }
 
+    let mut fullgifencoder = gif::Encoder::new(
+        File::create(format!("{}/{}-full.gif", args.out_dir, args.fn_prefix))?,
+        SCREEN_WIDTH.try_into()?,
+        SCREEN_HEIGHT.try_into()?,
+        &[],
+    )?;
+    fullgifencoder.set_repeat(gif::Repeat::Infinite)?;
+
     let mut frames = VecDeque::<Vec<u8>>::new();
+    let mut last_delay = 0;
     let mut control_seen = false;
     info!("Starting");
     while emulator.get_cycles() < args.cycles {
@@ -104,11 +122,26 @@ fn main() -> Result<()> {
                 .iter()
                 .map(|b| b.load(std::sync::atomic::Ordering::Relaxed))
                 .collect::<Vec<_>>();
-            while frames.len() >= 30 {
-                frames.pop_front();
+
+            if !frames.is_empty() && frame == *frames.back().unwrap() {
+                last_delay += 1;
+            } else {
+                let mut fcopy = frame.clone();
+                let mut gframe = gif::Frame::from_rgba(
+                    SCREEN_WIDTH.try_into()?,
+                    SCREEN_HEIGHT.try_into()?,
+                    &mut fcopy,
+                );
+                gframe.delay = last_delay;
+                fullgifencoder.write_frame(&gframe)?;
+                last_delay = 0;
             }
+
             if let Some(cf) = control_frame.as_ref() {
                 control_seen |= *cf == frame;
+            }
+            while frames.len() >= 120 {
+                frames.pop_front();
             }
             frames.push_back(frame);
         }
@@ -128,6 +161,18 @@ fn main() -> Result<()> {
     }
 
     if !frames.is_empty() {
+        // Finish full recording
+        if last_delay > 0 {
+            let mut fcopy = frames.back().unwrap().clone();
+            let mut gframe = gif::Frame::from_rgba(
+                SCREEN_WIDTH.try_into()?,
+                SCREEN_HEIGHT.try_into()?,
+                &mut fcopy,
+            );
+            gframe.delay = last_delay;
+            fullgifencoder.write_frame(&gframe)?;
+        }
+
         // Write still screenshot
         let frame = frames.back().unwrap();
         let mut encoder = png::Encoder::new(
@@ -142,28 +187,96 @@ fn main() -> Result<()> {
         writer.write_image_data(frame)?;
         fs::write(format!("{}/{}.frame", args.out_dir, args.fn_prefix), frame)?;
 
-        // Write animated GIF
-        let gifout = File::create(format!("{}/{}.gif", args.out_dir, args.fn_prefix))?;
-        let mut gifencoder = gif::Encoder::new(
-            gifout,
-            SCREEN_WIDTH.try_into()?,
-            SCREEN_HEIGHT.try_into()?,
-            &[],
+        // Write animated short
+        write_gif(
+            format!("{}/{}.gif", args.out_dir, args.fn_prefix),
+            &mut frames,
         )?;
-        gifencoder.set_repeat(gif::Repeat::Infinite)?;
-        while let Some(mut frame) = frames.pop_front() {
-            let mut gframe = gif::Frame::from_rgba(
-                SCREEN_WIDTH.try_into()?,
-                SCREEN_HEIGHT.try_into()?,
-                &mut frame,
-            );
-            gframe.delay = 1;
-            gifencoder.write_frame(&gframe)?;
-        }
     }
 
     if !control_seen {
         std::process::exit(2);
     }
     Ok(())
+}
+
+fn write_gif<P: AsRef<Path>>(file: P, frames: &mut VecDeque<Vec<u8>>) -> Result<(), anyhow::Error> {
+    let gifout = File::create(file)?;
+    let mut gifencoder = gif::Encoder::new(
+        gifout,
+        SCREEN_WIDTH.try_into()?,
+        SCREEN_HEIGHT.try_into()?,
+        &[],
+    )?;
+    gifencoder.set_repeat(gif::Repeat::Infinite)?;
+    let mut dedup_frames = deduplicate_with_counts(frames.make_contiguous());
+    for oframe in &mut dedup_frames {
+        let mut gframe = gif::Frame::from_rgba(
+            SCREEN_WIDTH.try_into()?,
+            SCREEN_HEIGHT.try_into()?,
+            &mut oframe.0,
+        );
+        gframe.delay = oframe.1 as u16;
+        gifencoder.write_frame(&gframe)?;
+    }
+    info!(
+        "deduplicated {} frames to {}",
+        frames.len(),
+        dedup_frames.len()
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dedup_empty_array() {
+        let arr: Vec<i32> = vec![];
+        let result = deduplicate_with_counts(&arr);
+        assert_eq!(result, vec![]);
+    }
+
+    #[test]
+    fn test_dedup_single_element() {
+        let arr = vec![42];
+        let result = deduplicate_with_counts(&arr);
+        assert_eq!(result, vec![(42, 1)]);
+    }
+
+    #[test]
+    fn test_dedup_consecutive_duplicates() {
+        let arr = vec![1, 1, 1];
+        let result = deduplicate_with_counts(&arr);
+        assert_eq!(result, vec![(1, 3)]);
+    }
+
+    #[test]
+    fn test_dedup_mixed_elements() {
+        let arr = vec![1, 2, 3, 4];
+        let result = deduplicate_with_counts(&arr);
+        assert_eq!(result, vec![(1, 1), (2, 1), (3, 1), (4, 1)]);
+    }
+
+    #[test]
+    fn test_dedup_realistic() {
+        let arr = vec![1, 1, 1, 5, 6, 7, 7, 1];
+        let result = deduplicate_with_counts(&arr);
+        assert_eq!(result, vec![(1, 3), (5, 1), (6, 1), (7, 2), (1, 1)]);
+    }
+
+    #[test]
+    fn test_dedup_different_data_types() {
+        let arr = vec!["a", "a", "b", "c", "c"];
+        let result = deduplicate_with_counts(&arr);
+        assert_eq!(result, vec![("a", 2), ("b", 1), ("c", 2)]);
+    }
+
+    #[test]
+    fn test_dedup_alternating_elements() {
+        let arr = vec![1, 2, 1, 2, 1];
+        let result = deduplicate_with_counts(&arr);
+        assert_eq!(result, vec![(1, 1), (2, 1), (1, 1), (2, 1), (1, 1)]);
+    }
 }

@@ -4000,6 +4000,7 @@ dependencies = [
  "clap",
  "env_logger",
  "gif",
+ "itertools 0.14.0",
  "log",
  "png",
  "rusty_pool",
