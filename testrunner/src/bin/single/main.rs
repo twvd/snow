@@ -19,6 +19,7 @@ struct Args {
     floppy: Option<String>,
     cycles: Ticks,
     fn_prefix: String,
+    control_frame: String,
     out_dir: String,
 }
 
@@ -82,19 +83,34 @@ fn main() -> Result<()> {
     cmd.send(EmulatorCommand::Run)?;
     cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Uncapped))?;
 
+    // Load control frame
+    let control_frame = fs::read(&args.control_frame).ok();
+    if control_frame.is_none() {
+        warn!(
+            "Could not load control frame: {}",
+            PathBuf::from_str(&args.control_frame)?
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+        );
+    }
+
     let mut frames = VecDeque::<Vec<u8>>::new();
+    let mut control_seen = false;
     info!("Starting");
     while emulator.get_cycles() < args.cycles {
-        while let Ok(frame) = frame_recv.try_recv() {
+        while let Ok(oframe) = frame_recv.try_recv() {
+            let frame = oframe
+                .iter()
+                .map(|b| b.load(std::sync::atomic::Ordering::Relaxed))
+                .collect::<Vec<_>>();
             while frames.len() >= 30 {
                 frames.pop_front();
             }
-            frames.push_back(
-                frame
-                    .iter()
-                    .map(|b| b.load(std::sync::atomic::Ordering::Relaxed))
-                    .collect::<Vec<_>>(),
-            );
+            if let Some(cf) = control_frame.as_ref() {
+                control_seen |= *cf == frame;
+            }
+            frames.push_back(frame);
         }
         while let Ok(event) = event_recv.try_recv() {
             match event {
@@ -146,5 +162,8 @@ fn main() -> Result<()> {
         }
     }
 
+    if !control_seen {
+        std::process::exit(2);
+    }
     Ok(())
 }

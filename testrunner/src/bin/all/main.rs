@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -66,18 +66,6 @@ fn get_binary_path(binary_name: &str) -> PathBuf {
         .parent()
         .expect("Failed to get binary directory");
     bin_dir.join(binary_name)
-}
-
-fn compare_frames(one: &Path, two: &Path) -> bool {
-    let Ok(a) = fs::read(one) else {
-        error!("Cannot read {}", one.display());
-        return false;
-    };
-    let Ok(b) = fs::read(two) else {
-        error!("Cannot read {}", two.display());
-        return false;
-    };
-    a == b
 }
 
 fn main() -> Result<()> {
@@ -167,7 +155,10 @@ fn main() -> Result<()> {
                 test.name, test.model, test, test.cycles
             );
 
-            let out_frame_fn = PathBuf::from(format!("{}/{}.frame", t_output_dir, test));
+            let mut frame_fn = test.floppy.clone().unwrap();
+            frame_fn.set_extension("frame");
+            let mut model_frame_fn = test.floppy.clone().unwrap();
+            model_frame_fn.set_file_name(format!("{}.frame", test));
             let output = Command::new(&t_single_bin)
                 .env("RUST_LOG_STYLE", "never")
                 .args([
@@ -175,6 +166,11 @@ fn main() -> Result<()> {
                     test.floppy.as_ref().unwrap().to_string_lossy().to_string(),
                     test.cycles.to_string(),
                     test.to_string(),
+                    if model_frame_fn.exists() {
+                        model_frame_fn.to_string_lossy().to_string()
+                    } else {
+                        frame_fn.to_string_lossy().to_string()
+                    },
                     t_output_dir.clone(),
                 ])
                 .output()
@@ -186,20 +182,24 @@ fn main() -> Result<()> {
                 model: test.model.to_string(),
                 img_type: test.floppy_type.as_ref().unwrap().to_string(),
                 fn_prefix: test.to_string(),
-                result: if output.status.success() {
-                    let mut frame_fn = test.floppy.clone().unwrap();
-                    frame_fn.set_extension("frame");
-                    let mut model_frame_fn = test.floppy.clone().unwrap();
-                    model_frame_fn.set_file_name(format!("{}.frame", test));
-                    if compare_frames(&model_frame_fn, &out_frame_fn)
-                        || compare_frames(&frame_fn, &out_frame_fn)
-                    {
+                result: match output.status.code().unwrap_or(255) {
+                    0 => {
+                        // Success / Ok(())
                         TestResult::Pass
-                    } else {
+                    }
+                    1 => {
+                        // Error / Err()
+                        TestResult::Failed(TestFailure::ExitCode(output.status.code().unwrap()))
+                    }
+                    2 => {
+                        // Frame not found
                         TestResult::Inconclusive
                     }
-                } else {
-                    TestResult::Failed(TestFailure::ExitCode(output.status.code().unwrap()))
+                    101 => {
+                        // Panic
+                        TestResult::Failed(TestFailure::ExitCode(output.status.code().unwrap()))
+                    }
+                    _ => TestResult::Failed(TestFailure::ExitCode(output.status.code().unwrap())),
                 },
             });
         });
