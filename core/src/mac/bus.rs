@@ -227,12 +227,12 @@ where
 
         // Duplicate framebuffers to video component
         // (writes also go through RAM)
-        if self.fb_main.contains(&addr) {
-            let offset = (addr - self.fb_main.start) as usize;
+        if self.fb_main.contains(&(addr & self.ram_mask as Address)) {
+            let offset = ((addr & self.ram_mask as Address) - self.fb_main.start) as usize;
             self.video.framebuffers[0][offset] = val;
         }
-        if self.fb_alt.contains(&addr) {
-            let offset = (addr - self.fb_alt.start) as usize;
+        if self.fb_alt.contains(&(addr & self.ram_mask as Address)) {
+            let offset = ((addr & self.ram_mask as Address) - self.fb_alt.start) as usize;
             self.video.framebuffers[1][offset] = val;
         }
 
