@@ -162,23 +162,23 @@ fn main() -> Result<()> {
 
     let report = Arc::new(Mutex::new(TestReport::default()));
 
+    let total_tests = tests.len();
     info!(
         "Collected {} tests, running {} tests in parallel",
-        tests.len(),
-        args.parallel
+        total_tests, args.parallel
     );
     let pool = rusty_pool::ThreadPool::new(args.parallel, args.parallel, Duration::from_secs(60));
     let start_time = Instant::now();
 
-    for test in tests {
+    for (current_test, test) in tests.into_iter().enumerate() {
         let t_report = Arc::clone(&report);
         let t_single_bin = single_bin.clone();
         let t_output_dir = args.output_dir.clone();
 
         pool.execute(move || {
             info!(
-                "Running {} on {} ({}) for {} cycles...",
-                test.name, test.model, test, test.cycles
+                "({}/{}) Running {} on {} ({}) for {} cycles...",
+                current_test, total_tests, test.name, test.model, test, test.cycles
             );
 
             let mut frame_fn = test.floppy.clone().unwrap();
