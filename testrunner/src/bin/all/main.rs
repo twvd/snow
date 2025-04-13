@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -66,6 +67,31 @@ fn get_binary_path(binary_name: &str) -> PathBuf {
         .parent()
         .expect("Failed to get binary directory");
     bin_dir.join(binary_name)
+}
+
+fn write_with_size_limit<P: AsRef<Path>>(
+    file_path: P,
+    data: &[u8],
+    max_size: usize,
+) -> io::Result<()> {
+    const TRUNCATION_MARKER: &[u8] = b"[TRUNCATED]";
+
+    let mut file = fs::File::create(file_path)?;
+
+    if data.len() <= max_size {
+        // If data is smaller than or equal to max_size, write it all
+        file.write_all(data)?;
+    } else {
+        // Write only up to the max_size
+        file.write_all(&data[..max_size])?;
+
+        // Append truncation marker
+        file.write_all(TRUNCATION_MARKER)?;
+    }
+
+    file.flush()?;
+
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -159,6 +185,7 @@ fn main() -> Result<()> {
             frame_fn.set_extension("frame");
             let mut model_frame_fn = test.floppy.clone().unwrap();
             model_frame_fn.set_file_name(format!("{}.frame", test));
+
             let output = Command::new(&t_single_bin)
                 .env("RUST_LOG_STYLE", "never")
                 .args([
@@ -175,7 +202,14 @@ fn main() -> Result<()> {
                 ])
                 .output()
                 .expect("Failed to execute command");
-            fs::write(format!("{}/{}.log", t_output_dir, test), output.stderr).unwrap();
+
+            // Save log
+            write_with_size_limit(
+                format!("{}/{}.log", t_output_dir, test),
+                &output.stderr,
+                10 * 1024 * 1024,
+            )
+            .unwrap();
 
             t_report.lock().unwrap().tests.push(TestReportTest {
                 name: test.name.clone(),
