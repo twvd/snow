@@ -24,4 +24,9 @@ pub struct TestReportTest {
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct TestReport {
     pub tests: Vec<TestReportTest>,
+    pub version: String,
+    pub run_start: String,
+    pub run_duration: String,
+    pub run_jobs: usize,
+    pub run_cpus: usize,
 }

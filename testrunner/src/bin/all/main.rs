@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use std::{env, fs};
 
 use anyhow::{Context, Result};
+use chrono::prelude::*;
 use clap::Parser;
 use log::*;
 use snow_core::mac::MacModel;
@@ -13,6 +14,10 @@ use snow_floppy::loaders::FloppyImageLoader;
 
 use snow_floppy::Floppy;
 use testrunner::{TestFailure, TestReport, TestReportTest, TestResult};
+
+pub mod built_info {
+    include!(concat!(env!("OUT_DIR"), "/built.rs"));
+}
 
 #[derive(Parser)]
 struct Args {
@@ -94,6 +99,19 @@ fn write_with_size_limit<P: AsRef<Path>>(
     Ok(())
 }
 
+pub fn version_string() -> String {
+    format!(
+        "{}-{}{}",
+        built_info::PKG_VERSION,
+        built_info::GIT_COMMIT_HASH_SHORT.expect("Git version unavailable"),
+        if built_info::GIT_DIRTY.expect("Git version unavailable") {
+            "-dirty"
+        } else {
+            ""
+        }
+    )
+}
+
 fn main() -> Result<()> {
     env_logger::builder()
         .filter_level(log::LevelFilter::Debug)
@@ -160,7 +178,13 @@ fn main() -> Result<()> {
     let single_bin = get_binary_path("single");
     assert!(single_bin.exists());
 
-    let report = Arc::new(Mutex::new(TestReport::default()));
+    let report = Arc::new(Mutex::new(TestReport {
+        run_start: Local::now().to_rfc2822(),
+        version: version_string(),
+        run_jobs: args.parallel,
+        run_cpus: num_cpus::get(),
+        ..Default::default()
+    }));
 
     let total_tests = tests.len();
     info!(
@@ -240,11 +264,17 @@ fn main() -> Result<()> {
     }
     pool.shutdown_join();
 
-    fs::write(
-        format!("{}/report.json", args.output_dir),
-        serde_json::to_string(&*report.as_ref().lock().unwrap())?,
-    )?;
-    info!("Tests completed in {:?}", Instant::now() - start_time);
+    let test_duration = Instant::now() - start_time;
+    if let Ok(mut report) = report.as_ref().lock() {
+        report.run_duration = format!("{:?}", test_duration);
+        fs::write(
+            format!("{}/report.json", args.output_dir),
+            serde_json::to_string(&*report)?,
+        )?;
+    } else {
+        unreachable!()
+    }
+    info!("Tests completed in {:?}", test_duration);
 
     Ok(())
 }

@@ -2,14 +2,20 @@
 name = "testrunner"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
+
+[build-dependencies]
+built = { version = "0.7.7", features = ["git2"] }
 
 [dependencies]
 anyhow = "1.0.97"
+chrono = "0.4.40"
 clap = { version = "4.5.35", features = ["derive"] }
 env_logger = "0.11.8"
 gif = "0.13.1"
 itertools = "0.14.0"
 log = "0.4.27"
+num_cpus = "1.16.0"
 png = "0.17.16"
 rusty_pool = "0.7.0"
 serde = { version = "1.0.219", features = ["derive"] }

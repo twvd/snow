@@ -3997,11 +3997,14 @@ name = "testrunner"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "built",
+ "chrono",
  "clap",
  "env_logger",
  "gif",
  "itertools 0.14.0",
  "log",
+ "num_cpus",
  "png",
  "rusty_pool",
  "serde",
