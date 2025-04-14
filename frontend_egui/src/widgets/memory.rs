@@ -202,6 +202,19 @@ impl MemoryViewerWidget {
                 .vertical_scroll_offset(row as f32 * (row_height + ui.spacing().item_spacing.y));
         }
 
+        ui.horizontal(|ui| {
+            // Address
+            ui.add_sized([60.0, row_height], egui::Label::new(""));
+            for i in 0..=0x0F {
+                let byte_text = format!("{:02X}", i);
+                let text = egui::RichText::new(byte_text)
+                    .family(egui::FontFamily::Monospace)
+                    .size(10.0);
+                ui.add(egui::Label::new(text));
+                ui.add_space(4.0);
+            }
+        });
+
         scroll_area.show_rows(ui, row_height, rows, |ui, row_range| {
             let mut hl_hex = 0;
             let mut hl_ascii = 0;
