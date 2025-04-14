@@ -145,10 +145,6 @@ impl Swim {
             }
             (true, false) => {
                 // Read status register
-
-                // Clear the shifter
-                self.shdata = 0;
-
                 let sense = self
                     .get_selected_drive()
                     .read_sense(self.get_selected_drive_reg_u8());
@@ -242,6 +238,12 @@ impl Swim {
 
     /// Shifts a bit into the read data shift register
     fn iwm_shift_bit(&mut self, bit: bool) {
+        if self.q6 || self.q7 {
+            // Not in read mode, clear shifter
+            self.shdata = 0;
+            return;
+        }
+
         self.shdata <<= 1;
         if bit {
             // 1 coming off the disk
