@@ -254,7 +254,7 @@ impl<'a> Disassembler<'a> {
                 mnemonic,
                 sz,
                 self.ea(instr)?,
-                instr.get_op2()
+                instr.get_op1()
             ),
 
             InstructionMnemonic::CMPI_l
