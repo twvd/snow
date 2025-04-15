@@ -303,7 +303,7 @@ impl<'a> Disassembler<'a> {
             InstructionMnemonic::MOVEQ => format!(
                 "{} #${:02X},D{}",
                 mnemonic,
-                instr.get_quick::<Byte>(),
+                instr.data as u8,
                 instr.get_op1()
             ),
 
