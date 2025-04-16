@@ -161,6 +161,12 @@ impl Emulator {
         }
         self.cpu.bus.ram_dirty.clear();
 
+        // Instruction history
+        if let Some(history) = self.cpu.read_history() {
+            self.event_sender
+                .send(EmulatorEvent::InstructionHistory(history.to_vec()))?;
+        }
+
         Ok(())
     }
 
@@ -522,6 +528,7 @@ impl Tickable for Emulator {
                                 .map(|(t, c)| (t - recording_offset + cycles, c)),
                         );
                     }
+                    EmulatorCommand::SetInstructionHistory(v) => self.cpu.enable_history(v),
                 }
             }
         }

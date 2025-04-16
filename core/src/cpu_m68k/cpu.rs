@@ -1,9 +1,10 @@
 use std::collections::VecDeque;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
+use arrayvec::ArrayVec;
 use either::Either;
 use log::*;
-use num_traits::FromBytes;
+use num_traits::{FromBytes, ToBytes};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -131,6 +132,29 @@ fn empty_decode_cache() -> DecodeCache {
     vec![None; Word::MAX as usize + 1]
 }
 
+#[derive(Clone, Eq, PartialEq)]
+pub enum HistoryEntry {
+    Instruction(HistoryEntryInstruction),
+    Exception { vector: Address, cycles: Ticks },
+}
+
+#[derive(Default, Clone, PartialEq, Eq)]
+pub struct HistoryEntryInstruction {
+    pub pc: Address,
+    pub raw: ArrayVec<u8, 12>,
+    pub cycles: Ticks,
+    pub final_regs: Option<RegisterFile>,
+    pub branch_taken: Option<bool>,
+}
+
+impl HistoryEntryInstruction {
+    pub fn push_raw<T: ToBytes>(&mut self, value: &T) {
+        self.raw
+            .try_extend_from_slice(value.to_be_bytes().as_ref())
+            .expect("HistoryEntry::raw overrun");
+    }
+}
+
 /// Motorola 680x0
 #[derive(Serialize, Deserialize)]
 pub struct CpuM68k<TBus: Bus<Address, u8> + IrqSource> {
@@ -171,12 +195,27 @@ pub struct CpuM68k<TBus: Bus<Address, u8> + IrqSource> {
 
     /// Next address to jump to for step over
     step_over_addr: Option<Address>,
+
+    /// Instruction history
+    #[serde(skip)]
+    history: VecDeque<HistoryEntry>,
+
+    /// Current history item
+    #[serde(skip)]
+    history_current: HistoryEntryInstruction,
+
+    /// Keep history?
+    #[serde(skip)]
+    history_enabled: bool,
 }
 
 impl<TBus> CpuM68k<TBus>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
+    /// Instruction history size
+    pub const HISTORY_SIZE: usize = 100;
+
     pub fn new(bus: TBus) -> Self {
         Self {
             bus,
@@ -191,6 +230,9 @@ where
             breakpoints: vec![],
             breakpoint_hit: LatchingEvent::default(),
             step_over_addr: None,
+            history: VecDeque::with_capacity(Self::HISTORY_SIZE),
+            history_current: HistoryEntryInstruction::default(),
+            history_enabled: false,
         }
     }
 
@@ -241,6 +283,22 @@ where
         self.step_over_addr
     }
 
+    /// Configures instruction history
+    pub fn enable_history(&mut self, val: bool) {
+        self.history_enabled = val;
+        self.history.clear();
+        self.history_current = Default::default();
+    }
+
+    /// Gets the instruction history, if enabled
+    pub fn read_history(&mut self) -> Option<&[HistoryEntry]> {
+        if self.history_enabled {
+            Some(self.history.make_contiguous())
+        } else {
+            None
+        }
+    }
+
     /// Pumps the prefetch queue, unless it is already full
     fn prefetch_pump(&mut self) -> Result<()> {
         if self.prefetch.len() >= 2 {
@@ -270,6 +328,9 @@ where
     fn fetch_pump(&mut self) -> Result<Word> {
         self.prefetch_pump_force()?;
         let v = self.prefetch.pop_front().unwrap();
+        if self.history_enabled {
+            self.history_current.push_raw(&v);
+        }
         Ok(v)
     }
 
@@ -278,7 +339,11 @@ where
         if self.prefetch.is_empty() {
             self.prefetch_pump()?;
         }
-        Ok(self.prefetch.pop_front().unwrap())
+        let v = self.prefetch.pop_front().unwrap();
+        if self.history_enabled {
+            self.history_current.push_raw(&v);
+        }
+        Ok(v)
     }
 
     /// Executes a single CPU step.
@@ -289,6 +354,7 @@ where
         self.step_exception = false;
         self.step_over_addr = None;
 
+        // Check pending interrupts
         if let Some(level) = self.bus.get_irq() {
             if level == 7 || self.regs.sr.int_prio_mask() < level {
                 if self
@@ -309,25 +375,57 @@ where
             }
         }
 
+        // Check pending trace
         if self.regs.sr.trace() && !self.trace_mask {
             self.raise_exception(ExceptionGroup::Group1, VECTOR_TRACE, None)?;
         }
 
+        // Start of instruction execution
+        if self.history_enabled {
+            self.history_current.pc = self.regs.pc;
+            debug_assert!(self.history_current.raw.is_empty());
+        }
+
+        let start_cycles = self.cycles;
         let start_pc = self.regs.pc;
         let opcode = self.fetch()?;
 
         if self.decode_cache[opcode as usize].is_none() {
             let instr = Instruction::try_decode(opcode);
             if instr.is_err() {
+                if self.history_enabled {
+                    self.history_current = Default::default();
+                }
                 return self.raise_illegal_instruction();
             }
 
-            self.decode_cache[opcode as usize] =
-                Some(instr.context(format!("Decode error @ {:08X}", self.regs.pc))?);
+            self.decode_cache[opcode as usize] = Some(instr.unwrap());
         }
-        let instr = self.decode_cache[opcode as usize].clone().unwrap();
 
-        match self.execute_instruction(&instr) {
+        let instr = self.decode_cache[opcode as usize].clone().unwrap();
+        let execute_result = self.execute_instruction(&instr);
+
+        // Write history entry
+        // This is done here already in case the instruction caused an
+        // address error.
+        if self.history_enabled {
+            let mut entry = std::mem::take(&mut self.history_current);
+
+            // Count prefetch reload towards the instruction
+            if execute_result.is_ok() {
+                self.prefetch_refill()?;
+            }
+
+            entry.cycles = self.cycles - start_cycles;
+            entry.final_regs = Some(self.regs.clone());
+
+            while self.history.len() >= Self::HISTORY_SIZE {
+                self.history.pop_front();
+            }
+            self.history.push_back(HistoryEntry::Instruction(entry));
+        }
+
+        match execute_result {
             Ok(()) => {
                 // Assert ea_commit() was called
                 debug_assert!(self.step_ea_load.is_none());
@@ -601,6 +699,7 @@ where
 
     /// Raises an IRQ to be executed next
     fn raise_irq(&mut self, level: u8, vector: Address) -> Result<()> {
+        let start_cycles = self.cycles;
         let saved_sr = self.regs.sr.sr();
 
         // Resume in supervisor mode
@@ -641,6 +740,13 @@ where
         self.advance_cycles(2)?; // 2x idle
         self.prefetch_pump()?;
 
+        if self.history_enabled {
+            self.history.push_back(HistoryEntry::Exception {
+                vector,
+                cycles: self.cycles - start_cycles,
+            });
+        }
+
         Ok(())
     }
 
@@ -651,6 +757,7 @@ where
         vector: Address,
         details: Option<AddressError>,
     ) -> Result<()> {
+        let start_cycles = self.cycles;
         let saved_sr = self.regs.sr.sr();
 
         // Resume in supervisor mode
@@ -715,6 +822,13 @@ where
         self.prefetch_pump()?;
         self.advance_cycles(2)?; // 2x idle
         self.prefetch_pump()?;
+
+        if self.history_enabled {
+            self.history.push_back(HistoryEntry::Exception {
+                vector,
+                cycles: self.cycles - start_cycles,
+            });
+        }
 
         Ok(())
     }

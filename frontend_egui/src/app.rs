@@ -3,6 +3,7 @@ use crate::keymap::map_winit_keycode;
 use crate::widgets::breakpoints::BreakpointsWidget;
 use crate::widgets::disassembly::Disassembly;
 use crate::widgets::framebuffer::FramebufferWidget;
+use crate::widgets::instruction_history::InstructionHistoryWidget;
 use crate::widgets::memory::MemoryViewerWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::Workspace;
@@ -75,6 +76,7 @@ pub struct SnowGui {
     breakpoints: BreakpointsWidget,
     memory: MemoryViewerWidget,
     watchpoints: WatchpointsWidget,
+    instruction_history: InstructionHistoryWidget,
 
     rom_dialog: FileDialog,
     rom_dialog_last: Option<DirectoryEntry>,
@@ -152,6 +154,7 @@ impl SnowGui {
             breakpoints: BreakpointsWidget::default(),
             memory: MemoryViewerWidget::default(),
             watchpoints: WatchpointsWidget::default(),
+            instruction_history: InstructionHistoryWidget::default(),
 
             rom_dialog: FileDialog::new()
                 .add_file_filter(
@@ -1043,6 +1046,15 @@ impl eframe::App for SnowGui {
                         ui.close_menu();
                     }
                     if ui
+                        .checkbox(
+                            &mut self.workspace.instruction_history_open,
+                            "Instruction history",
+                        )
+                        .clicked()
+                    {
+                        ui.close_menu();
+                    }
+                    if ui
                         .checkbox(&mut self.workspace.registers_open, "Registers")
                         .clicked()
                     {
@@ -1224,6 +1236,18 @@ impl eframe::App for SnowGui {
                         self.watchpoints
                             .draw(ui, self.memory.get_memory(), self.emu.get_cycles());
                     });
+
+                persistent_window_s!(self, "Instruction history", [800.0, 300.0])
+                    .resizable([true, true])
+                    .open(&mut self.workspace.instruction_history_open)
+                    .show(ctx, |ui| {
+                        self.instruction_history.draw(ui, self.emu.get_history());
+                    });
+                if self.instruction_history.is_enabled() != self.emu.is_history_enabled() {
+                    self.emu
+                        .enable_history(self.instruction_history.is_enabled())
+                        .unwrap();
+                }
             }
         });
 

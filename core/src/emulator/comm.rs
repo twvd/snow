@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use snow_floppy::FloppyImage;
 
 use crate::bus::Address;
+use crate::cpu_m68k::cpu::HistoryEntry;
 use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
@@ -59,6 +60,7 @@ pub enum EmulatorCommand {
     StartRecordingInput,
     EndRecordingInput,
     ReplayInputRecording(InputRecording, bool),
+    SetInstructionHistory(bool),
 }
 
 /// Emulator speed tweak
@@ -123,4 +125,5 @@ pub enum EmulatorEvent {
     FloppyEjected(usize, Box<FloppyImage>),
     Memory((Address, Vec<u8>)),
     RecordedInput(InputRecording),
+    InstructionHistory(Vec<HistoryEntry>),
 }
