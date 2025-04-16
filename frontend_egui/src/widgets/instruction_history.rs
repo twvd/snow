@@ -1,5 +1,5 @@
 use eframe::egui;
-use snow_core::cpu_m68k::cpu::HistoryEntry;
+use snow_core::cpu_m68k::cpu::{HistoryEntry, HistoryEntryInstruction};
 use snow_core::cpu_m68k::disassembler::Disassembler;
 
 use crate::consts;
@@ -34,14 +34,15 @@ impl InstructionHistoryWidget {
     }
 
     fn column_status(history: &[HistoryEntry], row_height: f32, row_idx: usize, ui: &mut egui::Ui) {
+        // Last instruction indicator
         Self::left_sized(
             ui,
-            [20.0, row_height],
+            [12.0, row_height],
             if row_idx == history.len() - 1 {
                 egui::Label::new(
                     egui::RichText::new(egui_material_icons::icons::ICON_PLAY_ARROW)
                         .color(egui::Color32::WHITE)
-                        .size(8.0),
+                        .size(12.0),
                 )
             } else {
                 egui::Label::new("")
@@ -64,7 +65,7 @@ impl InstructionHistoryWidget {
 
         // Column headers
         ui.horizontal(|ui| {
-            Self::left_sized(ui, [20.0, 20.0], egui::Label::new(""));
+            Self::left_sized(ui, [12.0, 20.0], egui::Label::new(""));
             Self::left_sized(
                 ui,
                 [60.0, 20.0],
@@ -77,9 +78,10 @@ impl InstructionHistoryWidget {
             );
             Self::left_sized(
                 ui,
-                [60.0, 20.0],
+                [50.0, 20.0],
                 egui::Label::new(egui::RichText::new("Cycles").strong()),
             );
+            Self::left_sized(ui, [10.0, 20.0], egui::Label::new(""));
             ui.add(egui::Label::new(
                 egui::RichText::new("Instruction").strong(),
             ));
@@ -114,7 +116,7 @@ impl InstructionHistoryWidget {
                             // Cycles column
                             Self::left_sized(
                                 ui,
-                                [60.0, row_height],
+                                [50.0, row_height],
                                 egui::Label::new(
                                     egui::RichText::new(format!("{}", cycles))
                                         .family(egui::FontFamily::Monospace)
@@ -123,10 +125,20 @@ impl InstructionHistoryWidget {
                             );
                             Self::left_sized(
                                 ui,
+                                [10.0, row_height],
+                                egui::Label::new(
+                                    egui::RichText::new(egui_material_icons::icons::ICON_REPORT)
+                                        .strong()
+                                        .color(egui::Color32::LIGHT_GRAY)
+                                        .size(10.0),
+                                ),
+                            );
+                            Self::left_sized(
+                                ui,
                                 [ui.available_width(), row_height],
                                 egui::Label::new(
                                     egui::RichText::new(format!(
-                                        "Exception: {} ({:06X})",
+                                        "Exception: {} (${:06X})",
                                         consts::VECTORS
                                             .iter()
                                             .find(|f| f.0 == *vector)
@@ -182,7 +194,7 @@ impl InstructionHistoryWidget {
                             // Cycles column
                             Self::left_sized(
                                 ui,
-                                [60.0, row_height],
+                                [50.0, row_height],
                                 egui::Label::new(
                                     egui::RichText::new(format!("{}", entry.cycles))
                                         .family(egui::FontFamily::Monospace)
@@ -190,6 +202,31 @@ impl InstructionHistoryWidget {
                                 ),
                             );
 
+                            // Branch indicator
+                            Self::left_sized(
+                                ui,
+                                [10.0, row_height],
+                                if let HistoryEntry::Instruction(HistoryEntryInstruction {
+                                    branch_taken: Some(branch_taken),
+                                    ..
+                                }) = history[row_idx]
+                                {
+                                    egui::Label::new(
+                                        egui::RichText::new(
+                                            egui_material_icons::icons::ICON_ALT_ROUTE,
+                                        )
+                                        .color(if branch_taken {
+                                            egui::Color32::LIGHT_GREEN
+                                        } else {
+                                            egui::Color32::RED
+                                        })
+                                        .strong()
+                                        .size(10.0),
+                                    )
+                                } else {
+                                    egui::Label::new("")
+                                },
+                            );
                             // Instruction column
                             let instr_text = if let Some(ref instr) = disasm_entry {
                                 egui::RichText::new(&instr.str)
