@@ -7,6 +7,7 @@ use eframe::egui;
 use log::*;
 use sdl2::audio::AudioDevice;
 use snow_core::bus::Address;
+use snow_core::cpu_m68k::cpu::HistoryEntry;
 use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
 use snow_core::cpu_m68k::regs::{Register, RegisterFile};
 use snow_core::emulator::comm::{
@@ -44,6 +45,8 @@ pub struct EmulatorState {
     pub last_images: [RefCell<Option<Box<FloppyImage>>>; 3],
     ram_update: VecDeque<(Address, Vec<u8>)>,
     record_input_path: Option<PathBuf>,
+    instruction_history: Vec<HistoryEntry>,
+    instruction_history_enabled: bool,
 }
 
 impl EmulatorState {
@@ -258,6 +261,7 @@ impl EmulatorState {
                         ));
                     }
                 }
+                EmulatorEvent::InstructionHistory(h) => self.instruction_history = h,
             }
         }
 
@@ -579,5 +583,23 @@ impl EmulatorState {
         let recording = serde_json::from_reader(fs::File::open(file)?)?;
         sender.send(EmulatorCommand::ReplayInputRecording(recording, true))?;
         Ok(())
+    }
+
+    pub fn enable_history(&mut self, val: bool) -> Result<()> {
+        let Some(ref sender) = self.cmdsender else {
+            return Ok(());
+        };
+        self.instruction_history_enabled = val;
+        sender.send(EmulatorCommand::SetInstructionHistory(val))?;
+        self.instruction_history.clear();
+        Ok(())
+    }
+
+    pub fn is_history_enabled(&self) -> bool {
+        self.instruction_history_enabled
+    }
+
+    pub fn get_history(&self) -> &[HistoryEntry] {
+        &self.instruction_history
     }
 }

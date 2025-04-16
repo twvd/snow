@@ -31,6 +31,7 @@ pub struct Workspace {
     pub breakpoints_open: bool,
     pub memory_open: bool,
     pub watchpoints_open: bool,
+    pub instruction_history_open: bool,
     pub center_viewport_v: bool,
     pub viewport_scale: f32,
 
@@ -56,6 +57,7 @@ impl Default for Workspace {
             breakpoints_open: false,
             memory_open: false,
             watchpoints_open: false,
+            instruction_history_open: false,
             center_viewport_v: false,
             rom_path: None,
             disks: core::array::from_fn(|_| None),
