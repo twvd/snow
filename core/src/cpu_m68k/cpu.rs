@@ -2682,6 +2682,8 @@ where
             self.regs.write_d::<Word>(instr.get_op2(), dn);
 
             if dn != 0xFFFF {
+                self.history_current.branch_taken = Some(true);
+
                 let pc = self
                     .regs
                     .pc
@@ -2693,9 +2695,11 @@ where
                 self.prefetch_refill()?;
             } else {
                 // Loop terminated
+                self.history_current.branch_taken = Some(false);
                 self.advance_cycles(4)?; // idle
             }
         } else {
+            self.history_current.branch_taken = Some(false);
             self.advance_cycles(2)?; // idle
         }
 
@@ -2714,6 +2718,9 @@ where
         self.advance_cycles(2)?; // idle
 
         if BSR || self.cc(instr.get_cc()) {
+            // Branch taken
+            self.history_current.branch_taken = Some(true);
+
             if BSR {
                 // Push current PC to stack
                 let addr = self.regs.read_a_predec(7, std::mem::size_of::<Long>());
@@ -2738,6 +2745,9 @@ where
             // Trigger address error now if unaligned..
             self.prefetch_refill()?;
         } else {
+            // Branch not taken
+            self.history_current.branch_taken = Some(false);
+
             self.advance_cycles(2)?; // idle
         }
         Ok(())
