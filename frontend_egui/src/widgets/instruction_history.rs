@@ -33,20 +33,42 @@ impl InstructionHistoryWidget {
         .response
     }
 
+    /// Helper to create a UI that takes up the size but aligns left, with
+    /// a material icon adjusted to fit in line with the monospace font.
+    fn left_sized_icon(
+        ui: &mut egui::Ui,
+        max_size: impl Into<egui::Vec2> + Clone,
+        icon: &str,
+        color: Option<egui::Color32>,
+    ) -> egui::Response {
+        ui.scope(|ui| {
+            ui.set_max_size(max_size.clone().into());
+            ui.set_min_size(max_size.clone().into());
+            ui.put(
+                // Slightly nudge the icon up so it sits nicely in line with the
+                // monospace font.
+                ui.cursor().translate([0.0, -3.0].into()),
+                egui::Label::new(
+                    egui::RichText::new(icon)
+                        .color(color.unwrap_or(egui::Color32::PLACEHOLDER))
+                        .size(12.0),
+                ),
+            );
+        })
+        .response
+    }
+
     fn column_status(history: &[HistoryEntry], row_height: f32, row_idx: usize, ui: &mut egui::Ui) {
         // Last instruction indicator
-        Self::left_sized(
+        Self::left_sized_icon(
             ui,
             [12.0, row_height],
             if row_idx == history.len() - 1 {
-                egui::Label::new(
-                    egui::RichText::new(egui_material_icons::icons::ICON_PLAY_ARROW)
-                        .color(egui::Color32::WHITE)
-                        .size(12.0),
-                )
+                egui_material_icons::icons::ICON_PLAY_ARROW
             } else {
-                egui::Label::new("")
+                ""
             },
+            Some(egui::Color32::WHITE),
         );
     }
 
@@ -123,15 +145,11 @@ impl InstructionHistoryWidget {
                                         .size(10.0),
                                 ),
                             );
-                            Self::left_sized(
+                            Self::left_sized_icon(
                                 ui,
                                 [10.0, row_height],
-                                egui::Label::new(
-                                    egui::RichText::new(egui_material_icons::icons::ICON_REPORT)
-                                        .strong()
-                                        .color(egui::Color32::LIGHT_GRAY)
-                                        .size(10.0),
-                                ),
+                                egui_material_icons::icons::ICON_REPORT,
+                                Some(egui::Color32::LIGHT_GRAY),
                             );
                             Self::left_sized(
                                 ui,
@@ -203,30 +221,24 @@ impl InstructionHistoryWidget {
                             );
 
                             // Branch indicator
-                            Self::left_sized(
-                                ui,
-                                [10.0, row_height],
-                                if let HistoryEntry::Instruction(HistoryEntryInstruction {
-                                    branch_taken: Some(branch_taken),
-                                    ..
-                                }) = history[row_idx]
-                                {
-                                    egui::Label::new(
-                                        egui::RichText::new(
-                                            egui_material_icons::icons::ICON_ALT_ROUTE,
-                                        )
-                                        .color(if branch_taken {
-                                            egui::Color32::LIGHT_GREEN
-                                        } else {
-                                            egui::Color32::RED
-                                        })
-                                        .strong()
-                                        .size(10.0),
-                                    )
-                                } else {
-                                    egui::Label::new("")
-                                },
-                            );
+                            if let HistoryEntry::Instruction(HistoryEntryInstruction {
+                                branch_taken: Some(branch_taken),
+                                ..
+                            }) = history[row_idx]
+                            {
+                                Self::left_sized_icon(
+                                    ui,
+                                    [10.0, row_height],
+                                    egui_material_icons::icons::ICON_ALT_ROUTE,
+                                    Some(if branch_taken {
+                                        egui::Color32::LIGHT_GREEN
+                                    } else {
+                                        egui::Color32::GRAY
+                                    }),
+                                );
+                            } else {
+                                Self::left_sized_icon(ui, [10.0, row_height], "", None);
+                            }
                             // Instruction column
                             let instr_text = if let Some(ref instr) = disasm_entry {
                                 egui::RichText::new(&instr.str)
