@@ -95,6 +95,60 @@ impl RegisterFile {
         }
     }
 
+    /// Creates a string with differences between this RegisterFile and another
+    pub fn diff_str(&self, other: &Self) -> String {
+        let diff = |name, s, o| {
+            if s != o {
+                format!("{}: {:08X} -> {:08X} ", name, s, o)
+            } else {
+                String::new()
+            }
+        };
+        let diff_flag = |name, s, o| {
+            if s != o {
+                format!(
+                    "SR.{}: {} -> {} ",
+                    name,
+                    if s { "1" } else { "0" },
+                    if o { "1" } else { "0" }
+                )
+            } else {
+                String::new()
+            }
+        };
+        let mut out = String::new();
+        for i in 0..8 {
+            out.push_str(diff(format!("D{}", i), self.d[i], other.d[i]).as_str());
+        }
+        for i in 0..7 {
+            out.push_str(diff(format!("A{}", i), self.a[i], other.a[i]).as_str());
+        }
+        out.push_str(diff("USP".to_string(), self.usp, other.usp).as_str());
+        out.push_str(diff("SSP".to_string(), self.ssp, other.ssp).as_str());
+        // PC skipped
+
+        out.push_str(&diff_flag("C", self.sr.c(), other.sr.c()));
+        out.push_str(&diff_flag("N", self.sr.n(), other.sr.n()));
+        out.push_str(&diff_flag("V", self.sr.v(), other.sr.v()));
+        out.push_str(&diff_flag("Z", self.sr.z(), other.sr.z()));
+        out.push_str(&diff_flag("X", self.sr.x(), other.sr.x()));
+        out.push_str(&diff_flag(
+            "SV",
+            self.sr.supervisor(),
+            other.sr.supervisor(),
+        ));
+        out.push_str(&diff_flag("TRACE", self.sr.trace(), other.sr.trace()));
+        out.push_str(
+            diff(
+                "SR.INTPRI".to_string(),
+                self.sr.int_prio_mask().into(),
+                other.sr.int_prio_mask().into(),
+            )
+            .as_str(),
+        );
+        out
+    }
+
     /// Read an An register
     pub fn read_a<T: CpuSized>(&self, a: usize) -> T {
         T::chop(if a == 7 {

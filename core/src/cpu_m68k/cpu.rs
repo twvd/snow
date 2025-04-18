@@ -143,8 +143,10 @@ pub struct HistoryEntryInstruction {
     pub pc: Address,
     pub raw: ArrayVec<u8, 12>,
     pub cycles: Ticks,
+    pub initial_regs: Option<RegisterFile>,
     pub final_regs: Option<RegisterFile>,
     pub branch_taken: Option<bool>,
+    pub waitstates: bool,
 }
 
 impl HistoryEntryInstruction {
@@ -402,6 +404,10 @@ where
             self.decode_cache[opcode as usize] = Some(instr.unwrap());
         }
 
+        if self.history_enabled {
+            self.history_current.initial_regs = Some(self.regs.clone());
+        }
+
         let instr = self.decode_cache[opcode as usize].clone().unwrap();
         let execute_result = self.execute_instruction(&instr);
 
@@ -547,6 +553,7 @@ where
                     }
                     BusResult::WaitState => {
                         // Insert wait states until bus access succeeds
+                        self.history_current.waitstates = true;
                         self.advance_cycles(2)?;
                     }
                 }
@@ -610,6 +617,7 @@ where
 
                     while self.bus.write(byte_addr, b) == BusResult::WaitState {
                         // Insert wait states until bus access succeeds
+                        self.history_current.waitstates = true;
                         self.advance_cycles(2)?;
                     }
                     self.advance_cycles(2)?;
@@ -642,6 +650,7 @@ where
 
                     while self.bus.write(byte_addr, b) == BusResult::WaitState {
                         // Insert wait states until bus access succeeds
+                        self.history_current.waitstates = true;
                         self.advance_cycles(2)?;
                     }
                     self.advance_cycles(2)?;
