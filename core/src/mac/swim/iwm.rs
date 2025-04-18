@@ -260,7 +260,7 @@ impl Swim {
             // This is sometimes called 'weak bits'. Some copy protection schemes rely on
             // this phenomenon.
             self.iwm_zeroes += 1;
-            if self.iwm_zeroes > 2 && rand::rng().random() {
+            if self.iwm_zeroes > 3 && rand::rng().random() {
                 self.shdata |= 1;
             }
         }
