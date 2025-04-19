@@ -27,8 +27,8 @@ hex = "0.4.3"
 itertools = "0.14.0"
 log = "0.4.22"
 multi_log = "0.1.2"
+pathdiff = "0.2.3"
 png = "0.17.16"
-relative-path = { version = "1.9.3", features = ["serde"] }
 sdl2 = { version = "0.37.0", features = ["static-link", "use-pkgconfig"] }
 serde = { version = "1.0.218", features = ["derive"] }
 serde_json = "1.0.139"

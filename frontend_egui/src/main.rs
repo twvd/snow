@@ -6,6 +6,7 @@ mod consts;
 mod dialogs;
 mod emulator;
 mod keymap;
+mod util;
 mod widgets;
 mod workspace;
 
