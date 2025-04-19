@@ -1098,6 +1098,7 @@ impl eframe::App for SnowGui {
 
                 if ui
                     .add(egui::Button::new(egui_material_icons::icons::ICON_MEMORY))
+                    .on_hover_text("Load ROM...")
                     .clicked()
                 {
                     self.rom_dialog.pick_file();
@@ -1108,6 +1109,7 @@ impl eframe::App for SnowGui {
                         .add(egui::Button::new(
                             egui_material_icons::icons::ICON_RESTART_ALT,
                         ))
+                        .on_hover_text("Reset machine")
                         .clicked()
                     {
                         self.emu.reset();
@@ -1116,6 +1118,7 @@ impl eframe::App for SnowGui {
                     if self.emu.is_running() {
                         if ui
                             .add(egui::Button::new(egui_material_icons::icons::ICON_PAUSE))
+                            .on_hover_text("Pause execution")
                             .clicked()
                         {
                             self.emu.stop();
@@ -1125,6 +1128,7 @@ impl eframe::App for SnowGui {
                                 egui::Button::new(egui_material_icons::icons::ICON_FAST_FORWARD)
                                     .selected(self.emu.is_fastforward()),
                             )
+                            .on_hover_text("Fast-forward execution")
                             .clicked()
                         {
                             self.emu.toggle_fastforward();
@@ -1134,6 +1138,7 @@ impl eframe::App for SnowGui {
                             .add(egui::Button::new(
                                 egui_material_icons::icons::ICON_PLAY_ARROW,
                             ))
+                            .on_hover_text("Resume execution")
                             .clicked()
                         {
                             self.emu.run();
@@ -1142,6 +1147,7 @@ impl eframe::App for SnowGui {
                             .add(egui::Button::new(
                                 egui_material_icons::icons::ICON_STEP_INTO,
                             ))
+                            .on_hover_text("Step into")
                             .clicked()
                         {
                             self.emu.step();
@@ -1150,12 +1156,14 @@ impl eframe::App for SnowGui {
                             .add(egui::Button::new(
                                 egui_material_icons::icons::ICON_STEP_OVER,
                             ))
+                            .on_hover_text("Step over")
                             .clicked()
                         {
                             self.emu.step_over();
                         }
                         if ui
                             .add(egui::Button::new(egui_material_icons::icons::ICON_STEP_OUT))
+                            .on_hover_text("Step out")
                             .clicked()
                         {
                             self.emu.step_out();
@@ -1167,6 +1175,7 @@ impl eframe::App for SnowGui {
                         .add(egui::Button::new(
                             egui_material_icons::icons::ICON_PHOTO_CAMERA,
                         ))
+                        .on_hover_text("Take screenshot")
                         .clicked()
                     {
                         self.screenshot();
