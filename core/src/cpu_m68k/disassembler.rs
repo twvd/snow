@@ -279,10 +279,6 @@ impl<'a> Disassembler<'a> {
             }
 
             InstructionMnemonic::JMP | InstructionMnemonic::JSR => {
-                if instr.needs_extword() {
-                    instr.fetch_extword(|| self.get16())?;
-                }
-
                 let target = match instr.get_addr_mode()? {
                     AddressingMode::AbsoluteShort => {
                         format!("${:04X}", self.get16()?)
@@ -607,5 +603,22 @@ impl Iterator for Disassembler<'_> {
         };
 
         Some(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dasm(b: &[u8]) -> String {
+        let mut iter = b.into_iter().copied();
+        let mut disasm = Disassembler::from(&mut iter, 0);
+        let disasm_entry = disasm.next();
+        disasm_entry.unwrap().str
+    }
+
+    #[test]
+    fn jsr() {
+        assert_eq!(dasm(&[0x4E, 0xBA, 0x01, 0xFA]), "JSR $0001FC");
     }
 }
