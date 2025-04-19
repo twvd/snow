@@ -51,7 +51,7 @@ impl InstructionHistoryWidget {
             ui.put(
                 // Slightly nudge the icon up so it sits nicely in line with the
                 // monospace font.
-                ui.cursor().translate([0.0, -3.0].into()),
+                ui.cursor().translate([0.0, -2.0].into()),
                 egui::Label::new(
                     egui::RichText::new(icon)
                         .color(color.unwrap_or(egui::Color32::PLACEHOLDER))
@@ -137,7 +137,7 @@ impl InstructionHistoryWidget {
             });
 
             // Virtual scrolling area
-            let row_height = 20.0;
+            let row_height = 16.0;
             let sa_row_height = row_height;
             let total_height =
                 (history.len() as f32) * (sa_row_height + ui.spacing().item_spacing.y);
@@ -211,6 +211,13 @@ impl InstructionHistoryWidget {
         let disasm_entry = disasm.next();
 
         ui.horizontal(|ui| {
+            ui.set_max_height(row_height);
+
+            if row_idx % 2 == 0 {
+                ui.painter()
+                    .rect_filled(ui.max_rect(), 0.0, ui.style().visuals.faint_bg_color);
+            }
+
             Self::column_status(history, row_height, row_idx, ui);
             // Address column
             Self::left_sized(
