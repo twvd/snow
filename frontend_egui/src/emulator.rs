@@ -10,6 +10,7 @@ use snow_core::bus::Address;
 use snow_core::cpu_m68k::cpu::HistoryEntry;
 use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
 use snow_core::cpu_m68k::regs::{Register, RegisterFile};
+use snow_core::debuggable::DebuggableProperties;
 use snow_core::emulator::comm::{
     Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus, HddStatus,
     UserMessageType,
@@ -47,6 +48,8 @@ pub struct EmulatorState {
     record_input_path: Option<PathBuf>,
     instruction_history: Vec<HistoryEntry>,
     instruction_history_enabled: bool,
+    peripheral_debug: DebuggableProperties,
+    peripheral_debug_enabled: bool,
 }
 
 impl EmulatorState {
@@ -262,6 +265,7 @@ impl EmulatorState {
                     }
                 }
                 EmulatorEvent::InstructionHistory(h) => self.instruction_history = h,
+                EmulatorEvent::PeripheralDebug(d) => self.peripheral_debug = d,
             }
         }
 
@@ -601,5 +605,23 @@ impl EmulatorState {
 
     pub fn get_history(&self) -> &[HistoryEntry] {
         &self.instruction_history
+    }
+
+    pub fn enable_peripheral_debug(&mut self, val: bool) -> Result<()> {
+        let Some(ref sender) = self.cmdsender else {
+            return Ok(());
+        };
+        self.peripheral_debug_enabled = val;
+        sender.send(EmulatorCommand::SetPeripheralDebug(val))?;
+        self.peripheral_debug.clear();
+        Ok(())
+    }
+
+    pub fn is_peripheral_debug_enabled(&self) -> bool {
+        self.peripheral_debug_enabled
+    }
+
+    pub fn get_peripheral_debug(&self) -> &DebuggableProperties {
+        &self.peripheral_debug
     }
 }

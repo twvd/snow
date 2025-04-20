@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::CpuM68k;
+use crate::debuggable::Debuggable;
 use crate::keymap::Keymap;
 use crate::mac::adb::{AdbKeyboard, AdbMouse};
 use crate::mac::audio::AudioReceiver;
@@ -44,6 +45,7 @@ pub struct Emulator {
     model: MacModel,
     record_input: Option<InputRecording>,
     replay_input: VecDeque<(Ticks, EmulatorCommand)>,
+    peripheral_debug: bool,
 }
 
 impl Emulator {
@@ -97,6 +99,7 @@ impl Emulator {
             model,
             record_input: None,
             replay_input: VecDeque::default(),
+            peripheral_debug: false,
         };
         emu.status_update()?;
 
@@ -165,6 +168,13 @@ impl Emulator {
         if let Some(history) = self.cpu.read_history() {
             self.event_sender
                 .send(EmulatorEvent::InstructionHistory(history.to_vec()))?;
+        }
+
+        // Peripheral debug view
+        if self.peripheral_debug {
+            self.event_sender.send(EmulatorEvent::PeripheralDebug(
+                self.cpu.bus.get_debug_properties(),
+            ))?;
         }
 
         Ok(())
@@ -529,6 +539,10 @@ impl Tickable for Emulator {
                         );
                     }
                     EmulatorCommand::SetInstructionHistory(v) => self.cpu.enable_history(v),
+                    EmulatorCommand::SetPeripheralDebug(v) => {
+                        self.peripheral_debug = v;
+                        self.status_update()?;
+                    }
                 }
             }
         }

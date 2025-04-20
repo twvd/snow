@@ -8,12 +8,14 @@ use super::scsi::ScsiController;
 use super::via::Via;
 use super::MacModel;
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
+use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
 use crate::mac::swim::Swim;
 use crate::mac::video::Video;
 use crate::renderer::Renderer;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent};
+use crate::{dbgprop_bool, dbgprop_nest};
 
 use anyhow::Result;
 use bit_set::BitSet;
@@ -634,5 +636,19 @@ where
         } else {
             self.write_normal(addr, val)
         }
+    }
+}
+
+impl<TRenderer> Debuggable for MacBus<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        use crate::debuggable::*;
+
+        vec![
+            dbgprop_bool!("Overlay", self.overlay),
+            dbgprop_nest!("SWIM", self.swim),
+        ]
     }
 }

@@ -6,7 +6,9 @@ use snow_floppy::flux::FluxTicks;
 use snow_floppy::{Floppy, FloppyImage, FloppyType, TrackLength, TrackType};
 use strum::Display;
 
+use crate::debuggable::Debuggable;
 use crate::tickable::{Ticks, TICKS_PER_SECOND};
+use crate::{dbgprop_bool, dbgprop_enum, dbgprop_sdec, dbgprop_udec};
 
 /// Floppy drive types
 ///
@@ -18,7 +20,7 @@ use crate::tickable::{Ticks, TICKS_PER_SECOND};
 ///    1010 - 800K GCR drive
 ///    1110 - HD-20 drive
 ///    1111 - No drive (pull-up on the sense line)
-#[derive(PartialEq, Eq, Clone, Copy, Debug, Display)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Display, strum::IntoStaticStr)]
 pub enum DriveType {
     None,
     GCR400K,
@@ -90,7 +92,7 @@ impl DriveType {
 }
 
 /// Direction the drive head is set to step to
-#[derive(PartialEq, Eq, Clone, Copy, Debug, Display)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Display, strum::IntoStaticStr)]
 enum HeadStepDirection {
     Up,
     Down,
@@ -526,6 +528,29 @@ impl FloppyDrive {
 
     pub(crate) fn take_ejected_image(&mut self) -> Option<Box<FloppyImage>> {
         self.floppy_ejected.take()
+    }
+}
+
+impl Debuggable for FloppyDrive {
+    fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        use crate::debuggable::*;
+
+        vec![
+            dbgprop_enum!("Type", self.drive_type),
+            dbgprop_bool!("Disk inserted", self.floppy_inserted),
+            dbgprop_bool!("Disk switched", self.switched),
+            dbgprop_bool!("MFM mode", self.mfm),
+            dbgprop_bool!("Motor on", self.motor),
+            dbgprop_enum!("Head step direction", self.stepdir),
+            dbgprop_udec!("Head stepping timer", self.stepping),
+            dbgprop_udec!("Track", self.track),
+            dbgprop_udec!("Track position", self.track_position),
+            dbgprop_udec!("Track RPM", self.get_track_rpm()),
+            dbgprop_udec!("Ticks per bit", self.get_ticks_per_bit()),
+            dbgprop_sdec!("Flux transition len", self.flux_ticks.into()),
+            dbgprop_sdec!("Flux transition left", self.flux_ticks_left.into()),
+            dbgprop_udec!("PWM dutycycle", self.pwm_dutycycle),
+        ]
     }
 }
 
