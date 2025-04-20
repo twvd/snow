@@ -55,13 +55,16 @@ impl PeripheralsWidget {
                                 egui::RichText::from(match prop.value() {
                                     DebuggablePropertyValue::Boolean(v) => v.to_string(),
                                     DebuggablePropertyValue::Byte(v) => {
-                                        format!("{:02X}", v)
+                                        format!("${:02X}", v)
+                                    }
+                                    DebuggablePropertyValue::ByteBinary(v) => {
+                                        format!("{:08b} (${:02X})", v, v)
                                     }
                                     DebuggablePropertyValue::Word(v) => {
-                                        format!("{:02X}", v)
+                                        format!("${:02X}", v)
                                     }
                                     DebuggablePropertyValue::Long(v) => {
-                                        format!("{:08X}", v)
+                                        format!("${:08X}", v)
                                     }
                                     DebuggablePropertyValue::SignedDecimal(v) => {
                                         if *v == isize::MAX {

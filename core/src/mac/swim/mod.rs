@@ -23,8 +23,8 @@ use crate::mac::swim::ism::IsmFifoEntry;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
 use crate::{
-    dbgprop_bool, dbgprop_byte, dbgprop_enum, dbgprop_group, dbgprop_header, dbgprop_nest,
-    dbgprop_udec,
+    dbgprop_bool, dbgprop_byte, dbgprop_byte_bin, dbgprop_enum, dbgprop_group, dbgprop_header,
+    dbgprop_nest, dbgprop_udec,
 };
 
 enum FluxTransitionTime {
@@ -352,10 +352,10 @@ impl Debuggable for Swim {
                     dbgprop_byte!("Mode", self.iwm_mode.0),
                     dbgprop_header!("Reading"),
                     dbgprop_byte!("Data register", self.datareg),
-                    dbgprop_byte!("Read shifter", self.shdata),
+                    dbgprop_byte_bin!("Read shifter", self.shdata),
                     dbgprop_udec!("Zeroes", self.iwm_zeroes),
                     dbgprop_header!("Writing"),
-                    dbgprop_byte!("Write shifter", self.write_shift),
+                    dbgprop_byte_bin!("Write shifter", self.write_shift),
                     dbgprop_udec!("Write position", self.write_pos),
                     dbgprop_byte!("Write buffer", self.write_buffer.unwrap_or(0)),
                 ]
