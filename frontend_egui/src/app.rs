@@ -5,6 +5,7 @@ use crate::widgets::disassembly::Disassembly;
 use crate::widgets::framebuffer::FramebufferWidget;
 use crate::widgets::instruction_history::InstructionHistoryWidget;
 use crate::widgets::memory::MemoryViewerWidget;
+use crate::widgets::peripherals::PeripheralsWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::Workspace;
 use crate::{emulator::EmulatorState, version_string, widgets::registers::RegistersWidget};
@@ -1078,6 +1079,12 @@ impl eframe::App for SnowGui {
                     {
                         ui.close_menu();
                     }
+                    if ui
+                        .checkbox(&mut self.workspace.peripheral_debug_open, "Peripherals")
+                        .clicked()
+                    {
+                        ui.close_menu();
+                    }
 
                     ui.separator();
                     if ui.button("Reset layout").clicked() {
@@ -1255,6 +1262,18 @@ impl eframe::App for SnowGui {
                 if self.instruction_history.is_enabled() != self.emu.is_history_enabled() {
                     self.emu
                         .enable_history(self.instruction_history.is_enabled())
+                        .unwrap();
+                }
+
+                persistent_window_s!(self, "Peripherals", [400.0, 800.0])
+                    .resizable([true, true])
+                    .open(&mut self.workspace.peripheral_debug_open)
+                    .show(ctx, |ui| {
+                        PeripheralsWidget::new().draw(ui, self.emu.get_peripheral_debug());
+                    });
+                if self.workspace.peripheral_debug_open != self.emu.is_peripheral_debug_enabled() {
+                    self.emu
+                        .enable_peripheral_debug(self.workspace.peripheral_debug_open)
                         .unwrap();
                 }
             }

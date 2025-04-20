@@ -8,6 +8,7 @@ use snow_floppy::FloppyImage;
 use crate::bus::Address;
 use crate::cpu_m68k::cpu::HistoryEntry;
 use crate::cpu_m68k::regs::{Register, RegisterFile};
+use crate::debuggable::DebuggableProperties;
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::tickable::Ticks;
@@ -61,6 +62,7 @@ pub enum EmulatorCommand {
     EndRecordingInput,
     ReplayInputRecording(InputRecording, bool),
     SetInstructionHistory(bool),
+    SetPeripheralDebug(bool),
 }
 
 /// Emulator speed tweak
@@ -126,4 +128,5 @@ pub enum EmulatorEvent {
     Memory((Address, Vec<u8>)),
     RecordedInput(InputRecording),
     InstructionHistory(Vec<HistoryEntry>),
+    PeripheralDebug(DebuggableProperties),
 }

@@ -27,6 +27,7 @@ pub struct Workspace {
     pub memory_open: bool,
     pub watchpoints_open: bool,
     pub instruction_history_open: bool,
+    pub peripheral_debug_open: bool,
     pub center_viewport_v: bool,
     pub viewport_scale: f32,
 
@@ -51,6 +52,7 @@ impl Default for Workspace {
             memory_open: false,
             watchpoints_open: false,
             instruction_history_open: false,
+            peripheral_debug_open: false,
             center_viewport_v: false,
             rom_path: None,
             disks: core::array::from_fn(|_| None),
@@ -68,6 +70,8 @@ impl Workspace {
         "Breakpoints",
         "Memory",
         "Watchpoints",
+        "Instruction history",
+        "Peripherals",
     ];
 
     pub fn from_file(path: &Path) -> Result<Self> {

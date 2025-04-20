@@ -18,9 +18,14 @@ use snow_floppy::flux::FluxTicks;
 use snow_floppy::{Floppy, FloppyImage};
 
 use crate::bus::{Address, BusMember};
+use crate::debuggable::Debuggable;
 use crate::mac::swim::ism::IsmFifoEntry;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
+use crate::{
+    dbgprop_bool, dbgprop_byte, dbgprop_enum, dbgprop_group, dbgprop_header, dbgprop_nest,
+    dbgprop_udec,
+};
 
 enum FluxTransitionTime {
     /// 1
@@ -71,7 +76,7 @@ impl FluxTransitionTime {
     }
 }
 
-#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, strum::IntoStaticStr, Clone)]
 enum SwimMode {
     #[default]
     Iwm,
@@ -315,5 +320,58 @@ impl Tickable for Swim {
         }
 
         Ok(ticks)
+    }
+}
+
+impl Debuggable for Swim {
+    fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        use crate::debuggable::*;
+
+        vec![
+            dbgprop_enum!("Mode", self.mode),
+            dbgprop_group!(
+                "I/O",
+                vec![
+                    dbgprop_bool!("CA0", self.ca0),
+                    dbgprop_bool!("CA1", self.ca1),
+                    dbgprop_bool!("CA2", self.ca2),
+                    dbgprop_bool!("LSTRB", self.lstrb),
+                    dbgprop_bool!("Q6", self.q6),
+                    dbgprop_bool!("Q7", self.q7),
+                    dbgprop_bool!("Extdrive", self.extdrive),
+                    dbgprop_bool!("Enable", self.enable),
+                    dbgprop_bool!("SEL", self.sel),
+                    dbgprop_bool!("Intdrive", self.intdrive),
+                ]
+            ),
+            dbgprop_group!(
+                "IWM",
+                vec![
+                    dbgprop_header!("Registers"),
+                    dbgprop_byte!("Status", self.iwm_status.0),
+                    dbgprop_byte!("Mode", self.iwm_mode.0),
+                    dbgprop_header!("Reading"),
+                    dbgprop_byte!("Data register", self.datareg),
+                    dbgprop_byte!("Read shifter", self.shdata),
+                    dbgprop_udec!("Zeroes", self.iwm_zeroes),
+                    dbgprop_header!("Writing"),
+                    dbgprop_byte!("Write shifter", self.write_shift),
+                    dbgprop_udec!("Write position", self.write_pos),
+                    dbgprop_byte!("Write buffer", self.write_buffer.unwrap_or(0)),
+                ]
+            ),
+            dbgprop_nest!(
+                format!("Drive #1 ({})", self.drives[0].drive_type),
+                self.drives[0]
+            ),
+            dbgprop_nest!(
+                format!("Drive #2 ({})", self.drives[1].drive_type),
+                self.drives[1]
+            ),
+            dbgprop_nest!(
+                format!("Drive #3 ({})", self.drives[2].drive_type),
+                self.drives[2]
+            ),
+        ]
     }
 }
