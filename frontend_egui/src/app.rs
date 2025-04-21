@@ -126,7 +126,7 @@ impl SnowGui {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
-        initial_rom_file: Option<String>,
+        initial_file: Option<String>,
         audio_enabled: bool,
         zoom_factor: f32,
     ) -> Self {
@@ -247,10 +247,23 @@ impl SnowGui {
             emu: EmulatorState::new(audio_enabled),
         };
 
-        if let Some(filename) = initial_rom_file {
-            match app.emu.init_from_rom(Path::new(&filename), None) {
-                Ok(recv) => app.framebuffer.connect_receiver(recv),
-                Err(e) => app.show_error(&format!("Failed to load ROM file: {}", e)),
+        if let Some(filename) = initial_file {
+            let path = Path::new(&filename);
+            if path
+                .extension()
+                .unwrap_or_default()
+                .eq_ignore_ascii_case("snoww")
+            {
+                app.load_workspace(Some(path));
+            } else if path
+                .extension()
+                .unwrap_or_default()
+                .eq_ignore_ascii_case("rom")
+            {
+                match app.emu.init_from_rom(path, None) {
+                    Ok(recv) => app.framebuffer.connect_receiver(recv),
+                    Err(e) => app.show_error(&format!("Failed to load ROM file: {}", e)),
+                }
             }
         }
 
@@ -372,6 +385,7 @@ impl SnowGui {
             match Workspace::from_file(path) {
                 Ok(ws) => {
                     self.workspace = ws;
+                    self.workspace_file = Some(path.to_path_buf());
                 }
                 Err(e) => self.show_error(&format!("Failed to load workspace: {}", e)),
             }

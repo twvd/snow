@@ -28,8 +28,8 @@ pub mod built_info {
     author = "Thomas <thomas@thomasw.dev>",
     long_about = None)]
 struct Args {
-    /// ROM filename to load on start
-    rom_filename: Option<String>,
+    /// Filename to load on start (ROM or workspace)
+    filename: Option<String>,
 
     /// Disable audio
     #[arg(long, action)]
@@ -91,7 +91,7 @@ fn main() -> eframe::Result {
             Ok(Box::new(SnowGui::new(
                 cc,
                 r,
-                args.rom_filename,
+                args.filename,
                 !args.no_audio,
                 args.ui_scale,
             )))
