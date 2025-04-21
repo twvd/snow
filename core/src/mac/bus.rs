@@ -647,6 +647,7 @@ where
         use crate::debuggable::*;
 
         vec![
+            dbgprop_nest!("SCSI controller (NCR 5380)", self.scsi),
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("VIA (SY6522)", self.via),
             dbgprop_nest!("Video circuit", self.video),
