@@ -1,4 +1,5 @@
 use crate::bus::{Address, BusMember};
+use crate::debuggable::Debuggable;
 use crate::mac::pluskbd::PlusKeyboard;
 use crate::mac::rtc::Rtc;
 use crate::tickable::{Tickable, Ticks};
@@ -540,5 +541,60 @@ impl Tickable for Via {
         }
 
         Ok(ticks)
+    }
+}
+
+impl Debuggable for Via {
+    fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        use crate::debuggable::*;
+        use crate::{dbgprop_bool, dbgprop_byte_bin, dbgprop_group, dbgprop_udec, dbgprop_word};
+
+        vec![
+            dbgprop_group!(
+                "Register A",
+                vec![
+                    dbgprop_byte_bin!("DDRA", self.ddra.0),
+                    dbgprop_byte_bin!("Inputs", self.a_in.0),
+                    dbgprop_byte_bin!("Outputs", self.a_out.0),
+                ]
+            ),
+            dbgprop_group!(
+                "Register B",
+                vec![
+                    dbgprop_byte_bin!("DDRB", self.ddrb.0),
+                    dbgprop_byte_bin!("Inputs", self.b_in.0),
+                    dbgprop_byte_bin!("Outputs", self.b_out.0),
+                ]
+            ),
+            dbgprop_group!(
+                "Timer 1",
+                vec![
+                    dbgprop_word!("Counter", self.t1cnt.0),
+                    dbgprop_word!("Latch", self.t1latch.0),
+                    dbgprop_bool!("Armed", self.t1_enable)
+                ]
+            ),
+            dbgprop_group!(
+                "Timer 2",
+                vec![
+                    dbgprop_word!("Counter", self.t2cnt.0),
+                    dbgprop_word!("Latch", self.t2latch.0),
+                    dbgprop_bool!("Armed", self.t2_enable)
+                ]
+            ),
+            dbgprop_group!(
+                "Keyboard shifter",
+                vec![
+                    dbgprop_byte_bin!("Input", self.kbdshift_in),
+                    dbgprop_byte_bin!("Output", self.kbdshift_out),
+                    dbgprop_udec!("Output timer", self.kbdshift_out_time),
+                ]
+            ),
+            dbgprop_udec!("One second timer", self.onesec),
+            dbgprop_byte_bin!("Interrupt Enable (IER)", self.ier.0),
+            dbgprop_byte_bin!("Interrupt Flags (IFR)", self.ifr.0),
+            dbgprop_byte_bin!("Peripheral Control (PCR)", self.pcr.0),
+            dbgprop_byte_bin!("Auxiliary Control (ACR)", self.acr.0),
+        ]
     }
 }

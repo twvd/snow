@@ -15,7 +15,6 @@ use crate::mac::video::Video;
 use crate::renderer::Renderer;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent};
-use crate::{dbgprop_bool, dbgprop_nest};
 
 use anyhow::Result;
 use bit_set::BitSet;
@@ -644,11 +643,12 @@ where
     TRenderer: Renderer,
 {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        use crate::dbgprop_nest;
         use crate::debuggable::*;
 
         vec![
-            dbgprop_bool!("Overlay", self.overlay),
             dbgprop_nest!("SWIM", self.swim),
+            dbgprop_nest!("VIA", self.via),
         ]
     }
 }

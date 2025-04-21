@@ -61,7 +61,7 @@ impl PeripheralsWidget {
                                         format!("{:08b} (${:02X})", v, v)
                                     }
                                     DebuggablePropertyValue::Word(v) => {
-                                        format!("${:02X}", v)
+                                        format!("${:04X}", v)
                                     }
                                     DebuggablePropertyValue::WordBinary(v) => {
                                         format!("{:016b} (${:04X})", v, v)
