@@ -58,6 +58,7 @@ use std::sync::atomic::Ordering;
 
 use crate::{
     bus::Address,
+    debuggable::Debuggable,
     renderer::Renderer,
     tickable::{Tickable, Ticks},
     types::LatchingEvent,
@@ -245,6 +246,32 @@ where
         }
 
         Ok(ticks)
+    }
+}
+
+impl<T> Debuggable for Video<T>
+where
+    T: Renderer,
+{
+    fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        use crate::debuggable::*;
+        use crate::{dbgprop_bool, dbgprop_header, dbgprop_str, dbgprop_udec};
+
+        vec![
+            dbgprop_str!(
+                "Active framebuffer",
+                if self.framebuffer_select {
+                    "Primary"
+                } else {
+                    "Alternate"
+                }
+            ),
+            dbgprop_bool!("In VBlank", self.in_vblank()),
+            dbgprop_bool!("In HBlank", self.in_hblank()),
+            dbgprop_header!("Beam position"),
+            dbgprop_udec!("Horizontal", self.dots % Self::H_DOTS),
+            dbgprop_udec!("Vertical", self.get_scanline()),
+        ]
     }
 }
 
