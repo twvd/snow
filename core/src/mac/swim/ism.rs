@@ -115,10 +115,19 @@ impl IsmRegister {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, strum::Display)]
 pub(super) enum IsmFifoEntry {
     Marker(u8),
     Data(u8),
+}
+
+impl IsmFifoEntry {
+    pub fn inner(&self) -> u8 {
+        match self {
+            Self::Marker(d) => *d,
+            Self::Data(d) => *d,
+        }
+    }
 }
 
 impl Swim {
