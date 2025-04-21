@@ -63,6 +63,9 @@ impl PeripheralsWidget {
                                     DebuggablePropertyValue::Word(v) => {
                                         format!("${:02X}", v)
                                     }
+                                    DebuggablePropertyValue::WordBinary(v) => {
+                                        format!("{:016b} (${:04X})", v, v)
+                                    }
                                     DebuggablePropertyValue::Long(v) => {
                                         format!("${:08X}", v)
                                     }
@@ -81,6 +84,7 @@ impl PeripheralsWidget {
                                         }
                                     }
                                     DebuggablePropertyValue::StaticStr(s) => s.to_string(),
+                                    DebuggablePropertyValue::String(s) => s.to_owned(),
                                     DebuggablePropertyValue::Header => unreachable!(),
                                     DebuggablePropertyValue::Nested(_) => unreachable!(),
                                 })

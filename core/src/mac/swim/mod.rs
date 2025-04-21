@@ -22,10 +22,6 @@ use crate::debuggable::Debuggable;
 use crate::mac::swim::ism::IsmFifoEntry;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
-use crate::{
-    dbgprop_bool, dbgprop_byte, dbgprop_byte_bin, dbgprop_enum, dbgprop_group, dbgprop_header,
-    dbgprop_nest, dbgprop_udec,
-};
 
 enum FluxTransitionTime {
     /// 1
@@ -326,9 +322,14 @@ impl Tickable for Swim {
 impl Debuggable for Swim {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
+        use crate::{
+            dbgprop_bool, dbgprop_byte, dbgprop_byte_bin, dbgprop_enum, dbgprop_group,
+            dbgprop_header, dbgprop_nest, dbgprop_string, dbgprop_udec, dbgprop_word_bin,
+        };
 
         vec![
             dbgprop_enum!("Mode", self.mode),
+            dbgprop_udec!("ISM switch counter", self.ism_switch_ctr),
             dbgprop_group!(
                 "I/O",
                 vec![
@@ -358,6 +359,40 @@ impl Debuggable for Swim {
                     dbgprop_byte_bin!("Write shifter", self.write_shift),
                     dbgprop_udec!("Write position", self.write_pos),
                     dbgprop_byte!("Write buffer", self.write_buffer.unwrap_or(0)),
+                ]
+            ),
+            dbgprop_group!(
+                "ISM",
+                vec![
+                    dbgprop_header!("Registers"),
+                    dbgprop_byte_bin!("Phase mask", self.ism_phase_mask),
+                    dbgprop_byte!("Error", self.ism_error.0),
+                    dbgprop_byte!("Mode", self.ism_mode.0),
+                    dbgprop_byte!("Setup", self.ism_setup.0),
+                    dbgprop_header!("Parameters"),
+                    dbgprop_udec!("Parameter index", self.ism_param_idx),
+                    dbgprop_group!(
+                        "Parameters",
+                        Vec::from_iter(
+                            self.ism_params
+                                .iter()
+                                .enumerate()
+                                .map(|(i, p)| dbgprop_byte!(format!("[{}]", i), *p))
+                        )
+                    ),
+                    dbgprop_header!("Reading/writing"),
+                    dbgprop_group!(
+                        "FIFO",
+                        Vec::from_iter(self.ism_fifo.iter().enumerate().map(
+                            |(i, p)| dbgprop_string!(
+                                format!("[{}]", i),
+                                format!("{} {:08b} (${:02X})", p, p.inner(), p.inner())
+                            )
+                        ))
+                    ),
+                    dbgprop_word_bin!("Shifter", self.ism_shreg),
+                    dbgprop_udec!("Shifter bits", self.ism_shreg_cnt),
+                    dbgprop_bool!("Synchronized", self.ism_synced),
                 ]
             ),
             dbgprop_nest!(
