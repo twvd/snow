@@ -55,6 +55,8 @@ use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
 use crate::bus::{Address, BusMember};
+use crate::dbgprop_byte;
+use crate::debuggable::Debuggable;
 
 pub const STATUS_GOOD: u8 = 0;
 pub const STATUS_CHECK_CONDITION: u8 = 2;
@@ -62,7 +64,7 @@ pub const STATUS_CHECK_CONDITION: u8 = 2;
 pub const DISK_BLOCKSIZE: usize = 512;
 
 #[allow(dead_code)]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, strum::IntoStaticStr)]
 /// SCSI bus phases
 enum ScsiBusPhase {
     Free,
@@ -914,5 +916,35 @@ impl BusMember<Address> for ScsiController {
                 Some(())
             }
         }
+    }
+}
+
+impl Debuggable for ScsiController {
+    fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        use crate::debuggable::*;
+        use crate::{dbgprop_bool, dbgprop_enum, dbgprop_group, dbgprop_header, dbgprop_udec};
+
+        vec![
+            dbgprop_group!(
+                "Registers",
+                vec![
+                    dbgprop_byte!("MR", self.reg_mr.0),
+                    dbgprop_byte!("ICR", self.reg_icr.0),
+                    dbgprop_byte!("CSR", self.reg_csr.0),
+                    dbgprop_byte!("CDR", self.reg_cdr),
+                    dbgprop_byte!("ODR", self.reg_odr),
+                    dbgprop_byte!("BSR", self.reg_bsr.0),
+                    dbgprop_byte!("Status", self.status),
+                ]
+            ),
+            dbgprop_enum!("Bus phase", self.busphase),
+            dbgprop_udec!("Selected ID", self.sel_id),
+            dbgprop_bool!("Attention", self.sel_atn),
+            dbgprop_header!("Buffers"),
+            dbgprop_udec!("Command buffer len", self.cmdbuf.len()),
+            dbgprop_udec!("Command length", self.cmdlen),
+            dbgprop_udec!("Response buffer len", self.responsebuf.len()),
+            dbgprop_udec!("Data out len", self.dataout_len),
+        ]
     }
 }
