@@ -9,20 +9,11 @@ use snow_core::tickable::Ticks;
 /// Widget to display CPU instruction history
 #[derive(Default)]
 pub struct InstructionHistoryWidget {
-    /// Whether history collection is enabled
-    enabled: bool,
     /// Last entry to detect changes
     last: Option<HistoryEntry>,
-    /// Show register changes
-    regdiff: bool,
 }
 
 impl InstructionHistoryWidget {
-    /// Returns whether history collection is enabled
-    pub fn is_enabled(&self) -> bool {
-        self.enabled
-    }
-
     /// Helper to create a UI that takes up the size but aligns left
     fn left_sized(
         ui: &mut egui::Ui,
@@ -77,22 +68,6 @@ impl InstructionHistoryWidget {
     }
 
     pub fn draw(&mut self, ui: &mut egui::Ui, history: &[HistoryEntry]) {
-        // Header
-        ui.horizontal(|ui| {
-            if ui
-                .checkbox(&mut self.enabled, "Enable history collection")
-                .clicked()
-            {
-                // The caller can check the enabled state to handle enabling/disabling collection
-            }
-            if ui
-                .checkbox(&mut self.regdiff, "Show register changes")
-                .clicked()
-            {}
-        });
-
-        ui.separator();
-
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing = [2.0, 0.0].into();
 
@@ -117,23 +92,14 @@ impl InstructionHistoryWidget {
                 Self::left_sized(ui, [10.0, 20.0], egui::Label::new(""));
                 Self::left_sized(
                     ui,
-                    [
-                        if self.regdiff {
-                            200.0
-                        } else {
-                            ui.available_width()
-                        },
-                        20.0,
-                    ],
+                    [200.0, 20.0],
                     egui::Label::new(egui::RichText::new("Instruction").strong()),
                 );
-                if self.regdiff {
-                    Self::left_sized(
-                        ui,
-                        [ui.available_width(), 20.0],
-                        egui::Label::new(egui::RichText::new("Changes").strong()),
-                    );
-                }
+                Self::left_sized(
+                    ui,
+                    [ui.available_width(), 20.0],
+                    egui::Label::new(egui::RichText::new("Changes").strong()),
+                );
             });
 
             // Virtual scrolling area
@@ -292,21 +258,8 @@ impl InstructionHistoryWidget {
                     .size(10.0)
             };
 
-            Self::left_sized(
-                ui,
-                [
-                    if self.regdiff {
-                        200.0
-                    } else {
-                        ui.available_width()
-                    },
-                    row_height,
-                ],
-                egui::Label::new(instr_text),
-            );
-            if self.regdiff {
-                self.col_regdiff(row_height, ui, entry);
-            }
+            Self::left_sized(ui, [200.0, row_height], egui::Label::new(instr_text));
+            self.col_regdiff(row_height, ui, entry);
         });
     }
 

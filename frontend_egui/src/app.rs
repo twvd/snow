@@ -1259,9 +1259,9 @@ impl eframe::App for SnowGui {
                     .show(ctx, |ui| {
                         self.instruction_history.draw(ui, self.emu.get_history());
                     });
-                if self.instruction_history.is_enabled() != self.emu.is_history_enabled() {
+                if self.workspace.instruction_history_open != self.emu.is_history_enabled() {
                     self.emu
-                        .enable_history(self.instruction_history.is_enabled())
+                        .enable_history(self.workspace.instruction_history_open)
                         .unwrap();
                 }
 
