@@ -10,6 +10,7 @@ use crate::cpu_m68k::cpu::HistoryEntry;
 use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::debuggable::DebuggableProperties;
 use crate::keymap::KeyEvent;
+use crate::mac::scc::SccCh;
 use crate::mac::MacModel;
 use crate::tickable::Ticks;
 
@@ -63,6 +64,7 @@ pub enum EmulatorCommand {
     ReplayInputRecording(InputRecording, bool),
     SetInstructionHistory(bool),
     SetPeripheralDebug(bool),
+    SccReceiveData(SccCh, Vec<u8>),
 }
 
 /// Emulator speed tweak
@@ -129,4 +131,5 @@ pub enum EmulatorEvent {
     RecordedInput(InputRecording),
     InstructionHistory(Vec<HistoryEntry>),
     PeripheralDebug(DebuggableProperties),
+    SccTransmitData(SccCh, Vec<u8>),
 }

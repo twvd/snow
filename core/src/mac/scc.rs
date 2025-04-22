@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use crate::{
     bus::{Address, BusMember},
     types::Byte,
@@ -189,8 +191,10 @@ bitfield! {
     }
 }
 
-#[derive(Debug, ToPrimitive, Eq, PartialEq, Copy, Clone)]
-enum SccCh {
+#[derive(
+    Debug, ToPrimitive, Eq, PartialEq, Copy, Clone, Serialize, Deserialize, strum::EnumIter,
+)]
+pub enum SccCh {
     A = 0,
     B = 1,
 }
@@ -201,9 +205,12 @@ struct SccChannel {
     tx_enable: bool,
     ext_ip: bool,
     tx_ip: bool,
-    rx_ip: bool,
+    rx_ie: bool,
     tx_ie: bool,
     ext_ie: bool,
+
+    tx_queue: VecDeque<u8>,
+    rx_queue: VecDeque<u8>,
 }
 
 impl SccChannel {}
@@ -230,15 +237,17 @@ impl Scc {
         Self::default()
     }
 
-    fn read_data(&self, _ch: SccCh) -> u8 {
-        0xFF
+    fn read_data(&mut self, ch: SccCh) -> u8 {
+        let chi = ch.to_usize().unwrap();
+        self.ch[chi].rx_queue.pop_front().unwrap_or(0xFF)
     }
 
-    fn write_data(&mut self, ch: SccCh, _val: u8) {
+    fn write_data(&mut self, ch: SccCh, val: u8) {
         let chi = ch.to_usize().unwrap();
         if self.ch[chi].tx_enable {
             self.ch[chi].tx_ip = true;
         }
+        self.ch[chi].tx_queue.push_back(val);
     }
 
     fn get_irq_pending(&self) -> Option<SccIrqPending> {
@@ -248,6 +257,10 @@ impl Scc {
             Some(SccIrqPending::ATxEmpty)
         } else if self.ch[1].tx_ip && self.ch[1].tx_ie {
             Some(SccIrqPending::BTxEmpty)
+        } else if !self.ch[0].rx_queue.is_empty() && self.ch[0].rx_ie {
+            Some(SccIrqPending::ARxAvailable)
+        } else if !self.ch[1].rx_queue.is_empty() && self.ch[1].rx_ie {
+            Some(SccIrqPending::BRxAvailable)
         } else if self.ch[0].ext_ip && self.ch[0].ext_ie {
             Some(SccIrqPending::AExtStatusChange)
         } else if self.ch[1].ext_ip && self.ch[1].ext_ie {
@@ -284,10 +297,10 @@ impl Scc {
             (3, SccCh::A) => *RdReg3::default()
                 .with_b_ext_status_ip(self.ch[1].ext_ip)
                 .with_b_tx_ip(self.ch[1].tx_ip)
-                .with_b_rx_ip(self.ch[1].rx_ip)
+                .with_b_rx_ip(!self.ch[1].rx_queue.is_empty())
                 .with_a_ext_status_ip(self.ch[0].ext_ip)
                 .with_a_tx_ip(self.ch[0].tx_ip)
-                .with_a_rx_ip(self.ch[0].rx_ip),
+                .with_a_rx_ip(!self.ch[0].rx_queue.is_empty()),
             _ => {
                 warn!("Ch {:?} unimplemented ctrl read {}", ch, self.reg);
                 0
@@ -326,6 +339,7 @@ impl Scc {
             1 => {
                 let r = WrReg1(val);
                 self.ch[chi].tx_ie = r.tx_ie();
+                self.ch[chi].rx_ie = r.rx_ie() != 0;
                 self.ch[chi].ext_ie = r.ext_ie();
             }
             3 => {
@@ -344,13 +358,25 @@ impl Scc {
                 self.mic.0 = val;
             }
             _ => {
-                warn!("{:?} unimplemented wr reg {} {:02X}", ch, self.reg, val);
+                warn!("{:?} unimplemented wr reg {} {:02X}", ch, reg, val);
             }
         }
     }
 
     pub fn get_irq(&mut self) -> bool {
         self.get_irq_pending().is_some()
+    }
+
+    pub fn push_rx(&mut self, ch: SccCh, data: &[u8]) {
+        self.ch[ch.to_usize().unwrap()].rx_queue.extend(data.iter());
+    }
+
+    pub fn take_tx(&mut self, ch: SccCh) -> Vec<u8> {
+        self.ch[ch.to_usize().unwrap()].tx_queue.drain(..).collect()
+    }
+
+    pub fn has_tx_data(&self, ch: SccCh) -> bool {
+        !self.ch[ch.to_usize().unwrap()].tx_queue.is_empty()
     }
 }
 

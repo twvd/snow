@@ -3800,6 +3800,8 @@ dependencies = [
  "itertools 0.14.0",
  "log",
  "multi_log",
+ "num-derive",
+ "num-traits",
  "pathdiff",
  "png",
  "sdl2",
