@@ -6,6 +6,7 @@ use crate::widgets::framebuffer::FramebufferWidget;
 use crate::widgets::instruction_history::InstructionHistoryWidget;
 use crate::widgets::memory::MemoryViewerWidget;
 use crate::widgets::peripherals::PeripheralsWidget;
+use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::Workspace;
 use crate::{emulator::EmulatorState, version_string, widgets::registers::RegistersWidget};
@@ -78,6 +79,7 @@ pub struct SnowGui {
     memory: MemoryViewerWidget,
     watchpoints: WatchpointsWidget,
     instruction_history: InstructionHistoryWidget,
+    terminal: TerminalWidget,
 
     rom_dialog: FileDialog,
     rom_dialog_last: Option<DirectoryEntry>,
@@ -156,6 +158,7 @@ impl SnowGui {
             memory: MemoryViewerWidget::default(),
             watchpoints: WatchpointsWidget::default(),
             instruction_history: InstructionHistoryWidget::default(),
+            terminal: TerminalWidget::new(),
 
             rom_dialog: FileDialog::new()
                 .add_file_filter(
@@ -1099,6 +1102,12 @@ impl eframe::App for SnowGui {
                     {
                         ui.close_menu();
                     }
+                    if ui
+                        .checkbox(&mut self.workspace.terminal_open, "Terminal")
+                        .clicked()
+                    {
+                        ui.close_menu();
+                    }
 
                     ui.separator();
                     if ui.button("Reset layout").clicked() {
@@ -1289,6 +1298,21 @@ impl eframe::App for SnowGui {
                     self.emu
                         .enable_peripheral_debug(self.workspace.peripheral_debug_open)
                         .unwrap();
+                }
+
+                persistent_window_s!(self, "Terminal", [600.0, 300.0])
+                    .resizable([true, true])
+                    .open(&mut self.workspace.terminal_open)
+                    .show(ctx, |ui| {
+                        self.terminal.draw(ui);
+                    });
+                if let Some(data) = self.terminal.pop_tx() {
+                    self.emu
+                        .scc_push_rx(snow_core::mac::scc::SccCh::A, data)
+                        .unwrap();
+                }
+                if let Some(data) = self.emu.scc_take_tx(snow_core::mac::scc::SccCh::A) {
+                    self.terminal.push_rx(&data);
                 }
             }
         });

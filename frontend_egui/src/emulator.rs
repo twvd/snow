@@ -1,11 +1,18 @@
 //! Emulator state management
 
-use crate::audio::SDLAudioSink;
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
+use std::thread::JoinHandle;
+use std::{fs, thread};
+
 use anyhow::{anyhow, Result};
 use crossbeam_channel::Receiver;
 use eframe::egui;
 use log::*;
+use num_traits::cast::ToPrimitive;
 use sdl2::audio::AudioDevice;
+
 use snow_core::bus::Address;
 use snow_core::cpu_m68k::cpu::HistoryEntry;
 use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
@@ -18,15 +25,13 @@ use snow_core::emulator::comm::{
 use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus};
 use snow_core::emulator::Emulator;
 use snow_core::keymap::Scancode;
+use snow_core::mac::scc::SccCh;
 use snow_core::mac::MacModel;
 use snow_core::renderer::DisplayBuffer;
 use snow_core::tickable::{Tickable, Ticks};
 use snow_floppy::{Floppy, FloppyImage, FloppyType};
-use std::cell::RefCell;
-use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
-use std::thread::JoinHandle;
-use std::{fs, thread};
+
+use crate::audio::SDLAudioSink;
 
 pub type DisassemblyListing = Vec<DisassemblyEntry>;
 
@@ -50,6 +55,7 @@ pub struct EmulatorState {
     instruction_history_enabled: bool,
     peripheral_debug: DebuggableProperties,
     peripheral_debug_enabled: bool,
+    scc_tx: [VecDeque<u8>; 2],
 }
 
 impl EmulatorState {
@@ -266,6 +272,9 @@ impl EmulatorState {
                 }
                 EmulatorEvent::InstructionHistory(h) => self.instruction_history = h,
                 EmulatorEvent::PeripheralDebug(d) => self.peripheral_debug = d,
+                EmulatorEvent::SccTransmitData(ch, data) => {
+                    self.scc_tx[ch.to_usize().unwrap()].extend(&data)
+                }
             }
         }
 
@@ -623,5 +632,20 @@ impl EmulatorState {
 
     pub fn get_peripheral_debug(&self) -> &DebuggableProperties {
         &self.peripheral_debug
+    }
+
+    pub fn scc_take_tx(&mut self, ch: SccCh) -> Option<Vec<u8>> {
+        let chi = ch.to_usize().unwrap();
+        if self.scc_tx[chi].is_empty() {
+            return None;
+        }
+        Some(self.scc_tx[chi].drain(..).collect())
+    }
+
+    pub fn scc_push_rx(&mut self, ch: SccCh, data: Vec<u8>) -> Result<()> {
+        let Some(ref sender) = self.cmdsender else {
+            return Ok(());
+        };
+        Ok(sender.send(EmulatorCommand::SccReceiveData(ch, data))?)
     }
 }

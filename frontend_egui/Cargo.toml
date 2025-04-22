@@ -27,6 +27,8 @@ hex = "0.4.3"
 itertools = "0.14.0"
 log = "0.4.22"
 multi_log = "0.1.2"
+num-derive = "0.4.2"
+num-traits = "0.2.19"
 pathdiff = "0.2.3"
 png = "0.17.16"
 sdl2 = { version = "0.37.0", features = ["static-link", "use-pkgconfig"] }

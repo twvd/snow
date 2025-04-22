@@ -40,7 +40,7 @@ pub struct MacBus<TRenderer: Renderer> {
     pub(crate) ram_dirty: BitSet,
 
     pub(crate) via: Via,
-    scc: Scc,
+    pub(crate) scc: Scc,
     pub(crate) video: Video<TRenderer>,
     pub(crate) audio: AudioState,
     eclock: Ticks,

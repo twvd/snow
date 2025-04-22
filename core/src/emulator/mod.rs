@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
+use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::CpuM68k;
@@ -544,6 +545,9 @@ impl Tickable for Emulator {
                         self.peripheral_debug = v;
                         self.status_update()?;
                     }
+                    EmulatorCommand::SccReceiveData(ch, data) => {
+                        self.cpu.bus.scc.push_rx(ch, &data);
+                    }
                 }
             }
         }
@@ -552,6 +556,15 @@ impl Tickable for Emulator {
             if self.last_update.elapsed() > Duration::from_millis(500) {
                 self.last_update = Instant::now();
                 self.status_update()?;
+
+                for ch in crate::mac::scc::SccCh::iter() {
+                    if self.cpu.bus.scc.has_tx_data(ch) {
+                        self.event_sender.send(EmulatorEvent::SccTransmitData(
+                            ch,
+                            self.cpu.bus.scc.take_tx(ch),
+                        ))?;
+                    }
+                }
             }
 
             // Replay next step in recording if currently replaying
