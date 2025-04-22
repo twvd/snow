@@ -598,6 +598,10 @@ where
         if self.progkey_pressed.get_clear() {
             return Some(4);
         }
+        // SCC
+        if self.scc.get_irq() {
+            return Some(2);
+        }
         // VIA IRQs
         if self.via.ifr.0 & self.via.ier.0 != 0 {
             return Some(1);
