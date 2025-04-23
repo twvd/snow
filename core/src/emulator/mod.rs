@@ -386,6 +386,7 @@ impl Tickable for Emulator {
                     EmulatorCommand::DetachHddImage(id) => {
                         self.cpu.bus.scsi.detach_disk_at(id);
                         info!("SCSI ID #{}: disk detached", id);
+                        self.status_update()?;
                     }
                     EmulatorCommand::SaveFloppy(drive, filename) => {
                         if let Err(e) = Moof::save_file(
