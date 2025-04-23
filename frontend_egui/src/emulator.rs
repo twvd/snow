@@ -273,7 +273,7 @@ impl EmulatorState {
                 EmulatorEvent::InstructionHistory(h) => self.instruction_history = h,
                 EmulatorEvent::PeripheralDebug(d) => self.peripheral_debug = d,
                 EmulatorEvent::SccTransmitData(ch, data) => {
-                    self.scc_tx[ch.to_usize().unwrap()].extend(&data)
+                    self.scc_tx[ch.to_usize().unwrap()].extend(&data);
                 }
             }
         }
@@ -642,7 +642,7 @@ impl EmulatorState {
         Some(self.scc_tx[chi].drain(..).collect())
     }
 
-    pub fn scc_push_rx(&mut self, ch: SccCh, data: Vec<u8>) -> Result<()> {
+    pub fn scc_push_rx(&self, ch: SccCh, data: Vec<u8>) -> Result<()> {
         let Some(ref sender) = self.cmdsender else {
             return Ok(());
         };

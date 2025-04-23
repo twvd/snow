@@ -79,6 +79,7 @@ impl TerminalWidget {
     }
 
     /// Check if there are transmitted data in the queue
+    #[allow(dead_code)]
     pub fn has_tx(&self) -> bool {
         !self.tx_queue.is_empty()
     }
@@ -221,8 +222,7 @@ impl TerminalWidget {
                 ui.checkbox(&mut self.hex_input, "Hex input");
 
                 if ui.button("Clear").clicked() {
-                    self.buffer.clear();
-                    self.display_buffer.clear();
+                    self.clear();
                 }
             });
 
@@ -247,32 +247,30 @@ impl TerminalWidget {
             );
 
             // Process input when Enter is pressed (without Shift)
-            if response.lost_focus() {
-                if !self.input.is_empty() {
-                    let data = if self.hex_input {
-                        // Parse hex string to bytes
-                        self.parse_hex_input()
-                    } else {
-                        // Convert text to bytes
-                        self.input.as_bytes().to_vec()
-                    };
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.input.is_empty() {
+                let data = if self.hex_input {
+                    // Parse hex string to bytes
+                    self.parse_hex_input()
+                } else {
+                    // Convert text to bytes
+                    self.input.as_bytes().to_vec()
+                };
 
-                    // Add local echo if enabled
-                    if self.local_echo && !data.is_empty() {
-                        self.push_rx(&data);
-                    }
-
-                    // Queue the input for transmission
-                    if !data.is_empty() {
-                        self.tx_queue.push_back(data);
-                    }
-
-                    // Clear the input field
-                    self.input.clear();
-
-                    // Request focus back
-                    response.request_focus();
+                // Add local echo if enabled
+                if self.local_echo && !data.is_empty() {
+                    self.push_rx(&data);
                 }
+
+                // Queue the input for transmission
+                if !data.is_empty() {
+                    self.tx_queue.push_back(data);
+                }
+
+                // Clear the input field
+                self.input.clear();
+
+                // Request focus back
+                response.request_focus();
             }
         });
     }
@@ -295,6 +293,7 @@ impl TerminalWidget {
     }
 
     /// Set the maximum buffer size in bytes
+    #[allow(dead_code)]
     pub fn set_max_buffer_size(&mut self, max_size: usize) {
         self.max_buffer_size = max_size;
 
@@ -313,6 +312,7 @@ impl TerminalWidget {
     }
 
     /// Set the display mode
+    #[allow(dead_code)]
     pub fn set_display_mode(&mut self, mode: DisplayMode) {
         self.display_mode = mode;
         self.needs_refresh = true;
