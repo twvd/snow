@@ -277,19 +277,10 @@ impl TerminalWidget {
 
     /// Parse hex input string into bytes
     fn parse_hex_input(&self) -> Vec<u8> {
-        let input = self.input.trim();
-        let mut result = Vec::new();
-
-        // Split by whitespace and parse each hex token
-        for token in input.split_whitespace() {
-            // Try to parse as hex byte
-            if let Ok(byte) = u8::from_str_radix(token, 16) {
-                result.push(byte);
-            }
-            // Ignore tokens that can't be parsed
-        }
-
-        result
+        self.input
+            .split_whitespace()
+            .filter_map(|token| u8::from_str_radix(token, 16).ok())
+            .collect()
     }
 
     /// Set the maximum buffer size in bytes
