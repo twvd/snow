@@ -191,6 +191,21 @@ bitfield! {
     }
 }
 
+bitfield! {
+    /// SCC read register 15
+    /// External/status interrupt control
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+    pub struct RdReg15(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+        pub zero_count: bool @ 1,
+        pub dcd: bool @ 3,
+        pub sync_hunt: bool @ 4,
+        pub cts: bool @ 5,
+        /// TX underrun / EOM
+        pub tx_underrun: bool @ 6,
+        pub break_abort: bool @ 7,
+    }
+}
+
 #[derive(
     Debug, ToPrimitive, Eq, PartialEq, Copy, Clone, Serialize, Deserialize, strum::EnumIter,
 )]
@@ -201,13 +216,17 @@ pub enum SccCh {
 
 #[derive(Default)]
 struct SccChannel {
+    sdlc: bool,
     hunt: bool,
     tx_enable: bool,
+    rx_enable: bool,
     ext_ip: bool,
     tx_ip: bool,
     rx_ie: bool,
     tx_ie: bool,
     ext_ie: bool,
+
+    reg15: u8,
 
     tx_queue: VecDeque<u8>,
     rx_queue: VecDeque<u8>,
@@ -239,7 +258,7 @@ impl Scc {
 
     fn read_data(&mut self, ch: SccCh) -> u8 {
         let chi = ch.to_usize().unwrap();
-        self.ch[chi].rx_queue.pop_front().unwrap_or(0xFF)
+        self.ch[chi].rx_queue.pop_front().unwrap_or(0)
     }
 
     fn write_data(&mut self, ch: SccCh, val: u8) {
@@ -272,11 +291,11 @@ impl Scc {
 
     fn read_ctrl(&mut self, ch: SccCh) -> u8 {
         let chi = ch.to_usize().unwrap();
-        self.ch[chi].hunt = true;
 
         let result = match (self.reg, ch) {
             (0 | 4, _) => *RdReg0::default()
                 .with_tx_empty(true)
+                .with_tx_underrun(true)
                 .with_sync_hunt(self.ch[chi].hunt),
             (1 | 5, _) => *RdReg1::default().with_all_sent(true),
             (2 | 6, SccCh::B) => {
@@ -301,11 +320,18 @@ impl Scc {
                 .with_a_ext_status_ip(self.ch[0].ext_ip)
                 .with_a_tx_ip(self.ch[0].tx_ip)
                 .with_a_rx_ip(!self.ch[0].rx_queue.is_empty()),
+            (10, _) => {
+                // Misc. status bits
+                0
+            }
+            (15, _) => self.ch[chi].reg15,
             _ => {
                 warn!("Ch {:?} unimplemented ctrl read {}", ch, self.reg);
                 0
             }
         };
+        //debug!("Ch {:?} read ctrl {} = {:02X}", ch, self.reg, result);
+
         self.reg = 0;
         result
     }
@@ -315,6 +341,8 @@ impl Scc {
         let reg = self.reg;
         self.reg = 0;
 
+        //debug!("Ch {:?} write ctrl {} = {:02X}", ch, reg, val);
+
         match reg {
             0 => {
                 let r = WrReg0(val);
@@ -323,6 +351,7 @@ impl Scc {
 
                 match r.cmdcode().unwrap() {
                     SccCommand::Null => (),
+                    SccCommand::ResetError => (),
                     SccCommand::PointHigh => self.reg |= 1 << 3,
                     SccCommand::ResetExtStatusInt => {
                         self.ch[chi].hunt = false;
@@ -332,7 +361,7 @@ impl Scc {
                         self.ch[chi].tx_ip = false;
                     }
                     _ => {
-                        warn!("TODO command {:?}", r.cmdcode().unwrap());
+                        warn!("unimplemented command {:?}", r.cmdcode().unwrap());
                     }
                 }
             }
@@ -342,12 +371,18 @@ impl Scc {
                 self.ch[chi].rx_ie = r.rx_ie() != 0;
                 self.ch[chi].ext_ie = r.ext_ie();
             }
+            2 => {
+                self.intvec = val;
+            }
             3 => {
                 let r = WrReg3(val);
                 if r.hunt() {
                     self.ch[chi].hunt = true;
-                    self.ch[chi].ext_ip = true;
                 }
+                if !r.rx_enable() && self.ch[chi].rx_enable {
+                    self.ch[chi].hunt = true;
+                }
+                self.ch[chi].rx_enable = r.rx_enable();
             }
             5 => {
                 let r = WrReg5(val);
@@ -356,6 +391,13 @@ impl Scc {
             }
             9 => {
                 self.mic.0 = val;
+            }
+            14 => {
+                // DPLL/baudrate generator
+            }
+            15 => {
+                self.ch[chi].sdlc = WrReg15(val).sdlc_en();
+                self.ch[chi].reg15 = val & !0b101;
             }
             _ => {
                 warn!("{:?} unimplemented wr reg {} {:02X}", ch, reg, val);

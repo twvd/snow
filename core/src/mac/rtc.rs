@@ -38,12 +38,6 @@ pub struct RtcData {
 }
 
 impl RtcData {
-    const PRAM_INIT_DATA: &'static [u8] = &[
-        0x00, 0x80, 0x4f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x88, 0x00, 0x4c, 0x42, 0x75, 0x67,
-        0x73, 0xa8, 0x00, 0x00, 0x00, 0xcc, 0x0a, 0xcc, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
-        0x63, 0x00,
-    ];
-
     /// Try to load a PRAM file, given the filename.
     ///
     /// This locks the file on PRAM and memory maps the file for use by
@@ -105,16 +99,12 @@ impl RtcData {
 
     #[cfg(feature = "mmap")]
     pub(super) fn empty_pram() -> MmapMut {
-        let mut m = MmapMut::map_anon(PRAM_SIZE).unwrap();
-        m[0..Self::PRAM_INIT_DATA.len()].copy_from_slice(Self::PRAM_INIT_DATA);
-        m
+        MmapMut::map_anon(PRAM_SIZE).unwrap()
     }
 
     #[cfg(not(feature = "mmap"))]
     pub(super) fn empty_pram() -> Vec<u8> {
-        let mut m = vec![0; PRAM_SIZE];
-        m[0..Self::PRAM_INIT_DATA.len()].copy_from_slice(Self::PRAM_INIT_DATA);
-        m
+        vec![0; PRAM_SIZE]
     }
 }
 
