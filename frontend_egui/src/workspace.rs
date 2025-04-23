@@ -28,7 +28,7 @@ pub struct Workspace {
     pub watchpoints_open: bool,
     pub instruction_history_open: bool,
     pub peripheral_debug_open: bool,
-    pub terminal_open: bool,
+    pub terminal_open: [bool; 2],
     pub center_viewport_v: bool,
     pub viewport_scale: f32,
 
@@ -54,7 +54,7 @@ impl Default for Workspace {
             watchpoints_open: false,
             instruction_history_open: false,
             peripheral_debug_open: false,
-            terminal_open: false,
+            terminal_open: [false; 2],
             center_viewport_v: false,
             rom_path: None,
             disks: core::array::from_fn(|_| None),

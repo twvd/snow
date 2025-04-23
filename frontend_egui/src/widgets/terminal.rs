@@ -54,10 +54,6 @@ impl Default for TerminalWidget {
 }
 
 impl TerminalWidget {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Push received data to the terminal
     pub fn push_rx(&mut self, data: &[u8]) {
         // Append data to the buffer

@@ -79,7 +79,7 @@ pub struct SnowGui {
     memory: MemoryViewerWidget,
     watchpoints: WatchpointsWidget,
     instruction_history: InstructionHistoryWidget,
-    terminal: TerminalWidget,
+    terminal: [TerminalWidget; 2],
 
     rom_dialog: FileDialog,
     rom_dialog_last: Option<DirectoryEntry>,
@@ -158,7 +158,7 @@ impl SnowGui {
             memory: MemoryViewerWidget::default(),
             watchpoints: WatchpointsWidget::default(),
             instruction_history: InstructionHistoryWidget::default(),
-            terminal: TerminalWidget::new(),
+            terminal: Default::default(),
 
             rom_dialog: FileDialog::new()
                 .add_file_filter(
@@ -997,6 +997,36 @@ impl eframe::App for SnowGui {
                         }
                     });
                 }
+                ui.menu_button("Ports", |ui| {
+                    ui.menu_button(
+                        format!(
+                            "{} Channel A (modem)",
+                            egui_material_icons::icons::ICON_CABLE
+                        ),
+                        |ui| {
+                            if ui
+                                .checkbox(&mut self.workspace.terminal_open[0], "Terminal")
+                                .clicked()
+                            {
+                                ui.close_menu();
+                            }
+                        },
+                    );
+                    ui.menu_button(
+                        format!(
+                            "{} Channel B (printer)",
+                            egui_material_icons::icons::ICON_CABLE
+                        ),
+                        |ui| {
+                            if ui
+                                .checkbox(&mut self.workspace.terminal_open[1], "Terminal")
+                                .clicked()
+                            {
+                                ui.close_menu();
+                            }
+                        },
+                    );
+                });
                 ui.menu_button("Tools", |ui| {
                     if ui
                         .add_enabled(
@@ -1102,13 +1132,6 @@ impl eframe::App for SnowGui {
                     {
                         ui.close_menu();
                     }
-                    if ui
-                        .checkbox(&mut self.workspace.terminal_open, "Terminal")
-                        .clicked()
-                    {
-                        ui.close_menu();
-                    }
-
                     ui.separator();
                     if ui.button("Reset layout").clicked() {
                         self.workspace.reset_windows();
@@ -1300,19 +1323,34 @@ impl eframe::App for SnowGui {
                         .unwrap();
                 }
 
-                persistent_window_s!(self, "Terminal", [600.0, 300.0])
+                persistent_window_s!(self, "Terminal - Channel A (modem)", [600.0, 300.0])
                     .resizable([true, true])
-                    .open(&mut self.workspace.terminal_open)
+                    .open(&mut self.workspace.terminal_open[0])
                     .show(ctx, |ui| {
-                        self.terminal.draw(ui);
+                        self.terminal[0].draw(ui);
                     });
-                if let Some(data) = self.terminal.pop_tx() {
+                if let Some(data) = self.terminal[0].pop_tx() {
                     self.emu
                         .scc_push_rx(snow_core::mac::scc::SccCh::A, data)
                         .unwrap();
                 }
                 if let Some(data) = self.emu.scc_take_tx(snow_core::mac::scc::SccCh::A) {
-                    self.terminal.push_rx(&data);
+                    self.terminal[0].push_rx(&data);
+                }
+
+                persistent_window_s!(self, "Terminal - Channel B (printer)", [600.0, 300.0])
+                    .resizable([true, true])
+                    .open(&mut self.workspace.terminal_open[1])
+                    .show(ctx, |ui| {
+                        self.terminal[1].draw(ui);
+                    });
+                if let Some(data) = self.terminal[1].pop_tx() {
+                    self.emu
+                        .scc_push_rx(snow_core::mac::scc::SccCh::B, data)
+                        .unwrap();
+                }
+                if let Some(data) = self.emu.scc_take_tx(snow_core::mac::scc::SccCh::B) {
+                    self.terminal[1].push_rx(&data);
                 }
             }
         });
