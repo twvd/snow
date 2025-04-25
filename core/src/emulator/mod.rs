@@ -15,7 +15,6 @@ use crate::keymap::Keymap;
 use crate::mac::adb::{AdbKeyboard, AdbMouse};
 use crate::mac::audio::AudioReceiver;
 use crate::mac::bus::{MacBus, RAM_DIRTY_PAGESIZE};
-use crate::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use crate::mac::MacModel;
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::{DisplayBuffer, Renderer};
@@ -57,7 +56,7 @@ impl Emulator {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
         let (statuss, statusr) = crossbeam_channel::unbounded();
-        let renderer = ChannelRenderer::new(SCREEN_WIDTH, SCREEN_HEIGHT)?;
+        let renderer = ChannelRenderer::new(model.display_width(), model.display_height())?;
         let frame_recv = renderer.get_receiver();
 
         // Initialize bus and CPU

@@ -12,7 +12,6 @@ use sdl2::event::{Event, WindowEvent};
 use sdl2::mouse::MouseButton;
 use snow_core::emulator::comm::EmulatorCommand;
 use snow_core::emulator::Emulator;
-use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow_core::mac::MacModel;
 use snow_core::tickable::Tickable;
 use ui::UserInterface;
@@ -80,7 +79,7 @@ struct Args {
 
     /// Scaling factor for the display
     #[arg(long, default_value_t = 2)]
-    scale: usize,
+    scale: u16,
 
     /// Emulation speed
     #[arg(long, value_enum, default_value_t=Speed::Accurate)]
@@ -110,16 +109,16 @@ fn main() -> Result<()> {
     tui_logger::init_logger(log::LevelFilter::Trace).unwrap();
     tui_logger::set_default_level(log::LevelFilter::Trace);
 
-    // Initialize display
-    let mut disp_win_width = SCREEN_WIDTH * args.scale;
-    let mut disp_win_height = SCREEN_HEIGHT * args.scale;
-    let mut renderer = SDLRenderer::new(SCREEN_WIDTH, SCREEN_HEIGHT)?;
-    renderer.set_window_size(disp_win_width, disp_win_height)?;
-    let eventpump = SDLEventPump::new();
-
     // Initialize ROM
     let rom = fs::read(&args.rom_filename)?;
     let model = MacModel::detect_from_rom(&rom).expect("Cannot detect model from ROM file");
+
+    // Initialize display
+    let mut disp_win_width = model.display_width() * args.scale;
+    let mut disp_win_height = model.display_height() * args.scale;
+    let mut renderer = SDLRenderer::new(model.display_width(), model.display_height())?;
+    renderer.set_window_size(disp_win_width, disp_win_height)?;
+    let eventpump = SDLEventPump::new();
 
     // Initialize emulator
     let (mut emulator, frame_recv) = Emulator::new(&rom, model)?;
@@ -215,8 +214,10 @@ fn main() -> Result<()> {
                     x, y, xrel, yrel, ..
                 } => match args.mouse {
                     MouseControl::Absolute => cmd.send(EmulatorCommand::MouseUpdateAbsolute {
-                        x: (x as f32 / (disp_win_width as f32 / SCREEN_WIDTH as f32)) as u16,
-                        y: (y as f32 / (disp_win_height as f32 / SCREEN_HEIGHT as f32)) as u16,
+                        x: (x as f32 / (disp_win_width as f32 / model.display_width() as f32))
+                            as u16,
+                        y: (y as f32 / (disp_win_height as f32 / model.display_height() as f32))
+                            as u16,
                     })?,
                     MouseControl::Relative => cmd.send(EmulatorCommand::MouseUpdateRelative {
                         relx: xrel.try_into()?,
@@ -248,8 +249,8 @@ fn main() -> Result<()> {
                     win_event: WindowEvent::Resized(w, h),
                     ..
                 } => {
-                    disp_win_width = w as usize;
-                    disp_win_height = h as usize;
+                    disp_win_width = w.try_into()?;
+                    disp_win_height = h.try_into()?;
                 }
                 _ => (),
             }

@@ -108,6 +108,39 @@ impl MacModel {
         }
     }
 
+    pub const fn display_width(self) -> u16 {
+        match self {
+            Self::Early128K
+            | Self::Early512K
+            | Self::Plus
+            | Self::SE
+            | Self::SeFdhd
+            | Self::Classic => 512,
+        }
+    }
+
+    pub const fn display_height(self) -> u16 {
+        match self {
+            Self::Early128K
+            | Self::Early512K
+            | Self::Plus
+            | Self::SE
+            | Self::SeFdhd
+            | Self::Classic => 342,
+        }
+    }
+
+    pub const fn display_bpp(self) -> u8 {
+        match self {
+            Self::Early128K
+            | Self::Early512K
+            | Self::Plus
+            | Self::SE
+            | Self::SeFdhd
+            | Self::Classic => 1,
+        }
+    }
+
     pub fn detect_from_rom(rom: &[u8]) -> Option<Self> {
         let mut hash = Sha256::new();
         hash.update(rom);

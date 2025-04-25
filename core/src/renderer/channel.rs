@@ -20,7 +20,7 @@ impl ChannelRenderer {
 
 impl Renderer for ChannelRenderer {
     /// Creates a new renderer with a screen of the given size
-    fn new(width: usize, height: usize) -> Result<Self> {
+    fn new(width: u16, height: u16) -> Result<Self> {
         let (sender, receiver) = crossbeam_channel::bounded(1);
         Ok(Self {
             displaybuffer: new_displaybuffer(width, height),

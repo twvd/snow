@@ -10,7 +10,6 @@ use log::*;
 
 use snow_core::emulator::comm::{EmulatorCommand, EmulatorEvent, EmulatorSpeed};
 use snow_core::emulator::Emulator;
-use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow_core::mac::MacModel;
 use snow_core::tickable::{Tickable, Ticks};
 
@@ -106,8 +105,8 @@ fn main() -> Result<()> {
 
     let mut fullgifencoder = gif::Encoder::new(
         File::create(format!("{}/{}-full.gif", args.out_dir, args.fn_prefix))?,
-        SCREEN_WIDTH.try_into()?,
-        SCREEN_HEIGHT.try_into()?,
+        model.display_width(),
+        model.display_height(),
         &[],
     )?;
     fullgifencoder.set_repeat(gif::Repeat::Infinite)?;
@@ -128,8 +127,8 @@ fn main() -> Result<()> {
             } else {
                 let mut fcopy = frame.clone();
                 let mut gframe = gif::Frame::from_rgba(
-                    SCREEN_WIDTH.try_into()?,
-                    SCREEN_HEIGHT.try_into()?,
+                    model.display_width(),
+                    model.display_height(),
                     &mut fcopy,
                 );
                 gframe.delay = last_delay;
@@ -164,11 +163,8 @@ fn main() -> Result<()> {
         // Finish full recording
         if last_delay > 0 {
             let mut fcopy = frames.back().unwrap().clone();
-            let mut gframe = gif::Frame::from_rgba(
-                SCREEN_WIDTH.try_into()?,
-                SCREEN_HEIGHT.try_into()?,
-                &mut fcopy,
-            );
+            let mut gframe =
+                gif::Frame::from_rgba(model.display_width(), model.display_height(), &mut fcopy);
             gframe.delay = last_delay;
             fullgifencoder.write_frame(&gframe)?;
         }
@@ -177,8 +173,8 @@ fn main() -> Result<()> {
         let frame = frames.back().unwrap();
         let mut encoder = png::Encoder::new(
             File::create(format!("{}/{}.png", args.out_dir, args.fn_prefix))?,
-            SCREEN_WIDTH as u32,
-            SCREEN_HEIGHT as u32,
+            model.display_width() as u32,
+            model.display_height() as u32,
         );
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
@@ -190,6 +186,8 @@ fn main() -> Result<()> {
         // Write animated short
         write_gif(
             format!("{}/{}.gif", args.out_dir, args.fn_prefix),
+            model.display_width(),
+            model.display_height(),
             &mut frames,
         )?;
     }
@@ -200,22 +198,18 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn write_gif<P: AsRef<Path>>(file: P, frames: &mut VecDeque<Vec<u8>>) -> Result<(), anyhow::Error> {
+fn write_gif<P: AsRef<Path>>(
+    file: P,
+    width: u16,
+    height: u16,
+    frames: &mut VecDeque<Vec<u8>>,
+) -> Result<(), anyhow::Error> {
     let gifout = File::create(file)?;
-    let mut gifencoder = gif::Encoder::new(
-        gifout,
-        SCREEN_WIDTH.try_into()?,
-        SCREEN_HEIGHT.try_into()?,
-        &[],
-    )?;
+    let mut gifencoder = gif::Encoder::new(gifout, width, height, &[])?;
     gifencoder.set_repeat(gif::Repeat::Infinite)?;
     let mut dedup_frames = deduplicate_with_counts(frames.make_contiguous());
     for oframe in &mut dedup_frames {
-        let mut gframe = gif::Frame::from_rgba(
-            SCREEN_WIDTH.try_into()?,
-            SCREEN_HEIGHT.try_into()?,
-            &mut oframe.0,
-        );
+        let mut gframe = gif::Frame::from_rgba(width, height, &mut oframe.0);
         gframe.delay = oframe.1 as u16;
         gifencoder.write_frame(&gframe)?;
     }
