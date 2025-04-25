@@ -8,15 +8,13 @@ use swim::drive::DriveType;
 use crate::{bus::Address, keymap::Keymap, tickable::Ticks};
 
 pub mod adb;
-pub mod audio;
-pub mod bus;
+pub mod compact;
 pub mod pluskbd;
 pub mod rtc;
 pub mod scc;
 pub mod scsi;
 pub mod swim;
 pub mod via;
-pub mod video;
 
 /// Differentiation of Macintosh models and their features
 #[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq)]

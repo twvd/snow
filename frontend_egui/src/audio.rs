@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use log::*;
 use sdl2::audio::{AudioCallback, AudioDevice, AudioSpecDesired};
 use sdl2::Sdl;
-use snow_core::mac::audio::{AudioReceiver, AUDIO_BUFFER_SIZE};
+use snow_core::renderer::{AudioReceiver, AUDIO_BUFFER_SIZE};
 
 pub struct SDLSingleton {
     context: Sdl,

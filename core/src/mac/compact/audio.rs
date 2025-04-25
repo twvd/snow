@@ -1,11 +1,11 @@
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 
-pub const AUDIO_BUFFER_SIZE: usize = 500;
+use crate::renderer::AUDIO_BUFFER_SIZE;
+
 pub const AUDIO_QUEUE_LEN: usize = 2;
 
 pub type AudioBuffer = Box<[u8]>;
-pub type AudioReceiver = Receiver<Box<[u8]>>;
 
 pub struct AudioState {
     sender: Sender<AudioBuffer>,
