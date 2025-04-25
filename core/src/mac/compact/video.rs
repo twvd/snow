@@ -274,12 +274,18 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::renderer::NullRenderer;
+    use crate::{mac::MacModel, renderer::NullRenderer};
 
     use super::*;
 
     fn video() -> Video<NullRenderer> {
-        Video::new(NullRenderer::new(SCREEN_WIDTH, SCREEN_HEIGHT).unwrap())
+        Video::new(
+            NullRenderer::new(
+                MacModel::Plus.display_width(),
+                MacModel::Plus.display_height(),
+            )
+            .unwrap(),
+        )
     }
 
     #[test]
