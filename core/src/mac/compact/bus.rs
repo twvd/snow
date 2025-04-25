@@ -2,17 +2,17 @@ use std::ops::Range;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::audio::{AudioReceiver, AudioState};
-use super::scc::Scc;
-use super::scsi::ScsiController;
-use super::via::Via;
-use super::MacModel;
+use super::audio::AudioState;
+use super::video::Video;
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
+use crate::mac::scc::Scc;
+use crate::mac::scsi::ScsiController;
 use crate::mac::swim::Swim;
-use crate::mac::video::Video;
-use crate::renderer::Renderer;
+use crate::mac::via::Via;
+use crate::mac::MacModel;
+use crate::renderer::{AudioReceiver, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent};
 

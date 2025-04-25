@@ -12,8 +12,9 @@ use sdl2::render::{Canvas, Texture};
 use sdl2::video::Window;
 use sdl2::{EventPump, Sdl};
 
-use snow_core::mac::audio::{AudioReceiver, AUDIO_BUFFER_SIZE};
-use snow_core::renderer::{new_displaybuffer, DisplayBuffer, Renderer};
+use snow_core::renderer::{
+    new_displaybuffer, AudioReceiver, DisplayBuffer, Renderer, AUDIO_BUFFER_SIZE,
+};
 
 pub struct SDLSingleton {
     context: Sdl,

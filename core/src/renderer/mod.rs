@@ -1,10 +1,18 @@
 pub mod channel;
 
 use anyhow::Result;
+use crossbeam_channel::Receiver;
 
 use std::iter;
 use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
+
+/// Audio frame channel receiver
+pub type AudioReceiver = Receiver<Box<[u8]>>;
+
+/// Audio buffer size
+/// TODO make this model-specific?
+pub const AUDIO_BUFFER_SIZE: usize = 500;
 
 /// Thread-safe display buffer
 pub type DisplayBuffer = Arc<Vec<AtomicU8>>;
