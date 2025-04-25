@@ -35,6 +35,12 @@ use crate::audio::SDLAudioSink;
 
 pub type DisassemblyListing = Vec<DisassemblyEntry>;
 
+pub struct EmulatorInitParams {
+    pub frame_receiver: Receiver<DisplayBuffer>,
+    pub display_width: u16,
+    pub display_height: u16,
+}
+
 /// Manages the state of the emulator and feeds input to the GUI
 #[derive(Default)]
 pub struct EmulatorState {
@@ -70,7 +76,7 @@ impl EmulatorState {
         &mut self,
         filename: &Path,
         disks: Option<[Option<PathBuf>; 7]>,
-    ) -> Result<Receiver<DisplayBuffer>> {
+    ) -> Result<EmulatorInitParams> {
         let rom = std::fs::read(filename)?;
         self.init(&rom, disks)
     }
@@ -80,7 +86,7 @@ impl EmulatorState {
         &mut self,
         rom: &[u8],
         disks: Option<[Option<PathBuf>; 7]>,
-    ) -> Result<Receiver<DisplayBuffer>> {
+    ) -> Result<EmulatorInitParams> {
         // Terminate running emulator (if any)
         self.deinit();
 
@@ -152,7 +158,11 @@ impl EmulatorState {
         while !self.poll() {}
         while self.poll() {}
 
-        Ok(frame_recv)
+        Ok(EmulatorInitParams {
+            frame_receiver: frame_recv,
+            display_width: model.display_width(),
+            display_height: model.display_height(),
+        })
     }
 
     pub fn deinit(&mut self) {

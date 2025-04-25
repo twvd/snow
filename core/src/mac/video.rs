@@ -66,9 +66,6 @@ use crate::{
 
 use anyhow::Result;
 
-pub const SCREEN_HEIGHT: usize = 342;
-pub const SCREEN_WIDTH: usize = 512;
-
 /// CRT/video circuitry state
 pub struct Video<T: Renderer> {
     renderer: T,

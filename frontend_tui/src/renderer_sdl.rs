@@ -36,9 +36,9 @@ pub struct SDLRenderer {
     canvas: Canvas<Window>,
     texture: Texture,
     displaybuffer: DisplayBuffer,
-    width: usize,
+    width: u16,
     #[allow(dead_code)]
-    height: usize,
+    height: u16,
 
     fps_count: u64,
     fps_time: Instant,
@@ -52,7 +52,7 @@ impl SDLRenderer {
         // buffer. Worst case is a garbled display.
         let sdl_displaybuffer = unsafe { std::mem::transmute::<&[AtomicU8], &[u8]>(buffer) };
         self.texture
-            .update(None, sdl_displaybuffer, self.width * Self::BPP)?;
+            .update(None, sdl_displaybuffer, usize::from(self.width) * Self::BPP)?;
         self.canvas.clear();
         self.canvas
             .copy(&self.texture, None, None)
@@ -69,10 +69,10 @@ impl SDLRenderer {
         Ok(())
     }
 
-    pub fn set_window_size(&mut self, width: usize, height: usize) -> Result<()> {
+    pub fn set_window_size(&mut self, width: u16, height: u16) -> Result<()> {
         self.canvas
             .window_mut()
-            .set_size(width as u32, height as u32)?;
+            .set_size(width.into(), height.into())?;
         self.canvas.window_mut().set_position(
             sdl2::video::WindowPos::Centered,
             sdl2::video::WindowPos::Centered,
@@ -83,13 +83,13 @@ impl SDLRenderer {
 
 impl Renderer for SDLRenderer {
     /// Creates a new renderer with a screen of the given size
-    fn new(width: usize, height: usize) -> Result<Self> {
+    fn new(width: u16, height: u16) -> Result<Self> {
         SDL.with(|cell| {
             let sdls = cell.borrow_mut();
 
             let video_subsystem = sdls.context.video().map_err(|e| anyhow!(e))?;
             let window = video_subsystem
-                .window("Snow", width.try_into()?, height.try_into()?)
+                .window("Snow", width.into(), height.into())
                 .position_centered()
                 .build()?;
 
@@ -101,8 +101,8 @@ impl Renderer for SDLRenderer {
             let texture_creator = canvas.texture_creator();
             let texture = texture_creator.create_texture_streaming(
                 PixelFormatEnum::RGB888,
-                width.try_into()?,
-                height.try_into()?,
+                width.into(),
+                height.into(),
             )?;
 
             Ok(Self {

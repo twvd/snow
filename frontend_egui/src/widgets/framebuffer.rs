@@ -9,7 +9,6 @@ use anyhow::{bail, Result};
 use crossbeam_channel::Receiver;
 use eframe::egui;
 use eframe::egui::Vec2;
-use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow_core::renderer::DisplayBuffer;
 
 pub struct FramebufferWidget {
@@ -17,6 +16,7 @@ pub struct FramebufferWidget {
     frame_recv: Option<Receiver<DisplayBuffer>>,
     viewport_texture: egui::TextureHandle,
     pub scale: f32,
+    display_size: [u16; 2],
 
     response: Option<egui::Response>,
 }
@@ -28,22 +28,46 @@ impl FramebufferWidget {
             frame_recv: None,
             viewport_texture: cc.egui_ctx.load_texture(
                 "viewport",
-                egui::ColorImage::new([SCREEN_WIDTH, SCREEN_HEIGHT], egui::Color32::BLACK),
+                egui::ColorImage::new([0, 0], egui::Color32::BLACK),
                 egui::TextureOptions::NEAREST,
             ),
             response: None,
             scale: 1.5,
+            display_size: [0, 0],
         }
     }
 
+    pub fn set_display_size(&mut self, width: u16, height: u16) {
+        self.display_size = [width, height];
+    }
+
+    pub fn display_size<T>(&self) -> [T; 2]
+    where
+        T: From<u16>,
+    {
+        core::array::from_fn(|i| self.display_size[i].into())
+    }
+
+    pub fn display_size_max_scaled(&self) -> egui::Vec2 {
+        egui::Vec2::from(core::array::from_fn(|i| {
+            f32::from(self.display_size[i]) * self.scale
+        }))
+    }
+
+    pub fn scaling_factors_actual(&self) -> egui::Vec2 {
+        egui::Vec2::from(self.display_size()) / self.rect().size()
+    }
+
     pub fn max_height(&self) -> f32 {
-        SCREEN_HEIGHT as f32 * self.scale
+        f32::from(self.display_size[1]) * self.scale
     }
 
     #[inline(always)]
-    fn convert_framebuffer(framebuffer: &DisplayBuffer) -> Vec<egui::Color32> {
+    fn convert_framebuffer(&self, framebuffer: &DisplayBuffer) -> Vec<egui::Color32> {
         // TODO optimize this
-        let mut out = Vec::with_capacity(SCREEN_WIDTH * SCREEN_HEIGHT);
+        let mut out = Vec::with_capacity(
+            usize::from(self.display_size[0]) * usize::from(self.display_size[1]),
+        );
 
         for c in framebuffer.chunks(4) {
             out.push(egui::Color32::from_rgb(
@@ -56,7 +80,8 @@ impl FramebufferWidget {
         out
     }
 
-    pub fn connect_receiver(&mut self, recv: Receiver<DisplayBuffer>) {
+    pub fn connect_receiver(&mut self, recv: Receiver<DisplayBuffer>, w: u16, h: u16) {
+        self.set_display_size(w, h);
         self.frame_recv = Some(recv);
     }
 
@@ -66,8 +91,8 @@ impl FramebufferWidget {
                 self.frame = Some(frame_recv.recv().unwrap());
                 self.viewport_texture.set(
                     egui::ColorImage {
-                        size: [SCREEN_WIDTH, SCREEN_HEIGHT],
-                        pixels: Self::convert_framebuffer(self.frame.as_ref().unwrap()),
+                        size: self.display_size.map(|i| i.into()),
+                        pixels: self.convert_framebuffer(self.frame.as_ref().unwrap()),
                     },
                     egui::TextureOptions::NEAREST,
                 );
@@ -79,10 +104,7 @@ impl FramebufferWidget {
         let response = ui.add(
             egui::Image::new(sized_texture)
                 .fit_to_fraction(Vec2::new(1.0, 1.0))
-                .max_size(Vec2::new(
-                    (SCREEN_WIDTH as f32) * self.scale,
-                    (SCREEN_HEIGHT as f32) * self.scale,
-                ))
+                .max_size(self.display_size_max_scaled())
                 .maintain_aspect_ratio(true),
         );
         self.response = Some(response.clone());
@@ -95,8 +117,8 @@ impl FramebufferWidget {
         };
         let mut encoder = png::Encoder::new(
             File::create(path)?,
-            SCREEN_WIDTH as u32,
-            SCREEN_HEIGHT as u32,
+            self.display_size[0].into(),
+            self.display_size[1].into(),
         );
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);

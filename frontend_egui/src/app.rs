@@ -18,7 +18,6 @@ use egui_file_dialog::{DialogMode, DirectoryEntry, FileDialog};
 use egui_toast::{Toast, ToastKind, ToastOptions};
 use itertools::Itertools;
 use snow_core::emulator::comm::UserMessageType;
-use snow_core::mac::video::{SCREEN_HEIGHT, SCREEN_WIDTH};
 use snow_core::mac::MacModel;
 use snow_floppy::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
 use std::fs::File;
@@ -263,10 +262,7 @@ impl SnowGui {
                 .unwrap_or_default()
                 .eq_ignore_ascii_case("rom")
             {
-                match app.emu.init_from_rom(path, None) {
-                    Ok(recv) => app.framebuffer.connect_receiver(recv),
-                    Err(e) => app.show_error(&format!("Failed to load ROM file: {}", e)),
-                }
+                app.load_rom_from_path(path, None);
             }
         }
 
@@ -334,14 +330,12 @@ impl SnowGui {
         }
 
         let mouse_pos = ctx.pointer_latest_pos()?;
+        let display_size = egui::Vec2::from(self.framebuffer.display_size());
         let fbrect = self.framebuffer.rect();
-        let scale = egui::Vec2::from([
-            SCREEN_WIDTH as f32 / fbrect.width(),
-            SCREEN_HEIGHT as f32 / fbrect.height(),
-        ]);
+        let scale = self.framebuffer.scaling_factors_actual();
         let x = (mouse_pos.x - fbrect.left_top().x) * scale.x;
         let y = (mouse_pos.y - fbrect.left_top().y) * scale.y;
-        if x < 0.0 || y < 0.0 || x > SCREEN_WIDTH as f32 || y > SCREEN_HEIGHT as f32 {
+        if x < 0.0 || y < 0.0 || x > display_size.x || y > display_size.y {
             None
         } else {
             Some(egui::Pos2::from([x, y]))
@@ -377,7 +371,11 @@ impl SnowGui {
 
     fn load_rom_from_path(&mut self, path: &Path, disks: Option<[Option<PathBuf>; 7]>) {
         match self.emu.init_from_rom(path, disks) {
-            Ok(recv) => self.framebuffer.connect_receiver(recv),
+            Ok(p) => self.framebuffer.connect_receiver(
+                p.frame_receiver,
+                p.display_width,
+                p.display_height,
+            ),
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
         }
         self.workspace.set_rom_path(path);

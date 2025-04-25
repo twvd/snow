@@ -9,15 +9,15 @@ use std::sync::Arc;
 /// Thread-safe display buffer
 pub type DisplayBuffer = Arc<Vec<AtomicU8>>;
 
-pub fn new_displaybuffer(width: usize, height: usize) -> DisplayBuffer {
+pub fn new_displaybuffer(width: u16, height: u16) -> DisplayBuffer {
     Arc::new(Vec::from_iter(
-        iter::repeat_with(|| AtomicU8::new(0)).take(width * height * 4),
+        iter::repeat_with(|| AtomicU8::new(0)).take(usize::from(width) * usize::from(height) * 4),
     ))
 }
 
 pub trait Renderer {
     /// Creates a new renderer with a screen of the given size
-    fn new(width: usize, height: usize) -> Result<Self>
+    fn new(width: u16, height: u16) -> Result<Self>
     where
         Self: Renderer + Sized;
 
@@ -33,7 +33,7 @@ pub struct NullRenderer {
 }
 
 impl Renderer for NullRenderer {
-    fn new(width: usize, height: usize) -> Result<Self> {
+    fn new(width: u16, height: u16) -> Result<Self> {
         Ok(Self {
             buffer: new_displaybuffer(width, height),
         })
