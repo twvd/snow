@@ -330,10 +330,6 @@ impl UserInterface {
                     .send(EmulatorCommand::SaveFloppy(2, PathBuf::from(filename)))?;
                 Ok(())
             }
-            "trace" => {
-                self.cmdsender.send(EmulatorCommand::ToggleBusTrace)?;
-                Ok(())
-            }
             "setpc" => {
                 let val = u32::from_str_radix(
                     tokens

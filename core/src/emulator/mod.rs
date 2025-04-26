@@ -9,31 +9,235 @@ use std::time::{Duration, Instant};
 use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, InspectableBus};
-use crate::cpu_m68k::cpu::CpuM68k;
-use crate::debuggable::Debuggable;
-use crate::keymap::Keymap;
+use crate::cpu_m68k::cpu::{CpuM68k, HistoryEntry};
+use crate::debuggable::{Debuggable, DebuggableProperties};
+use crate::keymap::{KeyEvent, Keymap};
 use crate::mac::adb::{AdbKeyboard, AdbMouse};
-use crate::mac::compact::bus::{MacBus, RAM_DIRTY_PAGESIZE};
+use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
+use crate::mac::scc::Scc;
 use crate::mac::MacModel;
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::AudioReceiver;
 use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
-use crate::types::{ClickEventSender, KeyEventSender};
+use crate::types::{Byte, ClickEventSender, KeyEventSender};
 
 use anyhow::Result;
+use bit_set::BitSet;
 use log::*;
 
-use crate::cpu_m68k::regs::Register;
-use crate::emulator::comm::UserMessageType;
+use crate::cpu_m68k::regs::{Register, RegisterFile};
+use crate::emulator::comm::{EmulatorSpeed, UserMessageType};
+use crate::mac::scsi::ScsiController;
+use crate::mac::swim::Swim;
 use comm::{
     Breakpoint, EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver,
     EmulatorStatus, FddStatus, HddStatus, InputRecording,
 };
 
+macro_rules! indirection {
+    ($name:ident, $name_mut:ident, $($prop:ident).+, $t:ident) => {
+        pub fn $name(&self) -> &$t {
+            match self {
+                Self::Compact(c) => &c.$($prop).+,
+            }
+        }
+
+        pub fn $name_mut(&mut self) -> &mut $t {
+            match self {
+                Self::Compact(c) => &mut c.$($prop).+,
+            }
+        }
+    };
+
+    ($name:ident, $($prop:ident).+, $t:ident) => {
+        pub fn $name(&self) -> &$t {
+            match self {
+                Self::Compact(c) => &c.$($prop).+,
+            }
+        }
+    };
+
+    ($name:ident, $($prop:ident).+(), $t:ident) => {
+        pub fn $name(&self) -> &$t {
+            match self {
+                Self::Compact(c) => &c.$($prop).+(),
+            }
+        }
+    };
+}
+
+/// Emulator config. Basically an abstraction on top of the CPU for multiple different model groups
+/// that provides access to the inner components by the emulator runner through dynamic dispatch.
+enum EmulatorConfig {
+    /// Compact series - Mac 128K, 512K, Plus, SE, Classic
+    Compact(CpuM68k<CompactMacBus<ChannelRenderer>>),
+}
+
+#[allow(dead_code)]
+impl EmulatorConfig {
+    indirection!(swim, swim_mut, bus.swim, Swim);
+    indirection!(scsi, scsi_mut, bus.scsi, ScsiController);
+    indirection!(scc, scc_mut, bus.scc, Scc);
+    indirection!(cpu_regs, cpu_regs_mut, regs, RegisterFile);
+    indirection!(cpu_cycles, cycles, Ticks);
+    indirection!(speed, bus.speed, EmulatorSpeed);
+    indirection!(ram_dirty, ram_dirty_mut, bus.ram_dirty, BitSet);
+
+    pub fn cpu_breakpoints(&self) -> &[Breakpoint] {
+        match self {
+            Self::Compact(c) => c.breakpoints(),
+        }
+    }
+
+    pub fn cpu_breakpoints_mut(&mut self) -> &mut Vec<Breakpoint> {
+        match self {
+            Self::Compact(c) => c.breakpoints_mut(),
+        }
+    }
+
+    pub fn cpu_set_breakpoint(&mut self, bp: Breakpoint) {
+        match self {
+            Self::Compact(c) => c.set_breakpoint(bp),
+        }
+    }
+
+    pub fn cpu_clear_breakpoint(&mut self, bp: Breakpoint) {
+        match self {
+            Self::Compact(c) => c.clear_breakpoint(bp),
+        }
+    }
+
+    pub fn cpu_read_history(&mut self) -> Option<&[HistoryEntry]> {
+        match self {
+            Self::Compact(c) => c.read_history(),
+        }
+    }
+
+    pub fn debug_properties(&self) -> DebuggableProperties {
+        match self {
+            Self::Compact(c) => c.bus.get_debug_properties(),
+        }
+    }
+
+    pub fn ram(&self) -> &[u8] {
+        match self {
+            Self::Compact(c) => &c.bus.ram,
+        }
+    }
+
+    pub fn ram_mut(&mut self) -> &mut [u8] {
+        match self {
+            Self::Compact(c) => &mut c.bus.ram,
+        }
+    }
+
+    pub fn bus_inspect_read(&mut self, addr: Address) -> Option<Byte> {
+        match self {
+            Self::Compact(c) => c.bus.inspect_read(addr),
+        }
+    }
+
+    pub fn cpu_tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+        match self {
+            Self::Compact(c) => c.tick(ticks),
+        }
+    }
+
+    pub fn cpu_get_clr_breakpoint_hit(&mut self) -> bool {
+        match self {
+            Self::Compact(c) => c.get_clr_breakpoint_hit(),
+        }
+    }
+
+    pub fn cpu_enable_history(&mut self, v: bool) {
+        match self {
+            Self::Compact(c) => c.enable_history(v),
+        }
+    }
+
+    pub fn cpu_set_pc(&mut self, pc: Address) -> Result<()> {
+        match self {
+            Self::Compact(c) => c.set_pc(pc),
+        }
+    }
+
+    pub fn cpu_prefetch_refill(&mut self) -> Result<()> {
+        match self {
+            Self::Compact(c) => c.prefetch_refill(),
+        }
+    }
+
+    pub fn bus_write(&mut self, addr: Address, val: Byte) -> crate::bus::BusResult<Byte> {
+        match self {
+            Self::Compact(c) => c.bus.write(addr, val),
+        }
+    }
+
+    pub fn get_audio_channel(&self) -> AudioReceiver {
+        match self {
+            Self::Compact(c) => c.bus.get_audio_channel(),
+        }
+    }
+
+    pub fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) {
+        match self {
+            Self::Compact(c) => c.bus.mouse_update_rel(relx, rely, button),
+        }
+    }
+
+    pub fn mouse_update_abs(&mut self, x: u16, y: u16) {
+        match self {
+            Self::Compact(c) => c.bus.mouse_update_abs(x, y),
+        }
+    }
+
+    pub fn video_blank(&mut self) -> Result<()> {
+        match self {
+            Self::Compact(c) => c.bus.video.blank(),
+        }
+    }
+
+    pub fn cpu_reset(&mut self) -> Result<()> {
+        match self {
+            Self::Compact(c) => c.reset(),
+        }
+    }
+
+    pub fn bus_reset(&mut self) -> Result<()> {
+        match self {
+            Self::Compact(c) => c.bus.reset(),
+        }
+    }
+
+    pub fn progkey(&mut self) {
+        match self {
+            Self::Compact(c) => c.bus.progkey(),
+        }
+    }
+
+    pub fn set_speed(&mut self, speed: EmulatorSpeed) {
+        match self {
+            Self::Compact(c) => c.bus.set_speed(speed),
+        }
+    }
+
+    pub fn keyboard_event(&mut self, ev: KeyEvent) -> Result<()> {
+        match self {
+            Self::Compact(c) => c.bus.via.keyboard.event(ev),
+        }
+    }
+
+    pub fn cpu_get_step_over(&self) -> Option<Address> {
+        match self {
+            Self::Compact(c) => c.get_step_over(),
+        }
+    }
+}
+
 /// Emulator runner
 pub struct Emulator {
-    cpu: CpuM68k<MacBus<ChannelRenderer>>,
+    config: EmulatorConfig,
     command_recv: crossbeam_channel::Receiver<EmulatorCommand>,
     command_sender: EmulatorCommandSender,
     event_sender: crossbeam_channel::Sender<EmulatorEvent>,
@@ -60,7 +264,7 @@ impl Emulator {
         let frame_recv = renderer.get_receiver();
 
         // Initialize bus and CPU
-        let bus = MacBus::new(model, rom, renderer);
+        let bus = CompactMacBus::new(model, rom, renderer);
         let mut cpu = CpuM68k::new(bus);
 
         // Initialize input devices
@@ -87,7 +291,7 @@ impl Emulator {
 
         cpu.reset()?;
         let mut emu = Self {
-            cpu,
+            config: EmulatorConfig::Compact(cpu),
             command_recv: cmdr,
             command_sender: cmds,
             event_sender: statuss,
@@ -115,7 +319,7 @@ impl Emulator {
     }
 
     fn status_update(&mut self) -> Result<()> {
-        for (i, drive) in self.cpu.bus.swim.drives.iter_mut().enumerate() {
+        for (i, drive) in self.config.swim_mut().drives.iter_mut().enumerate() {
             if let Some(img) = drive.take_ejected_image() {
                 self.event_sender
                     .send(EmulatorEvent::FloppyEjected(i, img))?;
@@ -124,48 +328,47 @@ impl Emulator {
 
         self.event_sender
             .send(EmulatorEvent::Status(Box::new(EmulatorStatus {
-                regs: self.cpu.regs.clone(),
+                regs: self.config.cpu_regs().clone(),
                 running: self.run,
-                breakpoints: self.cpu.breakpoints().to_vec(),
-                cycles: self.cpu.cycles,
+                breakpoints: self.config.cpu_breakpoints().to_vec(),
+                cycles: *self.config.cpu_cycles(),
                 fdd: core::array::from_fn(|i| FddStatus {
-                    present: self.cpu.bus.swim.drives[i].is_present(),
-                    ejected: !self.cpu.bus.swim.drives[i].floppy_inserted,
-                    motor: self.cpu.bus.swim.drives[i].motor,
-                    writing: self.cpu.bus.swim.drives[i].motor && self.cpu.bus.swim.is_writing(),
-                    track: self.cpu.bus.swim.drives[i].track,
-                    image_title: self.cpu.bus.swim.drives[i].floppy.get_title().to_owned(),
-                    dirty: self.cpu.bus.swim.drives[i].floppy.is_dirty(),
+                    present: self.config.swim().drives[i].is_present(),
+                    ejected: !self.config.swim().drives[i].floppy_inserted,
+                    motor: self.config.swim().drives[i].motor,
+                    writing: self.config.swim().drives[i].motor && self.config.swim().is_writing(),
+                    track: self.config.swim().drives[i].track,
+                    image_title: self.config.swim().drives[i].floppy.get_title().to_owned(),
+                    dirty: self.config.swim().drives[i].floppy.is_dirty(),
                 }),
                 model: self.model,
                 hdd: core::array::from_fn(|i| {
-                    self.cpu
-                        .bus
-                        .scsi
+                    self.config
+                        .scsi()
                         .get_disk_capacity(i)
                         .map(|capacity| HddStatus {
                             capacity,
-                            image: self.cpu.bus.scsi.get_disk_imagefn(i).unwrap().to_owned(),
+                            image: self.config.scsi().get_disk_imagefn(i).unwrap().to_owned(),
                         })
                 }),
-                speed: self.cpu.bus.speed,
+                speed: *self.config.speed(),
             })))?;
 
         // Next code stream for disassembly listing
-        self.disassemble(self.cpu.regs.pc, 200)?;
+        self.disassemble(self.config.cpu_regs().pc, 200)?;
 
         // Memory contents
-        for page in &self.cpu.bus.ram_dirty {
+        for page in self.config.ram_dirty() {
             let r = (page * RAM_DIRTY_PAGESIZE)..((page + 1) * RAM_DIRTY_PAGESIZE);
             self.event_sender.send(EmulatorEvent::Memory((
                 r.start as Address,
-                self.cpu.bus.ram[r].to_vec(),
+                self.config.ram()[r].to_vec(),
             )))?;
         }
-        self.cpu.bus.ram_dirty.clear();
+        self.config.ram_dirty_mut().clear();
 
         // Instruction history
-        if let Some(history) = self.cpu.read_history() {
+        if let Some(history) = self.config.cpu_read_history() {
             self.event_sender
                 .send(EmulatorEvent::InstructionHistory(history.to_vec()))?;
         }
@@ -173,7 +376,7 @@ impl Emulator {
         // Peripheral debug view
         if self.peripheral_debug {
             self.event_sender.send(EmulatorEvent::PeripheralDebug(
-                self.cpu.bus.get_debug_properties(),
+                self.config.debug_properties(),
             ))?;
         }
 
@@ -182,7 +385,7 @@ impl Emulator {
 
     fn disassemble(&mut self, addr: Address, len: usize) -> Result<()> {
         let ops = (addr..)
-            .flat_map(|addr| self.cpu.bus.inspect_read(addr))
+            .flat_map(|addr| self.config.bus_inspect_read(addr))
             .take(len)
             .collect::<Vec<_>>();
 
@@ -195,9 +398,7 @@ impl Emulator {
     /// Steps the emulator by one instruction.
     fn step(&mut self) -> Result<()> {
         let mut stop_break = false;
-        self.cpu.bus.swim.dbg_pc = self.cpu.regs.pc;
-        self.cpu.bus.scsi.dbg_pc = self.cpu.regs.pc;
-        self.cpu.tick(1)?;
+        self.config.cpu_tick(1)?;
 
         // Mac 512K: 0x402154, Mac Plus: 0x418CCC
         //if self.cpu.regs.pc == 0x418CCC {
@@ -213,7 +414,7 @@ impl Emulator {
         //    debug!("Sony_RdData = {}", self.cpu.regs.d[0] as i32);
         //}
 
-        if self.run && self.cpu.get_clr_breakpoint_hit() {
+        if self.run && self.config.cpu_get_clr_breakpoint_hit() {
             stop_break = true;
         }
         if stop_break {
@@ -224,11 +425,11 @@ impl Emulator {
     }
 
     pub fn get_audio(&self) -> AudioReceiver {
-        self.cpu.bus.get_audio_channel()
+        self.config.get_audio_channel()
     }
 
     pub fn load_hdd_image(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {
-        self.cpu.bus.scsi.load_disk_at(filename, scsi_id)
+        self.config.scsi_mut().load_disk_at(filename, scsi_id)
     }
 
     fn user_error(&self, msg: &str) {
@@ -279,14 +480,15 @@ impl Emulator {
             self.run = false;
             self.user_error(&format!(
                 "Emulator halted: Uncaught CPU stepping error at PC {:06X}: {}",
-                self.cpu.regs.pc, e
+                self.config.cpu_regs().pc,
+                e
             ));
             let _ = self.status_update();
         }
     }
 
     pub fn get_cycles(&self) -> Ticks {
-        self.cpu.cycles
+        *self.config.cpu_cycles()
     }
 }
 
@@ -307,25 +509,25 @@ impl Tickable for Emulator {
                                 s.send(b)?;
                             }
                         }
-                        self.cpu.bus.mouse_update_rel(relx, rely, btn);
+                        self.config.mouse_update_rel(relx, rely, btn);
                     }
                     EmulatorCommand::MouseUpdateAbsolute { x, y } => {
                         if let Some(r) = self.record_input.as_mut() {
                             r.push((cycles, cmd));
                         }
 
-                        self.cpu.bus.mouse_update_abs(x, y);
+                        self.config.mouse_update_abs(x, y);
                     }
                     EmulatorCommand::Quit => {
                         info!("Emulator terminating");
-                        self.cpu.bus.video.blank()?;
+                        self.config.video_blank()?;
                         return Ok(0);
                     }
                     EmulatorCommand::InsertFloppy(drive, filename) => {
                         let image = Autodetect::load_file(&filename);
                         match image {
                             Ok(img) => {
-                                if let Err(e) = self.cpu.bus.swim.disk_insert(drive, img) {
+                                if let Err(e) = self.config.swim_mut().disk_insert(drive, img) {
                                     self.user_error(&format!("Cannot insert disk: {}", e));
                                 }
                             }
@@ -343,7 +545,7 @@ impl Tickable for Emulator {
                         match image {
                             Ok(mut img) => {
                                 img.set_force_wp();
-                                if let Err(e) = self.cpu.bus.swim.disk_insert(drive, img) {
+                                if let Err(e) = self.config.swim_mut().disk_insert(drive, img) {
                                     self.user_error(&format!("Cannot insert disk: {}", e));
                                 }
                             }
@@ -357,13 +559,13 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     EmulatorCommand::InsertFloppyImage(drive, img) => {
-                        if let Err(e) = self.cpu.bus.swim.disk_insert(drive, *img) {
+                        if let Err(e) = self.config.swim_mut().disk_insert(drive, *img) {
                             self.user_error(&format!("Cannot insert disk: {}", e));
                         }
                         self.status_update()?;
                     }
                     EmulatorCommand::EjectFloppy(drive) => {
-                        self.cpu.bus.swim.drives[drive].eject();
+                        self.config.swim_mut().drives[drive].eject();
                     }
                     EmulatorCommand::LoadHddImage(id, filename) => {
                         match self.load_hdd_image(&filename, id) {
@@ -384,13 +586,13 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     EmulatorCommand::DetachHddImage(id) => {
-                        self.cpu.bus.scsi.detach_disk_at(id);
+                        self.config.scsi_mut().detach_disk_at(id);
                         info!("SCSI ID #{}: disk detached", id);
                         self.status_update()?;
                     }
                     EmulatorCommand::SaveFloppy(drive, filename) => {
                         if let Err(e) = Moof::save_file(
-                            self.cpu.bus.swim.get_active_image(drive),
+                            self.config.swim().get_active_image(drive),
                             &filename.to_string_lossy(),
                         ) {
                             self.user_error(&format!(
@@ -409,8 +611,8 @@ impl Tickable for Emulator {
                     EmulatorCommand::Run => {
                         info!("Running");
                         self.run = true;
-                        self.cpu.get_clr_breakpoint_hit();
-                        self.cpu.breakpoints_mut().retain(|bp| {
+                        self.config.cpu_get_clr_breakpoint_hit();
+                        self.config.cpu_breakpoints_mut().retain(|bp| {
                             !matches!(bp, Breakpoint::StepOver(_) | Breakpoint::StepOut(_))
                         });
                         self.status_update()?;
@@ -418,8 +620,8 @@ impl Tickable for Emulator {
                     EmulatorCommand::Reset => {
                         // Reset bus first so VIA comes back into overlay mode before resetting the CPU
                         // otherwise the wrong reset vector is loaded.
-                        self.cpu.bus.reset()?;
-                        self.cpu.reset()?;
+                        self.config.bus_reset()?;
+                        self.config.cpu_reset()?;
 
                         info!("Emulator reset");
                         self.status_update()?;
@@ -427,7 +629,7 @@ impl Tickable for Emulator {
                     EmulatorCommand::Stop => {
                         info!("Stopped");
                         self.run = false;
-                        self.cpu.breakpoints_mut().retain(|bp| {
+                        self.config.cpu_breakpoints_mut().retain(|bp| {
                             !matches!(bp, Breakpoint::StepOver(_) | Breakpoint::StepOut(_))
                         });
                         self.status_update()?;
@@ -440,8 +642,9 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::StepOut => {
                         if !self.run {
-                            self.cpu
-                                .set_breakpoint(Breakpoint::StepOut(self.cpu.regs.read_a(7)));
+                            self.config.cpu_set_breakpoint(Breakpoint::StepOut(
+                                self.config.cpu_regs().read_a(7),
+                            ));
                             self.run = true;
                             self.status_update()?;
                         }
@@ -449,27 +652,27 @@ impl Tickable for Emulator {
                     EmulatorCommand::StepOver => {
                         if !self.run {
                             self.try_step();
-                            if let Some(addr) = self.cpu.get_step_over() {
-                                self.cpu.set_breakpoint(Breakpoint::StepOver(addr));
+                            if let Some(addr) = self.config.cpu_get_step_over() {
+                                self.config.cpu_set_breakpoint(Breakpoint::StepOver(addr));
                                 self.run = true;
                             }
                             self.status_update()?;
                         }
                     }
                     EmulatorCommand::ToggleBreakpoint(bp) => {
-                        let exists = self.cpu.breakpoints().contains(&bp);
+                        let exists = self.config.cpu_breakpoints().contains(&bp);
                         if exists {
-                            self.cpu.clear_breakpoint(bp);
+                            self.config.cpu_clear_breakpoint(bp);
                             info!("Breakpoint removed: {:X?}", bp);
                         } else {
-                            self.cpu.set_breakpoint(bp);
+                            self.config.cpu_set_breakpoint(bp);
                             info!("Breakpoint set: {:X?}", bp);
                         }
                         self.status_update()?;
                     }
                     EmulatorCommand::BusWrite(start, data) => {
                         for (i, d) in data.into_iter().enumerate() {
-                            self.cpu.bus.write(start + (i as Address), d);
+                            self.config.bus_write(start + (i as Address), d);
                         }
                         self.status_update()?;
                     }
@@ -490,24 +693,23 @@ impl Tickable for Emulator {
                                 sender.send(e)?;
                             }
                         } else if let Some(e) = e.translate_scancode(Keymap::AkM0110) {
-                            self.cpu.bus.via.keyboard.event(e)?;
+                            self.config.keyboard_event(e)?;
                         }
                     }
-                    EmulatorCommand::ToggleBusTrace => self.cpu.bus.trace = !self.cpu.bus.trace,
-                    EmulatorCommand::CpuSetPC(val) => self.cpu.set_pc(val)?,
-                    EmulatorCommand::SetSpeed(s) => self.cpu.bus.set_speed(s),
-                    EmulatorCommand::ProgKey => self.cpu.bus.progkey(),
+                    EmulatorCommand::CpuSetPC(val) => self.config.cpu_set_pc(val)?,
+                    EmulatorCommand::SetSpeed(s) => self.config.set_speed(s),
+                    EmulatorCommand::ProgKey => self.config.progkey(),
                     EmulatorCommand::WriteRegister(reg, val) => {
                         match reg {
                             Register::PC => {
                                 if val & 1 != 0 {
                                     self.user_error("Program Counter must be aligned");
                                 } else {
-                                    self.cpu.set_pc(val)?;
-                                    self.cpu.prefetch_refill()?;
+                                    self.config.cpu_set_pc(val)?;
+                                    self.config.cpu_prefetch_refill()?;
                                 }
                             }
-                            _ => self.cpu.regs.write(reg, val),
+                            _ => self.config.cpu_regs_mut().write(reg, val),
                         };
                         self.status_update()?;
                     }
@@ -539,13 +741,13 @@ impl Tickable for Emulator {
                                 .map(|(t, c)| (t - recording_offset + cycles, c)),
                         );
                     }
-                    EmulatorCommand::SetInstructionHistory(v) => self.cpu.enable_history(v),
+                    EmulatorCommand::SetInstructionHistory(v) => self.config.cpu_enable_history(v),
                     EmulatorCommand::SetPeripheralDebug(v) => {
                         self.peripheral_debug = v;
                         self.status_update()?;
                     }
                     EmulatorCommand::SccReceiveData(ch, data) => {
-                        self.cpu.bus.scc.push_rx(ch, &data);
+                        self.config.scc_mut().push_rx(ch, &data);
                     }
                 }
             }
@@ -557,10 +759,10 @@ impl Tickable for Emulator {
                 self.status_update()?;
 
                 for ch in crate::mac::scc::SccCh::iter() {
-                    if self.cpu.bus.scc.has_tx_data(ch) {
+                    if self.config.scc().has_tx_data(ch) {
                         self.event_sender.send(EmulatorEvent::SccTransmitData(
                             ch,
-                            self.cpu.bus.scc.take_tx(ch),
+                            self.config.scc_mut().take_tx(ch),
                         ))?;
                     }
                 }
