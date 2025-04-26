@@ -8,13 +8,6 @@ use num_traits::{PrimInt, WrappingAdd};
 /// Main CPU address data type (actually 24-bit)
 pub type Address = u32;
 
-/// Main CPU address mask
-pub const ADDRESS_MASK: Address = 0x00FFFFFF;
-
-/// Main CPU total address space
-pub const ADDRESS_SPACE_SIZE: usize = 16 * 1024 * 1024;
-pub const ADDRESS_SPACE: u32 = 16 * 1024 * 1024;
-
 /// Result of a bus read/write
 #[derive(Debug, PartialEq, Eq)]
 pub enum BusResult<TD: PrimInt> {
@@ -94,6 +87,9 @@ pub trait IrqSource {
 
 #[cfg(test)]
 mod tests {
+    const ADDRESS_MASK: Address = 0x00FFFFFF;
+    const ADDRESS_SPACE: u32 = 16 * 1024 * 1024;
+
     use super::testbus::Testbus;
     use super::*;
 

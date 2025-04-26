@@ -8,7 +8,7 @@ use num_traits::{FromBytes, ToBytes};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::bus::{Address, Bus, BusResult, IrqSource, ADDRESS_MASK};
+use crate::bus::{Address, Bus, BusResult, IrqSource};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
 use crate::util::TemporalOrder;
@@ -159,7 +159,10 @@ impl HistoryEntryInstruction {
 
 /// Motorola 680x0
 #[derive(Serialize, Deserialize)]
-pub struct CpuM68k<TBus: Bus<Address, u8> + IrqSource> {
+pub struct CpuM68k<TBus, const ADDRESS_MASK: Address>
+where
+    TBus: Bus<Address, u8> + IrqSource,
+{
     /// Exception occured this step
     pub step_exception: bool,
 
@@ -211,7 +214,7 @@ pub struct CpuM68k<TBus: Bus<Address, u8> + IrqSource> {
     history_enabled: bool,
 }
 
-impl<TBus> CpuM68k<TBus>
+impl<TBus, const ADDRESS_MASK: Address> CpuM68k<TBus, ADDRESS_MASK>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
@@ -2837,7 +2840,7 @@ where
     }
 }
 
-impl<TBus> Tickable for CpuM68k<TBus>
+impl<TBus, const ADDRESS_MASK: Address> Tickable for CpuM68k<TBus, ADDRESS_MASK>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
