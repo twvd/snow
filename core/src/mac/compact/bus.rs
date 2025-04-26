@@ -24,7 +24,7 @@ use num_traits::{FromPrimitive, PrimInt, ToBytes};
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
-pub struct MacBus<TRenderer: Renderer> {
+pub struct CompactMacBus<TRenderer: Renderer> {
     cycles: Ticks,
 
     /// The currently emulated Macintosh model
@@ -85,7 +85,7 @@ pub struct MacBus<TRenderer: Renderer> {
     progkey_pressed: LatchingEvent,
 }
 
-impl<TRenderer> MacBus<TRenderer>
+impl<TRenderer> CompactMacBus<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -442,7 +442,7 @@ where
     }
 }
 
-impl<TRenderer> Bus<Address, Byte> for MacBus<TRenderer>
+impl<TRenderer> Bus<Address, Byte> for CompactMacBus<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -513,7 +513,7 @@ where
     }
 }
 
-impl<TRenderer> Tickable for MacBus<TRenderer>
+impl<TRenderer> Tickable for CompactMacBus<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -589,7 +589,7 @@ where
     }
 }
 
-impl<TRenderer> IrqSource for MacBus<TRenderer>
+impl<TRenderer> IrqSource for CompactMacBus<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -615,7 +615,7 @@ where
     }
 }
 
-impl<TRenderer> InspectableBus<Address, Byte> for MacBus<TRenderer>
+impl<TRenderer> InspectableBus<Address, Byte> for CompactMacBus<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -642,7 +642,7 @@ where
     }
 }
 
-impl<TRenderer> Debuggable for MacBus<TRenderer>
+impl<TRenderer> Debuggable for CompactMacBus<TRenderer>
 where
     TRenderer: Renderer,
 {

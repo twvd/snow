@@ -52,7 +52,6 @@ pub enum EmulatorCommand {
     BusWrite(Address, Vec<u8>),
     Disassemble(Address, usize),
     KeyEvent(KeyEvent),
-    ToggleBusTrace,
     CpuSetPC(u32),
     #[serde(skip)]
     SetSpeed(EmulatorSpeed),
