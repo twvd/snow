@@ -5,7 +5,7 @@ use super::CpuSized;
 use crate::bus::{Address, Bus, IrqSource};
 use crate::types::{Byte, Long, Word};
 
-impl<TBus> CpuM68k<TBus>
+impl<TBus, const ADDRESS_MASK: Address> CpuM68k<TBus, ADDRESS_MASK>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {

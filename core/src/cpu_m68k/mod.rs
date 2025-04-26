@@ -6,8 +6,13 @@ pub mod regs;
 
 use num_traits::{FromBytes, PrimInt, ToBytes, WrappingAdd, WrappingShl, WrappingShr};
 
+use crate::bus::Address;
 use crate::types::Long;
 use crate::util::lossyinto::LossyInto;
+
+/// Motorola 68000
+pub type CpuM68000<TBus> = cpu::CpuM68k<TBus, M68000_ADDRESS_MASK>;
+pub const M68000_ADDRESS_MASK: Address = 0x00FFFFFF;
 
 /// Trait to deal with the differently sized instructions for:
 /// Byte (u8)

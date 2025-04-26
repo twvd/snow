@@ -6,9 +6,9 @@ use std::fs;
 use std::path::Path;
 
 use crate::bus::testbus::{Access, Testbus};
-use crate::bus::{Address, Bus, ADDRESS_MASK};
-use crate::cpu_m68k::cpu::CpuM68k;
+use crate::bus::{Address, Bus};
 use crate::cpu_m68k::regs::{RegisterFile, RegisterSR};
+use crate::cpu_m68k::{CpuM68000, M68000_ADDRESS_MASK};
 use crate::tickable::Ticks;
 
 #[derive(Debug, Deserialize)]
@@ -111,7 +111,6 @@ macro_rules! _cpu_test {
     ($testfn:ident, $instr:expr, $level:expr) => {
         #[test]
         fn $testfn() {
-            //let filename = format!("testdata/680x0/68000/v1/{}.json", $instr);
             let filename = format!("../testdata/m68000/v1/{}.json", $instr);
             let filename_gz = format!("{}.gz", filename);
             let testcases: Vec<Testcase> = if Path::new(&filename).exists() {
@@ -139,7 +138,7 @@ fn create_regs(state: &TestcaseState) -> RegisterFile {
         usp: state.usp,
         ssp: state.ssp,
         sr: RegisterSR(state.sr),
-        pc: state.pc.wrapping_sub(4) & ADDRESS_MASK,
+        pc: state.pc.wrapping_sub(4) & M68000_ADDRESS_MASK,
     }
 }
 
@@ -177,7 +176,7 @@ fn print_reg_diff(initial: &RegisterFile, fin: &RegisterFile, actual: &RegisterF
     eprintln!();
 }
 
-fn print_result(cpu: &CpuM68k<Testbus<Address, u8>>, testcase: &Testcase) {
+fn print_result(cpu: &CpuM68000<Testbus<Address, u8>>, testcase: &Testcase) {
     eprintln!(
         "Cycles expected: {} actual: {}",
         testcase.length, cpu.cycles
@@ -285,12 +284,12 @@ fn run_testcase(testcase: Testcase, level: TestLevel) {
     let regs_initial = create_regs(&testcase.initial);
     let regs_final = create_regs(&testcase.r#final);
 
-    let mut bus = Testbus::new(ADDRESS_MASK);
+    let mut bus = Testbus::new(M68000_ADDRESS_MASK);
     for (addr, val) in &testcase.initial.ram {
         bus.write(*addr, *val);
     }
 
-    let mut cpu = CpuM68k::new(bus);
+    let mut cpu = CpuM68000::new(bus);
     cpu.trace_mask = true;
     cpu.regs = regs_initial;
     cpu.prefetch = testcase.initial.prefetch.into();
@@ -406,135 +405,139 @@ fn run_testcase(testcase: Testcase, level: TestLevel) {
     eprintln!("Pass!");
 }
 
-cpu_test!(abcd, "ABCD");
-cpu_test!(adda_l, "ADDA.l");
-cpu_test!(adda_w, "ADDA.w");
-cpu_test!(add_b, "ADD.b");
-cpu_test!(add_l, "ADD.l");
-cpu_test!(add_w, "ADD.w");
-cpu_test!(addx_b, "ADDX.b");
-cpu_test!(addx_l, "ADDX.l");
-cpu_test!(addx_w, "ADDX.w");
-cpu_test!(and_b, "AND.b");
-cpu_test!(anditoccr, "ANDItoCCR");
-cpu_test!(anditosr, "ANDItoSR");
-cpu_test!(and_l, "AND.l");
-cpu_test!(and_w, "AND.w");
-cpu_test!(asl_b, "ASL.b");
-cpu_test!(asl_l, "ASL.l");
-cpu_test!(asl_w, "ASL.w");
-cpu_test!(asr_b, "ASR.b");
-cpu_test!(asr_l, "ASR.l");
-cpu_test!(asr_w, "ASR.w");
-cpu_test!(bcc, "Bcc");
-cpu_test!(bchg, "BCHG");
-cpu_test!(bclr, "BCLR");
-cpu_test!(bset, "BSET");
-cpu_test!(bsr, "BSR");
-cpu_test!(btst, "BTST");
+mod m68000 {
+    use super::*;
 
-// TODO cycle accuracy
-cpu_test!(chk, "CHK", TestLevel::StateOnly);
+    cpu_test!(abcd, "ABCD");
+    cpu_test!(adda_l, "ADDA.l");
+    cpu_test!(adda_w, "ADDA.w");
+    cpu_test!(add_b, "ADD.b");
+    cpu_test!(add_l, "ADD.l");
+    cpu_test!(add_w, "ADD.w");
+    cpu_test!(addx_b, "ADDX.b");
+    cpu_test!(addx_l, "ADDX.l");
+    cpu_test!(addx_w, "ADDX.w");
+    cpu_test!(and_b, "AND.b");
+    cpu_test!(anditoccr, "ANDItoCCR");
+    cpu_test!(anditosr, "ANDItoSR");
+    cpu_test!(and_l, "AND.l");
+    cpu_test!(and_w, "AND.w");
+    cpu_test!(asl_b, "ASL.b");
+    cpu_test!(asl_l, "ASL.l");
+    cpu_test!(asl_w, "ASL.w");
+    cpu_test!(asr_b, "ASR.b");
+    cpu_test!(asr_l, "ASR.l");
+    cpu_test!(asr_w, "ASR.w");
+    cpu_test!(bcc, "Bcc");
+    cpu_test!(bchg, "BCHG");
+    cpu_test!(bclr, "BCLR");
+    cpu_test!(bset, "BSET");
+    cpu_test!(bsr, "BSR");
+    cpu_test!(btst, "BTST");
 
-cpu_test!(clr_b, "CLR.b");
-cpu_test!(clr_l, "CLR.l");
-cpu_test!(clr_w, "CLR.w");
-cpu_test!(cmpa_l, "CMPA.l");
-cpu_test!(cmpa_w, "CMPA.w");
-cpu_test!(cmp_b, "CMP.b");
-cpu_test!(cmp_l, "CMP.l");
-cpu_test!(cmp_w, "CMP.w");
-cpu_test!(dbcc, "DBcc");
-cpu_test!(divs, "DIVS");
-cpu_test!(divu, "DIVU");
-cpu_test!(eor_b, "EOR.b");
-cpu_test!(eoritoccr, "EORItoCCR");
-cpu_test!(eoritosr, "EORItoSR");
-cpu_test!(eor_l, "EOR.l");
-cpu_test!(eor_w, "EOR.w");
-cpu_test!(exg, "EXG");
-cpu_test!(ext_l, "EXT.l");
-cpu_test!(ext_w, "EXT.w");
-cpu_test!(illegal_linea, "ILLEGAL_LINEA");
-cpu_test!(illegal_linef, "ILLEGAL_LINEF");
-cpu_test!(jmp, "JMP");
-cpu_test!(jsr, "JSR");
-cpu_test!(lea, "LEA");
-cpu_test!(link, "LINK");
-cpu_test!(lsl_b, "LSL.b");
-cpu_test!(lsl_l, "LSL.l");
-cpu_test!(lsl_w, "LSL.w");
-cpu_test!(lsr_b, "LSR.b");
-cpu_test!(lsr_l, "LSR.l");
-cpu_test!(lsr_w, "LSR.w");
-cpu_test!(movea_l, "MOVEA.l");
-cpu_test!(movea_w, "MOVEA.w");
-cpu_test!(move_b, "MOVE.b");
-cpu_test!(movefromsr, "MOVEfromSR");
-cpu_test!(movefromusp, "MOVEfromUSP");
+    // TODO cycle accuracy
+    cpu_test!(chk, "CHK", TestLevel::StateOnly);
 
-// TODO fix all the insane edge cases of MOVE.l
-//cpu_test!(move_l, "MOVE.l", TestLevel::StateOnly);
+    cpu_test!(clr_b, "CLR.b");
+    cpu_test!(clr_l, "CLR.l");
+    cpu_test!(clr_w, "CLR.w");
+    cpu_test!(cmpa_l, "CMPA.l");
+    cpu_test!(cmpa_w, "CMPA.w");
+    cpu_test!(cmp_b, "CMP.b");
+    cpu_test!(cmp_l, "CMP.l");
+    cpu_test!(cmp_w, "CMP.w");
+    cpu_test!(dbcc, "DBcc");
+    cpu_test!(divs, "DIVS");
+    cpu_test!(divu, "DIVU");
+    cpu_test!(eor_b, "EOR.b");
+    cpu_test!(eoritoccr, "EORItoCCR");
+    cpu_test!(eoritosr, "EORItoSR");
+    cpu_test!(eor_l, "EOR.l");
+    cpu_test!(eor_w, "EOR.w");
+    cpu_test!(exg, "EXG");
+    cpu_test!(ext_l, "EXT.l");
+    cpu_test!(ext_w, "EXT.w");
+    cpu_test!(illegal_linea, "ILLEGAL_LINEA");
+    cpu_test!(illegal_linef, "ILLEGAL_LINEF");
+    cpu_test!(jmp, "JMP");
+    cpu_test!(jsr, "JSR");
+    cpu_test!(lea, "LEA");
+    cpu_test!(link, "LINK");
+    cpu_test!(lsl_b, "LSL.b");
+    cpu_test!(lsl_l, "LSL.l");
+    cpu_test!(lsl_w, "LSL.w");
+    cpu_test!(lsr_b, "LSR.b");
+    cpu_test!(lsr_l, "LSR.l");
+    cpu_test!(lsr_w, "LSR.w");
+    cpu_test!(movea_l, "MOVEA.l");
+    cpu_test!(movea_w, "MOVEA.w");
+    cpu_test!(move_b, "MOVE.b");
+    cpu_test!(movefromsr, "MOVEfromSR");
+    cpu_test!(movefromusp, "MOVEfromUSP");
 
-cpu_test!(movem_l, "MOVEM.l");
-cpu_test!(movem_w, "MOVEM.w");
-cpu_test!(movep_l, "MOVEP.l");
-cpu_test!(movep_w, "MOVEP.w");
-cpu_test!(move_q, "MOVE.q");
-cpu_test!(movetoccr, "MOVEtoCCR");
-cpu_test!(movetosr, "MOVEtoSR");
-cpu_test!(movetousp, "MOVEtoUSP");
-cpu_test!(move_w, "MOVE.w");
-cpu_test!(muls, "MULS");
-cpu_test!(mulu, "MULU");
-cpu_test!(nbcd, "NBCD");
-cpu_test!(neg_b, "NEG.b");
-cpu_test!(neg_l, "NEG.l");
-cpu_test!(neg_w, "NEG.w");
-cpu_test!(negx_b, "NEGX.b");
-cpu_test!(negx_l, "NEGX.l");
-cpu_test!(negx_w, "NEGX.w");
-cpu_test!(nop, "NOP");
-cpu_test!(not_b, "NOT.b");
-cpu_test!(not_l, "NOT.l");
-cpu_test!(not_w, "NOT.w");
-cpu_test!(or_b, "OR.b");
-cpu_test!(oritoccr, "ORItoCCR");
-cpu_test!(oritosr, "ORItoSR");
-cpu_test!(or_l, "OR.l");
-cpu_test!(or_w, "OR.w");
-cpu_test!(pea, "PEA");
-cpu_test!(reset, "RESET");
-cpu_test!(rol_b, "ROL.b");
-cpu_test!(rol_l, "ROL.l");
-cpu_test!(rol_w, "ROL.w");
-cpu_test!(ror_b, "ROR.b");
-cpu_test!(ror_l, "ROR.l");
-cpu_test!(ror_w, "ROR.w");
-cpu_test!(roxl_b, "ROXL.b");
-cpu_test!(roxl_l, "ROXL.l");
-cpu_test!(roxl_w, "ROXL.w");
-cpu_test!(roxr_b, "ROXR.b");
-cpu_test!(roxr_l, "ROXR.l");
-cpu_test!(roxr_w, "ROXR.w");
-cpu_test!(rte, "RTE");
-cpu_test!(rtr, "RTR");
-cpu_test!(rts, "RTS");
-cpu_test!(sbcd, "SBCD");
-cpu_test!(scc, "Scc");
-cpu_test!(suba_l, "SUBA.l");
-cpu_test!(suba_w, "SUBA.w");
-cpu_test!(sub_b, "SUB.b");
-cpu_test!(sub_l, "SUB.l");
-cpu_test!(sub_w, "SUB.w");
-cpu_test!(subx_b, "SUBX.b");
-cpu_test!(subx_l, "SUBX.l");
-cpu_test!(subx_w, "SUBX.w");
-cpu_test!(swap, "SWAP");
-cpu_test!(tas, "TAS");
-cpu_test!(trap, "TRAP");
-cpu_test!(trapv, "TRAPV");
-cpu_test!(tst_b, "TST.b");
-cpu_test!(tst_l, "TST.l");
-cpu_test!(tst_w, "TST.w");
-cpu_test!(unlink, "UNLINK");
+    // TODO fix all the insane edge cases of MOVE.l
+    //cpu_test!(move_l, "MOVE.l", TestLevel::StateOnly);
+
+    cpu_test!(movem_l, "MOVEM.l");
+    cpu_test!(movem_w, "MOVEM.w");
+    cpu_test!(movep_l, "MOVEP.l");
+    cpu_test!(movep_w, "MOVEP.w");
+    cpu_test!(move_q, "MOVE.q");
+    cpu_test!(movetoccr, "MOVEtoCCR");
+    cpu_test!(movetosr, "MOVEtoSR");
+    cpu_test!(movetousp, "MOVEtoUSP");
+    cpu_test!(move_w, "MOVE.w");
+    cpu_test!(muls, "MULS");
+    cpu_test!(mulu, "MULU");
+    cpu_test!(nbcd, "NBCD");
+    cpu_test!(neg_b, "NEG.b");
+    cpu_test!(neg_l, "NEG.l");
+    cpu_test!(neg_w, "NEG.w");
+    cpu_test!(negx_b, "NEGX.b");
+    cpu_test!(negx_l, "NEGX.l");
+    cpu_test!(negx_w, "NEGX.w");
+    cpu_test!(nop, "NOP");
+    cpu_test!(not_b, "NOT.b");
+    cpu_test!(not_l, "NOT.l");
+    cpu_test!(not_w, "NOT.w");
+    cpu_test!(or_b, "OR.b");
+    cpu_test!(oritoccr, "ORItoCCR");
+    cpu_test!(oritosr, "ORItoSR");
+    cpu_test!(or_l, "OR.l");
+    cpu_test!(or_w, "OR.w");
+    cpu_test!(pea, "PEA");
+    cpu_test!(reset, "RESET");
+    cpu_test!(rol_b, "ROL.b");
+    cpu_test!(rol_l, "ROL.l");
+    cpu_test!(rol_w, "ROL.w");
+    cpu_test!(ror_b, "ROR.b");
+    cpu_test!(ror_l, "ROR.l");
+    cpu_test!(ror_w, "ROR.w");
+    cpu_test!(roxl_b, "ROXL.b");
+    cpu_test!(roxl_l, "ROXL.l");
+    cpu_test!(roxl_w, "ROXL.w");
+    cpu_test!(roxr_b, "ROXR.b");
+    cpu_test!(roxr_l, "ROXR.l");
+    cpu_test!(roxr_w, "ROXR.w");
+    cpu_test!(rte, "RTE");
+    cpu_test!(rtr, "RTR");
+    cpu_test!(rts, "RTS");
+    cpu_test!(sbcd, "SBCD");
+    cpu_test!(scc, "Scc");
+    cpu_test!(suba_l, "SUBA.l");
+    cpu_test!(suba_w, "SUBA.w");
+    cpu_test!(sub_b, "SUB.b");
+    cpu_test!(sub_l, "SUB.l");
+    cpu_test!(sub_w, "SUB.w");
+    cpu_test!(subx_b, "SUBX.b");
+    cpu_test!(subx_l, "SUBX.l");
+    cpu_test!(subx_w, "SUBX.w");
+    cpu_test!(swap, "SWAP");
+    cpu_test!(tas, "TAS");
+    cpu_test!(trap, "TRAP");
+    cpu_test!(trapv, "TRAPV");
+    cpu_test!(tst_b, "TST.b");
+    cpu_test!(tst_l, "TST.l");
+    cpu_test!(tst_w, "TST.w");
+    cpu_test!(unlink, "UNLINK");
+}

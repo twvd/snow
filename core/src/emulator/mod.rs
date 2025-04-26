@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, InspectableBus};
-use crate::cpu_m68k::cpu::{CpuM68k, HistoryEntry};
+use crate::cpu_m68k::cpu::HistoryEntry;
+use crate::cpu_m68k::CpuM68000;
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::keymap::{KeyEvent, Keymap};
 use crate::mac::adb::{AdbKeyboard, AdbMouse};
@@ -71,7 +72,7 @@ macro_rules! indirection {
 /// that provides access to the inner components by the emulator runner through dynamic dispatch.
 enum EmulatorConfig {
     /// Compact series - Mac 128K, 512K, Plus, SE, Classic
-    Compact(CpuM68k<CompactMacBus<ChannelRenderer>>),
+    Compact(CpuM68000<CompactMacBus<ChannelRenderer>>),
 }
 
 #[allow(dead_code)]
@@ -265,7 +266,7 @@ impl Emulator {
 
         // Initialize bus and CPU
         let bus = CompactMacBus::new(model, rom, renderer);
-        let mut cpu = CpuM68k::new(bus);
+        let mut cpu = CpuM68000::new(bus);
 
         // Initialize input devices
         let adbmouse_sender = if model.has_adb() {
