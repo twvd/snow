@@ -10,11 +10,12 @@ use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::HistoryEntry;
-use crate::cpu_m68k::CpuM68000;
+use crate::cpu_m68k::{CpuM68000, CpuM68020};
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::keymap::{KeyEvent, Keymap};
 use crate::mac::adb::{AdbKeyboard, AdbMouse};
 use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
+use crate::mac::macii::bus::MacIIBus;
 use crate::mac::scc::Scc;
 use crate::mac::MacModel;
 use crate::renderer::channel::ChannelRenderer;
@@ -41,12 +42,14 @@ macro_rules! indirection {
         pub fn $name(&self) -> &$t {
             match self {
                 Self::Compact(c) => &c.$($prop).+,
+                Self::MacII(c) => &c.$($prop).+,
             }
         }
 
         pub fn $name_mut(&mut self) -> &mut $t {
             match self {
                 Self::Compact(c) => &mut c.$($prop).+,
+                Self::MacII(c) => &mut c.$($prop).+,
             }
         }
     };
@@ -55,6 +58,7 @@ macro_rules! indirection {
         pub fn $name(&self) -> &$t {
             match self {
                 Self::Compact(c) => &c.$($prop).+,
+                Self::MacII(c) => &c.$($prop).+,
             }
         }
     };
@@ -63,6 +67,7 @@ macro_rules! indirection {
         pub fn $name(&self) -> &$t {
             match self {
                 Self::Compact(c) => &c.$($prop).+(),
+                Self::MacII(c) => &c.$($prop).+(),
             }
         }
     };
@@ -73,6 +78,8 @@ macro_rules! indirection {
 enum EmulatorConfig {
     /// Compact series - Mac 128K, 512K, Plus, SE, Classic
     Compact(CpuM68000<CompactMacBus<ChannelRenderer>>),
+    /// Compact series - Mac 128K, 512K, Plus, SE, Classic
+    MacII(CpuM68020<MacIIBus<ChannelRenderer>>),
 }
 
 #[allow(dead_code)]
@@ -88,150 +95,175 @@ impl EmulatorConfig {
     pub fn cpu_breakpoints(&self) -> &[Breakpoint] {
         match self {
             Self::Compact(c) => c.breakpoints(),
+            Self::MacII(c) => c.breakpoints(),
         }
     }
 
     pub fn cpu_breakpoints_mut(&mut self) -> &mut Vec<Breakpoint> {
         match self {
             Self::Compact(c) => c.breakpoints_mut(),
+            Self::MacII(c) => c.breakpoints_mut(),
         }
     }
 
     pub fn cpu_set_breakpoint(&mut self, bp: Breakpoint) {
         match self {
             Self::Compact(c) => c.set_breakpoint(bp),
+            Self::MacII(c) => c.set_breakpoint(bp),
         }
     }
 
     pub fn cpu_clear_breakpoint(&mut self, bp: Breakpoint) {
         match self {
             Self::Compact(c) => c.clear_breakpoint(bp),
+            Self::MacII(c) => c.clear_breakpoint(bp),
         }
     }
 
     pub fn cpu_read_history(&mut self) -> Option<&[HistoryEntry]> {
         match self {
             Self::Compact(c) => c.read_history(),
+            Self::MacII(c) => c.read_history(),
         }
     }
 
     pub fn debug_properties(&self) -> DebuggableProperties {
         match self {
             Self::Compact(c) => c.bus.get_debug_properties(),
+            Self::MacII(c) => c.bus.get_debug_properties(),
         }
     }
 
     pub fn ram(&self) -> &[u8] {
         match self {
             Self::Compact(c) => &c.bus.ram,
+            Self::MacII(c) => &c.bus.ram,
         }
     }
 
     pub fn ram_mut(&mut self) -> &mut [u8] {
         match self {
             Self::Compact(c) => &mut c.bus.ram,
+            Self::MacII(c) => &mut c.bus.ram,
         }
     }
 
     pub fn bus_inspect_read(&mut self, addr: Address) -> Option<Byte> {
         match self {
             Self::Compact(c) => c.bus.inspect_read(addr),
+            Self::MacII(c) => c.bus.inspect_read(addr),
         }
     }
 
     pub fn cpu_tick(&mut self, ticks: Ticks) -> Result<Ticks> {
         match self {
             Self::Compact(c) => c.tick(ticks),
+            Self::MacII(c) => c.tick(ticks),
         }
     }
 
     pub fn cpu_get_clr_breakpoint_hit(&mut self) -> bool {
         match self {
             Self::Compact(c) => c.get_clr_breakpoint_hit(),
+            Self::MacII(c) => c.get_clr_breakpoint_hit(),
         }
     }
 
     pub fn cpu_enable_history(&mut self, v: bool) {
         match self {
             Self::Compact(c) => c.enable_history(v),
+            Self::MacII(c) => c.enable_history(v),
         }
     }
 
     pub fn cpu_set_pc(&mut self, pc: Address) -> Result<()> {
         match self {
             Self::Compact(c) => c.set_pc(pc),
+            Self::MacII(c) => c.set_pc(pc),
         }
     }
 
     pub fn cpu_prefetch_refill(&mut self) -> Result<()> {
         match self {
             Self::Compact(c) => c.prefetch_refill(),
+            Self::MacII(c) => c.prefetch_refill(),
         }
     }
 
     pub fn bus_write(&mut self, addr: Address, val: Byte) -> crate::bus::BusResult<Byte> {
         match self {
             Self::Compact(c) => c.bus.write(addr, val),
+            Self::MacII(c) => c.bus.write(addr, val),
         }
     }
 
     pub fn get_audio_channel(&self) -> AudioReceiver {
         match self {
             Self::Compact(c) => c.bus.get_audio_channel(),
+            Self::MacII(c) => c.bus.get_audio_channel(),
         }
     }
 
     pub fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) {
         match self {
             Self::Compact(c) => c.bus.mouse_update_rel(relx, rely, button),
+            Self::MacII(c) => c.bus.mouse_update_rel(relx, rely, button),
         }
     }
 
     pub fn mouse_update_abs(&mut self, x: u16, y: u16) {
         match self {
             Self::Compact(c) => c.bus.mouse_update_abs(x, y),
+            Self::MacII(c) => c.bus.mouse_update_abs(x, y),
         }
     }
 
     pub fn video_blank(&mut self) -> Result<()> {
         match self {
             Self::Compact(c) => c.bus.video.blank(),
+            Self::MacII(_) => Ok(()), // TODO
         }
     }
 
     pub fn cpu_reset(&mut self) -> Result<()> {
         match self {
             Self::Compact(c) => c.reset(),
+            Self::MacII(c) => c.reset(),
         }
     }
 
     pub fn bus_reset(&mut self) -> Result<()> {
         match self {
             Self::Compact(c) => c.bus.reset(),
+            Self::MacII(c) => c.bus.reset(),
         }
     }
 
     pub fn progkey(&mut self) {
         match self {
             Self::Compact(c) => c.bus.progkey(),
+            Self::MacII(c) => c.bus.progkey(),
         }
     }
 
     pub fn set_speed(&mut self, speed: EmulatorSpeed) {
         match self {
             Self::Compact(c) => c.bus.set_speed(speed),
+            Self::MacII(c) => c.bus.set_speed(speed),
         }
     }
 
     pub fn keyboard_event(&mut self, ev: KeyEvent) -> Result<()> {
         match self {
             Self::Compact(c) => c.bus.via.keyboard.event(ev),
+            Self::MacII(_) => unreachable!(),
         }
     }
 
     pub fn cpu_get_step_over(&self) -> Option<Address> {
         match self {
             Self::Compact(c) => c.get_step_over(),
+            Self::MacII(c) => c.get_step_over(),
         }
     }
 }
@@ -264,35 +296,75 @@ impl Emulator {
         let renderer = ChannelRenderer::new(model.display_width(), model.display_height())?;
         let frame_recv = renderer.get_receiver();
 
-        // Initialize bus and CPU
-        let bus = CompactMacBus::new(model, rom, renderer);
-        let mut cpu = CpuM68000::new(bus);
+        let (config, adbkeyboard_sender, adbmouse_sender) = match model {
+            MacModel::Early128K
+            | MacModel::Early512K
+            | MacModel::Plus
+            | MacModel::SE
+            | MacModel::SeFdhd
+            | MacModel::Classic => {
+                // Initialize bus and CPU
+                let bus = CompactMacBus::new(model, rom, renderer);
+                let mut cpu = CpuM68000::new(bus);
 
-        // Initialize input devices
-        let adbmouse_sender = if model.has_adb() {
-            let (mouse, mouse_sender) = AdbMouse::new();
-            cpu.bus.via.adb.add_device(mouse);
-            Some(mouse_sender)
-        } else {
-            None
-        };
-        let adbkeyboard_sender = if model.has_adb() {
-            let (keyboard, sender) = AdbKeyboard::new();
-            cpu.bus.via.adb.add_device(keyboard);
-            Some(sender)
-        } else {
-            None
-        };
+                // Initialize input devices
+                let adbmouse_sender = if model.has_adb() {
+                    let (mouse, mouse_sender) = AdbMouse::new();
+                    cpu.bus.via.adb.add_device(mouse);
+                    Some(mouse_sender)
+                } else {
+                    None
+                };
+                let adbkeyboard_sender = if model.has_adb() {
+                    let (keyboard, sender) = AdbKeyboard::new();
+                    cpu.bus.via.adb.add_device(keyboard);
+                    Some(sender)
+                } else {
+                    None
+                };
+                cpu.reset()?;
+                (
+                    EmulatorConfig::Compact(cpu),
+                    adbkeyboard_sender,
+                    adbmouse_sender,
+                )
+            }
+            MacModel::MacII => {
+                // Initialize bus and CPU
+                let bus = MacIIBus::new(model, rom, renderer);
+                let mut cpu = CpuM68020::new(bus);
 
+                // Initialize input devices
+                let adbmouse_sender = if model.has_adb() {
+                    let (mouse, mouse_sender) = AdbMouse::new();
+                    cpu.bus.via1.adb.add_device(mouse);
+                    Some(mouse_sender)
+                } else {
+                    None
+                };
+                let adbkeyboard_sender = if model.has_adb() {
+                    let (keyboard, sender) = AdbKeyboard::new();
+                    cpu.bus.via1.adb.add_device(keyboard);
+                    Some(sender)
+                } else {
+                    None
+                };
+                cpu.reset()?;
+                (
+                    EmulatorConfig::MacII(cpu),
+                    adbkeyboard_sender,
+                    adbmouse_sender,
+                )
+            }
+        };
         // Initialize RTC
         //cpu.bus
         //    .via
         //    .rtc
         //    .load_pram(&format!("{:?}.pram", model).to_ascii_lowercase());
 
-        cpu.reset()?;
         let mut emu = Self {
-            config: EmulatorConfig::Compact(cpu),
+            config,
             command_recv: cmdr,
             command_sender: cmds,
             event_sender: statuss,

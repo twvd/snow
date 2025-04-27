@@ -14,6 +14,10 @@ use crate::util::lossyinto::LossyInto;
 pub type CpuM68000<TBus> = cpu::CpuM68k<TBus, M68000_ADDRESS_MASK>;
 pub const M68000_ADDRESS_MASK: Address = 0x00FFFFFF;
 
+/// Motorola 68020
+pub type CpuM68020<TBus> = cpu::CpuM68k<TBus, M68020_ADDRESS_MASK>;
+pub const M68020_ADDRESS_MASK: Address = 0xFFFFFFFF;
+
 /// Trait to deal with the differently sized instructions for:
 /// Byte (u8)
 /// Word (u16)
