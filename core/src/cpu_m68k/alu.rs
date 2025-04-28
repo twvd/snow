@@ -1,11 +1,12 @@
 use super::cpu::CpuM68k;
 use super::regs::RegisterSR;
-use super::CpuSized;
+use super::{CpuM68kType, CpuSized};
 
 use crate::bus::{Address, Bus, IrqSource};
 use crate::types::{Byte, Long, Word};
 
-impl<TBus, const ADDRESS_MASK: Address> CpuM68k<TBus, ADDRESS_MASK>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
+    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {

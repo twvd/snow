@@ -17,7 +17,7 @@ use super::instruction::{
     AddressingMode, Direction, IndexSize, Instruction, InstructionMnemonic, Xn,
 };
 use super::regs::{Register, RegisterFile, RegisterSR};
-use super::CpuSized;
+use super::{CpuM68kType, CpuSized, M68000, M68020};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum BusBreakpoint {
@@ -159,7 +159,7 @@ impl HistoryEntryInstruction {
 
 /// Motorola 680x0
 #[derive(Serialize, Deserialize)]
-pub struct CpuM68k<TBus, const ADDRESS_MASK: Address>
+pub struct CpuM68k<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
@@ -214,7 +214,8 @@ where
     history_enabled: bool,
 }
 
-impl<TBus, const ADDRESS_MASK: Address> CpuM68k<TBus, ADDRESS_MASK>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
+    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
@@ -222,6 +223,8 @@ where
     pub const HISTORY_SIZE: usize = 100;
 
     pub fn new(bus: TBus) -> Self {
+        assert!([M68000, M68020].contains(&CPU_TYPE));
+
         Self {
             bus,
             regs: RegisterFile::new(),
@@ -396,11 +399,19 @@ where
         let opcode = self.fetch()?;
 
         if self.decode_cache[opcode as usize].is_none() {
-            let instr = Instruction::try_decode(opcode);
+            let instr = Instruction::try_decode(CPU_TYPE, opcode);
             if instr.is_err() {
                 if self.history_enabled {
                     self.history_current = Default::default();
                 }
+                debug!(
+                    "Illegal instruction PC {:08X}: {:04X} {:016b} {}",
+                    self.regs.pc,
+                    opcode,
+                    opcode,
+                    instr.unwrap_err()
+                );
+                self.breakpoint_hit.set();
                 return self.raise_illegal_instruction();
             }
 
@@ -2840,7 +2851,8 @@ where
     }
 }
 
-impl<TBus, const ADDRESS_MASK: Address> Tickable for CpuM68k<TBus, ADDRESS_MASK>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType> Tickable
+    for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {

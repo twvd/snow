@@ -586,7 +586,7 @@ impl Iterator for Disassembler<'_> {
         self.out.raw.push(op_msb);
         self.out.raw.push(op_lsb);
 
-        let instr = Instruction::try_decode(opcode);
+        let instr = Instruction::try_decode(0, opcode);
 
         if let Ok(i) = instr {
             self.do_instr(&i).ok()?;
