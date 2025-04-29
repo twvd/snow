@@ -155,24 +155,7 @@ where
 
         match addr {
             // 0x0000_0000 - 0x4FFF_FFFF is ROM
-            // VIA 1
-            0x5000_0000..=0x5000_1FFF => self.via1.write(addr, val),
-            // VIA 2
-            0x5000_2000..=0x5000_3FFF => self.via2.write(addr, val),
-            // SCC
-            0x5000_4000..=0x5000_5FFF => self.scc.write(addr, val),
-            // SCSI
-            0x5001_0000..=0x5001_1FFF => self.scsi.write(addr, val),
-            // SCSI pseudo-DMA
-            0x5001_2000..=0x5001_2FFF => None,
-            // Sound
-            0x5001_4000..=0x5001_5FFF => None,
-            // IWM
-            0x5001_6000..=0x5001_7FFF => self.swim.write(addr, val),
-            // NuBus super slot
-            0x6000_0000..=0xEFFF_FFFF => None,
-            // NuBus standard slot
-            0xF100_0000..=0xFFFF_FFFF => None,
+            0x5000_0000..=0xFFFF_FFFF => self.write_normal(addr, val),
             _ => None,
         }
     }
@@ -189,20 +172,24 @@ where
                 self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
                 Some(self.ram[idx] = val)
             }
-            // VIA 1
-            0x5000_0000..=0x5000_1FFF => self.via1.write(addr, val),
-            // VIA 2
-            0x5000_2000..=0x5000_3FFF => self.via2.write(addr, val),
-            // SCC
-            0x5000_4000..=0x5000_5FFF => self.scc.write(addr, val),
-            // SCSI
-            0x5001_0000..=0x5001_1FFF => self.scsi.write(addr, val),
-            // SCSI pseudo-DMA
-            0x5001_2000..=0x5001_2FFF => None,
-            // Sound
-            0x5001_4000..=0x5001_5FFF => None,
-            // IWM
-            0x5001_6000..=0x5001_7FFF => self.swim.write(addr, val),
+            // I/O region (repeats)
+            0x5000_0000..=0x51FF_FFFF => match addr & 0x1_FFFF {
+                // VIA 1
+                0x0000_0000..=0x0000_1FFF => self.via1.write(addr, val),
+                // VIA 2
+                0x0000_2000..=0x0000_3FFF => self.via2.write(addr, val),
+                // SCC
+                0x0000_4000..=0x0000_5FFF => self.scc.write(addr, val),
+                // SCSI
+                0x0001_0000..=0x0001_1FFF => self.scsi.write(addr, val),
+                // SCSI pseudo-DMA
+                0x0001_2000..=0x0001_2FFF => None,
+                // Sound
+                0x0001_4000..=0x0001_5FFF => None,
+                // IWM
+                0x0001_6000..=0x0001_7FFF => self.swim.write(addr, val),
+                _ => None,
+            },
             // NuBus super slot
             0x6000_0000..=0xEFFF_FFFF => None,
             // NuBus standard slot
@@ -217,25 +204,7 @@ where
             0x0000_0000..=0x4FFF_FFFF => {
                 Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
             }
-            // VIA 1
-            0x5000_0000..=0x5000_1FFF => self.via1.read(addr),
-            // VIA 2
-            0x5000_2000..=0x5000_3FFF => self.via2.read(addr),
-            // SCC
-            0x5000_4000..=0x5000_5FFF => self.scc.read(addr),
-            // SCSI
-            0x5001_0000..=0x5001_1FFF => self.scsi.read(addr),
-            // SCSI pseudo-DMA
-            0x5001_2000..=0x5001_2FFF => None,
-            // Sound
-            0x5001_4000..=0x5001_5FFF => None,
-            // IWM
-            0x5001_6000..=0x5001_7FFF => self.swim.read(addr),
-            // NuBus super slot
-            0x6000_0000..=0xEFFF_FFFF => None,
-            // NuBus standard slot
-            0xF100_0000..=0xFFFF_FFFF => None,
-            _ => None,
+            0x5000_0000..=0xFFFF_FFFF => self.read_normal(addr),
         };
         if self.trace {
             trace!("RDO {:08X} - {:02X?}", addr, result);
@@ -252,20 +221,24 @@ where
             0x4000_0000..=0x4FFF_FFFF => {
                 Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
             }
-            // VIA 1
-            0x5000_0000..=0x5000_1FFF => self.via1.read(addr),
-            // VIA 2
-            0x5000_2000..=0x5000_3FFF => self.via2.read(addr),
-            // SCC
-            0x5000_4000..=0x5000_5FFF => self.scc.read(addr),
-            // SCSI
-            0x5001_0000..=0x5001_1FFF => self.scsi.read(addr),
-            // SCSI pseudo-DMA
-            0x5001_2000..=0x5001_2FFF => None,
-            // Sound
-            0x5001_4000..=0x5001_5FFF => None,
-            // IWM
-            0x5001_6000..=0x5001_7FFF => self.swim.read(addr),
+            // I/O region (repeats)
+            0x5000_0000..=0x51FF_FFFF => match addr & 0x1_FFFF {
+                // VIA 1
+                0x0000_0000..=0x0000_1FFF => self.via1.read(addr),
+                // VIA 2
+                0x0000_2000..=0x0000_3FFF => self.via2.read(addr),
+                // SCC
+                0x0000_4000..=0x0000_5FFF => self.scc.read(addr),
+                // SCSI
+                0x0001_0000..=0x0001_1FFF => self.scsi.read(addr),
+                // SCSI pseudo-DMA
+                0x0001_2000..=0x0001_2FFF => None,
+                // Sound
+                0x0001_4000..=0x0001_5FFF => None,
+                // IWM
+                0x0001_6000..=0x0001_7FFF => self.swim.read(addr),
+                _ => None,
+            },
             // NuBus super slot
             0x6000_0000..=0xEFFF_FFFF => None,
             // NuBus standard slot
@@ -475,20 +448,16 @@ where
     TRenderer: Renderer,
 {
     fn get_irq(&mut self) -> Option<u8> {
-        // Programmer's key
         if self.progkey_pressed.get_clear() {
+            return Some(7);
+        }
+        if self.scc.get_irq() {
             return Some(4);
         }
-        // SCC
-        if self.scc.get_irq() {
+        if self.via2.ifr.0 & self.via2.ier.0 != 0 {
             return Some(2);
         }
-        // VIA IRQs
         if self.via1.ifr.0 & self.via1.ier.0 != 0 {
-            return Some(1);
-        }
-        // SCSI IRQs
-        if self.model >= MacModel::SE && self.scsi.get_irq() && !self.via1.b_out.scsi_int() {
             return Some(1);
         }
 
