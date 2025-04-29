@@ -306,6 +306,7 @@ impl Emulator {
                 // Initialize bus and CPU
                 let bus = CompactMacBus::new(model, rom, renderer);
                 let mut cpu = CpuM68000::new(bus);
+                assert_eq!(cpu.get_type(), model.cpu_type());
 
                 // Initialize input devices
                 let adbmouse_sender = if model.has_adb() {
@@ -333,6 +334,7 @@ impl Emulator {
                 // Initialize bus and CPU
                 let bus = MacIIBus::new(model, rom, renderer);
                 let mut cpu = CpuM68020::new(bus);
+                assert_eq!(cpu.get_type(), model.cpu_type());
 
                 // Initialize input devices
                 let adbmouse_sender = if model.has_adb() {

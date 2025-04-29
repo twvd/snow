@@ -16,6 +16,15 @@ pub enum Register {
     SSP,
     PC,
     SR,
+    // M68010
+    DFC,
+    SFC,
+    VBR,
+    // M68020
+    CAAR,
+    CACR,
+    MSP,
+    ISP,
 }
 
 impl std::fmt::Display for Register {
@@ -27,16 +36,23 @@ impl std::fmt::Display for Register {
             Self::SSP => write!(f, "SSP"),
             Self::PC => write!(f, "PC"),
             Self::SR => write!(f, "SR"),
+            Self::DFC => write!(f, "DFC"),
+            Self::SFC => write!(f, "SFC"),
+            Self::VBR => write!(f, "VBR"),
+            Self::CAAR => write!(f, "CAAR"),
+            Self::CACR => write!(f, "CACR"),
+            Self::MSP => write!(f, "MSP"),
+            Self::ISP => write!(f, "ISP"),
         }
     }
 }
 
 bitfield! {
     /// SR register bitfield
-    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
     pub struct RegisterSR(pub u16): Debug, FromRaw, IntoRaw, DerefRaw {
         /// Full SR (with masking)
-        pub sr: u16 [set_fn (|v| v & 0b1010011100011111)] @ ..,
+        pub sr: u16 [set_fn (|v| v & 0b1011011100011111)] @ ..,
         /// Condition Code Register
         pub ccr: u8 @ 0..=4,
         /// Carry
@@ -53,6 +69,11 @@ bitfield! {
         /// Interrupt priority mask
         pub int_prio_mask: u8 @ 8..=10,
 
+        /// Master/Interrupt stack bit
+        /// 0 = ISP, 1 = MSP
+        /// 68020+ only
+        pub m: bool @ 12,
+
         /// Supervisor mode
         pub supervisor: bool @ 13,
 
@@ -62,7 +83,7 @@ bitfield! {
 }
 
 /// Full Motorola 680x0 register file
-#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, Default)]
 pub struct RegisterFile {
     /// Dx
     pub d: [Long; 8],
@@ -73,26 +94,37 @@ pub struct RegisterFile {
     /// User Stack Pointer
     pub usp: Address,
 
-    /// Supervisor Stack Pointer
-    pub ssp: Address,
+    /// Supervisor Stack Pointer (68000) / Interrupt Stack Pointer (68020+)
+    pub isp: Address,
 
     /// Status Register
     pub sr: RegisterSR,
 
     /// Program counter
     pub pc: Address,
+
+    /// Destination Function Code (68010+)
+    pub dfc: Long,
+
+    /// Source Function Code (68010+)
+    pub sfc: Long,
+
+    /// Vector Base Register (68010+)
+    pub vbr: Address,
+
+    /// Cache Address Register (68020+)
+    pub caar: Address,
+
+    /// Cache Control Register (68020+)
+    pub cacr: Long,
+
+    /// Master Stack Pointer (68020+)
+    pub msp: Address,
 }
 
 impl RegisterFile {
     pub fn new() -> Self {
-        Self {
-            a: [0; 7],
-            d: [0; 8],
-            usp: 0,
-            ssp: 0,
-            sr: RegisterSR(0),
-            pc: 0,
-        }
+        Default::default()
     }
 
     /// Creates a string with differences between this RegisterFile and another
@@ -124,8 +156,16 @@ impl RegisterFile {
             out.push_str(diff(format!("A{}", i), self.a[i], other.a[i]).as_str());
         }
         out.push_str(diff("USP".to_string(), self.usp, other.usp).as_str());
-        out.push_str(diff("SSP".to_string(), self.ssp, other.ssp).as_str());
+        out.push_str(diff("SSP/ISP".to_string(), self.isp, other.isp).as_str());
         // PC skipped
+        // 68010+
+        out.push_str(diff("DFC".to_string(), self.dfc, other.dfc).as_str());
+        out.push_str(diff("SFC".to_string(), self.sfc, other.sfc).as_str());
+        out.push_str(diff("VBR".to_string(), self.vbr, other.vbr).as_str());
+        // 68020+
+        out.push_str(diff("CAAR".to_string(), self.caar, other.caar).as_str());
+        out.push_str(diff("CACR".to_string(), self.cacr, other.cacr).as_str());
+        out.push_str(diff("MSP".to_string(), self.msp, other.msp).as_str());
 
         out.push_str(&diff_flag("C", self.sr.c(), other.sr.c()));
         out.push_str(&diff_flag("N", self.sr.n(), other.sr.n()));
@@ -153,7 +193,7 @@ impl RegisterFile {
     pub fn read_a<T: CpuSized>(&self, a: usize) -> T {
         T::chop(if a == 7 {
             if self.sr.supervisor() {
-                self.ssp
+                *self.ssp()
             } else {
                 self.usp
             }
@@ -171,8 +211,8 @@ impl RegisterFile {
             let adjust = std::cmp::max(2, adjust);
 
             if self.sr.supervisor() {
-                let result = self.ssp;
-                self.ssp = self.ssp.wrapping_add(adjust);
+                let result = *self.ssp();
+                *self.ssp_mut() = self.ssp().wrapping_add(adjust);
                 result
             } else {
                 let result = self.usp;
@@ -195,8 +235,8 @@ impl RegisterFile {
             let adjust = std::cmp::max(2, adjust);
 
             if self.sr.supervisor() {
-                self.ssp = self.ssp.wrapping_sub(adjust);
-                self.ssp
+                *self.ssp_mut() = self.ssp().wrapping_sub(adjust);
+                *self.ssp()
             } else {
                 self.usp = self.usp.wrapping_sub(adjust);
                 self.usp
@@ -214,7 +254,7 @@ impl RegisterFile {
 
         if a == 7 {
             if self.sr.supervisor() {
-                self.ssp = adj_val;
+                *self.ssp_mut() = adj_val;
             } else {
                 self.usp = adj_val;
             }
@@ -253,9 +293,16 @@ impl RegisterFile {
             Register::An(r) => self.write_a(r, value),
             Register::Dn(r) => self.write_d(r, value),
             Register::USP => self.usp = value.expand(),
-            Register::SSP => self.ssp = value.expand(),
+            Register::SSP => *self.ssp_mut() = value.expand(),
             Register::PC => panic!("Must be written through CpuM68k::set_pc"),
             Register::SR => self.sr.set_sr(value.expand() as u16),
+            Register::DFC => self.dfc = value.expand() & 0b111,
+            Register::SFC => self.sfc = value.expand() & 0b111,
+            Register::VBR => self.vbr = value.expand(),
+            Register::CAAR => self.caar = value.expand(),
+            Register::CACR => self.cacr = value.expand(),
+            Register::MSP => self.msp = value.expand(),
+            Register::ISP => self.isp = value.expand(),
         }
     }
 
@@ -265,9 +312,34 @@ impl RegisterFile {
             Register::An(r) => self.read_a(r),
             Register::Dn(r) => self.read_d(r),
             Register::USP => T::chop(self.usp),
-            Register::SSP => T::chop(self.ssp),
+            Register::SSP => T::chop(*self.ssp()),
             Register::PC => T::chop(self.pc),
             Register::SR => T::chop(self.sr.sr().into()),
+            Register::DFC => T::chop(self.dfc & 0b111),
+            Register::SFC => T::chop(self.sfc & 0b111),
+            Register::VBR => T::chop(self.vbr),
+            Register::CAAR => T::chop(self.caar),
+            Register::CACR => T::chop(self.cacr),
+            Register::MSP => T::chop(self.msp),
+            Register::ISP => T::chop(self.isp),
+        }
+    }
+
+    /// Reference to active SSP, mutable
+    pub fn ssp_mut(&mut self) -> &mut Address {
+        if self.sr.m() {
+            &mut self.msp
+        } else {
+            &mut self.isp
+        }
+    }
+
+    /// Reference to active SSP
+    pub fn ssp(&self) -> &Address {
+        if self.sr.m() {
+            &self.msp
+        } else {
+            &self.isp
         }
     }
 }
@@ -277,7 +349,7 @@ impl fmt::Display for RegisterFile {
         write!(
             f,
             "A: {:X?} D: {:X?} USP: {:06X} SSP: {:06X} PC: {:06X} SR: {:X?}",
-            self.a, self.d, self.usp, self.ssp, self.pc, self.sr
+            self.a, self.d, self.usp, self.isp, self.pc, self.sr
         )
     }
 }
@@ -326,31 +398,73 @@ mod tests {
     fn write_a7_user() {
         let mut r = RegisterFile::new();
         r.sr.set_supervisor(false);
-        r.ssp = 0;
+        r.isp = 0;
         r.usp = 0;
 
         r.write_a(7, 0x11223344_u32);
         assert_eq!(r.usp, 0x11223344);
-        assert_eq!(r.ssp, 0x00000000);
+        assert_eq!(r.isp, 0);
+        assert_eq!(r.msp, 0);
+    }
+
+    #[test]
+    fn write_a7_user_m() {
+        let mut r = RegisterFile::new();
+        r.sr.set_supervisor(false);
+        r.sr.set_m(true);
+        r.isp = 0;
+        r.usp = 0;
+
+        r.write_a(7, 0x11223344_u32);
+        assert_eq!(r.usp, 0x11223344);
+        assert_eq!(r.isp, 0);
+        assert_eq!(r.msp, 0);
     }
 
     #[test]
     fn write_a7_supervisor() {
         let mut r = RegisterFile::new();
         r.sr.set_supervisor(true);
-        r.ssp = 0;
+        r.isp = 0;
         r.usp = 0;
 
         r.write_a(7, 0x11223344_u32);
-        assert_eq!(r.ssp, 0x11223344);
-        assert_eq!(r.usp, 0x00000000);
+        assert_eq!(r.isp, 0x11223344);
+        assert_eq!(r.usp, 0);
+        assert_eq!(r.msp, 0);
+    }
+
+    #[test]
+    fn write_a7_supervisor_m() {
+        let mut r = RegisterFile::new();
+        r.sr.set_supervisor(true);
+        r.sr.set_m(true);
+        r.isp = 0;
+        r.usp = 0;
+        r.msp = 0;
+
+        r.write_a(7, 0x11223344_u32);
+        assert_eq!(r.isp, 0);
+        assert_eq!(r.usp, 0);
+        assert_eq!(r.msp, 0x11223344);
     }
 
     #[test]
     fn read_a7_user() {
         let mut r = RegisterFile::new();
         r.sr.set_supervisor(false);
-        r.ssp = 0;
+        r.isp = 0;
+        r.usp = 0x11223344;
+
+        assert_eq!(r.read_a::<Long>(7), 0x11223344_u32);
+    }
+
+    #[test]
+    fn read_a7_user_m() {
+        let mut r = RegisterFile::new();
+        r.sr.set_supervisor(false);
+        r.sr.set_m(true);
+        r.isp = 0;
         r.usp = 0x11223344;
 
         assert_eq!(r.read_a::<Long>(7), 0x11223344_u32);
@@ -361,7 +475,19 @@ mod tests {
         let mut r = RegisterFile::new();
         r.sr.set_supervisor(true);
         r.usp = 0;
-        r.ssp = 0x11223344;
+        r.isp = 0x11223344;
+
+        assert_eq!(r.read_a::<Long>(7), 0x11223344_u32);
+    }
+
+    #[test]
+    fn read_a7_supervisor_m() {
+        let mut r = RegisterFile::new();
+        r.sr.set_supervisor(true);
+        r.sr.set_m(true);
+        r.usp = 0;
+        r.isp = 0;
+        r.msp = 0x11223344;
 
         assert_eq!(r.read_a::<Long>(7), 0x11223344_u32);
     }

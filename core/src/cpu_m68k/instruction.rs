@@ -6,7 +6,7 @@ use num_traits::FromPrimitive;
 use strum::Display;
 
 use super::regs::Register;
-use super::{CpuM68kType, CpuSized, M68000};
+use super::{CpuM68kType, CpuSized, M68000, M68010};
 
 use crate::bus::Address;
 use crate::types::{Long, Word};
@@ -131,6 +131,7 @@ pub enum InstructionMnemonic {
     MOVE_b,
     MOVEA_w,
     MOVEA_l,
+    MOVEC_l,
     MOVEP_w,
     MOVEP_l,
     MOVEfromSR,
@@ -249,6 +250,36 @@ pub enum IndexSize {
     Long = 1,
 }
 
+/// MOVEC control register
+#[derive(FromPrimitive, Debug, Eq, PartialEq, strum::Display)]
+pub enum MovecCtrlReg {
+    // M68010
+    SFC = 0x000,
+    DFC = 0x001,
+    USP = 0x800,
+    VBR = 0x801,
+    // M68020/30/40
+    CACR = 0x002,
+    CAAR = 0x802,
+    MSP = 0x803,
+    ISP = 0x804,
+}
+
+impl From<MovecCtrlReg> for Register {
+    fn from(value: MovecCtrlReg) -> Self {
+        match value {
+            MovecCtrlReg::SFC => Self::SFC,
+            MovecCtrlReg::DFC => Self::DFC,
+            MovecCtrlReg::USP => Self::USP,
+            MovecCtrlReg::VBR => Self::VBR,
+            MovecCtrlReg::CACR => Self::CACR,
+            MovecCtrlReg::CAAR => Self::CAAR,
+            MovecCtrlReg::MSP => Self::MSP,
+            MovecCtrlReg::ISP => Self::ISP,
+        }
+    }
+}
+
 impl From<u16> for ExtWord {
     fn from(data: u16) -> Self {
         Self { data }
@@ -270,6 +301,12 @@ impl From<ExtWord> for u32 {
 impl From<ExtWord> for i32 {
     fn from(val: ExtWord) -> Self {
         val.data as i16 as Self
+    }
+}
+
+impl From<ExtWord> for usize {
+    fn from(val: ExtWord) -> Self {
+        val.data as Self
     }
 }
 
@@ -495,13 +532,16 @@ impl Instruction {
         (M68000, 0b1110_0000_1001_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROR_l),
         (M68000, 0b1110_0001_1001_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROL_l),
         (M68000, 0b1111_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::LINEF),
+
+        // M68010+ instructions
+        (M68010, 0b0100_1110_0111_1010, 0b1111_1111_1111_1110, InstructionMnemonic::MOVEC_l),
     ];
 
     /// Attempts to decode an instruction.
     pub fn try_decode(cpu_type: CpuM68kType, data: Word) -> Result<Self> {
         for &(_, val, mask, mnemonic) in Self::DECODE_TABLE
             .iter()
-            .filter(|(t, _, _, _)| *t >= cpu_type)
+            .filter(|(t, _, _, _)| *t <= cpu_type)
         {
             if data & mask == val {
                 return Ok(Self {
@@ -636,7 +676,7 @@ impl Instruction {
                 | AddressingMode::IndirectIndex
                 | AddressingMode::PCDisplacement
                 | AddressingMode::PCIndex
-        )
+        ) || matches!(self.mnemonic, InstructionMnemonic::MOVEC_l)
     }
 
     pub fn get_displacement(&self) -> Result<i32> {
@@ -742,7 +782,8 @@ impl Instruction {
             | InstructionMnemonic::SUBI_l
             | InstructionMnemonic::SUBQ_l
             | InstructionMnemonic::SUBX_l
-            | InstructionMnemonic::TST_l => InstructionSize::Long,
+            | InstructionMnemonic::TST_l
+            | InstructionMnemonic::MOVEC_l => InstructionSize::Long,
 
             InstructionMnemonic::ADD_w
             | InstructionMnemonic::ADDA_w
@@ -887,6 +928,33 @@ impl Instruction {
     /// Is this considered a branch instruction?
     pub fn is_branch(&self) -> bool {
         self.mnemonic == InstructionMnemonic::JSR || self.mnemonic == InstructionMnemonic::BSR
+    }
+
+    /// MOVEC dr field
+    pub fn movec_ctrl_to_gen(&self) -> bool {
+        debug_assert!(self.mnemonic == InstructionMnemonic::MOVEC_l);
+        (self.data & 1) == 0
+    }
+
+    /// MOVEC general register
+    pub fn movec_reg(&self) -> Result<Register> {
+        debug_assert!(self.mnemonic == InstructionMnemonic::MOVEC_l);
+
+        let extword = usize::from(self.get_extword()?);
+
+        let regnum = (extword >> 12) & 0b111;
+        Ok(if extword & (1 << 15) == 0 {
+            Register::Dn(regnum)
+        } else {
+            Register::An(regnum)
+        })
+    }
+
+    /// MOVEC control register
+    pub fn movec_ctrlreg(&self) -> Result<MovecCtrlReg> {
+        debug_assert!(self.mnemonic == InstructionMnemonic::MOVEC_l);
+        MovecCtrlReg::from_u16(u16::from(self.get_extword()?) & 0xFFF)
+            .context("Invalid control register")
     }
 }
 

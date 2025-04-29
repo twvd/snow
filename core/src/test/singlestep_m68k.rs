@@ -8,7 +8,7 @@ use std::path::Path;
 use crate::bus::testbus::{Access, Testbus};
 use crate::bus::{Address, Bus};
 use crate::cpu_m68k::regs::{RegisterFile, RegisterSR};
-use crate::cpu_m68k::{CpuM68000, M68000_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68000, M68000_ADDRESS_MASK, M68000_SR_MASK};
 use crate::tickable::Ticks;
 
 #[derive(Debug, Deserialize)]
@@ -136,9 +136,10 @@ fn create_regs(state: &TestcaseState) -> RegisterFile {
             state.d0, state.d1, state.d2, state.d3, state.d4, state.d5, state.d6, state.d7,
         ],
         usp: state.usp,
-        ssp: state.ssp,
-        sr: RegisterSR(state.sr),
+        isp: state.ssp,
+        sr: RegisterSR(state.sr & M68000_SR_MASK),
         pc: state.pc.wrapping_sub(4) & M68000_ADDRESS_MASK,
+        ..Default::default()
     }
 }
 
@@ -165,7 +166,7 @@ fn print_reg_diff(initial: &RegisterFile, fin: &RegisterFile, actual: &RegisterF
         pr(format!("D{}", d), initial.d[d], fin.d[d], actual.d[d]);
     }
     pr(String::from("USP"), initial.usp, fin.usp, actual.usp);
-    pr(String::from("SSP"), initial.ssp, fin.ssp, actual.ssp);
+    pr(String::from("SSP"), initial.isp, fin.isp, actual.isp);
     pr(String::from("PC"), initial.pc, fin.pc, actual.pc);
     pr(
         String::from("SR"),
@@ -316,7 +317,7 @@ fn run_testcase(testcase: Testcase, level: TestLevel) {
 
     for (addr, expected) in testcase.r#final.ram.clone().into_iter() {
         // TODO inaccuracy - check exception stack frames
-        if cpu.step_exception && (addr >= regs_final.ssp && addr < regs_final.ssp.wrapping_add(14))
+        if cpu.step_exception && (addr >= regs_final.isp && addr < regs_final.isp.wrapping_add(14))
         {
             continue;
         }

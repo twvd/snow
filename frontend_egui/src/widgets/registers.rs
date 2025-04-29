@@ -1,5 +1,6 @@
 use eframe::egui;
 use snow_core::cpu_m68k::regs::{Register, RegisterFile};
+use snow_core::cpu_m68k::{CpuM68kType, M68010, M68020};
 use snow_core::types::Long;
 
 /// egui widget to display Motorola 68000 register state
@@ -35,7 +36,7 @@ impl RegistersWidget {
         self.edited.take()
     }
 
-    pub fn draw(&mut self, ui: &mut egui::Ui) {
+    pub fn draw(&mut self, ui: &mut egui::Ui, cpu_type: CpuM68kType) {
         use egui_extras::{Column, TableBuilder};
 
         let available_height = ui.available_height();
@@ -140,8 +141,19 @@ impl RegistersWidget {
 
                 // Display special registers
                 register_row(Register::PC, &|r: &RegisterFile| r.pc);
-                register_row(Register::SSP, &|r: &RegisterFile| r.ssp);
+                register_row(Register::SSP, &|r: &RegisterFile| *r.ssp());
                 register_row(Register::USP, &|r: &RegisterFile| r.usp);
+                if cpu_type >= M68010 {
+                    register_row(Register::SFC, &|r: &RegisterFile| r.sfc);
+                    register_row(Register::DFC, &|r: &RegisterFile| r.dfc);
+                    register_row(Register::VBR, &|r: &RegisterFile| r.vbr);
+                }
+                if cpu_type >= M68020 {
+                    register_row(Register::CAAR, &|r: &RegisterFile| r.caar);
+                    register_row(Register::CACR, &|r: &RegisterFile| r.cacr);
+                    register_row(Register::MSP, &|r: &RegisterFile| r.msp);
+                    register_row(Register::ISP, &|r: &RegisterFile| r.isp);
+                }
 
                 // SR register is handled separately since it's a 16-bit value
                 body.row(20.0, |mut row| {

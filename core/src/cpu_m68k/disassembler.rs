@@ -11,8 +11,9 @@ use crate::{
     types::Byte,
 };
 
-use super::instruction::{
-    AddressingMode, Direction, Instruction, InstructionMnemonic, InstructionSize,
+use super::{
+    instruction::{AddressingMode, Direction, Instruction, InstructionMnemonic, InstructionSize},
+    CpuM68kType,
 };
 
 #[derive(Clone)]
@@ -570,6 +571,24 @@ impl<'a> Disassembler<'a> {
             }
 
             InstructionMnemonic::TRAP => format!("{} #{}", mnemonic, instr.trap_get_vector()),
+
+            // M68010+ -----------------------------------------------------------------------------
+            InstructionMnemonic::MOVEC_l => {
+                instr.fetch_extword(|| self.get16())?;
+
+                let (left, right) = if instr.movec_ctrl_to_gen() {
+                    (
+                        instr.movec_ctrlreg()?.to_string(),
+                        instr.movec_reg()?.to_string(),
+                    )
+                } else {
+                    (
+                        instr.movec_reg()?.to_string(),
+                        instr.movec_ctrlreg()?.to_string(),
+                    )
+                };
+                format!("{} {},{}", mnemonic, left, right)
+            }
         };
 
         Ok(())
@@ -586,7 +605,7 @@ impl Iterator for Disassembler<'_> {
         self.out.raw.push(op_msb);
         self.out.raw.push(op_lsb);
 
-        let instr = Instruction::try_decode(0, opcode);
+        let instr = Instruction::try_decode(CpuM68kType::MAX, opcode);
 
         if let Ok(i) = instr {
             self.do_instr(&i).ok()?;

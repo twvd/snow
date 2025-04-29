@@ -5,7 +5,12 @@ use sha2::{Digest, Sha256};
 
 use swim::drive::DriveType;
 
-use crate::{bus::Address, keymap::Keymap, tickable::Ticks};
+use crate::{
+    bus::Address,
+    cpu_m68k::{CpuM68kType, M68000, M68020},
+    keymap::Keymap,
+    tickable::Ticks,
+};
 
 pub mod adb;
 pub mod asc;
@@ -196,6 +201,18 @@ impl MacModel {
             Some(Self::MacII)
         } else {
             None
+        }
+    }
+
+    pub const fn cpu_type(self) -> CpuM68kType {
+        match self {
+            Self::Early128K
+            | Self::Early512K
+            | Self::Plus
+            | Self::SE
+            | Self::SeFdhd
+            | Self::Classic => M68000,
+            Self::MacII => M68020,
         }
     }
 }

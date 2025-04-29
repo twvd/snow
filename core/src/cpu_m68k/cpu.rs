@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::bus::{Address, Bus, BusResult, IrqSource};
+use crate::cpu_m68k::M68000_SR_MASK;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
 use crate::util::TemporalOrder;
@@ -17,7 +18,7 @@ use super::instruction::{
     AddressingMode, Direction, IndexSize, Instruction, InstructionMnemonic, Xn,
 };
 use super::regs::{Register, RegisterFile, RegisterSR};
-use super::{CpuM68kType, CpuSized, M68000, M68020};
+use super::{CpuM68kType, CpuSized, M68000, M68010, M68020, M68020_SR_MASK};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum BusBreakpoint {
@@ -244,6 +245,10 @@ where
         }
     }
 
+    pub const fn get_type(&self) -> CpuM68kType {
+        CPU_TYPE
+    }
+
     /// Resets the CPU, loads reset vector and initial SP
     pub fn reset(&mut self) -> Result<()> {
         self.regs = RegisterFile::new();
@@ -252,7 +257,7 @@ where
         let init_pc = self.read_ticks(VECTOR_RESET)?;
 
         info!("Reset - SSP: {:08X}, PC: {:08X}", init_ssp, init_pc);
-        self.regs.ssp = init_ssp;
+        self.regs.isp = init_ssp;
         self.regs.sr.set_supervisor(true);
         self.regs.sr.set_int_prio_mask(7);
         self.set_pc(init_pc)?;
@@ -705,6 +710,15 @@ where
         Ok(())
     }
 
+    /// Sets SR, masking CPU model dependent bits accordingly
+    pub fn set_sr(&mut self, sr: Word) {
+        self.regs.sr.set_sr(match CPU_TYPE {
+            M68000 => sr & M68000_SR_MASK,
+            M68020 => sr & M68020_SR_MASK,
+            _ => unreachable!(),
+        });
+    }
+
     /// Gets the location where the next fetch() would occur from,
     /// regardless of the prefetch queue.
     fn get_fetch_addr(&self) -> Address {
@@ -732,8 +746,8 @@ where
         // Update mask
         self.regs.sr.set_int_prio_mask(level);
 
-        self.regs.ssp = self.regs.ssp.wrapping_sub(6);
-        self.write_ticks(self.regs.ssp.wrapping_add(0), saved_sr)?;
+        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(6);
+        self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
 
         // 6 cycles idle
         self.advance_cycles(6)?;
@@ -742,8 +756,8 @@ where
         // 4 cycles idle
         self.advance_cycles(4)?;
 
-        self.write_ticks(self.regs.ssp.wrapping_add(4), self.regs.pc as u16)?;
-        self.write_ticks(self.regs.ssp.wrapping_add(2), (self.regs.pc >> 16) as u16)?;
+        self.write_ticks(self.regs.ssp().wrapping_add(4), self.regs.pc as u16)?;
+        self.write_ticks(self.regs.ssp().wrapping_add(2), (self.regs.pc >> 16) as u16)?;
 
         if self
             .breakpoints
@@ -757,7 +771,8 @@ where
         }
 
         // Jump to vector
-        let new_pc = self.read_ticks::<Long>(vector)?;
+        let vector_base = if CPU_TYPE >= M68010 { self.regs.vbr } else { 0 };
+        let new_pc = self.read_ticks::<Long>(vector_base.wrapping_add(vector))?;
         self.set_pc(new_pc)?;
         self.prefetch_pump()?;
         self.advance_cycles(2)?; // 2x idle
@@ -799,20 +814,23 @@ where
                     details.read, details.address, self.regs.pc
                 );
 
-                self.regs.ssp = self.regs.ssp.wrapping_sub(14);
-                self.write_ticks(self.regs.ssp.wrapping_add(12), self.regs.pc as u16)?;
-                self.write_ticks(self.regs.ssp.wrapping_add(8), saved_sr)?;
-                self.write_ticks(self.regs.ssp.wrapping_add(10), (self.regs.pc >> 16) as u16)?;
-                self.write_ticks(self.regs.ssp.wrapping_add(6), details.ir)?;
-                self.write_ticks(self.regs.ssp.wrapping_add(4), details.address as u16)?;
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(14);
+                self.write_ticks(self.regs.ssp().wrapping_add(12), self.regs.pc as u16)?;
+                self.write_ticks(self.regs.ssp().wrapping_add(8), saved_sr)?;
+                self.write_ticks(
+                    self.regs.ssp().wrapping_add(10),
+                    (self.regs.pc >> 16) as u16,
+                )?;
+                self.write_ticks(self.regs.ssp().wrapping_add(6), details.ir)?;
+                self.write_ticks(self.regs.ssp().wrapping_add(4), details.address as u16)?;
                 // Function code (3), I/N (1), R/W (1)
                 // TODO I/N, function code..
                 self.write_ticks(
-                    self.regs.ssp.wrapping_add(0),
+                    self.regs.ssp().wrapping_add(0),
                     if details.read { 1_u16 << 4 } else { 0_u16 },
                 )?;
                 self.write_ticks(
-                    self.regs.ssp.wrapping_add(2),
+                    self.regs.ssp().wrapping_add(2),
                     (details.address >> 16) as u16,
                 )?;
             }
@@ -822,10 +840,10 @@ where
                 //    group, vector, self.regs.pc
                 //);
 
-                self.regs.ssp = self.regs.ssp.wrapping_sub(6);
-                self.write_ticks(self.regs.ssp.wrapping_add(4), self.regs.pc as u16)?;
-                self.write_ticks(self.regs.ssp.wrapping_add(0), saved_sr)?;
-                self.write_ticks(self.regs.ssp.wrapping_add(2), (self.regs.pc >> 16) as u16)?;
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(6);
+                self.write_ticks(self.regs.ssp().wrapping_add(4), self.regs.pc as u16)?;
+                self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
+                self.write_ticks(self.regs.ssp().wrapping_add(2), (self.regs.pc >> 16) as u16)?;
             }
         }
 
@@ -840,7 +858,8 @@ where
             self.breakpoint_hit.set();
         }
 
-        let new_pc = self.read_ticks::<Long>(vector)?;
+        let vector_base = if CPU_TYPE >= M68010 { self.regs.vbr } else { 0 };
+        let new_pc = self.read_ticks::<Long>(vector_base.wrapping_add(vector))?;
         self.set_pc(new_pc)?;
         self.prefetch_pump()?;
         self.advance_cycles(2)?; // 2x idle
@@ -1074,6 +1093,9 @@ where
                 self.advance_cycles(4)?;
                 self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEF, None)
             }
+
+            // M68010 ------------------------------------------------------------------------------
+            InstructionMnemonic::MOVEC_l => self.op_movec(instr),
         }
     }
 
@@ -1444,7 +1466,7 @@ where
 
         let a = self.fetch_immediate()?;
         let b = self.regs.sr.sr();
-        self.regs.sr.set_sr(calcfn(a, b));
+        self.set_sr(calcfn(a, b));
 
         // Idle cycles and dummy read
         self.advance_cycles(8)?;
@@ -2175,7 +2197,7 @@ where
         self.advance_cycles(4)?;
         self.read_ticks::<Word>(self.regs.pc.wrapping_add(2) & ADDRESS_MASK)?;
 
-        self.regs.sr.set_sr(value);
+        self.set_sr(value);
         Ok(())
     }
 
@@ -2405,10 +2427,10 @@ where
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
         }
 
-        let sr = self.read_ticks(self.regs.ssp.wrapping_add(0))?;
-        let pc = self.read_ticks(self.regs.ssp.wrapping_add(2))?;
-        self.regs.ssp = self.regs.ssp.wrapping_add(6);
-        self.regs.sr.set_sr(sr);
+        let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
+        let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+        *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(6);
+        self.set_sr(sr);
         self.set_pc(pc)?;
         self.prefetch_refill()?;
 
@@ -2849,6 +2871,28 @@ where
 
         Ok(())
     }
+
+    fn op_movec(&mut self, instr: &Instruction) -> Result<()> {
+        // Bus access and cycles are an approximation based on UM/PRM
+        instr.fetch_extword(|| self.fetch())?;
+
+        if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+
+        if instr.movec_ctrl_to_gen() {
+            let val = self.regs.read::<Long>(instr.movec_ctrlreg()?.into());
+            self.regs.write(instr.movec_reg()?, val);
+            self.advance_cycles(4)?;
+        } else {
+            let val = self.regs.read::<Long>(instr.movec_reg()?);
+            self.regs.write(instr.movec_ctrlreg()?.into(), val);
+            self.advance_cycles(2)?;
+        }
+
+        Ok(())
+    }
 }
 
 impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType> Tickable
@@ -2860,5 +2904,27 @@ where
         self.step()?;
 
         Ok(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::bus::testbus::Testbus;
+    use crate::cpu_m68k::{CpuM68000, CpuM68020, M68020_ADDRESS_MASK};
+
+    use super::*;
+
+    #[test]
+    fn sr_68000() {
+        let mut cpu = CpuM68000::<Testbus<Address, Byte>>::new(Testbus::new(M68000_ADDRESS_MASK));
+        cpu.set_sr(0xFFFF);
+        assert!(!cpu.regs.sr.m());
+    }
+
+    #[test]
+    fn sr_68020() {
+        let mut cpu = CpuM68020::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
+        cpu.set_sr(0xFFFF);
+        assert!(cpu.regs.sr.m());
     }
 }

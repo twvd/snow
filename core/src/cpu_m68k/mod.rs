@@ -13,15 +13,18 @@ use crate::util::lossyinto::LossyInto;
 /// Motorola 68000
 pub type CpuM68000<TBus> = cpu::CpuM68k<TBus, M68000_ADDRESS_MASK, M68000>;
 pub const M68000_ADDRESS_MASK: Address = 0x00FFFFFF;
+pub const M68000_SR_MASK: u16 = 0b1010011100011111;
 
 /// Motorola 68020
 pub type CpuM68020<TBus> = cpu::CpuM68k<TBus, M68020_ADDRESS_MASK, M68020>;
 pub const M68020_ADDRESS_MASK: Address = 0xFFFFFFFF;
+pub const M68020_SR_MASK: u16 = 0b1011011100011111;
 
 // CPU type constants for the CPU_TYPE const generic parameter of CpuM68k
 // Should be replaced witb enum const generic if that ever comes to Rust..
 pub type CpuM68kType = usize;
 pub const M68000: CpuM68kType = 68000;
+pub const M68010: CpuM68kType = 68010;
 pub const M68020: CpuM68kType = 68020;
 
 /// Trait to deal with the differently sized instructions for:

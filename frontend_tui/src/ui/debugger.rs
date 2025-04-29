@@ -161,7 +161,7 @@ impl StatefulWidget for DebuggerWidget<'_> {
             Line::from(""),
             reg("PC", &|r: &RegisterFile| r.pc),
             Line::from(""),
-            reg("SSP", &|r: &RegisterFile| r.ssp),
+            reg("SSP", &|r: &RegisterFile| r.isp),
             reg("USP", &|r: &RegisterFile| r.usp),
             Line::from(""),
             Line::from(vec![
