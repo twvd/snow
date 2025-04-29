@@ -134,6 +134,8 @@ fn empty_decode_cache() -> DecodeCache {
 }
 
 #[derive(Clone, Eq, PartialEq)]
+// The point of this enum is to mostly store instructions without allocation
+#[allow(clippy::large_enum_variant)]
 pub enum HistoryEntry {
     Instruction(HistoryEntryInstruction),
     Exception { vector: Address, cycles: Ticks },

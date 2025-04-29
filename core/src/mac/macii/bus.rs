@@ -56,15 +56,13 @@ pub struct MacIIBus<TRenderer: Renderer> {
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
 
-    /// Last pushed audio sample
-    last_audiosample: u8,
-
+    // /// Last pushed audio sample
+    //last_audiosample: u8,
     /// Last vblank time (for syncing to video)
     vblank_time: Instant,
 
-    /// VPA/E-clock sync in progress
-    vpa_sync: bool,
-
+    // /// VPA/E-clock sync in progress
+    //vpa_sync: bool,
     /// Programmer's key pressed
     progkey_pressed: LatchingEvent,
 }
@@ -110,9 +108,9 @@ where
 
             overlay: true,
             speed: EmulatorSpeed::Accurate,
-            last_audiosample: 0,
+            //last_audiosample: 0,
             vblank_time: Instant::now(),
-            vpa_sync: false,
+            //vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
         };
 
@@ -282,7 +280,7 @@ where
     }
 
     /// Updates the mouse position (relative coordinates) and button state
-    pub fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) {
+    pub fn mouse_update_rel(&mut self, relx: i16, rely: i16, _button: Option<bool>) {
         let old_x = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_X);
         let old_y = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_Y);
 
@@ -347,7 +345,7 @@ where
     }
 
     /// Tests for wait states on bus access
-    fn in_waitstate(&mut self, addr: Address) -> bool {
+    fn in_waitstate(&self, _addr: Address) -> bool {
         // TODO
         false
     }

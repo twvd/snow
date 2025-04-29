@@ -9,6 +9,7 @@ pub type AudioBuffer = Box<[u8]>;
 
 /// Apple Sound Chip
 /// TODO currently just stubbed
+#[allow(dead_code)]
 pub struct Asc {
     sender: Sender<AudioBuffer>,
     pub receiver: Receiver<AudioBuffer>,
