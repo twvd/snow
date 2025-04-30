@@ -275,30 +275,30 @@ impl Via {
 
 impl BusMember<Address> for Via {
     fn read(&mut self, addr: Address) -> Option<Byte> {
-        match addr & 0xFFFF {
+        match (addr >> 9) & 0xF {
             // Timer 2 counter LSB
-            0xF1FE => {
+            0x08 => {
                 self.ifr.set_t2(false);
                 Some(self.t2cnt.lsb())
             }
             // Timer 2 counter MSB
-            0xF3FE => Some(self.t2cnt.msb()),
+            0x09 => Some(self.t2cnt.msb()),
 
             // Timer 1 counter LSB
-            0xE9FE => {
+            0x04 => {
                 self.ifr.set_t1(false);
                 Some(self.t1cnt.lsb())
             }
             // Timer 1 counter MSB
-            0xEBFE => Some(self.t1cnt.msb()),
+            0x05 => Some(self.t1cnt.msb()),
 
             // Timer 1 latch LSB
-            0xEDFE => Some(self.t1latch.lsb()),
+            0x06 => Some(self.t1latch.lsb()),
             // Timer 1 latch MSB
-            0xEFFE => Some(self.t1latch.msb()),
+            0x07 => Some(self.t1latch.msb()),
 
             // Register B
-            0xE1FE => {
+            0x00 => {
                 self.ifr.set_kbddata(false);
                 self.ifr.set_kbdclock(false);
 
@@ -311,25 +311,25 @@ impl BusMember<Address> for Via {
             }
 
             // Register B Data Direction
-            0xE5FE => Some(self.ddrb.0),
+            0x02 => Some(self.ddrb.0),
 
             // Register A Data Direction
-            0xE7FE => Some(self.ddra.0),
+            0x03 => Some(self.ddra.0),
 
             // Keyboard shift register
-            0xF5FE => {
+            0x0A => {
                 self.ifr.set_kbdready(false);
                 Some(self.kbdshift_in)
             }
 
             // Auxiliary Control Register
-            0xF7FE => Some(self.acr.0),
+            0x0B => Some(self.acr.0),
 
             // Peripheral Control Register
-            0xF9FE => Some(self.pcr.0),
+            0x0C => Some(self.pcr.0),
 
             // Interrupt Flag Register
-            0xFBFE => {
+            0x0D => {
                 let mut val = self.ifr.0 & 0x7F;
                 if self.ifr.0 & self.ier.0 != 0 {
                     val |= 0x80;
@@ -338,10 +338,10 @@ impl BusMember<Address> for Via {
             }
 
             // Interrupt Enable Register
-            0xFDFE => Some(self.ier.0 | 0x80),
+            0x0E => Some(self.ier.0 | 0x80),
 
             // Register A
-            0xFFFE => {
+            0x01 | 0x0F => {
                 // The SCC write request bit is used for checking if there's data ready
                 // from the SCC in critical sections where SCC interrupts are disabled.
                 // Reporting 1 signals that there's no data ready.
@@ -357,12 +357,12 @@ impl BusMember<Address> for Via {
     }
 
     fn write(&mut self, addr: Address, val: Byte) -> Option<()> {
-        match addr & 0xFFFF {
+        match (addr >> 9) & 0x0F {
             // Timer 2 counter LSB
-            0xF1FE => Some(self.t2latch.set_lsb(val)),
+            0x08 => Some(self.t2latch.set_lsb(val)),
 
             // Timer 2 counter MSB
-            0xF3FE => {
+            0x09 => {
                 self.t2latch.set_msb(val);
 
                 // Clear interrupt flag
@@ -375,10 +375,10 @@ impl BusMember<Address> for Via {
             }
 
             // Timer 1 counter LSB, Timer 1 latch LSB
-            0xE9FE | 0xEDFE => Some(self.t1latch.set_lsb(val)),
+            0x04 | 0x06 => Some(self.t1latch.set_lsb(val)),
 
             // Timer 1 latch MSB
-            0xEFFE => {
+            0x07 => {
                 self.t1latch.set_msb(val);
 
                 // Clear interrupt flag
@@ -388,7 +388,7 @@ impl BusMember<Address> for Via {
             }
 
             // Timer 1 counter MSB
-            0xEBFE => {
+            0x05 => {
                 self.t1latch.set_msb(val);
                 self.t1cnt.0 = self.t1latch.0;
 
@@ -401,7 +401,7 @@ impl BusMember<Address> for Via {
             }
 
             // Keyboard shift register
-            0xF5FE => {
+            0x0A => {
                 self.ifr.set_kbdready(false);
 
                 self.kbdshift_out = val;
@@ -414,7 +414,7 @@ impl BusMember<Address> for Via {
             }
 
             // Register B
-            0xE1FE => {
+            0x00 => {
                 self.ifr.set_kbddata(false);
                 self.ifr.set_kbdclock(false);
 
@@ -437,25 +437,25 @@ impl BusMember<Address> for Via {
             }
 
             // Register B Data Direction
-            0xE5FE => Some(self.ddrb.0 = val),
+            0x02 => Some(self.ddrb.0 = val),
 
             // Register A Data Direction
-            0xE7FE => Some(self.ddra.0 = val),
+            0x03 => Some(self.ddra.0 = val),
 
             // Auxiliary Control Register
-            0xF7FE => Some(self.acr.0 = val),
+            0x0B => Some(self.acr.0 = val),
 
             // Peripheral Control Register
-            0xF9FE => Some(self.pcr.0 = val),
+            0x0C => Some(self.pcr.0 = val),
 
             // Interrupt Flag register
-            0xFBFE => {
+            0x0D => {
                 self.ifr.0 &= !(val & 0x7F);
                 Some(())
             }
 
             // Interrupt Enable register
-            0xFDFE => {
+            0x0E => {
                 let newflags = if val & 0x80 != 0 {
                     // Enable
                     RegisterIRQ(self.ier.0 | (val & 0x7F))
@@ -468,7 +468,7 @@ impl BusMember<Address> for Via {
             }
 
             // Register A
-            0xFFFE => {
+            0x01 | 0x0F => {
                 self.ifr.set_vblank(false);
                 self.ifr.set_onesec(false);
 
