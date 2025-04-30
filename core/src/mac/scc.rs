@@ -420,36 +420,34 @@ impl Scc {
     pub fn has_tx_data(&self, ch: SccCh) -> bool {
         !self.ch[ch.to_usize().unwrap()].tx_queue.is_empty()
     }
+
+    pub fn decode_addr(addr: Address) -> (SccCh, bool) {
+        let ch = if addr & (1 << 0) == 0 {
+            SccCh::B
+        } else {
+            SccCh::A
+        };
+        let ctrl = addr & (1 << 1) == 0;
+        (ch, ctrl)
+    }
 }
 
 impl BusMember<Address> for Scc {
     fn read(&mut self, addr: Address) -> Option<Byte> {
-        match addr {
-            // Channel B Control
-            0x9FFFF8 => Some(self.read_ctrl(SccCh::B)),
-            // Channel A Control
-            0x9FFFFA => Some(self.read_ctrl(SccCh::A)),
-            // Channel B Data
-            0x9FFFFC => Some(self.read_data(SccCh::B)),
-            // Channel A Data
-            0x9FFFFE => Some(self.read_data(SccCh::A)),
-
-            _ => None,
+        let (ch, ctrl) = Self::decode_addr(addr);
+        if ctrl {
+            Some(self.read_ctrl(ch))
+        } else {
+            Some(self.read_data(ch))
         }
     }
 
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
-        match addr {
-            // Channel B Control
-            0xBFFFF9 => Some(self.write_ctrl(SccCh::B, val)),
-            // Channel A Control
-            0xBFFFFB => Some(self.write_ctrl(SccCh::A, val)),
-            // Channel B Data
-            0xBFFFFD => Some(self.write_data(SccCh::B, val)),
-            // Channel A Data
-            0xBFFFFF => Some(self.write_data(SccCh::A, val)),
-
-            _ => None,
+        let (ch, ctrl) = Self::decode_addr(addr);
+        if ctrl {
+            Some(self.write_ctrl(ch, val))
+        } else {
+            Some(self.write_data(ch, val))
         }
     }
 }

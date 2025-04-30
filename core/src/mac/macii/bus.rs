@@ -179,7 +179,7 @@ where
                 // VIA 2
                 0x0000_2000..=0x0000_3FFF => self.via2.write(addr, val),
                 // SCC
-                0x0000_4000..=0x0000_5FFF => self.scc.write(addr, val),
+                0x0000_4000..=0x0000_5FFF => self.scc.write(addr >> 1, val),
                 // SCSI
                 0x0001_0000..=0x0001_1FFF => self.scsi.write(addr, val),
                 // SCSI pseudo-DMA
@@ -228,7 +228,7 @@ where
                 // VIA 2
                 0x0000_2000..=0x0000_3FFF => self.via2.read(addr),
                 // SCC
-                0x0000_4000..=0x0000_5FFF => self.scc.read(addr),
+                0x0000_4000..=0x0000_5FFF => self.scc.read(addr >> 1),
                 // SCSI
                 0x0001_0000..=0x0001_1FFF => self.scsi.read(addr),
                 // SCSI pseudo-DMA
