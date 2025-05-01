@@ -56,7 +56,7 @@ impl MacModel {
             Self::Early128K => 128 * 1024,
             Self::Early512K => 512 * 1024,
             Self::Plus | Self::SE | Self::SeFdhd | Self::Classic => 4096 * 1024,
-            Self::MacII => 8 * 1024,
+            Self::MacII => 8 * 1024 * 1024,
         }
     }
 

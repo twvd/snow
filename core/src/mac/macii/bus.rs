@@ -187,7 +187,9 @@ where
                 // Sound
                 0x0001_4000..=0x0001_5FFF => None,
                 // IWM
-                0x0001_6000..=0x0001_7FFF => self.swim.write(addr, val),
+                0x0001_6000..=0x0001_FFFF => self.swim.write(addr, val),
+                // Expansion area
+                //0x0001_8000..=0x0001_FFFF => Some(()),
                 _ => None,
             },
             // NuBus super slot
@@ -236,7 +238,9 @@ where
                 // Sound
                 0x0001_4000..=0x0001_5FFF => None,
                 // IWM
-                0x0001_6000..=0x0001_7FFF => self.swim.read(addr),
+                0x0001_6000..=0x0001_FFFF => self.swim.read(addr),
+                // Expansion area
+                //0x0001_8000..=0x0001_FFFF => Some(0xFF),
                 _ => None,
             },
             // NuBus super slot
