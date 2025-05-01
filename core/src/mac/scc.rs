@@ -294,6 +294,7 @@ impl Scc {
 
         let result = match (self.reg, ch) {
             (0 | 4, _) => *RdReg0::default()
+                .with_rx_char(!self.ch[chi].rx_queue.is_empty())
                 .with_tx_empty(true)
                 .with_tx_underrun(true)
                 .with_sync_hunt(self.ch[chi].hunt),
