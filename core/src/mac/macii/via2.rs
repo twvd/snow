@@ -1,7 +1,6 @@
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
-use crate::mac::pluskbd::PlusKeyboard;
-use crate::mac::rtc::Rtc;
+use crate::mac::MacModel;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, Field16};
 
@@ -9,94 +8,50 @@ use anyhow::Result;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
-use super::adb::AdbTransceiver;
-use super::MacModel;
-
-/// Counter at which to trigger the one second interrupt
-/// (counted on the E Clock)
-const ONESEC_TICKS: Ticks = 783360;
-
-/// Time until a keyboard response is created
-///
-/// Time for the host command to be clocked out is:
-/// 840us + (180us [clock low] + 220us [clock high]) * 8 + 80us
-///
-/// Time for the keyboard response to be clocked in:
-/// (160us [clock low] + 180us [clock high]) * 8
-/// = 6840us, roughly 7ms.
-const KEYBOARD_DELAY: Ticks = ONESEC_TICKS * 7 / 1000;
-
-const SHIFT_DELAY: Ticks = ONESEC_TICKS * 3 / 1000;
-
 bitfield! {
-    /// VIA Register A (for classic models)
+    /// VIA Register A
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct RegisterA(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
-        /// Sound volume
-        /// Reserved on Mac II
-        pub sound: u8 @ 0..=2,
-
-        /// Sound buffer
-        /// (true = main, false = alternate)
-        pub sndpg2: bool @ 3,
-
-        /// ROM overlay map is used when set (512K and Plus)
-        pub overlay: bool @ 4,
-
-        /// Floppy drive select
-        pub drivesel: bool @ 4,
-
-        /// Disk SEL line
-        pub sel: bool @ 5,
-
-        /// Video page to be used by video circuitry
-        /// (true = main, false = alternate)
-        pub page2: bool @ 6,
-
-        /// SCC Wait/Request (false)
-        pub sccwrreq: bool @ 7,
+        /// Expansion slot $9 IRQ
+        pub v2irq1: bool @ 0,
+        /// Expansion slot $A IRQ
+        pub v2irq2: bool @ 1,
+        /// Expansion slot $B IRQ
+        pub v2irq3: bool @ 2,
+        /// Expansion slot $C IRQ
+        pub v2irq4: bool @ 3,
+        /// Expansion slot $D IRQ
+        pub v2irq5: bool @ 4,
+        /// Expansion slot $E IRQ
+        pub v2irq6: bool @ 5,
+        /// RAM-size (output)
+        pub v2ram0: u8 @ 6..=7,
     }
 }
 
 bitfield! {
-    /// VIA Register B (for classic models)
+    /// VIA Register B
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct RegisterB(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
-        /// RTC data line
-        pub rtcdata: bool @ 0,
+        /// 0 = Disable CPU instruction/data cache
+        pub v2cdis: bool @ 0,
 
-        /// RTC clock line
-        pub rtcclk: bool @ 1,
+        /// 0 = NuBus transactions locked out
+        pub v2buslk: bool @ 1,
 
-        /// RTC enabled
-        pub rtcenb: bool @ 2,
+        /// 0 = power off
+        pub v2poweroff: bool @ 2,
 
-        /// Mouse switch (false = down) (512K and Plus)
-        pub sw: bool @ 3,
+        /// PMMU/AMU control
+        /// For AMU: 0 = 24-bit
+        pub vfc3: bool @ 3,
 
-        /// ADB interrupt (SE+)
-        pub adb_int: bool @ 3,
+        /// NuBus transfer acknowledge
+        pub v2tmxa: u8 @ 4..=5,
 
-        /// Mouse X2 (512K and Plus)
-        pub x2: bool @ 4,
+        pub v2sndext: bool @ 6,
+        pub v2vbl: bool @ 7,
 
-        /// ADB state input 0 (ST0) (SE+)
-        pub adb_st0: bool @ 4,
-
-        /// Mouse Y2 (512K and Plus)
-        pub y2: bool @ 5,
-
-        /// ADB state input 1 (ST1) (SE+)
-        pub adb_st1: bool @ 5,
-
-        /// HBlank (512K and Plus)
-        pub h4: bool @ 6,
-
-        /// SCSI interrupt (false = enabled) (SE+)
-        pub scsi_int: bool @ 6,
-
-        /// Sound enable
-        pub sndenb: bool @ 7,
     }
 }
 
@@ -174,8 +129,9 @@ bitfield! {
 }
 
 /// Synertek SY6522 Versatile Interface Adapter
-pub struct Via {
+pub struct Via2 {
     /// The currently emulated Macintosh model
+    #[allow(dead_code)]
     model: MacModel,
 
     /// Register A, outputs
@@ -214,9 +170,6 @@ pub struct Via {
     /// Timer 2 latch
     pub t2latch: Field16,
 
-    /// Counter for the one-second timer
-    onesec: Ticks,
-
     kbdshift_in: u8,
     kbdshift_out: u8,
     kbdshift_out_time: Ticks,
@@ -229,28 +182,18 @@ pub struct Via {
 
     /// Timer 1 latch
     pub t1latch: Field16,
-
-    pub keyboard: PlusKeyboard,
-    pub(crate) rtc: Rtc,
-
-    pub(crate) adb: AdbTransceiver,
 }
 
-impl Via {
+impl Via2 {
     pub fn new(model: MacModel) -> Self {
         Self {
             model,
-            a_out: RegisterA(0xFF),
-            b_out: RegisterB(0xFF),
-            a_in: RegisterA(0xFF)
-                .with_sndpg2(
-                    // Mac Classic has a pulldown (R79) as model identifier
-                    model != MacModel::Classic,
-                )
-                .with_sound(if model == MacModel::MacII { 0 } else { 3 }),
+            a_out: RegisterA(0),
+            b_out: RegisterB(0),
+            a_in: RegisterA(0xFF),
             b_in: RegisterB(0xFF),
-            ddra: RegisterA(0xFF),
-            ddrb: RegisterB(0xFF),
+            ddra: RegisterA(0),
+            ddrb: RegisterB(0),
             ier: RegisterIRQ(0),
             ifr: RegisterIRQ(0),
             acr: RegisterACR(0),
@@ -264,19 +207,14 @@ impl Via {
             t1latch: Field16(0),
             t1_enable: false,
 
-            onesec: 0,
             kbdshift_in: 0,
             kbdshift_out: 0,
             kbdshift_out_time: 0,
-
-            keyboard: PlusKeyboard::default(),
-            rtc: Rtc::default(),
-            adb: AdbTransceiver::default(),
         }
     }
 }
 
-impl BusMember<Address> for Via {
+impl BusMember<Address> for Via2 {
     fn read(&mut self, addr: Address) -> Option<Byte> {
         match (addr >> 9) & 0xF {
             // Timer 2 counter LSB
@@ -304,11 +242,6 @@ impl BusMember<Address> for Via {
             0x00 => {
                 self.ifr.set_kbddata(false);
                 self.ifr.set_kbdclock(false);
-
-                // Lazy update ADB Int to current state
-                if self.model.has_adb() {
-                    self.b_in.set_adb_int(!self.adb.get_int());
-                }
 
                 Some((self.b_in.0 & !self.ddrb.0) | (self.b_out.0 & self.ddrb.0))
             }
@@ -345,11 +278,6 @@ impl BusMember<Address> for Via {
 
             // Register A
             0x01 | 0x0F => {
-                // The SCC write request bit is used for checking if there's data ready
-                // from the SCC in critical sections where SCC interrupts are disabled.
-                // Reporting 1 signals that there's no data ready.
-                self.a_in.set_sccwrreq(true);
-
                 self.ifr.set_vblank(false);
                 self.ifr.set_onesec(false);
 
@@ -405,14 +333,10 @@ impl BusMember<Address> for Via {
 
             // Keyboard shift register
             0x0A => {
+                log::warn!("Shifter write on VIA2");
                 self.ifr.set_kbdready(false);
 
                 self.kbdshift_out = val;
-                if self.model.has_adb() {
-                    self.kbdshift_out_time = SHIFT_DELAY;
-                } else {
-                    self.kbdshift_out_time = KEYBOARD_DELAY;
-                }
                 Some(())
             }
 
@@ -422,25 +346,17 @@ impl BusMember<Address> for Via {
                 self.ifr.set_kbdclock(false);
 
                 self.b_out.0 = val;
-                let rtcin = self.rtc.io(
-                    self.b_out.rtcenb(),
-                    self.b_out.rtcclk(),
-                    self.b_out.rtcdata(),
-                );
-                self.b_in.set_rtcdata(rtcin);
-
-                if self.model.has_adb() {
-                    if let Some(b) = self.adb.io(self.b_out.adb_st0(), self.b_out.adb_st1()) {
-                        self.kbdshift_in = b;
-                        self.ifr.set_kbdready(true);
-                    }
-                }
+                log::debug!("VIA2 Reg B: {:?}", self.b_out);
 
                 Some(())
             }
 
             // Register B Data Direction
-            0x02 => Some(self.ddrb.0 = val),
+            0x02 => {
+                self.ddrb.0 = val;
+                log::debug!("VIA2 DDRB: {:?}", self.ddrb);
+                Some(())
+            }
 
             // Register A Data Direction
             0x03 => Some(self.ddra.0 = val),
@@ -476,6 +392,7 @@ impl BusMember<Address> for Via {
                 self.ifr.set_onesec(false);
 
                 self.a_out.0 = val;
+                log::debug!("VIA2 Reg A: {:?}", self.a_out);
                 Some(())
             }
 
@@ -484,18 +401,8 @@ impl BusMember<Address> for Via {
     }
 }
 
-impl Tickable for Via {
+impl Tickable for Via2 {
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
-        // This is ticked on the E Clock
-        self.onesec += ticks;
-
-        // One second interrupt
-        if self.onesec >= ONESEC_TICKS {
-            self.onesec -= ONESEC_TICKS;
-            self.ifr.set_onesec(true);
-            self.rtc.second();
-        }
-
         // Timer 1
         let t1ovf;
         (self.t1cnt.0, t1ovf) = self.t1cnt.0.overflowing_sub(ticks.try_into()?);
@@ -524,30 +431,11 @@ impl Tickable for Via {
             self.ifr.set_t2(true);
         }
 
-        // ADB/Keyboard response
-        if self.kbdshift_out_time > 0 {
-            self.kbdshift_out_time = self.kbdshift_out_time.saturating_sub(ticks);
-            if self.kbdshift_out_time == 0 {
-                if !self.model.has_adb() {
-                    self.kbdshift_in = self.keyboard.cmd(self.kbdshift_out)?;
-                    self.acr.set_kbd(0);
-                } else {
-                    self.adb.data_in(self.kbdshift_out);
-                    self.kbdshift_in = 0xFF;
-                }
-                self.ifr.set_kbdready(true);
-            }
-        }
-        if self.adb.wakeup() {
-            self.kbdshift_in = 0xFF;
-            self.ifr.set_kbdready(true);
-        }
-
         Ok(ticks)
     }
 }
 
-impl Debuggable for Via {
+impl Debuggable for Via2 {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
         use crate::{dbgprop_bool, dbgprop_byte_bin, dbgprop_group, dbgprop_udec, dbgprop_word};
@@ -586,14 +474,13 @@ impl Debuggable for Via {
                 ]
             ),
             dbgprop_group!(
-                "Keyboard shifter",
+                "Shifter",
                 vec![
                     dbgprop_byte_bin!("Input", self.kbdshift_in),
                     dbgprop_byte_bin!("Output", self.kbdshift_out),
                     dbgprop_udec!("Output timer", self.kbdshift_out_time),
                 ]
             ),
-            dbgprop_udec!("One second timer", self.onesec),
             dbgprop_byte_bin!("Interrupt Enable (IER)", self.ier.0),
             dbgprop_byte_bin!("Interrupt Flags (IFR)", self.ifr.0),
             dbgprop_byte_bin!("Peripheral Control (PCR)", self.pcr.0),

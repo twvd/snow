@@ -2,6 +2,7 @@ use std::marker::PhantomData;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use super::via2::Via2;
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -40,7 +41,7 @@ pub struct MacIIBus<TRenderer: Renderer> {
     pub(crate) ram_dirty: BitSet,
 
     pub(crate) via1: Via,
-    pub(crate) via2: Via,
+    pub(crate) via2: Via2,
     pub(crate) scc: Scc,
     pub(crate) asc: Asc,
     eclock: Ticks,
@@ -95,7 +96,7 @@ where
             ram: vec![0; ram_size],
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             via1: Via::new(model),
-            via2: Via::new(model),
+            via2: Via2::new(model),
             eclock: 0,
             scc: Scc::new(),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd()),
