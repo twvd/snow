@@ -156,12 +156,12 @@ where
 
         match addr {
             // 0x0000_0000 - 0x4FFF_FFFF is ROM
-            0x5000_0000..=0xFFFF_FFFF => self.write_normal(addr, val),
+            0x5000_0000..=0xFFFF_FFFF => self.write_32bit(addr, val),
             _ => None,
         }
     }
 
-    fn write_normal(&mut self, addr: Address, val: Byte) -> Option<()> {
+    fn write_32bit(&mut self, addr: Address, val: Byte) -> Option<()> {
         if self.trace && !(0x0000_0000..=0x003F_FFFF).contains(&addr) {
             trace!("WR {:08X} - {:02X}", addr, val);
         }
@@ -201,13 +201,17 @@ where
         }
     }
 
+    fn write_24bit(&mut self, addr: Address, val: Byte) -> Option<()> {
+        self.write_32bit(self.amu_translate(addr), val)
+    }
+
     fn read_overlay(&mut self, addr: Address) -> Option<Byte> {
         let result = match addr {
             // ROM
             0x0000_0000..=0x4FFF_FFFF => {
                 Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
             }
-            0x5000_0000..=0xFFFF_FFFF => self.read_normal(addr),
+            0x5000_0000..=0xFFFF_FFFF => self.read_32bit(addr),
         };
         if self.trace {
             trace!("RDO {:08X} - {:02X?}", addr, result);
@@ -216,7 +220,11 @@ where
         result
     }
 
-    fn read_normal(&mut self, addr: Address) -> Option<Byte> {
+    fn read_24bit(&mut self, addr: Address) -> Option<Byte> {
+        self.read_32bit(self.amu_translate(addr))
+    }
+
+    fn read_32bit(&mut self, addr: Address) -> Option<Byte> {
         let result = match addr {
             // RAM
             0x0000_0000..=0x3FFF_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
@@ -332,6 +340,22 @@ where
     pub fn progkey(&mut self) {
         self.progkey_pressed.set();
     }
+
+    fn amu_translate(&self, addr: Address) -> Address {
+        let translated = match addr & 0xFFFFFF {
+            0x00_0000..=0x7F_FFFF => addr,
+            0x80_0000..=0x8F_FFFF => 0x4000_0000 | (addr & 0xF_FFFF),
+            0x90_0000..=0x9F_FFFF => 0xF900_0000 | (addr & 0xF_FFFF),
+            0xA0_0000..=0xAF_FFFF => 0xFA00_0000 | (addr & 0xF_FFFF),
+            0xB0_0000..=0xBF_FFFF => 0xFB00_0000 | (addr & 0xF_FFFF),
+            0xC0_0000..=0xCF_FFFF => 0xFC00_0000 | (addr & 0xF_FFFF),
+            0xD0_0000..=0xDF_FFFF => 0xFD00_0000 | (addr & 0xF_FFFF),
+            0xE0_0000..=0xEF_FFFF => 0xFE00_0000 | (addr & 0xF_FFFF),
+            0xF0_0000..=0xFF_FFFF => 0x5000_0000 | (addr & 0xF_FFFF),
+            _ => unreachable!(),
+        };
+        translated
+    }
 }
 
 impl<TRenderer> Bus<Address, Byte> for MacIIBus<TRenderer>
@@ -347,10 +371,12 @@ where
             return BusResult::WaitState;
         }
 
-        let val = if self.overlay {
+        let val = if self.via2.b_out.vfc3() {
+            self.read_24bit(addr)
+        } else if self.overlay {
             self.read_overlay(addr)
         } else {
-            self.read_normal(addr)
+            self.read_32bit(addr)
         };
 
         if let Some(v) = val {
@@ -366,10 +392,12 @@ where
             return BusResult::WaitState;
         }
 
-        let written = if self.overlay {
+        let written = if self.via2.b_out.vfc3() {
+            self.write_24bit(addr, val)
+        } else if self.overlay {
             self.write_overlay(addr, val)
         } else {
-            self.write_normal(addr, val)
+            self.write_32bit(addr, val)
         };
 
         if self.overlay && !self.via1.a_out.overlay() {
@@ -401,6 +429,7 @@ where
 
         self.scc = Scc::new();
         self.overlay = true;
+        self.via2.b_out.set_vfc3(false);
         Ok(())
     }
 }
@@ -481,7 +510,7 @@ where
         } else if self.overlay {
             self.read_overlay(addr)
         } else {
-            self.read_normal(addr)
+            self.read_32bit(addr)
         }
     }
 
@@ -492,7 +521,7 @@ where
         } else if self.overlay {
             self.write_overlay(addr, val)
         } else {
-            self.write_normal(addr, val)
+            self.write_32bit(addr, val)
         }
     }
 }
