@@ -21,6 +21,7 @@ pub mod rtc;
 pub mod scc;
 pub mod scsi;
 pub mod swim;
+pub mod via;
 
 /// Differentiation of Macintosh models and their features
 #[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq)]

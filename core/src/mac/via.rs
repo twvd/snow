@@ -9,8 +9,8 @@ use anyhow::Result;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
-use crate::mac::adb::AdbTransceiver;
-use crate::mac::MacModel;
+use super::adb::AdbTransceiver;
+use super::MacModel;
 
 /// Counter at which to trigger the one second interrupt
 /// (counted on the E Clock)
