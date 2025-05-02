@@ -6,7 +6,7 @@ use num_traits::FromPrimitive;
 use strum::Display;
 
 use super::regs::Register;
-use super::{CpuM68kType, CpuSized, M68000, M68010};
+use super::{CpuM68kType, CpuSized, M68000, M68010, M68020};
 
 use crate::bus::Address;
 use crate::types::{Long, Word};
@@ -219,6 +219,21 @@ pub enum AddressingMode {
     AbsoluteShort,
     AbsoluteLong,
     Immediate,
+
+    // M68020 -------------------------
+    /// Address Register Indirect With Index (Base Displacement)
+    /// (bd, An, Xn.size*scale)
+    /// Extension of IndirectIndex
+    /// Uses Full Format Extension Word
+    IndirectIndexBase,
+
+    /// Memory Indirect Post-Indexed
+    /// ([bd,An], Xn.size*scale,od)
+    MemoryIndirectPostIndex,
+
+    /// Memory Indirect Pre-Indexed
+    /// ([bd,An,Xn.size*scale],od)
+    MemoryIndirectPreIndex,
 }
 
 /// Direction
@@ -232,6 +247,8 @@ pub enum Direction {
 #[derive(Debug, Clone, Copy)]
 pub struct ExtWord {
     pub data: u16,
+    /// For full extension words
+    pub data2: u16,
 }
 
 /// Register type (for D/A)
@@ -282,7 +299,7 @@ impl From<MovecCtrlReg> for Register {
 
 impl From<u16> for ExtWord {
     fn from(data: u16) -> Self {
-        Self { data }
+        Self { data, data2: 0 }
     }
 }
 
@@ -337,6 +354,10 @@ impl ExtWord {
     pub fn brief_get_index_size(&self) -> IndexSize {
         IndexSize::from_u16((self.data >> 11) & 1).unwrap()
     }
+
+    pub fn is_full(&self) -> bool {
+        self.data & (1 << 8) != 0
+    }
 }
 
 /// A decoded instruction
@@ -345,16 +366,19 @@ pub struct Instruction {
     pub mnemonic: InstructionMnemonic,
     pub data: u16,
     pub extword: AtomicCell<Option<ExtWord>>,
+    pub(super) cpu_type: CpuM68kType,
 }
 
 impl Clone for Instruction {
     fn clone(&self) -> Self {
         // Clone drops the loaded extension word
         // TODO rip the Cell out..
+        // TODO make generic on CPU type?
         Self {
             mnemonic: self.mnemonic,
             data: self.data,
             extword: AtomicCell::new(None),
+            cpu_type: self.cpu_type,
         }
     }
 }
@@ -548,6 +572,7 @@ impl Instruction {
                     mnemonic,
                     data,
                     extword: AtomicCell::new(None),
+                    cpu_type,
                 });
             }
         }
@@ -650,9 +675,17 @@ impl Instruction {
     where
         F: FnMut() -> Result<u16>,
     {
+        // This check is to handle 'MOVE mem, (xxx).L' properly.
         if !self.has_extword() {
-            // This check is to handle 'MOVE mem, (xxx).L' properly.
-            self.extword.store(Some(fetch()?.into()));
+            let mut w = ExtWord::from(fetch()?);
+            if w.is_full()
+                && self.cpu_type >= M68020
+                && self.get_addr_mode().unwrap() == AddressingMode::IndirectIndex
+            {
+                // Store second word for IndirectIndexBase
+                w.data2 = fetch()?;
+            }
+            self.extword.store(Some(w));
         }
         Ok(())
     }

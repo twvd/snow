@@ -131,23 +131,27 @@ impl<'a> Disassembler<'a> {
             }
             AddressingMode::IndirectIndex => {
                 instr.fetch_extword(|| self.get16())?;
-
                 let extword = instr.get_extword()?;
-                let (xn, reg) = extword.brief_get_register();
-                format!(
-                    "(${:04X},A{},{}{}.{})",
-                    extword.brief_get_displacement_signext(),
-                    op,
-                    match xn {
-                        Xn::Dn => "D",
-                        Xn::An => "A",
-                    },
-                    reg,
-                    match extword.brief_get_index_size() {
-                        IndexSize::Word => "w",
-                        IndexSize::Long => "l",
-                    }
-                )
+
+                if extword.is_full() {
+                    format!("TODO")
+                } else {
+                    let (xn, reg) = extword.brief_get_register();
+                    format!(
+                        "(${:04X},A{},{}{}.{})",
+                        extword.brief_get_displacement_signext(),
+                        op,
+                        match xn {
+                            Xn::Dn => "D",
+                            Xn::An => "A",
+                        },
+                        reg,
+                        match extword.brief_get_index_size() {
+                            IndexSize::Word => "w",
+                            IndexSize::Long => "l",
+                        }
+                    )
+                }
             }
             _ => format!("{:?}", mode),
         })

@@ -1160,6 +1160,10 @@ where
                 instr.fetch_extword(|| self.fetch_pump())?;
 
                 let extword = instr.get_extword()?;
+                if extword.is_full() {
+                    // Actually IndirectIndexBase
+                    return self.calc_ea_addr::<T>(instr, AddressingMode::IndirectIndexBase, ea_in);
+                }
                 let addr = self.regs.read_a::<Address>(ea_in);
                 let displacement = extword.brief_get_displacement_signext();
                 let index = read_idx(
@@ -1194,7 +1198,10 @@ where
                 let l = self.fetch_pump()? as u32;
                 (h << 16) | l
             }
-            _ => todo!(),
+            AddressingMode::Immediate => unreachable!(),
+            AddressingMode::IndirectIndexBase => bail!("TODO"),
+            AddressingMode::MemoryIndirectPostIndex => bail!("TODO"),
+            AddressingMode::MemoryIndirectPreIndex => bail!("TODO"),
         };
 
         self.step_ea_addr = Some(addr);
@@ -1273,7 +1280,11 @@ where
                 }
                 self.read_ticks(addr)?
             }
-            AddressingMode::IndirectIndex | AddressingMode::PCIndex => {
+            AddressingMode::IndirectIndexBase
+            | AddressingMode::MemoryIndirectPostIndex
+            | AddressingMode::MemoryIndirectPreIndex
+            | AddressingMode::IndirectIndex
+            | AddressingMode::PCIndex => {
                 let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
                 self.read_ticks(addr)?
             }
@@ -2927,7 +2938,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::bus::testbus::Testbus;
-    use crate::cpu_m68k::{CpuM68000, CpuM68020, M68020_ADDRESS_MASK};
+    use crate::cpu_m68k::{CpuM68000, CpuM68020, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK};
 
     use super::*;
 
