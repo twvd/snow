@@ -1160,7 +1160,7 @@ where
                 instr.fetch_extword(|| self.fetch_pump())?;
 
                 let extword = instr.get_extword()?;
-                if extword.is_full() {
+                if extword.is_full() && CPU_TYPE >= M68020 {
                     // Actually IndirectIndexBase
                     return self.calc_ea_addr::<T>(instr, AddressingMode::IndirectIndexBase, ea_in);
                 }
