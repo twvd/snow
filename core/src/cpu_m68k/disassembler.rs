@@ -134,7 +134,7 @@ impl<'a> Disassembler<'a> {
                 let extword = instr.get_extword()?;
 
                 if extword.is_full() {
-                    format!("TODO")
+                    "TODO".to_string()
                 } else {
                     let (xn, reg) = extword.brief_get_register();
                     format!(

@@ -342,7 +342,7 @@ where
     }
 
     fn amu_translate(&self, addr: Address) -> Address {
-        let translated = match addr & 0xFFFFFF {
+        match addr & 0xFFFFFF {
             0x00_0000..=0x7F_FFFF => addr,
             0x80_0000..=0x8F_FFFF => 0x4000_0000 | (addr & 0xF_FFFF),
             0x90_0000..=0x9F_FFFF => 0xF900_0000 | (addr & 0xF_FFFF),
@@ -353,8 +353,7 @@ where
             0xE0_0000..=0xEF_FFFF => 0xFE00_0000 | (addr & 0xF_FFFF),
             0xF0_0000..=0xFF_FFFF => 0x5000_0000 | (addr & 0xF_FFFF),
             _ => unreachable!(),
-        };
-        translated
+        }
     }
 }
 
