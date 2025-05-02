@@ -845,10 +845,22 @@ where
                 //    group, vector, self.regs.pc
                 //);
 
-                *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(6);
-                self.write_ticks(self.regs.ssp().wrapping_add(4), self.regs.pc as u16)?;
-                self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
-                self.write_ticks(self.regs.ssp().wrapping_add(2), (self.regs.pc >> 16) as u16)?;
+                let pc = self.regs.pc;
+                match CPU_TYPE {
+                    M68000 => {
+                        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(6);
+                        self.write_ticks(self.regs.ssp().wrapping_add(4), pc as u16)?;
+                        self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
+                        self.write_ticks(self.regs.ssp().wrapping_add(2), (pc >> 16) as u16)?;
+                    }
+                    _ => {
+                        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8);
+                        self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
+                        self.write_ticks(self.regs.ssp().wrapping_add(2), (pc >> 16) as u16)?;
+                        self.write_ticks(self.regs.ssp().wrapping_add(4), pc as u16)?;
+                        self.write_ticks(self.regs.ssp().wrapping_add(6), vector as u16)?;
+                    }
+                }
             }
         }
 
