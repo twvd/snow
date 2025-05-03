@@ -282,6 +282,16 @@ pub enum MovecCtrlReg {
     ISP = 0x804,
 }
 
+impl Into<(Xn, usize)> for Register {
+    fn into(self) -> (Xn, usize) {
+        match self {
+            Register::An(n) => (Xn::An, n),
+            Register::Dn(n) => (Xn::Dn, n),
+            _ => panic!("Invalid conversion"),
+        }
+    }
+}
+
 impl From<MovecCtrlReg> for Register {
     fn from(value: MovecCtrlReg) -> Self {
         match value {

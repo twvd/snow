@@ -1199,7 +1199,26 @@ where
                 (h << 16) | l
             }
             AddressingMode::Immediate => unreachable!(),
-            AddressingMode::IndirectIndexBase => bail!("TODO"),
+            AddressingMode::IndirectIndexBase => {
+                // TODO cycles?
+                instr.fetch_extword(|| self.fetch_pump())?;
+
+                let extword = instr.get_extword()?;
+                let addr = if extword.full_base_suppress() {
+                    0
+                } else {
+                    self.regs.read_a::<Address>(ea_in)
+                };
+                let displacement = extword.full_displacement()?;
+                let index = if let Some(idxreg) = extword.full_index_register() {
+                    read_idx(self, idxreg.into(), extword.full_index_size())
+                } else {
+                    0
+                };
+                let scale = extword.full_scale();
+                addr.wrapping_add(displacement)
+                    .wrapping_add(index * u32::from(scale))
+            }
             AddressingMode::MemoryIndirectPostIndex => bail!("TODO"),
             AddressingMode::MemoryIndirectPreIndex => bail!("TODO"),
         };
