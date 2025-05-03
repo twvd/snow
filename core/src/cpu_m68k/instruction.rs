@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use crossbeam::atomic::AtomicCell;
 use either::Either;
 use num_derive::FromPrimitive;
@@ -358,6 +358,65 @@ impl ExtWord {
     pub fn is_full(&self) -> bool {
         self.data & (1 << 8) != 0
     }
+
+    /// Scale - M68020+ only
+    pub fn brief_get_scale(&self) -> Word {
+        match (self.data >> 9) & 3 {
+            0b00 => 1,
+            0b01 => 2,
+            0b10 => 4,
+            0b11 => 8,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Second word of full extension word
+    pub fn get_second(&self) -> Word {
+        assert!(self.is_full());
+        self.data2
+    }
+
+    pub fn full_base_suppress(&self) -> bool {
+        self.data & (1 << 7) != 0
+    }
+
+    pub fn full_index_register(&self) -> Option<Register> {
+        assert!(self.is_full());
+        if self.data & (1 << 6) != 0 {
+            // IS - Index Suppress
+            None
+        } else if self.data & (1 << 15) != 0 {
+            Some(Register::An(usize::from((self.data >> 12) & 0b111)))
+        } else {
+            Some(Register::Dn(usize::from((self.data >> 12) & 0b111)))
+        }
+    }
+
+    pub fn full_scale(&self) -> Word {
+        assert!(self.is_full());
+        self.brief_get_scale()
+    }
+
+    pub fn full_index_size(&self) -> IndexSize {
+        assert!(self.is_full());
+        self.brief_get_index_size()
+    }
+
+    pub fn full_displacement_size(&self) -> Word {
+        (self.data >> 4) & 0b11
+    }
+
+    pub fn full_displacement(&self) -> Result<Address> {
+        assert!(self.is_full());
+        // Base displacement size
+        match self.full_displacement_size() {
+            0b00 => bail!("Reserved index size"),
+            0b01 => Ok(0),
+            0b10 => Ok(self.data2.into()),
+            0b11 => bail!("TODO Long displacement"),
+            _ => unreachable!(),
+        }
+    }
 }
 
 /// A decoded instruction
@@ -675,14 +734,16 @@ impl Instruction {
     where
         F: FnMut() -> Result<u16>,
     {
+        // TODO fix this utter mess
         // This check is to handle 'MOVE mem, (xxx).L' properly.
         if !self.has_extword() {
             let mut w = ExtWord::from(fetch()?);
             if w.is_full()
                 && self.cpu_type >= M68020
                 && self.get_addr_mode().unwrap() == AddressingMode::IndirectIndex
+                && w.full_displacement_size() == 0b10
             {
-                // Store second word for IndirectIndexBase
+                // Store second word for base displacement
                 w.data2 = fetch()?;
             }
             self.extword.store(Some(w));

@@ -7,7 +7,10 @@ use std::fmt::Write;
 
 use crate::{
     bus::Address,
-    cpu_m68k::instruction::{IndexSize, Xn},
+    cpu_m68k::{
+        instruction::{IndexSize, Xn},
+        regs::Register,
+    },
     types::Byte,
 };
 
@@ -134,7 +137,25 @@ impl<'a> Disassembler<'a> {
                 let extword = instr.get_extword()?;
 
                 if extword.is_full() {
-                    "TODO".to_string()
+                    // AddressingMode::IndirectIndexBase
+                    format!(
+                        "(${:04X},{},{}.{}*{})",
+                        extword.full_displacement()?,
+                        if extword.full_base_suppress() {
+                            "-".to_string()
+                        } else {
+                            Register::An(instr.get_op1()).to_string()
+                        },
+                        extword
+                            .full_index_register()
+                            .map(|r| r.to_string())
+                            .unwrap_or("-".to_string()),
+                        match extword.full_index_size() {
+                            IndexSize::Word => "w",
+                            IndexSize::Long => "l",
+                        },
+                        extword.full_scale(),
+                    )
                 } else {
                     let (xn, reg) = extword.brief_get_register();
                     format!(
@@ -637,11 +658,44 @@ mod tests {
         let mut iter = b.into_iter().copied();
         let mut disasm = Disassembler::from(&mut iter, 0);
         let disasm_entry = disasm.next();
-        disasm_entry.unwrap().str
+        let result = disasm_entry.unwrap().str;
+
+        // Ensure entire instruction is consumed
+        assert!(disasm.next().is_none());
+
+        result
     }
 
     #[test]
     fn jsr() {
         assert_eq!(dasm(&[0x4E, 0xBA, 0x01, 0xFA]), "JSR $0001FC");
+    }
+
+    #[test]
+    fn m68020_indirect_index_base() {
+        assert_eq!(
+            dasm(&[0x24, 0x70, 0x25, 0xA0, 0x12, 0x34]),
+            "MOVEA.l ($1234,-,D2.w*4),A2"
+        );
+        assert_eq!(
+            dasm(&[0x24, 0x70, 0b10100101, 0b10100000, 0x12, 0x34]),
+            "MOVEA.l ($1234,-,A2.w*4),A2"
+        );
+        assert_eq!(
+            dasm(&[0x24, 0x70, 0b00100101, 0b10100000, 0x12, 0x34]),
+            "MOVEA.l ($1234,-,D2.w*4),A2"
+        );
+        assert_eq!(
+            dasm(&[0x24, 0x70, 0b00100001, 0b10100000, 0x12, 0x34]),
+            "MOVEA.l ($1234,-,D2.w*1),A2"
+        );
+        assert_eq!(
+            dasm(&[0x24, 0x70, 0b00100001, 0b10010000]),
+            "MOVEA.l ($0000,-,D2.w*1),A2"
+        );
+        assert_eq!(
+            dasm(&[0x24, 0x70, 0b00100001, 0b00010000]),
+            "MOVEA.l ($0000,A2,D2.w*1),A2"
+        );
     }
 }
