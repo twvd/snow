@@ -2533,10 +2533,14 @@ where
 
     /// JMP/JSR
     fn op_jmp_jsr(&mut self, instr: &Instruction) -> Result<()> {
-        if instr.needs_extword() {
+        if instr.needs_extword() && CPU_TYPE == M68000 {
             // Pre-load extension word from prefetch queue
             // to avoid reads in calc_ea_addr().
             instr.fetch_extword(|| self.fetch())?;
+
+            // Advance PC for this last fetch to get the correct value in the PC addressing
+            // modes.
+            self.regs.pc = self.regs.pc.wrapping_add(2) & ADDRESS_MASK;
         }
 
         let pc = match instr.get_addr_mode()? {
@@ -2552,10 +2556,6 @@ where
                 (h << 16) | l
             }
             AddressingMode::PCDisplacement | AddressingMode::PCIndex => {
-                // Advance PC for this last fetch to get the correct value in the PC addressing
-                // modes.
-                self.regs.pc = self.regs.pc.wrapping_add(2) & ADDRESS_MASK;
-
                 self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?
             }
             _ => self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?,
