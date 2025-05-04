@@ -1212,29 +1212,37 @@ where
             AddressingMode::IndirectIndexBase => {
                 // also Memory Indirect modes
                 // TODO cycles?
-                instr.fetch_extword(|| self.fetch_pump())?;
-
+                assert!(instr.has_extword());
                 let extword = instr.get_extword()?;
-                match extword.full_memindirectmode()? {
-                    MemoryIndirectAction::None => (),
-                    MemoryIndirectAction::IndirectPreIndexWord => (),
-                    _ => bail!(format!("TODO {:?}", extword.full_memindirectmode())),
-                }
 
                 let addr = if extword.full_base_suppress() {
                     0
                 } else {
                     self.regs.read_a::<Address>(ea_in)
                 };
+                let scale = extword.full_scale();
+
                 let displacement = instr.fetch_ind_full_displacement(|| self.fetch_pump())?;
                 let index = if let Some(idxreg) = extword.full_index_register() {
                     read_idx(self, idxreg.into(), extword.full_index_size())
                 } else {
                     0
                 };
-                let scale = extword.full_scale();
-                addr.wrapping_add(displacement)
-                    .wrapping_add(index * u32::from(scale))
+                let result_addr = addr
+                    .wrapping_add(displacement)
+                    .wrapping_add(index * u32::from(scale));
+
+                match extword.full_memindirectmode()? {
+                    MemoryIndirectAction::None => {
+                        // Address Register Indirect with Index (Base Displacement) Mode
+                        result_addr
+                    }
+                    MemoryIndirectAction::Null => {
+                        // Memory Indirect (no index)
+                        self.read_ticks(result_addr)?
+                    }
+                    _ => bail!(format!("TODO {:?}", extword.full_memindirectmode())),
+                }
             }
         };
 
@@ -2529,10 +2537,6 @@ where
             // Pre-load extension word from prefetch queue
             // to avoid reads in calc_ea_addr().
             instr.fetch_extword(|| self.fetch())?;
-
-            // Advance PC for this last fetch to get the correct value in the PC addressing
-            // modes.
-            self.regs.pc = self.regs.pc.wrapping_add(2) & ADDRESS_MASK;
         }
 
         let pc = match instr.get_addr_mode()? {
@@ -2546,6 +2550,13 @@ where
                 let l = self.fetch()? as Address;
                 self.regs.pc = self.regs.pc.wrapping_add(2) & ADDRESS_MASK;
                 (h << 16) | l
+            }
+            AddressingMode::PCDisplacement | AddressingMode::PCIndex => {
+                // Advance PC for this last fetch to get the correct value in the PC addressing
+                // modes.
+                self.regs.pc = self.regs.pc.wrapping_add(2) & ADDRESS_MASK;
+
+                self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?
             }
             _ => self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?,
         };

@@ -239,15 +239,15 @@ pub enum AddressingMode {
 #[derive(Debug, Clone, Copy)]
 pub enum MemoryIndirectAction {
     None,
-    IndirectPreIndexNull,
-    IndirectPreIndexWord,
-    IndirectPreIndexLong,
-    IndirectPostIndexNull,
-    IndirectPostIndexWord,
-    IndirectPostIndexLong,
-    MemoryIndirectNull,
-    MemoryIndirectWord,
-    MemoryIndirectLong,
+    PreIndexNull,
+    PreIndexWord,
+    PreIndexLong,
+    PostIndexNull,
+    PostIndexWord,
+    PostIndexLong,
+    Null,
+    Word,
+    Long,
 }
 
 /// Direction
@@ -430,16 +430,16 @@ impl ExtWord {
 
         match (is, i) {
             (_, 0b000) => Ok(MemoryIndirectAction::None),
-            (false, 0b001) => Ok(MemoryIndirectAction::IndirectPreIndexNull),
-            (false, 0b010) => Ok(MemoryIndirectAction::IndirectPreIndexWord),
-            (false, 0b011) => Ok(MemoryIndirectAction::IndirectPreIndexLong),
-            (false, 0b101) => Ok(MemoryIndirectAction::IndirectPostIndexNull),
-            (false, 0b110) => Ok(MemoryIndirectAction::IndirectPostIndexWord),
-            (false, 0b111) => Ok(MemoryIndirectAction::IndirectPostIndexLong),
+            (false, 0b001) => Ok(MemoryIndirectAction::PreIndexNull),
+            (false, 0b010) => Ok(MemoryIndirectAction::PreIndexWord),
+            (false, 0b011) => Ok(MemoryIndirectAction::PreIndexLong),
+            (false, 0b101) => Ok(MemoryIndirectAction::PostIndexNull),
+            (false, 0b110) => Ok(MemoryIndirectAction::PostIndexWord),
+            (false, 0b111) => Ok(MemoryIndirectAction::PostIndexLong),
 
-            (true, 0b001) => Ok(MemoryIndirectAction::MemoryIndirectNull),
-            (true, 0b010) => Ok(MemoryIndirectAction::MemoryIndirectWord),
-            (true, 0b011) => Ok(MemoryIndirectAction::MemoryIndirectLong),
+            (true, 0b001) => Ok(MemoryIndirectAction::Null),
+            (true, 0b010) => Ok(MemoryIndirectAction::Word),
+            (true, 0b011) => Ok(MemoryIndirectAction::Long),
 
             _ => bail!(format!(
                 "Invalid memory indirect mode - IS = {}, I = {:03b}",
