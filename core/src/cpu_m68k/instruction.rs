@@ -6,7 +6,7 @@ use num_traits::FromPrimitive;
 use strum::Display;
 
 use super::regs::Register;
-use super::{CpuM68kType, CpuSized, M68000, M68010, M68020};
+use super::{CpuM68kType, CpuSized, M68000, M68010};
 
 use crate::bus::Address;
 use crate::types::{Long, Word};
@@ -261,8 +261,6 @@ pub enum Direction {
 #[derive(Debug, Clone, Copy)]
 pub struct ExtWord {
     pub data: u16,
-    /// For full extension words
-    pub data2: u16,
 }
 
 /// Register type (for D/A)
@@ -296,11 +294,12 @@ pub enum MovecCtrlReg {
     ISP = 0x804,
 }
 
+#[allow(clippy::from_over_into)]
 impl Into<(Xn, usize)> for Register {
     fn into(self) -> (Xn, usize) {
         match self {
-            Register::An(n) => (Xn::An, n),
-            Register::Dn(n) => (Xn::Dn, n),
+            Self::An(n) => (Xn::An, n),
+            Self::Dn(n) => (Xn::Dn, n),
             _ => panic!("Invalid conversion"),
         }
     }
@@ -323,7 +322,7 @@ impl From<MovecCtrlReg> for Register {
 
 impl From<u16> for ExtWord {
     fn from(data: u16) -> Self {
-        Self { data, data2: 0 }
+        Self { data }
     }
 }
 
@@ -394,12 +393,6 @@ impl ExtWord {
         }
     }
 
-    /// Second word of full extension word
-    pub fn get_second(&self) -> Word {
-        assert!(self.is_full());
-        self.data2
-    }
-
     pub fn full_base_suppress(&self) -> bool {
         self.data & (1 << 7) != 0
     }
@@ -428,18 +421,6 @@ impl ExtWord {
 
     pub fn full_displacement_size(&self) -> Word {
         (self.data >> 4) & 0b11
-    }
-
-    pub fn full_displacement(&self) -> Result<Address> {
-        assert!(self.is_full());
-        // Base displacement size
-        match self.full_displacement_size() {
-            0b00 => bail!("Reserved index size"),
-            0b01 => Ok(0),
-            0b10 => Ok(self.data2.into()),
-            0b11 => bail!("TODO Long displacement"),
-            _ => unreachable!(),
-        }
     }
 
     pub fn full_memindirectmode(&self) -> Result<MemoryIndirectAction> {
@@ -474,7 +455,6 @@ pub struct Instruction {
     pub mnemonic: InstructionMnemonic,
     pub data: u16,
     pub extword: AtomicCell<Option<ExtWord>>,
-    pub(super) cpu_type: CpuM68kType,
 }
 
 impl Clone for Instruction {
@@ -486,7 +466,6 @@ impl Clone for Instruction {
             mnemonic: self.mnemonic,
             data: self.data,
             extword: AtomicCell::new(None),
-            cpu_type: self.cpu_type,
         }
     }
 }
@@ -680,7 +659,6 @@ impl Instruction {
                     mnemonic,
                     data,
                     extword: AtomicCell::new(None),
-                    cpu_type,
                 });
             }
         }
@@ -783,19 +761,9 @@ impl Instruction {
     where
         F: FnMut() -> Result<u16>,
     {
-        // TODO fix this utter mess
         // This check is to handle 'MOVE mem, (xxx).L' properly.
         if !self.has_extword() {
-            let mut w = ExtWord::from(fetch()?);
-            if w.is_full()
-                && self.cpu_type >= M68020
-                && self.get_addr_mode().unwrap() == AddressingMode::IndirectIndex
-                && w.full_displacement_size() == 0b10
-            {
-                // Store second word for base displacement
-                w.data2 = fetch()?;
-            }
-            self.extword.store(Some(w));
+            self.extword.store(Some(ExtWord::from(fetch()?)));
         }
         Ok(())
     }
@@ -1098,6 +1066,25 @@ impl Instruction {
         debug_assert!(self.mnemonic == InstructionMnemonic::MOVEC_l);
         MovecCtrlReg::from_u16(u16::from(self.get_extword()?) & 0xFFF)
             .context("Invalid control register")
+    }
+
+    /// Displacement for IndirectIndex modes with full extension words
+    pub fn fetch_ind_full_displacement<F>(&self, mut fetch: F) -> Result<Address>
+    where
+        F: FnMut() -> Result<u16>,
+    {
+        let extword = self.get_extword()?;
+        assert!(extword.is_full());
+        assert_eq!(self.get_addr_mode()?, AddressingMode::IndirectIndex);
+
+        // Base displacement size
+        match extword.full_displacement_size() {
+            0b00 => bail!("Reserved index size"),
+            0b01 => Ok(0),
+            0b10 => Ok(fetch()?.into()),
+            0b11 => bail!("TODO Long displacement"),
+            _ => unreachable!(),
+        }
     }
 }
 

@@ -138,9 +138,10 @@ impl<'a> Disassembler<'a> {
 
                 if extword.is_full() {
                     // AddressingMode::IndirectIndexBase and friends
+                    let displacement = instr.fetch_ind_full_displacement(|| self.get16())?;
                     format!(
                         "(${:04X},{},{}.{}*{})",
-                        extword.full_displacement()?,
+                        displacement,
                         if extword.full_base_suppress() {
                             "-".to_string()
                         } else {
@@ -149,7 +150,7 @@ impl<'a> Disassembler<'a> {
                         extword
                             .full_index_register()
                             .map(|r| r.to_string())
-                            .unwrap_or("-".to_string()),
+                            .unwrap_or_else(|| "-".to_string()),
                         match extword.full_index_size() {
                             IndexSize::Word => "w",
                             IndexSize::Long => "l",

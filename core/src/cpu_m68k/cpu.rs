@@ -1226,7 +1226,7 @@ where
                 } else {
                     self.regs.read_a::<Address>(ea_in)
                 };
-                let displacement = extword.full_displacement()?;
+                let displacement = instr.fetch_ind_full_displacement(|| self.fetch_pump())?;
                 let index = if let Some(idxreg) = extword.full_index_register() {
                     read_idx(self, idxreg.into(), extword.full_index_size())
                 } else {
