@@ -137,7 +137,7 @@ impl<'a> Disassembler<'a> {
                 let extword = instr.get_extword()?;
 
                 if extword.is_full() {
-                    // AddressingMode::IndirectIndexBase
+                    // AddressingMode::IndirectIndexBase and friends
                     format!(
                         "(${:04X},{},{}.{}*{})",
                         extword.full_displacement()?,

@@ -15,7 +15,8 @@ use crate::types::{Byte, LatchingEvent, Long, Word};
 use crate::util::TemporalOrder;
 
 use super::instruction::{
-    AddressingMode, Direction, IndexSize, Instruction, InstructionMnemonic, Xn,
+    AddressingMode, Direction, IndexSize, Instruction, InstructionMnemonic, MemoryIndirectAction,
+    Xn,
 };
 use super::regs::{Register, RegisterFile, RegisterSR};
 use super::{CpuM68kType, CpuSized, M68000, M68010, M68020, M68020_SR_MASK};
@@ -1171,6 +1172,15 @@ where
                     extword.brief_get_register(),
                     extword.brief_get_index_size(),
                 );
+                let scale = if CPU_TYPE >= M68020 {
+                    extword.brief_get_scale()
+                } else {
+                    1
+                };
+
+                if scale > 1 {
+                    bail!("TODO brief scale");
+                }
                 addr.wrapping_add(displacement).wrapping_add(index)
             }
             AddressingMode::PCDisplacement => {
@@ -1200,10 +1210,17 @@ where
             }
             AddressingMode::Immediate => unreachable!(),
             AddressingMode::IndirectIndexBase => {
+                // also Memory Indirect modes
                 // TODO cycles?
                 instr.fetch_extword(|| self.fetch_pump())?;
 
                 let extword = instr.get_extword()?;
+                match extword.full_memindirectmode()? {
+                    MemoryIndirectAction::None => (),
+                    MemoryIndirectAction::IndirectPreIndexWord => (),
+                    _ => bail!(format!("TODO {:?}", extword.full_memindirectmode())),
+                }
+
                 let addr = if extword.full_base_suppress() {
                     0
                 } else {
@@ -1219,8 +1236,6 @@ where
                 addr.wrapping_add(displacement)
                     .wrapping_add(index * u32::from(scale))
             }
-            AddressingMode::MemoryIndirectPostIndex => bail!("TODO"),
-            AddressingMode::MemoryIndirectPreIndex => bail!("TODO"),
         };
 
         self.step_ea_addr = Some(addr);
@@ -1300,8 +1315,6 @@ where
                 self.read_ticks(addr)?
             }
             AddressingMode::IndirectIndexBase
-            | AddressingMode::MemoryIndirectPostIndex
-            | AddressingMode::MemoryIndirectPreIndex
             | AddressingMode::IndirectIndex
             | AddressingMode::PCIndex => {
                 let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;

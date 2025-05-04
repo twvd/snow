@@ -226,14 +226,28 @@ pub enum AddressingMode {
     /// Extension of IndirectIndex
     /// Uses Full Format Extension Word
     IndirectIndexBase,
+    // Memory Indirect Post-Indexed
+    // ([bd,An], Xn.size*scale,od)
+    //MemoryIndirectPostIndex,
 
-    /// Memory Indirect Post-Indexed
-    /// ([bd,An], Xn.size*scale,od)
-    MemoryIndirectPostIndex,
+    // Memory Indirect Pre-Indexed
+    // ([bd,An,Xn.size*scale],od)
+    //MemoryIndirectPreIndex,
+}
 
-    /// Memory Indirect Pre-Indexed
-    /// ([bd,An,Xn.size*scale],od)
-    MemoryIndirectPreIndex,
+/// I/IS Memory Indirect Actions for full extension words
+#[derive(Debug, Clone, Copy)]
+pub enum MemoryIndirectAction {
+    None,
+    IndirectPreIndexNull,
+    IndirectPreIndexWord,
+    IndirectPreIndexLong,
+    IndirectPostIndexNull,
+    IndirectPostIndexWord,
+    IndirectPostIndexLong,
+    MemoryIndirectNull,
+    MemoryIndirectWord,
+    MemoryIndirectLong,
 }
 
 /// Direction
@@ -425,6 +439,31 @@ impl ExtWord {
             0b10 => Ok(self.data2.into()),
             0b11 => bail!("TODO Long displacement"),
             _ => unreachable!(),
+        }
+    }
+
+    pub fn full_memindirectmode(&self) -> Result<MemoryIndirectAction> {
+        assert!(self.is_full());
+        let is = self.data & (1 << 6) != 0;
+        let i = self.data & 0b111;
+
+        match (is, i) {
+            (_, 0b000) => Ok(MemoryIndirectAction::None),
+            (false, 0b001) => Ok(MemoryIndirectAction::IndirectPreIndexNull),
+            (false, 0b010) => Ok(MemoryIndirectAction::IndirectPreIndexWord),
+            (false, 0b011) => Ok(MemoryIndirectAction::IndirectPreIndexLong),
+            (false, 0b101) => Ok(MemoryIndirectAction::IndirectPostIndexNull),
+            (false, 0b110) => Ok(MemoryIndirectAction::IndirectPostIndexWord),
+            (false, 0b111) => Ok(MemoryIndirectAction::IndirectPostIndexLong),
+
+            (true, 0b001) => Ok(MemoryIndirectAction::MemoryIndirectNull),
+            (true, 0b010) => Ok(MemoryIndirectAction::MemoryIndirectWord),
+            (true, 0b011) => Ok(MemoryIndirectAction::MemoryIndirectLong),
+
+            _ => bail!(format!(
+                "Invalid memory indirect mode - IS = {}, I = {:03b}",
+                is, i
+            )),
         }
     }
 }
