@@ -53,6 +53,7 @@ pub struct MacIIBus<TRenderer: Renderer> {
     rom_mask: usize,
 
     overlay: bool,
+    amu_active: bool,
 
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
@@ -108,6 +109,7 @@ where
             rom_mask: rom.len() - 1,
 
             overlay: true,
+            amu_active: false,
             speed: EmulatorSpeed::Accurate,
             //last_audiosample: 0,
             vblank_time: Instant::now(),
@@ -343,7 +345,7 @@ where
 
     fn amu_translate(&self, addr: Address) -> Address {
         match addr & 0xFFFFFF {
-            0x00_0000..=0x7F_FFFF => addr,
+            0x00_0000..=0x7F_FFFF => addr & 0x7F_FFFF,
             0x80_0000..=0x8F_FFFF => 0x4000_0000 | (addr & 0xF_FFFF),
             0x90_0000..=0x9F_FFFF => 0xF900_0000 | (addr & 0xF_FFFF),
             0xA0_0000..=0xAF_FFFF => 0xFA00_0000 | (addr & 0xF_FFFF),
@@ -370,7 +372,7 @@ where
             return BusResult::WaitState;
         }
 
-        let val = if self.via2.b_out.vfc3() {
+        let val = if self.amu_active {
             self.read_24bit(addr)
         } else if self.overlay {
             self.read_overlay(addr)
@@ -381,7 +383,15 @@ where
         if let Some(v) = val {
             BusResult::Ok(v)
         } else {
-            warn!("Read from unimplemented address: {:08X}", addr);
+            if self.amu_active {
+                warn!(
+                    "Read from unimplemented address: {:06X} -> {:08X}",
+                    self.amu_translate(addr),
+                    addr
+                );
+            } else {
+                warn!("Read from unimplemented address: {:08X}", addr);
+            }
             BusResult::Ok(0xFF)
         }
     }
@@ -391,7 +401,7 @@ where
             return BusResult::WaitState;
         }
 
-        let written = if self.via2.b_out.vfc3() {
+        let written = if self.amu_active {
             self.write_24bit(addr, val)
         } else if self.overlay {
             self.write_overlay(addr, val)
@@ -408,7 +418,16 @@ where
         self.swim.sel = self.via1.a_out.sel();
 
         if written.is_none() {
-            warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
+            if self.amu_active {
+                warn!(
+                    "Write to unimplemented address: {:06X} -> {:08X} {:02X}",
+                    self.amu_translate(addr),
+                    addr,
+                    val
+                );
+            } else {
+                warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
+            }
         }
         BusResult::Ok(val)
     }
@@ -441,6 +460,12 @@ where
         // This is called from the CPU, at the CPU clock speed
         assert_eq!(ticks, 1);
         self.cycles += ticks;
+
+        let amu_active = self.via2.ddrb.vfc3() && !self.via2.b_out.vfc3();
+        if self.amu_active != amu_active {
+            self.amu_active = amu_active;
+            log::debug!("AMU: {}", if amu_active { "24-bit" } else { "32-bit" });
+        }
 
         self.eclock += ticks;
         while self.eclock >= 10 {
