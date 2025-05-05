@@ -2495,9 +2495,14 @@ where
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
         }
 
+        let frame_size = match CPU_TYPE {
+            M68000 => 6,
+            _ => 8,
+        };
+
         let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
         let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
-        *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(6);
+        *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(frame_size);
         self.set_sr(sr);
         self.set_pc(pc)?;
         self.prefetch_refill()?;
