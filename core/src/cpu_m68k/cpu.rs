@@ -752,7 +752,10 @@ where
         // Update mask
         self.regs.sr.set_int_prio_mask(level);
 
-        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(6);
+        match CPU_TYPE {
+            M68000 => *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(6),
+            _ => *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8),
+        };
         self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
 
         // 6 cycles idle
