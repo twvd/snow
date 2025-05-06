@@ -615,6 +615,10 @@ impl<'a> Disassembler<'a> {
                 };
                 format!("{} {},{}", mnemonic, left, right)
             }
+            InstructionMnemonic::RTD => {
+                let displacement = self.get16()? as i16;
+                format!("{} #{}", mnemonic, displacement)
+            }
         };
 
         Ok(())

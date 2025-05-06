@@ -1117,6 +1117,7 @@ where
 
             // M68010 ------------------------------------------------------------------------------
             InstructionMnemonic::MOVEC_l => self.op_movec(instr),
+            InstructionMnemonic::RTD => self.op_rtd(instr),
         }
     }
 
@@ -2951,6 +2952,7 @@ where
         Ok(())
     }
 
+    /// MOVEC
     fn op_movec(&mut self, instr: &Instruction) -> Result<()> {
         // Bus access and cycles are an approximation based on UM/PRM
         instr.fetch_extword(|| self.fetch())?;
@@ -2969,6 +2971,22 @@ where
             self.regs.write(instr.movec_ctrlreg()?.into(), val);
             self.advance_cycles(2)?;
         }
+
+        Ok(())
+    }
+
+    /// RTD
+    fn op_rtd(&mut self, _instr: &Instruction) -> Result<()> {
+        // Bus access and cycles are an approximation based on UM/PRM
+        let displacement = self.fetch()?.expand_sign_extend() as i32;
+        let pc = self.read_ticks(self.regs.read_a(7))?;
+        let sp = self.regs.read_a::<Address>(7);
+        self.regs
+            .write_a(7, sp.wrapping_add_signed(4 + displacement));
+        self.set_pc(pc)?;
+        self.prefetch_refill()?;
+
+        self.test_step_out();
 
         Ok(())
     }

@@ -175,6 +175,7 @@ pub enum InstructionMnemonic {
     ROR_w,
     ROR_l,
     ROR_ea,
+    RTD,
     RTE,
     RTR,
     RTS,
@@ -646,6 +647,7 @@ impl Instruction {
 
         // M68010+ instructions
         (M68010, 0b0100_1110_0111_1010, 0b1111_1111_1111_1110, InstructionMnemonic::MOVEC_l),
+        (M68010, 0b0100_1110_0111_0100, 0b1111_1111_1111_1111, InstructionMnemonic::RTD),
     ];
 
     /// Attempts to decode an instruction.
@@ -1024,6 +1026,7 @@ impl Instruction {
             | InstructionMnemonic::MOVEQ
             | InstructionMnemonic::PEA
             | InstructionMnemonic::RESET
+            | InstructionMnemonic::RTD
             | InstructionMnemonic::RTE
             | InstructionMnemonic::RTR
             | InstructionMnemonic::RTS
