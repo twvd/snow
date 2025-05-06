@@ -1182,10 +1182,8 @@ where
                     1
                 };
 
-                if scale > 1 {
-                    bail!("TODO brief scale");
-                }
-                addr.wrapping_add(displacement).wrapping_add(index)
+                addr.wrapping_add(displacement)
+                    .wrapping_add(index * Address::from(scale))
             }
             AddressingMode::PCDisplacement => {
                 instr.fetch_extword(|| self.fetch_pump())?;
