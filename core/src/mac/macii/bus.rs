@@ -448,6 +448,8 @@ where
         self.scc = Scc::new();
         self.overlay = true;
         self.via2.b_out.set_vfc3(false);
+        self.via2.ddrb.set_vfc3(false);
+        self.amu_active = false;
         Ok(())
     }
 }
