@@ -3048,7 +3048,6 @@ where
         let result = value ^ omask;
 
         self.write_ea(instr, instr.get_op2(), result)?;
-        self.regs.write_d(sec.reg(), result);
         self.regs.sr.set_n((value << offset) & (1 << 31) != 0);
         self.regs.sr.set_z(result & omask == 0);
         self.regs.sr.set_v(false);
