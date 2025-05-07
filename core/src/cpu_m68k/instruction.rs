@@ -148,7 +148,7 @@ pub enum InstructionMnemonic {
     MOVEQ,
     // no MULU_l, MULU_b
     MULU_w,
-    // no MULS_l, MULS_b
+    MULS_l,
     MULS_w,
     NEG_l,
     NEG_w,
@@ -454,6 +454,10 @@ impl ExtWord {
     pub fn bfext(&self) -> BfextExtWord {
         BfextExtWord(self.data)
     }
+
+    pub fn muls(&self) -> MulsExtWord {
+        MulsExtWord(self.data)
+    }
 }
 
 bitfield! {
@@ -468,6 +472,16 @@ bitfield! {
         pub fdo: bool @ 11,
         pub reg: usize @ 12..=14,
         // 15 = 0
+    }
+}
+
+bitfield! {
+    /// MULS.l extension word
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub struct MulsExtWord(pub Word): Debug, FromRaw, IntoRaw, DerefRaw {
+        pub dh: usize @ 0..=3,
+        pub size: bool @ 10,
+        pub dl: usize @ 12..=14,
     }
 }
 
@@ -672,6 +686,7 @@ impl Instruction {
 
         // M68020+ instructions
         (M68020, 0b1110_1001_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFEXTU),
+        (M68020, 0b0100_1100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MULS_l),
     ];
 
     /// Attempts to decode an instruction.
@@ -910,6 +925,7 @@ impl Instruction {
             | InstructionMnemonic::MOVEP_l
             | InstructionMnemonic::MOVEM_mem_l
             | InstructionMnemonic::MOVEM_reg_l
+            | InstructionMnemonic::MULS_l
             | InstructionMnemonic::NEG_l
             | InstructionMnemonic::NEGX_l
             | InstructionMnemonic::NOT_l

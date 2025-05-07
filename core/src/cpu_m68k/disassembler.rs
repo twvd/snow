@@ -645,6 +645,18 @@ impl<'a> Disassembler<'a> {
                     sec.reg()
                 )
             }
+            InstructionMnemonic::MULS_l => {
+                instr.fetch_extword(|| self.get16())?;
+                let ew = instr.get_extword()?.muls();
+
+                let regs = if ew.size() {
+                    format!("D{}-D{}", ew.dh(), ew.dl())
+                } else {
+                    format!("D{}", ew.dl())
+                };
+
+                format!("{} {},{}", mnemonic, self.ea(instr)?, regs)
+            }
         };
 
         Ok(())

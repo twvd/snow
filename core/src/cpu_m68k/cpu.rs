@@ -987,7 +987,7 @@ where
             InstructionMnemonic::CMPM_w => self.op_cmpm::<Word>(instr),
             InstructionMnemonic::CMPM_b => self.op_cmpm::<Byte>(instr),
             InstructionMnemonic::MULU_w => self.op_mulu(instr),
-            InstructionMnemonic::MULS_w => self.op_muls(instr),
+            InstructionMnemonic::MULS_w => self.op_muls_w(instr),
             InstructionMnemonic::DIVU_w => self.op_divu(instr),
             InstructionMnemonic::DIVS_w => self.op_divs(instr),
             InstructionMnemonic::NOP => Ok(()),
@@ -1121,6 +1121,7 @@ where
 
             // M68020 ------------------------------------------------------------------------------
             InstructionMnemonic::BFEXTU => self.op_bfextu(instr),
+            InstructionMnemonic::MULS_l => self.op_muls_l(instr),
         }
     }
 
@@ -1928,8 +1929,8 @@ where
         Ok(())
     }
 
-    /// MULS
-    fn op_muls(&mut self, instr: &Instruction) -> Result<()> {
+    /// MULS (Word)
+    fn op_muls_w(&mut self, instr: &Instruction) -> Result<()> {
         let a = self.regs.read_d::<Word>(instr.get_op1()) as i16 as i32;
         let b = self.read_ea::<Word>(instr, instr.get_op2())? as i16 as i32;
         let result = a.wrapping_mul(b) as Long;
@@ -3019,6 +3020,38 @@ where
         self.regs.sr.set_z(result == 0);
         self.regs.sr.set_v(false);
         self.regs.sr.set_c(false);
+
+        Ok(())
+    }
+
+    /// MULS (Long)
+    fn op_muls_l(&mut self, instr: &Instruction) -> Result<()> {
+        instr.fetch_extword(|| self.fetch_pump())?;
+        let extword = instr.get_extword()?.muls();
+
+        let a = self.regs.read_d::<Long>(extword.dl()) as i32 as i64;
+        let b = self.read_ea::<Long>(instr, instr.get_op2())? as i32 as i64;
+        let result = a.wrapping_mul(b);
+
+        self.prefetch_pump()?;
+
+        // Computation time
+        self.advance_cycles(34 + (((b << 1) ^ b).count_ones() as Ticks) * 2)?;
+
+        self.regs.sr.set_v(false);
+        self.regs.sr.set_c(false);
+        if extword.size() {
+            self.regs.sr.set_n(result & (1 << 63) != 0);
+        } else {
+            self.regs.sr.set_n(result & (1 << 31) != 0);
+        }
+        self.regs.sr.set_z(result == 0);
+
+        self.regs.write_d(extword.dl(), result as i32 as Long);
+        if extword.size() {
+            self.regs
+                .write_d(extword.dh(), (result >> 32) as i32 as Long);
+        }
 
         Ok(())
     }
