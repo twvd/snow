@@ -140,22 +140,25 @@ impl<'a> Disassembler<'a> {
                     // AddressingMode::IndirectIndexBase and friends
                     let displacement = instr.fetch_ind_full_displacement(|| self.get16())?;
                     format!(
-                        "(${:04X},{},{}.{}*{})",
+                        "(${:04X},{},{})",
                         displacement,
                         if extword.full_base_suppress() {
                             "-".to_string()
                         } else {
-                            Register::An(instr.get_op1()).to_string()
+                            Register::An(instr.get_op2()).to_string()
                         },
                         extword
                             .full_index_register()
-                            .map(|r| r.to_string())
+                            .map(|r| format!(
+                                "{}.{}*{}",
+                                r,
+                                match extword.full_index_size() {
+                                    IndexSize::Word => "w",
+                                    IndexSize::Long => "l",
+                                },
+                                extword.full_scale()
+                            ))
                             .unwrap_or_else(|| "-".to_string()),
-                        match extword.full_index_size() {
-                            IndexSize::Word => "w",
-                            IndexSize::Long => "l",
-                        },
-                        extword.full_scale(),
                     )
                 } else {
                     let (xn, reg) = extword.brief_get_register();

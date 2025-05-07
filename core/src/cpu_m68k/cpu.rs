@@ -1236,7 +1236,7 @@ where
                     0
                 };
                 let result_addr = addr
-                    .wrapping_add(displacement)
+                    .wrapping_add_signed(displacement)
                     .wrapping_add(index * u32::from(scale));
 
                 match extword.full_memindirectmode()? {

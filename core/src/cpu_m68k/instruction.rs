@@ -1118,7 +1118,7 @@ impl Instruction {
     }
 
     /// Displacement for IndirectIndex modes with full extension words
-    pub fn fetch_ind_full_displacement<F>(&self, mut fetch: F) -> Result<Address>
+    pub fn fetch_ind_full_displacement<F>(&self, mut fetch: F) -> Result<i32>
     where
         F: FnMut() -> Result<u16>,
     {
@@ -1130,7 +1130,7 @@ impl Instruction {
         match extword.full_displacement_size() {
             0b00 => bail!("Reserved index size"),
             0b01 => Ok(0),
-            0b10 => Ok(fetch()?.into()),
+            0b10 => Ok(fetch()? as i16 as i32),
             0b11 => bail!("TODO Long displacement"),
             _ => unreachable!(),
         }
