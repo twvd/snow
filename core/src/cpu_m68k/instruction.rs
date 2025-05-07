@@ -66,6 +66,7 @@ pub enum InstructionMnemonic {
     BTST_dn,
     BCHG_imm,
     BCLR_imm,
+    BFCHG,
     BFEXTU,
     BSET_imm,
     BTST_imm,
@@ -451,8 +452,8 @@ impl ExtWord {
         }
     }
 
-    pub fn bfext(&self) -> BfextExtWord {
-        BfextExtWord(self.data)
+    pub fn bfx(&self) -> BfxExtWord {
+        BfxExtWord(self.data)
     }
 
     pub fn muls(&self) -> MulsExtWord {
@@ -461,9 +462,9 @@ impl ExtWord {
 }
 
 bitfield! {
-    /// BFEXTx extension word
+    /// BFxxx extension word
     #[derive(Clone, Copy, PartialEq, Eq)]
-    pub struct BfextExtWord(pub Word): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct BfxExtWord(pub Word): Debug, FromRaw, IntoRaw, DerefRaw {
         pub width: Long @ 0..=4,
         pub width_reg: usize @ 0..=2,
         pub fdw: bool @ 5,
@@ -471,7 +472,6 @@ bitfield! {
         pub offset_reg: usize @ 6..=8,
         pub fdo: bool @ 11,
         pub reg: usize @ 12..=14,
-        // 15 = 0
     }
 }
 
@@ -686,6 +686,7 @@ impl Instruction {
 
         // M68020+ instructions
         (M68020, 0b1110_1001_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFEXTU),
+        (M68020, 0b1110_1010_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFCHG),
         (M68020, 0b0100_1100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MULS_l),
     ];
 
@@ -1054,6 +1055,7 @@ impl Instruction {
 
             InstructionMnemonic::Bcc
             | InstructionMnemonic::BFEXTU
+            | InstructionMnemonic::BFCHG
             | InstructionMnemonic::BSR
             | InstructionMnemonic::CHK
             | InstructionMnemonic::DBcc

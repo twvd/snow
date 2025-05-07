@@ -1120,6 +1120,7 @@ where
             InstructionMnemonic::RTD => self.op_rtd(instr),
 
             // M68020 ------------------------------------------------------------------------------
+            InstructionMnemonic::BFCHG => self.op_bfchg(instr),
             InstructionMnemonic::BFEXTU => self.op_bfextu(instr),
             InstructionMnemonic::MULS_l => self.op_muls_l(instr),
         }
@@ -2996,7 +2997,7 @@ where
     /// BFEXTU
     fn op_bfextu(&mut self, instr: &Instruction) -> Result<()> {
         instr.fetch_extword(|| self.fetch_pump())?;
-        let sec = instr.get_extword()?.bfext();
+        let sec = instr.get_extword()?.bfx();
         let value = self.read_ea::<Long>(instr, instr.get_op2())?;
 
         let rwidth = if sec.fdw() {
@@ -3018,6 +3019,38 @@ where
         // N = MSbit of the SOURCE FIELD
         self.regs.sr.set_n(value & (1 << (width - 1)) != 0);
         self.regs.sr.set_z(result == 0);
+        self.regs.sr.set_v(false);
+        self.regs.sr.set_c(false);
+
+        Ok(())
+    }
+
+    /// BFCHG
+    fn op_bfchg(&mut self, instr: &Instruction) -> Result<()> {
+        instr.fetch_extword(|| self.fetch_pump())?;
+        let sec = instr.get_extword()?.bfx();
+        let value = self.read_ea::<Long>(instr, instr.get_op2())?;
+
+        let rwidth = if sec.fdw() {
+            self.regs.read_d::<Long>(sec.width_reg()) % 32
+        } else {
+            sec.width()
+        };
+        let width = if rwidth == 0 { 32 } else { rwidth };
+        let offset = if sec.fdo() {
+            self.regs.read_d::<Long>(sec.offset_reg()) % 32
+        } else {
+            sec.offset()
+        };
+
+        let mask = ((1u64 << width) - 1) as Long;
+        let omask = mask << offset;
+        let result = value ^ omask;
+
+        self.write_ea(instr, instr.get_op2(), result)?;
+        self.regs.write_d(sec.reg(), result);
+        self.regs.sr.set_n((value << offset) & (1 << 31) != 0);
+        self.regs.sr.set_z(result & omask == 0);
         self.regs.sr.set_v(false);
         self.regs.sr.set_c(false);
 
