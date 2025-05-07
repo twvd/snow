@@ -145,7 +145,7 @@ impl<'a> Disassembler<'a> {
                         if extword.full_base_suppress() {
                             "-".to_string()
                         } else {
-                            Register::An(instr.get_op2()).to_string()
+                            Register::An(op).to_string()
                         },
                         extword
                             .full_index_register()
@@ -759,8 +759,8 @@ mod tests {
             "MOVEA.l ($0000,-,D2.w*1),A2"
         );
         assert_eq!(
-            dasm(&[0x24, 0x70, 0b00100001, 0b00010000]),
-            "MOVEA.l ($0000,A2,D2.w*1),A2"
+            dasm(&[0x24, 0x74, 0x31, 0x10]),
+            "MOVEA.l ($0000,A4,D3.w*1),A2"
         );
     }
 }
