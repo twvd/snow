@@ -1118,6 +1118,9 @@ where
             // M68010 ------------------------------------------------------------------------------
             InstructionMnemonic::MOVEC_l => self.op_movec(instr),
             InstructionMnemonic::RTD => self.op_rtd(instr),
+
+            // M68020 ------------------------------------------------------------------------------
+            InstructionMnemonic::BFEXTU => self.op_bfextu(instr),
         }
     }
 
@@ -2985,6 +2988,37 @@ where
         self.prefetch_refill()?;
 
         self.test_step_out();
+
+        Ok(())
+    }
+
+    /// BFEXTU
+    fn op_bfextu(&mut self, instr: &Instruction) -> Result<()> {
+        instr.fetch_extword(|| self.fetch_pump())?;
+        let sec = instr.get_extword()?.bfext();
+        let value = self.read_ea::<Long>(instr, instr.get_op2())?;
+
+        let rwidth = if sec.fdw() {
+            self.regs.read_d::<Long>(sec.width_reg()) % 32
+        } else {
+            sec.width()
+        };
+        let width = if rwidth == 0 { 32 } else { rwidth };
+        let offset = if sec.fdo() {
+            self.regs.read_d::<Long>(sec.offset_reg()) % 32
+        } else {
+            sec.offset()
+        };
+
+        let mask = ((1u64 << width) - 1) as Long;
+        let result = (value >> offset) & mask;
+
+        self.regs.write_d(sec.reg(), result);
+        // N = MSbit of the SOURCE FIELD
+        self.regs.sr.set_n(value & (1 << (width - 1)) != 0);
+        self.regs.sr.set_z(result == 0);
+        self.regs.sr.set_v(false);
+        self.regs.sr.set_c(false);
 
         Ok(())
     }

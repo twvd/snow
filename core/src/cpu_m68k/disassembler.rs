@@ -619,6 +619,32 @@ impl<'a> Disassembler<'a> {
                 let displacement = self.get16()? as i16;
                 format!("{} #{}", mnemonic, displacement)
             }
+            InstructionMnemonic::BFEXTU => {
+                instr.fetch_extword(|| self.get16())?;
+
+                let sec = instr.get_extword()?.bfext();
+                let offset = if sec.fdo() {
+                    format!("D{}", sec.offset_reg())
+                } else {
+                    sec.offset().to_string()
+                };
+                let width = if sec.fdw() {
+                    format!("D{}", sec.width_reg())
+                } else if sec.width() == 0 {
+                    "32".to_string()
+                } else {
+                    sec.offset().to_string()
+                };
+
+                format!(
+                    "{} {} {{{}:{}}}, D{}",
+                    mnemonic,
+                    self.ea(instr)?,
+                    offset,
+                    width,
+                    sec.reg()
+                )
+            }
         };
 
         Ok(())

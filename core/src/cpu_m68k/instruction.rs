@@ -3,10 +3,11 @@ use crossbeam::atomic::AtomicCell;
 use either::Either;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
+use proc_bitfield::bitfield;
 use strum::Display;
 
 use super::regs::Register;
-use super::{CpuM68kType, CpuSized, M68000, M68010};
+use super::{CpuM68kType, CpuSized, M68000, M68010, M68020};
 
 use crate::bus::Address;
 use crate::types::{Long, Word};
@@ -65,6 +66,7 @@ pub enum InstructionMnemonic {
     BTST_dn,
     BCHG_imm,
     BCLR_imm,
+    BFEXTU,
     BSET_imm,
     BTST_imm,
     // BRA is actually just Bcc with cond = True
@@ -448,6 +450,25 @@ impl ExtWord {
             )),
         }
     }
+
+    pub fn bfext(&self) -> BfextExtWord {
+        BfextExtWord(self.data)
+    }
+}
+
+bitfield! {
+    /// BFEXTx extension word
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub struct BfextExtWord(pub Word): Debug, FromRaw, IntoRaw, DerefRaw {
+        pub width: Long @ 0..=4,
+        pub width_reg: usize @ 0..=2,
+        pub fdw: bool @ 5,
+        pub offset: Long @ 6..=10,
+        pub offset_reg: usize @ 6..=8,
+        pub fdo: bool @ 11,
+        pub reg: usize @ 12..=14,
+        // 15 = 0
+    }
 }
 
 /// A decoded instruction
@@ -648,6 +669,9 @@ impl Instruction {
         // M68010+ instructions
         (M68010, 0b0100_1110_0111_1010, 0b1111_1111_1111_1110, InstructionMnemonic::MOVEC_l),
         (M68010, 0b0100_1110_0111_0100, 0b1111_1111_1111_1111, InstructionMnemonic::RTD),
+
+        // M68020+ instructions
+        (M68020, 0b1110_1001_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFEXTU),
     ];
 
     /// Attempts to decode an instruction.
@@ -789,7 +813,10 @@ impl Instruction {
                 | AddressingMode::IndirectIndex
                 | AddressingMode::PCDisplacement
                 | AddressingMode::PCIndex
-        ) || matches!(self.mnemonic, InstructionMnemonic::MOVEC_l)
+        ) || matches!(
+            self.mnemonic,
+            InstructionMnemonic::MOVEC_l | InstructionMnemonic::BFEXTU
+        )
     }
 
     pub fn get_displacement(&self) -> Result<i32> {
@@ -1010,6 +1037,7 @@ impl Instruction {
             | InstructionMnemonic::BTST_imm => InstructionSize::Byte,
 
             InstructionMnemonic::Bcc
+            | InstructionMnemonic::BFEXTU
             | InstructionMnemonic::BSR
             | InstructionMnemonic::CHK
             | InstructionMnemonic::DBcc
