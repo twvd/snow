@@ -1233,21 +1233,25 @@ where
                 let index = if let Some(idxreg) = extword.full_index_register() {
                     read_idx(self, idxreg.into(), extword.full_index_size())
                 } else {
+                    // Index suppressed, leave at 0 for no effect
                     0
                 };
-                let result_addr = addr
-                    .wrapping_add_signed(displacement)
-                    .wrapping_add(index * u32::from(scale));
+                let disp_addr = addr.wrapping_add_signed(displacement);
+                let pre_addr = disp_addr.wrapping_add(index * u32::from(scale));
 
                 match extword.full_memindirectmode()? {
                     MemoryIndirectAction::None => {
                         // Address Register Indirect with Index (Base Displacement) Mode
-                        result_addr
+                        pre_addr
                     }
                     MemoryIndirectAction::Null => {
                         // Memory Indirect (no index)
-                        self.read_ticks(result_addr)?
+                        // Index suppress is handled above
+                        self.read_ticks(pre_addr)?
                     }
+                    MemoryIndirectAction::PostIndexNull => self
+                        .read_ticks::<Address>(disp_addr)?
+                        .wrapping_add(index * u32::from(scale)),
                     _ => bail!(format!("TODO {:?}", extword.full_memindirectmode())),
                 }
             }

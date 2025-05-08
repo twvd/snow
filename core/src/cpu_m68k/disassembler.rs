@@ -8,7 +8,7 @@ use std::fmt::Write;
 use crate::{
     bus::Address,
     cpu_m68k::{
-        instruction::{IndexSize, Xn},
+        instruction::{IndexSize, MemoryIndirectAction, Xn},
         regs::Register,
     },
     types::Byte,
@@ -139,17 +139,15 @@ impl<'a> Disassembler<'a> {
                 if extword.is_full() {
                     // AddressingMode::IndirectIndexBase and friends
                     let displacement = instr.fetch_ind_full_displacement(|| self.get16())?;
-                    format!(
-                        "(${:04X},{},{})",
-                        displacement,
-                        if extword.full_base_suppress() {
-                            "-".to_string()
-                        } else {
-                            Register::An(op).to_string()
-                        },
-                        extword
-                            .full_index_register()
-                            .map(|r| format!(
+                    let basereg = if extword.full_base_suppress() {
+                        "-".to_string()
+                    } else {
+                        Register::An(op).to_string()
+                    };
+                    let indexreg = extword
+                        .full_index_register()
+                        .map(|r| {
+                            format!(
                                 "{}.{}*{}",
                                 r,
                                 match extword.full_index_size() {
@@ -157,9 +155,55 @@ impl<'a> Disassembler<'a> {
                                     IndexSize::Long => "l",
                                 },
                                 extword.full_scale()
-                            ))
-                            .unwrap_or_else(|| "-".to_string()),
-                    )
+                            )
+                        })
+                        .unwrap_or_else(|| "-".to_string());
+
+                    let od = 0; // TODO outer displacement
+                    match extword.full_memindirectmode()? {
+                        MemoryIndirectAction::None => {
+                            format!("(${:04X},{},{})", displacement, basereg, indexreg)
+                        }
+                        MemoryIndirectAction::PreIndexNull => {
+                            format!("([${:04X},{},{}])", displacement, basereg, indexreg)
+                        }
+                        MemoryIndirectAction::PreIndexWord => {
+                            format!(
+                                "([${:04X},{},{}],${:04X})",
+                                displacement, basereg, indexreg, od
+                            )
+                        }
+                        MemoryIndirectAction::PreIndexLong => {
+                            format!(
+                                "([${:04X},{},{}],${:08X})",
+                                displacement, basereg, indexreg, od
+                            )
+                        }
+                        MemoryIndirectAction::PostIndexNull => {
+                            format!("([${:04X},{}],{})", displacement, basereg, indexreg)
+                        }
+                        MemoryIndirectAction::PostIndexWord => {
+                            format!(
+                                "([${:04X},{}],{},${:04X})",
+                                displacement, basereg, indexreg, od
+                            )
+                        }
+                        MemoryIndirectAction::PostIndexLong => {
+                            format!(
+                                "([${:04X},{}],{},${:08X})",
+                                displacement, basereg, indexreg, od
+                            )
+                        }
+                        MemoryIndirectAction::Null => {
+                            format!("([${:04X},{}])", displacement, basereg)
+                        }
+                        MemoryIndirectAction::Word => {
+                            format!("([${:04X},{}],${:04X})", displacement, basereg, od)
+                        }
+                        MemoryIndirectAction::Long => {
+                            format!("([${:04X},{}],${:08X})", displacement, basereg, od)
+                        }
+                    }
                 } else {
                     let (xn, reg) = extword.brief_get_register();
                     format!(
