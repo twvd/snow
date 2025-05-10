@@ -16,6 +16,7 @@ use crate::renderer::{AudioReceiver, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent};
 
+use crate::mac::nubus::mdc12::Mdc12;
 use anyhow::Result;
 use bit_set::BitSet;
 use log::*;
@@ -67,6 +68,9 @@ pub struct MacIIBus<TRenderer: Renderer> {
     //vpa_sync: bool,
     /// Programmer's key pressed
     progkey_pressed: LatchingEvent,
+
+    /// NuBus cards (base address: $9)
+    nubus_devices: [Option<Mdc12>; 6],
 }
 
 impl<TRenderer> MacIIBus<TRenderer>
@@ -115,6 +119,8 @@ where
             vblank_time: Instant::now(),
             //vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
+
+            nubus_devices: [Some(Mdc12::new()), None, None, None, None, None],
         };
 
         // Disable memory test
@@ -257,7 +263,17 @@ where
             // NuBus super slot
             0x6000_0000..=0xEFFF_FFFF => None,
             // NuBus standard slot
-            0xF100_0000..=0xFFFF_FFFF => None,
+            0xF100_0000..=0xFFFF_FFFF => {
+                let nubus_addr = (addr >> 24) & 0x0F;
+                if nubus_addr < 0x09 || nubus_addr == 0x0F {
+                    None
+                } else if let Some(dev) = self.nubus_devices[(nubus_addr - 0x09) as usize].as_mut()
+                {
+                    dev.read(addr & 0xFF_FFFF)
+                } else {
+                    None
+                }
+            }
             _ => None,
         };
 

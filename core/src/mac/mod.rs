@@ -16,6 +16,7 @@ pub mod adb;
 pub mod asc;
 pub mod compact;
 pub mod macii;
+pub mod nubus;
 pub mod pluskbd;
 pub mod rtc;
 pub mod scc;
