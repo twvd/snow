@@ -159,7 +159,6 @@ impl<'a> Disassembler<'a> {
                         })
                         .unwrap_or_else(|| "-".to_string());
 
-                    let od = 0; // TODO outer displacement
                     match extword.full_memindirectmode()? {
                         MemoryIndirectAction::None => {
                             format!("(${:04X},{},{})", displacement, basereg, indexreg)
@@ -168,12 +167,14 @@ impl<'a> Disassembler<'a> {
                             format!("([${:04X},{},{}])", displacement, basereg, indexreg)
                         }
                         MemoryIndirectAction::PreIndexWord => {
+                            let od = self.get16()?;
                             format!(
                                 "([${:04X},{},{}],${:04X})",
                                 displacement, basereg, indexreg, od
                             )
                         }
                         MemoryIndirectAction::PreIndexLong => {
+                            let od = self.get32()?;
                             format!(
                                 "([${:04X},{},{}],${:08X})",
                                 displacement, basereg, indexreg, od
@@ -183,12 +184,14 @@ impl<'a> Disassembler<'a> {
                             format!("([${:04X},{}],{})", displacement, basereg, indexreg)
                         }
                         MemoryIndirectAction::PostIndexWord => {
+                            let od = self.get16()?;
                             format!(
                                 "([${:04X},{}],{},${:04X})",
                                 displacement, basereg, indexreg, od
                             )
                         }
                         MemoryIndirectAction::PostIndexLong => {
+                            let od = self.get32()?;
                             format!(
                                 "([${:04X},{}],{},${:08X})",
                                 displacement, basereg, indexreg, od
@@ -198,9 +201,11 @@ impl<'a> Disassembler<'a> {
                             format!("([${:04X},{}])", displacement, basereg)
                         }
                         MemoryIndirectAction::Word => {
+                            let od = self.get16()?;
                             format!("([${:04X},{}],${:04X})", displacement, basereg, od)
                         }
                         MemoryIndirectAction::Long => {
+                            let od = self.get32()?;
                             format!("([${:04X},{}],${:08X})", displacement, basereg, od)
                         }
                     }

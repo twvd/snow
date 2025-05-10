@@ -1254,6 +1254,14 @@ where
                     MemoryIndirectAction::PostIndexNull => self
                         .read_ticks::<Address>(disp_addr)?
                         .wrapping_add(index * u32::from(scale)),
+                    MemoryIndirectAction::PreIndexLong => {
+                        let mut od = Long::from(self.fetch_pump()?) << 16;
+                        od |= Long::from(self.fetch_pump()?);
+
+                        self.read_ticks::<Address>(disp_addr)?
+                            .wrapping_add(index * u32::from(scale))
+                            .wrapping_add(od)
+                    }
                     _ => bail!(format!("TODO {:?}", extword.full_memindirectmode())),
                 }
             }
