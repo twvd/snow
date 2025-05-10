@@ -1152,7 +1152,8 @@ impl Instruction {
 
         // Base displacement size
         match extword.full_displacement_size() {
-            0b00 => bail!("Reserved index size"),
+            // 0b00 is 'reserved' according to the PRM. Musashi treats it same as 0b01.
+            0b00 => Ok(0),
             0b01 => Ok(0),
             0b10 => Ok(fetch()? as i16 as i32),
             0b11 => bail!("TODO Long displacement"),
