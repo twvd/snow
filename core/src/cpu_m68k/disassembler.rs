@@ -723,6 +723,23 @@ impl<'a> Disassembler<'a> {
 
                 format!("{} {},{}", mnemonic, self.ea(instr)?, regs)
             }
+            InstructionMnemonic::DIVx_l => {
+                instr.fetch_extword(|| self.get16())?;
+                let ew = instr.get_extword()?.divl();
+
+                let regs = if ew.size() {
+                    format!("D{}:D{}", ew.dr(), ew.dq())
+                } else {
+                    format!("D{}", ew.dq())
+                };
+
+                format!(
+                    "DIV{}.l {},{}",
+                    if ew.signed() { "S" } else { "" },
+                    self.ea(instr)?,
+                    regs
+                )
+            }
         };
 
         Ok(())

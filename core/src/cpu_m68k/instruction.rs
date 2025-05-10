@@ -89,7 +89,7 @@ pub enum InstructionMnemonic {
     CMPM_w,
     CMPM_b,
     DBcc,
-    // no DIVS_l, DIVS_b
+    DIVx_l,
     DIVS_w,
     // no DIVU_l, DIVU_b
     DIVU_w,
@@ -459,6 +459,10 @@ impl ExtWord {
     pub fn muls(&self) -> MulsExtWord {
         MulsExtWord(self.data)
     }
+
+    pub fn divl(&self) -> DivlExtWord {
+        DivlExtWord(self.data)
+    }
 }
 
 bitfield! {
@@ -482,6 +486,17 @@ bitfield! {
         pub dh: usize @ 0..=3,
         pub size: bool @ 10,
         pub dl: usize @ 12..=14,
+    }
+}
+
+bitfield! {
+    /// DIV.l/DIVS.l extension word
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub struct DivlExtWord(pub Word): Debug, FromRaw, IntoRaw, DerefRaw {
+        pub dr: usize @ 0..=3,
+        pub size: bool @ 10,
+        pub signed: bool @ 11,
+        pub dq: usize @ 12..=14,
     }
 }
 
@@ -688,6 +703,7 @@ impl Instruction {
         (M68020, 0b1110_1001_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFEXTU),
         (M68020, 0b1110_1010_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFCHG),
         (M68020, 0b0100_1100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MULS_l),
+        (M68020, 0b0100_1100_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::DIVx_l),
     ];
 
     /// Attempts to decode an instruction.
@@ -914,6 +930,7 @@ impl Instruction {
             | InstructionMnemonic::CMPA_l
             | InstructionMnemonic::CMPI_l
             | InstructionMnemonic::CMPM_l
+            | InstructionMnemonic::DIVx_l
             | InstructionMnemonic::EOR_l
             | InstructionMnemonic::EORI_l
             | InstructionMnemonic::EXT_l

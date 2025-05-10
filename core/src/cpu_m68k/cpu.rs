@@ -1123,6 +1123,7 @@ where
             InstructionMnemonic::BFCHG => self.op_bfchg(instr),
             InstructionMnemonic::BFEXTU => self.op_bfextu(instr),
             InstructionMnemonic::MULS_l => self.op_muls_l(instr),
+            InstructionMnemonic::DIVx_l => self.op_divx_l(instr),
         }
     }
 
@@ -3088,6 +3089,80 @@ where
             self.regs
                 .write_d(extword.dh(), (result >> 32) as i32 as Long);
         }
+
+        Ok(())
+    }
+
+    /// DIVU/DIVS (Long)
+    fn op_divx_l(&mut self, instr: &Instruction) -> Result<()> {
+        instr.fetch_extword(|| self.fetch_pump())?;
+        let extword = instr.get_extword()?.divl();
+        let dr = self.regs.read_d::<Long>(extword.dr());
+        let dq = self.regs.read_d::<Long>(extword.dq());
+
+        let dividend = if extword.size() {
+            // 64-bit
+            (u64::from(dr) << 32) | u64::from(dq)
+        } else {
+            u64::from(dq)
+        };
+        let divisor = self.read_ea::<Long>(instr, instr.get_op2())? as u64;
+
+        if divisor == 0 {
+            // Division by zero
+            self.advance_cycles(4)?;
+            self.regs.sr.set_n(false);
+            self.regs.sr.set_c(false);
+            self.regs.sr.set_z(false);
+            self.regs.sr.set_v(false);
+
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_DIV_ZERO, None);
+        }
+
+        self.prefetch_pump()?;
+
+        let (quotient, remainder) = match (extword.signed(), extword.size()) {
+            (false, false) => {
+                // 32-bit unsigned
+                (dividend / divisor, dividend % divisor)
+            }
+            (true, false) => {
+                // 32-bit signed
+                (
+                    ((dividend as u32 as i32) / (divisor as u32 as i32)) as i64 as u64,
+                    ((dividend as u32 as i32) % (divisor as u32 as i32)) as i64 as u64,
+                )
+            }
+            (false, true) => {
+                // 64-bit unsigned
+                (dividend / divisor, dividend % divisor)
+            }
+            (true, true) => {
+                // 64-bit signed
+                (
+                    ((dividend as i64) / (divisor as i64)) as u64,
+                    ((dividend as i64) % (divisor as i64)) as u64,
+                )
+            }
+        };
+
+        // Check overflow conditions on 64-bit divisions if the result exceeds 32-bit
+        if extword.size() && ![u32::MIN, u32::MAX].contains(&((quotient >> 32) as u32)) {
+            debug!("DIV.l overflow");
+            self.regs.sr.set_v(true);
+            return Ok(());
+        }
+
+        // 76-79 cycles
+        self.advance_cycles(76)?;
+
+        self.regs.sr.set_v(false);
+        self.regs.sr.set_c(false);
+        self.regs.sr.set_n(quotient & (1 << 31) != 0);
+        self.regs.sr.set_z(quotient == 0);
+
+        self.regs.write_d(extword.dr(), remainder as u32);
+        self.regs.write_d(extword.dq(), quotient as u32);
 
         Ok(())
     }
