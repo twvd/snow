@@ -711,6 +711,32 @@ impl<'a> Disassembler<'a> {
                     sec.reg()
                 )
             }
+            InstructionMnemonic::BFINS => {
+                instr.fetch_extword(|| self.get16())?;
+
+                let sec = instr.get_extword()?.bfx();
+                let offset = if sec.fdo() {
+                    format!("D{}", sec.offset_reg())
+                } else {
+                    sec.offset().to_string()
+                };
+                let width = if sec.fdw() {
+                    format!("D{}", sec.width_reg())
+                } else if sec.width() == 0 {
+                    "32".to_string()
+                } else {
+                    sec.offset().to_string()
+                };
+
+                format!(
+                    "{} D{}, {} {{{}:{}}}",
+                    mnemonic,
+                    sec.reg(),
+                    self.ea(instr)?,
+                    offset,
+                    width,
+                )
+            }
             InstructionMnemonic::MULS_l => {
                 instr.fetch_extword(|| self.get16())?;
                 let ew = instr.get_extword()?.muls();

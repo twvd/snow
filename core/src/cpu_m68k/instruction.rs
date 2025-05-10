@@ -68,6 +68,7 @@ pub enum InstructionMnemonic {
     BCLR_imm,
     BFCHG,
     BFEXTU,
+    BFINS,
     BSET_imm,
     BTST_imm,
     // BRA is actually just Bcc with cond = True
@@ -702,6 +703,7 @@ impl Instruction {
         // M68020+ instructions
         (M68020, 0b1110_1001_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFEXTU),
         (M68020, 0b1110_1010_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFCHG),
+        (M68020, 0b1110_1111_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFINS),
         (M68020, 0b0100_1100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MULS_l),
         (M68020, 0b0100_1100_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::DIVx_l),
     ];
@@ -847,7 +849,11 @@ impl Instruction {
                 | AddressingMode::PCIndex
         ) || matches!(
             self.mnemonic,
-            InstructionMnemonic::MOVEC_l | InstructionMnemonic::BFEXTU
+            InstructionMnemonic::MOVEC_l
+                | InstructionMnemonic::BFEXTU
+                | InstructionMnemonic::DIVx_l
+                | InstructionMnemonic::MULS_l
+                | InstructionMnemonic::BFINS
         )
     }
 
@@ -1073,6 +1079,7 @@ impl Instruction {
             InstructionMnemonic::Bcc
             | InstructionMnemonic::BFEXTU
             | InstructionMnemonic::BFCHG
+            | InstructionMnemonic::BFINS
             | InstructionMnemonic::BSR
             | InstructionMnemonic::CHK
             | InstructionMnemonic::DBcc
