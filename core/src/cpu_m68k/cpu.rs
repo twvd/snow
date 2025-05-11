@@ -3019,11 +3019,13 @@ where
             sec.width()
         };
         let width = if rwidth == 0 { 32 } else { rwidth };
-        let offset = if sec.fdo() {
-            self.regs.read_d::<Long>(sec.offset_reg()) % 32
-        } else {
-            sec.offset()
-        };
+        let offset = 32
+            - width
+            - if sec.fdo() {
+                self.regs.read_d::<Long>(sec.offset_reg()) % 32
+            } else {
+                sec.offset()
+            };
 
         let mask = ((1u64 << width) - 1) as Long;
         let result = (value >> offset) & mask;
@@ -3049,11 +3051,13 @@ where
             sec.width()
         };
         let width = if rwidth == 0 { 32 } else { rwidth };
-        let offset = if sec.fdo() {
-            self.regs.read_d::<Long>(sec.offset_reg()) % 32
-        } else {
-            sec.offset()
-        };
+        let offset = 32
+            - width
+            - if sec.fdo() {
+                self.regs.read_d::<Long>(sec.offset_reg()) % 32
+            } else {
+                sec.offset()
+            };
 
         let mask = ((1u64 << width) - 1) as Long;
         let omask = mask << offset;
@@ -3079,16 +3083,19 @@ where
             sec.width()
         };
         let width = if rwidth == 0 { 32 } else { rwidth };
-        let offset = if sec.fdo() {
-            self.regs.read_d::<Long>(sec.offset_reg()) % 32
-        } else {
-            sec.offset()
-        };
+        let offset = 32
+            - width
+            - if sec.fdo() {
+                self.regs.read_d::<Long>(sec.offset_reg()) % 32
+            } else {
+                sec.offset()
+            };
 
         let ins_value = self.regs.read_d::<Long>(sec.reg());
-        let mask = (((1u64 << width) - 1) as Long) << offset;
-        let ins_field = ins_value & mask;
-        let result = (value & !mask) | ins_field;
+        let mask = ((1u64 << width) - 1) as Long;
+        let omask = mask << offset;
+        let ins_field = (ins_value & mask) << offset;
+        let result = (value & !omask) | ins_field;
 
         self.write_ea(instr, instr.get_op2(), result)?;
         self.regs.sr.set_n(value & (1 << (offset + width - 1)) != 0);
