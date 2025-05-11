@@ -452,18 +452,6 @@ impl ExtWord {
             )),
         }
     }
-
-    pub fn bfx(&self) -> BfxExtWord {
-        BfxExtWord(self.data)
-    }
-
-    pub fn muls(&self) -> MulsExtWord {
-        MulsExtWord(self.data)
-    }
-
-    pub fn divl(&self) -> DivlExtWord {
-        DivlExtWord(self.data)
-    }
 }
 
 bitfield! {
@@ -847,14 +835,7 @@ impl Instruction {
                 | AddressingMode::IndirectIndex
                 | AddressingMode::PCDisplacement
                 | AddressingMode::PCIndex
-        ) || matches!(
-            self.mnemonic,
-            InstructionMnemonic::MOVEC_l
-                | InstructionMnemonic::BFEXTU
-                | InstructionMnemonic::DIVx_l
-                | InstructionMnemonic::MULS_l
-                | InstructionMnemonic::BFINS
-        )
+        ) || matches!(self.mnemonic, InstructionMnemonic::MOVEC_l)
     }
 
     pub fn get_displacement(&self) -> Result<i32> {
@@ -1152,8 +1133,7 @@ impl Instruction {
 
         // Base displacement size
         match extword.full_displacement_size() {
-            // 0b00 is 'reserved' according to the PRM. Musashi treats it same as 0b01.
-            0b00 => Ok(0),
+            0b00 => bail!("Reserved displacement size?"),
             0b01 => Ok(0),
             0b10 => Ok(fetch()? as i16 as i32),
             0b11 => bail!("TODO Long displacement"),

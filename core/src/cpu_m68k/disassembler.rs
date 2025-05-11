@@ -8,7 +8,7 @@ use std::fmt::Write;
 use crate::{
     bus::Address,
     cpu_m68k::{
-        instruction::{IndexSize, MemoryIndirectAction, Xn},
+        instruction::{BfxExtWord, DivlExtWord, IndexSize, MemoryIndirectAction, MulsExtWord, Xn},
         regs::Register,
     },
     types::Byte,
@@ -672,9 +672,8 @@ impl<'a> Disassembler<'a> {
                 format!("{} #{}", mnemonic, displacement)
             }
             InstructionMnemonic::BFCHG => {
-                instr.fetch_extword(|| self.get16())?;
+                let sec = BfxExtWord(self.get16()?);
 
-                let sec = instr.get_extword()?.bfx();
                 let offset = if sec.fdo() {
                     format!("D{}", sec.offset_reg())
                 } else {
@@ -685,15 +684,14 @@ impl<'a> Disassembler<'a> {
                 } else if sec.width() == 0 {
                     "32".to_string()
                 } else {
-                    sec.offset().to_string()
+                    sec.width().to_string()
                 };
 
                 format!("{} {} {{{}:{}}}", mnemonic, self.ea(instr)?, offset, width,)
             }
             InstructionMnemonic::BFEXTU => {
-                instr.fetch_extword(|| self.get16())?;
+                let sec = BfxExtWord(self.get16()?);
 
-                let sec = instr.get_extword()?.bfx();
                 let offset = if sec.fdo() {
                     format!("D{}", sec.offset_reg())
                 } else {
@@ -704,7 +702,7 @@ impl<'a> Disassembler<'a> {
                 } else if sec.width() == 0 {
                     "32".to_string()
                 } else {
-                    sec.offset().to_string()
+                    sec.width().to_string()
                 };
 
                 format!(
@@ -717,9 +715,8 @@ impl<'a> Disassembler<'a> {
                 )
             }
             InstructionMnemonic::BFINS => {
-                instr.fetch_extword(|| self.get16())?;
+                let sec = BfxExtWord(self.get16()?);
 
-                let sec = instr.get_extword()?.bfx();
                 let offset = if sec.fdo() {
                     format!("D{}", sec.offset_reg())
                 } else {
@@ -730,7 +727,7 @@ impl<'a> Disassembler<'a> {
                 } else if sec.width() == 0 {
                     "32".to_string()
                 } else {
-                    sec.offset().to_string()
+                    sec.width().to_string()
                 };
 
                 format!(
@@ -743,8 +740,7 @@ impl<'a> Disassembler<'a> {
                 )
             }
             InstructionMnemonic::MULS_l => {
-                instr.fetch_extword(|| self.get16())?;
-                let ew = instr.get_extword()?.muls();
+                let ew = MulsExtWord(self.get16()?);
 
                 let regs = if ew.size() {
                     format!("D{}-D{}", ew.dh(), ew.dl())
@@ -755,8 +751,7 @@ impl<'a> Disassembler<'a> {
                 format!("{} {},{}", mnemonic, self.ea(instr)?, regs)
             }
             InstructionMnemonic::DIVx_l => {
-                instr.fetch_extword(|| self.get16())?;
-                let ew = instr.get_extword()?.divl();
+                let ew = DivlExtWord(self.get16()?);
 
                 let regs = if ew.size() {
                     format!("D{}:D{}", ew.dr(), ew.dq())

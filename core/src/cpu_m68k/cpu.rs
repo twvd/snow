@@ -15,8 +15,8 @@ use crate::types::{Byte, LatchingEvent, Long, Word};
 use crate::util::TemporalOrder;
 
 use super::instruction::{
-    AddressingMode, Direction, IndexSize, Instruction, InstructionMnemonic, MemoryIndirectAction,
-    Xn,
+    AddressingMode, BfxExtWord, Direction, DivlExtWord, IndexSize, Instruction,
+    InstructionMnemonic, MemoryIndirectAction, MulsExtWord, Xn,
 };
 use super::regs::{Register, RegisterFile, RegisterSR};
 use super::{CpuM68kType, CpuSized, M68000, M68010, M68020, M68020_SR_MASK};
@@ -3010,8 +3010,7 @@ where
 
     /// BFEXTU
     fn op_bfextu(&mut self, instr: &Instruction) -> Result<()> {
-        instr.fetch_extword(|| self.fetch_pump())?;
-        let sec = instr.get_extword()?.bfx();
+        let sec = BfxExtWord(self.fetch_pump()?);
         let value = self.read_ea::<Long>(instr, instr.get_op2())?;
 
         let rwidth = if sec.fdw() {
@@ -3041,8 +3040,7 @@ where
 
     /// BFCHG
     fn op_bfchg(&mut self, instr: &Instruction) -> Result<()> {
-        instr.fetch_extword(|| self.fetch_pump())?;
-        let sec = instr.get_extword()?.bfx();
+        let sec = BfxExtWord(self.fetch_pump()?);
         let value = self.read_ea::<Long>(instr, instr.get_op2())?;
 
         let rwidth = if sec.fdw() {
@@ -3072,8 +3070,7 @@ where
 
     /// BFINS
     fn op_bfins(&mut self, instr: &Instruction) -> Result<()> {
-        instr.fetch_extword(|| self.fetch_pump())?;
-        let sec = instr.get_extword()?.bfx();
+        let sec = BfxExtWord(self.fetch_pump()?);
         let value = self.read_ea::<Long>(instr, instr.get_op2())?;
 
         let rwidth = if sec.fdw() {
@@ -3104,8 +3101,7 @@ where
 
     /// MULS (Long)
     fn op_muls_l(&mut self, instr: &Instruction) -> Result<()> {
-        instr.fetch_extword(|| self.fetch_pump())?;
-        let extword = instr.get_extword()?.muls();
+        let extword = MulsExtWord(self.fetch_pump()?);
 
         let a = self.regs.read_d::<Long>(extword.dl()) as i32 as i64;
         let b = self.read_ea::<Long>(instr, instr.get_op2())? as i32 as i64;
@@ -3136,8 +3132,7 @@ where
 
     /// DIVU/DIVS (Long)
     fn op_divx_l(&mut self, instr: &Instruction) -> Result<()> {
-        instr.fetch_extword(|| self.fetch_pump())?;
-        let extword = instr.get_extword()?.divl();
+        let extword = DivlExtWord(self.fetch_pump()?);
         let dr = self.regs.read_d::<Long>(extword.dr());
         let dq = self.regs.read_d::<Long>(extword.dq());
 
