@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -26,7 +26,7 @@ use num_traits::{FromPrimitive, PrimInt, ToBytes};
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
 pub struct MacIIBus<TRenderer: Renderer> {
-    renderer: PhantomData<TRenderer>,
+    renderer: TRenderer,
     cycles: Ticks,
 
     /// The currently emulated Macintosh model
@@ -88,11 +88,11 @@ where
     /// CrsrNew address
     const ADDR_CRSRNEW: Address = 0x08CE;
 
-    pub fn new(model: MacModel, rom: &[u8], _renderer: TRenderer) -> Self {
+    pub fn new(model: MacModel, rom: &[u8], renderer: TRenderer) -> Self {
         let ram_size = model.ram_size();
 
         let mut bus = Self {
-            renderer: PhantomData,
+            renderer,
             cycles: 0,
             model,
             trace: false,
@@ -204,7 +204,17 @@ where
             // NuBus super slot
             0x6000_0000..=0xEFFF_FFFF => None,
             // NuBus standard slot
-            0xF100_0000..=0xFFFF_FFFF => None,
+            0xF100_0000..=0xFFFF_FFFF => {
+                let nubus_addr = (addr >> 24) & 0x0F;
+                if nubus_addr < 0x09 || nubus_addr == 0x0F {
+                    None
+                } else if let Some(dev) = self.nubus_devices[(nubus_addr - 0x09) as usize].as_mut()
+                {
+                    dev.write(addr & 0xFF_FFFF, val)
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -373,6 +383,30 @@ where
             _ => unreachable!(),
         }
     }
+
+    /// Prepares the image and sends it to the frontend renderer
+    fn render(&mut self) -> Result<()> {
+        let fb = &self.nubus_devices[0].as_ref().unwrap().vram;
+
+        let buf = self.renderer.get_buffer();
+        for idx in 0..(self.model.display_width() as usize * self.model.display_height() as usize) {
+            let byte = idx / 8;
+            let bit = idx % 8;
+            if fb[0x80 + byte] & (1 << (7 - bit)) == 0 {
+                buf[idx * 4].store(0xEE, Ordering::Release);
+                buf[idx * 4 + 1].store(0xEE, Ordering::Release);
+                buf[idx * 4 + 2].store(0xEE, Ordering::Release);
+            } else {
+                buf[idx * 4].store(0x22, Ordering::Release);
+                buf[idx * 4 + 1].store(0x22, Ordering::Release);
+                buf[idx * 4 + 2].store(0x22, Ordering::Release);
+            }
+            buf[idx * 4 + 3].store(0xFF, Ordering::Release);
+        }
+        self.renderer.update()?;
+
+        Ok(())
+    }
 }
 
 impl<TRenderer> Bus<Address, Byte> for MacIIBus<TRenderer>
@@ -478,6 +512,10 @@ where
         // This is called from the CPU, at the CPU clock speed
         assert_eq!(ticks, 1);
         self.cycles += ticks;
+
+        if self.cycles % 80000000 == 0 {
+            self.render()?;
+        }
 
         let amu_active = self.via2.ddrb.vfc3() && !self.via2.b_out.vfc3();
         if self.amu_active != amu_active {
