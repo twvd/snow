@@ -537,6 +537,7 @@ where
             warn!("Unaligned access: address {:08X}", addr);
 
             if CPU_TYPE < M68020 {
+                // TODO should still happen on 68020+ for PC
                 bail!(CpuError::AddressError(AddressError {
                     function_code: 0,
                     ir: 0,

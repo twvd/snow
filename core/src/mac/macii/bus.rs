@@ -436,8 +436,8 @@ where
             if self.amu_active {
                 warn!(
                     "Read from unimplemented address: {:06X} -> {:08X}",
+                    addr & 0xFFFFFF,
                     self.amu_translate(addr),
-                    addr
                 );
             } else {
                 warn!("Read from unimplemented address: {:08X}", addr);
@@ -471,8 +471,8 @@ where
             if self.amu_active {
                 warn!(
                     "Write to unimplemented address: {:06X} -> {:08X} {:02X}",
+                    addr & 0xFFFFFF,
                     self.amu_translate(addr),
-                    addr,
                     val
                 );
             } else {
@@ -513,15 +513,7 @@ where
         assert_eq!(ticks, 1);
         self.cycles += ticks;
 
-        if self.cycles % 80000000 == 0 {
-            self.render()?;
-        }
-
-        let amu_active = self.via2.ddrb.vfc3() && !self.via2.b_out.vfc3();
-        if self.amu_active != amu_active {
-            self.amu_active = amu_active;
-            log::debug!("AMU: {}", if amu_active { "24-bit" } else { "32-bit" });
-        }
+        self.amu_active = self.via2.ddrb.vfc3() && !self.via2.b_out.vfc3();
 
         self.eclock += ticks;
         while self.eclock >= 10 {
@@ -534,8 +526,8 @@ where
         }
 
         // VBlank interrupt
-        if false {
-            //self.video.get_clr_vblank() {
+        if self.nubus_devices[0].as_mut().unwrap().render.get_clear() {
+            self.render()?;
             self.via1.ifr.set_vblank(true);
 
             if self.speed == EmulatorSpeed::Video {
@@ -551,16 +543,20 @@ where
             }
         }
 
-        // NuBus slot IRQs
+        // NuBus slot IRQs and ticks
         let mut slot_irqs = 0;
         for slot in 0..(self.nubus_devices.len()) {
-            if let Some(dev) = self.nubus_devices[slot].as_ref() {
+            if let Some(dev) = self.nubus_devices[slot].as_mut() {
+                dev.tick(ticks)?;
                 if dev.get_irq() {
                     slot_irqs |= 1 << slot;
                 }
             }
         }
-        self.via2.a_in.set_v2irqs(slot_irqs);
+        self.via2.a_in.set_v2irqs(!slot_irqs);
+        if slot_irqs > 0 {
+            self.via2.ifr.set_slot(true);
+        }
 
         self.swim.tick(1)?;
 
