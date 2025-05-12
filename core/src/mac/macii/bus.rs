@@ -551,6 +551,17 @@ where
             }
         }
 
+        // NuBus slot IRQs
+        let mut slot_irqs = 0;
+        for slot in 0..(self.nubus_devices.len()) {
+            if let Some(dev) = self.nubus_devices[slot].as_ref() {
+                if dev.get_irq() {
+                    slot_irqs |= 1 << slot;
+                }
+            }
+        }
+        self.via2.a_in.set_v2irqs(slot_irqs);
+
         self.swim.tick(1)?;
 
         Ok(1)

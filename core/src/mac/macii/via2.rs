@@ -24,6 +24,9 @@ bitfield! {
         pub v2irq5: bool @ 4,
         /// Expansion slot $E IRQ
         pub v2irq6: bool @ 5,
+
+        pub v2irqs: u8 @ 0..=5,
+
         /// RAM-size (output)
         pub v2ram0: u8 @ 6..=7,
     }
@@ -102,9 +105,8 @@ bitfield! {
         /// Cleared on Register A read/write
         pub onesec: bool @ 0,
 
-        /// Vertical blank
         /// Cleared on Register A read/write
-        pub vblank: bool @ 1,
+        pub slot: bool @ 1,
 
         /// Keyboard data ready
         /// Cleared on read/write shift reg
@@ -278,7 +280,7 @@ impl BusMember<Address> for Via2 {
 
             // Register A
             0x01 | 0x0F => {
-                self.ifr.set_vblank(false);
+                self.ifr.set_slot(false);
                 self.ifr.set_onesec(false);
 
                 Some((self.a_in.0 & !self.ddra.0) | (self.a_out.0 & self.ddra.0))
@@ -346,15 +348,12 @@ impl BusMember<Address> for Via2 {
                 self.ifr.set_kbdclock(false);
 
                 self.b_out.0 = val;
-                log::debug!("VIA2 Reg B: {:?}", self.b_out);
-
                 Some(())
             }
 
             // Register B Data Direction
             0x02 => {
                 self.ddrb.0 = val;
-                log::debug!("VIA2 DDRB: {:?}", self.ddrb);
                 Some(())
             }
 
@@ -388,11 +387,10 @@ impl BusMember<Address> for Via2 {
 
             // Register A
             0x01 | 0x0F => {
-                self.ifr.set_vblank(false);
+                self.ifr.set_slot(false);
                 self.ifr.set_onesec(false);
 
                 self.a_out.0 = val;
-                log::debug!("VIA2 Reg A: {:?}", self.a_out);
                 Some(())
             }
 

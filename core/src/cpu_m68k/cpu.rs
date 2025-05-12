@@ -1248,21 +1248,50 @@ where
                     }
                     MemoryIndirectAction::Null => {
                         // Memory Indirect (no index)
-                        // Index suppress is handled above
-                        self.read_ticks(pre_addr)?
+                        self.read_ticks(disp_addr)?
+                    }
+                    MemoryIndirectAction::Word => {
+                        let od = self.fetch_pump()?.expand_sign_extend();
+
+                        self.read_ticks::<Address>(disp_addr)?
+                            .wrapping_add_signed(od as i32)
+                    }
+                    MemoryIndirectAction::Long => {
+                        let mut od = Long::from(self.fetch_pump()?) << 16;
+                        od |= Long::from(self.fetch_pump()?);
+                        self.read_ticks::<Address>(disp_addr)?
+                            .wrapping_add_signed(od as i32)
                     }
                     MemoryIndirectAction::PostIndexNull => self
                         .read_ticks::<Address>(disp_addr)?
                         .wrapping_add(index * u32::from(scale)),
+                    MemoryIndirectAction::PostIndexWord => {
+                        let od = self.fetch_pump()?.expand_sign_extend();
+                        self.read_ticks::<Address>(disp_addr)?
+                            .wrapping_add(index * u32::from(scale))
+                            .wrapping_add_signed(od as i32)
+                    }
+                    MemoryIndirectAction::PostIndexLong => {
+                        let mut od = Long::from(self.fetch_pump()?) << 16;
+                        od |= Long::from(self.fetch_pump()?);
+                        self.read_ticks::<Address>(disp_addr)?
+                            .wrapping_add(index * u32::from(scale))
+                            .wrapping_add_signed(od as i32)
+                    }
+                    MemoryIndirectAction::PreIndexNull => self.read_ticks(pre_addr)?,
+                    MemoryIndirectAction::PreIndexWord => {
+                        let od = self.fetch_pump()?.expand_sign_extend();
+
+                        self.read_ticks::<Address>(pre_addr)?
+                            .wrapping_add_signed(od as i32)
+                    }
                     MemoryIndirectAction::PreIndexLong => {
                         let mut od = Long::from(self.fetch_pump()?) << 16;
                         od |= Long::from(self.fetch_pump()?);
 
-                        self.read_ticks::<Address>(disp_addr)?
-                            .wrapping_add(index * u32::from(scale))
-                            .wrapping_add(od)
+                        self.read_ticks::<Address>(pre_addr)?
+                            .wrapping_add_signed(od as i32)
                     }
-                    _ => bail!(format!("TODO {:?}", extword.full_memindirectmode())),
                 }
             }
         };
