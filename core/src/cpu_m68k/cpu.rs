@@ -1052,7 +1052,7 @@ where
             InstructionMnemonic::MOVEM_mem_w => self.op_movem_mem::<Word>(instr),
             InstructionMnemonic::MOVEM_reg_l => self.op_movem_reg::<Long>(instr),
             InstructionMnemonic::MOVEM_reg_w => self.op_movem_reg::<Word>(instr),
-            InstructionMnemonic::CHK => self.op_chk(instr),
+            InstructionMnemonic::CHK_w => self.op_chk::<Word>(instr),
             InstructionMnemonic::Scc => self.op_scc(instr),
             InstructionMnemonic::DBcc => self.op_dbcc(instr),
             InstructionMnemonic::Bcc => self.op_bcc::<false>(instr),
@@ -1126,6 +1126,7 @@ where
             InstructionMnemonic::BFINS => self.op_bfins(instr),
             InstructionMnemonic::MULS_l => self.op_muls_l(instr),
             InstructionMnemonic::DIVx_l => self.op_divx_l(instr),
+            InstructionMnemonic::CHK_l => self.op_chk::<Long>(instr),
         }
     }
 
@@ -2729,14 +2730,11 @@ where
     }
 
     /// CHK
-    fn op_chk(&mut self, instr: &Instruction) -> Result<()> {
+    fn op_chk<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         let max = self
-            .read_ea::<Word>(instr, instr.get_op2())?
+            .read_ea::<T>(instr, instr.get_op2())?
             .expand_sign_extend() as i32;
-        let value = self
-            .regs
-            .read_d::<Word>(instr.get_op1())
-            .expand_sign_extend() as i32;
+        let value = self.regs.read_d::<T>(instr.get_op1()).expand_sign_extend() as i32;
         let _result = value - max;
 
         match instr.get_addr_mode()? {

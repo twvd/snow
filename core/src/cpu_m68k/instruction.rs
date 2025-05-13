@@ -73,7 +73,8 @@ pub enum InstructionMnemonic {
     BTST_imm,
     // BRA is actually just Bcc with cond = True
     BSR,
-    CHK,
+    CHK_l,
+    CHK_w,
     CLR_l,
     CLR_w,
     CLR_b,
@@ -596,7 +597,7 @@ impl Instruction {
         (M68000, 0b0100_1100_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEM_reg_w),
         (M68000, 0b0100_1100_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEM_reg_l),
         (M68000, 0b0100_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::LEA),
-        (M68000, 0b0100_0001_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CHK),
+        (M68000, 0b0100_0001_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CHK_w),
         (M68000, 0b1000_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SBCD),
         (M68000, 0b1000_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_b),
         (M68000, 0b1000_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_w),
@@ -694,6 +695,7 @@ impl Instruction {
         (M68020, 0b1110_1111_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFINS),
         (M68020, 0b0100_1100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MULS_l),
         (M68020, 0b0100_1100_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::DIVx_l),
+        (M68020, 0b0100_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CHK_l),
     ];
 
     /// Attempts to decode an instruction.
@@ -912,6 +914,7 @@ impl Instruction {
             | InstructionMnemonic::ANDI_l
             | InstructionMnemonic::ASL_l
             | InstructionMnemonic::ASR_l
+            | InstructionMnemonic::CHK_l
             | InstructionMnemonic::CLR_l
             | InstructionMnemonic::CMP_l
             | InstructionMnemonic::CMPA_l
@@ -1062,7 +1065,7 @@ impl Instruction {
             | InstructionMnemonic::BFCHG
             | InstructionMnemonic::BFINS
             | InstructionMnemonic::BSR
-            | InstructionMnemonic::CHK
+            | InstructionMnemonic::CHK_w
             | InstructionMnemonic::DBcc
             | InstructionMnemonic::EXG
             | InstructionMnemonic::ILLEGAL

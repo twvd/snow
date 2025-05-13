@@ -603,7 +603,7 @@ impl<'a> Disassembler<'a> {
             | InstructionMnemonic::ROL_ea
             | InstructionMnemonic::ROR_ea => format!("{}.w {}", mnemonic, self.ea(instr)?),
 
-            InstructionMnemonic::CHK => {
+            InstructionMnemonic::CHK_w | InstructionMnemonic::CHK_l => {
                 format!("{} {},D{}", mnemonic, self.ea(instr)?, instr.get_op1())
             }
 
