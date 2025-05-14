@@ -1215,7 +1215,13 @@ where
                     extword.brief_get_register(),
                     extword.brief_get_index_size(),
                 );
-                pc.wrapping_add(displacement).wrapping_add(index)
+                let scale = if CPU_TYPE >= M68020 {
+                    extword.brief_get_scale()
+                } else {
+                    1
+                };
+                pc.wrapping_add(displacement)
+                    .wrapping_add(index * Address::from(scale))
             }
             AddressingMode::AbsoluteShort => self.fetch_pump()? as i16 as i32 as u32,
             AddressingMode::AbsoluteLong => {
