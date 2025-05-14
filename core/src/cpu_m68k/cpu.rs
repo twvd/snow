@@ -556,7 +556,11 @@ where
     fn read_ticks<T: CpuSized>(&mut self, oaddr: Address) -> Result<T> {
         let len = std::mem::size_of::<T>();
         let mut result: T = T::zero();
-        let addr = if len > 1 { oaddr & !1 } else { oaddr };
+        let addr = if CPU_TYPE == M68000 && len > 1 {
+            oaddr & !1
+        } else {
+            oaddr
+        };
 
         // Below converts from BE -> LE on the fly
         for a in 0..len {
@@ -627,7 +631,7 @@ where
         value: T,
         order: TemporalOrder,
     ) -> Result<()> {
-        let addr = if std::mem::size_of::<T>() > 1 {
+        let addr = if CPU_TYPE == 68000 && std::mem::size_of::<T>() > 1 {
             oaddr & !1
         } else {
             oaddr
