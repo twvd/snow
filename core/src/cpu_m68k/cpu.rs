@@ -2891,6 +2891,11 @@ where
         let displacement = if instr.get_bxx_displacement() == 0 {
             instr.fetch_extword(|| self.fetch())?;
             instr.get_displacement()?
+        } else if CPU_TYPE >= M68020 && instr.get_bxx_displacement_raw() == 0xFF {
+            let msb = self.fetch_pump()? as Address;
+            let lsb = self.fetch_pump()? as Address;
+            // -4 since we just nudged the PC twice
+            ((msb << 16) | lsb) as i32 - 4
         } else {
             instr.get_bxx_displacement()
         };

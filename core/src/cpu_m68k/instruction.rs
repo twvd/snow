@@ -866,6 +866,11 @@ impl Instruction {
         self.data as u8 as i8 as i32
     }
 
+    /// Displacement as part of the instruction for BRA/BSR/Bcc
+    pub fn get_bxx_displacement_raw(&self) -> u8 {
+        self.data as u8
+    }
+
     /// Retrieves the data part of 'quick' instructions (except MOVEQ)
     pub fn get_quick<T: CpuSized>(&self) -> T {
         let result = T::chop(((self.data as Long) >> 9) & 0b111);
