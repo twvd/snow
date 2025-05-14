@@ -3054,31 +3054,105 @@ where
     /// BFEXTU
     fn op_bfextu(&mut self, instr: &Instruction) -> Result<()> {
         let sec = BfxExtWord(self.fetch_pump()?);
-        let value = self.read_ea::<Long>(instr, instr.get_op2())?;
 
-        let rwidth = if sec.fdw() {
-            self.regs.read_d::<Long>(sec.width_reg()) % 32
-        } else {
-            sec.width()
-        };
-        let width = if rwidth == 0 { 32 } else { rwidth };
-        let offset = 32
-            - width
-            - if sec.fdo() {
-                self.regs.read_d::<Long>(sec.offset_reg()) % 32
-            } else {
-                sec.offset()
-            };
+        match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => {
+                // Data register version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) & 31
+                } else {
+                    sec.offset()
+                };
 
-        let mask = ((1u64 << width) - 1) as Long;
-        let result = (value >> offset) & mask;
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
 
-        self.regs.write_d(sec.reg(), result);
-        // N = MSbit of the SOURCE FIELD
-        self.regs.sr.set_n(value & (1 << (offset + width - 1)) != 0);
-        self.regs.sr.set_z(result == 0);
-        self.regs.sr.set_v(false);
-        self.regs.sr.set_c(false);
+                // Ensure offset is in range 0-31
+                offset &= 31;
+
+                width = ((width - 1) & 31) + 1;
+
+                let mut data = self.regs.read_d::<Long>(instr.get_op2());
+
+                data = data.rotate_left(offset);
+
+                // Set N flag from the rotated data
+                self.regs.sr.set_n(data & 0x80000000 != 0);
+
+                // Extract the bits
+                data >>= 32 - width;
+
+                self.regs.sr.set_z(data == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                self.regs.write_d(sec.reg(), data);
+            }
+            _ => {
+                // Memory version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) as i32
+                } else {
+                    sec.offset() as i32
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                // Calculate effective address
+                let mut ea =
+                    self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+
+                // Only adjust EA if offset comes from register
+                // (otherwise it is 0-31)
+                if sec.fdo() {
+                    ea += (offset / 8) as Address;
+                    offset %= 8;
+
+                    // Handle negative offset
+                    if offset < 0 {
+                        offset += 8;
+                        ea = ea.wrapping_sub(1);
+                    }
+                }
+
+                width = ((width - 1) & 31) + 1;
+
+                // Optimize reading based on field width
+                let mut data: Long = if (offset as u32 + width) < 8 {
+                    (self.read_ticks::<Byte>(ea)? as Long) << 24
+                } else if (offset as u32 + width) < 16 {
+                    (self.read_ticks::<Word>(ea)? as Long) << 16
+                } else {
+                    self.read_ticks::<Long>(ea)?
+                };
+
+                data <<= offset as usize;
+
+                // If the bit field crosses a 32-bit boundary, read an additional byte
+                if (offset as u32 + width) > 32 {
+                    let extra_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))? as Long;
+                    data |= (extra_byte << (offset as usize)) >> 8;
+                }
+
+                // Set N flag from the data before shifting for extraction
+                self.regs.sr.set_n(data & 0x80000000 != 0);
+
+                // Right shift to extract the bits
+                data >>= 32 - width;
+
+                self.regs.sr.set_z(data == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+                self.regs.write_d(sec.reg(), data);
+            }
+        }
 
         Ok(())
     }
@@ -3086,31 +3160,95 @@ where
     /// BFCHG
     fn op_bfchg(&mut self, instr: &Instruction) -> Result<()> {
         let sec = BfxExtWord(self.fetch_pump()?);
-        let value = self.read_ea::<Long>(instr, instr.get_op2())?;
 
-        let rwidth = if sec.fdw() {
-            self.regs.read_d::<Long>(sec.width_reg()) % 32
-        } else {
-            sec.width()
-        };
-        let width = if rwidth == 0 { 32 } else { rwidth };
-        let offset = 32
-            - width
-            - if sec.fdo() {
-                self.regs.read_d::<Long>(sec.offset_reg()) % 32
-            } else {
-                sec.offset()
-            };
+        match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => {
+                // Data register version
+                let offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) & 31
+                } else {
+                    sec.offset()
+                };
 
-        let mask = ((1u64 << width) - 1) as Long;
-        let omask = mask << offset;
-        let result = value ^ omask;
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
 
-        self.write_ea(instr, instr.get_op2(), result)?;
-        self.regs.sr.set_n((value << offset) & (1 << 31) != 0);
-        self.regs.sr.set_z(result & omask == 0);
-        self.regs.sr.set_v(false);
-        self.regs.sr.set_c(false);
+                width = ((width - 1) & 31) + 1;
+
+                let data_reg = instr.get_op2();
+                let data = self.regs.read_d::<Long>(data_reg);
+
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask = mask_base.rotate_right(offset);
+
+                // Set flags
+                self.regs.sr.set_n((data << offset) & 0x80000000 != 0);
+                self.regs.sr.set_z(data & mask == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                self.regs.write_d(data_reg, data ^ mask);
+            }
+            _ => {
+                // Memory version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) as i32
+                } else {
+                    sec.offset() as i32
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                // Calculate effective address with byte offset
+                let mut ea =
+                    self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+                ea += (offset / 8) as Address;
+                offset %= 8;
+
+                // Handle negative offsets
+                if offset < 0 {
+                    offset += 8;
+                    ea = ea.wrapping_sub(1);
+                }
+
+                width = ((width - 1) & 31) + 1;
+
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask_long = mask_base >> (offset as usize);
+
+                let data_long = self.read_ticks::<Long>(ea)?;
+                self.regs
+                    .sr
+                    .set_n((data_long << (offset as usize)) & 0x80000000 != 0);
+                self.regs.sr.set_z(data_long & mask_long == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                // Write result back
+                self.write_ticks(ea, data_long ^ mask_long)?;
+
+                // Handle bit fields that cross 32-bit boundaries
+                if (width as i32 + offset) > 32 {
+                    let mask_byte = (mask_base & 0xFF) as Byte;
+                    let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
+
+                    // Update Z flag with the extended part
+                    if data_byte & mask_byte != 0 {
+                        self.regs.sr.set_z(false);
+                    }
+
+                    // Write the extended part
+                    self.write_ticks(ea.wrapping_add(4), data_byte ^ mask_byte)?;
+                }
+            }
+        }
 
         Ok(())
     }
@@ -3118,33 +3256,116 @@ where
     /// BFINS
     fn op_bfins(&mut self, instr: &Instruction) -> Result<()> {
         let sec = BfxExtWord(self.fetch_pump()?);
-        let value = self.read_ea::<Long>(instr, instr.get_op2())?;
 
-        let rwidth = if sec.fdw() {
-            self.regs.read_d::<Long>(sec.width_reg()) % 32
-        } else {
-            sec.width()
-        };
-        let width = if rwidth == 0 { 32 } else { rwidth };
-        let offset = 32
-            - width
-            - if sec.fdo() {
-                self.regs.read_d::<Long>(sec.offset_reg()) % 32
-            } else {
-                sec.offset()
-            };
+        match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => {
+                // Data register version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) & 31
+                } else {
+                    sec.offset()
+                };
 
-        let ins_value = self.regs.read_d::<Long>(sec.reg());
-        let mask = ((1u64 << width) - 1) as Long;
-        let omask = mask << offset;
-        let ins_field = (ins_value & mask) << offset;
-        let result = (value & !omask) | ins_field;
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
 
-        self.write_ea(instr, instr.get_op2(), result)?;
-        self.regs.sr.set_n(value & (1 << (offset + width - 1)) != 0);
-        self.regs.sr.set_z(ins_field == 0);
-        self.regs.sr.set_v(false);
-        self.regs.sr.set_c(false);
+                // Ensure offset is in range 0-31
+                offset &= 31;
+
+                width = ((width - 1) & 31) + 1;
+
+                let data_reg = instr.get_op2();
+                let mut data = self.regs.read_d::<Long>(data_reg);
+
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask = mask_base.rotate_right(offset);
+
+                // Get insert data from source register, masked to width
+                let mut insert = self.regs.read_d::<Long>(sec.reg());
+                insert <<= 32 - width;
+
+                // Set flags on the insert data before rotating
+                self.regs.sr.set_n(insert & 0x80000000 != 0);
+                self.regs.sr.set_z(insert == 0);
+
+                // Rotate insert data to align with destination
+                insert = insert.rotate_right(offset);
+
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                data &= !mask;
+                data |= insert;
+                self.regs.write_d(data_reg, data);
+            }
+            _ => {
+                // Memory version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) as i32
+                } else {
+                    sec.offset() as i32
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                // Calculate effective address with byte offset
+                let mut ea =
+                    self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+                ea += (offset / 8) as Address;
+                offset %= 8;
+
+                // Handle negative offsets
+                if offset < 0 {
+                    offset += 8;
+                    ea = ea.wrapping_sub(1);
+                }
+
+                width = ((width - 1) & 31) + 1;
+
+                // Create mask for the bits to be inserted
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask_long = mask_base >> (offset as usize);
+
+                let mut insert_base = self.regs.read_d::<Long>(sec.reg());
+                insert_base <<= 32 - width;
+
+                // Set flags based on insert data
+                self.regs.sr.set_n(insert_base & 0x80000000 != 0);
+                self.regs.sr.set_z(insert_base == 0);
+
+                let insert_long = insert_base >> (offset as usize);
+
+                let data_long = self.read_ticks::<Long>(ea)?;
+
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                // Combine data and insert values and write back
+                self.write_ticks(ea, (data_long & !mask_long) | insert_long)?;
+
+                // Handle bit fields that cross 32-bit boundaries
+                if (width as i32 + offset) > 32 {
+                    let mask_byte = (mask_base & 0xFF) as Byte;
+                    let insert_byte = (insert_base & 0xFF) as Byte;
+                    let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
+
+                    // Update Z flag with the extended part
+                    if data_byte & mask_byte != 0 {
+                        self.regs.sr.set_z(false);
+                    }
+
+                    // Write the extended part
+                    self.write_ticks(ea.wrapping_add(4), (data_byte & !mask_byte) | insert_byte)?;
+                }
+            }
+        }
 
         Ok(())
     }

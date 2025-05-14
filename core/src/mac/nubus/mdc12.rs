@@ -63,12 +63,12 @@ impl BusMember<Address> for Mdc12 {
     fn read(&mut self, addr: Address) -> Option<u8> {
         // Assume normal slot, not super slot
         match addr & 0xFF_FFFF {
-            0x00_0000..=0x1F_FFFF => Some(self.vram[addr as usize]),
+            0x00_0000..=0x03_FFFF => Some(self.vram[addr as usize]),
             0x20_0002 => Some(self.ctrl.high()),
             0x20_0003 => Some(self.ctrl.low()),
             // CRTC beam position
             0x20_01C0..=0x20_01C3 => {
-                if addr == 0x20_01C0 {
+                if addr == 0x20_01C3 {
                     self.toggle = !self.toggle;
                 }
                 if self.toggle {
@@ -77,7 +77,7 @@ impl BusMember<Address> for Mdc12 {
                     Some(4)
                 }
             }
-            0x20_01CC..=0x20_01CF => Some(0),
+            0x20_01C4..=0x20_01CF => Some(0),
             // RAMDAC
             0x20_0204..=0x20_0207 => Some(self.clut_addr[addr as usize - 0x200204]),
             0xFE_0000..=0xFF_FFFF if addr % 4 == 3 => {
@@ -91,7 +91,7 @@ impl BusMember<Address> for Mdc12 {
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
         // Assume normal slot, not super slot
         match addr & 0xFF_FFFF {
-            0x00_0000..=0x1F_FFFF => {
+            0x00_0000..=0x03_FFFF => {
                 self.vram[addr as usize] = val;
                 Some(())
             }
