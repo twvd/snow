@@ -1214,6 +1214,9 @@ where
                 self.advance_cycles(2)?; // 2x idle
                 instr.fetch_extword(|| self.fetch_pump())?;
                 let extword = instr.get_extword()?;
+                if extword.is_full() && CPU_TYPE >= M68020 {
+                    return self.calc_ea_addr::<T>(instr, AddressingMode::PCIndexBase, ea_in);
+                }
                 let pc = self.regs.pc;
                 let displacement = extword.brief_get_displacement_signext();
                 let index = read_idx(
@@ -1236,7 +1239,7 @@ where
                 (h << 16) | l
             }
             AddressingMode::Immediate => unreachable!(),
-            AddressingMode::IndirectIndexBase => {
+            AddressingMode::IndirectIndexBase | AddressingMode::PCIndexBase => {
                 // also Memory Indirect modes
                 // TODO cycles?
                 assert!(instr.has_extword());
@@ -1245,11 +1248,15 @@ where
                 let addr = if extword.full_base_suppress() {
                     0
                 } else {
-                    self.regs.read_a::<Address>(ea_in)
+                    match addrmode {
+                        AddressingMode::IndirectIndexBase => self.regs.read_a::<Address>(ea_in),
+                        AddressingMode::PCIndexBase => self.regs.pc,
+                        _ => unreachable!(),
+                    }
                 };
+                let displacement = instr.fetch_ind_full_displacement(|| self.fetch_pump())?;
                 let scale = extword.full_scale();
 
-                let displacement = instr.fetch_ind_full_displacement(|| self.fetch_pump())?;
                 let index = if let Some(idxreg) = extword.full_index_register() {
                     read_idx(self, idxreg.into(), extword.full_index_size())
                 } else {
@@ -1392,6 +1399,7 @@ where
             }
             AddressingMode::IndirectIndexBase
             | AddressingMode::IndirectIndex
+            | AddressingMode::PCIndexBase
             | AddressingMode::PCIndex => {
                 let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
                 self.read_ticks(addr)?

@@ -237,6 +237,8 @@ pub enum AddressingMode {
     /// Extension of IndirectIndex
     /// Uses Full Format Extension Word
     IndirectIndexBase,
+    /// Program Counter Indirect With Index (Base displacement)
+    PCIndexBase,
     // Memory Indirect Post-Indexed
     // ([bd,An], Xn.size*scale,od)
     //MemoryIndirectPostIndex,
@@ -1150,14 +1152,18 @@ impl Instruction {
     {
         let extword = self.get_extword()?;
         assert!(extword.is_full());
-        assert_eq!(self.get_addr_mode()?, AddressingMode::IndirectIndex);
+        //assert_eq!(self.get_addr_mode()?, AddressingMode::IndirectIndex);
 
         // Base displacement size
         match extword.full_displacement_size() {
             0b00 => bail!("Reserved displacement size?"),
             0b01 => Ok(0),
             0b10 => Ok(fetch()? as i16 as i32),
-            0b11 => bail!("TODO Long displacement"),
+            0b11 => {
+                let msb = fetch()? as u32;
+                let lsb = fetch()? as u32;
+                Ok(((msb << 16) | lsb) as i32)
+            }
             _ => unreachable!(),
         }
     }
