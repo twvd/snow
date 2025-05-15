@@ -766,6 +766,13 @@ impl<'a> Disassembler<'a> {
                     regs
                 )
             }
+            InstructionMnemonic::FNOP => {
+                self.get16()?;
+                instr.mnemonic.to_string()
+            }
+            InstructionMnemonic::FSAVE => {
+                format!("{} {}", instr.mnemonic, self.ea(instr)?,)
+            }
         };
 
         Ok(())

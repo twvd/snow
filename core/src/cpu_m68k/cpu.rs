@@ -200,7 +200,7 @@ where
 
     /// Breakpoint hit latch
     #[serde(skip)]
-    breakpoint_hit: LatchingEvent,
+    pub(super) breakpoint_hit: LatchingEvent,
 
     /// Next address to jump to for step over
     step_over_addr: Option<Address>,
@@ -351,7 +351,7 @@ where
     }
 
     /// Fetches a 16-bit value from prefetch queue
-    fn fetch(&mut self) -> Result<Word> {
+    pub(super) fn fetch(&mut self) -> Result<Word> {
         if self.prefetch.is_empty() {
             self.prefetch_pump()?;
         }
@@ -1117,6 +1117,7 @@ where
                 }
 
                 self.advance_cycles(4)?;
+                log::debug!("Unhandled LINEF: {:04X}", instr.data);
                 self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEF, None)
             }
 
@@ -1131,6 +1132,10 @@ where
             InstructionMnemonic::MULS_l => self.op_muls_l(instr),
             InstructionMnemonic::DIVx_l => self.op_divx_l(instr),
             InstructionMnemonic::CHK_l => self.op_chk::<Long>(instr),
+
+            // FPU ---------------------------------------------------------------------------------
+            InstructionMnemonic::FNOP => self.op_fnop(instr),
+            InstructionMnemonic::FSAVE => self.op_fsave(instr),
         }
     }
 
@@ -1158,8 +1163,8 @@ where
             }
         };
         let addr = match addrmode {
-            AddressingMode::DataRegister => unreachable!(),
-            AddressingMode::AddressRegister => unreachable!(),
+            AddressingMode::DataRegister => bail!("calc_ea_addr invalid addressing mode Dn"),
+            AddressingMode::AddressRegister => bail!("calc_ea_addr invalid addressing mode An"),
             AddressingMode::Indirect => self.regs.read_a(ea_in),
             AddressingMode::IndirectPreDec => {
                 self.advance_cycles(2)?; // 2x idle
@@ -1397,7 +1402,12 @@ where
 
     /// Writes a value to the operand (ea_in) using the effective addressing mode specified
     /// by the instruction, directly or through indirection, depending on the mode.
-    fn write_ea<T: CpuSized>(&mut self, instr: &Instruction, ea_in: usize, value: T) -> Result<()> {
+    pub(super) fn write_ea<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        ea_in: usize,
+        value: T,
+    ) -> Result<()> {
         self.write_ea_with(
             instr,
             instr.get_addr_mode()?,

@@ -208,6 +208,10 @@ pub enum InstructionMnemonic {
     TST_l,
     TST_w,
     TST_b,
+
+    // FPU opcodes
+    FNOP,
+    FSAVE,
 }
 
 /// Addressing modes
@@ -683,7 +687,6 @@ impl Instruction {
         (M68000, 0b1110_0001_0101_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROL_w),
         (M68000, 0b1110_0000_1001_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROR_l),
         (M68000, 0b1110_0001_1001_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROL_l),
-        (M68000, 0b1111_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::LINEF),
 
         // M68010+ instructions
         (M68010, 0b0100_1110_0111_1010, 0b1111_1111_1111_1110, InstructionMnemonic::MOVEC_l),
@@ -696,6 +699,11 @@ impl Instruction {
         (M68020, 0b0100_1100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MULS_l),
         (M68020, 0b0100_1100_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::DIVx_l),
         (M68020, 0b0100_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CHK_l),
+
+        // M68020+ FPU instructions
+        (M68020, 0b1111_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::FSAVE),
+        (M68020, 0b1111_0000_1000_0000, 0b1111_0001_1111_1111, InstructionMnemonic::FNOP),
+        (M68000, 0b1111_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::LINEF),
     ];
 
     /// Attempts to decode an instruction.
@@ -1073,6 +1081,8 @@ impl Instruction {
             | InstructionMnemonic::CHK_w
             | InstructionMnemonic::DBcc
             | InstructionMnemonic::EXG
+            | InstructionMnemonic::FNOP
+            | InstructionMnemonic::FSAVE
             | InstructionMnemonic::ILLEGAL
             | InstructionMnemonic::JMP
             | InstructionMnemonic::JSR
