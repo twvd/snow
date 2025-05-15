@@ -1032,6 +1032,7 @@ where
             InstructionMnemonic::NOT_b => self.op_not::<Byte>(instr),
             InstructionMnemonic::EXT_l => self.op_ext::<Long, Word>(instr),
             InstructionMnemonic::EXT_w => self.op_ext::<Word, Byte>(instr),
+            InstructionMnemonic::EXTB_l => self.op_ext::<Long, Byte>(instr),
             InstructionMnemonic::SBCD => self.op_sbcd(instr),
             InstructionMnemonic::NBCD => self.op_nbcd(instr),
             InstructionMnemonic::ABCD => self.op_abcd(instr),

@@ -106,6 +106,7 @@ pub enum InstructionMnemonic {
     EXG,
     EXT_l,
     EXT_w,
+    EXTB_l,
     ILLEGAL,
     JMP,
     JSR,
@@ -566,6 +567,7 @@ impl Instruction {
         (M68000, 0b0100_0110_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NOT_b),
         (M68000, 0b0100_0110_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NOT_w),
         (M68000, 0b0100_0110_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NOT_l),
+        (M68000, 0b0100_1001_1100_0000, 0b1111_1111_1111_1000, InstructionMnemonic::EXTB_l),
         (M68000, 0b0100_1000_1000_0000, 0b1111_1111_1111_1000, InstructionMnemonic::EXT_w),
         (M68000, 0b0100_1000_1100_0000, 0b1111_1111_1111_1000, InstructionMnemonic::EXT_l),
         (M68000, 0b0100_1000_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NBCD),
@@ -1020,6 +1022,7 @@ impl Instruction {
             | InstructionMnemonic::CMPM_b
             | InstructionMnemonic::EOR_b
             | InstructionMnemonic::EORI_b
+            | InstructionMnemonic::EXTB_l
             | InstructionMnemonic::LSL_b
             | InstructionMnemonic::LSR_b
             | InstructionMnemonic::OR_b

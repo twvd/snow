@@ -514,7 +514,9 @@ impl<'a> Disassembler<'a> {
             | InstructionMnemonic::NEGX_w
             | InstructionMnemonic::NEGX_b => format!("{}.{} {}", mnemonic, sz, self.ea(instr)?),
 
-            InstructionMnemonic::EXT_l | InstructionMnemonic::EXT_w => {
+            InstructionMnemonic::EXT_l
+            | InstructionMnemonic::EXT_w
+            | InstructionMnemonic::EXTB_l => {
                 format!("{}.{} D{}", mnemonic, sz, instr.get_op2())
             }
 
