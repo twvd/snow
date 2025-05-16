@@ -101,9 +101,8 @@ bitfield! {
     /// VIA Interrupt flag/enable registers
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct RegisterIRQ(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
-        /// One-second interrupt
         /// Cleared on Register A read/write
-        pub onesec: bool @ 0,
+        pub scsi_drq: bool @ 0,
 
         /// Cleared on Register A read/write
         pub slot: bool @ 1,
@@ -112,9 +111,8 @@ bitfield! {
         /// Cleared on read/write shift reg
         pub kbdready: bool @ 2,
 
-        /// Keyboard data
         /// Cleared on Register B read/write
-        pub kbddata: bool @ 3,
+        pub scsi_irq: bool @ 3,
 
         /// Keyboard clock
         /// Cleared on Register B read/write
@@ -242,7 +240,7 @@ impl BusMember<Address> for Via2 {
 
             // Register B
             0x00 => {
-                self.ifr.set_kbddata(false);
+                self.ifr.set_scsi_irq(false);
                 self.ifr.set_kbdclock(false);
 
                 Some((self.b_in.0 & !self.ddrb.0) | (self.b_out.0 & self.ddrb.0))
@@ -281,7 +279,7 @@ impl BusMember<Address> for Via2 {
             // Register A
             0x01 | 0x0F => {
                 self.ifr.set_slot(false);
-                self.ifr.set_onesec(false);
+                self.ifr.set_scsi_drq(false);
 
                 Some((self.a_in.0 & !self.ddra.0) | (self.a_out.0 & self.ddra.0))
             }
@@ -344,7 +342,7 @@ impl BusMember<Address> for Via2 {
 
             // Register B
             0x00 => {
-                self.ifr.set_kbddata(false);
+                self.ifr.set_scsi_irq(false);
                 self.ifr.set_kbdclock(false);
 
                 self.b_out.0 = val;
@@ -388,7 +386,7 @@ impl BusMember<Address> for Via2 {
             // Register A
             0x01 | 0x0F => {
                 self.ifr.set_slot(false);
-                self.ifr.set_onesec(false);
+                self.ifr.set_scsi_drq(false);
 
                 self.a_out.0 = val;
                 Some(())

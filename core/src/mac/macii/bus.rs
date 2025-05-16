@@ -190,9 +190,9 @@ where
                 // SCC
                 0x0000_4000..=0x0000_5FFF => self.scc.write(addr >> 1, val),
                 // SCSI
+                0x0000_6000..=0x0000_6003 => Some(self.scsi.write_dma(val)),
                 0x0001_0000..=0x0001_1FFF => self.scsi.write(addr, val),
-                // SCSI pseudo-DMA
-                0x0001_2000..=0x0001_2FFF => None,
+                0x0001_2000..=0x0001_2FFF => Some(self.scsi.write_dma(val)),
                 // Sound
                 0x0001_4000..=0x0001_5FFF => Some(()),
                 // IWM
@@ -259,9 +259,9 @@ where
                 // SCC
                 0x0000_4000..=0x0000_5FFF => self.scc.read(addr >> 1),
                 // SCSI
+                0x0000_6060..=0x0000_6063 => Some(self.scsi.read_dma()),
                 0x0001_0000..=0x0001_1FFF => self.scsi.read(addr),
-                // SCSI pseudo-DMA
-                0x0001_2000..=0x0001_2FFF => None,
+                0x0001_2000..=0x0001_2FFF => Some(self.scsi.read_dma()),
                 // Sound
                 0x0001_4000..=0x0001_5FFF => Some(0),
                 // IWM
@@ -557,6 +557,8 @@ where
         if slot_irqs > 0 {
             self.via2.ifr.set_slot(true);
         }
+        self.via2.ifr.set_scsi_irq(self.scsi.get_irq());
+        self.via2.ifr.set_scsi_drq(self.scsi.get_drq());
 
         self.swim.tick(1)?;
 
