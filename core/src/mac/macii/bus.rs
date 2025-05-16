@@ -516,10 +516,10 @@ where
         self.amu_active = self.via2.ddrb.vfc3() && !self.via2.b_out.vfc3();
 
         self.eclock += ticks;
-        while self.eclock >= 10 {
+        while self.eclock >= 20 {
             // The E Clock is roughly 1/10th of the CPU clock
             // TODO ticks when VPA is asserted
-            self.eclock -= 10;
+            self.eclock -= 20;
 
             self.via1.tick(1)?;
             self.via2.tick(1)?;
