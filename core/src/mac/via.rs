@@ -247,6 +247,10 @@ impl Via {
                     // Mac Classic has a pulldown (R79) as model identifier
                     model != MacModel::Classic,
                 )
+                .with_page2(
+                    // On Mac II low for model detection
+                    model != MacModel::MacII,
+                )
                 .with_sound(if model == MacModel::MacII { 0 } else { 3 }),
             b_in: RegisterB(0xFF),
             ddra: RegisterA(0xFF),

@@ -534,9 +534,9 @@ where
     fn verify_access<T: CpuSized>(&self, addr: Address, read: bool) -> Result<()> {
         if std::mem::size_of::<T>() >= 2 && (addr & 1) != 0 {
             // Unaligned access
-            warn!("Unaligned access: address {:08X}", addr);
-
             if CPU_TYPE < M68020 {
+                warn!("Unaligned access: address {:08X}", addr);
+
                 // TODO should still happen on 68020+ for PC
                 bail!(CpuError::AddressError(AddressError {
                     function_code: 0,

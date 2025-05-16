@@ -194,9 +194,9 @@ where
                 // SCSI pseudo-DMA
                 0x0001_2000..=0x0001_2FFF => None,
                 // Sound
-                0x0001_4000..=0x0001_5FFF => None,
+                0x0001_4000..=0x0001_5FFF => Some(()),
                 // IWM
-                0x0001_6000..=0x0001_FFFF => self.swim.write(addr, val),
+                0x0001_6000..=0x0001_7FFF => self.swim.write(addr, val),
                 // Expansion area
                 //0x0001_8000..=0x0001_FFFF => Some(()),
                 _ => None,
@@ -263,9 +263,9 @@ where
                 // SCSI pseudo-DMA
                 0x0001_2000..=0x0001_2FFF => None,
                 // Sound
-                0x0001_4000..=0x0001_5FFF => None,
+                0x0001_4000..=0x0001_5FFF => Some(0),
                 // IWM
-                0x0001_6000..=0x0001_FFFF => self.swim.read(addr),
+                0x0001_6000..=0x0001_7FFF => self.swim.read(addr),
                 // Expansion area
                 //0x0001_8000..=0x0001_FFFF => Some(0xFF),
                 _ => None,
