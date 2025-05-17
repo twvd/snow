@@ -67,8 +67,13 @@ pub enum InstructionMnemonic {
     BCHG_imm,
     BCLR_imm,
     BFCHG,
+    BFCLR,
     BFEXTU,
+    BFEXTS,
+    BFFFO,
     BFINS,
+    BFTST,
+    BFSET,
     BSET_imm,
     BTST_imm,
     // BRA is actually just Bcc with cond = True
@@ -697,9 +702,14 @@ impl Instruction {
         (M68010, 0b0100_1110_0111_0100, 0b1111_1111_1111_1111, InstructionMnemonic::RTD),
 
         // M68020+ instructions
+        (M68020, 0b1110_1100_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFCLR),
         (M68020, 0b1110_1001_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFEXTU),
+        (M68020, 0b1110_1011_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFEXTS),
         (M68020, 0b1110_1010_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFCHG),
         (M68020, 0b1110_1111_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFINS),
+        (M68020, 0b1110_1110_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFSET),
+        (M68020, 0b1110_1000_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFTST),
+        (M68020, 0b1110_1101_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFFFO),
         (M68020, 0b0100_1100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MULS_l),
         (M68020, 0b0100_1100_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::DIVx_l),
         (M68020, 0b0100_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CHK_l),
@@ -1080,8 +1090,13 @@ impl Instruction {
 
             InstructionMnemonic::Bcc
             | InstructionMnemonic::BFEXTU
+            | InstructionMnemonic::BFEXTS
+            | InstructionMnemonic::BFFFO
             | InstructionMnemonic::BFCHG
+            | InstructionMnemonic::BFCLR
             | InstructionMnemonic::BFINS
+            | InstructionMnemonic::BFSET
+            | InstructionMnemonic::BFTST
             | InstructionMnemonic::BSR
             | InstructionMnemonic::CHK_w
             | InstructionMnemonic::DBcc

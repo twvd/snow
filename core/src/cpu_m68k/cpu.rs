@@ -1127,9 +1127,14 @@ where
             InstructionMnemonic::RTD => self.op_rtd(instr),
 
             // M68020 ------------------------------------------------------------------------------
+            InstructionMnemonic::BFCLR => self.op_bfclr(instr),
             InstructionMnemonic::BFCHG => self.op_bfchg(instr),
+            InstructionMnemonic::BFFFO => self.op_bfffo(instr),
             InstructionMnemonic::BFEXTU => self.op_bfextu(instr),
+            InstructionMnemonic::BFEXTS => self.op_bfexts(instr),
             InstructionMnemonic::BFINS => self.op_bfins(instr),
+            InstructionMnemonic::BFSET => self.op_bfset(instr),
+            InstructionMnemonic::BFTST => self.op_bftst(instr),
             InstructionMnemonic::MULS_l => self.op_muls_l(instr),
             InstructionMnemonic::DIVx_l => self.op_divx_l(instr),
             InstructionMnemonic::CHK_l => self.op_chk::<Long>(instr),
@@ -3070,6 +3075,99 @@ where
         Ok(())
     }
 
+    /// BFCLR
+    fn op_bfclr(&mut self, instr: &Instruction) -> Result<()> {
+        let sec = BfxExtWord(self.fetch_pump()?);
+
+        match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => {
+                // Data register version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) & 31
+                } else {
+                    sec.offset()
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                offset &= 31;
+                width = ((width - 1) & 31) + 1;
+
+                let data = self.regs.read_d::<Long>(instr.get_op2());
+
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask = mask_base.rotate_right(offset);
+
+                self.regs.sr.set_n((data << offset) & 0x80000000 != 0);
+                self.regs.sr.set_z(data & mask == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+                self.regs.write_d(instr.get_op2(), data & !mask);
+            }
+            _ => {
+                // Memory version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) as i32
+                } else {
+                    sec.offset() as i32
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                // Calculate effective address with byte offset
+                let mut ea =
+                    self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+                ea += (offset / 8) as Address;
+                offset %= 8;
+
+                // Handle negative offsets
+                if offset < 0 {
+                    offset += 8;
+                    ea = ea.wrapping_sub(1);
+                }
+
+                width = ((width - 1) & 31) + 1;
+
+                // Create mask for the main 32-bit word
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask_long = mask_base >> (offset as usize);
+
+                let data_long = self.read_ticks::<Long>(ea)?;
+                self.regs
+                    .sr
+                    .set_n((data_long << (offset as usize)) & 0x80000000 != 0);
+                self.regs.sr.set_z(data_long & mask_long == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                self.write_ticks(ea, data_long & !mask_long)?;
+
+                // Handle bit fields that cross 32-bit boundaries
+                if (width as i32 + offset) > 32 {
+                    let mask_byte = (mask_base & 0xFF) as Byte;
+                    let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
+
+                    // Update Z flag with the extended part
+                    if data_byte & mask_byte != 0 {
+                        self.regs.sr.set_z(false);
+                    }
+
+                    self.write_ticks(ea.wrapping_add(4), data_byte & !mask_byte)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// BFEXTU
     fn op_bfextu(&mut self, instr: &Instruction) -> Result<()> {
         let sec = BfxExtWord(self.fetch_pump()?);
@@ -3170,6 +3268,392 @@ where
                 self.regs.sr.set_v(false);
                 self.regs.sr.set_c(false);
                 self.regs.write_d(sec.reg(), data);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// BFEXTS
+    fn op_bfexts(&mut self, instr: &Instruction) -> Result<()> {
+        let sec = BfxExtWord(self.fetch_pump()?);
+
+        match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => {
+                // Data register version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) & 31
+                } else {
+                    sec.offset()
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                offset &= 31;
+                width = ((width - 1) & 31) + 1;
+
+                let mut data = self.regs.read_d::<Long>(instr.get_op2());
+                data = data.rotate_left(offset);
+
+                // Set N flag from the rotated data
+                self.regs.sr.set_n(data & 0x80000000 != 0);
+
+                // Right shift with sign extension to extract the bits
+                // Convert to signed, shift right, then back to unsigned
+                let signed_data = data as i32;
+                let result = (signed_data >> (32 - width)) as u32;
+
+                self.regs.sr.set_z(result == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+                self.regs.write_d(sec.reg(), result);
+            }
+            _ => {
+                // Memory version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) as i32
+                } else {
+                    sec.offset() as i32
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                let mut ea =
+                    self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+                ea += (offset / 8) as Address;
+                offset %= 8;
+
+                // Handle negative offsets
+                if offset < 0 {
+                    offset += 8;
+                    ea = ea.wrapping_sub(1);
+                }
+
+                width = ((width - 1) & 31) + 1;
+
+                let mut data = self.read_ticks::<Long>(ea)?;
+                data <<= offset as usize;
+
+                // If the bit field crosses a 32-bit boundary, read an additional byte
+                if (offset as u32 + width) > 32 {
+                    let extra_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))? as Long;
+                    data |= (extra_byte << (offset as usize)) >> 8;
+                }
+
+                // Set N flag from the data before shifting for extraction
+                self.regs.sr.set_n(data & 0x80000000 != 0);
+
+                // Right shift with sign extension to extract the bits
+                let signed_data = data as i32;
+                let result = (signed_data >> (32 - width)) as u32;
+
+                self.regs.sr.set_z(result == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+                self.regs.write_d(sec.reg(), result);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// BFFFO
+    fn op_bfffo(&mut self, instr: &Instruction) -> Result<()> {
+        let sec = BfxExtWord(self.fetch_pump()?);
+
+        match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => {
+                // Data register version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) & 31
+                } else {
+                    sec.offset()
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                offset &= 31;
+                width = ((width - 1) & 31) + 1;
+
+                let mut data = self.regs.read_d::<Long>(instr.get_op2());
+                data = data.rotate_left(offset);
+
+                // Set N flag from the rotated data
+                self.regs.sr.set_n(data & 0x80000000 != 0);
+
+                // Right shift to extract the bits
+                data >>= 32 - width;
+
+                self.regs.sr.set_z(data == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                // Find first one bit from MSB to LSB
+                let mut result_offset = offset;
+                for bit in (0..width).rev() {
+                    if data & (1 << bit) != 0 {
+                        break;
+                    }
+                    result_offset += 1;
+                }
+
+                self.regs.write_d(sec.reg(), result_offset);
+            }
+            _ => {
+                // Memory version
+                let offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) as i32
+                } else {
+                    sec.offset() as i32
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                // Calculate effective address with byte offset
+                let mut ea =
+                    self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+                ea += (offset / 8) as Address;
+                let mut local_offset = offset % 8;
+
+                // Handle negative offsets
+                if local_offset < 0 {
+                    local_offset += 8;
+                    ea = ea.wrapping_sub(1);
+                }
+
+                width = ((width - 1) & 31) + 1;
+
+                let mut data = self.read_ticks::<Long>(ea)?;
+                data <<= local_offset as usize;
+
+                // If the bit field crosses a 32-bit boundary, read an additional byte
+                if (local_offset as u32 + width) > 32 {
+                    let extra_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))? as Long;
+                    data |= (extra_byte << (local_offset as usize)) >> 8;
+                }
+
+                // Set N flag from the data before shifting for extraction
+                self.regs.sr.set_n(data & 0x80000000 != 0);
+
+                // Right shift to extract the bits
+                data >>= 32 - width;
+
+                self.regs.sr.set_z(data == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                // Find first one bit from MSB to LSB
+                let mut result_offset = offset;
+                for bit in (0..width).rev() {
+                    if data & (1 << bit) != 0 {
+                        break;
+                    }
+                    result_offset += 1;
+                }
+
+                self.regs.write_d(sec.reg(), result_offset as Long);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// BFSET
+    fn op_bfset(&mut self, instr: &Instruction) -> Result<()> {
+        let sec = BfxExtWord(self.fetch_pump()?);
+
+        match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => {
+                // Data register version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) & 31
+                } else {
+                    sec.offset()
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                offset &= 31;
+                width = ((width - 1) & 31) + 1;
+
+                let data = self.regs.read_d::<Long>(instr.get_op2());
+
+                // Create mask: 0xffffffff << (32 - width), then rotate right by offset
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask = mask_base.rotate_right(offset);
+
+                self.regs.sr.set_n((data << offset) & 0x80000000 != 0);
+                self.regs.sr.set_z(data & mask == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+                self.regs.write_d(instr.get_op2(), data | mask);
+            }
+            _ => {
+                // Memory version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) as i32
+                } else {
+                    sec.offset() as i32
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                // Calculate effective address with byte offset
+                let mut ea =
+                    self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+                ea += (offset / 8) as Address;
+                offset %= 8;
+
+                // Handle negative offsets
+                if offset < 0 {
+                    offset += 8;
+                    ea = ea.wrapping_sub(1);
+                }
+
+                width = ((width - 1) & 31) + 1;
+
+                // Create mask for the main 32-bit word
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask_long = mask_base >> (offset as usize);
+
+                let data_long = self.read_ticks::<Long>(ea)?;
+
+                self.regs
+                    .sr
+                    .set_n((data_long << (offset as usize)) & 0x80000000 != 0);
+                self.regs.sr.set_z(data_long & mask_long == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                self.write_ticks(ea, data_long | mask_long)?;
+
+                // Handle bit fields that cross 32-bit boundaries
+                if (width as i32 + offset) > 32 {
+                    let mask_byte = (mask_base & 0xFF) as Byte;
+                    let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
+
+                    // Update Z flag with the extended part
+                    if data_byte & mask_byte != 0 {
+                        self.regs.sr.set_z(false);
+                    }
+
+                    self.write_ticks(ea.wrapping_add(4), data_byte | mask_byte)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// BFTST
+    fn op_bftst(&mut self, instr: &Instruction) -> Result<()> {
+        let sec = BfxExtWord(self.fetch_pump()?);
+
+        match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => {
+                // Data register version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) & 31
+                } else {
+                    sec.offset()
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                offset &= 31;
+                width = ((width - 1) & 31) + 1;
+
+                let data = self.regs.read_d::<Long>(instr.get_op2());
+
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask = mask_base.rotate_right(offset);
+
+                self.regs.sr.set_n((data << offset) & 0x80000000 != 0);
+                self.regs.sr.set_z(data & mask == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                // No data modification for BFTST
+            }
+            _ => {
+                // Memory version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) as i32
+                } else {
+                    sec.offset() as i32
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                // Calculate effective address with byte offset
+                let mut ea =
+                    self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+                ea += (offset / 8) as Address;
+                offset %= 8;
+
+                // Handle negative offsets
+                if offset < 0 {
+                    offset += 8;
+                    ea = ea.wrapping_sub(1);
+                }
+
+                width = ((width - 1) & 31) + 1;
+
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask_long = mask_base >> (offset as usize);
+
+                let data_long = self.read_ticks::<Long>(ea)?;
+
+                let n_bit = (data_long & (0x80000000 >> (offset as usize))) != 0;
+                self.regs.sr.set_n(n_bit);
+                self.regs.sr.set_z(data_long & mask_long == 0);
+
+                // Handle bit fields that cross 32-bit boundaries
+                if (width as i32 + offset) > 32 {
+                    let mask_byte = (mask_base & 0xFF) as Byte;
+                    let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
+
+                    if data_byte & mask_byte != 0 {
+                        self.regs.sr.set_z(false);
+                    }
+                }
+
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                // No data modification for BFTST
             }
         }
 

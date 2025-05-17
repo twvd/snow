@@ -691,7 +691,12 @@ impl<'a> Disassembler<'a> {
 
                 format!("{} {} {{{}:{}}}", mnemonic, self.ea(instr)?, offset, width,)
             }
-            InstructionMnemonic::BFEXTU => {
+            InstructionMnemonic::BFEXTU
+            | InstructionMnemonic::BFEXTS
+            | InstructionMnemonic::BFFFO
+            | InstructionMnemonic::BFSET
+            | InstructionMnemonic::BFCLR
+            | InstructionMnemonic::BFTST => {
                 let sec = BfxExtWord(self.get16()?);
 
                 let offset = if sec.fdo() {
