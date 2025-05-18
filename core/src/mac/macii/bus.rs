@@ -551,7 +551,7 @@ where
             self.render()?;
             self.via1.ifr.set_vblank(true);
 
-            if self.speed == EmulatorSpeed::Video {
+            if self.speed == EmulatorSpeed::Video || self.speed == EmulatorSpeed::Accurate {
                 // Sync to 60 fps video
                 let frametime = self.vblank_time.elapsed().as_micros() as u64;
                 const DESIRED_FRAMETIME: u64 = 1_000_000 / 60;
