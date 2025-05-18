@@ -342,7 +342,7 @@ impl Scc {
         let reg = self.reg;
         self.reg = 0;
 
-        debug!("Ch {:?} write ctrl {} = {:02X}", ch, reg, val);
+        //debug!("Ch {:?} write ctrl {} = {:02X}", ch, reg, val);
 
         match reg {
             0 => {

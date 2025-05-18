@@ -419,7 +419,6 @@ where
                     opcode,
                     instr.unwrap_err()
                 );
-                self.breakpoint_hit.set();
                 return self.raise_illegal_instruction();
             }
 
