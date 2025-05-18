@@ -117,9 +117,7 @@ impl MacModel {
         match self {
             Self::Early128K | Self::Early512K => None,
             Self::Plus => Some((0x0002AE, 0x0040_0000)),
-            Self::SE | Self::SeFdhd | Self::Classic => Some((0x000CFC, 0x574C5343)),
-            // TODO memory teet MacII
-            Self::MacII => None,
+            Self::SE | Self::SeFdhd | Self::Classic | Self::MacII => Some((0x000CFC, 0x574C5343)),
         }
     }
 
