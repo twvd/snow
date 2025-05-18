@@ -286,6 +286,8 @@ pub struct Emulator {
 }
 
 impl Emulator {
+    // TODO fix large stack frame?
+    #[allow(clippy::large_stack_frames)]
     pub fn new(
         rom: &[u8],
         model: MacModel,
