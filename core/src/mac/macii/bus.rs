@@ -620,14 +620,29 @@ where
     TRenderer: Renderer,
 {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
-        use crate::dbgprop_nest;
         use crate::debuggable::*;
+        use crate::{dbgprop_group, dbgprop_nest};
 
-        vec![
+        let mut result = vec![
             dbgprop_nest!("SCSI controller (NCR 5380)", self.scsi),
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("VIA 1 (SY6522)", self.via1),
             dbgprop_nest!("VIA 2 (SY6522)", self.via2),
-        ]
+        ];
+
+        for (i, slot) in self.nubus_devices.iter().enumerate() {
+            if let Some(dev) = slot.as_ref() {
+                result.push(dbgprop_nest!(
+                    format!("NuBus slot ${:1X} ({})", i + 0x09, dev.to_string()),
+                    dev
+                ));
+            } else {
+                result.push(dbgprop_group!(
+                    format!("NuBus slot ${:1X} (empty)", i + 0x09),
+                    vec![]
+                ));
+            }
+        }
+        result
     }
 }

@@ -219,3 +219,31 @@ impl Tickable for Mdc12 {
         Ok(ticks)
     }
 }
+
+impl Debuggable for Mdc12 {
+    fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        use crate::debuggable::*;
+        use crate::{dbgprop_bool, dbgprop_group};
+        use crate::{dbgprop_byte_bin, dbgprop_enum, dbgprop_long, dbgprop_word_bin};
+
+        vec![
+            dbgprop_group!(
+                "Registers",
+                vec![
+                    dbgprop_word_bin!("Control", self.ctrl.0),
+                    dbgprop_long!("Screen base", self.base.0),
+                    dbgprop_long!("Screen stride", self.stride.0),
+                    dbgprop_byte_bin!("RAMDAC control", self.ramdac_ctrl.0),
+                ]
+            ),
+            dbgprop_enum!("BPP", self.bpp()),
+            dbgprop_bool!("VBlank enable", self.vblank_enable),
+        ]
+    }
+}
+
+impl ToString for Mdc12 {
+    fn to_string(&self) -> String {
+        "Macintosh Display Card 8-24".to_string()
+    }
+}
