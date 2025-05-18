@@ -3094,7 +3094,7 @@ where
                 };
 
                 offset &= 31;
-                width = ((width - 1) & 31) + 1;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 let data = self.regs.read_d::<Long>(instr.get_op2());
 
@@ -3133,7 +3133,7 @@ where
                     ea = ea.wrapping_sub(1);
                 }
 
-                width = ((width - 1) & 31) + 1;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 // Create mask for the main 32-bit word
                 let mask_base = 0xFFFFFFFF_u32 << (32 - width);
@@ -3189,7 +3189,7 @@ where
                 // Ensure offset is in range 0-31
                 offset &= 31;
 
-                width = ((width - 1) & 31) + 1;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 let mut data = self.regs.read_d::<Long>(instr.get_op2());
 
@@ -3238,7 +3238,7 @@ where
                     }
                 }
 
-                width = ((width - 1) & 31) + 1;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 // Optimize reading based on field width
                 let mut data: Long = if (offset as u32 + width) < 8 {
@@ -3293,7 +3293,7 @@ where
                 };
 
                 offset &= 31;
-                width = ((width - 1) & 31) + 1;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 let mut data = self.regs.read_d::<Long>(instr.get_op2());
                 data = data.rotate_left(offset);
@@ -3336,7 +3336,7 @@ where
                     ea = ea.wrapping_sub(1);
                 }
 
-                width = ((width - 1) & 31) + 1;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 let mut data = self.read_ticks::<Long>(ea)?;
                 data <<= offset as usize;
@@ -3384,7 +3384,7 @@ where
                 };
 
                 offset &= 31;
-                width = ((width - 1) & 31) + 1;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 let mut data = self.regs.read_d::<Long>(instr.get_op2());
                 data = data.rotate_left(offset);
@@ -3436,7 +3436,7 @@ where
                     ea = ea.wrapping_sub(1);
                 }
 
-                width = ((width - 1) & 31) + 1;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 let mut data = self.read_ticks::<Long>(ea)?;
                 data <<= local_offset as usize;
@@ -3493,7 +3493,7 @@ where
                 };
 
                 offset &= 31;
-                width = ((width - 1) & 31) + 1;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 let data = self.regs.read_d::<Long>(instr.get_op2());
 
@@ -3533,7 +3533,7 @@ where
                     ea = ea.wrapping_sub(1);
                 }
 
-                width = ((width - 1) & 31) + 1;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 // Create mask for the main 32-bit word
                 let mask_base = 0xFFFFFFFF_u32 << (32 - width);
@@ -3588,7 +3588,7 @@ where
                 };
 
                 offset &= 31;
-                width = ((width - 1) & 31) + 1;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 let data = self.regs.read_d::<Long>(instr.get_op2());
 
@@ -3628,7 +3628,7 @@ where
                     ea = ea.wrapping_sub(1);
                 }
 
-                width = ((width - 1) & 31) + 1;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 let mask_base = 0xFFFFFFFF_u32 << (32 - width);
                 let mask_long = mask_base >> (offset as usize);
@@ -3678,7 +3678,7 @@ where
                     sec.width()
                 };
 
-                width = ((width - 1) & 31) + 1;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 let data_reg = instr.get_op2();
                 let data = self.regs.read_d::<Long>(data_reg);
@@ -3720,7 +3720,7 @@ where
                     ea = ea.wrapping_sub(1);
                 }
 
-                width = ((width - 1) & 31) + 1;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 let mask_base = 0xFFFFFFFF_u32 << (32 - width);
                 let mask_long = mask_base >> (offset as usize);
@@ -3777,7 +3777,7 @@ where
                 // Ensure offset is in range 0-31
                 offset &= 31;
 
-                width = ((width - 1) & 31) + 1;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 let data_reg = instr.get_op2();
                 let mut data = self.regs.read_d::<Long>(data_reg);
@@ -3829,7 +3829,7 @@ where
                     ea = ea.wrapping_sub(1);
                 }
 
-                width = ((width - 1) & 31) + 1;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 // Create mask for the bits to be inserted
                 let mask_base = 0xFFFFFFFF_u32 << (32 - width);
