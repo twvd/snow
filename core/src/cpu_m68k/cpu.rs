@@ -3124,7 +3124,7 @@ where
                 // Calculate effective address with byte offset
                 let mut ea =
                     self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-                ea += (offset / 8) as Address;
+                ea = ea.wrapping_add_signed(offset / 8);
                 offset %= 8;
 
                 // Handle negative offsets
@@ -3228,7 +3228,7 @@ where
                 // Only adjust EA if offset comes from register
                 // (otherwise it is 0-31)
                 if sec.fdo() {
-                    ea += (offset / 8) as Address;
+                    ea = ea.wrapping_add_signed(offset.wrapping_div(8));
                     offset %= 8;
 
                     // Handle negative offset
@@ -3327,7 +3327,7 @@ where
 
                 let mut ea =
                     self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-                ea += (offset / 8) as Address;
+                ea = ea.wrapping_add_signed(offset / 8);
                 offset %= 8;
 
                 // Handle negative offsets
@@ -3427,7 +3427,7 @@ where
                 // Calculate effective address with byte offset
                 let mut ea =
                     self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-                ea += (offset / 8) as Address;
+                ea = ea.wrapping_add_signed(offset / 8);
                 let mut local_offset = offset % 8;
 
                 // Handle negative offsets
@@ -3524,7 +3524,7 @@ where
                 // Calculate effective address with byte offset
                 let mut ea =
                     self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-                ea += (offset / 8) as Address;
+                ea = ea.wrapping_add_signed(offset / 8);
                 offset %= 8;
 
                 // Handle negative offsets
@@ -3619,7 +3619,7 @@ where
                 // Calculate effective address with byte offset
                 let mut ea =
                     self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-                ea += (offset / 8) as Address;
+                ea = ea.wrapping_add_signed(offset / 8);
                 offset %= 8;
 
                 // Handle negative offsets
@@ -3711,7 +3711,7 @@ where
                 // Calculate effective address with byte offset
                 let mut ea =
                     self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-                ea += (offset / 8) as Address;
+                ea = ea.wrapping_add_signed(offset / 8);
                 offset %= 8;
 
                 // Handle negative offsets
@@ -3820,7 +3820,7 @@ where
                 // Calculate effective address with byte offset
                 let mut ea =
                     self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-                ea += (offset / 8) as Address;
+                ea = ea.wrapping_add_signed(offset / 8);
                 offset %= 8;
 
                 // Handle negative offsets
