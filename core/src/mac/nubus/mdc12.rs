@@ -83,10 +83,11 @@ impl Mdc12 {
 
     fn read_ctrl(&self) -> CtrlReg {
         self.ctrl.with_sense(match self.ctrl.sense() {
-            0 => 0,
-            1 => 0,
+            // RGB 12" monitor
+            0 => 2,
+            1 => 2,
             2 => 0,
-            3 => 0,
+            3 => 2,
             _ => unreachable!(),
         })
     }
