@@ -114,9 +114,8 @@ bitfield! {
         /// Cleared on Register B read/write
         pub scsi_irq: bool @ 3,
 
-        /// Keyboard clock
         /// Cleared on Register B read/write
-        pub kbdclock: bool @ 4,
+        pub asc: bool @ 4,
 
         /// Timer T2
         /// Cleared on read of T2 counter LSB or write of T2 counter MSB
@@ -241,7 +240,7 @@ impl BusMember<Address> for Via2 {
             // Register B
             0x00 => {
                 self.ifr.set_scsi_irq(false);
-                self.ifr.set_kbdclock(false);
+                self.ifr.set_asc(false);
 
                 Some((self.b_in.0 & !self.ddrb.0) | (self.b_out.0 & self.ddrb.0))
             }
@@ -343,7 +342,7 @@ impl BusMember<Address> for Via2 {
             // Register B
             0x00 => {
                 self.ifr.set_scsi_irq(false);
-                self.ifr.set_kbdclock(false);
+                self.ifr.set_asc(false);
 
                 self.b_out.0 = val;
                 Some(())

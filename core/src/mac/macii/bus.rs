@@ -263,7 +263,7 @@ where
                 0x0001_0000..=0x0001_1FFF => self.scsi.read(addr),
                 0x0001_2000..=0x0001_2FFF => Some(self.scsi.read_dma()),
                 // Sound
-                0x0001_4000..=0x0001_5FFF => Some(0),
+                0x0001_4000..=0x0001_5FFF => Some(0xFF),
                 // IWM
                 0x0001_6000..=0x0001_7FFF => self.swim.read(addr),
                 // Expansion area
