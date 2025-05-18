@@ -1206,7 +1206,7 @@ where
                 };
 
                 addr.wrapping_add(displacement)
-                    .wrapping_add(index * Address::from(scale))
+                    .wrapping_add(index.wrapping_mul(Address::from(scale)))
             }
             AddressingMode::PCDisplacement => {
                 instr.fetch_extword(|| self.fetch_pump())?;
@@ -1234,7 +1234,7 @@ where
                     1
                 };
                 pc.wrapping_add(displacement)
-                    .wrapping_add(index * Address::from(scale))
+                    .wrapping_add(index.wrapping_mul(Address::from(scale)))
             }
             AddressingMode::AbsoluteShort => self.fetch_pump()? as i16 as i32 as u32,
             AddressingMode::AbsoluteLong => {
@@ -1268,7 +1268,7 @@ where
                     0
                 };
                 let disp_addr = addr.wrapping_add_signed(displacement);
-                let pre_addr = disp_addr.wrapping_add(index * u32::from(scale));
+                let pre_addr = disp_addr.wrapping_add(index.wrapping_mul(u32::from(scale)));
 
                 match extword.full_memindirectmode()? {
                     MemoryIndirectAction::None => {
@@ -1293,18 +1293,18 @@ where
                     }
                     MemoryIndirectAction::PostIndexNull => self
                         .read_ticks::<Address>(disp_addr)?
-                        .wrapping_add(index * u32::from(scale)),
+                        .wrapping_add(index.wrapping_mul(u32::from(scale))),
                     MemoryIndirectAction::PostIndexWord => {
                         let od = self.fetch_pump()?.expand_sign_extend();
                         self.read_ticks::<Address>(disp_addr)?
-                            .wrapping_add(index * u32::from(scale))
+                            .wrapping_add(index.wrapping_mul(u32::from(scale)))
                             .wrapping_add_signed(od as i32)
                     }
                     MemoryIndirectAction::PostIndexLong => {
                         let mut od = Long::from(self.fetch_pump()?) << 16;
                         od |= Long::from(self.fetch_pump()?);
                         self.read_ticks::<Address>(disp_addr)?
-                            .wrapping_add(index * u32::from(scale))
+                            .wrapping_add(index.wrapping_mul(u32::from(scale)))
                             .wrapping_add_signed(od as i32)
                     }
                     MemoryIndirectAction::PreIndexNull => self.read_ticks(pre_addr)?,
