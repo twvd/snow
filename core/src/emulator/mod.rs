@@ -462,8 +462,8 @@ impl Emulator {
 
     fn disassemble(&mut self, addr: Address, len: usize) -> Result<()> {
         let ops = (addr..)
-            .flat_map(|addr| self.config.bus_inspect_read(addr))
             .take(len)
+            .flat_map(|addr| self.config.bus_inspect_read(addr))
             .collect::<Vec<_>>();
 
         self.event_sender
