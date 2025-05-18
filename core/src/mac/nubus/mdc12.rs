@@ -25,10 +25,29 @@ bitfield! {
     }
 }
 
+bitfield! {
+    /// RAMDAC control register
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub struct RamdacCtrlReg(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+        pub mode: u8 @ 1..=5,
+        pub conv: bool @ 0,
+    }
+}
+
+#[derive(Eq, PartialEq, Clone, Copy, strum::IntoStaticStr)]
+pub enum Bpp {
+    One,
+    Two,
+    Four,
+    Eight,
+    TwentyFour,
+}
+
 /// Macintosh Display Card 1.2.341-0868
 pub struct Mdc12 {
     rom: Vec<u8>,
     ctrl: CtrlReg,
+    ramdac_ctrl: RamdacCtrlReg,
     vblank_irq: bool,
     vblank_enable: bool,
     vblank_ticks: Ticks,
@@ -45,6 +64,7 @@ impl Mdc12 {
         Self {
             rom: std::fs::read("341-0868.bin").expect("Graphics card ROM file"),
             ctrl: CtrlReg(0),
+            ramdac_ctrl: RamdacCtrlReg(0),
             vblank_irq: false,
             vblank_enable: false,
             vram: vec![0; 0x1FFFFF],
@@ -59,6 +79,27 @@ impl Mdc12 {
 
     pub fn get_irq(&self) -> bool {
         self.vblank_irq
+    }
+
+    fn read_ctrl(&self) -> CtrlReg {
+        self.ctrl.with_sense(match self.ctrl.sense() {
+            0 => 0,
+            1 => 0,
+            2 => 0,
+            3 => 0,
+            _ => unreachable!(),
+        })
+    }
+
+    pub fn bpp(&self) -> Bpp {
+        match self.ramdac_ctrl.mode() {
+            0 => Bpp::One,
+            0x04 => Bpp::Two,
+            0x08 => Bpp::Four,
+            0x0C => Bpp::Eight,
+            0x0D => Bpp::TwentyFour,
+            _ => panic!("Unknown RAMDAC mode {:02X}", self.ramdac_ctrl.mode()),
+        }
     }
 
     pub fn framebuffer(&self) -> &[u8] {
@@ -103,6 +144,7 @@ impl BusMember<Address> for Mdc12 {
             0x20_01C4..=0x20_01CF => Some(0),
             // RAMDAC
             0x20_0204..=0x20_0207 => Some(self.clut_addr[addr as usize - 0x200204]),
+            0x20_020B => Some(self.ramdac_ctrl.0),
             0xFE_0000..=0xFF_FFFF if addr % 4 == 3 => {
                 // ROM (byte lane 3)
                 Some(self.rom[((addr - 0xFE_0000) / 4) as usize])
@@ -157,6 +199,7 @@ impl BusMember<Address> for Mdc12 {
                 self.clut_addr[addr as usize - 0x200204] = val;
                 Some(())
             }
+            0x20_020B => Some(self.ramdac_ctrl.0 = val),
             _ => None,
         }
     }
