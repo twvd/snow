@@ -1,11 +1,10 @@
 use anyhow::Result;
 use proc_bitfield::bitfield;
 
-use crate::{
-    bus::{Address, BusMember},
-    tickable::{Tickable, Ticks},
-    types::{LatchingEvent, Word},
-};
+use crate::bus::{Address, BusMember};
+use crate::debuggable::Debuggable;
+use crate::tickable::{Tickable, Ticks};
+use crate::types::{Field32, LatchingEvent, Word};
 
 bitfield! {
     /// Control register
@@ -37,6 +36,8 @@ pub struct Mdc12 {
     toggle: bool,
     clut_addr: [u8; 4],
     pub render: LatchingEvent,
+    base: Field32,
+    stride: Field32,
 }
 
 impl Mdc12 {
@@ -51,11 +52,25 @@ impl Mdc12 {
             vblank_ticks: 0,
             clut_addr: [0; 4],
             render: LatchingEvent::default(),
+            base: Field32(0),
+            stride: Field32(0),
         }
     }
 
     pub fn get_irq(&self) -> bool {
         self.vblank_irq
+    }
+
+    pub fn framebuffer(&self) -> &[u8] {
+        let mut shift = 5;
+        if self.bpp() == Bpp::TwentyFour {
+            shift += 1;
+        }
+        if self.ctrl.convolution() {
+            shift += 1;
+        }
+        let base_offset = (self.base.0 as usize) << shift;
+        &self.vram[base_offset..]
     }
 }
 
@@ -63,9 +78,17 @@ impl BusMember<Address> for Mdc12 {
     fn read(&mut self, addr: Address) -> Option<u8> {
         // Assume normal slot, not super slot
         match addr & 0xFF_FFFF {
-            0x00_0000..=0x03_FFFF => Some(self.vram[addr as usize]),
-            0x20_0002 => Some(self.ctrl.high()),
-            0x20_0003 => Some(self.ctrl.low()),
+            0x00_0000..=0x1F_FFFF => Some(self.vram[addr as usize]),
+            0x20_0002 => Some(self.read_ctrl().high()),
+            0x20_0003 => Some(self.read_ctrl().low()),
+            0x20_0008 => Some(self.base.be0()),
+            0x20_0009 => Some(self.base.be1()),
+            0x20_000A => Some(self.base.be2()),
+            0x20_000B => Some(self.base.be3()),
+            0x20_000C => Some(self.stride.be0()),
+            0x20_000D => Some(self.stride.be1()),
+            0x20_000E => Some(self.stride.be2()),
+            0x20_000F => Some(self.stride.be3()),
             // CRTC beam position
             0x20_01C0..=0x20_01C3 => {
                 if addr == 0x20_01C3 {
@@ -109,6 +132,14 @@ impl BusMember<Address> for Mdc12 {
                 //self.ctrl.set_sense(0);
                 Some(())
             }
+            0x20_0008 => Some(self.base.set_be0(val)),
+            0x20_0009 => Some(self.base.set_be1(val)),
+            0x20_000A => Some(self.base.set_be2(val)),
+            0x20_000B => Some(self.base.set_be3(val)),
+            0x20_000C => Some(self.stride.set_be0(val)),
+            0x20_000D => Some(self.stride.set_be1(val)),
+            0x20_000E => Some(self.stride.set_be2(val)),
+            0x20_000F => Some(self.stride.set_be3(val)),
             // CRTC
             0x20_013C => {
                 self.vblank_enable = val & (1 << 1) == 0;

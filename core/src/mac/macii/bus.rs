@@ -386,13 +386,13 @@ where
 
     /// Prepares the image and sends it to the frontend renderer
     fn render(&mut self) -> Result<()> {
-        let fb = &self.nubus_devices[0].as_ref().unwrap().vram;
+        let fb = &self.nubus_devices[0].as_ref().unwrap().framebuffer();
 
         let buf = self.renderer.get_buffer();
         for idx in 0..(self.model.display_width() as usize * self.model.display_height() as usize) {
             let byte = idx / 8;
             let bit = idx % 8;
-            if fb[0x80 + byte] & (1 << (7 - bit)) == 0 {
+            if fb[byte] & (1 << (7 - bit)) == 0 {
                 buf[idx * 4].store(0xEE, Ordering::Release);
                 buf[idx * 4 + 1].store(0xEE, Ordering::Release);
                 buf[idx * 4 + 2].store(0xEE, Ordering::Release);

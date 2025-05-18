@@ -31,6 +31,17 @@ bitfield! {
     }
 }
 
+bitfield! {
+    /// General purpose 32-bit field
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct Field32(pub u32): Debug, FromRaw, IntoRaw, DerefRaw {
+        pub be0: u8 @ 24..32,
+        pub be1: u8 @ 16..24,
+        pub be2: u8 @ 8..16,
+        pub be3: u8 @ 0..8,
+    }
+}
+
 /// A self-clearing latch for events etc.
 #[derive(Debug, Default)]
 pub struct LatchingEvent {
