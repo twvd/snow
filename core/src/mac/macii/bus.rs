@@ -1,4 +1,3 @@
-use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -16,7 +15,7 @@ use crate::renderer::{AudioReceiver, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent};
 
-use crate::mac::nubus::mdc12::{Bpp, Mdc12, RGB8_PALETTE};
+use crate::mac::nubus::mdc12::Mdc12;
 use anyhow::Result;
 use bit_set::BitSet;
 use log::*;
@@ -386,45 +385,8 @@ where
 
     /// Prepares the image and sends it to the frontend renderer
     fn render(&mut self) -> Result<()> {
-        let fb = &self.nubus_devices[0].as_ref().unwrap().framebuffer();
-        let bpp = &self.nubus_devices[0].as_ref().unwrap().bpp();
-
         let buf = self.renderer.get_buffer();
-        match bpp {
-            Bpp::One => {
-                for idx in
-                    0..(self.model.display_width() as usize * self.model.display_height() as usize)
-                {
-                    let byte = idx / 8;
-                    let bit = idx % 8;
-                    if fb[byte] & (1 << (7 - bit)) == 0 {
-                        buf[idx * 4].store(0xEE, Ordering::Release);
-                        buf[idx * 4 + 1].store(0xEE, Ordering::Release);
-                        buf[idx * 4 + 2].store(0xEE, Ordering::Release);
-                    } else {
-                        buf[idx * 4].store(0x22, Ordering::Release);
-                        buf[idx * 4 + 1].store(0x22, Ordering::Release);
-                        buf[idx * 4 + 2].store(0x22, Ordering::Release);
-                    }
-                    buf[idx * 4 + 3].store(0xFF, Ordering::Release);
-                }
-            }
-            Bpp::Eight => {
-                for idx in
-                    0..(self.model.display_width() as usize * self.model.display_height() as usize)
-                {
-                    let byte = !fb[idx];
-                    let color = RGB8_PALETTE[byte as usize];
-                    buf[idx * 4].store((color >> 16) as u8, Ordering::Release);
-                    buf[idx * 4 + 1].store((color >> 8) as u8, Ordering::Release);
-                    buf[idx * 4 + 2].store(color as u8, Ordering::Release);
-                    buf[idx * 4 + 3].store(0xFF, Ordering::Release);
-                }
-            }
-            _ => {
-                warn!("TODO {:?} bpp", bpp);
-            }
-        }
+        self.nubus_devices[0].as_ref().unwrap().render(&buf);
         self.renderer.update()?;
 
         Ok(())
@@ -581,6 +543,7 @@ where
         self.via2.ifr.set_scsi_irq(self.scsi.get_irq());
         self.via2.ifr.set_scsi_drq(self.scsi.get_drq());
 
+        self.swim.intdrive = self.via1.a_out.drivesel();
         self.swim.tick(1)?;
 
         Ok(1)

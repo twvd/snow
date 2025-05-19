@@ -1,44 +1,14 @@
 use std::fmt::Display;
+use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 use proc_bitfield::bitfield;
 
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
+use crate::renderer::DisplayBuffer;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Field32, LatchingEvent, Word};
-
-pub const RGB8_PALETTE: [u32; 256] = [
-    0x000000, 0x0b0b0b, 0x222222, 0x444444, 0x555555, 0x777777, 0x888888, 0xaaaaaa, 0xbbbbbb,
-    0xdddddd, 0xeeeeee, 0x00000b, 0x000022, 0x000044, 0x000055, 0x000077, 0x000088, 0x0000aa,
-    0x0000bb, 0x0000dd, 0x0000ee, 0x000b00, 0x002200, 0x004400, 0x005500, 0x007700, 0x008800,
-    0x00aa00, 0x00bb00, 0x00dd00, 0x00ee00, 0x0b0000, 0x220000, 0x440000, 0x550000, 0x770000,
-    0x880000, 0xaa0000, 0xbb0000, 0xdd0000, 0xee0000, 0x000033, 0x000066, 0x000099, 0x0000cc,
-    0x0000ff, 0x003300, 0x003333, 0x003366, 0x003399, 0x0033cc, 0x0033ff, 0x006600, 0x006633,
-    0x006666, 0x006699, 0x0066cc, 0x0066ff, 0x009900, 0x009933, 0x009966, 0x009999, 0x0099cc,
-    0x0099ff, 0x00cc00, 0x00cc33, 0x00cc66, 0x00cc99, 0x00cccc, 0x00ccff, 0x00ff00, 0x00ff33,
-    0x00ff66, 0x00ff99, 0x00ffcc, 0x00ffff, 0x330000, 0x330033, 0x330066, 0x330099, 0x3300cc,
-    0x3300ff, 0x333300, 0x333333, 0x333366, 0x333399, 0x3333cc, 0x3333ff, 0x336600, 0x336633,
-    0x336666, 0x336699, 0x3366cc, 0x3366ff, 0x339900, 0x339933, 0x339966, 0x339999, 0x3399cc,
-    0x3399ff, 0x33cc00, 0x33cc33, 0x33cc66, 0x33cc99, 0x33cccc, 0x33ccff, 0x33ff00, 0x33ff33,
-    0x33ff66, 0x33ff99, 0x33ffcc, 0x33ffff, 0x660000, 0x660033, 0x660066, 0x660099, 0x6600cc,
-    0x6600ff, 0x663300, 0x663333, 0x663366, 0x663399, 0x6633cc, 0x6633ff, 0x666600, 0x666633,
-    0x666666, 0x666699, 0x6666cc, 0x6666ff, 0x669900, 0x669933, 0x669966, 0x669999, 0x6699cc,
-    0x6699ff, 0x66cc00, 0x66cc33, 0x66cc66, 0x66cc99, 0x66cccc, 0x66ccff, 0x66ff00, 0x66ff33,
-    0x66ff66, 0x66ff99, 0x66ffcc, 0x66ffff, 0x990000, 0x990033, 0x990066, 0x990099, 0x9900cc,
-    0x9900ff, 0x993300, 0x993333, 0x993366, 0x993399, 0x9933cc, 0x9933ff, 0x996600, 0x996633,
-    0x996666, 0x996699, 0x9966cc, 0x9966ff, 0x999900, 0x999933, 0x999966, 0x999999, 0x9999cc,
-    0x9999ff, 0x99cc00, 0x99cc33, 0x99cc66, 0x99cc99, 0x99cccc, 0x99ccff, 0x99ff00, 0x99ff33,
-    0x99ff66, 0x99ff99, 0x99ffcc, 0x99ffff, 0xcc0000, 0xcc0033, 0xcc0066, 0xcc0099, 0xcc00cc,
-    0xcc00ff, 0xcc3300, 0xcc3333, 0xcc3366, 0xcc3399, 0xcc33cc, 0xcc33ff, 0xcc6600, 0xcc6633,
-    0xcc6666, 0xcc6699, 0xcc66cc, 0xcc66ff, 0xcc9900, 0xcc9933, 0xcc9966, 0xcc9999, 0xcc99cc,
-    0xcc99ff, 0xcccc00, 0xcccc33, 0xcccc66, 0xcccc99, 0xcccccc, 0xccccff, 0xccff00, 0xccff33,
-    0xccff66, 0xccff99, 0xccffcc, 0xccffff, 0xff0000, 0xff0033, 0xff0066, 0xff0099, 0xff00cc,
-    0xff00ff, 0xff3300, 0xff3333, 0xff3366, 0xff3399, 0xff33cc, 0xff33ff, 0xff6600, 0xff6633,
-    0xff6666, 0xff6699, 0xff66cc, 0xff66ff, 0xff9900, 0xff9933, 0xff9966, 0xff9999, 0xff99cc,
-    0xff99ff, 0xffcc00, 0xffcc33, 0xffcc66, 0xffcc99, 0xffcccc, 0xffccff, 0xffff00, 0xffff33,
-    0xffff66, 0xffff99, 0xffffcc, 0xffffff,
-];
 
 bitfield! {
     /// Control register
@@ -77,8 +47,35 @@ pub enum Bpp {
     TwentyFour,
 }
 
+#[derive(Clone, Copy, strum::IntoStaticStr)]
+pub enum Monitor {
+    /// Macintosh 12" RGB monitor
+    RGB12,
+}
+
+impl Monitor {
+    pub fn sense(self) -> [u8; 4] {
+        match self {
+            Self::RGB12 => [2, 2, 0, 2],
+        }
+    }
+
+    pub fn width(self) -> usize {
+        match self {
+            Self::RGB12 => 512,
+        }
+    }
+
+    pub fn height(self) -> usize {
+        match self {
+            Self::RGB12 => 384,
+        }
+    }
+}
+
 /// Macintosh Display Card 1.2.341-0868
 pub struct Mdc12 {
+    monitor: Monitor,
     rom: Vec<u8>,
     ctrl: CtrlReg,
     ramdac_ctrl: RamdacCtrlReg,
@@ -87,15 +84,19 @@ pub struct Mdc12 {
     vblank_ticks: Ticks,
     pub vram: Vec<u8>,
     toggle: bool,
-    clut_addr: [u8; 4],
     pub render: LatchingEvent,
     base: Field32,
     stride: Field32,
+    pub palette: Vec<u32>,
+    palette_addr: Field32,
+    palette_wr: Field32,
+    palette_cnt: usize,
 }
 
 impl Mdc12 {
     pub fn new() -> Self {
         Self {
+            monitor: Monitor::RGB12,
             rom: std::fs::read("341-0868.bin").expect("Graphics card ROM file"),
             ctrl: CtrlReg(0),
             ramdac_ctrl: RamdacCtrlReg(0),
@@ -104,10 +105,13 @@ impl Mdc12 {
             vram: vec![0; 0x1FFFFF],
             toggle: false,
             vblank_ticks: 0,
-            clut_addr: [0; 4],
+            palette: vec![0; 256],
+            palette_addr: Field32(0),
+            palette_wr: Field32(0),
             render: LatchingEvent::default(),
             base: Field32(0),
             stride: Field32(0),
+            palette_cnt: 0,
         }
     }
 
@@ -116,14 +120,8 @@ impl Mdc12 {
     }
 
     fn read_ctrl(&self) -> CtrlReg {
-        self.ctrl.with_sense(match self.ctrl.sense() {
-            // RGB 12" monitor
-            0 => 2,
-            1 => 2,
-            2 => 0,
-            3 => 2,
-            _ => unreachable!(),
-        })
+        self.ctrl
+            .with_sense(self.monitor.sense()[self.ctrl.sense() as usize])
     }
 
     pub fn bpp(&self) -> Bpp {
@@ -147,6 +145,42 @@ impl Mdc12 {
         }
         let base_offset = (self.base.0 as usize) << shift;
         &self.vram[base_offset..]
+    }
+
+    pub fn render(&self, buf: &DisplayBuffer) {
+        let fb = self.framebuffer();
+        let palette = &self.palette;
+        match self.bpp() {
+            Bpp::One => {
+                for idx in 0..(self.monitor.width() * self.monitor.height()) {
+                    let byte = idx / 8;
+                    let bit = idx % 8;
+                    if fb[byte] & (1 << (7 - bit)) == 0 {
+                        buf[idx * 4].store(0xEE, Ordering::Release);
+                        buf[idx * 4 + 1].store(0xEE, Ordering::Release);
+                        buf[idx * 4 + 2].store(0xEE, Ordering::Release);
+                    } else {
+                        buf[idx * 4].store(0x22, Ordering::Release);
+                        buf[idx * 4 + 1].store(0x22, Ordering::Release);
+                        buf[idx * 4 + 2].store(0x22, Ordering::Release);
+                    }
+                    buf[idx * 4 + 3].store(0xFF, Ordering::Release);
+                }
+            }
+            Bpp::Eight => {
+                for idx in 0..(self.monitor.width() * self.monitor.height()) {
+                    let byte = fb[idx];
+                    let color = palette[byte as usize];
+                    buf[idx * 4].store(color as u8, Ordering::Release);
+                    buf[idx * 4 + 1].store((color >> 8) as u8, Ordering::Release);
+                    buf[idx * 4 + 2].store((color >> 16) as u8, Ordering::Release);
+                    buf[idx * 4 + 3].store(0xFF, Ordering::Release);
+                }
+            }
+            _ => {
+                log::warn!("TODO {:?} bpp", self.bpp());
+            }
+        }
     }
 }
 
@@ -178,7 +212,10 @@ impl BusMember<Address> for Mdc12 {
             }
             0x20_01C4..=0x20_01CF => Some(0),
             // RAMDAC
-            0x20_0204..=0x20_0207 => Some(self.clut_addr[addr as usize - 0x200204]),
+            0x20_0200 => Some(self.palette_addr.be0()),
+            0x20_0201 => Some(self.palette_addr.be1()),
+            0x20_0202 => Some(self.palette_addr.be2()),
+            0x20_0203 => Some(self.palette_addr.be3()),
             0x20_020B => Some(self.ramdac_ctrl.0),
             0xFE_0000..=0xFF_FFFF if addr % 4 == 3 => {
                 // ROM (byte lane 3)
@@ -230,8 +267,23 @@ impl BusMember<Address> for Mdc12 {
             }
             0x20_0149..=0x20_014B => Some(()),
             // RAMDAC
-            0x20_0204..=0x20_0207 => {
-                self.clut_addr[addr as usize - 0x200204] = val;
+            0x20_0200 => Some(self.palette_addr.set_be0(val)),
+            0x20_0201 => Some(self.palette_addr.set_be1(val)),
+            0x20_0202 => Some(self.palette_addr.set_be2(val)),
+            0x20_0203 => Some(self.palette_addr.set_be3(val)),
+
+            // Palette memory. Written in full word/long but only the bottom byte is relevant
+            0x20_0204..=0x20_0206 => Some(()),
+            0x20_0207 => {
+                self.palette_wr.0 >>= 8;
+                self.palette_wr.0 |= (val as u32) << 24;
+                self.palette_cnt += 1;
+                if self.palette_cnt == 3 {
+                    self.palette[(self.palette_addr.0 % 256) as usize] = self.palette_wr.0 >> 8;
+                    self.palette_wr.0 = 0;
+                    self.palette_addr.0 += 1;
+                    self.palette_cnt = 0;
+                }
                 Some(())
             }
             0x20_020B => Some(self.ramdac_ctrl.0 = val),
@@ -269,8 +321,10 @@ impl Debuggable for Mdc12 {
                     dbgprop_long!("Screen base", self.base.0),
                     dbgprop_long!("Screen stride", self.stride.0),
                     dbgprop_byte_bin!("RAMDAC control", self.ramdac_ctrl.0),
+                    dbgprop_long!("Palette write index", self.palette_addr.0)
                 ]
             ),
+            dbgprop_enum!("Monitor", self.monitor),
             dbgprop_enum!("BPP", self.bpp()),
             dbgprop_bool!("VBlank enable", self.vblank_enable),
         ]
