@@ -51,24 +51,29 @@ pub enum Bpp {
 pub enum Monitor {
     /// Macintosh 12" RGB monitor
     RGB12,
+    /// Macintosh 14" high-res
+    HiRes14,
 }
 
 impl Monitor {
     pub fn sense(self) -> [u8; 4] {
         match self {
             Self::RGB12 => [2, 2, 0, 2],
+            Self::HiRes14 => [6, 2, 4, 6],
         }
     }
 
     pub fn width(self) -> usize {
         match self {
             Self::RGB12 => 512,
+            Self::HiRes14 => 640,
         }
     }
 
     pub fn height(self) -> usize {
         match self {
             Self::RGB12 => 384,
+            Self::HiRes14 => 480,
         }
     }
 }
@@ -96,7 +101,7 @@ pub struct Mdc12 {
 impl Mdc12 {
     pub fn new() -> Self {
         Self {
-            monitor: Monitor::RGB12,
+            monitor: Monitor::HiRes14,
             rom: std::fs::read("341-0868.bin").expect("Graphics card ROM file"),
             ctrl: CtrlReg(0),
             ramdac_ctrl: RamdacCtrlReg(0),
@@ -228,7 +233,7 @@ impl BusMember<Address> for Mdc12 {
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
         // Assume normal slot, not super slot
         match addr & 0xFF_FFFF {
-            0x00_0000..=0x03_FFFF => {
+            0x00_0000..=0x1F_FFFF => {
                 self.vram[addr as usize] = val;
                 Some(())
             }

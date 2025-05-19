@@ -129,7 +129,7 @@ impl MacModel {
             | Self::SE
             | Self::SeFdhd
             | Self::Classic => 512,
-            Self::MacII => 512,
+            Self::MacII => 640,
         }
     }
 
@@ -141,7 +141,7 @@ impl MacModel {
             | Self::SE
             | Self::SeFdhd
             | Self::Classic => 342,
-            Self::MacII => 384,
+            Self::MacII => 480,
         }
     }
 
