@@ -8,6 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Workaround for 'the SSL certificate is invalid; class=Ssl (16)'
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
 
 jobs:
   build:
@@ -31,6 +33,9 @@ jobs:
         release: false
         update: true
         msystem: ${{ matrix.environment.msystem }}
+        # Workaround for 'the SSL certificate is invalid; class=Ssl (16)'
+        install: >-
+          git
         pacboy: >-
           rust:p
           SDL2:p
