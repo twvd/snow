@@ -40,10 +40,19 @@ bitfield! {
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy, strum::IntoStaticStr)]
 pub enum Bpp {
+    /// 1bpp (black & white)
     One,
+
+    /// 2bpp paletted (4 colors)
     Two,
+
+    /// 4bpp paletted (16 colors)
     Four,
+
+    /// 8bpp paletted (256 colors)
     Eight,
+
+    /// 24-bit direct color ('Millions' of colors)
     TwentyFour,
 }
 
@@ -141,15 +150,18 @@ impl Mdc12 {
     }
 
     pub fn framebuffer(&self) -> &[u8] {
-        let mut shift = 5;
-        if self.bpp() == Bpp::TwentyFour {
-            shift += 1;
-        }
-        if self.ctrl.convolution() {
-            shift += 1;
-        }
-        let base_offset = (self.base.0 as usize) << shift;
+        let base_offset = match self.bpp() {
+            // ??? not sure why this is off by 2 scanlines
+            Bpp::TwentyFour => ((self.base.0 as usize) * 64 * 4) - (self.monitor.width() * 8),
+
+            _ => (self.base.0 as usize) * 32,
+        };
         &self.vram[base_offset..]
+    }
+
+    pub fn stride(&self) -> usize {
+        let shift = if self.bpp() == Bpp::TwentyFour { 3 } else { 2 };
+        (self.stride.0 as usize) << shift
     }
 
     pub fn render(&self, buf: &DisplayBuffer) {
@@ -172,6 +184,28 @@ impl Mdc12 {
                     buf[idx * 4 + 3].store(0xFF, Ordering::Release);
                 }
             }
+            Bpp::Two => {
+                for idx in 0..(self.monitor.width() * self.monitor.height()) {
+                    let byte = idx / 4;
+                    let shift = 6 - (idx % 4) * 2;
+                    let color = palette[usize::from(fb[byte] >> shift) & 0x03];
+                    buf[idx * 4].store(color as u8, Ordering::Release);
+                    buf[idx * 4 + 1].store((color >> 8) as u8, Ordering::Release);
+                    buf[idx * 4 + 2].store((color >> 16) as u8, Ordering::Release);
+                    buf[idx * 4 + 3].store(0xFF, Ordering::Release);
+                }
+            }
+            Bpp::Four => {
+                for idx in 0..(self.monitor.width() * self.monitor.height()) {
+                    let byte = idx / 2;
+                    let shift = 4 - (idx % 2) * 4;
+                    let color = palette[usize::from(fb[byte] >> shift) & 0x0F];
+                    buf[idx * 4].store(color as u8, Ordering::Release);
+                    buf[idx * 4 + 1].store((color >> 8) as u8, Ordering::Release);
+                    buf[idx * 4 + 2].store((color >> 16) as u8, Ordering::Release);
+                    buf[idx * 4 + 3].store(0xFF, Ordering::Release);
+                }
+            }
             Bpp::Eight => {
                 for idx in 0..(self.monitor.width() * self.monitor.height()) {
                     let byte = fb[idx];
@@ -182,8 +216,13 @@ impl Mdc12 {
                     buf[idx * 4 + 3].store(0xFF, Ordering::Release);
                 }
             }
-            _ => {
-                log::warn!("TODO {:?} bpp", self.bpp());
+            Bpp::TwentyFour => {
+                for idx in 0..(self.monitor.width() * self.monitor.height()) {
+                    buf[idx * 4].store(fb[idx * 4 + 1], Ordering::Release);
+                    buf[idx * 4 + 1].store(fb[idx * 4 + 2], Ordering::Release);
+                    buf[idx * 4 + 2].store(fb[idx * 4 + 3], Ordering::Release);
+                    buf[idx * 4 + 3].store(0xFF, Ordering::Release);
+                }
             }
         }
     }
@@ -204,6 +243,7 @@ impl BusMember<Address> for Mdc12 {
             0x20_000D => Some(self.stride.be1()),
             0x20_000E => Some(self.stride.be2()),
             0x20_000F => Some(self.stride.be3()),
+
             // CRTC beam position
             0x20_01C0..=0x20_01C3 => {
                 if addr == 0x20_01C3 {
@@ -215,15 +255,18 @@ impl BusMember<Address> for Mdc12 {
                     Some(4)
                 }
             }
+            // This has to read 0
             0x20_01C4..=0x20_01CF => Some(0),
+
             // RAMDAC
             0x20_0200 => Some(self.palette_addr.be0()),
             0x20_0201 => Some(self.palette_addr.be1()),
             0x20_0202 => Some(self.palette_addr.be2()),
             0x20_0203 => Some(self.palette_addr.be3()),
             0x20_020B => Some(self.ramdac_ctrl.0),
+
+            // ROM (byte lane 3)
             0xFE_0000..=0xFF_FFFF if addr % 4 == 3 => {
-                // ROM (byte lane 3)
                 Some(self.rom[((addr - 0xFE_0000) / 4) as usize])
             }
             _ => None,
@@ -239,30 +282,29 @@ impl BusMember<Address> for Mdc12 {
             }
             0x20_0002 => {
                 self.ctrl.set_high(val);
-                log::debug!("high {:?}", self.ctrl);
                 self.ctrl.set_reset(false);
-                //self.ctrl.set_sense(0);
                 Some(())
             }
             0x20_0003 => {
                 self.ctrl.set_low(val);
-                log::debug!("low {:?}", self.ctrl);
                 self.ctrl.set_reset(false);
-                //self.ctrl.set_sense(0);
                 Some(())
             }
+            // Screen base address
             0x20_0008 => Some(self.base.set_be0(val)),
             0x20_0009 => Some(self.base.set_be1(val)),
             0x20_000A => Some(self.base.set_be2(val)),
             0x20_000B => Some(self.base.set_be3(val)),
+
+            // Scanline width
             0x20_000C => Some(self.stride.set_be0(val)),
             0x20_000D => Some(self.stride.set_be1(val)),
             0x20_000E => Some(self.stride.set_be2(val)),
             0x20_000F => Some(self.stride.set_be3(val)),
+
             // CRTC
             0x20_013C => {
                 self.vblank_enable = val & (1 << 1) == 0;
-                log::debug!("Vblank enable {:?}", self.vblank_enable);
                 Some(())
             }
             // IRQ clear
@@ -301,7 +343,6 @@ impl Tickable for Mdc12 {
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
         self.vblank_ticks += ticks;
         if self.vblank_ticks > 16_000_000 / 60 {
-            // TODO attach renderer to card
             self.render.set();
             self.vblank_ticks = 0;
             if self.vblank_enable {
@@ -332,6 +373,7 @@ impl Debuggable for Mdc12 {
             dbgprop_enum!("Monitor", self.monitor),
             dbgprop_enum!("BPP", self.bpp()),
             dbgprop_bool!("VBlank enable", self.vblank_enable),
+            dbgprop_bool!("VBlank IRQ", self.vblank_irq),
         ]
     }
 }
