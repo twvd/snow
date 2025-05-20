@@ -97,6 +97,11 @@ impl InstructionHistoryWidget {
                 );
                 Self::left_sized(
                     ui,
+                    [50.0, 20.0],
+                    egui::Label::new(egui::RichText::new("EA").strong()),
+                );
+                Self::left_sized(
+                    ui,
                     [ui.available_width(), 20.0],
                     egui::Label::new(egui::RichText::new("Changes").strong()),
                 );
@@ -265,8 +270,23 @@ impl InstructionHistoryWidget {
                     .family(egui::FontFamily::Monospace)
                     .size(10.0)
             };
-
             Self::left_sized(ui, [200.0, row_height], egui::Label::new(instr_text));
+
+            // Effective Address column
+            Self::left_sized(
+                ui,
+                [50.0, row_height],
+                egui::Label::new(
+                    egui::RichText::new(if let Some(ea) = entry.ea {
+                        format!("{:08X}", ea)
+                    } else {
+                        "-".to_string()
+                    })
+                    .family(egui::FontFamily::Monospace)
+                    .size(10.0),
+                ),
+            );
+
             self.col_regdiff(row_height, ui, entry);
         });
     }

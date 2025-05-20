@@ -151,6 +151,7 @@ pub struct HistoryEntryInstruction {
     pub final_regs: Option<RegisterFile>,
     pub branch_taken: Option<bool>,
     pub waitstates: bool,
+    pub ea: Option<Address>,
 }
 
 impl HistoryEntryInstruction {
@@ -445,6 +446,7 @@ where
 
             entry.cycles = self.cycles - start_cycles;
             entry.final_regs = Some(self.regs.clone());
+            entry.ea = self.step_ea_addr;
 
             while self.history.len() >= Self::HISTORY_SIZE {
                 self.history.pop_front();
