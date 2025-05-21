@@ -300,7 +300,7 @@ impl RegisterFile {
             Register::SFC => self.sfc = value.expand() & 0b111,
             Register::VBR => self.vbr = value.expand(),
             Register::CAAR => self.caar = value.expand(),
-            Register::CACR => self.cacr = value.expand(),
+            Register::CACR => self.cacr = value.expand() & 0b1111,
             Register::MSP => self.msp = value.expand(),
             Register::ISP => self.isp = value.expand(),
         }
