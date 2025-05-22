@@ -3139,12 +3139,12 @@ where
 
                 // Create mask for the main 32-bit word
                 let mask_base = 0xFFFFFFFF_u32 << (32 - width);
-                let mask_long = mask_base >> (offset as usize);
+                let mask_long = mask_base >> (offset as isize);
 
                 let data_long = self.read_ticks::<Long>(ea)?;
                 self.regs
                     .sr
-                    .set_n((data_long << (offset as usize)) & 0x80000000 != 0);
+                    .set_n((data_long << (offset as isize)) & 0x80000000 != 0);
                 self.regs.sr.set_z(data_long & mask_long == 0);
                 self.regs.sr.set_v(false);
                 self.regs.sr.set_c(false);
@@ -3251,12 +3251,12 @@ where
                     self.read_ticks::<Long>(ea)?
                 };
 
-                data <<= offset as usize;
+                data <<= offset as isize;
 
                 // If the bit field crosses a 32-bit boundary, read an additional byte
                 if (offset as u32 + width) > 32 {
                     let extra_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))? as Long;
-                    data |= (extra_byte << (offset as usize)) >> 8;
+                    data |= (extra_byte << (offset as isize)) >> 8;
                 }
 
                 // Set N flag from the data before shifting for extraction
@@ -3341,12 +3341,12 @@ where
                 width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 let mut data = self.read_ticks::<Long>(ea)?;
-                data <<= offset as usize;
+                data <<= offset as isize;
 
                 // If the bit field crosses a 32-bit boundary, read an additional byte
                 if (offset as u32 + width) > 32 {
                     let extra_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))? as Long;
-                    data |= (extra_byte << (offset as usize)) >> 8;
+                    data |= (extra_byte << (offset as isize)) >> 8;
                 }
 
                 // Set N flag from the data before shifting for extraction
@@ -3441,12 +3441,12 @@ where
                 width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 let mut data = self.read_ticks::<Long>(ea)?;
-                data <<= local_offset as usize;
+                data <<= local_offset as isize;
 
                 // If the bit field crosses a 32-bit boundary, read an additional byte
                 if (local_offset as u32 + width) > 32 {
                     let extra_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))? as Long;
-                    data |= (extra_byte << (local_offset as usize)) >> 8;
+                    data |= (extra_byte << (local_offset as isize)) >> 8;
                 }
 
                 // Set N flag from the data before shifting for extraction
@@ -3539,13 +3539,13 @@ where
 
                 // Create mask for the main 32-bit word
                 let mask_base = 0xFFFFFFFF_u32 << (32 - width);
-                let mask_long = mask_base >> (offset as usize);
+                let mask_long = mask_base >> (offset as isize);
 
                 let data_long = self.read_ticks::<Long>(ea)?;
 
                 self.regs
                     .sr
-                    .set_n((data_long << (offset as usize)) & 0x80000000 != 0);
+                    .set_n((data_long << (offset as isize)) & 0x80000000 != 0);
                 self.regs.sr.set_z(data_long & mask_long == 0);
                 self.regs.sr.set_v(false);
                 self.regs.sr.set_c(false);
@@ -3633,11 +3633,11 @@ where
                 width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 let mask_base = 0xFFFFFFFF_u32 << (32 - width);
-                let mask_long = mask_base >> (offset as usize);
+                let mask_long = mask_base >> (offset as isize);
 
                 let data_long = self.read_ticks::<Long>(ea)?;
 
-                let n_bit = (data_long & (0x80000000 >> (offset as usize))) != 0;
+                let n_bit = (data_long & (0x80000000 >> (offset as isize))) != 0;
                 self.regs.sr.set_n(n_bit);
                 self.regs.sr.set_z(data_long & mask_long == 0);
 
@@ -3725,12 +3725,12 @@ where
                 width = ((width.wrapping_sub(1)) & 31) + 1;
 
                 let mask_base = 0xFFFFFFFF_u32 << (32 - width);
-                let mask_long = mask_base >> (offset as usize);
+                let mask_long = mask_base >> (offset as isize);
 
                 let data_long = self.read_ticks::<Long>(ea)?;
                 self.regs
                     .sr
-                    .set_n((data_long << (offset as usize)) & 0x80000000 != 0);
+                    .set_n((data_long << (offset as isize)) & 0x80000000 != 0);
                 self.regs.sr.set_z(data_long & mask_long == 0);
                 self.regs.sr.set_v(false);
                 self.regs.sr.set_c(false);
@@ -3835,7 +3835,7 @@ where
 
                 // Create mask for the bits to be inserted
                 let mask_base = 0xFFFFFFFF_u32 << (32 - width);
-                let mask_long = mask_base >> (offset as usize);
+                let mask_long = mask_base >> (offset as isize);
 
                 let mut insert_base = self.regs.read_d::<Long>(sec.reg());
                 insert_base <<= 32 - width;
@@ -3844,7 +3844,7 @@ where
                 self.regs.sr.set_n(insert_base & 0x80000000 != 0);
                 self.regs.sr.set_z(insert_base == 0);
 
-                let insert_long = insert_base >> (offset as usize);
+                let insert_long = insert_base >> (offset as isize);
 
                 let data_long = self.read_ticks::<Long>(ea)?;
 
