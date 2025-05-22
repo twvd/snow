@@ -8,7 +8,7 @@ use std::fmt::Write;
 use crate::{
     bus::Address,
     cpu_m68k::{
-        instruction::{BfxExtWord, DivlExtWord, IndexSize, MemoryIndirectAction, MulsExtWord, Xn},
+        instruction::{BfxExtWord, DivlExtWord, IndexSize, MemoryIndirectAction, MulxExtWord, Xn},
         regs::Register,
     },
     types::Byte,
@@ -647,7 +647,13 @@ impl<'a> Disassembler<'a> {
             InstructionMnemonic::SWAP => format!("{} D{}", mnemonic, instr.get_op2()),
 
             InstructionMnemonic::MULU_w | InstructionMnemonic::MULS_w => {
-                format!("{} {},D{}", mnemonic, self.ea(instr)?, instr.get_op1())
+                format!(
+                    "{}.{} {},D{}",
+                    mnemonic,
+                    sz,
+                    self.ea(instr)?,
+                    instr.get_op1()
+                )
             }
 
             InstructionMnemonic::TRAP => format!("{} #{}", mnemonic, instr.trap_get_vector()),
@@ -746,8 +752,8 @@ impl<'a> Disassembler<'a> {
                     width,
                 )
             }
-            InstructionMnemonic::MULS_l => {
-                let ew = MulsExtWord(self.get16()?);
+            InstructionMnemonic::MULx_l => {
+                let ew = MulxExtWord(self.get16()?);
 
                 let regs = if ew.size() {
                     format!("D{}-D{}", ew.dh(), ew.dl())
@@ -755,7 +761,13 @@ impl<'a> Disassembler<'a> {
                     format!("D{}", ew.dl())
                 };
 
-                format!("{} {},{}", mnemonic, self.ea(instr)?, regs)
+                format!(
+                    "MUL{}.{} {},{}",
+                    if ew.signed() { "S" } else { "" },
+                    sz,
+                    self.ea(instr)?,
+                    regs
+                )
             }
             InstructionMnemonic::DIVx_l => {
                 let ew = DivlExtWord(self.get16()?);

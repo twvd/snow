@@ -16,7 +16,7 @@ use crate::util::TemporalOrder;
 
 use super::instruction::{
     AddressingMode, BfxExtWord, Direction, DivlExtWord, IndexSize, Instruction,
-    InstructionMnemonic, MemoryIndirectAction, MulsExtWord, Xn,
+    InstructionMnemonic, MemoryIndirectAction, MulxExtWord, Xn,
 };
 use super::regs::{Register, RegisterFile, RegisterSR};
 use super::{CpuM68kType, CpuSized, M68000, M68010, M68020, M68020_SR_MASK};
@@ -1136,7 +1136,7 @@ where
             InstructionMnemonic::BFINS => self.op_bfins(instr),
             InstructionMnemonic::BFSET => self.op_bfset(instr),
             InstructionMnemonic::BFTST => self.op_bftst(instr),
-            InstructionMnemonic::MULS_l => self.op_muls_l(instr),
+            InstructionMnemonic::MULx_l => self.op_mulx_l(instr),
             InstructionMnemonic::DIVx_l => self.op_divx_l(instr),
             InstructionMnemonic::CHK_l => self.op_chk::<Long>(instr),
 
@@ -3874,18 +3874,29 @@ where
         Ok(())
     }
 
-    /// MULS (Long)
-    fn op_muls_l(&mut self, instr: &Instruction) -> Result<()> {
-        let extword = MulsExtWord(self.fetch_pump()?);
+    /// MULx (Long)
+    fn op_mulx_l(&mut self, instr: &Instruction) -> Result<()> {
+        let extword = MulxExtWord(self.fetch_pump()?);
 
-        let a = self.regs.read_d::<Long>(extword.dl()) as i32 as i64;
-        let b = self.read_ea::<Long>(instr, instr.get_op2())? as i32 as i64;
-        let result = a.wrapping_mul(b);
+        let result = if extword.signed() {
+            let a = self.regs.read_d::<Long>(extword.dl()) as i32 as i64;
+            let b = self.read_ea::<Long>(instr, instr.get_op2())? as i32 as i64;
+
+            // Computation time
+            self.advance_cycles(34 + (((b << 1) ^ b).count_ones() as Ticks) * 2)?;
+
+            a.wrapping_mul(b)
+        } else {
+            let a = self.regs.read_d::<Long>(extword.dl()) as u64;
+            let b = self.read_ea::<Long>(instr, instr.get_op2())? as u64;
+
+            // Computation time
+            self.advance_cycles(34 + (((b << 1) ^ b).count_ones() as Ticks) * 2)?;
+
+            a.wrapping_mul(b) as i64
+        };
 
         self.prefetch_pump()?;
-
-        // Computation time
-        self.advance_cycles(34 + (((b << 1) ^ b).count_ones() as Ticks) * 2)?;
 
         self.regs.sr.set_v(false);
         self.regs.sr.set_c(false);

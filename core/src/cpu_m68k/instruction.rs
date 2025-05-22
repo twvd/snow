@@ -157,7 +157,7 @@ pub enum InstructionMnemonic {
     MOVEQ,
     // no MULU_l, MULU_b
     MULU_w,
-    MULS_l,
+    MULx_l,
     MULS_w,
     NEG_l,
     NEG_w,
@@ -482,11 +482,12 @@ bitfield! {
 }
 
 bitfield! {
-    /// MULS.l extension word
+    /// MULx.l extension word
     #[derive(Clone, Copy, PartialEq, Eq)]
-    pub struct MulsExtWord(pub Word): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct MulxExtWord(pub Word): Debug, FromRaw, IntoRaw, DerefRaw {
         pub dh: usize @ 0..=3,
         pub size: bool @ 10,
+        pub signed: bool @ 11,
         pub dl: usize @ 12..=14,
     }
 }
@@ -710,7 +711,7 @@ impl Instruction {
         (M68020, 0b1110_1110_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFSET),
         (M68020, 0b1110_1000_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFTST),
         (M68020, 0b1110_1101_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFFFO),
-        (M68020, 0b0100_1100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MULS_l),
+        (M68020, 0b0100_1100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MULx_l),
         (M68020, 0b0100_1100_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::DIVx_l),
         (M68020, 0b0100_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CHK_l),
 
@@ -960,7 +961,7 @@ impl Instruction {
             | InstructionMnemonic::MOVEP_l
             | InstructionMnemonic::MOVEM_mem_l
             | InstructionMnemonic::MOVEM_reg_l
-            | InstructionMnemonic::MULS_l
+            | InstructionMnemonic::MULx_l
             | InstructionMnemonic::NEG_l
             | InstructionMnemonic::NEGX_l
             | InstructionMnemonic::NOT_l
