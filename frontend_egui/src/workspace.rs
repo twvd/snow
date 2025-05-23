@@ -27,6 +27,7 @@ pub struct Workspace {
     pub memory_open: bool,
     pub watchpoints_open: bool,
     pub instruction_history_open: bool,
+    pub systrap_history_open: bool,
     pub peripheral_debug_open: bool,
     pub terminal_open: [bool; 2],
     pub center_viewport_v: bool,
@@ -53,6 +54,7 @@ impl Default for Workspace {
             memory_open: false,
             watchpoints_open: false,
             instruction_history_open: false,
+            systrap_history_open: false,
             peripheral_debug_open: false,
             terminal_open: [false; 2],
             center_viewport_v: false,
@@ -73,6 +75,7 @@ impl Workspace {
         "Memory",
         "Watchpoints",
         "Instruction history",
+        "System trap history",
         "Peripherals",
     ];
 

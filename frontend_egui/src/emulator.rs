@@ -14,7 +14,7 @@ use num_traits::cast::ToPrimitive;
 use sdl2::audio::AudioDevice;
 
 use snow_core::bus::Address;
-use snow_core::cpu_m68k::cpu::HistoryEntry;
+use snow_core::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
 use snow_core::cpu_m68k::regs::{Register, RegisterFile};
 use snow_core::debuggable::DebuggableProperties;
@@ -59,6 +59,8 @@ pub struct EmulatorState {
     record_input_path: Option<PathBuf>,
     instruction_history: Vec<HistoryEntry>,
     instruction_history_enabled: bool,
+    systrap_history: Vec<SystrapHistoryEntry>,
+    systrap_history_enabled: bool,
     peripheral_debug: DebuggableProperties,
     peripheral_debug_enabled: bool,
     scc_tx: [VecDeque<u8>; 2],
@@ -281,6 +283,7 @@ impl EmulatorState {
                     }
                 }
                 EmulatorEvent::InstructionHistory(h) => self.instruction_history = h,
+                EmulatorEvent::SystrapHistory(h) => self.systrap_history = h,
                 EmulatorEvent::PeripheralDebug(d) => self.peripheral_debug = d,
                 EmulatorEvent::SccTransmitData(ch, data) => {
                     self.scc_tx[ch.to_usize().unwrap()].extend(&data);
@@ -618,12 +621,30 @@ impl EmulatorState {
         Ok(())
     }
 
+    pub fn enable_systrap_history(&mut self, val: bool) -> Result<()> {
+        let Some(ref sender) = self.cmdsender else {
+            return Ok(());
+        };
+        self.systrap_history_enabled = val;
+        sender.send(EmulatorCommand::SetSystrapHistory(val))?;
+        self.systrap_history.clear();
+        Ok(())
+    }
+
     pub fn is_history_enabled(&self) -> bool {
         self.instruction_history_enabled
     }
 
+    pub fn is_systrap_history_enabled(&self) -> bool {
+        self.systrap_history_enabled
+    }
+
     pub fn get_history(&self) -> &[HistoryEntry] {
         &self.instruction_history
+    }
+
+    pub fn get_systrap_history(&self) -> &[SystrapHistoryEntry] {
+        &self.systrap_history
     }
 
     pub fn enable_peripheral_debug(&mut self, val: bool) -> Result<()> {

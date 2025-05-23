@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, InspectableBus};
-use crate::cpu_m68k::cpu::HistoryEntry;
+use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use crate::cpu_m68k::{CpuM68000, CpuM68020};
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::keymap::{KeyEvent, Keymap};
@@ -127,6 +127,13 @@ impl EmulatorConfig {
         }
     }
 
+    pub fn cpu_read_systrap_history(&mut self) -> Option<&[SystrapHistoryEntry]> {
+        match self {
+            Self::Compact(c) => c.read_systrap_history(),
+            Self::MacII(c) => c.read_systrap_history(),
+        }
+    }
+
     pub fn debug_properties(&self) -> DebuggableProperties {
         match self {
             Self::Compact(c) => c.bus.get_debug_properties(),
@@ -173,6 +180,13 @@ impl EmulatorConfig {
         match self {
             Self::Compact(c) => c.enable_history(v),
             Self::MacII(c) => c.enable_history(v),
+        }
+    }
+
+    pub fn cpu_enable_systrap_history(&mut self, v: bool) {
+        match self {
+            Self::Compact(c) => c.enable_systrap_history(v),
+            Self::MacII(c) => c.enable_systrap_history(v),
         }
     }
 
@@ -448,6 +462,12 @@ impl Emulator {
         if let Some(history) = self.config.cpu_read_history() {
             self.event_sender
                 .send(EmulatorEvent::InstructionHistory(history.to_vec()))?;
+        }
+
+        // System trap history
+        if let Some(history) = self.config.cpu_read_systrap_history() {
+            self.event_sender
+                .send(EmulatorEvent::SystrapHistory(history.to_vec()))?;
         }
 
         // Peripheral debug view
@@ -819,6 +839,9 @@ impl Tickable for Emulator {
                         );
                     }
                     EmulatorCommand::SetInstructionHistory(v) => self.config.cpu_enable_history(v),
+                    EmulatorCommand::SetSystrapHistory(v) => {
+                        self.config.cpu_enable_systrap_history(v);
+                    }
                     EmulatorCommand::SetPeripheralDebug(v) => {
                         self.peripheral_debug = v;
                         self.status_update()?;

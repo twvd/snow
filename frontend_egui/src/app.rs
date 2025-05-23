@@ -6,6 +6,7 @@ use crate::widgets::framebuffer::FramebufferWidget;
 use crate::widgets::instruction_history::InstructionHistoryWidget;
 use crate::widgets::memory::MemoryViewerWidget;
 use crate::widgets::peripherals::PeripheralsWidget;
+use crate::widgets::systrap_history::SystrapHistoryWidget;
 use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::Workspace;
@@ -78,6 +79,7 @@ pub struct SnowGui {
     memory: MemoryViewerWidget,
     watchpoints: WatchpointsWidget,
     instruction_history: InstructionHistoryWidget,
+    systrap_history: SystrapHistoryWidget,
     terminal: [TerminalWidget; 2],
 
     rom_dialog: FileDialog,
@@ -157,6 +159,7 @@ impl SnowGui {
             memory: MemoryViewerWidget::default(),
             watchpoints: WatchpointsWidget::default(),
             instruction_history: InstructionHistoryWidget::default(),
+            systrap_history: SystrapHistoryWidget::default(),
             terminal: Default::default(),
 
             rom_dialog: FileDialog::new()
@@ -1101,6 +1104,15 @@ impl eframe::App for SnowGui {
                         ui.close_menu();
                     }
                     if ui
+                        .checkbox(
+                            &mut self.workspace.systrap_history_open,
+                            "System trap history",
+                        )
+                        .clicked()
+                    {
+                        ui.close_menu();
+                    }
+                    if ui
                         .checkbox(&mut self.workspace.registers_open, "Registers")
                         .clicked()
                     {
@@ -1307,6 +1319,19 @@ impl eframe::App for SnowGui {
                 if self.workspace.instruction_history_open != self.emu.is_history_enabled() {
                     self.emu
                         .enable_history(self.workspace.instruction_history_open)
+                        .unwrap();
+                }
+
+                persistent_window_s!(self, "System trap history", [800.0, 300.0])
+                    .resizable([true, true])
+                    .open(&mut self.workspace.systrap_history_open)
+                    .show(ctx, |ui| {
+                        self.systrap_history
+                            .draw(ui, self.emu.get_systrap_history());
+                    });
+                if self.workspace.systrap_history_open != self.emu.is_systrap_history_enabled() {
+                    self.emu
+                        .enable_systrap_history(self.workspace.systrap_history_open)
                         .unwrap();
                 }
 

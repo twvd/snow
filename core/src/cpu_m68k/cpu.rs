@@ -162,6 +162,13 @@ impl HistoryEntryInstruction {
     }
 }
 
+#[derive(Clone, Eq, PartialEq)]
+pub struct SystrapHistoryEntry {
+    pub trap: Word,
+    pub cycles: Ticks,
+    pub pc: Address,
+}
+
 /// Motorola 680x0
 #[derive(Serialize, Deserialize)]
 pub struct CpuM68k<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
@@ -217,6 +224,11 @@ where
     /// Keep history?
     #[serde(skip)]
     history_enabled: bool,
+
+    /// System trap history
+    #[serde(skip)]
+    systrap_history: VecDeque<SystrapHistoryEntry>,
+    systrap_history_enabled: bool,
 }
 
 impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
@@ -246,6 +258,8 @@ where
             history: VecDeque::with_capacity(Self::HISTORY_SIZE),
             history_current: HistoryEntryInstruction::default(),
             history_enabled: false,
+            systrap_history: VecDeque::with_capacity(Self::HISTORY_SIZE),
+            systrap_history_enabled: false,
         }
     }
 
@@ -307,10 +321,25 @@ where
         self.history_current = Default::default();
     }
 
+    /// Configures system trap history
+    pub fn enable_systrap_history(&mut self, val: bool) {
+        self.systrap_history_enabled = val;
+        self.systrap_history.clear();
+    }
+
     /// Gets the instruction history, if enabled
     pub fn read_history(&mut self) -> Option<&[HistoryEntry]> {
         if self.history_enabled {
             Some(self.history.make_contiguous())
+        } else {
+            None
+        }
+    }
+
+    /// Gets the systrap history, if enabled
+    pub fn read_systrap_history(&mut self) -> Option<&[SystrapHistoryEntry]> {
+        if self.systrap_history_enabled {
+            Some(self.systrap_history.make_contiguous())
         } else {
             None
         }
@@ -1104,6 +1133,17 @@ where
                         instr.data, self.regs.pc
                     );
                     self.breakpoint_hit.set();
+                }
+
+                if self.systrap_history_enabled {
+                    while self.systrap_history.len() >= Self::HISTORY_SIZE {
+                        self.systrap_history.pop_front();
+                    }
+                    self.systrap_history.push_back(SystrapHistoryEntry {
+                        trap: instr.data,
+                        cycles: self.cycles,
+                        pc: self.regs.pc,
+                    });
                 }
 
                 self.advance_cycles(4)?;
