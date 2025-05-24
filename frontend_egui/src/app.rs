@@ -1,11 +1,13 @@
 use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
 use crate::keymap::map_winit_keycode;
+use crate::uniform::{UniformAction, UNIFORM_ACTION};
 use crate::widgets::breakpoints::BreakpointsWidget;
 use crate::widgets::disassembly::Disassembly;
 use crate::widgets::framebuffer::FramebufferWidget;
 use crate::widgets::instruction_history::InstructionHistoryWidget;
 use crate::widgets::memory::MemoryViewerWidget;
 use crate::widgets::peripherals::PeripheralsWidget;
+use crate::widgets::systrap_history::SystrapHistoryWidget;
 use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::Workspace;
@@ -78,6 +80,7 @@ pub struct SnowGui {
     memory: MemoryViewerWidget,
     watchpoints: WatchpointsWidget,
     instruction_history: InstructionHistoryWidget,
+    systrap_history: SystrapHistoryWidget,
     terminal: [TerminalWidget; 2],
 
     rom_dialog: FileDialog,
@@ -157,6 +160,7 @@ impl SnowGui {
             memory: MemoryViewerWidget::default(),
             watchpoints: WatchpointsWidget::default(),
             instruction_history: InstructionHistoryWidget::default(),
+            systrap_history: SystrapHistoryWidget::default(),
             terminal: Default::default(),
 
             rom_dialog: FileDialog::new()
@@ -493,6 +497,25 @@ impl SnowGui {
                 ),
         );
     }
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn uniform_action(&mut self, action: UniformAction) {
+        match action {
+            UniformAction::None => (),
+            UniformAction::AddressWatch(a, t) => {
+                self.workspace.watchpoints_open = true;
+                self.watchpoints.add_watchpoint(a, t, format!("{:08X}", a));
+            }
+            UniformAction::Breakpoint(breakpoint) => {
+                self.workspace.breakpoints_open = true;
+                self.emu.set_breakpoint(breakpoint);
+            }
+            UniformAction::AddressMemoryViewer(addr) => {
+                self.workspace.memory_open = true;
+                self.memory.go_to_address(addr);
+            }
+        }
+    }
 }
 
 impl eframe::App for SnowGui {
@@ -504,6 +527,8 @@ impl eframe::App for SnowGui {
 
         self.sync_windows(ctx);
         self.poll_winit_events(ctx);
+        self.uniform_action(UNIFORM_ACTION.take());
+
         if self.emu.poll() {
             // Change in emulator state
             if self.last_running != self.emu.is_running() {
@@ -1101,6 +1126,15 @@ impl eframe::App for SnowGui {
                         ui.close_menu();
                     }
                     if ui
+                        .checkbox(
+                            &mut self.workspace.systrap_history_open,
+                            "System trap history",
+                        )
+                        .clicked()
+                    {
+                        ui.close_menu();
+                    }
+                    if ui
                         .checkbox(&mut self.workspace.registers_open, "Registers")
                         .clicked()
                     {
@@ -1260,7 +1294,8 @@ impl eframe::App for SnowGui {
                     .open(&mut self.workspace.registers_open)
                     .show(ctx, |ui| {
                         ui.horizontal_top(|ui| {
-                            self.registers.draw(ui);
+                            self.registers
+                                .draw(ui, self.emu.get_model().unwrap().cpu_type());
                         });
                     });
                 if let Some((reg, value)) = self.registers.take_edited_register() {
@@ -1306,6 +1341,19 @@ impl eframe::App for SnowGui {
                 if self.workspace.instruction_history_open != self.emu.is_history_enabled() {
                     self.emu
                         .enable_history(self.workspace.instruction_history_open)
+                        .unwrap();
+                }
+
+                persistent_window_s!(self, "System trap history", [800.0, 300.0])
+                    .resizable([true, true])
+                    .open(&mut self.workspace.systrap_history_open)
+                    .show(ctx, |ui| {
+                        self.systrap_history
+                            .draw(ui, self.emu.get_systrap_history());
+                    });
+                if self.workspace.systrap_history_open != self.emu.is_systrap_history_enabled() {
+                    self.emu
+                        .enable_systrap_history(self.workspace.systrap_history_open)
                         .unwrap();
                 }
 

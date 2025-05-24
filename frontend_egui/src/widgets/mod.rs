@@ -5,5 +5,6 @@ pub mod instruction_history;
 pub mod memory;
 pub mod peripherals;
 pub mod registers;
+pub mod systrap_history;
 pub mod terminal;
 pub mod watchpoints;

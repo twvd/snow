@@ -5,10 +5,18 @@ use sha2::{Digest, Sha256};
 
 use swim::drive::DriveType;
 
-use crate::{bus::Address, keymap::Keymap, tickable::Ticks};
+use crate::{
+    bus::Address,
+    cpu_m68k::{CpuM68kType, M68000, M68020},
+    keymap::Keymap,
+    tickable::Ticks,
+};
 
 pub mod adb;
+pub mod asc;
 pub mod compact;
+pub mod macii;
+pub mod nubus;
 pub mod pluskbd;
 pub mod rtc;
 pub mod scc;
@@ -31,6 +39,8 @@ pub enum MacModel {
     SeFdhd,
     /// Macintosh Classic
     Classic,
+    /// Macintosh II
+    MacII,
 }
 
 #[allow(clippy::match_like_matches_macro)]
@@ -47,6 +57,7 @@ impl MacModel {
             Self::Early128K => 128 * 1024,
             Self::Early512K => 512 * 1024,
             Self::Plus | Self::SE | Self::SeFdhd | Self::Classic => 4096 * 1024,
+            Self::MacII => 8 * 1024 * 1024,
         }
     }
 
@@ -54,7 +65,8 @@ impl MacModel {
     pub const fn fdd_hd(self) -> bool {
         match self {
             Self::Early128K | Self::Early512K | Self::Plus | Self::SE => false,
-            _ => true,
+            Self::SeFdhd | Self::Classic => true,
+            Self::MacII => false,
         }
     }
 
@@ -70,6 +82,7 @@ impl MacModel {
                 DriveType::SuperDrive,
             ],
             Self::Classic => &[DriveType::SuperDrive, DriveType::SuperDrive],
+            Self::MacII => &[DriveType::GCR800K, DriveType::GCR800K],
         }
     }
 
@@ -95,6 +108,8 @@ impl MacModel {
             Self::Early128K | Self::Early512K | Self::Plus => cycles % 8 >= 4,
             // 75/25 for SE and onwards
             Self::SE | Self::SeFdhd | Self::Classic => cycles % 16 >= 4,
+            // No interleave for MacII
+            Self::MacII => true,
         }
     }
 
@@ -102,7 +117,7 @@ impl MacModel {
         match self {
             Self::Early128K | Self::Early512K => None,
             Self::Plus => Some((0x0002AE, 0x0040_0000)),
-            Self::SE | Self::SeFdhd | Self::Classic => Some((0x000CFC, 0x574C5343)),
+            Self::SE | Self::SeFdhd | Self::Classic | Self::MacII => Some((0x000CFC, 0x574C5343)),
         }
     }
 
@@ -114,6 +129,7 @@ impl MacModel {
             | Self::SE
             | Self::SeFdhd
             | Self::Classic => 512,
+            Self::MacII => 640,
         }
     }
 
@@ -125,6 +141,7 @@ impl MacModel {
             | Self::SE
             | Self::SeFdhd
             | Self::Classic => 342,
+            Self::MacII => 480,
         }
     }
 
@@ -136,6 +153,7 @@ impl MacModel {
             | Self::SE
             | Self::SeFdhd
             | Self::Classic => 1,
+            Self::MacII => 4,
         }
     }
 
@@ -173,8 +191,27 @@ impl MacModel {
             == hex!("c1c47260bacac2473e21849925fbfdf48e5ab584aaef7c6d54569d0cb6b41cce")
         {
             Some(Self::Classic)
+        } else if
+        // Macintosh II v1
+        digest[..] == hex!("cc6d754cfa7841644971718ada1121bc5f94ff954918f502a75abb0e6fd90540") ||
+        // Macintosh II v2
+        digest[..] == hex!("97f2a22bdb8972bfcc1f16aff1ebbe157887c26787a1c81747a9842fa7b97a06")
+        {
+            Some(Self::MacII)
         } else {
             None
+        }
+    }
+
+    pub const fn cpu_type(self) -> CpuM68kType {
+        match self {
+            Self::Early128K
+            | Self::Early512K
+            | Self::Plus
+            | Self::SE
+            | Self::SeFdhd
+            | Self::Classic => M68000,
+            Self::MacII => M68020,
         }
     }
 }
@@ -191,6 +228,7 @@ impl Display for MacModel {
                 Self::SE => "Macintosh SE",
                 Self::SeFdhd => "Macintosh SE (FDHD)",
                 Self::Classic => "Macintosh Classic",
+                Self::MacII => "Macintosh II",
             }
         )
     }

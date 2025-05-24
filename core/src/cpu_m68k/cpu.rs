@@ -9,15 +9,17 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::bus::{Address, Bus, BusResult, IrqSource};
+use crate::cpu_m68k::M68000_SR_MASK;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
 use crate::util::TemporalOrder;
 
 use super::instruction::{
-    AddressingMode, Direction, IndexSize, Instruction, InstructionMnemonic, Xn,
+    AddressingMode, BfxExtWord, Direction, DivlExtWord, IndexSize, Instruction,
+    InstructionMnemonic, MemoryIndirectAction, MulxExtWord, Xn,
 };
 use super::regs::{Register, RegisterFile, RegisterSR};
-use super::CpuSized;
+use super::{CpuM68kType, CpuSized, M68000, M68010, M68020, M68020_SR_MASK};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum BusBreakpoint {
@@ -133,6 +135,8 @@ fn empty_decode_cache() -> DecodeCache {
 }
 
 #[derive(Clone, Eq, PartialEq)]
+// The point of this enum is to mostly store instructions without allocation
+#[allow(clippy::large_enum_variant)]
 pub enum HistoryEntry {
     Instruction(HistoryEntryInstruction),
     Exception { vector: Address, cycles: Ticks },
@@ -147,6 +151,7 @@ pub struct HistoryEntryInstruction {
     pub final_regs: Option<RegisterFile>,
     pub branch_taken: Option<bool>,
     pub waitstates: bool,
+    pub ea: Option<Address>,
 }
 
 impl HistoryEntryInstruction {
@@ -157,9 +162,16 @@ impl HistoryEntryInstruction {
     }
 }
 
+#[derive(Clone, Eq, PartialEq)]
+pub struct SystrapHistoryEntry {
+    pub trap: Word,
+    pub cycles: Ticks,
+    pub pc: Address,
+}
+
 /// Motorola 680x0
 #[derive(Serialize, Deserialize)]
-pub struct CpuM68k<TBus, const ADDRESS_MASK: Address>
+pub struct CpuM68k<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
@@ -196,7 +208,7 @@ where
 
     /// Breakpoint hit latch
     #[serde(skip)]
-    breakpoint_hit: LatchingEvent,
+    pub(super) breakpoint_hit: LatchingEvent,
 
     /// Next address to jump to for step over
     step_over_addr: Option<Address>,
@@ -212,9 +224,15 @@ where
     /// Keep history?
     #[serde(skip)]
     history_enabled: bool,
+
+    /// System trap history
+    #[serde(skip)]
+    systrap_history: VecDeque<SystrapHistoryEntry>,
+    systrap_history_enabled: bool,
 }
 
-impl<TBus, const ADDRESS_MASK: Address> CpuM68k<TBus, ADDRESS_MASK>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
+    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
@@ -222,6 +240,8 @@ where
     pub const HISTORY_SIZE: usize = 100;
 
     pub fn new(bus: TBus) -> Self {
+        assert!([M68000, M68020].contains(&CPU_TYPE));
+
         Self {
             bus,
             regs: RegisterFile::new(),
@@ -238,7 +258,13 @@ where
             history: VecDeque::with_capacity(Self::HISTORY_SIZE),
             history_current: HistoryEntryInstruction::default(),
             history_enabled: false,
+            systrap_history: VecDeque::with_capacity(Self::HISTORY_SIZE),
+            systrap_history_enabled: false,
         }
+    }
+
+    pub const fn get_type(&self) -> CpuM68kType {
+        CPU_TYPE
     }
 
     /// Resets the CPU, loads reset vector and initial SP
@@ -249,7 +275,7 @@ where
         let init_pc = self.read_ticks(VECTOR_RESET)?;
 
         info!("Reset - SSP: {:08X}, PC: {:08X}", init_ssp, init_pc);
-        self.regs.ssp = init_ssp;
+        self.regs.isp = init_ssp;
         self.regs.sr.set_supervisor(true);
         self.regs.sr.set_int_prio_mask(7);
         self.set_pc(init_pc)?;
@@ -295,10 +321,25 @@ where
         self.history_current = Default::default();
     }
 
+    /// Configures system trap history
+    pub fn enable_systrap_history(&mut self, val: bool) {
+        self.systrap_history_enabled = val;
+        self.systrap_history.clear();
+    }
+
     /// Gets the instruction history, if enabled
     pub fn read_history(&mut self) -> Option<&[HistoryEntry]> {
         if self.history_enabled {
             Some(self.history.make_contiguous())
+        } else {
+            None
+        }
+    }
+
+    /// Gets the systrap history, if enabled
+    pub fn read_systrap_history(&mut self) -> Option<&[SystrapHistoryEntry]> {
+        if self.systrap_history_enabled {
+            Some(self.systrap_history.make_contiguous())
         } else {
             None
         }
@@ -340,7 +381,7 @@ where
     }
 
     /// Fetches a 16-bit value from prefetch queue
-    fn fetch(&mut self) -> Result<Word> {
+    pub(super) fn fetch(&mut self) -> Result<Word> {
         if self.prefetch.is_empty() {
             self.prefetch_pump()?;
         }
@@ -396,11 +437,18 @@ where
         let opcode = self.fetch()?;
 
         if self.decode_cache[opcode as usize].is_none() {
-            let instr = Instruction::try_decode(opcode);
+            let instr = Instruction::try_decode(CPU_TYPE, opcode);
             if instr.is_err() {
                 if self.history_enabled {
                     self.history_current = Default::default();
                 }
+                debug!(
+                    "Illegal instruction PC {:08X}: {:04X} {:016b} {}",
+                    self.regs.pc,
+                    opcode,
+                    opcode,
+                    instr.unwrap_err()
+                );
                 return self.raise_illegal_instruction();
             }
 
@@ -427,6 +475,7 @@ where
 
             entry.cycles = self.cycles - start_cycles;
             entry.final_regs = Some(self.regs.clone());
+            entry.ea = self.step_ea_addr;
 
             while self.history.len() >= Self::HISTORY_SIZE {
                 self.history.pop_front();
@@ -515,16 +564,20 @@ where
     fn verify_access<T: CpuSized>(&self, addr: Address, read: bool) -> Result<()> {
         if std::mem::size_of::<T>() >= 2 && (addr & 1) != 0 {
             // Unaligned access
-            error!("Unaligned access: address {:08X}", addr);
-            bail!(CpuError::AddressError(AddressError {
-                function_code: 0,
-                ir: 0,
+            if CPU_TYPE < M68020 {
+                warn!("Unaligned access: address {:08X}", addr);
 
-                // TODO instruction bit
-                instruction: false,
-                read,
-                address: addr
-            }));
+                // TODO should still happen on 68020+ for PC
+                bail!(CpuError::AddressError(AddressError {
+                    function_code: 0,
+                    ir: 0,
+
+                    // TODO instruction bit
+                    instruction: false,
+                    read,
+                    address: addr
+                }));
+            }
         }
         Ok(())
     }
@@ -533,7 +586,11 @@ where
     fn read_ticks<T: CpuSized>(&mut self, oaddr: Address) -> Result<T> {
         let len = std::mem::size_of::<T>();
         let mut result: T = T::zero();
-        let addr = if len > 1 { oaddr & !1 } else { oaddr };
+        let addr = if CPU_TYPE == M68000 && len > 1 {
+            oaddr & !1
+        } else {
+            oaddr
+        };
 
         // Below converts from BE -> LE on the fly
         for a in 0..len {
@@ -604,7 +661,7 @@ where
         value: T,
         order: TemporalOrder,
     ) -> Result<()> {
-        let addr = if std::mem::size_of::<T>() > 1 {
+        let addr = if CPU_TYPE == 68000 && std::mem::size_of::<T>() > 1 {
             oaddr & !1
         } else {
             oaddr
@@ -694,6 +751,15 @@ where
         Ok(())
     }
 
+    /// Sets SR, masking CPU model dependent bits accordingly
+    pub fn set_sr(&mut self, sr: Word) {
+        self.regs.sr.set_sr(match CPU_TYPE {
+            M68000 => sr & M68000_SR_MASK,
+            M68020 => sr & M68020_SR_MASK,
+            _ => unreachable!(),
+        });
+    }
+
     /// Gets the location where the next fetch() would occur from,
     /// regardless of the prefetch queue.
     fn get_fetch_addr(&self) -> Address {
@@ -721,8 +787,11 @@ where
         // Update mask
         self.regs.sr.set_int_prio_mask(level);
 
-        self.regs.ssp = self.regs.ssp.wrapping_sub(6);
-        self.write_ticks(self.regs.ssp.wrapping_add(0), saved_sr)?;
+        match CPU_TYPE {
+            M68000 => *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(6),
+            _ => *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8),
+        };
+        self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
 
         // 6 cycles idle
         self.advance_cycles(6)?;
@@ -731,8 +800,8 @@ where
         // 4 cycles idle
         self.advance_cycles(4)?;
 
-        self.write_ticks(self.regs.ssp.wrapping_add(4), self.regs.pc as u16)?;
-        self.write_ticks(self.regs.ssp.wrapping_add(2), (self.regs.pc >> 16) as u16)?;
+        self.write_ticks(self.regs.ssp().wrapping_add(4), self.regs.pc as u16)?;
+        self.write_ticks(self.regs.ssp().wrapping_add(2), (self.regs.pc >> 16) as u16)?;
 
         if self
             .breakpoints
@@ -746,7 +815,8 @@ where
         }
 
         // Jump to vector
-        let new_pc = self.read_ticks::<Long>(vector)?;
+        let vector_base = if CPU_TYPE >= M68010 { self.regs.vbr } else { 0 };
+        let new_pc = self.read_ticks::<Long>(vector_base.wrapping_add(vector))?;
         self.set_pc(new_pc)?;
         self.prefetch_pump()?;
         self.advance_cycles(2)?; // 2x idle
@@ -788,20 +858,23 @@ where
                     details.read, details.address, self.regs.pc
                 );
 
-                self.regs.ssp = self.regs.ssp.wrapping_sub(14);
-                self.write_ticks(self.regs.ssp.wrapping_add(12), self.regs.pc as u16)?;
-                self.write_ticks(self.regs.ssp.wrapping_add(8), saved_sr)?;
-                self.write_ticks(self.regs.ssp.wrapping_add(10), (self.regs.pc >> 16) as u16)?;
-                self.write_ticks(self.regs.ssp.wrapping_add(6), details.ir)?;
-                self.write_ticks(self.regs.ssp.wrapping_add(4), details.address as u16)?;
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(14);
+                self.write_ticks(self.regs.ssp().wrapping_add(12), self.regs.pc as u16)?;
+                self.write_ticks(self.regs.ssp().wrapping_add(8), saved_sr)?;
+                self.write_ticks(
+                    self.regs.ssp().wrapping_add(10),
+                    (self.regs.pc >> 16) as u16,
+                )?;
+                self.write_ticks(self.regs.ssp().wrapping_add(6), details.ir)?;
+                self.write_ticks(self.regs.ssp().wrapping_add(4), details.address as u16)?;
                 // Function code (3), I/N (1), R/W (1)
                 // TODO I/N, function code..
                 self.write_ticks(
-                    self.regs.ssp.wrapping_add(0),
+                    self.regs.ssp().wrapping_add(0),
                     if details.read { 1_u16 << 4 } else { 0_u16 },
                 )?;
                 self.write_ticks(
-                    self.regs.ssp.wrapping_add(2),
+                    self.regs.ssp().wrapping_add(2),
                     (details.address >> 16) as u16,
                 )?;
             }
@@ -811,10 +884,22 @@ where
                 //    group, vector, self.regs.pc
                 //);
 
-                self.regs.ssp = self.regs.ssp.wrapping_sub(6);
-                self.write_ticks(self.regs.ssp.wrapping_add(4), self.regs.pc as u16)?;
-                self.write_ticks(self.regs.ssp.wrapping_add(0), saved_sr)?;
-                self.write_ticks(self.regs.ssp.wrapping_add(2), (self.regs.pc >> 16) as u16)?;
+                let pc = self.regs.pc;
+                match CPU_TYPE {
+                    M68000 => {
+                        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(6);
+                        self.write_ticks(self.regs.ssp().wrapping_add(4), pc as u16)?;
+                        self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
+                        self.write_ticks(self.regs.ssp().wrapping_add(2), (pc >> 16) as u16)?;
+                    }
+                    _ => {
+                        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8);
+                        self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
+                        self.write_ticks(self.regs.ssp().wrapping_add(2), (pc >> 16) as u16)?;
+                        self.write_ticks(self.regs.ssp().wrapping_add(4), pc as u16)?;
+                        self.write_ticks(self.regs.ssp().wrapping_add(6), vector as u16)?;
+                    }
+                }
             }
         }
 
@@ -829,7 +914,8 @@ where
             self.breakpoint_hit.set();
         }
 
-        let new_pc = self.read_ticks::<Long>(vector)?;
+        let vector_base = if CPU_TYPE >= M68010 { self.regs.vbr } else { 0 };
+        let new_pc = self.read_ticks::<Long>(vector_base.wrapping_add(vector))?;
         self.set_pc(new_pc)?;
         self.prefetch_pump()?;
         self.advance_cycles(2)?; // 2x idle
@@ -936,7 +1022,7 @@ where
             InstructionMnemonic::CMPM_w => self.op_cmpm::<Word>(instr),
             InstructionMnemonic::CMPM_b => self.op_cmpm::<Byte>(instr),
             InstructionMnemonic::MULU_w => self.op_mulu(instr),
-            InstructionMnemonic::MULS_w => self.op_muls(instr),
+            InstructionMnemonic::MULS_w => self.op_muls_w(instr),
             InstructionMnemonic::DIVU_w => self.op_divu(instr),
             InstructionMnemonic::DIVS_w => self.op_divs(instr),
             InstructionMnemonic::NOP => Ok(()),
@@ -976,6 +1062,7 @@ where
             InstructionMnemonic::NOT_b => self.op_not::<Byte>(instr),
             InstructionMnemonic::EXT_l => self.op_ext::<Long, Word>(instr),
             InstructionMnemonic::EXT_w => self.op_ext::<Word, Byte>(instr),
+            InstructionMnemonic::EXTB_l => self.op_ext::<Long, Byte>(instr),
             InstructionMnemonic::SBCD => self.op_sbcd(instr),
             InstructionMnemonic::NBCD => self.op_nbcd(instr),
             InstructionMnemonic::ABCD => self.op_abcd(instr),
@@ -1000,7 +1087,7 @@ where
             InstructionMnemonic::MOVEM_mem_w => self.op_movem_mem::<Word>(instr),
             InstructionMnemonic::MOVEM_reg_l => self.op_movem_reg::<Long>(instr),
             InstructionMnemonic::MOVEM_reg_w => self.op_movem_reg::<Word>(instr),
-            InstructionMnemonic::CHK => self.op_chk(instr),
+            InstructionMnemonic::CHK_w => self.op_chk::<Word>(instr),
             InstructionMnemonic::Scc => self.op_scc(instr),
             InstructionMnemonic::DBcc => self.op_dbcc(instr),
             InstructionMnemonic::Bcc => self.op_bcc::<false>(instr),
@@ -1048,6 +1135,17 @@ where
                     self.breakpoint_hit.set();
                 }
 
+                if self.systrap_history_enabled {
+                    while self.systrap_history.len() >= Self::HISTORY_SIZE {
+                        self.systrap_history.pop_front();
+                    }
+                    self.systrap_history.push_back(SystrapHistoryEntry {
+                        trap: instr.data,
+                        cycles: self.cycles,
+                        pc: self.regs.pc,
+                    });
+                }
+
                 self.advance_cycles(4)?;
                 self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEA, None)
             }
@@ -1061,8 +1159,30 @@ where
                 }
 
                 self.advance_cycles(4)?;
+                log::debug!("Unhandled LINEF: {:04X}", instr.data);
                 self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEF, None)
             }
+
+            // M68010 ------------------------------------------------------------------------------
+            InstructionMnemonic::MOVEC_l => self.op_movec(instr),
+            InstructionMnemonic::RTD => self.op_rtd(instr),
+
+            // M68020 ------------------------------------------------------------------------------
+            InstructionMnemonic::BFCLR => self.op_bfclr(instr),
+            InstructionMnemonic::BFCHG => self.op_bfchg(instr),
+            InstructionMnemonic::BFFFO => self.op_bfffo(instr),
+            InstructionMnemonic::BFEXTU => self.op_bfextu(instr),
+            InstructionMnemonic::BFEXTS => self.op_bfexts(instr),
+            InstructionMnemonic::BFINS => self.op_bfins(instr),
+            InstructionMnemonic::BFSET => self.op_bfset(instr),
+            InstructionMnemonic::BFTST => self.op_bftst(instr),
+            InstructionMnemonic::MULx_l => self.op_mulx_l(instr),
+            InstructionMnemonic::DIVx_l => self.op_divx_l(instr),
+            InstructionMnemonic::CHK_l => self.op_chk::<Long>(instr),
+
+            // FPU ---------------------------------------------------------------------------------
+            InstructionMnemonic::FNOP => self.op_fnop(instr),
+            InstructionMnemonic::FSAVE => self.op_fsave(instr),
         }
     }
 
@@ -1090,8 +1210,8 @@ where
             }
         };
         let addr = match addrmode {
-            AddressingMode::DataRegister => unreachable!(),
-            AddressingMode::AddressRegister => unreachable!(),
+            AddressingMode::DataRegister => bail!("calc_ea_addr invalid addressing mode Dn"),
+            AddressingMode::AddressRegister => bail!("calc_ea_addr invalid addressing mode An"),
             AddressingMode::Indirect => self.regs.read_a(ea_in),
             AddressingMode::IndirectPreDec => {
                 self.advance_cycles(2)?; // 2x idle
@@ -1110,6 +1230,10 @@ where
                 instr.fetch_extword(|| self.fetch_pump())?;
 
                 let extword = instr.get_extword()?;
+                if extword.is_full() && CPU_TYPE >= M68020 {
+                    // Actually IndirectIndexBase
+                    return self.calc_ea_addr::<T>(instr, AddressingMode::IndirectIndexBase, ea_in);
+                }
                 let addr = self.regs.read_a::<Address>(ea_in);
                 let displacement = extword.brief_get_displacement_signext();
                 let index = read_idx(
@@ -1117,7 +1241,14 @@ where
                     extword.brief_get_register(),
                     extword.brief_get_index_size(),
                 );
-                addr.wrapping_add(displacement).wrapping_add(index)
+                let scale = if CPU_TYPE >= M68020 {
+                    extword.brief_get_scale()
+                } else {
+                    1
+                };
+
+                addr.wrapping_add(displacement)
+                    .wrapping_add(index.wrapping_mul(Address::from(scale)))
             }
             AddressingMode::PCDisplacement => {
                 instr.fetch_extword(|| self.fetch_pump())?;
@@ -1129,6 +1260,9 @@ where
                 self.advance_cycles(2)?; // 2x idle
                 instr.fetch_extword(|| self.fetch_pump())?;
                 let extword = instr.get_extword()?;
+                if extword.is_full() && CPU_TYPE >= M68020 {
+                    return self.calc_ea_addr::<T>(instr, AddressingMode::PCIndexBase, ea_in);
+                }
                 let pc = self.regs.pc;
                 let displacement = extword.brief_get_displacement_signext();
                 let index = read_idx(
@@ -1136,7 +1270,13 @@ where
                     extword.brief_get_register(),
                     extword.brief_get_index_size(),
                 );
-                pc.wrapping_add(displacement).wrapping_add(index)
+                let scale = if CPU_TYPE >= M68020 {
+                    extword.brief_get_scale()
+                } else {
+                    1
+                };
+                pc.wrapping_add(displacement)
+                    .wrapping_add(index.wrapping_mul(Address::from(scale)))
             }
             AddressingMode::AbsoluteShort => self.fetch_pump()? as i16 as i32 as u32,
             AddressingMode::AbsoluteLong => {
@@ -1144,7 +1284,87 @@ where
                 let l = self.fetch_pump()? as u32;
                 (h << 16) | l
             }
-            _ => todo!(),
+            AddressingMode::Immediate => unreachable!(),
+            AddressingMode::IndirectIndexBase | AddressingMode::PCIndexBase => {
+                // also Memory Indirect modes
+                // TODO cycles?
+                assert!(instr.has_extword());
+                let extword = instr.get_extword()?;
+
+                let addr = if extword.full_base_suppress() {
+                    0
+                } else {
+                    match addrmode {
+                        AddressingMode::IndirectIndexBase => self.regs.read_a::<Address>(ea_in),
+                        AddressingMode::PCIndexBase => self.regs.pc,
+                        _ => unreachable!(),
+                    }
+                };
+                let displacement = instr.fetch_ind_full_displacement(|| self.fetch_pump())?;
+                let scale = extword.full_scale();
+
+                let index = if let Some(idxreg) = extword.full_index_register() {
+                    read_idx(self, idxreg.into(), extword.full_index_size())
+                } else {
+                    // Index suppressed, leave at 0 for no effect
+                    0
+                };
+                let disp_addr = addr.wrapping_add_signed(displacement);
+                let pre_addr = disp_addr.wrapping_add(index.wrapping_mul(u32::from(scale)));
+
+                match extword.full_memindirectmode()? {
+                    MemoryIndirectAction::None => {
+                        // Address Register Indirect with Index (Base Displacement) Mode
+                        pre_addr
+                    }
+                    MemoryIndirectAction::Null => {
+                        // Memory Indirect (no index)
+                        self.read_ticks(disp_addr)?
+                    }
+                    MemoryIndirectAction::Word => {
+                        let od = self.fetch_pump()?.expand_sign_extend();
+
+                        self.read_ticks::<Address>(disp_addr)?
+                            .wrapping_add_signed(od as i32)
+                    }
+                    MemoryIndirectAction::Long => {
+                        let mut od = Long::from(self.fetch_pump()?) << 16;
+                        od |= Long::from(self.fetch_pump()?);
+                        self.read_ticks::<Address>(disp_addr)?
+                            .wrapping_add_signed(od as i32)
+                    }
+                    MemoryIndirectAction::PostIndexNull => self
+                        .read_ticks::<Address>(disp_addr)?
+                        .wrapping_add(index.wrapping_mul(u32::from(scale))),
+                    MemoryIndirectAction::PostIndexWord => {
+                        let od = self.fetch_pump()?.expand_sign_extend();
+                        self.read_ticks::<Address>(disp_addr)?
+                            .wrapping_add(index.wrapping_mul(u32::from(scale)))
+                            .wrapping_add_signed(od as i32)
+                    }
+                    MemoryIndirectAction::PostIndexLong => {
+                        let mut od = Long::from(self.fetch_pump()?) << 16;
+                        od |= Long::from(self.fetch_pump()?);
+                        self.read_ticks::<Address>(disp_addr)?
+                            .wrapping_add(index.wrapping_mul(u32::from(scale)))
+                            .wrapping_add_signed(od as i32)
+                    }
+                    MemoryIndirectAction::PreIndexNull => self.read_ticks(pre_addr)?,
+                    MemoryIndirectAction::PreIndexWord => {
+                        let od = self.fetch_pump()?.expand_sign_extend();
+
+                        self.read_ticks::<Address>(pre_addr)?
+                            .wrapping_add_signed(od as i32)
+                    }
+                    MemoryIndirectAction::PreIndexLong => {
+                        let mut od = Long::from(self.fetch_pump()?) << 16;
+                        od |= Long::from(self.fetch_pump()?);
+
+                        self.read_ticks::<Address>(pre_addr)?
+                            .wrapping_add_signed(od as i32)
+                    }
+                }
+            }
         };
 
         self.step_ea_addr = Some(addr);
@@ -1223,7 +1443,10 @@ where
                 }
                 self.read_ticks(addr)?
             }
-            AddressingMode::IndirectIndex | AddressingMode::PCIndex => {
+            AddressingMode::IndirectIndexBase
+            | AddressingMode::IndirectIndex
+            | AddressingMode::PCIndexBase
+            | AddressingMode::PCIndex => {
                 let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
                 self.read_ticks(addr)?
             }
@@ -1234,7 +1457,12 @@ where
 
     /// Writes a value to the operand (ea_in) using the effective addressing mode specified
     /// by the instruction, directly or through indirection, depending on the mode.
-    fn write_ea<T: CpuSized>(&mut self, instr: &Instruction, ea_in: usize, value: T) -> Result<()> {
+    pub(super) fn write_ea<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        ea_in: usize,
+        value: T,
+    ) -> Result<()> {
         self.write_ea_with(
             instr,
             instr.get_addr_mode()?,
@@ -1433,7 +1661,7 @@ where
 
         let a = self.fetch_immediate()?;
         let b = self.regs.sr.sr();
-        self.regs.sr.set_sr(calcfn(a, b));
+        self.set_sr(calcfn(a, b));
 
         // Idle cycles and dummy read
         self.advance_cycles(8)?;
@@ -1822,8 +2050,8 @@ where
         Ok(())
     }
 
-    /// MULS
-    fn op_muls(&mut self, instr: &Instruction) -> Result<()> {
+    /// MULS (Word)
+    fn op_muls_w(&mut self, instr: &Instruction) -> Result<()> {
         let a = self.regs.read_d::<Word>(instr.get_op1()) as i16 as i32;
         let b = self.read_ea::<Word>(instr, instr.get_op2())? as i16 as i32;
         let result = a.wrapping_mul(b) as Long;
@@ -2164,7 +2392,7 @@ where
         self.advance_cycles(4)?;
         self.read_ticks::<Word>(self.regs.pc.wrapping_add(2) & ADDRESS_MASK)?;
 
-        self.regs.sr.set_sr(value);
+        self.set_sr(value);
         Ok(())
     }
 
@@ -2394,10 +2622,15 @@ where
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
         }
 
-        let sr = self.read_ticks(self.regs.ssp.wrapping_add(0))?;
-        let pc = self.read_ticks(self.regs.ssp.wrapping_add(2))?;
-        self.regs.ssp = self.regs.ssp.wrapping_add(6);
-        self.regs.sr.set_sr(sr);
+        let frame_size = match CPU_TYPE {
+            M68000 => 6,
+            _ => 8,
+        };
+
+        let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
+        let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+        *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(frame_size);
+        self.set_sr(sr);
         self.set_pc(pc)?;
         self.prefetch_refill()?;
 
@@ -2432,7 +2665,7 @@ where
 
     /// JMP/JSR
     fn op_jmp_jsr(&mut self, instr: &Instruction) -> Result<()> {
-        if instr.needs_extword() {
+        if instr.needs_extword() && CPU_TYPE == M68000 {
             // Pre-load extension word from prefetch queue
             // to avoid reads in calc_ea_addr().
             instr.fetch_extword(|| self.fetch())?;
@@ -2453,6 +2686,9 @@ where
                 let l = self.fetch()? as Address;
                 self.regs.pc = self.regs.pc.wrapping_add(2) & ADDRESS_MASK;
                 (h << 16) | l
+            }
+            AddressingMode::PCDisplacement | AddressingMode::PCIndex => {
+                self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?
             }
             _ => self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?,
         };
@@ -2569,14 +2805,11 @@ where
     }
 
     /// CHK
-    fn op_chk(&mut self, instr: &Instruction) -> Result<()> {
+    fn op_chk<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         let max = self
-            .read_ea::<Word>(instr, instr.get_op2())?
+            .read_ea::<T>(instr, instr.get_op2())?
             .expand_sign_extend() as i32;
-        let value = self
-            .regs
-            .read_d::<Word>(instr.get_op1())
-            .expand_sign_extend() as i32;
+        let value = self.regs.read_d::<T>(instr.get_op1()).expand_sign_extend() as i32;
         let _result = value - max;
 
         match instr.get_addr_mode()? {
@@ -2723,6 +2956,11 @@ where
         let displacement = if instr.get_bxx_displacement() == 0 {
             instr.fetch_extword(|| self.fetch())?;
             instr.get_displacement()?
+        } else if CPU_TYPE >= M68020 && instr.get_bxx_displacement_raw() == 0xFF {
+            let msb = self.fetch_pump()? as Address;
+            let lsb = self.fetch_pump()? as Address;
+            // -4 since we just nudged the PC twice
+            ((msb << 16) | lsb) as i32 - 4
         } else {
             instr.get_bxx_displacement()
         };
@@ -2838,9 +3076,962 @@ where
 
         Ok(())
     }
+
+    /// MOVEC
+    fn op_movec(&mut self, instr: &Instruction) -> Result<()> {
+        // Bus access and cycles are an approximation based on UM/PRM
+        instr.fetch_extword(|| self.fetch())?;
+
+        if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+
+        if instr.movec_ctrl_to_gen() {
+            let val = self.regs.read::<Long>(instr.movec_ctrlreg()?.into());
+            self.regs.write(instr.movec_reg()?, val);
+            self.advance_cycles(4)?;
+        } else {
+            let val = self.regs.read::<Long>(instr.movec_reg()?);
+            self.regs.write(instr.movec_ctrlreg()?.into(), val);
+            self.advance_cycles(2)?;
+        }
+
+        Ok(())
+    }
+
+    /// RTD
+    fn op_rtd(&mut self, _instr: &Instruction) -> Result<()> {
+        // Bus access and cycles are an approximation based on UM/PRM
+        let displacement = self.fetch()?.expand_sign_extend() as i32;
+        let pc = self.read_ticks(self.regs.read_a(7))?;
+        let sp = self.regs.read_a::<Address>(7);
+        self.regs
+            .write_a(7, sp.wrapping_add_signed(4 + displacement));
+        self.set_pc(pc)?;
+        self.prefetch_refill()?;
+
+        self.test_step_out();
+
+        Ok(())
+    }
+
+    /// BFCLR
+    fn op_bfclr(&mut self, instr: &Instruction) -> Result<()> {
+        let sec = BfxExtWord(self.fetch_pump()?);
+
+        match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => {
+                // Data register version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) & 31
+                } else {
+                    sec.offset()
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                offset &= 31;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
+
+                let data = self.regs.read_d::<Long>(instr.get_op2());
+
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask = mask_base.rotate_right(offset);
+
+                self.regs.sr.set_n((data << offset) & 0x80000000 != 0);
+                self.regs.sr.set_z(data & mask == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+                self.regs.write_d(instr.get_op2(), data & !mask);
+            }
+            _ => {
+                // Memory version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) as i32
+                } else {
+                    sec.offset() as i32
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                // Calculate effective address with byte offset
+                let mut ea =
+                    self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+                ea = ea.wrapping_add_signed(offset / 8);
+                offset %= 8;
+
+                // Handle negative offsets
+                if offset < 0 {
+                    offset += 8;
+                    ea = ea.wrapping_sub(1);
+                }
+
+                width = ((width.wrapping_sub(1)) & 31) + 1;
+
+                // Create mask for the main 32-bit word
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask_long = mask_base >> (offset as isize);
+
+                let data_long = self.read_ticks::<Long>(ea)?;
+                self.regs
+                    .sr
+                    .set_n((data_long << (offset as isize)) & 0x80000000 != 0);
+                self.regs.sr.set_z(data_long & mask_long == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                self.write_ticks(ea, data_long & !mask_long)?;
+
+                // Handle bit fields that cross 32-bit boundaries
+                if (width as i32 + offset) > 32 {
+                    let mask_byte = (mask_base & 0xFF) as Byte;
+                    let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
+
+                    // Update Z flag with the extended part
+                    if data_byte & mask_byte != 0 {
+                        self.regs.sr.set_z(false);
+                    }
+
+                    self.write_ticks(ea.wrapping_add(4), data_byte & !mask_byte)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// BFEXTU
+    fn op_bfextu(&mut self, instr: &Instruction) -> Result<()> {
+        let sec = BfxExtWord(self.fetch_pump()?);
+
+        match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => {
+                // Data register version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) & 31
+                } else {
+                    sec.offset()
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                // Ensure offset is in range 0-31
+                offset &= 31;
+
+                width = ((width.wrapping_sub(1)) & 31) + 1;
+
+                let mut data = self.regs.read_d::<Long>(instr.get_op2());
+
+                data = data.rotate_left(offset);
+
+                // Set N flag from the rotated data
+                self.regs.sr.set_n(data & 0x80000000 != 0);
+
+                // Extract the bits
+                data >>= 32 - width;
+
+                self.regs.sr.set_z(data == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                self.regs.write_d(sec.reg(), data);
+            }
+            _ => {
+                // Memory version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) as i32
+                } else {
+                    sec.offset() as i32
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                // Calculate effective address
+                let mut ea =
+                    self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+
+                // Only adjust EA if offset comes from register
+                // (otherwise it is 0-31)
+                if sec.fdo() {
+                    ea = ea.wrapping_add_signed(offset.wrapping_div(8));
+                    offset %= 8;
+
+                    // Handle negative offset
+                    if offset < 0 {
+                        offset += 8;
+                        ea = ea.wrapping_sub(1);
+                    }
+                }
+
+                width = ((width.wrapping_sub(1)) & 31) + 1;
+
+                // Optimize reading based on field width
+                let mut data: Long = if (offset as u32 + width) < 8 {
+                    (self.read_ticks::<Byte>(ea)? as Long) << 24
+                } else if (offset as u32 + width) < 16 {
+                    (self.read_ticks::<Word>(ea)? as Long) << 16
+                } else {
+                    self.read_ticks::<Long>(ea)?
+                };
+
+                data <<= offset as isize;
+
+                // If the bit field crosses a 32-bit boundary, read an additional byte
+                if (offset as u32 + width) > 32 {
+                    let extra_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))? as Long;
+                    data |= (extra_byte << (offset as isize)) >> 8;
+                }
+
+                // Set N flag from the data before shifting for extraction
+                self.regs.sr.set_n(data & 0x80000000 != 0);
+
+                // Right shift to extract the bits
+                data >>= 32 - width;
+
+                self.regs.sr.set_z(data == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+                self.regs.write_d(sec.reg(), data);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// BFEXTS
+    fn op_bfexts(&mut self, instr: &Instruction) -> Result<()> {
+        let sec = BfxExtWord(self.fetch_pump()?);
+
+        match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => {
+                // Data register version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) & 31
+                } else {
+                    sec.offset()
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                offset &= 31;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
+
+                let mut data = self.regs.read_d::<Long>(instr.get_op2());
+                data = data.rotate_left(offset);
+
+                // Set N flag from the rotated data
+                self.regs.sr.set_n(data & 0x80000000 != 0);
+
+                // Right shift with sign extension to extract the bits
+                // Convert to signed, shift right, then back to unsigned
+                let signed_data = data as i32;
+                let result = (signed_data >> (32 - width)) as u32;
+
+                self.regs.sr.set_z(result == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+                self.regs.write_d(sec.reg(), result);
+            }
+            _ => {
+                // Memory version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) as i32
+                } else {
+                    sec.offset() as i32
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                let mut ea =
+                    self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+                ea = ea.wrapping_add_signed(offset / 8);
+                offset %= 8;
+
+                // Handle negative offsets
+                if offset < 0 {
+                    offset += 8;
+                    ea = ea.wrapping_sub(1);
+                }
+
+                width = ((width.wrapping_sub(1)) & 31) + 1;
+
+                let mut data = self.read_ticks::<Long>(ea)?;
+                data <<= offset as isize;
+
+                // If the bit field crosses a 32-bit boundary, read an additional byte
+                if (offset as u32 + width) > 32 {
+                    let extra_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))? as Long;
+                    data |= (extra_byte << (offset as isize)) >> 8;
+                }
+
+                // Set N flag from the data before shifting for extraction
+                self.regs.sr.set_n(data & 0x80000000 != 0);
+
+                // Right shift with sign extension to extract the bits
+                let signed_data = data as i32;
+                let result = (signed_data >> (32 - width)) as u32;
+
+                self.regs.sr.set_z(result == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+                self.regs.write_d(sec.reg(), result);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// BFFFO
+    fn op_bfffo(&mut self, instr: &Instruction) -> Result<()> {
+        let sec = BfxExtWord(self.fetch_pump()?);
+
+        match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => {
+                // Data register version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) & 31
+                } else {
+                    sec.offset()
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                offset &= 31;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
+
+                let mut data = self.regs.read_d::<Long>(instr.get_op2());
+                data = data.rotate_left(offset);
+
+                // Set N flag from the rotated data
+                self.regs.sr.set_n(data & 0x80000000 != 0);
+
+                // Right shift to extract the bits
+                data >>= 32 - width;
+
+                self.regs.sr.set_z(data == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                // Find first one bit from MSB to LSB
+                let mut result_offset = offset;
+                for bit in (0..width).rev() {
+                    if data & (1 << bit) != 0 {
+                        break;
+                    }
+                    result_offset += 1;
+                }
+
+                self.regs.write_d(sec.reg(), result_offset);
+            }
+            _ => {
+                // Memory version
+                let offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) as i32
+                } else {
+                    sec.offset() as i32
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                // Calculate effective address with byte offset
+                let mut ea =
+                    self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+                ea = ea.wrapping_add_signed(offset / 8);
+                let mut local_offset = offset % 8;
+
+                // Handle negative offsets
+                if local_offset < 0 {
+                    local_offset += 8;
+                    ea = ea.wrapping_sub(1);
+                }
+
+                width = ((width.wrapping_sub(1)) & 31) + 1;
+
+                let mut data = self.read_ticks::<Long>(ea)?;
+                data <<= local_offset as isize;
+
+                // If the bit field crosses a 32-bit boundary, read an additional byte
+                if (local_offset as u32 + width) > 32 {
+                    let extra_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))? as Long;
+                    data |= (extra_byte << (local_offset as isize)) >> 8;
+                }
+
+                // Set N flag from the data before shifting for extraction
+                self.regs.sr.set_n(data & 0x80000000 != 0);
+
+                // Right shift to extract the bits
+                data >>= 32 - width;
+
+                self.regs.sr.set_z(data == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                // Find first one bit from MSB to LSB
+                let mut result_offset = offset;
+                for bit in (0..width).rev() {
+                    if data & (1 << bit) != 0 {
+                        break;
+                    }
+                    result_offset += 1;
+                }
+
+                self.regs.write_d(sec.reg(), result_offset as Long);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// BFSET
+    fn op_bfset(&mut self, instr: &Instruction) -> Result<()> {
+        let sec = BfxExtWord(self.fetch_pump()?);
+
+        match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => {
+                // Data register version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) & 31
+                } else {
+                    sec.offset()
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                offset &= 31;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
+
+                let data = self.regs.read_d::<Long>(instr.get_op2());
+
+                // Create mask: 0xffffffff << (32 - width), then rotate right by offset
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask = mask_base.rotate_right(offset);
+
+                self.regs.sr.set_n((data << offset) & 0x80000000 != 0);
+                self.regs.sr.set_z(data & mask == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+                self.regs.write_d(instr.get_op2(), data | mask);
+            }
+            _ => {
+                // Memory version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) as i32
+                } else {
+                    sec.offset() as i32
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                // Calculate effective address with byte offset
+                let mut ea =
+                    self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+                ea = ea.wrapping_add_signed(offset / 8);
+                offset %= 8;
+
+                // Handle negative offsets
+                if offset < 0 {
+                    offset += 8;
+                    ea = ea.wrapping_sub(1);
+                }
+
+                width = ((width.wrapping_sub(1)) & 31) + 1;
+
+                // Create mask for the main 32-bit word
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask_long = mask_base >> (offset as isize);
+
+                let data_long = self.read_ticks::<Long>(ea)?;
+
+                self.regs
+                    .sr
+                    .set_n((data_long << (offset as isize)) & 0x80000000 != 0);
+                self.regs.sr.set_z(data_long & mask_long == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                self.write_ticks(ea, data_long | mask_long)?;
+
+                // Handle bit fields that cross 32-bit boundaries
+                if (width as i32 + offset) > 32 {
+                    let mask_byte = (mask_base & 0xFF) as Byte;
+                    let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
+
+                    // Update Z flag with the extended part
+                    if data_byte & mask_byte != 0 {
+                        self.regs.sr.set_z(false);
+                    }
+
+                    self.write_ticks(ea.wrapping_add(4), data_byte | mask_byte)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// BFTST
+    fn op_bftst(&mut self, instr: &Instruction) -> Result<()> {
+        let sec = BfxExtWord(self.fetch_pump()?);
+
+        match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => {
+                // Data register version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) & 31
+                } else {
+                    sec.offset()
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                offset &= 31;
+                width = ((width.wrapping_sub(1)) & 31) + 1;
+
+                let data = self.regs.read_d::<Long>(instr.get_op2());
+
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask = mask_base.rotate_right(offset);
+
+                self.regs.sr.set_n((data << offset) & 0x80000000 != 0);
+                self.regs.sr.set_z(data & mask == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                // No data modification for BFTST
+            }
+            _ => {
+                // Memory version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) as i32
+                } else {
+                    sec.offset() as i32
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                // Calculate effective address with byte offset
+                let mut ea =
+                    self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+                ea = ea.wrapping_add_signed(offset / 8);
+                offset %= 8;
+
+                // Handle negative offsets
+                if offset < 0 {
+                    offset += 8;
+                    ea = ea.wrapping_sub(1);
+                }
+
+                width = ((width.wrapping_sub(1)) & 31) + 1;
+
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask_long = mask_base >> (offset as isize);
+
+                let data_long = self.read_ticks::<Long>(ea)?;
+
+                let n_bit = (data_long & (0x80000000 >> (offset as isize))) != 0;
+                self.regs.sr.set_n(n_bit);
+                self.regs.sr.set_z(data_long & mask_long == 0);
+
+                // Handle bit fields that cross 32-bit boundaries
+                if (width as i32 + offset) > 32 {
+                    let mask_byte = (mask_base & 0xFF) as Byte;
+                    let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
+
+                    if data_byte & mask_byte != 0 {
+                        self.regs.sr.set_z(false);
+                    }
+                }
+
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                // No data modification for BFTST
+            }
+        }
+
+        Ok(())
+    }
+
+    /// BFCHG
+    fn op_bfchg(&mut self, instr: &Instruction) -> Result<()> {
+        let sec = BfxExtWord(self.fetch_pump()?);
+
+        match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => {
+                // Data register version
+                let offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) & 31
+                } else {
+                    sec.offset()
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                width = ((width.wrapping_sub(1)) & 31) + 1;
+
+                let data_reg = instr.get_op2();
+                let data = self.regs.read_d::<Long>(data_reg);
+
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask = mask_base.rotate_right(offset);
+
+                // Set flags
+                self.regs.sr.set_n((data << offset) & 0x80000000 != 0);
+                self.regs.sr.set_z(data & mask == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                self.regs.write_d(data_reg, data ^ mask);
+            }
+            _ => {
+                // Memory version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) as i32
+                } else {
+                    sec.offset() as i32
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                // Calculate effective address with byte offset
+                let mut ea =
+                    self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+                ea = ea.wrapping_add_signed(offset / 8);
+                offset %= 8;
+
+                // Handle negative offsets
+                if offset < 0 {
+                    offset += 8;
+                    ea = ea.wrapping_sub(1);
+                }
+
+                width = ((width.wrapping_sub(1)) & 31) + 1;
+
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask_long = mask_base >> (offset as isize);
+
+                let data_long = self.read_ticks::<Long>(ea)?;
+                self.regs
+                    .sr
+                    .set_n((data_long << (offset as isize)) & 0x80000000 != 0);
+                self.regs.sr.set_z(data_long & mask_long == 0);
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                // Write result back
+                self.write_ticks(ea, data_long ^ mask_long)?;
+
+                // Handle bit fields that cross 32-bit boundaries
+                if (width as i32 + offset) > 32 {
+                    let mask_byte = (mask_base & 0xFF) as Byte;
+                    let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
+
+                    // Update Z flag with the extended part
+                    if data_byte & mask_byte != 0 {
+                        self.regs.sr.set_z(false);
+                    }
+
+                    // Write the extended part
+                    self.write_ticks(ea.wrapping_add(4), data_byte ^ mask_byte)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// BFINS
+    fn op_bfins(&mut self, instr: &Instruction) -> Result<()> {
+        let sec = BfxExtWord(self.fetch_pump()?);
+
+        match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => {
+                // Data register version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) & 31
+                } else {
+                    sec.offset()
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                // Ensure offset is in range 0-31
+                offset &= 31;
+
+                width = ((width.wrapping_sub(1)) & 31) + 1;
+
+                let data_reg = instr.get_op2();
+                let mut data = self.regs.read_d::<Long>(data_reg);
+
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask = mask_base.rotate_right(offset);
+
+                // Get insert data from source register, masked to width
+                let mut insert = self.regs.read_d::<Long>(sec.reg());
+                insert <<= 32 - width;
+
+                // Set flags on the insert data before rotating
+                self.regs.sr.set_n(insert & 0x80000000 != 0);
+                self.regs.sr.set_z(insert == 0);
+
+                // Rotate insert data to align with destination
+                insert = insert.rotate_right(offset);
+
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                data &= !mask;
+                data |= insert;
+                self.regs.write_d(data_reg, data);
+            }
+            _ => {
+                // Memory version
+                let mut offset = if sec.fdo() {
+                    self.regs.read_d::<Long>(sec.offset_reg()) as i32
+                } else {
+                    sec.offset() as i32
+                };
+
+                let mut width = if sec.fdw() {
+                    self.regs.read_d::<Long>(sec.width_reg())
+                } else {
+                    sec.width()
+                };
+
+                // Calculate effective address with byte offset
+                let mut ea =
+                    self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+                ea = ea.wrapping_add_signed(offset / 8);
+                offset %= 8;
+
+                // Handle negative offsets
+                if offset < 0 {
+                    offset += 8;
+                    ea = ea.wrapping_sub(1);
+                }
+
+                width = ((width.wrapping_sub(1)) & 31) + 1;
+
+                // Create mask for the bits to be inserted
+                let mask_base = 0xFFFFFFFF_u32 << (32 - width);
+                let mask_long = mask_base >> (offset as isize);
+
+                let mut insert_base = self.regs.read_d::<Long>(sec.reg());
+                insert_base <<= 32 - width;
+
+                // Set flags based on insert data
+                self.regs.sr.set_n(insert_base & 0x80000000 != 0);
+                self.regs.sr.set_z(insert_base == 0);
+
+                let insert_long = insert_base >> (offset as isize);
+
+                let data_long = self.read_ticks::<Long>(ea)?;
+
+                self.regs.sr.set_v(false);
+                self.regs.sr.set_c(false);
+
+                // Combine data and insert values and write back
+                self.write_ticks(ea, (data_long & !mask_long) | insert_long)?;
+
+                // Handle bit fields that cross 32-bit boundaries
+                if (width as i32 + offset) > 32 {
+                    let mask_byte = (mask_base & 0xFF) as Byte;
+                    let insert_byte = (insert_base & 0xFF) as Byte;
+                    let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
+
+                    // Update Z flag with the extended part
+                    if data_byte & mask_byte != 0 {
+                        self.regs.sr.set_z(false);
+                    }
+
+                    // Write the extended part
+                    self.write_ticks(ea.wrapping_add(4), (data_byte & !mask_byte) | insert_byte)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// MULx (Long)
+    fn op_mulx_l(&mut self, instr: &Instruction) -> Result<()> {
+        let extword = MulxExtWord(self.fetch_pump()?);
+
+        let result = if extword.signed() {
+            let a = self.regs.read_d::<Long>(extword.dl()) as i32 as i64;
+            let b = self.read_ea::<Long>(instr, instr.get_op2())? as i32 as i64;
+
+            // Computation time
+            self.advance_cycles(34 + (((b << 1) ^ b).count_ones() as Ticks) * 2)?;
+
+            a.wrapping_mul(b)
+        } else {
+            let a = self.regs.read_d::<Long>(extword.dl()) as u64;
+            let b = self.read_ea::<Long>(instr, instr.get_op2())? as u64;
+
+            // Computation time
+            self.advance_cycles(34 + (((b << 1) ^ b).count_ones() as Ticks) * 2)?;
+
+            a.wrapping_mul(b) as i64
+        };
+
+        self.prefetch_pump()?;
+
+        self.regs.sr.set_v(false);
+        self.regs.sr.set_c(false);
+        if extword.size() {
+            self.regs.sr.set_n(result & (1 << 63) != 0);
+        } else {
+            self.regs.sr.set_n(result & (1 << 31) != 0);
+        }
+        self.regs.sr.set_z(result == 0);
+
+        self.regs.write_d(extword.dl(), result as i32 as Long);
+        if extword.size() {
+            self.regs
+                .write_d(extword.dh(), (result >> 32) as i32 as Long);
+        }
+
+        Ok(())
+    }
+
+    /// DIVU/DIVS (Long)
+    fn op_divx_l(&mut self, instr: &Instruction) -> Result<()> {
+        let extword = DivlExtWord(self.fetch_pump()?);
+        let dr = self.regs.read_d::<Long>(extword.dr());
+        let dq = self.regs.read_d::<Long>(extword.dq());
+
+        let dividend = if extword.size() {
+            // 64-bit
+            (u64::from(dr) << 32) | u64::from(dq)
+        } else {
+            u64::from(dq)
+        };
+        let divisor = self.read_ea::<Long>(instr, instr.get_op2())? as u64;
+
+        if divisor == 0 {
+            // Division by zero
+            self.advance_cycles(4)?;
+            self.regs.sr.set_n(false);
+            self.regs.sr.set_c(false);
+            self.regs.sr.set_z(false);
+            self.regs.sr.set_v(false);
+
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_DIV_ZERO, None);
+        }
+
+        self.prefetch_pump()?;
+
+        let (quotient, remainder) = match (extword.signed(), extword.size()) {
+            (false, false) => {
+                // 32-bit unsigned
+                (dividend / divisor, dividend % divisor)
+            }
+            (true, false) => {
+                // 32-bit signed
+                (
+                    ((dividend as u32 as i32) / (divisor as u32 as i32)) as i64 as u64,
+                    ((dividend as u32 as i32) % (divisor as u32 as i32)) as i64 as u64,
+                )
+            }
+            (false, true) => {
+                // 64-bit unsigned
+                (dividend / divisor, dividend % divisor)
+            }
+            (true, true) => {
+                // 64-bit signed
+                (
+                    ((dividend as i64) / (divisor as i64)) as u64,
+                    ((dividend as i64) % (divisor as i64)) as u64,
+                )
+            }
+        };
+
+        // Check overflow conditions on 64-bit divisions if the result exceeds 32-bit
+        if extword.size() && ![u32::MIN, u32::MAX].contains(&((quotient >> 32) as u32)) {
+            debug!("DIV.l overflow");
+            self.regs.sr.set_v(true);
+            return Ok(());
+        }
+
+        // 76-79 cycles
+        self.advance_cycles(76)?;
+
+        self.regs.sr.set_v(false);
+        self.regs.sr.set_c(false);
+        self.regs.sr.set_n(quotient & (1 << 31) != 0);
+        self.regs.sr.set_z(quotient == 0);
+
+        self.regs.write_d(extword.dr(), remainder as u32);
+        self.regs.write_d(extword.dq(), quotient as u32);
+
+        Ok(())
+    }
 }
 
-impl<TBus, const ADDRESS_MASK: Address> Tickable for CpuM68k<TBus, ADDRESS_MASK>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType> Tickable
+    for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
@@ -2848,5 +4039,27 @@ where
         self.step()?;
 
         Ok(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::bus::testbus::Testbus;
+    use crate::cpu_m68k::{CpuM68000, CpuM68020, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK};
+
+    use super::*;
+
+    #[test]
+    fn sr_68000() {
+        let mut cpu = CpuM68000::<Testbus<Address, Byte>>::new(Testbus::new(M68000_ADDRESS_MASK));
+        cpu.set_sr(0xFFFF);
+        assert!(!cpu.regs.sr.m());
+    }
+
+    #[test]
+    fn sr_68020() {
+        let mut cpu = CpuM68020::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
+        cpu.set_sr(0xFFFF);
+        assert!(cpu.regs.sr.m());
     }
 }

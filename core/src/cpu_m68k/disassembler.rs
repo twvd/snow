@@ -7,12 +7,16 @@ use std::fmt::Write;
 
 use crate::{
     bus::Address,
-    cpu_m68k::instruction::{IndexSize, Xn},
+    cpu_m68k::{
+        instruction::{BfxExtWord, DivlExtWord, IndexSize, MemoryIndirectAction, MulxExtWord, Xn},
+        regs::Register,
+    },
     types::Byte,
 };
 
-use super::instruction::{
-    AddressingMode, Direction, Instruction, InstructionMnemonic, InstructionSize,
+use super::{
+    instruction::{AddressingMode, Direction, Instruction, InstructionMnemonic, InstructionSize},
+    CpuM68kType,
 };
 
 #[derive(Clone)]
@@ -130,23 +134,98 @@ impl<'a> Disassembler<'a> {
             }
             AddressingMode::IndirectIndex => {
                 instr.fetch_extword(|| self.get16())?;
-
                 let extword = instr.get_extword()?;
-                let (xn, reg) = extword.brief_get_register();
-                format!(
-                    "(${:04X},A{},{}{}.{})",
-                    extword.brief_get_displacement_signext(),
-                    op,
-                    match xn {
-                        Xn::Dn => "D",
-                        Xn::An => "A",
-                    },
-                    reg,
-                    match extword.brief_get_index_size() {
-                        IndexSize::Word => "w",
-                        IndexSize::Long => "l",
+
+                if extword.is_full() {
+                    // AddressingMode::IndirectIndexBase and friends
+                    let displacement = instr.fetch_ind_full_displacement(|| self.get16())?;
+                    let basereg = if extword.full_base_suppress() {
+                        "-".to_string()
+                    } else {
+                        Register::An(op).to_string()
+                    };
+                    let indexreg = extword
+                        .full_index_register()
+                        .map(|r| {
+                            format!(
+                                "{}.{}*{}",
+                                r,
+                                match extword.full_index_size() {
+                                    IndexSize::Word => "w",
+                                    IndexSize::Long => "l",
+                                },
+                                extword.full_scale()
+                            )
+                        })
+                        .unwrap_or_else(|| "-".to_string());
+
+                    match extword.full_memindirectmode()? {
+                        MemoryIndirectAction::None => {
+                            format!("(${:04X},{},{})", displacement, basereg, indexreg)
+                        }
+                        MemoryIndirectAction::PreIndexNull => {
+                            format!("([${:04X},{},{}])", displacement, basereg, indexreg)
+                        }
+                        MemoryIndirectAction::PreIndexWord => {
+                            let od = self.get16()?;
+                            format!(
+                                "([${:04X},{},{}],${:04X})",
+                                displacement, basereg, indexreg, od
+                            )
+                        }
+                        MemoryIndirectAction::PreIndexLong => {
+                            let od = self.get32()?;
+                            format!(
+                                "([${:04X},{},{}],${:08X})",
+                                displacement, basereg, indexreg, od
+                            )
+                        }
+                        MemoryIndirectAction::PostIndexNull => {
+                            format!("([${:04X},{}],{})", displacement, basereg, indexreg)
+                        }
+                        MemoryIndirectAction::PostIndexWord => {
+                            let od = self.get16()?;
+                            format!(
+                                "([${:04X},{}],{},${:04X})",
+                                displacement, basereg, indexreg, od
+                            )
+                        }
+                        MemoryIndirectAction::PostIndexLong => {
+                            let od = self.get32()?;
+                            format!(
+                                "([${:04X},{}],{},${:08X})",
+                                displacement, basereg, indexreg, od
+                            )
+                        }
+                        MemoryIndirectAction::Null => {
+                            format!("([${:04X},{}])", displacement, basereg)
+                        }
+                        MemoryIndirectAction::Word => {
+                            let od = self.get16()?;
+                            format!("([${:04X},{}],${:04X})", displacement, basereg, od)
+                        }
+                        MemoryIndirectAction::Long => {
+                            let od = self.get32()?;
+                            format!("([${:04X},{}],${:08X})", displacement, basereg, od)
+                        }
                     }
-                )
+                } else {
+                    let (xn, reg) = extword.brief_get_register();
+                    format!(
+                        "(${:04X},A{},{}{}.{})",
+                        extword.brief_get_displacement_signext(),
+                        op,
+                        match xn {
+                            Xn::Dn => "D",
+                            Xn::An => "A",
+                        },
+                        reg,
+                        match extword.brief_get_index_size() {
+                            IndexSize::Word => "w",
+                            IndexSize::Long => "l",
+                        }
+                    )
+                }
             }
             _ => format!("{:?}", mode),
         })
@@ -261,7 +340,7 @@ impl<'a> Disassembler<'a> {
             | InstructionMnemonic::CMPI_w
             | InstructionMnemonic::CMPI_b => {
                 format!(
-                    "{}.{} {},D{}",
+                    "{}.{} {},{}",
                     mnemonic,
                     sz,
                     match instr.get_size() {
@@ -270,7 +349,7 @@ impl<'a> Disassembler<'a> {
                         InstructionSize::Byte => format!("#${:02X}", self.get16()?),
                         _ => unreachable!(),
                     },
-                    instr.get_op2()
+                    self.ea(instr)?
                 )
             }
 
@@ -435,7 +514,9 @@ impl<'a> Disassembler<'a> {
             | InstructionMnemonic::NEGX_w
             | InstructionMnemonic::NEGX_b => format!("{}.{} {}", mnemonic, sz, self.ea(instr)?),
 
-            InstructionMnemonic::EXT_l | InstructionMnemonic::EXT_w => {
+            InstructionMnemonic::EXT_l
+            | InstructionMnemonic::EXT_w
+            | InstructionMnemonic::EXTB_l => {
                 format!("{}.{} D{}", mnemonic, sz, instr.get_op2())
             }
 
@@ -524,7 +605,7 @@ impl<'a> Disassembler<'a> {
             | InstructionMnemonic::ROL_ea
             | InstructionMnemonic::ROR_ea => format!("{}.w {}", mnemonic, self.ea(instr)?),
 
-            InstructionMnemonic::CHK => {
+            InstructionMnemonic::CHK_w | InstructionMnemonic::CHK_l => {
                 format!("{} {},D{}", mnemonic, self.ea(instr)?, instr.get_op1())
             }
 
@@ -566,10 +647,151 @@ impl<'a> Disassembler<'a> {
             InstructionMnemonic::SWAP => format!("{} D{}", mnemonic, instr.get_op2()),
 
             InstructionMnemonic::MULU_w | InstructionMnemonic::MULS_w => {
-                format!("{} {},D{}", mnemonic, self.ea(instr)?, instr.get_op1())
+                format!(
+                    "{}.{} {},D{}",
+                    mnemonic,
+                    sz,
+                    self.ea(instr)?,
+                    instr.get_op1()
+                )
             }
 
             InstructionMnemonic::TRAP => format!("{} #{}", mnemonic, instr.trap_get_vector()),
+
+            // M68010+ -----------------------------------------------------------------------------
+            InstructionMnemonic::MOVEC_l => {
+                instr.fetch_extword(|| self.get16())?;
+
+                let (left, right) = if instr.movec_ctrl_to_gen() {
+                    (
+                        instr.movec_ctrlreg()?.to_string(),
+                        instr.movec_reg()?.to_string(),
+                    )
+                } else {
+                    (
+                        instr.movec_reg()?.to_string(),
+                        instr.movec_ctrlreg()?.to_string(),
+                    )
+                };
+                format!("{} {},{}", mnemonic, left, right)
+            }
+            InstructionMnemonic::RTD => {
+                let displacement = self.get16()? as i16;
+                format!("{} #{}", mnemonic, displacement)
+            }
+            InstructionMnemonic::BFCHG => {
+                let sec = BfxExtWord(self.get16()?);
+
+                let offset = if sec.fdo() {
+                    format!("D{}", sec.offset_reg())
+                } else {
+                    sec.offset().to_string()
+                };
+                let width = if sec.fdw() {
+                    format!("D{}", sec.width_reg())
+                } else if sec.width() == 0 {
+                    "32".to_string()
+                } else {
+                    sec.width().to_string()
+                };
+
+                format!("{} {} {{{}:{}}}", mnemonic, self.ea(instr)?, offset, width,)
+            }
+            InstructionMnemonic::BFEXTU
+            | InstructionMnemonic::BFEXTS
+            | InstructionMnemonic::BFFFO
+            | InstructionMnemonic::BFSET
+            | InstructionMnemonic::BFCLR
+            | InstructionMnemonic::BFTST => {
+                let sec = BfxExtWord(self.get16()?);
+
+                let offset = if sec.fdo() {
+                    format!("D{}", sec.offset_reg())
+                } else {
+                    sec.offset().to_string()
+                };
+                let width = if sec.fdw() {
+                    format!("D{}", sec.width_reg())
+                } else if sec.width() == 0 {
+                    "32".to_string()
+                } else {
+                    sec.width().to_string()
+                };
+
+                format!(
+                    "{} {} {{{}:{}}}, D{}",
+                    mnemonic,
+                    self.ea(instr)?,
+                    offset,
+                    width,
+                    sec.reg()
+                )
+            }
+            InstructionMnemonic::BFINS => {
+                let sec = BfxExtWord(self.get16()?);
+
+                let offset = if sec.fdo() {
+                    format!("D{}", sec.offset_reg())
+                } else {
+                    sec.offset().to_string()
+                };
+                let width = if sec.fdw() {
+                    format!("D{}", sec.width_reg())
+                } else if sec.width() == 0 {
+                    "32".to_string()
+                } else {
+                    sec.width().to_string()
+                };
+
+                format!(
+                    "{} D{}, {} {{{}:{}}}",
+                    mnemonic,
+                    sec.reg(),
+                    self.ea(instr)?,
+                    offset,
+                    width,
+                )
+            }
+            InstructionMnemonic::MULx_l => {
+                let ew = MulxExtWord(self.get16()?);
+
+                let regs = if ew.size() {
+                    format!("D{}-D{}", ew.dh(), ew.dl())
+                } else {
+                    format!("D{}", ew.dl())
+                };
+
+                format!(
+                    "MUL{}.{} {},{}",
+                    if ew.signed() { "S" } else { "" },
+                    sz,
+                    self.ea(instr)?,
+                    regs
+                )
+            }
+            InstructionMnemonic::DIVx_l => {
+                let ew = DivlExtWord(self.get16()?);
+
+                let regs = if ew.size() {
+                    format!("D{}:D{}", ew.dr(), ew.dq())
+                } else {
+                    format!("D{}", ew.dq())
+                };
+
+                format!(
+                    "DIV{}.l {},{}",
+                    if ew.signed() { "S" } else { "" },
+                    self.ea(instr)?,
+                    regs
+                )
+            }
+            InstructionMnemonic::FNOP => {
+                self.get16()?;
+                instr.mnemonic.to_string()
+            }
+            InstructionMnemonic::FSAVE => {
+                format!("{} {}", instr.mnemonic, self.ea(instr)?,)
+            }
         };
 
         Ok(())
@@ -586,7 +808,7 @@ impl Iterator for Disassembler<'_> {
         self.out.raw.push(op_msb);
         self.out.raw.push(op_lsb);
 
-        let instr = Instruction::try_decode(opcode);
+        let instr = Instruction::try_decode(CpuM68kType::MAX, opcode);
 
         if let Ok(i) = instr {
             self.do_instr(&i).ok()?;
@@ -614,11 +836,49 @@ mod tests {
         let mut iter = b.into_iter().copied();
         let mut disasm = Disassembler::from(&mut iter, 0);
         let disasm_entry = disasm.next();
-        disasm_entry.unwrap().str
+        let result = disasm_entry.unwrap().str;
+
+        // Ensure entire instruction is consumed
+        assert!(disasm.next().is_none());
+
+        result
     }
 
     #[test]
     fn jsr() {
         assert_eq!(dasm(&[0x4E, 0xBA, 0x01, 0xFA]), "JSR $0001FC");
+    }
+
+    #[test]
+    fn m68020_indirect_index_base() {
+        assert_eq!(
+            dasm(&[0x24, 0x70, 0x25, 0xA0, 0x12, 0x34]),
+            "MOVEA.l ($1234,-,D2.w*4),A2"
+        );
+        assert_eq!(
+            dasm(&[0x24, 0x70, 0b10100101, 0b10100000, 0x12, 0x34]),
+            "MOVEA.l ($1234,-,A2.w*4),A2"
+        );
+        assert_eq!(
+            dasm(&[0x24, 0x70, 0b00100101, 0b10100000, 0x12, 0x34]),
+            "MOVEA.l ($1234,-,D2.w*4),A2"
+        );
+        assert_eq!(
+            dasm(&[0x24, 0x70, 0b00100001, 0b10100000, 0x12, 0x34]),
+            "MOVEA.l ($1234,-,D2.w*1),A2"
+        );
+        assert_eq!(
+            dasm(&[0x24, 0x70, 0b00100001, 0b10010000]),
+            "MOVEA.l ($0000,-,D2.w*1),A2"
+        );
+        assert_eq!(
+            dasm(&[0x24, 0x74, 0x31, 0x10]),
+            "MOVEA.l ($0000,A4,D3.w*1),A2"
+        );
+    }
+
+    #[test]
+    fn cmpi_ea() {
+        assert_eq!(dasm(&[0x0C, 0x11, 0x00, 0xA8]), "CMPI.b #$A8,(A1)");
     }
 }

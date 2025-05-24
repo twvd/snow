@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use snow_floppy::FloppyImage;
 
 use crate::bus::Address;
-use crate::cpu_m68k::cpu::HistoryEntry;
+use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::debuggable::DebuggableProperties;
 use crate::keymap::KeyEvent;
@@ -64,6 +64,7 @@ pub enum EmulatorCommand {
     SetInstructionHistory(bool),
     SetPeripheralDebug(bool),
     SccReceiveData(SccCh, Vec<u8>),
+    SetSystrapHistory(bool),
 }
 
 /// Emulator speed tweak
@@ -131,4 +132,5 @@ pub enum EmulatorEvent {
     InstructionHistory(Vec<HistoryEntry>),
     PeripheralDebug(DebuggableProperties),
     SccTransmitData(SccCh, Vec<u8>),
+    SystrapHistory(Vec<SystrapHistoryEntry>),
 }

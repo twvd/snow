@@ -212,7 +212,7 @@ where
                 Some(self.ram[idx] = val)
             }
             // SCC
-            0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr, val),
+            0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr >> 1, val),
             // IWM
             0x00DF_E1FF..=0x00DF_FFFF => self.swim.write(addr, val),
             // VIA
@@ -247,7 +247,7 @@ where
             // SCSI
             0x0058_0000..=0x005F_FFFF => self.scsi.write(addr, val),
             // SCC
-            0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr, val),
+            0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr >> 1, val),
             // IWM
             0x00DF_E1FF..=0x00DF_FFFF => self.swim.write(addr, val),
             // VIA
@@ -278,7 +278,7 @@ where
             // Phase adjust (ignore)
             0x009F_FFF7 | 0x009F_FFF9 => Some(0xFF),
             // SCC
-            0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr),
+            0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr >> 1),
             // IWM
             0x00DF_E1FF..=0x00DF_FFFF => self.swim.read(addr),
             // VIA
@@ -317,7 +317,7 @@ where
             // SCSI
             0x0058_0000..=0x005F_FFFF => self.scsi.read(addr),
             // SCC
-            0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr),
+            0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr >> 1),
             // IWM
             0x00DF_E1FF..=0x00DF_FFFF => self.swim.read(addr),
             // VIA

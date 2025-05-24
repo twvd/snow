@@ -1,12 +1,13 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use crossbeam::atomic::AtomicCell;
 use either::Either;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
+use proc_bitfield::bitfield;
 use strum::Display;
 
 use super::regs::Register;
-use super::CpuSized;
+use super::{CpuM68kType, CpuSized, M68000, M68010, M68020};
 
 use crate::bus::Address;
 use crate::types::{Long, Word};
@@ -65,11 +66,20 @@ pub enum InstructionMnemonic {
     BTST_dn,
     BCHG_imm,
     BCLR_imm,
+    BFCHG,
+    BFCLR,
+    BFEXTU,
+    BFEXTS,
+    BFFFO,
+    BFINS,
+    BFTST,
+    BFSET,
     BSET_imm,
     BTST_imm,
     // BRA is actually just Bcc with cond = True
     BSR,
-    CHK,
+    CHK_l,
+    CHK_w,
     CLR_l,
     CLR_w,
     CLR_b,
@@ -86,7 +96,7 @@ pub enum InstructionMnemonic {
     CMPM_w,
     CMPM_b,
     DBcc,
-    // no DIVS_l, DIVS_b
+    DIVx_l,
     DIVS_w,
     // no DIVU_l, DIVU_b
     DIVU_w,
@@ -101,6 +111,7 @@ pub enum InstructionMnemonic {
     EXG,
     EXT_l,
     EXT_w,
+    EXTB_l,
     ILLEGAL,
     JMP,
     JSR,
@@ -131,6 +142,7 @@ pub enum InstructionMnemonic {
     MOVE_b,
     MOVEA_w,
     MOVEA_l,
+    MOVEC_l,
     MOVEP_w,
     MOVEP_l,
     MOVEfromSR,
@@ -145,7 +157,7 @@ pub enum InstructionMnemonic {
     MOVEQ,
     // no MULU_l, MULU_b
     MULU_w,
-    // no MULS_l, MULS_b
+    MULx_l,
     MULS_w,
     NEG_l,
     NEG_w,
@@ -174,6 +186,7 @@ pub enum InstructionMnemonic {
     ROR_w,
     ROR_l,
     ROR_ea,
+    RTD,
     RTE,
     RTR,
     RTS,
@@ -201,6 +214,10 @@ pub enum InstructionMnemonic {
     TST_l,
     TST_w,
     TST_b,
+
+    // FPU opcodes
+    FNOP,
+    FSAVE,
 }
 
 /// Addressing modes
@@ -218,6 +235,37 @@ pub enum AddressingMode {
     AbsoluteShort,
     AbsoluteLong,
     Immediate,
+
+    // M68020 -------------------------
+    /// Address Register Indirect With Index (Base Displacement)
+    /// (bd, An, Xn.size*scale)
+    /// Extension of IndirectIndex
+    /// Uses Full Format Extension Word
+    IndirectIndexBase,
+    /// Program Counter Indirect With Index (Base displacement)
+    PCIndexBase,
+    // Memory Indirect Post-Indexed
+    // ([bd,An], Xn.size*scale,od)
+    //MemoryIndirectPostIndex,
+
+    // Memory Indirect Pre-Indexed
+    // ([bd,An,Xn.size*scale],od)
+    //MemoryIndirectPreIndex,
+}
+
+/// I/IS Memory Indirect Actions for full extension words
+#[derive(Debug, Clone, Copy)]
+pub enum MemoryIndirectAction {
+    None,
+    PreIndexNull,
+    PreIndexWord,
+    PreIndexLong,
+    PostIndexNull,
+    PostIndexWord,
+    PostIndexLong,
+    Null,
+    Word,
+    Long,
 }
 
 /// Direction
@@ -249,6 +297,47 @@ pub enum IndexSize {
     Long = 1,
 }
 
+/// MOVEC control register
+#[derive(FromPrimitive, Debug, Eq, PartialEq, strum::Display)]
+pub enum MovecCtrlReg {
+    // M68010
+    SFC = 0x000,
+    DFC = 0x001,
+    USP = 0x800,
+    VBR = 0x801,
+    // M68020/30/40
+    CACR = 0x002,
+    CAAR = 0x802,
+    MSP = 0x803,
+    ISP = 0x804,
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<(Xn, usize)> for Register {
+    fn into(self) -> (Xn, usize) {
+        match self {
+            Self::An(n) => (Xn::An, n),
+            Self::Dn(n) => (Xn::Dn, n),
+            _ => panic!("Invalid conversion"),
+        }
+    }
+}
+
+impl From<MovecCtrlReg> for Register {
+    fn from(value: MovecCtrlReg) -> Self {
+        match value {
+            MovecCtrlReg::SFC => Self::SFC,
+            MovecCtrlReg::DFC => Self::DFC,
+            MovecCtrlReg::USP => Self::USP,
+            MovecCtrlReg::VBR => Self::VBR,
+            MovecCtrlReg::CACR => Self::CACR,
+            MovecCtrlReg::CAAR => Self::CAAR,
+            MovecCtrlReg::MSP => Self::MSP,
+            MovecCtrlReg::ISP => Self::ISP,
+        }
+    }
+}
+
 impl From<u16> for ExtWord {
     fn from(data: u16) -> Self {
         Self { data }
@@ -270,6 +359,12 @@ impl From<ExtWord> for u32 {
 impl From<ExtWord> for i32 {
     fn from(val: ExtWord) -> Self {
         val.data as i16 as Self
+    }
+}
+
+impl From<ExtWord> for usize {
+    fn from(val: ExtWord) -> Self {
+        val.data as Self
     }
 }
 
@@ -300,6 +395,112 @@ impl ExtWord {
     pub fn brief_get_index_size(&self) -> IndexSize {
         IndexSize::from_u16((self.data >> 11) & 1).unwrap()
     }
+
+    pub fn is_full(&self) -> bool {
+        self.data & (1 << 8) != 0
+    }
+
+    /// Scale - M68020+ only
+    pub fn brief_get_scale(&self) -> Word {
+        match (self.data >> 9) & 3 {
+            0b00 => 1,
+            0b01 => 2,
+            0b10 => 4,
+            0b11 => 8,
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn full_base_suppress(&self) -> bool {
+        self.data & (1 << 7) != 0
+    }
+
+    pub fn full_index_register(&self) -> Option<Register> {
+        assert!(self.is_full());
+        if self.data & (1 << 6) != 0 {
+            // IS - Index Suppress
+            None
+        } else if self.data & (1 << 15) != 0 {
+            Some(Register::An(usize::from((self.data >> 12) & 0b111)))
+        } else {
+            Some(Register::Dn(usize::from((self.data >> 12) & 0b111)))
+        }
+    }
+
+    pub fn full_scale(&self) -> Word {
+        assert!(self.is_full());
+        self.brief_get_scale()
+    }
+
+    pub fn full_index_size(&self) -> IndexSize {
+        assert!(self.is_full());
+        self.brief_get_index_size()
+    }
+
+    pub fn full_displacement_size(&self) -> Word {
+        (self.data >> 4) & 0b11
+    }
+
+    pub fn full_memindirectmode(&self) -> Result<MemoryIndirectAction> {
+        assert!(self.is_full());
+        let is = self.data & (1 << 6) != 0;
+        let i = self.data & 0b111;
+
+        match (is, i) {
+            (_, 0b000) => Ok(MemoryIndirectAction::None),
+            (false, 0b001) => Ok(MemoryIndirectAction::PreIndexNull),
+            (false, 0b010) => Ok(MemoryIndirectAction::PreIndexWord),
+            (false, 0b011) => Ok(MemoryIndirectAction::PreIndexLong),
+            (false, 0b101) => Ok(MemoryIndirectAction::PostIndexNull),
+            (false, 0b110) => Ok(MemoryIndirectAction::PostIndexWord),
+            (false, 0b111) => Ok(MemoryIndirectAction::PostIndexLong),
+
+            (true, 0b001) => Ok(MemoryIndirectAction::Null),
+            (true, 0b010) => Ok(MemoryIndirectAction::Word),
+            (true, 0b011) => Ok(MemoryIndirectAction::Long),
+
+            _ => bail!(format!(
+                "Invalid memory indirect mode - IS = {}, I = {:03b}",
+                is, i
+            )),
+        }
+    }
+}
+
+bitfield! {
+    /// BFxxx extension word
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub struct BfxExtWord(pub Word): Debug, FromRaw, IntoRaw, DerefRaw {
+        pub width: Long @ 0..=4,
+        pub width_reg: usize @ 0..=2,
+        pub fdw: bool @ 5,
+        pub offset: Long @ 6..=10,
+        pub offset_reg: usize @ 6..=8,
+        pub fdo: bool @ 11,
+        pub reg: usize @ 12..=14,
+    }
+}
+
+bitfield! {
+    /// MULx.l extension word
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub struct MulxExtWord(pub Word): Debug, FromRaw, IntoRaw, DerefRaw {
+        pub dh: usize @ 0..=3,
+        pub size: bool @ 10,
+        pub signed: bool @ 11,
+        pub dl: usize @ 12..=14,
+    }
+}
+
+bitfield! {
+    /// DIV.l/DIVS.l extension word
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub struct DivlExtWord(pub Word): Debug, FromRaw, IntoRaw, DerefRaw {
+        pub dr: usize @ 0..=3,
+        pub size: bool @ 10,
+        pub signed: bool @ 11,
+        pub dq: usize @ 12..=14,
+    }
 }
 
 /// A decoded instruction
@@ -314,6 +515,7 @@ impl Clone for Instruction {
     fn clone(&self) -> Self {
         // Clone drops the loaded extension word
         // TODO rip the Cell out..
+        // TODO make generic on CPU type?
         Self {
             mnemonic: self.mnemonic,
             data: self.data,
@@ -324,182 +526,207 @@ impl Clone for Instruction {
 
 impl Instruction {
     #[rustfmt::skip]
-    const DECODE_TABLE: &'static [(u16, u16, InstructionMnemonic)] = &[
-        (0b0000_0000_0011_1100, 0b1111_1111_1111_1111, InstructionMnemonic::ORI_ccr),
-        (0b0000_0000_0111_1100, 0b1111_1111_1111_1111, InstructionMnemonic::ORI_sr),
-        (0b0000_0000_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ORI_b),
-        (0b0000_0000_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ORI_w),
-        (0b0000_0000_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ORI_l),
-        (0b0000_0010_0011_1100, 0b1111_1111_1111_1111, InstructionMnemonic::ANDI_ccr),
-        (0b0000_0010_0111_1100, 0b1111_1111_1111_1111, InstructionMnemonic::ANDI_sr),
-        (0b0000_0010_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ANDI_b),
-        (0b0000_0010_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ANDI_w),
-        (0b0000_0010_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ANDI_l),
-        (0b0000_0100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::SUBI_b),
-        (0b0000_0100_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::SUBI_w),
-        (0b0000_0100_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::SUBI_l),
-        (0b0000_0110_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ADDI_b),
-        (0b0000_0110_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ADDI_w),
-        (0b0000_0110_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ADDI_l),
-        (0b0000_1010_0011_1100, 0b1111_1111_1111_1111, InstructionMnemonic::EORI_ccr),
-        (0b0000_1010_0111_1100, 0b1111_1111_1111_1111, InstructionMnemonic::EORI_sr),
-        (0b0000_1010_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::EORI_b),
-        (0b0000_1010_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::EORI_w),
-        (0b0000_1010_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::EORI_l),
-        (0b0000_1100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CMPI_b),
-        (0b0000_1100_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CMPI_w),
-        (0b0000_1100_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CMPI_l),
-        (0b0011_0000_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::MOVEA_w),
-        (0b0010_0000_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::MOVEA_l),
-        (0b0001_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::MOVE_b),
-        (0b0011_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::MOVE_w),
-        (0b0010_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::MOVE_l),
-        (0b0000_0001_0000_1000, 0b1111_0001_0111_1000, InstructionMnemonic::MOVEP_w),
-        (0b0000_0001_0100_1000, 0b1111_0001_0111_1000, InstructionMnemonic::MOVEP_l),
-        (0b0100_0000_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEfromSR),
-        (0b0100_0100_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEtoCCR),
-        (0b0100_0110_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEtoSR),
-        (0b0100_1110_0110_1000, 0b1111_1111_1111_1000, InstructionMnemonic::MOVEfromUSP),
-        (0b0100_1110_0110_0000, 0b1111_1111_1111_1000, InstructionMnemonic::MOVEtoUSP),
-        (0b0100_0100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NEG_b),
-        (0b0100_0100_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NEG_w),
-        (0b0100_0100_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NEG_l),
-        (0b0100_0000_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NEGX_b),
-        (0b0100_0000_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NEGX_w),
-        (0b0100_0000_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NEGX_l),
-        (0b0100_0010_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CLR_b),
-        (0b0100_0010_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CLR_w),
-        (0b0100_0010_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CLR_l),
-        (0b0100_0110_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NOT_b),
-        (0b0100_0110_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NOT_w),
-        (0b0100_0110_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NOT_l),
-        (0b0100_1000_1000_0000, 0b1111_1111_1111_1000, InstructionMnemonic::EXT_w),
-        (0b0100_1000_1100_0000, 0b1111_1111_1111_1000, InstructionMnemonic::EXT_l),
-        (0b0100_1000_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NBCD),
-        (0b0000_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::BTST_dn),
-        (0b0000_0001_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::BCHG_dn),
-        (0b0000_0001_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::BCLR_dn),
-        (0b0000_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::BSET_dn),
-        (0b0000_1000_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BTST_imm),
-        (0b0000_1000_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BCHG_imm),
-        (0b0000_1000_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BCLR_imm),
-        (0b0000_1000_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BSET_imm),
-        (0b0100_1000_0100_0000, 0b1111_1111_1111_1000, InstructionMnemonic::SWAP),
-        (0b0100_1000_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::PEA),
-        (0b0100_1010_1111_1100, 0b1111_1111_1111_1111, InstructionMnemonic::ILLEGAL),
-        (0b0100_1010_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::TAS),
-        (0b0100_1010_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::TST_b),
-        (0b0100_1010_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::TST_w),
-        (0b0100_1010_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::TST_l),
-        (0b0100_1110_0100_0000, 0b1111_1111_1111_0000, InstructionMnemonic::TRAP),
-        (0b0100_1110_0101_0000, 0b1111_1111_1111_1000, InstructionMnemonic::LINK),
-        (0b0100_1110_0101_1000, 0b1111_1111_1111_1000, InstructionMnemonic::UNLINK),
-        (0b0100_1110_0111_0000, 0b1111_1111_1111_1111, InstructionMnemonic::RESET),
-        (0b0100_1110_0111_0001, 0b1111_1111_1111_1111, InstructionMnemonic::NOP),
-        (0b0100_1110_0111_0010, 0b1111_1111_1111_1111, InstructionMnemonic::STOP),
-        (0b0100_1110_0111_0011, 0b1111_1111_1111_1111, InstructionMnemonic::RTE),
-        (0b0100_1110_0111_0101, 0b1111_1111_1111_1111, InstructionMnemonic::RTS),
-        (0b0100_1110_0111_0110, 0b1111_1111_1111_1111, InstructionMnemonic::TRAPV),
-        (0b0100_1110_0111_0111, 0b1111_1111_1111_1111, InstructionMnemonic::RTR),
-        (0b0100_1110_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::JSR),
-        (0b0100_1110_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::JMP),
-        (0b0100_1000_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEM_mem_w),
-        (0b0100_1000_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEM_mem_l),
-        (0b0100_1100_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEM_reg_w),
-        (0b0100_1100_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEM_reg_l),
-        (0b0100_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::LEA),
-        (0b0100_0001_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CHK),
-        (0b1000_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SBCD),
-        (0b1000_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_b),
-        (0b1000_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_w),
-        (0b1000_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_l),
-        (0b1000_0000_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::DIVU_w),
-        (0b1000_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::DIVS_w),
-        (0b0101_0000_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::ADDQ_b),
-        (0b0101_0000_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::ADDQ_w),
-        (0b0101_0000_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::ADDQ_l),
-        (0b0101_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_b),
-        (0b0101_0001_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_w),
-        (0b0101_0001_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_l),
-        (0b0101_0000_1100_1000, 0b1111_0000_1111_1000, InstructionMnemonic::DBcc),
-        (0b0101_0000_1100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::Scc),
+    const DECODE_TABLE: &'static [(CpuM68kType, u16, u16, InstructionMnemonic)] = &[
+        (M68000, 0b0000_0000_0011_1100, 0b1111_1111_1111_1111, InstructionMnemonic::ORI_ccr),
+        (M68000, 0b0000_0000_0111_1100, 0b1111_1111_1111_1111, InstructionMnemonic::ORI_sr),
+        (M68000, 0b0000_0000_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ORI_b),
+        (M68000, 0b0000_0000_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ORI_w),
+        (M68000, 0b0000_0000_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ORI_l),
+        (M68000, 0b0000_0010_0011_1100, 0b1111_1111_1111_1111, InstructionMnemonic::ANDI_ccr),
+        (M68000, 0b0000_0010_0111_1100, 0b1111_1111_1111_1111, InstructionMnemonic::ANDI_sr),
+        (M68000, 0b0000_0010_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ANDI_b),
+        (M68000, 0b0000_0010_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ANDI_w),
+        (M68000, 0b0000_0010_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ANDI_l),
+        (M68000, 0b0000_0100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::SUBI_b),
+        (M68000, 0b0000_0100_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::SUBI_w),
+        (M68000, 0b0000_0100_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::SUBI_l),
+        (M68000, 0b0000_0110_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ADDI_b),
+        (M68000, 0b0000_0110_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ADDI_w),
+        (M68000, 0b0000_0110_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ADDI_l),
+        (M68000, 0b0000_1010_0011_1100, 0b1111_1111_1111_1111, InstructionMnemonic::EORI_ccr),
+        (M68000, 0b0000_1010_0111_1100, 0b1111_1111_1111_1111, InstructionMnemonic::EORI_sr),
+        (M68000, 0b0000_1010_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::EORI_b),
+        (M68000, 0b0000_1010_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::EORI_w),
+        (M68000, 0b0000_1010_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::EORI_l),
+        (M68000, 0b0000_1100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CMPI_b),
+        (M68000, 0b0000_1100_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CMPI_w),
+        (M68000, 0b0000_1100_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CMPI_l),
+        (M68000, 0b0011_0000_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::MOVEA_w),
+        (M68000, 0b0010_0000_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::MOVEA_l),
+        (M68000, 0b0001_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::MOVE_b),
+        (M68000, 0b0011_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::MOVE_w),
+        (M68000, 0b0010_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::MOVE_l),
+        (M68000, 0b0000_0001_0000_1000, 0b1111_0001_0111_1000, InstructionMnemonic::MOVEP_w),
+        (M68000, 0b0000_0001_0100_1000, 0b1111_0001_0111_1000, InstructionMnemonic::MOVEP_l),
+        (M68000, 0b0100_0000_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEfromSR),
+        (M68000, 0b0100_0100_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEtoCCR),
+        (M68000, 0b0100_0110_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEtoSR),
+        (M68000, 0b0100_1110_0110_1000, 0b1111_1111_1111_1000, InstructionMnemonic::MOVEfromUSP),
+        (M68000, 0b0100_1110_0110_0000, 0b1111_1111_1111_1000, InstructionMnemonic::MOVEtoUSP),
+        (M68000, 0b0100_0100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NEG_b),
+        (M68000, 0b0100_0100_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NEG_w),
+        (M68000, 0b0100_0100_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NEG_l),
+        (M68000, 0b0100_0000_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NEGX_b),
+        (M68000, 0b0100_0000_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NEGX_w),
+        (M68000, 0b0100_0000_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NEGX_l),
+        (M68000, 0b0100_0010_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CLR_b),
+        (M68000, 0b0100_0010_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CLR_w),
+        (M68000, 0b0100_0010_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CLR_l),
+        (M68000, 0b0100_0110_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NOT_b),
+        (M68000, 0b0100_0110_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NOT_w),
+        (M68000, 0b0100_0110_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NOT_l),
+        (M68000, 0b0100_1001_1100_0000, 0b1111_1111_1111_1000, InstructionMnemonic::EXTB_l),
+        (M68000, 0b0100_1000_1000_0000, 0b1111_1111_1111_1000, InstructionMnemonic::EXT_w),
+        (M68000, 0b0100_1000_1100_0000, 0b1111_1111_1111_1000, InstructionMnemonic::EXT_l),
+        (M68000, 0b0100_1000_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NBCD),
+        (M68000, 0b0000_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::BTST_dn),
+        (M68000, 0b0000_0001_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::BCHG_dn),
+        (M68000, 0b0000_0001_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::BCLR_dn),
+        (M68000, 0b0000_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::BSET_dn),
+        (M68000, 0b0000_1000_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BTST_imm),
+        (M68000, 0b0000_1000_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BCHG_imm),
+        (M68000, 0b0000_1000_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BCLR_imm),
+        (M68000, 0b0000_1000_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BSET_imm),
+        (M68000, 0b0100_1000_0100_0000, 0b1111_1111_1111_1000, InstructionMnemonic::SWAP),
+        (M68000, 0b0100_1000_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::PEA),
+        (M68000, 0b0100_1010_1111_1100, 0b1111_1111_1111_1111, InstructionMnemonic::ILLEGAL),
+        (M68000, 0b0100_1010_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::TAS),
+        (M68000, 0b0100_1010_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::TST_b),
+        (M68000, 0b0100_1010_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::TST_w),
+        (M68000, 0b0100_1010_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::TST_l),
+        (M68000, 0b0100_1110_0100_0000, 0b1111_1111_1111_0000, InstructionMnemonic::TRAP),
+        (M68000, 0b0100_1110_0101_0000, 0b1111_1111_1111_1000, InstructionMnemonic::LINK),
+        (M68000, 0b0100_1110_0101_1000, 0b1111_1111_1111_1000, InstructionMnemonic::UNLINK),
+        (M68000, 0b0100_1110_0111_0000, 0b1111_1111_1111_1111, InstructionMnemonic::RESET),
+        (M68000, 0b0100_1110_0111_0001, 0b1111_1111_1111_1111, InstructionMnemonic::NOP),
+        (M68000, 0b0100_1110_0111_0010, 0b1111_1111_1111_1111, InstructionMnemonic::STOP),
+        (M68000, 0b0100_1110_0111_0011, 0b1111_1111_1111_1111, InstructionMnemonic::RTE),
+        (M68000, 0b0100_1110_0111_0101, 0b1111_1111_1111_1111, InstructionMnemonic::RTS),
+        (M68000, 0b0100_1110_0111_0110, 0b1111_1111_1111_1111, InstructionMnemonic::TRAPV),
+        (M68000, 0b0100_1110_0111_0111, 0b1111_1111_1111_1111, InstructionMnemonic::RTR),
+        (M68000, 0b0100_1110_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::JSR),
+        (M68000, 0b0100_1110_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::JMP),
+        (M68000, 0b0100_1000_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEM_mem_w),
+        (M68000, 0b0100_1000_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEM_mem_l),
+        (M68000, 0b0100_1100_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEM_reg_w),
+        (M68000, 0b0100_1100_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEM_reg_l),
+        (M68000, 0b0100_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::LEA),
+        (M68000, 0b0100_0001_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CHK_w),
+        (M68000, 0b1000_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SBCD),
+        (M68000, 0b1000_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_b),
+        (M68000, 0b1000_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_w),
+        (M68000, 0b1000_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_l),
+        (M68000, 0b1000_0000_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::DIVU_w),
+        (M68000, 0b1000_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::DIVS_w),
+        (M68000, 0b0101_0000_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::ADDQ_b),
+        (M68000, 0b0101_0000_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::ADDQ_w),
+        (M68000, 0b0101_0000_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::ADDQ_l),
+        (M68000, 0b0101_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_b),
+        (M68000, 0b0101_0001_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_w),
+        (M68000, 0b0101_0001_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_l),
+        (M68000, 0b0101_0000_1100_1000, 0b1111_0000_1111_1000, InstructionMnemonic::DBcc),
+        (M68000, 0b0101_0000_1100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::Scc),
         // BRA is actually just Bcc with cond = True
-        (0b0110_0001_0000_0000, 0b1111_1111_0000_0000, InstructionMnemonic::BSR),
-        (0b0110_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::Bcc),
-        (0b0111_0000_0000_0000, 0b1111_0001_0000_0000, InstructionMnemonic::MOVEQ),
-        (0b1001_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SUBX_b),
-        (0b1001_0001_0100_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SUBX_w),
-        (0b1001_0001_1000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SUBX_l),
-        (0b1001_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::SUB_b),
-        (0b1001_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::SUB_w),
-        (0b1001_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::SUB_l),
-        (0b1001_0000_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBA_w),
-        (0b1001_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBA_l),
-        (0b1010_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::LINEA),
-        (0b1011_0001_0000_1000, 0b1111_0001_1111_1000, InstructionMnemonic::CMPM_b),
-        (0b1011_0001_0100_1000, 0b1111_0001_1111_1000, InstructionMnemonic::CMPM_w),
-        (0b1011_0001_1000_1000, 0b1111_0001_1111_1000, InstructionMnemonic::CMPM_l),
-        (0b1011_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::EOR_b),
-        (0b1011_0001_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::EOR_w),
-        (0b1011_0001_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::EOR_l),
-        (0b1011_0000_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CMPA_w),
-        (0b1011_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CMPA_l),
-        (0b1011_0000_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CMP_b),
-        (0b1011_0000_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CMP_w),
-        (0b1011_0000_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CMP_l),
-        (0b1100_0000_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::MULU_w),
-        (0b1100_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::MULS_w),
-        (0b1100_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::ABCD),
-        (0b1100_0001_0000_0000, 0b1111_0001_0011_0000, InstructionMnemonic::EXG),
-        (0b1100_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::AND_b),
-        (0b1100_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::AND_w),
-        (0b1100_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::AND_l),
-        (0b1101_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::ADDX_b),
-        (0b1101_0001_0100_0000, 0b1111_0001_1111_0000, InstructionMnemonic::ADDX_w),
-        (0b1101_0001_1000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::ADDX_l),
-        (0b1101_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::ADD_b),
-        (0b1101_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::ADD_w),
-        (0b1101_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::ADD_l),
-        (0b1101_0000_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::ADDA_w),
-        (0b1101_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::ADDA_l),
-        (0b1110_0000_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ASR_ea),
-        (0b1110_0001_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ASL_ea),
-        (0b1110_0010_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::LSR_ea),
-        (0b1110_0011_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::LSL_ea),
-        (0b1110_0100_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ROXR_ea),
-        (0b1110_0101_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ROXL_ea),
-        (0b1110_0110_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ROR_ea),
-        (0b1110_0111_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ROL_ea),
-        (0b1110_0000_0000_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ASR_b),
-        (0b1110_0001_0000_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ASL_b),
-        (0b1110_0000_0100_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ASR_w),
-        (0b1110_0001_0100_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ASL_w),
-        (0b1110_0000_1000_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ASR_l),
-        (0b1110_0001_1000_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ASL_l),
-        (0b1110_0000_0000_1000, 0b1111_0001_1101_1000, InstructionMnemonic::LSR_b),
-        (0b1110_0001_0000_1000, 0b1111_0001_1101_1000, InstructionMnemonic::LSL_b),
-        (0b1110_0000_0100_1000, 0b1111_0001_1101_1000, InstructionMnemonic::LSR_w),
-        (0b1110_0001_0100_1000, 0b1111_0001_1101_1000, InstructionMnemonic::LSL_w),
-        (0b1110_0000_1000_1000, 0b1111_0001_1101_1000, InstructionMnemonic::LSR_l),
-        (0b1110_0001_1000_1000, 0b1111_0001_1101_1000, InstructionMnemonic::LSL_l),
-        (0b1110_0000_0001_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ROXR_b),
-        (0b1110_0001_0001_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ROXL_b),
-        (0b1110_0000_0101_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ROXR_w),
-        (0b1110_0001_0101_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ROXL_w),
-        (0b1110_0000_1001_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ROXR_l),
-        (0b1110_0001_1001_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ROXL_l),
-        (0b1110_0000_0001_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROR_b),
-        (0b1110_0001_0001_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROL_b),
-        (0b1110_0000_0101_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROR_w),
-        (0b1110_0001_0101_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROL_w),
-        (0b1110_0000_1001_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROR_l),
-        (0b1110_0001_1001_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROL_l),
-        (0b1111_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::LINEF),
+        (M68000, 0b0110_0001_0000_0000, 0b1111_1111_0000_0000, InstructionMnemonic::BSR),
+        (M68000, 0b0110_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::Bcc),
+        (M68000, 0b0111_0000_0000_0000, 0b1111_0001_0000_0000, InstructionMnemonic::MOVEQ),
+        (M68000, 0b1001_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SUBX_b),
+        (M68000, 0b1001_0001_0100_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SUBX_w),
+        (M68000, 0b1001_0001_1000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SUBX_l),
+        (M68000, 0b1001_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::SUB_b),
+        (M68000, 0b1001_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::SUB_w),
+        (M68000, 0b1001_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::SUB_l),
+        (M68000, 0b1001_0000_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBA_w),
+        (M68000, 0b1001_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBA_l),
+        (M68000, 0b1010_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::LINEA),
+        (M68000, 0b1011_0001_0000_1000, 0b1111_0001_1111_1000, InstructionMnemonic::CMPM_b),
+        (M68000, 0b1011_0001_0100_1000, 0b1111_0001_1111_1000, InstructionMnemonic::CMPM_w),
+        (M68000, 0b1011_0001_1000_1000, 0b1111_0001_1111_1000, InstructionMnemonic::CMPM_l),
+        (M68000, 0b1011_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::EOR_b),
+        (M68000, 0b1011_0001_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::EOR_w),
+        (M68000, 0b1011_0001_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::EOR_l),
+        (M68000, 0b1011_0000_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CMPA_w),
+        (M68000, 0b1011_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CMPA_l),
+        (M68000, 0b1011_0000_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CMP_b),
+        (M68000, 0b1011_0000_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CMP_w),
+        (M68000, 0b1011_0000_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CMP_l),
+        (M68000, 0b1100_0000_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::MULU_w),
+        (M68000, 0b1100_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::MULS_w),
+        (M68000, 0b1100_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::ABCD),
+        (M68000, 0b1100_0001_0000_0000, 0b1111_0001_0011_0000, InstructionMnemonic::EXG),
+        (M68000, 0b1100_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::AND_b),
+        (M68000, 0b1100_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::AND_w),
+        (M68000, 0b1100_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::AND_l),
+        (M68000, 0b1101_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::ADDX_b),
+        (M68000, 0b1101_0001_0100_0000, 0b1111_0001_1111_0000, InstructionMnemonic::ADDX_w),
+        (M68000, 0b1101_0001_1000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::ADDX_l),
+        (M68000, 0b1101_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::ADD_b),
+        (M68000, 0b1101_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::ADD_w),
+        (M68000, 0b1101_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::ADD_l),
+        (M68000, 0b1101_0000_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::ADDA_w),
+        (M68000, 0b1101_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::ADDA_l),
+        (M68000, 0b1110_0000_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ASR_ea),
+        (M68000, 0b1110_0001_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ASL_ea),
+        (M68000, 0b1110_0010_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::LSR_ea),
+        (M68000, 0b1110_0011_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::LSL_ea),
+        (M68000, 0b1110_0100_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ROXR_ea),
+        (M68000, 0b1110_0101_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ROXL_ea),
+        (M68000, 0b1110_0110_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ROR_ea),
+        (M68000, 0b1110_0111_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ROL_ea),
+        (M68000, 0b1110_0000_0000_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ASR_b),
+        (M68000, 0b1110_0001_0000_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ASL_b),
+        (M68000, 0b1110_0000_0100_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ASR_w),
+        (M68000, 0b1110_0001_0100_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ASL_w),
+        (M68000, 0b1110_0000_1000_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ASR_l),
+        (M68000, 0b1110_0001_1000_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ASL_l),
+        (M68000, 0b1110_0000_0000_1000, 0b1111_0001_1101_1000, InstructionMnemonic::LSR_b),
+        (M68000, 0b1110_0001_0000_1000, 0b1111_0001_1101_1000, InstructionMnemonic::LSL_b),
+        (M68000, 0b1110_0000_0100_1000, 0b1111_0001_1101_1000, InstructionMnemonic::LSR_w),
+        (M68000, 0b1110_0001_0100_1000, 0b1111_0001_1101_1000, InstructionMnemonic::LSL_w),
+        (M68000, 0b1110_0000_1000_1000, 0b1111_0001_1101_1000, InstructionMnemonic::LSR_l),
+        (M68000, 0b1110_0001_1000_1000, 0b1111_0001_1101_1000, InstructionMnemonic::LSL_l),
+        (M68000, 0b1110_0000_0001_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ROXR_b),
+        (M68000, 0b1110_0001_0001_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ROXL_b),
+        (M68000, 0b1110_0000_0101_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ROXR_w),
+        (M68000, 0b1110_0001_0101_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ROXL_w),
+        (M68000, 0b1110_0000_1001_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ROXR_l),
+        (M68000, 0b1110_0001_1001_0000, 0b1111_0001_1101_1000, InstructionMnemonic::ROXL_l),
+        (M68000, 0b1110_0000_0001_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROR_b),
+        (M68000, 0b1110_0001_0001_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROL_b),
+        (M68000, 0b1110_0000_0101_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROR_w),
+        (M68000, 0b1110_0001_0101_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROL_w),
+        (M68000, 0b1110_0000_1001_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROR_l),
+        (M68000, 0b1110_0001_1001_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROL_l),
+
+        // M68010+ instructions
+        (M68010, 0b0100_1110_0111_1010, 0b1111_1111_1111_1110, InstructionMnemonic::MOVEC_l),
+        (M68010, 0b0100_1110_0111_0100, 0b1111_1111_1111_1111, InstructionMnemonic::RTD),
+
+        // M68020+ instructions
+        (M68020, 0b1110_1100_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFCLR),
+        (M68020, 0b1110_1001_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFEXTU),
+        (M68020, 0b1110_1011_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFEXTS),
+        (M68020, 0b1110_1010_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFCHG),
+        (M68020, 0b1110_1111_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFINS),
+        (M68020, 0b1110_1110_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFSET),
+        (M68020, 0b1110_1000_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFTST),
+        (M68020, 0b1110_1101_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFFFO),
+        (M68020, 0b0100_1100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MULx_l),
+        (M68020, 0b0100_1100_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::DIVx_l),
+        (M68020, 0b0100_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CHK_l),
+
+        // M68020+ FPU instructions
+        (M68020, 0b1111_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::FSAVE),
+        (M68020, 0b1111_0000_1000_0000, 0b1111_0001_1111_1111, InstructionMnemonic::FNOP),
+        (M68000, 0b1111_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::LINEF),
     ];
 
     /// Attempts to decode an instruction.
-    pub fn try_decode(data: Word) -> Result<Self> {
-        for &(val, mask, mnemonic) in Self::DECODE_TABLE {
+    pub fn try_decode(cpu_type: CpuM68kType, data: Word) -> Result<Self> {
+        for &(_, val, mask, mnemonic) in Self::DECODE_TABLE
+            .iter()
+            .filter(|(t, _, _, _)| *t <= cpu_type)
+        {
             if data & mask == val {
                 return Ok(Self {
                     mnemonic,
@@ -607,9 +834,9 @@ impl Instruction {
     where
         F: FnMut() -> Result<u16>,
     {
+        // This check is to handle 'MOVE mem, (xxx).L' properly.
         if !self.has_extword() {
-            // This check is to handle 'MOVE mem, (xxx).L' properly.
-            self.extword.store(Some(fetch()?.into()));
+            self.extword.store(Some(ExtWord::from(fetch()?)));
         }
         Ok(())
     }
@@ -633,7 +860,7 @@ impl Instruction {
                 | AddressingMode::IndirectIndex
                 | AddressingMode::PCDisplacement
                 | AddressingMode::PCIndex
-        )
+        ) || matches!(self.mnemonic, InstructionMnemonic::MOVEC_l)
     }
 
     pub fn get_displacement(&self) -> Result<i32> {
@@ -660,6 +887,11 @@ impl Instruction {
     /// Displacement as part of the instruction for BRA/BSR/Bcc
     pub fn get_bxx_displacement(&self) -> i32 {
         self.data as u8 as i8 as i32
+    }
+
+    /// Displacement as part of the instruction for BRA/BSR/Bcc
+    pub fn get_bxx_displacement_raw(&self) -> u8 {
+        self.data as u8
     }
 
     /// Retrieves the data part of 'quick' instructions (except MOVEQ)
@@ -710,11 +942,13 @@ impl Instruction {
             | InstructionMnemonic::ANDI_l
             | InstructionMnemonic::ASL_l
             | InstructionMnemonic::ASR_l
+            | InstructionMnemonic::CHK_l
             | InstructionMnemonic::CLR_l
             | InstructionMnemonic::CMP_l
             | InstructionMnemonic::CMPA_l
             | InstructionMnemonic::CMPI_l
             | InstructionMnemonic::CMPM_l
+            | InstructionMnemonic::DIVx_l
             | InstructionMnemonic::EOR_l
             | InstructionMnemonic::EORI_l
             | InstructionMnemonic::EXT_l
@@ -727,6 +961,7 @@ impl Instruction {
             | InstructionMnemonic::MOVEP_l
             | InstructionMnemonic::MOVEM_mem_l
             | InstructionMnemonic::MOVEM_reg_l
+            | InstructionMnemonic::MULx_l
             | InstructionMnemonic::NEG_l
             | InstructionMnemonic::NEGX_l
             | InstructionMnemonic::NOT_l
@@ -739,7 +974,8 @@ impl Instruction {
             | InstructionMnemonic::SUBI_l
             | InstructionMnemonic::SUBQ_l
             | InstructionMnemonic::SUBX_l
-            | InstructionMnemonic::TST_l => InstructionSize::Long,
+            | InstructionMnemonic::TST_l
+            | InstructionMnemonic::MOVEC_l => InstructionSize::Long,
 
             InstructionMnemonic::ADD_w
             | InstructionMnemonic::ADDA_w
@@ -799,6 +1035,7 @@ impl Instruction {
             | InstructionMnemonic::CMPM_b
             | InstructionMnemonic::EOR_b
             | InstructionMnemonic::EORI_b
+            | InstructionMnemonic::EXTB_l
             | InstructionMnemonic::LSL_b
             | InstructionMnemonic::LSR_b
             | InstructionMnemonic::OR_b
@@ -853,10 +1090,20 @@ impl Instruction {
             | InstructionMnemonic::BTST_imm => InstructionSize::Byte,
 
             InstructionMnemonic::Bcc
+            | InstructionMnemonic::BFEXTU
+            | InstructionMnemonic::BFEXTS
+            | InstructionMnemonic::BFFFO
+            | InstructionMnemonic::BFCHG
+            | InstructionMnemonic::BFCLR
+            | InstructionMnemonic::BFINS
+            | InstructionMnemonic::BFSET
+            | InstructionMnemonic::BFTST
             | InstructionMnemonic::BSR
-            | InstructionMnemonic::CHK
+            | InstructionMnemonic::CHK_w
             | InstructionMnemonic::DBcc
             | InstructionMnemonic::EXG
+            | InstructionMnemonic::FNOP
+            | InstructionMnemonic::FSAVE
             | InstructionMnemonic::ILLEGAL
             | InstructionMnemonic::JMP
             | InstructionMnemonic::JSR
@@ -869,6 +1116,7 @@ impl Instruction {
             | InstructionMnemonic::MOVEQ
             | InstructionMnemonic::PEA
             | InstructionMnemonic::RESET
+            | InstructionMnemonic::RTD
             | InstructionMnemonic::RTE
             | InstructionMnemonic::RTR
             | InstructionMnemonic::RTS
@@ -884,6 +1132,56 @@ impl Instruction {
     /// Is this considered a branch instruction?
     pub fn is_branch(&self) -> bool {
         self.mnemonic == InstructionMnemonic::JSR || self.mnemonic == InstructionMnemonic::BSR
+    }
+
+    /// MOVEC dr field
+    pub fn movec_ctrl_to_gen(&self) -> bool {
+        debug_assert!(self.mnemonic == InstructionMnemonic::MOVEC_l);
+        (self.data & 1) == 0
+    }
+
+    /// MOVEC general register
+    pub fn movec_reg(&self) -> Result<Register> {
+        debug_assert!(self.mnemonic == InstructionMnemonic::MOVEC_l);
+
+        let extword = usize::from(self.get_extword()?);
+
+        let regnum = (extword >> 12) & 0b111;
+        Ok(if extword & (1 << 15) == 0 {
+            Register::Dn(regnum)
+        } else {
+            Register::An(regnum)
+        })
+    }
+
+    /// MOVEC control register
+    pub fn movec_ctrlreg(&self) -> Result<MovecCtrlReg> {
+        debug_assert!(self.mnemonic == InstructionMnemonic::MOVEC_l);
+        MovecCtrlReg::from_u16(u16::from(self.get_extword()?) & 0xFFF)
+            .context("Invalid control register")
+    }
+
+    /// Displacement for IndirectIndex modes with full extension words
+    pub fn fetch_ind_full_displacement<F>(&self, mut fetch: F) -> Result<i32>
+    where
+        F: FnMut() -> Result<u16>,
+    {
+        let extword = self.get_extword()?;
+        assert!(extword.is_full());
+        //assert_eq!(self.get_addr_mode()?, AddressingMode::IndirectIndex);
+
+        // Base displacement size
+        match extword.full_displacement_size() {
+            0b00 => bail!("Reserved displacement size?"),
+            0b01 => Ok(0),
+            0b10 => Ok(fetch()? as i16 as i32),
+            0b11 => {
+                let msb = fetch()? as u32;
+                let lsb = fetch()? as u32;
+                Ok(((msb << 16) | lsb) as i32)
+            }
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -902,7 +1200,7 @@ mod tests {
         // BEQ -128, -1
         let mut v = Vec::<u16>::from([0b110011110000000, 65535]);
 
-        let i = Instruction::try_decode(v.remove(0)).unwrap();
+        let i = Instruction::try_decode(M68000, v.remove(0)).unwrap();
         i.fetch_extword(|| Ok(v.remove(0))).unwrap();
         assert_eq!(i.get_displacement().unwrap(), -1_i32);
     }

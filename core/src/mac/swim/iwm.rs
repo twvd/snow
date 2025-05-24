@@ -89,9 +89,9 @@ bitfield! {
 }
 
 impl Swim {
-    /// A memory-mapped I/O address was accessed (offset from IWM base address)
+    /// A memory-mapped I/O address was accessed
     pub(super) fn iwm_access(&mut self, offset: Address) {
-        match offset / 512 {
+        match (offset >> 9) & 0x0F {
             0 => self.ca0 = false,
             1 => self.ca0 = true,
             2 => self.ca1 = false,
@@ -128,11 +128,7 @@ impl Swim {
     pub(super) fn iwm_read(&mut self, addr: Address) -> Option<u8> {
         // Only the lower 8-bits of the databus are connected to IWM.
         // Assume the upper 8 bits are undefined.
-        if addr & 1 == 0 {
-            return None;
-        }
-
-        self.iwm_access(addr - 0xDFE1FF);
+        self.iwm_access(addr);
 
         let val = match (self.q6, self.q7) {
             (false, false) => {
@@ -175,7 +171,7 @@ impl Swim {
         const ISM_SWITCH_PATTERN: [u8; 4] = [0x57, 0x17, 0x57, 0x57];
 
         // UDS/LDS are not connected to IWM, so ignore the lower address bit here.
-        self.iwm_access((addr | 1) - 0xDFE1FF);
+        self.iwm_access(addr);
 
         match (self.q6, self.q7, self.enable) {
             (true, true, false) => {
