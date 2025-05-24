@@ -340,7 +340,7 @@ impl<'a> Disassembler<'a> {
             | InstructionMnemonic::CMPI_w
             | InstructionMnemonic::CMPI_b => {
                 format!(
-                    "{}.{} {},D{}",
+                    "{}.{} {},{}",
                     mnemonic,
                     sz,
                     match instr.get_size() {
@@ -349,7 +349,7 @@ impl<'a> Disassembler<'a> {
                         InstructionSize::Byte => format!("#${:02X}", self.get16()?),
                         _ => unreachable!(),
                     },
-                    instr.get_op2()
+                    self.ea(instr)?
                 )
             }
 
@@ -875,5 +875,10 @@ mod tests {
             dasm(&[0x24, 0x74, 0x31, 0x10]),
             "MOVEA.l ($0000,A4,D3.w*1),A2"
         );
+    }
+
+    #[test]
+    fn cmpi_ea() {
+        assert_eq!(dasm(&[0x0C, 0x11, 0x00, 0xA8]), "CMPI.b #$A8,(A1)");
     }
 }
