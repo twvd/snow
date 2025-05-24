@@ -157,7 +157,7 @@ impl InstructionHistoryWidget {
             left_sized_f(ui, [60.0, row_height], |ui| {
                 ui.add(
                     egui::Label::new(
-                        egui::RichText::new(format!(":{:06X}", entry.pc))
+                        egui::RichText::new(format!(":{:08X}", entry.pc))
                             .family(egui::FontFamily::Monospace)
                             .size(10.0),
                     )
@@ -293,7 +293,7 @@ impl InstructionHistoryWidget {
                 [ui.available_width(), row_height],
                 egui::Label::new(
                     egui::RichText::new(format!(
-                        "Exception: {} (${:06X})",
+                        "Exception: {} (${:08X})",
                         consts::VECTORS
                             .iter()
                             .find(|f| f.0 == *vector)

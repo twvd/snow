@@ -39,7 +39,7 @@ impl std::fmt::Display for DisassemblyEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            ":{:06X} {:<16} {}",
+            ":{:08X} {:<16} {}",
             self.addr,
             self.raw_as_string(),
             self.str
@@ -128,7 +128,7 @@ impl<'a> Disassembler<'a> {
             AddressingMode::PCDisplacement => {
                 instr.fetch_extword(|| self.get16())?;
                 format!(
-                    "${:06X}",
+                    "${:08X}",
                     self.addr.wrapping_add_signed(instr.get_displacement()? + 2)
                 )
             }
@@ -257,7 +257,7 @@ impl<'a> Disassembler<'a> {
                     instr.get_bxx_displacement()
                 };
                 format!(
-                    "B{}.{} {:06X}",
+                    "B{}.{} {:08X}",
                     if instr.mnemonic == InstructionMnemonic::Bcc {
                         Self::CC[instr.get_cc()]
                     } else {
@@ -275,7 +275,7 @@ impl<'a> Disassembler<'a> {
             InstructionMnemonic::DBcc => {
                 let displacement = self.get16()? as i16 as i32;
                 format!(
-                    "DB{} D{},${:06X}",
+                    "DB{} D{},${:08X}",
                     Self::CC[instr.get_cc()],
                     instr.get_op2(),
                     self.addr.wrapping_add_signed(displacement + 2)

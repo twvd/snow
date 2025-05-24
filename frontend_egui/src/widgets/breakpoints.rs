@@ -43,7 +43,7 @@ impl Default for BreakpointsWidget {
             vectors: Vec::from_iter(
                 crate::consts::VECTORS
                     .iter()
-                    .map(|(a, t)| format!("{} (${:06X})", t, a)),
+                    .map(|(a, t)| format!("{} (${:08X})", t, a)),
             ),
         }
     }
@@ -255,16 +255,16 @@ impl BreakpointsWidget {
                             row.col(|ui| {
                                 ui.label(RichText::from(match bp {
                                     Breakpoint::Execution(addr) => {
-                                        format!("Execution: ${:06X}", addr)
+                                        format!("Execution: ${:08X}", addr)
                                     }
                                     Breakpoint::Bus(BusBreakpoint::Read, addr) => {
-                                        format!("Bus access (R): ${:06X}", addr)
+                                        format!("Bus access (R): ${:08X}", addr)
                                     }
                                     Breakpoint::Bus(BusBreakpoint::Write, addr) => {
-                                        format!("Bus access (W): ${:06X}", addr)
+                                        format!("Bus access (W): ${:08X}", addr)
                                     }
                                     Breakpoint::Bus(BusBreakpoint::ReadWrite, addr) => {
-                                        format!("Bus access (R/W): ${:06X}", addr)
+                                        format!("Bus access (R/W): ${:08X}", addr)
                                     }
                                     Breakpoint::InterruptLevel(i) => {
                                         format!("Int level: {}", i)
@@ -285,7 +285,7 @@ impl BreakpointsWidget {
                                     }
                                     Breakpoint::ExceptionVector(i) => {
                                         format!(
-                                            "Vector: ${:06X} {}",
+                                            "Vector: ${:08X} {}",
                                             i,
                                             VECTORS
                                                 .iter()

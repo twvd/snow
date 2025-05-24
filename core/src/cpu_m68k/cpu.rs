@@ -408,7 +408,7 @@ where
                     .contains(&Breakpoint::InterruptLevel(level))
                 {
                     info!(
-                        "Breakpoint hit (interrupt level): {}, PC: ${:06X}",
+                        "Breakpoint hit (interrupt level): {}, PC: ${:08X}",
                         level, self.regs.pc
                     );
                     self.breakpoint_hit.set();
@@ -500,7 +500,7 @@ where
                 }
                 None => {
                     bail!(
-                        "PC: {:06X} Instruction: {:?} - error: {}",
+                        "PC: {:08X} Instruction: {:?} - error: {}",
                         start_pc,
                         instr,
                         e
@@ -516,7 +516,7 @@ where
             .breakpoints
             .contains(&Breakpoint::Execution(self.regs.pc))
         {
-            info!("Breakpoint hit (execution): ${:06X}", self.regs.pc);
+            info!("Breakpoint hit (execution): ${:08X}", self.regs.pc);
             self.breakpoint_hit.set();
         }
         if self
@@ -604,7 +604,7 @@ where
                                 || *bp == Breakpoint::Bus(BusBreakpoint::ReadWrite, byte_addr)
                         }) {
                             info!(
-                                "Breakpoint hit (bus read): ${:06X}, value: ${:02X}, PC: ${:06X}",
+                                "Breakpoint hit (bus read): ${:08X}, value: ${:02X}, PC: ${:08X}",
                                 byte_addr, b, self.regs.pc,
                             );
                             self.breakpoint_hit.set();
@@ -688,7 +688,7 @@ where
                             || *bp == Breakpoint::Bus(BusBreakpoint::ReadWrite, byte_addr)
                     }) {
                         info!(
-                            "Breakpoint hit (bus write): ${:06X}, value: ${:02X}, PC: ${:06X}",
+                            "Breakpoint hit (bus write): ${:08X}, value: ${:02X}, PC: ${:08X}",
                             byte_addr, b, self.regs.pc
                         );
                         self.breakpoint_hit.set();
@@ -721,7 +721,7 @@ where
                             || *bp == Breakpoint::Bus(BusBreakpoint::ReadWrite, byte_addr)
                     }) {
                         info!(
-                            "Breakpoint hit (bus write): ${:06X}, value: ${:02X}, PC: ${:06X}",
+                            "Breakpoint hit (bus write): ${:08X}, value: ${:02X}, PC: ${:08X}",
                             byte_addr, b, self.regs.pc
                         );
                         self.breakpoint_hit.set();
@@ -769,7 +769,7 @@ where
 
     /// Raises an illegal instruction exception
     fn raise_illegal_instruction(&mut self) -> Result<()> {
-        warn!("Illegal instruction at PC ${:06X}", self.regs.pc);
+        warn!("Illegal instruction at PC ${:08X}", self.regs.pc);
         self.advance_cycles(4)?;
         self.raise_exception(ExceptionGroup::Group1, VECTOR_ILLEGAL, None)?;
         Ok(())
@@ -808,7 +808,7 @@ where
             .contains(&Breakpoint::ExceptionVector(vector))
         {
             info!(
-                "Breakpoint hit (exception vector): {:06X}, PC: ${:06X}",
+                "Breakpoint hit (exception vector): {:08X}, PC: ${:08X}",
                 vector, self.regs.pc
             );
             self.breakpoint_hit.set();
@@ -854,7 +854,7 @@ where
                 self.advance_cycles(8)?; // idle
                 let details = details.expect("Address error details not passed");
                 debug!(
-                    "Address error: read = {:?}, address = {:08X} PC = {:06X}",
+                    "Address error: read = {:?}, address = {:08X} PC = {:08X}",
                     details.read, details.address, self.regs.pc
                 );
 
@@ -880,7 +880,7 @@ where
             }
             ExceptionGroup::Group1 | ExceptionGroup::Group2 => {
                 //debug!(
-                //    "Exception {:?}, vector {:08X} @  PC = {:06X}",
+                //    "Exception {:?}, vector {:08X} @  PC = {:08X}",
                 //    group, vector, self.regs.pc
                 //);
 
@@ -908,7 +908,7 @@ where
             .contains(&Breakpoint::ExceptionVector(vector))
         {
             info!(
-                "Breakpoint hit (exception vector): {:06X}, PC: ${:06X}",
+                "Breakpoint hit (exception vector): {:08X}, PC: ${:08X}",
                 vector, self.regs.pc
             );
             self.breakpoint_hit.set();
@@ -1129,7 +1129,7 @@ where
             InstructionMnemonic::LINEA => {
                 if self.breakpoints.contains(&Breakpoint::LineA(instr.data)) {
                     info!(
-                        "Breakpoint hit (LINEA): ${:04X}, PC: ${:06X}",
+                        "Breakpoint hit (LINEA): ${:04X}, PC: ${:08X}",
                         instr.data, self.regs.pc
                     );
                     self.breakpoint_hit.set();
@@ -1152,7 +1152,7 @@ where
             InstructionMnemonic::LINEF => {
                 if self.breakpoints.contains(&Breakpoint::LineF(instr.data)) {
                     info!(
-                        "Breakpoint hit (LINEF): ${:04X}, PC: ${:06X}",
+                        "Breakpoint hit (LINEF): ${:04X}, PC: ${:08X}",
                         instr.data, self.regs.pc
                     );
                     self.breakpoint_hit.set();

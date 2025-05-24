@@ -64,10 +64,11 @@ impl Disassembly {
                             }
                         });
                         row.col(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!(":{:06X}", c.addr))
+                            ui.add(
+                                egui::Label::new(
+                                egui::RichText::new(format!(":{:08X}", c.addr))
                                     .family(egui::FontFamily::Monospace)
-                                    .size(10.0),
+                                    .size(10.0)).sense(egui::Sense::click()),
                             ).context_address(c.addr);
                         });
                         row.col(|ui| {

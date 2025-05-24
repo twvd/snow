@@ -230,7 +230,7 @@ impl MemoryViewerWidget {
                     ui.add_sized(
                         [60.0, row_height],
                         egui::Label::new(
-                            egui::RichText::new(format!(":{:06X}", row_addr))
+                            egui::RichText::new(format!(":{:08X}", row_addr))
                                 .family(egui::FontFamily::Monospace)
                                 .size(10.0),
                         ),

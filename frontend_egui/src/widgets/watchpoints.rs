@@ -296,7 +296,7 @@ impl WatchpointsWidget {
 
                             // Address
                             row.col(|ui| {
-                                ui.label(format!("${:06X}", watchpoint.address));
+                                ui.label(format!("${:08X}", watchpoint.address));
                             });
 
                             // Type

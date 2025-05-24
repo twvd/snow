@@ -348,7 +348,7 @@ impl fmt::Display for RegisterFile {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "A: {:X?} D: {:X?} USP: {:06X} SSP: {:06X} PC: {:06X} SR: {:X?}",
+            "A: {:X?} D: {:X?} USP: {:08X} SSP: {:08X} PC: {:08X} SR: {:X?}",
             self.a, self.d, self.usp, self.isp, self.pc, self.sr
         )
     }
