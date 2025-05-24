@@ -543,6 +543,12 @@ impl EmulatorState {
         sender.send(EmulatorCommand::ToggleBreakpoint(bp)).unwrap();
     }
 
+    pub fn set_breakpoint(&self, bp: Breakpoint) {
+        if !self.get_breakpoints().contains(&bp) {
+            self.toggle_breakpoint(bp);
+        }
+    }
+
     pub fn take_message(&mut self) -> Option<(UserMessageType, String)> {
         self.messages.pop_front()
     }

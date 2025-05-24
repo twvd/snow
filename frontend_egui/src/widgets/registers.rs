@@ -3,6 +3,8 @@ use snow_core::cpu_m68k::regs::{Register, RegisterFile};
 use snow_core::cpu_m68k::{CpuM68kType, M68010, M68020};
 use snow_core::types::Long;
 
+use crate::uniform::UniformMethods;
+
 /// egui widget to display Motorola 68000 register state
 pub struct RegistersWidget {
     regs: RegisterFile,
@@ -100,7 +102,8 @@ impl RegistersWidget {
 
                         // Normal display (not editing)
                         row.col(|ui| {
-                            let text = egui::RichText::new(format!("{:08X}", value_fn(&self.regs)))
+                            let value = value_fn(&self.regs);
+                            let text = egui::RichText::new(format!("{:08X}", value))
                                 .family(egui::FontFamily::Monospace)
                                 .color(color);
 
@@ -109,7 +112,19 @@ impl RegistersWidget {
 
                             if response.clicked() {
                                 // Start editing this register
-                                self.editing = Some((reg, format!("{:08X}", value_fn(&self.regs))));
+                                self.editing = Some((reg, format!("{:08X}", value)));
+                            }
+
+                            if matches!(
+                                reg,
+                                Register::An(_)
+                                    | Register::USP
+                                    | Register::SSP
+                                    | Register::MSP
+                                    | Register::ISP
+                                    | Register::PC
+                            ) {
+                                response.context_address(value);
                             }
                         });
 

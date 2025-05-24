@@ -1,4 +1,6 @@
 use crate::consts;
+use crate::helpers::{left_sized, left_sized_f, left_sized_icon};
+use crate::uniform::UniformMethods;
 use eframe::egui;
 use eframe::egui::Ui;
 use snow_core::bus::Address;
@@ -14,48 +16,9 @@ pub struct InstructionHistoryWidget {
 }
 
 impl InstructionHistoryWidget {
-    /// Helper to create a UI that takes up the size but aligns left
-    fn left_sized(
-        ui: &mut egui::Ui,
-        max_size: impl Into<egui::Vec2> + Clone,
-        widget: impl egui::Widget,
-    ) -> egui::Response {
-        ui.scope(|ui| {
-            ui.set_max_size(max_size.clone().into());
-            ui.set_min_size(max_size.into());
-            ui.add(widget);
-        })
-        .response
-    }
-
-    /// Helper to create a UI that takes up the size but aligns left, with
-    /// a material icon adjusted to fit in line with the monospace font.
-    fn left_sized_icon(
-        ui: &mut egui::Ui,
-        max_size: &(impl Into<egui::Vec2> + Clone),
-        icon: &str,
-        color: Option<egui::Color32>,
-    ) -> egui::Response {
-        ui.scope(|ui| {
-            ui.set_max_size(max_size.clone().into());
-            ui.set_min_size(max_size.clone().into());
-            ui.put(
-                // Slightly nudge the icon up so it sits nicely in line with the
-                // monospace font.
-                ui.cursor().translate([0.0, -2.0].into()),
-                egui::Label::new(
-                    egui::RichText::new(icon)
-                        .color(color.unwrap_or(egui::Color32::PLACEHOLDER))
-                        .size(12.0),
-                ),
-            );
-        })
-        .response
-    }
-
     fn column_status(history: &[HistoryEntry], row_height: f32, row_idx: usize, ui: &mut egui::Ui) {
         // Last instruction indicator
-        Self::left_sized_icon(
+        left_sized_icon(
             ui,
             &[12.0, row_height],
             if row_idx == history.len() - 1 {
@@ -73,34 +36,34 @@ impl InstructionHistoryWidget {
 
             // Column headers
             ui.horizontal(|ui| {
-                Self::left_sized(ui, [12.0, 20.0], egui::Label::new(""));
-                Self::left_sized(
+                left_sized(ui, [12.0, 20.0], egui::Label::new(""));
+                left_sized(
                     ui,
                     [60.0, 20.0],
                     egui::Label::new(egui::RichText::new("Address").strong()),
                 );
-                Self::left_sized(
+                left_sized(
                     ui,
                     [120.0, 20.0],
                     egui::Label::new(egui::RichText::new("Raw").strong()),
                 );
-                Self::left_sized(
+                left_sized(
                     ui,
                     [50.0, 20.0],
                     egui::Label::new(egui::RichText::new("Cycles").strong()),
                 );
-                Self::left_sized(ui, [10.0, 20.0], egui::Label::new(""));
-                Self::left_sized(
+                left_sized(ui, [10.0, 20.0], egui::Label::new(""));
+                left_sized(
                     ui,
                     [200.0, 20.0],
                     egui::Label::new(egui::RichText::new("Instruction").strong()),
                 );
-                Self::left_sized(
+                left_sized(
                     ui,
                     [50.0, 20.0],
                     egui::Label::new(egui::RichText::new("EA").strong()),
                 );
-                Self::left_sized(
+                left_sized(
                     ui,
                     [ui.available_width(), 20.0],
                     egui::Label::new(egui::RichText::new("Changes").strong()),
@@ -149,7 +112,7 @@ impl InstructionHistoryWidget {
         {
             let diffstr = initial.diff_str(fin);
 
-            Self::left_sized(
+            left_sized(
                 ui,
                 [ui.available_width(), row_height],
                 egui::Label::new(if diffstr.is_empty() {
@@ -191,15 +154,17 @@ impl InstructionHistoryWidget {
 
             Self::column_status(history, row_height, row_idx, ui);
             // Address column
-            Self::left_sized(
-                ui,
-                [60.0, row_height],
-                egui::Label::new(
-                    egui::RichText::new(format!(":{:06X}", entry.pc))
-                        .family(egui::FontFamily::Monospace)
-                        .size(10.0),
-                ),
-            );
+            left_sized_f(ui, [60.0, row_height], |ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(format!(":{:06X}", entry.pc))
+                            .family(egui::FontFamily::Monospace)
+                            .size(10.0),
+                    )
+                    .sense(egui::Sense::click()),
+                )
+                .context_address(entry.pc);
+            });
 
             // Raw bytes column
             let raw_str = entry.raw.iter().fold(String::new(), |mut output, b| {
@@ -207,7 +172,7 @@ impl InstructionHistoryWidget {
                 output
             });
 
-            Self::left_sized(
+            left_sized(
                 ui,
                 [120.0, row_height],
                 egui::Label::new(
@@ -219,7 +184,7 @@ impl InstructionHistoryWidget {
             );
 
             // Cycles column
-            Self::left_sized(
+            left_sized(
                 ui,
                 [50.0, row_height],
                 egui::Label::new(
@@ -239,7 +204,7 @@ impl InstructionHistoryWidget {
                 ..
             }) = history[row_idx]
             {
-                Self::left_sized_icon(
+                left_sized_icon(
                     ui,
                     &[10.0, row_height],
                     egui_material_icons::icons::ICON_ALT_ROUTE,
@@ -250,7 +215,7 @@ impl InstructionHistoryWidget {
                     }),
                 );
             } else {
-                Self::left_sized_icon(ui, &[10.0, row_height], "", None);
+                left_sized_icon(ui, &[10.0, row_height], "", None);
             }
             // Instruction column
             let instr_text = if let Some(ref instr) = disasm_entry {
@@ -270,13 +235,11 @@ impl InstructionHistoryWidget {
                     .family(egui::FontFamily::Monospace)
                     .size(10.0)
             };
-            Self::left_sized(ui, [200.0, row_height], egui::Label::new(instr_text));
+            left_sized(ui, [200.0, row_height], egui::Label::new(instr_text));
 
             // Effective Address column
-            Self::left_sized(
-                ui,
-                [50.0, row_height],
-                egui::Label::new(
+            left_sized_f(ui, [50.0, row_height], |ui| {
+                let response = ui.add(egui::Label::new(
                     egui::RichText::new(if let Some(ea) = entry.ea {
                         format!("{:08X}", ea)
                     } else {
@@ -284,8 +247,11 @@ impl InstructionHistoryWidget {
                     })
                     .family(egui::FontFamily::Monospace)
                     .size(10.0),
-                ),
-            );
+                ));
+                if let Some(ea) = entry.ea {
+                    response.context_address(ea);
+                }
+            });
 
             self.col_regdiff(row_height, ui, entry);
         });
@@ -304,10 +270,10 @@ impl InstructionHistoryWidget {
             ui.painter()
                 .rect_filled(ui.max_rect(), 0.0, egui::Color32::DARK_BLUE);
             Self::column_status(history, row_height, row_idx, ui);
-            Self::left_sized(ui, [120.0, row_height], egui::Label::new(""));
-            Self::left_sized(ui, [60.0, row_height], egui::Label::new(""));
+            left_sized(ui, [120.0, row_height], egui::Label::new(""));
+            left_sized(ui, [60.0, row_height], egui::Label::new(""));
             // Cycles column
-            Self::left_sized(
+            left_sized(
                 ui,
                 [50.0, row_height],
                 egui::Label::new(
@@ -316,13 +282,13 @@ impl InstructionHistoryWidget {
                         .size(10.0),
                 ),
             );
-            Self::left_sized_icon(
+            left_sized_icon(
                 ui,
                 &[10.0, row_height],
                 egui_material_icons::icons::ICON_REPORT,
                 Some(egui::Color32::LIGHT_GRAY),
             );
-            Self::left_sized(
+            left_sized(
                 ui,
                 [ui.available_width(), row_height],
                 egui::Label::new(

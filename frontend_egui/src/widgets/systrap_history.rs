@@ -2,6 +2,9 @@ use eframe::egui;
 use eframe::egui::Ui;
 use snow_core::cpu_m68k::cpu::SystrapHistoryEntry;
 
+use crate::helpers::{left_sized, left_sized_f, left_sized_icon};
+use crate::uniform::UniformMethods;
+
 /// Widget to display system trap history
 #[derive(Default)]
 pub struct SystrapHistoryWidget {
@@ -10,64 +13,25 @@ pub struct SystrapHistoryWidget {
 }
 
 impl SystrapHistoryWidget {
-    /// Helper to create a UI that takes up the size but aligns left
-    fn left_sized(
-        ui: &mut egui::Ui,
-        max_size: impl Into<egui::Vec2> + Clone,
-        widget: impl egui::Widget,
-    ) -> egui::Response {
-        ui.scope(|ui| {
-            ui.set_max_size(max_size.clone().into());
-            ui.set_min_size(max_size.into());
-            ui.add(widget);
-        })
-        .response
-    }
-
-    /// Helper to create a UI that takes up the size but aligns left, with
-    /// a material icon adjusted to fit in line with the monospace font.
-    fn left_sized_icon(
-        ui: &mut egui::Ui,
-        max_size: &(impl Into<egui::Vec2> + Clone),
-        icon: &str,
-        color: Option<egui::Color32>,
-    ) -> egui::Response {
-        ui.scope(|ui| {
-            ui.set_max_size(max_size.clone().into());
-            ui.set_min_size(max_size.clone().into());
-            ui.put(
-                // Slightly nudge the icon up so it sits nicely in line with the
-                // monospace font.
-                ui.cursor().translate([0.0, -2.0].into()),
-                egui::Label::new(
-                    egui::RichText::new(icon)
-                        .color(color.unwrap_or(egui::Color32::PLACEHOLDER))
-                        .size(12.0),
-                ),
-            );
-        })
-        .response
-    }
-
     pub fn draw(&mut self, ui: &mut egui::Ui, history: &[SystrapHistoryEntry]) {
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing = [2.0, 0.0].into();
 
             // Column headers
             ui.horizontal(|ui| {
-                Self::left_sized(ui, [12.0, 20.0], egui::Label::new(""));
-                Self::left_sized(
+                left_sized(ui, [12.0, 20.0], egui::Label::new(""));
+                left_sized(
                     ui,
                     [60.0, 20.0],
                     egui::Label::new(egui::RichText::new("PC").strong()),
                 );
 
-                Self::left_sized(
+                left_sized(
                     ui,
                     [40.0, 20.0],
                     egui::Label::new(egui::RichText::new("Raw").strong()),
                 );
-                Self::left_sized(
+                left_sized(
                     ui,
                     [200.0, 20.0],
                     egui::Label::new(egui::RichText::new("System trap").strong()),
@@ -116,7 +80,7 @@ impl SystrapHistoryWidget {
                     .rect_filled(ui.max_rect(), 0.0, ui.style().visuals.faint_bg_color);
             }
 
-            Self::left_sized_icon(
+            left_sized_icon(
                 ui,
                 &[12.0, row_height],
                 if row_idx == history_len - 1 {
@@ -128,18 +92,17 @@ impl SystrapHistoryWidget {
             );
 
             // PC column
-            Self::left_sized(
-                ui,
-                [60.0, row_height],
-                egui::Label::new(
+            left_sized_f(ui, [60.0, row_height], |ui| {
+                ui.add(egui::Label::new(
                     egui::RichText::new(format!(":{:08X}", entry.pc))
                         .family(egui::FontFamily::Monospace)
                         .size(10.0),
-                ),
-            );
+                ))
+                .context_address(entry.pc);
+            });
 
             // Raw column
-            Self::left_sized(
+            left_sized(
                 ui,
                 [40.0, row_height],
                 egui::Label::new(
@@ -151,7 +114,7 @@ impl SystrapHistoryWidget {
             );
 
             // System trap
-            Self::left_sized(
+            left_sized(
                 ui,
                 [200.0, row_height],
                 egui::Label::new(

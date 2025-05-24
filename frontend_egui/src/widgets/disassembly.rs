@@ -1,4 +1,4 @@
-use crate::emulator::EmulatorState;
+use crate::{emulator::EmulatorState, uniform::UniformMethods};
 use eframe::egui;
 use snow_core::cpu_m68k::cpu::Breakpoint;
 
@@ -68,7 +68,7 @@ impl Disassembly {
                                 egui::RichText::new(format!(":{:06X}", c.addr))
                                     .family(egui::FontFamily::Monospace)
                                     .size(10.0),
-                            );
+                            ).context_address(c.addr);
                         });
                         row.col(|ui| {
                             ui.label(

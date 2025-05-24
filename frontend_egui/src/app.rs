@@ -1,5 +1,6 @@
 use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
 use crate::keymap::map_winit_keycode;
+use crate::uniform::{UniformAction, UNIFORM_ACTION};
 use crate::widgets::breakpoints::BreakpointsWidget;
 use crate::widgets::disassembly::Disassembly;
 use crate::widgets::framebuffer::FramebufferWidget;
@@ -496,6 +497,25 @@ impl SnowGui {
                 ),
         );
     }
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn uniform_action(&mut self, action: UniformAction) {
+        match action {
+            UniformAction::None => (),
+            UniformAction::AddressWatch(a, t) => {
+                self.workspace.watchpoints_open = true;
+                self.watchpoints.add_watchpoint(a, t, format!("{:08X}", a));
+            }
+            UniformAction::Breakpoint(breakpoint) => {
+                self.workspace.breakpoints_open = true;
+                self.emu.set_breakpoint(breakpoint);
+            }
+            UniformAction::AddressMemoryViewer(addr) => {
+                self.workspace.memory_open = true;
+                self.memory.go_to_address(addr);
+            }
+        }
+    }
 }
 
 impl eframe::App for SnowGui {
@@ -507,6 +527,8 @@ impl eframe::App for SnowGui {
 
         self.sync_windows(ctx);
         self.poll_winit_events(ctx);
+        self.uniform_action(UNIFORM_ACTION.take());
+
         if self.emu.poll() {
             // Change in emulator state
             if self.last_running != self.emu.is_running() {
