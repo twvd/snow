@@ -485,7 +485,7 @@ bitfield! {
     /// MULx.l extension word
     #[derive(Clone, Copy, PartialEq, Eq)]
     pub struct MulxExtWord(pub Word): Debug, FromRaw, IntoRaw, DerefRaw {
-        pub dh: usize @ 0..=3,
+        pub dh: usize @ 0..=2,
         pub size: bool @ 10,
         pub signed: bool @ 11,
         pub dl: usize @ 12..=14,
@@ -496,7 +496,7 @@ bitfield! {
     /// DIV.l/DIVS.l extension word
     #[derive(Clone, Copy, PartialEq, Eq)]
     pub struct DivlExtWord(pub Word): Debug, FromRaw, IntoRaw, DerefRaw {
-        pub dr: usize @ 0..=3,
+        pub dr: usize @ 0..=2,
         pub size: bool @ 10,
         pub signed: bool @ 11,
         pub dq: usize @ 12..=14,
