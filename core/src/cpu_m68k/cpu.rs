@@ -2820,7 +2820,7 @@ where
         }
 
         self.regs.sr.set_n(value < 0);
-        self.regs.sr.set_z(value as i16 == 0);
+        self.regs.sr.set_z(value == 0);
         self.regs.sr.set_c(false);
         self.regs.sr.set_v(false);
 
