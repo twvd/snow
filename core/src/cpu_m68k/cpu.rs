@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use arrayvec::ArrayVec;
 use either::Either;
 use log::*;
-use num_traits::{FromBytes, ToBytes};
+use num_traits::{FromBytes, PrimInt, ToBytes};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -3280,15 +3280,7 @@ where
 
                 width = ((width.wrapping_sub(1)) & 31) + 1;
 
-                // Optimize reading based on field width
-                let mut data: Long = if (offset as u32 + width) < 8 {
-                    (self.read_ticks::<Byte>(ea)? as Long) << 24
-                } else if (offset as u32 + width) < 16 {
-                    (self.read_ticks::<Word>(ea)? as Long) << 16
-                } else {
-                    self.read_ticks::<Long>(ea)?
-                };
-
+                let mut data: Long = self.read_ticks::<Long>(ea)?;
                 data <<= offset as isize;
 
                 // If the bit field crosses a 32-bit boundary, read an additional byte
@@ -3341,11 +3333,7 @@ where
                 // Set N flag from the rotated data
                 self.regs.sr.set_n(data & 0x80000000 != 0);
 
-                // Right shift with sign extension to extract the bits
-                // Convert to signed, shift right, then back to unsigned
-                let signed_data = data as i32;
-                let result = (signed_data >> (32 - width)) as u32;
-
+                let result = data.signed_shr(32 - width);
                 self.regs.sr.set_z(result == 0);
                 self.regs.sr.set_v(false);
                 self.regs.sr.set_c(false);
@@ -3390,10 +3378,7 @@ where
                 // Set N flag from the data before shifting for extraction
                 self.regs.sr.set_n(data & 0x80000000 != 0);
 
-                // Right shift with sign extension to extract the bits
-                let signed_data = data as i32;
-                let result = (signed_data >> (32 - width)) as u32;
-
+                let result = data.signed_shr(32 - width);
                 self.regs.sr.set_z(result == 0);
                 self.regs.sr.set_v(false);
                 self.regs.sr.set_c(false);
