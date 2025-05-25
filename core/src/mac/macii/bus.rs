@@ -103,7 +103,7 @@ where
             via2: Via2::new(model),
             eclock: 0,
             scc: Scc::new(),
-            swim: Swim::new(model.fdd_drives(), model.fdd_hd()),
+            swim: Swim::new(model.fdd_drives(), model.fdd_hd(), 16_000_000),
             scsi: ScsiController::new(),
             asc: Asc::default(),
             mouse_ready: false,

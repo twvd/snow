@@ -127,7 +127,7 @@ where
             audio: AudioState::default(),
             eclock: 0,
             scc: Scc::new(),
-            swim: Swim::new(model.fdd_drives(), model.fdd_hd()),
+            swim: Swim::new(model.fdd_drives(), model.fdd_hd(), 8_000_000),
             scsi: ScsiController::new(),
             mouse_ready: false,
 

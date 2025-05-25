@@ -127,10 +127,14 @@ pub struct Swim {
 }
 
 impl Swim {
-    pub fn new(drives: &[DriveType], ism_available: bool) -> Self {
+    pub fn new(drives: &[DriveType], ism_available: bool, base_frequency: Ticks) -> Self {
         Self {
             drives: core::array::from_fn(|i| {
-                FloppyDrive::new(i, *drives.get(i).unwrap_or(&DriveType::None))
+                FloppyDrive::new(
+                    i,
+                    *drives.get(i).unwrap_or(&DriveType::None),
+                    base_frequency,
+                )
             }),
             ism_available,
 

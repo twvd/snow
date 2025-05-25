@@ -7,7 +7,7 @@ use snow_floppy::{Floppy, FloppyImage, FloppyType, TrackLength, TrackType};
 use strum::Display;
 
 use crate::debuggable::Debuggable;
-use crate::tickable::{Ticks, TICKS_PER_SECOND};
+use crate::tickable::Ticks;
 use crate::{dbgprop_bool, dbgprop_enum, dbgprop_sdec, dbgprop_udec};
 
 /// Floppy drive types
@@ -192,6 +192,7 @@ enum DriveWriteReg {
 /// A single disk drive, attached to the drive controller
 pub(crate) struct FloppyDrive {
     idx: usize,
+    base_frequency: Ticks,
     pub(super) drive_type: DriveType,
     pub(super) cycles: Ticks,
 
@@ -235,9 +236,10 @@ impl FloppyDrive {
     /// Tacho pulses/disk revolution
     const TACHO_SPEED: Ticks = 60;
 
-    pub fn new(idx: usize, drive_type: DriveType) -> Self {
+    pub fn new(idx: usize, drive_type: DriveType, base_frequency: Ticks) -> Self {
         Self {
             idx,
+            base_frequency,
             drive_type,
             cycles: 0,
             floppy_inserted: false,
@@ -349,7 +351,7 @@ impl FloppyDrive {
         self.flux_ticks_left = 0;
 
         // Track-to-track stepping time: 30ms
-        self.stepping = TICKS_PER_SECOND / 60_000 * 30;
+        self.stepping = self.base_frequency / 60_000 * 30;
     }
 
     /// Writes to the currently selected drive register
@@ -451,7 +453,7 @@ impl FloppyDrive {
         if self.get_track_rpm() == 0 || !self.floppy_inserted {
             return Ticks::MAX;
         }
-        ((TICKS_PER_SECOND * 60)
+        ((self.base_frequency * 60)
             / self.get_track_rpm()
             / self.floppy.get_type().get_approx_track_length(self.track))
             + 1
@@ -467,7 +469,7 @@ impl FloppyDrive {
         // Each rotation produces 60 tacho pulses (= 120 edges)
         let pulses_per_min = self.get_track_rpm() * Self::TACHO_SPEED;
         let edges_per_min = pulses_per_min * 2;
-        let ticks_per_min = TICKS_PER_SECOND * 60;
+        let ticks_per_min = self.base_frequency * 60;
         let ticks_per_edge = ticks_per_min / edges_per_min;
         (self.cycles / ticks_per_edge % 2) != 0
     }
@@ -564,9 +566,11 @@ mod tests {
     /// Disk revolutions/minute at inner track (79)
     const DISK_RPM_INNER: Ticks = 590;
 
+    const BASE_FREQUENCY: Ticks = 8_000_000;
+
     #[test]
     fn disk_double_tacho_outer() {
-        let mut drv = FloppyDrive::new(0, DriveType::GCR800K);
+        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
         drv.floppy_inserted = true;
         drv.motor = true;
         drv.track = 0;
@@ -574,7 +578,7 @@ mod tests {
         let mut last = false;
         let mut result = 0;
 
-        for _ in 0..(TICKS_PER_SECOND * 60) {
+        for _ in 0..(BASE_FREQUENCY * 60) {
             drv.cycles += 1;
             if drv.get_tacho() != last {
                 result += 1;
@@ -587,7 +591,7 @@ mod tests {
 
     #[test]
     fn disk_double_tacho_inner() {
-        let mut drv = FloppyDrive::new(0, DriveType::GCR800K);
+        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
         drv.floppy_inserted = true;
         drv.motor = true;
         drv.track = 79;
@@ -595,7 +599,7 @@ mod tests {
         let mut last = false;
         let mut result = 0;
 
-        for _ in 0..(TICKS_PER_SECOND * 60) {
+        for _ in 0..(BASE_FREQUENCY * 60) {
             drv.cycles += 1;
             if drv.get_tacho() != last {
                 result += 1;
