@@ -450,6 +450,7 @@ where
 
         // Sync values that live in multiple places
         self.swim.sel = self.via1.a_out.sel();
+        self.swim.intdrive = self.via1.a_out.drivesel();
 
         if written.is_none() {
             if self.amu_active {
