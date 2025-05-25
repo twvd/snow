@@ -852,7 +852,7 @@ mod tests {
 
     #[test]
     fn jsr() {
-        assert_eq!(dasm(&[0x4E, 0xBA, 0x01, 0xFA]), "JSR $0001FC");
+        assert_eq!(dasm(&[0x4E, 0xBA, 0x01, 0xFA]), "JSR $000001FC");
     }
 
     #[test]
