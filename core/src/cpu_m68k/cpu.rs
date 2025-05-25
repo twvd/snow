@@ -3269,17 +3269,13 @@ where
                 let mut ea =
                     self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
 
-                // Only adjust EA if offset comes from register
-                // (otherwise it is 0-31)
-                if sec.fdo() {
-                    ea = ea.wrapping_add_signed(offset.wrapping_div(8));
-                    offset %= 8;
+                ea = ea.wrapping_add_signed(offset.wrapping_div(8));
+                offset %= 8;
 
-                    // Handle negative offset
-                    if offset < 0 {
-                        offset += 8;
-                        ea = ea.wrapping_sub(1);
-                    }
+                // Handle negative offset
+                if offset < 0 {
+                    offset += 8;
+                    ea = ea.wrapping_sub(1);
                 }
 
                 width = ((width.wrapping_sub(1)) & 31) + 1;
