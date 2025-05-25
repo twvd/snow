@@ -114,21 +114,23 @@ impl SystrapHistoryWidget {
             );
 
             // System trap
-            left_sized(
-                ui,
-                [200.0, row_height],
-                egui::Label::new(
-                    egui::RichText::new(
-                        crate::consts::TRAPS
-                            .iter()
-                            .find(|(i, _)| *i == entry.trap)
-                            .map(|(_, s)| *s)
-                            .unwrap_or("<unknown>"),
+            left_sized_f(ui, [200.0, row_height], |ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(
+                            crate::consts::TRAPS
+                                .iter()
+                                .find(|(i, _)| *i == entry.trap)
+                                .map(|(_, s)| *s)
+                                .unwrap_or("<unknown>"),
+                        )
+                        .family(egui::FontFamily::Monospace)
+                        .size(10.0),
                     )
-                    .family(egui::FontFamily::Monospace)
-                    .size(10.0),
-                ),
-            )
+                    .sense(egui::Sense::click()),
+                )
+                .context_linea(entry.trap);
+            });
         });
     }
 }

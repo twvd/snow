@@ -80,31 +80,31 @@ enum ExceptionGroup {
 
 // Exception vectors
 /// Stack pointer initialization
-const VECTOR_SP: Address = 0x00000000;
+pub const VECTOR_SP: Address = 0x00000000;
 /// Reset vector
-const VECTOR_RESET: Address = 0x00000004;
+pub const VECTOR_RESET: Address = 0x00000004;
 /// Address error exception vector
-const VECTOR_ADDRESS_ERROR: Address = 0x00000C;
+pub const VECTOR_ADDRESS_ERROR: Address = 0x00000C;
 /// Illegal instruction exception vector
-const VECTOR_ILLEGAL: Address = 0x000010;
+pub const VECTOR_ILLEGAL: Address = 0x000010;
 /// Division by zero exception vector
-const VECTOR_DIV_ZERO: Address = 0x000014;
+pub const VECTOR_DIV_ZERO: Address = 0x000014;
 /// CHK exception vector
-const VECTOR_CHK: Address = 0x000018;
+pub const VECTOR_CHK: Address = 0x000018;
 /// TRAPV exception vector
-const VECTOR_TRAPV: Address = 0x00001C;
+pub const VECTOR_TRAPV: Address = 0x00001C;
 /// Privilege violation exception vector
-const VECTOR_PRIVILEGE_VIOLATION: Address = 0x000020;
+pub const VECTOR_PRIVILEGE_VIOLATION: Address = 0x000020;
 /// Trace exception
-const VECTOR_TRACE: Address = 0x000024;
+pub const VECTOR_TRACE: Address = 0x000024;
 /// Line 1010 / A
-const VECTOR_LINEA: Address = 0x000028;
+pub const VECTOR_LINEA: Address = 0x000028;
 /// Line 1111 / F
-const VECTOR_LINEF: Address = 0x00002C;
+pub const VECTOR_LINEF: Address = 0x00002C;
 /// Auto vector offset (7 vectors)
-const VECTOR_AUTOVECTOR_OFFSET: Address = 0x000064;
+pub const VECTOR_AUTOVECTOR_OFFSET: Address = 0x000064;
 /// Trap exception vector offset (15 vectors)
-const VECTOR_TRAP_OFFSET: Address = 0x000080;
+pub const VECTOR_TRAP_OFFSET: Address = 0x000080;
 
 /// Register mask order for MOVEM
 const MOVEM_REGS: [Register; 16] = [

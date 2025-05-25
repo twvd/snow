@@ -28,7 +28,7 @@ impl Disassembly {
             .body(|mut body| {
                 for c in code {
                     let mut text = c.str.to_string();
-                    if c.raw.len() == 2 && c.raw[0] & 0xF0 == 0xA0 {
+                    if c.is_linea() {
                         // A-line annotation
                         let opcode = ((c.raw[0] as u16) << 8) | (c.raw[1] as u16);
                         if let Some((_, s)) = crate::consts::TRAPS.iter().find(|(i, _)| *i == opcode) {

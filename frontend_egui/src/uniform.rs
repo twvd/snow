@@ -13,7 +13,8 @@ use std::cell::Cell;
 
 use eframe::egui;
 use snow_core::bus::Address;
-use snow_core::cpu_m68k::cpu::{Breakpoint, BusBreakpoint};
+use snow_core::cpu_m68k::cpu::{Breakpoint, BusBreakpoint, VECTOR_LINEA};
+use snow_core::types::Word;
 
 use crate::widgets::watchpoints::WatchpointType;
 
@@ -32,6 +33,7 @@ pub enum UniformAction {
 
 pub trait UniformMethods {
     fn context_address(&self, addr: Address) -> Option<egui::InnerResponse<()>>;
+    fn context_linea(&self, opcode: Word) -> Option<egui::InnerResponse<()>>;
 }
 
 impl UniformMethods for egui::Response {
@@ -87,6 +89,32 @@ impl UniformMethods for egui::Response {
             ui.separator();
             if ui.button("View in memory viewer").clicked() {
                 UNIFORM_ACTION.set(UniformAction::AddressMemoryViewer(addr));
+                ui.close_menu();
+            }
+        })
+    }
+
+    fn context_linea(&self, opcode: Word) -> Option<egui::InnerResponse<()>> {
+        self.context_menu(|ui| {
+            if ui.button("Copy opcode (hex)").clicked() {
+                ui.output_mut(|o| o.copied_text = format!("{:04X}", opcode));
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui
+                .button(format!(
+                    "Add breakpoint for this system trap (${:04X})",
+                    opcode
+                ))
+                .clicked()
+            {
+                UNIFORM_ACTION.set(UniformAction::Breakpoint(Breakpoint::LineA(opcode)));
+                ui.close_menu();
+            }
+            if ui.button("Add breakpoint for all system traps").clicked() {
+                UNIFORM_ACTION.set(UniformAction::Breakpoint(Breakpoint::ExceptionVector(
+                    VECTOR_LINEA,
+                )));
                 ui.close_menu();
             }
         })

@@ -5,19 +5,17 @@ use itertools::Itertools;
 
 use std::fmt::Write;
 
-use crate::{
-    bus::Address,
-    cpu_m68k::{
-        instruction::{BfxExtWord, DivlExtWord, IndexSize, MemoryIndirectAction, MulxExtWord, Xn},
-        regs::Register,
-    },
-    types::Byte,
+use crate::bus::Address;
+use crate::cpu_m68k::instruction::{
+    BfxExtWord, DivlExtWord, IndexSize, MemoryIndirectAction, MulxExtWord, Xn,
 };
+use crate::cpu_m68k::regs::Register;
+use crate::types::{Byte, Word};
 
-use super::{
-    instruction::{AddressingMode, Direction, Instruction, InstructionMnemonic, InstructionSize},
-    CpuM68kType,
+use super::instruction::{
+    AddressingMode, Direction, Instruction, InstructionMnemonic, InstructionSize,
 };
+use super::CpuM68kType;
 
 #[derive(Clone)]
 pub struct DisassemblyEntry {
@@ -32,6 +30,14 @@ impl DisassemblyEntry {
             let _ = write!(output, "{b:02X}");
             output
         })
+    }
+
+    pub fn opcode(&self) -> Word {
+        ((self.raw[0] as Word) << 8) | (self.raw[1] as Word)
+    }
+
+    pub fn is_linea(&self) -> bool {
+        self.raw.len() == 2 && self.raw[0] & 0xF0 == 0xA0
     }
 }
 

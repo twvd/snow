@@ -218,11 +218,13 @@ impl InstructionHistoryWidget {
                 left_sized_icon(ui, &[10.0, row_height], "", None);
             }
             // Instruction column
+            let mut linea = None;
             let instr_text = if let Some(ref instr) = disasm_entry {
                 let mut text = instr.str.to_string();
-                if instr.raw.len() == 2 && instr.raw[0] & 0xF0 == 0xA0 {
+                if instr.is_linea() {
                     // A-line annotation
-                    let opcode = ((instr.raw[0] as u16) << 8) | (instr.raw[1] as u16);
+                    let opcode = instr.opcode();
+                    linea = Some(opcode);
                     if let Some((_, s)) = crate::consts::TRAPS.iter().find(|(i, _)| *i == opcode) {
                         text.push_str(&format!(" ; {}", s));
                     }
@@ -235,7 +237,12 @@ impl InstructionHistoryWidget {
                     .family(egui::FontFamily::Monospace)
                     .size(10.0)
             };
-            left_sized(ui, [200.0, row_height], egui::Label::new(instr_text));
+            left_sized_f(ui, [200.0, row_height], |ui| {
+                let response = ui.add(egui::Label::new(instr_text).sense(egui::Sense::click()));
+                if let Some(linea) = linea {
+                    response.context_linea(linea);
+                }
+            });
 
             // Effective Address column
             left_sized_f(ui, [50.0, row_height], |ui| {
