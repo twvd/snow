@@ -1284,7 +1284,9 @@ where
                 let l = self.fetch_pump()? as u32;
                 (h << 16) | l
             }
-            AddressingMode::Immediate => unreachable!(),
+            AddressingMode::Immediate => {
+                bail!("Invalid addressing mode at PC {:08X}", self.regs.pc)
+            }
             AddressingMode::IndirectIndexBase | AddressingMode::PCIndexBase => {
                 // also Memory Indirect modes
                 // TODO cycles?
