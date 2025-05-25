@@ -202,7 +202,7 @@ impl BreakpointsWidget {
                         .chars()
                         .skip_while(|c| *c != '$')
                         .skip(1)
-                        .take(6)
+                        .take(8)
                         .collect::<String>();
                     if ui
                         .add_enabled(
