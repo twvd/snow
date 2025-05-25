@@ -3898,10 +3898,8 @@ where
                     let insert_byte = (insert_base & 0xFF) as Byte;
                     let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
 
-                    // Update Z flag with the extended part
-                    if data_byte & mask_byte != 0 {
-                        self.regs.sr.set_z(false);
-                    }
+                    // Not updating Z flag here, it is based on the inserted data
+                    // and was already set above.
 
                     // Write the extended part
                     self.write_ticks(ea.wrapping_add(4), (data_byte & !mask_byte) | insert_byte)?;
