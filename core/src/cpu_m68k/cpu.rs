@@ -237,7 +237,7 @@ where
     TBus: Bus<Address, u8> + IrqSource,
 {
     /// Instruction history size
-    pub const HISTORY_SIZE: usize = 100;
+    pub const HISTORY_SIZE: usize = 10000;
 
     pub fn new(bus: TBus) -> Self {
         assert!([M68000, M68020].contains(&CPU_TYPE));

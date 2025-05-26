@@ -1,21 +1,92 @@
+use std::fs::File;
+use std::io::Write;
+use std::path::Path;
+
 use crate::consts;
 use crate::helpers::{left_sized, left_sized_f, left_sized_icon};
-use crate::uniform::UniformMethods;
+use crate::uniform::{uniform_error, UniformMethods};
+
+use anyhow::Result;
 use eframe::egui;
 use eframe::egui::Ui;
+use egui_file_dialog::FileDialog;
 use snow_core::bus::Address;
 use snow_core::cpu_m68k::cpu::{HistoryEntry, HistoryEntryInstruction};
-use snow_core::cpu_m68k::disassembler::Disassembler;
+use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
 use snow_core::tickable::Ticks;
+use snow_core::types::Long;
 
 /// Widget to display CPU instruction history
-#[derive(Default)]
 pub struct InstructionHistoryWidget {
     /// Last entry to detect changes
     last: Option<HistoryEntry>,
+    /// File export dialog
+    export_dialog: FileDialog,
+}
+
+impl Default for InstructionHistoryWidget {
+    fn default() -> Self {
+        Self {
+            last: Default::default(),
+            export_dialog: FileDialog::new()
+                .add_save_extension("Pipe-separated text file", "txt")
+                .default_save_extension("Pipe-separated text file")
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
+        }
+    }
 }
 
 impl InstructionHistoryWidget {
+    fn export_file(&self, history: &[HistoryEntry], filename: &Path) -> Result<()> {
+        let mut f = File::create(filename)?;
+        writeln!(
+            f,
+            "PC|Raw|Cycles|Instruction|D0|D1|D2|D3|D4|D5|D6|D7|A0|A1|A2|A3|A4|A5|A6|A7|SR"
+        )?;
+        for entry in history {
+            match entry {
+                HistoryEntry::Instruction(HistoryEntryInstruction {
+                    pc,
+                    raw,
+                    cycles,
+                    final_regs,
+                    ..
+                }) => {
+                    let r = final_regs.clone().unwrap_or_default();
+                    writeln!(
+                        f,
+                        "{:08X}|{}|{}|{}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:04X}",
+                        pc,
+                        Self::format_raw(raw),
+                        cycles,
+                        Self::disassemble(raw, *pc).map(|e| e.str).unwrap_or_else(|| "<invalid>".to_string()),
+                        r.read_d::<Long>(0),
+                        r.read_d::<Long>(1),
+                        r.read_d::<Long>(2),
+                        r.read_d::<Long>(3),
+                        r.read_d::<Long>(4),
+                        r.read_d::<Long>(5),
+                        r.read_d::<Long>(6),
+                        r.read_d::<Long>(7),
+                        r.read_a::<Long>(0),
+                        r.read_a::<Long>(1),
+                        r.read_a::<Long>(2),
+                        r.read_a::<Long>(3),
+                        r.read_a::<Long>(4),
+                        r.read_a::<Long>(5),
+                        r.read_a::<Long>(6),
+                        r.read_a::<Long>(7),
+                        r.sr.0,
+                    )?;
+                }
+                HistoryEntry::Exception { vector, .. } => {
+                    writeln!(f, "--- {}", self.text_exception(*vector))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn column_status(history: &[HistoryEntry], row_height: f32, row_idx: usize, ui: &mut egui::Ui) {
         // Last instruction indicator
         left_sized_icon(
@@ -31,8 +102,30 @@ impl InstructionHistoryWidget {
     }
 
     pub fn draw(&mut self, ui: &mut egui::Ui, history: &[HistoryEntry]) {
+        self.export_dialog.update(ui.ctx());
+        if let Some(f) = self.export_dialog.take_picked() {
+            if let Err(e) = self.export_file(history, &f) {
+                uniform_error(format!("Error exporting to file: {}", e));
+            }
+        }
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing = [2.0, 0.0].into();
+
+            ui.horizontal(|ui| {
+                ui.style_mut().text_styles.insert(
+                    egui::TextStyle::Button,
+                    egui::FontId::new(24.0, eframe::epaint::FontFamily::Proportional),
+                );
+
+                if ui
+                    .add(egui::Button::new(egui_material_icons::icons::ICON_SAVE))
+                    .on_hover_text("Export to file...")
+                    .clicked()
+                {
+                    self.export_dialog.save_file();
+                }
+            });
+            ui.separator();
 
             // Column headers
             ui.horizontal(|ui| {
@@ -140,9 +233,7 @@ impl InstructionHistoryWidget {
         entry: &HistoryEntryInstruction,
     ) {
         // Disassemble the instruction
-        let mut iter = entry.raw.iter().copied();
-        let mut disasm = Disassembler::from(&mut iter, entry.pc);
-        let disasm_entry = disasm.next();
+        let disasm_entry = Self::disassemble(&entry.raw, entry.pc);
 
         ui.horizontal(|ui| {
             ui.set_max_height(row_height);
@@ -167,16 +258,11 @@ impl InstructionHistoryWidget {
             });
 
             // Raw bytes column
-            let raw_str = entry.raw.iter().fold(String::new(), |mut output, b| {
-                let _ = std::fmt::Write::write_fmt(&mut output, format_args!("{:02X}", b));
-                output
-            });
-
             left_sized(
                 ui,
                 [120.0, row_height],
                 egui::Label::new(
-                    egui::RichText::new(format!("{:<16}", raw_str))
+                    egui::RichText::new(format!("{:<16}", Self::format_raw(&entry.raw)))
                         .family(egui::FontFamily::Monospace)
                         .size(10.0)
                         .color(egui::Color32::DARK_GRAY),
@@ -264,6 +350,18 @@ impl InstructionHistoryWidget {
         });
     }
 
+    fn text_exception(&self, vector: Address) -> String {
+        format!(
+            "Exception: {} (${:08X})",
+            consts::VECTORS
+                .iter()
+                .find(|f| f.0 == vector)
+                .map(|f| f.1)
+                .unwrap_or_default(),
+            vector,
+        )
+    }
+
     fn row_exception(
         &self,
         history: &[HistoryEntry],
@@ -299,19 +397,24 @@ impl InstructionHistoryWidget {
                 ui,
                 [ui.available_width(), row_height],
                 egui::Label::new(
-                    egui::RichText::new(format!(
-                        "Exception: {} (${:08X})",
-                        consts::VECTORS
-                            .iter()
-                            .find(|f| f.0 == *vector)
-                            .map(|f| f.1)
-                            .unwrap_or_default(),
-                        vector,
-                    ))
-                    .family(egui::FontFamily::Monospace)
-                    .size(10.0),
+                    egui::RichText::new(self.text_exception(*vector))
+                        .family(egui::FontFamily::Monospace)
+                        .size(10.0),
                 ),
             );
         });
+    }
+
+    fn format_raw(raw: &[u8]) -> String {
+        raw.iter().fold(String::new(), |mut output, b| {
+            let _ = std::fmt::Write::write_fmt(&mut output, format_args!("{:02X}", b));
+            output
+        })
+    }
+
+    fn disassemble(raw: &[u8], pc: Address) -> Option<DisassemblyEntry> {
+        let mut iter = raw.iter().copied();
+        let mut disasm = Disassembler::from(&mut iter, pc);
+        disasm.next()
     }
 }

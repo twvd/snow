@@ -514,6 +514,9 @@ impl SnowGui {
                 self.workspace.memory_open = true;
                 self.memory.go_to_address(addr);
             }
+            UniformAction::ShowError(s) => {
+                self.show_error(&s);
+            }
         }
     }
 }

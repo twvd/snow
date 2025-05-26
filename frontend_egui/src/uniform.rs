@@ -29,6 +29,7 @@ pub enum UniformAction {
     AddressWatch(Address, WatchpointType),
     Breakpoint(Breakpoint),
     AddressMemoryViewer(Address),
+    ShowError(String),
 }
 
 pub trait UniformMethods {
@@ -119,4 +120,8 @@ impl UniformMethods for egui::Response {
             }
         })
     }
+}
+
+pub fn uniform_error(s: String) {
+    UNIFORM_ACTION.set(UniformAction::ShowError(s));
 }
