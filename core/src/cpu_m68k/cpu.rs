@@ -3168,14 +3168,8 @@ where
                 // Calculate effective address with byte offset
                 let mut ea =
                     self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-                ea = ea.wrapping_add_signed(offset / 8);
-                offset %= 8;
-
-                // Handle negative offsets
-                if offset < 0 {
-                    offset += 8;
-                    ea = ea.wrapping_sub(1);
-                }
+                ea = ea.wrapping_add_signed(offset.div_euclid(8));
+                offset = offset.rem_euclid(8);
 
                 width = ((width.wrapping_sub(1)) & 31) + 1;
 
@@ -3269,22 +3263,16 @@ where
                 let mut ea =
                     self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
 
-                ea = ea.wrapping_add_signed(offset.wrapping_div(8));
-                offset %= 8;
-
-                // Handle negative offset
-                if offset < 0 {
-                    offset += 8;
-                    ea = ea.wrapping_sub(1);
-                }
+                ea = ea.wrapping_add_signed(offset.div_euclid(8));
+                offset = offset.rem_euclid(8);
 
                 width = ((width.wrapping_sub(1)) & 31) + 1;
 
-                let mut data: Long = self.read_ticks::<Long>(ea)?;
+                let mut data = self.read_ticks::<Long>(ea)?;
                 data <<= offset as isize;
 
                 // If the bit field crosses a 32-bit boundary, read an additional byte
-                if (offset as u32 + width) > 32 {
+                if (offset + width as i32) > 32 {
                     let extra_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))? as Long;
                     data |= (extra_byte << (offset as isize)) >> 8;
                 }
@@ -3355,14 +3343,8 @@ where
 
                 let mut ea =
                     self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-                ea = ea.wrapping_add_signed(offset / 8);
-                offset %= 8;
-
-                // Handle negative offsets
-                if offset < 0 {
-                    offset += 8;
-                    ea = ea.wrapping_sub(1);
-                }
+                ea = ea.wrapping_add_signed(offset.div_euclid(8));
+                offset = offset.rem_euclid(8);
 
                 width = ((width.wrapping_sub(1)) & 31) + 1;
 
@@ -3370,7 +3352,7 @@ where
                 data <<= offset as isize;
 
                 // If the bit field crosses a 32-bit boundary, read an additional byte
-                if (offset as u32 + width) > 32 {
+                if (offset + width as i32) > 32 {
                     let extra_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))? as Long;
                     data |= (extra_byte << (offset as isize)) >> 8;
                 }
@@ -3467,7 +3449,7 @@ where
                 data <<= local_offset as isize;
 
                 // If the bit field crosses a 32-bit boundary, read an additional byte
-                if (local_offset as u32 + width) > 32 {
+                if (local_offset + width as i32) > 32 {
                     let extra_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))? as Long;
                     data |= (extra_byte << (local_offset as isize)) >> 8;
                 }
@@ -3549,14 +3531,8 @@ where
                 // Calculate effective address with byte offset
                 let mut ea =
                     self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-                ea = ea.wrapping_add_signed(offset / 8);
-                offset %= 8;
-
-                // Handle negative offsets
-                if offset < 0 {
-                    offset += 8;
-                    ea = ea.wrapping_sub(1);
-                }
+                ea = ea.wrapping_add_signed(offset.div_euclid(8));
+                offset = offset.rem_euclid(8);
 
                 width = ((width.wrapping_sub(1)) & 31) + 1;
 
@@ -3644,14 +3620,8 @@ where
                 // Calculate effective address with byte offset
                 let mut ea =
                     self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-                ea = ea.wrapping_add_signed(offset / 8);
-                offset %= 8;
-
-                // Handle negative offsets
-                if offset < 0 {
-                    offset += 8;
-                    ea = ea.wrapping_sub(1);
-                }
+                ea = ea.wrapping_add_signed(offset.div_euclid(8));
+                offset = offset.rem_euclid(8);
 
                 width = ((width.wrapping_sub(1)) & 31) + 1;
 
@@ -3736,14 +3706,8 @@ where
                 // Calculate effective address with byte offset
                 let mut ea =
                     self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-                ea = ea.wrapping_add_signed(offset / 8);
-                offset %= 8;
-
-                // Handle negative offsets
-                if offset < 0 {
-                    offset += 8;
-                    ea = ea.wrapping_sub(1);
-                }
+                ea = ea.wrapping_add_signed(offset.div_euclid(8));
+                offset = offset.rem_euclid(8);
 
                 width = ((width.wrapping_sub(1)) & 31) + 1;
 
@@ -3845,14 +3809,8 @@ where
                 // Calculate effective address with byte offset
                 let mut ea =
                     self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-                ea = ea.wrapping_add_signed(offset / 8);
-                offset %= 8;
-
-                // Handle negative offsets
-                if offset < 0 {
-                    offset += 8;
-                    ea = ea.wrapping_sub(1);
-                }
+                ea = ea.wrapping_add_signed(offset.div_euclid(8));
+                offset = offset.rem_euclid(8);
 
                 width = ((width.wrapping_sub(1)) & 31) + 1;
 
