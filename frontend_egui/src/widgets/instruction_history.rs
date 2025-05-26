@@ -49,10 +49,10 @@ impl InstructionHistoryWidget {
                     pc,
                     raw,
                     cycles,
-                    final_regs,
+                    initial_regs,
                     ..
                 }) => {
-                    let r = final_regs.clone().unwrap_or_default();
+                    let r = initial_regs.clone().unwrap_or_default();
                     writeln!(
                         f,
                         "{:08X}|{}|{}|{}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:08X}|{:04X}",
