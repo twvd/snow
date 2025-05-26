@@ -3189,7 +3189,7 @@ where
 
                 // Handle bit fields that cross 32-bit boundaries
                 if (width as i32 + offset) > 32 {
-                    let mask_byte = (mask_base & 0xFF) as Byte;
+                    let mask_byte = (mask_base as Byte) << (8 - offset);
                     let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
 
                     // Update Z flag with the extended part
@@ -3553,7 +3553,7 @@ where
 
                 // Handle bit fields that cross 32-bit boundaries
                 if (width as i32 + offset) > 32 {
-                    let mask_byte = (mask_base & 0xFF) as Byte;
+                    let mask_byte = (mask_base as Byte) << (8 - offset);
                     let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
 
                     // Update Z flag with the extended part
@@ -3636,7 +3636,7 @@ where
 
                 // Handle bit fields that cross 32-bit boundaries
                 if (width as i32 + offset) > 32 {
-                    let mask_byte = (mask_base & 0xFF) as Byte;
+                    let mask_byte = (mask_base as Byte) << (8 - offset);
                     let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
 
                     if data_byte & mask_byte != 0 {
@@ -3727,7 +3727,7 @@ where
 
                 // Handle bit fields that cross 32-bit boundaries
                 if (width as i32 + offset) > 32 {
-                    let mask_byte = (mask_base & 0xFF) as Byte;
+                    let mask_byte = (mask_base as Byte) << (8 - offset);
                     let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
 
                     // Update Z flag with the extended part
@@ -3837,8 +3837,8 @@ where
 
                 // Handle bit fields that cross 32-bit boundaries
                 if (width as i32 + offset) > 32 {
-                    let mask_byte = (mask_base & 0xFF) as Byte;
-                    let insert_byte = (insert_base & 0xFF) as Byte;
+                    let mask_byte = (mask_base as Byte) << (8 - offset);
+                    let insert_byte = (insert_base as Byte) << (8 - offset);
                     let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
 
                     // Not updating Z flag here, it is based on the inserted data
