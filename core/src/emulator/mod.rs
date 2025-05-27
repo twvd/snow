@@ -77,9 +77,9 @@ macro_rules! indirection {
 /// that provides access to the inner components by the emulator runner through dynamic dispatch.
 enum EmulatorConfig {
     /// Compact series - Mac 128K, 512K, Plus, SE, Classic
-    Compact(CpuM68000<CompactMacBus<ChannelRenderer>>),
+    Compact(Box<CpuM68000<CompactMacBus<ChannelRenderer>>>),
     /// Compact series - Mac 128K, 512K, Plus, SE, Classic
-    MacII(CpuM68020<MacIIBus<ChannelRenderer>>),
+    MacII(Box<CpuM68020<MacIIBus<ChannelRenderer>>>),
 }
 
 #[allow(dead_code)]
@@ -326,7 +326,7 @@ impl Emulator {
             | MacModel::Classic => {
                 // Initialize bus and CPU
                 let bus = CompactMacBus::new(model, rom, renderer);
-                let mut cpu = CpuM68000::new(bus);
+                let mut cpu = Box::new(CpuM68000::new(bus));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
                 // Initialize input devices
@@ -361,7 +361,7 @@ impl Emulator {
 
                 // Initialize bus and CPU
                 let bus = MacIIBus::new(model, rom, mdcrom, renderer);
-                let mut cpu = CpuM68020::new(bus);
+                let mut cpu = Box::new(CpuM68020::new(bus));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
                 // Initialize input devices
