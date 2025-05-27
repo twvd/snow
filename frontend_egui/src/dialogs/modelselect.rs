@@ -366,6 +366,19 @@ impl ModelSelectionDialog {
                 ui.add_space(10.0);
             }
 
+            // Mac II experimental warning
+            if self.selected_model == MacModel::MacII {
+                ui.separator();
+                ui.add_space(10.0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "    {} Please note support for Macintosh II is still experimental. Certain things don't work and applications may crash.",
+                        egui_material_icons::icons::ICON_INFO,
+                    ))
+                );
+                ui.add_space(10.0);
+            }
+
             ui.separator();
 
             // Buttons
