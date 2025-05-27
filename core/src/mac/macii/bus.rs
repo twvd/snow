@@ -44,7 +44,7 @@ pub struct MacIIBus<TRenderer: Renderer> {
     pub(crate) via2: Via2,
     pub(crate) scc: Scc,
     pub(crate) asc: Asc,
-    eclock: Ticks,
+    via_clock: Ticks,
     mouse_ready: bool,
     pub(crate) swim: Swim,
     pub(crate) scsi: ScsiController,
@@ -101,7 +101,7 @@ where
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             via1: Via::new(model),
             via2: Via2::new(model),
-            eclock: 0,
+            via_clock: 0,
             scc: Scc::new(),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), 16_000_000),
             scsi: ScsiController::new(),
@@ -500,10 +500,12 @@ where
 
         self.amu_active = self.via2.ddrb.vfc3() && !self.via2.b_out.vfc3();
 
-        self.eclock += ticks;
-        while self.eclock >= 40 {
-            // TODO ticks when VPA is asserted
-            self.eclock -= 40;
+        // The Mac II generates the VIA clock through some dividers on the logic board.
+        // This same logic generates wait states when the VIAs are accessed.
+        self.via_clock += ticks;
+        while self.via_clock >= 20 {
+            // TODO VIA wait states
+            self.via_clock -= 20;
 
             self.via1.tick(1)?;
             self.via2.tick(1)?;
