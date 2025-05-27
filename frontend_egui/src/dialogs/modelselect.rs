@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Result};
 use eframe::egui;
 use egui_file_dialog::FileDialog;
+use sha2::{Digest, Sha256};
 use snow_core::mac::MacModel;
 use strum::IntoEnumIterator;
 
@@ -195,13 +196,18 @@ impl ModelSelectionDialog {
         }
 
         // Validate checksum
-        if true {
-            //MacModel::validate_display_card_rom(&rom_data) {
+        let mut hash = Sha256::new();
+        hash.update(std::fs::read(&self.display_rom_path)?);
+        let digest = hash.finalize();
+
+        if digest[..]
+            == hex_literal::hex!("e2e763a6b432c9196f619a9f90107726ab1a84a1d54242fe5f5182bf3c97b238")
+        {
             self.display_rom_valid = true;
             Ok(())
         } else {
             self.display_rom_valid = false;
-            bail!("Invalid Display Card ROM. Expected 341-0868 ROM.")
+            bail!("Invalid Display Card ROM. Expected Macintosh Display Card 8-24 (341-0868) ROM.")
         }
     }
 
@@ -245,7 +251,7 @@ impl ModelSelectionDialog {
         let last_model = self.selected_model;
         egui::Modal::new(egui::Id::new("Load ROM")).show(ctx, |ui| {
             ui.style_mut().spacing.item_spacing = egui::Vec2::splat(4.0);
-            ui.set_width(600.0);
+            ui.set_width(700.0);
 
             ui.heading("Set up emulated system");
             ui.separator();
@@ -314,7 +320,9 @@ impl ModelSelectionDialog {
 
                 // Display Card ROM selection (Mac II only)
                 if self.display_rom_required {
-                    ui.label(egui::RichText::new("Display Card ROM (341-0868)"));
+                    ui.label(egui::RichText::new(
+                        "Macintosh Display Card 8-24 ROM (341-0868)",
+                    ));
                     ui.horizontal(|ui| {
                         ui.text_edit_singleline(&mut self.display_rom_path);
                         if ui.button("Browse...").clicked() {

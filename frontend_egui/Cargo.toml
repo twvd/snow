@@ -24,6 +24,7 @@ egui_logger = "0.6.2"
 egui_material_icons = "0.2.0"
 env_logger = "0.11.6"
 hex = "0.4.3"
+hex-literal = "0.4.1"
 itertools = "0.14.0"
 log = "0.4.22"
 multi_log = "0.1.2"
@@ -34,6 +35,7 @@ png = "0.17.16"
 sdl2 = { version = "0.37.0", features = ["static-link", "use-pkgconfig"] }
 serde = { version = "1.0.218", features = ["derive"] }
 serde_json = "1.0.139"
+sha2 = "0.10.8"
 snow_core = { version = "0.1.0", path = "../core", features = ["mmap"] }
 snow_floppy = { version = "0.1.0", path = "../floppy" }
 strum = "0.26.3"
