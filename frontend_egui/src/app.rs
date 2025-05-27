@@ -14,13 +14,13 @@ use crate::workspace::Workspace;
 use crate::{emulator::EmulatorState, version_string, widgets::registers::RegistersWidget};
 use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
 
+use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
 use anyhow::{bail, Result};
 use eframe::egui;
 use egui_file_dialog::{DialogMode, DirectoryEntry, FileDialog};
 use egui_toast::{Toast, ToastKind, ToastOptions};
 use itertools::Itertools;
 use snow_core::emulator::comm::UserMessageType;
-use snow_core::mac::MacModel;
 use snow_floppy::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
@@ -83,9 +83,6 @@ pub struct SnowGui {
     systrap_history: SystrapHistoryWidget,
     terminal: [TerminalWidget; 2],
 
-    rom_dialog: FileDialog,
-    rom_dialog_last: Option<DirectoryEntry>,
-    rom_dialog_last_model: Option<MacModel>,
     hdd_dialog: FileDialog,
     workspace_dialog: FileDialog,
     hdd_dialog_idx: usize,
@@ -97,6 +94,7 @@ pub struct SnowGui {
     floppy_dialog_wp: bool,
     create_disk_dialog: DiskImageDialog,
     record_dialog: FileDialog,
+    model_dialog: ModelSelectionDialog,
 
     error_dialog_open: bool,
     error_string: String,
@@ -163,20 +161,6 @@ impl SnowGui {
             systrap_history: SystrapHistoryWidget::default(),
             terminal: Default::default(),
 
-            rom_dialog: FileDialog::new()
-                .add_file_filter(
-                    "Macintosh ROM files (*.rom)",
-                    Arc::new(|p| {
-                        p.extension()
-                            .unwrap_or_default()
-                            .eq_ignore_ascii_case("rom")
-                    }),
-                )
-                .default_file_filter("Macintosh ROM files (*.rom)")
-                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
-                .initial_directory(Self::default_dir()),
-            rom_dialog_last: None,
-            rom_dialog_last_model: None,
             hdd_dialog: FileDialog::new()
                 .add_file_filter(
                     "HDD images (*.img)",
@@ -245,6 +229,7 @@ impl SnowGui {
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir()),
             create_disk_dialog: Default::default(),
+            model_dialog: Default::default(),
             error_dialog_open: false,
             error_string: String::new(),
             ui_active: true,
@@ -266,7 +251,7 @@ impl SnowGui {
                 .unwrap_or_default()
                 .eq_ignore_ascii_case("rom")
             {
-                app.load_rom_from_path(path, None);
+                app.load_rom_from_path(path, None, None);
             }
         }
 
@@ -373,8 +358,13 @@ impl SnowGui {
         ));
     }
 
-    fn load_rom_from_path(&mut self, path: &Path, disks: Option<[Option<PathBuf>; 7]>) {
-        match self.emu.init_from_rom(path, disks) {
+    fn load_rom_from_path(
+        &mut self,
+        path: &Path,
+        display_rom_path: Option<&Path>,
+        disks: Option<[Option<PathBuf>; 7]>,
+    ) {
+        match self.emu.init_from_rom(path, display_rom_path, disks) {
             Ok(p) => self.framebuffer.connect_receiver(
                 p.frame_receiver,
                 p.display_width,
@@ -383,6 +373,7 @@ impl SnowGui {
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
         }
         self.workspace.set_rom_path(path);
+        self.workspace.set_display_card_rom_path(display_rom_path);
     }
 
     fn load_workspace(&mut self, path: Option<&Path>) {
@@ -406,7 +397,11 @@ impl SnowGui {
         self.load_windows = true;
         self.framebuffer.scale = self.workspace.viewport_scale;
         if let Some(rompath) = self.workspace.get_rom_path() {
-            self.load_rom_from_path(&rompath, Some(self.workspace.get_disk_paths()));
+            self.load_rom_from_path(
+                &rompath,
+                self.workspace.get_display_card_rom_path().as_deref(),
+                Some(self.workspace.get_disk_paths()),
+            );
         } else {
             self.emu.deinit();
         }
@@ -433,22 +428,6 @@ impl SnowGui {
                 }
             }
         });
-    }
-
-    fn rom_dialog_side_update(&mut self, d: Option<DirectoryEntry>) -> Result<()> {
-        self.rom_dialog_last = d.clone();
-        self.rom_dialog_last_model = None;
-
-        let Some(d) = d else { return Ok(()) };
-        if !d.is_file() {
-            return Ok(());
-        }
-        if fs::metadata(d.as_path())?.len() > (2 * 1024 * 1024) {
-            return Ok(());
-        }
-        self.rom_dialog_last_model = MacModel::detect_from_rom(&fs::read(d.as_path())?);
-
-        Ok(())
     }
 
     fn floppy_dialog_side_update(&mut self, d: Option<DirectoryEntry>) -> Result<()> {
@@ -518,6 +497,15 @@ impl SnowGui {
                 self.show_error(&s);
             }
         }
+    }
+
+    fn handle_model_selection_result(&mut self, result: &ModelSelectionResult) {
+        self.load_rom_from_path(
+            &result.main_rom_path,
+            result.display_rom_path.as_deref(),
+            Some(self.emu.get_disk_paths()),
+        );
+        self.last_running = false;
     }
 }
 
@@ -610,6 +598,13 @@ impl eframe::App for SnowGui {
             }
         }
 
+        // Model selection/'Load ROM' dialog
+        self.model_dialog.update(ctx);
+        self.ui_active &= !self.model_dialog.is_open();
+        if let Some(result) = self.model_dialog.take_result() {
+            self.handle_model_selection_result(&result);
+        }
+
         // Log window
         persistent_window!(&self, "Log")
             .open(&mut self.workspace.log_open)
@@ -617,30 +612,6 @@ impl eframe::App for SnowGui {
                 egui_logger::logger_ui().show(ui);
                 ui.allocate_space(ui.available_size());
             });
-
-        // ROM picker dialog
-        let mut last = None;
-        self.rom_dialog
-            .update_with_right_panel_ui(ctx, &mut |ui, dia| {
-                if dia.selected_entry().is_some() {
-                    last = dia.selected_entry().cloned();
-                    if let Some(m) = self.rom_dialog_last_model {
-                        ui.label(format!("Model: {}", m));
-                    }
-                }
-            });
-        if last.clone().map(|d| d.to_path_buf())
-            != self.rom_dialog_last.clone().map(|d| d.to_path_buf())
-        {
-            let _ = self.rom_dialog_side_update(last);
-        }
-
-        if let Some(path) = self.rom_dialog.take_picked() {
-            self.load_rom_from_path(&path, Some(self.emu.get_disk_paths()));
-            self.last_running = false;
-            self.update_titlebar(ctx);
-        }
-        self.ui_active &= self.rom_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // Floppy image picker dialog
         let mut last = None;
@@ -853,7 +824,7 @@ impl eframe::App for SnowGui {
                 });
                 ui.menu_button("Machine", |ui| {
                     if ui.button("Load ROM").clicked() {
-                        self.rom_dialog.pick_file();
+                        self.model_dialog.open();
                         ui.close_menu();
                     }
                     if self.emu.is_initialized() {
@@ -1189,7 +1160,7 @@ impl eframe::App for SnowGui {
                     .on_hover_text("Load ROM...")
                     .clicked()
                 {
-                    self.rom_dialog.pick_file();
+                    self.model_dialog.open();
                 }
                 if self.emu.is_initialized() {
                     ui.separator();

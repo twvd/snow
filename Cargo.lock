@@ -3809,6 +3809,7 @@ dependencies = [
  "serde_json",
  "snow_core",
  "snow_floppy",
+ "strum 0.26.3",
 ]
 
 [[package]]

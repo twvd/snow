@@ -17,14 +17,14 @@ use crate::mac::adb::{AdbKeyboard, AdbMouse};
 use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
 use crate::mac::macii::bus::MacIIBus;
 use crate::mac::scc::Scc;
-use crate::mac::MacModel;
+use crate::mac::{ExtraROMs, MacModel};
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::AudioReceiver;
 use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, ClickEventSender, KeyEventSender};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use bit_set::BitSet;
 use log::*;
 
@@ -300,10 +300,15 @@ pub struct Emulator {
 }
 
 impl Emulator {
-    // TODO fix large stack frame?
-    #[allow(clippy::large_stack_frames)]
     pub fn new(
         rom: &[u8],
+        model: MacModel,
+    ) -> Result<(Self, crossbeam_channel::Receiver<DisplayBuffer>)> {
+        Self::new_with_extra_roms(rom, &[], model)
+    }
+    pub fn new_with_extra_roms(
+        rom: &[u8],
+        extra_roms: &[ExtraROMs],
         model: MacModel,
     ) -> Result<(Self, crossbeam_channel::Receiver<DisplayBuffer>)> {
         // Set up channels
@@ -347,8 +352,15 @@ impl Emulator {
                 )
             }
             MacModel::MacII => {
+                // Find display card ROM
+                let Some(ExtraROMs::MDC12(mdcrom)) =
+                    extra_roms.iter().find(|p| matches!(p, ExtraROMs::MDC12(_)))
+                else {
+                    bail!("Macintosh II requires display card ROM")
+                };
+
                 // Initialize bus and CPU
-                let bus = MacIIBus::new(model, rom, renderer);
+                let bus = MacIIBus::new(model, rom, mdcrom, renderer);
                 let mut cpu = CpuM68020::new(bus);
                 assert_eq!(cpu.get_type(), model.cpu_type());
 

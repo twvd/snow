@@ -5,12 +5,10 @@ use sha2::{Digest, Sha256};
 
 use swim::drive::DriveType;
 
-use crate::{
-    bus::Address,
-    cpu_m68k::{CpuM68kType, M68000, M68020},
-    keymap::Keymap,
-    tickable::Ticks,
-};
+use crate::bus::Address;
+use crate::cpu_m68k::{CpuM68kType, M68000, M68020};
+use crate::keymap::Keymap;
+use crate::tickable::Ticks;
 
 pub mod adb;
 pub mod asc;
@@ -25,7 +23,7 @@ pub mod swim;
 pub mod via;
 
 /// Differentiation of Macintosh models and their features
-#[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq, strum::EnumIter)]
 pub enum MacModel {
     /// Macintosh 128K
     Early128K,
@@ -233,6 +231,13 @@ impl Display for MacModel {
         )
     }
 }
+
+/// Extra ROMs required/optional for some models
+pub enum ExtraROMs<'a> {
+    /// Macintosh Display Card 8-24
+    MDC12(&'a [u8]),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

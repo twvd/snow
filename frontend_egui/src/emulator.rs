@@ -26,7 +26,7 @@ use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, Em
 use snow_core::emulator::Emulator;
 use snow_core::keymap::Scancode;
 use snow_core::mac::scc::SccCh;
-use snow_core::mac::MacModel;
+use snow_core::mac::{ExtraROMs, MacModel};
 use snow_core::renderer::DisplayBuffer;
 use snow_core::tickable::{Tickable, Ticks};
 use snow_floppy::{Floppy, FloppyImage, FloppyType};
@@ -77,16 +77,23 @@ impl EmulatorState {
     pub fn init_from_rom(
         &mut self,
         filename: &Path,
+        display_rom_path: Option<&Path>,
         disks: Option<[Option<PathBuf>; 7]>,
     ) -> Result<EmulatorInitParams> {
         let rom = std::fs::read(filename)?;
-        self.init(&rom, disks)
+        let display_rom = if let Some(filename) = display_rom_path {
+            Some(std::fs::read(filename)?)
+        } else {
+            None
+        };
+        self.init(&rom, display_rom.as_deref(), disks)
     }
 
     #[allow(clippy::needless_pass_by_value)]
     fn init(
         &mut self,
         rom: &[u8],
+        display_rom: Option<&[u8]>,
         disks: Option<[Option<PathBuf>; 7]>,
     ) -> Result<EmulatorInitParams> {
         // Terminate running emulator (if any)
@@ -97,7 +104,12 @@ impl EmulatorState {
         // Initialize emulator
         let model =
             MacModel::detect_from_rom(rom).ok_or_else(|| anyhow!("Unsupported ROM file"))?;
-        let (mut emulator, frame_recv) = Emulator::new(rom, model)?;
+        let (mut emulator, frame_recv) = if let Some(display_rom) = display_rom {
+            Emulator::new_with_extra_roms(rom, &[ExtraROMs::MDC12(display_rom)], model)
+        } else {
+            Emulator::new(rom, model)
+        }?;
+
         let cmd = emulator.create_cmd_sender();
 
         // Initialize audio

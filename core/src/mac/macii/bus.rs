@@ -87,7 +87,7 @@ where
     /// CrsrNew address
     const ADDR_CRSRNEW: Address = 0x08CE;
 
-    pub fn new(model: MacModel, rom: &[u8], renderer: TRenderer) -> Self {
+    pub fn new(model: MacModel, rom: &[u8], mdcrom: &[u8], renderer: TRenderer) -> Self {
         let ram_size = model.ram_size();
 
         let mut bus = Self {
@@ -119,7 +119,7 @@ where
             //vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
 
-            nubus_devices: [Some(Mdc12::new()), None, None, None, None, None],
+            nubus_devices: [Some(Mdc12::new(mdcrom)), None, None, None, None, None],
         };
 
         // Disable memory test

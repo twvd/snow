@@ -36,6 +36,9 @@ pub struct Workspace {
     /// Last opened Mac ROM
     rom_path: Option<RelativePath>,
 
+    /// Last opened Display Card ROM
+    display_card_rom_path: Option<RelativePath>,
+
     /// Last loaded disks
     disks: [Option<RelativePath>; 7],
 
@@ -59,6 +62,7 @@ impl Default for Workspace {
             terminal_open: [false; 2],
             center_viewport_v: false,
             rom_path: None,
+            display_card_rom_path: None,
             disks: core::array::from_fn(|_| None),
             windows: HashMap::new(),
         }
@@ -88,6 +92,9 @@ impl Workspace {
         if let Some(p) = result.rom_path.as_mut() {
             p.after_deserialize(parent)?;
         }
+        if let Some(p) = result.display_card_rom_path.as_mut() {
+            p.after_deserialize(parent)?;
+        }
         for d in &mut result.disks {
             if let Some(p) = d.as_mut() {
                 p.after_deserialize(parent)?;
@@ -100,6 +107,9 @@ impl Workspace {
         // Resolve relative paths
         let parent = path.parent().context("Cannot resolve parent path")?;
         if let Some(p) = self.rom_path.as_mut() {
+            p.before_serialize(parent)?;
+        }
+        if let Some(p) = self.display_card_rom_path.as_mut() {
             p.before_serialize(parent)?;
         }
         for d in &mut self.disks {
@@ -127,6 +137,14 @@ impl Workspace {
 
     pub fn get_rom_path(&self) -> Option<PathBuf> {
         self.rom_path.clone().map(|d| d.get_absolute())
+    }
+
+    pub fn set_display_card_rom_path(&mut self, p: Option<&Path>) {
+        self.display_card_rom_path = p.map(RelativePath::from_absolute);
+    }
+
+    pub fn get_display_card_rom_path(&self) -> Option<PathBuf> {
+        self.display_card_rom_path.clone().map(|d| d.get_absolute())
     }
 
     /// Persists a window location

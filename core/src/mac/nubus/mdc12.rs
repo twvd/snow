@@ -108,10 +108,10 @@ pub struct Mdc12 {
 }
 
 impl Mdc12 {
-    pub fn new() -> Self {
+    pub fn new(rom: &[u8]) -> Self {
         Self {
             monitor: Monitor::HiRes14,
-            rom: std::fs::read("341-0868.bin").expect("Graphics card ROM file"),
+            rom: rom.to_owned(),
             ctrl: CtrlReg(0),
             ramdac_ctrl: RamdacCtrlReg(0),
             vblank_irq: false,
