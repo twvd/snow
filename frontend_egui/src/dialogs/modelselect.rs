@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use eframe::egui;
 use egui_file_dialog::FileDialog;
 use sha2::{Digest, Sha256};
@@ -60,6 +60,7 @@ impl Default for ModelSelectionDialog {
                         }
                     }),
                 )
+                .default_file_filter("ROM files (*.rom, *.bin)")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
             display_rom_path: String::new(),
             display_rom_valid: false,
@@ -75,6 +76,7 @@ impl Default for ModelSelectionDialog {
                         }
                     }),
                 )
+                .default_file_filter("ROM files (*.rom, *.bin)")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
             display_rom_required: false,
             result: None,
@@ -154,8 +156,8 @@ impl ModelSelectionDialog {
     }
 
     fn validate_main_rom(&mut self) -> Result<()> {
+        self.main_rom_valid = false;
         if self.main_rom_path.is_empty() {
-            self.main_rom_valid = false;
             return Ok(());
         }
 
@@ -170,15 +172,13 @@ impl ModelSelectionDialog {
                 Ok(())
             }
             Some(model) => {
-                self.main_rom_valid = false;
                 bail!(
-                    "ROM is for {} but {} was selected",
+                    "ROM is for '{}' but '{}' was selected",
                     model,
                     self.selected_model
                 )
             }
             None => {
-                self.main_rom_valid = false;
                 bail!("Unknown or unsupported ROM file")
             }
         }
@@ -190,14 +190,17 @@ impl ModelSelectionDialog {
             return Ok(());
         }
 
+        self.display_rom_valid = false;
         if self.display_rom_path.is_empty() {
-            self.display_rom_valid = false;
             return Ok(());
         }
 
         // Validate checksum
         let mut hash = Sha256::new();
-        hash.update(std::fs::read(&self.display_rom_path)?);
+        hash.update(
+            std::fs::read(&self.display_rom_path)
+                .map_err(|e| anyhow!("Invalid Display Card ROM: {}", e))?,
+        );
         let digest = hash.finalize();
 
         if digest[..]
@@ -293,7 +296,13 @@ impl ModelSelectionDialog {
                 // Main ROM selection
                 ui.label(egui::RichText::new("System ROM"));
                 ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut self.main_rom_path);
+                    if ui.text_edit_singleline(&mut self.main_rom_path).lost_focus() {
+                        if let Err(e) = self.validate_main_rom() {
+                            self.error_message = e.to_string();
+                        } else {
+                            self.error_message.clear();
+                        }
+                    }
                     if ui.button("Browse...").clicked() {
                         self.main_rom_dialog.pick_file();
                     }
@@ -324,7 +333,15 @@ impl ModelSelectionDialog {
                         "Macintosh Display Card 8-24 ROM (341-0868)",
                     ));
                     ui.horizontal(|ui| {
-                        ui.text_edit_singleline(&mut self.display_rom_path);
+                        if ui.text_edit_singleline(&mut self.display_rom_path).lost_focus() {
+                            if let Err(e) = self.validate_display_rom() {
+                                self.error_message = e.to_string();
+                            } else if !self.main_rom_path.is_empty()
+                                && self.error_message.starts_with("Invalid Display Card")
+                            {
+                                self.error_message.clear();
+                            }
+                        }
                         if ui.button("Browse...").clicked() {
                             self.display_rom_dialog.pick_file();
                         }
