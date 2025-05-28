@@ -4,12 +4,11 @@
 
 [![](https://dcbadge.limes.pink/api/server/F2vSzTEvPV)](https://discord.gg/F2vSzTEvPV)
 
-Snow emulates classic (Motorola 68000-based) Macintosh computers. It features either a graphical or a simple text-based
-user interface to operate and debug the emulated machine.
+Snow emulates classic (Motorola 68k-based) Macintosh computers. It features a graphical user interface operate and debug the emulated machine.
 The aim of this project is to emulate the Macintosh on a hardware-level as much as possible, as opposed to emulators
 that patch the ROM or intercept system calls.
 
-For more information or for downloads, see the [website](https://snowemu.com/). You can view a
+[For more information and downloads, go to the website](https://snowemu.com/). You can view a
 limited [online demo here](https://demo.snowemu.com/)
 
 ![Snow](docs/images/egui.png)
@@ -20,9 +19,11 @@ It currently supports the following models:
 * Macintosh Plus
 * Macintosh SE (both non-FDHD and FDHD)
 * Macintosh Classic
+* Macintosh II (experimental)
 
 Currently supported hardware:
 
+* Motorola 68000 and 68020 CPUs
 * IWM and SWIM floppy controllers
 * GCR 400K/800K floppy disk drives (up to 3 on SE)
 * GCR/MFM 1.44MB 'SuperDrive' floppy disk drive (currently read-only)
@@ -31,6 +32,7 @@ Currently supported hardware:
 * Macintosh keyboard/mouse
 * ADB keyboard/mouse
 * Audio output (PWM-based models)
+* Macintosh Display Card 8-24 with the 640x480 RGB monitor (Mac II)
 
 Supported floppy image formats:
 
@@ -42,6 +44,16 @@ Supported floppy image formats:
 * Raw images (sector-based)
 * Any format (Mac 1.44MB or PC) supported by [Fluxfox](https://github.com/dbalsom/fluxfox)
 
+Emulator and debugging features:
+* Breakpoints (execution, bus access, system trap, exception, interrupt level)
+* Single step, step over, step out
+* Disassembly view
+* Register view with editing
+* Memory viewer with editing
+* Instruction history view with export functionality
+* System trap history viewer
+* Peripheral debug view
+
 ## Building
 
 See the [BUILDING.md](docs/BUILDING.md) file for instructions on building.
@@ -52,3 +64,4 @@ See the [BUILDING.md](docs/BUILDING.md) file for instructions on building.
 * Thanks to Rubix for the ASCII Mac
 * Thanks to Daniel Balsom for the [Fluxfox](https://github.com/dbalsom/fluxfox) library
 * Thanks to the people of the Emudev and [Applesauce](https://applesaucefdc.com/) communities for their infinite wisdom
+* The [Musashi](https://github.com/kstenerud/Musashi) (by Karl Stenerud) and [MAME](https://github.com/mamedev/mame) (many authors) projects have been used as a reference for poorly documented components
