@@ -46,6 +46,7 @@ Supported floppy image formats:
 
 Emulator and debugging features:
 * Breakpoints (execution, bus access, system trap, exception, interrupt level)
+* Watchpoints with editing
 * Single step, step over, step out
 * Disassembly view
 * Register view with editing
@@ -53,6 +54,7 @@ Emulator and debugging features:
 * Instruction history view with export functionality
 * System trap history viewer
 * Peripheral debug view
+* Terminal for the serial ports
 
 ## Building
 

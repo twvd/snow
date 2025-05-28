@@ -12,6 +12,7 @@ use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::Workspace;
 use crate::{emulator::EmulatorState, version_string, widgets::registers::RegistersWidget};
+use snow_core::bus::Address;
 use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
 
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
@@ -1305,6 +1306,12 @@ impl eframe::App for SnowGui {
                         self.watchpoints
                             .draw(ui, self.memory.get_memory(), self.emu.get_cycles());
                     });
+                if let Some(edited_value) = self.watchpoints.take_edited() {
+                    for (offset, &byte) in edited_value.data.iter().enumerate() {
+                        self.emu
+                            .write_bus(edited_value.address.wrapping_add(offset as Address), byte);
+                    }
+                }
 
                 persistent_window_s!(self, "Instruction history", [800.0, 300.0])
                     .resizable([true, true])
