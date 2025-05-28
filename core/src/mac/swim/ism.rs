@@ -153,7 +153,7 @@ impl Swim {
 
     /// A memory-mapped I/O address was read
     pub(super) fn ism_read(&mut self, addr: Address) -> Option<Byte> {
-        let offset = (addr - 0xDFE1FF) / 512;
+        let offset = (addr >> 9) & 0x0F;
 
         if let Some(reg) = IsmRegister::from(offset, false, false) {
             let result = match reg {
@@ -225,7 +225,7 @@ impl Swim {
     }
 
     pub(super) fn ism_write(&mut self, addr: Address, value: Byte) {
-        let offset = (addr - 0xDFE1FF) / 512;
+        let offset = (addr >> 9) & 0x0F;
 
         if let Some(reg) = IsmRegister::from(offset, false, true) {
             //debug!(

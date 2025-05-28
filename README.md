@@ -20,7 +20,7 @@ It currently supports the following models:
 * Macintosh Plus
 * Macintosh SE (both non-FDHD and FDHD)
 * Macintosh Classic
-* Macintosh II (experimental)
+* Macintosh II (both non-FDHD and FDHD) (experimental)
 
 Currently supported hardware:
 
