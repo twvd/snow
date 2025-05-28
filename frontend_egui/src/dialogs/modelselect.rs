@@ -112,12 +112,13 @@ impl ModelSelectionDialog {
             MacModel::Early128K => 128 * 1024,
             MacModel::Early512K => 512 * 1024,
             MacModel::Plus | MacModel::SE | MacModel::SeFdhd | MacModel::Classic => 4 * 1024 * 1024,
-            MacModel::MacII => 8 * 1024 * 1024,
+            MacModel::MacII | MacModel::MacIIFDHD => 8 * 1024 * 1024,
         };
     }
 
     fn update_display_rom_requirement(&mut self) {
-        self.display_rom_required = matches!(self.selected_model, MacModel::MacII);
+        self.display_rom_required =
+            matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD);
         if !self.display_rom_required {
             self.display_rom_path.clear();
             self.display_rom_valid = false;
@@ -144,7 +145,7 @@ impl ModelSelectionDialog {
                 ("2MB".to_string(), 2 * 1024 * 1024),
                 ("4MB".to_string(), 4 * 1024 * 1024),
             ],
-            MacModel::MacII => vec![
+            MacModel::MacII | MacModel::MacIIFDHD => vec![
                 ("1MB".to_string(), 1 * 1024 * 1024),
                 ("2MB".to_string(), 2 * 1024 * 1024),
                 ("4MB".to_string(), 4 * 1024 * 1024),
@@ -384,7 +385,7 @@ impl ModelSelectionDialog {
             }
 
             // Mac II experimental warning
-            if self.selected_model == MacModel::MacII {
+            if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
                 ui.separator();
                 ui.add_space(10.0);
                 ui.label(

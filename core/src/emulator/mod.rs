@@ -358,7 +358,7 @@ impl Emulator {
                     adbmouse_sender,
                 )
             }
-            MacModel::MacII => {
+            MacModel::MacII | MacModel::MacIIFDHD => {
                 // Find display card ROM
                 let Some(ExtraROMs::MDC12(mdcrom)) =
                     extra_roms.iter().find(|p| matches!(p, ExtraROMs::MDC12(_)))
