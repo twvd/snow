@@ -582,7 +582,7 @@ impl EmulatorState {
             return;
         };
         sender
-            .send(EmulatorCommand::BusWrite(addr, vec![value]))
+            .send(EmulatorCommand::BusInspectWrite(addr, vec![value]))
             .unwrap();
     }
 

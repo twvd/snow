@@ -162,6 +162,13 @@ impl EmulatorConfig {
         }
     }
 
+    pub fn bus_inspect_write(&mut self, addr: Address, val: u8) -> Option<()> {
+        match self {
+            Self::Compact(c) => c.bus.inspect_write(addr, val),
+            Self::MacII(c) => c.bus.inspect_write(addr, val),
+        }
+    }
+
     pub fn cpu_tick(&mut self, ticks: Ticks) -> Result<Ticks> {
         match self {
             Self::Compact(c) => c.tick(ticks),
@@ -779,9 +786,15 @@ impl Tickable for Emulator {
                         }
                         self.status_update()?;
                     }
-                    EmulatorCommand::BusWrite(start, data) => {
+                    EmulatorCommand::BusInspectWrite(start, data) => {
                         for (i, d) in data.into_iter().enumerate() {
-                            self.config.bus_write(start + (i as Address), d);
+                            let addr = start.wrapping_add(i as Address);
+                            if self.config.bus_inspect_write(addr, d).is_none() {
+                                self.user_error(&format!(
+                                    "Could not write to address {:08X}",
+                                    addr
+                                ));
+                            }
                         }
                         self.status_update()?;
                     }

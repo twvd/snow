@@ -49,7 +49,7 @@ pub enum EmulatorCommand {
     StepOut,
     StepOver,
     ToggleBreakpoint(Breakpoint),
-    BusWrite(Address, Vec<u8>),
+    BusInspectWrite(Address, Vec<u8>),
     Disassemble(Address, usize),
     KeyEvent(KeyEvent),
     CpuSetPC(u32),

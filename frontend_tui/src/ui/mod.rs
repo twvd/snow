@@ -275,7 +275,8 @@ impl UserInterface {
                     16,
                 )?;
                 let data = std::fs::read(tokens[2])?;
-                self.cmdsender.send(EmulatorCommand::BusWrite(addr, data))?;
+                self.cmdsender
+                    .send(EmulatorCommand::BusInspectWrite(addr, data))?;
                 Ok(())
             }
             "dasm" => {

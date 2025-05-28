@@ -10,6 +10,7 @@ pub type Address = u32;
 
 /// Result of a bus read/write
 #[derive(Debug, PartialEq, Eq)]
+#[must_use]
 pub enum BusResult<TD: PrimInt> {
     /// Bus access executed ok, result value encapsulated
     /// (ignore for writes)
