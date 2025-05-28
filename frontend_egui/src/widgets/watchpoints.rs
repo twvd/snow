@@ -1,3 +1,4 @@
+use crate::consts::GLOBALS;
 use eframe::egui;
 use snow_core::{bus::Address, tickable::Ticks};
 use std::time::{Duration, Instant};
@@ -186,18 +187,28 @@ pub struct WatchpointsWidget {
     selected_type: WatchpointType,
     editing: Option<EditingState>,
     edited: Option<EditedValue>,
+    globals: Vec<String>,
+    globals_input: String,
+    globals_input_idx: Option<usize>,
 }
 
 impl Default for WatchpointsWidget {
     fn default() -> Self {
         Self {
-            watchpoints: Vec::new(),
-            address_input: String::new(),
-            description_input: String::new(),
+            watchpoints: vec![],
+            address_input: "".to_string(),
+            description_input: "".to_string(),
             string_length_input: "16".to_string(),
             selected_type: WatchpointType::U8,
             editing: None,
             edited: None,
+            globals: Vec::from_iter(
+                GLOBALS
+                    .iter()
+                    .map(|(n, a, _, _)| format!("{} (${:08X})", n, a)),
+            ),
+            globals_input: "".to_string(),
+            globals_input_idx: None,
         }
     }
 }
@@ -387,7 +398,7 @@ impl WatchpointsWidget {
 
         ui.vertical(|ui| {
             // Add new watchpoint controls
-            ui.collapsing("Add Watchpoint", |ui| {
+            ui.collapsing("Add watchpoint", |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Address (hex):");
                     ui.text_edit_singleline(&mut self.address_input);
@@ -446,6 +457,49 @@ impl WatchpointsWidget {
                         self.address_input.clear();
                         self.description_input.clear();
                     }
+                }
+            });
+            ui.collapsing("Add watchpoint on global variable", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Variable: ");
+                    if ui
+                        .add(
+                            egui_dropdown::DropDownBox::from_iter(
+                                &self.globals,
+                                "watchpoints_globals",
+                                &mut self.globals_input,
+                                |ui, trap| ui.selectable_label(false, trap),
+                            )
+                            .filter_by_input(true)
+                            .select_on_focus(true)
+                            .hint_text("Search global variables"),
+                        )
+                        .changed()
+                    {
+                        self.globals_input_idx =
+                            self.globals.iter().position(|n| *n == self.globals_input);
+                    }
+
+                    if ui
+                        .add_enabled(
+                            self.globals_input_idx.is_some(),
+                            egui::Button::new("Add watchpoint"),
+                        )
+                        .clicked()
+                    {
+                        let Some(global) = self.globals_input_idx.map(|i| &GLOBALS[i]) else {
+                            unreachable!()
+                        };
+                        self.add_watchpoint(global.1, global.2, global.0.to_string());
+                        self.globals_input.clear();
+                        self.globals_input_idx = None;
+                    }
+                });
+                if let Some(global) = self.globals_input_idx.map(|i| &GLOBALS[i]) {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(global.3).italics());
+                        ui.label(format!(" ({})", global.2));
+                    });
                 }
             });
 
