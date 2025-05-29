@@ -243,6 +243,8 @@ where
 
     fn read_32bit(&mut self, addr: Address) -> Option<Byte> {
         let result = match addr {
+            // bit 12
+            0x0B22 => Some(self.ram[addr as usize & self.ram_mask] & !(1 << (12 - 8))),
             // RAM
             0x0000_0000..=0x3FFF_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
             // ROM
