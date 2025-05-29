@@ -611,6 +611,7 @@ where
         use crate::{dbgprop_group, dbgprop_nest};
 
         let mut result = vec![
+            dbgprop_nest!("Apple Desktop Bus", self.via1.adb),
             dbgprop_nest!("SCSI controller (NCR 5380)", self.scsi),
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("VIA 1 (SY6522)", self.via1),

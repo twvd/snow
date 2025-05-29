@@ -650,11 +650,17 @@ where
         use crate::dbgprop_nest;
         use crate::debuggable::*;
 
-        vec![
+        let mut result = vec![
             dbgprop_nest!("SCSI controller (NCR 5380)", self.scsi),
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("VIA (SY6522)", self.via),
             dbgprop_nest!("Video circuit", self.video),
-        ]
+        ];
+
+        if self.model.has_adb() {
+            result.push(dbgprop_nest!("Apple Desktop Bus", self.via.adb));
+        }
+
+        result
     }
 }

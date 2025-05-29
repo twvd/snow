@@ -2,10 +2,11 @@ use crate::mac::adb::AdbDeviceResponse;
 
 use super::{AdbDevice, AdbDeviceInstance};
 
+use crate::debuggable::{Debuggable, DebuggableProperties};
 use log::*;
 
 /// ADB Bus/transceiver states
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, strum::IntoStaticStr)]
 enum AdbBusState {
     /// Send command - ST0 = 0, ST1 = 0
     Command,
@@ -175,5 +176,21 @@ impl AdbTransceiver {
         } else {
             false
         }
+    }
+}
+
+impl Debuggable for AdbTransceiver {
+    fn get_debug_properties(&self) -> DebuggableProperties {
+        use crate::debuggable::*;
+        use crate::{dbgprop_bool, dbgprop_enum, dbgprop_string, dbgprop_udec};
+
+        vec![
+            dbgprop_enum!("State", self.state),
+            dbgprop_udec!("Command buffer len", self.cmd.len()),
+            dbgprop_string!("Command", hex::encode(&self.cmd)),
+            dbgprop_udec!("Response buffer len", self.response.len()),
+            dbgprop_string!("Response", hex::encode(&self.response)),
+            dbgprop_bool!("Interrupt", self.int),
+        ]
     }
 }
