@@ -52,7 +52,7 @@ pub enum Breakpoint {
 
 /// Address error details
 #[derive(Debug, Clone, Copy)]
-struct AddressError {
+pub(super) struct AddressError {
     #[allow(dead_code)]
     function_code: u8,
     read: bool,
@@ -72,7 +72,7 @@ enum CpuError {
 
 /// M68000 exception groups
 #[derive(Debug, Clone, Copy)]
-enum ExceptionGroup {
+pub(super) enum ExceptionGroup {
     Group0,
     Group1,
     Group2,
@@ -229,6 +229,9 @@ where
     #[serde(skip)]
     systrap_history: VecDeque<SystrapHistoryEntry>,
     systrap_history_enabled: bool,
+
+    /// Stub FPU opcodes (to boot Mac II)
+    pub(super) fpu_stub: bool,
 }
 
 impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
@@ -260,6 +263,7 @@ where
             history_enabled: false,
             systrap_history: VecDeque::with_capacity(Self::HISTORY_SIZE),
             systrap_history_enabled: false,
+            fpu_stub: true,
         }
     }
 
@@ -271,6 +275,7 @@ where
     pub fn reset(&mut self) -> Result<()> {
         self.regs = RegisterFile::new();
         self.cycles = 0;
+        self.fpu_stub = true;
         let init_ssp = self.read_ticks(VECTOR_SP)?;
         let init_pc = self.read_ticks(VECTOR_RESET)?;
 
@@ -833,7 +838,7 @@ where
     }
 
     /// Raises a CPU exception in supervisor mode.
-    fn raise_exception(
+    pub(super) fn raise_exception(
         &mut self,
         group: ExceptionGroup,
         vector: Address,
@@ -1159,7 +1164,6 @@ where
                 }
 
                 self.advance_cycles(4)?;
-                log::debug!("Unhandled LINEF: {:04X}", instr.data);
                 self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEF, None)
             }
 
