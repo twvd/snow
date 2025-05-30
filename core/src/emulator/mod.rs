@@ -37,38 +37,69 @@ use comm::{
     EmulatorStatus, FddStatus, HddStatus, InputRecording,
 };
 
-macro_rules! indirection {
-    ($name:ident, $name_mut:ident, $($prop:ident).+, $t:ident) => {
-        pub fn $name(&self) -> &$t {
-            match self {
-                Self::Compact(c) => &c.$($prop).+,
-                Self::MacII(c) => &c.$($prop).+,
-            }
+macro_rules! dispatch {
+    (
+        // Immutable references (&self -> &Type)
+        immutable_refs {
+            $( fn $ref_method:ident(&self) -> $ref_ret:ty { $($ref_target:tt)* } )*
         }
 
-        pub fn $name_mut(&mut self) -> &mut $t {
-            match self {
-                Self::Compact(c) => &mut c.$($prop).+,
-                Self::MacII(c) => &mut c.$($prop).+,
-            }
+        // Mutable references (&mut self -> &mut Type)
+        mutable_refs {
+            $( fn $mut_ref_method:ident(&mut self) -> $mut_ref_ret:ty { $($mut_ref_target:tt)* } )*
         }
-    };
 
-    ($name:ident, $($prop:ident).+, $t:ident) => {
-        pub fn $name(&self) -> &$t {
-            match self {
-                Self::Compact(c) => &c.$($prop).+,
-                Self::MacII(c) => &c.$($prop).+,
-            }
+        // Immutable method calls (&self, args... -> RetType)
+        immutable_calls {
+            $( fn $immut_call_method:ident(&self $(, $immut_arg:ident: $immut_arg_ty:ty)*) -> $immut_call_ret:ty { $($immut_call_target:tt)* } )*
         }
-    };
 
-    ($name:ident, $($prop:ident).+(), $t:ident) => {
-        pub fn $name(&self) -> &$t {
-            match self {
-                Self::Compact(c) => &c.$($prop).+(),
-                Self::MacII(c) => &c.$($prop).+(),
-            }
+        // Mutable method calls (&mut self, args... -> RetType)
+        mutable_calls {
+            $( fn $mut_call_method:ident(&mut self $(, $mut_arg:ident: $mut_arg_ty:ty)*) -> $mut_call_ret:ty { $($mut_call_target:tt)* } )*
+        }
+    ) => {
+        #[allow(dead_code)]
+        impl EmulatorConfig {
+            // Generate immutable reference methods
+            $(
+                pub fn $ref_method(&self) -> $ref_ret {
+                    match self {
+                        Self::Compact(inner) => &inner.$($ref_target)*,
+                        Self::MacII(inner) => &inner.$($ref_target)*,
+                    }
+                }
+            )*
+
+            // Generate mutable reference methods
+            $(
+                pub fn $mut_ref_method(&mut self) -> $mut_ref_ret {
+                    match self {
+                        Self::Compact(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::MacII(inner) => &mut inner.$($mut_ref_target)*,
+                    }
+                }
+            )*
+
+            // Generate immutable method calls
+            $(
+                pub fn $immut_call_method(&self $(, $immut_arg: $immut_arg_ty)*) -> $immut_call_ret {
+                    match self {
+                        Self::Compact(inner) => inner.$($immut_call_target)*,
+                        Self::MacII(inner) => inner.$($immut_call_target)*,
+                    }
+                }
+            )*
+
+            // Generate mutable method calls
+            $(
+                pub fn $mut_call_method(&mut self $(, $mut_arg: $mut_arg_ty)*) -> $mut_call_ret {
+                    match self {
+                        Self::Compact(inner) => inner.$($mut_call_target)*,
+                        Self::MacII(inner) => inner.$($mut_call_target)*,
+                    }
+                }
+            )*
         }
     };
 }
@@ -82,209 +113,75 @@ enum EmulatorConfig {
     MacII(Box<CpuM68020<MacIIBus<ChannelRenderer>>>),
 }
 
-#[allow(dead_code)]
+dispatch! {
+    immutable_refs {
+        fn swim(&self) -> &Swim { bus.swim }
+        fn scsi(&self) -> &ScsiController { bus.scsi }
+        fn scc(&self) -> &Scc { bus.scc }
+        fn cpu_regs(&self) -> &RegisterFile { regs }
+        fn ram(&self) -> &[u8] { bus.ram }
+        fn ram_dirty(&self) -> &BitSet { bus.ram_dirty }
+    }
+
+    mutable_refs {
+        fn swim_mut(&mut self) -> &mut Swim { bus.swim }
+        fn scsi_mut(&mut self) -> &mut ScsiController { bus.scsi }
+        fn scc_mut(&mut self) -> &mut Scc { bus.scc }
+        fn cpu_regs_mut(&mut self) -> &mut RegisterFile { regs }
+        fn ram_mut(&mut self) -> &mut [u8] { bus.ram }
+        fn ram_dirty_mut(&mut self) -> &mut BitSet { bus.ram_dirty }
+    }
+
+    immutable_calls {
+        fn cpu_cycles(&self) -> Ticks { cycles }
+        fn cpu_breakpoints(&self) -> &[Breakpoint] { breakpoints() }
+        fn cpu_get_step_over(&self) -> Option<Address> { get_step_over() }
+        fn speed(&self) -> EmulatorSpeed { bus.speed }
+        fn debug_properties(&self) -> DebuggableProperties { bus.get_debug_properties() }
+        fn get_audio_channel(&self) -> AudioReceiver { bus.get_audio_channel() }
+    }
+
+    mutable_calls {
+        fn set_speed(&mut self, speed: EmulatorSpeed) -> () { bus.set_speed(speed) }
+
+        fn cpu_tick(&mut self, ticks: Ticks) -> Result<Ticks> { tick(ticks) }
+        fn cpu_set_breakpoint(&mut self, bp: Breakpoint) -> () { set_breakpoint(bp) }
+        fn cpu_breakpoints_mut(&mut self) -> &mut Vec<Breakpoint> { breakpoints_mut() }
+        fn cpu_clear_breakpoint(&mut self, bp: Breakpoint) -> () { clear_breakpoint(bp) }
+        fn cpu_enable_history(&mut self, v: bool) -> () { enable_history(v) }
+        fn cpu_enable_systrap_history(&mut self, v: bool) -> () { enable_systrap_history(v) }
+        fn cpu_set_pc(&mut self, pc: Address) -> Result<()> { set_pc(pc) }
+        fn cpu_get_clr_breakpoint_hit(&mut self) -> bool { get_clr_breakpoint_hit() }
+        fn cpu_read_history(&mut self) -> Option<&[HistoryEntry]> { read_history() }
+        fn cpu_read_systrap_history(&mut self) -> Option<&[SystrapHistoryEntry]> { read_systrap_history() }
+        fn cpu_prefetch_refill(&mut self) -> Result<()> { prefetch_refill() }
+        fn cpu_reset(&mut self) -> Result<()> { reset() }
+
+        fn bus_reset(&mut self) -> Result<()> { bus.reset() }
+        fn bus_write(&mut self, addr: Address, val: Byte) -> crate::bus::BusResult<Byte> { bus.write(addr, val) }
+        fn bus_inspect_read(&mut self, addr: Address) -> Option<Byte> { bus.inspect_read(addr) }
+        fn bus_inspect_write(&mut self, addr: Address, val: Byte) -> Option<()> { bus.inspect_write(addr, val) }
+
+        fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) -> () { bus.mouse_update_rel(relx, rely, button) }
+        fn mouse_update_abs(&mut self, x: u16, y: u16) -> () { bus.mouse_update_abs(x, y) }
+        fn progkey(&mut self) -> () { bus.progkey() }
+    }
+}
+
+// Special cases that differ between variants
+// TODO clean these up
 impl EmulatorConfig {
-    indirection!(swim, swim_mut, bus.swim, Swim);
-    indirection!(scsi, scsi_mut, bus.scsi, ScsiController);
-    indirection!(scc, scc_mut, bus.scc, Scc);
-    indirection!(cpu_regs, cpu_regs_mut, regs, RegisterFile);
-    indirection!(cpu_cycles, cycles, Ticks);
-    indirection!(speed, bus.speed, EmulatorSpeed);
-    indirection!(ram_dirty, ram_dirty_mut, bus.ram_dirty, BitSet);
-
-    pub fn cpu_breakpoints(&self) -> &[Breakpoint] {
-        match self {
-            Self::Compact(c) => c.breakpoints(),
-            Self::MacII(c) => c.breakpoints(),
-        }
-    }
-
-    pub fn cpu_breakpoints_mut(&mut self) -> &mut Vec<Breakpoint> {
-        match self {
-            Self::Compact(c) => c.breakpoints_mut(),
-            Self::MacII(c) => c.breakpoints_mut(),
-        }
-    }
-
-    pub fn cpu_set_breakpoint(&mut self, bp: Breakpoint) {
-        match self {
-            Self::Compact(c) => c.set_breakpoint(bp),
-            Self::MacII(c) => c.set_breakpoint(bp),
-        }
-    }
-
-    pub fn cpu_clear_breakpoint(&mut self, bp: Breakpoint) {
-        match self {
-            Self::Compact(c) => c.clear_breakpoint(bp),
-            Self::MacII(c) => c.clear_breakpoint(bp),
-        }
-    }
-
-    pub fn cpu_read_history(&mut self) -> Option<&[HistoryEntry]> {
-        match self {
-            Self::Compact(c) => c.read_history(),
-            Self::MacII(c) => c.read_history(),
-        }
-    }
-
-    pub fn cpu_read_systrap_history(&mut self) -> Option<&[SystrapHistoryEntry]> {
-        match self {
-            Self::Compact(c) => c.read_systrap_history(),
-            Self::MacII(c) => c.read_systrap_history(),
-        }
-    }
-
-    pub fn debug_properties(&self) -> DebuggableProperties {
-        match self {
-            Self::Compact(c) => c.bus.get_debug_properties(),
-            Self::MacII(c) => c.bus.get_debug_properties(),
-        }
-    }
-
-    pub fn ram(&self) -> &[u8] {
-        match self {
-            Self::Compact(c) => &c.bus.ram,
-            Self::MacII(c) => &c.bus.ram,
-        }
-    }
-
-    pub fn ram_mut(&mut self) -> &mut [u8] {
-        match self {
-            Self::Compact(c) => &mut c.bus.ram,
-            Self::MacII(c) => &mut c.bus.ram,
-        }
-    }
-
-    pub fn bus_inspect_read(&mut self, addr: Address) -> Option<Byte> {
-        match self {
-            Self::Compact(c) => c.bus.inspect_read(addr),
-            Self::MacII(c) => c.bus.inspect_read(addr),
-        }
-    }
-
-    pub fn bus_inspect_write(&mut self, addr: Address, val: u8) -> Option<()> {
-        match self {
-            Self::Compact(c) => c.bus.inspect_write(addr, val),
-            Self::MacII(c) => c.bus.inspect_write(addr, val),
-        }
-    }
-
-    pub fn cpu_tick(&mut self, ticks: Ticks) -> Result<Ticks> {
-        match self {
-            Self::Compact(c) => c.tick(ticks),
-            Self::MacII(c) => c.tick(ticks),
-        }
-    }
-
-    pub fn cpu_get_clr_breakpoint_hit(&mut self) -> bool {
-        match self {
-            Self::Compact(c) => c.get_clr_breakpoint_hit(),
-            Self::MacII(c) => c.get_clr_breakpoint_hit(),
-        }
-    }
-
-    pub fn cpu_enable_history(&mut self, v: bool) {
-        match self {
-            Self::Compact(c) => c.enable_history(v),
-            Self::MacII(c) => c.enable_history(v),
-        }
-    }
-
-    pub fn cpu_enable_systrap_history(&mut self, v: bool) {
-        match self {
-            Self::Compact(c) => c.enable_systrap_history(v),
-            Self::MacII(c) => c.enable_systrap_history(v),
-        }
-    }
-
-    pub fn cpu_set_pc(&mut self, pc: Address) -> Result<()> {
-        match self {
-            Self::Compact(c) => c.set_pc(pc),
-            Self::MacII(c) => c.set_pc(pc),
-        }
-    }
-
-    pub fn cpu_prefetch_refill(&mut self) -> Result<()> {
-        match self {
-            Self::Compact(c) => c.prefetch_refill(),
-            Self::MacII(c) => c.prefetch_refill(),
-        }
-    }
-
-    pub fn bus_write(&mut self, addr: Address, val: Byte) -> crate::bus::BusResult<Byte> {
-        match self {
-            Self::Compact(c) => c.bus.write(addr, val),
-            Self::MacII(c) => c.bus.write(addr, val),
-        }
-    }
-
-    pub fn get_audio_channel(&self) -> AudioReceiver {
-        match self {
-            Self::Compact(c) => c.bus.get_audio_channel(),
-            Self::MacII(c) => c.bus.get_audio_channel(),
-        }
-    }
-
-    pub fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) {
-        match self {
-            Self::Compact(c) => c.bus.mouse_update_rel(relx, rely, button),
-            Self::MacII(c) => c.bus.mouse_update_rel(relx, rely, button),
-        }
-    }
-
-    pub fn mouse_update_abs(&mut self, x: u16, y: u16) {
-        match self {
-            Self::Compact(c) => c.bus.mouse_update_abs(x, y),
-            Self::MacII(c) => c.bus.mouse_update_abs(x, y),
-        }
-    }
-
     pub fn video_blank(&mut self) -> Result<()> {
         match self {
-            Self::Compact(c) => c.bus.video.blank(),
-            Self::MacII(_) => Ok(()), // TODO
-        }
-    }
-
-    pub fn cpu_reset(&mut self) -> Result<()> {
-        match self {
-            Self::Compact(c) => c.reset(),
-            Self::MacII(c) => c.reset(),
-        }
-    }
-
-    pub fn bus_reset(&mut self) -> Result<()> {
-        match self {
-            Self::Compact(c) => c.bus.reset(),
-            Self::MacII(c) => c.bus.reset(),
-        }
-    }
-
-    pub fn progkey(&mut self) {
-        match self {
-            Self::Compact(c) => c.bus.progkey(),
-            Self::MacII(c) => c.bus.progkey(),
-        }
-    }
-
-    pub fn set_speed(&mut self, speed: EmulatorSpeed) {
-        match self {
-            Self::Compact(c) => c.bus.set_speed(speed),
-            Self::MacII(c) => c.bus.set_speed(speed),
+            Self::Compact(cpu) => cpu.bus.video.blank(),
+            Self::MacII(_) => Ok(()), // TODO: Implement for MacII
         }
     }
 
     pub fn keyboard_event(&mut self, ev: KeyEvent) -> Result<()> {
         match self {
-            Self::Compact(c) => c.bus.via.keyboard.event(ev),
-            Self::MacII(_) => unreachable!(),
-        }
-    }
-
-    pub fn cpu_get_step_over(&self) -> Option<Address> {
-        match self {
-            Self::Compact(c) => c.get_step_over(),
-            Self::MacII(c) => c.get_step_over(),
+            Self::Compact(cpu) => cpu.bus.via.keyboard.event(ev),
+            Self::MacII(_) => unreachable!(), // MacII uses ADB, not direct keyboard events
         }
     }
 }
@@ -441,7 +338,7 @@ impl Emulator {
                 regs: self.config.cpu_regs().clone(),
                 running: self.run,
                 breakpoints: self.config.cpu_breakpoints().to_vec(),
-                cycles: *self.config.cpu_cycles(),
+                cycles: self.config.cpu_cycles(),
                 fdd: core::array::from_fn(|i| FddStatus {
                     present: self.config.swim().drives[i].is_present(),
                     ejected: !self.config.swim().drives[i].floppy_inserted,
@@ -461,7 +358,7 @@ impl Emulator {
                             image: self.config.scsi().get_disk_imagefn(i).unwrap().to_owned(),
                         })
                 }),
-                speed: *self.config.speed(),
+                speed: self.config.speed(),
             })))?;
 
         // Next code stream for disassembly listing
@@ -540,7 +437,7 @@ impl Emulator {
         Ok(())
     }
 
-    pub fn get_audio(&self) -> AudioReceiver {
+    pub fn get_audio(&mut self) -> AudioReceiver {
         self.config.get_audio_channel()
     }
 
@@ -604,7 +501,7 @@ impl Emulator {
     }
 
     pub fn get_cycles(&self) -> Ticks {
-        *self.config.cpu_cycles()
+        self.config.cpu_cycles()
     }
 }
 
