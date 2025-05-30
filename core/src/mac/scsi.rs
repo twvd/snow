@@ -395,74 +395,77 @@ impl ScsiController {
         unreachable!()
     }
 
+    /// Asserts the REQ line (delayed)
+    fn assert_req(&mut self) {
+        // MacII has a race condition where it will get stuck if
+        // REQ is immediately set on a Data -> Status transition.
+        self.reg_csr.set_req(false);
+        self.set_req.set();
+    }
+
+    /// De-asserts the REQ line
+    fn deassert_req(&mut self) {
+        self.reg_csr.set_req(false);
+        self.set_req.get_clear();
+    }
+
     fn set_phase(&mut self, phase: ScsiBusPhase) {
         //debug!("Bus phase: {:?}", phase);
 
         self.busphase = phase;
         self.reg_csr.0 = 0;
-        self.reg_bsr.set_dma_req(false);
+        self.deassert_req();
 
         match self.busphase {
             ScsiBusPhase::Arbitration => {
                 self.reg_icr.set_aip(true);
-                self.reg_bsr.set_dma_end(false);
             }
             ScsiBusPhase::Selection => {
                 self.reg_icr.set_aip(false);
-                self.reg_bsr.set_dma_end(false);
             }
             ScsiBusPhase::Command => {
                 self.cmdbuf.clear();
                 self.responsebuf.clear();
                 self.reg_csr.set_bsy(true);
                 self.reg_csr.set_cd(true);
-                self.reg_csr.set_req(true);
                 self.reg_csr.set_msg(false);
+                self.assert_req();
             }
             ScsiBusPhase::DataIn => {
                 self.reg_csr.set_bsy(true);
                 self.reg_csr.set_cd(false);
                 self.reg_csr.set_io(true);
-                self.reg_csr.set_req(false);
                 self.reg_csr.set_msg(false);
                 self.reg_cdr = self.responsebuf.pop_front().unwrap();
-                if self.reg_mr.dma_mode() {
-                    self.reg_bsr.set_dma_req(true);
-                }
+
+                self.assert_req();
             }
             ScsiBusPhase::DataOut => {
                 self.reg_csr.set_bsy(true);
                 self.reg_csr.set_cd(false);
                 self.reg_csr.set_io(false);
-                self.reg_csr.set_req(true);
                 self.reg_csr.set_msg(false);
-                //if self.reg_mr.dma_mode() {
-                self.reg_bsr.set_dma_req(true);
-                //}
+
+                self.assert_req();
             }
             ScsiBusPhase::Status => {
                 self.reg_csr.set_bsy(true);
                 self.reg_csr.set_cd(true);
                 self.reg_csr.set_io(true);
 
-                // MacII has a race condition where it will get stuck if
-                // REQ is immediately set on a Data -> Status transition.
-                self.reg_csr.set_req(false);
-                self.set_req.set();
-
                 self.reg_csr.set_msg(false);
                 self.reg_cdr = self.status;
 
-                // Mac Plus needs this?
-                self.reg_bsr.set_dma_req(true);
+                self.assert_req();
             }
             ScsiBusPhase::MessageIn => {
                 self.reg_csr.set_bsy(true);
                 self.reg_csr.set_cd(true);
                 self.reg_csr.set_io(true);
-                self.reg_csr.set_req(true);
                 self.reg_csr.set_msg(true);
                 self.reg_cdr = 0;
+
+                self.assert_req();
             }
             _ => (),
         }
@@ -696,7 +699,11 @@ impl ScsiController {
     }
 
     pub fn get_drq(&self) -> bool {
-        self.reg_bsr.dma_req()
+        self.reg_mr.dma_mode()
+            && matches!(
+                self.busphase,
+                ScsiBusPhase::DataIn | ScsiBusPhase::DataOut | ScsiBusPhase::Status
+            )
     }
 
     pub fn read_dma(&mut self) -> u8 {
@@ -709,10 +716,12 @@ impl ScsiController {
 
     fn write_datareg(&mut self, val: u8) {
         if self.busphase == ScsiBusPhase::DataOut {
+            if self.reg_mr.dma_mode() {
+                self.assert_req();
+            }
             self.responsebuf.push_back(val);
             self.dataout_len -= 1;
             if self.dataout_len == 0 {
-                self.reg_bsr.set_dma_end(true);
                 // TODO inefficient
                 let datavec = Vec::from_iter(self.responsebuf.iter().cloned());
                 if let Ok(ScsiCmdResult::Status(s)) = self.cmd_run(Some(&datavec)) {
@@ -733,9 +742,11 @@ impl ScsiController {
             // Pump next byte to CDR for next read
             if let Some(b) = self.responsebuf.pop_front() {
                 self.reg_cdr = b;
+                self.assert_req();
             } else {
                 // Transfer completed
-                self.reg_bsr.set_dma_end(true);
+                self.deassert_req();
+
                 self.set_phase(ScsiBusPhase::Status);
             }
         }
@@ -771,7 +782,15 @@ impl BusMember<Address> for ScsiController {
 
                 Some(val)
             }
-            NcrReg::BSR => Some(self.reg_bsr.0),
+            NcrReg::BSR => Some(
+                self.reg_bsr
+                    .with_dma_req(self.get_drq())
+                    .with_dma_end(!matches!(
+                        self.busphase,
+                        ScsiBusPhase::DataIn | ScsiBusPhase::DataOut,
+                    ))
+                    .0,
+            ),
             NcrReg::RESET => {
                 self.reg_bsr.set_irq(false);
                 Some(0)
@@ -811,7 +830,7 @@ impl BusMember<Address> for ScsiController {
                     }
                     ScsiBusPhase::Command => {
                         if set.assert_ack() {
-                            self.reg_csr.set_req(false);
+                            self.deassert_req();
                         }
                         if clr.assert_ack() {
                             if self.cmdbuf.is_empty() {
@@ -847,7 +866,7 @@ impl BusMember<Address> for ScsiController {
                                     }
                                 }
                             } else {
-                                self.reg_csr.set_req(true);
+                                self.assert_req();
                             }
                         }
                     }
@@ -909,14 +928,6 @@ impl BusMember<Address> for ScsiController {
                     self.set_phase(ScsiBusPhase::Arbitration);
                     self.reg_cdr = self.reg_odr; // Initiator ID
                     return Some(());
-                }
-
-                if set.dma_mode()
-                    && (self.busphase == ScsiBusPhase::DataIn
-                        || self.busphase == ScsiBusPhase::DataOut)
-                {
-                    // Immediately flag DMA ready
-                    self.reg_bsr.set_dma_req(true);
                 }
 
                 match self.busphase {
