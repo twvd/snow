@@ -109,7 +109,12 @@ impl AdbDevice for AdbKeyboard {
                         }
                     }
                 }
-                response
+                if response.len() == 1 {
+                    // Must respond either 0 or 2 bytes
+                    AdbDeviceResponse::from_iter([0xFF, response[0]])
+                } else {
+                    response
+                }
             }
             2 => AdbDeviceResponse::from_iter(
                 AdbKeyboardReg2::default()
