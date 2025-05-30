@@ -28,6 +28,8 @@ const KEYBOARD_DELAY: Ticks = ONESEC_TICKS * 7 / 1000;
 
 const SHIFT_DELAY: Ticks = ONESEC_TICKS * 3 / 1000;
 
+const ADB_RESPONSE_TIME: Ticks = ONESEC_TICKS / 1000;
+
 bitfield! {
     /// VIA Register A (for classic models)
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,6 +220,7 @@ pub struct Via {
     onesec: Ticks,
 
     kbdshift_in: u8,
+    kbdshift_in_time: Ticks,
     kbdshift_out: u8,
     kbdshift_out_time: Ticks,
 
@@ -270,6 +273,7 @@ impl Via {
 
             onesec: 0,
             kbdshift_in: 0,
+            kbdshift_in_time: 0,
             kbdshift_out: 0,
             kbdshift_out_time: 0,
 
@@ -326,6 +330,7 @@ impl BusMember<Address> for Via {
             // Keyboard shift register
             0x0A => {
                 self.ifr.set_kbdready(false);
+                self.kbdshift_in_time = 0;
                 Some(self.kbdshift_in)
             }
 
@@ -436,7 +441,7 @@ impl BusMember<Address> for Via {
                 if self.model.has_adb() {
                     if let Some(b) = self.adb.io(self.b_out.adb_st0(), self.b_out.adb_st1()) {
                         self.kbdshift_in = b;
-                        self.ifr.set_kbdready(true);
+                        self.kbdshift_in_time = ADB_RESPONSE_TIME;
                     }
                 }
 
@@ -538,7 +543,14 @@ impl Tickable for Via {
                 } else {
                     self.adb.data_in(self.kbdshift_out);
                     self.kbdshift_in = 0xFF;
+                    self.kbdshift_in_time = 0;
                 }
+                self.ifr.set_kbdready(true);
+            }
+        }
+        if self.kbdshift_in_time > 0 {
+            self.kbdshift_in_time = self.kbdshift_in_time.saturating_sub(ticks);
+            if self.kbdshift_in_time == 0 {
                 self.ifr.set_kbdready(true);
             }
         }
@@ -593,6 +605,7 @@ impl Debuggable for Via {
                 "Keyboard shifter",
                 vec![
                     dbgprop_byte_bin!("Input", self.kbdshift_in),
+                    dbgprop_udec!("Input timer", self.kbdshift_in_time),
                     dbgprop_byte_bin!("Output", self.kbdshift_out),
                     dbgprop_udec!("Output timer", self.kbdshift_out_time),
                 ]

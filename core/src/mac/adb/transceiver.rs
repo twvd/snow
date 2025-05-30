@@ -184,13 +184,23 @@ impl Debuggable for AdbTransceiver {
         use crate::debuggable::*;
         use crate::{dbgprop_bool, dbgprop_enum, dbgprop_string, dbgprop_udec};
 
-        vec![
+        let mut result = vec![
             dbgprop_enum!("State", self.state),
             dbgprop_udec!("Command buffer len", self.cmd.len()),
             dbgprop_string!("Command", hex::encode(&self.cmd)),
             dbgprop_udec!("Response buffer len", self.response.len()),
             dbgprop_string!("Response", hex::encode(&self.response)),
             dbgprop_bool!("Interrupt", self.int),
-        ]
+            dbgprop_bool!("Global SRQ", self.device_has_srq()),
+        ];
+
+        for d in &self.devices {
+            result.push(dbgprop_bool!(
+                format!("Device {} SRQ", d.get_address()),
+                d.get_srq()
+            ));
+        }
+
+        result
     }
 }
