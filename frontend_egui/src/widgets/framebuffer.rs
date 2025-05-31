@@ -36,10 +36,6 @@ impl FramebufferWidget {
         }
     }
 
-    pub fn set_display_size(&mut self, width: u16, height: u16) {
-        self.display_size = [width, height];
-    }
-
     pub fn display_size<T>(&self) -> [T; 2]
     where
         T: From<u16>,
@@ -61,8 +57,7 @@ impl FramebufferWidget {
         f32::from(self.display_size[1]) * self.scale
     }
 
-    pub fn connect_receiver(&mut self, recv: Receiver<DisplayBuffer>, w: u16, h: u16) {
-        self.set_display_size(w, h);
+    pub fn connect_receiver(&mut self, recv: Receiver<DisplayBuffer>) {
         self.frame_recv = Some(recv);
     }
 
@@ -70,9 +65,8 @@ impl FramebufferWidget {
         if let Some(ref frame_recv) = self.frame_recv {
             if !frame_recv.is_empty() {
                 let frame = frame_recv.recv().unwrap();
-                assert_eq!(self.display_size[0], frame.width());
-                assert_eq!(self.display_size[1], frame.height());
 
+                self.display_size = [frame.width(), frame.height()];
                 self.viewport_texture.set(
                     egui::ColorImage {
                         size: self.display_size.map(|i| i.into()),

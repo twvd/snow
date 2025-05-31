@@ -37,8 +37,6 @@ pub type DisassemblyListing = Vec<DisassemblyEntry>;
 
 pub struct EmulatorInitParams {
     pub frame_receiver: Receiver<DisplayBuffer>,
-    pub display_width: u16,
-    pub display_height: u16,
 }
 
 /// Manages the state of the emulator and feeds input to the GUI
@@ -174,8 +172,6 @@ impl EmulatorState {
 
         Ok(EmulatorInitParams {
             frame_receiver: frame_recv,
-            display_width: model.display_width(),
-            display_height: model.display_height(),
         })
     }
 
