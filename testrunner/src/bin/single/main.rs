@@ -116,11 +116,8 @@ fn main() -> Result<()> {
     let mut control_seen = false;
     info!("Starting");
     while emulator.get_cycles() < args.cycles {
-        while let Ok(oframe) = frame_recv.try_recv() {
-            let frame = oframe
-                .iter()
-                .map(|b| b.load(std::sync::atomic::Ordering::Relaxed))
-                .collect::<Vec<_>>();
+        while let Ok(buf) = frame_recv.try_recv() {
+            let frame = buf.into_inner();
 
             if !frames.is_empty() && frame == *frames.back().unwrap() {
                 last_delay += 1;

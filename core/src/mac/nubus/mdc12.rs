@@ -1,5 +1,4 @@
 use std::fmt::Display;
-use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 use proc_bitfield::bitfield;
@@ -164,7 +163,8 @@ impl Mdc12 {
         (self.stride.0 as usize) << shift
     }
 
-    pub fn render(&self, buf: &DisplayBuffer) {
+    /// Renders current dislayed frame to target DisplayBuffer
+    pub fn render_to(&self, buf: &mut DisplayBuffer) {
         let fb = self.framebuffer();
         let palette = &self.palette;
         match self.bpp() {
@@ -173,15 +173,15 @@ impl Mdc12 {
                     let byte = idx / 8;
                     let bit = idx % 8;
                     if fb[byte] & (1 << (7 - bit)) == 0 {
-                        buf[idx * 4].store(0xEE, Ordering::Release);
-                        buf[idx * 4 + 1].store(0xEE, Ordering::Release);
-                        buf[idx * 4 + 2].store(0xEE, Ordering::Release);
+                        buf[idx * 4] = 0xEE;
+                        buf[idx * 4 + 1] = 0xEE;
+                        buf[idx * 4 + 2] = 0xEE;
                     } else {
-                        buf[idx * 4].store(0x22, Ordering::Release);
-                        buf[idx * 4 + 1].store(0x22, Ordering::Release);
-                        buf[idx * 4 + 2].store(0x22, Ordering::Release);
+                        buf[idx * 4] = 0x22;
+                        buf[idx * 4 + 1] = 0x22;
+                        buf[idx * 4 + 2] = 0x22;
                     }
-                    buf[idx * 4 + 3].store(0xFF, Ordering::Release);
+                    buf[idx * 4 + 3] = 0xFF;
                 }
             }
             Bpp::Two => {
@@ -189,10 +189,11 @@ impl Mdc12 {
                     let byte = idx / 4;
                     let shift = 6 - (idx % 4) * 2;
                     let color = palette[usize::from(fb[byte] >> shift) & 0x03];
-                    buf[idx * 4].store(color as u8, Ordering::Release);
-                    buf[idx * 4 + 1].store((color >> 8) as u8, Ordering::Release);
-                    buf[idx * 4 + 2].store((color >> 16) as u8, Ordering::Release);
-                    buf[idx * 4 + 3].store(0xFF, Ordering::Release);
+
+                    buf[idx * 4] = color as u8;
+                    buf[idx * 4 + 1] = (color >> 8) as u8;
+                    buf[idx * 4 + 2] = (color >> 16) as u8;
+                    buf[idx * 4 + 3] = 0xFF;
                 }
             }
             Bpp::Four => {
@@ -200,28 +201,30 @@ impl Mdc12 {
                     let byte = idx / 2;
                     let shift = 4 - (idx % 2) * 4;
                     let color = palette[usize::from(fb[byte] >> shift) & 0x0F];
-                    buf[idx * 4].store(color as u8, Ordering::Release);
-                    buf[idx * 4 + 1].store((color >> 8) as u8, Ordering::Release);
-                    buf[idx * 4 + 2].store((color >> 16) as u8, Ordering::Release);
-                    buf[idx * 4 + 3].store(0xFF, Ordering::Release);
+
+                    buf[idx * 4] = color as u8;
+                    buf[idx * 4 + 1] = (color >> 8) as u8;
+                    buf[idx * 4 + 2] = (color >> 16) as u8;
+                    buf[idx * 4 + 3] = 0xFF;
                 }
             }
             Bpp::Eight => {
                 for idx in 0..(self.monitor.width() * self.monitor.height()) {
                     let byte = fb[idx];
                     let color = palette[byte as usize];
-                    buf[idx * 4].store(color as u8, Ordering::Release);
-                    buf[idx * 4 + 1].store((color >> 8) as u8, Ordering::Release);
-                    buf[idx * 4 + 2].store((color >> 16) as u8, Ordering::Release);
-                    buf[idx * 4 + 3].store(0xFF, Ordering::Release);
+
+                    buf[idx * 4] = color as u8;
+                    buf[idx * 4 + 1] = (color >> 8) as u8;
+                    buf[idx * 4 + 2] = (color >> 16) as u8;
+                    buf[idx * 4 + 3] = 0xFF;
                 }
             }
             Bpp::TwentyFour => {
                 for idx in 0..(self.monitor.width() * self.monitor.height()) {
-                    buf[idx * 4].store(fb[idx * 4 + 1], Ordering::Release);
-                    buf[idx * 4 + 1].store(fb[idx * 4 + 2], Ordering::Release);
-                    buf[idx * 4 + 2].store(fb[idx * 4 + 3], Ordering::Release);
-                    buf[idx * 4 + 3].store(0xFF, Ordering::Release);
+                    buf[idx * 4] = fb[idx * 4 + 1];
+                    buf[idx * 4 + 1] = fb[idx * 4 + 2];
+                    buf[idx * 4 + 2] = fb[idx * 4 + 3];
+                    buf[idx * 4 + 3] = 0xFF;
                 }
             }
         }

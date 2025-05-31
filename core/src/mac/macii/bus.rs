@@ -385,8 +385,8 @@ where
 
     /// Prepares the image and sends it to the frontend renderer
     fn render(&mut self) -> Result<()> {
-        let buf = self.renderer.get_buffer();
-        self.nubus_devices[0].as_ref().unwrap().render(&buf);
+        let buf = self.renderer.buffer_mut();
+        self.nubus_devices[0].as_ref().unwrap().render_to(buf);
         self.renderer.update()?;
 
         Ok(())
@@ -481,6 +481,7 @@ where
         let _ = std::mem::replace(&mut self.via1.adb, oldadb);
 
         self.scc = Scc::new();
+
         self.overlay = true;
         self.via2.b_out.set_vfc3(false);
         self.via2.ddrb.set_vfc3(false);
