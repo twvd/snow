@@ -54,15 +54,11 @@
 //! |   |      Visible (512 dots)             | HBlank (192 dots)           | |
 //! +-------------------------------------------------------------------------+
 
-use std::sync::atomic::Ordering;
-
-use crate::{
-    bus::Address,
-    debuggable::Debuggable,
-    renderer::Renderer,
-    tickable::{Tickable, Ticks},
-    types::LatchingEvent,
-};
+use crate::bus::Address;
+use crate::debuggable::Debuggable;
+use crate::renderer::Renderer;
+use crate::tickable::{Tickable, Ticks};
+use crate::types::LatchingEvent;
 
 use anyhow::Result;
 
@@ -189,20 +185,20 @@ where
             &self.framebuffers[1]
         };
 
-        let buf = self.renderer.get_buffer();
+        let buf = self.renderer.buffer_mut();
         for idx in 0..Self::FRAME_VISIBLE_DOTS {
             let byte = idx / 8;
             let bit = idx % 8;
             if fb[byte] & (1 << (7 - bit)) == 0 {
-                buf[idx * 4].store(0xEE, Ordering::Release);
-                buf[idx * 4 + 1].store(0xEE, Ordering::Release);
-                buf[idx * 4 + 2].store(0xEE, Ordering::Release);
+                buf[idx * 4] = 0xEE;
+                buf[idx * 4 + 1] = 0xEE;
+                buf[idx * 4 + 2] = 0xEE;
             } else {
-                buf[idx * 4].store(0x22, Ordering::Release);
-                buf[idx * 4 + 1].store(0x22, Ordering::Release);
-                buf[idx * 4 + 2].store(0x22, Ordering::Release);
+                buf[idx * 4] = 0x22;
+                buf[idx * 4 + 1] = 0x22;
+                buf[idx * 4 + 2] = 0x22;
             }
-            buf[idx * 4 + 3].store(0xFF, Ordering::Release);
+            buf[idx * 4 + 3] = 0xFF;
         }
         self.renderer.update()?;
 

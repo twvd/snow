@@ -1,6 +1,4 @@
 use std::cell::RefCell;
-use std::sync::atomic::AtomicU8;
-use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{anyhow, Result};
@@ -12,9 +10,7 @@ use sdl2::render::{Canvas, Texture};
 use sdl2::video::Window;
 use sdl2::{EventPump, Sdl};
 
-use snow_core::renderer::{
-    new_displaybuffer, AudioReceiver, DisplayBuffer, Renderer, AUDIO_BUFFER_SIZE,
-};
+use snow_core::renderer::{AudioReceiver, DisplayBuffer, AUDIO_BUFFER_SIZE};
 
 pub struct SDLSingleton {
     context: Sdl,
@@ -36,7 +32,6 @@ thread_local! {
 pub struct SDLRenderer {
     canvas: Canvas<Window>,
     texture: Texture,
-    displaybuffer: DisplayBuffer,
     width: u16,
     #[allow(dead_code)]
     height: u16,
@@ -49,11 +44,8 @@ impl SDLRenderer {
     const BPP: usize = 4;
 
     pub fn update_from(&mut self, buffer: &DisplayBuffer) -> Result<()> {
-        // This is safe because SDL will only read from the transmuted
-        // buffer. Worst case is a garbled display.
-        let sdl_displaybuffer = unsafe { std::mem::transmute::<&[AtomicU8], &[u8]>(buffer) };
         self.texture
-            .update(None, sdl_displaybuffer, usize::from(self.width) * Self::BPP)?;
+            .update(None, buffer, usize::from(self.width) * Self::BPP)?;
         self.canvas.clear();
         self.canvas
             .copy(&self.texture, None, None)
@@ -80,11 +72,9 @@ impl SDLRenderer {
         );
         Ok(())
     }
-}
 
-impl Renderer for SDLRenderer {
     /// Creates a new renderer with a screen of the given size
-    fn new(width: u16, height: u16) -> Result<Self> {
+    pub fn new(width: u16, height: u16) -> Result<Self> {
         SDL.with(|cell| {
             let sdls = cell.borrow_mut();
 
@@ -109,22 +99,12 @@ impl Renderer for SDLRenderer {
             Ok(Self {
                 canvas,
                 texture,
-                displaybuffer: new_displaybuffer(width, height),
                 width,
                 height,
                 fps_count: 0,
                 fps_time: Instant::now(),
             })
         })
-    }
-
-    fn get_buffer(&mut self) -> DisplayBuffer {
-        Arc::clone(&self.displaybuffer)
-    }
-
-    /// Renders changes to screen
-    fn update(&mut self) -> Result<()> {
-        self.update_from(&Arc::clone(&self.displaybuffer))
     }
 }
 

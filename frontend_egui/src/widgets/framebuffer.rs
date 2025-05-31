@@ -3,7 +3,6 @@
 
 use std::fs::File;
 use std::path::Path;
-use std::sync::atomic::Ordering;
 
 use anyhow::{bail, Result};
 use crossbeam_channel::Receiver;
@@ -62,24 +61,6 @@ impl FramebufferWidget {
         f32::from(self.display_size[1]) * self.scale
     }
 
-    #[inline(always)]
-    fn convert_framebuffer(&self, framebuffer: &DisplayBuffer) -> Vec<egui::Color32> {
-        // TODO optimize this
-        let mut out = Vec::with_capacity(
-            usize::from(self.display_size[0]) * usize::from(self.display_size[1]),
-        );
-
-        for c in framebuffer.chunks(4) {
-            out.push(egui::Color32::from_rgb(
-                c[0].load(Ordering::Relaxed),
-                c[1].load(Ordering::Relaxed),
-                c[2].load(Ordering::Relaxed),
-            ));
-        }
-
-        out
-    }
-
     pub fn connect_receiver(&mut self, recv: Receiver<DisplayBuffer>, w: u16, h: u16) {
         self.set_display_size(w, h);
         self.frame_recv = Some(recv);
@@ -88,14 +69,22 @@ impl FramebufferWidget {
     pub fn draw(&mut self, ui: &mut egui::Ui) -> egui::Response {
         if let Some(ref frame_recv) = self.frame_recv {
             if !frame_recv.is_empty() {
-                self.frame = Some(frame_recv.recv().unwrap());
+                let frame = frame_recv.recv().unwrap();
+                assert_eq!(self.display_size[0], frame.width());
+                assert_eq!(self.display_size[1], frame.height());
+
                 self.viewport_texture.set(
                     egui::ColorImage {
                         size: self.display_size.map(|i| i.into()),
-                        pixels: self.convert_framebuffer(self.frame.as_ref().unwrap()),
+                        pixels: Vec::from_iter(
+                            frame
+                                .chunks_exact(4)
+                                .map(|c| egui::Color32::from_rgb(c[0], c[1], c[2])),
+                        ),
                     },
                     egui::TextureOptions::NEAREST,
                 );
+                self.frame = Some(frame);
             }
         }
 
@@ -123,12 +112,7 @@ impl FramebufferWidget {
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         let mut writer = encoder.write_header()?;
-        writer.write_image_data(
-            &frame
-                .iter()
-                .map(|b| b.load(Ordering::Relaxed))
-                .collect::<Vec<_>>(),
-        )?;
+        writer.write_image_data(frame)?;
 
         Ok(())
     }

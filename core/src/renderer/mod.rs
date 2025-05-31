@@ -3,9 +3,7 @@ pub mod channel;
 use anyhow::Result;
 use crossbeam_channel::Receiver;
 
-use std::iter;
-use std::sync::atomic::AtomicU8;
-use std::sync::Arc;
+use std::ops::{Deref, DerefMut};
 
 /// Audio frame channel receiver
 pub type AudioReceiver = Receiver<Box<[u8]>>;
@@ -14,13 +12,68 @@ pub type AudioReceiver = Receiver<Box<[u8]>>;
 /// TODO make this model-specific?
 pub const AUDIO_BUFFER_SIZE: usize = 500;
 
-/// Thread-safe display buffer
-pub type DisplayBuffer = Arc<Vec<AtomicU8>>;
+/// Display buffer for a single frame
+/// Always 24-bit color, RRGGBBAA
+pub struct DisplayBuffer {
+    width: usize,
+    height: usize,
+    frame: Vec<u8>,
+}
 
-pub fn new_displaybuffer(width: u16, height: u16) -> DisplayBuffer {
-    Arc::new(Vec::from_iter(
-        iter::repeat_with(|| AtomicU8::new(0)).take(usize::from(width) * usize::from(height) * 4),
-    ))
+impl DisplayBuffer {
+    pub fn new(width: impl Into<usize>, height: impl Into<usize>) -> Self {
+        let width = Into::<usize>::into(width);
+        let height = Into::<usize>::into(height);
+
+        Self {
+            width,
+            height,
+            frame: Self::allocate_buffer(width, height),
+        }
+    }
+
+    fn allocate_buffer(width: usize, height: usize) -> Vec<u8> {
+        let buffer_size = width * height * 4;
+
+        // TODO use uninitialized memory?
+        vec![0; buffer_size]
+    }
+
+    pub fn new_from_this(&self) -> Self {
+        Self {
+            width: self.width,
+            height: self.height,
+            frame: Self::allocate_buffer(self.width, self.height),
+        }
+    }
+
+    pub fn width(&self) -> u16 {
+        self.width as u16
+    }
+
+    pub fn height(&self) -> u16 {
+        self.height as u16
+    }
+
+    pub fn into_inner(self) -> Vec<u8> {
+        self.frame
+    }
+}
+
+impl Deref for DisplayBuffer {
+    type Target = [u8];
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        &self.frame
+    }
+}
+
+impl DerefMut for DisplayBuffer {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.frame
+    }
 }
 
 pub trait Renderer {
@@ -32,8 +85,8 @@ pub trait Renderer {
     /// Renders changes to screen
     fn update(&mut self) -> Result<()>;
 
-    /// Gets a reference to the (lockable) back buffer
-    fn get_buffer(&mut self) -> DisplayBuffer;
+    /// Gets a reference to the back buffer
+    fn buffer_mut(&mut self) -> &mut DisplayBuffer;
 }
 
 pub struct NullRenderer {
@@ -43,7 +96,7 @@ pub struct NullRenderer {
 impl Renderer for NullRenderer {
     fn new(width: u16, height: u16) -> Result<Self> {
         Ok(Self {
-            buffer: new_displaybuffer(width, height),
+            buffer: DisplayBuffer::new(width, height),
         })
     }
 
@@ -51,7 +104,8 @@ impl Renderer for NullRenderer {
         Ok(())
     }
 
-    fn get_buffer(&mut self) -> DisplayBuffer {
-        self.buffer.clone()
+    #[inline(always)]
+    fn buffer_mut(&mut self) -> &mut DisplayBuffer {
+        &mut self.buffer
     }
 }

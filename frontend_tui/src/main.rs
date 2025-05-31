@@ -21,7 +21,6 @@ use std::path::Path;
 use std::{fs, thread};
 
 use renderer_sdl::{SDLAudioSink, SDLEventPump, SDLRenderer};
-use snow_core::renderer::Renderer;
 
 #[derive(Eq, PartialEq, Clone, Copy, clap::ValueEnum)]
 enum MouseControl {
