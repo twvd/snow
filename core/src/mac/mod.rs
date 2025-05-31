@@ -250,6 +250,48 @@ pub enum ExtraROMs<'a> {
     MDC12(&'a [u8]),
 }
 
+/// Definitions of Macintosh monitors
+#[derive(Clone, Copy, strum::IntoStaticStr)]
+pub enum MacMonitor {
+    /// Macintosh 12" RGB monitor
+    RGB12,
+    /// Macintosh 14" high-res
+    HiRes14,
+    /// Macintosh 21" RGB monitor (1152x870)
+    RGB21,
+    /// Macintosh 19" RGB monitor (1024x768)
+    RGB19,
+}
+
+impl MacMonitor {
+    pub fn sense(self) -> [u8; 4] {
+        match self {
+            Self::RGB12 => [2, 2, 0, 2],
+            Self::HiRes14 => [6, 2, 4, 6],
+            Self::RGB21 => [0, 0, 0, 0],
+            Self::RGB19 => [7, 3, 4, 4],
+        }
+    }
+
+    pub fn width(self) -> usize {
+        match self {
+            Self::RGB12 => 512,
+            Self::HiRes14 => 640,
+            Self::RGB21 => 1152,
+            Self::RGB19 => 1024,
+        }
+    }
+
+    pub fn height(self) -> usize {
+        match self {
+            Self::RGB12 => 384,
+            Self::HiRes14 => 480,
+            Self::RGB21 => 870,
+            Self::RGB19 => 768,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

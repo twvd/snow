@@ -5,6 +5,7 @@ use proc_bitfield::bitfield;
 
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
+use crate::mac::MacMonitor;
 use crate::renderer::DisplayBuffer;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Field32, LatchingEvent, Word};
@@ -55,40 +56,9 @@ pub enum Bpp {
     TwentyFour,
 }
 
-#[derive(Clone, Copy, strum::IntoStaticStr)]
-pub enum Monitor {
-    /// Macintosh 12" RGB monitor
-    RGB12,
-    /// Macintosh 14" high-res
-    HiRes14,
-}
-
-impl Monitor {
-    pub fn sense(self) -> [u8; 4] {
-        match self {
-            Self::RGB12 => [2, 2, 0, 2],
-            Self::HiRes14 => [6, 2, 4, 6],
-        }
-    }
-
-    pub fn width(self) -> usize {
-        match self {
-            Self::RGB12 => 512,
-            Self::HiRes14 => 640,
-        }
-    }
-
-    pub fn height(self) -> usize {
-        match self {
-            Self::RGB12 => 384,
-            Self::HiRes14 => 480,
-        }
-    }
-}
-
 /// Macintosh Display Card 1.2.341-0868
 pub struct Mdc12 {
-    monitor: Monitor,
+    monitor: MacMonitor,
     rom: Vec<u8>,
     ctrl: CtrlReg,
     ramdac_ctrl: RamdacCtrlReg,
@@ -109,7 +79,7 @@ pub struct Mdc12 {
 impl Mdc12 {
     pub fn new(rom: &[u8]) -> Self {
         Self {
-            monitor: Monitor::HiRes14,
+            monitor: MacMonitor::HiRes14,
             rom: rom.to_owned(),
             ctrl: CtrlReg(0),
             ramdac_ctrl: RamdacCtrlReg(0),
