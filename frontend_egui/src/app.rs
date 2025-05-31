@@ -366,11 +366,7 @@ impl SnowGui {
         disks: Option<[Option<PathBuf>; 7]>,
     ) {
         match self.emu.init_from_rom(path, display_rom_path, disks) {
-            Ok(p) => self.framebuffer.connect_receiver(
-                p.frame_receiver,
-                p.display_width,
-                p.display_height,
-            ),
+            Ok(p) => self.framebuffer.connect_receiver(p.frame_receiver),
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
         }
         self.workspace.set_rom_path(path);
