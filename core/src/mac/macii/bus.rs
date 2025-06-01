@@ -82,7 +82,7 @@ where
     /// CrsrNew address
     const ADDR_CRSRNEW: Address = 0x08CE;
 
-    pub fn new(model: MacModel, rom: &[u8], mdcrom: &[u8], renderer: TRenderer) -> Self {
+    pub fn new(model: MacModel, rom: &[u8], mdcrom: &[u8], mut renderers: Vec<TRenderer>) -> Self {
         let ram_size = model.ram_size();
 
         let mut bus = Self {
@@ -113,14 +113,7 @@ where
             //vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
 
-            nubus_devices: [
-                Some(Mdc12::new(mdcrom, renderer)),
-                None,
-                None,
-                None,
-                None,
-                None,
-            ],
+            nubus_devices: core::array::from_fn(|_| renderers.pop().map(|r| Mdc12::new(mdcrom, r))),
         };
 
         // Disable memory test
@@ -523,12 +516,15 @@ where
 
         // NuBus slot IRQs and ticks
         let mut slot_irqs = 0;
-        for slot in 0..(self.nubus_devices.len()) {
-            if let Some(dev) = self.nubus_devices[slot].as_mut() {
-                dev.tick(ticks)?;
-                if dev.get_irq() {
-                    slot_irqs |= 1 << slot;
-                }
+        for (slot, dev) in self
+            .nubus_devices
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(i, o)| o.as_mut().map(|d| (i, d)))
+        {
+            dev.tick(ticks)?;
+            if dev.get_irq() {
+                slot_irqs |= 1 << slot;
             }
         }
         self.via2.a_in.set_v2irqs(!slot_irqs);
