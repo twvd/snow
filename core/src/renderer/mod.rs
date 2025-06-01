@@ -58,6 +58,16 @@ impl DisplayBuffer {
     pub fn into_inner(self) -> Vec<u8> {
         self.frame
     }
+
+    pub fn set_size(&mut self, width: impl Into<usize>, height: impl Into<usize>) {
+        let newwidth = Into::<usize>::into(width);
+        let newheight = Into::<usize>::into(height);
+        if newwidth != self.width || newheight != self.height {
+            self.width = newwidth;
+            self.height = newheight;
+            self.frame = Self::allocate_buffer(newwidth, newheight);
+        }
+    }
 }
 
 impl Deref for DisplayBuffer {

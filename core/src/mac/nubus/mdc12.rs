@@ -137,6 +137,7 @@ impl Mdc12 {
     pub fn render_to(&self, buf: &mut DisplayBuffer) {
         let fb = self.framebuffer();
         let palette = &self.palette;
+        buf.set_size(self.monitor.width(), self.monitor.height());
         match self.bpp() {
             Bpp::One => {
                 for idx in 0..(self.monitor.width() * self.monitor.height()) {
