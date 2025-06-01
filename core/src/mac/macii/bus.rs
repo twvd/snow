@@ -25,7 +25,6 @@ use num_traits::{FromPrimitive, PrimInt, ToBytes};
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
 pub struct MacIIBus<TRenderer: Renderer> {
-    renderer: TRenderer,
     cycles: Ticks,
 
     /// The currently emulated Macintosh model
@@ -58,18 +57,14 @@ pub struct MacIIBus<TRenderer: Renderer> {
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
 
-    // /// Last pushed audio sample
-    //last_audiosample: u8,
     /// Last vblank time (for syncing to video)
     vblank_time: Instant,
 
-    // /// VPA/E-clock sync in progress
-    //vpa_sync: bool,
     /// Programmer's key pressed
     progkey_pressed: LatchingEvent,
 
     /// NuBus cards (base address: $9)
-    nubus_devices: [Option<Mdc12>; 6],
+    nubus_devices: [Option<Mdc12<TRenderer>>; 6],
 }
 
 impl<TRenderer> MacIIBus<TRenderer>
@@ -91,7 +86,6 @@ where
         let ram_size = model.ram_size();
 
         let mut bus = Self {
-            renderer,
             cycles: 0,
             model,
             trace: false,
@@ -119,7 +113,14 @@ where
             //vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
 
-            nubus_devices: [Some(Mdc12::new(mdcrom)), None, None, None, None, None],
+            nubus_devices: [
+                Some(Mdc12::new(mdcrom, renderer)),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
         };
 
         // Disable memory test
@@ -382,15 +383,6 @@ where
             _ => unreachable!(),
         }
     }
-
-    /// Prepares the image and sends it to the frontend renderer
-    fn render(&mut self) -> Result<()> {
-        let buf = self.renderer.buffer_mut();
-        self.nubus_devices[0].as_ref().unwrap().render_to(buf);
-        self.renderer.update()?;
-
-        Ok(())
-    }
 }
 
 impl<TRenderer> Bus<Address, Byte> for MacIIBus<TRenderer>
@@ -512,9 +504,8 @@ where
             self.via2.tick(1)?;
         }
 
-        // VBlank interrupt
-        if self.nubus_devices[0].as_mut().unwrap().render.get_clear() {
-            self.render()?;
+        // Legacy VBlank interrupt
+        if self.cycles % (16_000_000 / 60) == 0 {
             self.via1.ifr.set_vblank(true);
 
             if self.speed == EmulatorSpeed::Video || self.speed == EmulatorSpeed::Accurate {
