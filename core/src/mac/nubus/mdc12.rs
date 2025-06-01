@@ -6,7 +6,7 @@ use proc_bitfield::bitfield;
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::mac::MacMonitor;
-use crate::renderer::DisplayBuffer;
+use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Field32, LatchingEvent, Word};
 
@@ -57,7 +57,8 @@ pub enum Bpp {
 }
 
 /// Macintosh Display Card 1.2.341-0868
-pub struct Mdc12 {
+pub struct Mdc12<TRenderer: Renderer> {
+    renderer: Option<TRenderer>,
     monitor: MacMonitor,
     rom: Vec<u8>,
     ctrl: CtrlReg,
@@ -76,9 +77,13 @@ pub struct Mdc12 {
     palette_cnt: usize,
 }
 
-impl Mdc12 {
-    pub fn new(rom: &[u8]) -> Self {
+impl<TRenderer> Mdc12<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    pub fn new(rom: &[u8], renderer: TRenderer) -> Self {
         Self {
+            renderer: Some(renderer),
             monitor: MacMonitor::HiRes14,
             rom: rom.to_owned(),
             ctrl: CtrlReg(0),
@@ -202,7 +207,10 @@ impl Mdc12 {
     }
 }
 
-impl BusMember<Address> for Mdc12 {
+impl<TRenderer> BusMember<Address> for Mdc12<TRenderer>
+where
+    TRenderer: Renderer,
+{
     fn read(&mut self, addr: Address) -> Option<u8> {
         // Assume normal slot, not super slot
         match addr & 0xFF_FFFF {
@@ -313,11 +321,19 @@ impl BusMember<Address> for Mdc12 {
     }
 }
 
-impl Tickable for Mdc12 {
+impl<TRenderer> Tickable for Mdc12<TRenderer>
+where
+    TRenderer: Renderer,
+{
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
         self.vblank_ticks += ticks;
         if self.vblank_ticks > 16_000_000 / 60 {
-            self.render.set();
+            // We have to move the renderer so we don't upset the borrow checker.
+            let mut renderer = self.renderer.take().unwrap();
+            self.render_to(renderer.buffer_mut());
+            self.renderer = Some(renderer);
+            self.renderer.as_mut().unwrap().update()?;
+
             self.vblank_ticks = 0;
             if self.vblank_enable {
                 self.vblank_irq = true;
@@ -327,7 +343,10 @@ impl Tickable for Mdc12 {
     }
 }
 
-impl Debuggable for Mdc12 {
+impl<TRenderer> Debuggable for Mdc12<TRenderer>
+where
+    TRenderer: Renderer,
+{
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
         use crate::{dbgprop_bool, dbgprop_group};
@@ -352,7 +371,10 @@ impl Debuggable for Mdc12 {
     }
 }
 
-impl Display for Mdc12 {
+impl<TRenderer> Display for Mdc12<TRenderer>
+where
+    TRenderer: Renderer,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Macintosh Display Card 8-24")
     }
