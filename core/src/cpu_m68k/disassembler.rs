@@ -360,7 +360,7 @@ impl<'a> Disassembler<'a> {
             }
 
             InstructionMnemonic::LEA => {
-                format!("{} {},A{}", mnemonic, self.ea(instr)?, instr.get_op2())
+                format!("{} {},A{}", mnemonic, self.ea(instr)?, instr.get_op1())
             }
 
             InstructionMnemonic::JMP | InstructionMnemonic::JSR => {
