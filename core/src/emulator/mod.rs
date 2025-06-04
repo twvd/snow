@@ -109,7 +109,7 @@ macro_rules! dispatch {
 enum EmulatorConfig {
     /// Compact series - Mac 128K, 512K, Plus, SE, Classic
     Compact(Box<CpuM68000<CompactMacBus<ChannelRenderer>>>),
-    /// Compact series - Mac 128K, 512K, Plus, SE, Classic
+    /// Macintosh II
     MacII(Box<CpuM68020<MacIIBus<ChannelRenderer>>>),
 }
 
@@ -165,19 +165,13 @@ dispatch! {
         fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) -> () { bus.mouse_update_rel(relx, rely, button) }
         fn mouse_update_abs(&mut self, x: u16, y: u16) -> () { bus.mouse_update_abs(x, y) }
         fn progkey(&mut self) -> () { bus.progkey() }
+        fn video_blank(&mut self) -> Result<()> { bus.video_blank() }
     }
 }
 
 // Special cases that differ between variants
 // TODO clean these up
 impl EmulatorConfig {
-    pub fn video_blank(&mut self) -> Result<()> {
-        match self {
-            Self::Compact(cpu) => cpu.bus.video.blank(),
-            Self::MacII(_) => Ok(()), // TODO: Implement for MacII
-        }
-    }
-
     pub fn keyboard_event(&mut self, ev: KeyEvent) -> Result<()> {
         match self {
             Self::Compact(cpu) => cpu.bus.via.keyboard.event(ev),
@@ -635,6 +629,7 @@ impl Tickable for Emulator {
                         // otherwise the wrong reset vector is loaded.
                         self.config.bus_reset()?;
                         self.config.cpu_reset()?;
+                        self.config.video_blank()?;
 
                         info!("Emulator reset");
                         self.status_update()?;

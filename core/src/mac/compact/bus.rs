@@ -440,6 +440,10 @@ where
     pub fn progkey(&mut self) {
         self.progkey_pressed.set();
     }
+
+    pub fn video_blank(&mut self) -> Result<()> {
+        self.video.blank()
+    }
 }
 
 impl<TRenderer> Bus<Address, Byte> for CompactMacBus<TRenderer>

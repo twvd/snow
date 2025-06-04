@@ -376,6 +376,13 @@ where
             _ => unreachable!(),
         }
     }
+
+    pub fn video_blank(&mut self) -> Result<()> {
+        for d in self.nubus_devices.iter_mut().flatten() {
+            d.blank()?;
+        }
+        Ok(())
+    }
 }
 
 impl<TRenderer> Bus<Address, Byte> for MacIIBus<TRenderer>

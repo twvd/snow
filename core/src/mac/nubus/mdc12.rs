@@ -205,6 +205,22 @@ where
             }
         }
     }
+
+    pub fn blank(&mut self) -> Result<()> {
+        self.vram.fill(0xFF);
+        self.ctrl.0 = 0;
+        self.render()?;
+        Ok(())
+    }
+
+    fn render(&mut self) -> Result<()> {
+        // We have to move the renderer so we don't upset the borrow checker.
+        let mut renderer = self.renderer.take().unwrap();
+        self.render_to(renderer.buffer_mut());
+        self.renderer = Some(renderer);
+        self.renderer.as_mut().unwrap().update()?;
+        Ok(())
+    }
 }
 
 impl<TRenderer> BusMember<Address> for Mdc12<TRenderer>
@@ -328,11 +344,7 @@ where
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
         self.vblank_ticks += ticks;
         if self.vblank_ticks > 16_000_000 / 60 {
-            // We have to move the renderer so we don't upset the borrow checker.
-            let mut renderer = self.renderer.take().unwrap();
-            self.render_to(renderer.buffer_mut());
-            self.renderer = Some(renderer);
-            self.renderer.as_mut().unwrap().update()?;
+            self.render()?;
 
             self.vblank_ticks = 0;
             if self.vblank_enable {
