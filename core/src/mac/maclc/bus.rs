@@ -230,7 +230,7 @@ where
             // VIA 1
             0xF0_0000..=0xF0_1FFF => self.via1.read(addr),
             // SCC
-            0xF0_2000..=0xF0_3FFF => self.scc.read(addr >> 1),
+            0xF0_4000..=0xF0_5FFF => self.scc.read(addr >> 1),
             // Sound
             0xF1_4000..=0xF1_5FFF => Some(0xFF),
             // SCSI
