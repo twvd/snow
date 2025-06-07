@@ -395,6 +395,7 @@ where
         self.scc = Scc::new();
 
         self.overlay = true;
+        self.via1.a_in.0 = 0xD5;
         Ok(())
     }
 }
