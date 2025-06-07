@@ -1048,6 +1048,9 @@ where
             InstructionMnemonic::MOVEtoCCR => self.op_move_to_ccr(instr),
             InstructionMnemonic::MOVEtoUSP => self.op_move_to_usp(instr),
             InstructionMnemonic::MOVEfromUSP => self.op_move_from_usp(instr),
+            InstructionMnemonic::MOVES_l => self.op_moves::<Long>(instr),
+            InstructionMnemonic::MOVES_w => self.op_moves::<Word>(instr),
+            InstructionMnemonic::MOVES_b => self.op_moves::<Byte>(instr),
             InstructionMnemonic::NEG_l => self.op_alu_zero::<Long>(instr, Self::alu_sub),
             InstructionMnemonic::NEG_w => self.op_alu_zero::<Word>(instr, Self::alu_sub),
             InstructionMnemonic::NEG_b => self.op_alu_zero::<Byte>(instr, Self::alu_sub),
@@ -3099,6 +3102,61 @@ where
             self.advance_cycles(2)?;
         }
 
+        Ok(())
+    }
+
+    /// MOVES - Move data to/from address space
+    fn op_moves<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+        // Fetch/decode the extension word
+        instr.fetch_extword(|| self.fetch())?;
+        let ext_word = instr.get_extword().unwrap().data;
+        let reg_num = (ext_word >> 12) & 15;
+        let is_addr_reg = (ext_word & 0x8000) != 0;
+        let dir_mem_to_reg = (ext_word & 0x0800) == 0;
+
+        if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+
+        let ea = self.calc_ea_addr::<T>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+
+        if dir_mem_to_reg {
+            // Memory to register transfer
+            // TODO: Use SFC function code when bus supports it
+            let value = self.read_ticks::<T>(ea)?;
+
+            if is_addr_reg {
+                // Memory to address register - sign extend
+                self.regs
+                    .write_a(reg_num as usize, value.expand_sign_extend());
+            } else {
+                // Memory to data register
+                self.regs.write_d::<T>(reg_num as usize, value);
+            }
+
+            // 68020+ additional cycles
+            if CPU_TYPE >= M68020 {
+                self.advance_cycles(2)?;
+            }
+        } else {
+            // Register to memory transfer
+            let value = if is_addr_reg {
+                T::chop(self.regs.read_a(reg_num as usize))
+            } else {
+                self.regs.read_d::<T>(reg_num as usize)
+            };
+
+            // TODO: Use DFC function code when bus supports it
+            self.write_ticks(ea, value)?;
+
+            // 68020+ additional cycles for long transfers
+            if CPU_TYPE >= M68020 && std::mem::size_of::<T>() == 4 {
+                self.advance_cycles(2)?;
+            }
+        }
+
+        self.prefetch_pump()?;
         Ok(())
     }
 

@@ -798,6 +798,26 @@ impl<'a> Disassembler<'a> {
             InstructionMnemonic::FSAVE => {
                 format!("{} {}", instr.mnemonic, self.ea(instr)?,)
             }
+            InstructionMnemonic::MOVES_b
+            | InstructionMnemonic::MOVES_w
+            | InstructionMnemonic::MOVES_l => {
+                let extword = self.get16()?;
+                let reg_num = (extword >> 12) & 15;
+                let is_addr_reg = (extword & 0x8000) != 0;
+                let dir_mem_to_reg = (extword & 0x0800) == 0;
+
+                let reg_name = if is_addr_reg {
+                    format!("A{}", reg_num & 7)
+                } else {
+                    format!("D{}", reg_num & 7)
+                };
+
+                if dir_mem_to_reg {
+                    format!("{} {},{}", mnemonic, self.ea(instr)?, reg_name)
+                } else {
+                    format!("{} {},{}", mnemonic, reg_name, self.ea(instr)?)
+                }
+            }
         };
 
         Ok(())

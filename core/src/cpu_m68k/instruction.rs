@@ -155,6 +155,9 @@ pub enum InstructionMnemonic {
     MOVEM_reg_w,
     MOVEM_reg_l,
     MOVEQ,
+    MOVES_b,
+    MOVES_w,
+    MOVES_l,
     // no MULU_l, MULU_b
     MULU_w,
     MULx_l,
@@ -701,6 +704,9 @@ impl Instruction {
         // M68010+ instructions
         (M68010, 0b0100_1110_0111_1010, 0b1111_1111_1111_1110, InstructionMnemonic::MOVEC_l),
         (M68010, 0b0100_1110_0111_0100, 0b1111_1111_1111_1111, InstructionMnemonic::RTD),
+        (M68010, 0b0000_1110_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVES_b),
+        (M68010, 0b0000_1110_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVES_w),
+        (M68010, 0b0000_1110_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVES_l),
 
         // M68020+ instructions
         (M68020, 0b1110_1100_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::BFCLR),
@@ -1126,6 +1132,9 @@ impl Instruction {
             | InstructionMnemonic::TAS
             | InstructionMnemonic::TRAP
             | InstructionMnemonic::TRAPV => InstructionSize::None,
+            InstructionMnemonic::MOVES_b => InstructionSize::Byte,
+            InstructionMnemonic::MOVES_w => InstructionSize::Word,
+            InstructionMnemonic::MOVES_l => InstructionSize::Long,
         }
     }
 
