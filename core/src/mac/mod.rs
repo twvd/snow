@@ -14,6 +14,7 @@ pub mod adb;
 pub mod asc;
 pub mod compact;
 pub mod macii;
+pub mod maclc;
 pub mod nubus;
 pub mod pluskbd;
 pub mod rtc;
@@ -41,6 +42,8 @@ pub enum MacModel {
     MacII,
     /// Macintosh II FDHD
     MacIIFDHD,
+    /// Macintosh LC
+    LC,
 }
 
 #[allow(clippy::match_like_matches_macro)]
@@ -58,6 +61,7 @@ impl MacModel {
             Self::Early512K => 512 * 1024,
             Self::Plus | Self::SE | Self::SeFdhd | Self::Classic => 4096 * 1024,
             Self::MacII | Self::MacIIFDHD => 8 * 1024 * 1024,
+            Self::LC => 10 * 1024 * 1024,
         }
     }
 
@@ -68,6 +72,7 @@ impl MacModel {
             Self::SeFdhd | Self::Classic => true,
             Self::MacII => false,
             Self::MacIIFDHD => true,
+            Self::LC => true,
         }
     }
 
@@ -85,6 +90,7 @@ impl MacModel {
             Self::Classic => &[DriveType::SuperDrive, DriveType::SuperDrive],
             Self::MacII => &[DriveType::GCR800K, DriveType::GCR800K],
             Self::MacIIFDHD => &[DriveType::SuperDrive, DriveType::SuperDrive],
+            Self::LC => &[DriveType::SuperDrive, DriveType::SuperDrive],
         }
     }
 
@@ -112,6 +118,8 @@ impl MacModel {
             Self::SE | Self::SeFdhd | Self::Classic => cycles % 16 >= 4,
             // No interleave for MacII
             Self::MacII | Self::MacIIFDHD => true,
+            // No interleave for LC
+            Self::LC => true,
         }
     }
 
@@ -122,6 +130,7 @@ impl MacModel {
             Self::SE | Self::SeFdhd | Self::Classic | Self::MacII | Self::MacIIFDHD => {
                 Some((0x000CFC, 0x574C5343))
             }
+            Self::LC => None, // TODO
         }
     }
 
@@ -134,6 +143,7 @@ impl MacModel {
             | Self::SeFdhd
             | Self::Classic => 512,
             Self::MacII | Self::MacIIFDHD => 640,
+            Self::LC => 640,
         }
     }
 
@@ -146,6 +156,7 @@ impl MacModel {
             | Self::SeFdhd
             | Self::Classic => 342,
             Self::MacII | Self::MacIIFDHD => 480,
+            Self::LC => 480,
         }
     }
 
@@ -158,6 +169,7 @@ impl MacModel {
             | Self::SeFdhd
             | Self::Classic => 1,
             Self::MacII | Self::MacIIFDHD => 4,
+            Self::LC => 4,
         }
     }
 
@@ -207,6 +219,10 @@ impl MacModel {
             == hex!("79fae48e2d5cfde68520e46616503963f8c16430903f410514b62c1379af20cb")
         {
             Some(Self::MacIIFDHD)
+        } else if digest[..]
+            == hex!("129391cc72f84c2b321709cad8281e30a45e50b3cf6e7afe7434c4d32c7b9d5b")
+        {
+            Some(Self::LC)
         } else {
             None
         }
@@ -221,6 +237,7 @@ impl MacModel {
             | Self::SeFdhd
             | Self::Classic => M68000,
             Self::MacII | Self::MacIIFDHD => M68020,
+            Self::LC => M68020,
         }
     }
 }
@@ -239,6 +256,7 @@ impl Display for MacModel {
                 Self::Classic => "Macintosh Classic",
                 Self::MacII => "Macintosh II",
                 Self::MacIIFDHD => "Macintosh II (FDHD)",
+                Self::LC => "Macintosh LC",
             }
         )
     }

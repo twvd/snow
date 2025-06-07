@@ -16,6 +16,7 @@ use crate::keymap::{KeyEvent, Keymap};
 use crate::mac::adb::{AdbKeyboard, AdbMouse};
 use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
 use crate::mac::macii::bus::MacIIBus;
+use crate::mac::maclc::bus::MacLCBus;
 use crate::mac::scc::Scc;
 use crate::mac::{ExtraROMs, MacModel};
 use crate::renderer::channel::ChannelRenderer;
@@ -67,6 +68,7 @@ macro_rules! dispatch {
                     match self {
                         Self::Compact(inner) => &inner.$($ref_target)*,
                         Self::MacII(inner) => &inner.$($ref_target)*,
+                        Self::MacLC(inner) => &inner.$($ref_target)*,
                     }
                 }
             )*
@@ -77,6 +79,7 @@ macro_rules! dispatch {
                     match self {
                         Self::Compact(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacII(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::MacLC(inner) => &mut inner.$($mut_ref_target)*,
                     }
                 }
             )*
@@ -87,6 +90,7 @@ macro_rules! dispatch {
                     match self {
                         Self::Compact(inner) => inner.$($immut_call_target)*,
                         Self::MacII(inner) => inner.$($immut_call_target)*,
+                        Self::MacLC(inner) => inner.$($immut_call_target)*,
                     }
                 }
             )*
@@ -97,6 +101,7 @@ macro_rules! dispatch {
                     match self {
                         Self::Compact(inner) => inner.$($mut_call_target)*,
                         Self::MacII(inner) => inner.$($mut_call_target)*,
+                        Self::MacLC(inner) => inner.$($mut_call_target)*,
                     }
                 }
             )*
@@ -111,6 +116,8 @@ enum EmulatorConfig {
     Compact(Box<CpuM68000<CompactMacBus<ChannelRenderer>>>),
     /// Macintosh II
     MacII(Box<CpuM68020<MacIIBus<ChannelRenderer>>>),
+    /// Macintosh LC
+    MacLC(Box<CpuM68020<MacLCBus<ChannelRenderer>>>),
 }
 
 dispatch! {
@@ -175,7 +182,7 @@ impl EmulatorConfig {
     pub fn keyboard_event(&mut self, ev: KeyEvent) -> Result<()> {
         match self {
             Self::Compact(cpu) => cpu.bus.via.keyboard.event(ev),
-            Self::MacII(_) => unreachable!(), // MacII uses ADB, not direct keyboard events
+            _ => unreachable!(), // Everything else uses ADB, not direct keyboard events
         }
     }
 }
@@ -280,6 +287,35 @@ impl Emulator {
                 cpu.reset()?;
                 (
                     EmulatorConfig::MacII(cpu),
+                    adbkeyboard_sender,
+                    adbmouse_sender,
+                )
+            }
+
+            MacModel::LC => {
+                // Initialize bus and CPU
+                let bus = MacLCBus::new(model, rom, renderer);
+                let mut cpu = Box::new(CpuM68020::new(bus));
+                assert_eq!(cpu.get_type(), model.cpu_type());
+
+                // Initialize input devices
+                let adbmouse_sender = if model.has_adb() {
+                    let (mouse, mouse_sender) = AdbMouse::new();
+                    cpu.bus.via1.adb.add_device(mouse);
+                    Some(mouse_sender)
+                } else {
+                    None
+                };
+                let adbkeyboard_sender = if model.has_adb() {
+                    let (keyboard, sender) = AdbKeyboard::new();
+                    cpu.bus.via1.adb.add_device(keyboard);
+                    Some(sender)
+                } else {
+                    None
+                };
+                cpu.reset()?;
+                (
+                    EmulatorConfig::MacLC(cpu),
                     adbkeyboard_sender,
                     adbmouse_sender,
                 )

@@ -113,6 +113,7 @@ impl ModelSelectionDialog {
             MacModel::Early512K => 512 * 1024,
             MacModel::Plus | MacModel::SE | MacModel::SeFdhd | MacModel::Classic => 4 * 1024 * 1024,
             MacModel::MacII | MacModel::MacIIFDHD => 8 * 1024 * 1024,
+            MacModel::LC => 10 * 1024 * 1024,
         };
     }
 
@@ -153,6 +154,7 @@ impl ModelSelectionDialog {
                 ("16MB".to_string(), 16 * 1024 * 1024),
                 ("32MB".to_string(), 32 * 1024 * 1024),
             ],
+            MacModel::LC => vec![],
         }
     }
 
