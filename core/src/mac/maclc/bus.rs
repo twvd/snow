@@ -52,7 +52,6 @@ pub struct MacLCBus<TRenderer: Renderer> {
     rom_mask: usize,
 
     overlay: bool,
-    amu_active: bool,
 
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
@@ -104,7 +103,6 @@ where
             rom_mask: rom.len() - 1,
 
             overlay: true,
-            amu_active: false,
             speed: EmulatorSpeed::Accurate,
             vblank_time: Instant::now(),
             progkey_pressed: LatchingEvent::default(),
@@ -149,14 +147,13 @@ where
             trace!("WRO {:08X} - {:02X}", addr, val);
         }
 
-        match addr {
-            0x0000_0000..=0x4FFF_FFFF => {
+        match addr & 0xFF_FFFF {
+            0xA0_0000..=0xDF_FFFF => {
                 debug!("Overlay off");
                 self.overlay = false;
                 Some(())
             }
-            // 0x0000_0000 - 0x4FFF_FFFF is ROM
-            0x5000_0000..=0xFFFF_FFFF => self.write_32bit(addr, val),
+            _ => self.write_32bit(addr, val),
         }
     }
 
@@ -165,53 +162,50 @@ where
             trace!("WR {:08X} - {:02X}", addr, val);
         }
 
-        match addr {
+        if addr & (1 << 31) != 0 {
+            // Expansion slot
+            return None;
+        }
+
+        match addr & 0xFF_FFFF {
             // RAM
-            0x0000_0000..=0x4FFF_FFFF => {
+            0x00_0000..=0x9F_FFFF => {
                 let idx = addr as usize & self.ram_mask;
                 self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
                 Some(self.ram[idx] = val)
             }
-            // I/O region (repeats)
-            0x5000_0000..=0x51FF_FFFF => match addr & 0x1_FFFF {
-                // VIA 1
-                0x0000_0000..=0x0000_1FFF => self.via1.write(addr, val),
-                // VIA 2
-                0x0000_2000..=0x0000_3FFF => self.via2.write(addr, val),
-                // SCC
-                0x0000_4000..=0x0000_5FFF => self.scc.write(addr >> 1, val),
-                // SCSI
-                0x0000_6000..=0x0000_6003 => Some(self.scsi.write_dma(val)),
-                0x0001_0000..=0x0001_1FFF => self.scsi.write(addr, val),
-                0x0001_2000..=0x0001_2FFF => Some(self.scsi.write_dma(val)),
-                // Sound
-                0x0001_4000..=0x0001_5FFF => Some(()),
-                // IWM
-                0x0001_6000..=0x0001_7FFF => self.swim.write(addr, val),
-                // Expansion area
-                //0x0001_8000..=0x0001_FFFF => Some(()),
-                _ => None,
-            },
+            // VIA 1
+            0xF0_0000..=0xF0_1FFF => self.via1.write(addr, val),
+            // SCC
+            0xF0_4000..=0xF0_5FFF => self.scc.write(addr >> 1, val),
+            // SCSI
+            0xF0_6000..=0xF0_7FFF => Some(self.scsi.write_dma(val)),
+            0xF1_0000..=0xF1_1FFF => self.scsi.write(addr, val),
+            0xF1_2000..=0xF1_2FFF => Some(self.scsi.write_dma(val)),
+            // Sound
+            0xF1_4000..=0xF1_5FFF => Some(()),
+            // SWIM
+            0xF1_6000..=0xF1_7FFF => self.swim.write(addr, val),
+            // VIA 2
+            0xF2_6000..=0xF2_7FFF => self.via2.write(addr, val),
+            // Expansion area
+            //0x0001_8000..=0x0001_FFFF => Some(()),
             _ => None,
         }
     }
 
-    fn write_24bit(&mut self, addr: Address, val: Byte) -> Option<()> {
-        self.write_32bit(self.amu_translate(addr), val)
-    }
-
     fn read_overlay(&mut self, addr: Address) -> Option<Byte> {
-        let result = match addr {
+        let result = match addr & 0xFF_FFFF {
             // ROM (overlay)
-            0x0000_0000..=0x3FFF_FFFF => {
+            0x00_0000..=0x9F_FFFF => {
                 Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
             }
-            0x4000_0000..=0x4FFF_FFFF => {
+            0xA0_0000..=0xDF_FFFF => {
                 log::debug!("Overlay off");
                 self.overlay = false;
                 Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
             }
-            0x5000_0000..=0xFFFF_FFFF => self.read_32bit(addr),
+            _ => self.read_32bit(addr),
         };
         if self.trace {
             trace!("RDO {:08X} - {:02X?}", addr, result);
@@ -220,38 +214,33 @@ where
         result
     }
 
-    fn read_24bit(&mut self, addr: Address) -> Option<Byte> {
-        self.read_32bit(self.amu_translate(addr))
-    }
-
     fn read_32bit(&mut self, addr: Address) -> Option<Byte> {
-        let result = match addr {
+        if addr & (1 << 31) != 0 {
+            // Expansion slot
+            return None;
+        }
+
+        let result = match addr & 0xFF_FFFF {
             // RAM
-            0x0000_0000..=0x3FFF_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
+            0x00_0000..=0x9F_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
             // ROM
-            0x4000_0000..=0x4FFF_FFFF => {
+            0xA0_0000..=0xDF_FFFF => {
                 Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
             }
-            // I/O region (repeats)
-            0x5000_0000..=0x51FF_FFFF => match addr & 0x1_FFFF {
-                // VIA 1
-                0x0000_0000..=0x0000_1FFF => self.via1.read(addr),
-                // VIA 2
-                0x0000_2000..=0x0000_3FFF => self.via2.read(addr),
-                // SCC
-                0x0000_4000..=0x0000_5FFF => self.scc.read(addr >> 1),
-                // SCSI
-                0x0000_6060..=0x0000_6063 => Some(self.scsi.read_dma()),
-                0x0001_0000..=0x0001_1FFF => self.scsi.read(addr),
-                0x0001_2000..=0x0001_2FFF => Some(self.scsi.read_dma()),
-                // Sound
-                0x0001_4000..=0x0001_5FFF => Some(0xFF),
-                // IWM
-                0x0001_6000..=0x0001_7FFF => self.swim.read(addr),
-                // Expansion area
-                //0x0001_8000..=0x0001_FFFF => Some(0xFF),
-                _ => None,
-            },
+            // VIA 1
+            0xF0_0000..=0xF0_1FFF => self.via1.read(addr),
+            // SCC
+            0xF0_2000..=0xF0_3FFF => self.scc.read(addr >> 1),
+            // Sound
+            0xF1_4000..=0xF1_5FFF => Some(0xFF),
+            // SCSI
+            0xF0_6000..=0xF0_7FFF => Some(self.scsi.read_dma()),
+            0xF1_0000..=0xF1_1FFF => self.scsi.read(addr),
+            0xF1_2000..=0xF1_2FFF => Some(self.scsi.read_dma()),
+            // SWIM
+            0xF1_6000..=0xF1_7FFF => self.swim.read(addr),
+            // VIA 2
+            0xF2_6000..=0xF2_7FFF => self.via2.read(addr),
             _ => None,
         };
 
@@ -337,21 +326,6 @@ where
         self.progkey_pressed.set();
     }
 
-    fn amu_translate(&self, addr: Address) -> Address {
-        match addr & 0xFFFFFF {
-            0x00_0000..=0x7F_FFFF => addr & 0x7F_FFFF,
-            0x80_0000..=0x8F_FFFF => 0x4000_0000 | (addr & 0xF_FFFF),
-            0x90_0000..=0x9F_FFFF => 0xF900_0000 | (addr & 0xF_FFFF),
-            0xA0_0000..=0xAF_FFFF => 0xFA00_0000 | (addr & 0xF_FFFF),
-            0xB0_0000..=0xBF_FFFF => 0xFB00_0000 | (addr & 0xF_FFFF),
-            0xC0_0000..=0xCF_FFFF => 0xFC00_0000 | (addr & 0xF_FFFF),
-            0xD0_0000..=0xDF_FFFF => 0xFD00_0000 | (addr & 0xF_FFFF),
-            0xE0_0000..=0xEF_FFFF => 0xFE00_0000 | (addr & 0xF_FFFF),
-            0xF0_0000..=0xFF_FFFF => 0x5000_0000 | (addr & 0xF_FFFF),
-            _ => unreachable!(),
-        }
-    }
-
     pub fn video_blank(&mut self) -> Result<()> {
         Ok(())
     }
@@ -370,9 +344,7 @@ where
             return BusResult::WaitState;
         }
 
-        let val = if self.amu_active {
-            self.read_24bit(addr)
-        } else if self.overlay {
+        let val = if self.overlay {
             self.read_overlay(addr)
         } else {
             self.read_32bit(addr)
@@ -381,15 +353,7 @@ where
         if let Some(v) = val {
             BusResult::Ok(v)
         } else {
-            if self.amu_active {
-                warn!(
-                    "Read from unimplemented address: {:06X} -> {:08X}",
-                    addr & 0xFFFFFF,
-                    self.amu_translate(addr),
-                );
-            } else {
-                warn!("Read from unimplemented address: {:08X}", addr);
-            }
+            warn!("Read from unimplemented address: {:08X}", addr);
             BusResult::Ok(0xFF)
         }
     }
@@ -399,9 +363,7 @@ where
             return BusResult::WaitState;
         }
 
-        let written = if self.amu_active {
-            self.write_24bit(addr, val)
-        } else if self.overlay {
+        let written = if self.overlay {
             self.write_overlay(addr, val)
         } else {
             self.write_32bit(addr, val)
@@ -412,16 +374,7 @@ where
         self.swim.intdrive = self.via1.a_out.drivesel();
 
         if written.is_none() {
-            if self.amu_active {
-                warn!(
-                    "Write to unimplemented address: {:06X} -> {:08X} {:02X}",
-                    addr & 0xFFFFFF,
-                    self.amu_translate(addr),
-                    val
-                );
-            } else {
-                warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
-            }
+            warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
         }
         BusResult::Ok(val)
     }
@@ -442,9 +395,6 @@ where
         self.scc = Scc::new();
 
         self.overlay = true;
-        self.via2.b_out.set_vfc3(false);
-        self.via2.ddrb.set_vfc3(false);
-        self.amu_active = false;
         Ok(())
     }
 }
@@ -457,8 +407,6 @@ where
         // This is called from the CPU, at the CPU clock speed
         assert_eq!(ticks, 1);
         self.cycles += ticks;
-
-        self.amu_active = self.via2.ddrb.vfc3() && !self.via2.b_out.vfc3();
 
         // The Mac II generates the VIA clock through some dividers on the logic board.
         // This same logic generates wait states when the VIAs are accessed.
