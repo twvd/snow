@@ -208,7 +208,7 @@ where
 
     /// Breakpoint hit latch
     #[serde(skip)]
-    pub(super) breakpoint_hit: LatchingEvent,
+    pub(in crate::cpu_m68k) breakpoint_hit: LatchingEvent,
 
     /// Next address to jump to for step over
     step_over_addr: Option<Address>,
@@ -381,7 +381,7 @@ where
     }
 
     /// Fetches a 16-bit value from prefetch queue
-    pub(super) fn fetch(&mut self) -> Result<Word> {
+    pub(in crate::cpu_m68k) fn fetch(&mut self) -> Result<Word> {
         if self.prefetch.is_empty() {
             self.prefetch_pump()?;
         }
@@ -1183,6 +1183,7 @@ where
             // FPU ---------------------------------------------------------------------------------
             InstructionMnemonic::FNOP => self.op_fnop(instr),
             InstructionMnemonic::FSAVE => self.op_fsave(instr),
+            InstructionMnemonic::FRESTORE => self.op_frestore(instr),
         }
     }
 
@@ -1396,18 +1397,26 @@ where
 
     /// Reads a value from the operand (ea_in) using the effective addressing mode specified
     /// by the instruction, directly or through indirection, depending on the mode.
-    fn read_ea<T: CpuSized>(&mut self, instr: &Instruction, ea_in: usize) -> Result<T> {
+    pub(in crate::cpu_m68k) fn read_ea<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        ea_in: usize,
+    ) -> Result<T> {
         self.read_ea_with(instr, instr.get_addr_mode()?, ea_in, false)
     }
 
     /// Reads a value from the operand (ea_in) using the effective addressing mode specified
     /// by the instruction, directly or through indirection, depending on the mode.
     /// Holds off on postincrement.
-    fn read_ea_hold<T: CpuSized>(&mut self, instr: &Instruction, ea_in: usize) -> Result<T> {
+    pub(in crate::cpu_m68k) fn read_ea_hold<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        ea_in: usize,
+    ) -> Result<T> {
         self.read_ea_with(instr, instr.get_addr_mode()?, ea_in, true)
     }
 
-    fn read_ea_with<T: CpuSized>(
+    pub(in crate::cpu_m68k) fn read_ea_with<T: CpuSized>(
         &mut self,
         instr: &Instruction,
         addrmode: AddressingMode,
@@ -1459,7 +1468,7 @@ where
 
     /// Writes a value to the operand (ea_in) using the effective addressing mode specified
     /// by the instruction, directly or through indirection, depending on the mode.
-    pub(super) fn write_ea<T: CpuSized>(
+    pub(in crate::cpu_m68k) fn write_ea<T: CpuSized>(
         &mut self,
         instr: &Instruction,
         ea_in: usize,
@@ -1478,7 +1487,7 @@ where
     /// Writes a value to the operand (ea_in) using the effective addressing mode specified
     /// by the instruction, directly or through indirection, depending on the mode.
     #[allow(dead_code)]
-    fn write_ea_hold<T: CpuSized>(
+    pub(in crate::cpu_m68k) fn write_ea_hold<T: CpuSized>(
         &mut self,
         instr: &Instruction,
         ea_in: usize,
@@ -1494,7 +1503,7 @@ where
         )
     }
 
-    fn write_ea_with<T: CpuSized>(
+    pub(in crate::cpu_m68k) fn write_ea_with<T: CpuSized>(
         &mut self,
         instr: &Instruction,
         addrmode: AddressingMode,
