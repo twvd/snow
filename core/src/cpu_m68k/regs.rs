@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::CpuSized;
 use crate::bus::Address;
+use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::types::Long;
 
 use std::fmt;
@@ -120,6 +121,11 @@ pub struct RegisterFile {
 
     /// Master Stack Pointer (68020+)
     pub msp: Address,
+
+    /// FPU registers
+    /// TODO serialization of FPU registers
+    #[serde(skip)]
+    pub fpu: FpuRegisterFile,
 }
 
 impl RegisterFile {
