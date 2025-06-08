@@ -1,5 +1,6 @@
 use arpfloat::{RoundingMode, Semantics};
 
+pub mod instruction;
 pub mod ops_generic;
 pub mod regs;
 

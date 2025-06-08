@@ -219,6 +219,7 @@ pub enum InstructionMnemonic {
     FNOP,
     FSAVE,
     FRESTORE,
+    FMOVE,
 }
 
 /// Addressing modes
@@ -717,9 +718,10 @@ impl Instruction {
         (M68020, 0b0100_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CHK_l),
 
         // M68020+ FPU instructions
-        (M68020, 0b1111_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::FSAVE),
-        (M68020, 0b1111_0001_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::FRESTORE),
-        (M68020, 0b1111_0000_1000_0000, 0b1111_0001_1111_1111, InstructionMnemonic::FNOP),
+        (M68020, 0b1111_0011_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FSAVE),
+        (M68020, 0b1111_0011_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FRESTORE),
+        (M68020, 0b1111_0010_1000_0000, 0b1111_1111_1111_1111, InstructionMnemonic::FNOP),
+        (M68020, 0b1111_0010_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FMOVE),
         (M68000, 0b1111_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::LINEF),
     ];
 
@@ -1104,6 +1106,7 @@ impl Instruction {
             | InstructionMnemonic::CHK_w
             | InstructionMnemonic::DBcc
             | InstructionMnemonic::EXG
+            | InstructionMnemonic::FMOVE
             | InstructionMnemonic::FNOP
             | InstructionMnemonic::FRESTORE
             | InstructionMnemonic::FSAVE
