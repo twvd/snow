@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use arrayvec::ArrayVec;
 use either::Either;
 use itertools::Itertools;
+use num::FromPrimitive;
 
 use std::fmt::Write;
 
@@ -12,6 +13,7 @@ use crate::cpu_m68k::instruction::{
 use crate::cpu_m68k::regs::Register;
 use crate::types::{Byte, Word};
 
+use super::fpu::instruction::{FmoveControlReg, FmoveExtWord};
 use super::instruction::{
     AddressingMode, Direction, Instruction, InstructionMnemonic, InstructionSize,
 };
@@ -796,7 +798,25 @@ impl<'a> Disassembler<'a> {
                 instr.mnemonic.to_string()
             }
             InstructionMnemonic::FSAVE | InstructionMnemonic::FRESTORE => {
-                format!("{} {}", instr.mnemonic, self.ea(instr)?,)
+                format!("{} {}", instr.mnemonic, self.ea(instr)?)
+            }
+            InstructionMnemonic::FMOVE => {
+                let extword = FmoveExtWord(self.get16()?);
+                match extword.subop() {
+                    0b100 => format!(
+                        "{} {},{}",
+                        mnemonic,
+                        self.ea(instr)?,
+                        FmoveControlReg::from_u8(extword.reg()).context("Invalid ctrlreg")?
+                    ),
+                    0b101 => format!(
+                        "{} {},{}",
+                        mnemonic,
+                        FmoveControlReg::from_u8(extword.reg()).context("Invalid ctrlreg")?,
+                        self.ea(instr)?
+                    ),
+                    _ => format!("{} ???", instr.mnemonic),
+                }
             }
         };
 
