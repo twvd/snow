@@ -795,7 +795,7 @@ impl<'a> Disassembler<'a> {
                 self.get16()?;
                 instr.mnemonic.to_string()
             }
-            InstructionMnemonic::FSAVE => {
+            InstructionMnemonic::FSAVE | InstructionMnemonic::FRESTORE => {
                 format!("{} {}", instr.mnemonic, self.ea(instr)?,)
             }
         };
