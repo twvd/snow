@@ -815,6 +815,22 @@ impl<'a> Disassembler<'a> {
                         FmoveControlReg::from_u8(extword.reg()).context("Invalid ctrlreg")?,
                         self.ea(instr)?
                     ),
+                    0b010 => format!(
+                        "{}.{} {},FP{}",
+                        instr.mnemonic,
+                        match extword.src_spec() {
+                            0b000 => "l",
+                            0b001 => "s",
+                            0b010 => "x",
+                            0b011 => "p",
+                            0b100 => "w",
+                            0b101 => "d",
+                            0b110 => "b",
+                            _ => "?",
+                        },
+                        self.ea(instr)?,
+                        extword.dst_reg()
+                    ),
                     _ => format!("{} ???", instr.mnemonic),
                 }
             }
