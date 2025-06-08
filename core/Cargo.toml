@@ -24,7 +24,7 @@ memmap2 = { version = "0.9.4", optional = true }
 num = "0.4.3"
 num-derive = "0.4.2"
 num-traits = "0.2.19"
-proc-bitfield = "0.4.0"
+proc-bitfield = "0.5.2"
 serde = { version = "1.0.203", features = ["serde_derive", "derive"] }
 serde_json = "1.0.117"
 snow_floppy = { version = "0.1.0", path = "../floppy" }

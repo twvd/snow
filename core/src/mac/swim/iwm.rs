@@ -14,7 +14,7 @@ use crate::{bus::Address, mac::swim::drive::DriveType, types::Byte};
 bitfield! {
     /// IWM handshake register
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct IwmHandshake(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct IwmHandshake(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         /// Write buffer underrun
         /// 1 = no under-run, 0 = under-run occurred
         pub underrun: bool @ 6,
@@ -34,7 +34,7 @@ impl Default for IwmHandshake {
 bitfield! {
     /// IWM status register
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct IwmStatus(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct IwmStatus(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         /// Lower bits of MODE
         pub mode_low: u8 @ 0..=4,
 
@@ -55,7 +55,7 @@ bitfield! {
 bitfield! {
     /// IWM mode
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct IwmMode(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct IwmMode(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         /// Full MODE register
         pub mode: u8 @ 0..=7,
 

@@ -41,7 +41,7 @@ bitfield! {
     /// SCC read register 0
     /// Transmit and Receive buffer status and external status
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-    pub struct RdReg0(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct RdReg0(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         /// RX character available
         pub rx_char: bool @ 0,
         /// Zero Count
@@ -65,7 +65,7 @@ bitfield! {
     /// SCC read register 1
     /// Special Receive Condition status bits and the residue codes for the l-field in SDLC mode
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize,Default)]
-    pub struct RdReg1(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct RdReg1(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         pub all_sent: bool @ 0,
         pub residue: u8 @ 1..=3,
         pub parity_error: bool @ 4,
@@ -79,7 +79,7 @@ bitfield! {
     /// SCC read register 2
     /// Interrupt vector/status bits
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct RdReg2(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct RdReg2(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         pub intvec: u8 @ 0..=7,
         pub status_low: u8 @ 1..=3,
         pub status_high: u8 @ 4..=6,
@@ -90,7 +90,7 @@ bitfield! {
     /// SCC read register 3
     /// Interrupt pending
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-    pub struct RdReg3(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct RdReg3(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         pub b_ext_status_ip: bool @ 0,
         pub b_tx_ip: bool @ 1,
         pub b_rx_ip: bool @ 2,
@@ -104,7 +104,7 @@ bitfield! {
     /// SCC write register 0
     /// CRC initialize, initialization commands for the various modes, register pointers
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct WrReg0(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct WrReg0(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         pub reg: u8 @ 0..=2,
         pub cmdcode: u8 [try_get_fn SccCommand::from_u8 -> Option<SccCommand>] @ 3..=5,
         pub crcreset: u8 @ 6..=7,
@@ -115,7 +115,7 @@ bitfield! {
     /// SCC write register 1
     /// Transmit/Receive Interrupt and Data Transfer Mode Definition
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct WrReg1(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct WrReg1(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         pub ext_ie: bool @ 0,
         pub tx_ie: bool @ 1,
         pub parity_special: bool @ 2,
@@ -128,7 +128,7 @@ bitfield! {
     /// SCC write register 3
     /// Receive Parameters and Control
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct WrReg3(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct WrReg3(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         pub rx_enable: bool @ 0,
         pub sync_load_inhibit: bool @ 1,
         pub sdlc_address_search: bool @ 2,
@@ -145,7 +145,7 @@ bitfield! {
     /// SCC write register 5
     /// Transmit parameters and controls
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct WrReg5(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct WrReg5(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         pub tx_crc: bool @ 0,
         pub rts: bool @ 1,
         pub sdlc: bool @ 2,
@@ -160,7 +160,7 @@ bitfield! {
     /// SCC write register 9
     /// Master Interrupt Control and Reset
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-    pub struct WrReg9(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct WrReg9(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         /// Vector Includes Status
         pub vis: bool @ 0,
         /// No Vector
@@ -178,7 +178,7 @@ bitfield! {
     /// SCC write register 15
     /// External/status interrupt control
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-    pub struct WrReg15(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct WrReg15(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         pub sdlc_en: bool @ 0,
         pub zero_count: bool @ 1,
         pub sdlc_fifo: bool @ 2,
@@ -195,7 +195,7 @@ bitfield! {
     /// SCC read register 15
     /// External/status interrupt control
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-    pub struct RdReg15(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct RdReg15(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         pub zero_count: bool @ 1,
         pub dcd: bool @ 3,
         pub sync_hunt: bool @ 4,

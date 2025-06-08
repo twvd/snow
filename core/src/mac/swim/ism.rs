@@ -33,7 +33,7 @@ enum IsmRegister {
 bitfield! {
     /// ISM mode/status register
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct IsmStatus(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct IsmStatus(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         pub clear_fifo: bool @ 0,
         pub drive1_enable: bool @ 1,
         pub drive2_enable: bool @ 2,
@@ -48,7 +48,7 @@ bitfield! {
 bitfield! {
     /// ISM error register
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct IsmError(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct IsmError(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         pub underrun: bool @ 0,
         pub mark_from_dr: bool @ 1,
         pub overrun: bool @ 2,
@@ -62,7 +62,7 @@ bitfield! {
 bitfield! {
     /// ISM handshake register
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct IsmHandshake(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct IsmHandshake(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         pub mark: bool @ 0,
         pub crc_error: bool @ 1,
         pub rddata: bool @ 2,
@@ -77,7 +77,7 @@ bitfield! {
 bitfield! {
     /// ISM setup register
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct IsmSetup(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct IsmSetup(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         /// HEADSEL/Q3
         pub hdsel: bool @ 0,
         /// 3.5SEL (inverted)

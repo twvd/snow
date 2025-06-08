@@ -50,7 +50,7 @@ impl std::fmt::Display for Register {
 bitfield! {
     /// SR register bitfield
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-    pub struct RegisterSR(pub u16): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct RegisterSR(pub u16): Debug, FromStorage, IntoStorage, DerefStorage {
         /// Full SR (with masking)
         pub sr: u16 [set_fn (|v| v & 0b1011011100011111)] @ ..,
         /// Condition Code Register

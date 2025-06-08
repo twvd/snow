@@ -470,7 +470,7 @@ impl ExtWord {
 bitfield! {
     /// BFxxx extension word
     #[derive(Clone, Copy, PartialEq, Eq)]
-    pub struct BfxExtWord(pub Word): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct BfxExtWord(pub Word): Debug, FromStorage, IntoStorage, DerefStorage {
         pub width: Long @ 0..=4,
         pub width_reg: usize @ 0..=2,
         pub fdw: bool @ 5,
@@ -484,7 +484,7 @@ bitfield! {
 bitfield! {
     /// MULx.l extension word
     #[derive(Clone, Copy, PartialEq, Eq)]
-    pub struct MulxExtWord(pub Word): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct MulxExtWord(pub Word): Debug, FromStorage, IntoStorage, DerefStorage {
         pub dh: usize @ 0..=2,
         pub size: bool @ 10,
         pub signed: bool @ 11,
@@ -495,7 +495,7 @@ bitfield! {
 bitfield! {
     /// DIV.l/DIVS.l extension word
     #[derive(Clone, Copy, PartialEq, Eq)]
-    pub struct DivlExtWord(pub Word): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct DivlExtWord(pub Word): Debug, FromStorage, IntoStorage, DerefStorage {
         pub dr: usize @ 0..=2,
         pub size: bool @ 10,
         pub signed: bool @ 11,

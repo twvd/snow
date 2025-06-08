@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 bitfield! {
     /// VIA Register A
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct RegisterA(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct RegisterA(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         /// Expansion slot $9 IRQ
         pub v2irq1: bool @ 0,
         /// Expansion slot $A IRQ
@@ -35,7 +35,7 @@ bitfield! {
 bitfield! {
     /// VIA Register B
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct RegisterB(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct RegisterB(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         /// 0 = Disable CPU instruction/data cache
         pub v2cdis: bool @ 0,
 
@@ -61,7 +61,7 @@ bitfield! {
 bitfield! {
     /// VIA Auxiliary Control Register
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct RegisterACR(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct RegisterACR(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         /// Input latch register A
         pub ralatch: bool @ 0,
 
@@ -82,7 +82,7 @@ bitfield! {
 bitfield! {
     /// VIA Peripheral Control Register
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct RegisterPCR(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct RegisterPCR(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         /// VBlank
         pub vblank: bool @ 0,
 
@@ -100,7 +100,7 @@ bitfield! {
 bitfield! {
     /// VIA Interrupt flag/enable registers
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct RegisterIRQ(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct RegisterIRQ(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         /// Cleared on Register A read/write
         pub scsi_drq: bool @ 0,
 
