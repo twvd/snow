@@ -9,7 +9,7 @@ use proc_bitfield::bitfield;
 bitfield! {
     /// Register 2
     #[derive(Clone, Copy, PartialEq, Eq, Default)]
-    pub struct AdbKeyboardReg2(pub u16): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct AdbKeyboardReg2(pub u16): Debug, FromStorage, IntoStorage, DerefStorage {
         pub led_numlock: bool @ 0,
         pub led_capslock: bool @ 1,
         pub led_scrolllock: bool @ 2,

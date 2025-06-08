@@ -33,7 +33,7 @@ const ADB_RESPONSE_TIME: Ticks = ONESEC_TICKS / 1000;
 bitfield! {
     /// VIA Register A (for classic models)
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct RegisterA(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct RegisterA(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         /// Sound volume
         /// Reserved on Mac II
         pub sound: u8 @ 0..=2,
@@ -63,7 +63,7 @@ bitfield! {
 bitfield! {
     /// VIA Register B (for classic models)
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct RegisterB(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct RegisterB(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         /// RTC data line
         pub rtcdata: bool @ 0,
 
@@ -105,7 +105,7 @@ bitfield! {
 bitfield! {
     /// VIA Auxiliary Control Register
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct RegisterACR(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct RegisterACR(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         /// Input latch register A
         pub ralatch: bool @ 0,
 
@@ -126,7 +126,7 @@ bitfield! {
 bitfield! {
     /// VIA Peripheral Control Register
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct RegisterPCR(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct RegisterPCR(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         /// VBlank
         pub vblank: bool @ 0,
 
@@ -144,7 +144,7 @@ bitfield! {
 bitfield! {
     /// VIA Interrupt flag/enable registers
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct RegisterIRQ(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct RegisterIRQ(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         /// One-second interrupt
         /// Cleared on Register A read/write
         pub onesec: bool @ 0,

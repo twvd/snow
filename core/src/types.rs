@@ -25,7 +25,7 @@ pub type Long = u32;
 bitfield! {
     /// General purpose 16-bit field
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct Field16(pub u16): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct Field16(pub u16): Debug, FromStorage, IntoStorage, DerefStorage {
         pub msb: u8 @ 8..16,
         pub lsb: u8 @ 0..8,
     }
@@ -34,7 +34,7 @@ bitfield! {
 bitfield! {
     /// General purpose 32-bit field
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct Field32(pub u32): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct Field32(pub u32): Debug, FromStorage, IntoStorage, DerefStorage {
         pub be0: u8 @ 24..32,
         pub be1: u8 @ 16..24,
         pub be2: u8 @ 8..16,

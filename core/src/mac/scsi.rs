@@ -118,7 +118,7 @@ enum NcrReg {
 bitfield! {
     /// NCR 5380 Mode Register
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    struct NcrRegMr(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    struct NcrRegMr(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         pub arbitrate: bool @ 0,
         pub dma_mode: bool @ 1,
         pub monitor_busy: bool @ 2,
@@ -133,7 +133,7 @@ bitfield! {
 bitfield! {
     /// NCR 5380 Initiator Control Register
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    struct NcrRegIcr(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    struct NcrRegIcr(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         pub assert_databus: bool @ 0,
         pub assert_atn: bool @ 1,
         pub assert_sel: bool @ 2,
@@ -150,7 +150,7 @@ bitfield! {
 bitfield! {
     /// NCR 5380 SCSI Bus Status
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    struct NcrRegCsr(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    struct NcrRegCsr(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         pub dbp: bool @ 0,
         pub sel: bool @ 1,
         pub io: bool @ 2,
@@ -168,7 +168,7 @@ bitfield! {
 bitfield! {
     /// NCR 5380 Bus and Status Register
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    struct NcrRegBsr(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    struct NcrRegBsr(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         /// ACK bus condition
         pub ack: bool @ 0,
         /// ATN bus condition

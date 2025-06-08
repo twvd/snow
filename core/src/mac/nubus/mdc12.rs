@@ -13,7 +13,7 @@ use crate::types::{Field32, LatchingEvent, Word};
 bitfield! {
     /// Control register
     #[derive(Clone, Copy, PartialEq, Eq)]
-    pub struct CtrlReg(pub Word): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct CtrlReg(pub Word): Debug, FromStorage, IntoStorage, DerefStorage {
         pub low: u8 @ 0..=7,
         pub high: u8 @ 8..=15,
 
@@ -32,7 +32,7 @@ bitfield! {
 bitfield! {
     /// RAMDAC control register
     #[derive(Clone, Copy, PartialEq, Eq)]
-    pub struct RamdacCtrlReg(pub u8): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct RamdacCtrlReg(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         pub mode: u8 @ 1..=5,
         pub conv: bool @ 0,
     }

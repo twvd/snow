@@ -27,7 +27,7 @@ pub type AdbDeviceInstance = Box<dyn AdbDevice + Send>;
 bitfield! {
     /// Register 3
     #[derive(Clone, Copy, PartialEq, Eq, Default)]
-    pub struct AdbReg3(pub u16): Debug, FromRaw, IntoRaw, DerefRaw {
+    pub struct AdbReg3(pub u16): Debug, FromStorage, IntoStorage, DerefStorage {
         /// Handler ID
         pub handler_id: u8 @ 0..=7,
         /// ADB address
