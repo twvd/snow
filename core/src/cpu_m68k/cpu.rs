@@ -1184,6 +1184,7 @@ where
             InstructionMnemonic::FNOP => self.op_fnop(instr),
             InstructionMnemonic::FSAVE => self.op_fsave(instr),
             InstructionMnemonic::FRESTORE => self.op_frestore(instr),
+            InstructionMnemonic::FMOVE => self.op_fmove(instr),
         }
     }
 

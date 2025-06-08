@@ -26,6 +26,10 @@ pub enum Register {
     CACR,
     MSP,
     ISP,
+    // FPU
+    FPCR,
+    FPSR,
+    FPIAR,
 }
 
 impl std::fmt::Display for Register {
@@ -44,6 +48,9 @@ impl std::fmt::Display for Register {
             Self::CACR => write!(f, "CACR"),
             Self::MSP => write!(f, "MSP"),
             Self::ISP => write!(f, "ISP"),
+            Self::FPCR => write!(f, "FPCR"),
+            Self::FPSR => write!(f, "FPSR"),
+            Self::FPIAR => write!(f, "FPIAR"),
         }
     }
 }
@@ -309,6 +316,9 @@ impl RegisterFile {
             Register::CACR => self.cacr = value.expand() & 0b1111,
             Register::MSP => self.msp = value.expand(),
             Register::ISP => self.isp = value.expand(),
+            Register::FPCR => self.fpu.fpcr.0 = value.expand(),
+            Register::FPSR => self.fpu.fpsr.0 = value.expand(),
+            Register::FPIAR => self.fpu.fpiar = value.expand(),
         }
     }
 
@@ -328,6 +338,9 @@ impl RegisterFile {
             Register::CACR => T::chop(self.cacr),
             Register::MSP => T::chop(self.msp),
             Register::ISP => T::chop(self.isp),
+            Register::FPCR => T::chop(self.fpu.fpcr.0),
+            Register::FPSR => T::chop(self.fpu.fpsr.0),
+            Register::FPIAR => T::chop(self.fpu.fpiar),
         }
     }
 
