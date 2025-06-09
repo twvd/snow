@@ -67,10 +67,26 @@ where
                 // EA to register
                 let fpx = extword.dst_reg();
                 let value_in = match extword.src_spec() {
-                    0b100 => Float::from_u64(
-                        SEMANTICS_EXTENDED,
-                        self.read_ea::<Word>(instr, instr.get_op2())?.into(),
-                    ),
+                    0b100 => {
+                        // Word
+                        Float::from_u64(
+                            SEMANTICS_EXTENDED,
+                            self.read_ea::<Word>(instr, instr.get_op2())?.into(),
+                        )
+                    }
+                    0b010 => {
+                        // Extended real
+                        let addr = if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
+                            self.regs.read_a_predec(instr.get_op2(), 12)
+                        } else {
+                            self.calc_ea_addr_no_mod::<Long>(instr, instr.get_op2())?
+                        };
+                        let v = self.read_fpu_extended(addr)?;
+                        if instr.get_addr_mode()? == AddressingMode::IndirectPostInc {
+                            self.regs.read_a_postinc::<Address>(instr.get_op2(), 12);
+                        }
+                        v
+                    }
                     _ => {
                         bail!(
                             "EA to reg unimplemented src spec {:03b}",
@@ -103,10 +119,8 @@ where
                 self.regs.fpu.fp[fpx] = value_in;
             }
             0b110 | 0b111 => {
-                self.breakpoint_hit.set();
                 // FMOVEM - Multiple register move
                 self.op_fmovem(instr, extword)?;
-                log::debug!("{:?}", self.regs.fpu);
             }
             _ => {
                 bail!("Unimplemented sub-operation {:03b}", extword.subop());
@@ -150,13 +164,7 @@ where
 
     /// FMOVEM registers to EA
     fn op_fmovem_regs_to_ea(&mut self, instr: &Instruction, reglist: u8) -> Result<()> {
-        let mut addr: Address = if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
-            // calc_ea_addr() already decrements the address once, but in this case,
-            // we don't want that.
-            self.regs.read_a(instr.get_op2())
-        } else {
-            self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?
-        };
+        let mut addr = self.calc_ea_addr_no_mod::<Address>(instr, instr.get_op2())?;
 
         // For predecrement mode, iterate in reverse order
         let reverse_order = instr.get_addr_mode()? == AddressingMode::IndirectPreDec;
@@ -192,14 +200,7 @@ where
 
     /// FMOVEM EA to registers  
     fn op_fmovem_ea_to_regs(&mut self, instr: &Instruction, reglist: u8) -> Result<()> {
-        // Calculate effective address
-        let mut addr: Address = if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
-            // calc_ea_addr() already decrements the address once, but in this case,
-            // we don't want that.
-            self.regs.read_a(instr.get_op2())
-        } else {
-            self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?
-        };
+        let mut addr = self.calc_ea_addr_no_mod::<Address>(instr, instr.get_op2())?;
 
         // For predecrement mode, iterate in reverse order
         let reverse_order = instr.get_addr_mode()? == AddressingMode::IndirectPreDec;

@@ -1383,6 +1383,21 @@ where
         Ok(addr)
     }
 
+    /// Calculates effective address but does not modify any registers in predec/postinc
+    pub(in crate::cpu_m68k) fn calc_ea_addr_no_mod<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        ea_in: usize,
+    ) -> Result<Address> {
+        if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
+            // calc_ea_addr() already decrements the address once, but in this case,
+            // we don't want that.
+            Ok(self.regs.read_a(instr.get_op2()))
+        } else {
+            self.calc_ea_addr::<T>(instr, instr.get_addr_mode()?, ea_in)
+        }
+    }
+
     fn fetch_immediate<T: CpuSized>(&mut self) -> Result<T> {
         Ok(match std::mem::size_of::<T>() {
             1 | 2 => T::chop(self.fetch_pump()?.into()),
