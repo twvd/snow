@@ -583,7 +583,7 @@ where
     }
 
     /// Reads a value from the bus and spends ticks.
-    fn read_ticks<T: CpuSized>(&mut self, oaddr: Address) -> Result<T> {
+    pub(in crate::cpu_m68k) fn read_ticks<T: CpuSized>(&mut self, oaddr: Address) -> Result<T> {
         let len = std::mem::size_of::<T>();
         let mut result: T = T::zero();
         let addr = if CPU_TYPE == M68000 && len > 1 {
@@ -638,13 +638,21 @@ where
     }
 
     /// Writes a value to the bus (big endian) and spends ticks.
-    fn write_ticks<T: CpuSized>(&mut self, addr: Address, value: T) -> Result<()> {
+    pub(in crate::cpu_m68k) fn write_ticks<T: CpuSized>(
+        &mut self,
+        addr: Address,
+        value: T,
+    ) -> Result<()> {
         self.write_ticks_order(addr, value, TemporalOrder::LowToHigh)
     }
 
     /// Writes a value to the bus (big endian) and spends ticks, but writes
     /// the word in opposite order if the type is Long.
-    fn write_ticks_wflip<T: CpuSized>(&mut self, addr: Address, value: T) -> Result<()> {
+    pub(in crate::cpu_m68k) fn write_ticks_wflip<T: CpuSized>(
+        &mut self,
+        addr: Address,
+        value: T,
+    ) -> Result<()> {
         match std::mem::size_of::<T>() {
             4 => {
                 let v: Long = value.expand();
@@ -655,7 +663,7 @@ where
         }
     }
 
-    fn write_ticks_order<T: CpuSized>(
+    pub(in crate::cpu_m68k) fn write_ticks_order<T: CpuSized>(
         &mut self,
         oaddr: Address,
         value: T,
@@ -1190,7 +1198,7 @@ where
 
     /// Calculates address from effective addressing mode
     /// Happens once per instruction so e.g. postinc/predec only occur once.
-    fn calc_ea_addr<T: CpuSized>(
+    pub(in crate::cpu_m68k) fn calc_ea_addr<T: CpuSized>(
         &mut self,
         instr: &Instruction,
         addrmode: AddressingMode,

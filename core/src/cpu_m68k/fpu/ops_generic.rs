@@ -7,7 +7,7 @@ use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord};
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
-use crate::cpu_m68k::instruction::Instruction;
+use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
 use crate::cpu_m68k::CpuM68kType;
 use crate::types::{Long, Word};
 
@@ -102,9 +102,130 @@ where
                 log::debug!("{:?}", self.regs.fpu.fpsr);
                 self.regs.fpu.fp[fpx] = value_in;
             }
+            0b110 | 0b111 => {
+                self.breakpoint_hit.set();
+                // FMOVEM - Multiple register move
+                self.op_fmovem(instr, extword)?;
+                log::debug!("{:?}", self.regs.fpu);
+            }
             _ => {
                 bail!("Unimplemented sub-operation {:03b}", extword.subop());
             }
+        }
+
+        Ok(())
+    }
+
+    /// FMOVEM - Multiple FPU register move
+    pub(in crate::cpu_m68k) fn op_fmovem(
+        &mut self,
+        instr: &Instruction,
+        extword: FmoveExtWord,
+    ) -> Result<()> {
+        let mode = extword.movem_mode();
+        let reglist = extword.movem_reglist();
+
+        match mode {
+            0b00 => {
+                // Static register list
+                if extword.movem_dir() {
+                    // EA to registers
+                    self.op_fmovem_ea_to_regs(instr, reglist)?;
+                } else {
+                    // Registers to EA
+                    self.op_fmovem_regs_to_ea(instr, reglist)?;
+                }
+            }
+            0b01 => {
+                // Dynamic register list (from control register)
+                bail!("Dynamic FMOVEM register list not implemented");
+            }
+            _ => {
+                bail!("Invalid FMOVEM mode {:02b}", mode);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// FMOVEM registers to EA
+    fn op_fmovem_regs_to_ea(&mut self, instr: &Instruction, reglist: u8) -> Result<()> {
+        let mut addr: Address = if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
+            // calc_ea_addr() already decrements the address once, but in this case,
+            // we don't want that.
+            self.regs.read_a(instr.get_op2())
+        } else {
+            self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?
+        };
+
+        // For predecrement mode, iterate in reverse order
+        let reverse_order = instr.get_addr_mode()? == AddressingMode::IndirectPreDec;
+
+        for fp_reg in 0..8 {
+            let bit_pos = if reverse_order { 7 - fp_reg } else { fp_reg };
+
+            if reglist & (1 << bit_pos) != 0 {
+                let fp_value = self.regs.fpu.fp[fp_reg].clone();
+
+                if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
+                    // Predecrement: decrement address before write
+                    addr = addr.wrapping_sub(12); // Extended precision = 12 bytes
+                    self.write_fpu_extended(addr, &fp_value)?;
+                } else {
+                    // Other modes: write then increment
+                    self.write_fpu_extended(addr, &fp_value)?;
+                    addr = addr.wrapping_add(12);
+                }
+            }
+        }
+
+        // Update address register for predec/postinc modes
+        match instr.get_addr_mode()? {
+            AddressingMode::IndirectPreDec | AddressingMode::IndirectPostInc => {
+                self.regs.write_a(instr.get_op2(), addr);
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    /// FMOVEM EA to registers  
+    fn op_fmovem_ea_to_regs(&mut self, instr: &Instruction, reglist: u8) -> Result<()> {
+        // Calculate effective address
+        let mut addr: Address = if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
+            // calc_ea_addr() already decrements the address once, but in this case,
+            // we don't want that.
+            self.regs.read_a(instr.get_op2())
+        } else {
+            self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?
+        };
+
+        // For predecrement mode, iterate in reverse order
+        let reverse_order = instr.get_addr_mode()? == AddressingMode::IndirectPreDec;
+
+        for fp_reg in 0..8 {
+            let bit_pos = if reverse_order { 7 - fp_reg } else { fp_reg };
+
+            if reglist & (1 << bit_pos) != 0 {
+                if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
+                    // Predecrement: decrement address before read
+                    addr = addr.wrapping_sub(12); // Extended precision = 12 bytes
+                    self.regs.fpu.fp[fp_reg] = self.read_fpu_extended(addr)?;
+                } else {
+                    // Other modes: read then increment
+                    self.regs.fpu.fp[fp_reg] = self.read_fpu_extended(addr)?;
+                    addr = addr.wrapping_add(12);
+                }
+            }
+        }
+
+        // Update address register for predec/postinc modes
+        match instr.get_addr_mode()? {
+            AddressingMode::IndirectPreDec | AddressingMode::IndirectPostInc => {
+                self.regs.write_a(instr.get_op2(), addr);
+            }
+            _ => {}
         }
 
         Ok(())
