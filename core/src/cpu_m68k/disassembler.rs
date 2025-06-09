@@ -105,6 +105,18 @@ impl<'a> Disassembler<'a> {
         Ok(((upper as u32) << 16) | (lower as u32))
     }
 
+    /// Format FPU register list for FMOVEM instruction
+    fn format_fpu_reglist(&self, reglist: u8) -> String {
+        let regs = ["FP0", "FP1", "FP2", "FP3", "FP4", "FP5", "FP6", "FP7"];
+        
+        regs.iter()
+            .enumerate()
+            .filter(|(i, _)| reglist & (1 << i) != 0)
+            .map(|(_, r)| *r)
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
     fn ea(&mut self, instr: &Instruction) -> Result<String> {
         self.ea_with(instr, instr.get_addr_mode()?, instr.get_op2())
     }
@@ -831,6 +843,40 @@ impl<'a> Disassembler<'a> {
                         self.ea(instr)?,
                         extword.dst_reg()
                     ),
+                    0b110 | 0b111 => {
+                        // FMOVEM - Multiple register move
+                        let reglist = extword.movem_reglist();
+                        let mode = extword.movem_mode();
+                        
+                        match mode {
+                            0b00 => {
+                                // Static register list
+                                let reg_str = self.format_fpu_reglist(reglist);
+                                if extword.movem_dir() {
+                                    // EA to registers
+                                    format!("FMOVEM.x {},{}", self.ea(instr)?, reg_str)
+                                } else {
+                                    // Registers to EA
+                                    format!("FMOVEM.x {},{}", reg_str, self.ea(instr)?)
+                                }
+                            }
+                            0b01 => {
+                                // Dynamic register list (from control register)
+                                let ctrl_reg = match extword.reg() {
+                                    0b001 => "FPIAR",
+                                    0b010 => "FPSR", 
+                                    0b100 => "FPCR",
+                                    _ => "???",
+                                };
+                                if extword.movem_dir() {
+                                    format!("FMOVEM.x {},D{}", self.ea(instr)?, ctrl_reg)
+                                } else {
+                                    format!("FMOVEM.x D{},{}", ctrl_reg, self.ea(instr)?)
+                                }
+                            }
+                            _ => "FMOVEM ???".to_string(),
+                        }
+                    }
                     _ => format!("{} ???", instr.mnemonic),
                 }
             }
