@@ -108,7 +108,7 @@ impl<'a> Disassembler<'a> {
     /// Format FPU register list for FMOVEM instruction
     fn format_fpu_reglist(&self, reglist: u8) -> String {
         let regs = ["FP0", "FP1", "FP2", "FP3", "FP4", "FP5", "FP6", "FP7"];
-        
+
         regs.iter()
             .enumerate()
             .filter(|(i, _)| reglist & (1 << i) != 0)
@@ -847,7 +847,7 @@ impl<'a> Disassembler<'a> {
                         // FMOVEM - Multiple register move
                         let reglist = extword.movem_reglist();
                         let mode = extword.movem_mode();
-                        
+
                         match mode {
                             0b00 => {
                                 // Static register list
@@ -864,7 +864,7 @@ impl<'a> Disassembler<'a> {
                                 // Dynamic register list (from control register)
                                 let ctrl_reg = match extword.reg() {
                                     0b001 => "FPIAR",
-                                    0b010 => "FPSR", 
+                                    0b010 => "FPSR",
                                     0b100 => "FPCR",
                                     _ => "???",
                                 };
