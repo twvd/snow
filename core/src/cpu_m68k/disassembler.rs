@@ -842,6 +842,12 @@ impl<'a> Disassembler<'a> {
             InstructionMnemonic::FMOVE => {
                 let extword = FmoveExtWord(self.get16()?);
                 match extword.subop() {
+                    0b000 => format!(
+                        "{}.x FP{},FP{}",
+                        mnemonic,
+                        extword.src_spec(),
+                        extword.dst_reg()
+                    ),
                     0b100 => format!(
                         "{} {},{}",
                         mnemonic,
