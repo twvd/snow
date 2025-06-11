@@ -49,6 +49,11 @@ where
         log::debug!("FMOVE {:04X} {:04X}", instr.data, extword.0);
 
         match extword.subop() {
+            0b000 => {
+                // Data reg to data reg
+                let src = self.regs.fpu.fp[extword.src_spec() as usize].clone();
+                self.regs.fpu.fp[extword.dst_reg()] = src;
+            }
             0b100 => {
                 // From EA to control reg
                 let ctrlreg = FmoveControlReg::from_u8(extword.reg())
