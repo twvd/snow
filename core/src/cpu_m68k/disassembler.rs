@@ -99,10 +99,19 @@ impl<'a> Disassembler<'a> {
         let lsb = self.get8()?;
         Ok(((msb as u16) << 8) | (lsb as u16))
     }
+
     fn get32(&mut self) -> Result<u32> {
         let upper = self.get16()?;
         let lower = self.get16()?;
         Ok(((upper as u32) << 16) | (lower as u32))
+    }
+
+    fn get_n(&mut self, n: usize) -> Result<Vec<u8>> {
+        let mut r = Vec::with_capacity(n);
+        for _ in 0..n {
+            r.push(self.get8()?);
+        }
+        Ok(r)
     }
 
     /// Format FPU register list for FMOVEM instruction
@@ -121,17 +130,35 @@ impl<'a> Disassembler<'a> {
         self.ea_with(instr, instr.get_addr_mode()?, instr.get_op2())
     }
 
+    fn ea_sz(&mut self, instr: &Instruction, sz: InstructionSize) -> Result<String> {
+        self.ea_with_sz(instr, instr.get_addr_mode()?, instr.get_op2(), sz)
+    }
+
     fn ea_left(&mut self, instr: &Instruction) -> Result<String> {
         self.ea_with(instr, instr.get_addr_mode_left()?, instr.get_op1())
     }
 
     fn ea_with(&mut self, instr: &Instruction, mode: AddressingMode, op: usize) -> Result<String> {
+        self.ea_with_sz(instr, mode, op, instr.get_size())
+    }
+
+    fn ea_with_sz(
+        &mut self,
+        instr: &Instruction,
+        mode: AddressingMode,
+        op: usize,
+        sz: InstructionSize,
+    ) -> Result<String> {
         instr.clear_extword();
         Ok(match mode {
-            AddressingMode::Immediate => match instr.get_size() {
+            AddressingMode::Immediate => match sz {
                 InstructionSize::Byte => format!("#${:02X}", self.get16()?),
                 InstructionSize::Word => format!("#${:04X}", self.get16()?),
                 InstructionSize::Long => format!("#${:08X}", self.get32()?),
+                InstructionSize::Single
+                | InstructionSize::Double
+                | InstructionSize::Extended
+                | InstructionSize::Packed => format!("{:?}", self.get_n(sz.bytelen())?),
                 InstructionSize::None => bail!("Invalid addr mode"),
             },
             AddressingMode::DataRegister => format!("D{}", op),
@@ -818,14 +845,14 @@ impl<'a> Disassembler<'a> {
                     0b100 => format!(
                         "{} {},{}",
                         mnemonic,
-                        self.ea(instr)?,
+                        self.ea_sz(instr, InstructionSize::Long)?,
                         FmoveControlReg::from_u8(extword.reg()).context("Invalid ctrlreg")?
                     ),
                     0b101 => format!(
                         "{} {},{}",
                         mnemonic,
                         FmoveControlReg::from_u8(extword.reg()).context("Invalid ctrlreg")?,
-                        self.ea(instr)?
+                        self.ea_sz(instr, InstructionSize::Long)?,
                     ),
                     0b010 => format!(
                         "{}.{} {},FP{}",
@@ -840,7 +867,10 @@ impl<'a> Disassembler<'a> {
                             0b110 => "b",
                             _ => "?",
                         },
-                        self.ea(instr)?,
+                        self.ea_sz(
+                            instr,
+                            extword.src_spec_instrsz().context("Invalid src spec")?
+                        )?,
                         extword.dst_reg()
                     ),
                     0b110 | 0b111 => {
