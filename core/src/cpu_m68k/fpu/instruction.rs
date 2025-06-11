@@ -42,6 +42,15 @@ bitfield! {
         /// (EA to register) Opmode
         pub opmode: u8 @ 0..=6,
 
+        /// (Register to EA) Destination format
+        pub dest_fmt: u8 @ 10..=12,
+
+        /// (Register to EA) Source register
+        pub src_reg: usize @ 7..=9,
+
+        /// (Register to EA) K-factor
+        pub k_factor: u8 @ 0..=6,
+
         /// (FMOVEM) Direction: 0=register to EA, 1=EA to register
         pub movem_dir: bool @ 13,
 
@@ -60,6 +69,19 @@ impl FmoveExtWord {
             0b001 => Some(InstructionSize::Single),
             0b010 => Some(InstructionSize::Extended),
             0b011 => Some(InstructionSize::Packed),
+            0b100 => Some(InstructionSize::Word),
+            0b101 => Some(InstructionSize::Double),
+            0b110 => Some(InstructionSize::Byte),
+            _ => None,
+        }
+    }
+
+    pub fn dest_fmt_instrsz(&self) -> Option<InstructionSize> {
+        match self.dest_fmt() {
+            0b000 => Some(InstructionSize::Long),
+            0b001 => Some(InstructionSize::Single),
+            0b010 => Some(InstructionSize::Extended),
+            0b011 | 0b111 => Some(InstructionSize::Packed),
             0b100 => Some(InstructionSize::Word),
             0b101 => Some(InstructionSize::Double),
             0b110 => Some(InstructionSize::Byte),
