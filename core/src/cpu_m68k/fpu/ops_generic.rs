@@ -141,6 +141,14 @@ where
                 }
                 let fpx = extword.src_reg();
                 match extword.dest_fmt() {
+                    0b000 => {
+                        // Long
+                        // TODO flags?
+                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
+                        let out = self.regs.fpu.fp[fpx].to_i64() as i32 as Long;
+                        self.write_ticks(ea, out)?;
+                    }
                     0b010 => {
                         // Extended real
                         self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
