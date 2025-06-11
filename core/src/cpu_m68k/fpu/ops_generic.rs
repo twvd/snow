@@ -118,6 +118,52 @@ where
                 log::debug!("{:?}", self.regs.fpu.fpsr);
                 self.regs.fpu.fp[fpx] = value_in;
             }
+            0b011 => {
+                // Register to EA
+                if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
+                    self.regs.read_a_predec::<Address>(
+                        instr.get_op2(),
+                        extword
+                            .dest_fmt_instrsz()
+                            .context("Unknown dest fmt")?
+                            .bytelen(),
+                    );
+                }
+                let ea = self.calc_ea_addr_no_mod::<Address>(instr, instr.get_op2())?;
+                if instr.get_addr_mode()? == AddressingMode::IndirectPostInc {
+                    self.regs.read_a_postinc::<Address>(
+                        instr.get_op2(),
+                        extword
+                            .dest_fmt_instrsz()
+                            .context("Unknown dest fmt")?
+                            .bytelen(),
+                    );
+                }
+                let fpx = extword.src_reg();
+                match extword.dest_fmt() {
+                    0b010 => {
+                        // Extended real
+                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
+                        self.write_fpu_extended(ea, &self.regs.fpu.fp[fpx].clone())?;
+                    }
+                    _ => {
+                        bail!(
+                            "Reg to EA unimplemented dest format {:03b}",
+                            extword.dest_fmt()
+                        );
+                    }
+                }
+
+                // Flags
+                self.regs.fpu.fpsr.exs_mut().set_bsun(false);
+                self.regs.fpu.fpsr.exs_mut().set_snan(false); // * 1.6.5
+                self.regs.fpu.fpsr.exs_mut().set_operr(false); // for invalid K-factor
+                self.regs.fpu.fpsr.exs_mut().set_inex2(false); // ???
+                self.regs.fpu.fpsr.exs_mut().set_inex1(false);
+
+                // Condition codes unaffected
+            }
             0b110 | 0b111 => {
                 // FMOVEM - Multiple register move
                 self.op_fmovem(instr, extword)?;
