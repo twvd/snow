@@ -1,9 +1,9 @@
-use arpfloat::{RoundingMode, Semantics};
-
 pub mod instruction;
 pub mod ops_generic;
 pub mod regs;
 pub mod storage;
+
+use arpfloat::{RoundingMode, Semantics};
 
 /// 6888x/68040 single precision float semantics
 pub const SEMANTICS_SINGLE: Semantics = Semantics::new(8, 24, RoundingMode::NearestTiesToEven);

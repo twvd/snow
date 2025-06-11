@@ -1,6 +1,7 @@
 use num_derive::FromPrimitive;
 use proc_bitfield::bitfield;
 
+use crate::cpu_m68k::instruction::InstructionSize;
 use crate::cpu_m68k::regs::Register;
 use crate::types::Word;
 
@@ -49,5 +50,20 @@ bitfield! {
 
         /// (FMOVEM) Mode field
         pub movem_mode: u8 @ 11..=12,
+    }
+}
+
+impl FmoveExtWord {
+    pub fn src_spec_instrsz(&self) -> Option<InstructionSize> {
+        match self.src_spec() {
+            0b000 => Some(InstructionSize::Long),
+            0b001 => Some(InstructionSize::Single),
+            0b010 => Some(InstructionSize::Extended),
+            0b011 => Some(InstructionSize::Packed),
+            0b100 => Some(InstructionSize::Word),
+            0b101 => Some(InstructionSize::Double),
+            0b110 => Some(InstructionSize::Byte),
+            _ => None,
+        }
     }
 }

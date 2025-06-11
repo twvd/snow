@@ -14,11 +14,37 @@ use crate::types::{Long, Word};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum InstructionSize {
+    /// 8-bit / 1 byte
     Byte,
+    /// 16-bit / 2 bytes
     Word,
+    /// 32-bit / 4 bytes
     Long,
+    /// Single precision real, 32-bit / 4 bytes
+    Single,
+    /// Double precision real, 64-bit / 8 bytes
+    Double,
+    /// Extended precision real, 96-bits / 12 bytes
+    Extended,
+    /// Packed BCD real, 96-bits / 12 bytes
+    Packed,
 
     None,
+}
+
+impl InstructionSize {
+    pub fn bytelen(&self) -> usize {
+        match self {
+            Self::Byte => 1,
+            Self::Word => 2,
+            Self::Long => 4,
+            Self::Single => 4,
+            Self::Double => 8,
+            Self::Extended => 12,
+            Self::Packed => 12,
+            Self::None => panic!("bytelen() on None size"),
+        }
+    }
 }
 
 /// Instruction mnemonic
