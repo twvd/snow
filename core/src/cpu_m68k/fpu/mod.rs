@@ -1,4 +1,5 @@
 pub mod instruction;
+pub mod ops_branch;
 pub mod ops_generic;
 pub mod regs;
 pub mod storage;
