@@ -219,11 +219,11 @@ where
 
     /// Current history item
     #[serde(skip)]
-    history_current: HistoryEntryInstruction,
+    pub(in crate::cpu_m68k) history_current: HistoryEntryInstruction,
 
     /// Keep history?
     #[serde(skip)]
-    history_enabled: bool,
+    pub(in crate::cpu_m68k) history_enabled: bool,
 
     /// System trap history
     #[serde(skip)]
@@ -1193,6 +1193,8 @@ where
             InstructionMnemonic::FSAVE => self.op_fsave(instr),
             InstructionMnemonic::FRESTORE => self.op_frestore(instr),
             InstructionMnemonic::FMOVE => self.op_fmove(instr),
+            InstructionMnemonic::FBcc_l => self.op_fbcc::<true>(instr),
+            InstructionMnemonic::FBcc_w => self.op_fbcc::<false>(instr),
         }
     }
 

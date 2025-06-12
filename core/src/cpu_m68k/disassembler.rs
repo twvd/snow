@@ -76,6 +76,51 @@ impl<'a> Disassembler<'a> {
         "D0",
     ];
 
+    /// Returns the mnemonic abbreviation for FPU condition codes
+    fn fcc_mnemonic(cc: usize) -> &'static str {
+        match cc & 0b111111 {
+            // Miscellaneous Tests
+            0b000000 => "F",   // False
+            0b001111 => "T",   // True
+            0b010000 => "SF",  // Signaling False
+            0b011111 => "ST",  // Signaling True
+            0b010001 => "SEQ", // Signaling Equal
+            0b011110 => "SNE", // Signaling Not Equal
+
+            // IEEE Aware Tests
+            0b000001 => "EQ",  // Equal
+            0b001110 => "NE",  // Not Equal
+            0b000010 => "OGT", // Ordered Greater Than
+            0b001101 => "ULE", // Unordered or Less or Equal
+            0b000011 => "OGE", // Ordered Greater Than or Equal
+            0b001100 => "ULT", // Unordered or Less Than
+            0b000100 => "OLT", // Ordered Less Than
+            0b001011 => "UGE", // Unordered or Greater or Equal
+            0b000101 => "OLE", // Ordered Less Than or Equal
+            0b001010 => "UGT", // Unordered or Greater Than
+            0b000110 => "OGL", // Ordered Greater or Less Than
+            0b001001 => "UEQ", // Unordered or Equal
+            0b000111 => "OR",  // Ordered
+            0b001000 => "UN",  // Unordered
+
+            // IEEE Nonaware Tests
+            0b010010 => "GT",   // Greater Than
+            0b011101 => "NGT",  // Not Greater Than
+            0b010011 => "GE",   // Greater Than or Equal
+            0b011100 => "NGE",  // Not (Greater Than or Equal)
+            0b010100 => "LT",   // Less Than
+            0b011011 => "NLT",  // Not Less Than
+            0b010101 => "LE",   // Less Than or Equal
+            0b011010 => "NLE",  // Not (Less Than or Equal)
+            0b010110 => "GL",   // Greater or Less Than
+            0b011001 => "NGL",  // Not (Greater or Less Than)
+            0b010111 => "GLE",  // Greater, Less or Equal
+            0b011000 => "NGLE", // Not (Greater, Less or Equal)
+
+            _ => "???", // Unknown condition
+        }
+    }
+
     pub fn from(iter: &'a mut dyn Iterator<Item = u8>, addr: Address) -> Self {
         Self {
             addr,
@@ -915,6 +960,23 @@ impl<'a> Disassembler<'a> {
                     }
                     _ => format!("{} ???", instr.mnemonic),
                 }
+            }
+
+            InstructionMnemonic::FBcc_l => {
+                let displacement = self.get32()? as i32;
+                format!(
+                    "FB{}.l ${:08X}",
+                    Self::fcc_mnemonic(instr.get_fcc()),
+                    displacement
+                )
+            }
+            InstructionMnemonic::FBcc_w => {
+                let displacement = self.get16()? as i16;
+                format!(
+                    "FB{}.w ${:04X}",
+                    Self::fcc_mnemonic(instr.get_fcc()),
+                    displacement
+                )
             }
         };
 
