@@ -74,9 +74,9 @@ where
                 let value_in = match extword.src_spec() {
                     0b100 => {
                         // Word
-                        Float::from_u64(
+                        Float::from_i64(
                             SEMANTICS_EXTENDED,
-                            self.read_ea::<Word>(instr, instr.get_op2())?.into(),
+                            self.read_ea::<Word>(instr, instr.get_op2())? as i16 as i64,
                         )
                     }
                     0b010 => {
@@ -106,7 +106,11 @@ where
 
                 // Flags
                 self.regs.fpu.fpsr.exs_mut().set_bsun(false);
-                self.regs.fpu.fpsr.exs_mut().set_snan(false); // * 1.6.5
+                self.regs
+                    .fpu
+                    .fpsr
+                    .exs_mut()
+                    .set_snan(self.regs.fpu.fp[fpx].is_nan()); // * 1.6.5
                 self.regs.fpu.fpsr.exs_mut().set_operr(false);
                 self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
                 self.regs.fpu.fpsr.exs_mut().set_unfl(false); // * X denormalized
@@ -170,7 +174,11 @@ where
 
                 // Flags
                 self.regs.fpu.fpsr.exs_mut().set_bsun(false);
-                self.regs.fpu.fpsr.exs_mut().set_snan(false); // * 1.6.5
+                self.regs
+                    .fpu
+                    .fpsr
+                    .exs_mut()
+                    .set_snan(self.regs.fpu.fp[fpx].is_nan()); // * 1.6.5
                 self.regs.fpu.fpsr.exs_mut().set_operr(false); // for invalid K-factor
                 self.regs.fpu.fpsr.exs_mut().set_inex2(false); // ???
                 self.regs.fpu.fpsr.exs_mut().set_inex1(false);

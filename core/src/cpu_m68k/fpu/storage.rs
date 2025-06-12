@@ -45,7 +45,7 @@ impl BitsExtReal {
 
     pub fn is_nan(&self) -> bool {
         // PRM 1.6.5
-        self.e() == ((1 << 15) - 1) && self.f() != 0
+        self.e() == ((1 << 16) - 1) && self.f() != 0
     }
 
     pub fn inf(s: bool) -> Self {
@@ -55,7 +55,7 @@ impl BitsExtReal {
 
     pub fn is_inf(&self) -> bool {
         // PRM 1.6.4
-        self.e() == ((1 << 15) - 1) && self.f() == 0
+        self.e() == ((1 << 16) - 1) && self.f() == 0
     }
 
     pub fn zero(s: bool) -> Self {
@@ -115,8 +115,8 @@ where
         // Extended precision format: 96 bits (12 bytes)
         // Read as 3 longs: sign/exponent (16 bits) + mantissa (64 bits)
         let high = self.read_ticks::<Long>(addr)?;
-        let mid = self.read_ticks::<Long>(addr + 4)?;
-        let low = self.read_ticks::<Long>(addr + 8)?;
+        let mid = self.read_ticks::<Long>(addr.wrapping_add(4))?;
+        let low = self.read_ticks::<Long>(addr.wrapping_add(8))?;
         let bits = BitsExtReal::default()
             .with_low(low)
             .with_mid(mid)
@@ -135,8 +135,8 @@ where
 
         // Write as 3 longs
         self.write_ticks(addr, bits.high())?;
-        self.write_ticks(addr + 4, bits.mid())?;
-        self.write_ticks(addr + 8, bits.low())?;
+        self.write_ticks(addr.wrapping_add(4), bits.mid())?;
+        self.write_ticks(addr.wrapping_add(8), bits.low())?;
 
         Ok(())
     }
