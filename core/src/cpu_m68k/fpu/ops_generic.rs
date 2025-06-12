@@ -199,8 +199,16 @@ where
         let reglist = extword.movem_reglist();
 
         match mode {
-            0b00 => {
+            0b00 | 0b10 => {
                 // Static register list
+
+                if mode == 0b00 && instr.get_addr_mode()? != AddressingMode::IndirectPreDec {
+                    bail!("Contradicting modes (pre-dec vs {0:2b})", mode);
+                }
+                if mode == 0b10 && instr.get_addr_mode()? != AddressingMode::IndirectPostInc {
+                    bail!("Contradicting modes (post-inc vs {0:2b})", mode);
+                }
+
                 if extword.movem_dir() {
                     // EA to registers
                     self.op_fmovem_ea_to_regs(instr, reglist)?;
@@ -209,7 +217,7 @@ where
                     self.op_fmovem_regs_to_ea(instr, reglist)?;
                 }
             }
-            0b01 => {
+            0b01 | 0b11 => {
                 // Dynamic register list (from control register)
                 bail!("Dynamic FMOVEM register list not implemented");
             }
