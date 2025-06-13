@@ -153,21 +153,31 @@ where
                 match extword.dest_fmt() {
                     0b000 => {
                         // Long
-                        // TODO flags?
                         self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
                         self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-                        let out = self.regs.fpu.fp[fpx].to_i64() as i32 as Long;
-                        self.write_ticks(ea, out)?;
 
-                        log::debug!("long out {} = {}", fpx, out);
+                        let out64 = self.regs.fpu.fp[fpx].to_i64();
+                        let (out, inex) = if out64 > i32::MAX.into() {
+                            // Overflow
+                            (i32::MAX, true)
+                        } else if out64 < i32::MIN.into() {
+                            // Underflow
+                            (i32::MIN, true)
+                        } else {
+                            // We're good
+                            (out64 as i32, false)
+                        };
+                        self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
+                        self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
+                        self.write_ticks(ea, out as Long)?;
                     }
                     0b010 => {
                         // Extended real
                         self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
                         self.regs.fpu.fpsr.exs_mut().set_unfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_inex2(false);
+                        self.regs.fpu.fpsr.exs_mut().set_inex1(false);
                         self.write_fpu_extended(ea, &self.regs.fpu.fp[fpx].clone())?;
-
-                        log::debug!("ext out {} = {}", fpx, &self.regs.fpu.fp[fpx]);
                     }
                     _ => {
                         bail!(
@@ -185,8 +195,6 @@ where
                     .exs_mut()
                     .set_snan(self.regs.fpu.fp[fpx].is_nan()); // * 1.6.5
                 self.regs.fpu.fpsr.exs_mut().set_operr(false); // for invalid K-factor
-                self.regs.fpu.fpsr.exs_mut().set_inex2(false); // ???
-                self.regs.fpu.fpsr.exs_mut().set_inex1(false);
 
                 // Condition codes unaffected
             }
