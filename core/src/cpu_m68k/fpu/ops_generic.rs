@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use arpfloat::Float;
+use either::Either;
 use num::FromPrimitive;
 
 use crate::bus::{Address, Bus, IrqSource};
@@ -123,7 +124,7 @@ where
                 self.regs.fpu.fpsr.set_fpcc_n(value_in.is_negative());
                 self.regs.fpu.fpsr.set_fpcc_z(value_in.is_zero());
 
-                log::debug!("{}", value_in);
+                log::debug!("in {} = {}", fpx, value_in);
                 log::debug!("{:?}", self.regs.fpu.fpsr);
                 self.regs.fpu.fp[fpx] = value_in;
             }
@@ -157,12 +158,16 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_unfl(false);
                         let out = self.regs.fpu.fp[fpx].to_i64() as i32 as Long;
                         self.write_ticks(ea, out)?;
+
+                        log::debug!("long out {} = {}", fpx, out);
                     }
                     0b010 => {
                         // Extended real
                         self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
                         self.regs.fpu.fpsr.exs_mut().set_unfl(false);
                         self.write_fpu_extended(ea, &self.regs.fpu.fp[fpx].clone())?;
+
+                        log::debug!("ext out {} = {}", fpx, &self.regs.fpu.fp[fpx]);
                     }
                     _ => {
                         bail!(
@@ -244,21 +249,25 @@ where
         // For predecrement mode, iterate in reverse order
         let reverse_order = instr.get_addr_mode()? == AddressingMode::IndirectPreDec;
 
-        for fp_reg in 0..8 {
-            let bit_pos = if reverse_order { 7 - fp_reg } else { fp_reg };
+        let range = if reverse_order {
+            Either::Left(0..8)
+        } else {
+            Either::Right((0..8).rev())
+        };
+        for fp_reg in range {
+            if reglist & (1 << fp_reg) == 0 {
+                continue;
+            }
+            let fp_value = self.regs.fpu.fp[fp_reg].clone();
 
-            if reglist & (1 << bit_pos) != 0 {
-                let fp_value = self.regs.fpu.fp[fp_reg].clone();
-
-                if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
-                    // Predecrement: decrement address before write
-                    addr = addr.wrapping_sub(12); // Extended precision = 12 bytes
-                    self.write_fpu_extended(addr, &fp_value)?;
-                } else {
-                    // Other modes: write then increment
-                    self.write_fpu_extended(addr, &fp_value)?;
-                    addr = addr.wrapping_add(12);
-                }
+            if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
+                // Predecrement: decrement address before write
+                addr = addr.wrapping_sub(12); // Extended precision = 12 bytes
+                self.write_fpu_extended(addr, &fp_value)?;
+            } else {
+                // Other modes: write then increment
+                self.write_fpu_extended(addr, &fp_value)?;
+                addr = addr.wrapping_add(12);
             }
         }
 
