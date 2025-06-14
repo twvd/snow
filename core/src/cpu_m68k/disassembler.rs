@@ -921,6 +921,11 @@ impl<'a> Disassembler<'a> {
                         FmoveControlReg::from_u8(extword.reg()).context("Invalid ctrlreg")?,
                         self.ea_sz(instr, InstructionSize::Long)?,
                     ),
+                    0b010 if extword.src_spec() == 0b111 => format!(
+                        "FMOVECR #${:02X},FP{}",
+                        extword.movecr_offset(),
+                        extword.dst_reg()
+                    ),
                     // FMOVE/ALU op from EA to FPx
                     0b010 => format!(
                         "{}.{} {},FP{}",
