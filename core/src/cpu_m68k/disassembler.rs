@@ -171,10 +171,16 @@ impl<'a> Disassembler<'a> {
     }
 
     /// Format FPU register list for FMOVEM instruction
-    fn format_fpu_reglist(&self, reglist: u8) -> String {
+    fn format_fpu_reglist(&self, reglist: u8, reverse: bool) -> String {
         let regs = ["FP0", "FP1", "FP2", "FP3", "FP4", "FP5", "FP6", "FP7"];
 
-        regs.iter()
+        let regiter = if reverse {
+            Either::Left(regs.iter())
+        } else {
+            Either::Right(regs.iter().rev())
+        };
+
+        regiter
             .enumerate()
             .filter(|(i, _)| reglist & (1 << i) != 0)
             .map(|(_, r)| *r)
@@ -961,7 +967,10 @@ impl<'a> Disassembler<'a> {
                         match mode {
                             0b00 | 0b10 => {
                                 // Static register list
-                                let reg_str = self.format_fpu_reglist(reglist);
+                                let reg_str = self.format_fpu_reglist(
+                                    reglist,
+                                    instr.get_addr_mode()? == AddressingMode::IndirectPreDec,
+                                );
                                 if extword.movem_dir() {
                                     // EA to registers
                                     format!("FMOVEM.x {},{}", self.ea(instr)?, reg_str)
