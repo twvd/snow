@@ -27,6 +27,9 @@ bitfield! {
     /// FMOVE extension word
     #[derive(Clone, Copy, PartialEq, Eq, Default)]
     pub(in crate::cpu_m68k) struct FmoveExtWord(pub Word): Debug, FromStorage, IntoStorage, DerefStorage {
+        /// MOVECR ROM offset
+        pub movecr_offset: usize @ 0..=6,
+
         /// Sub-operation bits
         pub subop: u8 @ 13..=15,
 
