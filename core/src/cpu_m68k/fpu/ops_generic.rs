@@ -96,6 +96,40 @@ where
                         }
                         v
                     }
+                    0b111 => {
+                        // ROM constant (FMOVECR)
+                        self.regs.fpu.fp[fpx] = match extword.movecr_offset() {
+                            0x00 => Float::pi(SEMANTICS_EXTENDED),
+                            // TODO 0x0B log10(2)
+                            0x0C => Float::e(SEMANTICS_EXTENDED),
+                            // TODO 0x0D log2(e)
+                            // TODO 0x0E log10(e)
+                            0x0F => Float::zero(SEMANTICS_EXTENDED, false),
+                            // TODO 0x30 ln(2)
+                            // TODO 0x31 ln(10)
+                            0x32 => Float::from_i64(SEMANTICS_EXTENDED, 1),
+                            0x33 => Float::from_i64(SEMANTICS_EXTENDED, 10),
+                            0x34 => Float::from_i64(SEMANTICS_EXTENDED, 100),
+                            0x35 => Float::from_i64(SEMANTICS_EXTENDED, 10000),
+                            0x36 => Float::one(SEMANTICS_EXTENDED, false).powi(8),
+                            0x37 => Float::one(SEMANTICS_EXTENDED, false).powi(16),
+                            0x38 => Float::one(SEMANTICS_EXTENDED, false).powi(32),
+                            0x39 => Float::one(SEMANTICS_EXTENDED, false).powi(64),
+                            0x3A => Float::one(SEMANTICS_EXTENDED, false).powi(128),
+                            0x3B => Float::one(SEMANTICS_EXTENDED, false).powi(256),
+                            0x3C => Float::one(SEMANTICS_EXTENDED, false).powi(512),
+                            0x3D => Float::one(SEMANTICS_EXTENDED, false).powi(1024),
+                            0x3E => Float::one(SEMANTICS_EXTENDED, false).powi(2048),
+                            0x3F => Float::one(SEMANTICS_EXTENDED, false).powi(4096),
+                            _ => bail!(
+                                "Unimplemented FMOVECR offset ${:02X}",
+                                extword.movecr_offset()
+                            ),
+                        };
+
+                        // No ALU operation
+                        return Ok(());
+                    }
                     _ => {
                         bail!(
                             "EA to reg unimplemented src spec {:03b}",
