@@ -979,7 +979,7 @@ impl<'a> Disassembler<'a> {
                                     reglist,
                                     instr.get_addr_mode()? == AddressingMode::IndirectPreDec,
                                 );
-                                if extword.movem_dir() {
+                                if !extword.movem_dir() {
                                     // EA to registers
                                     format!("FMOVEM.x {},{}", self.ea(instr)?, reg_str)
                                 } else {
