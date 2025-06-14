@@ -126,7 +126,10 @@ impl<'a> Disassembler<'a> {
             0b0000000 => "FMOVE",
             0b0011000 => "FABS",
             0b0100011 => "FMUL",
+            0b0100000 => "FDIV",
+            0b0100010 => "FADD",
             0b0000001 => "FINT",
+            0b0000011 => "FINTRZ",
             0b0111000 => "FCMP",
             _ => "F???",
         }
