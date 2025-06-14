@@ -53,9 +53,10 @@ where
             0b000 => {
                 // Data reg to data reg, with ALU
                 let src = self.regs.fpu.fp[extword.src_spec() as usize].clone();
+                let dest = self.regs.fpu.fp[extword.dst_reg()].clone();
                 let opmode = extword.opmode();
 
-                self.regs.fpu.fp[extword.dst_reg()] = self.fpu_alu_op(opmode, &src)?;
+                self.regs.fpu.fp[extword.dst_reg()] = self.fpu_alu_op(opmode, &src, &dest)?;
             }
             0b100 => {
                 // From EA to control reg
@@ -105,7 +106,8 @@ where
 
                 log::debug!("in {:03b} {} = {}", extword.src_spec(), fpx, value_in);
                 log::debug!("{:?}", self.regs.fpu.fpsr);
-                self.regs.fpu.fp[fpx] = self.fpu_alu_op(extword.opmode(), &value_in)?;
+                let dest = self.regs.fpu.fp[fpx].clone();
+                self.regs.fpu.fp[fpx] = self.fpu_alu_op(extword.opmode(), &value_in, &dest)?;
             }
             0b011 => {
                 // Register to EA
