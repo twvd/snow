@@ -124,7 +124,7 @@ where
                 self.regs.fpu.fpsr.set_fpcc_n(value_in.is_negative());
                 self.regs.fpu.fpsr.set_fpcc_z(value_in.is_zero());
 
-                log::debug!("in {} = {}", fpx, value_in);
+                log::debug!("in {:03b} {} = {}", extword.src_spec(), fpx, value_in);
                 log::debug!("{:?}", self.regs.fpu.fpsr);
                 self.regs.fpu.fp[fpx] = value_in;
             }
@@ -169,6 +169,11 @@ where
                         };
                         self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
+                        log::debug!(
+                            "out long {:?} {}",
+                            self.regs.fpu.fpcr,
+                            &self.regs.fpu.fp[fpx]
+                        );
                         self.write_ticks(ea, out as Long)?;
                     }
                     0b010 => {
@@ -177,6 +182,11 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_unfl(false);
                         self.regs.fpu.fpsr.exs_mut().set_inex2(false);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
+                        log::debug!(
+                            "out ext {:?} {}",
+                            self.regs.fpu.fpcr,
+                            &self.regs.fpu.fp[fpx]
+                        );
                         self.write_fpu_extended(ea, &self.regs.fpu.fp[fpx].clone())?;
                     }
                     _ => {
@@ -258,9 +268,9 @@ where
         let reverse_order = instr.get_addr_mode()? == AddressingMode::IndirectPreDec;
 
         let range = if reverse_order {
-            Either::Left(0..8)
+            Either::Left((0..8).rev())
         } else {
-            Either::Right((0..8).rev())
+            Either::Right(0..8)
         };
         for fp_reg in range {
             if reglist & (1 << fp_reg) == 0 {
@@ -296,20 +306,24 @@ where
 
         // For predecrement mode, iterate in reverse order
         let reverse_order = instr.get_addr_mode()? == AddressingMode::IndirectPreDec;
+        let range = if reverse_order {
+            Either::Left((0..8).rev())
+        } else {
+            Either::Right(0..8)
+        };
 
-        for fp_reg in 0..8 {
-            let bit_pos = if reverse_order { 7 - fp_reg } else { fp_reg };
-
-            if reglist & (1 << bit_pos) != 0 {
-                if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
-                    // Predecrement: decrement address before read
-                    addr = addr.wrapping_sub(12); // Extended precision = 12 bytes
-                    self.regs.fpu.fp[fp_reg] = self.read_fpu_extended(addr)?;
-                } else {
-                    // Other modes: read then increment
-                    self.regs.fpu.fp[fp_reg] = self.read_fpu_extended(addr)?;
-                    addr = addr.wrapping_add(12);
-                }
+        for fp_reg in range {
+            if reglist & (1 << fp_reg) == 0 {
+                continue;
+            }
+            if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
+                // Predecrement: decrement address before read
+                addr = addr.wrapping_sub(12); // Extended precision = 12 bytes
+                self.regs.fpu.fp[fp_reg] = self.read_fpu_extended(addr)?;
+            } else {
+                // Other modes: read then increment
+                self.regs.fpu.fp[fp_reg] = self.read_fpu_extended(addr)?;
+                addr = addr.wrapping_add(12);
             }
         }
 
