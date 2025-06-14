@@ -44,16 +44,18 @@ where
     }
 
     /// FMOVE
-    pub(in crate::cpu_m68k) fn op_fmove(&mut self, instr: &Instruction) -> Result<()> {
+    pub(in crate::cpu_m68k) fn op_f000(&mut self, instr: &Instruction) -> Result<()> {
         // Fetch extension word
         let extword = FmoveExtWord(self.fetch()?);
         log::debug!("FMOVE {:04X} {:04X}", instr.data, extword.0);
 
         match extword.subop() {
             0b000 => {
-                // Data reg to data reg
+                // Data reg to data reg, with ALU
                 let src = self.regs.fpu.fp[extword.src_spec() as usize].clone();
-                self.regs.fpu.fp[extword.dst_reg()] = src;
+                let opmode = extword.opmode();
+
+                self.regs.fpu.fp[extword.dst_reg()] = self.fpu_alu_op(opmode, &src)?;
             }
             0b100 => {
                 // From EA to control reg
@@ -70,7 +72,7 @@ where
                 self.write_ea(instr, instr.get_op2(), value)?;
             }
             0b010 => {
-                // EA to register
+                // EA to register, with ALU op
                 let fpx = extword.dst_reg();
                 let value_in = match extword.src_spec() {
                     0b100 => {
@@ -101,32 +103,9 @@ where
                     }
                 };
 
-                if extword.opmode() != 0 {
-                    bail!("TODO rounding precision");
-                }
-
-                // Flags
-                self.regs.fpu.fpsr.exs_mut().set_bsun(false);
-                self.regs
-                    .fpu
-                    .fpsr
-                    .exs_mut()
-                    .set_snan(self.regs.fpu.fp[fpx].is_nan()); // * 1.6.5
-                self.regs.fpu.fpsr.exs_mut().set_operr(false);
-                self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-                self.regs.fpu.fpsr.exs_mut().set_unfl(false); // * X denormalized
-                self.regs.fpu.fpsr.exs_mut().set_inex2(false); // * L, D, X
-                self.regs.fpu.fpsr.exs_mut().set_inex1(false); // * P
-
-                // Condition codes (3.6.2)
-                self.regs.fpu.fpsr.set_fpcc_nan(value_in.is_nan());
-                self.regs.fpu.fpsr.set_fpcc_i(value_in.is_inf());
-                self.regs.fpu.fpsr.set_fpcc_n(value_in.is_negative());
-                self.regs.fpu.fpsr.set_fpcc_z(value_in.is_zero());
-
                 log::debug!("in {:03b} {} = {}", extword.src_spec(), fpx, value_in);
                 log::debug!("{:?}", self.regs.fpu.fpsr);
-                self.regs.fpu.fp[fpx] = value_in;
+                self.regs.fpu.fp[fpx] = self.fpu_alu_op(extword.opmode(), &value_in)?;
             }
             0b011 => {
                 // Register to EA
