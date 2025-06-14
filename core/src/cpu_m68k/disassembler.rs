@@ -924,13 +924,32 @@ impl<'a> Disassembler<'a> {
                         )?,
                         extword.dst_reg()
                     ),
+                    0b011 => format!(
+                        "{}.{} FP{},{}",
+                        instr.mnemonic,
+                        match extword.dest_fmt() {
+                            0b000 => "l",
+                            0b001 => "s",
+                            0b010 => "x",
+                            0b011 => "p",
+                            0b100 => "w",
+                            0b101 => "d",
+                            0b110 => "b",
+                            _ => "?",
+                        },
+                        extword.src_reg(),
+                        self.ea_sz(
+                            instr,
+                            extword.dest_fmt_instrsz().context("Invalid dest fmt")?
+                        )?,
+                    ),
                     0b110 | 0b111 => {
                         // FMOVEM - Multiple register move
                         let reglist = extword.movem_reglist();
                         let mode = extword.movem_mode();
 
                         match mode {
-                            0b00 => {
+                            0b00 | 0b10 => {
                                 // Static register list
                                 let reg_str = self.format_fpu_reglist(reglist);
                                 if extword.movem_dir() {
@@ -941,7 +960,7 @@ impl<'a> Disassembler<'a> {
                                     format!("FMOVEM.x {},{}", reg_str, self.ea(instr)?)
                                 }
                             }
-                            0b01 => {
+                            0b01 | 0b11 => {
                                 // Dynamic register list (from control register)
                                 let ctrl_reg = match extword.reg() {
                                     0b001 => "FPIAR",
