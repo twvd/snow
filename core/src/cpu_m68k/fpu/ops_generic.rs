@@ -46,8 +46,7 @@ where
     /// FMOVE, ALU operations
     pub(in crate::cpu_m68k) fn op_f000(&mut self, instr: &Instruction) -> Result<()> {
         // Fetch extension word
-        let extword = FmoveExtWord(self.fetch()?);
-        log::debug!("FMOVE {:04X} {:04X}", instr.data, extword.0);
+        let extword = FmoveExtWord(self.fetch_pump()?);
 
         match extword.subop() {
             0b000 => {
