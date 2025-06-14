@@ -6,6 +6,8 @@ use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::cpu_m68k::CpuM68kType;
 
+use super::SEMANTICS_EXTENDED;
+
 impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
     CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE>
 where
@@ -22,13 +24,23 @@ where
             0b0000000 => source.clone(),
             // FABS
             0b0011000 => source.abs(),
+            // FADD
+            0b0100010 => source + dest,
             // FMUL
             0b0100011 => source * dest,
+            // FDIV
+            0b0100000 => source / dest,
             // FINT
             // TODO rounding mode
             0b0000001 => source.round(),
+            // FINTRZ
+            0b0000011 => source
+                .cast_with_rm(SEMANTICS_EXTENDED, arpfloat::RoundingMode::Zero)
+                .round()
+                .cast(SEMANTICS_EXTENDED),
             // FCMP
             0b0111000 => {
+                log::debug!("FCMP {} {}", dest, source);
                 let result = dest - source;
                 self.fpu_condition_codes(&result);
                 // TODO flags
