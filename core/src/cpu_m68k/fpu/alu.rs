@@ -26,6 +26,8 @@ where
             0b0011000 => source.abs(),
             // FADD
             0b0100010 => source + dest,
+            // FSUB
+            0b0101000 => source - dest,
             // FMUL
             0b0100011 => source * dest,
             // FDIV
