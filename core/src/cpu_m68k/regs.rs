@@ -199,6 +199,7 @@ impl RegisterFile {
             )
             .as_str(),
         );
+        out.push_str(&self.fpu.diff_str(&other.fpu));
         out
     }
 
