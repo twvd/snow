@@ -10,7 +10,7 @@ use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord};
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
 use crate::cpu_m68k::CpuM68kType;
-use crate::types::{Long, Word};
+use crate::types::{Byte, Long, Word};
 
 impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
     CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE>
@@ -43,7 +43,7 @@ where
         Ok(())
     }
 
-    /// FMOVE
+    /// FMOVE, ALU operations
     pub(in crate::cpu_m68k) fn op_f000(&mut self, instr: &Instruction) -> Result<()> {
         // Fetch extension word
         let extword = FmoveExtWord(self.fetch()?);
@@ -76,6 +76,13 @@ where
                 // EA to register, with ALU op
                 let fpx = extword.dst_reg();
                 let value_in = match extword.src_spec() {
+                    0b110 => {
+                        // Byte
+                        Float::from_i64(
+                            SEMANTICS_EXTENDED,
+                            self.read_ea::<Byte>(instr, instr.get_op2())? as i8 as i64,
+                        )
+                    }
                     0b100 => {
                         // Word
                         Float::from_i64(
@@ -190,6 +197,31 @@ where
                             &self.regs.fpu.fp[fpx]
                         );
                         self.write_ticks(ea, out as Long)?;
+                    }
+                    0b100 => {
+                        // Word
+                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
+
+                        let out64 = self.regs.fpu.fp[fpx].to_i64();
+                        let (out, inex) = if out64 > i16::MAX.into() {
+                            // Overflow
+                            (i16::MAX, true)
+                        } else if out64 < i16::MIN.into() {
+                            // Underflow
+                            (i16::MIN, true)
+                        } else {
+                            // We're good
+                            (out64 as i16, false)
+                        };
+                        self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
+                        self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
+                        log::debug!(
+                            "out word {:?} {}",
+                            self.regs.fpu.fpcr,
+                            &self.regs.fpu.fp[fpx]
+                        );
+                        self.write_ticks(ea, out as Word)?;
                     }
                     0b010 => {
                         // Extended real
