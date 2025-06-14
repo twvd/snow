@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use arrayvec::ArrayVec;
 use either::Either;
 use itertools::Itertools;
+use num::FromPrimitive;
 
 use std::fmt::Write;
 
@@ -12,6 +13,7 @@ use crate::cpu_m68k::instruction::{
 use crate::cpu_m68k::regs::Register;
 use crate::types::{Byte, Word};
 
+use super::fpu::instruction::{FmoveControlReg, FmoveExtWord};
 use super::instruction::{
     AddressingMode, Direction, Instruction, InstructionMnemonic, InstructionSize,
 };
@@ -74,6 +76,65 @@ impl<'a> Disassembler<'a> {
         "D0",
     ];
 
+    /// Returns the mnemonic abbreviation for FPU condition codes
+    fn fcc_mnemonic(cc: usize) -> &'static str {
+        match cc & 0b111111 {
+            // Miscellaneous Tests
+            0b000000 => "F",   // False
+            0b001111 => "T",   // True
+            0b010000 => "SF",  // Signaling False
+            0b011111 => "ST",  // Signaling True
+            0b010001 => "SEQ", // Signaling Equal
+            0b011110 => "SNE", // Signaling Not Equal
+
+            // IEEE Aware Tests
+            0b000001 => "EQ",  // Equal
+            0b001110 => "NE",  // Not Equal
+            0b000010 => "OGT", // Ordered Greater Than
+            0b001101 => "ULE", // Unordered or Less or Equal
+            0b000011 => "OGE", // Ordered Greater Than or Equal
+            0b001100 => "ULT", // Unordered or Less Than
+            0b000100 => "OLT", // Ordered Less Than
+            0b001011 => "UGE", // Unordered or Greater or Equal
+            0b000101 => "OLE", // Ordered Less Than or Equal
+            0b001010 => "UGT", // Unordered or Greater Than
+            0b000110 => "OGL", // Ordered Greater or Less Than
+            0b001001 => "UEQ", // Unordered or Equal
+            0b000111 => "OR",  // Ordered
+            0b001000 => "UN",  // Unordered
+
+            // IEEE Nonaware Tests
+            0b010010 => "GT",   // Greater Than
+            0b011101 => "NGT",  // Not Greater Than
+            0b010011 => "GE",   // Greater Than or Equal
+            0b011100 => "NGE",  // Not (Greater Than or Equal)
+            0b010100 => "LT",   // Less Than
+            0b011011 => "NLT",  // Not Less Than
+            0b010101 => "LE",   // Less Than or Equal
+            0b011010 => "NLE",  // Not (Less Than or Equal)
+            0b010110 => "GL",   // Greater or Less Than
+            0b011001 => "NGL",  // Not (Greater or Less Than)
+            0b010111 => "GLE",  // Greater, Less or Equal
+            0b011000 => "NGLE", // Not (Greater, Less or Equal)
+
+            _ => "???", // Unknown condition
+        }
+    }
+
+    fn fpu_alu_op(op: u8) -> &'static str {
+        match op {
+            0b0000000 => "FMOVE",
+            0b0011000 => "FABS",
+            0b0100011 => "FMUL",
+            0b0100000 => "FDIV",
+            0b0100010 => "FADD",
+            0b0000001 => "FINT",
+            0b0000011 => "FINTRZ",
+            0b0111000 => "FCMP",
+            _ => "F???",
+        }
+    }
+
     pub fn from(iter: &'a mut dyn Iterator<Item = u8>, addr: Address) -> Self {
         Self {
             addr,
@@ -97,14 +158,45 @@ impl<'a> Disassembler<'a> {
         let lsb = self.get8()?;
         Ok(((msb as u16) << 8) | (lsb as u16))
     }
+
     fn get32(&mut self) -> Result<u32> {
         let upper = self.get16()?;
         let lower = self.get16()?;
         Ok(((upper as u32) << 16) | (lower as u32))
     }
 
+    fn get_n(&mut self, n: usize) -> Result<Vec<u8>> {
+        let mut r = Vec::with_capacity(n);
+        for _ in 0..n {
+            r.push(self.get8()?);
+        }
+        Ok(r)
+    }
+
+    /// Format FPU register list for FMOVEM instruction
+    fn format_fpu_reglist(&self, reglist: u8, reverse: bool) -> String {
+        let regs = ["FP0", "FP1", "FP2", "FP3", "FP4", "FP5", "FP6", "FP7"];
+
+        let regiter = if reverse {
+            Either::Left(regs.iter())
+        } else {
+            Either::Right(regs.iter().rev())
+        };
+
+        regiter
+            .enumerate()
+            .filter(|(i, _)| reglist & (1 << i) != 0)
+            .map(|(_, r)| *r)
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
     fn ea(&mut self, instr: &Instruction) -> Result<String> {
         self.ea_with(instr, instr.get_addr_mode()?, instr.get_op2())
+    }
+
+    fn ea_sz(&mut self, instr: &Instruction, sz: InstructionSize) -> Result<String> {
+        self.ea_with_sz(instr, instr.get_addr_mode()?, instr.get_op2(), sz)
     }
 
     fn ea_left(&mut self, instr: &Instruction) -> Result<String> {
@@ -112,12 +204,26 @@ impl<'a> Disassembler<'a> {
     }
 
     fn ea_with(&mut self, instr: &Instruction, mode: AddressingMode, op: usize) -> Result<String> {
+        self.ea_with_sz(instr, mode, op, instr.get_size())
+    }
+
+    fn ea_with_sz(
+        &mut self,
+        instr: &Instruction,
+        mode: AddressingMode,
+        op: usize,
+        sz: InstructionSize,
+    ) -> Result<String> {
         instr.clear_extword();
         Ok(match mode {
-            AddressingMode::Immediate => match instr.get_size() {
+            AddressingMode::Immediate => match sz {
                 InstructionSize::Byte => format!("#${:02X}", self.get16()?),
                 InstructionSize::Word => format!("#${:04X}", self.get16()?),
                 InstructionSize::Long => format!("#${:08X}", self.get32()?),
+                InstructionSize::Single
+                | InstructionSize::Double
+                | InstructionSize::Extended
+                | InstructionSize::Packed => format!("{:?}", self.get_n(sz.bytelen())?),
                 InstructionSize::None => bail!("Invalid addr mode"),
             },
             AddressingMode::DataRegister => format!("D{}", op),
@@ -795,8 +901,128 @@ impl<'a> Disassembler<'a> {
                 self.get16()?;
                 instr.mnemonic.to_string()
             }
-            InstructionMnemonic::FSAVE => {
-                format!("{} {}", instr.mnemonic, self.ea(instr)?,)
+            InstructionMnemonic::FSAVE | InstructionMnemonic::FRESTORE => {
+                format!("{} {}", instr.mnemonic, self.ea(instr)?)
+            }
+            InstructionMnemonic::FOP_000 => {
+                let extword = FmoveExtWord(self.get16()?);
+                match extword.subop() {
+                    // FMOVE/ALU op from FPx to FPx
+                    0b000 => format!(
+                        "{}.x FP{},FP{}",
+                        Self::fpu_alu_op(extword.opmode()),
+                        extword.src_spec(),
+                        extword.dst_reg()
+                    ),
+                    0b100 => format!(
+                        "FMOVE {},{}",
+                        self.ea_sz(instr, InstructionSize::Long)?,
+                        FmoveControlReg::from_u8(extword.reg()).context("Invalid ctrlreg")?
+                    ),
+                    0b101 => format!(
+                        "FMOVE {},{}",
+                        FmoveControlReg::from_u8(extword.reg()).context("Invalid ctrlreg")?,
+                        self.ea_sz(instr, InstructionSize::Long)?,
+                    ),
+                    0b010 if extword.src_spec() == 0b111 => format!(
+                        "FMOVECR #${:02X},FP{}",
+                        extword.movecr_offset(),
+                        extword.dst_reg()
+                    ),
+                    // FMOVE/ALU op from EA to FPx
+                    0b010 => format!(
+                        "{}.{} {},FP{}",
+                        Self::fpu_alu_op(extword.opmode()),
+                        match extword.src_spec() {
+                            0b000 => "l",
+                            0b001 => "s",
+                            0b010 => "x",
+                            0b011 => "p",
+                            0b100 => "w",
+                            0b101 => "d",
+                            0b110 => "b",
+                            _ => "?",
+                        },
+                        self.ea_sz(
+                            instr,
+                            extword.src_spec_instrsz().context("Invalid src spec")?
+                        )?,
+                        extword.dst_reg()
+                    ),
+                    0b011 => format!(
+                        "FMOVE.{} FP{},{}",
+                        match extword.dest_fmt() {
+                            0b000 => "l",
+                            0b001 => "s",
+                            0b010 => "x",
+                            0b011 => "p",
+                            0b100 => "w",
+                            0b101 => "d",
+                            0b110 => "b",
+                            _ => "?",
+                        },
+                        extword.src_reg(),
+                        self.ea_sz(
+                            instr,
+                            extword.dest_fmt_instrsz().context("Invalid dest fmt")?
+                        )?,
+                    ),
+                    0b110 | 0b111 => {
+                        // FMOVEM - Multiple register move
+                        let reglist = extword.movem_reglist();
+                        let mode = extword.movem_mode();
+
+                        match mode {
+                            0b00 | 0b10 => {
+                                // Static register list
+                                let reg_str = self.format_fpu_reglist(
+                                    reglist,
+                                    instr.get_addr_mode()? == AddressingMode::IndirectPreDec,
+                                );
+                                if !extword.movem_dir() {
+                                    // EA to registers
+                                    format!("FMOVEM.x {},{}", self.ea(instr)?, reg_str)
+                                } else {
+                                    // Registers to EA
+                                    format!("FMOVEM.x {},{}", reg_str, self.ea(instr)?)
+                                }
+                            }
+                            0b01 | 0b11 => {
+                                // Dynamic register list (from control register)
+                                let ctrl_reg = match extword.reg() {
+                                    0b001 => "FPIAR",
+                                    0b010 => "FPSR",
+                                    0b100 => "FPCR",
+                                    _ => "???",
+                                };
+                                if extword.movem_dir() {
+                                    format!("FMOVEM.x {},D{}", self.ea(instr)?, ctrl_reg)
+                                } else {
+                                    format!("FMOVEM.x D{},{}", ctrl_reg, self.ea(instr)?)
+                                }
+                            }
+                            _ => "FMOVEM ???".to_string(),
+                        }
+                    }
+                    _ => format!("{} ???", instr.mnemonic),
+                }
+            }
+
+            InstructionMnemonic::FBcc_l => {
+                let displacement = self.get32()? as i32;
+                format!(
+                    "FB{}.l ${:08X}",
+                    Self::fcc_mnemonic(instr.get_fcc()),
+                    displacement
+                )
+            }
+            InstructionMnemonic::FBcc_w => {
+                let displacement = self.get16()? as i16;
+                format!(
+                    "FB{}.w ${:04X}",
+                    Self::fcc_mnemonic(instr.get_fcc()),
+                    displacement
+                )
             }
         };
 
