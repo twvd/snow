@@ -1192,7 +1192,7 @@ where
             InstructionMnemonic::FNOP => self.op_fnop(instr),
             InstructionMnemonic::FSAVE => self.op_fsave(instr),
             InstructionMnemonic::FRESTORE => self.op_frestore(instr),
-            InstructionMnemonic::FMOVE => self.op_fmove(instr),
+            InstructionMnemonic::FOP_000 => self.op_f000(instr),
             InstructionMnemonic::FBcc_l => self.op_fbcc::<true>(instr),
             InstructionMnemonic::FBcc_w => self.op_fbcc::<false>(instr),
         }

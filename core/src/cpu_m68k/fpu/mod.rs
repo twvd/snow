@@ -1,3 +1,4 @@
+pub mod alu;
 pub mod instruction;
 pub mod ops_branch;
 pub mod ops_generic;
