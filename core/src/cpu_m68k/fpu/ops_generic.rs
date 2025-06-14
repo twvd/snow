@@ -75,6 +75,13 @@ where
                 // EA to register, with ALU op
                 let fpx = extword.dst_reg();
                 let value_in = match extword.src_spec() {
+                    0b000 => {
+                        // Long
+                        Float::from_i64(
+                            SEMANTICS_EXTENDED,
+                            self.read_ea::<Long>(instr, instr.get_op2())? as i32 as i64,
+                        )
+                    }
                     0b110 => {
                         // Byte
                         Float::from_i64(
