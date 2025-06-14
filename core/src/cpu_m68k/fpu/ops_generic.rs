@@ -287,7 +287,7 @@ where
                     bail!("Contradicting modes (post-inc vs {0:2b})", mode);
                 }
 
-                if extword.movem_dir() {
+                if !extword.movem_dir() {
                     // EA to registers
                     self.op_fmovem_ea_to_regs(instr, reglist)?;
                 } else {

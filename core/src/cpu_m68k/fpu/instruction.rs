@@ -54,7 +54,7 @@ bitfield! {
         /// (Register to EA) K-factor
         pub k_factor: u8 @ 0..=6,
 
-        /// (FMOVEM) Direction: 0=register to EA, 1=EA to register
+        /// (FMOVEM) Direction: 1=register to EA, 0=EA to register
         pub movem_dir: bool @ 13,
 
         /// (FMOVEM) Register list mask
