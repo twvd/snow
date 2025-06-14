@@ -320,7 +320,7 @@ where
         // For predecrement mode, iterate in reverse order
         let reverse_order = instr.get_addr_mode()? == AddressingMode::IndirectPreDec;
 
-        let range = if reverse_order {
+        let range = if !reverse_order {
             Either::Left((0..8).rev())
         } else {
             Either::Right(0..8)
@@ -359,7 +359,7 @@ where
 
         // For predecrement mode, iterate in reverse order
         let reverse_order = instr.get_addr_mode()? == AddressingMode::IndirectPreDec;
-        let range = if reverse_order {
+        let range = if !reverse_order {
             Either::Left((0..8).rev())
         } else {
             Either::Right(0..8)
