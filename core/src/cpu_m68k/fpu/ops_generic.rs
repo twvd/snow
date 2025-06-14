@@ -253,8 +253,8 @@ where
         } else {
             Either::Right(0..8)
         };
-        for fp_reg in range {
-            if reglist & (1 << fp_reg) == 0 {
+        for (bit, fp_reg) in range.enumerate() {
+            if reglist & (1 << bit as u8) == 0 {
                 continue;
             }
             let fp_value = self.regs.fpu.fp[fp_reg].clone();
@@ -293,8 +293,8 @@ where
             Either::Right(0..8)
         };
 
-        for fp_reg in range {
-            if reglist & (1 << fp_reg) == 0 {
+        for (bit, fp_reg) in range.enumerate() {
+            if reglist & (1 << bit as u8) == 0 {
                 continue;
             }
             if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
