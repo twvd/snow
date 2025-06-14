@@ -121,6 +121,13 @@ impl<'a> Disassembler<'a> {
         }
     }
 
+    fn fpu_alu_op(op: u8) -> &'static str {
+        match op {
+            0b000000 => "FMOVE",
+            _ => "F???",
+        }
+    }
+
     pub fn from(iter: &'a mut dyn Iterator<Item = u8>, addr: Address) -> Self {
         Self {
             addr,
@@ -884,30 +891,30 @@ impl<'a> Disassembler<'a> {
             InstructionMnemonic::FSAVE | InstructionMnemonic::FRESTORE => {
                 format!("{} {}", instr.mnemonic, self.ea(instr)?)
             }
-            InstructionMnemonic::FMOVE => {
+            InstructionMnemonic::FOP_000 => {
                 let extword = FmoveExtWord(self.get16()?);
                 match extword.subop() {
+                    // FMOVE/ALU op from FPx to FPx
                     0b000 => format!(
                         "{}.x FP{},FP{}",
-                        mnemonic,
+                        Self::fpu_alu_op(extword.opmode()),
                         extword.src_spec(),
                         extword.dst_reg()
                     ),
                     0b100 => format!(
-                        "{} {},{}",
-                        mnemonic,
+                        "FMOVE {},{}",
                         self.ea_sz(instr, InstructionSize::Long)?,
                         FmoveControlReg::from_u8(extword.reg()).context("Invalid ctrlreg")?
                     ),
                     0b101 => format!(
-                        "{} {},{}",
-                        mnemonic,
+                        "FMOVE {},{}",
                         FmoveControlReg::from_u8(extword.reg()).context("Invalid ctrlreg")?,
                         self.ea_sz(instr, InstructionSize::Long)?,
                     ),
+                    // FMOVE/ALU op from EA to FPx
                     0b010 => format!(
                         "{}.{} {},FP{}",
-                        instr.mnemonic,
+                        Self::fpu_alu_op(extword.opmode()),
                         match extword.src_spec() {
                             0b000 => "l",
                             0b001 => "s",
@@ -925,8 +932,7 @@ impl<'a> Disassembler<'a> {
                         extword.dst_reg()
                     ),
                     0b011 => format!(
-                        "{}.{} FP{},{}",
-                        instr.mnemonic,
+                        "FMOVE.{} FP{},{}",
                         match extword.dest_fmt() {
                             0b000 => "l",
                             0b001 => "s",
