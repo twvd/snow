@@ -19,6 +19,9 @@ where
         source: &Float,
         dest: &Float,
     ) -> Result<Float> {
+        debug_assert_eq!(source.get_semantics(), SEMANTICS_EXTENDED);
+        debug_assert_eq!(dest.get_semantics(), SEMANTICS_EXTENDED);
+
         let result = match opmode {
             // FMOVE
             0b0000000 => source.clone(),
