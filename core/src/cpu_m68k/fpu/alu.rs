@@ -25,13 +25,13 @@ where
             // FABS
             0b0011000 => source.abs(),
             // FADD
-            0b0100010 => source + dest,
+            0b0100010 => dest + source,
             // FSUB
-            0b0101000 => source - dest,
+            0b0101000 => dest - source,
             // FMUL
-            0b0100011 => source * dest,
+            0b0100011 => dest * source,
             // FDIV
-            0b0100000 => source / dest,
+            0b0100000 => dest / source,
             // FINT
             // TODO rounding mode
             0b0000001 => source.round(),
