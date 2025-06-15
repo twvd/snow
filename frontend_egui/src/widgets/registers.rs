@@ -169,6 +169,12 @@ impl RegistersWidget {
                     register_row(Register::MSP, &|r: &RegisterFile| r.msp);
                     register_row(Register::ISP, &|r: &RegisterFile| r.isp);
                 }
+                if cpu_type >= M68020 {
+                    // FPU stuff
+                    register_row(Register::FPCR, &|r: &RegisterFile| r.fpu.fpcr.0);
+                    register_row(Register::FPSR, &|r: &RegisterFile| r.fpu.fpsr.0);
+                    register_row(Register::FPIAR, &|r: &RegisterFile| r.fpu.fpiar);
+                }
 
                 // SR register is handled separately since it's a 16-bit value
                 body.row(20.0, |mut row| {

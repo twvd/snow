@@ -279,6 +279,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arpfloat"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28898ff046edde8a5191546e2be631d5d45df9ca0867b2471c554502d5be65b4"
+
+[[package]]
 name = "array-init"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3737,6 +3743,7 @@ name = "snow_core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arpfloat",
  "arrayvec",
  "bit-set",
  "chrono",

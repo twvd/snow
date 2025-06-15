@@ -14,11 +14,37 @@ use crate::types::{Long, Word};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum InstructionSize {
+    /// 8-bit / 1 byte
     Byte,
+    /// 16-bit / 2 bytes
     Word,
+    /// 32-bit / 4 bytes
     Long,
+    /// Single precision real, 32-bit / 4 bytes
+    Single,
+    /// Double precision real, 64-bit / 8 bytes
+    Double,
+    /// Extended precision real, 96-bits / 12 bytes
+    Extended,
+    /// Packed BCD real, 96-bits / 12 bytes
+    Packed,
 
     None,
+}
+
+impl InstructionSize {
+    pub fn bytelen(&self) -> usize {
+        match self {
+            Self::Byte => 1,
+            Self::Word => 2,
+            Self::Long => 4,
+            Self::Single => 4,
+            Self::Double => 8,
+            Self::Extended => 12,
+            Self::Packed => 12,
+            Self::None => panic!("bytelen() on None size"),
+        }
+    }
 }
 
 /// Instruction mnemonic
@@ -218,6 +244,10 @@ pub enum InstructionMnemonic {
     // FPU opcodes
     FNOP,
     FSAVE,
+    FRESTORE,
+    FOP_000,
+    FBcc_w,
+    FBcc_l,
 }
 
 /// Addressing modes
@@ -716,8 +746,12 @@ impl Instruction {
         (M68020, 0b0100_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CHK_l),
 
         // M68020+ FPU instructions
-        (M68020, 0b1111_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::FSAVE),
-        (M68020, 0b1111_0000_1000_0000, 0b1111_0001_1111_1111, InstructionMnemonic::FNOP),
+        (M68020, 0b1111_0011_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FSAVE),
+        (M68020, 0b1111_0011_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FRESTORE),
+        (M68020, 0b1111_0010_1000_0000, 0b1111_1111_1111_1111, InstructionMnemonic::FNOP),
+        (M68020, 0b1111_0010_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FOP_000),
+        (M68020, 0b1111_0010_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FBcc_l),
+        (M68020, 0b1111_0010_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FBcc_w),
         (M68000, 0b1111_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::LINEF),
     ];
 
@@ -904,9 +938,14 @@ impl Instruction {
         }
     }
 
-    /// Retrieves the condition for a 'cc' instruction
+    /// Retrieves the condition predicate for a 'cc' instruction
     pub fn get_cc(&self) -> usize {
         usize::from((self.data >> 8) & 0b1111)
+    }
+
+    /// Retrieves the condition predicate for a 'Fcc' instruction
+    pub fn get_fcc(&self) -> usize {
+        usize::from(self.data & 0b111111)
     }
 
     /// Retrieves left and right operands for EXG
@@ -975,7 +1014,8 @@ impl Instruction {
             | InstructionMnemonic::SUBQ_l
             | InstructionMnemonic::SUBX_l
             | InstructionMnemonic::TST_l
-            | InstructionMnemonic::MOVEC_l => InstructionSize::Long,
+            | InstructionMnemonic::MOVEC_l
+            | InstructionMnemonic::FBcc_l => InstructionSize::Long,
 
             InstructionMnemonic::ADD_w
             | InstructionMnemonic::ADDA_w
@@ -1019,7 +1059,8 @@ impl Instruction {
             | InstructionMnemonic::SUBI_w
             | InstructionMnemonic::SUBQ_w
             | InstructionMnemonic::SUBX_w
-            | InstructionMnemonic::TST_w => InstructionSize::Word,
+            | InstructionMnemonic::TST_w
+            | InstructionMnemonic::FBcc_w => InstructionSize::Word,
 
             InstructionMnemonic::ADD_b
             | InstructionMnemonic::ADDI_b
@@ -1102,7 +1143,9 @@ impl Instruction {
             | InstructionMnemonic::CHK_w
             | InstructionMnemonic::DBcc
             | InstructionMnemonic::EXG
+            | InstructionMnemonic::FOP_000
             | InstructionMnemonic::FNOP
+            | InstructionMnemonic::FRESTORE
             | InstructionMnemonic::FSAVE
             | InstructionMnemonic::ILLEGAL
             | InstructionMnemonic::JMP
