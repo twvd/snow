@@ -45,7 +45,6 @@ where
                 .cast(SEMANTICS_EXTENDED),
             // FCMP
             0b0111000 => {
-                log::debug!("FCMP {} {}", dest, source);
                 let result = dest - source;
                 self.fpu_condition_codes(&result);
                 // TODO flags

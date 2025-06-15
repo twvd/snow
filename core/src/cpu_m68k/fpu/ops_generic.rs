@@ -177,8 +177,6 @@ where
                     }
                 };
 
-                log::debug!("in {:03b} {} = {}", extword.src_spec(), fpx, value_in);
-                log::debug!("{:?}", self.regs.fpu.fpsr);
                 let dest = self.regs.fpu.fp[fpx].clone();
                 self.regs.fpu.fp[fpx] = self.fpu_alu_op(extword.opmode(), &value_in, &dest)?;
             }
@@ -223,11 +221,6 @@ where
                         };
                         self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
-                        log::debug!(
-                            "out long {:?} {}",
-                            self.regs.fpu.fpcr,
-                            &self.regs.fpu.fp[fpx]
-                        );
                         self.write_ticks(ea, out as Long)?;
                     }
                     0b100 => {
@@ -248,11 +241,6 @@ where
                         };
                         self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
-                        log::debug!(
-                            "out word {:?} {}",
-                            self.regs.fpu.fpcr,
-                            &self.regs.fpu.fp[fpx]
-                        );
                         self.write_ticks(ea, out as Word)?;
                     }
                     0b010 => {
@@ -261,11 +249,6 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_unfl(false);
                         self.regs.fpu.fpsr.exs_mut().set_inex2(false);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
-                        log::debug!(
-                            "out ext {:?} {}",
-                            self.regs.fpu.fpcr,
-                            &self.regs.fpu.fp[fpx]
-                        );
                         self.write_fpu_extended(ea, &self.regs.fpu.fp[fpx].clone())?;
                     }
                     0b101 => {
