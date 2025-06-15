@@ -181,9 +181,7 @@ where
         for i in 0..8 {
             v.push(self.read_ticks(addr.wrapping_add(i))?);
         }
-        Ok(Float::from_f64(f64::from_be_bytes(
-            v.as_slice().try_into()?,
-        )))
+        Ok(Float::from_f64(f64::from_be_bytes(v.as_slice().try_into()?)).cast(SEMANTICS_EXTENDED))
     }
 
     /// Write FPU double precision value to memory
@@ -192,8 +190,6 @@ where
         addr: Address,
         value: &Float,
     ) -> Result<()> {
-        log::debug!("writing double: {}", value);
-
         for (i, b) in value.as_f64().to_be_bytes().into_iter().enumerate() {
             self.write_ticks(addr.wrapping_add(i as Address), b)?;
         }
@@ -204,7 +200,7 @@ where
     /// Read FPU single precision value from memory
     pub(in crate::cpu_m68k) fn read_fpu_single(&mut self, addr: Address) -> Result<Float> {
         let raw = self.read_ticks::<Long>(addr)?;
-        Ok(Float::from_f32(f32::from_bits(raw)))
+        Ok(Float::from_f32(f32::from_bits(raw)).cast(SEMANTICS_EXTENDED))
     }
 
     /// Write FPU single precision value to memory
@@ -228,18 +224,24 @@ mod tests {
     use arpfloat::{BigInt, Float};
 
     // M68881 Extended Precision Constants
-    const EXPONENT_BIAS: i64 = 16383; // 2^14 - 1 for 15-bit exponent
     const EXPONENT_MAX: u64 = 0x7FFF; // All 1s in 15-bit exponent (32767)
     const MANTISSA_EXPLICIT_BIT: u64 = 1u64 << 63; // Bit 63 - explicit integer bit
     const MANTISSA_FRACTION_MASK: u64 = (1u64 << 63) - 1; // Bits 0-62
 
-    fn kinda_equal(a: &Float, b: &Float) {
-        assert_eq!(a.is_negative(), b.is_negative());
+    fn fully_equal(a: &Float, b: &Float) {
+        kinda_equal(a, b);
         assert_eq!(a.get_mantissa(), b.get_mantissa());
         assert_eq!(a.get_exp(), b.get_exp());
+    }
+
+    fn kinda_equal(a: &Float, b: &Float) {
+        assert_eq!(a.is_negative(), b.is_negative());
         assert_eq!(a.is_inf(), b.is_inf());
         assert_eq!(a.is_zero(), b.is_zero());
         assert_eq!(a.is_nan(), b.is_nan());
+        if !a.is_nan() && !a.is_inf() {
+            assert_eq!(a.as_f64(), b.as_f64());
+        }
     }
 
     #[test]
@@ -278,7 +280,90 @@ mod tests {
             // Check reading back actual value
             let read = cpu.read_fpu_extended(0).unwrap();
             eprintln!("Read back: {}, {:?}", &read, &read);
+            fully_equal(&read, &v);
+            assert_eq!(read.get_semantics(), SEMANTICS_EXTENDED);
+        }
+    }
+
+    #[test]
+    fn read_write_double_real() {
+        let values = vec![
+            Float::zero(SEMANTICS_EXTENDED, false),
+            Float::zero(SEMANTICS_EXTENDED, true),
+            Float::from_u64(SEMANTICS_EXTENDED, 1234567890),
+            Float::nan(SEMANTICS_EXTENDED, false),
+            Float::nan(SEMANTICS_EXTENDED, true),
+            Float::from_f64(3.1415).cast(SEMANTICS_EXTENDED),
+            Float::from_f64(-3.1415).cast(SEMANTICS_EXTENDED),
+        ];
+
+        for v in values {
+            eprintln!("Testing {} / {:?}", &v, &v);
+
+            let mut cpu =
+                CpuM68020::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
+
+            // Ensure _something_ was written
+            for a in 0..8 {
+                cpu.write_ticks::<Byte>(a, 0xAA_u8).unwrap();
+            }
+            // Canary for writes too far
+            cpu.write_ticks::<Long>(8, 0xDEADBEEF_u32).unwrap();
+            cpu.write_fpu_double(0, &v).unwrap();
+
+            // Addresses should have been written to
+            for a in 0..8 {
+                assert_ne!(cpu.read_ticks::<Byte>(a).unwrap(), 0xAA_u8);
+            }
+            // Check canary
+            assert_eq!(cpu.read_ticks::<Long>(8).unwrap(), 0xDEADBEEF_u32);
+
+            // Check reading back actual value
+            let read = cpu.read_fpu_double(0).unwrap();
+            eprintln!("Read back: {}, {:?}", &read, &read);
             kinda_equal(&read, &v);
+            assert_eq!(read.get_semantics(), SEMANTICS_EXTENDED);
+        }
+    }
+
+    #[test]
+    fn read_write_single_real() {
+        let values = vec![
+            Float::zero(SEMANTICS_EXTENDED, false),
+            Float::zero(SEMANTICS_EXTENDED, true),
+            Float::from_u64(SEMANTICS_EXTENDED, 12345678),
+            Float::nan(SEMANTICS_EXTENDED, false),
+            Float::nan(SEMANTICS_EXTENDED, true),
+            Float::from_f32(3.14).cast(SEMANTICS_EXTENDED),
+            Float::from_f32(-3.14).cast(SEMANTICS_EXTENDED),
+        ];
+
+        for v in values {
+            eprintln!("Testing {} / {:?}", &v, &v);
+
+            let mut cpu =
+                CpuM68020::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
+
+            // Ensure _something_ was written
+            for a in 0..4 {
+                cpu.write_ticks::<Byte>(a, 0xAA_u8).unwrap();
+            }
+            // Canary for writes too far
+            cpu.write_ticks::<Long>(4, 0xDEADBEEF_u32).unwrap();
+            cpu.write_fpu_single(0, &v).unwrap();
+
+            // Addresses should have been written to
+            for a in 0..4 {
+                assert_ne!(cpu.read_ticks::<Byte>(a).unwrap(), 0xAA_u8);
+            }
+            // Check canary
+            assert_eq!(cpu.read_ticks::<Long>(4).unwrap(), 0xDEADBEEF_u32);
+
+            // Check reading back actual value
+            let read = cpu.read_fpu_single(0).unwrap();
+            eprintln!("Read back: {}, {:?}", &read, &read);
+            kinda_equal(&read, &v);
+            assert_eq!(read.get_semantics(), SEMANTICS_EXTENDED);
         }
     }
 
