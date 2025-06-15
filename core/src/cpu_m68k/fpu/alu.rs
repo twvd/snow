@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use arpfloat::Float;
+use arpfloat::{Float, RoundingMode};
 
 use crate::bus::{Address, Bus, IrqSource};
 
@@ -49,6 +49,16 @@ where
                 self.fpu_condition_codes(&result);
                 // TODO flags
                 return Ok(dest.clone());
+            }
+            // FREM
+            0b0100101 => {
+                assert_eq!(dest.get_rounding_mode(), RoundingMode::NearestTiesToEven);
+                assert_eq!(source.get_rounding_mode(), RoundingMode::NearestTiesToEven);
+                let quotient = dest / source;
+                let n = quotient.round();
+                self.regs.fpu.fpsr.set_quotient(n.to_i64() as u8);
+                self.regs.fpu.fpsr.set_quotient_s(n.is_negative());
+                dest - (source * n)
             }
             _ => bail!("Unimplemented FPU ALU op {:07b}", opmode),
         };
