@@ -1,5 +1,6 @@
 use anyhow::Result;
 use arpfloat::{BigInt, Float};
+use arrayvec::ArrayVec;
 use proc_bitfield::bitfield;
 
 use crate::bus::{Address, Bus, IrqSource};
@@ -171,6 +172,48 @@ where
         self.write_ticks(addr.wrapping_add(8), bits.low())?;
 
         Ok(())
+    }
+
+    /// Read FPU double precision value from memory
+    pub(in crate::cpu_m68k) fn read_fpu_double(&mut self, addr: Address) -> Result<Float> {
+        let mut v = ArrayVec::<u8, 8>::new();
+
+        for i in 0..8 {
+            v.push(self.read_ticks(addr.wrapping_add(i))?);
+        }
+        Ok(Float::from_f64(f64::from_be_bytes(
+            v.as_slice().try_into()?,
+        )))
+    }
+
+    /// Write FPU double precision value to memory
+    pub(in crate::cpu_m68k) fn write_fpu_double(
+        &mut self,
+        addr: Address,
+        value: &Float,
+    ) -> Result<()> {
+        log::debug!("writing double: {}", value);
+
+        for (i, b) in value.as_f64().to_be_bytes().into_iter().enumerate() {
+            self.write_ticks(addr.wrapping_add(i as Address), b)?;
+        }
+
+        Ok(())
+    }
+
+    /// Read FPU single precision value from memory
+    pub(in crate::cpu_m68k) fn read_fpu_single(&mut self, addr: Address) -> Result<Float> {
+        let raw = self.read_ticks::<Long>(addr)?;
+        Ok(Float::from_f32(f32::from_bits(raw)))
+    }
+
+    /// Write FPU single precision value to memory
+    pub(in crate::cpu_m68k) fn write_fpu_single(
+        &mut self,
+        addr: Address,
+        value: &Float,
+    ) -> Result<()> {
+        self.write_ticks::<Long>(addr, value.as_f32().to_bits())
     }
 }
 
