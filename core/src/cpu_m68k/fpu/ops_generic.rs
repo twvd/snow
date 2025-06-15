@@ -96,6 +96,32 @@ where
                             self.read_ea::<Word>(instr, instr.get_op2())? as i16 as i64,
                         )
                     }
+                    0b101 => {
+                        // Double-precision real
+                        let addr = if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
+                            self.regs.read_a_predec(instr.get_op2(), 8)
+                        } else {
+                            self.calc_ea_addr_no_mod::<Long>(instr, instr.get_op2())?
+                        };
+                        let v = self.read_fpu_double(addr)?;
+                        if instr.get_addr_mode()? == AddressingMode::IndirectPostInc {
+                            self.regs.read_a_postinc::<Address>(instr.get_op2(), 8);
+                        }
+                        v
+                    }
+                    0b001 => {
+                        // Single-precision real
+                        let addr = if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
+                            self.regs.read_a_predec(instr.get_op2(), 4)
+                        } else {
+                            self.calc_ea_addr_no_mod::<Long>(instr, instr.get_op2())?
+                        };
+                        let v = self.read_fpu_single(addr)?;
+                        if instr.get_addr_mode()? == AddressingMode::IndirectPostInc {
+                            self.regs.read_a_postinc::<Address>(instr.get_op2(), 4);
+                        }
+                        v
+                    }
                     0b010 => {
                         // Extended real
                         let addr = if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
@@ -241,6 +267,22 @@ where
                             &self.regs.fpu.fp[fpx]
                         );
                         self.write_fpu_extended(ea, &self.regs.fpu.fp[fpx].clone())?;
+                    }
+                    0b101 => {
+                        // Double-precision real
+                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_inex2(false);
+                        self.regs.fpu.fpsr.exs_mut().set_inex1(false);
+                        self.write_fpu_double(ea, &self.regs.fpu.fp[fpx].clone())?;
+                    }
+                    0b001 => {
+                        // Single precision real
+                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_inex2(false);
+                        self.regs.fpu.fpsr.exs_mut().set_inex1(false);
+                        self.write_fpu_single(ea, &self.regs.fpu.fp[fpx].clone())?;
                     }
                     _ => {
                         bail!(
