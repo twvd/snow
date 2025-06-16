@@ -9,6 +9,7 @@ use crate::types::Long;
 
 use super::SEMANTICS_EXTENDED;
 
+const EXPONENT_BIAS: u64 = 16383;
 const EXPONENT_MAX: u64 = 0x7FFF;
 
 bitfield! {
@@ -91,7 +92,7 @@ impl From<&Float> for BitsExtReal {
         } else {
             // Apply M68881 bias (16383) to the unbiased exponent from arpfloat
             let unbiased_exp = value.get_exp();
-            let biased_exp = unbiased_exp + 16383;
+            let biased_exp = unbiased_exp + EXPONENT_BIAS as i64;
 
             // Ensure the biased exponent fits in 15 bits and is positive
             assert!(
@@ -126,7 +127,7 @@ impl From<BitsExtReal> for Float {
         } else {
             // Convert M68881 biased exponent back to unbiased for arpfloat
             let biased_exp = value.e() as i64;
-            let unbiased_exp = biased_exp - 16383;
+            let unbiased_exp = biased_exp - EXPONENT_BIAS as i64;
 
             Self::from_parts(
                 SEMANTICS_EXTENDED,
