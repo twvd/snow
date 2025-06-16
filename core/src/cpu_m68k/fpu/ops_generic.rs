@@ -72,7 +72,7 @@ where
                 self.write_ea(instr, instr.get_op2(), value)?;
             }
             0b010 => {
-                // EA to register, with ALU op
+                // EA to FPU register, with ALU op
                 let fpx = extword.dst_reg();
                 let value_in = match extword.src_spec() {
                     0b000 => {
@@ -180,7 +180,7 @@ where
                 let dest = self.regs.fpu.fp[fpx].clone();
                 self.regs.fpu.fp[fpx] = self.fpu_alu_op(extword.opmode(), &value_in, &dest)?;
             }
-            0b011 => {
+            0b011 if instr.get_addr_mode()? != AddressingMode::DataRegister => {
                 // Register to EA
                 if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
                     self.regs.read_a_predec::<Address>(
@@ -270,6 +270,70 @@ where
                     _ => {
                         bail!(
                             "Reg to EA unimplemented dest format {:03b}",
+                            extword.dest_fmt()
+                        );
+                    }
+                }
+
+                // Flags
+                self.regs.fpu.fpsr.exs_mut().set_bsun(false);
+                self.regs
+                    .fpu
+                    .fpsr
+                    .exs_mut()
+                    .set_snan(self.regs.fpu.fp[fpx].is_nan()); // * 1.6.5
+                self.regs.fpu.fpsr.exs_mut().set_operr(false); // for invalid K-factor
+
+                // Condition codes unaffected
+            }
+            0b011 if instr.get_addr_mode()? == AddressingMode::DataRegister => {
+                // Register to Dn
+                let fpx = extword.src_reg();
+                let dn = instr.get_op2();
+                match extword.dest_fmt() {
+                    0b000 => {
+                        // Long
+                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
+
+                        let out64 = self.regs.fpu.fp[fpx].to_i64();
+                        let (out, inex) = if out64 > i32::MAX.into() {
+                            // Overflow
+                            (i32::MAX, true)
+                        } else if out64 < i32::MIN.into() {
+                            // Underflow
+                            (i32::MIN, true)
+                        } else {
+                            // We're good
+                            (out64 as i32, false)
+                        };
+                        self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
+                        self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
+                        self.regs.write_d(dn, out as Long);
+                    }
+                    0b100 => {
+                        // Word
+                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
+
+                        let out64 = self.regs.fpu.fp[fpx].to_i64();
+                        let (out, inex) = if out64 > i16::MAX.into() {
+                            // Overflow
+                            (i16::MAX, true)
+                        } else if out64 < i16::MIN.into() {
+                            // Underflow
+                            (i16::MIN, true)
+                        } else {
+                            // We're good
+                            (out64 as i16, false)
+                        };
+                        self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
+                        self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
+                        self.regs.write_d(dn, out as Word);
+                    }
+                    _ => {
+                        bail!(
+                            "Reg to Dn unimplemented dest format {:03b}",
                             extword.dest_fmt()
                         );
                     }
