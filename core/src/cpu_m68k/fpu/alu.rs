@@ -97,6 +97,11 @@ where
                 // No need to remove the bias here as we store FPx registers unbiased
                 Float::from_i64(SEMANTICS_EXTENDED, source.get_exp())
             }
+            // FTST
+            0b0111010 => {
+                self.fpu_condition_codes(source);
+                return Ok(dest.clone());
+            }
             _ => bail!("Unimplemented FPU ALU op {:07b}", opmode),
         };
 
