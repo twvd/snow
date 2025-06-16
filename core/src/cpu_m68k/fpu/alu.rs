@@ -102,6 +102,8 @@ where
                 self.fpu_condition_codes(source);
                 return Ok(dest.clone());
             }
+            // FNEG
+            0b0011010 => source.neg(),
             _ => bail!("Unimplemented FPU ALU op {:07b}", opmode),
         };
 
