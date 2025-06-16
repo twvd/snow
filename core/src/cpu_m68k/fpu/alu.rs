@@ -1,18 +1,48 @@
 use anyhow::{bail, Result};
-use arpfloat::{Float, RoundingMode};
+use arpfloat::{Float, RoundingMode, Semantics};
 
 use crate::bus::{Address, Bus, IrqSource};
 
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::cpu_m68k::CpuM68kType;
 
-use super::SEMANTICS_EXTENDED;
+use super::{SEMANTICS_DOUBLE, SEMANTICS_EXTENDED, SEMANTICS_SINGLE};
 
 impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
     CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
+    fn fpu_rounding_mode(&self) -> RoundingMode {
+        // 3.5.2 Rounding modes
+        // Table 3-21
+        match self.regs.fpu.fpcr.rnd() {
+            0b00 => RoundingMode::NearestTiesToEven,
+            0b01 => RoundingMode::Zero,
+            0b10 => RoundingMode::Negative,
+            0b11 => RoundingMode::Positive,
+            _ => unreachable!(),
+        }
+    }
+
+    fn fpu_rounding_precision(&self) -> Result<Semantics> {
+        // 3.5.2 Rounding modes
+        // Table 3-21
+        Ok(match self.regs.fpu.fpcr.prec() {
+            0b00 => SEMANTICS_EXTENDED,
+            0b01 => SEMANTICS_SINGLE,
+            0b10 => SEMANTICS_DOUBLE,
+            0b11 => bail!("Undefined rounding precision 11"),
+            _ => unreachable!(),
+        })
+    }
+
+    fn fpu_rounding_mode_precision(&self) -> Result<Semantics> {
+        Ok(self
+            .fpu_rounding_precision()?
+            .with_rm(self.fpu_rounding_mode()))
+    }
+
     pub(in crate::cpu_m68k) fn fpu_alu_op(
         &mut self,
         opmode: u8,
@@ -36,8 +66,10 @@ where
             // FDIV
             0b0100000 => dest / source,
             // FINT
-            // TODO rounding mode
-            0b0000001 => source.round(),
+            0b0000001 => source
+                .cast(self.fpu_rounding_mode_precision()?)
+                .round()
+                .cast(SEMANTICS_EXTENDED),
             // FINTRZ
             0b0000011 => source
                 .cast_with_rm(SEMANTICS_EXTENDED, arpfloat::RoundingMode::Zero)
