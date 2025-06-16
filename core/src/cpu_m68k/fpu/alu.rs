@@ -92,6 +92,11 @@ where
                 self.regs.fpu.fpsr.set_quotient_s(n.is_negative());
                 dest - (source * n)
             }
+            // FGETEXP
+            0b0011110 => {
+                // No need to remove the bias here as we store FPx registers unbiased
+                Float::from_i64(SEMANTICS_EXTENDED, source.get_exp())
+            }
             _ => bail!("Unimplemented FPU ALU op {:07b}", opmode),
         };
 
