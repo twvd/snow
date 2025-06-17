@@ -24,7 +24,7 @@ pub type Long = u32;
 
 bitfield! {
     /// General purpose 16-bit field
-    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
     pub struct Field16(pub u16): Debug, FromStorage, IntoStorage, DerefStorage {
         pub msb: u8 @ 8..16,
         pub lsb: u8 @ 0..8,
@@ -33,12 +33,36 @@ bitfield! {
 
 bitfield! {
     /// General purpose 32-bit field
-    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
     pub struct Field32(pub u32): Debug, FromStorage, IntoStorage, DerefStorage {
         pub be0: u8 @ 24..32,
         pub be1: u8 @ 16..24,
         pub be2: u8 @ 8..16,
         pub be3: u8 @ 0..8,
+    }
+}
+
+impl Field32 {
+    #[inline(always)]
+    pub fn set_be(&mut self, idx: usize, val: u8) {
+        match idx {
+            0 => self.set_be0(val),
+            1 => self.set_be1(val),
+            2 => self.set_be2(val),
+            3 => self.set_be3(val),
+            _ => panic!("Index out of bounds"),
+        }
+    }
+
+    #[inline(always)]
+    pub fn be(&mut self, idx: usize) -> u8 {
+        match idx {
+            0 => self.be0(),
+            1 => self.be1(),
+            2 => self.be2(),
+            3 => self.be3(),
+            _ => panic!("Index out of bounds"),
+        }
     }
 }
 

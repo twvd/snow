@@ -21,6 +21,9 @@ use bit_set::BitSet;
 use log::*;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
 
+/// Macintosh II main clock speed
+pub const CLOCK_SPEED: Ticks = 16_000_000;
+
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
@@ -186,8 +189,8 @@ where
                 0x0000_6000..=0x0000_6003 => Some(self.scsi.write_dma(val)),
                 0x0001_0000..=0x0001_1FFF => self.scsi.write(addr, val),
                 0x0001_2000..=0x0001_2FFF => Some(self.scsi.write_dma(val)),
-                // Sound
-                0x0001_4000..=0x0001_5FFF => Some(()),
+                // ASC (sound)
+                0x0001_4000..=0x0001_5FFF => self.asc.write(addr & 0xFFF, val),
                 // IWM
                 0x0001_6000..=0x0001_7FFF => self.swim.write(addr, val),
                 // Expansion area
@@ -255,8 +258,8 @@ where
                 0x0000_6060..=0x0000_6063 => Some(self.scsi.read_dma()),
                 0x0001_0000..=0x0001_1FFF => self.scsi.read(addr),
                 0x0001_2000..=0x0001_2FFF => Some(self.scsi.read_dma()),
-                // Sound
-                0x0001_4000..=0x0001_5FFF => Some(0xFF),
+                // ASC (sound)
+                0x0001_4000..=0x0001_5FFF => self.asc.read(addr & 0xFFF),
                 // IWM
                 0x0001_6000..=0x0001_7FFF => self.swim.read(addr),
                 // Expansion area
@@ -505,10 +508,10 @@ where
         }
 
         // Legacy VBlank interrupt
-        if self.cycles % (16_000_000 / 60) == 0 {
+        if self.cycles % (CLOCK_SPEED / 60) == 0 {
             self.via1.ifr.set_vblank(true);
 
-            if self.speed == EmulatorSpeed::Video || self.speed == EmulatorSpeed::Accurate {
+            if self.speed == EmulatorSpeed::Video {
                 // Sync to 60 fps video
                 let frametime = self.vblank_time.elapsed().as_micros() as u64;
                 const DESIRED_FRAMETIME: u64 = 1_000_000 / 60;
@@ -519,6 +522,11 @@ where
                     thread::sleep(Duration::from_micros(DESIRED_FRAMETIME - frametime));
                 }
             }
+        }
+
+        // Audio
+        if self.cycles % (CLOCK_SPEED / self.asc.sample_rate()) == 0 {
+            self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }
 
         // NuBus slot IRQs and ticks
