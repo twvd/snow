@@ -525,6 +525,7 @@ where
         }
 
         // Audio
+        self.via2.ifr.set_asc(self.asc.get_irq());
         if self.cycles % (CLOCK_SPEED / self.asc.sample_rate()) == 0 {
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }
@@ -615,6 +616,7 @@ where
 
         let mut result = vec![
             dbgprop_nest!("Apple Desktop Bus", self.via1.adb),
+            dbgprop_nest!("Apple Sound Chip", self.asc),
             dbgprop_nest!("SCSI controller (NCR 5380)", self.scsi),
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("VIA 1 (SY6522)", self.via1),
