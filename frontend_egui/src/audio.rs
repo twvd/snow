@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use log::*;
 use sdl2::audio::{AudioCallback, AudioDevice, AudioSpecDesired};
 use sdl2::Sdl;
-use snow_core::renderer::{AudioReceiver, AUDIO_BUFFER_SIZE};
+use snow_core::renderer::{AudioReceiver, AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS};
 
 pub struct SDLSingleton {
     context: Sdl,
@@ -50,8 +50,8 @@ impl SDLAudioSink {
                 // Audio sample frequency is tied to monitor's horizontal sync
                 // 370 horizontal lines * 60.147 frames/sec = 22.254 KHz
                 freq: Some(22254),
-                channels: Some(1),
-                samples: Some(AUDIO_BUFFER_SIZE.try_into().unwrap()),
+                channels: Some(AUDIO_CHANNELS.try_into().unwrap()),
+                samples: Some(AUDIO_BUFFER_SAMPLES.try_into().unwrap()),
             };
 
             let device = audio_subsystem

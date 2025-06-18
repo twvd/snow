@@ -1,7 +1,7 @@
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::renderer::AUDIO_BUFFER_SIZE;
+use crate::renderer::{AUDIO_BUFFER_SIZE, AUDIO_CHANNELS};
 
 pub const AUDIO_QUEUE_LEN: usize = 2;
 
@@ -32,7 +32,9 @@ impl AudioState {
             self.silent = false;
         }
 
-        self.buffer.push(val);
+        for _ in 0..AUDIO_CHANNELS {
+            self.buffer.push(val);
+        }
         if self.buffer.len() >= AUDIO_BUFFER_SIZE {
             let buffer = std::mem::replace(&mut self.buffer, Vec::with_capacity(AUDIO_BUFFER_SIZE));
             self.silent = buffer.iter().all(|&s| s == buffer[0]);

@@ -10,7 +10,7 @@ use sdl2::render::{Canvas, Texture};
 use sdl2::video::Window;
 use sdl2::{EventPump, Sdl};
 
-use snow_core::renderer::{AudioReceiver, DisplayBuffer, AUDIO_BUFFER_SIZE};
+use snow_core::renderer::{AudioReceiver, DisplayBuffer, AUDIO_BUFFER_SIZE, AUDIO_CHANNELS};
 
 pub struct SDLSingleton {
     context: Sdl,
@@ -161,7 +161,7 @@ impl SDLAudioSink {
                 // Audio sample frequency is tied to monitor's horizontal sync
                 // 370 horizontal lines * 60.147 frames/sec = 22.254 KHz
                 freq: Some(22254),
-                channels: Some(1),
+                channels: Some(AUDIO_CHANNELS.try_into().unwrap()),
                 samples: Some(AUDIO_BUFFER_SIZE.try_into().unwrap()),
             };
 
