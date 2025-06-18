@@ -32,7 +32,7 @@ Currently supported hardware:
 * Macintosh Real-Time Clock
 * Macintosh keyboard/mouse
 * ADB keyboard/mouse
-* Audio output (PWM-based models)
+* Audio output (PWM-based audio on compact Macs and ASC on Mac II)
 * Macintosh Display Card 8-24 with the 640x480 RGB monitor (Mac II)
 
 Supported floppy image formats:
