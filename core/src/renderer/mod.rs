@@ -8,9 +8,14 @@ use std::ops::{Deref, DerefMut};
 /// Audio frame channel receiver
 pub type AudioReceiver = Receiver<Box<[u8]>>;
 
-/// Audio buffer size
-/// TODO make this model-specific?
-pub const AUDIO_BUFFER_SIZE: usize = 500;
+/// Amount of samples in the audio buffer
+pub const AUDIO_BUFFER_SAMPLES: usize = 500;
+
+/// Audio buffer size (total for all channels)
+pub const AUDIO_BUFFER_SIZE: usize = AUDIO_BUFFER_SAMPLES * AUDIO_CHANNELS;
+
+/// Audio channels
+pub const AUDIO_CHANNELS: usize = 2;
 
 /// Display buffer for a single frame
 /// Always 24-bit color, RRGGBBAA

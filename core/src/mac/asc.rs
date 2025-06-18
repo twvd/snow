@@ -84,12 +84,14 @@ impl Asc {
         self.irq
     }
 
-    fn push(&mut self, val: u8) -> Result<()> {
-        if val != 0 && val != 0xFF {
+    fn push(&mut self, l: u8, r: u8) -> Result<()> {
+        if (l, r) != (0, 0) && (l, r) != (0xFF, 0xFF) {
             self.silent = false;
         }
 
-        self.buffer.push(val);
+        self.buffer.push(l);
+        self.buffer.push(r);
+        // Assuming we're always aligned to 2 here
         if self.buffer.len() >= AUDIO_BUFFER_SIZE {
             let buffer = std::mem::replace(&mut self.buffer, Vec::with_capacity(AUDIO_BUFFER_SIZE));
             self.silent = buffer.iter().all(|&s| s == buffer[0]);
@@ -99,7 +101,7 @@ impl Asc {
     }
 
     /// Sample the ASC for wavetable mode
-    fn sample_wavetable(&mut self) -> u8 {
+    fn sample_wavetable(&mut self) -> (u8, u8) {
         let mut sample = 0;
         for (i, c) in self.channels.iter_mut().enumerate() {
             c.phase.0 += c.freq.0;
@@ -107,13 +109,13 @@ impl Asc {
             let table_offset = (c.phase.0 >> 15) & 0x1FF;
             sample += self.wavetables[i * 0x200 + table_offset as usize] as u16;
         }
-        (sample >> 2) as u8
+        ((sample >> 2) as u8, (sample >> 2) as u8)
     }
 
     /// Sample the ASC for FIFO mode
-    fn sample_fifo(&mut self) -> u8 {
+    fn sample_fifo(&mut self) -> (u8, u8) {
         let l = self.fifo_l.pop_front().unwrap_or(0);
-        let _r = self.fifo_r.pop_front().unwrap_or(0);
+        let r = self.fifo_r.pop_front().unwrap_or(0);
 
         // Set FIFO status bits
         if self.fifo_l.len() == FIFO_SIZE / 2 {
@@ -133,19 +135,18 @@ impl Asc {
             self.irq = true;
         }
 
-        // TODO stereo
-        l
+        (l, r)
     }
 
     /// Ticks the ASC at the sample rate
     pub fn tick(&mut self, queue_sample: bool) -> Result<()> {
-        let sample = match self.mode {
-            AscMode::Off => 0,
+        let (l, r) = match self.mode {
+            AscMode::Off => (0, 0),
             AscMode::Fifo => self.sample_fifo(),
             AscMode::Wavetable => self.sample_wavetable(),
         };
         if queue_sample {
-            self.push(sample)?;
+            self.push(l, r)?;
         }
 
         Ok(())
