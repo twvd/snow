@@ -525,7 +525,9 @@ where
         }
 
         // Audio
-        self.via2.ifr.set_asc(self.asc.get_irq());
+        if self.asc.get_irq() {
+            self.via2.ifr.set_asc(true);
+        }
         if self.cycles % (CLOCK_SPEED / self.asc.sample_rate()) == 0 {
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }

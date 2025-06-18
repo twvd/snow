@@ -12,7 +12,7 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use proc_bitfield::bitfield;
 
 pub const AUDIO_QUEUE_LEN: usize = 2;
-const FIFO_SIZE: usize = 0x3FF;
+const FIFO_SIZE: usize = 0x400;
 
 pub type AudioBuffer = Box<[u8]>;
 
@@ -32,20 +32,14 @@ pub struct Asc {
     fifo_r: VecDeque<u8>,
 }
 
-#[derive(ToPrimitive)]
-pub enum FifoChStat {
-    None = 0,
-    HalfEmpty = 1,
-    Full = 2,
-    Empty = 3,
-}
-
 bitfield! {
     /// FIFO status register
     #[derive(Clone, Copy, PartialEq, Eq, Default)]
     pub struct FifoStatus(pub Byte): Debug, FromStorage, IntoStorage, DerefStorage {
-        pub l: u8 @ 0..2,
-        pub r: u8 @ 2..4,
+        pub l_half: bool @ 0,
+        pub l_fullempty: bool @ 1,
+        pub r_half: bool @ 2,
+        pub r_fullempty: bool @ 3,
     }
 }
 
@@ -123,21 +117,19 @@ impl Asc {
 
         // Set FIFO status bits
         if self.fifo_l.len() == FIFO_SIZE / 2 {
-            self.fifo_status
-                .set_l(FifoChStat::HalfEmpty.to_u8().unwrap());
+            self.fifo_status.set_l_half(true);
             self.irq = true;
         }
         if self.fifo_r.len() == FIFO_SIZE / 2 {
-            self.fifo_status
-                .set_r(FifoChStat::HalfEmpty.to_u8().unwrap());
+            self.fifo_status.set_r_half(true);
             self.irq = true;
         }
         if self.fifo_l.len() == 1 {
-            self.fifo_status.set_l(FifoChStat::Empty.to_u8().unwrap());
+            self.fifo_status.set_l_fullempty(true);
             self.irq = true;
         }
         if self.fifo_r.len() == 1 {
-            self.fifo_status.set_r(FifoChStat::Empty.to_u8().unwrap());
+            self.fifo_status.set_r_fullempty(true);
             self.irq = true;
         }
 
@@ -203,7 +195,7 @@ impl BusMember<Address> for Asc {
                     self.fifo_l.push_back(val);
                 }
                 if self.fifo_l.len() == FIFO_SIZE {
-                    self.fifo_status.set_l(FifoChStat::Full.to_u8().unwrap());
+                    self.fifo_status.set_l_fullempty(true);
                 }
                 Some(())
             }
@@ -212,7 +204,7 @@ impl BusMember<Address> for Asc {
                     self.fifo_r.push_back(val);
                 }
                 if self.fifo_r.len() == FIFO_SIZE {
-                    self.fifo_status.set_r(FifoChStat::Full.to_u8().unwrap());
+                    self.fifo_status.set_r_fullempty(true);
                 }
                 Some(())
             }
@@ -230,16 +222,18 @@ impl BusMember<Address> for Asc {
                     // Clear FIFOs
                     self.fifo_l.clear();
                     self.fifo_r.clear();
-                    self.fifo_status.set_l(FifoChStat::Empty.to_u8().unwrap());
-                    self.fifo_status.set_r(FifoChStat::Empty.to_u8().unwrap());
+                    self.fifo_status.set_l_fullempty(true);
+                    self.fifo_status.set_r_fullempty(true);
                 }
                 Some(())
             }
             // FIFO status
-            0x804 => Some(()),
+            0x804 => Some(self.fifo_status.0 = val),
             // Clock rate
             0x807 => {
-                log::debug!("Clock rate = {}", val);
+                if val != 0 {
+                    log::warn!("TODO Clock rate = {}", val);
+                }
                 Some(())
             }
             // Channel configuration
