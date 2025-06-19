@@ -172,11 +172,13 @@ where
 
         match addr {
             // RAM
-            0x0000_0000..=0x4FFF_FFFF => {
+            0x0000_0000..=0x3FFF_FFFF => {
                 let idx = addr as usize & self.ram_mask;
                 self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
                 Some(self.ram[idx] = val)
             }
+            // ROM
+            0x4000_0000..=0x4FFF_FFFF => Some(()),
             // I/O region (repeats)
             0x5000_0000..=0x51FF_FFFF => match addr & 0x1_FFFF {
                 // VIA 1
