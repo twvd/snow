@@ -71,8 +71,8 @@ where
             // -4 since we just nudged the PC twice
             ((msb << 16) | lsb) as i32 - 4
         } else {
-            let lsb = self.fetch_pump()? as Address;
-            lsb as i32 - 2
+            let lsb = self.fetch_pump()?;
+            lsb as i16 as i32 - 2
         };
 
         self.advance_cycles(2)?; // idle
