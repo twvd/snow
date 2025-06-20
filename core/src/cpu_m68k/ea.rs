@@ -16,9 +16,27 @@ impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
-    /// Calculates address from effective addressing mode
-    /// Happens once per instruction so e.g. postinc/predec only occur once.
+    /// Calculates address from effective addressing mode, based on operand type
     pub(in crate::cpu_m68k) fn calc_ea_addr<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        addrmode: AddressingMode,
+        ea_in: usize,
+    ) -> Result<Address> {
+        // TODO Waiting for generic_const_exprs to stabilize..
+        // https://github.com/rust-lang/rust/issues/76560
+        match std::mem::size_of::<T>() {
+            1 => self.calc_ea_addr_sz::<1>(instr, addrmode, ea_in),
+            2 => self.calc_ea_addr_sz::<2>(instr, addrmode, ea_in),
+            4 => self.calc_ea_addr_sz::<4>(instr, addrmode, ea_in),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Calculates effective address with an arbitrary type size.
+    /// Applies pre-decrement and post-increment
+    /// Happens once per instruction so e.g. postinc/predec only occur once.
+    pub(in crate::cpu_m68k) fn calc_ea_addr_sz<const SZ: usize>(
         &mut self,
         instr: &Instruction,
         addrmode: AddressingMode,
@@ -45,8 +63,7 @@ where
             AddressingMode::Indirect => self.regs.read_a(ea_in),
             AddressingMode::IndirectPreDec => {
                 self.advance_cycles(2)?; // 2x idle
-                self.regs
-                    .read_a_predec::<Address>(ea_in, std::mem::size_of::<T>())
+                self.regs.read_a_predec::<Address>(ea_in, SZ)
             }
             AddressingMode::IndirectPostInc => self.regs.read_a(ea_in),
             AddressingMode::IndirectDisplacement => {
@@ -62,7 +79,11 @@ where
                 let extword = instr.get_extword()?;
                 if extword.is_full() && CPU_TYPE >= M68020 {
                     // Actually IndirectIndexBase
-                    return self.calc_ea_addr::<T>(instr, AddressingMode::IndirectIndexBase, ea_in);
+                    return self.calc_ea_addr_sz::<SZ>(
+                        instr,
+                        AddressingMode::IndirectIndexBase,
+                        ea_in,
+                    );
                 }
                 let addr = self.regs.read_a::<Address>(ea_in);
                 let displacement = extword.brief_get_displacement_signext();
@@ -91,7 +112,7 @@ where
                 instr.fetch_extword(|| self.fetch_pump())?;
                 let extword = instr.get_extword()?;
                 if extword.is_full() && CPU_TYPE >= M68020 {
-                    return self.calc_ea_addr::<T>(instr, AddressingMode::PCIndexBase, ea_in);
+                    return self.calc_ea_addr_sz::<SZ>(instr, AddressingMode::PCIndexBase, ea_in);
                 }
                 let pc = self.regs.pc;
                 let displacement = extword.brief_get_displacement_signext();
