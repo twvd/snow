@@ -125,3 +125,9 @@ where
         T::one() << shift
     }
 }
+
+/// Temporal access order low address to high address
+pub(in crate::cpu_m68k) const TORDER_LOWHIGH: usize = 0;
+
+/// Temporal access order high address to low address
+pub(in crate::cpu_m68k) const TORDER_HIGHLOW: usize = 1;

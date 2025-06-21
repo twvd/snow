@@ -5,11 +5,10 @@ use anyhow::{bail, Result};
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::instruction::MemoryIndirectAction;
 use crate::types::Long;
-use crate::util::TemporalOrder;
 
 use super::cpu::CpuM68k;
 use super::instruction::{AddressingMode, IndexSize, Instruction, Xn};
-use super::{CpuM68kType, CpuSized, M68020};
+use super::{CpuM68kType, CpuSized, M68020, TORDER_HIGHLOW};
 
 impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
     CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE>
@@ -373,13 +372,7 @@ where
         ea_in: usize,
         value: T,
     ) -> Result<()> {
-        self.write_ea_with::<T, false>(
-            instr,
-            instr.get_addr_mode()?,
-            ea_in,
-            value,
-            TemporalOrder::HighToLow,
-        )
+        self.write_ea_with::<T, false, TORDER_HIGHLOW>(instr, instr.get_addr_mode()?, ea_in, value)
     }
 
     /// Writes a value to the operand (ea_in) using the effective addressing mode specified
@@ -391,22 +384,15 @@ where
         ea_in: usize,
         value: T,
     ) -> Result<()> {
-        self.write_ea_with::<T, true>(
-            instr,
-            instr.get_addr_mode()?,
-            ea_in,
-            value,
-            TemporalOrder::HighToLow,
-        )
+        self.write_ea_with::<T, true, TORDER_HIGHLOW>(instr, instr.get_addr_mode()?, ea_in, value)
     }
 
-    pub(in crate::cpu_m68k) fn write_ea_with<T: CpuSized, const HOLD: bool>(
+    pub(in crate::cpu_m68k) fn write_ea_with<T: CpuSized, const HOLD: bool, const TORDER: usize>(
         &mut self,
         instr: &Instruction,
         addrmode: AddressingMode,
         ea_in: usize,
         value: T,
-        order: TemporalOrder,
     ) -> Result<()> {
         match addrmode {
             AddressingMode::DataRegister => Ok(self.regs.write_d(ea_in, value)),
@@ -417,15 +403,15 @@ where
             | AddressingMode::AbsoluteShort
             | AddressingMode::AbsoluteLong => {
                 let addr = self.calc_ea_addr_ex::<T, HOLD>(instr, addrmode, ea_in)?;
-                self.write_ticks_order(addr, value, order)
+                self.write_ticks_order::<T, TORDER>(addr, value)
             }
             AddressingMode::IndirectPreDec => {
                 let addr = self.calc_ea_addr_ex::<T, HOLD>(instr, addrmode, ea_in)?;
-                self.write_ticks_order(addr, value, order)
+                self.write_ticks_order::<T, TORDER>(addr, value)
             }
             AddressingMode::IndirectPostInc => {
                 let addr = self.calc_ea_addr_ex::<T, HOLD>(instr, addrmode, ea_in)?;
-                self.write_ticks_order(addr, value, order)
+                self.write_ticks_order::<T, TORDER>(addr, value)
             }
             _ => {
                 bail!("Unimplemented addressing mode: {:?}", addrmode)
