@@ -17,7 +17,18 @@ where
     TBus: Bus<Address, u8> + IrqSource,
 {
     /// Calculates address from effective addressing mode, based on operand type
+    #[inline(always)]
     pub(in crate::cpu_m68k) fn calc_ea_addr<T: CpuSized>(
+        &mut self,
+        instr: &Instruction,
+        addrmode: AddressingMode,
+        ea_in: usize,
+    ) -> Result<Address> {
+        self.calc_ea_addr_ex::<T, false>(instr, addrmode, ea_in)
+    }
+
+    /// Calculates address from effective addressing mode, based on operand type
+    pub(in crate::cpu_m68k) fn calc_ea_addr_ex<T: CpuSized, const HOLD: bool>(
         &mut self,
         instr: &Instruction,
         addrmode: AddressingMode,
@@ -26,9 +37,9 @@ where
         // TODO Waiting for generic_const_exprs to stabilize..
         // https://github.com/rust-lang/rust/issues/76560
         match std::mem::size_of::<T>() {
-            1 => self.calc_ea_addr_sz::<1>(instr, addrmode, ea_in),
-            2 => self.calc_ea_addr_sz::<2>(instr, addrmode, ea_in),
-            4 => self.calc_ea_addr_sz::<4>(instr, addrmode, ea_in),
+            1 => self.calc_ea_addr_sz_ex::<1, HOLD>(instr, addrmode, ea_in),
+            2 => self.calc_ea_addr_sz_ex::<2, HOLD>(instr, addrmode, ea_in),
+            4 => self.calc_ea_addr_sz_ex::<4, HOLD>(instr, addrmode, ea_in),
             _ => unreachable!(),
         }
     }
@@ -36,7 +47,20 @@ where
     /// Calculates effective address with an arbitrary type size.
     /// Applies pre-decrement and post-increment
     /// Happens once per instruction so e.g. postinc/predec only occur once.
+    #[inline(always)]
     pub(in crate::cpu_m68k) fn calc_ea_addr_sz<const SZ: usize>(
+        &mut self,
+        instr: &Instruction,
+        addrmode: AddressingMode,
+        ea_in: usize,
+    ) -> Result<Address> {
+        self.calc_ea_addr_sz_ex::<SZ, false>(instr, addrmode, ea_in)
+    }
+
+    /// Calculates effective address with an arbitrary type size.
+    /// Applies pre-decrement and post-increment
+    /// Happens once per instruction so e.g. postinc/predec only occur once.
+    pub(in crate::cpu_m68k) fn calc_ea_addr_sz_ex<const SZ: usize, const HOLD: bool>(
         &mut self,
         instr: &Instruction,
         addrmode: AddressingMode,
@@ -65,7 +89,21 @@ where
                 self.advance_cycles(2)?; // 2x idle
                 self.regs.read_a_predec::<Address>(ea_in, SZ)
             }
-            AddressingMode::IndirectPostInc => self.regs.read_a(ea_in),
+            AddressingMode::IndirectPostInc => {
+                let addr = self.regs.read_a::<Address>(ea_in);
+                let inc_addr = if ea_in == 7 {
+                    // Minimum of 2 for A7
+                    addr.wrapping_add(std::cmp::max(2, SZ as Address))
+                } else {
+                    addr.wrapping_add(SZ as Address)
+                };
+                if !HOLD {
+                    self.regs.write_a::<Address>(ea_in, inc_addr);
+                } else {
+                    self.step_ea_load = Some((ea_in, inc_addr));
+                }
+                addr
+            }
             AddressingMode::IndirectDisplacement => {
                 instr.fetch_extword(|| self.fetch_pump())?;
                 let addr = self.regs.read_a::<Address>(ea_in);
@@ -79,7 +117,7 @@ where
                 let extword = instr.get_extword()?;
                 if extword.is_full() && CPU_TYPE >= M68020 {
                     // Actually IndirectIndexBase
-                    return self.calc_ea_addr_sz::<SZ>(
+                    return self.calc_ea_addr_sz_ex::<SZ, HOLD>(
                         instr,
                         AddressingMode::IndirectIndexBase,
                         ea_in,
@@ -112,7 +150,11 @@ where
                 instr.fetch_extword(|| self.fetch_pump())?;
                 let extword = instr.get_extword()?;
                 if extword.is_full() && CPU_TYPE >= M68020 {
-                    return self.calc_ea_addr_sz::<SZ>(instr, AddressingMode::PCIndexBase, ea_in);
+                    return self.calc_ea_addr_sz_ex::<SZ, HOLD>(
+                        instr,
+                        AddressingMode::PCIndexBase,
+                        ea_in,
+                    );
                 }
                 let pc = self.regs.pc;
                 let displacement = extword.brief_get_displacement_signext();
@@ -235,7 +277,9 @@ where
             // we don't want that.
             Ok(self.regs.read_a(instr.get_op2()))
         } else {
-            self.calc_ea_addr::<T>(instr, instr.get_addr_mode()?, ea_in)
+            let result = self.calc_ea_addr_ex::<T, true>(instr, instr.get_addr_mode()?, ea_in);
+            self.step_ea_load = None;
+            result
         }
     }
 
@@ -262,31 +306,32 @@ where
 
     /// Reads a value from the operand (ea_in) using the effective addressing mode specified
     /// by the instruction, directly or through indirection, depending on the mode.
+    #[inline(always)]
     pub(in crate::cpu_m68k) fn read_ea<T: CpuSized>(
         &mut self,
         instr: &Instruction,
         ea_in: usize,
     ) -> Result<T> {
-        self.read_ea_with(instr, instr.get_addr_mode()?, ea_in, false)
+        self.read_ea_with::<T, false>(instr, instr.get_addr_mode()?, ea_in)
     }
 
     /// Reads a value from the operand (ea_in) using the effective addressing mode specified
     /// by the instruction, directly or through indirection, depending on the mode.
     /// Holds off on postincrement.
+    #[inline(always)]
     pub(in crate::cpu_m68k) fn read_ea_hold<T: CpuSized>(
         &mut self,
         instr: &Instruction,
         ea_in: usize,
     ) -> Result<T> {
-        self.read_ea_with(instr, instr.get_addr_mode()?, ea_in, true)
+        self.read_ea_with::<T, true>(instr, instr.get_addr_mode()?, ea_in)
     }
 
-    pub(in crate::cpu_m68k) fn read_ea_with<T: CpuSized>(
+    pub(in crate::cpu_m68k) fn read_ea_with<T: CpuSized, const HOLD: bool>(
         &mut self,
         instr: &Instruction,
         addrmode: AddressingMode,
         ea_in: usize,
-        hold: bool,
     ) -> Result<T> {
         let v = match addrmode {
             AddressingMode::DataRegister => self.regs.read_d(ea_in),
@@ -297,33 +342,22 @@ where
             | AddressingMode::PCDisplacement
             | AddressingMode::AbsoluteShort
             | AddressingMode::AbsoluteLong => {
-                let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
+                let addr = self.calc_ea_addr_ex::<T, HOLD>(instr, addrmode, ea_in)?;
                 self.read_ticks(addr)?
             }
             AddressingMode::IndirectPreDec => {
-                let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
+                let addr = self.calc_ea_addr_ex::<T, HOLD>(instr, addrmode, ea_in)?;
                 self.read_ticks(addr)?
             }
             AddressingMode::IndirectPostInc => {
-                let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
-                let inc_addr = if ea_in == 7 {
-                    // Minimum of 2 for A7
-                    addr.wrapping_add(std::cmp::max(2, std::mem::size_of::<T>() as Address))
-                } else {
-                    addr.wrapping_add(std::mem::size_of::<T>() as Address)
-                };
-                if !hold || std::mem::size_of::<T>() <= 2 {
-                    self.regs.write_a::<Address>(ea_in, inc_addr);
-                } else {
-                    self.step_ea_load = Some((ea_in, inc_addr));
-                }
+                let addr = self.calc_ea_addr_ex::<T, HOLD>(instr, addrmode, ea_in)?;
                 self.read_ticks(addr)?
             }
             AddressingMode::IndirectIndexBase
             | AddressingMode::IndirectIndex
             | AddressingMode::PCIndexBase
             | AddressingMode::PCIndex => {
-                let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
+                let addr = self.calc_ea_addr_ex::<T, HOLD>(instr, addrmode, ea_in)?;
                 self.read_ticks(addr)?
             }
         };
@@ -339,13 +373,12 @@ where
         ea_in: usize,
         value: T,
     ) -> Result<()> {
-        self.write_ea_with(
+        self.write_ea_with::<T, false>(
             instr,
             instr.get_addr_mode()?,
             ea_in,
             value,
             TemporalOrder::HighToLow,
-            false,
         )
     }
 
@@ -358,24 +391,22 @@ where
         ea_in: usize,
         value: T,
     ) -> Result<()> {
-        self.write_ea_with(
+        self.write_ea_with::<T, true>(
             instr,
             instr.get_addr_mode()?,
             ea_in,
             value,
             TemporalOrder::HighToLow,
-            true,
         )
     }
 
-    pub(in crate::cpu_m68k) fn write_ea_with<T: CpuSized>(
+    pub(in crate::cpu_m68k) fn write_ea_with<T: CpuSized, const HOLD: bool>(
         &mut self,
         instr: &Instruction,
         addrmode: AddressingMode,
         ea_in: usize,
         value: T,
         order: TemporalOrder,
-        hold: bool,
     ) -> Result<()> {
         match addrmode {
             AddressingMode::DataRegister => Ok(self.regs.write_d(ea_in, value)),
@@ -385,26 +416,15 @@ where
             | AddressingMode::IndirectIndex
             | AddressingMode::AbsoluteShort
             | AddressingMode::AbsoluteLong => {
-                let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
+                let addr = self.calc_ea_addr_ex::<T, HOLD>(instr, addrmode, ea_in)?;
                 self.write_ticks_order(addr, value, order)
             }
             AddressingMode::IndirectPreDec => {
-                let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
+                let addr = self.calc_ea_addr_ex::<T, HOLD>(instr, addrmode, ea_in)?;
                 self.write_ticks_order(addr, value, order)
             }
             AddressingMode::IndirectPostInc => {
-                let addr = self.calc_ea_addr::<T>(instr, addrmode, ea_in)?;
-                let inc_addr = if ea_in == 7 {
-                    // Minimum of 2 for A7
-                    addr.wrapping_add(std::cmp::max(2, std::mem::size_of::<T>() as Address))
-                } else {
-                    addr.wrapping_add(std::mem::size_of::<T>() as Address)
-                };
-                if !hold {
-                    self.regs.write_a::<Address>(ea_in, inc_addr);
-                } else {
-                    self.step_ea_load = Some((ea_in, inc_addr));
-                }
+                let addr = self.calc_ea_addr_ex::<T, HOLD>(instr, addrmode, ea_in)?;
                 self.write_ticks_order(addr, value, order)
             }
             _ => {

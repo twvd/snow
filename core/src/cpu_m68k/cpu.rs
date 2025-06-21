@@ -1960,7 +1960,8 @@ where
 
     /// MOVE
     fn op_move<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
-        let value: T = self.read_ea_with(instr, instr.get_addr_mode()?, instr.get_op2(), false)?;
+        let value: T =
+            self.read_ea_with::<T, false>(instr, instr.get_addr_mode()?, instr.get_op2())?;
 
         self.regs.sr.set_z(value == T::zero());
         self.regs.sr.set_n(value & T::msb() != T::zero());
@@ -1998,22 +1999,20 @@ where
                 let h = self.fetch()? as u32;
                 let l = self.fetch()? as u32;
                 self.step_ea_addr = Some((h << 16) | l);
-                self.write_ea_with(
+                self.write_ea_with::<T, false>(
                     instr,
                     instr.get_addr_mode_left()?,
                     instr.get_op1(),
                     value,
                     TemporalOrder::LowToHigh,
-                    false,
                 )?;
             }
-            _ => self.write_ea_with(
+            _ => self.write_ea_with::<T, false>(
                 instr,
                 instr.get_addr_mode_left()?,
                 instr.get_op1(),
                 value,
                 TemporalOrder::LowToHigh,
-                false,
             )?,
         }
 
@@ -2383,13 +2382,7 @@ where
     /// MOVEM memory to register
     fn op_movem_reg<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         let mask = self.fetch_pump()?;
-        let mut addr = if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
-            // calc_ea_addr() already decrements the address once, but in this case,
-            // we don't want that.
-            self.regs.read_a(instr.get_op2())
-        } else {
-            self.calc_ea_addr::<T>(instr, instr.get_addr_mode()?, instr.get_op2())?
-        };
+        let mut addr = self.calc_ea_addr_no_mod::<T>(instr, instr.get_op2())?;
 
         let regs = if instr.get_addr_mode()? != AddressingMode::IndirectPreDec {
             Either::Left(MOVEM_REGS.iter().rev())
@@ -2430,13 +2423,7 @@ where
     /// MOVEM register to memory
     fn op_movem_mem<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         let mask = self.fetch_pump()?;
-        let mut addr = if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
-            // calc_ea_addr() already decrements the address once, but in this case,
-            // we don't want that.
-            self.regs.read_a(instr.get_op2())
-        } else {
-            self.calc_ea_addr::<T>(instr, instr.get_addr_mode()?, instr.get_op2())?
-        };
+        let mut addr = self.calc_ea_addr_no_mod::<T>(instr, instr.get_op2())?;
 
         let regs = if instr.get_addr_mode()? != AddressingMode::IndirectPreDec {
             Either::Left(MOVEM_REGS.iter().rev())
