@@ -12,6 +12,10 @@ use super::SEMANTICS_EXTENDED;
 const EXPONENT_BIAS: u64 = 16383;
 const EXPONENT_MAX: u64 = 0x7FFF;
 
+pub const SINGLE_SIZE: usize = 4;
+pub const DOUBLE_SIZE: usize = 8;
+pub const EXTENDED_SIZE: usize = 12;
+
 bitfield! {
     /// Raw (storage) bit representation of the extended-precision real format
     #[derive(Clone, Copy, PartialEq, Eq, Default)]
