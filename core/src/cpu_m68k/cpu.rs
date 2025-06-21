@@ -12,14 +12,15 @@ use crate::bus::{Address, Bus, BusResult, IrqSource};
 use crate::cpu_m68k::M68000_SR_MASK;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
-use crate::util::TemporalOrder;
 
 use super::instruction::{
     AddressingMode, BfxExtWord, Direction, DivlExtWord, Instruction, InstructionMnemonic,
     MulxExtWord,
 };
 use super::regs::{Register, RegisterFile, RegisterSR};
-use super::{CpuM68kType, CpuSized, M68000, M68010, M68020, M68020_SR_MASK};
+use super::{
+    CpuM68kType, CpuSized, M68000, M68010, M68020, M68020_SR_MASK, TORDER_HIGHLOW, TORDER_LOWHIGH,
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum BusBreakpoint {
@@ -643,7 +644,7 @@ where
         addr: Address,
         value: T,
     ) -> Result<()> {
-        self.write_ticks_order(addr, value, TemporalOrder::LowToHigh)
+        self.write_ticks_order::<T, TORDER_LOWHIGH>(addr, value)
     }
 
     /// Writes a value to the bus (big endian) and spends ticks, but writes
@@ -656,18 +657,17 @@ where
         match std::mem::size_of::<T>() {
             4 => {
                 let v: Long = value.expand();
-                self.write_ticks_order(addr.wrapping_add(2), v as Word, TemporalOrder::LowToHigh)?;
-                self.write_ticks_order(addr, (v >> 16) as Word, TemporalOrder::LowToHigh)
+                self.write_ticks_order::<Word, TORDER_LOWHIGH>(addr.wrapping_add(2), v as Word)?;
+                self.write_ticks_order::<Word, TORDER_LOWHIGH>(addr, (v >> 16) as Word)
             }
-            _ => self.write_ticks_order(addr, value, TemporalOrder::LowToHigh),
+            _ => self.write_ticks_order::<T, TORDER_LOWHIGH>(addr, value),
         }
     }
 
-    pub(in crate::cpu_m68k) fn write_ticks_order<T: CpuSized>(
+    pub(in crate::cpu_m68k) fn write_ticks_order<T: CpuSized, const TORDER: usize>(
         &mut self,
         oaddr: Address,
         value: T,
-        order: TemporalOrder,
     ) -> Result<()> {
         let addr = if CPU_TYPE == 68000 && std::mem::size_of::<T>() > 1 {
             oaddr & !1
@@ -675,8 +675,8 @@ where
             oaddr
         };
 
-        match order {
-            TemporalOrder::LowToHigh => {
+        match TORDER {
+            TORDER_LOWHIGH => {
                 let mut val: Long = value.to_be().into();
                 for a in 0..std::mem::size_of::<T>() {
                     let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
@@ -709,7 +709,7 @@ where
                     }
                 }
             }
-            TemporalOrder::HighToLow => {
+            TORDER_HIGHLOW => {
                 let mut val: Long = value.into();
                 for a in (0..std::mem::size_of::<T>()).rev() {
                     let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
@@ -742,6 +742,7 @@ where
                     }
                 }
             }
+            _ => unreachable!(),
         }
 
         if std::mem::size_of::<T>() == 1 {
@@ -1999,20 +2000,18 @@ where
                 let h = self.fetch()? as u32;
                 let l = self.fetch()? as u32;
                 self.step_ea_addr = Some((h << 16) | l);
-                self.write_ea_with::<T, false>(
+                self.write_ea_with::<T, false, TORDER_LOWHIGH>(
                     instr,
                     instr.get_addr_mode_left()?,
                     instr.get_op1(),
                     value,
-                    TemporalOrder::LowToHigh,
                 )?;
             }
-            _ => self.write_ea_with::<T, false>(
+            _ => self.write_ea_with::<T, false, TORDER_LOWHIGH>(
                 instr,
                 instr.get_addr_mode_left()?,
                 instr.get_op1(),
                 value,
-                TemporalOrder::LowToHigh,
             )?,
         }
 
