@@ -12,6 +12,8 @@ use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
 use crate::cpu_m68k::CpuM68kType;
 use crate::types::{Byte, Long, Word};
 
+use super::storage::{DOUBLE_SIZE, EXTENDED_SIZE, SINGLE_SIZE};
+
 impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
     CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE>
 where
@@ -98,42 +100,30 @@ where
                     }
                     0b101 => {
                         // Double-precision real
-                        let addr = if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
-                            self.regs.read_a_predec(instr.get_op2(), 8)
-                        } else {
-                            self.calc_ea_addr_no_mod::<Long>(instr, instr.get_op2())?
-                        };
-                        let v = self.read_fpu_double(addr)?;
-                        if instr.get_addr_mode()? == AddressingMode::IndirectPostInc {
-                            self.regs.read_a_postinc::<Address>(instr.get_op2(), 8);
-                        }
-                        v
+                        let ea = self.calc_ea_addr_sz::<DOUBLE_SIZE>(
+                            instr,
+                            instr.get_addr_mode()?,
+                            instr.get_op2(),
+                        )?;
+                        self.read_fpu_double(ea)?
                     }
                     0b001 => {
                         // Single-precision real
-                        let addr = if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
-                            self.regs.read_a_predec(instr.get_op2(), 4)
-                        } else {
-                            self.calc_ea_addr_no_mod::<Long>(instr, instr.get_op2())?
-                        };
-                        let v = self.read_fpu_single(addr)?;
-                        if instr.get_addr_mode()? == AddressingMode::IndirectPostInc {
-                            self.regs.read_a_postinc::<Address>(instr.get_op2(), 4);
-                        }
-                        v
+                        let ea = self.calc_ea_addr_sz::<SINGLE_SIZE>(
+                            instr,
+                            instr.get_addr_mode()?,
+                            instr.get_op2(),
+                        )?;
+                        self.read_fpu_single(ea)?
                     }
                     0b010 => {
-                        // Extended real
-                        let addr = if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
-                            self.regs.read_a_predec(instr.get_op2(), 12)
-                        } else {
-                            self.calc_ea_addr_no_mod::<Long>(instr, instr.get_op2())?
-                        };
-                        let v = self.read_fpu_extended(addr)?;
-                        if instr.get_addr_mode()? == AddressingMode::IndirectPostInc {
-                            self.regs.read_a_postinc::<Address>(instr.get_op2(), 12);
-                        }
-                        v
+                        // Extended-precision real
+                        let ea = self.calc_ea_addr_sz::<EXTENDED_SIZE>(
+                            instr,
+                            instr.get_addr_mode()?,
+                            instr.get_op2(),
+                        )?;
+                        self.read_fpu_extended(ea)?
                     }
                     0b111 => {
                         // ROM constant (FMOVECR)
@@ -182,29 +172,15 @@ where
             }
             0b011 if instr.get_addr_mode()? != AddressingMode::DataRegister => {
                 // Register to EA
-                if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
-                    self.regs.read_a_predec::<Address>(
-                        instr.get_op2(),
-                        extword
-                            .dest_fmt_instrsz()
-                            .context("Unknown dest fmt")?
-                            .bytelen(),
-                    );
-                }
-                let ea = self.calc_ea_addr_no_mod::<Address>(instr, instr.get_op2())?;
-                if instr.get_addr_mode()? == AddressingMode::IndirectPostInc {
-                    self.regs.read_a_postinc::<Address>(
-                        instr.get_op2(),
-                        extword
-                            .dest_fmt_instrsz()
-                            .context("Unknown dest fmt")?
-                            .bytelen(),
-                    );
-                }
                 let fpx = extword.src_reg();
                 match extword.dest_fmt() {
                     0b000 => {
                         // Long
+                        let ea = self.calc_ea_addr::<Long>(
+                            instr,
+                            instr.get_addr_mode()?,
+                            instr.get_op2(),
+                        )?;
                         self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
                         self.regs.fpu.fpsr.exs_mut().set_unfl(false);
 
@@ -225,6 +201,11 @@ where
                     }
                     0b100 => {
                         // Word
+                        let ea = self.calc_ea_addr::<Word>(
+                            instr,
+                            instr.get_addr_mode()?,
+                            instr.get_op2(),
+                        )?;
                         self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
                         self.regs.fpu.fpsr.exs_mut().set_unfl(false);
 
@@ -244,7 +225,12 @@ where
                         self.write_ticks(ea, out as Word)?;
                     }
                     0b010 => {
-                        // Extended real
+                        // Extended-precision real
+                        let ea = self.calc_ea_addr_sz::<EXTENDED_SIZE>(
+                            instr,
+                            instr.get_addr_mode()?,
+                            instr.get_op2(),
+                        )?;
                         self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
                         self.regs.fpu.fpsr.exs_mut().set_unfl(false);
                         self.regs.fpu.fpsr.exs_mut().set_inex2(false);
@@ -253,6 +239,11 @@ where
                     }
                     0b101 => {
                         // Double-precision real
+                        let ea = self.calc_ea_addr_sz::<DOUBLE_SIZE>(
+                            instr,
+                            instr.get_addr_mode()?,
+                            instr.get_op2(),
+                        )?;
                         self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
                         self.regs.fpu.fpsr.exs_mut().set_unfl(false);
                         self.regs.fpu.fpsr.exs_mut().set_inex2(false);
@@ -261,6 +252,11 @@ where
                     }
                     0b001 => {
                         // Single precision real
+                        let ea = self.calc_ea_addr_sz::<SINGLE_SIZE>(
+                            instr,
+                            instr.get_addr_mode()?,
+                            instr.get_op2(),
+                        )?;
                         self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
                         self.regs.fpu.fpsr.exs_mut().set_unfl(false);
                         self.regs.fpu.fpsr.exs_mut().set_inex2(false);
