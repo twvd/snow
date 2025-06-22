@@ -51,7 +51,7 @@ impl DiskImageDialog {
                 ui.end_row();
 
                 ui.label("Size (MB):");
-                ui.add(egui::Slider::new(&mut self.current_size, 1.0..=80.0).step_by(0.5));
+                ui.add(egui::Slider::new(&mut self.current_size, 1.0..=1024.0).step_by(0.5));
                 ui.end_row();
             });
 
