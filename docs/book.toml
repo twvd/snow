@@ -1,0 +1,8 @@
+[book]
+authors = ["Thomas W."]
+language = "en"
+src = "src"
+title = "Snow"
+
+[output.html]
+git-repository-url = "https://github.com/twvd/snow"
