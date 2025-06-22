@@ -297,7 +297,10 @@ impl ModelSelectionDialog {
                 // Main ROM selection
                 ui.label(egui::RichText::new("System ROM"));
                 ui.horizontal(|ui| {
-                    if ui.text_edit_singleline(&mut self.main_rom_path).lost_focus() {
+                    if ui
+                        .text_edit_singleline(&mut self.main_rom_path)
+                        .lost_focus()
+                    {
                         if let Err(e) = self.validate_main_rom() {
                             self.error_message = e.to_string();
                         } else {
@@ -334,7 +337,10 @@ impl ModelSelectionDialog {
                         "Macintosh Display Card 8-24 ROM (341-0868)",
                     ));
                     ui.horizontal(|ui| {
-                        if ui.text_edit_singleline(&mut self.display_rom_path).lost_focus() {
+                        if ui
+                            .text_edit_singleline(&mut self.display_rom_path)
+                            .lost_focus()
+                        {
                             if let Err(e) = self.validate_display_rom() {
                                 self.error_message = e.to_string();
                             } else if !self.main_rom_path.is_empty()
@@ -380,19 +386,6 @@ impl ModelSelectionDialog {
                         &self.error_message
                     ))
                     .color(egui::Color32::RED),
-                );
-                ui.add_space(10.0);
-            }
-
-            // Mac II experimental warning
-            if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
-                ui.separator();
-                ui.add_space(10.0);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "    {} Please note support for Macintosh II is still experimental. Certain things don't work and applications may crash.",
-                        egui_material_icons::icons::ICON_INFO,
-                    ))
                 );
                 ui.add_space(10.0);
             }
