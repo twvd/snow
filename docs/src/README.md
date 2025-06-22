@@ -1,5 +1,7 @@
 # Introduction
 
+![Snowy macintosh](images/snowmac.png)
+
 Thank you for checking out Snow! Snow is a classic Macintosh emulator,
 emulating Motorola 68k-based Macintosh models. It aims to be user-friendly
 as well as an accurate emulation of the original hardware.
