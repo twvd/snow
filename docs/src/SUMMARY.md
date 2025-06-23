@@ -14,3 +14,6 @@
   - [Floppies](./manual/media/floppies.md)
   - [Hard drives](./manual/media/harddrives.md)
 - [Workspaces](./manual/workspaces.md)
+- [Debugging](./manual/debugging/README.md)
+  - [Breakpoints](./manual/debugging/breakpoints.md)
+  - [Disassembly](./manual/debugging/disassembly.md)
