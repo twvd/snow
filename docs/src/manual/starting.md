@@ -8,7 +8,7 @@ other means. I cannot help you to obtain ROMs.
 ## Loading a ROM file
 
 To load a ROM file, go to 'Machine > Load ROM' in the menu or click the
-<span class="material-icons-round">memory</span> icon in the toolbar.
+<span class="material-symbols-rounded">memory</span> icon in the toolbar.
 
 ![Load ROM dialog](../images/load_rom.png)
 
@@ -21,10 +21,10 @@ Card 8-24. This ROM is usually labeled 341-0868.bin.
 Snow will validate whether your ROM file is correct for the selected model
 and the integrity of the file.
 
-<span class="material-icons-round">check_circle</span> indicates the
+<span class="material-symbols-rounded">check_circle</span> indicates the
 correct file was selected.
 
-<span class="material-icons-round">error</span> indicates the selected
+<span class="material-symbols-rounded">error</span> indicates the selected
 file is not correct. An error message will tell you what's wrong.
 
 Once everything is good, you can click 'Load and run' to proceed.

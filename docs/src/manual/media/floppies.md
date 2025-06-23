@@ -67,8 +67,8 @@ to using a paperclip to forcibly eject a floppy on real hardware.
 ## Writing to floppies
 
 When a floppy is written to, the icon in the menu bar will change:
- * <span class="material-icons-round">save</span> indicates the floppy has not been written to.
- * <span class="material-icons-round">save_as</span> indicates the floppy was written
+ * <span class="material-symbols-rounded">save</span> indicates the floppy has not been written to.
+ * <span class="material-symbols-rounded">save_as</span> indicates the floppy was written
 to since it was mounted.
 
 To save a floppy including any changes, use the 'Save image...' item. If the floppy
