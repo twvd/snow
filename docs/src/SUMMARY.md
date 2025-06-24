@@ -17,3 +17,4 @@
 - [Debugging](./manual/debugging/README.md)
   - [Breakpoints](./manual/debugging/breakpoints.md)
   - [Disassembly](./manual/debugging/disassembly.md)
+  - [Instruction history](./manual/debugging/instruction_history.md)
