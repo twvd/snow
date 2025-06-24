@@ -587,11 +587,11 @@ impl ScsiController {
                 match cmd[2] & 0x3F {
                     0x01 => {
                         // Read/write recovery page
-                        let mut result = vec![0; 12];
+                        let mut result = vec![0; 22];
                         // Page code
                         result[0] = 0x01;
                         // Page length
-                        result[1] = 10;
+                        result[1] = 20;
 
                         // Error recovery stuff, can remain at 0.
                         // Also, HD SC Setup doesn't seem to care as long as we respond to this command.
@@ -601,11 +601,11 @@ impl ScsiController {
                     0x03 => {
                         // Format device page
 
-                        let mut result = vec![0; 24];
+                        let mut result = vec![0; 34];
                         // Page code
                         result[0] = 0x03;
                         // Page length
-                        result[1] = 22;
+                        result[1] = 32;
 
                         // The remaining bytes can remain at 0 as they indicate information on how many
                         // sectors/tracks are reserved for defect management.
