@@ -189,7 +189,7 @@ impl MemoryViewerWidget {
 
         // Calculate number of rows needed
         let row_height = 20.0;
-        let rows = (self.memory.len() + 15) / 16;
+        let rows = self.memory.len().div_ceil(16);
 
         // Create a scroll area with row-based virtualization
         let mut scroll_area = egui::ScrollArea::vertical()
