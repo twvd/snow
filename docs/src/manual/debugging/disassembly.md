@@ -4,6 +4,8 @@ The disassembly view shows a linear disassembly of instructions from the
 address in PC onwards. Note that this is not necessarily the same as the
 next instructions that will be executed by the CPU.
 
+![Disassembly](../../images/disassembly.png)
+
 It can be opened through the 'View > Disassembly' menu item.
 
 The disassembly view shows the following columns:

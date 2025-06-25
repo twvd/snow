@@ -4,11 +4,13 @@ The instruction history view shows a trace of the instructions executed by the
 CPU and the effect of these instructions. The instruction history view can be
 opened using the 'View > Instruction history' menu item.
 
+![Instruction history](../../images/instruction_history.png)
+
 <div class="warning">
 As long as the 'Instruction history' dialog is open, additional trace
 functionality is enabled in the emulator core which impacts performance
 of the emulator. It is recommended to only keep the instruction history
-window open only when it is needed.
+window open for as long as it is needed.
 </div>
 
 The instruction history dialog has the following actions in the toolbar:

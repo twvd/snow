@@ -16,5 +16,11 @@
 - [Workspaces](./manual/workspaces.md)
 - [Debugging](./manual/debugging/README.md)
   - [Breakpoints](./manual/debugging/breakpoints.md)
+  - [Registers](./manual/debugging/registers.md)
   - [Disassembly](./manual/debugging/disassembly.md)
   - [Instruction history](./manual/debugging/instruction_history.md)
+  - [System trap history](./manual/debugging/trap_history.md)
+  - [Peripherals](./manual/debugging/peripherals.md)
+  - [Memory viewer](./manual/debugging/memory.md)
+  - [Watchpoints](./manual/debugging/watchpoints.md)
+  
