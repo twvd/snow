@@ -119,7 +119,7 @@ impl TerminalWidget {
             }
             DisplayMode::Both => {
                 // Both - show as hex + ASCII
-                for i in 0..(self.buffer.len() + 15) / 16 {
+                for i in 0..self.buffer.len().div_ceil(16) {
                     let start = i * 16;
                     let end = (start + 16).min(self.buffer.len());
 
