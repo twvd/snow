@@ -55,6 +55,8 @@ where
         let result = match opmode {
             // FMOVE
             0b0000000 => source.clone(),
+            // FSQRT
+            0b0000100 => source.sqrt(),
             // FABS
             0b0011000 => source.abs(),
             // FADD

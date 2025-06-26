@@ -124,6 +124,7 @@ impl<'a> Disassembler<'a> {
     fn fpu_alu_op(op: u8) -> &'static str {
         match op {
             0b0000000 => "FMOVE",
+            0b0000100 => "FSQRT",
             0b0011000 => "FABS",
             0b0100011 => "FMUL",
             0b0100000 => "FDIV",
