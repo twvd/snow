@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use snow_core::mac::MacMonitor;
+use snow_core::emulator::comm::EmulatorSpeed;
 
 use crate::util::relativepath::RelativePath;
 
@@ -46,6 +47,9 @@ pub struct Workspace {
     /// Selected monitor
     selected_monitor: MacMonitor,
 
+    /// Selected emulation speed
+    emulation_speed: EmulatorSpeed,
+
     /// Window positions
     windows: HashMap<String, [f32; 4]>,
 }
@@ -69,6 +73,7 @@ impl Default for Workspace {
             display_card_rom_path: None,
             disks: core::array::from_fn(|_| None),
             selected_monitor: MacMonitor::HiRes14,
+            emulation_speed: EmulatorSpeed::Accurate,
             windows: HashMap::new(),
         }
     }
@@ -158,6 +163,14 @@ impl Workspace {
 
     pub fn get_selected_monitor(&self) -> MacMonitor {
         self.selected_monitor
+    }
+
+    pub fn set_emulation_speed(&mut self, speed: EmulatorSpeed) {
+        self.emulation_speed = speed;
+    }
+
+    pub fn get_emulation_speed(&self) -> EmulatorSpeed {
+        self.emulation_speed
     }
 
     /// Persists a window location

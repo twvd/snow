@@ -415,6 +415,9 @@ impl SnowGui {
                 Some(self.workspace.get_disk_paths()),
                 monitor,
             );
+            
+            // Set the emulation speed from workspace
+            self.emu.set_speed(self.workspace.get_emulation_speed());
         } else {
             self.emu.deinit();
         }
@@ -514,12 +517,15 @@ impl SnowGui {
 
     fn handle_model_selection_result(&mut self, result: &ModelSelectionResult) {
         self.workspace.set_selected_monitor(result.monitor);
+        self.workspace.set_emulation_speed(result.speed);
         self.load_rom_from_path(
             &result.main_rom_path,
             result.display_rom_path.as_deref(),
             Some(self.emu.get_disk_paths()),
             Some(result.monitor),
         );
+        // Set the emulation speed after loading the ROM
+        self.emu.set_speed(result.speed);
         self.last_running = false;
     }
 }

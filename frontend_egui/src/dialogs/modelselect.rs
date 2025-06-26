@@ -6,6 +6,7 @@ use eframe::egui;
 use egui_file_dialog::FileDialog;
 use sha2::{Digest, Sha256};
 use snow_core::mac::{MacModel, MacMonitor};
+use snow_core::emulator::comm::EmulatorSpeed;
 use strum::IntoEnumIterator;
 
 /// Dialog for selecting Macintosh model and associated ROMs
@@ -13,6 +14,7 @@ pub struct ModelSelectionDialog {
     open: bool,
     selected_model: MacModel,
     selected_monitor: MacMonitor,
+    selected_speed: EmulatorSpeed,
     memory_size: usize,
 
     // Main ROM selection
@@ -37,6 +39,7 @@ pub struct ModelSelectionDialog {
 pub struct ModelSelectionResult {
     pub model: MacModel,
     pub monitor: MacMonitor,
+    pub speed: EmulatorSpeed,
     pub memory_size: usize,
     pub main_rom_path: PathBuf,
     pub display_rom_path: Option<PathBuf>,
@@ -48,6 +51,7 @@ impl Default for ModelSelectionDialog {
             open: false,
             selected_model: MacModel::Plus,
             selected_monitor: MacMonitor::HiRes14,
+            selected_speed: EmulatorSpeed::Accurate,
             memory_size: 4 * 1024 * 1024, // 4MB default
             main_rom_path: String::new(),
             main_rom_valid: false,
@@ -315,6 +319,18 @@ impl ModelSelectionDialog {
                     ui.end_row();
                 }
 
+                // Emulation speed selection
+                ui.label("Emulation speed:");
+                egui::ComboBox::new(egui::Id::new("Select emulation speed"), "")
+                    .selected_text(format!("{}", self.selected_speed))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.selected_speed, EmulatorSpeed::Accurate, "Accurate - Hardware accurate speed with audio");
+                        ui.selectable_value(&mut self.selected_speed, EmulatorSpeed::Dynamic, "Dynamic - Full speed when silent, accurate with audio"); 
+                        ui.selectable_value(&mut self.selected_speed, EmulatorSpeed::Video, "Video - 60 FPS sync, audio disabled");
+                        ui.selectable_value(&mut self.selected_speed, EmulatorSpeed::Uncapped, "Uncapped - Maximum speed, audio disabled");
+                    });
+                ui.end_row();
+
                 // Memory selection
                 //ui.label("Memory size:");
                 //let memory_options = Self::get_memory_options(self.selected_model);
@@ -450,6 +466,7 @@ impl ModelSelectionDialog {
                         self.result = Some(ModelSelectionResult {
                             model: self.selected_model,
                             monitor: self.selected_monitor,
+                            speed: self.selected_speed,
                             memory_size: self.memory_size,
                             main_rom_path: PathBuf::from(&self.main_rom_path),
                             display_rom_path: if self.display_rom_required

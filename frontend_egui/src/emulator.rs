@@ -693,6 +693,13 @@ impl EmulatorState {
         let Some(ref sender) = self.cmdsender else {
             return Ok(());
         };
-        Ok(sender.send(EmulatorCommand::SccReceiveData(ch, data))?)
+        sender.send(EmulatorCommand::SccReceiveData(ch, data))?;
+        Ok(())
+    }
+
+    pub fn set_speed(&self, speed: snow_core::emulator::comm::EmulatorSpeed) {
+        if let Some(ref sender) = self.cmdsender {
+            sender.send(EmulatorCommand::SetSpeed(speed)).unwrap();
+        }
     }
 }
