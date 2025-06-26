@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
+use snow_core::mac::MacMonitor;
 
 use crate::util::relativepath::RelativePath;
 
@@ -42,6 +43,9 @@ pub struct Workspace {
     /// Last loaded disks
     disks: [Option<RelativePath>; 7],
 
+    /// Selected monitor
+    selected_monitor: MacMonitor,
+
     /// Window positions
     windows: HashMap<String, [f32; 4]>,
 }
@@ -64,6 +68,7 @@ impl Default for Workspace {
             rom_path: None,
             display_card_rom_path: None,
             disks: core::array::from_fn(|_| None),
+            selected_monitor: MacMonitor::HiRes14,
             windows: HashMap::new(),
         }
     }
@@ -145,6 +150,14 @@ impl Workspace {
 
     pub fn get_display_card_rom_path(&self) -> Option<PathBuf> {
         self.display_card_rom_path.clone().map(|d| d.get_absolute())
+    }
+
+    pub fn set_selected_monitor(&mut self, monitor: MacMonitor) {
+        self.selected_monitor = monitor;
+    }
+
+    pub fn get_selected_monitor(&self) -> MacMonitor {
+        self.selected_monitor
     }
 
     /// Persists a window location

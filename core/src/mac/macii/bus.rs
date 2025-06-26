@@ -85,7 +85,11 @@ where
     /// CrsrNew address
     const ADDR_CRSRNEW: Address = 0x08CE;
 
-    pub fn new(model: MacModel, rom: &[u8], mdcrom: &[u8], mut renderers: Vec<TRenderer>) -> Self {
+    pub fn new(model: MacModel, rom: &[u8], mdcrom: &[u8], renderers: Vec<TRenderer>) -> Self {
+        Self::new_with_monitor(model, rom, mdcrom, renderers, None)
+    }
+
+    pub fn new_with_monitor(model: MacModel, rom: &[u8], mdcrom: &[u8], mut renderers: Vec<TRenderer>, monitor: Option<crate::mac::MacMonitor>) -> Self {
         let ram_size = model.ram_size();
 
         let mut bus = Self {
@@ -116,7 +120,7 @@ where
             //vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
 
-            nubus_devices: core::array::from_fn(|_| renderers.pop().map(|r| Mdc12::new(mdcrom, r))),
+            nubus_devices: core::array::from_fn(|_| renderers.pop().map(|r| Mdc12::new_with_monitor(mdcrom, r, monitor.unwrap_or(crate::mac::MacMonitor::HiRes14)))),
         };
 
         // Disable memory test

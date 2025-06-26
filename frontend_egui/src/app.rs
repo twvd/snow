@@ -252,7 +252,7 @@ impl SnowGui {
                 .unwrap_or_default()
                 .eq_ignore_ascii_case("rom")
             {
-                app.load_rom_from_path(path, None, None);
+                app.load_rom_from_path(path, None, None, None);
             }
         }
 
@@ -364,13 +364,17 @@ impl SnowGui {
         path: &Path,
         display_rom_path: Option<&Path>,
         disks: Option<[Option<PathBuf>; 7]>,
+        monitor: Option<snow_core::mac::MacMonitor>,
     ) {
-        match self.emu.init_from_rom(path, display_rom_path, disks) {
+        match self.emu.init_from_rom(path, display_rom_path, disks, monitor) {
             Ok(p) => self.framebuffer.connect_receiver(p.frame_receiver),
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
         }
         self.workspace.set_rom_path(path);
         self.workspace.set_display_card_rom_path(display_rom_path);
+        if let Some(monitor) = monitor {
+            self.workspace.set_selected_monitor(monitor);
+        }
     }
 
     fn load_workspace(&mut self, path: Option<&Path>) {
@@ -394,10 +398,22 @@ impl SnowGui {
         self.load_windows = true;
         self.framebuffer.scale = self.workspace.viewport_scale;
         if let Some(rompath) = self.workspace.get_rom_path() {
+            // Determine the model from the ROM to decide if monitor selection applies
+            let rom_data = std::fs::read(&rompath).ok();
+            let model = rom_data.as_ref().and_then(|rom| snow_core::mac::MacModel::detect_from_rom(rom));
+            
+            let monitor = match model {
+                Some(snow_core::mac::MacModel::MacII) | Some(snow_core::mac::MacModel::MacIIFDHD) => {
+                    Some(self.workspace.get_selected_monitor())
+                }
+                _ => None, // For compact Macs, monitor is built-in and handled internally
+            };
+            
             self.load_rom_from_path(
                 &rompath,
                 self.workspace.get_display_card_rom_path().as_deref(),
                 Some(self.workspace.get_disk_paths()),
+                monitor,
             );
         } else {
             self.emu.deinit();
@@ -497,10 +513,12 @@ impl SnowGui {
     }
 
     fn handle_model_selection_result(&mut self, result: &ModelSelectionResult) {
+        self.workspace.set_selected_monitor(result.monitor);
         self.load_rom_from_path(
             &result.main_rom_path,
             result.display_rom_path.as_deref(),
             Some(self.emu.get_disk_paths()),
+            Some(result.monitor),
         );
         self.last_running = false;
     }

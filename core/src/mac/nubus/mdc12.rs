@@ -82,9 +82,13 @@ where
     TRenderer: Renderer,
 {
     pub fn new(rom: &[u8], renderer: TRenderer) -> Self {
+        Self::new_with_monitor(rom, renderer, MacMonitor::HiRes14)
+    }
+
+    pub fn new_with_monitor(rom: &[u8], renderer: TRenderer, monitor: MacMonitor) -> Self {
         Self {
             renderer: Some(renderer),
-            monitor: MacMonitor::HiRes14,
+            monitor,
             rom: rom.to_owned(),
             ctrl: CtrlReg(0),
             ramdac_ctrl: RamdacCtrlReg(0),

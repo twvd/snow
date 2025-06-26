@@ -251,7 +251,7 @@ pub enum ExtraROMs<'a> {
 }
 
 /// Definitions of Macintosh monitors
-#[derive(Clone, Copy, strum::IntoStaticStr)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr, serde::Serialize, serde::Deserialize)]
 pub enum MacMonitor {
     /// Macintosh 12" RGB monitor
     RGB12,
@@ -289,6 +289,21 @@ impl MacMonitor {
             Self::RGB21 => 870,
             Self::RGB19 => 768,
         }
+    }
+}
+
+impl Display for MacMonitor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::RGB12 => "Macintosh 12\" RGB",
+                Self::HiRes14 => "Macintosh 14\" High-Res", 
+                Self::RGB21 => "Macintosh 21\" RGB",
+                Self::RGB19 => "Macintosh 19\" RGB",
+            }
+        )
     }
 }
 

@@ -5,13 +5,14 @@ use anyhow::{anyhow, bail, Result};
 use eframe::egui;
 use egui_file_dialog::FileDialog;
 use sha2::{Digest, Sha256};
-use snow_core::mac::MacModel;
+use snow_core::mac::{MacModel, MacMonitor};
 use strum::IntoEnumIterator;
 
 /// Dialog for selecting Macintosh model and associated ROMs
 pub struct ModelSelectionDialog {
     open: bool,
     selected_model: MacModel,
+    selected_monitor: MacMonitor,
     memory_size: usize,
 
     // Main ROM selection
@@ -35,6 +36,7 @@ pub struct ModelSelectionDialog {
 #[allow(dead_code)]
 pub struct ModelSelectionResult {
     pub model: MacModel,
+    pub monitor: MacMonitor,
     pub memory_size: usize,
     pub main_rom_path: PathBuf,
     pub display_rom_path: Option<PathBuf>,
@@ -45,6 +47,7 @@ impl Default for ModelSelectionDialog {
         Self {
             open: false,
             selected_model: MacModel::Plus,
+            selected_monitor: MacMonitor::HiRes14,
             memory_size: 4 * 1024 * 1024, // 4MB default
             main_rom_path: String::new(),
             main_rom_valid: false,
@@ -96,6 +99,7 @@ impl ModelSelectionDialog {
         self.display_rom_valid = false;
         self.update_memory_options();
         self.update_display_rom_requirement();
+        self.update_monitor_availability();
     }
 
     pub fn is_open(&self) -> bool {
@@ -123,6 +127,31 @@ impl ModelSelectionDialog {
             self.display_rom_path.clear();
             self.display_rom_valid = false;
         }
+    }
+
+    fn update_monitor_availability(&mut self) {
+        // For compact Macs, monitor is built-in, so force it to RGB12 (internal)
+        match self.selected_model {
+            MacModel::Early128K
+            | MacModel::Early512K
+            | MacModel::Plus
+            | MacModel::SE
+            | MacModel::SeFdhd
+            | MacModel::Classic => {
+                self.selected_monitor = MacMonitor::RGB12;
+            }
+            // For Mac II series, allow any monitor selection
+            MacModel::MacII | MacModel::MacIIFDHD => {
+                // Keep current selection, or default to HiRes14 if RGB12 was selected
+                if self.selected_monitor == MacMonitor::RGB12 {
+                    self.selected_monitor = MacMonitor::HiRes14;
+                }
+            }
+        }
+    }
+
+    fn monitor_selection_available(&self) -> bool {
+        matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD)
     }
 
     #[allow(dead_code, clippy::identity_op)]
@@ -272,6 +301,20 @@ impl ModelSelectionDialog {
                     });
                 ui.end_row();
 
+                // Monitor selection (only for Mac II series)
+                if self.monitor_selection_available() {
+                    ui.label("Monitor:");
+                    egui::ComboBox::new(egui::Id::new("Select monitor"), "")
+                        .selected_text(format!("{}", self.selected_monitor))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.selected_monitor, MacMonitor::HiRes14, format!("{} (640×480)", MacMonitor::HiRes14));
+                            ui.selectable_value(&mut self.selected_monitor, MacMonitor::RGB12, format!("{} (512×384)", MacMonitor::RGB12));
+                            ui.selectable_value(&mut self.selected_monitor, MacMonitor::RGB19, format!("{} (1024×768)", MacMonitor::RGB19));
+                            ui.selectable_value(&mut self.selected_monitor, MacMonitor::RGB21, format!("{} (1152×870)", MacMonitor::RGB21));
+                        });
+                    ui.end_row();
+                }
+
                 // Memory selection
                 //ui.label("Memory size:");
                 //let memory_options = Self::get_memory_options(self.selected_model);
@@ -406,6 +449,7 @@ impl ModelSelectionDialog {
                     {
                         self.result = Some(ModelSelectionResult {
                             model: self.selected_model,
+                            monitor: self.selected_monitor,
                             memory_size: self.memory_size,
                             main_rom_path: PathBuf::from(&self.main_rom_path),
                             display_rom_path: if self.display_rom_required
@@ -429,6 +473,7 @@ impl ModelSelectionDialog {
         if last_model != self.selected_model {
             self.update_memory_options();
             self.update_display_rom_requirement();
+            self.update_monitor_availability();
             // Revalidate ROMs when model changes
             if !self.main_rom_path.is_empty() {
                 if let Err(e) = self.validate_main_rom() {
