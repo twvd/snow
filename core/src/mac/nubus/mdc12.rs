@@ -131,9 +131,30 @@ where
     pub fn framebuffer(&self) -> &[u8] {
         let base_offset = match self.bpp() {
             // ??? not sure why this is off by 2 scanlines
-            Bpp::TwentyFour => ((self.base.0 as usize) * 64 * 4) - (self.monitor.width() * 8),
-
-            _ => (self.base.0 as usize) * 32,
+            Bpp::TwentyFour => {
+                let calculated_offset = (self.base.0 as usize) * 64 * 4;
+                let adjustment = self.monitor.width() * 8;
+                
+                // Prevent underflow and ensure we don't exceed VRAM bounds
+                if calculated_offset >= adjustment {
+                    let offset = calculated_offset - adjustment;
+                    if offset < self.vram.len() {
+                        offset
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                }
+            },
+            _ => {
+                let offset = (self.base.0 as usize) * 32;
+                if offset < self.vram.len() {
+                    offset
+                } else {
+                    0
+                }
+            },
         };
         &self.vram[base_offset..]
     }
@@ -148,10 +169,13 @@ where
         let fb = self.framebuffer();
         let palette = &self.palette;
         buf.set_size(self.monitor.width(), self.monitor.height());
+        let total_pixels = self.monitor.width() * self.monitor.height();
+        
         match self.bpp() {
             Bpp::One => {
-                for idx in 0..(self.monitor.width() * self.monitor.height()) {
+                for idx in 0..total_pixels {
                     let byte = idx / 8;
+                    if byte >= fb.len() { break; } // Bounds check
                     let bit = idx % 8;
                     if fb[byte] & (1 << (7 - bit)) == 0 {
                         buf[idx * 4] = 0xEE;
@@ -166,8 +190,9 @@ where
                 }
             }
             Bpp::Two => {
-                for idx in 0..(self.monitor.width() * self.monitor.height()) {
+                for idx in 0..total_pixels {
                     let byte = idx / 4;
+                    if byte >= fb.len() { break; } // Bounds check
                     let shift = 6 - (idx % 4) * 2;
                     let color = palette[usize::from(fb[byte] >> shift) & 0x03];
 
@@ -178,8 +203,9 @@ where
                 }
             }
             Bpp::Four => {
-                for idx in 0..(self.monitor.width() * self.monitor.height()) {
+                for idx in 0..total_pixels {
                     let byte = idx / 2;
+                    if byte >= fb.len() { break; } // Bounds check
                     let shift = 4 - (idx % 2) * 4;
                     let color = palette[usize::from(fb[byte] >> shift) & 0x0F];
 
@@ -190,7 +216,8 @@ where
                 }
             }
             Bpp::Eight => {
-                for idx in 0..(self.monitor.width() * self.monitor.height()) {
+                for idx in 0..total_pixels {
+                    if idx >= fb.len() { break; } // Bounds check
                     let byte = fb[idx];
                     let color = palette[byte as usize];
 
@@ -201,10 +228,12 @@ where
                 }
             }
             Bpp::TwentyFour => {
-                for idx in 0..(self.monitor.width() * self.monitor.height()) {
-                    buf[idx * 4] = fb[idx * 4 + 1];
-                    buf[idx * 4 + 1] = fb[idx * 4 + 2];
-                    buf[idx * 4 + 2] = fb[idx * 4 + 3];
+                for idx in 0..total_pixels {
+                    let pixel_offset = idx * 4;
+                    if pixel_offset + 3 >= fb.len() { break; } // Bounds check
+                    buf[idx * 4] = fb[pixel_offset + 1];
+                    buf[idx * 4 + 1] = fb[pixel_offset + 2];
+                    buf[idx * 4 + 2] = fb[pixel_offset + 3];
                     buf[idx * 4 + 3] = 0xFF;
                 }
             }
@@ -235,7 +264,7 @@ where
     fn read(&mut self, addr: Address) -> Option<u8> {
         // Assume normal slot, not super slot
         match addr & 0xFF_FFFF {
-            0x00_0000..=0x1F_FFFF => Some(self.vram[addr as usize]),
+            0x00_0000..=0x1F_FFFF => Some(self.vram[addr as usize]), // 2MB VRAM range
             0x20_0002 => Some(self.read_ctrl().high()),
             0x20_0003 => Some(self.read_ctrl().low()),
             0x20_0008 => Some(self.base.be0()),
@@ -279,7 +308,7 @@ where
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
         // Assume normal slot, not super slot
         match addr & 0xFF_FFFF {
-            0x00_0000..=0x1F_FFFF => {
+            0x00_0000..=0x1F_FFFF => { // 2MB VRAM range
                 self.vram[addr as usize] = val;
                 Some(())
             }
