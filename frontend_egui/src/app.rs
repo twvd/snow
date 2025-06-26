@@ -845,7 +845,12 @@ impl eframe::App for SnowGui {
                 });
                 ui.menu_button("Machine", |ui| {
                     if ui.button("Load ROM").clicked() {
-                        self.model_dialog.open();
+                        self.model_dialog.open_with_workspace_values(
+                            self.workspace.get_rom_path(),
+                            self.workspace.get_display_card_rom_path(),
+                            self.workspace.get_selected_monitor(),
+                            self.workspace.get_emulation_speed(),
+                        );
                         ui.close_menu();
                     }
                     if self.emu.is_initialized() {
@@ -1181,7 +1186,12 @@ impl eframe::App for SnowGui {
                     .on_hover_text("Load ROM...")
                     .clicked()
                 {
-                    self.model_dialog.open();
+                    self.model_dialog.open_with_workspace_values(
+                        self.workspace.get_rom_path(),
+                        self.workspace.get_display_card_rom_path(),
+                        self.workspace.get_selected_monitor(),
+                        self.workspace.get_emulation_speed(),
+                    );
                 }
                 if self.emu.is_initialized() {
                     ui.separator();

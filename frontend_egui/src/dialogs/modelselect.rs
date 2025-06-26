@@ -93,14 +93,60 @@ impl Default for ModelSelectionDialog {
 }
 
 impl ModelSelectionDialog {
-    pub fn open(&mut self) {
+    pub fn open_with_workspace_values(
+        &mut self,
+        rom_path: Option<std::path::PathBuf>,
+        display_rom_path: Option<std::path::PathBuf>,
+        selected_monitor: snow_core::mac::MacMonitor,
+        selected_speed: snow_core::emulator::comm::EmulatorSpeed,
+    ) {
         self.open = true;
         self.error_message.clear();
         self.result = None;
 
-        // Reset ROM validation when dialog opens
-        self.main_rom_valid = false;
-        self.display_rom_valid = false;
+        // Set values from workspace
+        self.selected_monitor = selected_monitor;
+        self.selected_speed = selected_speed;
+
+        // Set ROM paths if available
+        if let Some(path) = rom_path {
+            self.main_rom_path = path.to_string_lossy().to_string();
+            
+            // Try to detect the model from the ROM
+            if let Ok(rom_data) = std::fs::read(&path) {
+                if let Some(detected_model) = snow_core::mac::MacModel::detect_from_rom(&rom_data) {
+                    self.selected_model = detected_model;
+                }
+            }
+        } else {
+            self.main_rom_path.clear();
+        }
+
+        if let Some(path) = display_rom_path {
+            self.display_rom_path = path.to_string_lossy().to_string();
+        } else {
+            self.display_rom_path.clear();
+        }
+
+        // Validate ROMs and update dependent settings
+        if !self.main_rom_path.is_empty() {
+            if let Err(e) = self.validate_main_rom() {
+                self.error_message = e.to_string();
+            }
+        } else {
+            self.main_rom_valid = false;
+        }
+
+        if !self.display_rom_path.is_empty() {
+            if let Err(e) = self.validate_display_rom() {
+                if self.error_message.is_empty() {
+                    self.error_message = e.to_string();
+                }
+            }
+        } else {
+            self.display_rom_valid = false;
+        }
+
         self.update_memory_options();
         self.update_display_rom_requirement();
         self.update_monitor_availability();

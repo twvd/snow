@@ -112,8 +112,9 @@ where
     }
 
     fn read_ctrl(&self) -> CtrlReg {
+        let sense_index = (self.ctrl.sense() as usize).min(3);
         self.ctrl
-            .with_sense(self.monitor.sense()[self.ctrl.sense() as usize])
+            .with_sense(self.monitor.sense()[sense_index])
     }
 
     pub fn bpp(&self) -> Bpp {

@@ -221,7 +221,15 @@ impl Emulator {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
         let (statuss, statusr) = crossbeam_channel::unbounded();
-        let renderer = ChannelRenderer::new(model.display_width(), model.display_height())?;
+        
+        // Determine display dimensions based on monitor (if specified) or model default
+        let (display_width, display_height) = if let Some(monitor) = monitor {
+            (monitor.width() as u16, monitor.height() as u16)
+        } else {
+            (model.display_width(), model.display_height())
+        };
+        
+        let renderer = ChannelRenderer::new(display_width, display_height)?;
         let frame_recv = renderer.get_receiver();
 
         let (config, adbkeyboard_sender, adbmouse_sender) = match model {
