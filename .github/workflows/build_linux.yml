@@ -17,8 +17,12 @@ env:
 
 jobs:
   build:
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
 
-    runs-on: ubuntu-latest
+    name: Linux-${{ matrix.arch }}
+    runs-on: ${{ matrix.arch == 'x86_64' && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
 
     steps:
     - uses: actions/checkout@v4
@@ -33,12 +37,12 @@ jobs:
     - name: TUI Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: 'Snow Linux TUI (x86_64)'
+        name: 'Snow Linux TUI (${{ matrix.arch }})'
         if-no-files-found: error
         path: target/release/snow_frontend_tui
     - name: GUI Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: 'Snow Linux (x86_64)'
+        name: 'Snow Linux (${{ matrix.arch }})'
         if-no-files-found: error
         path: target/release/snow_frontend_egui
