@@ -178,6 +178,20 @@ impl ModelSelectionDialog {
                     model,
                     self.selected_model
                 )
+                // Check if attempting to use Plus ROMs on a 128K/512K
+                if (model == MacModel::Plus) & (self.selected_model == MacModel::Early512K)
+                    || (self.selected_model == MacModel::Early128K) {
+                    log::warn!("Using Plus ROM on a {}", self.selected_model);
+                    self.main_rom_valid = true;
+                    Ok(())
+                } else {
+                    bail!(
+                        "ROM is for '{}' but '{}' was selected",
+                        model,
+                        self.selected_model
+                    )
+                }
+
             }
             None => {
                 bail!("Unknown or unsupported ROM file")
