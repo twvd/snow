@@ -33,10 +33,6 @@ struct Args {
     /// Filename to load on start (ROM or workspace)
     filename: Option<String>,
 
-    /// Disable audio
-    #[arg(long, action)]
-    no_audio: bool,
-
     /// UI scale
     #[arg(long, default_value_t = 1.0)]
     ui_scale: f32,
@@ -93,13 +89,7 @@ fn main() -> eframe::Result {
             // Force dark theme as UI elements and colors are not light-friendly (yet)
             cc.egui_ctx.set_theme(egui::Theme::Dark);
 
-            Ok(Box::new(SnowGui::new(
-                cc,
-                r,
-                args.filename,
-                !args.no_audio,
-                args.ui_scale,
-            )))
+            Ok(Box::new(SnowGui::new(cc, r, args.filename, args.ui_scale)))
         }),
     )
 }

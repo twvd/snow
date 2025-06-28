@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
+use crate::emulator::EmulatorInitArgs;
 use anyhow::{anyhow, bail, Result};
 use eframe::egui;
 use egui_file_dialog::FileDialog;
@@ -13,6 +14,7 @@ pub struct ModelSelectionDialog {
     open: bool,
     selected_model: MacModel,
     memory_size: usize,
+    init_args: EmulatorInitArgs,
 
     // Main ROM selection
     main_rom_path: String,
@@ -44,6 +46,7 @@ pub struct ModelSelectionResult {
     pub main_rom_path: PathBuf,
     pub display_rom_path: Option<PathBuf>,
     pub pram_path: Option<PathBuf>,
+    pub init_args: EmulatorInitArgs,
 }
 
 impl Default for ModelSelectionDialog {
@@ -52,6 +55,8 @@ impl Default for ModelSelectionDialog {
             open: false,
             selected_model: MacModel::Plus,
             memory_size: 4 * 1024 * 1024, // 4MB default
+            init_args: Default::default(),
+
             main_rom_path: String::new(),
             main_rom_valid: false,
             main_rom_dialog: FileDialog::new()
@@ -68,6 +73,7 @@ impl Default for ModelSelectionDialog {
                 )
                 .default_file_filter("ROM files (*.rom, *.bin)")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
+
             display_rom_path: String::new(),
             display_rom_valid: false,
             display_rom_dialog: FileDialog::new()
@@ -419,6 +425,11 @@ impl ModelSelectionDialog {
                         }
                     });
                 });
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.init_args.audio_disabled, "Disable audio");
+                    });
+                });
             });
 
             // Error message
@@ -466,6 +477,7 @@ impl ModelSelectionDialog {
                             } else {
                                 Some(PathBuf::from(&self.pram_path))
                             },
+                            init_args: self.init_args.clone(),
                         });
                         self.open = false;
                     }

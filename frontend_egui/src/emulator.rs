@@ -12,7 +12,7 @@ use eframe::egui;
 use log::*;
 use num_traits::cast::ToPrimitive;
 use sdl2::audio::AudioDevice;
-
+use serde::{Deserialize, Serialize};
 use snow_core::bus::Address;
 use snow_core::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
@@ -40,6 +40,13 @@ pub struct EmulatorInitResult {
     pub frame_receiver: Receiver<DisplayBuffer>,
 }
 
+/// Initialization arguments for the emulator, minus filenames
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct EmulatorInitArgs {
+    #[serde(default)]
+    pub audio_disabled: bool,
+}
+
 /// Manages the state of the emulator and feeds input to the GUI
 #[derive(Default)]
 pub struct EmulatorState {
@@ -49,7 +56,6 @@ pub struct EmulatorState {
     eventrecv: Option<EmulatorEventReceiver>,
     status: Option<EmulatorStatus>,
     audiosink: Option<AudioDevice<SDLAudioSink>>,
-    audio_enabled: bool,
     disasm_address: Address,
     disasm_code: DisassemblyListing,
     messages: VecDeque<(UserMessageType, String)>,
@@ -66,19 +72,13 @@ pub struct EmulatorState {
 }
 
 impl EmulatorState {
-    pub fn new(audio_enabled: bool) -> Self {
-        Self {
-            audio_enabled,
-            ..Default::default()
-        }
-    }
-
     pub fn init_from_rom(
         &mut self,
         filename: &Path,
         display_rom_path: Option<&Path>,
         disks: Option<[Option<PathBuf>; 7]>,
         pram: Option<&Path>,
+        args: &EmulatorInitArgs,
     ) -> Result<EmulatorInitResult> {
         let rom = std::fs::read(filename)?;
         let display_rom = if let Some(filename) = display_rom_path {
@@ -86,7 +86,7 @@ impl EmulatorState {
         } else {
             None
         };
-        self.init(&rom, display_rom.as_deref(), disks, pram)
+        self.init(&rom, display_rom.as_deref(), disks, pram, args)
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -96,6 +96,7 @@ impl EmulatorState {
         display_rom: Option<&[u8]>,
         disks: Option<[Option<PathBuf>; 7]>,
         pram: Option<&Path>,
+        args: &EmulatorInitArgs,
     ) -> Result<EmulatorInitResult> {
         // Terminate running emulator (if any)
         self.deinit();
@@ -114,7 +115,7 @@ impl EmulatorState {
         let cmd = emulator.create_cmd_sender();
 
         // Initialize audio
-        if !self.audio_enabled {
+        if args.audio_disabled {
             cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
         } else if self.audiosink.is_none() {
             match SDLAudioSink::new(emulator.get_audio()) {

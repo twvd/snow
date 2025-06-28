@@ -16,6 +16,7 @@ use snow_core::bus::Address;
 use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
 
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
+use crate::emulator::EmulatorInitArgs;
 use anyhow::{bail, Result};
 use eframe::egui;
 use egui_file_dialog::{DialogMode, DirectoryEntry, FileDialog};
@@ -130,7 +131,6 @@ impl SnowGui {
         cc: &eframe::CreationContext<'_>,
         wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
         initial_file: Option<String>,
-        audio_enabled: bool,
         zoom_factor: f32,
     ) -> Self {
         egui_material_icons::initialize(&cc.egui_ctx);
@@ -236,7 +236,7 @@ impl SnowGui {
             ui_active: true,
             last_running: false,
 
-            emu: EmulatorState::new(audio_enabled),
+            emu: EmulatorState::default(),
         };
 
         if let Some(filename) = initial_file {
@@ -252,7 +252,7 @@ impl SnowGui {
                 .unwrap_or_default()
                 .eq_ignore_ascii_case("rom")
             {
-                app.load_rom_from_path(path, None, None, None);
+                app.load_rom_from_path(path, None, None, None, &EmulatorInitArgs::default());
             }
         }
 
@@ -365,10 +365,11 @@ impl SnowGui {
         display_rom_path: Option<&Path>,
         disks: Option<[Option<PathBuf>; 7]>,
         pram_path: Option<&Path>,
+        args: &EmulatorInitArgs,
     ) {
         match self
             .emu
-            .init_from_rom(path, display_rom_path, disks, pram_path)
+            .init_from_rom(path, display_rom_path, disks, pram_path, args)
         {
             Ok(p) => self.framebuffer.connect_receiver(p.frame_receiver),
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
@@ -376,6 +377,7 @@ impl SnowGui {
         self.workspace.set_rom_path(path);
         self.workspace.set_display_card_rom_path(display_rom_path);
         self.workspace.set_pram_path(pram_path);
+        self.workspace.init_args = args.clone();
     }
 
     fn load_workspace(&mut self, path: Option<&Path>) {
@@ -404,6 +406,7 @@ impl SnowGui {
                 self.workspace.get_display_card_rom_path().as_deref(),
                 Some(self.workspace.get_disk_paths()),
                 self.workspace.get_pram_path().as_deref(),
+                &self.workspace.init_args.clone(),
             );
         } else {
             self.emu.deinit();
@@ -508,6 +511,7 @@ impl SnowGui {
             result.display_rom_path.as_deref(),
             Some(self.emu.get_disk_paths()),
             result.pram_path.as_deref(),
+            &result.init_args,
         );
         self.last_running = false;
     }
