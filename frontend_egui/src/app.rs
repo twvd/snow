@@ -252,7 +252,7 @@ impl SnowGui {
                 .unwrap_or_default()
                 .eq_ignore_ascii_case("rom")
             {
-                app.load_rom_from_path(path, None, None);
+                app.load_rom_from_path(path, None, None, None);
             }
         }
 
@@ -364,13 +364,18 @@ impl SnowGui {
         path: &Path,
         display_rom_path: Option<&Path>,
         disks: Option<[Option<PathBuf>; 7]>,
+        pram_path: Option<&Path>,
     ) {
-        match self.emu.init_from_rom(path, display_rom_path, disks) {
+        match self
+            .emu
+            .init_from_rom(path, display_rom_path, disks, pram_path)
+        {
             Ok(p) => self.framebuffer.connect_receiver(p.frame_receiver),
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
         }
         self.workspace.set_rom_path(path);
         self.workspace.set_display_card_rom_path(display_rom_path);
+        self.workspace.set_pram_path(pram_path);
     }
 
     fn load_workspace(&mut self, path: Option<&Path>) {
@@ -398,6 +403,7 @@ impl SnowGui {
                 &rompath,
                 self.workspace.get_display_card_rom_path().as_deref(),
                 Some(self.workspace.get_disk_paths()),
+                self.workspace.get_pram_path().as_deref(),
             );
         } else {
             self.emu.deinit();
@@ -501,6 +507,7 @@ impl SnowGui {
             &result.main_rom_path,
             result.display_rom_path.as_deref(),
             Some(self.emu.get_disk_paths()),
+            result.pram_path.as_deref(),
         );
         self.last_running = false;
     }

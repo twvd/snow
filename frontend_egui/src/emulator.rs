@@ -35,7 +35,8 @@ use crate::audio::SDLAudioSink;
 
 pub type DisassemblyListing = Vec<DisassemblyEntry>;
 
-pub struct EmulatorInitParams {
+/// Results of initializing the emulator, includes channels
+pub struct EmulatorInitResult {
     pub frame_receiver: Receiver<DisplayBuffer>,
 }
 
@@ -77,14 +78,15 @@ impl EmulatorState {
         filename: &Path,
         display_rom_path: Option<&Path>,
         disks: Option<[Option<PathBuf>; 7]>,
-    ) -> Result<EmulatorInitParams> {
+        pram: Option<&Path>,
+    ) -> Result<EmulatorInitResult> {
         let rom = std::fs::read(filename)?;
         let display_rom = if let Some(filename) = display_rom_path {
             Some(std::fs::read(filename)?)
         } else {
             None
         };
-        self.init(&rom, display_rom.as_deref(), disks)
+        self.init(&rom, display_rom.as_deref(), disks, pram)
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -93,7 +95,8 @@ impl EmulatorState {
         rom: &[u8],
         display_rom: Option<&[u8]>,
         disks: Option<[Option<PathBuf>; 7]>,
-    ) -> Result<EmulatorInitParams> {
+        pram: Option<&Path>,
+    ) -> Result<EmulatorInitResult> {
         // Terminate running emulator (if any)
         self.deinit();
 
@@ -149,6 +152,10 @@ impl EmulatorState {
             }
         }
 
+        if let Some(pram_path) = pram {
+            emulator.persist_pram(pram_path);
+        }
+
         cmd.send(EmulatorCommand::Run)?;
 
         self.eventrecv = Some(emulator.create_event_recv());
@@ -170,7 +177,7 @@ impl EmulatorState {
         while !self.poll() {}
         while self.poll() {}
 
-        Ok(EmulatorInitParams {
+        Ok(EmulatorInitResult {
             frame_receiver: frame_recv,
         })
     }
