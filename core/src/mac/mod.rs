@@ -1,6 +1,7 @@
 use std::fmt::Display;
 
 use hex_literal::hex;
+use serde::{Serialize,Deserialize};
 use sha2::{Digest, Sha256};
 
 use swim::drive::DriveType;
@@ -23,7 +24,7 @@ pub mod swim;
 pub mod via;
 
 /// Differentiation of Macintosh models and their features
-#[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq, strum::EnumIter)]
+#[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq, strum::EnumIter, Serialize, Deserialize)]
 pub enum MacModel {
     /// Macintosh 128K
     Early128K,

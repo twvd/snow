@@ -13,6 +13,7 @@ use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::Workspace;
 use crate::{emulator::EmulatorState, version_string, widgets::registers::RegistersWidget};
 use snow_core::bus::Address;
+use snow_core::mac::MacModel;
 use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
 
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
@@ -252,7 +253,7 @@ impl SnowGui {
                 .unwrap_or_default()
                 .eq_ignore_ascii_case("rom")
             {
-                app.load_rom_from_path(path, None, None);
+                app.load_rom_from_path(path, None, None, None);
             }
         }
 
@@ -364,13 +365,15 @@ impl SnowGui {
         path: &Path,
         display_rom_path: Option<&Path>,
         disks: Option<[Option<PathBuf>; 7]>,
+        selected_model: Option<MacModel>,
     ) {
-        match self.emu.init_from_rom(path, display_rom_path, disks) {
+        match self.emu.init_from_rom(path, display_rom_path, disks, selected_model) {
             Ok(p) => self.framebuffer.connect_receiver(p.frame_receiver),
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
         }
         self.workspace.set_rom_path(path);
         self.workspace.set_display_card_rom_path(display_rom_path);
+        self.workspace.set_selected_model(selected_model.unwrap_or(MacModel::Plus));
     }
 
     fn load_workspace(&mut self, path: Option<&Path>) {
@@ -398,6 +401,7 @@ impl SnowGui {
                 &rompath,
                 self.workspace.get_display_card_rom_path().as_deref(),
                 Some(self.workspace.get_disk_paths()),
+                self.workspace.get_selected_model(),
             );
         } else {
             self.emu.deinit();
@@ -501,6 +505,7 @@ impl SnowGui {
             &result.main_rom_path,
             result.display_rom_path.as_deref(),
             Some(self.emu.get_disk_paths()),
+            result.selected_model,
         );
         self.last_running = false;
     }

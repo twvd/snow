@@ -38,6 +38,7 @@ pub struct ModelSelectionResult {
     pub memory_size: usize,
     pub main_rom_path: PathBuf,
     pub display_rom_path: Option<PathBuf>,
+    pub selected_model: Option<MacModel>,
 }
 
 impl Default for ModelSelectionDialog {
@@ -173,11 +174,20 @@ impl ModelSelectionDialog {
                 Ok(())
             }
             Some(model) => {
-                bail!(
-                    "ROM is for '{}' but '{}' was selected",
-                    model,
-                    self.selected_model
-                )
+                // Check if attempting to use Plus ROMs on a 128K/512K
+                if (model == MacModel::Plus) & (self.selected_model == MacModel::Early512K)
+                    || (self.selected_model == MacModel::Early128K) {
+                    log::warn!("Using Plus ROM on a {}", self.selected_model);
+                    self.main_rom_valid = true;
+                    Ok(())
+                } else {
+                    bail!(
+                        "ROM is for '{}' but '{}' was selected",
+                        model,
+                        self.selected_model
+                    )
+                }
+
             }
             None => {
                 bail!("Unknown or unsupported ROM file")
@@ -415,6 +425,7 @@ impl ModelSelectionDialog {
                             } else {
                                 None
                             },
+                            selected_model: Some(self.selected_model),
                         });
                         self.open = false;
                     }
