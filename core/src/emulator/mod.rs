@@ -17,7 +17,7 @@ use crate::mac::adb::{AdbKeyboard, AdbMouse};
 use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
 use crate::mac::macii::bus::MacIIBus;
 use crate::mac::scc::Scc;
-use crate::mac::{ExtraROMs, MacModel};
+use crate::mac::{ExtraROMs, MacModel, MacMonitor};
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::AudioReceiver;
 use crate::renderer::{DisplayBuffer, Renderer};
@@ -210,12 +210,13 @@ impl Emulator {
         rom: &[u8],
         model: MacModel,
     ) -> Result<(Self, crossbeam_channel::Receiver<DisplayBuffer>)> {
-        Self::new_with_extra_roms(rom, &[], model)
+        Self::new_with_extra(rom, &[], model, None)
     }
-    pub fn new_with_extra_roms(
+    pub fn new_with_extra(
         rom: &[u8],
         extra_roms: &[ExtraROMs],
         model: MacModel,
+        monitor: Option<MacMonitor>,
     ) -> Result<(Self, crossbeam_channel::Receiver<DisplayBuffer>)> {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
@@ -266,7 +267,13 @@ impl Emulator {
                 };
 
                 // Initialize bus and CPU
-                let bus = MacIIBus::new(model, rom, mdcrom, vec![renderer]);
+                let bus = MacIIBus::new(
+                    model,
+                    rom,
+                    mdcrom,
+                    vec![renderer],
+                    monitor.unwrap_or_default(),
+                );
                 let mut cpu = Box::new(CpuM68020::new(bus));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 

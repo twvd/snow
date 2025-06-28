@@ -26,7 +26,7 @@ use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, Em
 use snow_core::emulator::Emulator;
 use snow_core::keymap::Scancode;
 use snow_core::mac::scc::SccCh;
-use snow_core::mac::{ExtraROMs, MacModel};
+use snow_core::mac::{ExtraROMs, MacModel, MacMonitor};
 use snow_core::renderer::DisplayBuffer;
 use snow_core::tickable::{Tickable, Ticks};
 use snow_floppy::{Floppy, FloppyImage, FloppyType};
@@ -45,6 +45,9 @@ pub struct EmulatorInitResult {
 pub struct EmulatorInitArgs {
     #[serde(default)]
     pub audio_disabled: bool,
+
+    #[serde(default)]
+    pub monitor: Option<MacMonitor>,
 }
 
 /// Manages the state of the emulator and feeds input to the GUI
@@ -107,7 +110,7 @@ impl EmulatorState {
         let model =
             MacModel::detect_from_rom(rom).ok_or_else(|| anyhow!("Unsupported ROM file"))?;
         let (mut emulator, frame_recv) = if let Some(display_rom) = display_rom {
-            Emulator::new_with_extra_roms(rom, &[ExtraROMs::MDC12(display_rom)], model)
+            Emulator::new_with_extra(rom, &[ExtraROMs::MDC12(display_rom)], model, args.monitor)
         } else {
             Emulator::new(rom, model)
         }?;

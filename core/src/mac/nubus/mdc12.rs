@@ -81,10 +81,10 @@ impl<TRenderer> Mdc12<TRenderer>
 where
     TRenderer: Renderer,
 {
-    pub fn new(rom: &[u8], renderer: TRenderer) -> Self {
+    pub fn new(rom: &[u8], renderer: TRenderer, monitor: MacMonitor) -> Self {
         Self {
             renderer: Some(renderer),
-            monitor: MacMonitor::HiRes14,
+            monitor,
             rom: rom.to_owned(),
             ctrl: CtrlReg(0),
             ramdac_ctrl: RamdacCtrlReg(0),

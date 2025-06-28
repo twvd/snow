@@ -6,7 +6,7 @@ use anyhow::{anyhow, bail, Result};
 use eframe::egui;
 use egui_file_dialog::FileDialog;
 use sha2::{Digest, Sha256};
-use snow_core::mac::MacModel;
+use snow_core::mac::{MacModel, MacMonitor};
 use strum::IntoEnumIterator;
 
 /// Dialog for selecting Macintosh model and associated ROMs
@@ -15,6 +15,7 @@ pub struct ModelSelectionDialog {
     selected_model: MacModel,
     memory_size: usize,
     init_args: EmulatorInitArgs,
+    selected_monitor: MacMonitor,
 
     // Main ROM selection
     main_rom_path: String,
@@ -56,6 +57,7 @@ impl Default for ModelSelectionDialog {
             selected_model: MacModel::Plus,
             memory_size: 4 * 1024 * 1024, // 4MB default
             init_args: Default::default(),
+            selected_monitor: MacMonitor::default(),
 
             main_rom_path: String::new(),
             main_rom_valid: false,
@@ -331,7 +333,7 @@ impl ModelSelectionDialog {
             ui.label(egui::RichText::from("Select ROM files").strong());
             egui::Grid::new("model_grid_2").show(ui, |ui| {
                 // Main ROM selection
-                ui.label(egui::RichText::new("System ROM"));
+                ui.label("System ROM");
                 ui.horizontal(|ui| {
                     if ui
                         .text_edit_singleline(&mut self.main_rom_path)
@@ -369,9 +371,7 @@ impl ModelSelectionDialog {
 
                 // Display Card ROM selection (Mac II only)
                 if self.display_rom_required {
-                    ui.label(egui::RichText::new(
-                        "Macintosh Display Card 8-24 ROM (341-0868)",
-                    ));
+                    ui.label("Macintosh Display Card 8-24 ROM (341-0868)");
                     ui.horizontal(|ui| {
                         if ui
                             .text_edit_singleline(&mut self.display_rom_path)
@@ -407,6 +407,23 @@ impl ModelSelectionDialog {
                     } else {
                         ui.label("");
                     }
+                    ui.end_row();
+
+                    ui.label(egui::RichText::from("Select peripherals").strong());
+                    ui.end_row();
+
+                    ui.label("Monitor");
+                    egui::ComboBox::new(egui::Id::new("Select monitor"), "")
+                        .selected_text(format!("{}", self.selected_monitor))
+                        .show_ui(ui, |ui| {
+                            for monitor in MacMonitor::iter() {
+                                ui.selectable_value(
+                                    &mut self.selected_monitor,
+                                    monitor,
+                                    monitor.to_string(),
+                                );
+                            }
+                        });
                     ui.end_row();
                 }
             });
@@ -477,7 +494,14 @@ impl ModelSelectionDialog {
                             } else {
                                 Some(PathBuf::from(&self.pram_path))
                             },
-                            init_args: self.init_args.clone(),
+                            init_args: EmulatorInitArgs {
+                                monitor: if self.display_rom_required {
+                                    Some(self.selected_monitor)
+                                } else {
+                                    None
+                                },
+                                ..self.init_args
+                            },
                         });
                         self.open = false;
                     }

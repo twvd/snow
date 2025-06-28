@@ -10,7 +10,7 @@ use crate::mac::scc::Scc;
 use crate::mac::scsi::ScsiController;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
-use crate::mac::MacModel;
+use crate::mac::{MacModel, MacMonitor};
 use crate::renderer::{AudioReceiver, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent};
@@ -85,7 +85,13 @@ where
     /// CrsrNew address
     const ADDR_CRSRNEW: Address = 0x08CE;
 
-    pub fn new(model: MacModel, rom: &[u8], mdcrom: &[u8], mut renderers: Vec<TRenderer>) -> Self {
+    pub fn new(
+        model: MacModel,
+        rom: &[u8],
+        mdcrom: &[u8],
+        mut renderers: Vec<TRenderer>,
+        monitor: MacMonitor,
+    ) -> Self {
         let ram_size = model.ram_size();
 
         let mut bus = Self {
@@ -116,7 +122,9 @@ where
             //vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
 
-            nubus_devices: core::array::from_fn(|_| renderers.pop().map(|r| Mdc12::new(mdcrom, r))),
+            nubus_devices: core::array::from_fn(|_| {
+                renderers.pop().map(|r| Mdc12::new(mdcrom, r, monitor))
+            }),
         };
 
         // Disable memory test
