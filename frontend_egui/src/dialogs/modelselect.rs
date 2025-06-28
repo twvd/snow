@@ -96,18 +96,8 @@ impl Default for ModelSelectionDialog {
 
             pram_enabled: false,
             pram_dialog: FileDialog::new()
-                .add_file_filter(
-                    "PRAM files (*.pram)",
-                    std::sync::Arc::new(|p| {
-                        if let Some(ext) = p.extension() {
-                            let ext_str = ext.to_string_lossy().to_lowercase();
-                            ext_str == "pram"
-                        } else {
-                            false
-                        }
-                    }),
-                )
-                .default_file_filter("PRAM files (*.pram)")
+                .add_save_extension("PRAM files", "pram")
+                .default_save_extension("PRAM files")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
             pram_path: String::new(),
 
@@ -428,7 +418,7 @@ impl ModelSelectionDialog {
                             ui.horizontal(|ui| {
                                 ui.text_edit_singleline(&mut self.pram_path);
                                 if ui.button("Browse...").clicked() {
-                                    self.pram_dialog.pick_file();
+                                    self.pram_dialog.save_file();
                                 }
                             });
                         }
