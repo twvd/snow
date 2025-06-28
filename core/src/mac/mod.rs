@@ -1,6 +1,7 @@
 use std::fmt::Display;
 
 use hex_literal::hex;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use swim::drive::DriveType;
@@ -253,16 +254,45 @@ pub enum ExtraROMs<'a> {
 }
 
 /// Definitions of Macintosh monitors
-#[derive(Clone, Copy, strum::IntoStaticStr)]
+#[derive(
+    Clone,
+    Copy,
+    strum::IntoStaticStr,
+    Default,
+    Serialize,
+    Deserialize,
+    Debug,
+    strum::EnumIter,
+    Eq,
+    PartialEq,
+)]
 pub enum MacMonitor {
     /// Macintosh 12" RGB monitor
     RGB12,
     /// Macintosh 14" high-res
+    #[default]
     HiRes14,
-    /// Macintosh 21" RGB monitor (1152x870)
-    RGB21,
     /// Macintosh 19" RGB monitor (1024x768)
     RGB19,
+    /// Macintosh 21" RGB monitor (1152x870)
+    RGB21,
+}
+
+impl Display for MacMonitor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} ({}x{})",
+            match self {
+                Self::RGB12 => "Macintosh 12\" RGB monitor",
+                Self::HiRes14 => "Macintosh 14\" high-resolution",
+                Self::RGB21 => "Macintosh 21\" RGB monitor",
+                Self::RGB19 => "Macintosh 19\" RGB monitor",
+            },
+            self.width(),
+            self.height()
+        )
+    }
 }
 
 impl MacMonitor {
