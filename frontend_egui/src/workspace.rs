@@ -3,11 +3,11 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
+use crate::emulator::EmulatorInitArgs;
+use crate::util::relativepath::RelativePath;
 use anyhow::{Context, Result};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
-
-use crate::util::relativepath::RelativePath;
 
 /// A workspace representation which contains:
 /// * (Paths to) loaded assets
@@ -47,6 +47,9 @@ pub struct Workspace {
 
     /// Window positions
     windows: HashMap<String, [f32; 4]>,
+
+    /// Last emulator initialization args
+    pub init_args: EmulatorInitArgs,
 }
 
 impl Default for Workspace {
@@ -69,6 +72,7 @@ impl Default for Workspace {
             pram_path: None,
             disks: core::array::from_fn(|_| None),
             windows: HashMap::new(),
+            init_args: EmulatorInitArgs::default(),
         }
     }
 }
