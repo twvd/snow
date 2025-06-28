@@ -401,31 +401,13 @@ where
         self.step_exception = false;
         self.step_over_addr = None;
 
-        // Check pending interrupts
-        if let Some(level) = self.bus.get_irq() {
-            if level == 7 || self.regs.sr.int_prio_mask() < level {
-                if self
-                    .breakpoints
-                    .contains(&Breakpoint::InterruptLevel(level))
-                {
-                    info!(
-                        "Breakpoint hit (interrupt level): {}, PC: ${:08X}",
-                        level, self.regs.pc
-                    );
-                    self.breakpoint_hit.set();
-                }
-
-                self.raise_irq(
-                    level,
-                    VECTOR_AUTOVECTOR_OFFSET + (Address::from(level - 1) * 4),
-                )?;
-            }
-        }
-
-        // Check pending trace
-        if self.regs.sr.trace() && !self.trace_mask {
-            self.raise_exception(ExceptionGroup::Group1, VECTOR_TRACE, None)?;
-        }
+        // Flag exceptions before executing the instruction to act on them later
+        let trace_exception = self.regs.sr.trace() && !self.trace_mask;
+        let irq_exception = match self.bus.get_irq() {
+            Some(7) => true,
+            Some(level) => self.regs.sr.int_prio_mask() < level,
+            _ => false,
+        };
 
         // Start of instruction execution
         if self.history_enabled {
@@ -511,6 +493,31 @@ where
         };
 
         self.prefetch_refill()?;
+
+        // Check pending trace
+        if trace_exception {
+            self.raise_exception(ExceptionGroup::Group1, VECTOR_TRACE, None)?;
+        }
+
+        // Check pending interrupts
+        if irq_exception {
+            let level = self.bus.get_irq().unwrap();
+            if self
+                .breakpoints
+                .contains(&Breakpoint::InterruptLevel(level))
+            {
+                info!(
+                    "Breakpoint hit (interrupt level): {}, PC: ${:08X}",
+                    level, self.regs.pc
+                );
+                self.breakpoint_hit.set();
+            }
+
+            self.raise_irq(
+                level,
+                VECTOR_AUTOVECTOR_OFFSET + (Address::from(level - 1) * 4),
+            )?;
+        }
 
         // Test breakpoint on next PC location
         if self
