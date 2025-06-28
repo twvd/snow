@@ -128,6 +128,8 @@ impl ModelSelectionDialog {
         self.display_rom_valid = false;
         self.update_memory_options();
         self.update_display_rom_requirement();
+        self.do_validate_main_rom();
+        self.do_validate_display_rom();
     }
 
     pub fn is_open(&self) -> bool {
@@ -339,11 +341,7 @@ impl ModelSelectionDialog {
                         .text_edit_singleline(&mut self.main_rom_path)
                         .lost_focus()
                     {
-                        if let Err(e) = self.validate_main_rom() {
-                            self.error_message = e.to_string();
-                        } else {
-                            self.error_message.clear();
-                        }
+                        self.do_validate_main_rom();
                     }
                     if ui.button("Browse...").clicked() {
                         self.main_rom_dialog.pick_file();
@@ -377,13 +375,7 @@ impl ModelSelectionDialog {
                             .text_edit_singleline(&mut self.display_rom_path)
                             .lost_focus()
                         {
-                            if let Err(e) = self.validate_display_rom() {
-                                self.error_message = e.to_string();
-                            } else if !self.main_rom_path.is_empty()
-                                && self.error_message.starts_with("Invalid Display Card")
-                            {
-                                self.error_message.clear();
-                            }
+                            self.do_validate_display_rom();
                         }
                         if ui.button("Browse...").clicked() {
                             self.display_rom_dialog.pick_file();
@@ -525,6 +517,24 @@ impl ModelSelectionDialog {
                     self.error_message.clear();
                 }
             }
+        }
+    }
+
+    fn do_validate_main_rom(&mut self) {
+        if let Err(e) = self.validate_main_rom() {
+            self.error_message = e.to_string();
+        } else {
+            self.error_message.clear();
+        }
+    }
+
+    fn do_validate_display_rom(&mut self) {
+        if let Err(e) = self.validate_display_rom() {
+            self.error_message = e.to_string();
+        } else if !self.main_rom_path.is_empty()
+            && self.error_message.starts_with("Invalid Display Card")
+        {
+            self.error_message.clear();
         }
     }
 }
