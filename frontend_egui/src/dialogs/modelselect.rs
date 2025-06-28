@@ -443,8 +443,9 @@ impl ModelSelectionDialog {
                     });
                 });
                 ui.group(|ui| {
-                    ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
                         ui.checkbox(&mut self.init_args.audio_disabled, "Disable audio");
+                        ui.checkbox(&mut self.init_args.mouse_disabled, "Disable mouse");
                     });
                 });
             });

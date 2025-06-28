@@ -68,6 +68,9 @@ pub struct MacIIBus<TRenderer: Renderer> {
 
     /// NuBus cards (base address: $9)
     nubus_devices: [Option<Mdc12<TRenderer>>; 6],
+
+    /// Mouse enabled
+    mouse_enabled: bool,
 }
 
 impl<TRenderer> MacIIBus<TRenderer>
@@ -91,6 +94,7 @@ where
         mdcrom: &[u8],
         mut renderers: Vec<TRenderer>,
         monitor: MacMonitor,
+        mouse_enabled: bool,
     ) -> Self {
         let ram_size = model.ram_size();
 
@@ -125,6 +129,7 @@ where
             nubus_devices: core::array::from_fn(|_| {
                 renderers.pop().map(|r| Mdc12::new(mdcrom, r, monitor))
             }),
+            mouse_enabled,
         };
 
         // Disable memory test
@@ -301,6 +306,10 @@ where
 
     /// Updates the mouse position (relative coordinates) and button state
     pub fn mouse_update_rel(&mut self, relx: i16, rely: i16, _button: Option<bool>) {
+        if !self.mouse_enabled {
+            return;
+        }
+
         let old_x = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_X);
         let old_y = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_Y);
 
@@ -333,6 +342,10 @@ where
 
     /// Updates the mouse position (absolute coordinates)
     pub fn mouse_update_abs(&mut self, x: u16, y: u16) {
+        if !self.mouse_enabled {
+            return;
+        }
+
         let old_x = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_X);
         let old_y = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_Y);
 

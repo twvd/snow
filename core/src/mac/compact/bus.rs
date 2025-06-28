@@ -83,6 +83,9 @@ pub struct CompactMacBus<TRenderer: Renderer> {
 
     /// Programmer's key pressed
     progkey_pressed: LatchingEvent,
+
+    /// Mouse enabled
+    mouse_enabled: bool,
 }
 
 impl<TRenderer> CompactMacBus<TRenderer>
@@ -107,7 +110,7 @@ where
     /// CrsrNew address
     const ADDR_CRSRNEW: Address = 0x08CE;
 
-    pub fn new(model: MacModel, rom: &[u8], renderer: TRenderer) -> Self {
+    pub fn new(model: MacModel, rom: &[u8], renderer: TRenderer, mouse_enabled: bool) -> Self {
         let ram_size = model.ram_size();
         let fb_alt_start = ram_size as Address - Video::<TRenderer>::FRAMEBUFFER_ALT_OFFSET;
         let fb_main_start = ram_size as Address - Video::<TRenderer>::FRAMEBUFFER_MAIN_OFFSET;
@@ -148,6 +151,7 @@ where
             vblank_time: Instant::now(),
             vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
+            mouse_enabled,
         };
 
         // Disable memory test
@@ -336,6 +340,10 @@ where
 
     /// Updates the mouse position (relative coordinates) and button state
     pub fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) {
+        if !self.mouse_enabled {
+            return;
+        }
+
         let old_x = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_X);
         let old_y = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_Y);
 
@@ -377,6 +385,10 @@ where
 
     /// Updates the mouse position (absolute coordinates)
     pub fn mouse_update_abs(&mut self, x: u16, y: u16) {
+        if !self.mouse_enabled {
+            return;
+        }
+
         let old_x = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_X);
         let old_y = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_Y);
 
