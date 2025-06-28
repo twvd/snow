@@ -180,7 +180,9 @@ impl MacModel {
         // Macintosh Plus v2
     digest[..] == hex!("06f598ff0f64c944e7c347ba55ae60c792824c09c74f4a55a32c0141bf91b8b3") ||
         // Macintosh Plus v3
-    digest[..] == hex!("dd908e2b65772a6b1f0c859c24e9a0d3dcde17b1c6a24f4abd8955846d7895e7")
+    digest[..] == hex!("dd908e2b65772a6b1f0c859c24e9a0d3dcde17b1c6a24f4abd8955846d7895e7") ||
+        // Macintosh Plus Japanese ROM
+    digest[..] == hex!("969269ced56dcb76402f2bc32e4d41343b5af00e5ad828e6f08098d5e4b1ad05")
         {
             Some(Self::Plus)
         } else if digest[..]
