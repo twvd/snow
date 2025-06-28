@@ -48,6 +48,9 @@ pub struct EmulatorInitArgs {
 
     #[serde(default)]
     pub monitor: Option<MacMonitor>,
+
+    #[serde(default)]
+    pub mouse_disabled: bool,
 }
 
 /// Manages the state of the emulator and feeds input to the GUI
@@ -110,9 +113,15 @@ impl EmulatorState {
         let model =
             MacModel::detect_from_rom(rom).ok_or_else(|| anyhow!("Unsupported ROM file"))?;
         let (mut emulator, frame_recv) = if let Some(display_rom) = display_rom {
-            Emulator::new_with_extra(rom, &[ExtraROMs::MDC12(display_rom)], model, args.monitor)
+            Emulator::new_with_extra(
+                rom,
+                &[ExtraROMs::MDC12(display_rom)],
+                model,
+                args.monitor,
+                !args.mouse_disabled,
+            )
         } else {
-            Emulator::new(rom, model)
+            Emulator::new_with_extra(rom, &[], model, args.monitor, !args.mouse_disabled)
         }?;
 
         let cmd = emulator.create_cmd_sender();
