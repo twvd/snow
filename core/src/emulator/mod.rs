@@ -30,6 +30,7 @@ use log::*;
 
 use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::emulator::comm::{EmulatorSpeed, UserMessageType};
+use crate::mac::rtc::Rtc;
 use crate::mac::scsi::ScsiController;
 use crate::mac::swim::Swim;
 use comm::{
@@ -178,6 +179,13 @@ impl EmulatorConfig {
             Self::MacII(_) => unreachable!(), // MacII uses ADB, not direct keyboard events
         }
     }
+
+    pub fn rtc_mut(&mut self) -> &mut Rtc {
+        match self {
+            Self::Compact(cpu) => &mut cpu.bus.via.rtc,
+            Self::MacII(cpu) => &mut cpu.bus.via1.rtc,
+        }
+    }
 }
 
 /// Emulator runner
@@ -285,11 +293,6 @@ impl Emulator {
                 )
             }
         };
-        // Initialize RTC
-        //cpu.bus
-        //    .via
-        //    .rtc
-        //    .load_pram(&format!("{:?}.pram", model).to_ascii_lowercase());
 
         let mut emu = Self {
             config,
@@ -309,6 +312,12 @@ impl Emulator {
         emu.status_update()?;
 
         Ok((emu, frame_recv))
+    }
+
+    /// Sets a path to persist the PRAM in. If the file exists, it is loaded. Otherwise, an empty
+    /// file is created. The PRAM file is continuously updated.
+    pub fn persist_pram(&mut self, pram_path: &Path) {
+        self.config.rtc_mut().load_pram(pram_path);
     }
 
     pub fn create_cmd_sender(&self) -> EmulatorCommandSender {

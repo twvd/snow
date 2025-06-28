@@ -1,8 +1,8 @@
-#[cfg(feature = "mmap")]
-use std::fs::OpenOptions;
-
 use arrayvec::ArrayVec;
 use chrono::{Local, NaiveDate};
+#[cfg(feature = "mmap")]
+use std::fs::OpenOptions;
+use std::path::Path;
 
 #[cfg(feature = "mmap")]
 use fs2::FileExt;
@@ -44,27 +44,27 @@ impl RtcData {
     /// the emulator for fast access and automatic writes back to PRAM,
     /// at the discretion of the operating system.
     #[cfg(feature = "mmap")]
-    pub(super) fn load_pram(filename: &str) -> Option<MmapMut> {
+    pub(super) fn load_pram(filename: &Path) -> Option<MmapMut> {
         let f = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(filename)
-            .inspect_err(|e| error!("Opening PRAM {} failed: {}", filename, e))
+            .inspect_err(|e| error!("Opening PRAM {} failed: {}", filename.display(), e))
             .ok()?;
 
         f.set_len(PRAM_SIZE as u64)
-            .inspect_err(|e| error!("Opening PRAM {} failed: {}", filename, e))
+            .inspect_err(|e| error!("Opening PRAM {} failed: {}", filename.display(), e))
             .ok()?;
 
         f.lock_exclusive()
-            .inspect_err(|e| error!("Cannot lock PRAM {}: {}", filename, e))
+            .inspect_err(|e| error!("Cannot lock PRAM {}: {}", filename.display(), e))
             .ok()?;
 
         let mmapped = unsafe {
             MmapMut::map_mut(&f)
-                .inspect_err(|e| error!("Cannot mmap PRAM file {}: {}", filename, e))
+                .inspect_err(|e| error!("Cannot mmap PRAM file {}: {}", filename.display(), e))
                 .ok()?
         };
 
@@ -140,15 +140,15 @@ impl Default for Rtc {
 
 impl Rtc {
     /// Loads a data file into PRAM
-    pub fn load_pram(&mut self, filename: &str) {
+    pub fn load_pram(&mut self, filename: &Path) {
         let Some(pram) = RtcData::load_pram(filename) else {
             warn!(
                 "Cannot load PRAM file {}, PRAM reset and changes will not be saved",
-                filename
+                filename.display()
             );
             return;
         };
-        info!("Persisting PRAM in {}", filename);
+        info!("Persisting PRAM in {}", filename.display());
 
         self.data.pram = pram;
     }
