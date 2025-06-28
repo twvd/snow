@@ -90,6 +90,9 @@ fn main() -> eframe::Result {
         "Snow",
         options,
         Box::new(|cc| {
+            // Force dark theme as UI elements and colors are not light-friendly (yet)
+            cc.egui_ctx.set_theme(egui::Theme::Dark);
+
             Ok(Box::new(SnowGui::new(
                 cc,
                 r,
