@@ -272,8 +272,6 @@ pub enum MacMonitor {
     /// Macintosh 14" high-res
     #[default]
     HiRes14,
-    /// Macintosh 19" RGB monitor (1024x768)
-    RGB19,
     /// Macintosh 21" RGB monitor (1152x870)
     RGB21,
 }
@@ -287,7 +285,6 @@ impl Display for MacMonitor {
                 Self::RGB12 => "Macintosh 12\" RGB monitor",
                 Self::HiRes14 => "Macintosh 14\" high-resolution",
                 Self::RGB21 => "Macintosh 21\" RGB monitor",
-                Self::RGB19 => "Macintosh 19\" RGB monitor",
             },
             self.width(),
             self.height()
@@ -301,7 +298,6 @@ impl MacMonitor {
             Self::RGB12 => [2, 2, 0, 2],
             Self::HiRes14 => [6, 2, 4, 6],
             Self::RGB21 => [0, 0, 0, 0],
-            Self::RGB19 => [7, 3, 4, 4],
         }
     }
 
@@ -310,7 +306,6 @@ impl MacMonitor {
             Self::RGB12 => 512,
             Self::HiRes14 => 640,
             Self::RGB21 => 1152,
-            Self::RGB19 => 1024,
         }
     }
 
@@ -319,7 +314,6 @@ impl MacMonitor {
             Self::RGB12 => 384,
             Self::HiRes14 => 480,
             Self::RGB21 => 870,
-            Self::RGB19 => 768,
         }
     }
 }
