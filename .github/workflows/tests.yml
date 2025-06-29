@@ -38,7 +38,9 @@ jobs:
       working-directory: ./testdata/m68000
       run: python3 decode.py
     - name: Test build with no features
-      run: cargo build --no-default-features
+      run: cargo build --no-default-features --all
+    - name: Test build core with no features
+      run: cargo build --no-default-features -p snow_core
     - name: Generate code coverage
       # snow_frontend_egui excluded due to https://github.com/Smithay/wayland-rs/issues/717
       run: cargo llvm-cov --workspace --exclude snow_frontend_egui --codecov --output-path codecov.json
