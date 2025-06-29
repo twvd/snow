@@ -19,7 +19,12 @@ bitfield! {
 
         pub reset: bool @ 15,
         pub pixelclock: u8 @ 12..=14,
-        pub sense: u8 @ 9..=11,
+
+        pub sense_out: u8 @ 9..=11,
+        pub sense_in2: bool @ 9,
+        pub sense_in1: bool @ 10,
+        pub sense_in0: bool @ 11,
+
         pub transfer: bool @ 6,
         pub convolution: bool @ 5,
         pub interlace: bool @ 4,
@@ -108,8 +113,19 @@ where
     }
 
     fn read_ctrl(&self) -> CtrlReg {
-        self.ctrl
-            .with_sense(self.monitor.sense()[self.ctrl.sense() as usize])
+        let msense = self.monitor.sense();
+        let mut sense = msense[0];
+        if self.ctrl.sense_in0() {
+            sense &= msense[1];
+        }
+        if self.ctrl.sense_in1() {
+            sense &= msense[2];
+        }
+        if self.ctrl.sense_in2() {
+            sense &= msense[3];
+        }
+
+        self.ctrl.with_sense_out(sense)
     }
 
     pub fn bpp(&self) -> Bpp {
