@@ -14,7 +14,7 @@ anyhow = { version = "1.0.86", features = ["backtrace"] }
 arrayvec = { version = "0.7.4", features = ["serde"] }
 chrono = "0.4.38"
 crossbeam = "0.8.4"
-crossbeam-channel = "0.5.13"
+crossbeam-channel = "0.5.15"
 either = "1.13.0"
 flate2 = "1.0.30"
 fs2 = { version = "0.4.3", optional = true }
