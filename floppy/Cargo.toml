@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.86"
 binrw = "0.14.0"
-built = { version = "0.8.0", features = ["git2"] }
+built = { version = "0.8.0" }
 crc = "3.2.1"
 fluxfox = { git = "https://github.com/dbalsom/fluxfox.git", optional = true, rev = "6498fe59fd5a5cc4c1f2b7ee5ab795515c52febd", default-features = false, features = ["core", "archives", "viz", "mfi", "flux", "ibm_pc", "macintosh"] }
 itertools = "0.14.0"
@@ -15,7 +15,7 @@ rand = "0.9.0"
 strum = { version = "0.26.3", features = ["derive"] }
 
 [build-dependencies]
-built = { version = "0.8.0", features = ["git2"] }
+built = { version = "0.8.0" }
 
 [features]
 default = ["fluxfox"]

@@ -318,16 +318,7 @@ impl FloppyImageSaver for Moof {
             } else {
                 16
             },
-            creator: format!(
-                "Snow {}-{}{}",
-                built_info::PKG_VERSION,
-                built_info::GIT_COMMIT_HASH_SHORT.expect("Git version unavailable"),
-                if built_info::GIT_DIRTY.expect("Git version unavailable") {
-                    "-dirty"
-                } else {
-                    ""
-                }
-            ),
+            creator: format!("Snow {}", built_info::PKG_VERSION),
             zero: 0,
             largest_track: img
                 .trackdata
