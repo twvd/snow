@@ -1175,7 +1175,6 @@ where
                 }
 
                 self.advance_cycles(4)?;
-                log::debug!("Unhandled LINEF: {:04X}", instr.data);
                 self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEF, None)
             }
 
