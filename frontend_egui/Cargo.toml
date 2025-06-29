@@ -12,7 +12,7 @@ anyhow = "1.0.95"
 built = { version = "0.7.7", features = ["git2"] }
 chrono = "0.4.40"
 clap = { version = "4.5.23", features = ["derive"] }
-crossbeam-channel = "0.5.14"
+crossbeam-channel = "0.5.15"
 dirs = "6.0.0"
 eframe = "0.30.0"
 egui-dropdown = "0.12.0"
