@@ -266,14 +266,14 @@ where
 
     fn read_overlay(&mut self, addr: Address) -> Option<Byte> {
         let result = match addr {
+            // Overlay flip for Mac SE+
+            0x0040_0000..=0x004F_FFFF if self.model >= MacModel::SE => {
+                self.overlay = false;
+                self.read_normal(addr)
+            }
             // ROM
             0x0000_0000..=0x000F_FFFF | 0x0020_0000..=0x002F_FFFF | 0x0040_0000..=0x004F_FFFF => {
                 Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
-            }
-            // Overlay flip for Mac SE+
-            0x0040_0000..=0x005F_FFFF if self.model >= MacModel::SE => {
-                self.overlay = false;
-                self.read_normal(addr)
             }
             // SCSI
             0x0058_0000..=0x005F_FFFF => self.scsi.read(addr),
