@@ -8,6 +8,7 @@ use crate::util::relativepath::RelativePath;
 use anyhow::{Context, Result};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
+use snow_core::mac::MacModel;
 
 /// A workspace representation which contains:
 /// * (Paths to) loaded assets
@@ -50,6 +51,9 @@ pub struct Workspace {
 
     /// Last emulator initialization args
     pub init_args: EmulatorInitArgs,
+
+    /// Emulated model (None for autodetect)
+    pub model: Option<MacModel>,
 }
 
 impl Default for Workspace {
@@ -73,6 +77,7 @@ impl Default for Workspace {
             disks: core::array::from_fn(|_| None),
             windows: HashMap::new(),
             init_args: EmulatorInitArgs::default(),
+            model: None,
         }
     }
 }
