@@ -36,6 +36,9 @@ pub struct ModelSelectionDialog {
     // Result
     result: Option<ModelSelectionResult>,
 
+    // ROM validation bypass
+    disable_rom_validation: bool,
+
     // Error state
     error_message: String,
 }
@@ -48,6 +51,7 @@ pub struct ModelSelectionResult {
     pub display_rom_path: Option<PathBuf>,
     pub pram_path: Option<PathBuf>,
     pub init_args: EmulatorInitArgs,
+    pub disable_rom_validation: bool,
 }
 
 impl Default for ModelSelectionDialog {
@@ -102,6 +106,7 @@ impl Default for ModelSelectionDialog {
             pram_path: String::new(),
 
             result: None,
+            disable_rom_validation: false,
             error_message: String::new(),
         }
     }
@@ -118,8 +123,7 @@ impl ModelSelectionDialog {
         self.display_rom_valid = false;
         self.update_memory_options();
         self.update_display_rom_requirement();
-        self.do_validate_main_rom();
-        self.do_validate_display_rom();
+        self.do_validate_roms();
     }
 
     pub fn is_open(&self) -> bool {
@@ -186,6 +190,14 @@ impl ModelSelectionDialog {
             return Ok(());
         }
 
+        // Skip validation if disabled
+        if self.disable_rom_validation {
+            // Just check if the file exists and is readable
+            let _rom_data = fs::read(&self.main_rom_path)?;
+            self.main_rom_valid = true;
+            return Ok(());
+        }
+
         let rom_data = fs::read(&self.main_rom_path)?;
 
         // Check ROM checksum
@@ -217,6 +229,15 @@ impl ModelSelectionDialog {
 
         self.display_rom_valid = false;
         if self.display_rom_path.is_empty() {
+            return Ok(());
+        }
+
+        // Skip validation if disabled
+        if self.disable_rom_validation {
+            // Just check if the file exists and is readable
+            let _rom_data = std::fs::read(&self.display_rom_path)
+                .map_err(|e| anyhow!("Cannot read Display Card ROM: {}", e))?;
+            self.display_rom_valid = true;
             return Ok(());
         }
 
@@ -259,22 +280,12 @@ impl ModelSelectionDialog {
         // Handle file dialog results
         if let Some(path) = self.main_rom_dialog.take_picked() {
             self.main_rom_path = path.to_string_lossy().to_string();
-            if let Err(e) = self.validate_main_rom() {
-                self.error_message = e.to_string();
-            } else {
-                self.error_message.clear();
-            }
+            self.do_validate_main_rom();
         }
 
         if let Some(path) = self.display_rom_dialog.take_picked() {
             self.display_rom_path = path.to_string_lossy().to_string();
-            if let Err(e) = self.validate_display_rom() {
-                self.error_message = e.to_string();
-            } else if !self.main_rom_path.is_empty()
-                && self.error_message.starts_with("Invalid Display Card")
-            {
-                self.error_message.clear();
-            }
+            self.do_validate_display_rom();
         }
 
         if let Some(path) = self.pram_dialog.take_picked() {
@@ -283,6 +294,7 @@ impl ModelSelectionDialog {
 
         // Main dialog window
         let last_model = self.selected_model;
+        let last_validation_disabled = self.disable_rom_validation;
         egui::Modal::new(egui::Id::new("Load ROM")).show(ctx, |ui| {
             ui.style_mut().spacing.item_spacing = egui::Vec2::splat(4.0);
             ui.set_width(700.0);
@@ -428,6 +440,10 @@ impl ModelSelectionDialog {
                     ui.vertical(|ui| {
                         ui.checkbox(&mut self.init_args.audio_disabled, "Disable audio");
                         ui.checkbox(&mut self.init_args.mouse_disabled, "Disable mouse");
+                        ui.checkbox(
+                            &mut self.disable_rom_validation,
+                            "Disable ROM validation (allow loading any ROM)",
+                        );
                     });
                 });
             });
@@ -485,6 +501,7 @@ impl ModelSelectionDialog {
                                 },
                                 ..self.init_args
                             },
+                            disable_rom_validation: self.disable_rom_validation,
                         });
                         self.open = false;
                     }
@@ -499,18 +516,24 @@ impl ModelSelectionDialog {
         if last_model != self.selected_model {
             self.update_memory_options();
             self.update_display_rom_requirement();
-            // Revalidate ROMs when model changes
-            if !self.main_rom_path.is_empty() {
-                if let Err(e) = self.validate_main_rom() {
-                    self.error_message = e.to_string();
-                } else {
-                    self.error_message.clear();
-                }
-            }
+            self.do_validate_roms();
+        }
+
+        if last_validation_disabled != self.disable_rom_validation {
+            self.do_validate_roms();
         }
     }
 
+    fn do_validate_roms(&mut self) {
+        self.do_validate_display_rom();
+        self.do_validate_main_rom();
+    }
+
     fn do_validate_main_rom(&mut self) {
+        if self.main_rom_path.is_empty() {
+            return;
+        }
+
         if let Err(e) = self.validate_main_rom() {
             self.error_message = e.to_string();
         } else {
@@ -519,6 +542,12 @@ impl ModelSelectionDialog {
     }
 
     fn do_validate_display_rom(&mut self) {
+        if (self.display_rom_path.is_empty() || !self.display_rom_required)
+            && self.error_message.starts_with("Invalid Display Card")
+        {
+            self.error_message.clear();
+        }
+
         if let Err(e) = self.validate_display_rom() {
             self.error_message = e.to_string();
         } else if !self.main_rom_path.is_empty()
