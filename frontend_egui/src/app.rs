@@ -13,6 +13,7 @@ use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::Workspace;
 use crate::{emulator::EmulatorState, version_string, widgets::registers::RegistersWidget};
 use snow_core::bus::Address;
+use snow_core::mac::MacModel;
 use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
 
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
@@ -252,7 +253,7 @@ impl SnowGui {
                 .unwrap_or_default()
                 .eq_ignore_ascii_case("rom")
             {
-                app.load_rom_from_path(path, None, None, None, &EmulatorInitArgs::default());
+                app.load_rom_from_path(path, None, None, None, &EmulatorInitArgs::default(), None);
             }
         }
 
@@ -366,10 +367,11 @@ impl SnowGui {
         disks: Option<[Option<PathBuf>; 7]>,
         pram_path: Option<&Path>,
         args: &EmulatorInitArgs,
+        model: Option<MacModel>,
     ) {
         match self
             .emu
-            .init_from_rom(path, display_rom_path, disks, pram_path, args)
+            .init_from_rom(path, display_rom_path, disks, pram_path, args, model)
         {
             Ok(p) => self.framebuffer.connect_receiver(p.frame_receiver),
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
@@ -378,6 +380,7 @@ impl SnowGui {
         self.workspace.set_display_card_rom_path(display_rom_path);
         self.workspace.set_pram_path(pram_path);
         self.workspace.init_args = args.clone();
+        self.workspace.model = model;
     }
 
     fn load_workspace(&mut self, path: Option<&Path>) {
@@ -407,6 +410,7 @@ impl SnowGui {
                 Some(self.workspace.get_disk_paths()),
                 self.workspace.get_pram_path().as_deref(),
                 &self.workspace.init_args.clone(),
+                self.workspace.model,
             );
         } else {
             self.emu.deinit();
@@ -512,6 +516,7 @@ impl SnowGui {
             Some(self.emu.get_disk_paths()),
             result.pram_path.as_deref(),
             &result.init_args,
+            Some(result.model),
         );
         self.last_running = false;
     }

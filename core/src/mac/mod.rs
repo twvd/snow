@@ -24,7 +24,9 @@ pub mod swim;
 pub mod via;
 
 /// Differentiation of Macintosh models and their features
-#[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq, strum::EnumIter)]
+#[derive(
+    Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq, strum::EnumIter, Serialize, Deserialize,
+)]
 pub enum MacModel {
     /// Macintosh 128K
     Early128K,
