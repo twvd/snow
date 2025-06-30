@@ -66,8 +66,6 @@ See the [BUILDING.md](docs/BUILDING.md) file for instructions on building.
 ## Acknowledgements
 
 * Thanks to raddad772 for the excellent [68000 JSON test suite](https://github.com/SingleStepTests/m68000)
-* Thanks to Rubix for the ASCII Mac
 * Thanks to Daniel Balsom for the [Fluxfox](https://github.com/dbalsom/fluxfox) library
 * Thanks to the people of the Emudev and [Applesauce](https://applesaucefdc.com/) communities for their infinite wisdom
-* The [Musashi](https://github.com/kstenerud/Musashi) (by Karl Stenerud) and [MAME](https://github.com/mamedev/mame) (
-  many authors) projects have been used as a reference for poorly documented components
+* The [Musashi](https://github.com/kstenerud/Musashi) (by Karl Stenerud) and [MAME](https://github.com/mamedev/mame) (many authors) projects have been used as a reference for poorly documented components
