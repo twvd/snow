@@ -48,16 +48,6 @@ jobs:
           pkg-config:p
     - name: Build release
       run: cargo build --verbose --release --all
-    - name: TUI Create packaging directory
-      run: mkdir snow-tui
-    - name: TUI Gather files
-      run: cp 'target/release/snow_frontend_tui.exe' '${{ steps.msys2.outputs.msys2-location }}/mingw64/bin/SDL2.dll' snow-tui/
-    - name: TUI Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: 'Snow Windows TUI (x86_64)'
-        if-no-files-found: error
-        path: snow-tui/*
     - name: GUI Create packaging directory
       run: mkdir snow-gui
     - name: GUI Gather files

@@ -34,12 +34,6 @@ jobs:
       run: git submodule update --init --recursive
     - name: Build release
       run: cargo build --verbose --release --all
-    - name: TUI Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: 'Snow Linux TUI (${{ matrix.arch }})'
-        if-no-files-found: error
-        path: target/release/snow_frontend_tui
     - name: GUI Upload artifact
       uses: actions/upload-artifact@v4
       with:
