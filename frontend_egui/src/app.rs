@@ -923,10 +923,12 @@ impl eframe::App for SnowGui {
                                     }
                                 ),
                                 |ui| {
-                                    if ui.button("Insert blank 400/800K floppy").clicked() {
-                                        self.emu.insert_blank_floppy(i, FloppyType::Mac800K);
-                                        ui.close_menu();
-                                    }
+                                    ui.horizontal(|ui| {
+                                        if ui.button("Insert blank 400/800K floppy").clicked() {
+                                            self.emu.insert_blank_floppy(i, FloppyType::Mac800K);
+                                            ui.close_menu();
+                                        }
+                                    });
                                     // TODO write support on ISM
                                     //if ui
                                     //    .add_enabled(
@@ -939,53 +941,71 @@ impl eframe::App for SnowGui {
                                     //    ui.close_menu();
                                     //}
                                     ui.separator();
-                                    if ui.button("Load image...").clicked() {
-                                        self.floppy_dialog_target = FloppyDialogTarget::Drive(i);
-                                        self.floppy_dialog.pick_file();
-                                        ui.close_menu();
-                                    }
-                                    if ui
-                                        .add_enabled(
-                                            self.emu.last_images[i].borrow().is_some(),
-                                            egui::Button::new("Re-insert last ejected floppy"),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.emu.reload_floppy(i);
-                                        ui.close_menu();
-                                    }
+                                    ui.horizontal(|ui| {
+                                        if ui.button("Load image...").clicked() {
+                                            self.floppy_dialog_target =
+                                                FloppyDialogTarget::Drive(i);
+                                            self.floppy_dialog.pick_file();
+                                            ui.close_menu();
+                                        }
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .add_enabled(
+                                                self.emu.last_images[i].borrow().is_some(),
+                                                egui::Button::new("Re-insert last ejected floppy"),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.emu.reload_floppy(i);
+                                            ui.close_menu();
+                                        }
+                                    });
                                     ui.separator();
-                                    if ui
-                                        .add_enabled(
-                                            !d.ejected && d.dirty,
-                                            egui::Button::new("Save image..."),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.floppy_dialog_target = FloppyDialogTarget::Drive(i);
-                                        self.floppy_dialog.save_file();
-                                        ui.close_menu();
-                                    }
-                                    if ui
-                                        .add_enabled(
-                                            self.emu.last_images[i].borrow().is_some(),
-                                            egui::Button::new("Save last ejected image..."),
-                                        )
-                                        .clicked()
-                                    {
-                                        let img = self.emu.last_images[i].borrow().clone().unwrap();
-                                        self.floppy_dialog_target = FloppyDialogTarget::Image(img);
-                                        self.floppy_dialog.save_file();
-                                        ui.close_menu();
-                                    }
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .add_enabled(
+                                                !d.ejected && d.dirty,
+                                                egui::Button::new("Save image..."),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.floppy_dialog_target =
+                                                FloppyDialogTarget::Drive(i);
+                                            self.floppy_dialog.save_file();
+                                            ui.close_menu();
+                                        }
+                                    });
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .add_enabled(
+                                                self.emu.last_images[i].borrow().is_some(),
+                                                egui::Button::new("Save last ejected image..."),
+                                            )
+                                            .clicked()
+                                        {
+                                            let img =
+                                                self.emu.last_images[i].borrow().clone().unwrap();
+                                            self.floppy_dialog_target =
+                                                FloppyDialogTarget::Image(img);
+                                            self.floppy_dialog.save_file();
+                                            ui.close_menu();
+                                        }
+                                    });
                                     ui.separator();
-                                    if ui
-                                        .add_enabled(!d.ejected, egui::Button::new("Force eject"))
-                                        .clicked()
-                                    {
-                                        self.emu.force_eject(i);
-                                        ui.close_menu();
-                                    }
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .add_enabled(
+                                                !d.ejected,
+                                                egui::Button::new("Force eject"),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.emu.force_eject(i);
+                                            ui.close_menu();
+                                        }
+                                    });
                                 },
                             );
                         }
