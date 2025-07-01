@@ -253,6 +253,8 @@ impl Display for MacModel {
 pub enum ExtraROMs<'a> {
     /// Macintosh Display Card 8-24
     MDC12(&'a [u8]),
+    /// Extension ROM
+    ExtensionROM(&'a [u8]),
 }
 
 /// Definitions of Macintosh monitors

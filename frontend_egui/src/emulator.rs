@@ -78,10 +78,12 @@ pub struct EmulatorState {
 }
 
 impl EmulatorState {
+    #[allow(clippy::too_many_arguments)]
     pub fn init_from_rom(
         &mut self,
         filename: &Path,
         display_rom_path: Option<&Path>,
+        extension_rom_path: Option<&Path>,
         disks: Option<[Option<PathBuf>; 7]>,
         pram: Option<&Path>,
         args: &EmulatorInitArgs,
@@ -93,14 +95,29 @@ impl EmulatorState {
         } else {
             None
         };
-        self.init(&rom, display_rom.as_deref(), disks, pram, args, model)
+        let extension_rom = if let Some(filename) = extension_rom_path {
+            Some(std::fs::read(filename)?)
+        } else {
+            None
+        };
+        self.init(
+            &rom,
+            display_rom.as_deref(),
+            extension_rom.as_deref(),
+            disks,
+            pram,
+            args,
+            model,
+        )
     }
 
     #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::too_many_arguments)]
     fn init(
         &mut self,
         rom: &[u8],
         display_rom: Option<&[u8]>,
+        extension_rom: Option<&[u8]>,
         disks: Option<[Option<PathBuf>; 7]>,
         pram: Option<&Path>,
         args: &EmulatorInitArgs,
@@ -119,17 +136,17 @@ impl EmulatorState {
             // Fall back to ROM autodetection
             MacModel::detect_from_rom(rom).ok_or_else(|| anyhow!("Unsupported ROM file"))?
         };
-        let (mut emulator, frame_recv) = if let Some(display_rom) = display_rom {
-            Emulator::new_with_extra(
-                rom,
-                &[ExtraROMs::MDC12(display_rom)],
-                model,
-                args.monitor,
-                !args.mouse_disabled,
-            )
-        } else {
-            Emulator::new_with_extra(rom, &[], model, args.monitor, !args.mouse_disabled)
-        }?;
+        // Build extra ROMs array
+        let mut extra_roms = Vec::new();
+        if let Some(display_rom) = display_rom {
+            extra_roms.push(ExtraROMs::MDC12(display_rom));
+        }
+        if let Some(extension_rom) = extension_rom {
+            extra_roms.push(ExtraROMs::ExtensionROM(extension_rom));
+        }
+
+        let (mut emulator, frame_recv) =
+            Emulator::new_with_extra(rom, &extra_roms, model, args.monitor, !args.mouse_disabled)?;
 
         let cmd = emulator.create_cmd_sender();
 

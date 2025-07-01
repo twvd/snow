@@ -37,6 +37,7 @@ pub struct MacIIBus<TRenderer: Renderer> {
     pub trace: bool,
 
     rom: Vec<u8>,
+    extension_rom: Vec<u8>,
     pub(crate) ram: Vec<u8>,
 
     /// RAM pages (RAM_DIRTY_PAGESIZE bytes) written
@@ -92,11 +93,16 @@ where
         model: MacModel,
         rom: &[u8],
         mdcrom: &[u8],
+        extension_rom: Option<&[u8]>,
         mut renderers: Vec<TRenderer>,
         monitor: MacMonitor,
         mouse_enabled: bool,
     ) -> Self {
         let ram_size = model.ram_size();
+
+        if extension_rom.is_some() {
+            log::info!("Extension ROM present");
+        }
 
         let mut bus = Self {
             cycles: 0,
@@ -104,6 +110,7 @@ where
             trace: false,
 
             rom: Vec::from(rom),
+            extension_rom: extension_rom.map(Vec::from).unwrap_or_default(),
             ram: vec![0; ram_size],
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             via1: Via::new(model),
@@ -281,6 +288,13 @@ where
                 //0x0001_8000..=0x0001_FFFF => Some(0xFF),
                 _ => None,
             },
+            // Extension ROM / test area
+            0x5800_0000..=0x5FFF_FFFF => Some(
+                *self
+                    .extension_rom
+                    .get((addr - 0x5800_0000) as usize)
+                    .unwrap_or(&0xFF),
+            ),
             // NuBus super slot
             0x6000_0000..=0xEFFF_FFFF => None,
             // NuBus standard slot
