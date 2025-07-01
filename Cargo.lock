@@ -1162,7 +1162,7 @@ checksum = "0d6ef0072f8a535281e4876be788938b528e9a1d43900b82c2569af7da799125"
 [[package]]
 name = "ecolor"
 version = "0.30.0"
-source = "git+https://github.com/twvd/egui.git?branch=patch-0.30.0#856d675c30693d6650a417b1d8443b39d1636171"
+source = "git+https://github.com/twvd/snow-egui.git?rev=50c4fe34b1de666af33f935c33ed5ff5d050832d#50c4fe34b1de666af33f935c33ed5ff5d050832d"
 dependencies = [
  "bytemuck",
  "emath",
@@ -1207,7 +1207,7 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.30.0"
-source = "git+https://github.com/twvd/egui.git?branch=patch-0.30.0#856d675c30693d6650a417b1d8443b39d1636171"
+source = "git+https://github.com/twvd/snow-egui.git?rev=50c4fe34b1de666af33f935c33ed5ff5d050832d#50c4fe34b1de666af33f935c33ed5ff5d050832d"
 dependencies = [
  "accesskit",
  "ahash",
@@ -1271,7 +1271,7 @@ dependencies = [
 [[package]]
 name = "egui-winit"
 version = "0.30.0"
-source = "git+https://github.com/twvd/egui.git?branch=patch-0.30.0#856d675c30693d6650a417b1d8443b39d1636171"
+source = "git+https://github.com/twvd/snow-egui.git?rev=50c4fe34b1de666af33f935c33ed5ff5d050832d#50c4fe34b1de666af33f935c33ed5ff5d050832d"
 dependencies = [
  "accesskit_winit",
  "ahash",
@@ -1351,7 +1351,7 @@ checksum = "60b1af1c220855b6ceac025d3f6ecdd2b7c4894bfe9cd9bda4fbb4bc7c0d4cf0"
 [[package]]
 name = "emath"
 version = "0.30.0"
-source = "git+https://github.com/twvd/egui.git?branch=patch-0.30.0#856d675c30693d6650a417b1d8443b39d1636171"
+source = "git+https://github.com/twvd/snow-egui.git?rev=50c4fe34b1de666af33f935c33ed5ff5d050832d#50c4fe34b1de666af33f935c33ed5ff5d050832d"
 dependencies = [
  "bytemuck",
 ]
@@ -1430,7 +1430,7 @@ dependencies = [
 [[package]]
 name = "epaint"
 version = "0.30.0"
-source = "git+https://github.com/twvd/egui.git?branch=patch-0.30.0#856d675c30693d6650a417b1d8443b39d1636171"
+source = "git+https://github.com/twvd/snow-egui.git?rev=50c4fe34b1de666af33f935c33ed5ff5d050832d#50c4fe34b1de666af33f935c33ed5ff5d050832d"
 dependencies = [
  "ab_glyph",
  "ahash",
@@ -1447,7 +1447,7 @@ dependencies = [
 [[package]]
 name = "epaint_default_fonts"
 version = "0.30.0"
-source = "git+https://github.com/twvd/egui.git?branch=patch-0.30.0#856d675c30693d6650a417b1d8443b39d1636171"
+source = "git+https://github.com/twvd/snow-egui.git?rev=50c4fe34b1de666af33f935c33ed5ff5d050832d#50c4fe34b1de666af33f935c33ed5ff5d050832d"
 
 [[package]]
 name = "equivalent"
