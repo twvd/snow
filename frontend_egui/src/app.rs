@@ -253,7 +253,15 @@ impl SnowGui {
                 .unwrap_or_default()
                 .eq_ignore_ascii_case("rom")
             {
-                app.load_rom_from_path(path, None, None, None, &EmulatorInitArgs::default(), None);
+                app.load_rom_from_path(
+                    path,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &EmulatorInitArgs::default(),
+                    None,
+                );
             }
         }
 
@@ -360,24 +368,32 @@ impl SnowGui {
         ));
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn load_rom_from_path(
         &mut self,
         path: &Path,
         display_rom_path: Option<&Path>,
+        extension_rom_path: Option<&Path>,
         disks: Option<[Option<PathBuf>; 7]>,
         pram_path: Option<&Path>,
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
     ) {
-        match self
-            .emu
-            .init_from_rom(path, display_rom_path, disks, pram_path, args, model)
-        {
+        match self.emu.init_from_rom(
+            path,
+            display_rom_path,
+            extension_rom_path,
+            disks,
+            pram_path,
+            args,
+            model,
+        ) {
             Ok(p) => self.framebuffer.connect_receiver(p.frame_receiver),
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
         }
         self.workspace.set_rom_path(path);
         self.workspace.set_display_card_rom_path(display_rom_path);
+        self.workspace.set_extension_rom_path(extension_rom_path);
         self.workspace.set_pram_path(pram_path);
         self.workspace.init_args = args.clone();
         self.workspace.model = model;
@@ -404,13 +420,21 @@ impl SnowGui {
         self.load_windows = true;
         self.framebuffer.scale = self.workspace.viewport_scale;
         if let Some(rompath) = self.workspace.get_rom_path() {
+            let display_rom_path = self.workspace.get_display_card_rom_path();
+            let extension_rom_path = self.workspace.get_extension_rom_path();
+            let disk_paths = self.workspace.get_disk_paths();
+            let pram_path = self.workspace.get_pram_path();
+            let init_args = self.workspace.init_args.clone();
+            let model = self.workspace.model;
+
             self.load_rom_from_path(
                 &rompath,
-                self.workspace.get_display_card_rom_path().as_deref(),
-                Some(self.workspace.get_disk_paths()),
-                self.workspace.get_pram_path().as_deref(),
-                &self.workspace.init_args.clone(),
-                self.workspace.model,
+                display_rom_path.as_deref(),
+                extension_rom_path.as_deref(),
+                Some(disk_paths),
+                pram_path.as_deref(),
+                &init_args,
+                model,
             );
         } else {
             self.emu.deinit();
@@ -513,6 +537,7 @@ impl SnowGui {
         self.load_rom_from_path(
             &result.main_rom_path,
             result.display_rom_path.as_deref(),
+            result.extension_rom_path.as_deref(),
             Some(self.emu.get_disk_paths()),
             result.pram_path.as_deref(),
             &result.init_args,

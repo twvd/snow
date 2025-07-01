@@ -33,6 +33,10 @@ pub struct ModelSelectionDialog {
     pram_path: String,
     pram_dialog: FileDialog,
 
+    // Extension ROM path
+    extension_rom_path: String,
+    extension_rom_dialog: FileDialog,
+
     // Result
     result: Option<ModelSelectionResult>,
 
@@ -50,6 +54,7 @@ pub struct ModelSelectionResult {
     pub main_rom_path: PathBuf,
     pub display_rom_path: Option<PathBuf>,
     pub pram_path: Option<PathBuf>,
+    pub extension_rom_path: Option<PathBuf>,
     pub init_args: EmulatorInitArgs,
     pub disable_rom_validation: bool,
 }
@@ -104,6 +109,22 @@ impl Default for ModelSelectionDialog {
                 .default_save_extension("PRAM files")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
             pram_path: String::new(),
+
+            extension_rom_path: String::new(),
+            extension_rom_dialog: FileDialog::new()
+                .add_file_filter(
+                    "ROM files (*.rom, *.bin)",
+                    std::sync::Arc::new(|p| {
+                        if let Some(ext) = p.extension() {
+                            let ext_str = ext.to_string_lossy().to_lowercase();
+                            ext_str == "rom" || ext_str == "bin"
+                        } else {
+                            false
+                        }
+                    }),
+                )
+                .default_file_filter("ROM files (*.rom, *.bin)")
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
 
             result: None,
             disable_rom_validation: false,
@@ -269,10 +290,12 @@ impl ModelSelectionDialog {
         self.main_rom_dialog.update(ctx);
         self.display_rom_dialog.update(ctx);
         self.pram_dialog.update(ctx);
+        self.extension_rom_dialog.update(ctx);
 
         if self.main_rom_dialog.state() == egui_file_dialog::DialogState::Open
             || self.display_rom_dialog.state() == egui_file_dialog::DialogState::Open
             || self.pram_dialog.state() == egui_file_dialog::DialogState::Open
+            || self.extension_rom_dialog.state() == egui_file_dialog::DialogState::Open
         {
             return;
         }
@@ -290,6 +313,10 @@ impl ModelSelectionDialog {
 
         if let Some(path) = self.pram_dialog.take_picked() {
             self.pram_path = path.to_string_lossy().to_string();
+        }
+
+        if let Some(path) = self.extension_rom_dialog.take_picked() {
+            self.extension_rom_path = path.to_string_lossy().to_string();
         }
 
         // Main dialog window
@@ -437,6 +464,15 @@ impl ModelSelectionDialog {
                     });
                 });
                 ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Extension ROM:");
+                        ui.text_edit_singleline(&mut self.extension_rom_path);
+                        if ui.button("Browse...").clicked() {
+                            self.extension_rom_dialog.pick_file();
+                        }
+                    });
+                });
+                ui.group(|ui| {
                     ui.vertical(|ui| {
                         ui.checkbox(&mut self.init_args.audio_disabled, "Disable audio");
                         ui.checkbox(&mut self.init_args.mouse_disabled, "Disable mouse");
@@ -492,6 +528,11 @@ impl ModelSelectionDialog {
                                 None
                             } else {
                                 Some(PathBuf::from(&self.pram_path))
+                            },
+                            extension_rom_path: if self.extension_rom_path.is_empty() {
+                                None
+                            } else {
+                                Some(PathBuf::from(&self.extension_rom_path))
                             },
                             init_args: EmulatorInitArgs {
                                 monitor: if self.display_rom_required {

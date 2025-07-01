@@ -232,8 +232,14 @@ impl Emulator {
             | MacModel::SE
             | MacModel::SeFdhd
             | MacModel::Classic => {
+                // Find extension ROM if present
+                let extension_rom = extra_roms.iter().find_map(|p| match p {
+                    ExtraROMs::ExtensionROM(data) => Some(*data),
+                    _ => None,
+                });
+
                 // Initialize bus and CPU
-                let bus = CompactMacBus::new(model, rom, renderer, mouse_enabled);
+                let bus = CompactMacBus::new(model, rom, extension_rom, renderer, mouse_enabled);
                 let mut cpu = Box::new(CpuM68000::new(bus));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
@@ -267,11 +273,18 @@ impl Emulator {
                     bail!("Macintosh II requires display card ROM")
                 };
 
+                // Find extension ROM if present
+                let extension_rom = extra_roms.iter().find_map(|p| match p {
+                    ExtraROMs::ExtensionROM(data) => Some(*data),
+                    _ => None,
+                });
+
                 // Initialize bus and CPU
                 let bus = MacIIBus::new(
                     model,
                     rom,
                     mdcrom,
+                    extension_rom,
                     vec![renderer],
                     monitor.unwrap_or_default(),
                     mouse_enabled,

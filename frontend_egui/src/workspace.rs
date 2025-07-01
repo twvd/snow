@@ -43,6 +43,9 @@ pub struct Workspace {
     /// Last specified PRAM path
     pram_path: Option<RelativePath>,
 
+    /// Last specified extension ROM path
+    extension_rom_path: Option<RelativePath>,
+
     /// Last loaded disks
     disks: [Option<RelativePath>; 7],
 
@@ -74,6 +77,7 @@ impl Default for Workspace {
             rom_path: None,
             display_card_rom_path: None,
             pram_path: None,
+            extension_rom_path: None,
             disks: core::array::from_fn(|_| None),
             windows: HashMap::new(),
             init_args: EmulatorInitArgs::default(),
@@ -111,6 +115,9 @@ impl Workspace {
         if let Some(p) = result.pram_path.as_mut() {
             p.after_deserialize(parent)?;
         }
+        if let Some(p) = result.extension_rom_path.as_mut() {
+            p.after_deserialize(parent)?;
+        }
         for d in &mut result.disks {
             if let Some(p) = d.as_mut() {
                 p.after_deserialize(parent)?;
@@ -129,6 +136,9 @@ impl Workspace {
             p.before_serialize(parent)?;
         }
         if let Some(p) = self.pram_path.as_mut() {
+            p.before_serialize(parent)?;
+        }
+        if let Some(p) = self.extension_rom_path.as_mut() {
             p.before_serialize(parent)?;
         }
         for d in &mut self.disks {
@@ -156,6 +166,14 @@ impl Workspace {
 
     pub fn get_rom_path(&self) -> Option<PathBuf> {
         self.rom_path.clone().map(|d| d.get_absolute())
+    }
+
+    pub fn set_extension_rom_path(&mut self, p: Option<&Path>) {
+        self.extension_rom_path = p.map(RelativePath::from_absolute);
+    }
+
+    pub fn get_extension_rom_path(&self) -> Option<PathBuf> {
+        self.extension_rom_path.clone().map(|d| d.get_absolute())
     }
 
     pub fn set_display_card_rom_path(&mut self, p: Option<&Path>) {

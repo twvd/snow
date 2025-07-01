@@ -34,6 +34,7 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     pub trace: bool,
 
     rom: Vec<u8>,
+    extension_rom: Vec<u8>,
     pub(crate) ram: Vec<u8>,
 
     /// RAM pages (RAM_DIRTY_PAGESIZE bytes) written
@@ -110,12 +111,22 @@ where
     /// CrsrNew address
     const ADDR_CRSRNEW: Address = 0x08CE;
 
-    pub fn new(model: MacModel, rom: &[u8], renderer: TRenderer, mouse_enabled: bool) -> Self {
+    pub fn new(
+        model: MacModel,
+        rom: &[u8],
+        extension_rom: Option<&[u8]>,
+        renderer: TRenderer,
+        mouse_enabled: bool,
+    ) -> Self {
         let ram_size = model.ram_size();
         let fb_alt_start = ram_size as Address - Video::<TRenderer>::FRAMEBUFFER_ALT_OFFSET;
         let fb_main_start = ram_size as Address - Video::<TRenderer>::FRAMEBUFFER_MAIN_OFFSET;
         let sound_alt_start = ram_size - Self::SOUND_ALT_OFFSET;
         let sound_main_start = ram_size - Self::SOUND_MAIN_OFFSET;
+
+        if extension_rom.is_some() {
+            log::info!("Extension ROM present");
+        }
 
         let mut bus = Self {
             cycles: 0,
@@ -123,6 +134,7 @@ where
             trace: false,
 
             rom: Vec::from(rom),
+            extension_rom: extension_rom.map(Vec::from).unwrap_or_default(),
             ram: vec![0; ram_size],
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             via: Via::new(model),
@@ -289,8 +301,13 @@ where
             0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
             // Phase read (ignore)
             0x00F0_0000..=0x00F7_FFFF => Some(0xFF),
-            // Test software region (ignore)
-            0x00F8_0000..=0x00F9_FFFF => Some(0xFF),
+            // Test software region / extension ROM
+            0x00F8_0000..=0x00F9_FFFF => Some(
+                *self
+                    .extension_rom
+                    .get((addr - 0xF8_0000) as usize)
+                    .unwrap_or(&0xFF),
+            ),
 
             _ => None,
         };
