@@ -312,7 +312,7 @@ impl SnowGui {
                         continue;
                     }
 
-                    if let Some(k) = map_winit_keycode(kc) {
+                    if let Some(k) = map_winit_keycode(kc, self.workspace.map_cmd_ralt) {
                         self.emu.update_key(k, state.is_pressed());
                     } else {
                         log::warn!("Unknown key {:?}", kc);
@@ -1120,7 +1120,7 @@ impl eframe::App for SnowGui {
                         ui.close_menu();
                     }
                 });
-                ui.menu_button("View", |ui| {
+                ui.menu_button("Options", |ui| {
                     ui.menu_button("UI scale", |ui| {
                         for z in Self::ZOOM_FACTORS {
                             if ui.button(format!("{:0.2}", z)).clicked() {
@@ -1139,6 +1139,16 @@ impl eframe::App for SnowGui {
                     ));
 
                     ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui
+                            .checkbox(&mut self.workspace.map_cmd_ralt, "Map right ALT to Cmd")
+                            .clicked()
+                        {
+                            ui.close_menu();
+                        }
+                    });
+                });
+                ui.menu_button("View", |ui| {
                     if ui.checkbox(&mut self.workspace.log_open, "Log").clicked() {
                         ui.close_menu();
                     }
