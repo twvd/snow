@@ -13,6 +13,7 @@
 - [Working with media](./manual/media/README.md)
   - [Floppies](./manual/media/floppies.md)
   - [Hard drives](./manual/media/harddrives.md)
+- [Keyboard/mouse](./manual/input.md)
 - [Workspaces](./manual/workspaces.md)
 - [Debugging](./manual/debugging/README.md)
   - [Breakpoints](./manual/debugging/breakpoints.md)
