@@ -145,7 +145,10 @@ pub fn map_egui_keycode(kc: egui::Key) -> Option<Scancode> {
 }
 
 /// Maps a winit keycode to 'Snow universal'
-pub fn map_winit_keycode(kc: egui_winit::winit::keyboard::KeyCode) -> Option<Scancode> {
+pub fn map_winit_keycode(
+    kc: egui_winit::winit::keyboard::KeyCode,
+    map_cmd_ralt: bool,
+) -> Option<Scancode> {
     use egui_winit::winit::keyboard::KeyCode;
 
     match kc {
@@ -277,7 +280,8 @@ pub fn map_winit_keycode(kc: egui_winit::winit::keyboard::KeyCode) -> Option<Sca
         KeyCode::SuperLeft => Some(0x37),
         KeyCode::Space => Some(0x31),
         KeyCode::SuperRight => Some(0x37),
-        KeyCode::AltRight => Some(0x7C),
+        KeyCode::AltRight if !map_cmd_ralt => Some(0x7C),
+        KeyCode::AltRight if map_cmd_ralt => Some(0x37),
         KeyCode::ControlRight => Some(0x7D),
         KeyCode::ArrowLeft => Some(0x3B),
         KeyCode::ArrowDown => Some(0x3D),

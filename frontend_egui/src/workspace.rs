@@ -57,6 +57,9 @@ pub struct Workspace {
 
     /// Emulated model (None for autodetect)
     pub model: Option<MacModel>,
+
+    /// Map Right ALT to Cmd
+    pub map_cmd_ralt: bool,
 }
 
 impl Default for Workspace {
@@ -82,6 +85,7 @@ impl Default for Workspace {
             windows: HashMap::new(),
             init_args: EmulatorInitArgs::default(),
             model: None,
+            map_cmd_ralt: true,
         }
     }
 }
