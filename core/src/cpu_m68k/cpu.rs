@@ -1975,13 +1975,25 @@ where
         self.regs.sr.set_c(false);
         self.regs.sr.set_v(false);
 
-        // Clear EA cache
-        // TODO this is kinda hacky
+        // Clear EA cache to write to the left mode
         self.step_ea_addr = None;
         instr.clear_extword();
 
-        match (instr.get_addr_mode_left()?, instr.get_addr_mode()?) {
-            (AddressingMode::IndirectPreDec, _) => {
+        match (
+            std::mem::size_of::<T>(),
+            instr.get_addr_mode_left()?,
+            instr.get_addr_mode()?,
+        ) {
+            (4, AddressingMode::IndirectPreDec, _) => {
+                // Writes high to low
+                self.write_ea_with::<T, false, TORDER_HIGHLOW>(
+                    instr,
+                    instr.get_addr_mode_left()?,
+                    instr.get_op1(),
+                    value,
+                )?;
+            }
+            (_, AddressingMode::IndirectPreDec, _) => {
                 // MOVE ..., -(An) this mode has a fetch instead of the idle cycles.
                 let addr: Address = self
                     .regs
@@ -1990,6 +2002,7 @@ where
                 self.write_ticks(addr, value)?;
             }
             (
+                _,
                 AddressingMode::AbsoluteLong,
                 AddressingMode::Indirect
                 | AddressingMode::IndirectDisplacement
