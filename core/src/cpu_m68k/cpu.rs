@@ -742,7 +742,7 @@ where
                         self.breakpoint_hit.set();
                     }
 
-                    if a == 1 {
+                    if a == 2 {
                         // Address errors occur AFTER the first Word was accessed and not at all if
                         // it is a byte access, so this is the perfect time to check.
                         self.verify_access::<T>(oaddr, true)?;
@@ -1985,13 +1985,10 @@ where
             instr.get_addr_mode()?,
         ) {
             (4, AddressingMode::IndirectPreDec, _) => {
-                // Writes high to low
-                self.write_ea_with::<T, false, TORDER_HIGHLOW>(
-                    instr,
-                    instr.get_addr_mode_left()?,
-                    instr.get_op1(),
-                    value,
-                )?;
+                // Writes high to low and fetch instead of idle cycles
+                let addr = self.regs.read_a_predec::<Address>(instr.get_op1(), 4);
+                self.prefetch_pump()?;
+                self.write_ticks_order::<T, TORDER_HIGHLOW>(addr, value)?;
             }
             (_, AddressingMode::IndirectPreDec, _) => {
                 // MOVE ..., -(An) this mode has a fetch instead of the idle cycles.

@@ -475,7 +475,7 @@ mod m68000 {
     cpu_test!(move_b, "MOVE.b");
     cpu_test!(movefromsr, "MOVEfromSR");
     cpu_test!(movefromusp, "MOVEfromUSP");
-    cpu_test!(move_l, "MOVE.l", TestLevel::StateOnly);
+    cpu_test!(move_l, "MOVE.l");
     cpu_test!(movem_l, "MOVEM.l");
     cpu_test!(movem_w, "MOVEM.w");
     cpu_test!(movep_l, "MOVEP.l");
