@@ -97,7 +97,7 @@ mod tests {
     fn testbus() -> Testbus<Address, u8> {
         let mut b = Testbus::<Address, u8>::new(ADDRESS_MASK);
         for a in 0..ADDRESS_SPACE {
-            b.write(a, a as u8);
+            assert_eq!(b.write(a, a as u8), BusResult::Ok(a as u8));
         }
         b
     }

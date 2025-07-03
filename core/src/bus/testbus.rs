@@ -151,7 +151,7 @@ mod tests {
             assert_eq!(b.read(a), BusResult::Ok(0));
         }
         for a in 0..=u16::MAX {
-            b.write(a, a as u8);
+            assert_eq!(b.write(a, a as u8), BusResult::Ok(a as u8));
         }
         for a in 0..=u16::MAX {
             assert_eq!(b.read(a), BusResult::Ok(a as u8));
@@ -162,7 +162,7 @@ mod tests {
     fn in_mask() {
         let mut b = Testbus::<u16, u8>::new(u8::MAX.into());
 
-        b.write(0x10, 1);
+        assert_eq!(b.write(0x10, 1), BusResult::Ok(1));
     }
 
     #[test]
@@ -170,6 +170,6 @@ mod tests {
     fn out_mask() {
         let mut b = Testbus::<u16, u8>::new(u8::MAX.into());
 
-        b.write(0x100, 1);
+        let _ = b.write(0x100, 1);
     }
 }

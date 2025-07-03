@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::bus::testbus::{Access, Testbus};
-use crate::bus::{Address, Bus};
+use crate::bus::{Address, Bus, BusResult};
 use crate::cpu_m68k::regs::{RegisterFile, RegisterSR};
 use crate::cpu_m68k::{CpuM68000, M68000_ADDRESS_MASK, M68000_SR_MASK};
 use crate::tickable::Ticks;
@@ -287,7 +287,7 @@ fn run_testcase(testcase: Testcase, level: TestLevel) {
 
     let mut bus = Testbus::new(M68000_ADDRESS_MASK);
     for (addr, val) in &testcase.initial.ram {
-        bus.write(*addr, *val);
+        assert_eq!(bus.write(*addr, *val), BusResult::Ok(*val));
     }
 
     let mut cpu = CpuM68000::new(bus);
