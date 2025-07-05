@@ -61,7 +61,7 @@ impl FramebufferWidget {
         self.frame_recv = Some(recv);
     }
 
-    pub fn draw(&mut self, ui: &mut egui::Ui) -> egui::Response {
+    pub fn draw(&mut self, ui: &mut egui::Ui, fullscreen: bool) -> egui::Response {
         if let Some(ref frame_recv) = self.frame_recv {
             if !frame_recv.is_empty() {
                 let frame = frame_recv.recv().unwrap();
@@ -84,10 +84,15 @@ impl FramebufferWidget {
 
         let size = self.viewport_texture.size_vec2();
         let sized_texture = egui::load::SizedTexture::new(&mut self.viewport_texture, size);
+        let size = if fullscreen {
+            ui.available_size()
+        } else {
+            self.display_size_max_scaled()
+        };
         let response = ui.add(
             egui::Image::new(sized_texture)
                 .fit_to_fraction(Vec2::new(1.0, 1.0))
-                .max_size(self.display_size_max_scaled())
+                .max_size(size)
                 .maintain_aspect_ratio(true),
         );
         self.response = Some(response.clone());
