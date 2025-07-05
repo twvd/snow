@@ -435,10 +435,7 @@ mod m68000 {
     cpu_test!(bset, "BSET");
     cpu_test!(bsr, "BSR");
     cpu_test!(btst, "BTST");
-
-    // TODO cycle accuracy
-    cpu_test!(chk, "CHK", TestLevel::StateOnly);
-
+    cpu_test!(chk, "CHK");
     cpu_test!(clr_b, "CLR.b");
     cpu_test!(clr_l, "CLR.l");
     cpu_test!(clr_w, "CLR.w");

@@ -2473,7 +2473,10 @@ where
             .read_ea::<T>(instr, instr.get_op2())?
             .expand_sign_extend() as i32;
         let value = self.regs.read_d::<T>(instr.get_op1()).expand_sign_extend() as i32;
-        let _result = value - max;
+
+        let (_result, ccr) =
+            Self::alu_sub::<T>(T::chop(max as u32), T::chop(value as u32), self.regs.sr);
+        let t = RegisterSR::default().with_ccr(ccr);
 
         match instr.get_addr_mode()? {
             AddressingMode::Indirect => self.advance_cycles(2)?,
@@ -2485,10 +2488,10 @@ where
         self.regs.sr.set_c(false);
         self.regs.sr.set_v(false);
 
-        if value > max {
+        if t.v() || t.n() {
+            // Short trap
             match instr.get_addr_mode()? {
-                // TODO fix cycle accuracy, shorter instruction only for address registers?
-                AddressingMode::Indirect | AddressingMode::DataRegister => {
+                AddressingMode::Indirect => {
                     self.advance_cycles(6)?;
                 }
                 _ => self.advance_cycles(8)?,
@@ -2496,12 +2499,8 @@ where
             // Offset PC correctly for exception stack frame for CHK
             self.regs.pc = self.regs.pc.wrapping_add(2);
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_CHK, None);
-        }
-
-        //self.regs.sr.set_c(result & 0x10000 != 0);
-        //self.regs.sr.set_v(((value ^ result) & (max ^ value)) < 0);
-
-        if value < 0 {
+        } else if self.regs.sr.n() {
+            // Long trap
             match instr.get_addr_mode()? {
                 AddressingMode::Indirect => self.advance_cycles(8)?,
                 _ => self.advance_cycles(10)?,
@@ -2513,7 +2512,7 @@ where
 
         match instr.get_addr_mode()? {
             AddressingMode::Indirect => self.advance_cycles(4)?,
-            _ => self.advance_cycles(4)?,
+            _ => self.advance_cycles(6)?,
         }
         Ok(())
     }
