@@ -1037,15 +1037,20 @@ impl eframe::App for SnowGui {
                                 } else {
                                     // No disk
                                     ui.menu_button(format!("SCSI #{}: (no disk)", i), |ui| {
-                                        if ui.button("Create new image...").clicked() {
-                                            self.create_disk_dialog.open(i, &self.workspace_dir());
-                                            ui.close_menu();
-                                        }
-                                        if ui.button("Load disk image...").clicked() {
-                                            self.hdd_dialog_idx = i;
-                                            self.hdd_dialog.pick_file();
-                                            ui.close_menu();
-                                        }
+                                        ui.horizontal(|ui| {
+                                            if ui.button("Create new image...").clicked() {
+                                                self.create_disk_dialog
+                                                    .open(i, &self.workspace_dir());
+                                                ui.close_menu();
+                                            }
+                                        });
+                                        ui.horizontal(|ui| {
+                                            if ui.button("Load disk image...").clicked() {
+                                                self.hdd_dialog_idx = i;
+                                                self.hdd_dialog.pick_file();
+                                                ui.close_menu();
+                                            }
+                                        });
                                     });
                                 }
                             }
