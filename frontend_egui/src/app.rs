@@ -73,6 +73,7 @@ pub struct SnowGui {
     workspace_file: Option<PathBuf>,
     load_windows: bool,
     first_draw: bool,
+    in_fullscreen: bool,
 
     wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
 
@@ -111,23 +112,6 @@ impl SnowGui {
     const TOAST_DURATION: Duration = Duration::from_secs(3);
     const ZOOM_FACTORS: [f32; 8] = [0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0];
 
-    fn try_create_image(&self, result: &DiskImageDialogResult) -> Result<()> {
-        if result.filename.try_exists()? {
-            bail!("Cowardly refusing to overwrite existing file. Delete the file first, or choose a different filename.");
-        }
-
-        {
-            let mut file = File::create(result.filename.clone())?;
-            file.seek(SeekFrom::Start(result.size as u64 - 1))?;
-            file.write_all(&[0])?;
-            file.flush()?;
-        }
-        self.emu.load_hdd_image(result.scsi_id, &result.filename);
-        Ok(())
-    }
-}
-
-impl SnowGui {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
@@ -149,6 +133,7 @@ impl SnowGui {
             workspace_file: None,
             load_windows: false,
             first_draw: true,
+            in_fullscreen: false,
 
             wev_recv,
             toasts: egui_toast::Toasts::new()
@@ -266,6 +251,529 @@ impl SnowGui {
         }
 
         app
+    }
+
+    fn enter_fullscreen(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+        self.in_fullscreen = true;
+        self.toasts.add(
+            egui_toast::Toast::default()
+                .text("RIGHT-CLICK to exit fullscreen or other actions")
+                .options(
+                    egui_toast::ToastOptions::default()
+                        .duration(Self::TOAST_DURATION)
+                        .show_progress(true),
+                ),
+        );
+    }
+
+    fn exit_fullscreen(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        self.in_fullscreen = false;
+    }
+
+    fn try_create_image(&self, result: &DiskImageDialogResult) -> Result<()> {
+        if result.filename.try_exists()? {
+            bail!("Cowardly refusing to overwrite existing file. Delete the file first, or choose a different filename.");
+        }
+
+        {
+            let mut file = File::create(result.filename.clone())?;
+            file.seek(SeekFrom::Start(result.size as u64 - 1))?;
+            file.write_all(&[0])?;
+            file.flush()?;
+        }
+        self.emu.load_hdd_image(result.scsi_id, &result.filename);
+        Ok(())
+    }
+
+    fn draw_menubar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        egui::menu::bar(ui, |ui| {
+            ui.menu_button("Workspace", |ui| {
+                if ui.button("New workspace").clicked() {
+                    self.load_workspace(None);
+                    self.update_titlebar(ctx);
+                    ui.close_menu();
+                }
+                if ui.button("Load workspace").clicked() {
+                    self.workspace_dialog.pick_file();
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui.button("Save workspace").clicked() {
+                    if let Some(path) = self.workspace_file.clone() {
+                        self.save_workspace(&path);
+                    } else {
+                        self.workspace_dialog.save_file();
+                    }
+                    ui.close_menu();
+                }
+                if ui.button("Save workspace as...").clicked() {
+                    self.workspace_dialog.save_file();
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui.button("Exit").clicked() {
+                    std::process::exit(0);
+                }
+            });
+            ui.menu_button("Machine", |ui| {
+                if ui.button("Load ROM").clicked() {
+                    self.model_dialog.open();
+                    ui.close_menu();
+                }
+                if self.emu.is_initialized() {
+                    ui.separator();
+
+                    if ui.button("Reset").clicked() {
+                        self.emu.reset();
+                        ui.close_menu();
+                    }
+
+                    if self.emu.is_running() && ui.button("Stop").clicked() {
+                        self.emu.stop();
+                        ui.close_menu();
+                    } else if !self.emu.is_running() && ui.button("Run").clicked() {
+                        self.emu.run();
+                        ui.close_menu();
+                    }
+                    if ui.button("Single step").clicked() {
+                        self.emu.step();
+                        ui.close_menu();
+                    }
+                    if ui.button("Step over").clicked() {
+                        self.emu.step_over();
+                        ui.close_menu();
+                    }
+                    if ui.button("Step out").clicked() {
+                        self.emu.step_out();
+                        ui.close_menu();
+                    }
+
+                    ui.separator();
+                    if ui.button("Programmers key").clicked() {
+                        self.emu.progkey();
+                        ui.close_menu();
+                    }
+                }
+            });
+            if self.emu.is_initialized() {
+                ui.menu_button("Drives", |ui| {
+                    for (i, d) in (0..3).filter_map(|i| self.emu.get_fdd_status(i).map(|d| (i, d)))
+                    {
+                        ui.menu_button(
+                            format!(
+                                "{} Floppy #{}: {}",
+                                if d.ejected {
+                                    egui_material_icons::icons::ICON_EJECT
+                                } else if !d.ejected && d.dirty {
+                                    egui_material_icons::icons::ICON_SAVE_AS
+                                } else {
+                                    egui_material_icons::icons::ICON_SAVE
+                                },
+                                i + 1,
+                                if d.ejected {
+                                    "(ejected)"
+                                } else {
+                                    &d.image_title
+                                }
+                            ),
+                            |ui| {
+                                ui.horizontal(|ui| {
+                                    if ui.button("Insert blank 400/800K floppy").clicked() {
+                                        self.emu.insert_blank_floppy(i, FloppyType::Mac800K);
+                                        ui.close_menu();
+                                    }
+                                });
+                                // TODO write support on ISM
+                                //if ui
+                                //    .add_enabled(
+                                //        self.emu.get_model().unwrap().fdd_hd(),
+                                //        egui::Button::new("Insert blank 1.44MB floppy"),
+                                //    )
+                                //    .clicked()
+                                //{
+                                //    self.emu.insert_blank_floppy(i, FloppyType::Mfm144M);
+                                //    ui.close_menu();
+                                //}
+                                ui.separator();
+                                ui.horizontal(|ui| {
+                                    if ui.button("Load image...").clicked() {
+                                        self.floppy_dialog_target = FloppyDialogTarget::Drive(i);
+                                        self.floppy_dialog.pick_file();
+                                        ui.close_menu();
+                                    }
+                                });
+
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add_enabled(
+                                            self.emu.last_images[i].borrow().is_some(),
+                                            egui::Button::new("Re-insert last ejected floppy"),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.emu.reload_floppy(i);
+                                        ui.close_menu();
+                                    }
+                                });
+                                ui.separator();
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add_enabled(
+                                            !d.ejected && d.dirty,
+                                            egui::Button::new("Save image..."),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.floppy_dialog_target = FloppyDialogTarget::Drive(i);
+                                        self.floppy_dialog.save_file();
+                                        ui.close_menu();
+                                    }
+                                });
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add_enabled(
+                                            self.emu.last_images[i].borrow().is_some(),
+                                            egui::Button::new("Save last ejected image..."),
+                                        )
+                                        .clicked()
+                                    {
+                                        let img = self.emu.last_images[i].borrow().clone().unwrap();
+                                        self.floppy_dialog_target = FloppyDialogTarget::Image(img);
+                                        self.floppy_dialog.save_file();
+                                        ui.close_menu();
+                                    }
+                                });
+                                ui.separator();
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add_enabled(!d.ejected, egui::Button::new("Force eject"))
+                                        .clicked()
+                                    {
+                                        self.emu.force_eject(i);
+                                        ui.close_menu();
+                                    }
+                                });
+                            },
+                        );
+                    }
+
+                    // Needs cloning for the later borrow to call create_disk_dialog.open()
+                    let hdds = self.emu.get_hdds().map(|d| d.to_owned());
+                    if let Some(hdd) = hdds {
+                        ui.separator();
+                        for (i, disk) in hdd.iter().enumerate() {
+                            if let Some(disk) = disk {
+                                // Disk loaded
+                                ui.menu_button(
+                                    format!(
+                                        "SCSI #{}: {} ({:0.2}MB)",
+                                        i,
+                                        disk.image
+                                            .file_name()
+                                            .unwrap_or_default()
+                                            .to_string_lossy(),
+                                        disk.capacity / 1024 / 1024
+                                    ),
+                                    |ui| {
+                                        if ui.button("Detach").clicked() {
+                                            self.emu.detach_hdd(i);
+                                            ui.close_menu();
+                                        }
+                                    },
+                                );
+                            } else {
+                                // No disk
+                                ui.menu_button(format!("SCSI #{}: (no disk)", i), |ui| {
+                                    ui.horizontal(|ui| {
+                                        if ui.button("Create new image...").clicked() {
+                                            self.create_disk_dialog.open(i, &self.workspace_dir());
+                                            ui.close_menu();
+                                        }
+                                    });
+                                    ui.horizontal(|ui| {
+                                        if ui.button("Load disk image...").clicked() {
+                                            self.hdd_dialog_idx = i;
+                                            self.hdd_dialog.pick_file();
+                                            ui.close_menu();
+                                        }
+                                    });
+                                });
+                            }
+                        }
+                    }
+                });
+            }
+            ui.menu_button("Ports", |ui| {
+                ui.menu_button(
+                    format!(
+                        "{} Channel A (modem)",
+                        egui_material_icons::icons::ICON_CABLE
+                    ),
+                    |ui| {
+                        if ui
+                            .checkbox(&mut self.workspace.terminal_open[0], "Terminal")
+                            .clicked()
+                        {
+                            ui.close_menu();
+                        }
+                    },
+                );
+                ui.menu_button(
+                    format!(
+                        "{} Channel B (printer)",
+                        egui_material_icons::icons::ICON_CABLE
+                    ),
+                    |ui| {
+                        if ui
+                            .checkbox(&mut self.workspace.terminal_open[1], "Terminal")
+                            .clicked()
+                        {
+                            ui.close_menu();
+                        }
+                    },
+                );
+            });
+            ui.menu_button("Tools", |ui| {
+                if ui
+                    .add_enabled(
+                        self.emu.is_initialized(),
+                        egui::Button::new("Take screenshot"),
+                    )
+                    .clicked()
+                {
+                    self.screenshot();
+                    ui.close_menu();
+                }
+                ui.separator();
+                if !self.emu.is_recording_input() {
+                    if ui
+                        .add_enabled(
+                            self.emu.is_initialized(),
+                            egui::Button::new("Record input..."),
+                        )
+                        .clicked()
+                    {
+                        self.record_dialog.save_file();
+                        ui.close_menu();
+                    }
+                    if ui
+                        .add_enabled(
+                            self.emu.is_initialized(),
+                            egui::Button::new("Replay recording..."),
+                        )
+                        .clicked()
+                    {
+                        self.record_dialog.pick_file();
+                        ui.close_menu();
+                    }
+                } else if ui.button("Stop recording").clicked() {
+                    self.emu.record_input_end();
+                    ui.close_menu();
+                }
+            });
+            ui.menu_button("Options", |ui| {
+                ui.menu_button("UI scale", |ui| {
+                    for z in Self::ZOOM_FACTORS {
+                        if ui.button(format!("{:0.2}", z)).clicked() {
+                            ctx.set_zoom_factor(z);
+                            ui.close_menu();
+                        }
+                    }
+                });
+                ui.add(
+                    egui::Slider::new(&mut self.framebuffer.scale, 0.5..=4.0).text("Display scale"),
+                );
+                ui.add(egui::Checkbox::new(
+                    &mut self.workspace.center_viewport_v,
+                    "Center display vertically",
+                ));
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui
+                        .checkbox(&mut self.workspace.map_cmd_ralt, "Map right ALT to Cmd")
+                        .clicked()
+                    {
+                        ui.close_menu();
+                    }
+                });
+            });
+            ui.menu_button("View", |ui| {
+                if ui.button("Enter fullscreen").clicked() {
+                    self.enter_fullscreen(ctx);
+                }
+                ui.separator();
+                if ui.checkbox(&mut self.workspace.log_open, "Log").clicked() {
+                    ui.close_menu();
+                }
+                if ui
+                    .checkbox(&mut self.workspace.disassembly_open, "Disassembly")
+                    .clicked()
+                {
+                    ui.close_menu();
+                }
+                if ui
+                    .checkbox(
+                        &mut self.workspace.instruction_history_open,
+                        "Instruction history",
+                    )
+                    .clicked()
+                {
+                    ui.close_menu();
+                }
+                if ui
+                    .checkbox(
+                        &mut self.workspace.systrap_history_open,
+                        "System trap history",
+                    )
+                    .clicked()
+                {
+                    ui.close_menu();
+                }
+                if ui
+                    .checkbox(&mut self.workspace.registers_open, "Registers")
+                    .clicked()
+                {
+                    ui.close_menu();
+                }
+                if ui
+                    .checkbox(&mut self.workspace.breakpoints_open, "Breakpoints")
+                    .clicked()
+                {
+                    ui.close_menu();
+                }
+                if ui
+                    .checkbox(&mut self.workspace.memory_open, "Memory")
+                    .clicked()
+                {
+                    ui.close_menu();
+                }
+                if ui
+                    .checkbox(&mut self.workspace.watchpoints_open, "Watchpoints")
+                    .clicked()
+                {
+                    ui.close_menu();
+                }
+                if ui
+                    .checkbox(&mut self.workspace.peripheral_debug_open, "Peripherals")
+                    .clicked()
+                {
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui.button("Reset layout").clicked() {
+                    self.workspace.reset_windows();
+                    self.load_windows = true;
+                    ui.close_menu();
+                }
+            });
+        });
+    }
+
+    fn draw_toolbar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.style_mut().text_styles.insert(
+                egui::TextStyle::Button,
+                egui::FontId::new(24.0, eframe::epaint::FontFamily::Proportional),
+            );
+
+            if ui
+                .add(egui::Button::new(egui_material_icons::icons::ICON_MEMORY))
+                .on_hover_text("Load ROM...")
+                .clicked()
+            {
+                self.model_dialog.open();
+            }
+            if self.emu.is_initialized() {
+                ui.separator();
+                if ui
+                    .add(egui::Button::new(
+                        egui_material_icons::icons::ICON_RESTART_ALT,
+                    ))
+                    .on_hover_text("Reset machine")
+                    .clicked()
+                {
+                    self.emu.reset();
+                }
+
+                if self.emu.is_running() {
+                    if ui
+                        .add(egui::Button::new(egui_material_icons::icons::ICON_PAUSE))
+                        .on_hover_text("Pause execution")
+                        .clicked()
+                    {
+                        self.emu.stop();
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(egui_material_icons::icons::ICON_FAST_FORWARD)
+                                .selected(self.emu.is_fastforward()),
+                        )
+                        .on_hover_text("Fast-forward execution")
+                        .clicked()
+                    {
+                        self.emu.toggle_fastforward();
+                    }
+                } else if !self.emu.is_running() {
+                    if ui
+                        .add(egui::Button::new(
+                            egui_material_icons::icons::ICON_PLAY_ARROW,
+                        ))
+                        .on_hover_text("Resume execution")
+                        .clicked()
+                    {
+                        self.emu.run();
+                    }
+                    if ui
+                        .add(egui::Button::new(
+                            egui_material_icons::icons::ICON_STEP_INTO,
+                        ))
+                        .on_hover_text("Step into")
+                        .clicked()
+                    {
+                        self.emu.step();
+                    }
+                    if ui
+                        .add(egui::Button::new(
+                            egui_material_icons::icons::ICON_STEP_OVER,
+                        ))
+                        .on_hover_text("Step over")
+                        .clicked()
+                    {
+                        self.emu.step_over();
+                    }
+                    if ui
+                        .add(egui::Button::new(egui_material_icons::icons::ICON_STEP_OUT))
+                        .on_hover_text("Step out")
+                        .clicked()
+                    {
+                        self.emu.step_out();
+                    }
+                }
+
+                ui.separator();
+                if ui
+                    .add(egui::Button::new(
+                        egui_material_icons::icons::ICON_PHOTO_CAMERA,
+                    ))
+                    .on_hover_text("Take screenshot")
+                    .clicked()
+                {
+                    self.screenshot();
+                }
+                if ui
+                    .add(egui::Button::new(
+                        egui_material_icons::icons::ICON_FULLSCREEN,
+                    ))
+                    .on_hover_text("Enter fullscreen")
+                    .clicked()
+                {
+                    self.enter_fullscreen(ctx);
+                }
+            }
+        });
     }
 
     fn default_dir() -> PathBuf {
@@ -830,503 +1338,47 @@ impl eframe::App for SnowGui {
                 ui.disable();
             }
 
-            // Menubar
-            egui::menu::bar(ui, |ui| {
-                ui.menu_button("Workspace", |ui| {
-                    if ui.button("New workspace").clicked() {
-                        self.load_workspace(None);
-                        self.update_titlebar(ctx);
-                        ui.close_menu();
-                    }
-                    if ui.button("Load workspace").clicked() {
-                        self.workspace_dialog.pick_file();
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui.button("Save workspace").clicked() {
-                        if let Some(path) = self.workspace_file.clone() {
-                            self.save_workspace(&path);
-                        } else {
-                            self.workspace_dialog.save_file();
-                        }
-                        ui.close_menu();
-                    }
-                    if ui.button("Save workspace as...").clicked() {
-                        self.workspace_dialog.save_file();
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui.button("Exit").clicked() {
-                        std::process::exit(0);
-                    }
-                });
-                ui.menu_button("Machine", |ui| {
-                    if ui.button("Load ROM").clicked() {
-                        self.model_dialog.open();
-                        ui.close_menu();
-                    }
-                    if self.emu.is_initialized() {
-                        ui.separator();
-
-                        if ui.button("Reset").clicked() {
-                            self.emu.reset();
-                            ui.close_menu();
-                        }
-
-                        if self.emu.is_running() && ui.button("Stop").clicked() {
-                            self.emu.stop();
-                            ui.close_menu();
-                        } else if !self.emu.is_running() && ui.button("Run").clicked() {
-                            self.emu.run();
-                            ui.close_menu();
-                        }
-                        if ui.button("Single step").clicked() {
-                            self.emu.step();
-                            ui.close_menu();
-                        }
-                        if ui.button("Step over").clicked() {
-                            self.emu.step_over();
-                            ui.close_menu();
-                        }
-                        if ui.button("Step out").clicked() {
-                            self.emu.step_out();
-                            ui.close_menu();
-                        }
-
-                        ui.separator();
-                        if ui.button("Programmers key").clicked() {
-                            self.emu.progkey();
-                            ui.close_menu();
-                        }
-                    }
-                });
-                if self.emu.is_initialized() {
-                    ui.menu_button("Drives", |ui| {
-                        for (i, d) in
-                            (0..3).filter_map(|i| self.emu.get_fdd_status(i).map(|d| (i, d)))
-                        {
-                            ui.menu_button(
-                                format!(
-                                    "{} Floppy #{}: {}",
-                                    if d.ejected {
-                                        egui_material_icons::icons::ICON_EJECT
-                                    } else if !d.ejected && d.dirty {
-                                        egui_material_icons::icons::ICON_SAVE_AS
-                                    } else {
-                                        egui_material_icons::icons::ICON_SAVE
-                                    },
-                                    i + 1,
-                                    if d.ejected {
-                                        "(ejected)"
-                                    } else {
-                                        &d.image_title
-                                    }
-                                ),
-                                |ui| {
-                                    ui.horizontal(|ui| {
-                                        if ui.button("Insert blank 400/800K floppy").clicked() {
-                                            self.emu.insert_blank_floppy(i, FloppyType::Mac800K);
-                                            ui.close_menu();
-                                        }
-                                    });
-                                    // TODO write support on ISM
-                                    //if ui
-                                    //    .add_enabled(
-                                    //        self.emu.get_model().unwrap().fdd_hd(),
-                                    //        egui::Button::new("Insert blank 1.44MB floppy"),
-                                    //    )
-                                    //    .clicked()
-                                    //{
-                                    //    self.emu.insert_blank_floppy(i, FloppyType::Mfm144M);
-                                    //    ui.close_menu();
-                                    //}
-                                    ui.separator();
-                                    ui.horizontal(|ui| {
-                                        if ui.button("Load image...").clicked() {
-                                            self.floppy_dialog_target =
-                                                FloppyDialogTarget::Drive(i);
-                                            self.floppy_dialog.pick_file();
-                                            ui.close_menu();
-                                        }
-                                    });
-
-                                    ui.horizontal(|ui| {
-                                        if ui
-                                            .add_enabled(
-                                                self.emu.last_images[i].borrow().is_some(),
-                                                egui::Button::new("Re-insert last ejected floppy"),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.emu.reload_floppy(i);
-                                            ui.close_menu();
-                                        }
-                                    });
-                                    ui.separator();
-                                    ui.horizontal(|ui| {
-                                        if ui
-                                            .add_enabled(
-                                                !d.ejected && d.dirty,
-                                                egui::Button::new("Save image..."),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.floppy_dialog_target =
-                                                FloppyDialogTarget::Drive(i);
-                                            self.floppy_dialog.save_file();
-                                            ui.close_menu();
-                                        }
-                                    });
-                                    ui.horizontal(|ui| {
-                                        if ui
-                                            .add_enabled(
-                                                self.emu.last_images[i].borrow().is_some(),
-                                                egui::Button::new("Save last ejected image..."),
-                                            )
-                                            .clicked()
-                                        {
-                                            let img =
-                                                self.emu.last_images[i].borrow().clone().unwrap();
-                                            self.floppy_dialog_target =
-                                                FloppyDialogTarget::Image(img);
-                                            self.floppy_dialog.save_file();
-                                            ui.close_menu();
-                                        }
-                                    });
-                                    ui.separator();
-                                    ui.horizontal(|ui| {
-                                        if ui
-                                            .add_enabled(
-                                                !d.ejected,
-                                                egui::Button::new("Force eject"),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.emu.force_eject(i);
-                                            ui.close_menu();
-                                        }
-                                    });
-                                },
-                            );
-                        }
-
-                        // Needs cloning for the later borrow to call create_disk_dialog.open()
-                        let hdds = self.emu.get_hdds().map(|d| d.to_owned());
-                        if let Some(hdd) = hdds {
-                            ui.separator();
-                            for (i, disk) in hdd.iter().enumerate() {
-                                if let Some(disk) = disk {
-                                    // Disk loaded
-                                    ui.menu_button(
-                                        format!(
-                                            "SCSI #{}: {} ({:0.2}MB)",
-                                            i,
-                                            disk.image
-                                                .file_name()
-                                                .unwrap_or_default()
-                                                .to_string_lossy(),
-                                            disk.capacity / 1024 / 1024
-                                        ),
-                                        |ui| {
-                                            if ui.button("Detach").clicked() {
-                                                self.emu.detach_hdd(i);
-                                                ui.close_menu();
-                                            }
-                                        },
-                                    );
-                                } else {
-                                    // No disk
-                                    ui.menu_button(format!("SCSI #{}: (no disk)", i), |ui| {
-                                        ui.horizontal(|ui| {
-                                            if ui.button("Create new image...").clicked() {
-                                                self.create_disk_dialog
-                                                    .open(i, &self.workspace_dir());
-                                                ui.close_menu();
-                                            }
-                                        });
-                                        ui.horizontal(|ui| {
-                                            if ui.button("Load disk image...").clicked() {
-                                                self.hdd_dialog_idx = i;
-                                                self.hdd_dialog.pick_file();
-                                                ui.close_menu();
-                                            }
-                                        });
-                                    });
-                                }
-                            }
-                        }
-                    });
-                }
-                ui.menu_button("Ports", |ui| {
-                    ui.menu_button(
-                        format!(
-                            "{} Channel A (modem)",
-                            egui_material_icons::icons::ICON_CABLE
-                        ),
-                        |ui| {
-                            if ui
-                                .checkbox(&mut self.workspace.terminal_open[0], "Terminal")
-                                .clicked()
-                            {
-                                ui.close_menu();
-                            }
-                        },
-                    );
-                    ui.menu_button(
-                        format!(
-                            "{} Channel B (printer)",
-                            egui_material_icons::icons::ICON_CABLE
-                        ),
-                        |ui| {
-                            if ui
-                                .checkbox(&mut self.workspace.terminal_open[1], "Terminal")
-                                .clicked()
-                            {
-                                ui.close_menu();
-                            }
-                        },
-                    );
-                });
-                ui.menu_button("Tools", |ui| {
-                    if ui
-                        .add_enabled(
-                            self.emu.is_initialized(),
-                            egui::Button::new("Take screenshot"),
-                        )
-                        .clicked()
-                    {
-                        self.screenshot();
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if !self.emu.is_recording_input() {
-                        if ui
-                            .add_enabled(
-                                self.emu.is_initialized(),
-                                egui::Button::new("Record input..."),
-                            )
-                            .clicked()
-                        {
-                            self.record_dialog.save_file();
-                            ui.close_menu();
-                        }
-                        if ui
-                            .add_enabled(
-                                self.emu.is_initialized(),
-                                egui::Button::new("Replay recording..."),
-                            )
-                            .clicked()
-                        {
-                            self.record_dialog.pick_file();
-                            ui.close_menu();
-                        }
-                    } else if ui.button("Stop recording").clicked() {
-                        self.emu.record_input_end();
-                        ui.close_menu();
-                    }
-                });
-                ui.menu_button("Options", |ui| {
-                    ui.menu_button("UI scale", |ui| {
-                        for z in Self::ZOOM_FACTORS {
-                            if ui.button(format!("{:0.2}", z)).clicked() {
-                                ctx.set_zoom_factor(z);
-                                ui.close_menu();
-                            }
-                        }
-                    });
-                    ui.add(
-                        egui::Slider::new(&mut self.framebuffer.scale, 0.5..=4.0)
-                            .text("Display scale"),
-                    );
-                    ui.add(egui::Checkbox::new(
-                        &mut self.workspace.center_viewport_v,
-                        "Center display vertically",
-                    ));
-
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        if ui
-                            .checkbox(&mut self.workspace.map_cmd_ralt, "Map right ALT to Cmd")
-                            .clicked()
-                        {
-                            ui.close_menu();
-                        }
-                    });
-                });
-                ui.menu_button("View", |ui| {
-                    if ui.checkbox(&mut self.workspace.log_open, "Log").clicked() {
-                        ui.close_menu();
-                    }
-                    if ui
-                        .checkbox(&mut self.workspace.disassembly_open, "Disassembly")
-                        .clicked()
-                    {
-                        ui.close_menu();
-                    }
-                    if ui
-                        .checkbox(
-                            &mut self.workspace.instruction_history_open,
-                            "Instruction history",
-                        )
-                        .clicked()
-                    {
-                        ui.close_menu();
-                    }
-                    if ui
-                        .checkbox(
-                            &mut self.workspace.systrap_history_open,
-                            "System trap history",
-                        )
-                        .clicked()
-                    {
-                        ui.close_menu();
-                    }
-                    if ui
-                        .checkbox(&mut self.workspace.registers_open, "Registers")
-                        .clicked()
-                    {
-                        ui.close_menu();
-                    }
-                    if ui
-                        .checkbox(&mut self.workspace.breakpoints_open, "Breakpoints")
-                        .clicked()
-                    {
-                        ui.close_menu();
-                    }
-                    if ui
-                        .checkbox(&mut self.workspace.memory_open, "Memory")
-                        .clicked()
-                    {
-                        ui.close_menu();
-                    }
-                    if ui
-                        .checkbox(&mut self.workspace.watchpoints_open, "Watchpoints")
-                        .clicked()
-                    {
-                        ui.close_menu();
-                    }
-                    if ui
-                        .checkbox(&mut self.workspace.peripheral_debug_open, "Peripherals")
-                        .clicked()
-                    {
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui.button("Reset layout").clicked() {
-                        self.workspace.reset_windows();
-                        self.load_windows = true;
-                        ui.close_menu();
-                    }
-                });
-            });
-
-            // Toolbar
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.style_mut().text_styles.insert(
-                    egui::TextStyle::Button,
-                    egui::FontId::new(24.0, eframe::epaint::FontFamily::Proportional),
-                );
-
-                if ui
-                    .add(egui::Button::new(egui_material_icons::icons::ICON_MEMORY))
-                    .on_hover_text("Load ROM...")
-                    .clicked()
-                {
-                    self.model_dialog.open();
-                }
-                if self.emu.is_initialized() {
-                    ui.separator();
-                    if ui
-                        .add(egui::Button::new(
-                            egui_material_icons::icons::ICON_RESTART_ALT,
-                        ))
-                        .on_hover_text("Reset machine")
-                        .clicked()
-                    {
-                        self.emu.reset();
-                    }
-
-                    if self.emu.is_running() {
-                        if ui
-                            .add(egui::Button::new(egui_material_icons::icons::ICON_PAUSE))
-                            .on_hover_text("Pause execution")
-                            .clicked()
-                        {
-                            self.emu.stop();
-                        }
-                        if ui
-                            .add(
-                                egui::Button::new(egui_material_icons::icons::ICON_FAST_FORWARD)
-                                    .selected(self.emu.is_fastforward()),
-                            )
-                            .on_hover_text("Fast-forward execution")
-                            .clicked()
-                        {
-                            self.emu.toggle_fastforward();
-                        }
-                    } else if !self.emu.is_running() {
-                        if ui
-                            .add(egui::Button::new(
-                                egui_material_icons::icons::ICON_PLAY_ARROW,
-                            ))
-                            .on_hover_text("Resume execution")
-                            .clicked()
-                        {
-                            self.emu.run();
-                        }
-                        if ui
-                            .add(egui::Button::new(
-                                egui_material_icons::icons::ICON_STEP_INTO,
-                            ))
-                            .on_hover_text("Step into")
-                            .clicked()
-                        {
-                            self.emu.step();
-                        }
-                        if ui
-                            .add(egui::Button::new(
-                                egui_material_icons::icons::ICON_STEP_OVER,
-                            ))
-                            .on_hover_text("Step over")
-                            .clicked()
-                        {
-                            self.emu.step_over();
-                        }
-                        if ui
-                            .add(egui::Button::new(egui_material_icons::icons::ICON_STEP_OUT))
-                            .on_hover_text("Step out")
-                            .clicked()
-                        {
-                            self.emu.step_out();
-                        }
-                    }
-
-                    ui.separator();
-                    if ui
-                        .add(egui::Button::new(
-                            egui_material_icons::icons::ICON_PHOTO_CAMERA,
-                        ))
-                        .on_hover_text("Take screenshot")
-                        .clicked()
-                    {
-                        self.screenshot();
-                    }
-                }
-            });
-            ui.separator();
+            if !self.in_fullscreen {
+                self.draw_menubar(ctx, ui);
+                ui.separator();
+                self.draw_toolbar(ctx, ui);
+                ui.separator();
+            }
 
             // Framebuffer display
             ui.vertical_centered(|ui| {
-                let padding_height = (ui.available_height() - self.framebuffer.max_height()) / 2.0;
-                if padding_height > 0.0 && self.workspace.center_viewport_v {
-                    ui.allocate_space(egui::Vec2::from([1.0, padding_height]));
+                // Align framebuffer vertically
+                if self.in_fullscreen {
+                    const GUEST_ASPECT_RATIO: f32 = 4.0 / 3.0;
+                    let host_aspect_ratio = ui.available_width() / ui.available_height();
+                    if host_aspect_ratio < GUEST_ASPECT_RATIO {
+                        let screen_height = 3.0 * ui.available_width() / 4.0;
+                        let padding_height = (ui.available_height() - screen_height) / 2.0;
+                        ui.allocate_space(egui::Vec2::from([1.0, padding_height]));
+                    }
+                } else {
+                    let padding_height =
+                        (ui.available_height() - self.framebuffer.max_height()) / 2.0;
+                    if padding_height > 0.0 && self.workspace.center_viewport_v {
+                        ui.allocate_space(egui::Vec2::from([1.0, padding_height]));
+                    }
                 }
-                self.framebuffer.draw(ui);
+
+                let response = self.framebuffer.draw(ui, self.in_fullscreen);
+                if self.in_fullscreen {
+                    response.context_menu(|ui| {
+                        ui.horizontal(|ui| {
+                            if ui.button("Exit fullscreen").clicked() {
+                                self.exit_fullscreen(ctx);
+                                ui.close_menu();
+                            }
+                        });
+                    });
+                }
             });
 
             // Debugger views
-            if self.emu.is_initialized() {
+            if self.emu.is_initialized() && !self.in_fullscreen {
                 persistent_window!(self, "Disassembly")
                     .resizable([true, true])
                     .open(&mut self.workspace.disassembly_open)
