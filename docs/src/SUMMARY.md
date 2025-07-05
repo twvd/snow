@@ -15,6 +15,7 @@
   - [Hard drives](./manual/media/harddrives.md)
 - [Keyboard/mouse](./manual/input.md)
 - [Workspaces](./manual/workspaces.md)
+- [Fullscreen mode](./manual/fullscreen.md)
 - [Debugging](./manual/debugging/README.md)
   - [Breakpoints](./manual/debugging/breakpoints.md)
   - [Registers](./manual/debugging/registers.md)
@@ -24,4 +25,3 @@
   - [Peripherals](./manual/debugging/peripherals.md)
   - [Memory viewer](./manual/debugging/memory.md)
   - [Watchpoints](./manual/debugging/watchpoints.md)
-  
