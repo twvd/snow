@@ -359,105 +359,7 @@ impl SnowGui {
             });
             if self.emu.is_initialized() {
                 ui.menu_button("Drives", |ui| {
-                    for (i, d) in (0..3).filter_map(|i| self.emu.get_fdd_status(i).map(|d| (i, d)))
-                    {
-                        ui.menu_button(
-                            format!(
-                                "{} Floppy #{}: {}",
-                                if d.ejected {
-                                    egui_material_icons::icons::ICON_EJECT
-                                } else if !d.ejected && d.dirty {
-                                    egui_material_icons::icons::ICON_SAVE_AS
-                                } else {
-                                    egui_material_icons::icons::ICON_SAVE
-                                },
-                                i + 1,
-                                if d.ejected {
-                                    "(ejected)"
-                                } else {
-                                    &d.image_title
-                                }
-                            ),
-                            |ui| {
-                                ui.horizontal(|ui| {
-                                    if ui.button("Insert blank 400/800K floppy").clicked() {
-                                        self.emu.insert_blank_floppy(i, FloppyType::Mac800K);
-                                        ui.close_menu();
-                                    }
-                                });
-                                // TODO write support on ISM
-                                //if ui
-                                //    .add_enabled(
-                                //        self.emu.get_model().unwrap().fdd_hd(),
-                                //        egui::Button::new("Insert blank 1.44MB floppy"),
-                                //    )
-                                //    .clicked()
-                                //{
-                                //    self.emu.insert_blank_floppy(i, FloppyType::Mfm144M);
-                                //    ui.close_menu();
-                                //}
-                                ui.separator();
-                                ui.horizontal(|ui| {
-                                    if ui.button("Load image...").clicked() {
-                                        self.floppy_dialog_target = FloppyDialogTarget::Drive(i);
-                                        self.floppy_dialog.pick_file();
-                                        ui.close_menu();
-                                    }
-                                });
-
-                                ui.horizontal(|ui| {
-                                    if ui
-                                        .add_enabled(
-                                            self.emu.last_images[i].borrow().is_some(),
-                                            egui::Button::new("Re-insert last ejected floppy"),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.emu.reload_floppy(i);
-                                        ui.close_menu();
-                                    }
-                                });
-                                ui.separator();
-                                ui.horizontal(|ui| {
-                                    if ui
-                                        .add_enabled(
-                                            !d.ejected && d.dirty,
-                                            egui::Button::new("Save image..."),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.floppy_dialog_target = FloppyDialogTarget::Drive(i);
-                                        self.floppy_dialog.save_file();
-                                        ui.close_menu();
-                                    }
-                                });
-                                ui.horizontal(|ui| {
-                                    if ui
-                                        .add_enabled(
-                                            self.emu.last_images[i].borrow().is_some(),
-                                            egui::Button::new("Save last ejected image..."),
-                                        )
-                                        .clicked()
-                                    {
-                                        let img = self.emu.last_images[i].borrow().clone().unwrap();
-                                        self.floppy_dialog_target = FloppyDialogTarget::Image(img);
-                                        self.floppy_dialog.save_file();
-                                        ui.close_menu();
-                                    }
-                                });
-                                ui.separator();
-                                ui.horizontal(|ui| {
-                                    if ui
-                                        .add_enabled(!d.ejected, egui::Button::new("Force eject"))
-                                        .clicked()
-                                    {
-                                        self.emu.force_eject(i);
-                                        ui.close_menu();
-                                    }
-                                });
-                            },
-                        );
-                    }
+                    self.draw_menu_floppies(ui);
 
                     // Needs cloning for the later borrow to call create_disk_dialog.open()
                     let hdds = self.emu.get_hdds().map(|d| d.to_owned());
@@ -603,6 +505,7 @@ impl SnowGui {
             ui.menu_button("View", |ui| {
                 if ui.button("Enter fullscreen").clicked() {
                     self.enter_fullscreen(ctx);
+                    ui.close_menu();
                 }
                 ui.separator();
                 if ui.checkbox(&mut self.workspace.log_open, "Log").clicked() {
@@ -670,6 +573,104 @@ impl SnowGui {
                 }
             });
         });
+    }
+
+    fn draw_menu_floppies(&mut self, ui: &mut egui::Ui) {
+        for (i, d) in (0..3).filter_map(|i| self.emu.get_fdd_status(i).map(|d| (i, d))) {
+            ui.menu_button(
+                format!(
+                    "{} Floppy #{}: {}",
+                    if d.ejected {
+                        egui_material_icons::icons::ICON_EJECT
+                    } else if !d.ejected && d.dirty {
+                        egui_material_icons::icons::ICON_SAVE_AS
+                    } else {
+                        egui_material_icons::icons::ICON_SAVE
+                    },
+                    i + 1,
+                    if d.ejected {
+                        "(ejected)"
+                    } else {
+                        &d.image_title
+                    }
+                ),
+                |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("Insert blank 400/800K floppy").clicked() {
+                            self.emu.insert_blank_floppy(i, FloppyType::Mac800K);
+                            ui.close_menu();
+                        }
+                    });
+                    // TODO write support on ISM
+                    //if ui
+                    //    .add_enabled(
+                    //        self.emu.get_model().unwrap().fdd_hd(),
+                    //        egui::Button::new("Insert blank 1.44MB floppy"),
+                    //    )
+                    //    .clicked()
+                    //{
+                    //    self.emu.insert_blank_floppy(i, FloppyType::Mfm144M);
+                    //    ui.close_menu();
+                    //}
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Load image...").clicked() {
+                            self.floppy_dialog_target = FloppyDialogTarget::Drive(i);
+                            self.floppy_dialog.pick_file();
+                            ui.close_menu();
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(
+                                self.emu.last_images[i].borrow().is_some(),
+                                egui::Button::new("Re-insert last ejected floppy"),
+                            )
+                            .clicked()
+                        {
+                            self.emu.reload_floppy(i);
+                            ui.close_menu();
+                        }
+                    });
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(!d.ejected && d.dirty, egui::Button::new("Save image..."))
+                            .clicked()
+                        {
+                            self.floppy_dialog_target = FloppyDialogTarget::Drive(i);
+                            self.floppy_dialog.save_file();
+                            ui.close_menu();
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(
+                                self.emu.last_images[i].borrow().is_some(),
+                                egui::Button::new("Save last ejected image..."),
+                            )
+                            .clicked()
+                        {
+                            let img = self.emu.last_images[i].borrow().clone().unwrap();
+                            self.floppy_dialog_target = FloppyDialogTarget::Image(img);
+                            self.floppy_dialog.save_file();
+                            ui.close_menu();
+                        }
+                    });
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(!d.ejected, egui::Button::new("Force eject"))
+                            .clicked()
+                        {
+                            self.emu.force_eject(i);
+                            ui.close_menu();
+                        }
+                    });
+                },
+            );
+        }
     }
 
     fn draw_toolbar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
@@ -1371,6 +1372,27 @@ impl eframe::App for SnowGui {
                             if ui.button("Exit fullscreen").clicked() {
                                 self.exit_fullscreen(ctx);
                                 ui.close_menu();
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            if ui.button("Take screenshot").clicked() {
+                                self.screenshot();
+                                ui.close_menu();
+                            }
+                        });
+                        ui.separator();
+                        self.draw_menu_floppies(ui);
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            let mut ff = self.emu.is_fastforward();
+                            if ui.checkbox(&mut ff, "Fast-forward").clicked() {
+                                self.emu.toggle_fastforward();
+                                ui.close_menu();
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            if ui.button("Reset machine").clicked() {
+                                self.emu.reset();
                             }
                         });
                     });
