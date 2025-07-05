@@ -117,6 +117,7 @@ impl SnowGui {
         wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
         initial_file: Option<String>,
         zoom_factor: f32,
+        fullscreen: bool,
     ) -> Self {
         egui_material_icons::initialize(&cc.egui_ctx);
         cc.egui_ctx.set_zoom_factor(zoom_factor);
@@ -247,6 +248,9 @@ impl SnowGui {
                     &EmulatorInitArgs::default(),
                     None,
                 );
+            }
+            if fullscreen {
+                app.enter_fullscreen(&cc.egui_ctx);
             }
         }
 
@@ -697,6 +701,7 @@ impl SnowGui {
                     .clicked()
                 {
                     self.emu.reset();
+                    ui.close_menu();
                 }
 
                 if self.emu.is_running() {
@@ -1352,15 +1357,19 @@ impl eframe::App for SnowGui {
                 if self.in_fullscreen {
                     const GUEST_ASPECT_RATIO: f32 = 4.0 / 3.0;
                     let host_aspect_ratio = ui.available_width() / ui.available_height();
+
                     if host_aspect_ratio < GUEST_ASPECT_RATIO {
                         let screen_height = 3.0 * ui.available_width() / 4.0;
                         let padding_height = (ui.available_height() - screen_height) / 2.0;
-                        ui.allocate_space(egui::Vec2::from([1.0, padding_height]));
+
+                        if padding_height > 0.0 {
+                            ui.allocate_space(egui::Vec2::from([1.0, padding_height]));
+                        }
                     }
-                } else {
+                } else if self.workspace.center_viewport_v {
                     let padding_height =
                         (ui.available_height() - self.framebuffer.max_height()) / 2.0;
-                    if padding_height > 0.0 && self.workspace.center_viewport_v {
+                    if padding_height > 0.0 {
                         ui.allocate_space(egui::Vec2::from([1.0, padding_height]));
                     }
                 }

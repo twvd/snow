@@ -36,6 +36,10 @@ struct Args {
     /// UI scale
     #[arg(long, default_value_t = 1.0)]
     ui_scale: f32,
+
+    /// Start in fullscreen (specify ROM or workspace)
+    #[arg(long, short)]
+    fullscreen: bool,
 }
 
 pub fn version_string() -> String {
@@ -89,7 +93,13 @@ fn main() -> eframe::Result {
             // Force dark theme as UI elements and colors are not light-friendly (yet)
             cc.egui_ctx.set_theme(egui::Theme::Dark);
 
-            Ok(Box::new(SnowGui::new(cc, r, args.filename, args.ui_scale)))
+            Ok(Box::new(SnowGui::new(
+                cc,
+                r,
+                args.filename,
+                args.ui_scale,
+                args.fullscreen,
+            )))
         }),
     )
 }
