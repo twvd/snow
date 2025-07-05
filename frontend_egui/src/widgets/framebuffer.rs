@@ -76,7 +76,7 @@ impl FramebufferWidget {
                                 .map(|c| egui::Color32::from_rgb(c[0], c[1], c[2])),
                         ),
                     },
-                    egui::TextureOptions::NEAREST,
+                    egui::TextureOptions::LINEAR,
                 );
                 self.frame = Some(frame);
             }
