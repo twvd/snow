@@ -25,8 +25,9 @@ pub enum ImageType {
 }
 
 impl ImageType {
-    pub const EXTENSIONS: [&'static str; 8] =
-        ["a2r", "moof", "dc42", "dsk", "pfi", "pri", "raw", "img"];
+    pub const EXTENSIONS: [&'static str; 9] = [
+        "a2r", "moof", "dc42", "dsk", "pfi", "pri", "raw", "img", "image",
+    ];
 
     pub fn as_friendly_str(&self) -> &'static str {
         match self {

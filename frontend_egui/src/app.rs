@@ -132,6 +132,8 @@ impl SnowGui {
                 .map(|e| format!("*.{}", e.to_ascii_uppercase()))
                 .join(", ")
         );
+        let hdd_filter_str = "HDD images (*.img, *.hda)";
+
         let mut app = Self {
             workspace: Default::default(),
             workspace_file: None,
@@ -154,14 +156,17 @@ impl SnowGui {
 
             hdd_dialog: FileDialog::new()
                 .add_file_filter(
-                    "HDD images (*.img)",
+                    hdd_filter_str,
                     Arc::new(|p| {
                         p.extension()
                             .unwrap_or_default()
                             .eq_ignore_ascii_case("img")
+                            || p.extension()
+                                .unwrap_or_default()
+                                .eq_ignore_ascii_case("hda")
                     }),
                 )
-                .default_file_filter("HDD images (*.img)")
+                .default_file_filter(hdd_filter_str)
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir()),
             hdd_dialog_idx: 0,
