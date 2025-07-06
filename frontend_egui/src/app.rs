@@ -1,3 +1,4 @@
+use crate::dialogs::about::AboutDialog;
 use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
 use crate::keymap::map_winit_keycode;
 use crate::uniform::{UniformAction, UNIFORM_ACTION};
@@ -99,6 +100,7 @@ pub struct SnowGui {
     create_disk_dialog: DiskImageDialog,
     record_dialog: FileDialog,
     model_dialog: ModelSelectionDialog,
+    about_dialog: AboutDialog,
 
     error_dialog_open: bool,
     error_string: String,
@@ -218,6 +220,7 @@ impl SnowGui {
                 .initial_directory(Self::default_dir()),
             create_disk_dialog: Default::default(),
             model_dialog: Default::default(),
+            about_dialog: AboutDialog::new(&cc.egui_ctx),
             error_dialog_open: false,
             error_string: String::new(),
             ui_active: true,
@@ -573,6 +576,12 @@ impl SnowGui {
                 if ui.button("Reset layout").clicked() {
                     self.workspace.reset_windows();
                     self.load_windows = true;
+                    ui.close_menu();
+                }
+            });
+            ui.menu_button("Help", |ui| {
+                if ui.button("About Snow").clicked() {
+                    self.about_dialog.open();
                     ui.close_menu();
                 }
             });
@@ -1156,6 +1165,10 @@ impl eframe::App for SnowGui {
         if let Some(result) = self.model_dialog.take_result() {
             self.handle_model_selection_result(&result);
         }
+
+        // About dialog
+        self.about_dialog.update(ctx);
+        self.ui_active &= !self.about_dialog.is_open();
 
         // Log window
         persistent_window!(&self, "Log")
