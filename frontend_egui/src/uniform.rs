@@ -40,6 +40,8 @@ pub trait UniformMethods {
 impl UniformMethods for egui::Response {
     fn context_address(&self, addr: Address) -> Option<egui::InnerResponse<()>> {
         self.context_menu(|ui| {
+            ui.set_min_width(150.0);
+
             if ui.button("Copy address (24-bit hex)").clicked() {
                 ui.output_mut(|o| o.copied_text = format!("{:06X}", addr & 0xFFFFFF));
                 ui.close_menu();
