@@ -24,13 +24,14 @@ use eframe::egui;
 use egui_file_dialog::{DialogMode, DirectoryEntry, FileDialog};
 use egui_toast::{Toast, ToastKind, ToastOptions};
 use itertools::Itertools;
+use rand::Rng;
 use snow_core::emulator::comm::UserMessageType;
 use snow_floppy::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{env, fs};
 
 macro_rules! persistent_window_s {
@@ -67,6 +68,56 @@ enum FloppyDialogTarget {
     Drive(usize),
     /// Save this image to a file (invalid on load)
     Image(Box<FloppyImage>),
+}
+
+#[derive(Clone)]
+struct Snowflake {
+    x: f32,
+    y: f32,
+    velocity_x: f32,
+    velocity_y: f32,
+    size: f32,
+    opacity: f32,
+}
+
+impl Snowflake {
+    fn new(screen_width: f32) -> Self {
+        let mut rng = rand::rng();
+        Self {
+            x: rng.random_range(0.0..screen_width),
+            y: -10.0,
+            velocity_x: rng.random_range(-1.0..1.0),
+            velocity_y: rng.random_range(1.0..3.0),
+            size: rng.random_range(2.0..6.0),
+            opacity: rng.random_range(0.5..1.0),
+        }
+    }
+
+    fn update(&mut self, delta_time: f32) {
+        self.x += self.velocity_x * delta_time * 60.0;
+        self.y += self.velocity_y * delta_time * 60.0;
+
+        // Add some drift
+        self.velocity_x += (rand::rng().random::<f32>() - 0.5) * 0.1 * delta_time;
+        self.velocity_x = self.velocity_x.clamp(-2.0, 2.0);
+    }
+
+    fn is_off_screen(&self, screen_height: f32) -> bool {
+        self.y > screen_height + 10.0
+    }
+
+    fn draw(&self, ui: &egui::Ui) {
+        let rect = egui::Rect::from_center_size(
+            egui::Pos2::new(self.x, self.y),
+            egui::Vec2::splat(self.size),
+        );
+
+        ui.painter().rect_filled(
+            rect,
+            egui::Rounding::same(1.0),
+            egui::Color32::from_white_alpha((self.opacity * 255.0) as u8),
+        );
+    }
 }
 
 pub struct SnowGui {
@@ -106,6 +157,11 @@ pub struct SnowGui {
     error_string: String,
     ui_active: bool,
     last_running: bool,
+
+    // Snowflakes
+    snowflakes: Vec<Snowflake>,
+    last_snowflake_time: Instant,
+    snowflake_spawn_timer: f32,
 
     emu: EmulatorState,
 }
@@ -231,6 +287,11 @@ impl SnowGui {
             error_string: String::new(),
             ui_active: true,
             last_running: false,
+
+            // Snowflakes
+            snowflakes: Vec::new(),
+            last_snowflake_time: Instant::now(),
+            snowflake_spawn_timer: 0.0,
 
             emu: EmulatorState::default(),
         };
@@ -1087,6 +1148,46 @@ impl SnowGui {
         );
         self.last_running = false;
     }
+
+    fn update_snowflakes(&mut self, screen_size: egui::Vec2) {
+        // Only update snowflakes if About dialog is open
+        if !self.about_dialog.is_open() {
+            self.snowflakes.clear();
+            return;
+        }
+
+        let now = Instant::now();
+        let delta_time = now.duration_since(self.last_snowflake_time).as_secs_f32();
+        self.last_snowflake_time = now;
+
+        // Spawn new snowflakes
+        self.snowflake_spawn_timer += delta_time;
+        if self.snowflake_spawn_timer > 0.1 {
+            // Spawn every 100ms
+            self.snowflake_spawn_timer = 0.0;
+            if self.snowflakes.len() < 50 {
+                // Limit to 50 snowflakes
+                self.snowflakes.push(Snowflake::new(screen_size.x));
+            }
+        }
+
+        // Update existing snowflakes
+        for snowflake in &mut self.snowflakes {
+            snowflake.update(delta_time);
+        }
+
+        // Remove snowflakes that are off screen
+        self.snowflakes
+            .retain(|snowflake| !snowflake.is_off_screen(screen_size.y));
+    }
+
+    fn draw_snowflakes(&self, ui: &egui::Ui) {
+        if self.about_dialog.is_open() {
+            for snowflake in &self.snowflakes {
+                snowflake.draw(ui);
+            }
+        }
+    }
 }
 
 impl eframe::App for SnowGui {
@@ -1188,6 +1289,9 @@ impl eframe::App for SnowGui {
         // About dialog
         self.about_dialog.update(ctx);
         self.ui_active &= !self.about_dialog.is_open();
+
+        // Update snowflakes
+        self.update_snowflakes(ctx.screen_rect().size());
 
         // Log window
         persistent_window!(&self, "Log")
@@ -1432,6 +1536,9 @@ impl eframe::App for SnowGui {
                     });
                 }
             });
+
+            // Draw snowflakes behind the dialogs
+            self.draw_snowflakes(ui);
 
             // Debugger views
             if self.emu.is_initialized() && !self.in_fullscreen {
