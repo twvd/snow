@@ -594,6 +594,23 @@ impl SnowGui {
             });
             ui.menu_button("Help", |ui| {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
+
+                if ui.button("Documentation...").clicked() {
+                    ctx.open_url(egui::OpenUrl::new_tab("https://docs.snowemu.com/"));
+                    ui.close_menu();
+                }
+                if ui.button("Website...").clicked() {
+                    ctx.open_url(egui::OpenUrl::new_tab("https://snowemu.com/"));
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui.button("Report an issue...").clicked() {
+                    ctx.open_url(egui::OpenUrl::new_tab(
+                        "https://github.com/twvd/snow/issues/new/choose",
+                    ));
+                    ui.close_menu();
+                }
+                ui.separator();
                 if ui.button("About Snow").clicked() {
                     self.about_dialog.open();
                     ui.close_menu();
