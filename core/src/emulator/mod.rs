@@ -158,7 +158,7 @@ dispatch! {
         fn cpu_prefetch_refill(&mut self) -> Result<()> { prefetch_refill() }
         fn cpu_reset(&mut self) -> Result<()> { reset() }
 
-        fn bus_reset(&mut self) -> Result<()> { bus.reset() }
+        fn bus_reset(&mut self) -> Result<()> { bus.reset(true) }
         fn bus_write(&mut self, addr: Address, val: Byte) -> crate::bus::BusResult<Byte> { bus.write(addr, val) }
         fn bus_inspect_read(&mut self, addr: Address) -> Option<Byte> { bus.inspect_read(addr) }
         fn bus_inspect_write(&mut self, addr: Address, val: Byte) -> Option<()> { bus.inspect_write(addr, val) }

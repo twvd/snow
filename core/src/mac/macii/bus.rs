@@ -499,13 +499,15 @@ where
         BusResult::Ok(val)
     }
 
-    fn reset(&mut self) -> Result<()> {
-        // Clear RAM
-        self.ram.fill(0);
+    fn reset(&mut self, hard: bool) -> Result<()> {
+        if hard {
+            // Clear RAM
+            self.ram.fill(0);
 
-        // Disable memory test
-        if let Some((addr, value)) = self.model.disable_memtest() {
-            self.write_ram(addr, value);
+            // Disable memory test
+            if let Some((addr, value)) = self.model.disable_memtest() {
+                self.write_ram(addr, value);
+            }
         }
 
         // Take the ADB transceiver out because that contains crossbeam channels..
@@ -513,11 +515,15 @@ where
         let _ = std::mem::replace(&mut self.via1.adb, oldadb);
 
         self.scc = Scc::new();
+        self.via2 = Via2::new(self.model);
+        for d in self.nubus_devices.iter_mut().filter_map(|f| f.as_mut()) {
+            d.reset();
+        }
+        self.asc.reset();
 
-        self.overlay = true;
-        self.via2.b_out.set_vfc3(false);
-        self.via2.ddrb.set_vfc3(false);
         self.amu_active = false;
+        self.mouse_ready = false;
+        self.overlay = true;
         Ok(())
     }
 }
