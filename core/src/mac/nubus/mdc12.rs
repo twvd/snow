@@ -108,6 +108,12 @@ where
         }
     }
 
+    pub fn reset(&mut self) {
+        self.vblank_irq = false;
+        self.vblank_enable = false;
+        self.ctrl.0 = 0;
+    }
+
     pub fn get_irq(&self) -> bool {
         self.vblank_irq
     }

@@ -76,6 +76,15 @@ impl Default for Asc {
 }
 
 impl Asc {
+    pub fn reset(&mut self) {
+        self.irq = false;
+        self.fifo_status.0 = 0;
+        self.mode = AscMode::Off;
+        self.fifo_l.clear();
+        self.fifo_r.clear();
+        self.wavetables.fill(0);
+    }
+
     pub fn is_silent(&self) -> bool {
         self.silent
     }

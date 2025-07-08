@@ -527,13 +527,15 @@ where
         BusResult::Ok(val)
     }
 
-    fn reset(&mut self) -> Result<()> {
-        // Clear RAM
-        self.ram.fill(0);
+    fn reset(&mut self, hard: bool) -> Result<()> {
+        if hard {
+            // Clear RAM
+            self.ram.fill(0);
 
-        // Disable memory test
-        if let Some((addr, value)) = self.model.disable_memtest() {
-            self.write_ram(addr, value);
+            // Disable memory test
+            if let Some((addr, value)) = self.model.disable_memtest() {
+                self.write_ram(addr, value);
+            }
         }
 
         // Take the ADB transceiver out because that contains crossbeam channels..
