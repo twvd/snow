@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::bus::{Address, Bus, BusResult, IrqSource};
+use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::cpu_m68k::M68000_SR_MASK;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
@@ -2285,8 +2286,22 @@ where
         }
 
         debug!("RESET instruction");
-        self.bus.reset()?;
         self.advance_cycles(128)?;
+
+        // The MacII / System 4.2 restart routine relies on part of a JMP
+        // being in the prefetch queue because pulling on reset will re-
+        // activate overlay. Re-fill now to have the full JMP pre-fetched.
+        self.prefetch_refill()?;
+
+        // Pull on reset
+        self.bus.reset(false)?;
+
+        // The (external) FPU is connected to the RESET line, so we reset
+        // it here. Not for the models with a CPU with a built-in FPU.
+        if CPU_TYPE == M68020 {
+            self.regs.fpu = FpuRegisterFile::default();
+        }
+
         Ok(())
     }
 

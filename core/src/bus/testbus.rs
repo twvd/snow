@@ -103,7 +103,7 @@ where
         BusResult::Ok(val)
     }
 
-    fn reset(&mut self) -> Result<()> {
+    fn reset(&mut self, _hard: bool) -> Result<()> {
         Ok(())
     }
 }
