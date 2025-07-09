@@ -607,16 +607,14 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::LoadHddImage(id, filename) => {
                         match self.load_hdd_image(&filename, id) {
-                            Ok(_) => info!(
-                                "SCSI ID #{}: image '{}' loaded",
-                                id,
-                                filename.to_string_lossy()
-                            ),
+                            Ok(_) => {
+                                info!("SCSI ID #{}: image '{}' loaded", id, filename.display());
+                            }
                             Err(e) => {
                                 self.user_error(&format!(
-                                    "SCSI ID #{}: cannot load image '{}': {}",
+                                    "SCSI ID #{}: cannot load image '{}': {:#}",
                                     id,
-                                    filename.to_string_lossy(),
+                                    filename.display(),
                                     e
                                 ));
                             }

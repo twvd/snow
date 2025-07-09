@@ -1,7 +1,9 @@
 //! SCSI hard disk drive (block device)
 
+use anyhow::{bail, Context, Result};
 #[cfg(feature = "mmap")]
 use memmap2::MmapMut;
+
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -26,92 +28,72 @@ impl ScsiTargetDisk {
     /// the emulator for fast access and automatic writes back to disk,
     /// at the discretion of the operating system.
     #[cfg(feature = "mmap")]
-    pub(super) fn load_disk(filename: &Path) -> Option<Self> {
+    pub(super) fn load_disk(filename: &Path) -> Result<Self> {
         use fs2::FileExt;
-        use std::fs::OpenOptions;
+        use std::{
+            fs::OpenOptions,
+            io::{Seek, SeekFrom},
+        };
 
         if !Path::new(filename).exists() {
-            // File not found
-            return None;
+            bail!("File not found: {}", filename.display());
         }
 
-        let f = OpenOptions::new()
+        let mut f = OpenOptions::new()
             .read(true)
             .write(true)
             .open(filename)
-            .inspect_err(|e| {
-                log::error!(
-                    "Opening disk image {} failed: {}",
-                    filename.to_string_lossy(),
-                    e
-                );
-            })
-            .ok()?;
+            .with_context(|| format!("Failed to open {}", filename.display()))?;
 
-        f.lock_exclusive()
-            .inspect_err(|e| {
-                log::error!(
-                    "Cannot lock disk image {}: {}",
-                    filename.to_string_lossy(),
-                    e
-                );
-            })
-            .ok()?;
+        let file_size = f.seek(SeekFrom::End(0))? as usize;
+        f.seek(SeekFrom::Start(0))?;
 
-        let mmapped = unsafe {
-            MmapMut::map_mut(&f)
-                .inspect_err(|e| {
-                    log::error!(
-                        "Cannot mmap image file {}: {}",
-                        filename.to_string_lossy(),
-                        e
-                    );
-                })
-                .ok()?
-        };
-
-        if mmapped.len() % DISK_BLOCKSIZE != 0 {
-            log::error!(
+        if file_size % DISK_BLOCKSIZE != 0 {
+            bail!(
                 "Cannot load disk image {}: not multiple of {}",
-                filename.to_string_lossy(),
+                filename.display(),
                 DISK_BLOCKSIZE
             );
-            return None;
         }
 
-        Some(Self {
+        f.lock_exclusive()
+            .with_context(|| format!("Failed to lock {}", filename.display()))?;
+
+        let mmapped = unsafe {
+            use memmap2::MmapOptions;
+
+            MmapOptions::new()
+                .len(file_size)
+                .map_mut(&f)
+                .with_context(|| format!("Failed to mmap file {}", filename.display()))?
+        };
+
+        Ok(Self {
             disk: mmapped,
             path: filename.to_path_buf(),
         })
     }
 
     #[cfg(not(feature = "mmap"))]
-    pub(super) fn load_disk(filename: &Path) -> Option<Self> {
+    pub(super) fn load_disk(filename: &Path) -> Result<Self> {
         use std::fs;
 
         if !Path::new(filename).exists() {
-            // File not found
-            return None;
+            bail!("File not found: {}", filename.display());
         }
 
-        let disk = match fs::read(filename) {
-            Ok(d) => d,
-            Err(e) => {
-                log::error!("Failed to open file: {}", e);
-                return None;
-            }
-        };
+        let disk = fs::read(filename)
+            .with_context(|| format!("Failed to open file {}", filename.display()))?;
 
         if disk.len() % DISK_BLOCKSIZE != 0 {
-            log::error!(
+            bail!(
                 "Cannot load disk image {}: not multiple of {}",
-                filename.to_string_lossy(),
+                filename.display(),
                 DISK_BLOCKSIZE
             );
-            return None;
         }
 
-        Some(Self {
+        Ok(Self {
             disk,
             path: filename.to_path_buf(),
         })
