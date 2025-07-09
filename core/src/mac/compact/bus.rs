@@ -8,7 +8,7 @@ use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
 use crate::mac::scc::Scc;
-use crate::mac::scsi::ScsiController;
+use crate::mac::scsi::controller::ScsiController;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::MacModel;
