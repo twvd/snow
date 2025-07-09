@@ -624,7 +624,7 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     EmulatorCommand::DetachHddImage(id) => {
-                        self.config.scsi_mut().detach_disk_at(id);
+                        self.config.scsi_mut().detach_target(id);
                         info!("SCSI ID #{}: disk detached", id);
                         self.status_update()?;
                     }

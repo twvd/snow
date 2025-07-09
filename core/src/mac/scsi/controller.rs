@@ -2,13 +2,10 @@
 
 use std::collections::VecDeque;
 use std::path::Path;
-use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 
 use log::*;
-#[cfg(feature = "mmap")]
-use memmap2::MmapMut;
 use num_derive::FromPrimitive;
 use num_derive::ToPrimitive;
 use num_traits::FromPrimitive;
@@ -18,12 +15,12 @@ use serde::{Deserialize, Serialize};
 use crate::bus::{Address, BusMember};
 use crate::dbgprop_byte;
 use crate::debuggable::Debuggable;
+use crate::mac::scsi::disk::ScsiTargetDisk;
+use crate::mac::scsi::disk::DISK_BLOCKSIZE;
 use crate::types::LatchingEvent;
 
 pub const STATUS_GOOD: u8 = 0;
 pub const STATUS_CHECK_CONDITION: u8 = 2;
-
-pub const DISK_BLOCKSIZE: usize = 512;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq, strum::IntoStaticStr)]
@@ -150,7 +147,6 @@ bitfield! {
 
 /// NCR 5380 SCSI controller
 pub struct ScsiController {
-    pub dbg_pc: Address,
     busphase: ScsiBusPhase,
     reg_mr: NcrRegMr,
     reg_icr: NcrRegIcr,
@@ -178,15 +174,8 @@ pub struct ScsiController {
     /// Response buffer
     responsebuf: VecDeque<u8>,
 
-    /// Disks
-    #[cfg(feature = "mmap")]
-    disks: [Option<MmapMut>; Self::MAX_TARGETS],
-
-    #[cfg(not(feature = "mmap"))]
-    disks: [Option<Vec<u8>>; Self::MAX_TARGETS],
-
-    /// Disk image paths
-    disk_paths: [Option<PathBuf>; Self::MAX_TARGETS],
+    /// Attached targets
+    targets: [Option<ScsiTargetDisk>; Self::MAX_TARGETS],
 
     set_req: LatchingEvent,
 }
@@ -200,108 +189,16 @@ impl ScsiController {
 
     /// Returns the capacity of an emulated disk or None if not present.
     pub fn get_disk_capacity(&self, id: usize) -> Option<usize> {
-        Some(self.disks[id].as_ref()?.len())
+        self.targets[id].as_ref().map(|t| t.capacity())
     }
 
     /// Returns the image filename of an emulated disk
     pub fn get_disk_imagefn(&self, id: usize) -> Option<&Path> {
-        self.disk_paths[id].as_deref()
-    }
-
-    /// Try to load a disk image, given the filename of the image.
-    ///
-    /// This locks the file on disk and memory maps the file for use by
-    /// the emulator for fast access and automatic writes back to disk,
-    /// at the discretion of the operating system.
-    #[cfg(feature = "mmap")]
-    fn load_disk(filename: &Path) -> Option<MmapMut> {
-        use fs2::FileExt;
-        use std::fs::OpenOptions;
-
-        if !Path::new(filename).exists() {
-            // File not found
-            return None;
-        }
-
-        let f = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(filename)
-            .inspect_err(|e| {
-                error!(
-                    "Opening disk image {} failed: {}",
-                    filename.to_string_lossy(),
-                    e
-                );
-            })
-            .ok()?;
-
-        f.lock_exclusive()
-            .inspect_err(|e| {
-                error!(
-                    "Cannot lock disk image {}: {}",
-                    filename.to_string_lossy(),
-                    e
-                );
-            })
-            .ok()?;
-
-        let mmapped = unsafe {
-            MmapMut::map_mut(&f)
-                .inspect_err(|e| {
-                    error!(
-                        "Cannot mmap image file {}: {}",
-                        filename.to_string_lossy(),
-                        e
-                    );
-                })
-                .ok()?
-        };
-
-        if mmapped.len() % DISK_BLOCKSIZE != 0 {
-            error!(
-                "Cannot load disk image {}: not multiple of {}",
-                filename.to_string_lossy(),
-                DISK_BLOCKSIZE
-            );
-            return None;
-        }
-
-        Some(mmapped)
-    }
-
-    #[cfg(not(feature = "mmap"))]
-    fn load_disk(filename: &Path) -> Option<Vec<u8>> {
-        use std::fs;
-
-        if !Path::new(filename).exists() {
-            // File not found
-            return None;
-        }
-
-        let disk = match fs::read(filename) {
-            Ok(d) => d,
-            Err(e) => {
-                error!("Failed to open file: {}", e);
-                return None;
-            }
-        };
-
-        if disk.len() % DISK_BLOCKSIZE != 0 {
-            error!(
-                "Cannot load disk image {}: not multiple of {}",
-                filename.to_string_lossy(),
-                DISK_BLOCKSIZE
-            );
-            return None;
-        }
-
-        Some(disk)
+        self.targets[id].as_ref().map(|t| t.path.as_ref())
     }
 
     pub fn new() -> Self {
         Self {
-            dbg_pc: 0,
             busphase: ScsiBusPhase::Free,
             reg_mr: NcrRegMr(0),
             reg_icr: NcrRegIcr(0),
@@ -316,9 +213,8 @@ impl ScsiController {
             cmdlen: 0,
             dataout_len: 0,
             status: 0,
-            disks: Default::default(),
-            disk_paths: Default::default(),
             set_req: Default::default(),
+            targets: Default::default(),
         }
     }
 
@@ -330,15 +226,14 @@ impl ScsiController {
         if !Path::new(filename).exists() {
             bail!("File {} does not exist", filename.to_string_lossy());
         }
-        self.disks[scsi_id] = Some(Self::load_disk(filename).context("Error loading disk")?);
-        self.disk_paths[scsi_id] = Some(filename.to_path_buf());
+        self.targets[scsi_id] =
+            Some(ScsiTargetDisk::load_disk(filename).context("Error loading disk")?);
         Ok(())
     }
 
-    /// Detaches a disk image from the given SCSI ID
-    pub fn detach_disk_at(&mut self, scsi_id: usize) {
-        self.disks[scsi_id] = None;
-        self.disk_paths[scsi_id] = None;
+    /// Detaches a target from the given SCSI ID
+    pub fn detach_target(&mut self, scsi_id: usize) {
+        self.targets[scsi_id] = None;
     }
 
     /// Translates a SCSI ID on the bus (bit position) to a numeric ID
@@ -470,6 +365,9 @@ impl ScsiController {
 
     fn cmd_run(&mut self, outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
         let cmd = &self.cmdbuf;
+        let Some(target) = self.targets[self.sel_id].as_mut() else {
+            bail!("SCSI command to disconnected target ID {}", self.sel_id);
+        };
 
         match cmd[0] {
             0x00 => {
@@ -488,16 +386,16 @@ impl ScsiController {
             }
             0x08 => {
                 // READ(6)
-                let disk = self.disks[self.sel_id].as_ref().unwrap();
                 let blocknum = (u32::from_be_bytes(cmd[0..4].try_into()?) & 0x1F_FFFF) as usize;
                 let blockcnt = if cmd[4] == 0 { 256 } else { cmd[4] as usize };
 
-                if (blocknum + blockcnt) * DISK_BLOCKSIZE > disk.len() {
+                if (blocknum + blockcnt) * DISK_BLOCKSIZE > target.capacity() {
                     error!("Reading beyond disk");
                     Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                 } else {
                     Ok(ScsiCmdResult::DataIn(
-                        disk[(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
+                        target.disk
+                            [(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
                             .to_vec(),
                     ))
                 }
@@ -508,12 +406,12 @@ impl ScsiController {
                 let blockcnt = if cmd[4] == 0 { 256 } else { cmd[4] as usize };
 
                 if let Some(data) = outdata {
-                    let disk = self.disks[self.sel_id].as_mut().unwrap();
-                    if (blocknum + blockcnt) * DISK_BLOCKSIZE > disk.len() {
+                    if (blocknum + blockcnt) * DISK_BLOCKSIZE > target.capacity() {
                         error!("Writing beyond disk");
                         Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                     } else {
-                        disk[(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
+                        target.disk
+                            [(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
                             .copy_from_slice(data);
                         Ok(ScsiCmdResult::Status(STATUS_GOOD))
                     }
@@ -597,7 +495,7 @@ impl ScsiController {
             0x25 => {
                 // READ CAPACITY(10)
                 let mut result = vec![0; 40];
-                let blocks = self.disks[self.sel_id].as_ref().unwrap().len() / DISK_BLOCKSIZE;
+                let blocks = target.capacity() / DISK_BLOCKSIZE;
 
                 // Amount of blocks
                 result[0..4].copy_from_slice(&((blocks as u32) - 1).to_be_bytes());
@@ -607,16 +505,16 @@ impl ScsiController {
             }
             0x28 => {
                 // READ(10)
-                let disk = self.disks[self.sel_id].as_ref().unwrap();
                 let blocknum = (u32::from_be_bytes(cmd[2..6].try_into()?)) as usize;
                 let blockcnt = (u16::from_be_bytes(cmd[7..9].try_into()?)) as usize;
 
-                if (blocknum + blockcnt) * DISK_BLOCKSIZE > disk.len() {
+                if (blocknum + blockcnt) * DISK_BLOCKSIZE > target.capacity() {
                     error!("Reading beyond disk");
                     Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                 } else {
                     Ok(ScsiCmdResult::DataIn(
-                        disk[(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
+                        target.disk
+                            [(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
                             .to_vec(),
                     ))
                 }
@@ -627,12 +525,12 @@ impl ScsiController {
                 let blockcnt = (u16::from_be_bytes(cmd[7..9].try_into()?)) as usize;
 
                 if let Some(data) = outdata {
-                    let disk = self.disks[self.sel_id].as_mut().unwrap();
-                    if (blocknum + blockcnt) * DISK_BLOCKSIZE > disk.len() {
+                    if (blocknum + blockcnt) * DISK_BLOCKSIZE > target.capacity() {
                         error!("Writing beyond disk");
                         Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                     } else {
-                        disk[(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
+                        target.disk
+                            [(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
                             .copy_from_slice(data);
                         Ok(ScsiCmdResult::Status(STATUS_GOOD))
                     }
@@ -899,7 +797,7 @@ impl BusMember<Address> for ScsiController {
                                 self.set_phase(ScsiBusPhase::Free);
                                 return Some(());
                             };
-                            if self.disks[id].is_none() {
+                            if self.targets[id].is_none() {
                                 // No device present at this ID
                                 self.set_phase(ScsiBusPhase::Free);
                                 return Some(());
