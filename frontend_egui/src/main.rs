@@ -7,6 +7,7 @@ mod dialogs;
 mod emulator;
 mod helpers;
 mod keymap;
+mod settings;
 mod uniform;
 mod util;
 mod widgets;
