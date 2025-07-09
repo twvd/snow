@@ -1,6 +1,7 @@
 use crate::dialogs::about::AboutDialog;
 use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
 use crate::keymap::map_winit_keycode;
+use crate::settings::AppSettings;
 use crate::uniform::{UniformAction, UNIFORM_ACTION};
 use crate::widgets::breakpoints::BreakpointsWidget;
 use crate::widgets::disassembly::Disassembly;
@@ -163,6 +164,7 @@ pub struct SnowGui {
     last_snowflake_time: Instant,
     snowflake_spawn_timer: f32,
 
+    settings: AppSettings,
     emu: EmulatorState,
 }
 
@@ -293,6 +295,7 @@ impl SnowGui {
             last_snowflake_time: Instant::now(),
             snowflake_spawn_timer: 0.0,
 
+            settings: AppSettings::load(),
             emu: EmulatorState::default(),
         };
 
@@ -388,6 +391,18 @@ impl SnowGui {
                     self.workspace_dialog.save_file();
                     ui.close_menu();
                 }
+                ui.separator();
+                ui.menu_button("Recent workspaces", |ui| {
+                    ui.set_min_width(Self::SUBMENU_WIDTH);
+                    for (i, path, display_name) in self.settings.get_recent_workspaces_for_display()
+                    {
+                        if ui.button(format!("{}: {}", i, display_name)).clicked() {
+                            self.load_workspace(Some(&path));
+                            self.update_titlebar(ctx);
+                            ui.close_menu();
+                        }
+                    }
+                });
                 ui.separator();
                 if ui.button("Exit").clicked() {
                     std::process::exit(0);
@@ -1008,6 +1023,7 @@ impl SnowGui {
                 Ok(ws) => {
                     self.workspace = ws;
                     self.workspace_file = Some(path.to_path_buf());
+                    self.settings.add_recent_workspace(path);
                 }
                 Err(e) => self.show_error(&format!("Failed to load workspace: {}", e)),
             }
@@ -1446,6 +1462,7 @@ impl eframe::App for SnowGui {
                         path = osstr.into();
                     }
                     self.save_workspace(&path);
+                    self.settings.add_recent_workspace(&path);
                 } else {
                     // 'Load workspace...'
                     self.load_workspace(Some(&path));
