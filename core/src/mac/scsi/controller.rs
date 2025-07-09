@@ -1,44 +1,4 @@
-//! SCSI bus and controller stuff
-//!
-//! ## Bus phases and transitions
-//! ```mermaid
-//! stateDiagram-v2
-//!     [*] --> Idle
-//!
-//!     Idle --> Arbitration : Assert BSY
-//!     Arbitration --> Selection : Assert SEL
-//!     Arbitration --> Idle : Release BSY (Lose Arbitration)
-//!     
-//!     Selection --> Command : Assert C/D, REQ
-//!     Command --> DataTransfer : Assert I/O, REQ
-//!     DataTransfer --> Status : Assert REQ, Status Byte
-//!     Status --> Message : Assert MSG, REQ
-//!     Message --> Idle : Release BSY (End of Command)
-//!     
-//!     Idle --> Reselection : Assert BSY, SEL
-//!     Reselection --> Command : Assert C/D, REQ
-//!     
-//!     StateChange --> Idle: Reset (Release all signals)
-//! ```
-//!
-//! ## Target -> Initiator data transfer flow
-//! ```mermaid
-//! stateDiagram
-//!     [*] --> Selection: Initiator selects Target
-//!     Selection --> Command: Initiator sends READ (6) Command
-//!     Command --> Data: Target enters Data Phase
-//!     Data: Data Phase\n(C/D=0, I/O=1, MSG=0, REQ asserted)
-//!     Data --> REQ_ACK: REQ/ACK Handshake for Data Transfer
-//!     REQ_ACK --> More_Data: Data transfer continues (REQ/ACK Handshake)
-//!     More_Data --> REQ_ACK: Next block of data ready on the bus
-//!     REQ_ACK --> End_Data: All blocks transferred
-//!     End_Data --> Status_Transition: Target changes Phase Signals
-//!     Status_Transition --> Status: Status Phase begins (C/D=1, I/O=1, MSG=0)
-//!     Status --> REQ_ACK_Status: REQ/ACK Handshake for Status Byte
-//!     REQ_ACK_Status --> Message: Status Byte sent, Target enters Message Phase
-//!     Message --> REQ_ACK_Message: REQ/ACK Handshake for Message (Usually 0x00)
-//!     REQ_ACK_Message --> End: Command complete
-//! ```
+//! NCR5380 SCSI controller
 
 use std::collections::VecDeque;
 use std::path::Path;
