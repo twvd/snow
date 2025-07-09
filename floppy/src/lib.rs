@@ -6,7 +6,6 @@ use rand::Rng;
 use std::collections::HashMap;
 
 use flux::FluxTicks;
-use log::*;
 use strum::EnumIter;
 
 pub mod built_info {
@@ -222,20 +221,10 @@ impl FloppyImage {
 
     /// Resizes the length of a track to the actual size used in the image
     pub(crate) fn set_actual_track_length(&mut self, side: usize, track: usize, sz: usize) {
-        let TrackLength::Bits(old_sz) = self.get_track_length(side, track) else {
+        let TrackLength::Bits(_old_sz) = self.get_track_length(side, track) else {
             panic!("Invalid operation on a flux track")
         };
-        let perc_inc = (100
-            - (std::cmp::min(sz as isize, old_sz as isize) * 100)
-                / std::cmp::max(sz as isize, old_sz as isize))
-        .wrapping_abs();
 
-        if old_sz != 0 && perc_inc >= 10 {
-            warn!(
-                "Side {} track {}: length changed by {}% ({} -> {})",
-                side, track, perc_inc, old_sz, sz
-            );
-        }
         self.bitlen[side][track] = sz;
         let mut rng = rand::rng();
         self.trackdata[side][track].resize_with(sz / 8 + 1, || rng.random());
