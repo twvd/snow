@@ -28,4 +28,4 @@
 
 # Guides
 
- - [Converting volume images using Disk Jockey](./guides/dj_volume.md)
+ - [Converting volume disk images](./guides/volume.md)

@@ -30,7 +30,7 @@ partitions and the SCSI driver. Other emulators, such as Mini vMac, use
 'volume images', which is an image of only a single HFS volume/partition.
 Volume images are not compatible with Snow because they contain insufficient
 data for the Mac to boot. If you want to convert a volume image to a device
-image you can use in Snow, see [Converting volume images using Disk Jockey](../../guides/dj_volume.md).
+image you can use in Snow, see [Converting volume images](../../guides/volume.md).
 
 To mount an existing image file, use the 'Load disk image...' menu action
 to browse for a disk image. Note that an image file must be a multiple of

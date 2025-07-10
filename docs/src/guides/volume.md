@@ -1,8 +1,10 @@
-# Converting volume images using Disk Jockey
+# Converting volume images
 
 For hard drives, Snow uses 'device images' where other emulators, such as
 Mini vMac, use 'volume images'. See [working with hard drives](../manual/media/harddrives.md)
 for more information.
+
+## Using Disk Jockey
 
 [Disk Jockey](https://diskjockey.onegeekarmy.eu/) is an easy tool to, among
 other things, convert a volume image to a device image. This guide explains
