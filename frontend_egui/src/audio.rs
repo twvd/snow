@@ -26,16 +26,26 @@ pub struct SDLAudioSink {
 }
 
 impl AudioCallback for SDLAudioSink {
-    type Channel = u8;
+    type Channel = i16;
 
-    fn callback(&mut self, out: &mut [u8]) {
+    fn callback(&mut self, out: &mut [i16]) {
+        // The formula below SHOULD be ((s as i16) - 128) * 256, but for some reason
+        // if the audio clips on MacOS hosts with CERTAIN audio outputs, the sound
+        // in the OS will be distorted for as long as the emulator is running.
+        // Reducing the maximum sample amplitude seems to not trigger this, so that
+        // is the workaround for now.
+        //
+        // Last tested on MacOS Sequoia, SDL 2.32.8.
+
         if let Ok(buffer) = self.recv.try_recv() {
             self.last_sample = buffer.last().copied().unwrap();
-            out.copy_from_slice(&buffer);
+            for i in 0..out.len() {
+                out[i] = ((buffer[i] as i16) - 128) * 128;
+            }
         } else {
             // Audio is late. Continue the last output sample to reduce
             // pops and other abrupt noises.
-            out.fill(self.last_sample);
+            out.fill(((self.last_sample as i16) - 128) * 128);
         }
     }
 }
@@ -49,7 +59,8 @@ impl SDLAudioSink {
             let spec = AudioSpecDesired {
                 // Audio sample frequency is tied to monitor's horizontal sync
                 // 370 horizontal lines * 60.147 frames/sec = 22.254 KHz
-                freq: Some(22254),
+                // Round down to a safe commonly used value (22050), 0.9% off
+                freq: Some(22050),
                 channels: Some(AUDIO_CHANNELS.try_into().unwrap()),
                 samples: Some(AUDIO_BUFFER_SAMPLES.try_into().unwrap()),
             };

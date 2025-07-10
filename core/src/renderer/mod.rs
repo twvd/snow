@@ -9,7 +9,7 @@ use std::ops::{Deref, DerefMut};
 pub type AudioReceiver = Receiver<Box<[u8]>>;
 
 /// Amount of samples in the audio buffer
-pub const AUDIO_BUFFER_SAMPLES: usize = 500;
+pub const AUDIO_BUFFER_SAMPLES: usize = 512;
 
 /// Audio buffer size (total for all channels)
 pub const AUDIO_BUFFER_SIZE: usize = AUDIO_BUFFER_SAMPLES * AUDIO_CHANNELS;
