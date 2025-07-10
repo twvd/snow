@@ -25,3 +25,7 @@
   - [Peripherals](./manual/debugging/peripherals.md)
   - [Memory viewer](./manual/debugging/memory.md)
   - [Watchpoints](./manual/debugging/watchpoints.md)
+
+# Guides
+
+ - [Converting volume images using Disk Jockey](./guides/dj_volume.md)
