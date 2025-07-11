@@ -8,6 +8,10 @@ pub mod target;
 pub const STATUS_GOOD: u8 = 0;
 pub const STATUS_CHECK_CONDITION: u8 = 2;
 
+pub const CC_KEY_MEDIUM_ERROR: u8 = 0x03;
+
+pub const ASC_MEDIUM_NOT_PRESENT: u16 = 0x3A00;
+
 const fn scsi_cmd_len(cmdnum: u8) -> Option<usize> {
     match cmdnum {
         // UNIT READY
@@ -37,6 +41,8 @@ const fn scsi_cmd_len(cmdnum: u8) -> Option<usize> {
         | 0x2F
         // READ BUFFER(10)
         | 0x3C
+        // READ TOC
+        | 0x43
         => Some(10),
         _ => {
             None
