@@ -17,7 +17,8 @@ use crate::dbgprop_byte;
 use crate::debuggable::Debuggable;
 use crate::mac::scsi::disk::ScsiTargetDisk;
 use crate::mac::scsi::disk::DISK_BLOCKSIZE;
-use crate::mac::scsi::ScsiTarget;
+use crate::mac::scsi::target::ScsiTarget;
+use crate::mac::scsi::ScsiCmdResult;
 use crate::types::LatchingEvent;
 
 pub const STATUS_GOOD: u8 = 0;
@@ -39,16 +40,6 @@ enum ScsiBusPhase {
     Status,
     MessageIn,
     MessageOut,
-}
-
-/// Result of a command
-pub(super) enum ScsiCmdResult {
-    /// Immediately turn to the Status phase
-    Status(u8),
-    /// Returns data to the initiator
-    DataIn(Vec<u8>),
-    /// Expects data written to target
-    DataOut(usize),
 }
 
 #[allow(non_camel_case_types)]

@@ -8,8 +8,8 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crate::mac::scsi::controller::STATUS_CHECK_CONDITION;
+use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::scsi::ScsiCmdResult;
-use crate::mac::scsi::ScsiTarget;
 
 pub const DISK_BLOCKSIZE: usize = 512;
 
