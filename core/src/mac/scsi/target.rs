@@ -12,8 +12,12 @@ pub enum ScsiTargetType {
 }
 
 pub(super) trait ScsiTarget {
+    fn unit_ready(&mut self) -> Result<ScsiCmdResult>;
     fn inquiry(&mut self, cmd: &[u8]) -> Result<ScsiCmdResult>;
     fn mode_sense(&mut self, page: u8) -> Result<ScsiCmdResult>;
+
+    /// Request sense result (code, asc, ascq)
+    fn req_sense(&mut self) -> (u8, u16);
 
     // For block devices
     fn blocksize(&self) -> Option<usize>;
@@ -31,12 +35,14 @@ pub(super) trait ScsiTarget {
         match cmd[0] {
             0x00 => {
                 // UNIT READY
-                Ok(ScsiCmdResult::Status(STATUS_GOOD))
+                self.unit_ready()
             }
             0x03 => {
                 // REQUEST SENSE
-                let result = vec![0; 13];
-                // 0 = no error
+                let (key, asc) = self.req_sense();
+                let mut result = vec![0; 14];
+                result[2] = key & 0x0F;
+                result[12..14].copy_from_slice(&asc.to_be_bytes());
                 Ok(ScsiCmdResult::DataIn(result))
             }
             0x04 => {
