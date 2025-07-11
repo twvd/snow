@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::scsi::ScsiCmdResult;
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
+use crate::mac::scsi::STATUS_GOOD;
 
 pub const DISK_BLOCKSIZE: usize = 512;
 
@@ -105,6 +106,14 @@ impl ScsiTargetDisk {
 }
 
 impl ScsiTarget for ScsiTargetDisk {
+    fn req_sense(&mut self) -> (u8, u16) {
+        (0, 0)
+    }
+
+    fn unit_ready(&mut self) -> Result<ScsiCmdResult> {
+        Ok(ScsiCmdResult::Status(STATUS_GOOD))
+    }
+
     fn inquiry(&mut self, _cmd: &[u8]) -> Result<ScsiCmdResult> {
         let mut result = vec![0; 36];
 

@@ -9,20 +9,29 @@ use std::path::PathBuf;
 
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::scsi::ScsiCmdResult;
+use crate::mac::scsi::ASC_MEDIUM_NOT_PRESENT;
+use crate::mac::scsi::CC_KEY_MEDIUM_ERROR;
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
+use crate::mac::scsi::STATUS_GOOD;
 
 pub const DISK_BLOCKSIZE: usize = 512;
 
 pub(super) struct ScsiTargetCdrom {
     /// Disk contents
     #[cfg(feature = "mmap")]
-    pub(super) disk: Mmap,
+    pub(super) disk: Option<Mmap>,
 
     #[cfg(not(feature = "mmap"))]
-    pub(super) disk: Vec<u8>,
+    pub(super) disk: Option<Vec<u8>>,
 
     /// Path where the original image resides
     pub(super) path: PathBuf,
+
+    /// Check condition code
+    cc_code: u8,
+
+    /// Check condition ASC
+    cc_asc: u16,
 }
 
 impl ScsiTargetCdrom {
@@ -72,8 +81,10 @@ impl ScsiTargetCdrom {
         };
 
         Ok(Self {
-            disk: mmapped,
+            disk: Some(mmapped),
             path: filename.to_path_buf(),
+            cc_code: 0,
+            cc_asc: 0,
         })
     }
 
@@ -97,13 +108,34 @@ impl ScsiTargetCdrom {
         }
 
         Ok(Self {
-            disk,
+            disk: Some(disk),
             path: filename.to_path_buf(),
+            cc_code: 0,
+            cc_asc: 0,
         })
     }
 }
 
 impl ScsiTarget for ScsiTargetCdrom {
+    fn unit_ready(&mut self) -> Result<ScsiCmdResult> {
+        if self.disk.is_some() {
+            // CD inserted, ready
+            Ok(ScsiCmdResult::Status(STATUS_GOOD))
+        } else {
+            // No CD inserted
+            self.cc_code = CC_KEY_MEDIUM_ERROR;
+            self.cc_asc = ASC_MEDIUM_NOT_PRESENT;
+            Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+        }
+    }
+
+    fn req_sense(&mut self) -> (u8, u16) {
+        (
+            std::mem::take(&mut self.cc_code),
+            std::mem::take(&mut self.cc_asc),
+        )
+    }
+
     fn inquiry(&mut self, _cmd: &[u8]) -> Result<ScsiCmdResult> {
         let mut result = vec![0; 36];
 
@@ -149,11 +181,12 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn blocks(&self) -> Option<usize> {
-        Some(self.disk.len() / DISK_BLOCKSIZE)
+        Some(self.disk.as_ref()?.len() / DISK_BLOCKSIZE)
     }
 
     fn read(&self, block_offset: usize, block_count: usize) -> &[u8] {
-        &self.disk[(block_offset * DISK_BLOCKSIZE)..((block_offset + block_count) * DISK_BLOCKSIZE)]
+        &self.disk.as_ref().expect("read() but no media inserted")
+            [(block_offset * DISK_BLOCKSIZE)..((block_offset + block_count) * DISK_BLOCKSIZE)]
     }
 
     fn write(&mut self, _block_offset: usize, _data: &[u8]) {
