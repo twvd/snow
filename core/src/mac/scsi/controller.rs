@@ -16,6 +16,7 @@ use crate::bus::{Address, BusMember};
 use crate::dbgprop_byte;
 use crate::debuggable::Debuggable;
 use crate::mac::scsi::disk::ScsiTargetDisk;
+use crate::mac::scsi::scsi_cmd_len;
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::scsi::ScsiCmdResult;
 use crate::mac::scsi::STATUS_GOOD;
@@ -316,43 +317,6 @@ impl ScsiController {
         }
     }
 
-    fn cmd_get_len(&self, cmdnum: u8) -> usize {
-        match cmdnum {
-                // UNIT READY
-                0x00
-                // REQUEST SENSE
-                | 0x03
-                // FORMAT UNIT
-                | 0x04
-                // READ(6)
-                | 0x08
-                // WRITE(6)
-                | 0x0A
-                // INQUIRY
-                | 0x12
-                // MODE SELECT(6)
-                | 0x15
-                // MODE SENSE(6)
-                | 0x1A
-                => 6,
-                // READ CAPACITY(10)
-                0x25
-                // READ(10)
-                | 0x28
-                // WRITE(10)
-                | 0x2A
-                // VERIFY(10)
-                | 0x2F
-                // READ BUFFER(10)
-                | 0x3C
-                => 10,
-            _ => {
-                warn!("cmd_get_len unknown command: {:02X}", cmdnum);
-                6
-            }
-        }
-    }
-
     fn cmd_run(&mut self, outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
         let cmd = &self.cmdbuf;
         let Some(target) = self.targets[self.sel_id].as_mut() else {
@@ -500,12 +464,13 @@ impl BusMember<Address> for ScsiController {
                         }
                         if clr.assert_ack() {
                             if self.cmdbuf.is_empty() {
-                                self.cmdlen = self.cmd_get_len(self.reg_odr);
+                                self.cmdlen = scsi_cmd_len(self.reg_odr).unwrap_or_else(|| {
+                                    log::error!("Cmd length unknown for {:02X}", self.reg_odr);
+                                    6
+                                });
                             }
                             self.cmdbuf.push(self.reg_odr);
                             if self.cmdbuf.len() >= self.cmdlen {
-                                //debug!("cmd: {:X?}", self.cmdbuf);
-
                                 match self.cmd_run(None) {
                                     Ok(ScsiCmdResult::Status(status)) => {
                                         self.status = status;
