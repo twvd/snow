@@ -17,6 +17,7 @@ use crate::dbgprop_byte;
 use crate::debuggable::Debuggable;
 use crate::mac::scsi::disk::ScsiTargetDisk;
 use crate::mac::scsi::disk::DISK_BLOCKSIZE;
+use crate::mac::scsi::ScsiTarget;
 use crate::types::LatchingEvent;
 
 pub const STATUS_GOOD: u8 = 0;
@@ -41,7 +42,7 @@ enum ScsiBusPhase {
 }
 
 /// Result of a command
-enum ScsiCmdResult {
+pub(super) enum ScsiCmdResult {
     /// Immediately turn to the Status phase
     Status(u8),
     /// Returns data to the initiator
@@ -175,7 +176,7 @@ pub struct ScsiController {
     responsebuf: VecDeque<u8>,
 
     /// Attached targets
-    targets: [Option<ScsiTargetDisk>; Self::MAX_TARGETS],
+    targets: [Option<Box<dyn ScsiTarget + Send>>; Self::MAX_TARGETS],
 
     set_req: LatchingEvent,
 }
@@ -189,12 +190,12 @@ impl ScsiController {
 
     /// Returns the capacity of an emulated disk or None if not present.
     pub fn get_disk_capacity(&self, id: usize) -> Option<usize> {
-        self.targets[id].as_ref().map(|t| t.capacity())
+        self.targets[id].as_ref().and_then(|t| t.capacity())
     }
 
     /// Returns the image filename of an emulated disk
     pub fn get_disk_imagefn(&self, id: usize) -> Option<&Path> {
-        self.targets[id].as_ref().map(|t| t.path.as_ref())
+        self.targets[id].as_ref().and_then(|t| t.image_fn())
     }
 
     pub fn new() -> Self {
@@ -226,8 +227,9 @@ impl ScsiController {
         if !Path::new(filename).exists() {
             bail!("File {} does not exist", filename.to_string_lossy());
         }
-        self.targets[scsi_id] =
-            Some(ScsiTargetDisk::load_disk(filename).context("Error loading disk")?);
+        self.targets[scsi_id] = Some(Box::new(
+            ScsiTargetDisk::load_disk(filename).context("Error loading disk")?,
+        ));
         Ok(())
     }
 
@@ -386,33 +388,37 @@ impl ScsiController {
             }
             0x08 => {
                 // READ(6)
+                let Some(blocks) = target.blocks() else {
+                    log::warn!("READ(6) command to non-block device");
+                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                };
                 let blocknum = (u32::from_be_bytes(cmd[0..4].try_into()?) & 0x1F_FFFF) as usize;
                 let blockcnt = if cmd[4] == 0 { 256 } else { cmd[4] as usize };
 
-                if (blocknum + blockcnt) * DISK_BLOCKSIZE > target.capacity() {
+                if blocknum + blockcnt > blocks {
                     error!("Reading beyond disk");
                     Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                 } else {
                     Ok(ScsiCmdResult::DataIn(
-                        target.disk
-                            [(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
-                            .to_vec(),
+                        target.read(blocknum, blockcnt).to_vec(),
                     ))
                 }
             }
             0x0A => {
                 // WRITE(6)
+                let Some(blocks) = target.blocks() else {
+                    log::warn!("WRITE(6) command to non-block device");
+                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                };
                 let blocknum = (u32::from_be_bytes(cmd[0..4].try_into()?) & 0x1F_FFFF) as usize;
                 let blockcnt = if cmd[4] == 0 { 256 } else { cmd[4] as usize };
 
                 if let Some(data) = outdata {
-                    if (blocknum + blockcnt) * DISK_BLOCKSIZE > target.capacity() {
+                    if blocknum + blockcnt > blocks {
                         error!("Writing beyond disk");
                         Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                     } else {
-                        target.disk
-                            [(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
-                            .copy_from_slice(data);
+                        target.write(blocknum, data);
                         Ok(ScsiCmdResult::Status(STATUS_GOOD))
                     }
                 } else {
@@ -421,20 +427,7 @@ impl ScsiController {
             }
             0x12 => {
                 // INQUIRY
-                let mut result = vec![0; 36];
-
-                // 0 Peripheral qualifier (5-7), peripheral device type (4-0)
-                result[0] = 0; // Magnetic disk
-
-                // 4 Additional length (N-4), min. 32
-                result[4] = result.len() as u8 - 4;
-
-                // 8..16 Vendor identification
-                result[8..(8 + 4)].copy_from_slice(b"SNOW");
-
-                // 16..32 Product identification
-                result[16..(16 + 11)].copy_from_slice(b"VIRTUAL HDD");
-                Ok(ScsiCmdResult::DataIn(result))
+                target.inquiry(cmd)
             }
             0x15 => {
                 // MODE SELECT(6)
@@ -442,96 +435,53 @@ impl ScsiController {
             }
             0x1A => {
                 // MODE SENSE(6)
-                match cmd[2] & 0x3F {
-                    0x01 => {
-                        // Read/write recovery page
-                        let mut result = vec![0; 22];
-                        // Page code
-                        result[0] = 0x01;
-                        // Page length
-                        result[1] = 20;
-
-                        // Error recovery stuff, can remain at 0.
-                        // Also, HD SC Setup doesn't seem to care as long as we respond to this command.
-
-                        Ok(ScsiCmdResult::DataIn(result))
-                    }
-                    0x03 => {
-                        // Format device page
-
-                        let mut result = vec![0; 34];
-                        // Page code
-                        result[0] = 0x03;
-                        // Page length
-                        result[1] = 32;
-
-                        // The remaining bytes can remain at 0 as they indicate information on how many
-                        // sectors/tracks are reserved for defect management.
-                        // Also, HD SC Setup doesn't seem to care as long as we respond to this command.
-
-                        Ok(ScsiCmdResult::DataIn(result))
-                    }
-                    0x30 => {
-                        // ? Non-standard mode page
-
-                        let mut result = vec![0; 36];
-                        // Page code
-                        result[0] = 0x30;
-                        // Page length
-                        result[1] = 34;
-
-                        // The string below has to appear for HD SC Setup and possibly other tools to work.
-                        // https://68kmla.org/bb/index.php?threads/apple-rom-hard-disks.44920/post-493863
-                        result[14..(14 + 20)].copy_from_slice(b"APPLE COMPUTER, INC.");
-
-                        Ok(ScsiCmdResult::DataIn(result))
-                    }
-                    _ => {
-                        warn!("Unknown MODE SENSE page {:02X}", cmd[2]);
-                        Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
-                    }
-                }
+                target.mode_sense(cmd[2] & 0x3F)
             }
             0x25 => {
                 // READ CAPACITY(10)
                 let mut result = vec![0; 40];
-                let blocks = target.capacity() / DISK_BLOCKSIZE;
+                let (Some(blocksize), Some(blocks)) = (target.blocksize(), target.blocks()) else {
+                    log::warn!("READ CAPACITY(10) command to non-block device");
+                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                };
 
-                // Amount of blocks
                 result[0..4].copy_from_slice(&((blocks as u32) - 1).to_be_bytes());
-                // Block size
-                result[4..8].copy_from_slice(&(DISK_BLOCKSIZE as u32).to_be_bytes());
+                result[4..8].copy_from_slice(&(blocksize as u32).to_be_bytes());
                 Ok(ScsiCmdResult::DataIn(result))
             }
             0x28 => {
                 // READ(10)
+                let Some(blocks) = target.blocks() else {
+                    log::warn!("READ(10) command to non-block device");
+                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                };
                 let blocknum = (u32::from_be_bytes(cmd[2..6].try_into()?)) as usize;
                 let blockcnt = (u16::from_be_bytes(cmd[7..9].try_into()?)) as usize;
 
-                if (blocknum + blockcnt) * DISK_BLOCKSIZE > target.capacity() {
+                if blocknum + blockcnt > blocks {
                     error!("Reading beyond disk");
                     Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                 } else {
                     Ok(ScsiCmdResult::DataIn(
-                        target.disk
-                            [(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
-                            .to_vec(),
+                        target.read(blocknum, blockcnt).to_vec(),
                     ))
                 }
             }
             0x2A => {
                 // WRITE(10)
+                let Some(blocks) = target.blocks() else {
+                    log::warn!("WRITE(10) command to non-block device");
+                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                };
                 let blocknum = (u32::from_be_bytes(cmd[2..6].try_into()?)) as usize;
                 let blockcnt = (u16::from_be_bytes(cmd[7..9].try_into()?)) as usize;
 
                 if let Some(data) = outdata {
-                    if (blocknum + blockcnt) * DISK_BLOCKSIZE > target.capacity() {
+                    if blocknum + blockcnt > blocks {
                         error!("Writing beyond disk");
                         Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                     } else {
-                        target.disk
-                            [(blocknum * DISK_BLOCKSIZE)..((blocknum + blockcnt) * DISK_BLOCKSIZE)]
-                            .copy_from_slice(data);
+                        target.write(blocknum, data);
                         Ok(ScsiCmdResult::Status(STATUS_GOOD))
                     }
                 } else {

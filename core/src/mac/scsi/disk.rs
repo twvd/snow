@@ -7,6 +7,10 @@ use memmap2::MmapMut;
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::mac::scsi::controller::STATUS_CHECK_CONDITION;
+use crate::mac::scsi::ScsiCmdResult;
+use crate::mac::scsi::ScsiTarget;
+
 pub const DISK_BLOCKSIZE: usize = 512;
 
 pub(super) struct ScsiTargetDisk {
@@ -98,9 +102,96 @@ impl ScsiTargetDisk {
             path: filename.to_path_buf(),
         })
     }
+}
 
-    /// Returns the drives total capacity in bytes
-    pub(super) fn capacity(&self) -> usize {
-        self.disk.len()
+impl ScsiTarget for ScsiTargetDisk {
+    fn inquiry(&mut self, _cmd: &[u8]) -> Result<ScsiCmdResult> {
+        let mut result = vec![0; 36];
+
+        // 0 Peripheral qualifier (5-7), peripheral device type (4-0)
+        result[0] = 0; // Magnetic disk
+
+        // 4 Additional length (N-4), min. 32
+        result[4] = result.len() as u8 - 4;
+
+        // 8..16 Vendor identification
+        result[8..(8 + 4)].copy_from_slice(b"SNOW");
+
+        // 16..32 Product identification
+        result[16..(16 + 11)].copy_from_slice(b"VIRTUAL HDD");
+        Ok(ScsiCmdResult::DataIn(result))
+    }
+
+    fn mode_sense(&mut self, page: u8) -> Result<ScsiCmdResult> {
+        match page {
+            0x01 => {
+                // Read/write recovery page
+                let mut result = vec![0; 22];
+                // Page code
+                result[0] = 0x01;
+                // Page length
+                result[1] = 20;
+
+                // Error recovery stuff, can remain at 0.
+                // Also, HD SC Setup doesn't seem to care as long as we respond to this command.
+
+                Ok(ScsiCmdResult::DataIn(result))
+            }
+            0x03 => {
+                // Format device page
+
+                let mut result = vec![0; 34];
+                // Page code
+                result[0] = 0x03;
+                // Page length
+                result[1] = 32;
+
+                // The remaining bytes can remain at 0 as they indicate information on how many
+                // sectors/tracks are reserved for defect management.
+                // Also, HD SC Setup doesn't seem to care as long as we respond to this command.
+
+                Ok(ScsiCmdResult::DataIn(result))
+            }
+            0x30 => {
+                // ? Non-standard mode page
+
+                let mut result = vec![0; 36];
+                // Page code
+                result[0] = 0x30;
+                // Page length
+                result[1] = 34;
+
+                // The string below has to appear for HD SC Setup and possibly other tools to work.
+                // https://68kmla.org/bb/index.php?threads/apple-rom-hard-disks.44920/post-493863
+                result[14..(14 + 20)].copy_from_slice(b"APPLE COMPUTER, INC.");
+
+                Ok(ScsiCmdResult::DataIn(result))
+            }
+            _ => {
+                log::warn!("Unknown MODE SENSE page {:02X}", page);
+                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+            }
+        }
+    }
+
+    fn blocksize(&self) -> Option<usize> {
+        Some(DISK_BLOCKSIZE)
+    }
+
+    fn blocks(&self) -> Option<usize> {
+        Some(self.disk.len() / DISK_BLOCKSIZE)
+    }
+
+    fn read(&self, block_offset: usize, block_count: usize) -> &[u8] {
+        &self.disk[(block_offset * DISK_BLOCKSIZE)..((block_offset + block_count) * DISK_BLOCKSIZE)]
+    }
+
+    fn write(&mut self, block_offset: usize, data: &[u8]) {
+        let offset = block_offset * DISK_BLOCKSIZE;
+        self.disk[offset..(offset + data.len())].copy_from_slice(data);
+    }
+
+    fn image_fn(&self) -> Option<&Path> {
+        Some(self.path.as_ref())
     }
 }
