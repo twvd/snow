@@ -16,13 +16,10 @@ use crate::bus::{Address, BusMember};
 use crate::dbgprop_byte;
 use crate::debuggable::Debuggable;
 use crate::mac::scsi::disk::ScsiTargetDisk;
-use crate::mac::scsi::disk::DISK_BLOCKSIZE;
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::scsi::ScsiCmdResult;
+use crate::mac::scsi::STATUS_GOOD;
 use crate::types::LatchingEvent;
-
-pub const STATUS_GOOD: u8 = 0;
-pub const STATUS_CHECK_CONDITION: u8 = 2;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq, strum::IntoStaticStr)]
@@ -362,139 +359,9 @@ impl ScsiController {
             bail!("SCSI command to disconnected target ID {}", self.sel_id);
         };
 
-        match cmd[0] {
-            0x00 => {
-                // UNIT READY
-                Ok(ScsiCmdResult::Status(STATUS_GOOD))
-            }
-            0x03 => {
-                // REQUEST SENSE
-                let result = vec![0; 13];
-                // 0 = no error
-                Ok(ScsiCmdResult::DataIn(result))
-            }
-            0x04 => {
-                // FORMAT UNIT(6)
-                Ok(ScsiCmdResult::Status(STATUS_GOOD))
-            }
-            0x08 => {
-                // READ(6)
-                let Some(blocks) = target.blocks() else {
-                    log::warn!("READ(6) command to non-block device");
-                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-                };
-                let blocknum = (u32::from_be_bytes(cmd[0..4].try_into()?) & 0x1F_FFFF) as usize;
-                let blockcnt = if cmd[4] == 0 { 256 } else { cmd[4] as usize };
-
-                if blocknum + blockcnt > blocks {
-                    error!("Reading beyond disk");
-                    Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
-                } else {
-                    Ok(ScsiCmdResult::DataIn(
-                        target.read(blocknum, blockcnt).to_vec(),
-                    ))
-                }
-            }
-            0x0A => {
-                // WRITE(6)
-                let Some(blocks) = target.blocks() else {
-                    log::warn!("WRITE(6) command to non-block device");
-                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-                };
-                let blocknum = (u32::from_be_bytes(cmd[0..4].try_into()?) & 0x1F_FFFF) as usize;
-                let blockcnt = if cmd[4] == 0 { 256 } else { cmd[4] as usize };
-
-                if let Some(data) = outdata {
-                    if blocknum + blockcnt > blocks {
-                        error!("Writing beyond disk");
-                        Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
-                    } else {
-                        target.write(blocknum, data);
-                        Ok(ScsiCmdResult::Status(STATUS_GOOD))
-                    }
-                } else {
-                    Ok(ScsiCmdResult::DataOut(blockcnt * DISK_BLOCKSIZE))
-                }
-            }
-            0x12 => {
-                // INQUIRY
-                target.inquiry(cmd)
-            }
-            0x15 => {
-                // MODE SELECT(6)
-                Ok(ScsiCmdResult::DataIn(vec![0; 40]))
-            }
-            0x1A => {
-                // MODE SENSE(6)
-                target.mode_sense(cmd[2] & 0x3F)
-            }
-            0x25 => {
-                // READ CAPACITY(10)
-                let mut result = vec![0; 40];
-                let (Some(blocksize), Some(blocks)) = (target.blocksize(), target.blocks()) else {
-                    log::warn!("READ CAPACITY(10) command to non-block device");
-                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-                };
-
-                result[0..4].copy_from_slice(&((blocks as u32) - 1).to_be_bytes());
-                result[4..8].copy_from_slice(&(blocksize as u32).to_be_bytes());
-                Ok(ScsiCmdResult::DataIn(result))
-            }
-            0x28 => {
-                // READ(10)
-                let Some(blocks) = target.blocks() else {
-                    log::warn!("READ(10) command to non-block device");
-                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-                };
-                let blocknum = (u32::from_be_bytes(cmd[2..6].try_into()?)) as usize;
-                let blockcnt = (u16::from_be_bytes(cmd[7..9].try_into()?)) as usize;
-
-                if blocknum + blockcnt > blocks {
-                    error!("Reading beyond disk");
-                    Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
-                } else {
-                    Ok(ScsiCmdResult::DataIn(
-                        target.read(blocknum, blockcnt).to_vec(),
-                    ))
-                }
-            }
-            0x2A => {
-                // WRITE(10)
-                let Some(blocks) = target.blocks() else {
-                    log::warn!("WRITE(10) command to non-block device");
-                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-                };
-                let blocknum = (u32::from_be_bytes(cmd[2..6].try_into()?)) as usize;
-                let blockcnt = (u16::from_be_bytes(cmd[7..9].try_into()?)) as usize;
-
-                if let Some(data) = outdata {
-                    if blocknum + blockcnt > blocks {
-                        error!("Writing beyond disk");
-                        Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
-                    } else {
-                        target.write(blocknum, data);
-                        Ok(ScsiCmdResult::Status(STATUS_GOOD))
-                    }
-                } else {
-                    Ok(ScsiCmdResult::DataOut(blockcnt * DISK_BLOCKSIZE))
-                }
-            }
-            0x2F => {
-                // VERIFY(10)
-                Ok(ScsiCmdResult::Status(STATUS_GOOD))
-            }
-            0x3C => {
-                // READ BUFFER(10)
-                let result = vec![0; 4];
-                // 0 reserved (0)
-                // 1-3 buffer length (0)
-                Ok(ScsiCmdResult::DataIn(result))
-            }
-            _ => {
-                error!("Unknown command {:02X}", cmd[0]);
-                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
-            }
         }
+
+        target.cmd(cmd, outdata)
     }
 
     pub fn get_drq(&self) -> bool {
