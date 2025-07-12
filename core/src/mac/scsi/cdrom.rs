@@ -7,16 +7,18 @@ use memmap2::Mmap;
 use std::path::Path;
 use std::path::PathBuf;
 
-use crate::mac::scsi::target::ScsiTarget;
-use crate::mac::scsi::ScsiCmdResult;
-use crate::mac::scsi::ASC_INVALID_FIELD_IN_CDB;
-use crate::mac::scsi::ASC_MEDIUM_NOT_PRESENT;
-use crate::mac::scsi::CC_KEY_ILLEGAL_REQUEST;
-use crate::mac::scsi::CC_KEY_MEDIUM_ERROR;
-use crate::mac::scsi::STATUS_CHECK_CONDITION;
-use crate::mac::scsi::STATUS_GOOD;
+use crate::types::LatchingEvent;
 
+use super::target::ScsiTarget;
+use super::target::ScsiTargetEvent;
 use super::target::ScsiTargetType;
+use super::ScsiCmdResult;
+use super::ASC_INVALID_FIELD_IN_CDB;
+use super::ASC_MEDIUM_NOT_PRESENT;
+use super::CC_KEY_ILLEGAL_REQUEST;
+use super::CC_KEY_MEDIUM_ERROR;
+use super::STATUS_CHECK_CONDITION;
+use super::STATUS_GOOD;
 
 const CDROM_BLOCKSIZE: usize = 2048;
 
@@ -38,6 +40,9 @@ pub(super) struct ScsiTargetCdrom {
 
     /// Check condition ASC
     cc_asc: u16,
+
+    /// Media eject event
+    event_eject: LatchingEvent,
 }
 
 impl ScsiTargetCdrom {
@@ -89,6 +94,7 @@ impl ScsiTargetCdrom {
         Ok(Self {
             disk: Some(mmapped),
             path: filename.to_path_buf(),
+            event_eject: Default::default(),
             cc_code: 0,
             cc_asc: 0,
         })
@@ -116,6 +122,7 @@ impl ScsiTargetCdrom {
         Ok(Self {
             disk: Some(disk),
             path: filename.to_path_buf(),
+            event_eject: Default::default(),
             cc_code: 0,
             cc_asc: 0,
         })
@@ -221,9 +228,22 @@ impl ScsiTargetCdrom {
             }
         }
     }
+
+    fn eject_media(&mut self) {
+        self.event_eject.set();
+        self.disk = None;
+    }
 }
 
 impl ScsiTarget for ScsiTargetCdrom {
+    fn take_event(&mut self) -> Option<ScsiTargetEvent> {
+        if self.event_eject.get_clear() {
+            Some(ScsiTargetEvent::MediaEjected)
+        } else {
+            None
+        }
+    }
+
     fn target_type(&self) -> ScsiTargetType {
         ScsiTargetType::Cdrom
     }
@@ -307,11 +327,28 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn image_fn(&self) -> Option<&Path> {
-        Some(self.path.as_ref())
+        if self.disk.is_none() {
+            None
+        } else {
+            Some(self.path.as_ref())
+        }
     }
 
     fn specific_cmd(&mut self, cmd: &[u8], _outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
         match cmd[0] {
+            // START/STOP UNIT
+            0x1B => {
+                // LoEj + !start = eject
+                let eject = cmd[4] & 0b11 == 0b10;
+
+                if eject {
+                    self.eject_media();
+                }
+
+                Ok(ScsiCmdResult::Status(STATUS_GOOD))
+            }
+            // PREVENT/ALLOW MEDIA REMOVAL
+            0x1E => Ok(ScsiCmdResult::Status(STATUS_GOOD)),
             // READ TOC
             0x43 => {
                 let format = cmd[9] >> 6;

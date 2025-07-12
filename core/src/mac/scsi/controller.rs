@@ -166,7 +166,7 @@ pub struct ScsiController {
     responsebuf: VecDeque<u8>,
 
     /// Attached targets
-    targets: [Option<Box<dyn ScsiTarget + Send>>; Self::MAX_TARGETS],
+    pub(crate) targets: [Option<Box<dyn ScsiTarget + Send>>; Self::MAX_TARGETS],
 
     set_req: LatchingEvent,
 }
@@ -328,8 +328,6 @@ impl ScsiController {
         let Some(target) = self.targets[self.sel_id].as_mut() else {
             bail!("SCSI command to disconnected target ID {}", self.sel_id);
         };
-
-        }
 
         target.cmd(cmd, outdata)
     }

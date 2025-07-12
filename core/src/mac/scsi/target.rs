@@ -13,8 +13,15 @@ pub enum ScsiTargetType {
     Cdrom,
 }
 
+/// Some events that may occur to feed to the UI through EmulatorEvent
+pub enum ScsiTargetEvent {
+    MediaEjected,
+}
+
 /// An abstraction of a generic SCSI target
-pub(super) trait ScsiTarget {
+pub(crate) trait ScsiTarget {
+    fn take_event(&mut self) -> Option<ScsiTargetEvent>;
+
     fn target_type(&self) -> ScsiTargetType;
     fn unit_ready(&mut self) -> Result<ScsiCmdResult>;
     fn inquiry(&mut self, cmd: &[u8]) -> Result<ScsiCmdResult>;
@@ -30,7 +37,7 @@ pub(super) trait ScsiTarget {
     fn write(&mut self, block_offset: usize, data: &[u8]);
     fn image_fn(&self) -> Option<&Path>;
 
-    // Device-specific commands
+    /// Device-specific commands
     fn specific_cmd(&mut self, cmd: &[u8], outdata: Option<&[u8]>) -> Result<ScsiCmdResult>;
 
     /// Returns the drives total capacity in bytes
