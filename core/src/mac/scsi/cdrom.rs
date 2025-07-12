@@ -9,12 +9,16 @@ use std::path::PathBuf;
 
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::scsi::ScsiCmdResult;
+use crate::mac::scsi::ASC_INVALID_FIELD_IN_CDB;
 use crate::mac::scsi::ASC_MEDIUM_NOT_PRESENT;
+use crate::mac::scsi::CC_KEY_ILLEGAL_REQUEST;
 use crate::mac::scsi::CC_KEY_MEDIUM_ERROR;
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
 
-pub const DISK_BLOCKSIZE: usize = 512;
+const CDROM_BLOCKSIZE: usize = 2048;
+
+const TRACK_LEADOUT: u8 = 0xAA;
 
 pub(super) struct ScsiTargetCdrom {
     /// Disk contents
@@ -60,11 +64,11 @@ impl ScsiTargetCdrom {
         let file_size = f.seek(SeekFrom::End(0))? as usize;
         f.seek(SeekFrom::Start(0))?;
 
-        if file_size % DISK_BLOCKSIZE != 0 {
+        if file_size % CDROM_BLOCKSIZE != 0 {
             bail!(
                 "Cannot load disk image {}: not multiple of {}",
                 filename.display(),
-                DISK_BLOCKSIZE
+                CDROM_BLOCKSIZE
             );
         }
 
@@ -99,11 +103,11 @@ impl ScsiTargetCdrom {
         let disk = fs::read(filename)
             .with_context(|| format!("Failed to open file {}", filename.display()))?;
 
-        if disk.len() % DISK_BLOCKSIZE != 0 {
+        if disk.len() % CDROM_BLOCKSIZE != 0 {
             bail!(
                 "Cannot load disk image {}: not multiple of {}",
                 filename.display(),
-                DISK_BLOCKSIZE
+                CDROM_BLOCKSIZE
             );
         }
 
@@ -113,6 +117,107 @@ impl ScsiTargetCdrom {
             cc_code: 0,
             cc_asc: 0,
         })
+    }
+
+    fn read_toc(&mut self, format: u8, track: u8, alloc_len: usize) -> Result<ScsiCmdResult> {
+        if self.disk.is_none() {
+            // No CD inserted
+            self.cc_code = CC_KEY_MEDIUM_ERROR;
+            self.cc_asc = ASC_MEDIUM_NOT_PRESENT;
+            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+        }
+        match format {
+            0 => {
+                // SCSI-2 TOC
+                log::debug!("Read TOC track {}", track);
+                match track {
+                    0 | 1 => {
+                        let mut result = vec![0; 0x14];
+
+                        // Length
+                        result[1] = 0x12;
+                        // First track
+                        result[2] = 1;
+                        // Last track
+                        result[3] = 1;
+
+                        // Track descriptor for track 1
+                        // 4 reserved
+                        // Digital
+                        result[5] = 0x14;
+                        // Track number
+                        result[6] = 1;
+                        // 7 reserved
+                        // 8..12 Start block number (0)
+
+                        // Track descriptor for lead-out
+                        // 12 reserved
+                        // Digital
+                        result[13] = 0x14;
+                        // Track number
+                        result[14] = TRACK_LEADOUT;
+
+                        result.truncate(alloc_len);
+                        Ok(ScsiCmdResult::DataIn(result))
+                    }
+                    TRACK_LEADOUT => {
+                        let mut result = vec![0; 12];
+                        // Length
+                        result[1] = 0x0A;
+                        // First track
+                        result[2] = 1;
+                        // Last track
+                        result[3] = 1;
+
+                        // Track descriptor for track 1
+                        // 4 reserved
+                        // Digital
+                        result[5] = 0x14;
+                        // Track number
+                        result[6] = TRACK_LEADOUT;
+                        // 7 reserved
+                        // 8..12 Start block number (0)
+                        result.truncate(alloc_len);
+                        Ok(ScsiCmdResult::DataIn(result))
+                    }
+                    _ => {
+                        self.cc_code = CC_KEY_ILLEGAL_REQUEST;
+                        self.cc_asc = ASC_INVALID_FIELD_IN_CDB;
+                        Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+                    }
+                }
+            }
+            1 => {
+                // Session TOC
+                let mut result = vec![0; 12];
+
+                // Length
+                result[1] = 0x0A;
+                // First track
+                result[2] = 1;
+                // Last track
+                result[3] = 1;
+
+                // Track descriptor for track 1
+                // 4 reserved
+                // Digital
+                result[5] = 0x14;
+                // Track number
+                result[6] = 1;
+                // 7 reserved
+                // 8..12 Start block number (0)
+
+                result.truncate(alloc_len);
+                Ok(ScsiCmdResult::DataIn(result))
+            }
+            _ => {
+                log::error!("Unknown READ TOC format: {}", format);
+
+                self.cc_code = CC_KEY_ILLEGAL_REQUEST;
+                self.cc_asc = ASC_INVALID_FIELD_IN_CDB;
+                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+            }
+        }
     }
 }
 
@@ -177,16 +282,18 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn blocksize(&self) -> Option<usize> {
-        Some(DISK_BLOCKSIZE)
+        Some(CDROM_BLOCKSIZE)
     }
 
     fn blocks(&self) -> Option<usize> {
-        Some(self.disk.as_ref()?.len() / DISK_BLOCKSIZE)
+        Some(self.disk.as_ref()?.len() / CDROM_BLOCKSIZE)
     }
 
     fn read(&self, block_offset: usize, block_count: usize) -> &[u8] {
+        // If blocks() returns None this will never be called by
+        // ScsiTarget::cmd
         &self.disk.as_ref().expect("read() but no media inserted")
-            [(block_offset * DISK_BLOCKSIZE)..((block_offset + block_count) * DISK_BLOCKSIZE)]
+            [(block_offset * CDROM_BLOCKSIZE)..((block_offset + block_count) * CDROM_BLOCKSIZE)]
     }
 
     fn write(&mut self, _block_offset: usize, _data: &[u8]) {
@@ -195,5 +302,22 @@ impl ScsiTarget for ScsiTargetCdrom {
 
     fn image_fn(&self) -> Option<&Path> {
         Some(self.path.as_ref())
+    }
+
+    fn specific_cmd(&mut self, cmd: &[u8], _outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
+        match cmd[0] {
+            // READ TOC
+            0x43 => {
+                let format = cmd[9] >> 6;
+                let track = cmd[6];
+                let alloc_len = u16::from_be_bytes(cmd[7..9].try_into()?) as usize;
+
+                self.read_toc(format, track, alloc_len)
+            }
+            _ => {
+                log::error!("Unknown command {:02X}", cmd[0]);
+                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+            }
+        }
     }
 }
