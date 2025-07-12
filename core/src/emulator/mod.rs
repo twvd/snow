@@ -17,6 +17,7 @@ use crate::mac::adb::{AdbKeyboard, AdbMouse};
 use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
 use crate::mac::macii::bus::MacIIBus;
 use crate::mac::scc::Scc;
+use crate::mac::scsi::target::ScsiTargetEvent;
 use crate::mac::{ExtraROMs, MacModel, MacMonitor};
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::AudioReceiver;
@@ -355,6 +356,23 @@ impl Emulator {
             if let Some(img) = drive.take_ejected_image() {
                 self.event_sender
                     .send(EmulatorEvent::FloppyEjected(i, img))?;
+            }
+        }
+        for (id, target) in self
+            .config
+            .scsi_mut()
+            .targets
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(i, t)| t.as_mut().map(|t| (i, t)))
+        {
+            match target.take_event() {
+                Some(ScsiTargetEvent::MediaEjected) => {
+                    self.event_sender
+                        .send(EmulatorEvent::ScsiMediaEjected(id))
+                        .unwrap();
+                }
+                None => (),
             }
         }
 

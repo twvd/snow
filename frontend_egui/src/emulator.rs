@@ -319,6 +319,10 @@ impl EmulatorState {
                     ));
                     *self.last_images[idx].borrow_mut() = Some(img);
                 }
+                EmulatorEvent::ScsiMediaEjected(id) => {
+                    self.messages
+                        .push_back((UserMessageType::Notice, format!("CD-ROM #{} ejected", id)));
+                }
                 EmulatorEvent::UserMessage(t, s) => self.messages.push_back((t, s)),
                 EmulatorEvent::Memory(update) => {
                     self.ram_update.push_back(update);

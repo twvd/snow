@@ -32,6 +32,10 @@ const fn scsi_cmd_len(cmdnum: u8) -> Option<usize> {
         | 0x15
         // MODE SENSE(6)
         | 0x1A
+        // START/STOP UNIT
+        | 0x1B
+        // PREVENT/ALLOW MEDIA REMOVAL
+        | 0x1E
         => Some(6),
         // READ CAPACITY(10)
         0x25
@@ -53,7 +57,7 @@ const fn scsi_cmd_len(cmdnum: u8) -> Option<usize> {
 }
 
 /// Result of a command
-pub(super) enum ScsiCmdResult {
+pub(crate) enum ScsiCmdResult {
     /// Immediately turn to the Status phase
     Status(u8),
     /// Returns data to the initiator

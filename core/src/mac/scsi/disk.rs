@@ -107,6 +107,10 @@ impl ScsiTargetDisk {
 }
 
 impl ScsiTarget for ScsiTargetDisk {
+    fn take_event(&mut self) -> Option<super::target::ScsiTargetEvent> {
+        None
+    }
+
     fn target_type(&self) -> ScsiTargetType {
         ScsiTargetType::Disk
     }
