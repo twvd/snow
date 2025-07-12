@@ -19,7 +19,7 @@ use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
 use snow_core::cpu_m68k::regs::{Register, RegisterFile};
 use snow_core::debuggable::DebuggableProperties;
 use snow_core::emulator::comm::{
-    Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus, HddStatus,
+    Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus, ScsiTargetStatus,
     UserMessageType,
 };
 use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus};
@@ -403,13 +403,13 @@ impl EmulatorState {
         Some(&status.fdd[drive])
     }
 
-    /// Gets a reference to the active SCSI hard drive array.
-    pub fn get_hdds(&self) -> Option<&[Option<HddStatus>]> {
+    /// Gets a reference to the active SCSI target array.
+    pub fn get_scsi_targets(&self) -> Option<&[Option<ScsiTargetStatus>]> {
         let status = self.status.as_ref()?;
         if !status.model.has_scsi() {
             return None;
         }
-        Some(&status.hdd)
+        Some(&status.scsi)
     }
 
     /// Gets an array of PathBuf of the loaded disk images
@@ -417,7 +417,7 @@ impl EmulatorState {
         let Some(status) = self.status.as_ref() else {
             return core::array::from_fn(|_| None);
         };
-        core::array::from_fn(|i| status.hdd[i].clone().map(|v| v.image))
+        core::array::from_fn(|i| status.scsi[i].clone().and_then(|v| v.image))
     }
 
     /// Returns `true` if the emulator has been instansiated and loaded with a ROM.

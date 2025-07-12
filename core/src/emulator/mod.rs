@@ -35,7 +35,7 @@ use crate::mac::scsi::controller::ScsiController;
 use crate::mac::swim::Swim;
 use comm::{
     Breakpoint, EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver,
-    EmulatorStatus, FddStatus, HddStatus, InputRecording,
+    EmulatorStatus, FddStatus, InputRecording, ScsiTargetStatus,
 };
 
 macro_rules! dispatch {
@@ -374,13 +374,18 @@ impl Emulator {
                     dirty: self.config.swim().drives[i].floppy.is_dirty(),
                 }),
                 model: self.model,
-                hdd: core::array::from_fn(|i| {
+                scsi: core::array::from_fn(|i| {
                     self.config
                         .scsi()
-                        .get_disk_capacity(i)
-                        .map(|capacity| HddStatus {
-                            capacity,
-                            image: self.config.scsi().get_disk_imagefn(i).unwrap().to_owned(),
+                        .get_target_type(i)
+                        .map(|t| ScsiTargetStatus {
+                            target_type: t,
+                            capacity: self.config.scsi().get_disk_capacity(i),
+                            image: self
+                                .config
+                                .scsi()
+                                .get_disk_imagefn(i)
+                                .map(|p| p.to_path_buf()),
                         })
                 }),
                 speed: self.config.speed(),

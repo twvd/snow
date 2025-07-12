@@ -6,12 +6,16 @@ use anyhow::Result;
 
 use crate::mac::scsi::{ScsiCmdResult, STATUS_CHECK_CONDITION, STATUS_GOOD};
 
+#[derive(Debug, Clone, Copy)]
+/// Enumeration of supported emulated SCSI target types (devices)
 pub enum ScsiTargetType {
     Disk,
     Cdrom,
 }
 
+/// An abstraction of a generic SCSI target
 pub(super) trait ScsiTarget {
+    fn target_type(&self) -> ScsiTargetType;
     fn unit_ready(&mut self) -> Result<ScsiCmdResult>;
     fn inquiry(&mut self, cmd: &[u8]) -> Result<ScsiCmdResult>;
     fn mode_sense(&mut self, page: u8) -> Result<ScsiCmdResult>;

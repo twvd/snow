@@ -11,6 +11,7 @@ use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::debuggable::DebuggableProperties;
 use crate::keymap::KeyEvent;
 use crate::mac::scc::SccCh;
+use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::MacModel;
 use crate::tickable::Ticks;
 
@@ -91,13 +92,14 @@ pub struct EmulatorStatus {
     pub fdd: [FddStatus; 3],
     pub model: MacModel,
     pub speed: EmulatorSpeed,
-    pub hdd: [Option<HddStatus>; 7],
+    pub scsi: [Option<ScsiTargetStatus>; 7],
 }
 
 #[derive(Debug, Clone)]
-pub struct HddStatus {
-    pub image: PathBuf,
-    pub capacity: usize,
+pub struct ScsiTargetStatus {
+    pub target_type: ScsiTargetType,
+    pub image: Option<PathBuf>,
+    pub capacity: Option<usize>,
 }
 
 #[derive(Debug)]
