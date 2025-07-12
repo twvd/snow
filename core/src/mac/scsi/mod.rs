@@ -9,7 +9,9 @@ pub const STATUS_GOOD: u8 = 0;
 pub const STATUS_CHECK_CONDITION: u8 = 2;
 
 pub const CC_KEY_MEDIUM_ERROR: u8 = 0x03;
+pub const CC_KEY_ILLEGAL_REQUEST: u8 = 0x05;
 
+pub const ASC_INVALID_FIELD_IN_CDB: u16 = 0x2400;
 pub const ASC_MEDIUM_NOT_PRESENT: u16 = 0x3A00;
 
 const fn scsi_cmd_len(cmdnum: u8) -> Option<usize> {

@@ -203,4 +203,9 @@ impl ScsiTarget for ScsiTargetDisk {
     fn image_fn(&self) -> Option<&Path> {
         Some(self.path.as_ref())
     }
+
+    fn specific_cmd(&mut self, cmd: &[u8], _outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
+        log::error!("Unknown command {:02X}", cmd[0]);
+        Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+    }
 }
