@@ -8,6 +8,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crate::mac::scsi::target::ScsiTarget;
+use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::scsi::ScsiCmdResult;
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
@@ -106,6 +107,10 @@ impl ScsiTargetDisk {
 }
 
 impl ScsiTarget for ScsiTargetDisk {
+    fn target_type(&self) -> ScsiTargetType {
+        ScsiTargetType::Disk
+    }
+
     fn req_sense(&mut self) -> (u8, u16) {
         (0, 0)
     }

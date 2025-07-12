@@ -18,6 +18,7 @@ use crate::debuggable::Debuggable;
 use crate::mac::scsi::disk::ScsiTargetDisk;
 use crate::mac::scsi::scsi_cmd_len;
 use crate::mac::scsi::target::ScsiTarget;
+use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::scsi::ScsiCmdResult;
 use crate::mac::scsi::STATUS_GOOD;
 use crate::types::LatchingEvent;
@@ -177,14 +178,19 @@ impl ScsiController {
         self.reg_bsr.irq()
     }
 
-    /// Returns the capacity of an emulated disk or None if not present.
+    /// Returns the capacity of a target or None if detached or no media
     pub fn get_disk_capacity(&self, id: usize) -> Option<usize> {
         self.targets[id].as_ref().and_then(|t| t.capacity())
     }
 
-    /// Returns the image filename of an emulated disk
+    /// Returns the image filename of a target or None if detached or no media
     pub fn get_disk_imagefn(&self, id: usize) -> Option<&Path> {
         self.targets[id].as_ref().and_then(|t| t.image_fn())
+    }
+
+    /// Gets the target type (if attached) of an ID
+    pub fn get_target_type(&self, id: usize) -> Option<ScsiTargetType> {
+        self.targets[id].as_ref().map(|t| t.target_type())
     }
 
     pub fn new() -> Self {

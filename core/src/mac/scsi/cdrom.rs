@@ -16,6 +16,8 @@ use crate::mac::scsi::CC_KEY_MEDIUM_ERROR;
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
 
+use super::target::ScsiTargetType;
+
 const CDROM_BLOCKSIZE: usize = 2048;
 
 const TRACK_LEADOUT: u8 = 0xAA;
@@ -222,6 +224,10 @@ impl ScsiTargetCdrom {
 }
 
 impl ScsiTarget for ScsiTargetCdrom {
+    fn target_type(&self) -> ScsiTargetType {
+        ScsiTargetType::Cdrom
+    }
+
     fn unit_ready(&mut self) -> Result<ScsiCmdResult> {
         if self.disk.is_some() {
             // CD inserted, ready
