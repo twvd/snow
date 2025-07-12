@@ -26,6 +26,9 @@ pub(super) trait ScsiTarget {
     fn write(&mut self, block_offset: usize, data: &[u8]);
     fn image_fn(&self) -> Option<&Path>;
 
+    // Device-specific commands
+    fn specific_cmd(&mut self, cmd: &[u8], outdata: Option<&[u8]>) -> Result<ScsiCmdResult>;
+
     /// Returns the drives total capacity in bytes
     fn capacity(&self) -> Option<usize> {
         Some(self.blocksize()? * self.blocks()?)
@@ -102,7 +105,7 @@ pub(super) trait ScsiTarget {
             }
             0x25 => {
                 // READ CAPACITY(10)
-                let mut result = vec![0; 40];
+                let mut result = vec![0; 8];
                 let (Some(blocksize), Some(blocks)) = (self.blocksize(), self.blocks()) else {
                     log::warn!("READ CAPACITY(10) command to non-block device");
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
@@ -162,10 +165,7 @@ pub(super) trait ScsiTarget {
                 // 1-3 buffer length (0)
                 Ok(ScsiCmdResult::DataIn(result))
             }
-            _ => {
-                log::error!("Unknown command {:02X}", cmd[0]);
-                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
-            }
+            _ => self.specific_cmd(cmd, outdata),
         }
     }
 }
