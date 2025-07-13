@@ -24,6 +24,7 @@ const CDROM_BLOCKSIZE: usize = 2048;
 
 const TRACK_LEADOUT: u8 = 0xAA;
 
+#[derive(Default)]
 pub(super) struct ScsiTargetCdrom {
     /// Disk contents
     #[cfg(feature = "mmap")]
@@ -46,88 +47,6 @@ pub(super) struct ScsiTargetCdrom {
 }
 
 impl ScsiTargetCdrom {
-    /// Try to load a disk image, given the filename of the image.
-    ///
-    /// This locks the file on disk and memory maps the file for use by
-    /// the emulator for fast access and automatic writes back to disk,
-    /// at the discretion of the operating system.
-    #[cfg(feature = "mmap")]
-    pub(super) fn load_disk(filename: &Path) -> Result<Self> {
-        use fs2::FileExt;
-        use std::{
-            fs::OpenOptions,
-            io::{Seek, SeekFrom},
-        };
-
-        if !Path::new(filename).exists() {
-            bail!("File not found: {}", filename.display());
-        }
-
-        let mut f = OpenOptions::new()
-            .read(true)
-            .open(filename)
-            .with_context(|| format!("Failed to open {}", filename.display()))?;
-
-        let file_size = f.seek(SeekFrom::End(0))? as usize;
-        f.seek(SeekFrom::Start(0))?;
-
-        if file_size % CDROM_BLOCKSIZE != 0 {
-            bail!(
-                "Cannot load disk image {}: not multiple of {}",
-                filename.display(),
-                CDROM_BLOCKSIZE
-            );
-        }
-
-        f.lock_exclusive()
-            .with_context(|| format!("Failed to lock {}", filename.display()))?;
-
-        let mmapped = unsafe {
-            use memmap2::MmapOptions;
-
-            MmapOptions::new()
-                .len(file_size)
-                .map(&f)
-                .with_context(|| format!("Failed to mmap file {}", filename.display()))?
-        };
-
-        Ok(Self {
-            disk: Some(mmapped),
-            path: filename.to_path_buf(),
-            event_eject: Default::default(),
-            cc_code: 0,
-            cc_asc: 0,
-        })
-    }
-
-    #[cfg(not(feature = "mmap"))]
-    pub(super) fn load_disk(filename: &Path) -> Result<Self> {
-        use std::fs;
-
-        if !Path::new(filename).exists() {
-            bail!("File not found: {}", filename.display());
-        }
-
-        let disk = fs::read(filename)
-            .with_context(|| format!("Failed to open file {}", filename.display()))?;
-
-        if disk.len() % CDROM_BLOCKSIZE != 0 {
-            bail!(
-                "Cannot load disk image {}: not multiple of {}",
-                filename.display(),
-                CDROM_BLOCKSIZE
-            );
-        }
-
-        Ok(Self {
-            disk: Some(disk),
-            path: filename.to_path_buf(),
-            event_eject: Default::default(),
-            cc_code: 0,
-            cc_asc: 0,
-        })
-    }
-
     fn read_toc(&mut self, format: u8, track: u8, alloc_len: usize) -> Result<ScsiCmdResult> {
         if self.disk.is_none() {
             // No CD inserted
@@ -236,6 +155,78 @@ impl ScsiTargetCdrom {
 }
 
 impl ScsiTarget for ScsiTargetCdrom {
+    /// Try to load a disk image, given the filename of the image.
+    ///
+    /// This locks the file on disk and memory maps the file for use by
+    /// the emulator for fast access and automatic writes back to disk,
+    /// at the discretion of the operating system.
+    #[cfg(feature = "mmap")]
+    fn load_media(&mut self, path: &Path) -> Result<()> {
+        use fs2::FileExt;
+        use std::fs::OpenOptions;
+        use std::io::{Seek, SeekFrom};
+
+        if !Path::new(path).exists() {
+            bail!("File not found: {}", path.display());
+        }
+
+        let mut f = OpenOptions::new()
+            .read(true)
+            .open(path)
+            .with_context(|| format!("Failed to open {}", path.display()))?;
+
+        let file_size = f.seek(SeekFrom::End(0))? as usize;
+        f.seek(SeekFrom::Start(0))?;
+
+        if file_size % CDROM_BLOCKSIZE != 0 {
+            bail!(
+                "Cannot load disk image {}: not multiple of {}",
+                path.display(),
+                CDROM_BLOCKSIZE
+            );
+        }
+
+        f.lock_exclusive()
+            .with_context(|| format!("Failed to lock {}", path.display()))?;
+
+        let mmapped = unsafe {
+            use memmap2::MmapOptions;
+
+            MmapOptions::new()
+                .len(file_size)
+                .map(&f)
+                .with_context(|| format!("Failed to mmap file {}", path.display()))?
+        };
+
+        self.disk = Some(mmapped);
+        self.path = path.to_path_buf();
+        Ok(())
+    }
+
+    #[cfg(not(feature = "mmap"))]
+    fn load_media(&mut self, path: &Path) -> Result<()> {
+        use std::fs;
+
+        if !path.exists() {
+            bail!("File not found: {}", path.display());
+        }
+
+        let disk =
+            fs::read(path).with_context(|| format!("Failed to open file {}", path.display()))?;
+
+        if disk.len() % CDROM_BLOCKSIZE != 0 {
+            bail!(
+                "Cannot load disk image {}: not multiple of {}",
+                path.display(),
+                CDROM_BLOCKSIZE
+            );
+        }
+
+        self.disk = Some(disk);
+        self.path = path.to_path_buf();
+        Ok(())
+    }
+
     fn take_event(&mut self) -> Option<ScsiTargetEvent> {
         if self.event_eject.get_clear() {
             Some(ScsiTargetEvent::MediaEjected)

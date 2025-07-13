@@ -141,9 +141,11 @@ pub struct SnowGui {
     systrap_history: SystrapHistoryWidget,
     terminal: [TerminalWidget; 2],
 
-    hdd_dialog: FileDialog,
     workspace_dialog: FileDialog,
+    hdd_dialog: FileDialog,
     hdd_dialog_idx: usize,
+    cdrom_dialog: FileDialog,
+    cdrom_dialog_idx: usize,
     floppy_dialog: FileDialog,
     floppy_dialog_last: Option<DirectoryEntry>,
     floppy_dialog_last_image: Option<FloppyImage>,
@@ -192,6 +194,7 @@ impl SnowGui {
                 .join(", ")
         );
         let hdd_filter_str = "HDD images (*.img, *.hda)";
+        let cdrom_filter_str = "CD-ROM images (*.iso)";
 
         let mut app = Self {
             workspace: Default::default(),
@@ -229,6 +232,19 @@ impl SnowGui {
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir()),
             hdd_dialog_idx: 0,
+            cdrom_dialog: FileDialog::new()
+                .add_file_filter(
+                    cdrom_filter_str,
+                    Arc::new(|p| {
+                        p.extension()
+                            .unwrap_or_default()
+                            .eq_ignore_ascii_case("iso")
+                    }),
+                )
+                .default_file_filter(cdrom_filter_str)
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
+                .initial_directory(Self::default_dir()),
+            cdrom_dialog_idx: 0,
             floppy_dialog: FileDialog::new()
                 .add_file_filter(
                     &floppy_filter_str,
@@ -361,7 +377,7 @@ impl SnowGui {
             file.write_all(&[0])?;
             file.flush()?;
         }
-        self.emu.load_hdd_image(result.scsi_id, &result.filename);
+        self.emu.scsi_attach_hdd(result.scsi_id, &result.filename);
         Ok(())
     }
 
@@ -480,7 +496,7 @@ impl SnowGui {
                                             |ui| {
                                                 ui.set_min_width(Self::SUBMENU_WIDTH);
                                                 if ui.button("Detach hard drive").clicked() {
-                                                    self.emu.detach_hdd(i);
+                                                    self.emu.scsi_detach_target(i);
                                                     ui.close_menu();
                                                 }
                                             },
@@ -502,7 +518,7 @@ impl SnowGui {
                                                 |ui| {
                                                     ui.set_min_width(Self::SUBMENU_WIDTH);
                                                     if ui.button("Detach CD-ROM drive").clicked() {
-                                                        self.emu.detach_hdd(i);
+                                                        self.emu.scsi_detach_target(i);
                                                         ui.close_menu();
                                                     }
                                                 },
@@ -511,13 +527,19 @@ impl SnowGui {
                                             ui.menu_button(
                                                 format!(
                                                     "{} SCSI #{}: CD-ROM (no media)",
-                                                    egui_material_icons::icons::ICON_ALBUM,
+                                                    egui_material_icons::icons::ICON_EJECT,
                                                     i,
                                                 ),
                                                 |ui| {
                                                     ui.set_min_width(Self::SUBMENU_WIDTH);
+                                                    if ui.button("Load image...").clicked() {
+                                                        self.cdrom_dialog_idx = i;
+                                                        self.cdrom_dialog.pick_file();
+                                                        ui.close_menu();
+                                                    }
+                                                    ui.separator();
                                                     if ui.button("Detach CD-ROM drive").clicked() {
-                                                        self.emu.detach_hdd(i);
+                                                        self.emu.scsi_detach_target(i);
                                                         ui.close_menu();
                                                     }
                                                 },
@@ -541,6 +563,19 @@ impl SnowGui {
                                         if ui.button("Load HDD disk image...").clicked() {
                                             self.hdd_dialog_idx = i;
                                             self.hdd_dialog.pick_file();
+                                            ui.close_menu();
+                                        }
+                                        ui.separator();
+                                        if ui
+                                            .button("Attach CD-ROM drive (with image)...")
+                                            .clicked()
+                                        {
+                                            self.cdrom_dialog_idx = i;
+                                            self.cdrom_dialog.pick_file();
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("Attach CD-ROM drive (empty)").clicked() {
+                                            self.emu.scsi_attach_cdrom(i);
                                             ui.close_menu();
                                         }
                                     },
@@ -1480,9 +1515,16 @@ impl eframe::App for SnowGui {
         // HDD image picker dialog
         self.hdd_dialog.update(ctx);
         if let Some(path) = self.hdd_dialog.take_picked() {
-            self.emu.load_hdd_image(self.hdd_dialog_idx, &path);
+            self.emu.scsi_attach_hdd(self.hdd_dialog_idx, &path);
         }
         self.ui_active &= self.hdd_dialog.state() != egui_file_dialog::DialogState::Open;
+
+        // CD-ROM image picker dialog
+        self.cdrom_dialog.update(ctx);
+        if let Some(path) = self.cdrom_dialog.take_picked() {
+            self.emu.scsi_load_cdrom(self.cdrom_dialog_idx, &path);
+        }
+        self.ui_active &= self.cdrom_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // Workspace picker dialog
         self.workspace_dialog.update(ctx);

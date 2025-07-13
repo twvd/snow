@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 
 use log::*;
 use num_derive::FromPrimitive;
@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::bus::{Address, BusMember};
 use crate::dbgprop_byte;
 use crate::debuggable::Debuggable;
+use crate::mac::scsi::cdrom::ScsiTargetCdrom;
 use crate::mac::scsi::disk::ScsiTargetDisk;
 use crate::mac::scsi::scsi_cmd_len;
 use crate::mac::scsi::target::ScsiTarget;
@@ -214,18 +215,21 @@ impl ScsiController {
         }
     }
 
-    /// Loads a disk image (filename) at the given SCSI ID
-    pub fn load_disk_at(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {
+    /// Loads a disk image (filename) and attaches a hard drive at the given SCSI ID
+    pub fn attach_hdd_at(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {
         if scsi_id >= Self::MAX_TARGETS {
             bail!("SCSI ID out of range: {}", scsi_id);
         }
         if !Path::new(filename).exists() {
             bail!("File {} does not exist", filename.to_string_lossy());
         }
-        self.targets[scsi_id] = Some(Box::new(
-            ScsiTargetDisk::load_disk(filename).context("Error loading disk")?,
-        ));
+        self.targets[scsi_id] = Some(Box::new(ScsiTargetDisk::load_disk(filename)?));
         Ok(())
+    }
+
+    /// Attaches a CD-ROM drive at the given SCSI ID
+    pub fn attach_cdrom_at(&mut self, scsi_id: usize) {
+        self.targets[scsi_id] = Some(Box::new(ScsiTargetCdrom::default()));
     }
 
     /// Detaches a target from the given SCSI ID

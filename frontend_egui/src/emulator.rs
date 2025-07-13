@@ -26,6 +26,7 @@ use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, Em
 use snow_core::emulator::Emulator;
 use snow_core::keymap::Scancode;
 use snow_core::mac::scc::SccCh;
+use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::{ExtraROMs, MacModel, MacMonitor};
 use snow_core::renderer::DisplayBuffer;
 use snow_core::tickable::{Tickable, Ticks};
@@ -501,26 +502,61 @@ impl EmulatorState {
     }
 
     /// Loads a SCSI HDD image from the specified path.
-    pub fn load_hdd_image(&self, idx: usize, path: &Path) {
+    pub fn scsi_attach_hdd(&self, id: usize, path: &Path) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
-            .send(EmulatorCommand::LoadHddImage(idx, path.to_path_buf()))
+            .send(EmulatorCommand::ScsiAttachHdd(id, path.to_path_buf()))
             .unwrap();
     }
 
-    /// Detach a HDD image from a SCSI ID
-    pub fn detach_hdd(&mut self, id: usize) {
+    /// Attaches a CD-ROM drive at the given ID
+    pub fn scsi_attach_cdrom(&self, id: usize) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        sender.send(EmulatorCommand::ScsiAttachCdrom(id)).unwrap();
+    }
+
+    /// Loads CD-ROM media into the specified SCSI target
+    /// Attaches a CD-ROM drive if one is not there
+    pub fn scsi_load_cdrom(&self, id: usize, path: &Path) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        if let Some(status) = self.status.as_ref() {
+            if !matches!(
+                status.scsi[id],
+                Some(ScsiTargetStatus {
+                    target_type: ScsiTargetType::Cdrom,
+                    ..
+                })
+            ) {
+                self.scsi_attach_cdrom(id);
+            }
+        }
+        sender
+            .send(EmulatorCommand::ScsiLoadMedia(id, path.to_path_buf()))
+            .unwrap();
+    }
+
+    /// Detach a target from a SCSI ID
+    pub fn scsi_detach_target(&mut self, id: usize) {
         self.cmdsender
             .as_ref()
             .unwrap()
-            .send(EmulatorCommand::DetachHddImage(id))
+            .send(EmulatorCommand::DetachScsiTarget(id))
             .unwrap();
         self.messages.push_back((
             UserMessageType::Notice,
-            format!("SCSI HDD #{} detached. System should be restarted.", id),
+            format!(
+                "SCSI device at #{} detached. System should be restarted.",
+                id
+            ),
         ));
     }
 
