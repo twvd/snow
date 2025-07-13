@@ -57,7 +57,6 @@ impl ScsiTargetCdrom {
         match format {
             0 => {
                 // SCSI-2 TOC
-                log::debug!("Read TOC track {}", track);
                 match track {
                     0 | 1 => {
                         let mut result = vec![0; 0x14];
