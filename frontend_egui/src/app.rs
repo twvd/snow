@@ -476,7 +476,7 @@ impl SnowGui {
                     if let Some(targets) = targets {
                         ui.separator();
                         for (i, target) in targets.iter().enumerate() {
-                            self.draw_scsi_target_menu(ui, i, target.as_ref());
+                            self.draw_scsi_target_menu(ui, i, target.as_ref(), true);
                         }
                     }
                 });
@@ -683,6 +683,7 @@ impl SnowGui {
         ui: &mut egui::Ui,
         id: usize,
         target: Option<&snow_core::emulator::comm::ScsiTargetStatus>,
+        show_detach: bool,
     ) {
         if let Some(target) = target {
             match target.target_type {
@@ -722,9 +723,14 @@ impl SnowGui {
                             ),
                             |ui| {
                                 ui.set_min_width(Self::SUBMENU_WIDTH);
-                                if ui.button("Detach CD-ROM drive").clicked() {
-                                    self.emu.scsi_detach_target(id);
-                                    ui.close_menu();
+                                if show_detach {
+                                    if ui.button("Detach CD-ROM drive").clicked() {
+                                        self.emu.scsi_detach_target(id);
+                                        ui.close_menu();
+                                    }
+                                } else {
+                                    ui.disable();
+                                    let _ = ui.button("No actions");
                                 }
                             },
                         );
@@ -742,10 +748,12 @@ impl SnowGui {
                                     self.cdrom_dialog.pick_file();
                                     ui.close_menu();
                                 }
-                                ui.separator();
-                                if ui.button("Detach CD-ROM drive").clicked() {
-                                    self.emu.scsi_detach_target(id);
-                                    ui.close_menu();
+                                if show_detach {
+                                    ui.separator();
+                                    if ui.button("Detach CD-ROM drive").clicked() {
+                                        self.emu.scsi_detach_target(id);
+                                        ui.close_menu();
+                                    }
                                 }
                             },
                         );
@@ -1650,7 +1658,7 @@ impl eframe::App for SnowGui {
                                 .filter_map(|(i, t)| t.as_ref().map(|t| (i, t)))
                                 .filter(|(_, t)| t.target_type == ScsiTargetType::Cdrom)
                             {
-                                self.draw_scsi_target_menu(ui, id, Some(target));
+                                self.draw_scsi_target_menu(ui, id, Some(target), false);
                             }
                         }
                         ui.separator();
