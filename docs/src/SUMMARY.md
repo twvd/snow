@@ -13,6 +13,7 @@
 - [Working with media](./manual/media/README.md)
   - [Floppies](./manual/media/floppies.md)
   - [Hard drives](./manual/media/harddrives.md)
+  - [CD-ROM](./manual/media/cdrom.md)
 - [Keyboard/mouse](./manual/input.md)
 - [Workspaces](./manual/workspaces.md)
 - [Fullscreen mode](./manual/fullscreen.md)
