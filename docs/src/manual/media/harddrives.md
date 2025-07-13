@@ -8,7 +8,7 @@ To perform actions on a specific SCSI HDD, go to 'Drives > SCSI #n' where
 
 ## Creating a blank drive image
 
-To create a blank hard drive image within Snow, use the 'Create new image...'
+To create a blank hard drive image within Snow, use the 'Create new HDD image...'
 menu action. This will present the following dialog:
 
 ![Create disk dialog](../../images/create_disk_dialog.png)
@@ -32,7 +32,7 @@ Volume images are not compatible with Snow because they contain insufficient
 data for the Mac to boot. If you want to convert a volume image to a device
 image you can use in Snow, see [Converting volume images](../../guides/volume.md).
 
-To mount an existing image file, use the 'Load disk image...' menu action
+To mount an existing image file, use the 'Load HDD disk image...' menu action
 to browse for a disk image. Note that an image file must be a multiple of
 512 bytes (the SCSI sector size) and must be an image of a full drive.
 
