@@ -551,6 +551,11 @@ impl Emulator {
     pub fn get_cycles(&self) -> Ticks {
         self.config.cpu_cycles()
     }
+
+    pub fn attach_cdrom(&mut self, id: usize) {
+        self.config.scsi_mut().attach_cdrom_at(id);
+        info!("SCSI ID #{}: CD-ROM drive attached", id);
+    }
 }
 
 impl Tickable for Emulator {
@@ -669,8 +674,7 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     EmulatorCommand::ScsiAttachCdrom(id) => {
-                        self.config.scsi_mut().attach_cdrom_at(id);
-                        info!("SCSI ID #{}: CD-ROM drive attached", id);
+                        self.attach_cdrom(id);
                         self.status_update()?;
                     }
                     EmulatorCommand::DetachScsiTarget(id) => {

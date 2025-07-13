@@ -20,7 +20,7 @@ use snow_core::mac::MacModel;
 use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
 
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
-use crate::emulator::EmulatorInitArgs;
+use crate::emulator::{EmulatorInitArgs, ScsiTargets};
 use anyhow::{bail, Result};
 use eframe::egui;
 use egui_file_dialog::{DialogMode, DirectoryEntry, FileDialog};
@@ -472,7 +472,7 @@ impl SnowGui {
                     self.draw_menu_floppies(ui);
 
                     // Needs cloning for the later borrow to call create_disk_dialog.open()
-                    let targets = self.emu.get_scsi_targets().map(|d| d.to_owned());
+                    let targets = self.emu.get_scsi_target_status().map(|d| d.to_owned());
                     if let Some(targets) = targets {
                         ui.separator();
                         for (i, target) in targets.iter().enumerate() {
@@ -1082,7 +1082,7 @@ impl SnowGui {
         path: &Path,
         display_rom_path: Option<&Path>,
         extension_rom_path: Option<&Path>,
-        disks: Option<[Option<PathBuf>; 7]>,
+        scsi_targets: Option<ScsiTargets>,
         pram_path: Option<&Path>,
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
@@ -1091,7 +1091,7 @@ impl SnowGui {
             path,
             display_rom_path,
             extension_rom_path,
-            disks,
+            scsi_targets,
             pram_path,
             args,
             model,
@@ -1131,7 +1131,7 @@ impl SnowGui {
         if let Some(rompath) = self.workspace.get_rom_path() {
             let display_rom_path = self.workspace.get_display_card_rom_path();
             let extension_rom_path = self.workspace.get_extension_rom_path();
-            let disk_paths = self.workspace.get_disk_paths();
+            let scsi_targets = self.workspace.scsi_targets();
             let pram_path = self.workspace.get_pram_path();
             let init_args = self.workspace.init_args.clone();
             let model = self.workspace.model;
@@ -1140,7 +1140,7 @@ impl SnowGui {
                 &rompath,
                 display_rom_path.as_deref(),
                 extension_rom_path.as_deref(),
-                Some(disk_paths),
+                Some(scsi_targets),
                 pram_path.as_deref(),
                 &init_args,
                 model,
@@ -1152,7 +1152,11 @@ impl SnowGui {
 
     fn save_workspace(&mut self, path: &Path) {
         self.workspace.viewport_scale = self.framebuffer.scale;
-        self.workspace.set_disk_paths(&self.emu.get_disk_paths());
+        if let Some(targets) = self.emu.get_scsi_target_status().as_ref() {
+            for (i, d) in targets.iter().enumerate() {
+                self.workspace.set_scsi_target(i, d.clone());
+            }
+        }
         if let Err(e) = self.workspace.write_file(path) {
             self.show_error(&format!("Failed to save workspace: {}", e));
         }
@@ -1247,7 +1251,7 @@ impl SnowGui {
             &result.main_rom_path,
             result.display_rom_path.as_deref(),
             result.extension_rom_path.as_deref(),
-            Some(self.emu.get_disk_paths()),
+            self.emu.get_scsi_targets(),
             result.pram_path.as_deref(),
             &result.init_args,
             Some(result.model),
@@ -1638,7 +1642,7 @@ impl eframe::App for SnowGui {
                         }
                         ui.separator();
                         self.draw_menu_floppies(ui);
-                        let targets = self.emu.get_scsi_targets().map(|d| d.to_owned());
+                        let targets = self.emu.get_scsi_target_status().map(|d| d.to_owned());
                         if let Some(targets) = targets {
                             for (id, target) in targets
                                 .iter()
