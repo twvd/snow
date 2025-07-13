@@ -62,7 +62,7 @@ impl ScsiTargetDisk {
             );
         }
 
-        f.lock_exclusive()
+        f.try_lock_exclusive()
             .with_context(|| format!("Failed to lock {}", filename.display()))?;
 
         let mmapped = unsafe {

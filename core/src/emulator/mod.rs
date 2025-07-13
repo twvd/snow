@@ -643,12 +643,7 @@ impl Tickable for Emulator {
                                 );
                             }
                             Err(e) => {
-                                self.user_error(&format!(
-                                    "SCSI ID #{}: cannot load image '{}': {:#}",
-                                    id,
-                                    filename.display(),
-                                    e
-                                ));
+                                self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
                             }
                         };
                         self.status_update()?;
@@ -663,12 +658,7 @@ impl Tickable for Emulator {
                                 info!("SCSI ID #{}: image '{}' loaded", id, filename.display());
                             }
                             Err(e) => {
-                                self.user_error(&format!(
-                                    "SCSI ID #{}: cannot load image '{}': {:#}",
-                                    id,
-                                    filename.display(),
-                                    e
-                                ));
+                                self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
                             }
                         };
                         self.status_update()?;
