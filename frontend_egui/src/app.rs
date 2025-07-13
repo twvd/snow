@@ -472,115 +472,11 @@ impl SnowGui {
                     self.draw_menu_floppies(ui);
 
                     // Needs cloning for the later borrow to call create_disk_dialog.open()
-                    let hdds = self.emu.get_scsi_targets().map(|d| d.to_owned());
-                    if let Some(hdd) = hdds {
+                    let targets = self.emu.get_scsi_targets().map(|d| d.to_owned());
+                    if let Some(targets) = targets {
                         ui.separator();
-                        for (i, target) in hdd.iter().enumerate() {
-                            if let Some(target) = target {
-                                match target.target_type {
-                                    ScsiTargetType::Disk => {
-                                        ui.menu_button(
-                                            format!(
-                                                "{} SCSI #{}: HDD {} ({:0.2}MB)",
-                                                egui_material_icons::icons::ICON_HARD_DRIVE_2,
-                                                i,
-                                                target
-                                                    .image
-                                                    .as_ref()
-                                                    .unwrap()
-                                                    .file_name()
-                                                    .unwrap_or_default()
-                                                    .to_string_lossy(),
-                                                target.capacity.unwrap() / 1024 / 1024
-                                            ),
-                                            |ui| {
-                                                ui.set_min_width(Self::SUBMENU_WIDTH);
-                                                if ui.button("Detach hard drive").clicked() {
-                                                    self.emu.scsi_detach_target(i);
-                                                    ui.close_menu();
-                                                }
-                                            },
-                                        );
-                                    }
-                                    ScsiTargetType::Cdrom => {
-                                        if let Some(image) = target.image.as_ref() {
-                                            // CD inserted
-                                            ui.menu_button(
-                                                format!(
-                                                    "{} SCSI #{}: CD-ROM {}",
-                                                    egui_material_icons::icons::ICON_ALBUM,
-                                                    i,
-                                                    image
-                                                        .file_name()
-                                                        .unwrap_or_default()
-                                                        .to_string_lossy(),
-                                                ),
-                                                |ui| {
-                                                    ui.set_min_width(Self::SUBMENU_WIDTH);
-                                                    if ui.button("Detach CD-ROM drive").clicked() {
-                                                        self.emu.scsi_detach_target(i);
-                                                        ui.close_menu();
-                                                    }
-                                                },
-                                            );
-                                        } else {
-                                            ui.menu_button(
-                                                format!(
-                                                    "{} SCSI #{}: CD-ROM (no media)",
-                                                    egui_material_icons::icons::ICON_EJECT,
-                                                    i,
-                                                ),
-                                                |ui| {
-                                                    ui.set_min_width(Self::SUBMENU_WIDTH);
-                                                    if ui.button("Load image...").clicked() {
-                                                        self.cdrom_dialog_idx = i;
-                                                        self.cdrom_dialog.pick_file();
-                                                        ui.close_menu();
-                                                    }
-                                                    ui.separator();
-                                                    if ui.button("Detach CD-ROM drive").clicked() {
-                                                        self.emu.scsi_detach_target(i);
-                                                        ui.close_menu();
-                                                    }
-                                                },
-                                            );
-                                        }
-                                    }
-                                }
-                            } else {
-                                ui.menu_button(
-                                    format!(
-                                        "{} SCSI #{}: (no device)",
-                                        egui_material_icons::icons::ICON_BLOCK,
-                                        i
-                                    ),
-                                    |ui| {
-                                        ui.set_min_width(Self::SUBMENU_WIDTH);
-                                        if ui.button("Create new HDD image...").clicked() {
-                                            self.create_disk_dialog.open(i, &self.workspace_dir());
-                                            ui.close_menu();
-                                        }
-                                        if ui.button("Load HDD disk image...").clicked() {
-                                            self.hdd_dialog_idx = i;
-                                            self.hdd_dialog.pick_file();
-                                            ui.close_menu();
-                                        }
-                                        ui.separator();
-                                        if ui
-                                            .button("Attach CD-ROM drive (with image)...")
-                                            .clicked()
-                                        {
-                                            self.cdrom_dialog_idx = i;
-                                            self.cdrom_dialog.pick_file();
-                                            ui.close_menu();
-                                        }
-                                        if ui.button("Attach CD-ROM drive (empty)").clicked() {
-                                            self.emu.scsi_attach_cdrom(i);
-                                            ui.close_menu();
-                                        }
-                                    },
-                                );
-                            }
+                        for (i, target) in targets.iter().enumerate() {
+                            self.draw_scsi_target_menu(ui, i, target.as_ref());
                         }
                     }
                 });
@@ -780,6 +676,113 @@ impl SnowGui {
                 }
             });
         });
+    }
+
+    fn draw_scsi_target_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: usize,
+        target: Option<&snow_core::emulator::comm::ScsiTargetStatus>,
+    ) {
+        if let Some(target) = target {
+            match target.target_type {
+                ScsiTargetType::Disk => {
+                    ui.menu_button(
+                        format!(
+                            "{} SCSI #{}: HDD {} ({:0.2}MB)",
+                            egui_material_icons::icons::ICON_HARD_DRIVE_2,
+                            id,
+                            target
+                                .image
+                                .as_ref()
+                                .unwrap()
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy(),
+                            target.capacity.unwrap() / 1024 / 1024
+                        ),
+                        |ui| {
+                            ui.set_min_width(Self::SUBMENU_WIDTH);
+                            if ui.button("Detach hard drive").clicked() {
+                                self.emu.scsi_detach_target(id);
+                                ui.close_menu();
+                            }
+                        },
+                    );
+                }
+                ScsiTargetType::Cdrom => {
+                    if let Some(image) = target.image.as_ref() {
+                        // CD inserted
+                        ui.menu_button(
+                            format!(
+                                "{} SCSI #{}: CD {}",
+                                egui_material_icons::icons::ICON_ALBUM,
+                                id,
+                                image.file_name().unwrap_or_default().to_string_lossy(),
+                            ),
+                            |ui| {
+                                ui.set_min_width(Self::SUBMENU_WIDTH);
+                                if ui.button("Detach CD-ROM drive").clicked() {
+                                    self.emu.scsi_detach_target(id);
+                                    ui.close_menu();
+                                }
+                            },
+                        );
+                    } else {
+                        ui.menu_button(
+                            format!(
+                                "{} SCSI #{}: CD (no media)",
+                                egui_material_icons::icons::ICON_EJECT,
+                                id,
+                            ),
+                            |ui| {
+                                ui.set_min_width(Self::SUBMENU_WIDTH);
+                                if ui.button("Load image...").clicked() {
+                                    self.cdrom_dialog_idx = id;
+                                    self.cdrom_dialog.pick_file();
+                                    ui.close_menu();
+                                }
+                                ui.separator();
+                                if ui.button("Detach CD-ROM drive").clicked() {
+                                    self.emu.scsi_detach_target(id);
+                                    ui.close_menu();
+                                }
+                            },
+                        );
+                    }
+                }
+            }
+        } else {
+            ui.menu_button(
+                format!(
+                    "{} SCSI #{}: (no device)",
+                    egui_material_icons::icons::ICON_BLOCK,
+                    id
+                ),
+                |ui| {
+                    ui.set_min_width(Self::SUBMENU_WIDTH + 50.0);
+                    if ui.button("Create new HDD image...").clicked() {
+                        self.create_disk_dialog.open(id, &self.workspace_dir());
+                        ui.close_menu();
+                    }
+                    if ui.button("Load HDD disk image...").clicked() {
+                        self.hdd_dialog_idx = id;
+                        self.hdd_dialog.pick_file();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Attach CD-ROM drive (with image)...").clicked() {
+                        self.cdrom_dialog_idx = id;
+                        self.cdrom_dialog.pick_file();
+                        ui.close_menu();
+                    }
+                    if ui.button("Attach CD-ROM drive (empty)").clicked() {
+                        self.emu.scsi_attach_cdrom(id);
+                        ui.close_menu();
+                    }
+                },
+            );
+        }
     }
 
     fn draw_menu_floppies(&mut self, ui: &mut egui::Ui) {
@@ -1635,6 +1638,17 @@ impl eframe::App for SnowGui {
                         }
                         ui.separator();
                         self.draw_menu_floppies(ui);
+                        let targets = self.emu.get_scsi_targets().map(|d| d.to_owned());
+                        if let Some(targets) = targets {
+                            for (id, target) in targets
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(i, t)| t.as_ref().map(|t| (i, t)))
+                                .filter(|(_, t)| t.target_type == ScsiTargetType::Cdrom)
+                            {
+                                self.draw_scsi_target_menu(ui, id, Some(target));
+                            }
+                        }
                         ui.separator();
                         let mut ff = self.emu.is_fastforward();
                         if ui.checkbox(&mut ff, "Fast-forward").clicked() {

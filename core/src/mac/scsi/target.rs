@@ -6,7 +6,7 @@ use anyhow::Result;
 
 use crate::mac::scsi::{ScsiCmdResult, STATUS_CHECK_CONDITION, STATUS_GOOD};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 /// Enumeration of supported emulated SCSI target types (devices)
 pub enum ScsiTargetType {
     Disk,
