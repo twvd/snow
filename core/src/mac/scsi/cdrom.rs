@@ -185,7 +185,7 @@ impl ScsiTarget for ScsiTargetCdrom {
             );
         }
 
-        f.lock_exclusive()
+        f.try_lock_exclusive()
             .with_context(|| format!("Failed to lock {}", path.display()))?;
 
         let mmapped = unsafe {

@@ -58,7 +58,7 @@ impl RtcData {
             .inspect_err(|e| error!("Opening PRAM {} failed: {}", filename.display(), e))
             .ok()?;
 
-        f.lock_exclusive()
+        f.try_lock_exclusive()
             .inspect_err(|e| error!("Cannot lock PRAM {}: {}", filename.display(), e))
             .ok()?;
 
