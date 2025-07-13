@@ -107,6 +107,10 @@ impl ScsiTargetDisk {
 }
 
 impl ScsiTarget for ScsiTargetDisk {
+    fn load_media(&mut self, _path: &Path) -> Result<()> {
+        bail!("load_media on non-removable disk");
+    }
+
     fn take_event(&mut self) -> Option<super::target::ScsiTargetEvent> {
         None
     }

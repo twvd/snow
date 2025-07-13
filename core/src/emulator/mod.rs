@@ -25,7 +25,7 @@ use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, ClickEventSender, KeyEventSender};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use bit_set::BitSet;
 use log::*;
 
@@ -490,7 +490,7 @@ impl Emulator {
     }
 
     pub fn load_hdd_image(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {
-        self.config.scsi_mut().load_disk_at(filename, scsi_id)
+        self.config.scsi_mut().attach_hdd_at(filename, scsi_id)
     }
 
     fn user_error(&self, msg: &str) {
@@ -628,8 +628,32 @@ impl Tickable for Emulator {
                     EmulatorCommand::EjectFloppy(drive) => {
                         self.config.swim_mut().drives[drive].eject();
                     }
-                    EmulatorCommand::LoadHddImage(id, filename) => {
+                    EmulatorCommand::ScsiAttachHdd(id, filename) => {
                         match self.load_hdd_image(&filename, id) {
+                            Ok(_) => {
+                                info!(
+                                    "SCSI ID #{}: hard drive attached, image '{}' loaded",
+                                    id,
+                                    filename.display()
+                                );
+                            }
+                            Err(e) => {
+                                self.user_error(&format!(
+                                    "SCSI ID #{}: cannot load image '{}': {:#}",
+                                    id,
+                                    filename.display(),
+                                    e
+                                ));
+                            }
+                        };
+                        self.status_update()?;
+                    }
+                    EmulatorCommand::ScsiLoadMedia(id, filename) => {
+                        match self.config.scsi_mut().targets[id]
+                            .as_mut()
+                            .context("No target attached")?
+                            .load_media(&filename)
+                        {
                             Ok(_) => {
                                 info!("SCSI ID #{}: image '{}' loaded", id, filename.display());
                             }
@@ -644,9 +668,14 @@ impl Tickable for Emulator {
                         };
                         self.status_update()?;
                     }
-                    EmulatorCommand::DetachHddImage(id) => {
+                    EmulatorCommand::ScsiAttachCdrom(id) => {
+                        self.config.scsi_mut().attach_cdrom_at(id);
+                        info!("SCSI ID #{}: CD-ROM drive attached", id);
+                        self.status_update()?;
+                    }
+                    EmulatorCommand::DetachScsiTarget(id) => {
                         self.config.scsi_mut().detach_target(id);
-                        info!("SCSI ID #{}: disk detached", id);
+                        info!("SCSI ID #{}: target detached", id);
                         self.status_update()?;
                     }
                     EmulatorCommand::SaveFloppy(drive, filename) => {

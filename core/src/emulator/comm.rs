@@ -32,8 +32,10 @@ pub enum EmulatorCommand {
     InsertFloppyImage(usize, Box<FloppyImage>),
     SaveFloppy(usize, PathBuf),
     EjectFloppy(usize),
-    LoadHddImage(usize, PathBuf),
-    DetachHddImage(usize),
+    ScsiAttachHdd(usize, PathBuf),
+    ScsiAttachCdrom(usize),
+    ScsiLoadMedia(usize, PathBuf),
+    DetachScsiTarget(usize),
     MouseUpdateAbsolute {
         x: u16,
         y: u16,
