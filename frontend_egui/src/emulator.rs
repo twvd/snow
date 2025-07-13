@@ -35,6 +35,32 @@ use snow_floppy::{Floppy, FloppyImage, FloppyType};
 use crate::audio::SDLAudioSink;
 
 pub type DisassemblyListing = Vec<DisassemblyEntry>;
+pub type ScsiTargets = [ScsiTarget; 7];
+pub struct ScsiTarget {
+    pub target_type: Option<ScsiTargetType>,
+    pub image_path: Option<PathBuf>,
+}
+
+impl From<ScsiTargetStatus> for ScsiTarget {
+    fn from(value: ScsiTargetStatus) -> Self {
+        Self {
+            target_type: Some(value.target_type),
+            image_path: value.image,
+        }
+    }
+}
+
+impl From<Option<ScsiTargetStatus>> for ScsiTarget {
+    fn from(value: Option<ScsiTargetStatus>) -> Self {
+        match value {
+            None => Self {
+                target_type: None,
+                image_path: None,
+            },
+            Some(v) => v.into(),
+        }
+    }
+}
 
 /// Results of initializing the emulator, includes channels
 pub struct EmulatorInitResult {
@@ -85,7 +111,7 @@ impl EmulatorState {
         filename: &Path,
         display_rom_path: Option<&Path>,
         extension_rom_path: Option<&Path>,
-        disks: Option<[Option<PathBuf>; 7]>,
+        scsi_targets: Option<ScsiTargets>,
         pram: Option<&Path>,
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
@@ -105,7 +131,7 @@ impl EmulatorState {
             &rom,
             display_rom.as_deref(),
             extension_rom.as_deref(),
-            disks,
+            scsi_targets,
             pram,
             args,
             model,
@@ -119,7 +145,7 @@ impl EmulatorState {
         rom: &[u8],
         display_rom: Option<&[u8]>,
         extension_rom: Option<&[u8]>,
-        disks: Option<[Option<PathBuf>; 7]>,
+        scsi_targets: Option<ScsiTargets>,
         pram: Option<&Path>,
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
@@ -169,24 +195,42 @@ impl EmulatorState {
 
         if model.has_scsi() {
             for id in 0..7 {
-                let Some(ref disks) = disks else {
+                let Some(ref targets) = scsi_targets else {
                     break;
                 };
-                let Some(ref filename) = disks[id] else {
-                    continue;
+                match &targets[id] {
+                    ScsiTarget {
+                        target_type: Some(ScsiTargetType::Disk),
+                        image_path: Some(filename),
+                    } => match emulator.load_hdd_image(filename, id) {
+                        Ok(_) => {
+                            info!(
+                                "SCSI ID #{}: loaded image file {}",
+                                id,
+                                filename.to_string_lossy()
+                            );
+                        }
+                        Err(e) => {
+                            error!("SCSI ID #{}: image load failed: {}", id, e);
+                        }
+                    },
+                    ScsiTarget {
+                        target_type: Some(ScsiTargetType::Disk),
+                        image_path: None,
+                    } => {
+                        // Invalid, ignore
+                        log::error!("SCSI ID #{} is a hard drive but no image was specified", id);
+                    }
+                    ScsiTarget {
+                        target_type: Some(ScsiTargetType::Cdrom),
+                        ..
+                    } => {
+                        emulator.attach_cdrom(id);
+                    }
+                    ScsiTarget {
+                        target_type: None, ..
+                    } => (),
                 };
-                match emulator.load_hdd_image(filename, id) {
-                    Ok(_) => {
-                        info!(
-                            "SCSI ID #{}: loaded image file {}",
-                            id,
-                            filename.to_string_lossy()
-                        );
-                    }
-                    Err(e) => {
-                        error!("SCSI ID #{}: image load failed: {}", id, e);
-                    }
-                }
             }
         }
 
@@ -409,7 +453,7 @@ impl EmulatorState {
     }
 
     /// Gets a reference to the active SCSI target array.
-    pub fn get_scsi_targets(&self) -> Option<&[Option<ScsiTargetStatus>]> {
+    pub fn get_scsi_target_status(&self) -> Option<&[Option<ScsiTargetStatus>]> {
         let status = self.status.as_ref()?;
         if !status.model.has_scsi() {
             return None;
@@ -417,12 +461,10 @@ impl EmulatorState {
         Some(&status.scsi)
     }
 
-    /// Gets an array of PathBuf of the loaded disk images
-    pub fn get_disk_paths(&self) -> [Option<PathBuf>; 7] {
-        let Some(status) = self.status.as_ref() else {
-            return core::array::from_fn(|_| None);
-        };
-        core::array::from_fn(|i| status.scsi[i].clone().and_then(|v| v.image))
+    /// Gets a copy of SCSI targets and loaded media
+    pub fn get_scsi_targets(&self) -> Option<ScsiTargets> {
+        let status = self.get_scsi_target_status()?;
+        Some(core::array::from_fn(|id| status[id].clone().into()))
     }
 
     /// Returns `true` if the emulator has been instansiated and loaded with a ROM.

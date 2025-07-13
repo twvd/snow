@@ -3,12 +3,66 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-use crate::emulator::EmulatorInitArgs;
+use crate::emulator::{EmulatorInitArgs, ScsiTarget};
 use crate::util::relativepath::RelativePath;
 use anyhow::{Context, Result};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
+use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::MacModel;
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub enum WorkspaceScsiTarget {
+    #[default]
+    None,
+    Disk(RelativePath),
+    Cdrom,
+}
+
+impl TryFrom<ScsiTarget> for WorkspaceScsiTarget {
+    type Error = ();
+
+    fn try_from(value: ScsiTarget) -> std::result::Result<Self, Self::Error> {
+        Ok(match value.target_type.ok_or(())? {
+            ScsiTargetType::Disk => {
+                Self::Disk(RelativePath::from_absolute(&value.image_path.ok_or(())?))
+            }
+            ScsiTargetType::Cdrom => Self::Cdrom,
+        })
+    }
+}
+
+impl TryFrom<Option<ScsiTarget>> for WorkspaceScsiTarget {
+    type Error = ();
+
+    fn try_from(value: Option<ScsiTarget>) -> std::result::Result<Self, Self::Error> {
+        match value {
+            None => Ok(Self::None),
+            Some(v) => Self::try_from(v),
+        }
+    }
+}
+
+// The opposite is not infallible
+#[allow(clippy::from_over_into)]
+impl Into<ScsiTarget> for WorkspaceScsiTarget {
+    fn into(self) -> ScsiTarget {
+        match self {
+            Self::None => ScsiTarget {
+                target_type: None,
+                image_path: None,
+            },
+            Self::Cdrom => ScsiTarget {
+                target_type: Some(ScsiTargetType::Cdrom),
+                image_path: None,
+            },
+            Self::Disk(p) => ScsiTarget {
+                target_type: Some(ScsiTargetType::Disk),
+                image_path: Some(p.get_absolute()),
+            },
+        }
+    }
+}
 
 /// A workspace representation which contains:
 /// * (Paths to) loaded assets
@@ -47,7 +101,12 @@ pub struct Workspace {
     extension_rom_path: Option<RelativePath>,
 
     /// Last loaded disks
+    /// Deprecated; now scsi_targets
+    #[serde(skip_serializing)]
     disks: [Option<RelativePath>; 7],
+
+    /// Configured SCSI targets
+    scsi_targets: [WorkspaceScsiTarget; 7],
 
     /// Window positions
     windows: HashMap<String, [f32; 4]>,
@@ -81,7 +140,8 @@ impl Default for Workspace {
             display_card_rom_path: None,
             pram_path: None,
             extension_rom_path: None,
-            disks: core::array::from_fn(|_| None),
+            disks: Default::default(),
+            scsi_targets: Default::default(),
             windows: HashMap::new(),
             init_args: EmulatorInitArgs::default(),
             model: None,
@@ -122,11 +182,22 @@ impl Workspace {
         if let Some(p) = result.extension_rom_path.as_mut() {
             p.after_deserialize(parent)?;
         }
-        for d in &mut result.disks {
-            if let Some(p) = d.as_mut() {
-                p.after_deserialize(parent)?;
+        for d in &mut result.scsi_targets {
+            match d {
+                WorkspaceScsiTarget::Disk(ref mut p) => p.after_deserialize(parent)?,
+                WorkspaceScsiTarget::None | WorkspaceScsiTarget::Cdrom => (),
             }
         }
+        for (i, d) in result.disks.iter_mut().enumerate() {
+            if let Some(p) = d.as_mut() {
+                p.after_deserialize(parent)?;
+
+                // Migrate
+                result.scsi_targets[i] = WorkspaceScsiTarget::Disk(p.clone());
+            }
+        }
+        result.disks = core::array::from_fn(|_| None);
+
         Ok(result)
     }
 
@@ -145,9 +216,11 @@ impl Workspace {
         if let Some(p) = self.extension_rom_path.as_mut() {
             p.before_serialize(parent)?;
         }
-        for d in &mut self.disks {
-            if let Some(p) = d.as_mut() {
-                p.before_serialize(parent)?;
+        // disks is deprecated
+        for d in &mut self.scsi_targets {
+            match d {
+                WorkspaceScsiTarget::Disk(ref mut p) => p.before_serialize(parent)?,
+                WorkspaceScsiTarget::None | WorkspaceScsiTarget::Cdrom => (),
             }
         }
 
@@ -155,13 +228,12 @@ impl Workspace {
         Ok(serde_json::to_writer_pretty(file, self)?)
     }
 
-    pub fn get_disk_paths(&self) -> [Option<PathBuf>; 7] {
-        core::array::from_fn(|i| self.disks[i].clone().map(|p| p.get_absolute()))
+    pub fn scsi_targets(&self) -> [ScsiTarget; 7] {
+        core::array::from_fn(|i| self.scsi_targets[i].clone().into())
     }
 
-    pub fn set_disk_paths(&mut self, disks: &[Option<PathBuf>; 7]) {
-        self.disks =
-            core::array::from_fn(|i| disks[i].as_ref().map(|d| RelativePath::from_absolute(d)));
+    pub fn set_scsi_target(&mut self, id: usize, target: impl Into<ScsiTarget>) {
+        self.scsi_targets[id] = target.into().try_into().unwrap_or_default();
     }
 
     pub fn set_rom_path(&mut self, p: &Path) {
