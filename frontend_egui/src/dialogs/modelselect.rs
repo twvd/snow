@@ -480,6 +480,10 @@ impl ModelSelectionDialog {
                             &mut self.disable_rom_validation,
                             "Disable ROM validation (allow loading any ROM)",
                         );
+                        ui.checkbox(
+                            &mut self.init_args.start_fastforward,
+                            "Start in fast-forward mode",
+                        );
                     });
                 });
             });

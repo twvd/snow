@@ -78,6 +78,9 @@ pub struct EmulatorInitArgs {
 
     #[serde(default)]
     pub mouse_disabled: bool,
+
+    #[serde(default)]
+    pub start_fastforward: bool,
 }
 
 /// Manages the state of the emulator and feeds input to the GUI
@@ -191,6 +194,10 @@ impl EmulatorState {
         } else {
             let mut cb = self.audiosink.as_mut().unwrap().lock();
             cb.set_receiver(emulator.get_audio());
+        }
+
+        if args.start_fastforward {
+            cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Uncapped))?;
         }
 
         if model.has_scsi() {
