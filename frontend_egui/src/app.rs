@@ -194,7 +194,7 @@ impl SnowGui {
                 .join(", ")
         );
         let hdd_filter_str = "HDD images (*.img, *.hda)";
-        let cdrom_filter_str = "CD-ROM images (*.iso)";
+        let cdrom_filter_str = "CD-ROM images (*.iso, *.toast)";
 
         let mut app = Self {
             workspace: Default::default(),
@@ -239,6 +239,9 @@ impl SnowGui {
                         p.extension()
                             .unwrap_or_default()
                             .eq_ignore_ascii_case("iso")
+                            || p.extension()
+                                .unwrap_or_default()
+                                .eq_ignore_ascii_case("toast")
                     }),
                 )
                 .default_file_filter(cdrom_filter_str)
