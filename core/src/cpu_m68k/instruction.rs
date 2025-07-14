@@ -171,6 +171,7 @@ pub enum InstructionMnemonic {
     MOVEC_l,
     MOVEP_w,
     MOVEP_l,
+    MOVEfromCCR,
     MOVEfromSR,
     MOVEfromUSP,
     MOVEtoCCR,
@@ -729,6 +730,7 @@ impl Instruction {
         (M68000, 0b1110_0001_1001_1000, 0b1111_0001_1101_1000, InstructionMnemonic::ROL_l),
 
         // M68010+ instructions
+        (M68010, 0b0100_0010_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MOVEfromCCR),
         (M68010, 0b0100_1110_0111_1010, 0b1111_1111_1111_1110, InstructionMnemonic::MOVEC_l),
         (M68010, 0b0100_1110_0111_0100, 0b1111_1111_1111_1111, InstructionMnemonic::RTD),
 
@@ -1045,6 +1047,7 @@ impl Instruction {
             | InstructionMnemonic::MOVEP_w
             | InstructionMnemonic::MOVEM_mem_w
             | InstructionMnemonic::MOVEM_reg_w
+            | InstructionMnemonic::MOVEfromCCR
             | InstructionMnemonic::MULU_w
             | InstructionMnemonic::MULS_w
             | InstructionMnemonic::NEG_w

@@ -483,6 +483,7 @@ impl<'a> Disassembler<'a> {
                 format!("{} {}", mnemonic, target)
             }
 
+            InstructionMnemonic::MOVEfromCCR => format!("MOVE.w {},CCR", self.ea(instr)?),
             InstructionMnemonic::MOVEtoCCR => format!("MOVE.w CCR,{}", self.ea(instr)?),
             InstructionMnemonic::MOVEtoSR => format!("MOVE.w SR,{}", self.ea(instr)?),
             InstructionMnemonic::MOVEfromSR => format!("MOVE.w {},SR", self.ea(instr)?),
