@@ -177,14 +177,6 @@ impl ScsiTarget for ScsiTargetCdrom {
         let file_size = f.seek(SeekFrom::End(0))? as usize;
         f.seek(SeekFrom::Start(0))?;
 
-        if file_size % CDROM_BLOCKSIZE != 0 {
-            bail!(
-                "Cannot load disk image {}: not multiple of {}",
-                path.display(),
-                CDROM_BLOCKSIZE
-            );
-        }
-
         f.try_lock_exclusive()
             .with_context(|| format!("Failed to lock {}", path.display()))?;
 
@@ -212,14 +204,6 @@ impl ScsiTarget for ScsiTargetCdrom {
 
         let disk =
             fs::read(path).with_context(|| format!("Failed to open file {}", path.display()))?;
-
-        if disk.len() % CDROM_BLOCKSIZE != 0 {
-            bail!(
-                "Cannot load disk image {}: not multiple of {}",
-                path.display(),
-                CDROM_BLOCKSIZE
-            );
-        }
 
         self.disk = Some(disk);
         self.path = path.to_path_buf();
@@ -302,14 +286,21 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn blocks(&self) -> Option<usize> {
-        Some(self.disk.as_ref()?.len() / CDROM_BLOCKSIZE)
+        Some(self.disk.as_ref()?.len().div_ceil(CDROM_BLOCKSIZE))
     }
 
-    fn read(&self, block_offset: usize, block_count: usize) -> &[u8] {
+    fn read(&self, block_offset: usize, block_count: usize) -> Vec<u8> {
         // If blocks() returns None this will never be called by
         // ScsiTarget::cmd
-        &self.disk.as_ref().expect("read() but no media inserted")
-            [(block_offset * CDROM_BLOCKSIZE)..((block_offset + block_count) * CDROM_BLOCKSIZE)]
+        let disk = self.disk.as_ref().expect("read() but no media inserted");
+        let end_offset = (block_offset + block_count) * CDROM_BLOCKSIZE;
+        let image_end_offset = std::cmp::min(end_offset, disk.len());
+
+        let mut result = disk[(block_offset * CDROM_BLOCKSIZE)..image_end_offset].to_vec();
+        // CD-ROM images may not be exactly aligned on block size
+        // Pad the end to a full block size
+        result.resize(block_count * CDROM_BLOCKSIZE, 0);
+        result
     }
 
     fn write(&mut self, _block_offset: usize, _data: &[u8]) {
