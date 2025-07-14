@@ -204,8 +204,9 @@ impl ScsiTarget for ScsiTargetDisk {
         Some(self.disk.len() / DISK_BLOCKSIZE)
     }
 
-    fn read(&self, block_offset: usize, block_count: usize) -> &[u8] {
-        &self.disk[(block_offset * DISK_BLOCKSIZE)..((block_offset + block_count) * DISK_BLOCKSIZE)]
+    fn read(&self, block_offset: usize, block_count: usize) -> Vec<u8> {
+        self.disk[(block_offset * DISK_BLOCKSIZE)..((block_offset + block_count) * DISK_BLOCKSIZE)]
+            .to_vec()
     }
 
     fn write(&mut self, block_offset: usize, data: &[u8]) {

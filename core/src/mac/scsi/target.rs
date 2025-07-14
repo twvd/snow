@@ -33,7 +33,7 @@ pub(crate) trait ScsiTarget {
     // For block devices
     fn blocksize(&self) -> Option<usize>;
     fn blocks(&self) -> Option<usize>;
-    fn read(&self, block_offset: usize, block_count: usize) -> &[u8];
+    fn read(&self, block_offset: usize, block_count: usize) -> Vec<u8>;
     fn write(&mut self, block_offset: usize, data: &[u8]);
     fn image_fn(&self) -> Option<&Path>;
     fn load_media(&mut self, path: &Path) -> Result<()>;
