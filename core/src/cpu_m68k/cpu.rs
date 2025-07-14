@@ -1182,6 +1182,7 @@ where
             // M68010 ------------------------------------------------------------------------------
             InstructionMnemonic::MOVEC_l => self.op_movec(instr),
             InstructionMnemonic::RTD => self.op_rtd(instr),
+            InstructionMnemonic::MOVEfromCCR => self.op_move_from_ccr(instr),
 
             // M68020 ------------------------------------------------------------------------------
             InstructionMnemonic::BFCLR => self.op_bfclr(instr),
@@ -2082,6 +2083,15 @@ where
         self.prefetch_pump()?;
 
         self.regs.sr.set_ccr(value as Byte);
+        Ok(())
+    }
+
+    /// MOVEfromCCR
+    fn op_move_from_ccr(&mut self, instr: &Instruction) -> Result<()> {
+        self.advance_cycles(4)?;
+        self.write_ea::<Word>(instr, instr.get_op2(), self.regs.sr.ccr().into())?;
+        self.prefetch_pump()?;
+
         Ok(())
     }
 
