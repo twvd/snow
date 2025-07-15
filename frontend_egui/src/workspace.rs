@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::emulator::{EmulatorInitArgs, ScsiTarget};
 use crate::util::relativepath::RelativePath;
+use crate::widgets::framebuffer::ScalingAlgorithm;
 use anyhow::{Context, Result};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
@@ -119,6 +120,9 @@ pub struct Workspace {
 
     /// Map Right ALT to Cmd
     pub map_cmd_ralt: bool,
+
+    /// Scaling algorithm in use
+    pub scaling_algorithm: ScalingAlgorithm,
 }
 
 impl Default for Workspace {
@@ -146,6 +150,7 @@ impl Default for Workspace {
             init_args: EmulatorInitArgs::default(),
             model: None,
             map_cmd_ralt: true,
+            scaling_algorithm: ScalingAlgorithm::Linear,
         }
     }
 }

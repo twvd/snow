@@ -5,7 +5,7 @@ use crate::settings::AppSettings;
 use crate::uniform::{UniformAction, UNIFORM_ACTION};
 use crate::widgets::breakpoints::BreakpointsWidget;
 use crate::widgets::disassembly::Disassembly;
-use crate::widgets::framebuffer::FramebufferWidget;
+use crate::widgets::framebuffer::{FramebufferWidget, ScalingAlgorithm};
 use crate::widgets::instruction_history::InstructionHistoryWidget;
 use crate::widgets::memory::MemoryViewerWidget;
 use crate::widgets::peripherals::PeripheralsWidget;
@@ -175,6 +175,8 @@ impl SnowGui {
     const TOAST_DURATION: Duration = Duration::from_secs(3);
     const ZOOM_FACTORS: [f32; 8] = [0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0];
     const SUBMENU_WIDTH: f32 = 175.0;
+    const SCALING_ALGORITHMS: [ScalingAlgorithm; 2] =
+        [ScalingAlgorithm::Linear, ScalingAlgorithm::NearestNeighbor];
 
     pub fn new(
         cc: &eframe::CreationContext<'_>,
@@ -563,6 +565,15 @@ impl SnowGui {
                     for z in Self::ZOOM_FACTORS {
                         if ui.button(format!("{:0.2}", z)).clicked() {
                             ctx.set_zoom_factor(z);
+                            ui.close_menu();
+                        }
+                    }
+                });
+                ui.menu_button("Scaling algorithm", |ui| {
+                    ui.set_min_width(Self::SUBMENU_WIDTH);
+                    for algorithm in Self::SCALING_ALGORITHMS {
+                        if ui.button(format!("{}", algorithm)).clicked() {
+                            self.framebuffer.scaling_algorithm = algorithm;
                             ui.close_menu();
                         }
                     }
@@ -1139,6 +1150,7 @@ impl SnowGui {
         // Re-initialize stuff from newly loaded workspace
         self.load_windows = true;
         self.framebuffer.scale = self.workspace.viewport_scale;
+        self.framebuffer.scaling_algorithm = self.workspace.scaling_algorithm.clone();
         if let Some(rompath) = self.workspace.get_rom_path() {
             let display_rom_path = self.workspace.get_display_card_rom_path();
             let extension_rom_path = self.workspace.get_extension_rom_path();
@@ -1163,6 +1175,7 @@ impl SnowGui {
 
     fn save_workspace(&mut self, path: &Path) {
         self.workspace.viewport_scale = self.framebuffer.scale;
+        self.workspace.scaling_algorithm = self.framebuffer.scaling_algorithm.clone();
         if let Some(targets) = self.emu.get_scsi_target_status().as_ref() {
             for (i, d) in targets.iter().enumerate() {
                 self.workspace.set_scsi_target(i, d.clone());
