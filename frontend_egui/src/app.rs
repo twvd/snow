@@ -5,7 +5,7 @@ use crate::settings::AppSettings;
 use crate::uniform::{UniformAction, UNIFORM_ACTION};
 use crate::widgets::breakpoints::BreakpointsWidget;
 use crate::widgets::disassembly::Disassembly;
-use crate::widgets::framebuffer::FramebufferWidget;
+use crate::widgets::framebuffer::{FramebufferWidget, ScalingAlgorithm};
 use crate::widgets::instruction_history::InstructionHistoryWidget;
 use crate::widgets::memory::MemoryViewerWidget;
 use crate::widgets::peripherals::PeripheralsWidget;
@@ -35,6 +35,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{env, fs};
+use strum::IntoEnumIterator;
 
 macro_rules! persistent_window_s {
     ($gui:expr, $title:expr, $default_size:expr) => {{
@@ -565,6 +566,16 @@ impl SnowGui {
                             ctx.set_zoom_factor(z);
                             ui.close_menu();
                         }
+                    }
+                });
+                ui.menu_button("Scaling algorithm", |ui| {
+                    ui.set_min_width(Self::SUBMENU_WIDTH);
+                    for algorithm in ScalingAlgorithm::iter() {
+                        ui.radio_value(
+                            &mut self.framebuffer.scaling_algorithm,
+                            algorithm,
+                            format!("{}", algorithm),
+                        );
                     }
                 });
                 ui.add(
@@ -1139,6 +1150,7 @@ impl SnowGui {
         // Re-initialize stuff from newly loaded workspace
         self.load_windows = true;
         self.framebuffer.scale = self.workspace.viewport_scale;
+        self.framebuffer.scaling_algorithm = self.workspace.scaling_algorithm;
         if let Some(rompath) = self.workspace.get_rom_path() {
             let display_rom_path = self.workspace.get_display_card_rom_path();
             let extension_rom_path = self.workspace.get_extension_rom_path();
@@ -1163,6 +1175,7 @@ impl SnowGui {
 
     fn save_workspace(&mut self, path: &Path) {
         self.workspace.viewport_scale = self.framebuffer.scale;
+        self.workspace.scaling_algorithm = self.framebuffer.scaling_algorithm;
         if let Some(targets) = self.emu.get_scsi_target_status().as_ref() {
             for (i, d) in targets.iter().enumerate() {
                 self.workspace.set_scsi_target(i, d.clone());
