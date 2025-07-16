@@ -11,8 +11,9 @@ use eframe::egui::Vec2;
 use serde::{Deserialize, Serialize};
 use snow_core::renderer::DisplayBuffer;
 use std::fmt::Display;
+use strum::EnumIter;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, EnumIter, PartialEq)]
 pub enum ScalingAlgorithm {
     Linear,
     NearestNeighbor,

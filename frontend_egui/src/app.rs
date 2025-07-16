@@ -35,6 +35,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{env, fs};
+use strum::IntoEnumIterator;
 
 macro_rules! persistent_window_s {
     ($gui:expr, $title:expr, $default_size:expr) => {{
@@ -175,8 +176,6 @@ impl SnowGui {
     const TOAST_DURATION: Duration = Duration::from_secs(3);
     const ZOOM_FACTORS: [f32; 8] = [0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0];
     const SUBMENU_WIDTH: f32 = 175.0;
-    const SCALING_ALGORITHMS: [ScalingAlgorithm; 2] =
-        [ScalingAlgorithm::Linear, ScalingAlgorithm::NearestNeighbor];
 
     pub fn new(
         cc: &eframe::CreationContext<'_>,
@@ -571,11 +570,12 @@ impl SnowGui {
                 });
                 ui.menu_button("Scaling algorithm", |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH);
-                    for algorithm in Self::SCALING_ALGORITHMS {
-                        if ui.button(format!("{}", algorithm)).clicked() {
-                            self.framebuffer.scaling_algorithm = algorithm;
-                            ui.close_menu();
-                        }
+                    for algorithm in ScalingAlgorithm::iter() {
+                        ui.radio_value(
+                            &mut self.framebuffer.scaling_algorithm,
+                            algorithm,
+                            format!("{}", algorithm),
+                        );
                     }
                 });
                 ui.add(
