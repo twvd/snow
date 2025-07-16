@@ -36,6 +36,8 @@ const fn scsi_cmd_len(cmdnum: u8) -> Option<usize> {
         | 0x1B
         // PREVENT/ALLOW MEDIA REMOVAL
         | 0x1E
+        // VENDOR SPECIFIC (EJECT)
+        | 0xC0
         => Some(6),
         // READ CAPACITY(10)
         0x25

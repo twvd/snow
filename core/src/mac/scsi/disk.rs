@@ -25,6 +25,12 @@ pub(super) struct ScsiTargetDisk {
 
     /// Path where the original image resides
     pub(super) path: PathBuf,
+
+    /// Check condition code
+    cc_code: u8,
+
+    /// Check condition ASC
+    cc_asc: u16,
 }
 
 impl ScsiTargetDisk {
@@ -77,6 +83,8 @@ impl ScsiTargetDisk {
         Ok(Self {
             disk: mmapped,
             path: filename.to_path_buf(),
+            cc_code: 0,
+            cc_asc: 0,
         })
     }
 
@@ -102,6 +110,8 @@ impl ScsiTargetDisk {
         Ok(Self {
             disk,
             path: filename.to_path_buf(),
+            cc_code: 0,
+            cc_asc: 0,
         })
     }
 }
@@ -144,55 +154,37 @@ impl ScsiTarget for ScsiTargetDisk {
         Ok(ScsiCmdResult::DataIn(result))
     }
 
-    fn mode_sense(&mut self, page: u8) -> Result<ScsiCmdResult> {
+    fn mode_sense(&mut self, page: u8) -> Option<Vec<u8>> {
         match page {
             0x01 => {
                 // Read/write recovery page
-                let mut result = vec![0; 22];
-                // Page code
-                result[0] = 0x01;
-                // Page length
-                result[1] = 20;
 
                 // Error recovery stuff, can remain at 0.
                 // Also, HD SC Setup doesn't seem to care as long as we respond to this command.
 
-                Ok(ScsiCmdResult::DataIn(result))
+                Some(vec![0; 6])
             }
             0x03 => {
                 // Format device page
-
-                let mut result = vec![0; 34];
-                // Page code
-                result[0] = 0x03;
-                // Page length
-                result[1] = 32;
 
                 // The remaining bytes can remain at 0 as they indicate information on how many
                 // sectors/tracks are reserved for defect management.
                 // Also, HD SC Setup doesn't seem to care as long as we respond to this command.
 
-                Ok(ScsiCmdResult::DataIn(result))
+                Some(vec![0; 0x16])
             }
             0x30 => {
                 // ? Non-standard mode page
 
-                let mut result = vec![0; 36];
-                // Page code
-                result[0] = 0x30;
-                // Page length
-                result[1] = 34;
+                let mut result = vec![0; 20];
 
                 // The string below has to appear for HD SC Setup and possibly other tools to work.
                 // https://68kmla.org/bb/index.php?threads/apple-rom-hard-disks.44920/post-493863
-                result[14..(14 + 20)].copy_from_slice(b"APPLE COMPUTER, INC.");
+                result[0..20].copy_from_slice(b"APPLE COMPUTER, INC.");
 
-                Ok(ScsiCmdResult::DataIn(result))
+                Some(result)
             }
-            _ => {
-                log::warn!("Unknown MODE SENSE page {:02X}", page);
-                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
-            }
+            _ => None,
         }
     }
 
@@ -221,5 +213,26 @@ impl ScsiTarget for ScsiTargetDisk {
     fn specific_cmd(&mut self, cmd: &[u8], _outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
         log::error!("Unknown command {:02X}", cmd[0]);
         Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+    }
+
+    fn ms_density(&self) -> u8 {
+        0
+    }
+
+    fn ms_media_type(&self) -> u8 {
+        0
+    }
+
+    fn ms_device_specific(&self) -> u8 {
+        0
+    }
+
+    fn set_cc(&mut self, code: u8, asc: u16) {
+        self.cc_code = code;
+        self.cc_asc = asc;
+    }
+
+    fn set_blocksize(&mut self, _blocksize: usize) -> bool {
+        false
     }
 }
