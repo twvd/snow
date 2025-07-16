@@ -327,13 +327,32 @@ impl ScsiController {
         }
     }
 
-    fn cmd_run(&mut self, outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
+    fn cmd_run(&mut self, outdata: Option<&[u8]>) -> Result<()> {
         let cmd = &self.cmdbuf;
         let Some(target) = self.targets[self.sel_id].as_mut() else {
             bail!("SCSI command to disconnected target ID {}", self.sel_id);
         };
 
-        target.cmd(cmd, outdata)
+        match target.cmd(cmd, outdata) {
+            Ok(ScsiCmdResult::Status(s)) => {
+                self.status = s;
+
+                self.set_phase(ScsiBusPhase::Status);
+            }
+            Ok(ScsiCmdResult::DataIn(data)) => {
+                self.status = STATUS_GOOD;
+                self.responsebuf = VecDeque::from(data);
+                self.set_phase(ScsiBusPhase::DataIn);
+            }
+            Ok(ScsiCmdResult::DataOut(len)) => {
+                self.dataout_len = len;
+                self.responsebuf.clear();
+                self.set_phase(ScsiBusPhase::DataOut);
+            }
+            Err(e) => return Err(e),
+        }
+
+        Ok(())
     }
 
     pub fn get_drq(&self) -> bool {
@@ -362,14 +381,10 @@ impl ScsiController {
             if self.dataout_len == 0 {
                 // TODO inefficient
                 let datavec = Vec::from_iter(self.responsebuf.iter().cloned());
-                if let Ok(ScsiCmdResult::Status(s)) = self.cmd_run(Some(&datavec)) {
-                    self.status = s;
-                    self.set_phase(ScsiBusPhase::Status);
-                } else {
-                    todo!();
+                if let Err(e) = self.cmd_run(Some(&datavec)) {
+                    log::error!("SCSI command run error: {:#}", e);
                 }
             }
-            //}
         }
         self.reg_odr = val;
     }
@@ -479,30 +494,8 @@ impl BusMember<Address> for ScsiController {
                             }
                             self.cmdbuf.push(self.reg_odr);
                             if self.cmdbuf.len() >= self.cmdlen {
-                                match self.cmd_run(None) {
-                                    Ok(ScsiCmdResult::Status(status)) => {
-                                        self.status = status;
-                                        self.set_phase(ScsiBusPhase::Status);
-                                    }
-                                    Ok(ScsiCmdResult::DataIn(data)) => {
-                                        self.status = STATUS_GOOD;
-
-                                        // TODO this is inefficient
-                                        self.responsebuf = VecDeque::from(data);
-
-                                        self.set_phase(ScsiBusPhase::DataIn);
-                                    }
-                                    Ok(ScsiCmdResult::DataOut(len)) => {
-                                        self.dataout_len = len;
-                                        self.responsebuf.clear();
-                                        self.set_phase(ScsiBusPhase::DataOut);
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            "SCSI command ({:02X}) error: {}",
-                                            self.cmdbuf[0], e
-                                        );
-                                    }
+                                if let Err(e) = self.cmd_run(None) {
+                                    error!("SCSI command ({:02X}) error: {}", self.cmdbuf[0], e);
                                 }
                             } else {
                                 self.assert_req();
