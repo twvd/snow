@@ -13,7 +13,7 @@ use snow_core::renderer::DisplayBuffer;
 use std::fmt::Display;
 use strum::EnumIter;
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, EnumIter, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, EnumIter, Eq, PartialEq)]
 pub enum ScalingAlgorithm {
     Linear,
     NearestNeighbor,

@@ -1150,7 +1150,7 @@ impl SnowGui {
         // Re-initialize stuff from newly loaded workspace
         self.load_windows = true;
         self.framebuffer.scale = self.workspace.viewport_scale;
-        self.framebuffer.scaling_algorithm = self.workspace.scaling_algorithm.clone();
+        self.framebuffer.scaling_algorithm = self.workspace.scaling_algorithm;
         if let Some(rompath) = self.workspace.get_rom_path() {
             let display_rom_path = self.workspace.get_display_card_rom_path();
             let extension_rom_path = self.workspace.get_extension_rom_path();
@@ -1175,7 +1175,7 @@ impl SnowGui {
 
     fn save_workspace(&mut self, path: &Path) {
         self.workspace.viewport_scale = self.framebuffer.scale;
-        self.workspace.scaling_algorithm = self.framebuffer.scaling_algorithm.clone();
+        self.workspace.scaling_algorithm = self.framebuffer.scaling_algorithm;
         if let Some(targets) = self.emu.get_scsi_target_status().as_ref() {
             for (i, d) in targets.iter().enumerate() {
                 self.workspace.set_scsi_target(i, d.clone());
