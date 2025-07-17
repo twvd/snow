@@ -4,6 +4,7 @@ pub mod ops_branch;
 pub mod ops_generic;
 pub mod regs;
 pub mod storage;
+pub mod trig;
 
 use arpfloat::{RoundingMode, Semantics};
 

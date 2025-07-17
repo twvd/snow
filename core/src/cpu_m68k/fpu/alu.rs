@@ -4,6 +4,7 @@ use arpfloat::{Float, RoundingMode, Semantics};
 use crate::bus::{Address, Bus, IrqSource};
 
 use crate::cpu_m68k::cpu::CpuM68k;
+use crate::cpu_m68k::fpu::trig::FloatTrig;
 use crate::cpu_m68k::CpuM68kType;
 
 use super::{SEMANTICS_DOUBLE, SEMANTICS_EXTENDED, SEMANTICS_SINGLE};
@@ -108,6 +109,8 @@ where
             0b0011010 => source.neg(),
             // FCOS
             0b0011101 => source.cos(),
+            // FATAN
+            0b0001010 => source.atan(),
             _ => bail!("Unimplemented FPU ALU op {:07b}", opmode),
         };
 
