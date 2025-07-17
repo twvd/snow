@@ -111,6 +111,10 @@ where
             0b0011101 => source.cos(),
             // FATAN
             0b0001010 => source.atan(),
+            // FSIN
+            0b0001110 => source.sin(),
+            // FTAN
+            0b0001111 => source.tan(),
             _ => bail!("Unimplemented FPU ALU op {:07b}", opmode),
         };
 
