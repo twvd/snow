@@ -129,7 +129,6 @@ impl<'a> Disassembler<'a> {
             0b0011000 => "FABS",
             0b0100010 => "FADD",
             0b0101000 => "FSUB",
-
             0b0100011 => "FMUL",
             0b0100000 => "FDIV",
             0b0000001 => "FINT",
@@ -141,6 +140,8 @@ impl<'a> Disassembler<'a> {
             0b0011101 => "FCOS",
             0b0001010 => "FATAN",
             0b0011110 => "FGETEXP",
+            0b0001110 => "FSIN",
+            0b0001111 => "FTAN",
 
             _ => "F???",
         }
