@@ -30,7 +30,8 @@ where
     /// FSAVE
     pub(in crate::cpu_m68k) fn op_fsave(&mut self, instr: &Instruction) -> Result<()> {
         // Idle state frame
-        self.write_ea(instr, instr.get_op2(), 0x00180018u32)?;
+        // 0x1F = 68881
+        self.write_ea(instr, instr.get_op2(), 0x1F180000u32)?;
 
         Ok(())
     }
@@ -38,7 +39,7 @@ where
     /// FRESTORE
     pub(in crate::cpu_m68k) fn op_frestore(&mut self, instr: &Instruction) -> Result<()> {
         let state = self.read_ea::<Long>(instr, instr.get_op2())?;
-        if state != 0 {
+        if state != 0 && state != 0x1F180000 {
             log::warn!("TODO FPU state frame restored: {:08X}", state);
         }
 
