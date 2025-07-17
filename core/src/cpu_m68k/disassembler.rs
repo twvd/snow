@@ -2,7 +2,8 @@ use anyhow::{bail, Context, Result};
 use arrayvec::ArrayVec;
 use either::Either;
 use itertools::Itertools;
-use num::FromPrimitive;
+use num_traits::ToPrimitive;
+use strum::IntoEnumIterator;
 
 use std::fmt::Write;
 
@@ -342,6 +343,13 @@ impl<'a> Disassembler<'a> {
             }
             _ => format!("{:?}", mode),
         })
+    }
+
+    fn fmove_ctrl_regs(&self, regs: u8) -> String {
+        FmoveControlReg::iter()
+            .filter(|fc| regs & fc.to_u8().unwrap() != 0)
+            .map(|fc| fc.to_string())
+            .join("+")
     }
 
     fn do_instr(&mut self, instr: &Instruction) -> Result<()> {
@@ -919,11 +927,11 @@ impl<'a> Disassembler<'a> {
                     0b100 => format!(
                         "FMOVE {},{}",
                         self.ea_sz(instr, InstructionSize::Long)?,
-                        FmoveControlReg::from_u8(extword.reg()).context("Invalid ctrlreg")?
+                        self.fmove_ctrl_regs(extword.reg()),
                     ),
                     0b101 => format!(
                         "FMOVE {},{}",
-                        FmoveControlReg::from_u8(extword.reg()).context("Invalid ctrlreg")?,
+                        self.fmove_ctrl_regs(extword.reg()),
                         self.ea_sz(instr, InstructionSize::Long)?,
                     ),
                     0b010 if extword.src_spec() == 0b111 => format!(

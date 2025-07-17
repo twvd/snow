@@ -1,4 +1,4 @@
-use num_derive::FromPrimitive;
+use num_derive::{FromPrimitive, ToPrimitive};
 use proc_bitfield::bitfield;
 
 use crate::cpu_m68k::instruction::InstructionSize;
@@ -6,8 +6,9 @@ use crate::cpu_m68k::regs::Register;
 use crate::types::Word;
 
 #[allow(clippy::upper_case_acronyms)]
-#[derive(FromPrimitive, strum::Display)]
+#[derive(FromPrimitive, strum::Display, strum::EnumIter, ToPrimitive)]
 pub(in crate::cpu_m68k) enum FmoveControlReg {
+    // The order here is relevant!
     FPCR = 0b100,
     FPSR = 0b010,
     FPIAR = 0b001,
