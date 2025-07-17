@@ -106,6 +106,8 @@ where
             }
             // FNEG
             0b0011010 => source.neg(),
+            // FCOS
+            0b0011101 => source.cos(),
             _ => bail!("Unimplemented FPU ALU op {:07b}", opmode),
         };
 
