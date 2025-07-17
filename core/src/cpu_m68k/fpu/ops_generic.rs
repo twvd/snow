@@ -1,7 +1,8 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use arpfloat::Float;
 use either::Either;
-use num::FromPrimitive;
+use num_traits::ToPrimitive;
+use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, IrqSource};
 
@@ -62,17 +63,33 @@ where
             }
             0b100 => {
                 // From EA to control reg
-                let ctrlreg = FmoveControlReg::from_u8(extword.reg())
-                    .context("Invalid register selection field")?;
-                let value = self.read_ea::<Long>(instr, instr.get_op2())?;
-                self.regs.write(ctrlreg.into(), value);
+                // Supports multiple registers
+                for r in FmoveControlReg::iter() {
+                    if extword.reg() & r.to_u8().unwrap() == 0 {
+                        continue;
+                    }
+                    let value = self.read_ea::<Long>(instr, instr.get_op2())?;
+                    self.regs.write(r.into(), value);
+
+                    // Next read from its own, re-calculated address
+                    self.ea_commit();
+                    self.step_ea_addr = None;
+                }
             }
             0b101 => {
                 // From control reg to EA
-                let ctrlreg = FmoveControlReg::from_u8(extword.reg())
-                    .context("Invalid register selection field")?;
-                let value = self.regs.read::<Long>(ctrlreg.into());
-                self.write_ea(instr, instr.get_op2(), value)?;
+                // Supports multiple registers
+                for r in FmoveControlReg::iter() {
+                    if extword.reg() & r.to_u8().unwrap() == 0 {
+                        continue;
+                    }
+                    let value = self.regs.read::<Long>(r.into());
+                    self.write_ea(instr, instr.get_op2(), value)?;
+
+                    // Next write to its own, re-calculated address
+                    self.ea_commit();
+                    self.step_ea_addr = None;
+                }
             }
             0b010 => {
                 // EA to FPU register, with ALU op
