@@ -423,6 +423,9 @@ impl SnowGui {
                             ui.close_menu();
                         }
                     }
+                    if self.settings.recent_workspaces.is_empty() {
+                        ui.weak("No recent workspaces");
+                    }
                 });
                 ui.separator();
                 if ui.button("Exit").clicked() {
@@ -762,6 +765,22 @@ impl SnowGui {
                                     self.cdrom_dialog.pick_file();
                                     ui.close_menu();
                                 }
+                                ui.menu_button("Load recent image", |ui| {
+                                    ui.set_min_width(Self::SUBMENU_WIDTH);
+                                    for (idx, path, display_name) in
+                                        self.settings.get_recent_cd_images_for_display()
+                                    {
+                                        if ui.button(format!("{}: {}", idx, display_name)).clicked()
+                                        {
+                                            self.emu.scsi_load_cdrom(id, &path);
+                                            self.settings.add_recent_cd_image(&path);
+                                            ui.close_menu();
+                                        }
+                                    }
+                                    if self.settings.recent_cd_images.is_empty() {
+                                        ui.weak("No recent images");
+                                    }
+                                });
                                 if show_detach {
                                     ui.separator();
                                     if ui.button("Detach CD-ROM drive").clicked() {
@@ -849,6 +868,21 @@ impl SnowGui {
                         self.floppy_dialog.pick_file();
                         ui.close_menu();
                     }
+                    ui.menu_button("Load recent image", |ui| {
+                        ui.set_min_width(Self::SUBMENU_WIDTH);
+                        for (idx, path, display_name) in
+                            self.settings.get_recent_floppy_images_for_display()
+                        {
+                            if ui.button(format!("{}: {}", idx, display_name)).clicked() {
+                                self.emu.load_floppy(i, &path, false);
+                                self.settings.add_recent_floppy_image(&path);
+                                ui.close_menu();
+                            }
+                        }
+                        if self.settings.recent_floppy_images.is_empty() {
+                            ui.weak("No recent images");
+                        }
+                    });
                     if ui
                         .add_enabled(
                             self.emu.last_images[i].borrow().is_some(),
@@ -1513,6 +1547,7 @@ impl eframe::App for SnowGui {
                         unreachable!()
                     };
                     self.emu.load_floppy(driveidx, &path, self.floppy_dialog_wp);
+                    self.settings.add_recent_floppy_image(&path);
                 }
                 DialogMode::SaveFile => {
                     if !path
@@ -1554,6 +1589,7 @@ impl eframe::App for SnowGui {
         self.cdrom_dialog.update(ctx);
         if let Some(path) = self.cdrom_dialog.take_picked() {
             self.emu.scsi_load_cdrom(self.cdrom_dialog_idx, &path);
+            self.settings.add_recent_cd_image(&path);
         }
         self.ui_active &= self.cdrom_dialog.state() != egui_file_dialog::DialogState::Open;
 
