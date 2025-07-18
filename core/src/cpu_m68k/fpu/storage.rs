@@ -5,7 +5,7 @@ use proc_bitfield::bitfield;
 
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::{cpu::CpuM68k, CpuM68kType};
-use crate::types::Long;
+use crate::types::{Long, Word};
 
 use super::SEMANTICS_EXTENDED;
 
@@ -163,6 +163,21 @@ where
         Ok(bits.into())
     }
 
+    /// Read FPU extended precision value immediate
+    pub(in crate::cpu_m68k) fn read_fpu_extended_imm(&mut self) -> Result<Float> {
+        // Extended precision format: 96 bits (12 bytes)
+        // Read as 3 longs: sign/exponent (16 bits) + mantissa (64 bits)
+        let high = self.fetch_immediate::<Long>()?;
+        let mid = self.fetch_immediate::<Long>()?;
+        let low = self.fetch_immediate::<Long>()?;
+        let bits = BitsExtReal::default()
+            .with_low(low)
+            .with_mid(mid)
+            .with_high(high);
+
+        Ok(bits.into())
+    }
+
     /// Write FPU extended precision value to memory
     pub(in crate::cpu_m68k) fn write_fpu_extended(
         &mut self,
@@ -189,6 +204,17 @@ where
         Ok(Float::from_f64(f64::from_be_bytes(v.as_slice().try_into()?)).cast(SEMANTICS_EXTENDED))
     }
 
+    /// Read FPU double precision value immediate
+    pub(in crate::cpu_m68k) fn read_fpu_double_imm(&mut self) -> Result<Float> {
+        let mut v = ArrayVec::<u8, 8>::new();
+
+        for _ in 0..4 {
+            let word = self.fetch_immediate::<Word>()?;
+            v.try_extend_from_slice(&word.to_be_bytes())?;
+        }
+        Ok(Float::from_f64(f64::from_be_bytes(v.as_slice().try_into()?)).cast(SEMANTICS_EXTENDED))
+    }
+
     /// Write FPU double precision value to memory
     pub(in crate::cpu_m68k) fn write_fpu_double(
         &mut self,
@@ -205,6 +231,12 @@ where
     /// Read FPU single precision value from memory
     pub(in crate::cpu_m68k) fn read_fpu_single(&mut self, addr: Address) -> Result<Float> {
         let raw = self.read_ticks::<Long>(addr)?;
+        Ok(Float::from_f32(f32::from_bits(raw)).cast(SEMANTICS_EXTENDED))
+    }
+
+    /// Read FPU single precision value immediate
+    pub(in crate::cpu_m68k) fn read_fpu_single_imm(&mut self) -> Result<Float> {
+        let raw = self.fetch_immediate::<Long>()?;
         Ok(Float::from_f32(f32::from_bits(raw)).cast(SEMANTICS_EXTENDED))
     }
 
