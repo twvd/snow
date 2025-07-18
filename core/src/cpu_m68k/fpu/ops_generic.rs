@@ -357,6 +357,16 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
                         self.regs.write_d(dn, out as Word);
                     }
+                    0b001 => {
+                        // Single precision real
+                        // TODO flags?
+                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_inex2(false);
+                        self.regs.fpu.fpsr.exs_mut().set_inex1(false);
+                        self.regs
+                            .write_d(dn, self.regs.fpu.fp[fpx].as_f32().to_bits());
+                    }
                     _ => {
                         bail!(
                             "Reg to Dn unimplemented dest format {:03b}",
