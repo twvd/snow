@@ -116,6 +116,10 @@ where
                             self.read_ea::<Word>(instr, instr.get_op2())? as i16 as i64,
                         )
                     }
+                    0b101 if instr.get_addr_mode()? == AddressingMode::Immediate => {
+                        // Double-precision real (immediate)
+                        self.read_fpu_double_imm()?
+                    }
                     0b101 => {
                         // Double-precision real
                         let ea = self.calc_ea_addr_sz::<DOUBLE_SIZE>(
@@ -125,6 +129,10 @@ where
                         )?;
                         self.read_fpu_double(ea)?
                     }
+                    0b001 if instr.get_addr_mode()? == AddressingMode::Immediate => {
+                        // Single-precision real (immediate)
+                        self.read_fpu_single_imm()?
+                    }
                     0b001 => {
                         // Single-precision real
                         let ea = self.calc_ea_addr_sz::<SINGLE_SIZE>(
@@ -133,6 +141,10 @@ where
                             instr.get_op2(),
                         )?;
                         self.read_fpu_single(ea)?
+                    }
+                    0b010 if instr.get_addr_mode()? == AddressingMode::Immediate => {
+                        // Extended-precision real (immediate)
+                        self.read_fpu_extended_imm()?
                     }
                     0b010 => {
                         // Extended-precision real
