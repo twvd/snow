@@ -129,6 +129,10 @@ where
                         )?;
                         self.read_fpu_double(ea)?
                     }
+                    0b001 if instr.get_addr_mode()? == AddressingMode::DataRegister => {
+                        // Single-precision real (Dn)
+                        self.read_fpu_single_dn(instr.get_op2())?
+                    }
                     0b001 if instr.get_addr_mode()? == AddressingMode::Immediate => {
                         // Single-precision real (immediate)
                         self.read_fpu_single_imm()?
