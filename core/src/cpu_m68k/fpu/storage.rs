@@ -234,6 +234,12 @@ where
         Ok(Float::from_f32(f32::from_bits(raw)).cast(SEMANTICS_EXTENDED))
     }
 
+    /// Read FPU single precision value from data register
+    pub(in crate::cpu_m68k) fn read_fpu_single_dn(&self, dn: usize) -> Result<Float> {
+        let raw = self.regs.read_d(dn);
+        Ok(Float::from_f32(f32::from_bits(raw)).cast(SEMANTICS_EXTENDED))
+    }
+
     /// Read FPU single precision value immediate
     pub(in crate::cpu_m68k) fn read_fpu_single_imm(&mut self) -> Result<Float> {
         let raw = self.fetch_immediate::<Long>()?;
