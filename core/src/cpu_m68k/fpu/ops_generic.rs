@@ -410,20 +410,15 @@ where
         match mode {
             0b00 | 0b10 => {
                 // Static register list
-
-                if mode == 0b00 && instr.get_addr_mode()? != AddressingMode::IndirectPreDec {
-                    bail!("Contradicting modes (pre-dec vs {0:2b})", mode);
-                }
-                if mode == 0b10 && instr.get_addr_mode()? != AddressingMode::IndirectPostInc {
-                    bail!("Contradicting modes (post-inc vs {0:2b})", mode);
-                }
+                // For predecrement mode, iterate in reverse order
+                let reverse_mode = mode & 0b10 == 0;
 
                 if !extword.movem_dir() {
                     // EA to registers
-                    self.op_fmovem_ea_to_regs(instr, reglist)?;
+                    self.op_fmovem_ea_to_regs(instr, reglist, reverse_mode)?;
                 } else {
                     // Registers to EA
-                    self.op_fmovem_regs_to_ea(instr, reglist)?;
+                    self.op_fmovem_regs_to_ea(instr, reglist, reverse_mode)?;
                 }
             }
             0b01 | 0b11 => {
@@ -439,11 +434,13 @@ where
     }
 
     /// FMOVEM registers to EA
-    fn op_fmovem_regs_to_ea(&mut self, instr: &Instruction, reglist: u8) -> Result<()> {
+    fn op_fmovem_regs_to_ea(
+        &mut self,
+        instr: &Instruction,
+        reglist: u8,
+        reverse_order: bool,
+    ) -> Result<()> {
         let mut addr = self.calc_ea_addr_no_mod::<Address>(instr, instr.get_op2())?;
-
-        // For predecrement mode, iterate in reverse order
-        let reverse_order = instr.get_addr_mode()? == AddressingMode::IndirectPreDec;
 
         let range = if !reverse_order {
             Either::Left((0..8).rev())
@@ -479,11 +476,14 @@ where
     }
 
     /// FMOVEM EA to registers  
-    fn op_fmovem_ea_to_regs(&mut self, instr: &Instruction, reglist: u8) -> Result<()> {
+    fn op_fmovem_ea_to_regs(
+        &mut self,
+        instr: &Instruction,
+        reglist: u8,
+        reverse_order: bool,
+    ) -> Result<()> {
         let mut addr = self.calc_ea_addr_no_mod::<Address>(instr, instr.get_op2())?;
 
-        // For predecrement mode, iterate in reverse order
-        let reverse_order = instr.get_addr_mode()? == AddressingMode::IndirectPreDec;
         let range = if !reverse_order {
             Either::Left((0..8).rev())
         } else {
