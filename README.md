@@ -25,11 +25,12 @@ It currently supports the following models:
 Currently supported hardware:
 
 * Motorola 68000 and 68020 CPUs
-* Motorola M68881 FPU (Mac II)
+* Motorola 68881 FPU (Mac II)
 * IWM and SWIM floppy controllers
 * GCR 400K/800K floppy disk drives (up to 3 on SE)
 * GCR/MFM 1.44MB 'SuperDrive' floppy disk drive (currently read-only)
 * SCSI hard disk drives (up to 7)
+* SCSI CD-ROM drive
 * Macintosh Real-Time Clock
 * Macintosh keyboard/mouse
 * ADB keyboard/mouse
