@@ -13,6 +13,9 @@ use snow_core::emulator::Emulator;
 use snow_core::mac::MacModel;
 use snow_core::tickable::{Tickable, Ticks};
 
+const DISPLAY_WIDTH: u16 = 512;
+const DISPLAY_HEIGHT: u16 = 342;
+
 #[derive(Parser)]
 struct Args {
     rom: String,
@@ -105,8 +108,8 @@ fn main() -> Result<()> {
 
     let mut fullgifencoder = gif::Encoder::new(
         File::create(format!("{}/{}-full.gif", args.out_dir, args.fn_prefix))?,
-        model.display_width(),
-        model.display_height(),
+        DISPLAY_WIDTH,
+        DISPLAY_HEIGHT,
         &[],
     )?;
     fullgifencoder.set_repeat(gif::Repeat::Infinite)?;
@@ -123,11 +126,7 @@ fn main() -> Result<()> {
                 last_delay += 1;
             } else {
                 let mut fcopy = frame.clone();
-                let mut gframe = gif::Frame::from_rgba(
-                    model.display_width(),
-                    model.display_height(),
-                    &mut fcopy,
-                );
+                let mut gframe = gif::Frame::from_rgba(DISPLAY_WIDTH, DISPLAY_HEIGHT, &mut fcopy);
                 gframe.delay = last_delay;
                 fullgifencoder.write_frame(&gframe)?;
                 last_delay = 0;
@@ -160,8 +159,7 @@ fn main() -> Result<()> {
         // Finish full recording
         if last_delay > 0 {
             let mut fcopy = frames.back().unwrap().clone();
-            let mut gframe =
-                gif::Frame::from_rgba(model.display_width(), model.display_height(), &mut fcopy);
+            let mut gframe = gif::Frame::from_rgba(DISPLAY_WIDTH, DISPLAY_HEIGHT, &mut fcopy);
             gframe.delay = last_delay;
             fullgifencoder.write_frame(&gframe)?;
         }
@@ -170,8 +168,8 @@ fn main() -> Result<()> {
         let frame = frames.back().unwrap();
         let mut encoder = png::Encoder::new(
             File::create(format!("{}/{}.png", args.out_dir, args.fn_prefix))?,
-            model.display_width() as u32,
-            model.display_height() as u32,
+            DISPLAY_WIDTH as u32,
+            DISPLAY_HEIGHT as u32,
         );
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
@@ -183,8 +181,8 @@ fn main() -> Result<()> {
         // Write animated short
         write_gif(
             format!("{}/{}.gif", args.out_dir, args.fn_prefix),
-            model.display_width(),
-            model.display_height(),
+            DISPLAY_WIDTH,
+            DISPLAY_HEIGHT,
             &mut frames,
         )?;
     }

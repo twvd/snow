@@ -186,6 +186,8 @@ where
         };
 
         let buf = self.renderer.buffer_mut();
+        buf.set_size(Self::H_VISIBLE_DOTS, Self::V_VISIBLE_LINES);
+
         for idx in 0..Self::FRAME_VISIBLE_DOTS {
             let byte = idx / 8;
             let bit = idx % 8;
@@ -275,13 +277,7 @@ mod tests {
     use super::*;
 
     fn video() -> Video<NullRenderer> {
-        Video::new(
-            NullRenderer::new(
-                MacModel::Plus.display_width(),
-                MacModel::Plus.display_height(),
-            )
-            .unwrap(),
-        )
+        Video::new(NullRenderer::new(0, 0).unwrap())
     }
 
     #[test]

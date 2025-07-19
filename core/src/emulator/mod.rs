@@ -223,7 +223,7 @@ impl Emulator {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
         let (statuss, statusr) = crossbeam_channel::unbounded();
-        let renderer = ChannelRenderer::new(model.display_width(), model.display_height())?;
+        let renderer = ChannelRenderer::new(0, 0)?;
         let frame_recv = renderer.get_receiver();
 
         let (config, adbkeyboard_sender, adbmouse_sender) = match model {
