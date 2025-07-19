@@ -412,7 +412,9 @@ where
             0xC0_0000..=0xCF_FFFF => 0xFC00_0000 | (addr & 0xF_FFFF),
             0xD0_0000..=0xDF_FFFF => 0xFD00_0000 | (addr & 0xF_FFFF),
             0xE0_0000..=0xEF_FFFF => 0xFE00_0000 | (addr & 0xF_FFFF),
-            0xF0_0000..=0xFF_FFFF => 0x5000_0000 | (addr & 0xF_FFFF),
+            0xF0_0000..=0xF7_FFFF => 0x5000_0000 | (addr & 0xF_FFFF),
+            0xF8_0000..=0xF9_FFFF => 0x5800_0000 | (addr & 0x1_FFFF),
+            0xFA_0000..=0xFF_FFFF => 0x5000_0000 | (addr & 0xF_FFFF),
             _ => unreachable!(),
         }
     }
