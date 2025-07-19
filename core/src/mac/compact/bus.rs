@@ -343,8 +343,13 @@ where
             0x00DF_E1FF..=0x00DF_FFFF => self.swim.read(addr),
             // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
-            // Test software region (ignore)
-            0x00F8_0000..=0x00F9_FFFF => Some(0xFF),
+            // Test software region / extension ROM
+            0x00F8_0000..=0x00F9_FFFF => Some(
+                *self
+                    .extension_rom
+                    .get((addr - 0xF8_0000) as usize)
+                    .unwrap_or(&0xFF),
+            ),
 
             _ => None,
         };
