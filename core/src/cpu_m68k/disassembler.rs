@@ -23,7 +23,7 @@ use super::CpuM68kType;
 #[derive(Clone)]
 pub struct DisassemblyEntry {
     pub addr: Address,
-    pub raw: ArrayVec<u8, 12>,
+    pub raw: ArrayVec<u8, 20>,
     pub str: String,
 }
 
@@ -1043,6 +1043,10 @@ impl<'a> Disassembler<'a> {
                     Self::fcc_mnemonic(instr.get_fcc()),
                     displacement
                 )
+            }
+            InstructionMnemonic::FScc_b => {
+                let cc = usize::from(self.get16()? & 0b111111);
+                format!("FS{}.b {}", Self::fcc_mnemonic(cc), self.ea(instr)?)
             }
         };
 

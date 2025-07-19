@@ -249,6 +249,7 @@ pub enum InstructionMnemonic {
     FOP_000,
     FBcc_w,
     FBcc_l,
+    FScc_b,
 }
 
 /// Addressing modes
@@ -754,6 +755,7 @@ impl Instruction {
         (M68020, 0b1111_0010_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FOP_000),
         (M68020, 0b1111_0010_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FBcc_l),
         (M68020, 0b1111_0010_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FBcc_w),
+        (M68020, 0b1111_0010_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FScc_b),
         (M68000, 0b1111_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::LINEF),
     ];
 
@@ -1096,16 +1098,16 @@ impl Instruction {
             | InstructionMnemonic::SUBI_b
             | InstructionMnemonic::SUBQ_b
             | InstructionMnemonic::SUBX_b
-            | InstructionMnemonic::TST_b => InstructionSize::Byte,
-
-            InstructionMnemonic::ABCD | InstructionMnemonic::NBCD | InstructionMnemonic::SBCD => {
-                InstructionSize::Byte
-            }
-
-            InstructionMnemonic::ANDI_ccr
+            | InstructionMnemonic::TST_b
+            | InstructionMnemonic::ABCD
+            | InstructionMnemonic::NBCD
+            | InstructionMnemonic::SBCD
+            | InstructionMnemonic::FScc_b
+            | InstructionMnemonic::ANDI_ccr
             | InstructionMnemonic::EORI_ccr
             | InstructionMnemonic::ORI_ccr
             | InstructionMnemonic::MOVEtoCCR => InstructionSize::Byte,
+
             InstructionMnemonic::ANDI_sr
             | InstructionMnemonic::ORI_sr
             | InstructionMnemonic::EORI_sr

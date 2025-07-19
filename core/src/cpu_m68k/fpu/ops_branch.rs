@@ -5,6 +5,7 @@ use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::cpu_m68k::instruction::Instruction;
 use crate::cpu_m68k::CpuM68kType;
+use crate::types::Byte;
 
 impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
     CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE>
@@ -95,6 +96,16 @@ where
 
             self.advance_cycles(2)?; // idle
         }
+        Ok(())
+    }
+
+    /// FScc.b
+    pub(in crate::cpu_m68k) fn op_fscc(&mut self, instr: &Instruction) -> Result<()> {
+        let cc = usize::from(self.fetch()? & 0b111111);
+        let (test, bsun) = self.fcc(cc)?;
+        self.regs.fpu.fpsr.exs_mut().set_bsun(bsun);
+
+        self.write_ea::<Byte>(instr, instr.get_op2(), if test { 0xFF } else { 0 })?;
         Ok(())
     }
 }
