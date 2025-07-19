@@ -1204,6 +1204,7 @@ where
             InstructionMnemonic::FOP_000 => self.op_f000(instr),
             InstructionMnemonic::FBcc_l => self.op_fbcc::<true>(instr),
             InstructionMnemonic::FBcc_w => self.op_fbcc::<false>(instr),
+            InstructionMnemonic::FScc_b => self.op_fscc(instr),
         }
     }
 
