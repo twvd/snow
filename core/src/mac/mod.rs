@@ -128,42 +128,6 @@ impl MacModel {
         }
     }
 
-    pub const fn display_width(self) -> u16 {
-        match self {
-            Self::Early128K
-            | Self::Early512K
-            | Self::Plus
-            | Self::SE
-            | Self::SeFdhd
-            | Self::Classic => 512,
-            Self::MacII | Self::MacIIFDHD => 640,
-        }
-    }
-
-    pub const fn display_height(self) -> u16 {
-        match self {
-            Self::Early128K
-            | Self::Early512K
-            | Self::Plus
-            | Self::SE
-            | Self::SeFdhd
-            | Self::Classic => 342,
-            Self::MacII | Self::MacIIFDHD => 480,
-        }
-    }
-
-    pub const fn display_bpp(self) -> u8 {
-        match self {
-            Self::Early128K
-            | Self::Early512K
-            | Self::Plus
-            | Self::SE
-            | Self::SeFdhd
-            | Self::Classic => 1,
-            Self::MacII | Self::MacIIFDHD => 4,
-        }
-    }
-
     pub fn detect_from_rom(rom: &[u8]) -> Option<Self> {
         let mut hash = Sha256::new();
         hash.update(rom);
