@@ -1,15 +1,19 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use snow_core::mac::MacModel;
 use std::path::{Path, PathBuf};
 
 const MAX_RECENT_WORKSPACES: usize = 10;
 const MAX_RECENT_IMAGES: usize = 10;
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
+#[serde(default)]
 pub struct AppSettings {
     pub recent_workspaces: Vec<PathBuf>,
     pub recent_floppy_images: Vec<PathBuf>,
     pub recent_cd_images: Vec<PathBuf>,
+    pub last_roms: Vec<(MacModel, PathBuf)>,
+    pub last_display_roms: Vec<(MacModel, PathBuf)>,
 }
 
 impl AppSettings {
@@ -35,7 +39,13 @@ impl AppSettings {
         Default::default()
     }
 
-    pub fn save(&self) -> Result<()> {
+    pub fn save(&self) {
+        if let Err(e) = self.try_save() {
+            log::warn!("Failed to save settings: {}", e);
+        }
+    }
+
+    pub fn try_save(&self) -> Result<()> {
         let path = Self::config_path()?;
         let file = std::fs::File::create(path)?;
         serde_json::to_writer_pretty(file, self)?;
@@ -58,9 +68,7 @@ impl AppSettings {
         });
         self.recent_workspaces.insert(0, path);
         self.recent_workspaces.truncate(MAX_RECENT_WORKSPACES);
-        if let Err(e) = self.save() {
-            log::warn!("Failed to save settings: {}", e);
-        }
+        self.save();
     }
 
     pub fn get_recent_workspaces_for_display(&self) -> Vec<(usize, PathBuf, String)> {
@@ -94,9 +102,7 @@ impl AppSettings {
         });
         self.recent_floppy_images.insert(0, path);
         self.recent_floppy_images.truncate(MAX_RECENT_IMAGES);
-        if let Err(e) = self.save() {
-            log::warn!("Failed to save settings: {}", e);
-        }
+        self.save();
     }
 
     pub fn add_recent_cd_image(&mut self, path: &Path) {
@@ -115,9 +121,27 @@ impl AppSettings {
         });
         self.recent_cd_images.insert(0, path);
         self.recent_cd_images.truncate(MAX_RECENT_IMAGES);
-        if let Err(e) = self.save() {
-            log::warn!("Failed to save settings: {}", e);
-        }
+        self.save();
+    }
+
+    pub fn set_last_rom(&mut self, model: MacModel, path: &Path) {
+        self.last_roms.retain(|(m, _)| *m != model);
+        self.last_roms.push((model, path.to_path_buf()));
+        self.save();
+    }
+
+    pub fn get_last_roms(&self) -> Vec<(MacModel, PathBuf)> {
+        self.last_roms.clone()
+    }
+
+    pub fn get_last_display_roms(&self) -> Vec<(MacModel, PathBuf)> {
+        self.last_display_roms.clone()
+    }
+
+    pub fn set_last_display_rom(&mut self, model: MacModel, path: &Path) {
+        self.last_display_roms.retain(|(m, _)| *m != model);
+        self.last_display_roms.push((model, path.to_path_buf()));
+        self.save();
     }
 
     pub fn get_recent_floppy_images_for_display(&self) -> Vec<(usize, PathBuf, String)> {
