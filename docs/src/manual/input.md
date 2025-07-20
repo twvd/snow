@@ -2,8 +2,8 @@
 
 ## Keyboard
 
-For non-ADB Macintosh models (128K, 512K and Plus), Snow emulates the Apple
-M0110 keyboard with the following layout:
+For non-ADB Macintosh models (128K, 512K, 512Ke and Plus), Snow emulates the
+Apple M0110 keyboard with the following layout:
 
 ```  
 ,---------------------------------------------------------.

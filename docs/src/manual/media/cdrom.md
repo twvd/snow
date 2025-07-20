@@ -1,7 +1,7 @@
 # CD-ROM drives
 
 Snow supports CD-ROM drives in every emulated Macintosh model
-except the Macintosh 128K/512K (as these models never included SCSI).
+except the Macintosh 128K/512K/512Ke (as these models never included SCSI).
 
 Note that in order to use a CD-ROM drive, you need to have the 'Apple CD'
 extension installed in the emulated operating system.

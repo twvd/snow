@@ -4,6 +4,7 @@ Snow supports 2 or 3 floppy drives, depending on the model you are emulating.
 The following drives are available, per model:
 
  * Macintosh 128K/512K: 2 400K drives
+ * Macintosh 512Ke: 2 800K drives
  * Macintosh Plus: 2 800K drives
  * Macintosh SE (non-FDHD): 3 800K drives
  * Macintosh SE (FDHD): 3 1.44MB SuperDrives

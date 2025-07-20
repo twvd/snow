@@ -1,7 +1,7 @@
 # Hard drives
 
 Snow supports up to 7 SCSI hard drives in every emulated Macintosh model
-except the Macintosh 128K/512K (as these models never included SCSI).
+except the Macintosh 128K/512K/512Ke (as these models never included SCSI).
 
 To perform actions on a specific SCSI HDD, go to 'Drives > SCSI #n' where
 'n' is the SCSI ID of the drive (0 to 6).

@@ -16,7 +16,7 @@ limited [online demo here](https://demo.snowemu.com/)
 
 It currently supports the following models:
 
-* Macintosh 128K/512K
+* Macintosh 128K/512K/512Ke
 * Macintosh Plus
 * Macintosh SE (both non-FDHD and FDHD)
 * Macintosh Classic

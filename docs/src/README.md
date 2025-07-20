@@ -12,7 +12,7 @@ underlying hardware. This allows Snow to, for example, run applications
 off original floppy images with the copy protection intact.
 
 It currently emulates the following Macintosh models:
- * Macintosh 128K and 512K
+ * Macintosh 128K, 512K and 512Ke
  * Macintosh Plus
  * Macintosh SE (non-FDHD and FDHD)
  * Macintosh Classic
