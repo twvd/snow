@@ -13,7 +13,6 @@ use strum::IntoEnumIterator;
 pub struct ModelSelectionDialog {
     open: bool,
     selected_model: MacModel,
-    memory_size: usize,
     init_args: EmulatorInitArgs,
     selected_monitor: MacMonitor,
 
@@ -47,16 +46,13 @@ pub struct ModelSelectionDialog {
     error_message: String,
 }
 
-#[allow(dead_code)]
 pub struct ModelSelectionResult {
     pub model: MacModel,
-    pub memory_size: usize,
     pub main_rom_path: PathBuf,
     pub display_rom_path: Option<PathBuf>,
     pub pram_path: Option<PathBuf>,
     pub extension_rom_path: Option<PathBuf>,
     pub init_args: EmulatorInitArgs,
-    pub disable_rom_validation: bool,
 }
 
 impl Default for ModelSelectionDialog {
@@ -64,7 +60,6 @@ impl Default for ModelSelectionDialog {
         Self {
             open: false,
             selected_model: MacModel::Plus,
-            memory_size: 4 * 1024 * 1024, // 4MB default
             init_args: Default::default(),
             selected_monitor: MacMonitor::default(),
 
@@ -142,7 +137,6 @@ impl ModelSelectionDialog {
         // Reset ROM validation when dialog opens
         self.main_rom_valid = false;
         self.display_rom_valid = false;
-        self.update_memory_options();
         self.update_display_rom_requirement();
         self.do_validate_roms();
     }
@@ -155,53 +149,12 @@ impl ModelSelectionDialog {
         self.result.take()
     }
 
-    fn update_memory_options(&mut self) {
-        // Set default memory size based on model
-        self.memory_size = match self.selected_model {
-            MacModel::Early128K => 128 * 1024,
-            MacModel::Early512K => 512 * 1024,
-            MacModel::Plus | MacModel::SE | MacModel::SeFdhd | MacModel::Classic => 4 * 1024 * 1024,
-            MacModel::MacII | MacModel::MacIIFDHD => 8 * 1024 * 1024,
-        };
-    }
-
     fn update_display_rom_requirement(&mut self) {
         self.display_rom_required =
             matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD);
         if !self.display_rom_required {
             self.display_rom_path.clear();
             self.display_rom_valid = false;
-        }
-    }
-
-    #[allow(dead_code, clippy::identity_op)]
-    fn get_memory_options(model: MacModel) -> Vec<(String, usize)> {
-        // TODO
-        match model {
-            MacModel::Early128K => vec![("128KB".to_string(), 128 * 1024)],
-            MacModel::Early512K => vec![("512KB".to_string(), 512 * 1024)],
-            MacModel::Plus => vec![
-                ("1MB".to_string(), 1 * 1024 * 1024),
-                ("2MB".to_string(), 2 * 1024 * 1024),
-                ("4MB".to_string(), 4 * 1024 * 1024),
-            ],
-            MacModel::SE | MacModel::SeFdhd => vec![
-                ("1MB".to_string(), 1 * 1024 * 1024),
-                ("2MB".to_string(), 2 * 1024 * 1024),
-                ("4MB".to_string(), 4 * 1024 * 1024),
-            ],
-            MacModel::Classic => vec![
-                ("2MB".to_string(), 2 * 1024 * 1024),
-                ("4MB".to_string(), 4 * 1024 * 1024),
-            ],
-            MacModel::MacII | MacModel::MacIIFDHD => vec![
-                ("1MB".to_string(), 1 * 1024 * 1024),
-                ("2MB".to_string(), 2 * 1024 * 1024),
-                ("4MB".to_string(), 4 * 1024 * 1024),
-                ("8MB".to_string(), 8 * 1024 * 1024),
-                ("16MB".to_string(), 16 * 1024 * 1024),
-                ("32MB".to_string(), 32 * 1024 * 1024),
-            ],
         }
     }
 
@@ -334,24 +287,6 @@ impl ModelSelectionDialog {
                         }
                     });
                 ui.end_row();
-
-                // Memory selection
-                //ui.label("Memory size:");
-                //let memory_options = Self::get_memory_options(self.selected_model);
-                //let current_memory_str = memory_options
-                //    .iter()
-                //    .find(|(_, size)| *size == self.memory_size)
-                //    .map(|(name, _)| name.as_str())
-                //    .unwrap_or("Custom");
-
-                //egui::ComboBox::new(egui::Id::new("Select memory size"), "")
-                //    .selected_text(current_memory_str)
-                //    .show_ui(ui, |ui| {
-                //        for (name, size) in memory_options {
-                //            ui.selectable_value(&mut self.memory_size, size, name);
-                //        }
-                //    });
-                //ui.end_row();
             });
 
             ui.separator();
@@ -513,7 +448,6 @@ impl ModelSelectionDialog {
                     {
                         self.result = Some(ModelSelectionResult {
                             model: self.selected_model,
-                            memory_size: self.memory_size,
                             main_rom_path: PathBuf::from(&self.main_rom_path),
                             display_rom_path: if self.display_rom_required
                                 && !self.display_rom_path.is_empty()
@@ -540,7 +474,6 @@ impl ModelSelectionDialog {
                                 },
                                 ..self.init_args
                             },
-                            disable_rom_validation: self.disable_rom_validation,
                         });
                         self.open = false;
                     }
@@ -553,7 +486,6 @@ impl ModelSelectionDialog {
         });
 
         if last_model != self.selected_model {
-            self.update_memory_options();
             self.update_display_rom_requirement();
             self.do_validate_roms();
         }
