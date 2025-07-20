@@ -4,7 +4,8 @@ Snow supports CD-ROM drives in every emulated Macintosh model
 except the Macintosh 128K/512K/512Ke (as these models never included SCSI).
 
 Note that in order to use a CD-ROM drive, you need to have the 'Apple CD'
-extension installed in the emulated operating system.
+extension installed in the emulated operating system. This requires System 6
+or higher, although System 7 is preferable (see 'Troubleshooting' below).
 
 <div class="warning">
 Most operating systems seem to only support a single CD-ROM drive. Snow
@@ -25,8 +26,7 @@ recognized.
 ## Mounting an existing image
 
 To mount an existing image file, use the 'Load image...' menu action
-to browse for a CD image. Note that an image file must be a multiple of
-2048 bytes. Currently, only ISO files are supported.
+to browse for a CD image. Currently, ISO and TOAST files are supported.
 
 ## Ejecting a CD
 
@@ -40,3 +40,11 @@ To detach a CD-ROM drive, use the 'Detach' menu action.
 Note that this is the equivalent of pulling the cable on a hard drive so
 if the disk is in use by the emulated operating system, it will likely
 crash. Shut down the emulated operating system first.
+
+## Troubleshooting
+
+On System 6, when you try to insert a CD, you may get the following message:
+`Please unlock the disk "Disk name" and try again. The desktop file couldn't be created.`.
+This is a System 6 issue which also occurs on real hardware. Install
+the "Desktop Mgr" extension inside the emulated system to solve this, or
+update to System 7.
