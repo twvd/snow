@@ -30,10 +30,10 @@ opt-level = 3
 debug = true
 
 [patch.crates-io]
-ecolor = { git = "https://github.com/twvd/snow-egui.git", rev = "50c4fe34b1de666af33f935c33ed5ff5d050832d"}
-emath = { git = "https://github.com/twvd/snow-egui.git", rev = "50c4fe34b1de666af33f935c33ed5ff5d050832d"}
-epaint = { git = "https://github.com/twvd/snow-egui.git", rev = "50c4fe34b1de666af33f935c33ed5ff5d050832d"}
-egui = { git = "https://github.com/twvd/snow-egui.git", rev = "50c4fe34b1de666af33f935c33ed5ff5d050832d"}
-egui-file-dialog = { git = "https://github.com/twvd/snow-egui-file-dialog.git", rev = "7504d855c587129b36092cea818fafd2153a311b" }
-egui-winit = { git = "https://github.com/twvd/snow-egui.git", rev = "50c4fe34b1de666af33f935c33ed5ff5d050832d"}
+ecolor = { git = "https://github.com/twvd/snow-egui.git", rev = "628a7a4b455f355fafb1d47c9e6870effab96eb5"}
+emath = { git = "https://github.com/twvd/snow-egui.git", rev = "628a7a4b455f355fafb1d47c9e6870effab96eb5"}
+epaint = { git = "https://github.com/twvd/snow-egui.git", rev = "628a7a4b455f355fafb1d47c9e6870effab96eb5"}
+egui = { git = "https://github.com/twvd/snow-egui.git", rev = "628a7a4b455f355fafb1d47c9e6870effab96eb5"}
+egui-winit = { git = "https://github.com/twvd/snow-egui.git", rev = "628a7a4b455f355fafb1d47c9e6870effab96eb5"}
 
+egui-file-dialog = { git = "https://github.com/twvd/snow-egui-file-dialog.git", rev = "7504d855c587129b36092cea818fafd2153a311b" }
