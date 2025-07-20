@@ -222,23 +222,17 @@ impl ModelSelectionDialog {
         let rom_data = fs::read(&self.main_rom_path)?;
 
         // Check ROM checksum
-        let detected_model = MacModel::detect_from_rom(&rom_data);
-
-        match detected_model {
-            Some(model) if model == self.selected_model => {
-                self.main_rom_valid = true;
-                Ok(())
-            }
-            Some(model) => {
-                bail!(
-                    "ROM is for '{}' but '{}' was selected",
-                    model,
-                    self.selected_model
-                )
-            }
-            None => {
-                bail!("Unknown or unsupported ROM file")
-            }
+        if self.selected_model.is_valid_rom(&rom_data) {
+            self.main_rom_valid = true;
+            Ok(())
+        } else if let Some(model) = MacModel::detect_from_rom(&rom_data) {
+            bail!(
+                "ROM is for '{}' but '{}' was selected",
+                model,
+                self.selected_model
+            )
+        } else {
+            bail!("Unknown or unsupported ROM file")
         }
     }
 
