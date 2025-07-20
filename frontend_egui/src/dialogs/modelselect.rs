@@ -12,6 +12,8 @@ use strum::IntoEnumIterator;
 /// Dialog for selecting Macintosh model and associated ROMs
 pub struct ModelSelectionDialog {
     open: bool,
+    last_roms: Vec<(MacModel, PathBuf)>,
+    last_display_roms: Vec<(MacModel, PathBuf)>,
     selected_model: MacModel,
     init_args: EmulatorInitArgs,
     selected_monitor: MacMonitor,
@@ -59,6 +61,8 @@ impl Default for ModelSelectionDialog {
     fn default() -> Self {
         Self {
             open: false,
+            last_roms: vec![],
+            last_display_roms: vec![],
             selected_model: MacModel::Plus,
             init_args: Default::default(),
             selected_monitor: MacMonitor::default(),
@@ -129,15 +133,44 @@ impl Default for ModelSelectionDialog {
 }
 
 impl ModelSelectionDialog {
-    pub fn open(&mut self) {
+    pub fn open(
+        &mut self,
+        last_roms: Vec<(MacModel, PathBuf)>,
+        last_display_roms: Vec<(MacModel, PathBuf)>,
+    ) {
         self.open = true;
+        self.last_roms = last_roms;
+        self.last_display_roms = last_display_roms;
         self.error_message.clear();
         self.result = None;
 
-        // Reset ROM validation when dialog opens
+        self.do_model_changed();
+    }
+
+    fn do_model_changed(&mut self) {
+        // Reset ROM validation when dialog opens or model changes
         self.main_rom_valid = false;
         self.display_rom_valid = false;
         self.update_display_rom_requirement();
+
+        // Load from last used ROMs if possible
+        if let Some((_, path)) = self
+            .last_roms
+            .iter()
+            .find(|(m, _)| *m == self.selected_model)
+        {
+            self.main_rom_path = path.to_string_lossy().to_string();
+        }
+        if self.display_rom_required {
+            if let Some((_, path)) = self
+                .last_display_roms
+                .iter()
+                .find(|(m, _)| *m == self.selected_model)
+            {
+                self.display_rom_path = path.to_string_lossy().to_string();
+            }
+        }
+
         self.do_validate_roms();
     }
 
@@ -486,8 +519,7 @@ impl ModelSelectionDialog {
         });
 
         if last_model != self.selected_model {
-            self.update_display_rom_requirement();
-            self.do_validate_roms();
+            self.do_model_changed();
         }
 
         if last_validation_disabled != self.disable_rom_validation {

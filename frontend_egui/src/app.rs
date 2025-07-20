@@ -435,7 +435,10 @@ impl SnowGui {
             ui.menu_button("Machine", |ui| {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
                 if ui.button("Load ROM").clicked() {
-                    self.model_dialog.open();
+                    self.model_dialog.open(
+                        self.settings.get_last_roms(),
+                        self.settings.get_last_display_roms(),
+                    );
                     ui.close_menu();
                 }
                 if self.emu.is_initialized() {
@@ -939,7 +942,10 @@ impl SnowGui {
                 .on_hover_text("Load ROM...")
                 .clicked()
             {
-                self.model_dialog.open();
+                self.model_dialog.open(
+                    self.settings.get_last_roms(),
+                    self.settings.get_last_display_roms(),
+                );
             }
             if self.emu.is_initialized() {
                 ui.separator();
@@ -1155,6 +1161,15 @@ impl SnowGui {
             Ok(p) => self.framebuffer.connect_receiver(p.frame_receiver),
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
         }
+
+        // Save to last used ROMs
+        if let Some(model) = model {
+            self.settings.set_last_rom(model, path);
+            if let Some(dr_path) = display_rom_path {
+                self.settings.set_last_display_rom(model, dr_path);
+            }
+        }
+
         self.workspace.set_rom_path(path);
         self.workspace.set_display_card_rom_path(display_rom_path);
         self.workspace.set_extension_rom_path(extension_rom_path);
