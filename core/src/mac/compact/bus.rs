@@ -220,7 +220,7 @@ where
                 self.write_normal(addr, val)
             }
             // SCSI
-            0x0058_0000..=0x005F_FFFF => self.scsi.write(addr, val),
+            0x0058_0000..=0x005F_FFFF if self.model.has_scsi() => self.scsi.write(addr, val),
             // RAM
             0x0060_0000..=0x007F_FFFF => {
                 let idx = ((addr as usize) - 0x60_0000) & self.ram_mask;
@@ -261,7 +261,7 @@ where
                 Some(self.ram[idx] = val)
             }
             // SCSI
-            0x0058_0000..=0x005F_FFFF => self.scsi.write(addr, val),
+            0x0058_0000..=0x005F_FFFF if self.model.has_scsi() => self.scsi.write(addr, val),
             // SCC
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr >> 1, val),
             // IWM
@@ -288,7 +288,7 @@ where
                 Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
             }
             // SCSI
-            0x0058_0000..=0x005F_FFFF => self.scsi.read(addr),
+            0x0058_0000..=0x005F_FFFF if self.model.has_scsi() => self.scsi.read(addr),
             // RAM
             0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
             // Phase adjust (ignore)
@@ -330,13 +330,15 @@ where
                 if self.model == MacModel::Plus {
                     // Plus with SCSI has no repeated ROM images above 0x440000 as
                     // indication of SCSI controller present.
+                    //
+                    // 512Ke (using Plus ROM) does have repeated ROM images
                     Some(0xFF)
                 } else {
                     Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
                 }
             }
             // SCSI
-            0x0058_0000..=0x005F_FFFF => self.scsi.read(addr),
+            0x0058_0000..=0x005F_FFFF if self.model.has_scsi() => self.scsi.read(addr),
             // SCC
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr >> 1),
             // IWM
@@ -691,11 +693,14 @@ where
         use crate::debuggable::*;
 
         let mut result = vec![
-            dbgprop_nest!("SCSI controller (NCR 5380)", self.scsi),
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("VIA (SY6522)", self.via),
             dbgprop_nest!("Video circuit", self.video),
         ];
+
+        if self.model.has_scsi() {
+            result.push(dbgprop_nest!("SCSI controller (NCR 5380)", self.scsi));
+        }
 
         if self.model.has_adb() {
             result.push(dbgprop_nest!("Apple Desktop Bus", self.via.adb));

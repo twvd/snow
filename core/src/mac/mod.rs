@@ -31,6 +31,8 @@ pub enum MacModel {
     Early128K,
     /// Macintosh 512K
     Early512K,
+    /// Macintosh 512Ke
+    Early512Ke,
     /// Macintosh Plus
     Plus,
     /// Macintosh SE
@@ -54,13 +56,13 @@ impl MacModel {
         // Macintosh 512K
         ("fe6a1ceff5b3eefe32f20efea967cdf8cd4cada291ede040600e7f6c9e2dfc0e", &[Self::Early512K]),
         // Macintosh Plus v1
-        ("c5d862605867381af6200dd52f5004cc00304a36ab996531f15e0b1f8a80bc01", &[Self::Plus]),
+        ("c5d862605867381af6200dd52f5004cc00304a36ab996531f15e0b1f8a80bc01", &[Self::Plus, Self::Early512Ke]),
         // Macintosh Plus v2
-        ("06f598ff0f64c944e7c347ba55ae60c792824c09c74f4a55a32c0141bf91b8b3", &[Self::Plus]),
+        ("06f598ff0f64c944e7c347ba55ae60c792824c09c74f4a55a32c0141bf91b8b3", &[Self::Plus, Self::Early512Ke]),
         // Macintosh Plus v3
-        ("dd908e2b65772a6b1f0c859c24e9a0d3dcde17b1c6a24f4abd8955846d7895e7", &[Self::Plus]),
+        ("dd908e2b65772a6b1f0c859c24e9a0d3dcde17b1c6a24f4abd8955846d7895e7", &[Self::Plus, Self::Early512Ke]),
         // Macintosh Plus Japanese ROM
-        ("969269ced56dcb76402f2bc32e4d41343b5af00e5ad828e6f08098d5e4b1ad05", &[Self::Plus]),
+        ("969269ced56dcb76402f2bc32e4d41343b5af00e5ad828e6f08098d5e4b1ad05", &[Self::Plus, Self::Early512Ke]),
         // Macintosh SE
         ("0dea05180e66fddb5f5577c89418de31b97e2d9dc6affe84871b031df8245487", &[Self::SE]),
         // Macintosh SE FDHD
@@ -77,7 +79,7 @@ impl MacModel {
 
     pub const fn has_adb(self) -> bool {
         match self {
-            Self::Early128K | Self::Early512K | Self::Plus => false,
+            Self::Early128K | Self::Early512K | Self::Early512Ke | Self::Plus => false,
             _ => true,
         }
     }
@@ -85,7 +87,7 @@ impl MacModel {
     pub const fn ram_size(self) -> usize {
         match self {
             Self::Early128K => 128 * 1024,
-            Self::Early512K => 512 * 1024,
+            Self::Early512K | Self::Early512Ke => 512 * 1024,
             Self::Plus | Self::SE | Self::SeFdhd | Self::Classic => 4096 * 1024,
             Self::MacII | Self::MacIIFDHD => 8 * 1024 * 1024,
         }
@@ -94,7 +96,7 @@ impl MacModel {
     /// Supports high-density floppies, implying SWIM controller
     pub const fn fdd_hd(self) -> bool {
         match self {
-            Self::Early128K | Self::Early512K | Self::Plus | Self::SE => false,
+            Self::Early128K | Self::Early512K | Self::Early512Ke | Self::Plus | Self::SE => false,
             Self::SeFdhd | Self::Classic => true,
             Self::MacII => false,
             Self::MacIIFDHD => true,
@@ -105,7 +107,7 @@ impl MacModel {
     pub const fn fdd_drives(self) -> &'static [DriveType] {
         match self {
             Self::Early128K | Self::Early512K => &[DriveType::GCR400K, DriveType::GCR400K],
-            Self::Plus => &[DriveType::GCR800K, DriveType::GCR800K],
+            Self::Early512Ke | Self::Plus => &[DriveType::GCR800K, DriveType::GCR800K],
             Self::SE => &[DriveType::GCR800K, DriveType::GCR800K, DriveType::GCR800K],
             Self::SeFdhd => &[
                 DriveType::SuperDrive,
@@ -120,14 +122,14 @@ impl MacModel {
 
     pub const fn has_scsi(self) -> bool {
         match self {
-            Self::Early128K | Self::Early512K => false,
+            Self::Early128K | Self::Early512K | Self::Early512Ke => false,
             _ => true,
         }
     }
 
     pub const fn keymap(self) -> Keymap {
         match self {
-            Self::Early128K | Self::Early512K | Self::Plus => Keymap::AkM0110,
+            Self::Early128K | Self::Early512K | Self::Early512Ke | Self::Plus => Keymap::AkM0110,
             _ => Keymap::AekM0115,
         }
     }
@@ -137,7 +139,7 @@ impl MacModel {
     pub const fn ram_interleave_cpu(self, cycles: Ticks) -> bool {
         match self {
             // 50/50 ratio for early macs
-            Self::Early128K | Self::Early512K | Self::Plus => cycles % 8 >= 4,
+            Self::Early128K | Self::Early512K | Self::Early512Ke | Self::Plus => cycles % 8 >= 4,
             // 75/25 for SE and onwards
             Self::SE | Self::SeFdhd | Self::Classic => cycles % 16 >= 4,
             // No interleave for MacII
@@ -148,7 +150,7 @@ impl MacModel {
     pub const fn disable_memtest(self) -> Option<(Address, u32)> {
         match self {
             Self::Early128K | Self::Early512K => None,
-            Self::Plus => Some((0x0002AE, 0x0040_0000)),
+            Self::Early512Ke | Self::Plus => Some((0x0002AE, 0x0040_0000)),
             Self::SE | Self::SeFdhd | Self::Classic | Self::MacII | Self::MacIIFDHD => {
                 Some((0x000CFC, 0x574C5343))
             }
@@ -159,6 +161,7 @@ impl MacModel {
         match self {
             Self::Early128K
             | Self::Early512K
+            | Self::Early512Ke
             | Self::Plus
             | Self::SE
             | Self::SeFdhd
@@ -206,6 +209,7 @@ impl Display for MacModel {
             match self {
                 Self::Early128K => "Macintosh 128K",
                 Self::Early512K => "Macintosh 512K",
+                Self::Early512Ke => "Macintosh 512Ke",
                 Self::Plus => "Macintosh Plus",
                 Self::SE => "Macintosh SE",
                 Self::SeFdhd => "Macintosh SE (FDHD)",
