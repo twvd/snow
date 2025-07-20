@@ -1,6 +1,5 @@
 use std::fmt::Display;
 
-use hex_literal::hex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -48,6 +47,34 @@ pub enum MacModel {
 
 #[allow(clippy::match_like_matches_macro)]
 impl MacModel {
+    #[rustfmt::skip]
+    const ROMS: &[(&str, &[Self])] = &[
+        // Macintosh 128K
+        ("13fe8312cf6167a2bb4351297b48cc1ee29c523b788e58270434742bfeda864c", &[Self::Early128K]),
+        // Macintosh 512K
+        ("fe6a1ceff5b3eefe32f20efea967cdf8cd4cada291ede040600e7f6c9e2dfc0e", &[Self::Early512K]),
+        // Macintosh Plus v1
+        ("c5d862605867381af6200dd52f5004cc00304a36ab996531f15e0b1f8a80bc01", &[Self::Plus]),
+        // Macintosh Plus v2
+        ("06f598ff0f64c944e7c347ba55ae60c792824c09c74f4a55a32c0141bf91b8b3", &[Self::Plus]),
+        // Macintosh Plus v3
+        ("dd908e2b65772a6b1f0c859c24e9a0d3dcde17b1c6a24f4abd8955846d7895e7", &[Self::Plus]),
+        // Macintosh Plus Japanese ROM
+        ("969269ced56dcb76402f2bc32e4d41343b5af00e5ad828e6f08098d5e4b1ad05", &[Self::Plus]),
+        // Macintosh SE
+        ("0dea05180e66fddb5f5577c89418de31b97e2d9dc6affe84871b031df8245487", &[Self::SE]),
+        // Macintosh SE FDHD
+        ("bb0cb4786e2e004b701dda9bec475598bc82a4f27eb7b11e6b78dfcee1434f71", &[Self::SeFdhd]),
+        // Macintosh Classic
+        ("c1c47260bacac2473e21849925fbfdf48e5ab584aaef7c6d54569d0cb6b41cce", &[Self::Classic]),
+        // Macintosh II v1
+        ("cc6d754cfa7841644971718ada1121bc5f94ff954918f502a75abb0e6fd90540", &[Self::MacII]),
+        // Macintosh II v2
+        ("97f2a22bdb8972bfcc1f16aff1ebbe157887c26787a1c81747a9842fa7b97a06", &[Self::MacII]),
+        // Macintosh II FDHD
+        ("79fae48e2d5cfde68520e46616503963f8c16430903f410514b62c1379af20cb", &[Self::MacIIFDHD]),
+    ];
+
     pub const fn has_adb(self) -> bool {
         match self {
             Self::Early128K | Self::Early512K | Self::Plus => false,
@@ -128,59 +155,6 @@ impl MacModel {
         }
     }
 
-    pub fn detect_from_rom(rom: &[u8]) -> Option<Self> {
-        let mut hash = Sha256::new();
-        hash.update(rom);
-        let digest = hash.finalize();
-
-        if digest[..] == hex!("13fe8312cf6167a2bb4351297b48cc1ee29c523b788e58270434742bfeda864c") {
-            // Macintosh 128K
-            Some(Self::Early128K)
-        } else if digest[..]
-            == hex!("fe6a1ceff5b3eefe32f20efea967cdf8cd4cada291ede040600e7f6c9e2dfc0e")
-        {
-            // Macintosh 512K
-            Some(Self::Early512K)
-        } else if
-        // Macintosh Plus v1
-        digest[..] == hex!("c5d862605867381af6200dd52f5004cc00304a36ab996531f15e0b1f8a80bc01") ||
-        // Macintosh Plus v2
-    digest[..] == hex!("06f598ff0f64c944e7c347ba55ae60c792824c09c74f4a55a32c0141bf91b8b3") ||
-        // Macintosh Plus v3
-    digest[..] == hex!("dd908e2b65772a6b1f0c859c24e9a0d3dcde17b1c6a24f4abd8955846d7895e7") ||
-        // Macintosh Plus Japanese ROM
-    digest[..] == hex!("969269ced56dcb76402f2bc32e4d41343b5af00e5ad828e6f08098d5e4b1ad05")
-        {
-            Some(Self::Plus)
-        } else if digest[..]
-            == hex!("0dea05180e66fddb5f5577c89418de31b97e2d9dc6affe84871b031df8245487")
-        {
-            Some(Self::SE)
-        } else if digest[..]
-            == hex!("bb0cb4786e2e004b701dda9bec475598bc82a4f27eb7b11e6b78dfcee1434f71")
-        {
-            Some(Self::SeFdhd)
-        } else if digest[..]
-            == hex!("c1c47260bacac2473e21849925fbfdf48e5ab584aaef7c6d54569d0cb6b41cce")
-        {
-            Some(Self::Classic)
-        } else if
-        // Macintosh II v1
-        digest[..] == hex!("cc6d754cfa7841644971718ada1121bc5f94ff954918f502a75abb0e6fd90540") ||
-        // Macintosh II v2
-        digest[..] == hex!("97f2a22bdb8972bfcc1f16aff1ebbe157887c26787a1c81747a9842fa7b97a06")
-        {
-            Some(Self::MacII)
-            // Macintosh II FDHD
-        } else if digest[..]
-            == hex!("79fae48e2d5cfde68520e46616503963f8c16430903f410514b62c1379af20cb")
-        {
-            Some(Self::MacIIFDHD)
-        } else {
-            None
-        }
-    }
-
     pub const fn cpu_type(self) -> CpuM68kType {
         match self {
             Self::Early128K
@@ -191,6 +165,36 @@ impl MacModel {
             | Self::Classic => M68000,
             Self::MacII | Self::MacIIFDHD => M68020,
         }
+    }
+}
+
+impl MacModel {
+    fn rom_digest(rom: &[u8]) -> String {
+        let mut hash = Sha256::new();
+        hash.update(rom);
+        let digest = hash.finalize();
+        hex::encode(digest)
+    }
+
+    /// Detects the Mac model from a given ROM file
+    pub fn detect_from_rom(rom: &[u8]) -> Option<Self> {
+        let digest = Self::rom_digest(rom);
+
+        // For auto-detect, only return the first model in the list so e.g.
+        // the Plus is chosen for the Plus ROMs and not the 512Ke
+        Self::ROMS
+            .iter()
+            .find(|(h, _)| h == &digest)
+            .map(|(_, models)| models[0])
+    }
+
+    /// Checks whether the provided ROM is valid for this model
+    pub fn is_valid_rom(&self, rom: &[u8]) -> bool {
+        let digest = Self::rom_digest(rom);
+
+        Self::ROMS
+            .iter()
+            .any(|(h, models)| h == &digest && models.contains(self))
     }
 }
 
