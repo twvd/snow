@@ -229,6 +229,7 @@ impl Emulator {
         let (config, adbkeyboard_sender, adbmouse_sender) = match model {
             MacModel::Early128K
             | MacModel::Early512K
+            | MacModel::Early512Ke
             | MacModel::Plus
             | MacModel::SE
             | MacModel::SeFdhd
