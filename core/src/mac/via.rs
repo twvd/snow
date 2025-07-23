@@ -417,7 +417,6 @@ impl BusMember<Address> for Via {
                     // Start shift-out
                     self.kbdshift_out = val;
                     self.kbdshift_out_time = SHIFT_DELAY;
-                    self.sr = 0xFF;
                 }
                 Some(())
             }
@@ -561,7 +560,7 @@ impl Tickable for Via {
             if self.kbdshift_in_time == 0 {
                 self.sr = self.kbdshift_in;
                 self.ifr.set_kbdready(true);
-                self.kbdshift_in = 0xFF;
+                self.kbdshift_in = self.sr;
                 self.kbdshift_in_time = SHIFT_DELAY;
             }
         }
