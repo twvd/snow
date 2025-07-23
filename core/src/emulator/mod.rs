@@ -10,7 +10,7 @@ use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
-use crate::cpu_m68k::{CpuM68000, CpuM68020};
+use crate::cpu_m68k::{CpuM68000, CpuM68020, CpuM68020Pmmu};
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::keymap::{KeyEvent, Keymap};
 use crate::mac::adb::{AdbKeyboard, AdbMouse};
@@ -69,6 +69,7 @@ macro_rules! dispatch {
                     match self {
                         Self::Compact(inner) => &inner.$($ref_target)*,
                         Self::MacII(inner) => &inner.$($ref_target)*,
+                        Self::MacIIPmmu(inner) => &inner.$($ref_target)*,
                     }
                 }
             )*
@@ -79,6 +80,7 @@ macro_rules! dispatch {
                     match self {
                         Self::Compact(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacII(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::MacIIPmmu(inner) => &mut inner.$($mut_ref_target)*,
                     }
                 }
             )*
@@ -89,6 +91,7 @@ macro_rules! dispatch {
                     match self {
                         Self::Compact(inner) => inner.$($immut_call_target)*,
                         Self::MacII(inner) => inner.$($immut_call_target)*,
+                        Self::MacIIPmmu(inner) => inner.$($immut_call_target)*,
                     }
                 }
             )*
@@ -99,6 +102,7 @@ macro_rules! dispatch {
                     match self {
                         Self::Compact(inner) => inner.$($mut_call_target)*,
                         Self::MacII(inner) => inner.$($mut_call_target)*,
+                        Self::MacIIPmmu(inner) => inner.$($mut_call_target)*,
                     }
                 }
             )*
@@ -111,8 +115,10 @@ macro_rules! dispatch {
 enum EmulatorConfig {
     /// Compact series - Mac 128K, 512K, Plus, SE, Classic
     Compact(Box<CpuM68000<CompactMacBus<ChannelRenderer>>>),
-    /// Macintosh II
-    MacII(Box<CpuM68020<MacIIBus<ChannelRenderer>>>),
+    /// Macintosh II (AMU)
+    MacII(Box<CpuM68020<MacIIBus<ChannelRenderer, true>>>),
+    /// Macintosh II (PMMU)
+    MacIIPmmu(Box<CpuM68020Pmmu<MacIIBus<ChannelRenderer, false>>>),
 }
 
 dispatch! {
@@ -177,7 +183,7 @@ impl EmulatorConfig {
     pub fn keyboard_event(&mut self, ev: KeyEvent) -> Result<()> {
         match self {
             Self::Compact(cpu) => cpu.bus.via.keyboard.event(ev),
-            Self::MacII(_) => unreachable!(), // MacII uses ADB, not direct keyboard events
+            Self::MacII(_) | Self::MacIIPmmu(_) => unreachable!(), // MacII uses ADB, not direct keyboard events
         }
     }
 
@@ -185,6 +191,7 @@ impl EmulatorConfig {
         match self {
             Self::Compact(cpu) => &mut cpu.bus.via.rtc,
             Self::MacII(cpu) => &mut cpu.bus.via1.rtc,
+            Self::MacIIPmmu(cpu) => &mut cpu.bus.via1.rtc,
         }
     }
 }
