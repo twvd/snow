@@ -3,7 +3,6 @@ use crate::mac::adb::AdbDeviceResponse;
 use super::{AdbDevice, AdbDeviceInstance};
 
 use crate::debuggable::{Debuggable, DebuggableProperties};
-use log::*;
 
 /// ADB Bus/transceiver states
 #[derive(Clone, Copy, PartialEq, Eq, Debug, strum::IntoStaticStr)]
@@ -47,9 +46,6 @@ pub struct AdbTransceiver {
     /// Response that is currently being clocked out
     response: AdbDeviceResponse,
 
-    /// Current state of the ADB Int I/O pin
-    int: bool,
-
     /// Command data being clocked in
     cmd: Vec<u8>,
 }
@@ -63,7 +59,18 @@ impl AdbTransceiver {
     }
 
     pub fn get_int(&self) -> bool {
-        self.int
+        // The INT line has a different meaning in each phase.
+        // In Data1, it signals that the command response has ended or that the
+        // device did not respond (e.g. a keyboard Talk with no events pending).
+        // In Idle and Data2, it signals a pending SRQ.
+        // This is also the reason why ADB command responses must always
+        // be an even number in length.
+
+        match self.state {
+            AdbBusState::Command => false,
+            AdbBusState::Data1 => self.cmd.is_empty() && self.response.is_empty(),
+            AdbBusState::Data2 | AdbBusState::Idle => self.device_has_srq(),
+        }
     }
 
     /// A device has asserted Service Request
@@ -81,7 +88,6 @@ impl AdbTransceiver {
 
         // Bus state has changed
         self.state = newstate;
-        self.int = false;
 
         match self.state {
             AdbBusState::Idle => None,
@@ -99,17 +105,14 @@ impl AdbTransceiver {
                 if !self.cmd.is_empty() {
                     if self.process_cmd(false) {
                         self.cmd.clear();
+                        // Command processed, response ready
                     } else {
                         // Wait for command to be clocked out
                         return None;
                     }
                 }
-                if self.cmd.is_empty() && self.response.is_empty() {
-                    // Response finished
-                    self.int = true;
-                }
 
-                Some(self.response.pop_at(0).unwrap_or(0xFF))
+                Some(self.response.pop_at(0).unwrap_or(0))
             }
         }
     }
@@ -160,22 +163,14 @@ impl AdbTransceiver {
                 self.response = device.talk(reg);
             }
             _ => {
-                error!(
+                log::error!(
                     "Unknown ADB command {:02X} for address {:02X}",
-                    address, cmd
+                    address,
+                    cmd
                 );
             }
         };
         true
-    }
-
-    pub fn wakeup(&mut self) -> bool {
-        if self.state == AdbBusState::Idle && !self.int && self.device_has_srq() {
-            self.int = true;
-            true
-        } else {
-            false
-        }
     }
 }
 
@@ -190,7 +185,7 @@ impl Debuggable for AdbTransceiver {
             dbgprop_string!("Command", hex::encode(&self.cmd)),
             dbgprop_udec!("Response buffer len", self.response.len()),
             dbgprop_string!("Response", hex::encode(&self.response)),
-            dbgprop_bool!("Interrupt", self.int),
+            dbgprop_bool!("Interrupt/status line", self.get_int()),
             dbgprop_bool!("Global SRQ", self.device_has_srq()),
         ];
 

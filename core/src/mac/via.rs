@@ -16,19 +16,10 @@ use super::MacModel;
 /// (counted on the E Clock)
 const ONESEC_TICKS: Ticks = 783360;
 
-/// Time until a keyboard response is created
-///
-/// Time for the host command to be clocked out is:
-/// 840us + (180us [clock low] + 220us [clock high]) * 8 + 80us
-///
-/// Time for the keyboard response to be clocked in:
-/// (160us [clock low] + 180us [clock high]) * 8
-/// = 6840us, roughly 7ms.
-const KEYBOARD_DELAY: Ticks = ONESEC_TICKS * 7 / 1000;
-
 const SHIFT_DELAY: Ticks = ONESEC_TICKS * 3 / 1000;
 
-const ADB_RESPONSE_TIME: Ticks = ONESEC_TICKS / 1000;
+const ACR_SHIFT_OUT: u8 = 0b111;
+const ACR_SHIFT_IN: u8 = 0b011;
 
 bitfield! {
     /// VIA Register A (for classic models)
@@ -219,6 +210,9 @@ pub struct Via {
     /// Counter for the one-second timer
     onesec: Ticks,
 
+    /// Shift register
+    sr: u8,
+
     kbdshift_in: u8,
     kbdshift_in_time: Ticks,
     kbdshift_out: u8,
@@ -272,6 +266,7 @@ impl Via {
             t1_enable: false,
 
             onesec: 0,
+            sr: 0,
             kbdshift_in: 0,
             kbdshift_in_time: 0,
             kbdshift_out: 0,
@@ -327,11 +322,12 @@ impl BusMember<Address> for Via {
             // Register A Data Direction
             0x03 => Some(self.ddra.0),
 
-            // Keyboard shift register
+            // Shift register
             0x0A => {
+                let sr = self.sr;
                 self.ifr.set_kbdready(false);
-                self.kbdshift_in_time = 0;
-                Some(self.kbdshift_in)
+
+                Some(sr)
             }
 
             // Auxiliary Control Register
@@ -416,11 +412,12 @@ impl BusMember<Address> for Via {
             0x0A => {
                 self.ifr.set_kbdready(false);
 
-                self.kbdshift_out = val;
-                if self.model.has_adb() {
+                self.sr = val;
+                if self.acr.kbd() == ACR_SHIFT_OUT {
+                    // Start shift-out
+                    self.kbdshift_out = val;
                     self.kbdshift_out_time = SHIFT_DELAY;
-                } else {
-                    self.kbdshift_out_time = KEYBOARD_DELAY;
+                    self.sr = 0xFF;
                 }
                 Some(())
             }
@@ -441,7 +438,6 @@ impl BusMember<Address> for Via {
                 if self.model.has_adb() {
                     if let Some(b) = self.adb.io(self.b_out.adb_st0(), self.b_out.adb_st1()) {
                         self.kbdshift_in = b;
-                        self.kbdshift_in_time = ADB_RESPONSE_TIME;
                     }
                 }
 
@@ -455,7 +451,22 @@ impl BusMember<Address> for Via {
             0x03 => Some(self.ddra.0 = val),
 
             // Auxiliary Control Register
-            0x0B => Some(self.acr.0 = val),
+            0x0B => {
+                let newacr = RegisterACR(val);
+                if newacr.kbd() != self.acr.kbd() {
+                    // Reset shifter operation
+                    self.kbdshift_in_time = 0;
+                    self.kbdshift_out_time = 0;
+                }
+                if newacr.kbd() == ACR_SHIFT_IN {
+                    self.kbdshift_in_time = SHIFT_DELAY;
+                } else if newacr.kbd() == ACR_SHIFT_OUT {
+                    self.kbdshift_out = self.sr;
+                    self.kbdshift_out_time = SHIFT_DELAY;
+                }
+
+                Some(self.acr.0 = val)
+            }
 
             // Peripheral Control Register
             0x0C => Some(self.pcr.0 = val),
@@ -539,11 +550,8 @@ impl Tickable for Via {
             if self.kbdshift_out_time == 0 {
                 if !self.model.has_adb() {
                     self.kbdshift_in = self.keyboard.cmd(self.kbdshift_out)?;
-                    self.acr.set_kbd(0);
                 } else {
                     self.adb.data_in(self.kbdshift_out);
-                    self.kbdshift_in = 0xFF;
-                    self.kbdshift_in_time = 0;
                 }
                 self.ifr.set_kbdready(true);
             }
@@ -551,12 +559,11 @@ impl Tickable for Via {
         if self.kbdshift_in_time > 0 {
             self.kbdshift_in_time = self.kbdshift_in_time.saturating_sub(ticks);
             if self.kbdshift_in_time == 0 {
+                self.sr = self.kbdshift_in;
                 self.ifr.set_kbdready(true);
+                self.kbdshift_in = 0xFF;
+                self.kbdshift_in_time = SHIFT_DELAY;
             }
-        }
-        if self.adb.wakeup() {
-            self.kbdshift_in = 0xFF;
-            self.ifr.set_kbdready(true);
         }
 
         Ok(ticks)
@@ -604,6 +611,7 @@ impl Debuggable for Via {
             dbgprop_group!(
                 "Keyboard shifter",
                 vec![
+                    dbgprop_byte_bin!("Shift register", self.sr),
                     dbgprop_byte_bin!("Input", self.kbdshift_in),
                     dbgprop_udec!("Input timer", self.kbdshift_in_time),
                     dbgprop_byte_bin!("Output", self.kbdshift_out),

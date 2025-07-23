@@ -58,7 +58,7 @@ impl AdbDevice for AdbMouse {
                 AdbReg3::default()
                     .with_exceptional(true)
                     .with_srq(true)
-                    .with_address(self.address)
+                    .with_address(Self::INITIAL_ADDRESS)
                     .with_handler_id(1)
                     .to_be_bytes(),
             ),
