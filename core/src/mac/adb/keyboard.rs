@@ -111,10 +111,9 @@ impl AdbDevice for AdbKeyboard {
                 }
                 if response.len() == 1 {
                     // Must respond either 0 or 2 bytes
-                    AdbDeviceResponse::from_iter([0xFF, response[0]])
-                } else {
-                    response
+                    response.push(0xFF);
                 }
+                response
             }
             2 => AdbDeviceResponse::from_iter(
                 AdbKeyboardReg2::default()
@@ -138,7 +137,7 @@ impl AdbDevice for AdbKeyboard {
                 AdbReg3::default()
                     .with_exceptional(true)
                     .with_srq(true)
-                    .with_address(self.address)
+                    .with_address(Self::INITIAL_ADDRESS)
                     .with_handler_id(2) // Apple Extended Keyboard M0115
                     .to_be_bytes(),
             ),

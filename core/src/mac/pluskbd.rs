@@ -22,6 +22,10 @@ pub const SC_APPLE: u8 = 0x6F;
 pub const SC_SPACE: u8 = 0x63;
 
 impl PlusKeyboard {
+    pub fn pending_events(&self) -> bool {
+        !self.event_queue.is_empty()
+    }
+
     pub fn event(&mut self, ev: KeyEvent) -> Result<()> {
         self.event_queue.push_back(ev);
         Ok(())
