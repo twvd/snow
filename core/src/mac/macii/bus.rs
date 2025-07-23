@@ -27,7 +27,7 @@ pub const CLOCK_SPEED: Ticks = 16_000_000;
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
-pub struct MacIIBus<TRenderer: Renderer> {
+pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     cycles: Ticks,
 
     /// The currently emulated Macintosh model
@@ -74,7 +74,7 @@ pub struct MacIIBus<TRenderer: Renderer> {
     mouse_enabled: bool,
 }
 
-impl<TRenderer> MacIIBus<TRenderer>
+impl<TRenderer, const AMU: bool> MacIIBus<TRenderer, AMU>
 where
     TRenderer: Renderer,
 {
@@ -403,6 +403,10 @@ where
     }
 
     fn amu_translate(&self, addr: Address) -> Address {
+        if !AMU {
+            return addr;
+        }
+
         match addr & 0xFFFFFF {
             0x00_0000..=0x7F_FFFF => addr & 0x7F_FFFF,
             0x80_0000..=0x8F_FFFF => 0x4000_0000 | (addr & 0xF_FFFF),
@@ -427,7 +431,7 @@ where
     }
 }
 
-impl<TRenderer> Bus<Address, Byte> for MacIIBus<TRenderer>
+impl<TRenderer, const AMU: bool> Bus<Address, Byte> for MacIIBus<TRenderer, AMU>
 where
     TRenderer: Renderer,
 {
@@ -440,7 +444,7 @@ where
             return BusResult::WaitState;
         }
 
-        let val = if self.amu_active {
+        let val = if AMU && self.amu_active {
             self.read_24bit(addr)
         } else if self.overlay {
             self.read_overlay(addr)
@@ -451,7 +455,7 @@ where
         if let Some(v) = val {
             BusResult::Ok(v)
         } else {
-            if self.amu_active {
+            if AMU && self.amu_active {
                 warn!(
                     "Read from unimplemented address: {:06X} -> {:08X}",
                     addr & 0xFFFFFF,
@@ -469,7 +473,7 @@ where
             return BusResult::WaitState;
         }
 
-        let written = if self.amu_active {
+        let written = if AMU && self.amu_active {
             self.write_24bit(addr, val)
         } else if self.overlay {
             self.write_overlay(addr, val)
@@ -487,7 +491,7 @@ where
         self.swim.intdrive = self.via1.a_out.drivesel();
 
         if written.is_none() {
-            if self.amu_active {
+            if AMU && self.amu_active {
                 warn!(
                     "Write to unimplemented address: {:06X} -> {:08X} {:02X}",
                     addr & 0xFFFFFF,
@@ -530,7 +534,7 @@ where
     }
 }
 
-impl<TRenderer> Tickable for MacIIBus<TRenderer>
+impl<TRenderer, const AMU: bool> Tickable for MacIIBus<TRenderer, AMU>
 where
     TRenderer: Renderer,
 {
@@ -539,7 +543,9 @@ where
         assert_eq!(ticks, 1);
         self.cycles += ticks;
 
-        self.amu_active = self.via2.ddrb.vfc3() && !self.via2.b_out.vfc3();
+        if AMU {
+            self.amu_active = self.via2.ddrb.vfc3() && !self.via2.b_out.vfc3();
+        }
 
         // The Mac II generates the VIA clock through some dividers on the logic board.
         // This same logic generates wait states when the VIAs are accessed.
@@ -604,7 +610,7 @@ where
     }
 }
 
-impl<TRenderer> IrqSource for MacIIBus<TRenderer>
+impl<TRenderer, const AMU: bool> IrqSource for MacIIBus<TRenderer, AMU>
 where
     TRenderer: Renderer,
 {
@@ -626,7 +632,7 @@ where
     }
 }
 
-impl<TRenderer> InspectableBus<Address, Byte> for MacIIBus<TRenderer>
+impl<TRenderer, const AMU: bool> InspectableBus<Address, Byte> for MacIIBus<TRenderer, AMU>
 where
     TRenderer: Renderer,
 {
@@ -653,7 +659,7 @@ where
     }
 }
 
-impl<TRenderer> Debuggable for MacIIBus<TRenderer>
+impl<TRenderer, const AMU: bool> Debuggable for MacIIBus<TRenderer, AMU>
 where
     TRenderer: Renderer,
 {
