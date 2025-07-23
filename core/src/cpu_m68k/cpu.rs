@@ -173,7 +173,7 @@ pub struct SystrapHistoryEntry {
 
 /// Motorola 680x0
 #[derive(Serialize, Deserialize)]
-pub struct CpuM68k<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
+pub struct CpuM68k<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
@@ -233,8 +233,8 @@ where
     systrap_history_enabled: bool,
 }
 
-impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
-    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
+    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
@@ -3751,8 +3751,8 @@ where
     }
 }
 
-impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType> Tickable
-    for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool> Tickable
+    for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
