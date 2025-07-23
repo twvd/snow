@@ -143,8 +143,8 @@ impl From<BitsExtReal> for Float {
     }
 }
 
-impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
-    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
+    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
