@@ -436,6 +436,9 @@ impl ModelSelectionDialog {
                 });
                 ui.group(|ui| {
                     ui.vertical(|ui| {
+                        if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
+                            ui.checkbox(&mut self.init_args.pmmu_enabled, "Enable PMMU");
+                        }
                         ui.checkbox(&mut self.init_args.audio_disabled, "Disable audio");
                         ui.checkbox(&mut self.init_args.mouse_disabled, "Disable mouse");
                         ui.checkbox(
@@ -479,6 +482,10 @@ impl ModelSelectionDialog {
                         .add_enabled(can_proceed, egui::Button::new("Load and run"))
                         .clicked()
                     {
+                        if !matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
+                            self.init_args.pmmu_enabled = false;
+                        }
+
                         self.result = Some(ModelSelectionResult {
                             model: self.selected_model,
                             main_rom_path: PathBuf::from(&self.main_rom_path),
