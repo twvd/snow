@@ -1166,18 +1166,7 @@ where
                 self.advance_cycles(4)?;
                 self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEA, None)
             }
-            InstructionMnemonic::LINEF => {
-                if self.breakpoints.contains(&Breakpoint::LineF(instr.data)) {
-                    info!(
-                        "Breakpoint hit (LINEF): ${:04X}, PC: ${:08X}",
-                        instr.data, self.regs.pc
-                    );
-                    self.breakpoint_hit.set();
-                }
-
-                self.advance_cycles(4)?;
-                self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEF, None)
-            }
+            InstructionMnemonic::LINEF => self.op_linef(instr),
 
             // M68010 ------------------------------------------------------------------------------
             InstructionMnemonic::MOVEC_l => self.op_movec(instr),
@@ -1208,7 +1197,30 @@ where
             InstructionMnemonic::FBcc_l => self.op_fbcc::<true>(instr),
             InstructionMnemonic::FBcc_w => self.op_fbcc::<false>(instr),
             InstructionMnemonic::FScc_b => self.op_fscc(instr),
+
+            // PMMU --------------------------------------------------------------------------------
+            InstructionMnemonic::POP_000 => self.op_pop_000(instr),
         }
+    }
+
+    /// LINEF
+    pub(in crate::cpu_m68k) fn op_linef(&mut self, instr: &Instruction) -> Result<()> {
+        if self.breakpoints.contains(&Breakpoint::LineF(instr.data)) {
+            info!(
+                "Breakpoint hit (LINEF): ${:04X}, PC: ${:08X}",
+                instr.data, self.regs.pc
+            );
+            self.breakpoint_hit.set();
+        }
+
+        log::debug!(
+            "Unhandled LINEF {:04X} {:04X?}",
+            instr.data,
+            self.prefetch.make_contiguous()
+        );
+
+        self.advance_cycles(4)?;
+        self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEF, None)
     }
 
     /// SWAP
