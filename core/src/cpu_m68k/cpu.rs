@@ -54,7 +54,7 @@ pub enum Breakpoint {
 
 /// Address error details
 #[derive(Debug, Clone, Copy)]
-struct AddressError {
+pub(in crate::cpu_m68k) struct AddressError {
     #[allow(dead_code)]
     function_code: u8,
     read: bool,
@@ -66,7 +66,7 @@ struct AddressError {
 
 /// CPU error type to cascade exceptions down
 #[derive(Error, Debug)]
-enum CpuError {
+pub(in crate::cpu_m68k) enum CpuError {
     /// Address error exception (unaligned address on Word/Long access)
     #[error("Address error exception")]
     AddressError(AddressError),
@@ -74,7 +74,7 @@ enum CpuError {
 
 /// M68000 exception groups
 #[derive(Debug, Clone, Copy)]
-enum ExceptionGroup {
+pub(in crate::cpu_m68k) enum ExceptionGroup {
     Group0,
     Group1,
     Group2,
@@ -850,7 +850,7 @@ where
     }
 
     /// Raises a CPU exception in supervisor mode.
-    fn raise_exception(
+    pub(in crate::cpu_m68k) fn raise_exception(
         &mut self,
         group: ExceptionGroup,
         vector: Address,

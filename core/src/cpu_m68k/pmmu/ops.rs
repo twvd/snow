@@ -1,10 +1,12 @@
+//! M68851 PMMU - Opcode implementations
+
 use anyhow::{bail, Result};
 
 use crate::bus::{Address, Bus, IrqSource};
-use crate::cpu_m68k::cpu::CpuM68k;
+use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_PRIVILEGE_VIOLATION};
 use crate::cpu_m68k::instruction::Instruction;
 use crate::cpu_m68k::CpuM68kType;
-use crate::types::Word;
+use crate::types::{DoubleLong, Word};
 
 use super::instruction::Pmove1Extword;
 
@@ -60,9 +62,72 @@ where
         instr: &Instruction,
         extword: Word,
     ) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+
         let extword = Pmove1Extword(extword);
 
         log::debug!("PMOVE1 {:?}", extword);
+
+        match (extword.preg(), extword.write()) {
+            (0b000, true) => {
+                self.write_ea(instr, instr.get_op2(), self.regs.pmmu.tc.0)?;
+            }
+            (0b000, false) => {
+                self.regs.pmmu.tc.0 = self.read_ea(instr, instr.get_op2())?;
+            }
+            (0b001, true) => {
+                self.write_ea_sz::<8>(instr, instr.get_op2(), self.regs.pmmu.drp.0.to_be_bytes())?;
+            }
+            (0b001, false) => {
+                self.regs.pmmu.drp.0 =
+                    DoubleLong::from_be_bytes(self.read_ea_sz::<8>(instr, instr.get_op2())?);
+            }
+            (0b010, true) => {
+                self.write_ea_sz::<8>(instr, instr.get_op2(), self.regs.pmmu.srp.0.to_be_bytes())?;
+            }
+            (0b010, false) => {
+                self.regs.pmmu.srp.0 =
+                    DoubleLong::from_be_bytes(self.read_ea_sz::<8>(instr, instr.get_op2())?);
+            }
+            (0b011, true) => {
+                self.write_ea_sz::<8>(instr, instr.get_op2(), self.regs.pmmu.crp.0.to_be_bytes())?;
+            }
+            (0b011, false) => {
+                self.regs.pmmu.crp.0 =
+                    DoubleLong::from_be_bytes(self.read_ea_sz::<8>(instr, instr.get_op2())?);
+            }
+            (0b100, true) => {
+                self.write_ea(instr, instr.get_op2(), self.regs.pmmu.cal.0)?;
+            }
+            (0b100, false) => {
+                self.regs.pmmu.cal.0 = self.read_ea(instr, instr.get_op2())?;
+            }
+            (0b101, true) => {
+                self.write_ea(instr, instr.get_op2(), self.regs.pmmu.val.0)?;
+            }
+            (0b101, false) => {
+                self.regs.pmmu.val.0 = self.read_ea(instr, instr.get_op2())?;
+            }
+            (0b110, true) => {
+                self.write_ea(instr, instr.get_op2(), self.regs.pmmu.scc)?;
+            }
+            (0b110, false) => {
+                self.regs.pmmu.scc = self.read_ea(instr, instr.get_op2())?;
+            }
+            (0b111, true) => {
+                self.write_ea(instr, instr.get_op2(), self.regs.pmmu.ac.0)?;
+            }
+            (0b111, false) => {
+                self.regs.pmmu.ac.0 = self.read_ea(instr, instr.get_op2())?;
+            }
+            _ => unreachable!(),
+        }
+
+        log::debug!("{:02X?}", self.regs.pmmu);
+
         Ok(())
     }
 }
