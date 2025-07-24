@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use super::CpuSized;
 use crate::bus::Address;
 use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
+use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
 use crate::types::Long;
 
 use std::fmt;
@@ -133,6 +134,8 @@ pub struct RegisterFile {
     /// TODO serialization of FPU registers
     #[serde(skip)]
     pub fpu: FpuRegisterFile,
+
+    pub pmmu: PmmuRegisterFile,
 }
 
 impl RegisterFile {
