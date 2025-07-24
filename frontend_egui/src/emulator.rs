@@ -72,21 +72,30 @@ pub struct EmulatorInitResult {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]
 pub struct EmulatorInitArgs {
+    /// Disable audio, synchronize to video
     pub audio_disabled: bool,
 
+    /// Selected monitor (if available)
     pub monitor: Option<MacMonitor>,
 
     #[serde(skip_serializing)]
     /// Deprecated; now mouse_mode
     pub mouse_disabled: Option<bool>,
 
+    /// Mouse emulation mode
     pub mouse_mode: MouseMode,
 
+    /// Start in fast-forward mode
     pub start_fastforward: bool,
 
+    /// Configured RAM size or default if None
     pub ram_size: Option<usize>,
 
+    /// Override the type of floppy drive (for all drives)
     pub override_fdd_type: Option<DriveType>,
+
+    /// Enable PMMU (Macintosh II only)
+    pub pmmu_enabled: bool,
 }
 
 /// Manages the state of the emulator and feeds input to the GUI
@@ -200,6 +209,7 @@ impl EmulatorState {
             mouse_mode,
             args.ram_size,
             args.override_fdd_type,
+            args.pmmu_enabled,
         )?;
 
         let cmd = emulator.create_cmd_sender();
