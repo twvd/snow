@@ -113,4 +113,5 @@ pub struct PmmuRegisterFile {
     pub val: AccessLevelReg,
     pub scc: u8,
     pub ac: AccessControlReg,
+    pub tc: TcReg,
 }

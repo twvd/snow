@@ -26,6 +26,7 @@ pub type AudioSampleSender = crossbeam_channel::Sender<u8>;
 pub type Byte = u8;
 pub type Word = u16;
 pub type Long = u32;
+pub type DoubleLong = u64;
 
 bitfield! {
     /// General purpose 16-bit field
