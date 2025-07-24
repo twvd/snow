@@ -1048,6 +1048,9 @@ impl<'a> Disassembler<'a> {
                 let cc = usize::from(self.get16()? & 0b111111);
                 format!("FS{}.b {}", Self::fcc_mnemonic(cc), self.ea(instr)?)
             }
+
+            // M68851 PMMU
+            InstructionMnemonic::POP_000 => format!("PMMU {:04X} ???", self.get16()?),
         };
 
         Ok(())

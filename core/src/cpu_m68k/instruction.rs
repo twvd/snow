@@ -250,6 +250,9 @@ pub enum InstructionMnemonic {
     FBcc_w,
     FBcc_l,
     FScc_b,
+
+    // PMMU opcodes
+    POP_000,
 }
 
 /// Addressing modes
@@ -748,7 +751,7 @@ impl Instruction {
         (M68020, 0b0100_1100_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::DIVx_l),
         (M68020, 0b0100_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CHK_l),
 
-        // M68020+ FPU instructions
+        // M68881 FPU instructions
         (M68020, 0b1111_0011_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FSAVE),
         (M68020, 0b1111_0011_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FRESTORE),
         (M68020, 0b1111_0010_1000_0000, 0b1111_1111_1111_1111, InstructionMnemonic::FNOP),
@@ -756,6 +759,10 @@ impl Instruction {
         (M68020, 0b1111_0010_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FBcc_l),
         (M68020, 0b1111_0010_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FBcc_w),
         (M68020, 0b1111_0010_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FScc_b),
+
+        // M68851 PMMU instructions
+        (M68020, 0b1111_0000_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::POP_000),
+        
         (M68000, 0b1111_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::LINEF),
     ];
 
@@ -1174,6 +1181,8 @@ impl Instruction {
             | InstructionMnemonic::TAS
             | InstructionMnemonic::TRAP
             | InstructionMnemonic::TRAPV => InstructionSize::None,
+
+            InstructionMnemonic::POP_000 => InstructionSize::None,
         }
     }
 
