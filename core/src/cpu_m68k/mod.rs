@@ -4,6 +4,7 @@ pub mod disassembler;
 pub mod ea;
 pub mod fpu;
 pub mod instruction;
+pub mod pmmu;
 pub mod regs;
 
 use num_traits::{FromBytes, PrimInt, ToBytes, WrappingAdd, WrappingShl, WrappingShr};
