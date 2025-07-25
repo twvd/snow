@@ -115,3 +115,48 @@ pub struct PmmuRegisterFile {
     pub ac: AccessControlReg,
     pub tc: TcReg,
 }
+
+impl PmmuRegisterFile {
+    /// Creates a string with differences between this RegisterFile and another
+    pub fn diff_str(&self, other: &Self) -> String {
+        let diff8 = |name, s: u8, o: u8| {
+            if s != o {
+                format!("{}: {:02X} -> {:02X} ", name, s, o)
+            } else {
+                String::new()
+            }
+        };
+        let diff16 = |name, s: u16, o: u16| {
+            if s != o {
+                format!("{}: {:04X} -> {:04X} ", name, s, o)
+            } else {
+                String::new()
+            }
+        };
+        let diff32 = |name, s: u32, o: u32| {
+            if s != o {
+                format!("{}: {:08X} -> {:08X} ", name, s, o)
+            } else {
+                String::new()
+            }
+        };
+        let diff64 = |name, s: u64, o: u64| {
+            if s != o {
+                format!("{}: {:016X} -> {:016X} ", name, s, o)
+            } else {
+                String::new()
+            }
+        };
+        let mut out = String::new();
+        out.push_str(&diff64("PCRP", self.crp.0, other.crp.0));
+        out.push_str(&diff64("PSRP", self.srp.0, other.srp.0));
+        out.push_str(&diff64("PDRP", self.drp.0, other.drp.0));
+        out.push_str(&diff16("PCSR", self.pcsr.0, other.pcsr.0));
+        out.push_str(&diff8("PCAL", self.cal.0, other.cal.0));
+        out.push_str(&diff8("PVAL", self.val.0, other.val.0));
+        out.push_str(&diff8("PSCC", self.scc, other.scc));
+        out.push_str(&diff16("PAC", self.ac.0, other.ac.0));
+        out.push_str(&diff32("PTC", self.tc.0, other.tc.0));
+        out
+    }
+}
