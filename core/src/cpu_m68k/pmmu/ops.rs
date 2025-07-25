@@ -22,31 +22,24 @@ where
 
         let extword = self.fetch_immediate::<Word>()?;
 
-        self.breakpoint_hit.set();
-
         if extword & 0b1110_0001_0000_0000 == 0b0010_0000_0000_0000 {
             // PFLUSH
-            log::debug!("PFLUSH");
-            Ok(())
+            bail!("PFLUSH");
         } else if extword == 0b1010_0000_0000_0000 {
             // PFLUSHR
-            log::debug!("PFLUSHR");
-            Ok(())
+            bail!("PFLUSHR");
         } else if extword & 0b1110_0001_1111_1111 == 0b0100_0000_0000_0000 {
             // PMOVE (format 1)
             self.op_pmove1(instr, extword)
         } else if extword & 0b1110_0001_1110_0011 == 0b0110_0000_0000_0000 {
             // PMOVE (format 2)
-            log::debug!("PMOVE2");
-            Ok(())
+            bail!("PMOVE2");
         } else if extword & 0b1110_0011_1111_1111 == 0b0110_0000_0000_0000 {
             // PMOVE (format 3)
-            log::debug!("PMOVE3");
-            Ok(())
+            bail!("PMOVE3");
         } else if extword & 0b1110_0000_0000_0000 == 0b1000_0000_0000_0000 {
             // PTEST
-            log::debug!("PTEST");
-            Ok(())
+            bail!("PTEST");
         } else {
             // Unknown instruction
             bail!(
@@ -68,8 +61,6 @@ where
         }
 
         let extword = Pmove1Extword(extword);
-
-        log::debug!("PMOVE1 {:?}", extword);
 
         match (extword.preg(), extword.write()) {
             (0b000, true) => {
@@ -125,8 +116,6 @@ where
             }
             _ => unreachable!(),
         }
-
-        log::debug!("{:02X?}", self.regs.pmmu);
 
         Ok(())
     }

@@ -1,5 +1,14 @@
+use num_derive::FromPrimitive;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+pub(in crate::cpu_m68k) enum PmmuPageDescriptorType {
+    Invalid = 0,
+    PageDescriptor = 1,
+    Valid4b = 2,
+    Valid8b = 3,
+}
 
 bitfield! {
     /// Root pointer registers
