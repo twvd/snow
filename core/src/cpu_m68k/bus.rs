@@ -14,11 +14,11 @@ where
     TBus: Bus<Address, u8> + IrqSource,
 {
     /// Checks if an access needs to fail and raise bus error on alignment errors
-    fn verify_access<T: CpuSized>(&self, addr: Address, read: bool) -> Result<()> {
-        if std::mem::size_of::<T>() >= 2 && (addr & 1) != 0 {
+    fn verify_access_physical<T: CpuSized>(&self, paddr: Address, read: bool) -> Result<()> {
+        if std::mem::size_of::<T>() >= 2 && (paddr & 1) != 0 {
             // Unaligned access
             if CPU_TYPE < M68020 {
-                log::warn!("Unaligned access: address {:08X}", addr);
+                log::warn!("Unaligned access: address {:08X}", paddr);
 
                 // TODO should still happen on 68020+ for PC
                 bail!(CpuError::AddressError(AddressError {
@@ -28,7 +28,7 @@ where
                     // TODO instruction bit
                     instruction: false,
                     read,
-                    address: addr
+                    address: paddr
                 }));
             }
         }
@@ -36,18 +36,30 @@ where
     }
 
     /// Reads a value from the bus and spends ticks.
-    pub(in crate::cpu_m68k) fn read_ticks<T: CpuSized>(&mut self, oaddr: Address) -> Result<T> {
+    /// Virtual address version
+    pub(in crate::cpu_m68k) fn read_ticks<T: CpuSized>(&mut self, vaddr: Address) -> Result<T> {
+        // TODO address translation
+        let paddr = vaddr;
+        self.read_ticks_physical(paddr)
+    }
+
+    /// Reads a value from the bus and spends ticks.
+    /// Physical address version
+    pub(in crate::cpu_m68k) fn read_ticks_physical<T: CpuSized>(
+        &mut self,
+        o_paddr: Address,
+    ) -> Result<T> {
         let len = std::mem::size_of::<T>();
         let mut result: T = T::zero();
-        let addr = if CPU_TYPE == M68000 && len > 1 {
-            oaddr & !1
+        let paddr = if CPU_TYPE == M68000 && len > 1 {
+            o_paddr & !1
         } else {
-            oaddr
+            o_paddr
         };
 
         // Below converts from BE -> LE on the fly
         for a in 0..len {
-            let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
+            let byte_addr = paddr.wrapping_add(a as Address) & ADDRESS_MASK;
             let b: T =
                 loop {
                     match self.bus.read(byte_addr) {
@@ -79,7 +91,7 @@ where
             if a == 1 {
                 // Address errors occur AFTER the first Word was accessed and not at all if
                 // it is a byte access, so this is the perfect time to check.
-                self.verify_access::<T>(oaddr, true)?;
+                self.verify_access_physical::<T>(o_paddr, true)?;
             }
         }
 
@@ -92,16 +104,45 @@ where
     }
 
     /// Writes a value to the bus (big endian) and spends ticks.
-    pub(in crate::cpu_m68k) fn write_ticks<T: CpuSized>(
+    /// Physical address version
+    #[allow(dead_code)]
+    pub(in crate::cpu_m68k) fn write_ticks_physical<T: CpuSized>(
         &mut self,
-        addr: Address,
+        paddr: Address,
         value: T,
     ) -> Result<()> {
-        self.write_ticks_order::<T, TORDER_LOWHIGH>(addr, value)
+        self.write_ticks_order_physical::<T, TORDER_LOWHIGH>(paddr, value)
+    }
+
+    /// Writes a value to the bus (big endian) and spends ticks.
+    /// Virtual address version
+    pub(in crate::cpu_m68k) fn write_ticks<T: CpuSized>(
+        &mut self,
+        vaddr: Address,
+        value: T,
+    ) -> Result<()> {
+        // TODO address translation
+        let paddr = vaddr;
+
+        self.write_ticks_order_physical::<T, TORDER_LOWHIGH>(paddr, value)
+    }
+
+    /// Writes a value to the bus (big endian) and spends ticks.
+    /// Virtual address version
+    pub(in crate::cpu_m68k) fn write_ticks_order<T: CpuSized, const TORDER: usize>(
+        &mut self,
+        vaddr: Address,
+        value: T,
+    ) -> Result<()> {
+        // TODO address translation
+        let paddr = vaddr;
+
+        self.write_ticks_order_physical::<T, TORDER>(paddr, value)
     }
 
     /// Writes a value to the bus (big endian) and spends ticks, but writes
     /// the word in opposite order if the type is Long.
+    /// Virtual address
     pub(in crate::cpu_m68k) fn write_ticks_wflip<T: CpuSized>(
         &mut self,
         addr: Address,
@@ -117,22 +158,22 @@ where
         }
     }
 
-    pub(in crate::cpu_m68k) fn write_ticks_order<T: CpuSized, const TORDER: usize>(
+    pub(in crate::cpu_m68k) fn write_ticks_order_physical<T: CpuSized, const TORDER: usize>(
         &mut self,
-        oaddr: Address,
+        o_paddr: Address,
         value: T,
     ) -> Result<()> {
-        let addr = if CPU_TYPE == 68000 && std::mem::size_of::<T>() > 1 {
-            oaddr & !1
+        let paddr = if CPU_TYPE == 68000 && std::mem::size_of::<T>() > 1 {
+            o_paddr & !1
         } else {
-            oaddr
+            o_paddr
         };
 
         match TORDER {
             TORDER_LOWHIGH => {
                 let mut val: Long = value.to_be().into();
                 for a in 0..std::mem::size_of::<T>() {
-                    let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
+                    let byte_addr = paddr.wrapping_add(a as Address) & ADDRESS_MASK;
                     let b = val as u8;
                     val >>= 8;
 
@@ -160,14 +201,14 @@ where
                     if a == 1 {
                         // Address errors occur AFTER the first Word was accessed and not at all if
                         // it is a byte access, so this is the perfect time to check.
-                        self.verify_access::<T>(oaddr, true)?;
+                        self.verify_access_physical::<T>(o_paddr, true)?;
                     }
                 }
             }
             TORDER_HIGHLOW => {
                 let mut val: Long = value.into();
                 for a in (0..std::mem::size_of::<T>()).rev() {
-                    let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
+                    let byte_addr = paddr.wrapping_add(a as Address) & ADDRESS_MASK;
                     let b = val as u8;
                     val >>= 8;
 
@@ -195,7 +236,7 @@ where
                     if a == 2 {
                         // Address errors occur AFTER the first Word was accessed and not at all if
                         // it is a byte access, so this is the perfect time to check.
-                        self.verify_access::<T>(oaddr, true)?;
+                        self.verify_access_physical::<T>(o_paddr, true)?;
                     }
                 }
             }
