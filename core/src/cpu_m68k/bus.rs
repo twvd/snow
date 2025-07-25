@@ -38,8 +38,11 @@ where
     /// Reads a value from the bus and spends ticks.
     /// Virtual address version
     pub(in crate::cpu_m68k) fn read_ticks<T: CpuSized>(&mut self, vaddr: Address) -> Result<T> {
-        // TODO address translation
-        let paddr = vaddr;
+        let paddr = if PMMU {
+            self.pmmu_translate(vaddr, false)?
+        } else {
+            vaddr
+        };
         self.read_ticks_physical(paddr)
     }
 
@@ -121,8 +124,11 @@ where
         vaddr: Address,
         value: T,
     ) -> Result<()> {
-        // TODO address translation
-        let paddr = vaddr;
+        let paddr = if PMMU {
+            self.pmmu_translate(vaddr, true)?
+        } else {
+            vaddr
+        };
 
         self.write_ticks_order_physical::<T, TORDER_LOWHIGH>(paddr, value)
     }
@@ -134,8 +140,11 @@ where
         vaddr: Address,
         value: T,
     ) -> Result<()> {
-        // TODO address translation
-        let paddr = vaddr;
+        let paddr = if PMMU {
+            self.pmmu_translate(vaddr, true)?
+        } else {
+            vaddr
+        };
 
         self.write_ticks_order_physical::<T, TORDER>(paddr, value)
     }
