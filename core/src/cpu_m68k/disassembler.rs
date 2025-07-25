@@ -18,6 +18,7 @@ use super::fpu::instruction::{FmoveControlReg, FmoveExtWord};
 use super::instruction::{
     AddressingMode, Direction, Instruction, InstructionMnemonic, InstructionSize,
 };
+use super::pmmu::instruction::Pmove1Extword;
 use super::CpuM68kType;
 
 #[derive(Clone)]
@@ -1102,7 +1103,47 @@ impl<'a> Disassembler<'a> {
             }
 
             // M68851 PMMU
-            InstructionMnemonic::POP_000 => format!("PMMU {:04X} ???", self.get16()?),
+            InstructionMnemonic::POP_000 => {
+                let extword = self.get16()?;
+
+                if extword & 0b1110_0001_0000_0000 == 0b0010_0000_0000_0000 {
+                    // PFLUSH
+                    "PFLUSH".to_string()
+                } else if extword == 0b1010_0000_0000_0000 {
+                    // PFLUSHR
+                    "PFLUSHR".to_string()
+                } else if extword & 0b1110_0001_1111_1111 == 0b0100_0000_0000_0000 {
+                    // PMOVE (format 1)
+                    let extword = Pmove1Extword(extword);
+                    let preg = match extword.preg() {
+                        0b000 => "PTC",
+                        0b001 => "PDRP",
+                        0b010 => "PSRP",
+                        0b011 => "PCRP",
+                        0b100 => "PCAL",
+                        0b101 => "PVAL",
+                        0b110 => "PSCC",
+                        0b111 => "PAC",
+                        _ => unreachable!(),
+                    };
+                    if extword.write() {
+                        format!("PMOVE {},{}", preg, self.ea(instr)?)
+                    } else {
+                        format!("PMOVE {},{}", self.ea(instr)?, preg)
+                    }
+                } else if extword & 0b1110_0001_1110_0011 == 0b0110_0000_0000_0000 {
+                    // PMOVE (format 2)
+                    "PMOVE2".to_string()
+                } else if extword & 0b1110_0011_1111_1111 == 0b0110_0000_0000_0000 {
+                    // PMOVE (format 3)
+                    "PMOVE3".to_string()
+                } else if extword & 0b1110_0000_0000_0000 == 0b1000_0000_0000_0000 {
+                    // PTEST
+                    "PTEST".to_string()
+                } else {
+                    format!("P??? {:04X}", extword)
+                }
+            }
         };
 
         Ok(())
