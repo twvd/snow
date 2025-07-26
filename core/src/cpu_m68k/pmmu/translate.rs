@@ -29,6 +29,16 @@ impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU:
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
+    pub(in crate::cpu_m68k) fn pmmu_cache_invalidate(&mut self) {
+        let cache_size =
+            (Address::MAX >> (self.regs.pmmu.tc.is() + self.regs.pmmu.tc.ps() as Address)) as usize;
+        if self.pmmu_cache.len() != cache_size {
+            self.pmmu_cache = vec![None; cache_size];
+        } else {
+            self.pmmu_cache.fill(None);
+        }
+    }
+
     fn pmmu_rootptr(&self) -> &RootPointerReg {
         // TODO FC?
         if self.regs.pmmu.tc.sre() {
@@ -70,6 +80,13 @@ where
             return Ok(vaddr);
         }
 
+        let is_mask = Address::MAX << (32 - self.regs.pmmu.tc.is());
+        let page_mask = (1u32 << self.regs.pmmu.tc.ps()) - 1;
+        let cache_key = ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize;
+        if let Some(cached_paddr) = self.pmmu_cache[cache_key] {
+            return Ok((cached_paddr & !page_mask) | (vaddr & page_mask));
+        }
+
         let rootptr = self.pmmu_rootptr();
         let page_addr = self.pmmu_fetch_table(
             vaddr << self.regs.pmmu.tc.is(),
@@ -81,6 +98,9 @@ where
         let used_bits = self.regs.pmmu.tc.is() as u32 + self.regs.pmmu.tc.tia() as u32;
         let mask = 0xFFFFFFFF >> used_bits;
         let paddr = (page_addr & !mask) | (vaddr & mask);
+
+        self.pmmu_cache[cache_key] = Some(paddr);
+
         //log::debug!("{:08X} -> {:08X}", paddr, vaddr);
         Ok(paddr)
     }

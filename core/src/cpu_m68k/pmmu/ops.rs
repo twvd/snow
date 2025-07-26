@@ -9,6 +9,7 @@ use crate::cpu_m68k::CpuM68kType;
 use crate::types::{DoubleLong, Word};
 
 use super::instruction::Pmove1Extword;
+use super::regs::TcReg;
 
 impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
     CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
@@ -67,7 +68,13 @@ where
                 self.write_ea(instr, instr.get_op2(), self.regs.pmmu.tc.0)?;
             }
             (0b000, false) => {
-                self.regs.pmmu.tc.0 = self.read_ea(instr, instr.get_op2())?;
+                let newval = TcReg(self.read_ea(instr, instr.get_op2())?);
+                let oldval = self.regs.pmmu.tc;
+                if newval.ps() != oldval.ps() || oldval.is() != newval.is() {
+                    self.pmmu_cache_invalidate();
+                }
+
+                self.regs.pmmu.tc = newval;
             }
             (0b001, true) => {
                 self.write_ea_sz::<8>(instr, instr.get_op2(), self.regs.pmmu.drp.0.to_be_bytes())?;
