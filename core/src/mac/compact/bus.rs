@@ -117,8 +117,10 @@ where
         extension_rom: Option<&[u8]>,
         renderer: TRenderer,
         mouse_enabled: bool,
+        ram_size: Option<usize>,
     ) -> Self {
-        let ram_size = model.ram_size();
+        let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
+
         let fb_alt_start = ram_size as Address - Video::<TRenderer>::FRAMEBUFFER_ALT_OFFSET;
         let fb_main_start = ram_size as Address - Video::<TRenderer>::FRAMEBUFFER_MAIN_OFFSET;
         let sound_alt_start = ram_size - Self::SOUND_ALT_OFFSET;

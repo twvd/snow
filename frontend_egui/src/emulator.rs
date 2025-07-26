@@ -81,6 +81,9 @@ pub struct EmulatorInitArgs {
 
     #[serde(default)]
     pub start_fastforward: bool,
+
+    #[serde(default)]
+    pub ram_size: Option<usize>,
 }
 
 /// Manages the state of the emulator and feeds input to the GUI
@@ -175,8 +178,14 @@ impl EmulatorState {
             extra_roms.push(ExtraROMs::ExtensionROM(extension_rom));
         }
 
-        let (mut emulator, frame_recv) =
-            Emulator::new_with_extra(rom, &extra_roms, model, args.monitor, !args.mouse_disabled)?;
+        let (mut emulator, frame_recv) = Emulator::new_with_extra(
+            rom,
+            &extra_roms,
+            model,
+            args.monitor,
+            !args.mouse_disabled,
+            args.ram_size,
+        )?;
 
         let cmd = emulator.create_cmd_sender();
 

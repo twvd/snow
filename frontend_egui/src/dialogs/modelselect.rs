@@ -48,6 +48,14 @@ pub struct ModelSelectionDialog {
     error_message: String,
 }
 
+fn format_ram(sz: usize) -> String {
+    if sz < 1024 * 1024 {
+        format!("{} KB", sz / 1024)
+    } else {
+        format!("{} MB", sz / 1024 / 1024)
+    }
+}
+
 pub struct ModelSelectionResult {
     pub model: MacModel,
     pub main_rom_path: PathBuf,
@@ -152,6 +160,8 @@ impl ModelSelectionDialog {
         self.main_rom_valid = false;
         self.display_rom_valid = false;
         self.update_display_rom_requirement();
+
+        self.init_args.ram_size = None;
 
         // Load from last used ROMs if possible
         if let Some((_, path)) = self
@@ -317,6 +327,25 @@ impl ModelSelectionDialog {
                     .show_ui(ui, |ui| {
                         for model in MacModel::iter() {
                             ui.selectable_value(&mut self.selected_model, model, model.to_string());
+                        }
+                    });
+                ui.end_row();
+            });
+            egui::Grid::new("model_grid_mem").show(ui, |ui| {
+                ui.label("RAM size:");
+                egui::ComboBox::new(egui::Id::new("ram size"), "")
+                    .selected_text(format_ram(
+                        self.init_args
+                            .ram_size
+                            .unwrap_or_else(|| self.selected_model.ram_size_default()),
+                    ))
+                    .show_ui(ui, |ui| {
+                        for &sz in self.selected_model.ram_size_options() {
+                            ui.selectable_value(
+                                &mut self.init_args.ram_size,
+                                Some(sz),
+                                format_ram(sz),
+                            );
                         }
                     });
                 ui.end_row();
