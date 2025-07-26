@@ -10,6 +10,7 @@ use thiserror::Error;
 
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
+use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
 use crate::cpu_m68k::M68000_SR_MASK;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
@@ -231,6 +232,10 @@ where
     #[serde(skip)]
     systrap_history: VecDeque<SystrapHistoryEntry>,
     systrap_history_enabled: bool,
+
+    /// PMMU translation cache
+    #[serde(skip)]
+    pub(in crate::cpu_m68k) pmmu_cache: Vec<Option<Address>>,
 }
 
 impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
@@ -262,6 +267,7 @@ where
             history_enabled: false,
             systrap_history: VecDeque::with_capacity(Self::HISTORY_SIZE),
             systrap_history_enabled: false,
+            pmmu_cache: vec![],
         }
     }
 
