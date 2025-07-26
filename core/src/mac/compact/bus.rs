@@ -545,9 +545,10 @@ where
             }
         }
 
-        // Take the ADB transceiver out because that contains crossbeam channels..
-        let oldadb = std::mem::replace(&mut self.via, Via::new(self.model)).adb;
-        let _ = std::mem::replace(&mut self.via.adb, oldadb);
+        // Keep the RTC and ADB for PRAM and event channels
+        let Via { adb, rtc, .. } = std::mem::replace(&mut self.via, Via::new(self.model));
+        self.via.adb = adb;
+        self.via.rtc = rtc;
 
         self.scc = Scc::new();
         self.overlay = true;
