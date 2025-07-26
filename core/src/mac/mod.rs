@@ -84,12 +84,40 @@ impl MacModel {
         }
     }
 
-    pub const fn ram_size(self) -> usize {
+    /// Default RAM size
+    pub const fn ram_size_default(self) -> usize {
         match self {
             Self::Early128K => 128 * 1024,
             Self::Early512K | Self::Early512Ke => 512 * 1024,
             Self::Plus | Self::SE | Self::SeFdhd | Self::Classic => 4096 * 1024,
             Self::MacII | Self::MacIIFDHD => 8 * 1024 * 1024,
+        }
+    }
+
+    /// Selectable RAM size configurations
+    pub const fn ram_size_options(self) -> &'static [usize] {
+        match self {
+            Self::Early128K => &[128 * 1024],
+            Self::Early512K | Self::Early512Ke => &[512 * 1024],
+            Self::Plus | Self::SE | Self::SeFdhd | Self::Classic => {
+                &[1024 * 1024, 2048 * 1024, 4096 * 1024]
+            }
+            Self::MacII => {
+                // TODO Mac II supports more RAM configurations but that requires
+                // implementing the SIMM sense lines
+                &[8 * 1024 * 1024]
+            }
+            Self::MacIIFDHD => {
+                &[
+                    8 * 1024 * 1024,
+                    // Configurations > 8MB require 32-bit addressing mode
+                    // and the MODE32 extension.
+                    16 * 1024 * 1024,
+                    32 * 1024 * 1024,
+                    64 * 1024 * 1024,
+                    128 * 1024 * 1024,
+                ]
+            }
         }
     }
 

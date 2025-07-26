@@ -89,6 +89,7 @@ where
     /// CrsrNew address
     const ADDR_CRSRNEW: Address = 0x08CE;
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         model: MacModel,
         rom: &[u8],
@@ -97,8 +98,9 @@ where
         mut renderers: Vec<TRenderer>,
         monitor: MacMonitor,
         mouse_enabled: bool,
+        ram_size: Option<usize>,
     ) -> Self {
-        let ram_size = model.ram_size();
+        let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
 
         if extension_rom.is_some() {
             log::info!("Extension ROM present");
