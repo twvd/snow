@@ -1048,6 +1048,41 @@ impl<'a> Disassembler<'a> {
                 let cc = usize::from(self.get16()? & 0b111111);
                 format!("FS{}.b {}", Self::fcc_mnemonic(cc), self.ea(instr)?)
             }
+
+            InstructionMnemonic::CAS_b
+            | InstructionMnemonic::CAS_l
+            | InstructionMnemonic::CAS_w => {
+                if instr.data & 0b111111 == 0b111100 {
+                    // CAS2
+                    let extword1 = self.get16()?;
+                    let extword2 = self.get16()?;
+
+                    let rn1 = if extword1 & (1 << 15) != 0 {
+                        Register::An(usize::from((extword1 >> 12) & 0b111))
+                    } else {
+                        Register::Dn(usize::from((extword1 >> 12) & 0b111))
+                    };
+                    let rn2 = if extword2 & (1 << 15) != 0 {
+                        Register::An(usize::from((extword2 >> 12) & 0b111))
+                    } else {
+                        Register::Dn(usize::from((extword2 >> 12) & 0b111))
+                    };
+                    let du1 = usize::from((extword1 >> 6) & 0b111);
+                    let du2 = usize::from((extword2 >> 6) & 0b111);
+                    let dc1 = usize::from(extword1 & 0b111);
+                    let dc2 = usize::from(extword2 & 0b111);
+                    format!(
+                        "{}2.{} D{}:D{},D{}:D{},({}):({})",
+                        mnemonic, sz, dc1, dc2, du1, du2, rn1, rn2
+                    )
+                } else {
+                    // CAS
+                    let extword = self.get16()?;
+                    let dc = (extword & 0b111) as usize;
+                    let du = ((extword >> 6) & 0b111) as usize;
+                    format!("{}.{} D{},D{},{}", mnemonic, sz, dc, du, self.ea(instr)?)
+                }
+            }
         };
 
         Ok(())

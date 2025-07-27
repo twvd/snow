@@ -1196,6 +1196,9 @@ where
             InstructionMnemonic::MULx_l => self.op_mulx_l(instr),
             InstructionMnemonic::DIVx_l => self.op_divx_l(instr),
             InstructionMnemonic::CHK_l => self.op_chk::<Long>(instr),
+            InstructionMnemonic::CAS_b => self.op_cas::<Byte>(instr),
+            InstructionMnemonic::CAS_w => self.op_cas::<Word>(instr),
+            InstructionMnemonic::CAS_l => self.op_cas::<Long>(instr),
 
             // FPU ---------------------------------------------------------------------------------
             InstructionMnemonic::FNOP => self.op_fnop(instr),
@@ -3650,6 +3653,99 @@ where
 
         self.regs.write_d(extword.dr(), remainder as u32);
         self.regs.write_d(extword.dq(), quotient as u32);
+
+        Ok(())
+    }
+
+    /// CAS
+    fn op_cas<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+        if instr.data & 0b111111 == 0b111100 {
+            // Actually CAS2
+            return self.op_cas2::<T>(instr);
+        }
+
+        let extword = self.fetch()?;
+        let dc = (extword & 0b111) as usize;
+        let du = ((extword >> 6) & 0b111) as usize;
+
+        let ea_op = self.read_ea::<T>(instr, instr.get_op2())?;
+        let comp_op = self.regs.read_d::<T>(dc);
+        let update_op = self.regs.read_d::<T>(du);
+        let (_, ccr) = Self::alu_sub(ea_op, comp_op, self.regs.sr);
+
+        let old_x = self.regs.sr.x();
+        self.regs.sr.set_ccr(ccr);
+        self.regs.sr.set_x(old_x); // X is unaffected
+
+        if self.regs.sr.z() {
+            self.write_ea(instr, instr.get_op2(), update_op)?;
+        } else {
+            self.regs.write_d(dc, ea_op);
+        }
+
+        Ok(())
+    }
+
+    /// CAS2
+    fn op_cas2<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+        debug_assert_eq!(instr.data & 0b111111, 0b111100);
+        if std::mem::size_of::<T>() == 1 {
+            // CAS2 not valid as byte size
+            return self.raise_illegal_instruction();
+        }
+
+        let extword1 = self.fetch()?;
+        let extword2 = self.fetch()?;
+
+        let rn1 = if extword1 & (1 << 15) != 0 {
+            Register::An(usize::from((extword1 >> 12) & 0b111))
+        } else {
+            Register::Dn(usize::from((extword1 >> 12) & 0b111))
+        };
+        let rn2 = if extword2 & (1 << 15) != 0 {
+            Register::An(usize::from((extword2 >> 12) & 0b111))
+        } else {
+            Register::Dn(usize::from((extword2 >> 12) & 0b111))
+        };
+        let du1 = usize::from((extword1 >> 6) & 0b111);
+        let du2 = usize::from((extword2 >> 6) & 0b111);
+        let dc1 = usize::from(extword1 & 0b111);
+        let dc2 = usize::from(extword2 & 0b111);
+        let mem_addr1 = self.regs.read::<Address>(rn1);
+        let mem_addr2 = self.regs.read::<Address>(rn2);
+        let mem_op1 = self.read_ticks::<T>(mem_addr1)?;
+        let mem_op2 = self.read_ticks::<T>(mem_addr2)?;
+        let comp_op1 = self.regs.read_d::<T>(dc1);
+        let comp_op2 = self.regs.read_d::<T>(dc2);
+        let update_op1 = self.regs.read_d::<T>(du1);
+        let update_op2 = self.regs.read_d::<T>(du2);
+
+        let old_x = self.regs.sr.x();
+
+        // First round
+        let (_, ccr) = Self::alu_sub(mem_op1, comp_op1, self.regs.sr);
+        self.regs.sr.set_ccr(ccr);
+        self.regs.sr.set_x(old_x); // X is unaffected
+        if self.regs.sr.z() {
+            // Second round
+            let (_, ccr) = Self::alu_sub(mem_op2, comp_op2, self.regs.sr);
+            self.regs.sr.set_ccr(ccr);
+            self.regs.sr.set_x(old_x); // X is unaffected
+            if self.regs.sr.z() {
+                // Success
+                // Do these need to happen atomically?..
+                self.write_ticks(mem_addr1, update_op1)?;
+                self.write_ticks(mem_addr2, update_op2)?;
+
+                return Ok(());
+            }
+        }
+
+        // Failed
+        // Write Dc1 last, as the PRM states that MemOp1 will be written to
+        // the register if Dc1 == Dc2
+        self.regs.write_d(dc2, mem_op2);
+        self.regs.write_d(dc1, mem_op1);
 
         Ok(())
     }

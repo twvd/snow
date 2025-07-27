@@ -104,6 +104,9 @@ pub enum InstructionMnemonic {
     BTST_imm,
     // BRA is actually just Bcc with cond = True
     BSR,
+    CAS_b,
+    CAS_l,
+    CAS_w,
     CHK_l,
     CHK_w,
     CLR_l,
@@ -747,6 +750,9 @@ impl Instruction {
         (M68020, 0b0100_1100_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::MULx_l),
         (M68020, 0b0100_1100_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::DIVx_l),
         (M68020, 0b0100_0001_0000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CHK_l),
+        (M68020, 0b0000_1010_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CAS_b),
+        (M68020, 0b0000_1100_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CAS_w),
+        (M68020, 0b0000_1110_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CAS_l),
 
         // M68020+ FPU instructions
         (M68020, 0b1111_0011_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FSAVE),
@@ -985,6 +991,7 @@ impl Instruction {
             | InstructionMnemonic::ANDI_l
             | InstructionMnemonic::ASL_l
             | InstructionMnemonic::ASR_l
+            | InstructionMnemonic::CAS_l
             | InstructionMnemonic::CHK_l
             | InstructionMnemonic::CLR_l
             | InstructionMnemonic::CMP_l
@@ -1030,6 +1037,7 @@ impl Instruction {
             | InstructionMnemonic::ANDI_w
             | InstructionMnemonic::ASL_w
             | InstructionMnemonic::ASR_w
+            | InstructionMnemonic::CAS_w
             | InstructionMnemonic::CLR_w
             | InstructionMnemonic::CMP_w
             | InstructionMnemonic::CMPA_w
@@ -1075,6 +1083,7 @@ impl Instruction {
             | InstructionMnemonic::ANDI_b
             | InstructionMnemonic::ASL_b
             | InstructionMnemonic::ASR_b
+            | InstructionMnemonic::CAS_b
             | InstructionMnemonic::CLR_b
             | InstructionMnemonic::CMP_b
             | InstructionMnemonic::CMPI_b
