@@ -1,11 +1,17 @@
+use std::fs::File;
+use std::io::Write;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
+use anyhow::Result;
 use eframe::egui;
 use eframe::egui::ahash::HashMap;
 use eframe::egui::Ui;
+use egui_file_dialog::FileDialog;
 use snow_core::bus::Address;
 
-#[derive(Default)]
+use crate::uniform::uniform_error;
+
 pub struct MemoryViewerWidget {
     /// The memory data to display
     memory: Vec<u8>,
@@ -27,6 +33,29 @@ pub struct MemoryViewerWidget {
     highlight: Vec<u8>,
     /// Changed addresses for highlighting
     changes: HashMap<Address, Instant>,
+    /// File export dialog
+    export_dialog: FileDialog,
+}
+
+impl Default for MemoryViewerWidget {
+    fn default() -> Self {
+        Self {
+            memory: Vec::new(),
+            address_input: String::new(),
+            editing: None,
+            edited: None,
+            scroll_to_row: None,
+            top_row: 0,
+            stringsearch_input: String::new(),
+            hexsearch_input: String::new(),
+            highlight: Vec::new(),
+            changes: HashMap::default(),
+            export_dialog: FileDialog::new()
+                .add_save_extension("Binary file", "bin")
+                .default_save_extension("Binary file")
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
+        }
+    }
 }
 
 impl MemoryViewerWidget {
@@ -64,7 +93,22 @@ impl MemoryViewerWidget {
         self.scroll_to_row = Some((address / 16) as usize);
     }
 
+    /// Export the entire RAM to a binary file
+    fn export_ram(&self, filename: &Path) -> Result<()> {
+        let mut f = File::create(filename)?;
+        f.write_all(&self.memory)?;
+        Ok(())
+    }
+
     pub fn draw(&mut self, ui: &mut egui::Ui) {
+        // Handle export dialog
+        self.export_dialog.update(ui.ctx());
+        if let Some(f) = self.export_dialog.take_picked() {
+            if let Err(e) = self.export_ram(&f) {
+                uniform_error(format!("Error exporting RAM to file: {}", e));
+            }
+        }
+
         // Discard expired change highlights
         let now = Instant::now();
         self.changes.retain(|_, v| *v > now);
@@ -142,6 +186,20 @@ impl MemoryViewerWidget {
                 .clicked()
             {
                 self.scroll_to_row = Some(self.top_row + 0x1000 / 16);
+            }
+
+            ui.separator();
+
+            // Export button
+            if ui
+                .add_enabled(
+                    !self.memory.is_empty(),
+                    egui::Button::new(egui_material_icons::icons::ICON_SAVE),
+                )
+                .on_hover_text("Export RAM to binary file...")
+                .clicked()
+            {
+                self.export_dialog.save_file();
             }
         });
 
