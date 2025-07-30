@@ -165,6 +165,7 @@ pub const ICACHE_OFFSET_MASK: Address = 0x000_0003;
 pub enum HistoryEntry {
     Instruction(HistoryEntryInstruction),
     Exception { vector: Address, cycles: Ticks },
+    Pagefault { address: Address, write: bool },
 }
 
 #[derive(Default, Clone, PartialEq, Eq)]
@@ -241,7 +242,7 @@ where
 
     /// Instruction history
     //#[serde(skip)]
-    history: VecDeque<HistoryEntry>,
+    pub(in crate::cpu_m68k) history: VecDeque<HistoryEntry>,
 
     /// Current history item
     //#[serde(skip)]
