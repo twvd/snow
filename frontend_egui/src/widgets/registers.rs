@@ -165,7 +165,7 @@ impl RegistersWidget {
                 }
                 if cpu_type >= M68020 {
                     register_row(Register::CAAR, &|r: &RegisterFile| r.caar);
-                    register_row(Register::CACR, &|r: &RegisterFile| r.cacr);
+                    register_row(Register::CACR, &|r: &RegisterFile| r.cacr.0);
                     register_row(Register::MSP, &|r: &RegisterFile| r.msp);
                     register_row(Register::ISP, &|r: &RegisterFile| r.isp);
                 }
