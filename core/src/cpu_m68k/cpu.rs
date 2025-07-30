@@ -11,6 +11,7 @@ use thiserror::Error;
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
+use crate::cpu_m68k::regs::RegisterCACR;
 use crate::cpu_m68k::M68000_SR_MASK;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
@@ -140,6 +141,24 @@ fn empty_decode_cache() -> DecodeCache {
     vec![None; Word::MAX as usize + 1]
 }
 
+/// I-cache cache line size (68020/68030)
+pub const ICACHE_LINE_SIZE: usize = 4;
+
+/// I-cache amount of cache lines (68020/68030)
+pub const ICACHE_LINES: usize = 64;
+
+/// I-cache tag marking a line as invalid
+///
+/// Tags are normally 30-bit, we keep 32.
+/// We store the line address as full width address, with the lower
+/// (index/offset) bits masked to 0. This is why this value works as an
+/// 'invalid' marker, as the lower 8 bits are normally always 0.
+pub const ICACHE_TAG_INVALID: u32 = 0xFFFF_FFFF;
+
+pub const ICACHE_TAG_MASK: Address = 0xFFFF_FF00;
+pub const ICACHE_INDEX_MASK: Address = 0x0000_00FC;
+pub const ICACHE_OFFSET_MASK: Address = 0x000_0003;
+
 #[derive(Clone, Eq, PartialEq)]
 // The point of this enum is to mostly store instructions without allocation
 #[allow(clippy::large_enum_variant)]
@@ -176,7 +195,6 @@ pub struct SystrapHistoryEntry {
 }
 
 /// Motorola 680x0
-#[derive(Serialize, Deserialize)]
 pub struct CpuM68k<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
 where
     TBus: Bus<Address, u8> + IrqSource,
@@ -203,7 +221,7 @@ where
     pub(in crate::cpu_m68k) step_ea_load: Option<(usize, Address)>,
 
     /// Instruction decode cache
-    #[serde(skip, default = "empty_decode_cache")]
+    //#[serde(skip, default = "empty_decode_cache")]
     decode_cache: DecodeCache,
 
     /// Mask trace exceptions (for tests)
@@ -213,32 +231,38 @@ where
     pub(in crate::cpu_m68k) breakpoints: Vec<Breakpoint>,
 
     /// Breakpoint hit latch
-    #[serde(skip)]
+    //#[serde(skip)]
     pub(in crate::cpu_m68k) breakpoint_hit: LatchingEvent,
 
     /// Next address to jump to for step over
     step_over_addr: Option<Address>,
 
     /// Instruction history
-    #[serde(skip)]
+    //#[serde(skip)]
     history: VecDeque<HistoryEntry>,
 
     /// Current history item
-    #[serde(skip)]
+    //#[serde(skip)]
     pub(in crate::cpu_m68k) history_current: HistoryEntryInstruction,
 
     /// Keep history?
-    #[serde(skip)]
+    //#[serde(skip)]
     pub(in crate::cpu_m68k) history_enabled: bool,
 
     /// System trap history
-    #[serde(skip)]
+    //#[serde(skip)]
     systrap_history: VecDeque<SystrapHistoryEntry>,
     systrap_history_enabled: bool,
 
     /// PMMU translation cache
-    #[serde(skip)]
+    //#[serde(skip)]
     pub(in crate::cpu_m68k) pmmu_cache: Vec<Option<Address>>,
+
+    /// 68020+ I-cache lines
+    icache_lines: [[u8; ICACHE_LINE_SIZE]; ICACHE_LINES],
+
+    /// 68020+ I-cache tags
+    icache_tags: [u32; ICACHE_LINES],
 }
 
 impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
@@ -271,6 +295,8 @@ where
             systrap_history: VecDeque::with_capacity(Self::HISTORY_SIZE),
             systrap_history_enabled: false,
             pmmu_cache: vec![],
+            icache_lines: core::array::from_fn(|_| Default::default()),
+            icache_tags: [ICACHE_TAG_INVALID; ICACHE_LINES],
         }
     }
 
@@ -281,6 +307,8 @@ where
     /// Resets the CPU, loads reset vector and initial SP
     pub fn reset(&mut self) -> Result<()> {
         self.regs = RegisterFile::new();
+        self.icache_tags.fill(ICACHE_TAG_INVALID);
+
         self.cycles = 0;
         let init_ssp = self.read_ticks(VECTOR_SP)?;
         let init_pc = self.read_ticks(VECTOR_RESET)?;
@@ -367,7 +395,40 @@ where
     /// Pumps a new word into the prefetch queue, regardless of current queue length
     fn prefetch_pump_force(&mut self) -> Result<()> {
         let fetch_addr = self.regs.pc.wrapping_add(4) & ADDRESS_MASK;
-        let new_item = self.read_ticks::<Word>(fetch_addr)?;
+
+        let new_item = if CPU_TYPE >= M68020 && self.regs.cacr.e() {
+            // We keep the tag full size so we can invalidate easily
+            if fetch_addr & 1 != 0 {
+                bail!("I-cache enabled but PC unaligned");
+            }
+            let cache_tag = fetch_addr & ICACHE_TAG_MASK;
+            let cache_idx = ((fetch_addr & ICACHE_INDEX_MASK) >> 2) as usize;
+            let cache_offset = (fetch_addr & ICACHE_OFFSET_MASK) as usize;
+            if self.icache_tags[cache_idx] == cache_tag {
+                // Cache hit
+                self.advance_cycles(1)?;
+                u16::from_be_bytes([
+                    self.icache_lines[cache_idx][cache_offset],
+                    self.icache_lines[cache_idx][cache_offset + 1],
+                ])
+            } else if !self.regs.cacr.f() {
+                // Cache miss, fill cache line
+                let addr = fetch_addr & !ICACHE_OFFSET_MASK;
+                self.icache_lines[cache_idx] = self.read_ticks::<Long>(addr)?.to_be_bytes();
+                self.icache_tags[cache_idx] = cache_tag;
+
+                u16::from_be_bytes([
+                    self.icache_lines[cache_idx][cache_offset],
+                    self.icache_lines[cache_idx][cache_offset + 1],
+                ])
+            } else {
+                // Cache miss and cache frozen, normal fetch
+                self.read_ticks::<Word>(fetch_addr)?
+            }
+        } else {
+            // Cache disabled/not available
+            self.read_ticks::<Word>(fetch_addr)?
+        };
         self.prefetch.push_back(new_item);
         self.regs.pc = (self.regs.pc + 2) & ADDRESS_MASK;
         Ok(())
@@ -460,10 +521,6 @@ where
         // address error.
         if self.history_enabled {
             let mut entry = std::mem::take(&mut self.history_current);
-
-            if entry.raw.iter().all(|b| *b == 0) {
-                self.breakpoint_hit.set();
-            }
 
             // Count prefetch reload towards the instruction
             if execute_result.is_ok() {
@@ -607,7 +664,6 @@ where
 
     /// Raises an illegal instruction exception
     fn raise_illegal_instruction(&mut self) -> Result<()> {
-        self.breakpoint_hit.set();
         warn!("Illegal instruction at PC ${:08X}", self.regs.pc);
         self.advance_cycles(4)?;
         self.raise_exception(ExceptionGroup::Group1, VECTOR_ILLEGAL, None)?;
@@ -1034,12 +1090,6 @@ where
             );
             self.breakpoint_hit.set();
         }
-
-        log::debug!(
-            "Unhandled LINEF {:04X} {:04X?}",
-            instr.data,
-            self.prefetch.make_contiguous()
-        );
 
         self.advance_cycles(4)?;
         self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEF, None)
@@ -2620,7 +2670,25 @@ where
             self.advance_cycles(4)?;
         } else {
             let val = self.regs.read::<Long>(instr.movec_reg()?);
-            self.regs.write(instr.movec_ctrlreg()?.into(), val);
+            let destreg: Register = instr.movec_ctrlreg()?.into();
+
+            if destreg == Register::CACR {
+                // I-cache operations
+                let val = RegisterCACR(val);
+                if val.c() {
+                    // Full clear
+                    self.icache_tags.fill(ICACHE_TAG_INVALID);
+                }
+                if val.ce() {
+                    // Clear specified index
+                    let index = ((self.regs.caar & ICACHE_INDEX_MASK) >> 2) as usize;
+                    self.icache_tags[index] = ICACHE_TAG_INVALID;
+                }
+
+                self.regs.write(destreg, val.with_c(false).with_ce(false).0);
+            } else {
+                self.regs.write(destreg, val);
+            }
             self.advance_cycles(2)?;
         }
 
