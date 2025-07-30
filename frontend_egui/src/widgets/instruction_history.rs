@@ -82,6 +82,9 @@ impl InstructionHistoryWidget {
                 HistoryEntry::Exception { vector, .. } => {
                     writeln!(f, "--- {}", self.text_exception(*vector))?;
                 }
+                HistoryEntry::Pagefault { address, write } => {
+                    writeln!(f, "--- {}", self.text_pagefault(*address, *write))?;
+                }
             }
         }
         Ok(())
@@ -189,6 +192,9 @@ impl InstructionHistoryWidget {
                         }
                         HistoryEntry::Instruction(entry) => {
                             self.row_instruction(history, row_height, row_idx, ui, entry);
+                        }
+                        HistoryEntry::Pagefault { address, write } => {
+                            self.row_pagefault(history, row_height, row_idx, ui, *address, *write);
                         }
                     }
                 }
@@ -388,6 +394,13 @@ impl InstructionHistoryWidget {
             vector,
         )
     }
+    fn text_pagefault(&self, addr: Address, write: bool) -> String {
+        format!(
+            "MMU Page fault: {:08X} ({})",
+            addr,
+            if !write { "read" } else { "write" }
+        )
+    }
 
     fn row_exception(
         &self,
@@ -425,6 +438,41 @@ impl InstructionHistoryWidget {
                 [ui.available_width(), row_height],
                 egui::Label::new(
                     egui::RichText::new(self.text_exception(*vector))
+                        .family(egui::FontFamily::Monospace)
+                        .size(10.0),
+                ),
+            );
+        });
+    }
+
+    fn row_pagefault(
+        &self,
+        history: &[HistoryEntry],
+        row_height: f32,
+        row_idx: usize,
+        ui: &mut Ui,
+        addr: Address,
+        write: bool,
+    ) {
+        ui.horizontal(|ui| {
+            ui.painter()
+                .rect_filled(ui.max_rect(), 0.0, egui::Color32::DARK_BLUE);
+            Self::column_status(history, row_height, row_idx, ui);
+            left_sized(ui, [120.0, row_height], egui::Label::new(""));
+            left_sized(ui, [60.0, row_height], egui::Label::new(""));
+            // Cycles column
+            left_sized(ui, [50.0, row_height], egui::Label::new(""));
+            left_sized_icon(
+                ui,
+                &[10.0, row_height],
+                egui_material_icons::icons::ICON_SHIELD_QUESTION,
+                Some(egui::Color32::LIGHT_GRAY),
+            );
+            left_sized(
+                ui,
+                [ui.available_width(), row_height],
+                egui::Label::new(
+                    egui::RichText::new(self.text_pagefault(addr, write))
                         .family(egui::FontFamily::Monospace)
                         .size(10.0),
                 ),
