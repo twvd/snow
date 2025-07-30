@@ -91,6 +91,21 @@ bitfield! {
     }
 }
 
+bitfield! {
+    /// CACR register bitfield
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+    pub struct RegisterCACR(pub Long): Debug, FromStorage, IntoStorage, DerefStorage {
+        /// Cache enable
+        pub e: bool @ 0,
+        /// Freeze cache
+        pub f: bool @ 1,
+        /// Clear Entry In Cache
+        pub ce: bool @ 2,
+        /// Clear cache
+        pub c: bool @ 3,
+    }
+}
+
 /// Full Motorola 680x0 register file
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, Default)]
 pub struct RegisterFile {
@@ -125,7 +140,7 @@ pub struct RegisterFile {
     pub caar: Address,
 
     /// Cache Control Register (68020+)
-    pub cacr: Long,
+    pub cacr: RegisterCACR,
 
     /// Master Stack Pointer (68020+)
     pub msp: Address,
@@ -135,6 +150,7 @@ pub struct RegisterFile {
     #[serde(skip)]
     pub fpu: FpuRegisterFile,
 
+    /// PMMU registers
     pub pmmu: PmmuRegisterFile,
 }
 
@@ -180,7 +196,7 @@ impl RegisterFile {
         out.push_str(diff("VBR".to_string(), self.vbr, other.vbr).as_str());
         // 68020+
         out.push_str(diff("CAAR".to_string(), self.caar, other.caar).as_str());
-        out.push_str(diff("CACR".to_string(), self.cacr, other.cacr).as_str());
+        out.push_str(diff("CACR".to_string(), self.cacr.0, other.cacr.0).as_str());
         out.push_str(diff("MSP".to_string(), self.msp, other.msp).as_str());
 
         out.push_str(&diff_flag("C", self.sr.c(), other.sr.c()));
@@ -318,7 +334,7 @@ impl RegisterFile {
             Register::SFC => self.sfc = value.expand() & 0b111,
             Register::VBR => self.vbr = value.expand(),
             Register::CAAR => self.caar = value.expand(),
-            Register::CACR => self.cacr = value.expand() & 0b1111,
+            Register::CACR => self.cacr.0 = value.expand() & 0b1111,
             Register::MSP => self.msp = value.expand(),
             Register::ISP => self.isp = value.expand(),
             Register::FPCR => self.fpu.fpcr.0 = value.expand(),
@@ -340,7 +356,7 @@ impl RegisterFile {
             Register::SFC => T::chop(self.sfc & 0b111),
             Register::VBR => T::chop(self.vbr),
             Register::CAAR => T::chop(self.caar),
-            Register::CACR => T::chop(self.cacr),
+            Register::CACR => T::chop(self.cacr.0),
             Register::MSP => T::chop(self.msp),
             Register::ISP => T::chop(self.isp),
             Register::FPCR => T::chop(self.fpu.fpcr.0),
