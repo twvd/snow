@@ -177,6 +177,8 @@ pub struct HistoryEntryInstruction {
     pub branch_taken: Option<bool>,
     pub waitstates: bool,
     pub ea: Option<Address>,
+    pub icache_hit: bool,
+    pub icache_miss: bool,
 }
 
 impl HistoryEntryInstruction {
@@ -406,6 +408,7 @@ where
             let cache_offset = (fetch_addr & ICACHE_OFFSET_MASK) as usize;
             if self.icache_tags[cache_idx] == cache_tag {
                 // Cache hit
+                self.history_current.icache_hit = true;
                 self.advance_cycles(1)?;
                 u16::from_be_bytes([
                     self.icache_lines[cache_idx][cache_offset],
@@ -413,6 +416,8 @@ where
                 ])
             } else if !self.regs.cacr.f() {
                 // Cache miss, fill cache line
+                self.history_current.icache_miss = true;
+
                 let addr = fetch_addr & !ICACHE_OFFSET_MASK;
                 self.icache_lines[cache_idx] = self.read_ticks::<Long>(addr)?.to_be_bytes();
                 self.icache_tags[cache_idx] = cache_tag;
@@ -423,6 +428,7 @@ where
                 ])
             } else {
                 // Cache miss and cache frozen, normal fetch
+                self.history_current.icache_miss = true;
                 self.read_ticks::<Word>(fetch_addr)?
             }
         } else {
