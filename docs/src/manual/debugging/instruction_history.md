@@ -23,7 +23,18 @@ The table in the dialog shows the following columns:
      last instruction to be executed
  * Address: the address the instruction was fetched from.
  * Raw: complete instruction in hex format
- * Cycles: amount of CPU clock cycles spent on this instruction
+ * Cycles: amount of CPU clock cycles spent on this instruction.
+   An <span class="material-symbols-rounded">hourglass_top</span>
+   icon indicates that wait states were incurred during instruction or data
+   fetch for this instruction.
+   If the CPU has I-cache and it is enabled, a cache state indicator will appear
+   in front of the cycles cell:
+    * <span class="material-symbols-rounded" style="color: #00bb00">speed</span>
+      indicates a cache hit for the entire instruction,
+    * <span class="material-symbols-rounded" style="color: orange">speed</span>
+      indicates a cache hit for part of the instruction,
+    * <span class="material-symbols-rounded" style="color: red">speed</span>
+      indicates a cache miss for the entire instruction.
  * Instruction: text representation of the instruction. A-line instructions are
    annotated with the name of the system trap.
    On branch instructions, a branch indicator shows if the branch was taken:
