@@ -71,6 +71,9 @@ pub(in crate::cpu_m68k) enum CpuError {
     /// Address error exception (unaligned address on Word/Long access)
     #[error("Address error exception")]
     AddressError(AddressError),
+    /// Page fault (PMMU)
+    #[error("Page fault exception")]
+    Pagefault,
 }
 
 /// M68000 exception groups
@@ -458,6 +461,10 @@ where
         if self.history_enabled {
             let mut entry = std::mem::take(&mut self.history_current);
 
+            if entry.raw.iter().all(|b| *b == 0) {
+                self.breakpoint_hit.set();
+            }
+
             // Count prefetch reload towards the instruction
             if execute_result.is_ok() {
                 self.prefetch_refill()?;
@@ -488,7 +495,7 @@ where
                         Some(details),
                     )?;
                 }
-                None => {
+                _ => {
                     bail!(
                         "PC: {:08X} Instruction: {:?} - error: {}",
                         start_pc,
@@ -600,6 +607,7 @@ where
 
     /// Raises an illegal instruction exception
     fn raise_illegal_instruction(&mut self) -> Result<()> {
+        self.breakpoint_hit.set();
         warn!("Illegal instruction at PC ${:08X}", self.regs.pc);
         self.advance_cycles(4)?;
         self.raise_exception(ExceptionGroup::Group1, VECTOR_ILLEGAL, None)?;
