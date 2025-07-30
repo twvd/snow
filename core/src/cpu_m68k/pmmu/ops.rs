@@ -71,7 +71,7 @@ where
                 let newval = TcReg(self.read_ea(instr, instr.get_op2())?);
                 let oldval = self.regs.pmmu.tc;
                 if newval.ps() != oldval.ps() || oldval.is() != newval.is() {
-                    self.pmmu_cache_invalidate();
+                    //self.pmmu_cache_invalidate();
                 }
 
                 self.regs.pmmu.tc = newval;
