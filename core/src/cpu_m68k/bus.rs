@@ -89,7 +89,9 @@ where
                 };
             result = result.wrapping_shl(8) | b;
 
-            self.advance_cycles(2)?;
+            if CPU_TYPE < M68020 {
+                self.advance_cycles(2)?;
+            }
 
             if a == 1 {
                 // Address errors occur AFTER the first Word was accessed and not at all if
@@ -98,9 +100,23 @@ where
             }
         }
 
-        if len == 1 {
+        if CPU_TYPE < M68020 && len == 1 {
             // Minimum of 4 cycles
             self.advance_cycles(2)?;
+        }
+
+        if CPU_TYPE >= M68020 {
+            // 68020+ has a 32-bit wide data bus with dynamic bus sizing.
+            // We assume all accesses are of equivalent size of their ports;
+            // e.g. the RAM is 32-bit wide ported and receives byte, word and
+            // long access, but e.g. the SWIM is 16-bit ported but never
+            // gets a 32-bit access (if that does happen, it will be faster).
+            self.advance_cycles(4)?;
+
+            // 1 bus cycle penalty for unaligned access
+            if (len == 2 && (paddr & 0b01) != 0) || (len == 4 && (paddr & 0b11) != 0) {
+                self.advance_cycles(4)?;
+            }
         }
 
         Ok(result)
@@ -177,11 +193,12 @@ where
         } else {
             o_paddr
         };
+        let len = std::mem::size_of::<T>();
 
         match TORDER {
             TORDER_LOWHIGH => {
                 let mut val: Long = value.to_be().into();
-                for a in 0..std::mem::size_of::<T>() {
+                for a in 0..len {
                     let byte_addr = paddr.wrapping_add(a as Address) & ADDRESS_MASK;
                     let b = val as u8;
                     val >>= 8;
@@ -191,7 +208,9 @@ where
                         self.history_current.waitstates = true;
                         self.advance_cycles(2)?;
                     }
-                    self.advance_cycles(2)?;
+                    if CPU_TYPE < M68020 {
+                        self.advance_cycles(2)?;
+                    }
 
                     // Trigger bus access breakpoints
                     if self.breakpoints.iter().any(|bp| {
@@ -216,7 +235,7 @@ where
             }
             TORDER_HIGHLOW => {
                 let mut val: Long = value.into();
-                for a in (0..std::mem::size_of::<T>()).rev() {
+                for a in (0..len).rev() {
                     let byte_addr = paddr.wrapping_add(a as Address) & ADDRESS_MASK;
                     let b = val as u8;
                     val >>= 8;
@@ -226,7 +245,9 @@ where
                         self.history_current.waitstates = true;
                         self.advance_cycles(2)?;
                     }
-                    self.advance_cycles(2)?;
+                    if CPU_TYPE < M68020 {
+                        self.advance_cycles(2)?;
+                    }
 
                     // Trigger bus access breakpoints
                     if self.breakpoints.iter().any(|bp| {
@@ -252,9 +273,23 @@ where
             _ => unreachable!(),
         }
 
-        if std::mem::size_of::<T>() == 1 {
+        if CPU_TYPE < M68020 && len == 1 {
             // Minimum of 4 cycles
             self.advance_cycles(2)?;
+        }
+
+        if CPU_TYPE >= M68020 {
+            // 68020+ has a 32-bit wide data bus with dynamic bus sizing.
+            // We assume all accesses are of equivalent size of their ports;
+            // e.g. the RAM is 32-bit wide ported and receives byte, word and
+            // long access, but e.g. the SWIM is 16-bit ported but never
+            // gets a 32-bit access (if that does happen, it will be faster).
+            self.advance_cycles(4)?;
+
+            // 1 bus cycle penalty for unaligned access
+            if (len == 2 && (paddr & 0b01) != 0) || (len == 4 && (paddr & 0b11) != 0) {
+                self.advance_cycles(4)?;
+            }
         }
 
         Ok(())
