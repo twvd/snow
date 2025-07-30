@@ -1,5 +1,5 @@
 use crate::bus::{Address, Bus, IrqSource};
-use crate::cpu_m68k::cpu::{AddressError, CpuError, CpuM68k};
+use crate::cpu_m68k::cpu::{AddressError, CpuError, CpuM68k, HistoryEntry};
 use crate::cpu_m68k::pmmu::regs::{PmmuPageDescriptorType, RootPointerReg};
 use crate::cpu_m68k::CpuM68kType;
 use crate::types::Long;
@@ -152,6 +152,13 @@ where
                 }
                 Some(CpuError::Pagefault) => {
                     log::debug!("Page fault: virtual address {:08X}", vaddr);
+
+                    if self.history_enabled {
+                        self.history.push_back(HistoryEntry::Pagefault {
+                            address: vaddr,
+                            write: writing,
+                        });
+                    }
 
                     anyhow!(CpuError::AddressError(AddressError {
                         function_code: 0,
