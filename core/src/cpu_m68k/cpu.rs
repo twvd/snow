@@ -54,9 +54,9 @@ pub enum Breakpoint {
     StepOut(Address),
 }
 
-/// Address error details
+/// Address error/bus error details
 #[derive(Debug, Clone, Copy)]
-pub(in crate::cpu_m68k) struct AddressError {
+pub(in crate::cpu_m68k) struct Group0Details {
     #[allow(dead_code)]
     pub(in crate::cpu_m68k) function_code: u8,
     pub(in crate::cpu_m68k) read: bool,
@@ -70,11 +70,14 @@ pub(in crate::cpu_m68k) struct AddressError {
 /// CPU error type to cascade exceptions down
 #[derive(Error, Debug)]
 pub(in crate::cpu_m68k) enum CpuError {
-    /// Address error exception (unaligned address on Word/Long access)
+    /// Raise address error exception (unaligned address on Word/Long access)
     #[error("Address error exception")]
-    AddressError(AddressError),
-    /// Page fault (PMMU)
-    #[error("Page fault exception")]
+    AddressError(Group0Details),
+    /// Raise bus error exception
+    #[error("Bus error exception")]
+    BusError(Group0Details),
+    /// Handle page fault (PMMU)
+    #[error("Page fault")]
     Pagefault,
 }
 
@@ -91,6 +94,8 @@ pub(in crate::cpu_m68k) enum ExceptionGroup {
 pub const VECTOR_SP: Address = 0x00000000;
 /// Reset vector
 pub const VECTOR_RESET: Address = 0x00000004;
+/// Bus error exception vector
+pub const VECTOR_BUS_ERROR: Address = 0x000008;
 /// Address error exception vector
 pub const VECTOR_ADDRESS_ERROR: Address = 0x00000C;
 /// Illegal instruction exception vector
@@ -567,6 +572,12 @@ where
                         Some(details),
                     )?;
                 }
+                Some(CpuError::BusError(ae)) => {
+                    let mut details = *ae;
+                    details.ir = instr.data;
+                    details.start_pc = start_pc;
+                    self.raise_exception(ExceptionGroup::Group0, VECTOR_BUS_ERROR, Some(details))?;
+                }
                 _ => {
                     bail!(
                         "PC: {:08X} Instruction: {:?} - error: {}",
@@ -762,7 +773,7 @@ where
         &mut self,
         group: ExceptionGroup,
         vector: Address,
-        details: Option<AddressError>,
+        details: Option<Group0Details>,
     ) -> Result<()> {
         let start_cycles = self.cycles;
         let saved_sr = self.regs.sr.sr();
