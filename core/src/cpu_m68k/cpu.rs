@@ -64,6 +64,7 @@ pub(in crate::cpu_m68k) struct AddressError {
     pub(in crate::cpu_m68k) instruction: bool,
     pub(in crate::cpu_m68k) address: Address,
     pub(in crate::cpu_m68k) ir: Word,
+    pub(in crate::cpu_m68k) start_pc: Address,
 }
 
 /// CPU error type to cascade exceptions down
@@ -553,6 +554,13 @@ where
                 Some(CpuError::AddressError(ae)) => {
                     let mut details = *ae;
                     details.ir = instr.data;
+                    details.start_pc = start_pc;
+
+                    debug!(
+                        "Address error: read = {:?}, address = {:08X} PC = {:08X}",
+                        details.read, details.address, self.regs.pc
+                    );
+
                     self.raise_exception(
                         ExceptionGroup::Group0,
                         VECTOR_ADDRESS_ERROR,
@@ -690,20 +698,35 @@ where
         self.regs.sr.set_int_prio_mask(level);
 
         match CPU_TYPE {
-            M68000 => *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(6),
-            _ => *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8),
+            M68000 => {
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(6);
+
+                self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
+
+                // 6 cycles idle
+                self.advance_cycles(6)?;
+                // Interrupt ack
+                self.advance_cycles(4)?;
+                // 4 cycles idle
+                self.advance_cycles(4)?;
+
+                self.write_ticks(self.regs.ssp().wrapping_add(4), self.regs.pc as u16)?;
+                self.write_ticks(self.regs.ssp().wrapping_add(2), (self.regs.pc >> 16) as u16)?;
+            }
+            _ => {
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8);
+                // 6 cycles idle, interrupt ack, 4 cycles idle
+                self.advance_cycles(6 + 4 + 4)?;
+
+                self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
+                self.write_ticks(self.regs.ssp().wrapping_add(2), (self.regs.pc >> 16) as u16)?;
+                self.write_ticks(self.regs.ssp().wrapping_add(4), self.regs.pc as u16)?;
+                self.write_ticks(
+                    self.regs.ssp().wrapping_add(6),
+                    0b0000_0000_0000_0000u16 | (vector as u16),
+                )?;
+            }
         };
-        self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
-
-        // 6 cycles idle
-        self.advance_cycles(6)?;
-        // Interrupt ack
-        self.advance_cycles(4)?;
-        // 4 cycles idle
-        self.advance_cycles(4)?;
-
-        self.write_ticks(self.regs.ssp().wrapping_add(4), self.regs.pc as u16)?;
-        self.write_ticks(self.regs.ssp().wrapping_add(2), (self.regs.pc >> 16) as u16)?;
 
         if self
             .breakpoints
@@ -755,30 +778,56 @@ where
 
                 self.advance_cycles(8)?; // idle
                 let details = details.expect("Address error details not passed");
-                debug!(
-                    "Address error: read = {:?}, address = {:08X} PC = {:08X}",
-                    details.read, details.address, self.regs.pc
-                );
 
-                *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(14);
-                self.write_ticks(self.regs.ssp().wrapping_add(12), self.regs.pc as u16)?;
-                self.write_ticks(self.regs.ssp().wrapping_add(8), saved_sr)?;
-                self.write_ticks(
-                    self.regs.ssp().wrapping_add(10),
-                    (self.regs.pc >> 16) as u16,
-                )?;
-                self.write_ticks(self.regs.ssp().wrapping_add(6), details.ir)?;
-                self.write_ticks(self.regs.ssp().wrapping_add(4), details.address as u16)?;
-                // Function code (3), I/N (1), R/W (1)
-                // TODO I/N, function code..
-                self.write_ticks(
-                    self.regs.ssp().wrapping_add(0),
-                    if details.read { 1_u16 << 4 } else { 0_u16 },
-                )?;
-                self.write_ticks(
-                    self.regs.ssp().wrapping_add(2),
-                    (details.address >> 16) as u16,
-                )?;
+                match CPU_TYPE {
+                    M68000 => {
+                        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(14);
+                        self.write_ticks(self.regs.ssp().wrapping_add(12), self.regs.pc as u16)?;
+                        self.write_ticks(self.regs.ssp().wrapping_add(8), saved_sr)?;
+                        self.write_ticks(
+                            self.regs.ssp().wrapping_add(10),
+                            (self.regs.pc >> 16) as u16,
+                        )?;
+                        self.write_ticks(self.regs.ssp().wrapping_add(6), details.ir)?;
+                        self.write_ticks(self.regs.ssp().wrapping_add(4), details.address as u16)?;
+                        // Function code (3), I/N (1), R/W (1)
+                        // TODO I/N, function code..
+                        self.write_ticks(
+                            self.regs.ssp().wrapping_add(0),
+                            if details.read { 1_u16 << 4 } else { 0_u16 },
+                        )?;
+                        self.write_ticks(
+                            self.regs.ssp().wrapping_add(2),
+                            (details.address >> 16) as u16,
+                        )?;
+                    }
+                    _ => {
+                        // Always at boundary
+                        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(32);
+                        self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
+                        self.write_ticks(self.regs.ssp().wrapping_add(0x02), details.start_pc)?;
+                        self.write_ticks(
+                            self.regs.ssp().wrapping_add(0x06),
+                            0b1010_0000_0000_0000 | (vector as u16),
+                        )?;
+                        // Internal register
+                        self.write_ticks(self.regs.ssp().wrapping_add(0x08), 0u16)?;
+                        // Special status register
+                        self.write_ticks(self.regs.ssp().wrapping_add(0x0A), 0u16)?;
+                        // Instruction pipe stage C
+                        self.write_ticks(self.regs.ssp().wrapping_add(0x0C), 0u16)?;
+                        // Instruction pipe stage B
+                        self.write_ticks(self.regs.ssp().wrapping_add(0x0E), 0u16)?;
+                        // Data cycle fault address
+                        self.write_ticks(self.regs.ssp().wrapping_add(0x10), details.address)?;
+                        // Internal registers
+                        self.write_ticks(self.regs.ssp().wrapping_add(0x14), 0u32)?;
+                        // Data output buffer
+                        self.write_ticks(self.regs.ssp().wrapping_add(0x18), 0u32)?;
+                        // Internal registers
+                        self.write_ticks(self.regs.ssp().wrapping_add(0x1C), 0u32)?;
+                    }
+                }
             }
             ExceptionGroup::Group1 | ExceptionGroup::Group2 => {
                 //debug!(
@@ -2219,18 +2268,43 @@ where
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
         }
 
-        let frame_size = match CPU_TYPE {
-            M68000 => 6,
-            _ => 8,
-        };
+        if CPU_TYPE == M68000 {
+            // 68000 version
+            let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
+            let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+            *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(6);
+            self.set_sr(sr);
+            self.set_pc(pc)?;
+            self.prefetch_refill()?;
 
-        let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
-        let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
-        *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(frame_size);
-        self.set_sr(sr);
-        self.set_pc(pc)?;
+            self.test_step_out();
+            return Ok(());
+        }
+
+        // 68020+ version
+        let ssp = self.regs.ssp();
+        let format = (self.read_ticks::<Word>(ssp.wrapping_add(6))? & 0b1111_0000_0000_0000) >> 12;
+        match format {
+            0b0000 => {
+                // Normal format
+                let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
+                let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(8);
+                self.set_sr(sr);
+                self.set_pc(pc)?;
+            }
+            0b1010 => {
+                // Bus error at instruction boundary
+                let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
+                let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(32);
+                self.set_sr(sr);
+                self.set_pc(pc)?;
+            }
+            _ => bail!("Unknown exception frame format: {:04b}", format),
+        }
+
         self.prefetch_refill()?;
-
         self.test_step_out();
 
         Ok(())
