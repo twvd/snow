@@ -1,5 +1,5 @@
 use crate::bus::{Address, Bus, IrqSource};
-use crate::cpu_m68k::cpu::{AddressError, CpuError, CpuM68k, HistoryEntry};
+use crate::cpu_m68k::cpu::{CpuError, CpuM68k, Group0Details, HistoryEntry};
 use crate::cpu_m68k::pmmu::regs::{PmmuPageDescriptorType, RootPointerReg};
 use crate::cpu_m68k::CpuM68kType;
 use crate::types::Long;
@@ -160,7 +160,7 @@ where
                         });
                     }
 
-                    anyhow!(CpuError::AddressError(AddressError {
+                    anyhow!(CpuError::BusError(Group0Details {
                         function_code: 0,
                         ir: 0,
 

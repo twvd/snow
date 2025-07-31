@@ -1,7 +1,7 @@
 //! M68k CPU - Bus access functionality
 
 use crate::bus::{Address, Bus, BusResult, IrqSource};
-use crate::cpu_m68k::cpu::{AddressError, Breakpoint, BusBreakpoint, CpuError, CpuM68k};
+use crate::cpu_m68k::cpu::{Breakpoint, BusBreakpoint, CpuError, CpuM68k, Group0Details};
 use crate::cpu_m68k::{CpuM68kType, CpuSized, M68000, M68020, TORDER_HIGHLOW, TORDER_LOWHIGH};
 use crate::types::Long;
 use crate::types::Word;
@@ -21,7 +21,7 @@ where
                 log::warn!("Unaligned access: address {:08X}", paddr);
 
                 // TODO should still happen on 68020+ for PC
-                bail!(CpuError::AddressError(AddressError {
+                bail!(CpuError::AddressError(Group0Details {
                     function_code: 0,
                     ir: 0,
 
