@@ -28,7 +28,10 @@ where
                     // TODO instruction bit
                     instruction: false,
                     read,
-                    address: paddr
+                    address: paddr,
+
+                    // Filled in later
+                    start_pc: 0,
                 }));
             }
         }
