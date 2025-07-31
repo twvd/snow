@@ -164,10 +164,12 @@ where
                         function_code: 0,
                         ir: 0,
 
-                        // TODO instruction bit
                         instruction: false,
                         read: !writing,
                         address: vaddr,
+
+                        // Filled in later
+                        start_pc: 0,
                     }))
                 }
                 _ => e,
