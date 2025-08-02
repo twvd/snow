@@ -402,6 +402,8 @@ impl<'a> Disassembler<'a> {
             InstructionMnemonic::Bcc | InstructionMnemonic::BSR => {
                 let displacement = if instr.get_bxx_displacement() == 0 {
                     self.get16()? as i16 as i32
+                } else if instr.get_bxx_displacement_raw() == 0xFF {
+                    self.get32()? as i32
                 } else {
                     instr.get_bxx_displacement()
                 };
@@ -412,7 +414,9 @@ impl<'a> Disassembler<'a> {
                     } else {
                         "SR"
                     },
-                    if instr.get_bxx_displacement() == 0 {
+                    if instr.get_bxx_displacement_raw() == 0xFF {
+                        'l'
+                    } else if instr.get_bxx_displacement() == 0 {
                         'w'
                     } else {
                         'b'
