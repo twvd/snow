@@ -2,6 +2,8 @@ use num_derive::FromPrimitive;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
+use crate::bus::Address;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
 pub(in crate::cpu_m68k) enum PmmuPageDescriptorType {
     Invalid = 0,
@@ -35,7 +37,7 @@ bitfield! {
 bitfield! {
     /// PMMU cache status register (PCSR)
     #[derive(Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-    pub struct PcsrReg(pub u16): Debug, FromStorage, IntoStorage, DerefStorage {
+    pub struct RegisterPCSR(pub u16): Debug, FromStorage, IntoStorage, DerefStorage {
         /// Task Alias
         pub ta: u8 @ 0..=2,
 
@@ -97,7 +99,7 @@ bitfield! {
 bitfield! {
     /// PMMU status register
     #[derive(Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-    pub struct PsrReg(pub u16): Debug, FromStorage, IntoStorage, DerefStorage {
+    pub struct RegisterPSR(pub u16): Debug, FromStorage, IntoStorage, DerefStorage {
         pub bus_error: bool @ 15,
         pub limit_violation: bool @ 14,
         pub supervisor_violation: bool @ 13,
@@ -117,12 +119,15 @@ pub struct PmmuRegisterFile {
     pub crp: RootPointerReg,
     pub srp: RootPointerReg,
     pub drp: RootPointerReg,
-    pub pcsr: PcsrReg,
+    pub pcsr: RegisterPCSR,
     pub cal: AccessLevelReg,
     pub val: AccessLevelReg,
     pub scc: u8,
     pub ac: AccessControlReg,
     pub tc: TcReg,
+    pub psr: RegisterPSR,
+
+    pub last_desc: Address,
 }
 
 impl PmmuRegisterFile {

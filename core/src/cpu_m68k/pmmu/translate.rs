@@ -1,12 +1,13 @@
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::cpu::{CpuError, CpuM68k, Group0Details, HistoryEntry};
-use crate::cpu_m68k::pmmu::regs::{PmmuPageDescriptorType, RootPointerReg};
+use crate::cpu_m68k::pmmu::regs::{
+    PmmuPageDescriptorType, RegisterPCSR, RegisterPSR, RootPointerReg,
+};
 use crate::cpu_m68k::CpuM68kType;
 use crate::types::Long;
 
 use anyhow::{anyhow, bail, Result};
 use arrayvec::ArrayVec;
-use itertools::concat;
 use num_traits::FromPrimitive;
 use proc_bitfield::bitfield;
 
@@ -60,13 +61,13 @@ where
         }
     }
 
-    fn pmmu_rootptr(&self) -> &RootPointerReg {
+    fn pmmu_rootptr(&self) -> RootPointerReg {
         // TODO FC?
         if self.regs.pmmu.tc.sre() {
             todo!();
         }
 
-        &self.regs.pmmu.crp
+        self.regs.pmmu.crp
     }
 
     fn pmmu_fetch_table(
@@ -88,6 +89,7 @@ where
         // Table index
         let idx = vaddr >> (32 - ti);
         let entry_addr = table_addr.wrapping_add(idx * 4);
+        self.regs.pmmu.last_desc = entry_addr;
 
         let entry_word = self.read_ticks_physical::<Long>(entry_addr)?;
         let child_dt = PmmuPageDescriptorType::from_u32(entry_word & 0b11).unwrap();
@@ -130,7 +132,22 @@ where
         //    return Ok((cached_paddr & !page_mask) | (vaddr & page_mask));
         //}
 
+        self.pmmu_translate_lookup::<false>(vaddr, writing)
+    }
+
+    /// Perform address translation by performing a page table lookup
+    pub(in crate::cpu_m68k) fn pmmu_translate_lookup<const PTEST: bool>(
+        &mut self,
+        vaddr: Address,
+        writing: bool,
+    ) -> Result<Address> {
         let rootptr = self.pmmu_rootptr();
+
+        if PTEST {
+            self.regs.pmmu.psr = RegisterPSR::default();
+            self.regs.pmmu.last_desc = 0;
+        }
+
         let mut tis = ArrayVec::from([
             self.regs.pmmu.tc.tid(),
             self.regs.pmmu.tc.tic(),
@@ -151,13 +168,18 @@ where
                     anyhow!("Address error while reading page tables: {:X?}", ae)
                 }
                 Some(CpuError::Pagefault) => {
-                    log::debug!("Page fault: virtual address {:08X}", vaddr);
+                    if PTEST {
+                        self.regs.pmmu.psr.set_invalid(true);
+                        self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
+                    } else {
+                        log::debug!("Page fault: virtual address {:08X}", vaddr);
 
-                    if self.history_enabled {
-                        self.history.push_back(HistoryEntry::Pagefault {
-                            address: vaddr,
-                            write: writing,
-                        });
+                        if self.history_enabled {
+                            self.history.push_back(HistoryEntry::Pagefault {
+                                address: vaddr,
+                                write: writing,
+                            });
+                        }
                     }
 
                     anyhow!(CpuError::BusError(Group0Details {
@@ -176,8 +198,11 @@ where
             })?;
 
         let mask = 0xFFFFFFFF >> used_bits;
-        let paddr = ((page_addr & !mask) | (vaddr & mask));
+        let paddr = (page_addr & !mask) | (vaddr & mask);
 
+        if PTEST {
+            self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
+        }
         //self.pmmu_cache[cache_key] = Some(paddr);
         //if tis.len() <= 2 && paddr != vaddr {
         //    log::debug!("{:02X?}", self.regs.pmmu);
