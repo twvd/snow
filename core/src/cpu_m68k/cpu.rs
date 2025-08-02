@@ -5,6 +5,7 @@ use arrayvec::ArrayVec;
 use either::Either;
 use log::*;
 use num_traits::{FromBytes, PrimInt, ToBytes};
+use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -87,6 +88,32 @@ pub(in crate::cpu_m68k) enum ExceptionGroup {
     Group0,
     Group1,
     Group2,
+}
+
+bitfield! {
+    /// 68020+ group 0 exception stack frame Special Status Word
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+    pub struct Group0Ssw(pub Word): Debug, FromStorage, IntoStorage, DerefStorage {
+        pub function_code: u8 @ 0..=2,
+
+        /// Size of failed access
+        /// 0 = Long, 1 = Word, 2 = Byte
+        pub size: usize @ 4..=5,
+
+        pub read: bool @ 6,
+        /// Read-Modify-Write
+        pub rm: bool @ 7,
+        /// Re-run fault
+        pub df: bool @ 8,
+        /// Re-run stage B
+        pub rb: bool @ 12,
+        /// Re-run stage C
+        pub rc: bool @ 13,
+        /// Fault on stage B
+        pub fb: bool @ 14,
+        /// Fault on stage C
+        pub fc: bool @ 15,
+    }
 }
 
 // Exception vectors
@@ -813,30 +840,64 @@ where
                         )?;
                     }
                     _ => {
-                        // Always at boundary
-                        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(32);
-                        self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
-                        self.write_ticks(self.regs.ssp().wrapping_add(0x02), details.start_pc)?;
-                        self.write_ticks(
-                            self.regs.ssp().wrapping_add(0x06),
-                            0b1010_0000_0000_0000 | (vector as u16),
-                        )?;
-                        // Internal register
-                        self.write_ticks(self.regs.ssp().wrapping_add(0x08), 0u16)?;
-                        // Special status register
-                        self.write_ticks(self.regs.ssp().wrapping_add(0x0A), 0u16)?;
-                        // Instruction pipe stage C
-                        self.write_ticks(self.regs.ssp().wrapping_add(0x0C), 0u16)?;
-                        // Instruction pipe stage B
-                        self.write_ticks(self.regs.ssp().wrapping_add(0x0E), 0u16)?;
-                        // Data cycle fault address
-                        self.write_ticks(self.regs.ssp().wrapping_add(0x10), details.address)?;
-                        // Internal registers
-                        self.write_ticks(self.regs.ssp().wrapping_add(0x14), 0u32)?;
-                        // Data output buffer
-                        self.write_ticks(self.regs.ssp().wrapping_add(0x18), 0u32)?;
-                        // Internal registers
-                        self.write_ticks(self.regs.ssp().wrapping_add(0x1C), 0u32)?;
+                        if true {
+                            // Bus error at instruction boundary
+                            *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(32);
+                            self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x02), details.start_pc)?;
+                            self.write_ticks(
+                                self.regs.ssp().wrapping_add(0x06),
+                                0b1010_0000_0000_0000 | (vector as u16),
+                            )?;
+                            // Internal register
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x08), 0u16)?;
+                            // Special status register
+                            // TODO size
+                            self.write_ticks(
+                                self.regs.ssp().wrapping_add(0x0A),
+                                *Group0Ssw::default().with_read(details.read).with_df(true),
+                            )?;
+                            // Instruction pipe stage C
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x0C), 0u16)?;
+                            // Instruction pipe stage B
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x0E), 0u16)?;
+                            // Data cycle fault address
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x10), details.address)?;
+                            // Internal registers
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x14), 0u32)?;
+                            // Data output buffer
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x18), 0u32)?;
+                            // Internal registers
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x1C), 0u32)?;
+                        } else {
+                            *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(92);
+                            self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x02), details.start_pc)?;
+                            self.write_ticks(
+                                self.regs.ssp().wrapping_add(0x06),
+                                0b1011_0000_0000_0000 | (vector as u16),
+                            )?;
+                            // Internal register
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x08), 0u16)?;
+                            // Special status register
+                            // TODO size
+                            self.write_ticks(
+                                self.regs.ssp().wrapping_add(0x0A),
+                                *Group0Ssw::default().with_read(details.read).with_df(true),
+                            )?;
+                            // Instruction pipe stage C
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x0C), 0u16)?;
+                            // Instruction pipe stage B
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x0E), 0u16)?;
+                            // Data cycle fault address
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x10), details.address)?;
+                            log::debug!("Bus error addr: {:08X}", details.address);
+
+                            // More internal stuff
+                            for i in (0x14..=0x5A).step_by(2) {
+                                self.write_ticks(self.regs.ssp().wrapping_add(i), 0u16)?;
+                            }
+                        }
                     }
                 }
             }
@@ -2309,6 +2370,14 @@ where
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
                 *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(32);
+                self.set_sr(sr);
+                self.set_pc(pc)?;
+            }
+            0b1011 => {
+                // Bus error during instruction
+                let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
+                let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(92);
                 self.set_sr(sr);
                 self.set_pc(pc)?;
             }
