@@ -2643,6 +2643,12 @@ where
             if BSR {
                 // Push current PC to stack
                 let addr = self.regs.read_a_predec(7, std::mem::size_of::<Long>());
+
+                // For .b and .w we add an offset because they fetch the
+                // displacement from the prefetch queue and therefore need
+                // PC adjustment.
+                // For .l, the PC is already adjusted because of the use of
+                // fetch_pump().
                 let stack_pc = if instr.get_bxx_displacement() == 0 {
                     // Offset by instruction + displacement word
                     self.regs.pc.wrapping_add(4)
