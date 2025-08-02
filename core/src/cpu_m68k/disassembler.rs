@@ -1143,7 +1143,7 @@ impl<'a> Disassembler<'a> {
                     "PMOVE3".to_string()
                 } else if extword & 0b1110_0000_0000_0000 == 0b1000_0000_0000_0000 {
                     // PTEST
-                    "PTEST".to_string()
+                    format!("PTEST {}", self.ea(instr)?)
                 } else {
                     format!("P??? {:04X}", extword)
                 }
