@@ -3,8 +3,9 @@
 use anyhow::{bail, Result};
 
 use crate::bus::{Address, Bus, IrqSource};
-use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_PRIVILEGE_VIOLATION};
+use crate::cpu_m68k::cpu::{CpuError, CpuM68k, ExceptionGroup, VECTOR_PRIVILEGE_VIOLATION};
 use crate::cpu_m68k::instruction::Instruction;
+use crate::cpu_m68k::pmmu::instruction::{Pmove3Extword, PtestExtword};
 use crate::cpu_m68k::CpuM68kType;
 use crate::types::{DoubleLong, Word};
 
@@ -32,15 +33,12 @@ where
         } else if extword & 0b1110_0001_1111_1111 == 0b0100_0000_0000_0000 {
             // PMOVE (format 1)
             self.op_pmove1(instr, extword)
-        } else if extword & 0b1110_0001_1110_0011 == 0b0110_0000_0000_0000 {
-            // PMOVE (format 2)
-            bail!("PMOVE2");
-        } else if extword & 0b1110_0011_1111_1111 == 0b0110_0000_0000_0000 {
-            // PMOVE (format 3)
-            bail!("PMOVE3");
+        } else if extword & 0b1110_0001_1111_1111 == 0b0110_0000_0000_0000 {
+            // PMOVE (format 2 or 3)
+            self.op_pmove3(instr, extword)
         } else if extword & 0b1110_0000_0000_0000 == 0b1000_0000_0000_0000 {
             // PTEST
-            bail!("PTEST");
+            self.op_ptest(instr, extword)
         } else {
             // Unknown instruction
             bail!(
@@ -124,6 +122,60 @@ where
             _ => unreachable!(),
         }
 
+        Ok(())
+    }
+
+    pub(in crate::cpu_m68k) fn op_pmove3(
+        &mut self,
+        instr: &Instruction,
+        extword: Word,
+    ) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+
+        let extword = Pmove3Extword(extword);
+
+        match (extword.preg(), extword.write()) {
+            (0b000, true) => {
+                log::debug!("{:?}", self.regs.pmmu.psr);
+                self.write_ea(instr, instr.get_op2(), self.regs.pmmu.psr.0)?;
+            }
+            (0b000, false) => {
+                self.regs.pmmu.psr.0 = self.read_ea(instr, instr.get_op2())?;
+            }
+            (0b001, true) => {
+                self.write_ea(instr, instr.get_op2(), self.regs.pmmu.pcsr.0)?;
+            }
+            (0b001, false) => {
+                self.regs.pmmu.pcsr.0 = self.read_ea(instr, instr.get_op2())?;
+            }
+            _ => bail!("PMOVE3 invalid Preg: {}", extword.preg()),
+        }
+
+        Ok(())
+    }
+
+    pub(in crate::cpu_m68k) fn op_ptest(
+        &mut self,
+        instr: &Instruction,
+        extword: Word,
+    ) -> Result<()> {
+        let extword = PtestExtword(extword);
+
+        let vaddr = self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+        let result = self.pmmu_translate_lookup::<true>(vaddr, !extword.read());
+        log::debug!("PTEST {:08X} {:?} {:?}", vaddr, self.regs.pmmu.psr, result);
+        match result {
+            Ok(_) => {
+                if extword.a_set() {
+                    self.regs.write_a(extword.an(), self.regs.pmmu.last_desc);
+                }
+            }
+            // TODO fix error handling
+            Err(e) => (),
+        }
         Ok(())
     }
 }
