@@ -26,10 +26,12 @@ where
 
         if extword & 0b1110_0001_0000_0000 == 0b0010_0000_0000_0000 {
             // PFLUSH
-            bail!("PFLUSH");
+            self.pmmu_cache_invalidate();
+            Ok(())
         } else if extword == 0b1010_0000_0000_0000 {
             // PFLUSHR
-            bail!("PFLUSHR");
+            self.pmmu_cache_invalidate();
+            Ok(())
         } else if extword & 0b1110_0001_1111_1111 == 0b0100_0000_0000_0000 {
             // PMOVE (format 1)
             self.op_pmove1(instr, extword)
