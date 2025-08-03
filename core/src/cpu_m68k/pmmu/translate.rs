@@ -181,6 +181,12 @@ where
                                 write: writing,
                             });
                         }
+
+                        if let Some(regs) = self.restart_regs.take() {
+                            self.regs = regs;
+                        } else {
+                            log::error!("Cannot reset registers for stacking a bus error frame");
+                        }
                     }
 
                     anyhow!(CpuError::BusError(Group0Details {
