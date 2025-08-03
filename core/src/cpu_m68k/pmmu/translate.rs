@@ -1,8 +1,6 @@
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::cpu::{CpuError, CpuM68k, Group0Details, HistoryEntry};
-use crate::cpu_m68k::pmmu::regs::{
-    PmmuPageDescriptorType, RegisterPCSR, RegisterPSR, RootPointerReg,
-};
+use crate::cpu_m68k::pmmu::regs::{PmmuPageDescriptorType, RegisterPSR, RootPointerReg};
 use crate::cpu_m68k::CpuM68kType;
 use crate::types::Long;
 
@@ -47,18 +45,17 @@ where
     TBus: Bus<Address, u8> + IrqSource,
 {
     pub(in crate::cpu_m68k) fn pmmu_cache_invalidate(&mut self) {
+        if !self.regs.pmmu.tc.enable() {
+            return;
+        }
+
         let cache_size =
             (Address::MAX >> (self.regs.pmmu.tc.is() + self.regs.pmmu.tc.ps() as Address)) as usize;
-        if self.pmmu_cache.len() != cache_size {
+        if self.pmmu_cache.len() < cache_size {
             log::debug!("Allocating cache size: {}", cache_size);
-            if cache_size >= (Address::MAX as usize) {
-                self.pmmu_cache = vec![];
-            } else {
-                self.pmmu_cache = vec![None; cache_size];
-            }
-        } else {
-            self.pmmu_cache.fill(None);
+            self.pmmu_cache.resize(cache_size, None);
         }
+        self.pmmu_cache.fill(None);
     }
 
     fn pmmu_rootptr(&self) -> RootPointerReg {
@@ -125,14 +122,18 @@ where
             return Ok(vaddr);
         }
 
-        let is_mask = Address::MAX << (32 - self.regs.pmmu.tc.is());
+        let is_mask = Address::MAX.unbounded_shl(32 - self.regs.pmmu.tc.is());
         let page_mask = (1u32 << self.regs.pmmu.tc.ps()) - 1;
         let cache_key = ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize;
-        //if let Some(cached_paddr) = self.pmmu_cache[cache_key] {
-        //    return Ok((cached_paddr & !page_mask) | (vaddr & page_mask));
-        //}
+        if let Some(cached_paddr) = self.pmmu_cache[cache_key] {
+            return Ok(cached_paddr | (vaddr & page_mask));
+        }
 
         self.pmmu_translate_lookup::<false>(vaddr, writing)
+            .inspect(|paddr| {
+                let cache_key = ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize;
+                self.pmmu_cache[cache_key] = Some(*paddr & !page_mask);
+            })
     }
 
     /// Perform address translation by performing a page table lookup
@@ -203,7 +204,6 @@ where
         if PTEST {
             self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
         }
-        //self.pmmu_cache[cache_key] = Some(paddr);
         //if tis.len() <= 2 && paddr != vaddr {
         //    log::debug!("{:02X?}", self.regs.pmmu);
         //    log::debug!(
