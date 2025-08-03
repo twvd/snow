@@ -299,6 +299,8 @@ where
 
     /// 68020+ I-cache tags
     icache_tags: [u32; ICACHE_LINES],
+
+    pub(in crate::cpu_m68k) restart_regs: Option<RegisterFile>,
 }
 
 impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
@@ -333,6 +335,7 @@ where
             pmmu_cache: vec![],
             icache_lines: core::array::from_fn(|_| Default::default()),
             icache_tags: [ICACHE_TAG_INVALID; ICACHE_LINES],
+            restart_regs: None,
         }
     }
 
@@ -512,6 +515,10 @@ where
         self.step_exception = false;
         self.step_over_addr = None;
 
+        if PMMU {
+            self.restart_regs = Some(self.regs.clone());
+        }
+
         // Flag exceptions before executing the instruction to act on them later
         let trace_exception = self.regs.sr.trace() && !self.trace_mask;
         let irq_exception = match self.bus.get_irq() {
@@ -580,7 +587,7 @@ where
         match execute_result {
             Ok(()) => {
                 // Assert ea_commit() was called
-                debug_assert!(self.step_ea_load.is_none());
+                assert!(self.step_ea_load.is_none());
             }
             Err(e) => match e.downcast_ref() {
                 Some(CpuError::AddressError(ae)) => {
