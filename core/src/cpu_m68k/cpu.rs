@@ -751,6 +751,7 @@ where
                 self.write_ticks(self.regs.ssp().wrapping_add(4), self.regs.pc as u16)?;
                 self.write_ticks(self.regs.ssp().wrapping_add(2), (self.regs.pc >> 16) as u16)?;
             }
+            #[allow(clippy::identity_op)]
             _ => {
                 *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8);
                 // 6 cycles idle, interrupt ack, 4 cycles idle
