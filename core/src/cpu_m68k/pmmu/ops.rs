@@ -3,7 +3,7 @@
 use anyhow::{bail, Result};
 
 use crate::bus::{Address, Bus, IrqSource};
-use crate::cpu_m68k::cpu::{CpuError, CpuM68k, ExceptionGroup, VECTOR_PRIVILEGE_VIOLATION};
+use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_PRIVILEGE_VIOLATION};
 use crate::cpu_m68k::instruction::Instruction;
 use crate::cpu_m68k::pmmu::instruction::{Pmove3Extword, PtestExtword};
 use crate::cpu_m68k::CpuM68kType;
@@ -69,12 +69,10 @@ where
             }
             (0b000, false) => {
                 let newval = TcReg(self.read_ea(instr, instr.get_op2())?);
-                let oldval = self.regs.pmmu.tc;
-                if newval.ps() != oldval.ps() || oldval.is() != newval.is() {
-                    //self.pmmu_cache_invalidate();
-                }
-
                 self.regs.pmmu.tc = newval;
+                if newval.enable() {
+                    self.pmmu_cache_invalidate();
+                }
             }
             (0b001, true) => {
                 self.write_ea_sz::<8>(instr, instr.get_op2(), self.regs.pmmu.drp.0.to_be_bytes())?;
@@ -170,13 +168,13 @@ where
         let result = self.pmmu_translate_lookup::<true>(vaddr, !extword.read());
         log::debug!("PTEST {:08X} {:?} {:?}", vaddr, self.regs.pmmu.psr, result);
         match result {
-            Ok(_) => {
+            Ok(_paddr) => {
                 if extword.a_set() {
                     self.regs.write_a(extword.an(), self.regs.pmmu.last_desc);
                 }
             }
             // TODO fix error handling
-            Err(e) => (),
+            Err(_e) => (),
         }
         Ok(())
     }
