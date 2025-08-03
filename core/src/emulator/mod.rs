@@ -638,7 +638,7 @@ impl Emulator {
         if let Err(e) = self.step() {
             self.run = false;
             self.user_error(&format!(
-                "Emulator halted: Uncaught CPU stepping error at PC {:08X}: {}",
+                "Emulator halted: Uncaught CPU stepping error at PC {:08X}: {:?}",
                 self.config.cpu_regs().pc,
                 e
             ));
