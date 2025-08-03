@@ -114,13 +114,22 @@ impl SystrapHistoryWidget {
             );
 
             // System trap
+            let cleaned_trap = if entry.trap & (1 << 11) != 0 {
+                // OS trap
+                // Mask Flags and return/save A0 bit
+                entry.trap & 0b1111_1000_1111_1111
+            } else {
+                // Toolbox (ROM) trap
+                // Mask auto-pop bit
+                entry.trap & 0b1111_1011_1111_1111
+            };
             left_sized_f(ui, [200.0, row_height], |ui| {
                 ui.add(
                     egui::Label::new(
                         egui::RichText::new(
                             crate::consts::TRAPS
                                 .iter()
-                                .find(|(i, _)| *i == entry.trap)
+                                .find(|(i, _)| *i == cleaned_trap)
                                 .map(|(_, s)| *s)
                                 .unwrap_or("<unknown>"),
                         )
