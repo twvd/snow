@@ -41,12 +41,7 @@ where
     /// Reads a value from the bus and spends ticks.
     /// Virtual address version
     pub(in crate::cpu_m68k) fn read_ticks<T: CpuSized>(&mut self, vaddr: Address) -> Result<T> {
-        let paddr = if PMMU {
-            self.pmmu_translate(vaddr, false)?
-        } else {
-            vaddr
-        };
-        self.read_ticks_physical(paddr)
+        self.read_ticks_generic::<T, false>(vaddr)
     }
 
     /// Reads a value from the bus and spends ticks.
@@ -55,17 +50,29 @@ where
         &mut self,
         o_paddr: Address,
     ) -> Result<T> {
+        self.read_ticks_generic::<T, true>(o_paddr)
+    }
+
+    #[inline(always)]
+    fn read_ticks_generic<T: CpuSized, const PHYSICAL: bool>(
+        &mut self,
+        o_addr: Address,
+    ) -> Result<T> {
         let len = std::mem::size_of::<T>();
         let mut result: T = T::zero();
-        let paddr = if CPU_TYPE == M68000 && len > 1 {
-            o_paddr & !1
+        let addr = if CPU_TYPE == M68000 && len > 1 {
+            o_addr & !1
         } else {
-            o_paddr
+            o_addr
         };
 
         // Below converts from BE -> LE on the fly
         for a in 0..len {
-            let byte_addr = paddr.wrapping_add(a as Address) & ADDRESS_MASK;
+            let byte_addr = if PHYSICAL || !PMMU {
+                addr.wrapping_add(a as Address) & ADDRESS_MASK
+            } else {
+                self.pmmu_translate(addr.wrapping_add(a as Address) & ADDRESS_MASK, false)?
+            };
             let b: T =
                 loop {
                     match self.bus.read(byte_addr) {
@@ -96,10 +103,12 @@ where
                 self.advance_cycles(2)?;
             }
 
-            if a == 1 {
+            if CPU_TYPE == M68000 && a == 1 {
                 // Address errors occur AFTER the first Word was accessed and not at all if
                 // it is a byte access, so this is the perfect time to check.
-                self.verify_access_physical::<T>(o_paddr, true)?;
+                //
+                // 68000 only addresses physical pages so no translation needed here.
+                self.verify_access_physical::<T>(o_addr, true)?;
             }
         }
 
@@ -117,7 +126,9 @@ where
             self.advance_cycles(4)?;
 
             // 1 bus cycle penalty for unaligned access
-            if (len == 2 && (paddr & 0b01) != 0) || (len == 4 && (paddr & 0b11) != 0) {
+            // We check this on the virtual address, but that is fine, given the
+            // PMMUs minimum page size is 256 bytes.
+            if (len == 2 && (addr & 0b01) != 0) || (len == 4 && (addr & 0b11) != 0) {
                 self.advance_cycles(4)?;
             }
         }
@@ -143,13 +154,7 @@ where
         vaddr: Address,
         value: T,
     ) -> Result<()> {
-        let paddr = if PMMU {
-            self.pmmu_translate(vaddr, true)?
-        } else {
-            vaddr
-        };
-
-        self.write_ticks_order_physical::<T, TORDER_LOWHIGH>(paddr, value)
+        self.write_ticks_order_generic::<T, TORDER_LOWHIGH, false>(vaddr, value)
     }
 
     /// Writes a value to the bus (big endian) and spends ticks.
@@ -159,13 +164,7 @@ where
         vaddr: Address,
         value: T,
     ) -> Result<()> {
-        let paddr = if PMMU {
-            self.pmmu_translate(vaddr, true)?
-        } else {
-            vaddr
-        };
-
-        self.write_ticks_order_physical::<T, TORDER>(paddr, value)
+        self.write_ticks_order_generic::<T, TORDER, false>(vaddr, value)
     }
 
     /// Writes a value to the bus (big endian) and spends ticks, but writes
@@ -179,10 +178,16 @@ where
         match std::mem::size_of::<T>() {
             4 => {
                 let v: Long = value.expand();
-                self.write_ticks_order::<Word, TORDER_LOWHIGH>(addr.wrapping_add(2), v as Word)?;
-                self.write_ticks_order::<Word, TORDER_LOWHIGH>(addr, (v >> 16) as Word)
+                self.write_ticks_order_generic::<Word, TORDER_LOWHIGH, false>(
+                    addr.wrapping_add(2),
+                    v as Word,
+                )?;
+                self.write_ticks_order_generic::<Word, TORDER_LOWHIGH, false>(
+                    addr,
+                    (v >> 16) as Word,
+                )
             }
-            _ => self.write_ticks_order::<T, TORDER_LOWHIGH>(addr, value),
+            _ => self.write_ticks_order_generic::<T, TORDER_LOWHIGH, false>(addr, value),
         }
     }
 
@@ -191,10 +196,19 @@ where
         o_paddr: Address,
         value: T,
     ) -> Result<()> {
-        let paddr = if CPU_TYPE == 68000 && std::mem::size_of::<T>() > 1 {
-            o_paddr & !1
+        self.write_ticks_order_generic::<T, TORDER, true>(o_paddr, value)
+    }
+
+    #[inline(always)]
+    fn write_ticks_order_generic<T: CpuSized, const TORDER: usize, const PHYSICAL: bool>(
+        &mut self,
+        o_addr: Address,
+        value: T,
+    ) -> Result<()> {
+        let addr = if CPU_TYPE == 68000 && std::mem::size_of::<T>() > 1 {
+            o_addr & !1
         } else {
-            o_paddr
+            o_addr
         };
         let len = std::mem::size_of::<T>();
 
@@ -202,7 +216,11 @@ where
             TORDER_LOWHIGH => {
                 let mut val: Long = value.to_be().into();
                 for a in 0..len {
-                    let byte_addr = paddr.wrapping_add(a as Address) & ADDRESS_MASK;
+                    let byte_addr = if PHYSICAL || !PMMU {
+                        addr.wrapping_add(a as Address) & ADDRESS_MASK
+                    } else {
+                        self.pmmu_translate(addr.wrapping_add(a as Address) & ADDRESS_MASK, true)?
+                    };
                     let b = val as u8;
                     val >>= 8;
 
@@ -229,17 +247,23 @@ where
                         self.breakpoint_hit.set();
                     }
 
-                    if a == 1 {
+                    if CPU_TYPE == M68000 && a == 1 {
                         // Address errors occur AFTER the first Word was accessed and not at all if
                         // it is a byte access, so this is the perfect time to check.
-                        self.verify_access_physical::<T>(o_paddr, true)?;
+                        //
+                        // 68000 only addresses physical pages so no translation needed here.
+                        self.verify_access_physical::<T>(o_addr, true)?;
                     }
                 }
             }
             TORDER_HIGHLOW => {
                 let mut val: Long = value.into();
                 for a in (0..len).rev() {
-                    let byte_addr = paddr.wrapping_add(a as Address) & ADDRESS_MASK;
+                    let byte_addr = if PHYSICAL || !PMMU {
+                        addr.wrapping_add(a as Address) & ADDRESS_MASK
+                    } else {
+                        self.pmmu_translate(addr.wrapping_add(a as Address) & ADDRESS_MASK, true)?
+                    };
                     let b = val as u8;
                     val >>= 8;
 
@@ -266,10 +290,12 @@ where
                         self.breakpoint_hit.set();
                     }
 
-                    if a == 2 {
+                    if CPU_TYPE == M68000 && a == 2 {
                         // Address errors occur AFTER the first Word was accessed and not at all if
                         // it is a byte access, so this is the perfect time to check.
-                        self.verify_access_physical::<T>(o_paddr, true)?;
+                        //
+                        // 68000 only addresses physical pages so no translation needed here.
+                        self.verify_access_physical::<T>(o_addr, true)?;
                     }
                 }
             }
@@ -290,7 +316,9 @@ where
             self.advance_cycles(4)?;
 
             // 1 bus cycle penalty for unaligned access
-            if (len == 2 && (paddr & 0b01) != 0) || (len == 4 && (paddr & 0b11) != 0) {
+            // We check this on the virtual address, but that is fine, given the
+            // PMMUs minimum page size is 256 bytes.
+            if (len == 2 && (addr & 0b01) != 0) || (len == 4 && (addr & 0b11) != 0) {
                 self.advance_cycles(4)?;
             }
         }
