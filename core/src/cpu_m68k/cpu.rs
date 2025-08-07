@@ -466,11 +466,11 @@ where
             } else {
                 // Cache miss and cache frozen, normal fetch
                 self.history_current.icache_miss = true;
-                self.read_ticks::<Word>(fetch_addr)?
+                self.read_ticks_program::<Word>(fetch_addr)?
             }
         } else {
             // Cache disabled/not available
-            self.read_ticks::<Word>(fetch_addr)?
+            self.read_ticks_program::<Word>(fetch_addr)?
         };
         self.prefetch.push_back(new_item);
         self.regs.pc = (self.regs.pc + 2) & ADDRESS_MASK;

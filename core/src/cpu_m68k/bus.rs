@@ -8,11 +8,45 @@ use crate::types::Word;
 
 use anyhow::{bail, Result};
 
+// M68k UM 3.8
+pub const FC_UNUSED: u8 = 0;
+pub const FC_USER_DATA: u8 = 1;
+pub const FC_USER_PROGRAM: u8 = 2;
+pub const FC_SUPERVISOR_DATA: u8 = 5;
+pub const FC_SUPERVISOR_PROGRAM: u8 = 6;
+pub const FC_MASK: u8 = 0b1111;
+
 impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
     CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
+    #[inline(always)]
+    fn fc_data(&self) -> u8 {
+        if PMMU {
+            if self.regs.sr.supervisor() {
+                FC_SUPERVISOR_DATA
+            } else {
+                FC_USER_DATA
+            }
+        } else {
+            FC_UNUSED
+        }
+    }
+
+    #[inline(always)]
+    fn fc_program(&self) -> u8 {
+        if PMMU {
+            if self.regs.sr.supervisor() {
+                FC_SUPERVISOR_PROGRAM
+            } else {
+                FC_USER_PROGRAM
+            }
+        } else {
+            FC_UNUSED
+        }
+    }
+
     /// Checks if an access needs to fail and raise bus error on alignment errors
     fn verify_access_physical<T: CpuSized>(&self, paddr: Address, read: bool) -> Result<()> {
         if std::mem::size_of::<T>() >= 2 && (paddr & 1) != 0 {
@@ -39,9 +73,18 @@ where
     }
 
     /// Reads a value from the bus and spends ticks.
-    /// Virtual address version
+    /// Virtual address version, data FC
     pub(in crate::cpu_m68k) fn read_ticks<T: CpuSized>(&mut self, vaddr: Address) -> Result<T> {
-        self.read_ticks_generic::<T, false>(vaddr)
+        self.read_ticks_generic::<T, false>(self.fc_data(), vaddr)
+    }
+
+    /// Reads a value from the bus and spends ticks.
+    /// Virtual address version, program FC
+    pub(in crate::cpu_m68k) fn read_ticks_program<T: CpuSized>(
+        &mut self,
+        vaddr: Address,
+    ) -> Result<T> {
+        self.read_ticks_generic::<T, false>(self.fc_program(), vaddr)
     }
 
     /// Reads a value from the bus and spends ticks.
@@ -50,12 +93,14 @@ where
         &mut self,
         o_paddr: Address,
     ) -> Result<T> {
-        self.read_ticks_generic::<T, true>(o_paddr)
+        // FC unused for physical addressing
+        self.read_ticks_generic::<T, true>(FC_UNUSED, o_paddr)
     }
 
     #[inline(always)]
     fn read_ticks_generic<T: CpuSized, const PHYSICAL: bool>(
         &mut self,
+        fc: u8,
         o_addr: Address,
     ) -> Result<T> {
         let len = std::mem::size_of::<T>();
@@ -71,7 +116,7 @@ where
             let byte_addr = if PHYSICAL || !PMMU {
                 addr.wrapping_add(a as Address) & ADDRESS_MASK
             } else {
-                self.pmmu_translate(addr.wrapping_add(a as Address) & ADDRESS_MASK, false)?
+                self.pmmu_translate(fc, addr.wrapping_add(a as Address), false)?
             };
             let b: T =
                 loop {
@@ -148,13 +193,13 @@ where
     }
 
     /// Writes a value to the bus (big endian) and spends ticks.
-    /// Virtual address version
+    /// Virtual address version, data FC
     pub(in crate::cpu_m68k) fn write_ticks<T: CpuSized>(
         &mut self,
         vaddr: Address,
         value: T,
     ) -> Result<()> {
-        self.write_ticks_order_generic::<T, TORDER_LOWHIGH, false>(vaddr, value)
+        self.write_ticks_order_generic::<T, TORDER_LOWHIGH, false>(self.fc_data(), vaddr, value)
     }
 
     /// Writes a value to the bus (big endian) and spends ticks.
@@ -164,7 +209,7 @@ where
         vaddr: Address,
         value: T,
     ) -> Result<()> {
-        self.write_ticks_order_generic::<T, TORDER, false>(vaddr, value)
+        self.write_ticks_order_generic::<T, TORDER, false>(self.fc_data(), vaddr, value)
     }
 
     /// Writes a value to the bus (big endian) and spends ticks, but writes
@@ -179,15 +224,21 @@ where
             4 => {
                 let v: Long = value.expand();
                 self.write_ticks_order_generic::<Word, TORDER_LOWHIGH, false>(
+                    self.fc_data(),
                     addr.wrapping_add(2),
                     v as Word,
                 )?;
                 self.write_ticks_order_generic::<Word, TORDER_LOWHIGH, false>(
+                    self.fc_data(),
                     addr,
                     (v >> 16) as Word,
                 )
             }
-            _ => self.write_ticks_order_generic::<T, TORDER_LOWHIGH, false>(addr, value),
+            _ => self.write_ticks_order_generic::<T, TORDER_LOWHIGH, false>(
+                self.fc_data(),
+                addr,
+                value,
+            ),
         }
     }
 
@@ -196,12 +247,13 @@ where
         o_paddr: Address,
         value: T,
     ) -> Result<()> {
-        self.write_ticks_order_generic::<T, TORDER, true>(o_paddr, value)
+        self.write_ticks_order_generic::<T, TORDER, true>(FC_UNUSED, o_paddr, value)
     }
 
     #[inline(always)]
     fn write_ticks_order_generic<T: CpuSized, const TORDER: usize, const PHYSICAL: bool>(
         &mut self,
+        fc: u8,
         o_addr: Address,
         value: T,
     ) -> Result<()> {
@@ -219,7 +271,7 @@ where
                     let byte_addr = if PHYSICAL || !PMMU {
                         addr.wrapping_add(a as Address) & ADDRESS_MASK
                     } else {
-                        self.pmmu_translate(addr.wrapping_add(a as Address) & ADDRESS_MASK, true)?
+                        self.pmmu_translate(fc, addr.wrapping_add(a as Address), true)?
                     };
                     let b = val as u8;
                     val >>= 8;
@@ -262,7 +314,7 @@ where
                     let byte_addr = if PHYSICAL || !PMMU {
                         addr.wrapping_add(a as Address) & ADDRESS_MASK
                     } else {
-                        self.pmmu_translate(addr.wrapping_add(a as Address) & ADDRESS_MASK, true)?
+                        self.pmmu_translate(fc, addr.wrapping_add(a as Address), true)?
                     };
                     let b = val as u8;
                     val >>= 8;
