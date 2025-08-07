@@ -204,7 +204,7 @@ pub enum HistoryEntry {
 #[derive(Default, Clone, PartialEq, Eq)]
 pub struct HistoryEntryInstruction {
     pub pc: Address,
-    pub raw: ArrayVec<u8, 12>,
+    pub raw: ArrayVec<u8, 24>,
     pub cycles: Ticks,
     pub initial_regs: Option<RegisterFile>,
     pub final_regs: Option<RegisterFile>,
