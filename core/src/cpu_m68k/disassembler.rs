@@ -11,6 +11,7 @@ use crate::bus::Address;
 use crate::cpu_m68k::instruction::{
     BfxExtWord, DivlExtWord, IndexSize, MemoryIndirectAction, MulxExtWord, Xn,
 };
+use crate::cpu_m68k::pmmu::instruction::PtestExtword;
 use crate::cpu_m68k::regs::Register;
 use crate::types::{Byte, Word};
 
@@ -1149,7 +1150,29 @@ impl<'a> Disassembler<'a> {
                     "PMOVE3".to_string()
                 } else if extword & 0b1110_0000_0000_0000 == 0b1000_0000_0000_0000 {
                     // PTEST
-                    format!("PTEST {}", self.ea(instr)?)
+                    let extword = PtestExtword(extword);
+                    let fc = if extword.fc() & 0b10000 != 0 {
+                        format!("{}", extword.fc() & 0b1111)
+                    } else if extword.fc() & 0b11000 == 0b01000 {
+                        format!("D{}", extword.fc() & 0b111)
+                    } else if extword.fc() & 0b11111 == 0 {
+                        "SFC".to_string()
+                    } else if extword.fc() & 0b11111 == 1 {
+                        "DFC".to_string()
+                    } else {
+                        "<invalid>".to_string()
+                    };
+                    format!(
+                        "PTEST {},{},#{}{}",
+                        fc,
+                        self.ea(instr)?,
+                        extword.level(),
+                        if extword.a_set() {
+                            format!(",A{}", extword.an())
+                        } else {
+                            "".to_string()
+                        }
+                    )
                 } else {
                     format!("P??? {:04X}", extword)
                 }
