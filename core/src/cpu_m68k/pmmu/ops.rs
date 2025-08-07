@@ -44,11 +44,12 @@ where
             self.op_ptest(instr, extword)
         } else {
             // Unknown instruction
-            bail!(
+            log::warn!(
                 "Unimplemented PMMU op 000: {:016b} {:016b}",
                 instr.data,
                 extword
             );
+            return self.op_linef(instr);
         }
     }
 
