@@ -3,6 +3,7 @@
 use anyhow::{bail, Result};
 
 use crate::bus::{Address, Bus, IrqSource};
+use crate::cpu_m68k::bus::FC_MASK;
 use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_PRIVILEGE_VIOLATION};
 use crate::cpu_m68k::instruction::Instruction;
 use crate::cpu_m68k::pmmu::instruction::{Pmove3Extword, PtestExtword};
@@ -164,8 +165,20 @@ where
     ) -> Result<()> {
         let extword = PtestExtword(extword);
 
+        let fc = if extword.fc() & 0b10000 != 0 {
+            extword.fc() & 0b1111
+        } else if extword.fc() & 0b11000 == 0b01000 {
+            self.regs.read_d(usize::from(extword.fc() & 0b111))
+        } else if extword.fc() & 0b11111 == 0 {
+            self.regs.sfc as u8
+        } else if extword.fc() & 0b11111 == 1 {
+            self.regs.dfc as u8
+        } else {
+            bail!("Invalid FC in PTEST: {:05b}", extword.fc());
+        } & FC_MASK;
+
         let vaddr = self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-        let result = self.pmmu_translate_lookup::<true>(vaddr, !extword.read());
+        let result = self.pmmu_translate_lookup::<true>(fc, vaddr, !extword.read());
         log::debug!("PTEST {:08X} {:?} {:?}", vaddr, self.regs.pmmu.psr, result);
         match result {
             Ok(_paddr) => {

@@ -58,13 +58,16 @@ where
         self.pmmu_cache.fill(None);
     }
 
-    fn pmmu_rootptr(&self) -> RootPointerReg {
-        // TODO FC?
-        if self.regs.pmmu.tc.sre() {
-            todo!();
+    fn pmmu_rootptr(&self, fc: u8) -> RootPointerReg {
+        // M68851 manual 5.1.4.2
+        // + Table 3-1, M68000 Family Function Code Assignments
+        //
+        // FC3 is not output by the 68020 so we ignore DRP here
+        if fc & (1 << 2) != 0 && self.regs.pmmu.tc.sre() {
+            self.regs.pmmu.srp
+        } else {
+            self.regs.pmmu.crp
         }
-
-        self.regs.pmmu.crp
     }
 
     fn pmmu_fetch_table(
@@ -115,6 +118,7 @@ where
 
     pub(in crate::cpu_m68k) fn pmmu_translate(
         &mut self,
+        fc: u8,
         vaddr: Address,
         writing: bool,
     ) -> Result<Address> {
@@ -129,7 +133,7 @@ where
             return Ok(cached_paddr | (vaddr & page_mask));
         }
 
-        self.pmmu_translate_lookup::<false>(vaddr, writing)
+        self.pmmu_translate_lookup::<false>(fc, vaddr, writing)
             .inspect(|paddr| {
                 let cache_key = ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize;
                 self.pmmu_cache[cache_key] = Some(*paddr & !page_mask);
@@ -139,10 +143,11 @@ where
     /// Perform address translation by performing a page table lookup
     pub(in crate::cpu_m68k) fn pmmu_translate_lookup<const PTEST: bool>(
         &mut self,
+        fc: u8,
         vaddr: Address,
         writing: bool,
     ) -> Result<Address> {
-        let rootptr = self.pmmu_rootptr();
+        let rootptr = self.pmmu_rootptr(fc);
 
         if PTEST {
             self.regs.pmmu.psr = RegisterPSR::default();
