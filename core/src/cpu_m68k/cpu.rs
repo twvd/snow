@@ -1104,7 +1104,8 @@ where
             InstructionMnemonic::TST_b => self.op_tst::<Byte>(instr),
             InstructionMnemonic::TST_w => self.op_tst::<Word>(instr),
             InstructionMnemonic::TST_l => self.op_tst::<Long>(instr),
-            InstructionMnemonic::LINK => self.op_link(instr),
+            InstructionMnemonic::LINK_w => self.op_link_w(instr),
+            InstructionMnemonic::LINK_l => self.op_link_l(instr),
             InstructionMnemonic::UNLINK => self.op_unlink(instr),
             InstructionMnemonic::RESET => self.op_reset(instr),
             InstructionMnemonic::RTE => self.op_rte(instr),
@@ -2287,8 +2288,8 @@ where
         Ok(())
     }
 
-    /// LINK
-    fn op_link(&mut self, instr: &Instruction) -> Result<()> {
+    /// LINK.w
+    fn op_link_w(&mut self, instr: &Instruction) -> Result<()> {
         let sp = self.regs.read_a::<Address>(7).wrapping_sub(4);
         let addr = self.regs.read_a::<Address>(instr.get_op2());
 
@@ -2299,6 +2300,25 @@ where
         self.regs.read_a_predec::<Address>(7, 4);
         self.regs
             .write_a(7, sp.wrapping_add_signed(instr.get_displacement()?));
+
+        Ok(())
+    }
+
+    /// LINK.l
+    fn op_link_l(&mut self, instr: &Instruction) -> Result<()> {
+        let sp = self.regs.read_a::<Address>(7).wrapping_sub(4);
+        let addr = self.regs.read_a::<Address>(instr.get_op2());
+
+        let displacement = {
+            let msb = self.fetch_pump()? as Long;
+            let lsb = self.fetch_pump()? as Long;
+            ((msb << 16) | lsb) as i32
+        };
+
+        self.write_ticks(sp, addr)?;
+        self.regs.write_a(instr.get_op2(), sp);
+        self.regs.read_a_predec::<Address>(7, 4);
+        self.regs.write_a(7, sp.wrapping_add_signed(displacement));
 
         Ok(())
     }

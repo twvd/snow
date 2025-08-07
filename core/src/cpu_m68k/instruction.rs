@@ -164,7 +164,8 @@ pub enum InstructionMnemonic {
     LEA,
     LINEA,
     LINEF,
-    LINK,
+    LINK_w,
+    LINK_l,
     UNLINK,
     MOVE_w,
     MOVE_l,
@@ -565,6 +566,9 @@ impl Clone for Instruction {
 impl Instruction {
     #[rustfmt::skip]
     const DECODE_TABLE: &'static [(CpuM68kType, u16, u16, InstructionMnemonic)] = &[
+        // Overlaps with NBCD so needs to be first
+        (M68020, 0b0100_1000_0000_1000, 0b1111_1111_1111_1000, InstructionMnemonic::LINK_l),
+
         (M68000, 0b0000_0000_0011_1100, 0b1111_1111_1111_1111, InstructionMnemonic::ORI_ccr),
         (M68000, 0b0000_0000_0111_1100, 0b1111_1111_1111_1111, InstructionMnemonic::ORI_sr),
         (M68000, 0b0000_0000_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::ORI_b),
@@ -633,7 +637,7 @@ impl Instruction {
         (M68000, 0b0100_1010_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::TST_w),
         (M68000, 0b0100_1010_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::TST_l),
         (M68000, 0b0100_1110_0100_0000, 0b1111_1111_1111_0000, InstructionMnemonic::TRAP),
-        (M68000, 0b0100_1110_0101_0000, 0b1111_1111_1111_1000, InstructionMnemonic::LINK),
+        (M68000, 0b0100_1110_0101_0000, 0b1111_1111_1111_1000, InstructionMnemonic::LINK_w),
         (M68000, 0b0100_1110_0101_1000, 0b1111_1111_1111_1000, InstructionMnemonic::UNLINK),
         (M68000, 0b0100_1110_0111_0000, 0b1111_1111_1111_1111, InstructionMnemonic::RESET),
         (M68000, 0b0100_1110_0111_0001, 0b1111_1111_1111_1111, InstructionMnemonic::NOP),
@@ -925,7 +929,7 @@ impl Instruction {
                 || self.get_addr_mode().unwrap() == AddressingMode::PCDisplacement
                 || self.mnemonic == InstructionMnemonic::MOVEP_l
                 || self.mnemonic == InstructionMnemonic::MOVEP_w
-                || self.mnemonic == InstructionMnemonic::LINK
+                || self.mnemonic == InstructionMnemonic::LINK_w
                 || self.mnemonic == InstructionMnemonic::Bcc
                 || self.mnemonic == InstructionMnemonic::DBcc
                 || self.mnemonic == InstructionMnemonic::BSR
@@ -1009,6 +1013,7 @@ impl Instruction {
             | InstructionMnemonic::EOR_l
             | InstructionMnemonic::EORI_l
             | InstructionMnemonic::EXT_l
+            | InstructionMnemonic::LINK_l
             | InstructionMnemonic::LSL_l
             | InstructionMnemonic::LSR_l
             | InstructionMnemonic::OR_l
@@ -1059,6 +1064,7 @@ impl Instruction {
             | InstructionMnemonic::LSR_w
             | InstructionMnemonic::OR_w
             | InstructionMnemonic::ORI_w
+            | InstructionMnemonic::LINK_w
             | InstructionMnemonic::MOVE_w
             | InstructionMnemonic::MOVEA_w
             | InstructionMnemonic::MOVEP_w
@@ -1175,7 +1181,6 @@ impl Instruction {
             | InstructionMnemonic::LEA
             | InstructionMnemonic::LINEA
             | InstructionMnemonic::LINEF
-            | InstructionMnemonic::LINK
             | InstructionMnemonic::UNLINK
             | InstructionMnemonic::MOVEQ
             | InstructionMnemonic::PEA

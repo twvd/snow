@@ -782,14 +782,20 @@ impl<'a> Disassembler<'a> {
                 format!("{}.{} {},{}", mnemonic, sz, left, right)
             }
 
-            InstructionMnemonic::LINK => {
+            InstructionMnemonic::LINK_w => {
                 instr.fetch_extword(|| self.get16())?;
                 format!(
-                    "{} A{},#{}",
+                    "{}.{} A{},#{}",
                     mnemonic,
+                    sz,
                     instr.get_op2(),
                     instr.get_displacement()?
                 )
+            }
+
+            InstructionMnemonic::LINK_l => {
+                let displacement = self.get32()?;
+                format!("{}.{} A{},#{}", mnemonic, sz, instr.get_op2(), displacement)
             }
 
             InstructionMnemonic::UNLINK => format!("{} A{}", mnemonic, instr.get_op2()),
