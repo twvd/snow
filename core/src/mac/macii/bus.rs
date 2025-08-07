@@ -512,6 +512,9 @@ where
             if let Some((addr, value)) = self.model.disable_memtest() {
                 self.write_ram(addr, value);
             }
+
+            self.ram_dirty
+                .extend(0..(self.ram.len() / RAM_DIRTY_PAGESIZE));
         }
 
         // Keep the RTC and ADB for PRAM and event channels
