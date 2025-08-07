@@ -772,7 +772,7 @@ impl Instruction {
 
         // M68851 PMMU instructions
         (M68020, 0b1111_0000_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::POP_000),
-        
+
         (M68000, 0b1111_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::LINEF),
     ];
 
