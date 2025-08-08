@@ -197,6 +197,22 @@ impl MacModel {
             Self::MacII | Self::MacIIFDHD => M68020,
         }
     }
+
+    pub fn via1_a_in(self) -> via::RegisterA {
+        match self {
+            Self::Early128K
+            | Self::Early512K
+            | Self::Early512Ke
+            | Self::Plus
+            | Self::SE
+            | Self::SeFdhd => via::RegisterA(0xFF),
+            Self::Classic => {
+                // Mac Classic has a pulldown (R79) as model identifier
+                via::RegisterA(0xFF).with_sndpg2(false)
+            }
+            Self::MacII | Self::MacIIFDHD => via::RegisterA(0).with_model(1),
+        }
+    }
 }
 
 impl MacModel {
