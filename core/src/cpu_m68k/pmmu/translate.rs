@@ -9,6 +9,11 @@ use arrayvec::ArrayVec;
 use num_traits::FromPrimitive;
 use proc_bitfield::bitfield;
 
+/// Index in CpuM68k::pmmu_atc tables when URP is in use
+pub(in crate::cpu_m68k) const PMMU_ATC_URP: usize = 0;
+/// Index in CpuM68k::pmmu_atc tables when SRP is in use
+pub(in crate::cpu_m68k) const PMMU_ATC_SRP: usize = 0;
+
 bitfield! {
     /// Short format page descriptor
     #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -51,13 +56,16 @@ where
 
         let cache_size =
             (Address::MAX >> (self.regs.pmmu.tc.is() + self.regs.pmmu.tc.ps() as Address)) as usize;
-        if self.pmmu_cache.len() < cache_size {
-            log::debug!("Allocating cache size: {}", cache_size);
-            self.pmmu_cache.resize(cache_size, None);
+        if self.pmmu_atc.iter().map(|atc| atc.len()).min().unwrap() < cache_size {
+            log::debug!("Expanding cache size: {}", cache_size);
+            self.pmmu_atc
+                .iter_mut()
+                .for_each(|atc| atc.resize(cache_size, None));
         }
-        self.pmmu_cache.fill(None);
+        self.pmmu_atc.iter_mut().for_each(|atc| atc.fill(None));
     }
 
+    #[inline(always)]
     fn pmmu_rootptr(&self, fc: u8) -> RootPointerReg {
         // M68851 manual 5.1.4.2
         // + Table 3-1, M68000 Family Function Code Assignments
@@ -67,6 +75,19 @@ where
             self.regs.pmmu.srp
         } else {
             self.regs.pmmu.crp
+        }
+    }
+
+    #[inline(always)]
+    fn pmmu_atc_tableidx(&self, fc: u8) -> usize {
+        // M68851 manual 5.1.4.2
+        // + Table 3-1, M68000 Family Function Code Assignments
+        //
+        // FC3 is not output by the 68020 so we ignore DRP here
+        if fc & (1 << 2) != 0 && self.regs.pmmu.tc.sre() {
+            PMMU_ATC_SRP
+        } else {
+            PMMU_ATC_URP
         }
     }
 
@@ -126,17 +147,18 @@ where
             return Ok(vaddr);
         }
 
+        let atc = self.pmmu_atc_tableidx(fc);
         let is_mask = Address::MAX.unbounded_shl(32 - self.regs.pmmu.tc.is());
         let page_mask = (1u32 << self.regs.pmmu.tc.ps()) - 1;
         let cache_key = ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize;
-        if let Some(cached_paddr) = self.pmmu_cache[cache_key] {
+        if let Some(cached_paddr) = self.pmmu_atc[atc][cache_key] {
             return Ok(cached_paddr | (vaddr & page_mask));
         }
 
         self.pmmu_translate_lookup::<false>(fc, vaddr, writing)
             .inspect(|paddr| {
                 let cache_key = ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize;
-                self.pmmu_cache[cache_key] = Some(*paddr & !page_mask);
+                self.pmmu_atc[atc][cache_key] = Some(*paddr & !page_mask);
             })
     }
 
