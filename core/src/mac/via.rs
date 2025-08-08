@@ -25,9 +25,11 @@ bitfield! {
     /// VIA Register A (for classic models)
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct RegisterA(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
-        /// Sound volume
-        /// Reserved on Mac II
+        /// Sound volume (non-ASC models)
         pub sound: u8 @ 0..=2,
+
+        /// Model sense (Mac II)
+        pub model: u8 @ 0..=2,
 
         /// Sound buffer
         /// (true = main, false = alternate)
@@ -239,16 +241,7 @@ impl Via {
             model,
             a_out: RegisterA(0xFF),
             b_out: RegisterB(0xFF),
-            a_in: RegisterA(0xFF)
-                .with_sndpg2(
-                    // Mac Classic has a pulldown (R79) as model identifier
-                    model != MacModel::Classic,
-                )
-                .with_page2(
-                    // On Mac II low for model detection
-                    model != MacModel::MacII,
-                )
-                .with_sound(if model == MacModel::MacII { 0 } else { 3 }),
+            a_in: model.via1_a_in(),
             b_in: RegisterB(0xFF),
             ddra: RegisterA(0xFF),
             ddrb: RegisterB(0xFF),
