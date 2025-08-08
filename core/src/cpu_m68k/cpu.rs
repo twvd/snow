@@ -290,9 +290,15 @@ where
     systrap_history: VecDeque<SystrapHistoryEntry>,
     systrap_history_enabled: bool,
 
-    /// PMMU translation cache
+    /// PMMU address translation caches
+    /// The index is either PMMU_ATC_URP or PMMU_ATC_SRP, depending on which root
+    /// pointer is used in the translation.
+    ///
+    /// The caching method used is a one-dimensional lookup table where the
+    /// index is the page, allowing for O(1) lookup. The cache is expanded on
+    /// the fly (never shrunk).
     //#[serde(skip)]
-    pub(in crate::cpu_m68k) pmmu_cache: Vec<Option<Address>>,
+    pub(in crate::cpu_m68k) pmmu_atc: [Vec<Option<Address>>; 2],
 
     /// 68020+ I-cache lines
     icache_lines: [[u8; ICACHE_LINE_SIZE]; ICACHE_LINES],
@@ -300,6 +306,9 @@ where
     /// 68020+ I-cache tags
     icache_tags: [u32; ICACHE_LINES],
 
+    /// Register state at the beginning of an instruction to allow
+    /// restarting an instruction that caused a mid-instruction
+    /// bus fault.
     pub(in crate::cpu_m68k) restart_regs: Option<RegisterFile>,
 }
 
@@ -332,7 +341,7 @@ where
             history_enabled: false,
             systrap_history: VecDeque::with_capacity(Self::HISTORY_SIZE),
             systrap_history_enabled: false,
-            pmmu_cache: vec![],
+            pmmu_atc: Default::default(),
             icache_lines: core::array::from_fn(|_| Default::default()),
             icache_tags: [ICACHE_TAG_INVALID; ICACHE_LINES],
             restart_regs: None,
