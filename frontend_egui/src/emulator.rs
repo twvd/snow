@@ -102,12 +102,14 @@ pub struct EmulatorState {
     ram_update: VecDeque<(Address, Vec<u8>)>,
     record_input_path: Option<PathBuf>,
     instruction_history: Vec<HistoryEntry>,
-    instruction_history_enabled: bool,
     systrap_history: Vec<SystrapHistoryEntry>,
-    systrap_history_enabled: bool,
     peripheral_debug: DebuggableProperties,
-    peripheral_debug_enabled: bool,
     scc_tx: [VecDeque<u8>; 2],
+
+    // Clear these when emulator is de-initialized
+    instruction_history_enabled: bool,
+    peripheral_debug_enabled: bool,
+    systrap_history_enabled: bool,
 }
 
 impl EmulatorState {
@@ -293,6 +295,10 @@ impl EmulatorState {
             self.status = None;
             self.record_input_path = None;
         }
+
+        self.instruction_history_enabled = false;
+        self.systrap_history_enabled = false;
+        self.peripheral_debug_enabled = false;
     }
 
     pub fn reset(&self) {
