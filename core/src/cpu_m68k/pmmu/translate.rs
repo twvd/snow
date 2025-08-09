@@ -147,6 +147,17 @@ where
             return Ok(vaddr);
         }
 
+        // This is formally tested in PMOVE when translation is enabled
+        debug_assert_eq!(
+            self.regs.pmmu.tc.is() as u32
+                + self.regs.pmmu.tc.tia() as u32
+                + self.regs.pmmu.tc.tib() as u32
+                + self.regs.pmmu.tc.tic() as u32
+                + self.regs.pmmu.tc.tid() as u32
+                + self.regs.pmmu.tc.ps() as u32,
+            32
+        );
+
         let atc = self.pmmu_atc_tableidx(fc);
         let is_mask = Address::MAX.unbounded_shl(32 - self.regs.pmmu.tc.is());
         let page_mask = (1u32 << self.regs.pmmu.tc.ps()) - 1;
@@ -231,7 +242,7 @@ where
                 _ => e,
             })?;
 
-        let mask = 0xFFFFFFFF >> used_bits;
+        let mask = 0xFFFFFFFFu32.unbounded_shr(used_bits);
         let paddr = (page_addr & !mask) | (vaddr & mask);
 
         if PTEST {
