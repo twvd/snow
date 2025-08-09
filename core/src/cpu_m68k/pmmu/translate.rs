@@ -12,7 +12,7 @@ use proc_bitfield::bitfield;
 /// Index in CpuM68k::pmmu_atc tables when URP is in use
 pub(in crate::cpu_m68k) const PMMU_ATC_URP: usize = 0;
 /// Index in CpuM68k::pmmu_atc tables when SRP is in use
-pub(in crate::cpu_m68k) const PMMU_ATC_SRP: usize = 0;
+pub(in crate::cpu_m68k) const PMMU_ATC_SRP: usize = 1;
 
 bitfield! {
     /// Short format page descriptor
