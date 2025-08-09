@@ -523,6 +523,7 @@ where
         self.step_ea_addr = None;
         self.step_exception = false;
         self.step_over_addr = None;
+        self.step_ea_load = None;
 
         if PMMU {
             self.restart_regs = Some(self.regs.clone());
