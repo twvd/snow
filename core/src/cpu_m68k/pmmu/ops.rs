@@ -73,6 +73,16 @@ where
                 let newval = TcReg(self.read_ea(instr, instr.get_op2())?);
                 self.regs.pmmu.tc = newval;
                 if newval.enable() {
+                    if newval.is() as u32
+                        + newval.tia() as u32
+                        + newval.tib() as u32
+                        + newval.tic() as u32
+                        + newval.tid() as u32
+                        + newval.ps() as u32
+                        != 32
+                    {
+                        bail!("Invalid PMMU configuration: {:?}", newval);
+                    }
                     self.pmmu_cache_invalidate();
                 }
             }
