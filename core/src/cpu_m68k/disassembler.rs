@@ -11,6 +11,7 @@ use crate::bus::Address;
 use crate::cpu_m68k::instruction::{
     BfxExtWord, DivlExtWord, IndexSize, MemoryIndirectAction, MulxExtWord, Xn,
 };
+use crate::cpu_m68k::pmmu::instruction::PtestExtword;
 use crate::cpu_m68k::regs::Register;
 use crate::types::{Byte, Word};
 
@@ -18,6 +19,7 @@ use super::fpu::instruction::{FmoveControlReg, FmoveExtWord};
 use super::instruction::{
     AddressingMode, Direction, Instruction, InstructionMnemonic, InstructionSize,
 };
+use super::pmmu::instruction::Pmove1Extword;
 use super::CpuM68kType;
 
 #[derive(Clone)]
@@ -384,6 +386,8 @@ impl<'a> Disassembler<'a> {
             InstructionMnemonic::Bcc | InstructionMnemonic::BSR => {
                 let displacement = if instr.get_bxx_displacement() == 0 {
                     self.get16()? as i16 as i32
+                } else if instr.get_bxx_displacement_raw() == 0xFF {
+                    self.get32()? as i32
                 } else {
                     instr.get_bxx_displacement()
                 };
@@ -394,7 +398,9 @@ impl<'a> Disassembler<'a> {
                     } else {
                         "SR"
                     },
-                    if instr.get_bxx_displacement() == 0 {
+                    if instr.get_bxx_displacement_raw() == 0xFF {
+                        'l'
+                    } else if instr.get_bxx_displacement() == 0 {
                         'w'
                     } else {
                         'b'
@@ -760,14 +766,20 @@ impl<'a> Disassembler<'a> {
                 format!("{}.{} {},{}", mnemonic, sz, left, right)
             }
 
-            InstructionMnemonic::LINK => {
+            InstructionMnemonic::LINK_w => {
                 instr.fetch_extword(|| self.get16())?;
                 format!(
-                    "{} A{},#{}",
+                    "{}.{} A{},#{}",
                     mnemonic,
+                    sz,
                     instr.get_op2(),
                     instr.get_displacement()?
                 )
+            }
+
+            InstructionMnemonic::LINK_l => {
+                let displacement = self.get32()?;
+                format!("{}.{} A{},#{}", mnemonic, sz, instr.get_op2(), displacement)
             }
 
             InstructionMnemonic::UNLINK => format!("{} A{}", mnemonic, instr.get_op2()),
@@ -1081,6 +1093,71 @@ impl<'a> Disassembler<'a> {
                     let dc = (extword & 0b111) as usize;
                     let du = ((extword >> 6) & 0b111) as usize;
                     format!("{}.{} D{},D{},{}", mnemonic, sz, dc, du, self.ea(instr)?)
+                }
+            }
+
+            // M68851 PMMU
+            InstructionMnemonic::POP_000 => {
+                let extword = self.get16()?;
+
+                if extword & 0b1110_0001_0000_0000 == 0b0010_0000_0000_0000 {
+                    // PFLUSH
+                    "PFLUSH".to_string()
+                } else if extword == 0b1010_0000_0000_0000 {
+                    // PFLUSHR
+                    "PFLUSHR".to_string()
+                } else if extword & 0b1110_0001_1111_1111 == 0b0100_0000_0000_0000 {
+                    // PMOVE (format 1)
+                    let extword = Pmove1Extword(extword);
+                    let preg = match extword.preg() {
+                        0b000 => "PTC",
+                        0b001 => "PDRP",
+                        0b010 => "PSRP",
+                        0b011 => "PCRP",
+                        0b100 => "PCAL",
+                        0b101 => "PVAL",
+                        0b110 => "PSCC",
+                        0b111 => "PAC",
+                        _ => unreachable!(),
+                    };
+                    if extword.write() {
+                        format!("PMOVE {},{}", preg, self.ea(instr)?)
+                    } else {
+                        format!("PMOVE {},{}", self.ea(instr)?, preg)
+                    }
+                } else if extword & 0b1110_0001_1110_0011 == 0b0110_0000_0000_0000 {
+                    // PMOVE (format 2)
+                    "PMOVE2".to_string()
+                } else if extword & 0b1110_0011_1111_1111 == 0b0110_0000_0000_0000 {
+                    // PMOVE (format 3)
+                    "PMOVE3".to_string()
+                } else if extword & 0b1110_0000_0000_0000 == 0b1000_0000_0000_0000 {
+                    // PTEST
+                    let extword = PtestExtword(extword);
+                    let fc = if extword.fc() & 0b10000 != 0 {
+                        format!("{}", extword.fc() & 0b1111)
+                    } else if extword.fc() & 0b11000 == 0b01000 {
+                        format!("D{}", extword.fc() & 0b111)
+                    } else if extword.fc() & 0b11111 == 0 {
+                        "SFC".to_string()
+                    } else if extword.fc() & 0b11111 == 1 {
+                        "DFC".to_string()
+                    } else {
+                        "<invalid>".to_string()
+                    };
+                    format!(
+                        "PTEST {},{},#{}{}",
+                        fc,
+                        self.ea(instr)?,
+                        extword.level(),
+                        if extword.a_set() {
+                            format!(",A{}", extword.an())
+                        } else {
+                            "".to_string()
+                        }
+                    )
+                } else {
+                    format!("P??? {:04X}", extword)
                 }
             }
         };

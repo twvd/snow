@@ -1,6 +1,7 @@
 //! M68k CPU - Effective Address / Addressing modes handling
 
 use anyhow::{bail, Result};
+use arrayvec::ArrayVec;
 
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::instruction::MemoryIndirectAction;
@@ -10,8 +11,8 @@ use super::cpu::CpuM68k;
 use super::instruction::{AddressingMode, IndexSize, Instruction, Xn};
 use super::{CpuM68kType, CpuSized, M68020, TORDER_HIGHLOW};
 
-impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
-    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
+    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
@@ -417,5 +418,36 @@ where
                 bail!("Unimplemented addressing mode: {:?}", addrmode)
             }
         }
+    }
+
+    /// Write to effective address a specified number of bytes
+    pub(in crate::cpu_m68k) fn write_ea_sz<const SZ: usize>(
+        &mut self,
+        instr: &Instruction,
+        ea_in: usize,
+        value: [u8; SZ],
+    ) -> Result<()> {
+        let ea = self.calc_ea_addr_sz::<SZ>(instr, instr.get_addr_mode()?, ea_in)?;
+        for (i, b) in value.into_iter().enumerate() {
+            self.write_ticks(ea.wrapping_add(i as Address), b)?;
+        }
+
+        Ok(())
+    }
+
+    /// Read from effective address a specified number of bytes
+    pub(in crate::cpu_m68k) fn read_ea_sz<const SZ: usize>(
+        &mut self,
+        instr: &Instruction,
+        ea_in: usize,
+    ) -> Result<[u8; SZ]> {
+        let ea = self.calc_ea_addr_sz::<SZ>(instr, instr.get_addr_mode()?, ea_in)?;
+        let mut v = ArrayVec::<u8, SZ>::new();
+
+        for i in 0..SZ {
+            v.push(self.read_ticks(ea.wrapping_add(i as Address))?);
+        }
+
+        Ok(v.into_inner().unwrap())
     }
 }
