@@ -27,6 +27,7 @@ mounted as write-protected.
 
 Snow supports the following image file formats for reading:
 * Apple DiskCopy 4.2 (sector-based)
+* Apple Disk Archive / Retrieval Tool ('DART') (sector-based)
 * Applesauce A2R 2.x and 3.x (raw flux)
 * Applesauce MOOF (bitstream and flux)
 * PCE Flux Image (PFI, flux)

@@ -12,6 +12,7 @@ fluxfox = { git = "https://github.com/dbalsom/fluxfox.git", optional = true, rev
 itertools = "0.14.0"
 log = "0.4.22"
 rand = "0.9.0"
+retrocompressor = "1.0.1"
 strum = { version = "0.26.3", features = ["derive"] }
 
 [build-dependencies]

@@ -2,6 +2,7 @@ mod a2r2;
 mod a2r3;
 mod auto;
 mod bitfile;
+mod dart;
 mod diskcopy42;
 
 #[cfg(feature = "fluxfox")]
@@ -19,6 +20,7 @@ pub use a2r3::A2Rv3;
 pub use auto::Autodetect;
 pub use auto::ImageType;
 pub use bitfile::Bitfile;
+pub use dart::Dart;
 pub use diskcopy42::Diskcopy42;
 pub use moof::Moof;
 pub use pfi::PFI;
