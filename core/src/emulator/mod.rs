@@ -609,7 +609,7 @@ impl Tickable for Emulator {
                             }
                             Err(e) => {
                                 self.user_error(&format!(
-                                    "Cannot load image '{}': {}",
+                                    "Cannot load image '{}': {:?}",
                                     filename, e
                                 ));
                             }
