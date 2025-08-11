@@ -4,10 +4,10 @@
 
 [![](https://dcbadge.limes.pink/api/server/F2vSzTEvPV)](https://discord.gg/F2vSzTEvPV)
 
-Snow emulates classic (Motorola 68k-based) Macintosh computers. It features a graphical user interface operate and debug
-the emulated machine.
-The aim of this project is to emulate the Macintosh on a hardware-level as much as possible, as opposed to emulators
-that patch the ROM or intercept system calls.
+Snow emulates classic (Motorola 68k-based) Macintosh computers. It features a
+graphical user interface to operate and debug the emulated machine.
+The aim of this project is to emulate the Macintosh on a hardware-level as much
+as possible, as opposed to emulators that patch the ROM or intercept system calls.
 
 [For more information and downloads, go to the website](https://snowemu.com/). You can view a
 limited [online demo here](https://demo.snowemu.com/)
@@ -20,7 +20,7 @@ It currently supports the following models:
 * Macintosh Plus
 * Macintosh SE (both non-FDHD and FDHD)
 * Macintosh Classic
-* Macintosh II (both non-FDHD and FDHD) (experimental)
+* Macintosh II (both non-FDHD and FDHD)
 
 Currently supported hardware:
 
