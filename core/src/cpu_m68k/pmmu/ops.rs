@@ -73,7 +73,7 @@ where
                 let newval = TcReg(self.read_ea(instr, instr.get_op2())?);
                 self.regs.pmmu.tc = newval;
                 if newval.enable() {
-                    if newval.is() as u32
+                    if newval.is()
                         + newval.tia() as u32
                         + newval.tib() as u32
                         + newval.tic() as u32
