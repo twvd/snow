@@ -1372,12 +1372,17 @@ where
         _instr: &Instruction,
         calcfn: fn(Word, Word) -> Word,
     ) -> Result<()> {
+        // This has to be a fetch from the prefetch queue for PC to stay correct
+        // in the exception frame.
+        let a = self.fetch()?;
+
         if !self.regs.sr.supervisor() {
             self.advance_cycles(4)?;
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
         }
 
-        let a = self.fetch_immediate()?;
+        // Now load a
+        self.prefetch_pump()?;
         let b = self.regs.sr.sr();
         self.set_sr(calcfn(a, b));
 
@@ -2880,6 +2885,8 @@ where
     /// MOVEC
     fn op_movec(&mut self, instr: &Instruction) -> Result<()> {
         // Bus access and cycles are an approximation based on UM/PRM
+        // This has to be a fetch from the prefetch queue for PC to stay correct
+        // in the exception frame.
         instr.fetch_extword(|| self.fetch())?;
 
         if !self.regs.sr.supervisor() {
