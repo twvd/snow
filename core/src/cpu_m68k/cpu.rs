@@ -821,7 +821,7 @@ where
         details: Option<Group0Details>,
     ) -> Result<()> {
         let start_cycles = self.cycles;
-        let saved_sr = self.regs.sr.sr();
+        let mut saved_sr = self.regs.sr.sr();
 
         // Resume in supervisor mode
         self.regs.sr.set_supervisor(true);
@@ -858,7 +858,15 @@ where
                         )?;
                     }
                     _ => {
-                        if true {
+                        if let Some(regs) = self.restart_regs.take() {
+                            self.regs.a = regs.a;
+                            self.regs.d = regs.d;
+                            saved_sr = regs.sr.sr();
+                        } else {
+                            log::error!("Cannot reset registers for stacking a bus error frame");
+                        }
+
+                        if self.regs.pc == details.start_pc && self.prefetch.len() == 2 {
                             // Bus error at instruction boundary
                             *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(32);
                             self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
