@@ -524,12 +524,12 @@ impl<'a> Disassembler<'a> {
                 format!("{} {}", mnemonic, target)
             }
 
-            InstructionMnemonic::MOVEfromCCR => format!("MOVE.w {},CCR", self.ea(instr)?),
-            InstructionMnemonic::MOVEtoCCR => format!("MOVE.w CCR,{}", self.ea(instr)?),
-            InstructionMnemonic::MOVEtoSR => format!("MOVE.w SR,{}", self.ea(instr)?),
-            InstructionMnemonic::MOVEfromSR => format!("MOVE.w {},SR", self.ea(instr)?),
-            InstructionMnemonic::MOVEfromUSP => format!("MOVE.l A{},USP", instr.get_op2()),
-            InstructionMnemonic::MOVEtoUSP => format!("MOVE.l USP,A{}", instr.get_op2()),
+            InstructionMnemonic::MOVEfromCCR => format!("MOVE.w CCR,{}", self.ea(instr)?),
+            InstructionMnemonic::MOVEtoCCR => format!("MOVE.w {},CCR", self.ea(instr)?),
+            InstructionMnemonic::MOVEtoSR => format!("MOVE.w {},SR", self.ea(instr)?),
+            InstructionMnemonic::MOVEfromSR => format!("MOVE.w SR,{}", self.ea(instr)?),
+            InstructionMnemonic::MOVEfromUSP => format!("MOVE.l USP,A{}", instr.get_op2()),
+            InstructionMnemonic::MOVEtoUSP => format!("MOVE.l A{},USP", instr.get_op2()),
             InstructionMnemonic::MOVEQ => format!(
                 "{} #${:02X},D{}",
                 mnemonic,
