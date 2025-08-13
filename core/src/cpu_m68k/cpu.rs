@@ -2086,6 +2086,11 @@ where
 
     /// MOVEfromSR
     fn op_move_from_sr(&mut self, instr: &Instruction) -> Result<()> {
+        if CPU_TYPE >= M68010 && !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+
         let value = self.regs.sr.sr();
 
         // Discarded read, prefetch
