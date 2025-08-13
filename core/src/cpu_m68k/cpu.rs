@@ -873,7 +873,10 @@ where
                             // TODO size
                             self.write_ticks(
                                 self.regs.ssp().wrapping_add(0x0A),
-                                *Group0Ssw::default().with_read(details.read).with_df(true),
+                                *Group0Ssw::default()
+                                    .with_read(details.read)
+                                    .with_df(true)
+                                    .with_function_code(details.function_code),
                             )?;
                             // Instruction pipe stage C
                             self.write_ticks(self.regs.ssp().wrapping_add(0x0C), 0u16)?;
@@ -901,7 +904,10 @@ where
                             // TODO size
                             self.write_ticks(
                                 self.regs.ssp().wrapping_add(0x0A),
-                                *Group0Ssw::default().with_read(details.read).with_df(true),
+                                *Group0Ssw::default()
+                                    .with_read(details.read)
+                                    .with_df(true)
+                                    .with_function_code(details.function_code),
                             )?;
                             // Instruction pipe stage C
                             self.write_ticks(self.regs.ssp().wrapping_add(0x0C), 0u16)?;
@@ -909,7 +915,6 @@ where
                             self.write_ticks(self.regs.ssp().wrapping_add(0x0E), 0u16)?;
                             // Data cycle fault address
                             self.write_ticks(self.regs.ssp().wrapping_add(0x10), details.address)?;
-                            log::debug!("Bus error addr: {:08X}", details.address);
 
                             // More internal stuff
                             for i in (0x14..=0x5A).step_by(2) {

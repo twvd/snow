@@ -149,7 +149,7 @@ where
 
         // This is formally tested in PMOVE when translation is enabled
         debug_assert_eq!(
-            self.regs.pmmu.tc.is() as u32
+            self.regs.pmmu.tc.is()
                 + self.regs.pmmu.tc.tia() as u32
                 + self.regs.pmmu.tc.tib() as u32
                 + self.regs.pmmu.tc.tic() as u32
@@ -210,10 +210,7 @@ where
                     if PTEST {
                         self.regs.pmmu.psr.set_invalid(true);
                         self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
-                    } else {
-                        log::debug!("Page fault: virtual address {:08X}", vaddr);
-
-                        if self.history_enabled {
+                    } else if self.history_enabled {
                             self.history.push_back(HistoryEntry::Pagefault {
                                 address: vaddr,
                                 write: writing,
@@ -228,7 +225,7 @@ where
                     }
 
                     anyhow!(CpuError::BusError(Group0Details {
-                        function_code: 0,
+                        function_code: fc,
                         ir: 0,
 
                         instruction: false,
