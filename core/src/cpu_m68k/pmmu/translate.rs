@@ -211,17 +211,10 @@ where
                         self.regs.pmmu.psr.set_invalid(true);
                         self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
                     } else if self.history_enabled {
-                            self.history.push_back(HistoryEntry::Pagefault {
-                                address: vaddr,
-                                write: writing,
-                            });
-                        }
-
-                        if let Some(regs) = self.restart_regs.take() {
-                            self.regs = regs;
-                        } else {
-                            log::error!("Cannot reset registers for stacking a bus error frame");
-                        }
+                        self.history.push_back(HistoryEntry::Pagefault {
+                            address: vaddr,
+                            write: writing,
+                        });
                     }
 
                     anyhow!(CpuError::BusError(Group0Details {
