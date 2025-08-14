@@ -526,6 +526,7 @@ where
         self.step_ea_load = None;
 
         if PMMU {
+            // TODO this is incredibly expensive..
             self.restart_regs = Some(self.regs.clone());
         }
 
@@ -859,9 +860,10 @@ where
                     }
                     _ => {
                         if let Some(regs) = self.restart_regs.take() {
-                            self.regs.a = regs.a;
-                            self.regs.d = regs.d;
                             saved_sr = regs.sr.sr();
+                            self.regs = regs;
+                            self.regs.sr.set_supervisor(true);
+                            self.regs.sr.set_trace(false);
                         } else {
                             log::error!("Cannot reset registers for stacking a bus error frame");
                         }
