@@ -5,6 +5,7 @@ use super::via2::Via2;
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
+use crate::emulator::MouseMode;
 use crate::mac::asc::Asc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
@@ -70,8 +71,8 @@ pub struct MacIIBus<TRenderer: Renderer> {
     /// NuBus cards (base address: $9)
     nubus_devices: [Option<Mdc12<TRenderer>>; 6],
 
-    /// Mouse enabled
-    mouse_enabled: bool,
+    /// Mouse mode
+    mouse_mode: MouseMode,
 }
 
 impl<TRenderer> MacIIBus<TRenderer>
@@ -97,7 +98,7 @@ where
         extension_rom: Option<&[u8]>,
         mut renderers: Vec<TRenderer>,
         monitor: MacMonitor,
-        mouse_enabled: bool,
+        mouse_mode: MouseMode,
         ram_size: Option<usize>,
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
@@ -138,7 +139,7 @@ where
             nubus_devices: core::array::from_fn(|_| {
                 renderers.pop().map(|r| Mdc12::new(mdcrom, r, monitor))
             }),
-            mouse_enabled,
+            mouse_mode,
         };
 
         // Disable memory test
@@ -322,7 +323,7 @@ where
 
     /// Updates the mouse position (relative coordinates) and button state
     pub fn mouse_update_rel(&mut self, relx: i16, rely: i16, _button: Option<bool>) {
-        if !self.mouse_enabled {
+        if self.mouse_mode == MouseMode::Disabled {
             return;
         }
 
@@ -358,7 +359,7 @@ where
 
     /// Updates the mouse position (absolute coordinates)
     pub fn mouse_update_abs(&mut self, x: u16, y: u16) {
-        if !self.mouse_enabled {
+        if self.mouse_mode == MouseMode::Disabled {
             return;
         }
 
