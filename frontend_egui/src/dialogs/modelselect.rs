@@ -6,6 +6,7 @@ use anyhow::{anyhow, bail, Result};
 use eframe::egui;
 use egui_file_dialog::FileDialog;
 use sha2::{Digest, Sha256};
+use snow_core::emulator::MouseMode;
 use snow_core::mac::{MacModel, MacMonitor};
 use strum::IntoEnumIterator;
 
@@ -465,8 +466,21 @@ impl ModelSelectionDialog {
                 });
                 ui.group(|ui| {
                     ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Mouse emulation:");
+                            egui::ComboBox::new(egui::Id::new("mouse_mode"), "")
+                                .selected_text(format!("{}", self.init_args.mouse_mode))
+                                .show_ui(ui, |ui| {
+                                    for v in MouseMode::iter() {
+                                        ui.selectable_value(
+                                            &mut self.init_args.mouse_mode,
+                                            v,
+                                            v.to_string(),
+                                        );
+                                    }
+                                });
+                        });
                         ui.checkbox(&mut self.init_args.audio_disabled, "Disable audio");
-                        ui.checkbox(&mut self.init_args.mouse_disabled, "Disable mouse");
                         ui.checkbox(
                             &mut self.disable_rom_validation,
                             "Disable ROM validation (allow loading any ROM)",
@@ -534,6 +548,8 @@ impl ModelSelectionDialog {
                                 } else {
                                     None
                                 },
+                                // Deprecated
+                                mouse_disabled: None,
                                 ..self.init_args
                             },
                         });
