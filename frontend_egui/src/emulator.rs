@@ -69,21 +69,25 @@ pub struct EmulatorInitResult {
 
 /// Initialization arguments for the emulator, minus filenames
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default)]
 pub struct EmulatorInitArgs {
-    #[serde(default)]
+    /// Disable audio, synchronize to video
     pub audio_disabled: bool,
 
-    #[serde(default)]
+    /// Selected monitor (if available)
     pub monitor: Option<MacMonitor>,
 
-    #[serde(default)]
+    /// Mouse and absolute mouse positioning disabled
     pub mouse_disabled: bool,
 
-    #[serde(default)]
+    /// Start in fast-forward mode
     pub start_fastforward: bool,
 
-    #[serde(default)]
+    /// Configured RAM size or default if None
     pub ram_size: Option<usize>,
+
+    /// Enable PMMU (Macintosh II only)
+    pub pmmu_enabled: bool,
 }
 
 /// Manages the state of the emulator and feeds input to the GUI
@@ -187,6 +191,7 @@ impl EmulatorState {
             args.monitor,
             !args.mouse_disabled,
             args.ram_size,
+            args.pmmu_enabled,
         )?;
 
         let cmd = emulator.create_cmd_sender();

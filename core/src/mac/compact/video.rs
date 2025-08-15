@@ -272,7 +272,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::{mac::MacModel, renderer::NullRenderer};
+    use crate::renderer::NullRenderer;
 
     use super::*;
 

@@ -82,6 +82,9 @@ impl InstructionHistoryWidget {
                 HistoryEntry::Exception { vector, .. } => {
                     writeln!(f, "--- {}", self.text_exception(*vector))?;
                 }
+                HistoryEntry::Pagefault { address, write } => {
+                    writeln!(f, "--- {}", self.text_pagefault(*address, *write))?;
+                }
             }
         }
         Ok(())
@@ -137,12 +140,12 @@ impl InstructionHistoryWidget {
                 );
                 left_sized(
                     ui,
-                    [120.0, 20.0],
+                    [130.0, 20.0],
                     egui::Label::new(egui::RichText::new("Raw").strong()),
                 );
                 left_sized(
                     ui,
-                    [50.0, 20.0],
+                    [40.0, 20.0],
                     egui::Label::new(egui::RichText::new("Cycles").strong()),
                 );
                 left_sized(ui, [10.0, 20.0], egui::Label::new(""));
@@ -189,6 +192,9 @@ impl InstructionHistoryWidget {
                         }
                         HistoryEntry::Instruction(entry) => {
                             self.row_instruction(history, row_height, row_idx, ui, entry);
+                        }
+                        HistoryEntry::Pagefault { address, write } => {
+                            self.row_pagefault(history, row_height, row_idx, ui, *address, *write);
                         }
                     }
                 }
@@ -269,18 +275,45 @@ impl InstructionHistoryWidget {
                 ),
             );
 
+            // Cache/waitstate status
+            left_sized_icon(
+                ui,
+                &[10.0, row_height],
+                if entry
+                    .initial_regs
+                    .as_ref()
+                    .map(|rf| rf.cacr.e())
+                    .unwrap_or(false)
+                {
+                    egui_material_icons::icons::ICON_SPEED
+                } else if entry.waitstates {
+                    egui_material_icons::icons::ICON_HOURGLASS_TOP
+                } else {
+                    ""
+                },
+                if entry
+                    .initial_regs
+                    .as_ref()
+                    .map(|rf| rf.cacr.e())
+                    .unwrap_or(false)
+                {
+                    Some(match (entry.icache_hit, entry.icache_miss) {
+                        (true, false) => egui::Color32::LIGHT_GREEN,
+                        (true, true) => egui::Color32::ORANGE,
+                        (false, true) | (false, false) => egui::Color32::RED,
+                    })
+                } else {
+                    None
+                },
+            );
             // Cycles column
             left_sized(
                 ui,
-                [50.0, row_height],
+                [40.0, row_height],
                 egui::Label::new(
-                    egui::RichText::new(format!(
-                        "{}{}",
-                        entry.cycles,
-                        if entry.waitstates { "*" } else { "" }
-                    ))
-                    .family(egui::FontFamily::Monospace)
-                    .size(10.0),
+                    egui::RichText::new(format!("{}", entry.cycles))
+                        .family(egui::FontFamily::Monospace)
+                        .size(10.0),
                 ),
             );
 
@@ -361,6 +394,13 @@ impl InstructionHistoryWidget {
             vector,
         )
     }
+    fn text_pagefault(&self, addr: Address, write: bool) -> String {
+        format!(
+            "MMU Page fault: {:08X} ({})",
+            addr,
+            if !write { "read" } else { "write" }
+        )
+    }
 
     fn row_exception(
         &self,
@@ -398,6 +438,41 @@ impl InstructionHistoryWidget {
                 [ui.available_width(), row_height],
                 egui::Label::new(
                     egui::RichText::new(self.text_exception(*vector))
+                        .family(egui::FontFamily::Monospace)
+                        .size(10.0),
+                ),
+            );
+        });
+    }
+
+    fn row_pagefault(
+        &self,
+        history: &[HistoryEntry],
+        row_height: f32,
+        row_idx: usize,
+        ui: &mut Ui,
+        addr: Address,
+        write: bool,
+    ) {
+        ui.horizontal(|ui| {
+            ui.painter()
+                .rect_filled(ui.max_rect(), 0.0, egui::Color32::DARK_BLUE);
+            Self::column_status(history, row_height, row_idx, ui);
+            left_sized(ui, [120.0, row_height], egui::Label::new(""));
+            left_sized(ui, [60.0, row_height], egui::Label::new(""));
+            // Cycles column
+            left_sized(ui, [50.0, row_height], egui::Label::new(""));
+            left_sized_icon(
+                ui,
+                &[10.0, row_height],
+                egui_material_icons::icons::ICON_SHIELD_QUESTION,
+                Some(egui::Color32::LIGHT_GRAY),
+            );
+            left_sized(
+                ui,
+                [ui.available_width(), row_height],
+                egui::Label::new(
+                    egui::RichText::new(self.text_pagefault(addr, write))
                         .family(egui::FontFamily::Monospace)
                         .size(10.0),
                 ),
