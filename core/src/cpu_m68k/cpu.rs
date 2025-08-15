@@ -741,6 +741,13 @@ where
         Ok(())
     }
 
+    /// Raises a privilege violation exception
+    fn raise_privilege_violation(&mut self) -> Result<()> {
+        self.advance_cycles(4)?;
+        self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None)?;
+        Ok(())
+    }
+
     /// Raises an IRQ to be executed next
     fn raise_irq(&mut self, level: u8, vector: Address) -> Result<()> {
         let start_cycles = self.cycles;
@@ -1379,8 +1386,7 @@ where
         let a = self.fetch()?;
 
         if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+            return self.raise_privilege_violation();
         }
 
         // Now load a
@@ -2094,8 +2100,7 @@ where
     /// MOVEfromSR
     fn op_move_from_sr(&mut self, instr: &Instruction) -> Result<()> {
         if CPU_TYPE >= M68010 && !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+            return self.raise_privilege_violation();
         }
 
         let value = self.regs.sr.sr();
@@ -2120,8 +2125,7 @@ where
     /// MOVEtoSR
     fn op_move_to_sr(&mut self, instr: &Instruction) -> Result<()> {
         if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group1, VECTOR_PRIVILEGE_VIOLATION, None);
+            return self.raise_privilege_violation();
         }
         let value: Word = self.read_ea(instr, instr.get_op2())?;
 
@@ -2158,8 +2162,7 @@ where
     /// MOVEtoUSP
     fn op_move_to_usp(&mut self, instr: &Instruction) -> Result<()> {
         if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group1, VECTOR_PRIVILEGE_VIOLATION, None);
+            return self.raise_privilege_violation();
         }
         let value: Address = self.regs.read_a(instr.get_op2());
 
@@ -2170,8 +2173,7 @@ where
     /// MOVEfromUSP
     fn op_move_from_usp(&mut self, instr: &Instruction) -> Result<()> {
         if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group1, VECTOR_PRIVILEGE_VIOLATION, None);
+            return self.raise_privilege_violation();
         }
         let value: Address = self.regs.usp;
 
@@ -2370,8 +2372,7 @@ where
     /// RESET
     fn op_reset(&mut self, _instr: &Instruction) -> Result<()> {
         if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+            return self.raise_privilege_violation();
         }
 
         debug!("RESET instruction");
@@ -2399,8 +2400,7 @@ where
     /// RTE
     fn op_rte(&mut self, _instr: &Instruction) -> Result<()> {
         if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+            return self.raise_privilege_violation();
         }
 
         if CPU_TYPE == M68000 {
@@ -2892,8 +2892,7 @@ where
         instr.fetch_extword(|| self.fetch())?;
 
         if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+            return self.raise_privilege_violation();
         }
 
         if instr.movec_ctrl_to_gen() {
