@@ -23,7 +23,7 @@ use snow_core::emulator::comm::{
     UserMessageType,
 };
 use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus};
-use snow_core::emulator::Emulator;
+use snow_core::emulator::{Emulator, MouseMode};
 use snow_core::keymap::Scancode;
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
@@ -76,8 +76,12 @@ pub struct EmulatorInitArgs {
     #[serde(default)]
     pub monitor: Option<MacMonitor>,
 
+    #[serde(default, skip_serializing)]
+    /// Deprecated; now mouse_mode
+    pub mouse_disabled: Option<bool>,
+
     #[serde(default)]
-    pub mouse_disabled: bool,
+    pub mouse_mode: MouseMode,
 
     #[serde(default)]
     pub start_fastforward: bool,
@@ -185,7 +189,12 @@ impl EmulatorState {
             &extra_roms,
             model,
             args.monitor,
-            !args.mouse_disabled,
+            if matches!(args.mouse_disabled, Some(true)) {
+                // Deprecated mouse_disabled
+                MouseMode::Disabled
+            } else {
+                args.mouse_mode
+            },
             args.ram_size,
         )?;
 

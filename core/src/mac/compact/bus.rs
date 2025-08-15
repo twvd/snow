@@ -7,6 +7,7 @@ use super::video::Video;
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
+use crate::emulator::MouseMode;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::swim::Swim;
@@ -85,8 +86,8 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     /// Programmer's key pressed
     progkey_pressed: LatchingEvent,
 
-    /// Mouse enabled
-    mouse_enabled: bool,
+    /// Mouse mode
+    mouse_mode: MouseMode,
 }
 
 impl<TRenderer> CompactMacBus<TRenderer>
@@ -116,7 +117,7 @@ where
         rom: &[u8],
         extension_rom: Option<&[u8]>,
         renderer: TRenderer,
-        mouse_enabled: bool,
+        mouse_mode: MouseMode,
         ram_size: Option<usize>,
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
@@ -165,7 +166,7 @@ where
             vblank_time: Instant::now(),
             vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
-            mouse_enabled,
+            mouse_mode,
         };
 
         // Disable memory test
@@ -366,7 +367,7 @@ where
 
     /// Updates the mouse position (relative coordinates) and button state
     pub fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) {
-        if !self.mouse_enabled {
+        if self.mouse_mode == MouseMode::Disabled {
             return;
         }
 
@@ -411,7 +412,7 @@ where
 
     /// Updates the mouse position (absolute coordinates)
     pub fn mouse_update_abs(&mut self, x: u16, y: u16) {
-        if !self.mouse_enabled {
+        if self.mouse_mode == MouseMode::Disabled {
             return;
         }
 
