@@ -73,13 +73,13 @@ bitfield! {
         pub adb_int: bool @ 3,
 
         /// Mouse X2 (512K and Plus)
-        pub x2: bool @ 4,
+        pub mouse_x2: bool @ 4,
 
         /// ADB state input 0 (ST0) (SE+)
         pub adb_st0: bool @ 4,
 
         /// Mouse Y2 (512K and Plus)
-        pub y2: bool @ 5,
+        pub mouse_y2: bool @ 5,
 
         /// ADB state input 1 (ST1) (SE+)
         pub adb_st1: bool @ 5,
