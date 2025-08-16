@@ -9,11 +9,16 @@ pub type KeyEventSender = crossbeam_channel::Sender<KeyEvent>;
 /// Communication channel (receiver) for keyboard events to an emulated keyboard
 pub type KeyEventReceiver = crossbeam_channel::Receiver<KeyEvent>;
 
-/// Communication channel (sender) for click events to an emulated mouse
-pub type ClickEventSender = crossbeam_channel::Sender<bool>;
+/// Communication channel (sender) for mouse events to an emulated mouse
+#[derive(Default)]
+pub struct MouseEvent {
+    pub button: Option<bool>,
+    pub rel_movement: Option<(i32, i32)>,
+}
+pub type MouseEventSender = crossbeam_channel::Sender<MouseEvent>;
 
 /// Communication channel (receiver) for click events to an emulated mouse
-pub type ClickEventReceiver = crossbeam_channel::Receiver<bool>;
+pub type MouseEventReceiver = crossbeam_channel::Receiver<MouseEvent>;
 
 /// Communication channel (sender) for sending samples to the host audio device.
 pub type AudioSampleSender = crossbeam_channel::Sender<u8>;

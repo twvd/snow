@@ -23,7 +23,7 @@ use snow_core::emulator::comm::{
     UserMessageType,
 };
 use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus};
-use snow_core::emulator::Emulator;
+use snow_core::emulator::{Emulator, MouseMode};
 use snow_core::keymap::Scancode;
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
@@ -76,8 +76,12 @@ pub struct EmulatorInitArgs {
     #[serde(default)]
     pub monitor: Option<MacMonitor>,
 
+    #[serde(default, skip_serializing)]
+    /// Deprecated; now mouse_mode
+    pub mouse_disabled: Option<bool>,
+
     #[serde(default)]
-    pub mouse_disabled: bool,
+    pub mouse_mode: MouseMode,
 
     #[serde(default)]
     pub start_fastforward: bool,
@@ -105,6 +109,7 @@ pub struct EmulatorState {
     systrap_history: Vec<SystrapHistoryEntry>,
     peripheral_debug: DebuggableProperties,
     scc_tx: [VecDeque<u8>; 2],
+    mouse_mode: MouseMode,
 
     // Clear these when emulator is de-initialized
     instruction_history_enabled: bool,
@@ -180,12 +185,20 @@ impl EmulatorState {
             extra_roms.push(ExtraROMs::ExtensionROM(extension_rom));
         }
 
+        let mouse_mode = if matches!(args.mouse_disabled, Some(true)) {
+            // Deprecated mouse_disabled
+            MouseMode::Disabled
+        } else {
+            args.mouse_mode
+        };
+        self.mouse_mode = mouse_mode;
+
         let (mut emulator, frame_recv) = Emulator::new_with_extra(
             rom,
             &extra_roms,
             model,
             args.monitor,
-            !args.mouse_disabled,
+            mouse_mode,
             args.ram_size,
         )?;
 
@@ -307,23 +320,35 @@ impl EmulatorState {
         }
     }
 
-    pub fn update_mouse(&self, p: egui::Pos2) {
+    pub fn update_mouse(&self, abs_p: &egui::Pos2, rel_p: &egui::Pos2) {
         if !self.is_running() {
             return;
         }
 
-        if let Some(ref sender) = self.cmdsender {
-            sender
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        match self.mouse_mode {
+            MouseMode::Absolute => sender
                 .send(EmulatorCommand::MouseUpdateAbsolute {
-                    x: p.x as u16,
-                    y: p.y as u16,
+                    x: abs_p.x as u16,
+                    y: abs_p.y as u16,
                 })
-                .unwrap();
-        }
+                .unwrap(),
+            MouseMode::RelativeHw => sender
+                .send(EmulatorCommand::MouseUpdateRelative {
+                    relx: rel_p.x as i16,
+                    rely: rel_p.y as i16,
+                    btn: None,
+                })
+                .unwrap(),
+            MouseMode::Disabled => (),
+        };
     }
 
     pub fn update_mouse_button(&self, state: bool) {
-        if !self.is_running() {
+        if !self.is_running() || self.mouse_mode == MouseMode::Disabled {
             return;
         }
 

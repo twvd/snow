@@ -1,5 +1,6 @@
 pub mod comm;
 
+use serde::{Deserialize, Serialize};
 use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof};
 use snow_floppy::Floppy;
 use std::collections::VecDeque;
@@ -23,11 +24,12 @@ use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::AudioReceiver;
 use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
-use crate::types::{Byte, ClickEventSender, KeyEventSender};
+use crate::types::{Byte, KeyEventSender, MouseEvent, MouseEventSender};
 
 use anyhow::{bail, Context, Result};
 use bit_set::BitSet;
 use log::*;
+use std::fmt;
 
 use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::emulator::comm::{EmulatorSpeed, UserMessageType};
@@ -38,6 +40,28 @@ use comm::{
     Breakpoint, EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver,
     EmulatorStatus, FddStatus, InputRecording, ScsiTargetStatus,
 };
+
+/// Mouse emulation mode
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, strum::EnumIter)]
+pub enum MouseMode {
+    /// Absolute with memory hack (original software only)
+    #[default]
+    Absolute,
+    /// Relative through hardware emulation
+    RelativeHw,
+    /// Disabled
+    Disabled,
+}
+
+impl fmt::Display for MouseMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Absolute => write!(f, "Absolute (memory patching)"),
+            Self::RelativeHw => write!(f, "Relative (hardware emulation)"),
+            Self::Disabled => write!(f, "Disabled"),
+        }
+    }
+}
 
 macro_rules! dispatch {
     (
@@ -198,7 +222,7 @@ pub struct Emulator {
     event_recv: EmulatorEventReceiver,
     run: bool,
     last_update: Instant,
-    adbmouse_sender: Option<ClickEventSender>,
+    adbmouse_sender: Option<MouseEventSender>,
     adbkeyboard_sender: Option<KeyEventSender>,
     model: MacModel,
     record_input: Option<InputRecording>,
@@ -211,14 +235,14 @@ impl Emulator {
         rom: &[u8],
         model: MacModel,
     ) -> Result<(Self, crossbeam_channel::Receiver<DisplayBuffer>)> {
-        Self::new_with_extra(rom, &[], model, None, true, None)
+        Self::new_with_extra(rom, &[], model, None, MouseMode::default(), None)
     }
     pub fn new_with_extra(
         rom: &[u8],
         extra_roms: &[ExtraROMs],
         model: MacModel,
         monitor: Option<MacMonitor>,
-        mouse_enabled: bool,
+        mouse_mode: MouseMode,
         ram_size: Option<usize>,
     ) -> Result<(Self, crossbeam_channel::Receiver<DisplayBuffer>)> {
         // Set up channels
@@ -242,14 +266,8 @@ impl Emulator {
                 });
 
                 // Initialize bus and CPU
-                let bus = CompactMacBus::new(
-                    model,
-                    rom,
-                    extension_rom,
-                    renderer,
-                    mouse_enabled,
-                    ram_size,
-                );
+                let bus =
+                    CompactMacBus::new(model, rom, extension_rom, renderer, mouse_mode, ram_size);
                 let mut cpu = Box::new(CpuM68000::new(bus));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
@@ -297,7 +315,7 @@ impl Emulator {
                     extension_rom,
                     vec![renderer],
                     monitor.unwrap_or_default(),
-                    mouse_enabled,
+                    mouse_mode,
                     ram_size,
                 );
                 let mut cpu = Box::new(CpuM68020::new(bus));
@@ -581,9 +599,10 @@ impl Tickable for Emulator {
                         }
 
                         if let Some(s) = self.adbmouse_sender.as_ref() {
-                            if let Some(b) = btn {
-                                s.send(b)?;
-                            }
+                            s.send(MouseEvent {
+                                button: btn,
+                                rel_movement: Some((relx.into(), rely.into())),
+                            })?;
                         }
                         self.config.mouse_update_rel(relx, rely, btn);
                     }

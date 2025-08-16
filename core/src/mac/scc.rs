@@ -225,6 +225,8 @@ struct SccChannel {
     rx_ie: bool,
     tx_ie: bool,
     ext_ie: bool,
+    dcd: bool,
+    dcd_ie: bool,
 
     reg15: u8,
 
@@ -297,7 +299,8 @@ impl Scc {
                 .with_rx_char(!self.ch[chi].rx_queue.is_empty())
                 .with_tx_empty(true)
                 .with_tx_underrun(true)
-                .with_sync_hunt(self.ch[chi].hunt),
+                .with_sync_hunt(self.ch[chi].hunt)
+                .with_dcd(self.ch[chi].dcd),
             (1 | 5, _) => *RdReg1::default().with_all_sent(true),
             (2 | 6, SccCh::B) => {
                 // Modified interrupt vector
@@ -397,7 +400,9 @@ impl Scc {
                 // DPLL/baudrate generator
             }
             15 => {
-                self.ch[chi].sdlc = WrReg15(val).sdlc_en();
+                let wrval = WrReg15(val);
+                self.ch[chi].sdlc = wrval.sdlc_en();
+                self.ch[chi].dcd_ie = wrval.dcd();
                 self.ch[chi].reg15 = val & !0b101;
             }
             _ => {
@@ -430,6 +435,26 @@ impl Scc {
         };
         let ctrl = addr & (1 << 1) == 0;
         (ch, ctrl)
+    }
+
+    pub fn set_dcd(&mut self, ch: SccCh, val: bool) {
+        let chi = ch.to_usize().unwrap();
+
+        if self.ch[chi].dcd == val {
+            // No change in state
+            return;
+        }
+
+        if self.ch[chi].dcd_ie {
+            // Trigger interrupt
+            self.ch[chi].ext_ip = true;
+        }
+        self.ch[chi].dcd = val;
+    }
+
+    pub fn get_dcd(&self, ch: SccCh) -> bool {
+        let chi = ch.to_usize().unwrap();
+        self.ch[chi].dcd
     }
 }
 

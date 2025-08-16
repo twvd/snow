@@ -7,7 +7,8 @@ use super::video::Video;
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
-use crate::mac::scc::Scc;
+use crate::emulator::MouseMode;
+use crate::mac::scc::{Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
@@ -15,6 +16,7 @@ use crate::mac::MacModel;
 use crate::renderer::{AudioReceiver, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent};
+use crate::util::take_from_accumulator;
 
 use anyhow::Result;
 use bit_set::BitSet;
@@ -85,8 +87,14 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     /// Programmer's key pressed
     progkey_pressed: LatchingEvent,
 
-    /// Mouse enabled
-    mouse_enabled: bool,
+    /// Mouse mode
+    mouse_mode: MouseMode,
+
+    /// Early/Plus mouse motion accumulator for X coordinate
+    plusmouse_rel_x: i32,
+
+    /// Early/Plus mouse motion accumulator for Y coordinate
+    plusmouse_rel_y: i32,
 }
 
 impl<TRenderer> CompactMacBus<TRenderer>
@@ -116,7 +124,7 @@ where
         rom: &[u8],
         extension_rom: Option<&[u8]>,
         renderer: TRenderer,
-        mouse_enabled: bool,
+        mouse_mode: MouseMode,
         ram_size: Option<usize>,
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
@@ -165,7 +173,9 @@ where
             vblank_time: Instant::now(),
             vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
-            mouse_enabled,
+            mouse_mode,
+            plusmouse_rel_x: 0,
+            plusmouse_rel_y: 0,
         };
 
         // Disable memory test
@@ -366,52 +376,40 @@ where
 
     /// Updates the mouse position (relative coordinates) and button state
     pub fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) {
-        if !self.mouse_enabled {
-            return;
-        }
-
-        let old_x = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_X);
-        let old_y = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_Y);
-
-        if !self.mouse_ready && (old_x != 15 || old_y != 15) {
-            // Wait until the boot process has initialized the mouse position so we don't
-            // interfere with the memory test.
-            return;
-        }
-        self.mouse_ready = true;
-
-        if relx != 0 || rely != 0 {
-            let new_x = old_x.wrapping_add_signed(relx);
-            let new_y = old_y.wrapping_add_signed(rely);
-
-            // Report updated mouse coordinates to OS
-            self.write_ram(Self::ADDR_MTEMP_X, new_x);
-            self.write_ram(Self::ADDR_MTEMP_Y, new_y);
-            if self.model >= MacModel::SE {
-                // SE+ needs to see even a small difference between the current (RawMouse)
-                // and new (MTemp) position, otherwise the change is ignored.
-                self.write_ram(Self::ADDR_RAWMOUSE_X, new_x - 1);
-                self.write_ram(Self::ADDR_RAWMOUSE_Y, new_y + 1);
-            } else {
-                self.write_ram(Self::ADDR_RAWMOUSE_X, new_x);
-                self.write_ram(Self::ADDR_RAWMOUSE_Y, new_y);
-            }
-            self.write_ram(Self::ADDR_CRSRNEW, 1_u8);
-        }
-
         if let Some(b) = button {
-            if self.model.has_adb() {
-                // TODO ADB
-            } else {
+            if !self.model.has_adb() {
                 // Mouse button through VIA I/O
                 self.via.b_in.set_sw(!b);
             }
+        }
+
+        if relx == 0 && rely == 0 {
+            return;
+        }
+
+        match self.mouse_mode {
+            MouseMode::Absolute => {
+                let old_x = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_X);
+                let old_y = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_Y);
+                let new_x = old_x.wrapping_add_signed(relx);
+                let new_y = old_y.wrapping_add_signed(rely);
+                self.mouse_update_abs(new_x, new_y);
+            }
+            MouseMode::RelativeHw if !self.model.has_adb() => {
+                self.plusmouse_rel_x = self.plusmouse_rel_x.saturating_add(relx.into());
+                self.plusmouse_rel_y = self.plusmouse_rel_y.saturating_add(rely.into());
+            }
+            MouseMode::RelativeHw => {
+                // If ADB, this is not called but handled through the mouse
+                // event channel
+            }
+            MouseMode::Disabled => (),
         }
     }
 
     /// Updates the mouse position (absolute coordinates)
     pub fn mouse_update_abs(&mut self, x: u16, y: u16) {
-        if !self.mouse_enabled {
+        if self.mouse_mode != MouseMode::Absolute {
             return;
         }
 
@@ -481,6 +479,41 @@ where
 
     pub fn video_blank(&mut self) -> Result<()> {
         self.video.blank()
+    }
+
+    fn plusmouse_tick(&mut self) {
+        if self.mouse_mode != MouseMode::RelativeHw
+            || (self.plusmouse_rel_x == 0 && self.plusmouse_rel_y == 0)
+        {
+            return;
+        }
+
+        let motion_x = take_from_accumulator(&mut self.plusmouse_rel_x, 1);
+        let motion_y = take_from_accumulator(&mut self.plusmouse_rel_y, 1);
+
+        if motion_x != 0 {
+            let dcd_a = self.scc.get_dcd(SccCh::A);
+            if motion_x > 0 {
+                // Moving right
+                self.via.b_in.set_mouse_x2(dcd_a);
+            } else if motion_x < 0 {
+                // Moving left
+                self.via.b_in.set_mouse_x2(!dcd_a);
+            }
+            self.scc.set_dcd(SccCh::A, !dcd_a);
+        }
+
+        if motion_y != 0 {
+            let dcd_b = self.scc.get_dcd(SccCh::B);
+            if motion_y > 0 {
+                // Moving up
+                self.via.b_in.set_mouse_y2(!dcd_b);
+            } else if motion_y < 0 {
+                // Moving down
+                self.via.b_in.set_mouse_y2(dcd_b);
+            }
+            self.scc.set_dcd(SccCh::B, !dcd_b);
+        }
     }
 }
 
@@ -616,6 +649,11 @@ where
             let audiosample = if soundon { soundbuf[scanline * 2] } else { 0 };
 
             self.swim.push_pwm(pwm)?;
+
+            // Sample the mouse here for Early/Plus
+            if scanline % 8 == 0 {
+                self.plusmouse_tick();
+            }
 
             // Emulator will block here to sync to audio frequency
             match self.speed {
