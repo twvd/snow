@@ -323,7 +323,7 @@ where
 
     /// Updates the mouse position (relative coordinates) and button state
     pub fn mouse_update_rel(&mut self, relx: i16, rely: i16, _button: Option<bool>) {
-        if self.mouse_mode == MouseMode::Disabled {
+        if self.mouse_mode != MouseMode::Absolute {
             return;
         }
 
@@ -359,7 +359,7 @@ where
 
     /// Updates the mouse position (absolute coordinates)
     pub fn mouse_update_abs(&mut self, x: u16, y: u16) {
-        if self.mouse_mode == MouseMode::Disabled {
+        if self.mouse_mode != MouseMode::Absolute {
             return;
         }
 

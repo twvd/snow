@@ -1901,10 +1901,25 @@ impl eframe::App for SnowGui {
                         self.emu.update_mouse_button(*pressed);
                     }
                 }
-                egui::Event::MouseMoved(_) | egui::Event::PointerMoved(_) => {
-                    if let Some(mouse_pos) = self.get_machine_mouse_pos(ctx) {
+                egui::Event::MouseMoved(rel_p) => {
+                    // Event with relative motion, but 'optional' according to egui docs
+                    if let Some(abs_p) = self.get_machine_mouse_pos(ctx) {
                         // Cursor is within framebuffer view area
-                        self.emu.update_mouse(mouse_pos);
+                        self.emu.update_mouse(
+                            &abs_p,
+                            &egui::Pos2 {
+                                x: rel_p.x,
+                                y: rel_p.y,
+                            },
+                        );
+                    }
+                }
+                egui::Event::PointerMoved(_) => {
+                    // No relative motion in this event
+                    if let Some(abs_p) = self.get_machine_mouse_pos(ctx) {
+                        // Cursor is within framebuffer view area
+                        // No relative motion in this event
+                        self.emu.update_mouse(&abs_p, &egui::Pos2::default());
                     }
                 }
                 _ => (),
