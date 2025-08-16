@@ -1908,8 +1908,8 @@ impl eframe::App for SnowGui {
                         self.emu.update_mouse(
                             &abs_p,
                             &egui::Pos2 {
-                                x: rel_p.x,
-                                y: rel_p.y,
+                                x: (rel_p.x / self.framebuffer.scale) * 2.0,
+                                y: (rel_p.y / self.framebuffer.scale) * 2.0,
                             },
                         );
                     }
