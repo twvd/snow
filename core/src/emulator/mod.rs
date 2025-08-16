@@ -24,7 +24,7 @@ use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::AudioReceiver;
 use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
-use crate::types::{Byte, ClickEventSender, KeyEventSender};
+use crate::types::{Byte, KeyEventSender, MouseEvent, MouseEventSender};
 
 use anyhow::{bail, Context, Result};
 use bit_set::BitSet;
@@ -222,7 +222,7 @@ pub struct Emulator {
     event_recv: EmulatorEventReceiver,
     run: bool,
     last_update: Instant,
-    adbmouse_sender: Option<ClickEventSender>,
+    adbmouse_sender: Option<MouseEventSender>,
     adbkeyboard_sender: Option<KeyEventSender>,
     model: MacModel,
     record_input: Option<InputRecording>,
@@ -599,9 +599,10 @@ impl Tickable for Emulator {
                         }
 
                         if let Some(s) = self.adbmouse_sender.as_ref() {
-                            if let Some(b) = btn {
-                                s.send(b)?;
-                            }
+                            s.send(MouseEvent {
+                                button: btn,
+                                rel_movement: Some((relx.into(), rely.into())),
+                            })?;
                         }
                         self.config.mouse_update_rel(relx, rely, btn);
                     }
