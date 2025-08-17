@@ -320,7 +320,7 @@ impl EmulatorState {
         }
     }
 
-    pub fn update_mouse(&self, abs_p: &egui::Pos2, rel_p: &egui::Pos2) {
+    pub fn update_mouse(&self, abs_p: Option<&egui::Pos2>, rel_p: &egui::Pos2) {
         if !self.is_running() {
             return;
         }
@@ -330,19 +330,27 @@ impl EmulatorState {
         };
 
         match self.mouse_mode {
-            MouseMode::Absolute => sender
-                .send(EmulatorCommand::MouseUpdateAbsolute {
-                    x: abs_p.x as u16,
-                    y: abs_p.y as u16,
-                })
-                .unwrap(),
-            MouseMode::RelativeHw => sender
-                .send(EmulatorCommand::MouseUpdateRelative {
-                    relx: rel_p.x as i16,
-                    rely: rel_p.y as i16,
-                    btn: None,
-                })
-                .unwrap(),
+            MouseMode::Absolute => {
+                if let Some(abs_p) = abs_p {
+                    sender
+                        .send(EmulatorCommand::MouseUpdateAbsolute {
+                            x: abs_p.x as u16,
+                            y: abs_p.y as u16,
+                        })
+                        .unwrap();
+                }
+            }
+            MouseMode::RelativeHw => {
+                if rel_p.x != 0.0 || rel_p.y != 0.0 {
+                    sender
+                        .send(EmulatorCommand::MouseUpdateRelative {
+                            relx: rel_p.x as i16,
+                            rely: rel_p.y as i16,
+                            btn: None,
+                        })
+                        .unwrap();
+                }
+            }
             MouseMode::Disabled => (),
         };
     }
@@ -865,5 +873,9 @@ impl EmulatorState {
             return Ok(());
         };
         Ok(sender.send(EmulatorCommand::SccReceiveData(ch, data))?)
+    }
+
+    pub fn is_mouse_relative(&self) -> bool {
+        self.mouse_mode == MouseMode::RelativeHw
     }
 }
