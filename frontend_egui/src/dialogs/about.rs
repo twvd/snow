@@ -18,6 +18,7 @@ impl AboutDialog {
         "Rubix",
         "Eric Helgeson",
         "Reza Fouladian",
+        "KenDesigns",
     ];
 
     pub fn new(ctx: &egui::Context) -> Self {
