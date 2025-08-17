@@ -651,6 +651,14 @@ where
             self.swim.push_pwm(pwm)?;
 
             // Sample the mouse here for Early/Plus
+            //
+            // Oscilloscope traces of the SCC show a mouse interrupt can be triggered
+            // at a smallest interval of 284us with vigorous mousing going on.
+            // This translates into ~6.3 scanlines. To be on the safe side, round up to
+            // 8. If the interval is too short, the ROM will not keep up and will
+            // not be able to service Y axis movements anymore.
+            //
+            // From a DCD edge to asserting the interrupt line takes the SCC ~1.5us.
             if scanline % 8 == 0 {
                 self.plusmouse_tick();
             }
