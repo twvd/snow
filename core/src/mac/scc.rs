@@ -222,8 +222,9 @@ struct SccChannel {
     rx_enable: bool,
     ext_ip: bool,
     tx_ip: bool,
-    rx_ie: bool,
     tx_ie: bool,
+    rx_ip: bool,
+    rx_ie: bool,
     ext_ie: bool,
 
     reg15: u8,
@@ -263,7 +264,7 @@ impl Scc {
 
     fn write_data(&mut self, ch: SccCh, val: u8) {
         let chi = ch.to_usize().unwrap();
-        if self.ch[chi].tx_enable {
+        if self.ch[chi].tx_enable && self.ch[chi].tx_ie && self.mic.mie() {
             self.ch[chi].tx_ip = true;
         }
         self.ch[chi].tx_queue.push_back(val);
@@ -317,10 +318,10 @@ impl Scc {
             (3, SccCh::A) => *RdReg3::default()
                 .with_b_ext_status_ip(self.ch[1].ext_ip)
                 .with_b_tx_ip(self.ch[1].tx_ip)
-                .with_b_rx_ip(!self.ch[1].rx_queue.is_empty())
+                .with_b_rx_ip(self.ch[1].rx_ip)
                 .with_a_ext_status_ip(self.ch[0].ext_ip)
                 .with_a_tx_ip(self.ch[0].tx_ip)
-                .with_a_rx_ip(!self.ch[0].rx_queue.is_empty()),
+                .with_a_rx_ip(self.ch[0].rx_ip),
             (10, _) => {
                 // Misc. status bits
                 0
@@ -360,6 +361,9 @@ impl Scc {
                     }
                     SccCommand::ResetTxInt => {
                         self.ch[chi].tx_ip = false;
+                    }
+                    SccCommand::IntNextRx => {
+                        self.ch[chi].rx_ip = false;
                     }
                     _ => {
                         warn!("unimplemented command {:?}", r.cmdcode().unwrap());
@@ -411,7 +415,15 @@ impl Scc {
     }
 
     pub fn push_rx(&mut self, ch: SccCh, data: &[u8]) {
-        self.ch[ch.to_usize().unwrap()].rx_queue.extend(data.iter());
+        let chi = ch.to_usize().unwrap();
+        if !self.ch[chi].rx_enable {
+            return;
+        }
+
+        self.ch[chi].rx_queue.extend(data.iter());
+        if self.mic.mie() && self.ch[chi].rx_ie {
+            self.ch[chi].rx_ip = true;
+        }
     }
 
     pub fn take_tx(&mut self, ch: SccCh) -> Vec<u8> {
