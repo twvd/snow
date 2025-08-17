@@ -1681,7 +1681,7 @@ impl eframe::App for SnowGui {
             }
 
             // Framebuffer display
-            ui.vertical_centered(|ui| {
+            let response = ui.vertical_centered(|ui| {
                 // Align framebuffer vertically
                 if self.in_fullscreen {
                     const GUEST_ASPECT_RATIO: f32 = 4.0 / 3.0;
@@ -1703,43 +1703,50 @@ impl eframe::App for SnowGui {
                     }
                 }
 
-                let response = self.framebuffer.draw(ui, self.in_fullscreen);
+                self.framebuffer.draw(ui, self.in_fullscreen);
                 if self.in_fullscreen {
-                    response.context_menu(|ui| {
-                        ui.set_min_width(Self::SUBMENU_WIDTH);
-                        if ui.button("Exit fullscreen").clicked() {
-                            self.exit_fullscreen(ctx);
-                            ui.close_menu();
-                        }
-                        if ui.button("Take screenshot").clicked() {
-                            self.screenshot();
-                            ui.close_menu();
-                        }
-                        ui.separator();
-                        self.draw_menu_floppies(ui);
-                        let targets = self.emu.get_scsi_target_status().map(|d| d.to_owned());
-                        if let Some(targets) = targets {
-                            for (id, target) in targets
-                                .iter()
-                                .enumerate()
-                                .filter_map(|(i, t)| t.as_ref().map(|t| (i, t)))
-                                .filter(|(_, t)| t.target_type == ScsiTargetType::Cdrom)
-                            {
-                                self.draw_scsi_target_menu(ui, id, Some(target), false);
-                            }
-                        }
-                        ui.separator();
-                        let mut ff = self.emu.is_fastforward();
-                        if ui.checkbox(&mut ff, "Fast-forward").clicked() {
-                            self.emu.toggle_fastforward();
-                            ui.close_menu();
-                        }
-                        if ui.button("Reset machine").clicked() {
-                            self.emu.reset();
-                        }
-                    });
+                    // To fill the screen with hitbox for the context menu
+                    ui.allocate_space(ui.available_size());
                 }
             });
+            if self.in_fullscreen {
+                response.response.context_menu(|ui| {
+                    // Show the mouse cursor so the user can interact with the menu
+                    self.ui_active = false;
+
+                    ui.set_min_width(Self::SUBMENU_WIDTH);
+                    if ui.button("Exit fullscreen").clicked() {
+                        self.exit_fullscreen(ctx);
+                        ui.close_menu();
+                    }
+                    if ui.button("Take screenshot").clicked() {
+                        self.screenshot();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    self.draw_menu_floppies(ui);
+                    let targets = self.emu.get_scsi_target_status().map(|d| d.to_owned());
+                    if let Some(targets) = targets {
+                        for (id, target) in targets
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, t)| t.as_ref().map(|t| (i, t)))
+                            .filter(|(_, t)| t.target_type == ScsiTargetType::Cdrom)
+                        {
+                            self.draw_scsi_target_menu(ui, id, Some(target), false);
+                        }
+                    }
+                    ui.separator();
+                    let mut ff = self.emu.is_fastforward();
+                    if ui.checkbox(&mut ff, "Fast-forward").clicked() {
+                        self.emu.toggle_fastforward();
+                        ui.close_menu();
+                    }
+                    if ui.button("Reset machine").clicked() {
+                        self.emu.reset();
+                    }
+                });
+            }
 
             // Draw snowflakes behind the dialogs
             self.draw_snowflakes(ui);
@@ -1876,7 +1883,11 @@ impl eframe::App for SnowGui {
         // Hide mouse over framebuffer
         // When using 'on_hover_and_drag_cursor' on the widget, the cursor still shows when the
         // mouse button is down, which is why this is done here.
-        if self.ui_active && self.emu.is_running() && self.get_machine_mouse_pos(ctx).is_some() {
+        if self.ui_active
+            && self.emu.is_running()
+            && (self.get_machine_mouse_pos(ctx).is_some()
+                || (self.in_fullscreen && self.emu.is_mouse_relative()))
+        {
             ctx.set_cursor_icon(egui::CursorIcon::None);
         }
 
@@ -1896,22 +1907,36 @@ impl eframe::App for SnowGui {
                     pressed,
                     ..
                 } => {
-                    if self.get_machine_mouse_pos(ctx).is_some() {
+                    if self.get_machine_mouse_pos(ctx).is_some()
+                        || (self.in_fullscreen && self.emu.is_mouse_relative())
+                    {
                         // Cursor is within framebuffer view area
                         self.emu.update_mouse_button(*pressed);
                     }
                 }
                 egui::Event::MouseMoved(rel_p) => {
                     // Event with relative motion, but 'optional' according to egui docs
+                    let relpos = if self.in_fullscreen {
+                        // In fullscreen mode, do not scale the mouse as the pointer cannot leave
+                        // the viewport.
+                        egui::Pos2 {
+                            x: rel_p.x,
+                            y: rel_p.y,
+                        }
+                    } else {
+                        egui::Pos2 {
+                            x: (rel_p.x / self.framebuffer.scale) * 2.0,
+                            y: (rel_p.y / self.framebuffer.scale) * 2.0,
+                        }
+                    };
+
                     if let Some(abs_p) = self.get_machine_mouse_pos(ctx) {
                         // Cursor is within framebuffer view area
-                        self.emu.update_mouse(
-                            &abs_p,
-                            &egui::Pos2 {
-                                x: (rel_p.x / self.framebuffer.scale) * 2.0,
-                                y: (rel_p.y / self.framebuffer.scale) * 2.0,
-                            },
-                        );
+                        self.emu.update_mouse(Some(&abs_p), &relpos);
+                    } else if self.in_fullscreen {
+                        // Always send relative motion for the entire screen in
+                        // fullscreen mode
+                        self.emu.update_mouse(None, &relpos);
                     }
                 }
                 egui::Event::PointerMoved(_) => {
@@ -1919,7 +1944,7 @@ impl eframe::App for SnowGui {
                     if let Some(abs_p) = self.get_machine_mouse_pos(ctx) {
                         // Cursor is within framebuffer view area
                         // No relative motion in this event
-                        self.emu.update_mouse(&abs_p, &egui::Pos2::default());
+                        self.emu.update_mouse(Some(&abs_p), &egui::Pos2::default());
                     }
                 }
                 _ => (),
