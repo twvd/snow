@@ -97,8 +97,6 @@ impl AdbTransceiver {
                     self.process_cmd(true);
                     self.cmd.clear();
                 }
-
-                self.response.clear();
                 None
             }
             AdbBusState::Data1 | AdbBusState::Data2 => {
@@ -118,6 +116,10 @@ impl AdbTransceiver {
     }
 
     pub fn data_in(&mut self, data: u8) {
+        if self.state == AdbBusState::Command && self.cmd.is_empty() {
+            // New command, clear response buffer
+            self.response.clear();
+        }
         self.cmd.push(data);
     }
 
