@@ -10,6 +10,7 @@ use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::MouseMode;
 use crate::mac::scc::{Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
+use crate::mac::swim::drive::DriveType;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::MacModel;
@@ -126,6 +127,7 @@ where
         renderer: TRenderer,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
+        override_fdd_type: Option<DriveType>,
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
 
@@ -133,6 +135,12 @@ where
         let fb_main_start = ram_size as Address - Video::<TRenderer>::FRAMEBUFFER_MAIN_OFFSET;
         let sound_alt_start = ram_size - Self::SOUND_ALT_OFFSET;
         let sound_main_start = ram_size - Self::SOUND_MAIN_OFFSET;
+
+        let fdds = if let Some(override_fdd_type) = override_fdd_type {
+            vec![override_fdd_type; model.fdd_drives().len()]
+        } else {
+            model.fdd_drives().to_vec()
+        };
 
         if extension_rom.is_some() {
             log::info!("Extension ROM present");
@@ -152,7 +160,7 @@ where
             audio: AudioState::default(),
             eclock: 0,
             scc: Scc::new(),
-            swim: Swim::new(model.fdd_drives(), model.fdd_hd(), 8_000_000),
+            swim: Swim::new(&fdds, model.fdd_hd(), 8_000_000),
             scsi: ScsiController::new(),
             mouse_ready: false,
 

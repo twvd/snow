@@ -27,6 +27,7 @@ use snow_core::emulator::{Emulator, MouseMode};
 use snow_core::keymap::Scancode;
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
+use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{ExtraROMs, MacModel, MacMonitor};
 use snow_core::renderer::DisplayBuffer;
 use snow_core::tickable::{Tickable, Ticks};
@@ -69,25 +70,23 @@ pub struct EmulatorInitResult {
 
 /// Initialization arguments for the emulator, minus filenames
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default)]
 pub struct EmulatorInitArgs {
-    #[serde(default)]
     pub audio_disabled: bool,
 
-    #[serde(default)]
     pub monitor: Option<MacMonitor>,
 
-    #[serde(default, skip_serializing)]
+    #[serde(skip_serializing)]
     /// Deprecated; now mouse_mode
     pub mouse_disabled: Option<bool>,
 
-    #[serde(default)]
     pub mouse_mode: MouseMode,
 
-    #[serde(default)]
     pub start_fastforward: bool,
 
-    #[serde(default)]
     pub ram_size: Option<usize>,
+
+    pub override_fdd_type: Option<DriveType>,
 }
 
 /// Manages the state of the emulator and feeds input to the GUI
@@ -200,6 +199,7 @@ impl EmulatorState {
             args.monitor,
             mouse_mode,
             args.ram_size,
+            args.override_fdd_type,
         )?;
 
         let cmd = emulator.create_cmd_sender();

@@ -7,6 +7,7 @@ use eframe::egui;
 use egui_file_dialog::FileDialog;
 use sha2::{Digest, Sha256};
 use snow_core::emulator::MouseMode;
+use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{MacModel, MacMonitor};
 use strum::IntoEnumIterator;
 
@@ -18,6 +19,7 @@ pub struct ModelSelectionDialog {
     selected_model: MacModel,
     init_args: EmulatorInitArgs,
     selected_monitor: MacMonitor,
+    early_800k: bool,
 
     // Main ROM selection
     main_rom_path: String,
@@ -75,6 +77,7 @@ impl Default for ModelSelectionDialog {
             selected_model: MacModel::Plus,
             init_args: Default::default(),
             selected_monitor: MacMonitor::default(),
+            early_800k: false,
 
             main_rom_path: String::new(),
             main_rom_valid: false,
@@ -480,6 +483,15 @@ impl ModelSelectionDialog {
                                     }
                                 });
                         });
+                        if matches!(
+                            self.selected_model,
+                            MacModel::Early128K | MacModel::Early512K
+                        ) {
+                            ui.checkbox(
+                                &mut self.early_800k,
+                                "Use 800K floppy drive on Macintosh 128K/512K",
+                            );
+                        }
                         ui.checkbox(&mut self.init_args.audio_disabled, "Disable audio");
                         ui.checkbox(
                             &mut self.disable_rom_validation,
@@ -550,6 +562,15 @@ impl ModelSelectionDialog {
                                 },
                                 // Deprecated
                                 mouse_disabled: None,
+                                override_fdd_type: if matches!(
+                                    self.selected_model,
+                                    MacModel::Early128K | MacModel::Early512K
+                                ) && self.early_800k
+                                {
+                                    Some(DriveType::GCR800KPWM)
+                                } else {
+                                    None
+                                },
                                 ..self.init_args
                             },
                         });

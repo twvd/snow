@@ -19,6 +19,7 @@ use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
 use crate::mac::macii::bus::MacIIBus;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
+use crate::mac::swim::drive::DriveType;
 use crate::mac::{ExtraROMs, MacModel, MacMonitor};
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::AudioReceiver;
@@ -235,7 +236,7 @@ impl Emulator {
         rom: &[u8],
         model: MacModel,
     ) -> Result<(Self, crossbeam_channel::Receiver<DisplayBuffer>)> {
-        Self::new_with_extra(rom, &[], model, None, MouseMode::default(), None)
+        Self::new_with_extra(rom, &[], model, None, MouseMode::default(), None, None)
     }
     pub fn new_with_extra(
         rom: &[u8],
@@ -244,6 +245,7 @@ impl Emulator {
         monitor: Option<MacMonitor>,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
+        override_fdd_type: Option<DriveType>,
     ) -> Result<(Self, crossbeam_channel::Receiver<DisplayBuffer>)> {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
@@ -266,8 +268,15 @@ impl Emulator {
                 });
 
                 // Initialize bus and CPU
-                let bus =
-                    CompactMacBus::new(model, rom, extension_rom, renderer, mouse_mode, ram_size);
+                let bus = CompactMacBus::new(
+                    model,
+                    rom,
+                    extension_rom,
+                    renderer,
+                    mouse_mode,
+                    ram_size,
+                    override_fdd_type,
+                );
                 let mut cpu = Box::new(CpuM68000::new(bus));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
@@ -294,6 +303,8 @@ impl Emulator {
                 )
             }
             MacModel::MacII | MacModel::MacIIFDHD => {
+                assert!(override_fdd_type.is_none());
+
                 // Find display card ROM
                 let Some(ExtraROMs::MDC12(mdcrom)) =
                     extra_roms.iter().find(|p| matches!(p, ExtraROMs::MDC12(_)))
