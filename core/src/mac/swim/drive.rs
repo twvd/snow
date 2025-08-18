@@ -2,6 +2,7 @@ use anyhow::Result;
 use log::*;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
+use serde::{Deserialize, Serialize};
 use snow_floppy::flux::FluxTicks;
 use snow_floppy::{Floppy, FloppyImage, FloppyType, TrackLength, TrackType};
 use strum::Display;
@@ -20,11 +21,15 @@ use crate::{dbgprop_bool, dbgprop_enum, dbgprop_sdec, dbgprop_udec};
 ///    1010 - 800K GCR drive
 ///    1110 - HD-20 drive
 ///    1111 - No drive (pull-up on the sense line)
-#[derive(PartialEq, Eq, Clone, Copy, Debug, Display, strum::IntoStaticStr)]
+#[derive(
+    Serialize, Deserialize, PartialEq, Eq, Clone, Copy, Debug, Display, strum::IntoStaticStr,
+)]
 pub enum DriveType {
     None,
     GCR400K,
     GCR800K,
+    /// PWM-controlled 800K drive for use in the 128K/512K
+    GCR800KPWM,
     SuperDrive,
 }
 
@@ -32,7 +37,7 @@ impl DriveType {
     pub const fn io_superdrive(self) -> bool {
         match self {
             Self::None => true,
-            Self::GCR400K | Self::GCR800K => false,
+            Self::GCR400K | Self::GCR800K | Self::GCR800KPWM => false,
             Self::SuperDrive => true,
         }
     }
@@ -41,7 +46,7 @@ impl DriveType {
         match self {
             Self::None => true,
             Self::GCR400K => false,
-            Self::GCR800K => true,
+            Self::GCR800K | Self::GCR800KPWM => true,
             Self::SuperDrive => unreachable!(),
         }
     }
@@ -49,7 +54,7 @@ impl DriveType {
     pub const fn io_mfm(self) -> bool {
         match self {
             Self::None => true,
-            Self::GCR400K | Self::GCR800K => false,
+            Self::GCR400K | Self::GCR800K | Self::GCR800KPWM => false,
             Self::SuperDrive => true,
         }
     }
@@ -57,7 +62,7 @@ impl DriveType {
     pub const fn io_rddata1(self) -> bool {
         match self {
             Self::None => true,
-            Self::GCR400K | Self::GCR800K => false,
+            Self::GCR400K | Self::GCR800K | Self::GCR800KPWM => false,
             Self::SuperDrive => true,
         }
     }
@@ -65,7 +70,7 @@ impl DriveType {
     pub const fn io_ready(self) -> bool {
         match self {
             Self::None => true,
-            Self::GCR400K | Self::GCR800K | Self::SuperDrive => false,
+            Self::GCR400K | Self::GCR800K | Self::GCR800KPWM | Self::SuperDrive => false,
         }
     }
 
@@ -73,7 +78,16 @@ impl DriveType {
         match self {
             Self::None => true,
             Self::GCR400K => false,
-            Self::GCR800K | Self::SuperDrive => true,
+            Self::GCR800K | Self::GCR800KPWM | Self::SuperDrive => true,
+        }
+    }
+
+    pub const fn has_pwm_control(self) -> bool {
+        match self {
+            Self::None => false,
+            Self::GCR400K => true,
+            Self::GCR800KPWM => true,
+            Self::GCR800K | Self::SuperDrive => false,
         }
     }
 
@@ -82,6 +96,7 @@ impl DriveType {
             Self::None => &[],
             Self::GCR400K => &[FloppyType::Mac400K],
             Self::GCR800K => &[FloppyType::Mac400K, FloppyType::Mac800K],
+            Self::GCR800KPWM => &[FloppyType::Mac400K, FloppyType::Mac800K],
             Self::SuperDrive => &[
                 FloppyType::Mac400K,
                 FloppyType::Mac800K,
@@ -413,7 +428,7 @@ impl FloppyDrive {
             // SuperDrive in MFM mode, fixed speed (CAV)
             // TODO DD spins at 600rpm!
             300
-        } else if !self.drive_type.is_doublesided() {
+        } else if self.drive_type.has_pwm_control() {
             // Macintosh CLV
             // PWM-driven spindle motor speed control
 

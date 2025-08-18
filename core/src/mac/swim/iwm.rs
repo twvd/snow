@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use snow_floppy::{TrackLength, TrackType};
 
 use super::{FluxTransitionTime, Swim, SwimMode};
-use crate::{bus::Address, mac::swim::drive::DriveType, types::Byte};
+use crate::bus::Address;
+use crate::types::Byte;
 
 bitfield! {
     /// IWM handshake register
@@ -210,8 +211,8 @@ impl Swim {
             26, 22, 43, 57, 38, 47, 17, 28, 10, 25, 21, 37, 46, 9, 24, 45, 8, 7, 6,
         ];
 
-        if self.get_selected_drive().drive_type != DriveType::GCR400K {
-            // Only 400K drives are PWM controlled
+        if !self.get_selected_drive().drive_type.has_pwm_control() {
+            // Skip expensive calculation for non-PWM drives
             return Ok(());
         }
 
