@@ -11,7 +11,6 @@ use crate::{FloppyImage, FloppyType};
 use anyhow::{bail, Result};
 use binrw::io::Cursor;
 use binrw::{binrw, BinRead};
-use log::*;
 
 #[binrw]
 #[derive(Debug, Clone, Copy)]
@@ -78,11 +77,9 @@ impl Dc42Raw {
     pub fn get_type(&self) -> Result<FloppyType> {
         match (self.encoding, self.format) {
             (Dc42Encoding::GcrClvSsDd, Dc42Format::Mac400K) => Ok(FloppyType::Mac400K),
+            (Dc42Encoding::GcrClvSsDd, Dc42Format::Lisa400K) => Ok(FloppyType::Mac400K),
             (Dc42Encoding::GcrClvDsDd, Dc42Format::Mac800K) => Ok(FloppyType::Mac800K),
-            (Dc42Encoding::GcrClvDsDd, Dc42Format::Prodos800K) => {
-                warn!("Image header says format is Prodos800K? Proceeding anyway..");
-                Ok(FloppyType::Mac800K)
-            }
+            (Dc42Encoding::GcrClvDsDd, Dc42Format::Prodos800K) => Ok(FloppyType::Mac800K),
             (Dc42Encoding::MfmCavDsHd, _) => Ok(FloppyType::Mfm144M),
             _ => bail!(
                 "Unknown type, encoding: {:?} format: {:?}",
