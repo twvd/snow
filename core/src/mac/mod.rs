@@ -98,7 +98,8 @@ impl MacModel {
     pub const fn ram_size_options(self) -> &'static [usize] {
         match self {
             Self::Early128K => &[128 * 1024],
-            Self::Early512K | Self::Early512Ke => &[512 * 1024],
+            Self::Early512K => &[512 * 1024],
+            Self::Early512Ke => &[128 * 1024, 512 * 1024],
             Self::Plus | Self::SE | Self::SeFdhd | Self::Classic => {
                 &[1024 * 1024, 2048 * 1024, 4096 * 1024]
             }
