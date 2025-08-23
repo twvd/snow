@@ -66,6 +66,7 @@ pub(in crate::cpu_m68k) struct Group0Details {
     pub(in crate::cpu_m68k) address: Address,
     pub(in crate::cpu_m68k) ir: Word,
     pub(in crate::cpu_m68k) start_pc: Address,
+    pub(in crate::cpu_m68k) size: usize,
 }
 
 /// CPU error type to cascade exceptions down
@@ -893,7 +894,20 @@ where
                                 *Group0Ssw::default()
                                     .with_read(details.read)
                                     .with_df(true)
-                                    .with_function_code(details.function_code),
+                                    .with_function_code(details.function_code)
+                                    .with_size(match details.size {
+                                        1 => 1,
+                                        2 => 2,
+                                        4 => 0,
+                                        _ => {
+                                            log::error!(
+                                                "Unknown size in group 0 details: {}",
+                                                details.size
+                                            );
+                                            // Assume long
+                                            0
+                                        }
+                                    }),
                             )?;
                             // Instruction pipe stage C
                             self.write_ticks(self.regs.ssp().wrapping_add(0x0C), 0u16)?;
@@ -924,7 +938,20 @@ where
                                 *Group0Ssw::default()
                                     .with_read(details.read)
                                     .with_df(true)
-                                    .with_function_code(details.function_code),
+                                    .with_function_code(details.function_code)
+                                    .with_size(match details.size {
+                                        1 => 1,
+                                        2 => 2,
+                                        4 => 0,
+                                        _ => {
+                                            log::error!(
+                                                "Unknown size in group 0 details: {}",
+                                                details.size
+                                            );
+                                            // Assume long
+                                            0
+                                        }
+                                    }),
                             )?;
                             // Instruction pipe stage C
                             self.write_ticks(self.regs.ssp().wrapping_add(0x0C), 0u16)?;
