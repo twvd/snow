@@ -6,7 +6,7 @@ use crate::cpu_m68k::{CpuM68kType, CpuSized, M68000, M68020, TORDER_HIGHLOW, TOR
 use crate::types::Long;
 use crate::types::Word;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 
 // M68k UM 3.8
 pub const FC_UNUSED: u8 = 0;
@@ -58,6 +58,7 @@ where
                 bail!(CpuError::AddressError(Group0Details {
                     function_code: 0,
                     ir: 0,
+                    size: std::mem::size_of::<T>(),
 
                     // TODO instruction bit
                     instruction: false,
@@ -116,7 +117,19 @@ where
             let byte_addr = if PHYSICAL || !PMMU {
                 addr.wrapping_add(a as Address) & ADDRESS_MASK
             } else {
-                self.pmmu_translate(fc, addr.wrapping_add(a as Address), false)?
+                self.pmmu_translate(fc, addr.wrapping_add(a as Address), false)
+                    .map_err(|e| match e.downcast_ref() {
+                        Some(CpuError::BusError(details)) => {
+                            anyhow!(CpuError::BusError(Group0Details {
+                                // Fill in the size of the faulting access
+                                size: std::mem::size_of::<T>(),
+                                // Replace the BYTE address with the original
+                                address: addr,
+                                ..*details
+                            }))
+                        }
+                        _ => e,
+                    })?
             };
             let b: T =
                 loop {
@@ -271,7 +284,19 @@ where
                     let byte_addr = if PHYSICAL || !PMMU {
                         addr.wrapping_add(a as Address) & ADDRESS_MASK
                     } else {
-                        self.pmmu_translate(fc, addr.wrapping_add(a as Address), true)?
+                        self.pmmu_translate(fc, addr.wrapping_add(a as Address), true)
+                            .map_err(|e| match e.downcast_ref() {
+                                Some(CpuError::BusError(details)) => {
+                                    anyhow!(CpuError::BusError(Group0Details {
+                                        // Fill in the size of the faulting access
+                                        size: std::mem::size_of::<T>(),
+                                        // Replace the BYTE address with the original
+                                        address: addr,
+                                        ..*details
+                                    }))
+                                }
+                                _ => e,
+                            })?
                     };
                     let b = val as u8;
                     val >>= 8;
@@ -314,7 +339,19 @@ where
                     let byte_addr = if PHYSICAL || !PMMU {
                         addr.wrapping_add(a as Address) & ADDRESS_MASK
                     } else {
-                        self.pmmu_translate(fc, addr.wrapping_add(a as Address), true)?
+                        self.pmmu_translate(fc, addr.wrapping_add(a as Address), true)
+                            .map_err(|e| match e.downcast_ref() {
+                                Some(CpuError::BusError(details)) => {
+                                    anyhow!(CpuError::BusError(Group0Details {
+                                        // Fill in the size of the faulting access
+                                        size: std::mem::size_of::<T>(),
+                                        // Replace the BYTE address with the original
+                                        address: addr,
+                                        ..*details
+                                    }))
+                                }
+                                _ => e,
+                            })?
                     };
                     let b = val as u8;
                     val >>= 8;

@@ -227,6 +227,7 @@ where
 
                         // Filled in later
                         start_pc: 0,
+                        size: 0,
                     }))
                 }
                 _ => e,
