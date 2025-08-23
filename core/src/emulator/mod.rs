@@ -11,7 +11,7 @@ use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
-use crate::cpu_m68k::{CpuM68000, CpuM68020};
+use crate::cpu_m68k::{CpuM68000, CpuM68020, CpuM68020Pmmu};
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::keymap::{KeyEvent, Keymap};
 use crate::mac::adb::{AdbKeyboard, AdbMouse};
@@ -94,6 +94,7 @@ macro_rules! dispatch {
                     match self {
                         Self::Compact(inner) => &inner.$($ref_target)*,
                         Self::MacII(inner) => &inner.$($ref_target)*,
+                        Self::MacIIPmmu(inner) => &inner.$($ref_target)*,
                     }
                 }
             )*
@@ -104,6 +105,7 @@ macro_rules! dispatch {
                     match self {
                         Self::Compact(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacII(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::MacIIPmmu(inner) => &mut inner.$($mut_ref_target)*,
                     }
                 }
             )*
@@ -114,6 +116,7 @@ macro_rules! dispatch {
                     match self {
                         Self::Compact(inner) => inner.$($immut_call_target)*,
                         Self::MacII(inner) => inner.$($immut_call_target)*,
+                        Self::MacIIPmmu(inner) => inner.$($immut_call_target)*,
                     }
                 }
             )*
@@ -124,6 +127,7 @@ macro_rules! dispatch {
                     match self {
                         Self::Compact(inner) => inner.$($mut_call_target)*,
                         Self::MacII(inner) => inner.$($mut_call_target)*,
+                        Self::MacIIPmmu(inner) => inner.$($mut_call_target)*,
                     }
                 }
             )*
@@ -136,8 +140,10 @@ macro_rules! dispatch {
 enum EmulatorConfig {
     /// Compact series - Mac 128K, 512K, Plus, SE, Classic
     Compact(Box<CpuM68000<CompactMacBus<ChannelRenderer>>>),
-    /// Macintosh II
-    MacII(Box<CpuM68020<MacIIBus<ChannelRenderer>>>),
+    /// Macintosh II (AMU)
+    MacII(Box<CpuM68020<MacIIBus<ChannelRenderer, true>>>),
+    /// Macintosh II (PMMU)
+    MacIIPmmu(Box<CpuM68020Pmmu<MacIIBus<ChannelRenderer, false>>>),
 }
 
 dispatch! {
@@ -202,7 +208,7 @@ impl EmulatorConfig {
     pub fn keyboard_event(&mut self, ev: KeyEvent) -> Result<()> {
         match self {
             Self::Compact(cpu) => cpu.bus.via.keyboard.event(ev),
-            Self::MacII(_) => unreachable!(), // MacII uses ADB, not direct keyboard events
+            Self::MacII(_) | Self::MacIIPmmu(_) => unreachable!(), // MacII uses ADB, not direct keyboard events
         }
     }
 
@@ -210,6 +216,7 @@ impl EmulatorConfig {
         match self {
             Self::Compact(cpu) => &mut cpu.bus.via.rtc,
             Self::MacII(cpu) => &mut cpu.bus.via1.rtc,
+            Self::MacIIPmmu(cpu) => &mut cpu.bus.via1.rtc,
         }
     }
 }
@@ -236,8 +243,19 @@ impl Emulator {
         rom: &[u8],
         model: MacModel,
     ) -> Result<(Self, crossbeam_channel::Receiver<DisplayBuffer>)> {
-        Self::new_with_extra(rom, &[], model, None, MouseMode::default(), None, None)
+        Self::new_with_extra(
+            rom,
+            &[],
+            model,
+            None,
+            MouseMode::default(),
+            None,
+            None,
+            false,
+        )
     }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_extra(
         rom: &[u8],
         extra_roms: &[ExtraROMs],
@@ -246,6 +264,7 @@ impl Emulator {
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
         override_fdd_type: Option<DriveType>,
+        pmmu_enabled: bool,
     ) -> Result<(Self, crossbeam_channel::Receiver<DisplayBuffer>)> {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
@@ -261,6 +280,8 @@ impl Emulator {
             | MacModel::SE
             | MacModel::SeFdhd
             | MacModel::Classic => {
+                assert!(!pmmu_enabled, "PMMU not available on compact models");
+
                 // Find extension ROM if present
                 let extension_rom = extra_roms.iter().find_map(|p| match p {
                     ExtraROMs::ExtensionROM(data) => Some(*data),
@@ -318,41 +339,79 @@ impl Emulator {
                     _ => None,
                 });
 
-                // Initialize bus and CPU
-                let bus = MacIIBus::new(
-                    model,
-                    rom,
-                    mdcrom,
-                    extension_rom,
-                    vec![renderer],
-                    monitor.unwrap_or_default(),
-                    mouse_mode,
-                    ram_size,
-                );
-                let mut cpu = Box::new(CpuM68020::new(bus));
-                assert_eq!(cpu.get_type(), model.cpu_type());
+                if !pmmu_enabled {
+                    // Initialize bus and CPU
+                    let bus = MacIIBus::new(
+                        model,
+                        rom,
+                        mdcrom,
+                        extension_rom,
+                        vec![renderer],
+                        monitor.unwrap_or_default(),
+                        mouse_mode,
+                        ram_size,
+                    );
+                    let mut cpu = Box::new(CpuM68020::new(bus));
+                    assert_eq!(cpu.get_type(), model.cpu_type());
 
-                // Initialize input devices
-                let adbmouse_sender = if model.has_adb() {
-                    let (mouse, mouse_sender) = AdbMouse::new();
-                    cpu.bus.via1.adb.add_device(mouse);
-                    Some(mouse_sender)
+                    // Initialize input devices
+                    let adbmouse_sender = if model.has_adb() {
+                        let (mouse, mouse_sender) = AdbMouse::new();
+                        cpu.bus.via1.adb.add_device(mouse);
+                        Some(mouse_sender)
+                    } else {
+                        None
+                    };
+                    let adbkeyboard_sender = if model.has_adb() {
+                        let (keyboard, sender) = AdbKeyboard::new();
+                        cpu.bus.via1.adb.add_device(keyboard);
+                        Some(sender)
+                    } else {
+                        None
+                    };
+                    cpu.reset()?;
+                    (
+                        EmulatorConfig::MacII(cpu),
+                        adbkeyboard_sender,
+                        adbmouse_sender,
+                    )
                 } else {
-                    None
-                };
-                let adbkeyboard_sender = if model.has_adb() {
-                    let (keyboard, sender) = AdbKeyboard::new();
-                    cpu.bus.via1.adb.add_device(keyboard);
-                    Some(sender)
-                } else {
-                    None
-                };
-                cpu.reset()?;
-                (
-                    EmulatorConfig::MacII(cpu),
-                    adbkeyboard_sender,
-                    adbmouse_sender,
-                )
+                    // Initialize bus and CPU
+                    let bus = MacIIBus::new(
+                        model,
+                        rom,
+                        mdcrom,
+                        extension_rom,
+                        vec![renderer],
+                        monitor.unwrap_or_default(),
+                        mouse_mode,
+                        ram_size,
+                    );
+                    let mut cpu = Box::new(CpuM68020Pmmu::new(bus));
+                    assert_eq!(cpu.get_type(), model.cpu_type());
+
+                    // Initialize input devices
+                    let adbmouse_sender = if model.has_adb() {
+                        let (mouse, mouse_sender) = AdbMouse::new();
+                        cpu.bus.via1.adb.add_device(mouse);
+                        Some(mouse_sender)
+                    } else {
+                        None
+                    };
+                    let adbkeyboard_sender = if model.has_adb() {
+                        let (keyboard, sender) = AdbKeyboard::new();
+                        cpu.bus.via1.adb.add_device(keyboard);
+                        Some(sender)
+                    } else {
+                        None
+                    };
+                    cpu.reset()?;
+                    (
+                        EmulatorConfig::MacIIPmmu(cpu),
+                        adbkeyboard_sender,
+                        adbmouse_sender,
+                    )
+                }
             }
         };
 
@@ -579,7 +638,7 @@ impl Emulator {
         if let Err(e) = self.step() {
             self.run = false;
             self.user_error(&format!(
-                "Emulator halted: Uncaught CPU stepping error at PC {:08X}: {}",
+                "Emulator halted: Uncaught CPU stepping error at PC {:08X}: {:?}",
                 self.config.cpu_regs().pc,
                 e
             ));

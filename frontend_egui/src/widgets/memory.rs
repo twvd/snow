@@ -316,6 +316,7 @@ impl MemoryViewerWidget {
         for i in row_start..row_end {
             // Search highlighting
             if !self.highlight.is_empty()
+                && (i + self.highlight.len()) < self.memory.len()
                 && self.memory[i..(i + self.highlight.len())] == self.highlight
             {
                 *hl_left = self.highlight.len();

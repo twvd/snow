@@ -5,11 +5,14 @@ use arrayvec::ArrayVec;
 use either::Either;
 use log::*;
 use num_traits::{FromBytes, PrimInt, ToBytes};
+use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::bus::{Address, Bus, BusResult, IrqSource};
+use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
+use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
+use crate::cpu_m68k::regs::RegisterCACR;
 use crate::cpu_m68k::M68000_SR_MASK;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
@@ -52,32 +55,66 @@ pub enum Breakpoint {
     StepOut(Address),
 }
 
-/// Address error details
+/// Address error/bus error details
 #[derive(Debug, Clone, Copy)]
-struct AddressError {
+pub(in crate::cpu_m68k) struct Group0Details {
     #[allow(dead_code)]
-    function_code: u8,
-    read: bool,
+    pub(in crate::cpu_m68k) function_code: u8,
+    pub(in crate::cpu_m68k) read: bool,
     #[allow(dead_code)]
-    instruction: bool,
-    address: Address,
-    ir: Word,
+    pub(in crate::cpu_m68k) instruction: bool,
+    pub(in crate::cpu_m68k) address: Address,
+    pub(in crate::cpu_m68k) ir: Word,
+    pub(in crate::cpu_m68k) start_pc: Address,
+    pub(in crate::cpu_m68k) size: usize,
 }
 
 /// CPU error type to cascade exceptions down
 #[derive(Error, Debug)]
-enum CpuError {
-    /// Address error exception (unaligned address on Word/Long access)
+pub(in crate::cpu_m68k) enum CpuError {
+    /// Raise address error exception (unaligned address on Word/Long access)
     #[error("Address error exception")]
-    AddressError(AddressError),
+    AddressError(Group0Details),
+    /// Raise bus error exception
+    #[error("Bus error exception")]
+    BusError(Group0Details),
+    /// Handle page fault (PMMU)
+    #[error("Page fault")]
+    Pagefault,
 }
 
 /// M68000 exception groups
 #[derive(Debug, Clone, Copy)]
-enum ExceptionGroup {
+pub(in crate::cpu_m68k) enum ExceptionGroup {
     Group0,
     Group1,
     Group2,
+}
+
+bitfield! {
+    /// 68020+ group 0 exception stack frame Special Status Word
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+    pub struct Group0Ssw(pub Word): Debug, FromStorage, IntoStorage, DerefStorage {
+        pub function_code: u8 @ 0..=2,
+
+        /// Size of failed access
+        /// 0 = Long, 1 = Word, 2 = Byte
+        pub size: usize @ 4..=5,
+
+        pub read: bool @ 6,
+        /// Read-Modify-Write
+        pub rm: bool @ 7,
+        /// Re-run fault
+        pub df: bool @ 8,
+        /// Re-run stage B
+        pub rb: bool @ 12,
+        /// Re-run stage C
+        pub rc: bool @ 13,
+        /// Fault on stage B
+        pub fb: bool @ 14,
+        /// Fault on stage C
+        pub fc: bool @ 15,
+    }
 }
 
 // Exception vectors
@@ -85,6 +122,8 @@ enum ExceptionGroup {
 pub const VECTOR_SP: Address = 0x00000000;
 /// Reset vector
 pub const VECTOR_RESET: Address = 0x00000004;
+/// Bus error exception vector
+pub const VECTOR_BUS_ERROR: Address = 0x000008;
 /// Address error exception vector
 pub const VECTOR_ADDRESS_ERROR: Address = 0x00000C;
 /// Illegal instruction exception vector
@@ -136,24 +175,45 @@ fn empty_decode_cache() -> DecodeCache {
     vec![None; Word::MAX as usize + 1]
 }
 
+/// I-cache cache line size (68020/68030)
+pub const ICACHE_LINE_SIZE: usize = 4;
+
+/// I-cache amount of cache lines (68020/68030)
+pub const ICACHE_LINES: usize = 64;
+
+/// I-cache tag marking a line as invalid
+///
+/// Tags are normally 30-bit, we keep 32.
+/// We store the line address as full width address, with the lower
+/// (index/offset) bits masked to 0. This is why this value works as an
+/// 'invalid' marker, as the lower 8 bits are normally always 0.
+pub const ICACHE_TAG_INVALID: u32 = 0xFFFF_FFFF;
+
+pub const ICACHE_TAG_MASK: Address = 0xFFFF_FF00;
+pub const ICACHE_INDEX_MASK: Address = 0x0000_00FC;
+pub const ICACHE_OFFSET_MASK: Address = 0x000_0003;
+
 #[derive(Clone, Eq, PartialEq)]
 // The point of this enum is to mostly store instructions without allocation
 #[allow(clippy::large_enum_variant)]
 pub enum HistoryEntry {
     Instruction(HistoryEntryInstruction),
     Exception { vector: Address, cycles: Ticks },
+    Pagefault { address: Address, write: bool },
 }
 
 #[derive(Default, Clone, PartialEq, Eq)]
 pub struct HistoryEntryInstruction {
     pub pc: Address,
-    pub raw: ArrayVec<u8, 12>,
+    pub raw: ArrayVec<u8, 24>,
     pub cycles: Ticks,
     pub initial_regs: Option<RegisterFile>,
     pub final_regs: Option<RegisterFile>,
     pub branch_taken: Option<bool>,
     pub waitstates: bool,
     pub ea: Option<Address>,
+    pub icache_hit: bool,
+    pub icache_miss: bool,
 }
 
 impl HistoryEntryInstruction {
@@ -172,8 +232,7 @@ pub struct SystrapHistoryEntry {
 }
 
 /// Motorola 680x0
-#[derive(Serialize, Deserialize)]
-pub struct CpuM68k<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
+pub struct CpuM68k<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
@@ -199,42 +258,63 @@ where
     pub(in crate::cpu_m68k) step_ea_load: Option<(usize, Address)>,
 
     /// Instruction decode cache
-    #[serde(skip, default = "empty_decode_cache")]
+    //#[serde(skip, default = "empty_decode_cache")]
     decode_cache: DecodeCache,
 
     /// Mask trace exceptions (for tests)
     pub trace_mask: bool,
 
     /// Active breakpoints
-    breakpoints: Vec<Breakpoint>,
+    pub(in crate::cpu_m68k) breakpoints: Vec<Breakpoint>,
 
     /// Breakpoint hit latch
-    #[serde(skip)]
+    //#[serde(skip)]
     pub(in crate::cpu_m68k) breakpoint_hit: LatchingEvent,
 
     /// Next address to jump to for step over
     step_over_addr: Option<Address>,
 
     /// Instruction history
-    #[serde(skip)]
-    history: VecDeque<HistoryEntry>,
+    //#[serde(skip)]
+    pub(in crate::cpu_m68k) history: VecDeque<HistoryEntry>,
 
     /// Current history item
-    #[serde(skip)]
+    //#[serde(skip)]
     pub(in crate::cpu_m68k) history_current: HistoryEntryInstruction,
 
     /// Keep history?
-    #[serde(skip)]
+    //#[serde(skip)]
     pub(in crate::cpu_m68k) history_enabled: bool,
 
     /// System trap history
-    #[serde(skip)]
+    //#[serde(skip)]
     systrap_history: VecDeque<SystrapHistoryEntry>,
     systrap_history_enabled: bool,
+
+    /// PMMU address translation caches
+    /// The index is either PMMU_ATC_URP or PMMU_ATC_SRP, depending on which root
+    /// pointer is used in the translation.
+    ///
+    /// The caching method used is a one-dimensional lookup table where the
+    /// index is the page, allowing for O(1) lookup. The cache is expanded on
+    /// the fly (never shrunk).
+    //#[serde(skip)]
+    pub(in crate::cpu_m68k) pmmu_atc: [Vec<Option<Address>>; 2],
+
+    /// 68020+ I-cache lines
+    icache_lines: [[u8; ICACHE_LINE_SIZE]; ICACHE_LINES],
+
+    /// 68020+ I-cache tags
+    icache_tags: [u32; ICACHE_LINES],
+
+    /// Register state at the beginning of an instruction to allow
+    /// restarting an instruction that caused a mid-instruction
+    /// bus fault.
+    pub(in crate::cpu_m68k) restart_regs: Option<RegisterFile>,
 }
 
-impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType>
-    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
+    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
@@ -262,6 +342,10 @@ where
             history_enabled: false,
             systrap_history: VecDeque::with_capacity(Self::HISTORY_SIZE),
             systrap_history_enabled: false,
+            pmmu_atc: Default::default(),
+            icache_lines: core::array::from_fn(|_| Default::default()),
+            icache_tags: [ICACHE_TAG_INVALID; ICACHE_LINES],
+            restart_regs: None,
         }
     }
 
@@ -272,6 +356,8 @@ where
     /// Resets the CPU, loads reset vector and initial SP
     pub fn reset(&mut self) -> Result<()> {
         self.regs = RegisterFile::new();
+        self.icache_tags.fill(ICACHE_TAG_INVALID);
+
         self.cycles = 0;
         let init_ssp = self.read_ticks(VECTOR_SP)?;
         let init_pc = self.read_ticks(VECTOR_RESET)?;
@@ -358,7 +444,44 @@ where
     /// Pumps a new word into the prefetch queue, regardless of current queue length
     fn prefetch_pump_force(&mut self) -> Result<()> {
         let fetch_addr = self.regs.pc.wrapping_add(4) & ADDRESS_MASK;
-        let new_item = self.read_ticks::<Word>(fetch_addr)?;
+
+        let new_item = if CPU_TYPE >= M68020 && self.regs.cacr.e() {
+            // We keep the tag full size so we can invalidate easily
+            if fetch_addr & 1 != 0 {
+                bail!("I-cache enabled but PC unaligned");
+            }
+            let cache_tag = fetch_addr & ICACHE_TAG_MASK;
+            let cache_idx = ((fetch_addr & ICACHE_INDEX_MASK) >> 2) as usize;
+            let cache_offset = (fetch_addr & ICACHE_OFFSET_MASK) as usize;
+            if self.icache_tags[cache_idx] == cache_tag {
+                // Cache hit
+                self.history_current.icache_hit = true;
+                self.advance_cycles(1)?;
+                u16::from_be_bytes([
+                    self.icache_lines[cache_idx][cache_offset],
+                    self.icache_lines[cache_idx][cache_offset + 1],
+                ])
+            } else if !self.regs.cacr.f() {
+                // Cache miss, fill cache line
+                self.history_current.icache_miss = true;
+
+                let addr = fetch_addr & !ICACHE_OFFSET_MASK;
+                self.icache_lines[cache_idx] = self.read_ticks::<Long>(addr)?.to_be_bytes();
+                self.icache_tags[cache_idx] = cache_tag;
+
+                u16::from_be_bytes([
+                    self.icache_lines[cache_idx][cache_offset],
+                    self.icache_lines[cache_idx][cache_offset + 1],
+                ])
+            } else {
+                // Cache miss and cache frozen, normal fetch
+                self.history_current.icache_miss = true;
+                self.read_ticks_program::<Word>(fetch_addr)?
+            }
+        } else {
+            // Cache disabled/not available
+            self.read_ticks_program::<Word>(fetch_addr)?
+        };
         self.prefetch.push_back(new_item);
         self.regs.pc = (self.regs.pc + 2) & ADDRESS_MASK;
         Ok(())
@@ -401,6 +524,12 @@ where
         self.step_ea_addr = None;
         self.step_exception = false;
         self.step_over_addr = None;
+        self.step_ea_load = None;
+
+        if PMMU {
+            // TODO this is incredibly expensive..
+            self.restart_regs = Some(self.regs.clone());
+        }
 
         // Flag exceptions before executing the instruction to act on them later
         let trace_exception = self.regs.sr.trace() && !self.trace_mask;
@@ -470,19 +599,32 @@ where
         match execute_result {
             Ok(()) => {
                 // Assert ea_commit() was called
-                debug_assert!(self.step_ea_load.is_none());
+                assert!(self.step_ea_load.is_none());
             }
             Err(e) => match e.downcast_ref() {
                 Some(CpuError::AddressError(ae)) => {
                     let mut details = *ae;
                     details.ir = instr.data;
+                    details.start_pc = start_pc;
+
+                    debug!(
+                        "Address error: read = {:?}, address = {:08X} PC = {:08X}",
+                        details.read, details.address, self.regs.pc
+                    );
+
                     self.raise_exception(
                         ExceptionGroup::Group0,
                         VECTOR_ADDRESS_ERROR,
                         Some(details),
                     )?;
                 }
-                None => {
+                Some(CpuError::BusError(ae)) => {
+                    let mut details = *ae;
+                    details.ir = instr.data;
+                    details.start_pc = start_pc;
+                    self.raise_exception(ExceptionGroup::Group0, VECTOR_BUS_ERROR, Some(details))?;
+                }
+                _ => {
                     bail!(
                         "PC: {:08X} Instruction: {:?} - error: {}",
                         start_pc,
@@ -569,198 +711,6 @@ where
         Ok(())
     }
 
-    /// Checks if an access needs to fail and raise bus error on alignment errors
-    fn verify_access<T: CpuSized>(&self, addr: Address, read: bool) -> Result<()> {
-        if std::mem::size_of::<T>() >= 2 && (addr & 1) != 0 {
-            // Unaligned access
-            if CPU_TYPE < M68020 {
-                warn!("Unaligned access: address {:08X}", addr);
-
-                // TODO should still happen on 68020+ for PC
-                bail!(CpuError::AddressError(AddressError {
-                    function_code: 0,
-                    ir: 0,
-
-                    // TODO instruction bit
-                    instruction: false,
-                    read,
-                    address: addr
-                }));
-            }
-        }
-        Ok(())
-    }
-
-    /// Reads a value from the bus and spends ticks.
-    pub(in crate::cpu_m68k) fn read_ticks<T: CpuSized>(&mut self, oaddr: Address) -> Result<T> {
-        let len = std::mem::size_of::<T>();
-        let mut result: T = T::zero();
-        let addr = if CPU_TYPE == M68000 && len > 1 {
-            oaddr & !1
-        } else {
-            oaddr
-        };
-
-        // Below converts from BE -> LE on the fly
-        for a in 0..len {
-            let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
-            let b: T = loop {
-                match self.bus.read(byte_addr) {
-                    BusResult::Ok(b) => {
-                        // Trigger bus access breakpoints
-                        if self.breakpoints.iter().any(|bp| {
-                            *bp == Breakpoint::Bus(BusBreakpoint::Read, byte_addr)
-                                || *bp == Breakpoint::Bus(BusBreakpoint::ReadWrite, byte_addr)
-                        }) {
-                            info!(
-                                "Breakpoint hit (bus read): ${:08X}, value: ${:02X}, PC: ${:08X}",
-                                byte_addr, b, self.regs.pc,
-                            );
-                            self.breakpoint_hit.set();
-                        }
-                        break b.into();
-                    }
-                    BusResult::WaitState => {
-                        // Insert wait states until bus access succeeds
-                        self.history_current.waitstates = true;
-                        self.advance_cycles(2)?;
-                    }
-                }
-            };
-            result = result.wrapping_shl(8) | b;
-
-            self.advance_cycles(2)?;
-
-            if a == 1 {
-                // Address errors occur AFTER the first Word was accessed and not at all if
-                // it is a byte access, so this is the perfect time to check.
-                self.verify_access::<T>(oaddr, true)?;
-            }
-        }
-
-        if len == 1 {
-            // Minimum of 4 cycles
-            self.advance_cycles(2)?;
-        }
-
-        Ok(result)
-    }
-
-    /// Writes a value to the bus (big endian) and spends ticks.
-    pub(in crate::cpu_m68k) fn write_ticks<T: CpuSized>(
-        &mut self,
-        addr: Address,
-        value: T,
-    ) -> Result<()> {
-        self.write_ticks_order::<T, TORDER_LOWHIGH>(addr, value)
-    }
-
-    /// Writes a value to the bus (big endian) and spends ticks, but writes
-    /// the word in opposite order if the type is Long.
-    pub(in crate::cpu_m68k) fn write_ticks_wflip<T: CpuSized>(
-        &mut self,
-        addr: Address,
-        value: T,
-    ) -> Result<()> {
-        match std::mem::size_of::<T>() {
-            4 => {
-                let v: Long = value.expand();
-                self.write_ticks_order::<Word, TORDER_LOWHIGH>(addr.wrapping_add(2), v as Word)?;
-                self.write_ticks_order::<Word, TORDER_LOWHIGH>(addr, (v >> 16) as Word)
-            }
-            _ => self.write_ticks_order::<T, TORDER_LOWHIGH>(addr, value),
-        }
-    }
-
-    pub(in crate::cpu_m68k) fn write_ticks_order<T: CpuSized, const TORDER: usize>(
-        &mut self,
-        oaddr: Address,
-        value: T,
-    ) -> Result<()> {
-        let addr = if CPU_TYPE == 68000 && std::mem::size_of::<T>() > 1 {
-            oaddr & !1
-        } else {
-            oaddr
-        };
-
-        match TORDER {
-            TORDER_LOWHIGH => {
-                let mut val: Long = value.to_be().into();
-                for a in 0..std::mem::size_of::<T>() {
-                    let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
-                    let b = val as u8;
-                    val >>= 8;
-
-                    while self.bus.write(byte_addr, b) == BusResult::WaitState {
-                        // Insert wait states until bus access succeeds
-                        self.history_current.waitstates = true;
-                        self.advance_cycles(2)?;
-                    }
-                    self.advance_cycles(2)?;
-
-                    // Trigger bus access breakpoints
-                    if self.breakpoints.iter().any(|bp| {
-                        *bp == Breakpoint::Bus(BusBreakpoint::Write, byte_addr)
-                            || *bp == Breakpoint::Bus(BusBreakpoint::ReadWrite, byte_addr)
-                    }) {
-                        info!(
-                            "Breakpoint hit (bus write): ${:08X}, value: ${:02X}, PC: ${:08X}",
-                            byte_addr, b, self.regs.pc
-                        );
-                        self.breakpoint_hit.set();
-                    }
-
-                    if a == 1 {
-                        // Address errors occur AFTER the first Word was accessed and not at all if
-                        // it is a byte access, so this is the perfect time to check.
-                        self.verify_access::<T>(oaddr, true)?;
-                    }
-                }
-            }
-            TORDER_HIGHLOW => {
-                let mut val: Long = value.into();
-                for a in (0..std::mem::size_of::<T>()).rev() {
-                    let byte_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
-                    let b = val as u8;
-                    val >>= 8;
-
-                    while self.bus.write(byte_addr, b) == BusResult::WaitState {
-                        // Insert wait states until bus access succeeds
-                        self.history_current.waitstates = true;
-                        self.advance_cycles(2)?;
-                    }
-                    self.advance_cycles(2)?;
-
-                    // Trigger bus access breakpoints
-                    if self.breakpoints.iter().any(|bp| {
-                        *bp == Breakpoint::Bus(BusBreakpoint::Write, byte_addr)
-                            || *bp == Breakpoint::Bus(BusBreakpoint::ReadWrite, byte_addr)
-                    }) {
-                        info!(
-                            "Breakpoint hit (bus write): ${:08X}, value: ${:02X}, PC: ${:08X}",
-                            byte_addr, b, self.regs.pc
-                        );
-                        self.breakpoint_hit.set();
-                    }
-
-                    if a == 2 {
-                        // Address errors occur AFTER the first Word was accessed and not at all if
-                        // it is a byte access, so this is the perfect time to check.
-                        self.verify_access::<T>(oaddr, true)?;
-                    }
-                }
-            }
-            _ => unreachable!(),
-        }
-
-        if std::mem::size_of::<T>() == 1 {
-            // Minimum of 4 cycles
-            self.advance_cycles(2)?;
-        }
-
-        Ok(())
-    }
-
     /// Sets the program counter and flushes the prefetch queue
     pub fn set_pc(&mut self, pc: Address) -> Result<()> {
         self.prefetch.clear();
@@ -792,6 +742,13 @@ where
         Ok(())
     }
 
+    /// Raises a privilege violation exception
+    fn raise_privilege_violation(&mut self) -> Result<()> {
+        self.advance_cycles(4)?;
+        self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None)?;
+        Ok(())
+    }
+
     /// Raises an IRQ to be executed next
     fn raise_irq(&mut self, level: u8, vector: Address) -> Result<()> {
         let start_cycles = self.cycles;
@@ -805,20 +762,36 @@ where
         self.regs.sr.set_int_prio_mask(level);
 
         match CPU_TYPE {
-            M68000 => *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(6),
-            _ => *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8),
+            M68000 => {
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(6);
+
+                self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
+
+                // 6 cycles idle
+                self.advance_cycles(6)?;
+                // Interrupt ack
+                self.advance_cycles(4)?;
+                // 4 cycles idle
+                self.advance_cycles(4)?;
+
+                self.write_ticks(self.regs.ssp().wrapping_add(4), self.regs.pc as u16)?;
+                self.write_ticks(self.regs.ssp().wrapping_add(2), (self.regs.pc >> 16) as u16)?;
+            }
+            #[allow(clippy::identity_op)]
+            _ => {
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8);
+                // 6 cycles idle, interrupt ack, 4 cycles idle
+                self.advance_cycles(6 + 4 + 4)?;
+
+                self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
+                self.write_ticks(self.regs.ssp().wrapping_add(2), (self.regs.pc >> 16) as u16)?;
+                self.write_ticks(self.regs.ssp().wrapping_add(4), self.regs.pc as u16)?;
+                self.write_ticks(
+                    self.regs.ssp().wrapping_add(6),
+                    0b0000_0000_0000_0000u16 | (vector as u16),
+                )?;
+            }
         };
-        self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
-
-        // 6 cycles idle
-        self.advance_cycles(6)?;
-        // Interrupt ack
-        self.advance_cycles(4)?;
-        // 4 cycles idle
-        self.advance_cycles(4)?;
-
-        self.write_ticks(self.regs.ssp().wrapping_add(4), self.regs.pc as u16)?;
-        self.write_ticks(self.regs.ssp().wrapping_add(2), (self.regs.pc >> 16) as u16)?;
 
         if self
             .breakpoints
@@ -850,14 +823,14 @@ where
     }
 
     /// Raises a CPU exception in supervisor mode.
-    fn raise_exception(
+    pub(in crate::cpu_m68k) fn raise_exception(
         &mut self,
         group: ExceptionGroup,
         vector: Address,
-        details: Option<AddressError>,
+        details: Option<Group0Details>,
     ) -> Result<()> {
         let start_cycles = self.cycles;
-        let saved_sr = self.regs.sr.sr();
+        let mut saved_sr = self.regs.sr.sr();
 
         // Resume in supervisor mode
         self.regs.sr.set_supervisor(true);
@@ -870,30 +843,130 @@ where
 
                 self.advance_cycles(8)?; // idle
                 let details = details.expect("Address error details not passed");
-                debug!(
-                    "Address error: read = {:?}, address = {:08X} PC = {:08X}",
-                    details.read, details.address, self.regs.pc
-                );
 
-                *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(14);
-                self.write_ticks(self.regs.ssp().wrapping_add(12), self.regs.pc as u16)?;
-                self.write_ticks(self.regs.ssp().wrapping_add(8), saved_sr)?;
-                self.write_ticks(
-                    self.regs.ssp().wrapping_add(10),
-                    (self.regs.pc >> 16) as u16,
-                )?;
-                self.write_ticks(self.regs.ssp().wrapping_add(6), details.ir)?;
-                self.write_ticks(self.regs.ssp().wrapping_add(4), details.address as u16)?;
-                // Function code (3), I/N (1), R/W (1)
-                // TODO I/N, function code..
-                self.write_ticks(
-                    self.regs.ssp().wrapping_add(0),
-                    if details.read { 1_u16 << 4 } else { 0_u16 },
-                )?;
-                self.write_ticks(
-                    self.regs.ssp().wrapping_add(2),
-                    (details.address >> 16) as u16,
-                )?;
+                match CPU_TYPE {
+                    M68000 => {
+                        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(14);
+                        self.write_ticks(self.regs.ssp().wrapping_add(12), self.regs.pc as u16)?;
+                        self.write_ticks(self.regs.ssp().wrapping_add(8), saved_sr)?;
+                        self.write_ticks(
+                            self.regs.ssp().wrapping_add(10),
+                            (self.regs.pc >> 16) as u16,
+                        )?;
+                        self.write_ticks(self.regs.ssp().wrapping_add(6), details.ir)?;
+                        self.write_ticks(self.regs.ssp().wrapping_add(4), details.address as u16)?;
+                        // Function code (3), I/N (1), R/W (1)
+                        // TODO I/N, function code..
+                        self.write_ticks(
+                            self.regs.ssp().wrapping_add(0),
+                            if details.read { 1_u16 << 4 } else { 0_u16 },
+                        )?;
+                        self.write_ticks(
+                            self.regs.ssp().wrapping_add(2),
+                            (details.address >> 16) as u16,
+                        )?;
+                    }
+                    _ => {
+                        if let Some(regs) = self.restart_regs.take() {
+                            saved_sr = regs.sr.sr();
+                            self.regs = regs;
+                            self.regs.sr.set_supervisor(true);
+                            self.regs.sr.set_trace(false);
+                        } else {
+                            log::error!("Cannot reset registers for stacking a bus error frame");
+                        }
+
+                        if self.regs.pc == details.start_pc && self.prefetch.len() == 2 {
+                            // Bus error at instruction boundary
+                            *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(32);
+                            self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x02), details.start_pc)?;
+                            self.write_ticks(
+                                self.regs.ssp().wrapping_add(0x06),
+                                0b1010_0000_0000_0000 | (vector as u16),
+                            )?;
+                            // Internal register
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x08), 0u16)?;
+                            // Special status register
+                            // TODO size
+                            self.write_ticks(
+                                self.regs.ssp().wrapping_add(0x0A),
+                                *Group0Ssw::default()
+                                    .with_read(details.read)
+                                    .with_df(true)
+                                    .with_function_code(details.function_code)
+                                    .with_size(match details.size {
+                                        1 => 1,
+                                        2 => 2,
+                                        4 => 0,
+                                        _ => {
+                                            log::error!(
+                                                "Unknown size in group 0 details: {}",
+                                                details.size
+                                            );
+                                            // Assume long
+                                            0
+                                        }
+                                    }),
+                            )?;
+                            // Instruction pipe stage C
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x0C), 0u16)?;
+                            // Instruction pipe stage B
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x0E), 0u16)?;
+                            // Data cycle fault address
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x10), details.address)?;
+                            // Internal registers
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x14), 0u32)?;
+                            // Data output buffer
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x18), 0u32)?;
+                            // Internal registers
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x1C), 0u32)?;
+                        } else {
+                            *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(92);
+                            self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x02), details.start_pc)?;
+                            self.write_ticks(
+                                self.regs.ssp().wrapping_add(0x06),
+                                0b1011_0000_0000_0000 | (vector as u16),
+                            )?;
+                            // Internal register
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x08), 0u16)?;
+                            // Special status register
+                            // TODO size
+                            self.write_ticks(
+                                self.regs.ssp().wrapping_add(0x0A),
+                                *Group0Ssw::default()
+                                    .with_read(details.read)
+                                    .with_df(true)
+                                    .with_function_code(details.function_code)
+                                    .with_size(match details.size {
+                                        1 => 1,
+                                        2 => 2,
+                                        4 => 0,
+                                        _ => {
+                                            log::error!(
+                                                "Unknown size in group 0 details: {}",
+                                                details.size
+                                            );
+                                            // Assume long
+                                            0
+                                        }
+                                    }),
+                            )?;
+                            // Instruction pipe stage C
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x0C), 0u16)?;
+                            // Instruction pipe stage B
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x0E), 0u16)?;
+                            // Data cycle fault address
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x10), details.address)?;
+
+                            // More internal stuff
+                            for i in (0x14..=0x5A).step_by(2) {
+                                self.write_ticks(self.regs.ssp().wrapping_add(i), 0u16)?;
+                            }
+                        }
+                    }
+                }
             }
             ExceptionGroup::Group1 | ExceptionGroup::Group2 => {
                 //debug!(
@@ -1090,7 +1163,8 @@ where
             InstructionMnemonic::TST_b => self.op_tst::<Byte>(instr),
             InstructionMnemonic::TST_w => self.op_tst::<Word>(instr),
             InstructionMnemonic::TST_l => self.op_tst::<Long>(instr),
-            InstructionMnemonic::LINK => self.op_link(instr),
+            InstructionMnemonic::LINK_w => self.op_link_w(instr),
+            InstructionMnemonic::LINK_l => self.op_link_l(instr),
             InstructionMnemonic::UNLINK => self.op_unlink(instr),
             InstructionMnemonic::RESET => self.op_reset(instr),
             InstructionMnemonic::RTE => self.op_rte(instr),
@@ -1166,18 +1240,7 @@ where
                 self.advance_cycles(4)?;
                 self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEA, None)
             }
-            InstructionMnemonic::LINEF => {
-                if self.breakpoints.contains(&Breakpoint::LineF(instr.data)) {
-                    info!(
-                        "Breakpoint hit (LINEF): ${:04X}, PC: ${:08X}",
-                        instr.data, self.regs.pc
-                    );
-                    self.breakpoint_hit.set();
-                }
-
-                self.advance_cycles(4)?;
-                self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEF, None)
-            }
+            InstructionMnemonic::LINEF => self.op_linef(instr),
 
             // M68010 ------------------------------------------------------------------------------
             InstructionMnemonic::MOVEC_l => self.op_movec(instr),
@@ -1208,7 +1271,24 @@ where
             InstructionMnemonic::FBcc_l => self.op_fbcc::<true>(instr),
             InstructionMnemonic::FBcc_w => self.op_fbcc::<false>(instr),
             InstructionMnemonic::FScc_b => self.op_fscc(instr),
+
+            // PMMU --------------------------------------------------------------------------------
+            InstructionMnemonic::POP_000 => self.op_pop_000(instr),
         }
+    }
+
+    /// LINEF
+    pub(in crate::cpu_m68k) fn op_linef(&mut self, instr: &Instruction) -> Result<()> {
+        if self.breakpoints.contains(&Breakpoint::LineF(instr.data)) {
+            info!(
+                "Breakpoint hit (LINEF): ${:04X}, PC: ${:08X}",
+                instr.data, self.regs.pc
+            );
+            self.breakpoint_hit.set();
+        }
+
+        self.advance_cycles(4)?;
+        self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEF, None)
     }
 
     /// SWAP
@@ -1328,12 +1408,16 @@ where
         _instr: &Instruction,
         calcfn: fn(Word, Word) -> Word,
     ) -> Result<()> {
+        // This has to be a fetch from the prefetch queue for PC to stay correct
+        // in the exception frame.
+        let a = self.fetch()?;
+
         if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+            return self.raise_privilege_violation();
         }
 
-        let a = self.fetch_immediate()?;
+        // Now load a
+        self.prefetch_pump()?;
         let b = self.regs.sr.sr();
         self.set_sr(calcfn(a, b));
 
@@ -2042,6 +2126,10 @@ where
 
     /// MOVEfromSR
     fn op_move_from_sr(&mut self, instr: &Instruction) -> Result<()> {
+        if CPU_TYPE >= M68010 && !self.regs.sr.supervisor() {
+            return self.raise_privilege_violation();
+        }
+
         let value = self.regs.sr.sr();
 
         // Discarded read, prefetch
@@ -2064,8 +2152,7 @@ where
     /// MOVEtoSR
     fn op_move_to_sr(&mut self, instr: &Instruction) -> Result<()> {
         if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group1, VECTOR_PRIVILEGE_VIOLATION, None);
+            return self.raise_privilege_violation();
         }
         let value: Word = self.read_ea(instr, instr.get_op2())?;
 
@@ -2102,8 +2189,7 @@ where
     /// MOVEtoUSP
     fn op_move_to_usp(&mut self, instr: &Instruction) -> Result<()> {
         if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group1, VECTOR_PRIVILEGE_VIOLATION, None);
+            return self.raise_privilege_violation();
         }
         let value: Address = self.regs.read_a(instr.get_op2());
 
@@ -2114,8 +2200,7 @@ where
     /// MOVEfromUSP
     fn op_move_from_usp(&mut self, instr: &Instruction) -> Result<()> {
         if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group1, VECTOR_PRIVILEGE_VIOLATION, None);
+            return self.raise_privilege_violation();
         }
         let value: Address = self.regs.usp;
 
@@ -2267,8 +2352,8 @@ where
         Ok(())
     }
 
-    /// LINK
-    fn op_link(&mut self, instr: &Instruction) -> Result<()> {
+    /// LINK.w
+    fn op_link_w(&mut self, instr: &Instruction) -> Result<()> {
         let sp = self.regs.read_a::<Address>(7).wrapping_sub(4);
         let addr = self.regs.read_a::<Address>(instr.get_op2());
 
@@ -2279,6 +2364,25 @@ where
         self.regs.read_a_predec::<Address>(7, 4);
         self.regs
             .write_a(7, sp.wrapping_add_signed(instr.get_displacement()?));
+
+        Ok(())
+    }
+
+    /// LINK.l
+    fn op_link_l(&mut self, instr: &Instruction) -> Result<()> {
+        let sp = self.regs.read_a::<Address>(7).wrapping_sub(4);
+        let addr = self.regs.read_a::<Address>(instr.get_op2());
+
+        let displacement = {
+            let msb = self.fetch_pump()? as Long;
+            let lsb = self.fetch_pump()? as Long;
+            ((msb << 16) | lsb) as i32
+        };
+
+        self.write_ticks(sp, addr)?;
+        self.regs.write_a(instr.get_op2(), sp);
+        self.regs.read_a_predec::<Address>(7, 4);
+        self.regs.write_a(7, sp.wrapping_add_signed(displacement));
 
         Ok(())
     }
@@ -2295,8 +2399,7 @@ where
     /// RESET
     fn op_reset(&mut self, _instr: &Instruction) -> Result<()> {
         if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+            return self.raise_privilege_violation();
         }
 
         debug!("RESET instruction");
@@ -2310,10 +2413,12 @@ where
         // Pull on reset
         self.bus.reset(false)?;
 
-        // The (external) FPU is connected to the RESET line, so we reset
-        // it here. Not for the models with a CPU with a built-in FPU.
+        // The (external) FPU and PMMU are connected to the RESET line,
+        // so we reset them here.
+        // Not for the models with a CPU with a built-in FPU.
         if CPU_TYPE == M68020 {
             self.regs.fpu = FpuRegisterFile::default();
+            self.regs.pmmu = PmmuRegisterFile::default();
         }
 
         Ok(())
@@ -2322,22 +2427,54 @@ where
     /// RTE
     fn op_rte(&mut self, _instr: &Instruction) -> Result<()> {
         if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+            return self.raise_privilege_violation();
         }
 
-        let frame_size = match CPU_TYPE {
-            M68000 => 6,
-            _ => 8,
-        };
+        if CPU_TYPE == M68000 {
+            // 68000 version
+            let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
+            let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+            *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(6);
+            self.set_sr(sr);
+            self.set_pc(pc)?;
+            self.prefetch_refill()?;
 
-        let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
-        let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
-        *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(frame_size);
-        self.set_sr(sr);
-        self.set_pc(pc)?;
+            self.test_step_out();
+            return Ok(());
+        }
+
+        // 68020+ version
+        let ssp = self.regs.ssp();
+        let format = (self.read_ticks::<Word>(ssp.wrapping_add(6))? & 0b1111_0000_0000_0000) >> 12;
+        match format {
+            0b0000 => {
+                // Normal format
+                let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
+                let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(8);
+                self.set_sr(sr);
+                self.set_pc(pc)?;
+            }
+            0b1010 => {
+                // Bus error at instruction boundary
+                let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
+                let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(32);
+                self.set_sr(sr);
+                self.set_pc(pc)?;
+            }
+            0b1011 => {
+                // Bus error during instruction
+                let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
+                let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(92);
+                self.set_sr(sr);
+                self.set_pc(pc)?;
+            }
+            _ => bail!("Unknown exception frame format: {:04b}", format),
+        }
+
         self.prefetch_refill()?;
-
         self.test_step_out();
 
         Ok(())
@@ -2665,6 +2802,12 @@ where
             if BSR {
                 // Push current PC to stack
                 let addr = self.regs.read_a_predec(7, std::mem::size_of::<Long>());
+
+                // For .b and .w we add an offset because they fetch the
+                // displacement from the prefetch queue and therefore need
+                // PC adjustment.
+                // For .l, the PC is already adjusted because of the use of
+                // fetch_pump().
                 let stack_pc = if instr.get_bxx_displacement() == 0 {
                     // Offset by instruction + displacement word
                     self.regs.pc.wrapping_add(4)
@@ -2771,11 +2914,12 @@ where
     /// MOVEC
     fn op_movec(&mut self, instr: &Instruction) -> Result<()> {
         // Bus access and cycles are an approximation based on UM/PRM
+        // This has to be a fetch from the prefetch queue for PC to stay correct
+        // in the exception frame.
         instr.fetch_extword(|| self.fetch())?;
 
         if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
-            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+            return self.raise_privilege_violation();
         }
 
         if instr.movec_ctrl_to_gen() {
@@ -2784,7 +2928,25 @@ where
             self.advance_cycles(4)?;
         } else {
             let val = self.regs.read::<Long>(instr.movec_reg()?);
-            self.regs.write(instr.movec_ctrlreg()?.into(), val);
+            let destreg: Register = instr.movec_ctrlreg()?.into();
+
+            if destreg == Register::CACR {
+                // I-cache operations
+                let val = RegisterCACR(val);
+                if val.c() {
+                    // Full clear
+                    self.icache_tags.fill(ICACHE_TAG_INVALID);
+                }
+                if val.ce() {
+                    // Clear specified index
+                    let index = ((self.regs.caar & ICACHE_INDEX_MASK) >> 2) as usize;
+                    self.icache_tags[index] = ICACHE_TAG_INVALID;
+                }
+
+                self.regs.write(destreg, val.with_c(false).with_ce(false).0);
+            } else {
+                self.regs.write(destreg, val);
+            }
             self.advance_cycles(2)?;
         }
 
@@ -3751,8 +3913,8 @@ where
     }
 }
 
-impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType> Tickable
-    for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE>
+impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool> Tickable
+    for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
