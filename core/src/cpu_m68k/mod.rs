@@ -48,6 +48,7 @@ pub trait CpuSized:
     + WrappingShl
     + WrappingShr
     + std::fmt::Display
+    + std::fmt::UpperHex
     + std::ops::BitOrAssign
     + std::ops::ShlAssign
     + std::ops::ShrAssign
@@ -81,6 +82,7 @@ where
         + WrappingShl
         + WrappingShr
         + std::fmt::Display
+        + std::fmt::UpperHex
         + std::ops::BitOrAssign
         + std::ops::ShlAssign
         + std::ops::ShrAssign,
