@@ -21,7 +21,7 @@ use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
 
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
 use crate::emulator::{EmulatorInitArgs, ScsiTargets};
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use eframe::egui;
 use egui_file_dialog::{DialogMode, DirectoryEntry, FileDialog};
 use egui_toast::{Toast, ToastKind, ToastOptions};
@@ -147,6 +147,7 @@ pub struct SnowGui {
     hdd_dialog_idx: usize,
     cdrom_dialog: FileDialog,
     cdrom_dialog_idx: usize,
+    cdrom_files_dialog: FileDialog,
     floppy_dialog: FileDialog,
     floppy_dialog_last: Option<DirectoryEntry>,
     floppy_dialog_last_image: Option<FloppyImage>,
@@ -170,6 +171,9 @@ pub struct SnowGui {
 
     settings: AppSettings,
     emu: EmulatorState,
+
+    /// Temporary files that need cleanup on exit
+    temp_files: Vec<PathBuf>,
 }
 
 impl SnowGui {
@@ -249,6 +253,9 @@ impl SnowGui {
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir()),
             cdrom_dialog_idx: 0,
+            cdrom_files_dialog: FileDialog::new()
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
+                .initial_directory(Self::default_dir()),
             floppy_dialog: FileDialog::new()
                 .add_file_filter(
                     &floppy_filter_str,
@@ -318,6 +325,8 @@ impl SnowGui {
 
             settings: AppSettings::load(),
             emu: EmulatorState::default(),
+
+            temp_files: vec![],
         };
 
         if let Some(filename) = initial_file {
@@ -784,6 +793,11 @@ impl SnowGui {
                                         ui.weak("No recent images");
                                     }
                                 });
+                                if ui.button("Mount image from files...").clicked() {
+                                    self.cdrom_dialog_idx = id;
+                                    self.cdrom_files_dialog.pick_multiple();
+                                    ui.close_menu();
+                                }
                                 if show_detach {
                                     ui.separator();
                                     if ui.button("Detach CD-ROM drive").clicked() {
@@ -1402,6 +1416,33 @@ impl SnowGui {
             }
         }
     }
+
+    fn create_temp_iso<P: AsRef<Path>>(paths: &[P]) -> Result<PathBuf> {
+        let mut files = hadris_iso::FileInput::empty();
+        for p in paths {
+            if !p.as_ref().is_file() {
+                log::warn!("Skipping {}: not a file", p.as_ref().display());
+                continue;
+            }
+
+            files.append(hadris_iso::File {
+                path: p
+                    .as_ref()
+                    .file_name()
+                    .context("Cannot get basename")?
+                    .to_string_lossy()
+                    .to_string(),
+                data: hadris_iso::FileData::File(p.as_ref().to_path_buf()),
+            });
+        }
+        let options = hadris_iso::FormatOption::default()
+            .with_files(files)
+            .with_volume_name("SNOW".to_string());
+        let mut imgpath = env::temp_dir();
+        imgpath.push(format!("snow_tmp_iso_{}.iso", rand::rng().random::<u64>()));
+        hadris_iso::IsoImage::format_file(&imgpath, options)?;
+        Ok(imgpath)
+    }
 }
 
 impl eframe::App for SnowGui {
@@ -1642,6 +1683,22 @@ impl eframe::App for SnowGui {
             self.settings.add_recent_cd_image(&path);
         }
         self.ui_active &= self.cdrom_dialog.state() != egui_file_dialog::DialogState::Open;
+
+        // CD-ROM image creatiom dialog
+        self.cdrom_files_dialog.update(ctx);
+        if let Some(paths) = self.cdrom_files_dialog.take_picked_multiple() {
+            match Self::create_temp_iso(&paths) {
+                Ok(isofn) => {
+                    log::info!("Created temporary ISO {}", isofn.display());
+                    self.emu.scsi_load_cdrom(self.cdrom_dialog_idx, &isofn);
+                    self.temp_files.push(isofn);
+                }
+                Err(e) => {
+                    self.show_error(&format!("Error creating image: {:?}", e));
+                }
+            }
+        }
+        self.ui_active &= self.cdrom_files_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // Workspace picker dialog
         self.workspace_dialog.update(ctx);
@@ -1983,6 +2040,18 @@ impl eframe::App for SnowGui {
                     }
                 }
                 _ => (),
+            }
+        }
+    }
+}
+
+impl Drop for SnowGui {
+    fn drop(&mut self) {
+        for f in &self.temp_files {
+            if let Err(e) = std::fs::remove_file(f) {
+                log::error!("Cannot delete temp file {}: {:?}", f.display(), e);
+            } else {
+                log::info!("Deleted temp file {}", f.display());
             }
         }
     }
