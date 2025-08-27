@@ -115,6 +115,12 @@ where
             0b0001110 => source.sin(),
             // FTAN
             0b0001111 => source.tan(),
+            // FLOGN
+            0b0010100 => source.log(),
+            // FETOX
+            0b0010000 => Float::e(SEMANTICS_EXTENDED).pow(source),
+            // FLOG10
+            0b0010101 => source.log() / Float::from_u64(SEMANTICS_EXTENDED, 10).log(),
             _ => bail!("Unimplemented FPU ALU op {:07b}", opmode),
         };
 
