@@ -40,6 +40,11 @@ snow_core = { version = "0.1.0", path = "../core", features = ["mmap"] }
 snow_floppy = { version = "0.1.0", path = "../floppy" }
 strum = "0.26.3"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# https://github.com/twvd/snow/issues/106
+objc2-app-kit = "0.3.1"
+objc2-foundation = "0.3.1"
+
 [target.'cfg(target_os = "freebsd")'.dependencies]
 # https://github.com/twvd/snow/issues/49
 sdl2 = { version = "0.37.0", features = ["use-pkgconfig"] }

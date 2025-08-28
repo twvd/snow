@@ -1371,11 +1371,46 @@ impl SnowGui {
             }
         }
     }
+
+    /// This function nukes the Cmd+Q shortcut from the menubar so that this common classic
+    /// MacOS shortcut doesn't lead to users inadvertently terminating the emulator.
+    ///
+    /// https://github.com/twvd/snow/issues/106
+    #[cfg(target_os = "macos")]
+    fn patch_macos_menubar(&self) {
+        use objc2_app_kit::NSApplication;
+        use objc2_foundation::ns_string;
+
+        extern "C" {
+            static NSApp: Option<&'static NSApplication>;
+        }
+
+        unsafe {
+            if let Some(app) = NSApp {
+                if let Some(main_menu) = app.mainMenu() {
+                    // Find the first menubar dropdown ('Snow')
+                    if let Some(item) = main_menu.itemAtIndex(0) {
+                        if let Some(app_menu) = item.submenu() {
+                            // Find the quit item, last one in the menu
+                            if let Some(quit) = app_menu.itemAtIndex(app_menu.numberOfItems() - 1) {
+                                // Remove the keyboard shortcut so Cmd+Q doesn't terminate the emulator
+                                quit.setKeyEquivalent(ns_string!(""));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl eframe::App for SnowGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.first_draw {
+            #[cfg(target_os = "macos")]
+            {
+                self.patch_macos_menubar();
+            }
             self.update_titlebar(ctx);
             self.first_draw = false;
         }
