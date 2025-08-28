@@ -4,6 +4,7 @@ use arpfloat::{Float, RoundingMode, Semantics};
 use crate::bus::{Address, Bus, IrqSource};
 
 use crate::cpu_m68k::cpu::CpuM68k;
+use crate::cpu_m68k::fpu::math::FloatMath;
 use crate::cpu_m68k::fpu::trig::FloatTrig;
 use crate::cpu_m68k::CpuM68kType;
 
@@ -120,7 +121,7 @@ where
             // FETOX
             0b0010000 => Float::e(SEMANTICS_EXTENDED).pow(source),
             // FLOG10
-            0b0010101 => source.log() / Float::from_u64(SEMANTICS_EXTENDED, 10).log(),
+            0b0010101 => source.log10(),
             _ => bail!("Unimplemented FPU ALU op {:07b}", opmode),
         };
 
