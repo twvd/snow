@@ -1,5 +1,6 @@
 pub mod alu;
 pub mod instruction;
+pub mod math;
 pub mod ops_branch;
 pub mod ops_generic;
 pub mod regs;

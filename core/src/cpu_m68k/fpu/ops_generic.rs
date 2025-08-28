@@ -8,6 +8,7 @@ use crate::bus::{Address, Bus, IrqSource};
 
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord};
+use crate::cpu_m68k::fpu::math::FloatMath;
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
 use crate::cpu_m68k::CpuM68kType;
@@ -163,13 +164,13 @@ where
                         // ROM constant (FMOVECR)
                         self.regs.fpu.fp[fpx] = match extword.movecr_offset() {
                             0x00 => Float::pi(SEMANTICS_EXTENDED),
-                            // TODO 0x0B log10(2)
+                            0x0B => Float::from_u64(SEMANTICS_EXTENDED, 2).log10(),
                             0x0C => Float::e(SEMANTICS_EXTENDED),
-                            // TODO 0x0D log2(e)
-                            // TODO 0x0E log10(e)
+                            0x0D => Float::e(SEMANTICS_EXTENDED).log2(),
+                            0x0E => Float::e(SEMANTICS_EXTENDED).log10(),
                             0x0F => Float::zero(SEMANTICS_EXTENDED, false),
-                            // TODO 0x30 ln(2)
-                            // TODO 0x31 ln(10)
+                            0x30 => Float::from_u64(SEMANTICS_EXTENDED, 2).log(),
+                            0x31 => Float::from_u64(SEMANTICS_EXTENDED, 10).log(),
                             0x32 => Float::from_i64(SEMANTICS_EXTENDED, 1),
                             0x33 => Float::from_i64(SEMANTICS_EXTENDED, 10),
                             0x34 => Float::from_i64(SEMANTICS_EXTENDED, 100),
