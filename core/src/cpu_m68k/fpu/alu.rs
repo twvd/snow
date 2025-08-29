@@ -152,6 +152,20 @@ where
             0b0001101 => source.atanh(),
             // FSCALE
             0b0100110 => dest.scale(source.trunc().to_i64(), dest.get_rounding_mode()),
+            // FGETMAN
+            0b0011111 => {
+                if source.is_inf() || source.is_nan() {
+                    // Not sure if sign gets cleared here, assuming it does
+                    Float::nan(SEMANTICS_EXTENDED, false)
+                } else if source.is_zero() {
+                    // Not sure if sign gets cleared here, assuming it does
+                    Float::zero(SEMANTICS_EXTENDED, false)
+                } else {
+                    // Decompose and recreate float to get a normalized mantissa
+                    let mantissa = source.get_mantissa();
+                    Float::from_parts(SEMANTICS_EXTENDED, false, 0, mantissa)
+                }
+            }
 
             _ => bail!("Unimplemented FPU ALU op {:07b}", opmode),
         };
