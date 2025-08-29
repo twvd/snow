@@ -132,6 +132,14 @@ where
             0b0010001 => Float::from_u64(SEMANTICS_EXTENDED, 2).pow(source),
             // FTENTOX
             0b0010010 => Float::from_u64(SEMANTICS_EXTENDED, 10).pow(source),
+            // FSINH
+            0b0000010 => source.sinh(),
+            // FCOSH
+            0b0011001 => source.cosh(),
+            // FTANH
+            0b0001001 => source.tanh(),
+            // FATANH
+            0b0001101 => source.atanh(),
 
             _ => bail!("Unimplemented FPU ALU op {:07b}", opmode),
         };
