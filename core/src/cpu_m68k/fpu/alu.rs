@@ -96,6 +96,16 @@ where
                 self.regs.fpu.fpsr.set_quotient_s(n.is_negative());
                 dest - (source * n)
             }
+            // FMOD
+            0b0100001 => {
+                assert_eq!(dest.get_rounding_mode(), RoundingMode::NearestTiesToEven);
+                assert_eq!(source.get_rounding_mode(), RoundingMode::NearestTiesToEven);
+                let quotient = dest / source;
+                let n = quotient.trunc();
+                self.regs.fpu.fpsr.set_quotient(n.to_i64() as u8);
+                self.regs.fpu.fpsr.set_quotient_s(n.is_negative());
+                dest - (source * n)
+            }
             // FGETEXP
             0b0011110 => {
                 // No need to remove the bias here as we store FPx registers unbiased
