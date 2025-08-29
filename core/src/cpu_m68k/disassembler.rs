@@ -155,6 +155,7 @@ impl<'a> Disassembler<'a> {
             0b0001001 => "FTANH",
             0b0001101 => "FATANH",
             0b0100001 => "FMOD",
+            0b0100110 => "FSCALE",
 
             _ => "F???",
         }
