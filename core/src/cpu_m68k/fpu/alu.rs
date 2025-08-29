@@ -150,6 +150,8 @@ where
             0b0001001 => source.tanh(),
             // FATANH
             0b0001101 => source.atanh(),
+            // FSCALE
+            0b0100110 => dest.scale(source.trunc().to_i64(), dest.get_rounding_mode()),
 
             _ => bail!("Unimplemented FPU ALU op {:07b}", opmode),
         };
