@@ -118,10 +118,21 @@ where
             0b0001111 => source.tan(),
             // FLOGN
             0b0010100 => source.log(),
-            // FETOX
-            0b0010000 => Float::e(SEMANTICS_EXTENDED).pow(source),
+            // FLOGNP1
+            0b0000110 => (source + Float::one(source.get_semantics(), false)).log(),
+            // FLOG2
+            0b0010110 => source.log2(),
             // FLOG10
             0b0010101 => source.log10(),
+            // FETOX
+            0b0010000 => Float::e(SEMANTICS_EXTENDED).pow(source),
+            // FETOXM1
+            0b0001000 => Float::e(SEMANTICS_EXTENDED).pow(source) - 1,
+            // FTWOTOX
+            0b0010001 => Float::from_u64(SEMANTICS_EXTENDED, 2).pow(source),
+            // FTENTOX
+            0b0010010 => Float::from_u64(SEMANTICS_EXTENDED, 10).pow(source),
+
             _ => bail!("Unimplemented FPU ALU op {:07b}", opmode),
         };
 
