@@ -3,6 +3,11 @@ use arpfloat::Float;
 pub trait FloatTrig {
     fn atan(&self) -> Self;
     fn relative_epsilon(&self, scale: f64) -> Float;
+
+    fn sinh(&self) -> Self;
+    fn cosh(&self) -> Self;
+    fn tanh(&self) -> Self;
+    fn atanh(&self) -> Self;
 }
 
 impl FloatTrig for Float {
@@ -45,6 +50,33 @@ impl FloatTrig for Float {
 
     fn relative_epsilon(&self, scale: f64) -> Float {
         self.abs() * Self::from_f64(scale).cast(self.get_semantics())
+    }
+
+    fn sinh(&self) -> Self {
+        let e = Self::e(self.get_semantics());
+
+        (e.pow(self) - e.pow(&self.neg())) / 2
+    }
+
+    fn cosh(&self) -> Self {
+        if self.is_zero() {
+            return Self::one(self.get_semantics(), false);
+        }
+
+        let x = self.abs();
+        let e = Self::e(self.get_semantics());
+        (e.pow(&x) + e.pow(&x.neg())) / 2
+    }
+
+    fn tanh(&self) -> Self {
+        self.sinh() / self.cosh()
+    }
+
+    fn atanh(&self) -> Self {
+        // ½ × ln((1 + x)/(1 - x))
+        let one = Self::one(self.get_semantics(), false);
+        let two = Self::from_u64(self.get_semantics(), 2);
+        ((one.clone() + self.clone()) / (one - self.clone())).log() / two
     }
 }
 
@@ -180,6 +212,58 @@ mod tests {
                 std_result,
                 error
             );
+        }
+    }
+
+    #[test]
+    fn test_sinh() {
+        let tolerance = 1e-6;
+        for i in -2000..2000 {
+            let f = f64::from(i) / 100.0;
+            let me = Float::from_f64(f).sinh().as_f64();
+            let std = f.sinh();
+            let error = (me - std).abs();
+            eprintln!("{} me: {} std: {} error: {}", f, me, std, error);
+            assert!(error < tolerance);
+        }
+    }
+
+    #[test]
+    fn test_cosh() {
+        let tolerance = 1e-6;
+        for i in -2000..2000 {
+            let f = f64::from(i) / 100.0;
+            let me = Float::from_f64(f).cosh().as_f64();
+            let std = f.cosh();
+            let error = (me - std).abs();
+            eprintln!("{} me: {} std: {} error: {}", f, me, std, error);
+            assert!(error < tolerance);
+        }
+    }
+
+    #[test]
+    fn test_tanh() {
+        let tolerance = 1e-6;
+        for i in -2000..2000 {
+            let f = f64::from(i) / 100.0;
+            let me = Float::from_f64(f).tanh().as_f64();
+            let std = f.tanh();
+            let error = (me - std).abs();
+            eprintln!("{} me: {} std: {} error: {}", f, me, std, error);
+            assert!(error < tolerance);
+        }
+    }
+
+    #[test]
+    fn test_atanh() {
+        let tolerance = 1e-12;
+        for i in -999..999 {
+            let f = f64::from(i) / 1000.0;
+            let me = Float::from_f64(f).atanh().as_f64();
+            let std = f.atanh();
+            let error = (me - std).abs();
+            eprintln!("{} me: {} std: {} error: {}", f, me, std, error);
+            assert!(error < tolerance);
         }
     }
 }
