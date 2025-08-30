@@ -69,6 +69,14 @@ where
             0b0100011 => dest * source,
             // FDIV
             0b0100000 => dest / source,
+            // FSGLMUL
+            0b0100111 => (dest * source)
+                .cast(SEMANTICS_SINGLE)
+                .cast(SEMANTICS_EXTENDED),
+            // FSGLDIV
+            0b0100100 => (dest / source)
+                .cast(SEMANTICS_SINGLE)
+                .cast(SEMANTICS_EXTENDED),
             // FINT
             0b0000001 => source
                 .cast(self.fpu_rounding_mode_precision()?)
