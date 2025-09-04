@@ -44,16 +44,20 @@ struct Args {
 }
 
 pub fn version_string() -> String {
-    format!(
-        "{}-{}{}",
-        built_info::PKG_VERSION,
-        built_info::GIT_COMMIT_HASH_SHORT.expect("Git version unavailable"),
-        if built_info::GIT_DIRTY.expect("Git version unavailable") {
-            "-dirty"
-        } else {
-            ""
-        }
-    )
+    if built_info::GIT_COMMIT_HASH_SHORT.is_some() {
+        format!(
+            "{}-{}{}",
+            built_info::PKG_VERSION,
+            built_info::GIT_COMMIT_HASH_SHORT.expect("Git version unavailable"),
+            if built_info::GIT_DIRTY.expect("Git version unavailable") {
+                "-dirty"
+            } else {
+                ""
+            }
+        )
+    } else {
+        built_info::PKG_VERSION.to_string()
+    }
 }
 
 fn main() -> eframe::Result {
