@@ -493,7 +493,10 @@ impl ModelSelectionDialog {
                             );
                         }
                         if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
-                            ui.checkbox(&mut self.init_args.pmmu_enabled, "Enable PMMU");
+                            ui.checkbox(
+                                &mut self.init_args.pmmu_enabled,
+                                "Enable PMMU (experimental!)",
+                            );
                         }
                         ui.checkbox(&mut self.init_args.audio_disabled, "Disable audio");
                         ui.checkbox(
