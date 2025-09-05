@@ -146,8 +146,6 @@ pub struct RegisterFile {
     pub msp: Address,
 
     /// FPU registers
-    /// TODO serialization of FPU registers
-    #[serde(skip)]
     pub fpu: FpuRegisterFile,
 
     /// PMMU registers

@@ -1,4 +1,5 @@
 use crate::bus::Address;
+use crate::cpu_m68k::fpu::storage::float_array_as_ext_real;
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::types::{Byte, Long};
 use arpfloat::Float;
@@ -114,9 +115,9 @@ bitfield! {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FpuRegisterFile {
-    // TODO can't serde serialize/deserialize arpfloat::Float
+    #[serde(with = "float_array_as_ext_real")]
     pub fp: [Float; 8],
     pub fpcr: RegisterFPCR,
     pub fpsr: RegisterFPSR,

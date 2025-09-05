@@ -2,6 +2,7 @@ use anyhow::Result;
 use arpfloat::{BigInt, Float};
 use arrayvec::ArrayVec;
 use proc_bitfield::bitfield;
+use serde::{Deserialize, Serialize};
 
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::{cpu::CpuM68k, CpuM68kType};
@@ -16,9 +17,57 @@ pub const SINGLE_SIZE: usize = 4;
 pub const DOUBLE_SIZE: usize = 8;
 pub const EXTENDED_SIZE: usize = 12;
 
+/// Serde adapter for arpfloat::Float (as M68881 extended precision float format)
+pub mod float_as_ext_real {
+    use super::*;
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &Float, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let bits_ext_real: BitsExtReal = value.into();
+        bits_ext_real.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Float, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let bits_ext_real = BitsExtReal::deserialize(deserializer)?;
+        Ok(bits_ext_real.into())
+    }
+}
+
+/// Serde adapter for [arpfloat::Float; N] (as M68881 extended precision float format)
+pub mod float_array_as_ext_real {
+    use super::*;
+    use serde::{Deserializer, Serializer};
+    use serde_big_array::BigArray;
+
+    pub fn serialize<S, const N: usize>(
+        value: &[Float; N],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let bits_array: [BitsExtReal; N] = core::array::from_fn(|i| (&value[i]).into());
+        bits_array.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D, const N: usize>(deserializer: D) -> Result<[Float; N], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let bits_array: [BitsExtReal; N] = <[BitsExtReal; N]>::deserialize(deserializer)?;
+        Ok(core::array::from_fn(|i| bits_array[i].into()))
+    }
+}
+
 bitfield! {
     /// Raw (storage) bit representation of the extended-precision real format
-    #[derive(Clone, Copy, PartialEq, Eq, Default)]
+    #[derive(Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
     pub struct BitsExtReal(pub u128): Debug, FromStorage, IntoStorage, DerefStorage {
         /// f (Mantissa)
         pub f: u64 @ 0..=62,
