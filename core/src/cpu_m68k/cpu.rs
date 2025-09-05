@@ -7,6 +7,7 @@ use log::*;
 use num_traits::{FromBytes, PrimInt, ToBytes};
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
+use serde_big_array::BigArray;
 use thiserror::Error;
 
 use crate::bus::{Address, Bus, IrqSource};
@@ -232,6 +233,7 @@ pub struct SystrapHistoryEntry {
 }
 
 /// Motorola 680x0
+#[derive(Serialize, Deserialize)]
 pub struct CpuM68k<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
 where
     TBus: Bus<Address, u8> + IrqSource,
@@ -258,7 +260,7 @@ where
     pub(in crate::cpu_m68k) step_ea_load: Option<(usize, Address)>,
 
     /// Instruction decode cache
-    //#[serde(skip, default = "empty_decode_cache")]
+    #[serde(skip, default = "empty_decode_cache")]
     decode_cache: DecodeCache,
 
     /// Mask trace exceptions (for tests)
@@ -268,27 +270,30 @@ where
     pub(in crate::cpu_m68k) breakpoints: Vec<Breakpoint>,
 
     /// Breakpoint hit latch
-    //#[serde(skip)]
+    #[serde(skip)]
     pub(in crate::cpu_m68k) breakpoint_hit: LatchingEvent,
 
     /// Next address to jump to for step over
     step_over_addr: Option<Address>,
 
     /// Instruction history
-    //#[serde(skip)]
+    #[serde(skip)]
     pub(in crate::cpu_m68k) history: VecDeque<HistoryEntry>,
 
-    /// Current history item
-    //#[serde(skip)]
+    /// Current instruction history item
+    #[serde(skip)]
     pub(in crate::cpu_m68k) history_current: HistoryEntryInstruction,
 
-    /// Keep history?
-    //#[serde(skip)]
+    /// Keep instruction history?
+    #[serde(skip)]
     pub(in crate::cpu_m68k) history_enabled: bool,
 
     /// System trap history
-    //#[serde(skip)]
+    #[serde(skip)]
     systrap_history: VecDeque<SystrapHistoryEntry>,
+
+    /// Keep system trap history?
+    #[serde(skip)]
     systrap_history_enabled: bool,
 
     /// PMMU address translation caches
@@ -298,13 +303,15 @@ where
     /// The caching method used is a one-dimensional lookup table where the
     /// index is the page, allowing for O(1) lookup. The cache is expanded on
     /// the fly (never shrunk).
-    //#[serde(skip)]
+    #[serde(skip)]
     pub(in crate::cpu_m68k) pmmu_atc: [Vec<Option<Address>>; 2],
 
     /// 68020+ I-cache lines
+    #[serde(with = "BigArray")]
     icache_lines: [[u8; ICACHE_LINE_SIZE]; ICACHE_LINES],
 
     /// 68020+ I-cache tags
+    #[serde(with = "BigArray")]
     icache_tags: [u32; ICACHE_LINES],
 
     /// Register state at the beginning of an instruction to allow
