@@ -507,6 +507,32 @@ impl BusMember<Address> for ScsiController {
                             self.set_phase(ScsiBusPhase::Selection);
                         }
                     }
+                    ScsiBusPhase::Selection => {
+                        if set.assert_databus() {
+                            let Ok(id) = Self::translate_id(self.reg_odr & 0x7F) else {
+                                error!("Invalid ID on bus! ODR = {:02X}", self.reg_odr);
+                                self.set_phase(ScsiBusPhase::Free);
+                                return Some(());
+                            };
+                            if self.targets[id].is_none() {
+                                // No device present at this ID
+                                self.set_phase(ScsiBusPhase::Free);
+                                return Some(());
+                            }
+
+                            // Select this ID
+                            self.sel_id = id;
+                            self.sel_atn = self.reg_odr & 0x80 != 0;
+
+                            //log::debug!(
+                            //    "Selected SCSI ID: {:02X}, attention = {}",
+                            //    self.sel_id,
+                            //    self.sel_atn
+                            //);
+
+                            self.set_phase(ScsiBusPhase::Command);
+                        }
+                    }
                     ScsiBusPhase::Command => {
                         if set.assert_ack() {
                             self.deassert_req();
@@ -578,7 +604,7 @@ impl BusMember<Address> for ScsiController {
             }
             NcrReg::MR => {
                 let set = NcrRegMr(val & !self.reg_mr.0);
-                let clr = NcrRegMr(!val & self.reg_mr.0);
+                let _clr = NcrRegMr(!val & self.reg_mr.0);
                 self.reg_mr.0 = val;
 
                 if set.arbitrate() {
@@ -586,37 +612,6 @@ impl BusMember<Address> for ScsiController {
                     self.set_phase(ScsiBusPhase::Arbitration);
                     self.reg_cdr = self.reg_odr; // Initiator ID
                     return Some(());
-                }
-
-                match self.busphase {
-                    ScsiBusPhase::Free => {}
-                    ScsiBusPhase::Selection => {
-                        if clr.arbitrate() {
-                            let Ok(id) = Self::translate_id(self.reg_odr & 0x7F) else {
-                                error!("Invalid ID on bus! ODR = {:02X}", self.reg_odr);
-                                self.set_phase(ScsiBusPhase::Free);
-                                return Some(());
-                            };
-                            if self.targets[id].is_none() {
-                                // No device present at this ID
-                                self.set_phase(ScsiBusPhase::Free);
-                                return Some(());
-                            }
-
-                            // Select this ID
-                            self.sel_id = id;
-                            self.sel_atn = self.reg_odr & 0x80 != 0;
-
-                            //trace!(
-                            //    "Selected SCSI ID: {:02X}, attention = {}",
-                            //    self.sel_id,
-                            //    self.sel_atn
-                            //);
-
-                            self.set_phase(ScsiBusPhase::Command);
-                        }
-                    }
-                    _ => (),
                 }
                 Some(())
             }
