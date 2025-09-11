@@ -322,11 +322,13 @@ where
             // Phase read (ignore)
             0x00F0_0000..=0x00F7_FFFF => Some(0xFF),
             // Test software region / extension ROM
+            // Note that some software (e.g. Animation Toolkit) relies on specific
+            // open bus behavior here.
             0x00F8_0000..=0x00F9_FFFF => Some(
                 *self
                     .extension_rom
                     .get((addr - 0xF8_0000) as usize)
-                    .unwrap_or(&0xFF),
+                    .unwrap_or(&0x00),
             ),
 
             _ => None,
@@ -366,11 +368,13 @@ where
             // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
             // Test software region / extension ROM
+            // Note that some software (e.g. Animation Toolkit) relies on specific
+            // open bus behavior here.
             0x00F8_0000..=0x00F9_FFFF => Some(
                 *self
                     .extension_rom
                     .get((addr - 0xF8_0000) as usize)
-                    .unwrap_or(&0xFF),
+                    .unwrap_or(&0x00),
             ),
 
             _ => None,
@@ -548,7 +552,7 @@ where
             BusResult::Ok(v)
         } else {
             warn!("Read from unimplemented address: {:08X}", addr);
-            BusResult::Ok(0xFF)
+            BusResult::Ok(0)
         }
     }
 
