@@ -7,6 +7,10 @@ build = "build.rs"
 [build-dependencies]
 built = { version = "0.8.0", features = ["chrono", "git2"] }
 
+[features]
+default = []
+sdl2-bundled = ["sdl2/bundled"]
+
 [dependencies]
 anyhow = "1.0.95"
 built = { version = "0.8.0", features = ["chrono", "git2"] }

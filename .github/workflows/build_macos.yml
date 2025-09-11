@@ -14,6 +14,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Required to build bundled SDL2 on the current MacOS CMake (tested up to 4.1.1)
+  CMAKE_POLICY_VERSION_MINIMUM: 3.5
 
 jobs:
   build:
@@ -26,14 +28,13 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - name: Install prerequisites
-      run: brew install sdl2
     - name: Fetch submodules
       run: git submodule update --init --recursive
     - name: Install toolchain
       run: rustup target add ${{ matrix.arch }}-apple-darwin
     - name: Build release
-      run: cargo build --verbose --release --target ${{ matrix.arch }}-apple-darwin
+      # Build with bundled SDL2 to avoid issues with sdl2 on brew breaking
+      run: cargo build --verbose --release --target ${{ matrix.arch }}-apple-darwin -F sdl2-bundled
     - name: Install bundle dependencies
       run: brew install dylibbundler imagemagick
     - name: Run bundle script
