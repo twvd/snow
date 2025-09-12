@@ -256,7 +256,7 @@ where
     fn write_normal(&mut self, addr: Address, val: Byte) -> Option<()> {
         match addr {
             // RAM
-            0x0000_0000..=0x003F_FFFF => {
+            0x0000_0000..=0x003F_FFFF | 0x0060_0000..=0x006F_FFFF => {
                 // Duplicate framebuffers to video component
                 // (writes also go through RAM)
                 if self.fb_main.contains(&(addr & self.ram_mask as Address)) {
@@ -333,7 +333,9 @@ where
     fn read_normal(&mut self, addr: Address) -> Option<Byte> {
         match addr {
             // RAM
-            0x0000_0000..=0x003F_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
+            0x0000_0000..=0x003F_FFFF | 0x0060_0000..=0x006F_FFFF => {
+                Some(self.ram[addr as usize & self.ram_mask])
+            }
             // ROM
             0x0040_0000..=0x0043_FFFF => Some(
                 *self
