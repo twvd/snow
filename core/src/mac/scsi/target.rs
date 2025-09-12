@@ -22,7 +22,8 @@ pub enum ScsiTargetEvent {
 }
 
 /// An abstraction of a generic SCSI target
-pub(crate) trait ScsiTarget {
+#[typetag::serde(tag = "type")]
+pub(crate) trait ScsiTarget: Send {
     fn set_cc(&mut self, code: u8, asc: u16);
     fn set_blocksize(&mut self, blocksize: usize) -> bool;
     fn take_event(&mut self) -> Option<ScsiTargetEvent>;

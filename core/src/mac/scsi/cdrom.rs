@@ -3,6 +3,7 @@
 use anyhow::{bail, Context, Result};
 #[cfg(feature = "mmap")]
 use memmap2::Mmap;
+use serde::{Deserialize, Serialize};
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -22,9 +23,11 @@ use super::STATUS_GOOD;
 
 const TRACK_LEADOUT: u8 = 0xAA;
 
+#[derive(Serialize, Deserialize)]
 pub(super) struct ScsiTargetCdrom {
     /// Disk contents
     #[cfg(feature = "mmap")]
+    #[serde(skip)] // TODO serde
     pub(super) disk: Option<Mmap>,
 
     #[cfg(not(feature = "mmap"))]
@@ -165,6 +168,7 @@ impl ScsiTargetCdrom {
     }
 }
 
+#[typetag::serde]
 impl ScsiTarget for ScsiTargetCdrom {
     /// Try to load a disk image, given the filename of the image.
     ///

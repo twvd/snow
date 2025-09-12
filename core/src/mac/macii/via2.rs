@@ -128,6 +128,7 @@ bitfield! {
 }
 
 /// Synertek SY6522 Versatile Interface Adapter
+#[derive(Serialize, Deserialize)]
 pub struct Via2 {
     /// The currently emulated Macintosh model
     #[allow(dead_code)]

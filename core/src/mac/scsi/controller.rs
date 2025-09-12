@@ -11,6 +11,7 @@ use num_derive::ToPrimitive;
 use num_traits::FromPrimitive;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
+use serde_big_array::BigArray;
 
 use crate::bus::{Address, BusMember};
 use crate::dbgprop_byte;
@@ -25,7 +26,7 @@ use crate::mac::scsi::STATUS_GOOD;
 use crate::types::LatchingEvent;
 
 #[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Eq, strum::IntoStaticStr)]
+#[derive(Clone, Debug, PartialEq, Eq, strum::IntoStaticStr, Serialize, Deserialize)]
 /// SCSI bus phases
 enum ScsiBusPhase {
     Free,
@@ -138,6 +139,7 @@ bitfield! {
 }
 
 /// NCR 5380 SCSI controller
+#[derive(Serialize, Deserialize)]
 pub struct ScsiController {
     busphase: ScsiBusPhase,
     reg_mr: NcrRegMr,
@@ -167,7 +169,8 @@ pub struct ScsiController {
     responsebuf: VecDeque<u8>,
 
     /// Attached targets
-    pub(crate) targets: [Option<Box<dyn ScsiTarget + Send>>; Self::MAX_TARGETS],
+    #[serde(with = "BigArray")]
+    pub(crate) targets: [Option<Box<dyn ScsiTarget>>; Self::MAX_TARGETS],
 
     set_req: LatchingEvent,
 }

@@ -1,4 +1,7 @@
-use std::ops::{Mul, SubAssign};
+use std::{
+    ops::{Mul, SubAssign},
+    time::Instant,
+};
 
 use num::{PrimInt, Signed};
 
@@ -19,4 +22,9 @@ pub fn take_from_accumulator<T: PrimInt + Signed + Mul<Output = T> + SubAssign>(
 
     *accumulator -= actual_taken;
     actual_taken
+}
+
+/// Serde default helper for Instant::now()
+pub fn instant_now() -> Instant {
+    Instant::now()
 }

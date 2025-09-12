@@ -7,6 +7,7 @@ use super::{AdbDevice, AdbDeviceResponse, AdbReg3};
 
 use log::*;
 use proc_bitfield::bitfield;
+use serde::{Deserialize, Serialize};
 
 bitfield! {
     /// Talk Register 0
@@ -25,9 +26,13 @@ const MAX_REL_MOVE: i32 = 31;
 const MOUSE_FACTOR: i32 = 1;
 
 /// Apple Desktop Bus-connected mouse
+#[derive(Serialize, Deserialize)]
 pub struct AdbMouse {
     address: u8,
-    event_recv: MouseEventReceiver,
+
+    #[serde(skip)]
+    event_recv: Option<MouseEventReceiver>,
+
     button: bool,
     rel_move_x: i32,
     rel_move_y: i32,
@@ -40,7 +45,7 @@ impl AdbMouse {
         let (s, button_recv) = crossbeam_channel::unbounded();
         (
             Self {
-                event_recv: button_recv,
+                event_recv: Some(button_recv),
                 address: Self::INITIAL_ADDRESS,
                 button: false,
                 rel_move_x: 0,
@@ -51,6 +56,7 @@ impl AdbMouse {
     }
 }
 
+#[typetag::serde]
 impl AdbDevice for AdbMouse {
     fn get_address(&self) -> u8 {
         self.address
@@ -62,8 +68,10 @@ impl AdbDevice for AdbMouse {
     }
 
     fn flush(&mut self) {
-        while !self.event_recv.is_empty() {
-            let _ = self.event_recv.recv();
+        let event_recv = self.event_recv.as_ref().unwrap();
+
+        while !event_recv.is_empty() {
+            let _ = event_recv.recv();
         }
         self.rel_move_x = 0;
         self.rel_move_y = 0;
@@ -71,11 +79,13 @@ impl AdbDevice for AdbMouse {
     }
 
     fn talk(&mut self, reg: u8) -> AdbDeviceResponse {
+        let event_recv = self.event_recv.as_ref().unwrap();
+
         match reg {
             0 => {
                 if self.get_srq() {
-                    while !self.event_recv.is_empty() {
-                        let event = self.event_recv.recv().unwrap();
+                    while !event_recv.is_empty() {
+                        let event = event_recv.recv().unwrap();
                         if let Some(btn) = event.button {
                             self.button = btn;
                         }
@@ -140,6 +150,8 @@ impl AdbDevice for AdbMouse {
     }
 
     fn get_srq(&self) -> bool {
-        !self.event_recv.is_empty() || self.rel_move_x != 0 || self.rel_move_y != 0
+        !self.event_recv.as_ref().unwrap().is_empty()
+            || self.rel_move_x != 0
+            || self.rel_move_y != 0
     }
 }

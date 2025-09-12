@@ -1,11 +1,12 @@
+use serde::{Deserialize, Serialize};
+
+use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::mac::adb::AdbDeviceResponse;
 
 use super::{AdbDevice, AdbDeviceInstance};
 
-use crate::debuggable::{Debuggable, DebuggableProperties};
-
 /// ADB Bus/transceiver states
-#[derive(Clone, Copy, PartialEq, Eq, Debug, strum::IntoStaticStr)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, strum::IntoStaticStr, Serialize, Deserialize)]
 enum AdbBusState {
     /// Send command - ST0 = 0, ST1 = 0
     Command,
@@ -35,7 +36,7 @@ impl Default for AdbBusState {
 }
 
 /// Apple Desktop Bus transceiver
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct AdbTransceiver {
     /// Current bus state
     state: AdbBusState,

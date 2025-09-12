@@ -23,10 +23,13 @@ use anyhow::Result;
 use bit_set::BitSet;
 use log::*;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
+use serde::{Deserialize, Serialize};
 
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "")]
 pub struct CompactMacBus<TRenderer: Renderer> {
     cycles: Ticks,
 
@@ -43,7 +46,10 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     pub(crate) via: Via,
     pub(crate) scc: Scc,
     pub(crate) video: Video<TRenderer>,
+
+    #[serde(skip)]
     pub(crate) audio: AudioState,
+
     eclock: Ticks,
     mouse_ready: bool,
     pub(crate) swim: Swim,
@@ -66,8 +72,6 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     /// Sound is in the upper bytes per 16-bit pair, disk PWM in the lower
     soundbuf_alt: Range<usize>,
 
-    pub dbg_break: LatchingEvent,
-
     overlay: bool,
 
     /// Emulation speed setting
@@ -77,6 +81,9 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     last_audiosample: u8,
 
     /// Last vblank time (for syncing to video)
+    /// Not serializing this because it is only used for determining how long to
+    /// sleep for in Video speed mode.
+    #[serde(skip, default = "Instant::now")]
     vblank_time: Instant,
 
     /// VPA/E-clock sync in progress
@@ -174,7 +181,6 @@ where
             soundbuf_main: sound_main_start..(sound_main_start + Self::SOUNDBUF_SIZE),
             soundbuf_alt: sound_alt_start..(sound_alt_start + Self::SOUNDBUF_SIZE),
 
-            dbg_break: LatchingEvent::default(),
             overlay: true,
             speed: EmulatorSpeed::Accurate,
             last_audiosample: 0,
@@ -196,7 +202,7 @@ where
     }
 
     pub(crate) fn get_audio_channel(&self) -> AudioReceiver {
-        self.audio.receiver.clone()
+        self.audio.receiver.as_ref().unwrap().clone()
     }
 
     fn soundbuf(&mut self) -> &mut [u8] {

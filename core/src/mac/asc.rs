@@ -10,6 +10,8 @@ use crossbeam_channel::{Receiver, Sender};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use proc_bitfield::bitfield;
+use serde::{Deserialize, Serialize};
+use serde_big_array::BigArray;
 
 pub const AUDIO_QUEUE_LEN: usize = 2;
 const FIFO_SIZE: usize = 0x400;
@@ -17,14 +19,19 @@ const FIFO_SIZE: usize = 0x400;
 pub type AudioBuffer = Box<[u8]>;
 
 /// Apple Sound Chip
+#[derive(Serialize, Deserialize)]
 pub struct Asc {
-    sender: Sender<AudioBuffer>,
-    pub receiver: Receiver<AudioBuffer>,
+    #[serde(skip)]
+    sender: Option<Sender<AudioBuffer>>,
+    #[serde(skip)]
+    pub receiver: Option<Receiver<AudioBuffer>>,
+
     buffer: Vec<u8>,
     silent: bool,
 
     mode: AscMode,
     channels: [AscChannel; 4],
+    #[serde(with = "BigArray")]
     wavetables: [u8; 0x800],
     fifo_status: FifoStatus,
     irq: bool,
@@ -34,7 +41,7 @@ pub struct Asc {
 
 bitfield! {
     /// FIFO status register
-    #[derive(Clone, Copy, PartialEq, Eq, Default)]
+    #[derive(Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
     pub struct FifoStatus(pub Byte): Debug, FromStorage, IntoStorage, DerefStorage {
         pub l_half: bool @ 0,
         pub l_fullempty: bool @ 1,
@@ -43,13 +50,23 @@ bitfield! {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct AscChannel {
     freq: Field32,
     phase: Field32,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq, FromPrimitive, ToPrimitive, strum::IntoStaticStr)]
+#[derive(
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    FromPrimitive,
+    ToPrimitive,
+    strum::IntoStaticStr,
+    Serialize,
+    Deserialize,
+)]
 enum AscMode {
     Off = 0,
     Fifo = 1,
@@ -60,8 +77,8 @@ impl Default for Asc {
     fn default() -> Self {
         let (sender, receiver) = crossbeam_channel::bounded(AUDIO_QUEUE_LEN);
         Self {
-            sender,
-            receiver,
+            sender: Some(sender),
+            receiver: Some(receiver),
             buffer: Vec::with_capacity(AUDIO_BUFFER_SIZE),
             silent: true,
             channels: Default::default(),
@@ -104,7 +121,10 @@ impl Asc {
         if self.buffer.len() >= AUDIO_BUFFER_SIZE {
             let buffer = std::mem::replace(&mut self.buffer, Vec::with_capacity(AUDIO_BUFFER_SIZE));
             self.silent = buffer.iter().all(|&s| s == buffer[0]);
-            self.sender.send(buffer.into_boxed_slice())?;
+            self.sender
+                .as_ref()
+                .unwrap()
+                .send(buffer.into_boxed_slice())?;
         }
         Ok(())
     }

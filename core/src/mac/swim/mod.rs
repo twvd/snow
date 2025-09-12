@@ -14,6 +14,7 @@ use ism::{IsmError, IsmSetup, IsmStatus};
 
 use drive::{DriveType, FloppyDrive};
 use iwm::{IwmMode, IwmStatus};
+use serde::{Deserialize, Serialize};
 use snow_floppy::flux::FluxTicks;
 use snow_floppy::{Floppy, FloppyImage};
 
@@ -72,7 +73,18 @@ impl FluxTransitionTime {
     }
 }
 
-#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, strum::IntoStaticStr, Clone)]
+#[derive(
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    strum::IntoStaticStr,
+    Clone,
+    Serialize,
+    Deserialize,
+)]
 enum SwimMode {
     #[default]
     Iwm,
@@ -80,6 +92,7 @@ enum SwimMode {
 }
 
 /// Sander-Wozniak Integrated Machine - floppy drive controller
+#[derive(Serialize, Deserialize)]
 pub struct Swim {
     ism_available: bool,
 

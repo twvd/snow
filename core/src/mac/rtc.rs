@@ -1,5 +1,6 @@
 use arrayvec::ArrayVec;
 use chrono::{Local, NaiveDate};
+use serde::{Deserialize, Serialize};
 #[cfg(feature = "mmap")]
 use std::fs::OpenOptions;
 use std::path::Path;
@@ -12,7 +13,42 @@ use memmap2::MmapMut;
 
 const PRAM_SIZE: usize = 256;
 
+/// Serde adapter for PRAM
+#[cfg(feature = "mmap")]
+pub mod serde_rtc_pram {
+    use super::*;
+    use serde::de::Error;
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &MmapMut, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let pram_vec = Vec::from_iter(value.iter().copied());
+        pram_vec.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<MmapMut, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let mut mmap = MmapMut::map_anon(PRAM_SIZE).unwrap();
+        let vec = Vec::deserialize(deserializer)?;
+
+        if vec.len() != PRAM_SIZE {
+            return Err(D::Error::invalid_length(vec.len(), &"invalid size"));
+        }
+
+        for (i, c) in vec.into_iter().enumerate() {
+            mmap[i] = c;
+        }
+
+        Ok(mmap)
+    }
+}
+
 /// Macintosh Real-Time Clock
+#[derive(Serialize, Deserialize)]
 pub struct Rtc {
     io_enable: bool,
     io_clk: bool,
@@ -26,11 +62,13 @@ pub struct Rtc {
     data: RtcData,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct RtcData {
     writeprotect: bool,
     seconds: u32,
 
     #[cfg(feature = "mmap")]
+    #[serde(with = "serde_rtc_pram")]
     pram: MmapMut,
 
     #[cfg(not(feature = "mmap"))]

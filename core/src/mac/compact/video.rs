@@ -61,10 +61,14 @@ use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 /// CRT/video circuitry state
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "")]
 pub struct Video<T: Renderer> {
-    renderer: T,
+    #[serde(skip)]
+    renderer: Option<T>,
 
     /// Absolute beam position
     dots: Ticks,
@@ -155,7 +159,7 @@ where
 
     pub fn new(renderer: T) -> Self {
         Self {
-            renderer,
+            renderer: Some(renderer),
             dots: 0,
             event_vblank: LatchingEvent::default(),
             event_hblank: LatchingEvent::default(),
@@ -185,7 +189,8 @@ where
             &self.framebuffers[1]
         };
 
-        let buf = self.renderer.buffer_mut();
+        let renderer = self.renderer.as_mut().unwrap();
+        let buf = renderer.buffer_mut();
         buf.set_size(Self::H_VISIBLE_DOTS, Self::V_VISIBLE_LINES);
 
         for idx in 0..Self::FRAME_VISIBLE_DOTS {
@@ -202,7 +207,7 @@ where
             }
             buf[idx * 4 + 3] = 0xFF;
         }
-        self.renderer.update()?;
+        renderer.update()?;
 
         Ok(())
     }
