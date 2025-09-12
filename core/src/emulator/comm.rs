@@ -71,7 +71,7 @@ pub enum EmulatorCommand {
 }
 
 /// Emulator speed tweak
-#[derive(Debug, Copy, Clone, strum::Display, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, strum::Display, Eq, PartialEq, Serialize, Deserialize)]
 pub enum EmulatorSpeed {
     /// Actual speed accurate to the real hardware
     Accurate,

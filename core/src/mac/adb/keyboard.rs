@@ -5,6 +5,8 @@ use super::{AdbDevice, AdbDeviceResponse, AdbReg3};
 
 use log::*;
 use proc_bitfield::bitfield;
+use serde::{Deserialize, Serialize};
+use serde_big_array::BigArray;
 
 bitfield! {
     /// Register 2
@@ -38,10 +40,16 @@ const SC_ROPTION: u8 = 0x7C;
 const SC_DELETE: u8 = 0x75;
 
 /// Apple Desktop Bus-connected keyboard
+#[derive(Serialize, Deserialize)]
 pub struct AdbKeyboard {
     address: u8,
-    key_recv: KeyEventReceiver,
+
+    #[serde(skip)]
+    key_recv: Option<KeyEventReceiver>,
+
+    #[serde(with = "BigArray")]
     keystate: [bool; 256],
+
     capslock: bool,
 }
 
@@ -52,7 +60,7 @@ impl AdbKeyboard {
         let (s, key_recv) = crossbeam_channel::unbounded();
         (
             Self {
-                key_recv,
+                key_recv: Some(key_recv),
                 address: Self::INITIAL_ADDRESS,
                 keystate: [false; 256],
                 capslock: false,
@@ -62,6 +70,7 @@ impl AdbKeyboard {
     }
 }
 
+#[typetag::serde]
 impl AdbDevice for AdbKeyboard {
     fn get_address(&self) -> u8 {
         self.address
@@ -73,17 +82,21 @@ impl AdbDevice for AdbKeyboard {
     }
 
     fn flush(&mut self) {
-        while !self.key_recv.is_empty() {
-            let _ = self.key_recv.recv();
+        let key_recv = self.key_recv.as_ref().unwrap();
+
+        while !key_recv.is_empty() {
+            let _ = key_recv.recv();
         }
     }
 
     fn talk(&mut self, reg: u8) -> AdbDeviceResponse {
+        let key_recv = self.key_recv.as_ref().unwrap();
+
         match reg {
             0 => {
                 let mut response = AdbDeviceResponse::default();
                 for _ in 0..2 {
-                    if let Ok(ke) = self.key_recv.try_recv() {
+                    if let Ok(ke) = key_recv.try_recv() {
                         match ke {
                             KeyEvent::KeyDown(sc) => {
                                 self.keystate[sc as usize] = true;
@@ -174,6 +187,6 @@ impl AdbDevice for AdbKeyboard {
     }
 
     fn get_srq(&self) -> bool {
-        !self.key_recv.is_empty()
+        !self.key_recv.as_ref().unwrap().is_empty()
     }
 }

@@ -3,6 +3,7 @@
 use anyhow::{bail, Context, Result};
 #[cfg(feature = "mmap")]
 use memmap2::MmapMut;
+use serde::{Deserialize, Serialize};
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -15,9 +16,15 @@ use crate::mac::scsi::STATUS_GOOD;
 
 pub const DISK_BLOCKSIZE: usize = 512;
 
+fn todo_fixme() -> MmapMut {
+    MmapMut::map_anon(0).unwrap()
+}
+
+#[derive(Serialize, Deserialize)]
 pub(super) struct ScsiTargetDisk {
     /// Disk contents
     #[cfg(feature = "mmap")]
+    #[serde(skip, default = "todo_fixme")] // TODO serde
     pub(super) disk: MmapMut,
 
     #[cfg(not(feature = "mmap"))]
@@ -116,6 +123,7 @@ impl ScsiTargetDisk {
     }
 }
 
+#[typetag::serde]
 impl ScsiTarget for ScsiTargetDisk {
     fn load_media(&mut self, _path: &Path) -> Result<()> {
         bail!("load_media on non-removable disk");

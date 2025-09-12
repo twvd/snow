@@ -7,6 +7,7 @@ use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::MouseMode;
 use crate::mac::asc::Asc;
+use crate::mac::nubus::mdc12::Mdc12;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::swim::Swim;
@@ -16,11 +17,11 @@ use crate::renderer::{AudioReceiver, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent};
 
-use crate::mac::nubus::mdc12::Mdc12;
 use anyhow::Result;
 use bit_set::BitSet;
 use log::*;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
+use serde::{Deserialize, Serialize};
 
 /// Macintosh II main clock speed
 pub const CLOCK_SPEED: Ticks = 16_000_000;
@@ -28,6 +29,8 @@ pub const CLOCK_SPEED: Ticks = 16_000_000;
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "")]
 pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     cycles: Ticks,
 
@@ -44,6 +47,7 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     pub(crate) via1: Via,
     pub(crate) via2: Via2,
     pub(crate) scc: Scc,
+    #[serde(rename = "AscState")]
     pub(crate) asc: Asc,
     via_clock: Ticks,
     mouse_ready: bool,
@@ -60,6 +64,9 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     pub(crate) speed: EmulatorSpeed,
 
     /// Last vblank time (for syncing to video)
+    /// Not serializing this because it is only used for determining how long to
+    /// sleep for in Video speed mode.
+    #[serde(skip, default = "Instant::now")]
     vblank_time: Instant,
 
     /// Programmer's key pressed
@@ -152,7 +159,7 @@ where
     }
 
     pub(crate) fn get_audio_channel(&self) -> AudioReceiver {
-        self.asc.receiver.clone()
+        self.asc.receiver.as_ref().unwrap().clone()
     }
 
     #[allow(clippy::needless_pass_by_value)]

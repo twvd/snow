@@ -1,5 +1,6 @@
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
+use serde::{Deserialize, Serialize};
 
 use crate::renderer::{AUDIO_BUFFER_SIZE, AUDIO_CHANNELS};
 
@@ -7,9 +8,12 @@ pub const AUDIO_QUEUE_LEN: usize = 2;
 
 pub type AudioBuffer = Box<[u8]>;
 
+#[derive(Serialize, Deserialize)]
 pub struct AudioState {
-    sender: Sender<AudioBuffer>,
-    pub receiver: Receiver<AudioBuffer>,
+    #[serde(skip)]
+    sender: Option<Sender<AudioBuffer>>,
+    #[serde(skip)]
+    pub receiver: Option<Receiver<AudioBuffer>>,
     buffer: Vec<u8>,
     silent: bool,
 }
@@ -18,8 +22,8 @@ impl Default for AudioState {
     fn default() -> Self {
         let (sender, receiver) = crossbeam_channel::bounded(AUDIO_QUEUE_LEN);
         Self {
-            sender,
-            receiver,
+            sender: Some(sender),
+            receiver: Some(receiver),
             buffer: Vec::with_capacity(AUDIO_BUFFER_SIZE),
             silent: true,
         }
@@ -38,7 +42,10 @@ impl AudioState {
         if self.buffer.len() >= AUDIO_BUFFER_SIZE {
             let buffer = std::mem::replace(&mut self.buffer, Vec::with_capacity(AUDIO_BUFFER_SIZE));
             self.silent = buffer.iter().all(|&s| s == buffer[0]);
-            self.sender.send(buffer.into_boxed_slice())?;
+            self.sender
+                .as_ref()
+                .unwrap()
+                .send(buffer.into_boxed_slice())?;
         }
         Ok(())
     }
