@@ -68,6 +68,7 @@ pub enum EmulatorCommand {
     SetPeripheralDebug(bool),
     SccReceiveData(SccCh, Vec<u8>),
     SetSystrapHistory(bool),
+    SaveState(PathBuf),
 }
 
 /// Emulator speed tweak

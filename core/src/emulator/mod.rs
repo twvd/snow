@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof};
 use snow_floppy::Floppy;
 use std::collections::VecDeque;
+use std::fs::File;
+use std::io::Seek;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -657,6 +659,21 @@ impl Emulator {
         self.config.scsi_mut().attach_cdrom_at(id);
         info!("SCSI ID #{}: CD-ROM drive attached", id);
     }
+
+    fn save_state(&self, p: &Path) -> Result<()> {
+        let mut f = File::create(p)?;
+        let time = Instant::now();
+        postcard::to_io(&self.config, &f)?;
+        log::info!(
+            "Wrote state to {} in {:?} ({} bytes)",
+            p.file_name()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            time.elapsed(),
+            f.stream_position()?
+        );
+        Ok(())
+    }
 }
 
 impl Tickable for Emulator {
@@ -942,6 +959,11 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::SccReceiveData(ch, data) => {
                         self.config.scc_mut().push_rx(ch, &data);
+                    }
+                    EmulatorCommand::SaveState(path) => {
+                        if let Err(e) = self.save_state(&path) {
+                            self.user_error(&format!("Failed to save state: {:?}", e));
+                        }
                     }
                 }
             }

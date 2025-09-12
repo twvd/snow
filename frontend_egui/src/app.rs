@@ -158,6 +158,7 @@ pub struct SnowGui {
     record_dialog: FileDialog,
     model_dialog: ModelSelectionDialog,
     about_dialog: AboutDialog,
+    state_dialog: FileDialog,
 
     error_dialog_open: bool,
     error_string: String,
@@ -313,6 +314,21 @@ impl SnowGui {
             create_disk_dialog: Default::default(),
             model_dialog: Default::default(),
             about_dialog: AboutDialog::new(&cc.egui_ctx),
+            state_dialog: FileDialog::new()
+                .add_file_filter(
+                    "Snow state file (*.snows)",
+                    Arc::new(|p| {
+                        p.extension()
+                            .unwrap_or_default()
+                            .eq_ignore_ascii_case("snows")
+                    }),
+                )
+                .default_file_filter("Snow state file (*.snows)")
+                .add_save_extension("Snow state file", "snows")
+                .default_save_extension("Snow state file")
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
+                .initial_directory(Self::default_dir()),
+
             error_dialog_open: false,
             error_string: String::new(),
             ui_active: true,
@@ -481,6 +497,12 @@ impl SnowGui {
                     ui.separator();
                     if ui.button("Programmers key").clicked() {
                         self.emu.progkey();
+                        ui.close_menu();
+                    }
+
+                    ui.separator();
+                    if ui.button("Save state...").clicked() {
+                        self.state_dialog.save_file();
                         ui.close_menu();
                     }
                 }
@@ -1684,7 +1706,7 @@ impl eframe::App for SnowGui {
         }
         self.ui_active &= self.cdrom_dialog.state() != egui_file_dialog::DialogState::Open;
 
-        // CD-ROM image creatiom dialog
+        // CD-ROM image creation dialog
         self.cdrom_files_dialog.update(ctx);
         if let Some(paths) = self.cdrom_files_dialog.take_picked_multiple() {
             match Self::create_temp_iso(&paths) {
@@ -1757,6 +1779,17 @@ impl eframe::App for SnowGui {
             }
         }
         self.ui_active &= self.record_dialog.state() != egui_file_dialog::DialogState::Open;
+
+        // State file picker dialog
+        self.state_dialog.update(ctx);
+        if let Some(path) = self.state_dialog.take_picked() {
+            if self.state_dialog.mode() == egui_file_dialog::DialogMode::SaveFile {
+                self.emu.save_state(&path);
+            } else {
+                todo!();
+            }
+        }
+        self.ui_active &= self.state_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // Actual UI
         egui::CentralPanel::default().show(ctx, |ui| {
