@@ -888,4 +888,13 @@ impl EmulatorState {
     pub fn is_mouse_relative(&self) -> bool {
         self.mouse_mode == MouseMode::RelativeHw
     }
+
+    pub fn save_state(&self, p: &Path) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender
+            .send(EmulatorCommand::SaveState(p.to_path_buf()))
+            .unwrap();
+    }
 }
