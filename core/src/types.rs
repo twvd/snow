@@ -73,7 +73,7 @@ impl Field32 {
 }
 
 /// A self-clearing latch for events etc.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct LatchingEvent {
     val: bool,
 }

@@ -2,11 +2,14 @@ pub mod flux;
 pub mod loaders;
 mod macformat;
 
-use rand::Rng;
 use std::collections::HashMap;
 
-use flux::FluxTicks;
+use rand::Rng;
+use serde::{Deserialize, Serialize};
+use serde_big_array::{Array, BigArray};
 use strum::EnumIter;
+
+use flux::FluxTicks;
 
 pub mod built_info {
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
@@ -17,7 +20,7 @@ pub mod built_info {
 pub type FloppyMetadata = HashMap<String, String>;
 
 /// Types of emulated floppies - 3.5" only
-#[derive(Copy, Clone, EnumIter, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, EnumIter, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum FloppyType {
     /// Macintosh GCR CLV 3.5", single sided
     Mac400K,
@@ -28,7 +31,7 @@ pub enum FloppyType {
 }
 
 /// Type of the original track when loaded from the image
-#[derive(Copy, Clone, EnumIter, Default, Eq, PartialEq)]
+#[derive(Copy, Clone, EnumIter, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum OriginalTrackType {
     /// Unknown
     #[default]
@@ -44,7 +47,7 @@ pub enum OriginalTrackType {
 }
 
 /// Current track type
-#[derive(Debug, Copy, Clone, EnumIter, Default, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, EnumIter, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TrackType {
     /// Physical bitstream data
     #[default]
@@ -54,7 +57,7 @@ pub enum TrackType {
 }
 
 /// Length of a track in different units
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TrackLength {
     Bits(usize),
     Transitions(usize),
@@ -147,23 +150,27 @@ pub trait Floppy {
 }
 
 /// An in-memory loaded floppy image
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct FloppyImage {
     floppy_type: FloppyType,
 
     /// Bitstream track data
     /// Only tracks with bitstream accuracy are filled in here
-    pub(crate) trackdata: [[Vec<u8>; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
+    #[serde(with = "BigArray")]
+    pub(crate) trackdata: [Array<Vec<u8>, FLOPPY_MAX_TRACKS>; FLOPPY_MAX_SIDES],
 
     /// Bit length of bitstream tracks
-    bitlen: [[usize; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
+    #[serde(with = "BigArray")]
+    bitlen: [Array<usize, FLOPPY_MAX_TRACKS>; FLOPPY_MAX_SIDES],
 
     /// Flux track data, stored in flux transition time (in ticks)
     /// Only tracks with flux accuracy are filled in here
-    pub(crate) flux_trackdata: [[Vec<FluxTicks>; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
+    #[serde(with = "BigArray")]
+    pub(crate) flux_trackdata: [Array<Vec<FluxTicks>, FLOPPY_MAX_TRACKS>; FLOPPY_MAX_SIDES],
 
     /// Original track types at load time
-    pub(crate) origtracktype: [[OriginalTrackType; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
+    #[serde(with = "BigArray")]
+    pub(crate) origtracktype: [Array<OriginalTrackType, FLOPPY_MAX_TRACKS>; FLOPPY_MAX_SIDES],
 
     /// Some way to represent what is on this floppy (e.g. the label)
     title: String,
@@ -208,12 +215,12 @@ impl FloppyImage {
     fn new_internal(floppy_type: FloppyType, title: &str) -> Self {
         Self {
             floppy_type,
-            trackdata: core::array::from_fn(|_| core::array::from_fn(|_| vec![])),
-            flux_trackdata: core::array::from_fn(|_| core::array::from_fn(|_| vec![])),
-            bitlen: [[0; FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
+            trackdata: core::array::from_fn(|_| Default::default()),
+            flux_trackdata: core::array::from_fn(|_| Default::default()),
+            bitlen: [Default::default(); FLOPPY_MAX_SIDES],
             title: title.to_owned(),
             metadata: FloppyMetadata::from([("title".to_string(), title.to_string())]),
-            origtracktype: [[Default::default(); FLOPPY_MAX_TRACKS]; FLOPPY_MAX_SIDES],
+            origtracktype: [Default::default(); FLOPPY_MAX_SIDES],
             dirty: false,
             force_wp: false,
         }

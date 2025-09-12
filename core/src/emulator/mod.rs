@@ -137,6 +137,7 @@ macro_rules! dispatch {
 
 /// Emulator config. Basically an abstraction on top of the CPU for multiple different model groups
 /// that provides access to the inner components by the emulator runner through dynamic dispatch.
+#[derive(Serialize, Deserialize)]
 enum EmulatorConfig {
     /// Compact series - Mac 128K, 512K, Plus, SE, Classic
     Compact(Box<CpuM68000<CompactMacBus<ChannelRenderer>>>),

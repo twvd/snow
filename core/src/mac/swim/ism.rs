@@ -115,7 +115,7 @@ impl IsmRegister {
     }
 }
 
-#[derive(Debug, strum::Display)]
+#[derive(Debug, strum::Display, Serialize, Deserialize)]
 pub(super) enum IsmFifoEntry {
     Marker(u8),
     Data(u8),

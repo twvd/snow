@@ -214,7 +214,7 @@ pub enum SccCh {
     B = 1,
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct SccChannel {
     sdlc: bool,
     hunt: bool,
@@ -235,10 +235,8 @@ struct SccChannel {
     rx_queue: VecDeque<u8>,
 }
 
-impl SccChannel {}
-
 /// Zilog Z8530 Serial Communications Controller
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Scc {
     /// Channels
     /// 0 = Channel A, 1 = Channel B

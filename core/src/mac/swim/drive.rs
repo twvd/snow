@@ -107,7 +107,9 @@ impl DriveType {
 }
 
 /// Direction the drive head is set to step to
-#[derive(PartialEq, Eq, Clone, Copy, Debug, Display, strum::IntoStaticStr)]
+#[derive(
+    PartialEq, Eq, Clone, Copy, Debug, Display, strum::IntoStaticStr, Serialize, Deserialize,
+)]
 enum HeadStepDirection {
     Up,
     Down,
@@ -205,6 +207,7 @@ enum DriveWriteReg {
 }
 
 /// A single disk drive, attached to the drive controller
+#[derive(Serialize, Deserialize)]
 pub(crate) struct FloppyDrive {
     idx: usize,
     base_frequency: Ticks,

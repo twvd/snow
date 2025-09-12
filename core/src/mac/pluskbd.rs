@@ -2,11 +2,12 @@ use std::collections::VecDeque;
 
 use anyhow::Result;
 use log::*;
+use serde::{Deserialize, Serialize};
 
 use crate::keymap::KeyEvent;
 
 /// Apple M0110 keyboard, for the 512K/Plus
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct PlusKeyboard {
     event_queue: VecDeque<KeyEvent>,
 }

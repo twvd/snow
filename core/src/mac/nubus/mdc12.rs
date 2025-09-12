@@ -2,6 +2,7 @@ use std::fmt::Display;
 
 use anyhow::Result;
 use proc_bitfield::bitfield;
+use serde::{Deserialize, Serialize};
 
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
@@ -12,7 +13,7 @@ use crate::types::{Field32, LatchingEvent, Word};
 
 bitfield! {
     /// Control register
-    #[derive(Clone, Copy, PartialEq, Eq)]
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct CtrlReg(pub Word): Debug, FromStorage, IntoStorage, DerefStorage {
         pub low: u8 @ 0..=7,
         pub high: u8 @ 8..=15,
@@ -36,14 +37,14 @@ bitfield! {
 
 bitfield! {
     /// RAMDAC control register
-    #[derive(Clone, Copy, PartialEq, Eq)]
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct RamdacCtrlReg(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         pub mode: u8 @ 1..=5,
         pub conv: bool @ 0,
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Clone, Copy, strum::IntoStaticStr)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy, strum::IntoStaticStr, Serialize, Deserialize)]
 pub enum Bpp {
     /// 1bpp (black & white)
     One,
@@ -62,8 +63,12 @@ pub enum Bpp {
 }
 
 /// Macintosh Display Card 1.2.341-0868
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "")]
 pub struct Mdc12<TRenderer: Renderer> {
+    #[serde(skip)]
     renderer: Option<TRenderer>,
+
     monitor: MacMonitor,
     rom: Vec<u8>,
     ctrl: CtrlReg,
