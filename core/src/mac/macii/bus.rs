@@ -34,9 +34,6 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     /// The currently emulated Macintosh model
     model: MacModel,
 
-    /// Trace non-ROM/RAM access
-    pub trace: bool,
-
     rom: Vec<u8>,
     extension_rom: Vec<u8>,
     pub(crate) ram: Vec<u8>,
@@ -79,6 +76,10 @@ impl<TRenderer, const AMU: bool> MacIIBus<TRenderer, AMU>
 where
     TRenderer: Renderer,
 {
+    /// Value to return on open bus
+    /// Certain applications (e.g. Animation Toolkit) rely on this.
+    const OPENBUS: u8 = 0;
+
     /// MTemp address, Y coordinate (16 bit, signed)
     const ADDR_MTEMP_Y: Address = 0x0828;
     /// MTemp address, X coordinate (16 bit, signed)
@@ -110,7 +111,6 @@ where
         let mut bus = Self {
             cycles: 0,
             model,
-            trace: false,
 
             rom: Vec::from(rom),
             extension_rom: extension_rom.map(Vec::from).unwrap_or_default(),
@@ -177,10 +177,6 @@ where
     }
 
     fn write_overlay(&mut self, addr: Address, val: Byte) -> Option<()> {
-        if self.trace {
-            trace!("WRO {:08X} - {:02X}", addr, val);
-        }
-
         match addr {
             // 0x0000_0000 - 0x4FFF_FFFF is ROM
             0x5000_0000..=0xFFFF_FFFF => self.write_32bit(addr, val),
@@ -189,10 +185,6 @@ where
     }
 
     fn write_32bit(&mut self, addr: Address, val: Byte) -> Option<()> {
-        if self.trace && !(0x0000_0000..=0x003F_FFFF).contains(&addr) {
-            trace!("WR {:08X} - {:02X}", addr, val);
-        }
-
         match addr {
             // RAM
             0x0000_0000..=0x3FFF_FFFF => {
@@ -245,18 +237,16 @@ where
     }
 
     fn read_overlay(&mut self, addr: Address) -> Option<Byte> {
-        let result = match addr {
+        match addr {
             // ROM
-            0x0000_0000..=0x4FFF_FFFF => {
-                Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
-            }
+            0x0000_0000..=0x4FFF_FFFF => Some(
+                *self
+                    .rom
+                    .get(addr as usize & self.rom_mask)
+                    .unwrap_or(&Self::OPENBUS),
+            ),
             0x5000_0000..=0xFFFF_FFFF => self.read_32bit(addr),
-        };
-        if self.trace {
-            trace!("RDO {:08X} - {:02X?}", addr, result);
         }
-
-        result
     }
 
     fn read_24bit(&mut self, addr: Address) -> Option<Byte> {
@@ -264,13 +254,16 @@ where
     }
 
     fn read_32bit(&mut self, addr: Address) -> Option<Byte> {
-        let result = match addr {
+        match addr {
             // RAM
             0x0000_0000..=0x3FFF_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
             // ROM
-            0x4000_0000..=0x4FFF_FFFF => {
-                Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
-            }
+            0x4000_0000..=0x4FFF_FFFF => Some(
+                *self
+                    .rom
+                    .get(addr as usize & self.rom_mask)
+                    .unwrap_or(&Self::OPENBUS),
+            ),
             // I/O region (repeats)
             0x5000_0000..=0x51FF_FFFF => match addr & 0x1_FFFF {
                 // VIA 1
@@ -288,7 +281,7 @@ where
                 // IWM
                 0x0001_6000..=0x0001_7FFF => self.swim.read(addr),
                 // Expansion area
-                //0x0001_8000..=0x0001_FFFF => Some(0xFF),
+                //0x0001_8000..=0x0001_FFFF => Some(Self::OPENBUS),
                 _ => None,
             },
             // Extension ROM / test area
@@ -296,7 +289,7 @@ where
                 *self
                     .extension_rom
                     .get((addr - 0x5800_0000) as usize)
-                    .unwrap_or(&0xFF),
+                    .unwrap_or(&Self::OPENBUS),
             ),
             // NuBus super slot
             0x6000_0000..=0xEFFF_FFFF => None,
@@ -313,12 +306,7 @@ where
                 }
             }
             _ => None,
-        };
-
-        if self.trace && !(0x0000_0000..=0x3FFF_FFFF).contains(&addr) {
-            trace!("RD {:08X} - {:02X?}", addr, result);
         }
-        result
     }
 
     /// Updates the mouse position (relative coordinates) and button state
@@ -467,7 +455,7 @@ where
             } else {
                 warn!("Read from unimplemented address: {:08X}", addr);
             }
-            BusResult::Ok(0xFF)
+            BusResult::Ok(Self::OPENBUS)
         }
     }
 

@@ -33,9 +33,6 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     /// The currently emulated Macintosh model
     model: MacModel,
 
-    /// Trace non-ROM/RAM access
-    pub trace: bool,
-
     rom: Vec<u8>,
     extension_rom: Vec<u8>,
     pub(crate) ram: Vec<u8>,
@@ -102,6 +99,10 @@ impl<TRenderer> CompactMacBus<TRenderer>
 where
     TRenderer: Renderer,
 {
+    /// Value to return on open bus
+    /// Certain applications (e.g. Animation Toolkit) rely on this.
+    const OPENBUS: u8 = 0;
+
     /// Main sound buffer offset (from end of RAM)
     const SOUND_MAIN_OFFSET: usize = 0x0300;
     /// Alternate sound buffer offset (from end of RAM)
@@ -149,7 +150,6 @@ where
         let mut bus = Self {
             cycles: 0,
             model,
-            trace: false,
 
             rom: Vec::from(rom),
             extension_rom: extension_rom.map(Vec::from).unwrap_or_default(),
@@ -229,10 +229,6 @@ where
     }
 
     fn write_overlay(&mut self, addr: Address, val: Byte) -> Option<()> {
-        if self.trace && !(0x0060_0000..=0x007F_FFFF).contains(&addr) {
-            trace!("WRO {:08X} - {:02X}", addr, val);
-        }
-
         match addr {
             // ROM (disables overlay)
             0x0040_0000..=0x0057_FFFF if self.model >= MacModel::SE => {
@@ -258,10 +254,6 @@ where
     }
 
     fn write_normal(&mut self, addr: Address, val: Byte) -> Option<()> {
-        if self.trace && !(0x0000_0000..=0x003F_FFFF).contains(&addr) {
-            trace!("WR {:08X} - {:02X}", addr, val);
-        }
-
         match addr {
             // RAM
             0x0000_0000..=0x003F_FFFF => {
@@ -297,7 +289,7 @@ where
     }
 
     fn read_overlay(&mut self, addr: Address) -> Option<Byte> {
-        let result = match addr {
+        match addr {
             // Overlay flip for Mac SE+
             0x0040_0000..=0x004F_FFFF if self.model >= MacModel::SE => {
                 self.overlay = false;
@@ -305,14 +297,19 @@ where
             }
             // ROM
             0x0000_0000..=0x000F_FFFF | 0x0020_0000..=0x002F_FFFF | 0x0040_0000..=0x004F_FFFF => {
-                Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
+                Some(
+                    *self
+                        .rom
+                        .get(addr as usize & self.rom_mask)
+                        .unwrap_or(&Self::OPENBUS),
+                )
             }
             // SCSI
             0x0058_0000..=0x005F_FFFF if self.model.has_scsi() => self.scsi.read(addr),
             // RAM
             0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
             // Phase adjust (ignore)
-            0x009F_FFF7 | 0x009F_FFF9 => Some(0xFF),
+            0x009F_FFF7 | 0x009F_FFF9 => Some(Self::OPENBUS),
             // SCC
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr >> 1),
             // IWM
@@ -320,41 +317,44 @@ where
             // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
             // Phase read (ignore)
-            0x00F0_0000..=0x00F7_FFFF => Some(0xFF),
+            0x00F0_0000..=0x00F7_FFFF => Some(Self::OPENBUS),
             // Test software region / extension ROM
             0x00F8_0000..=0x00F9_FFFF => Some(
                 *self
                     .extension_rom
                     .get((addr - 0xF8_0000) as usize)
-                    .unwrap_or(&0xFF),
+                    .unwrap_or(&Self::OPENBUS),
             ),
 
             _ => None,
-        };
-        if self.trace && !(0x0000_0000..=0x007F_FFFF).contains(&addr) {
-            trace!("RDO {:08X} - {:02X?}", addr, result);
         }
-
-        result
     }
 
     fn read_normal(&mut self, addr: Address) -> Option<Byte> {
-        let result = match addr {
+        match addr {
             // RAM
             0x0000_0000..=0x003F_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
             // ROM
-            0x0040_0000..=0x0043_FFFF => {
-                Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
-            }
+            0x0040_0000..=0x0043_FFFF => Some(
+                *self
+                    .rom
+                    .get(addr as usize & self.rom_mask)
+                    .unwrap_or(&Self::OPENBUS),
+            ),
             0x0044_0000..=0x004F_FFFF => {
                 if self.model == MacModel::Plus {
                     // Plus with SCSI has no repeated ROM images above 0x440000 as
                     // indication of SCSI controller present.
                     //
                     // 512Ke (using Plus ROM) does have repeated ROM images
-                    Some(0xFF)
+                    Some(Self::OPENBUS)
                 } else {
-                    Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
+                    Some(
+                        *self
+                            .rom
+                            .get(addr as usize & self.rom_mask)
+                            .unwrap_or(&Self::OPENBUS),
+                    )
                 }
             }
             // SCSI
@@ -370,16 +370,11 @@ where
                 *self
                     .extension_rom
                     .get((addr - 0xF8_0000) as usize)
-                    .unwrap_or(&0xFF),
+                    .unwrap_or(&Self::OPENBUS),
             ),
 
             _ => None,
-        };
-
-        if self.trace && !(0x0000_0000..=0x004F_FFFF).contains(&addr) {
-            trace!("RD {:08X} - {:02X?}", addr, result);
         }
-        result
     }
 
     /// Updates the mouse position (relative coordinates) and button state
@@ -548,7 +543,7 @@ where
             BusResult::Ok(v)
         } else {
             warn!("Read from unimplemented address: {:08X}", addr);
-            BusResult::Ok(0xFF)
+            BusResult::Ok(Self::OPENBUS)
         }
     }
 
