@@ -8,6 +8,9 @@ use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::MouseMode;
+use crate::keymap::KeyEvent;
+use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
+use crate::mac::rtc::Rtc;
 use crate::mac::scc::{Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::swim::drive::DriveType;
@@ -16,7 +19,7 @@ use crate::mac::via::Via;
 use crate::mac::MacModel;
 use crate::renderer::{AudioReceiver, Renderer};
 use crate::tickable::{Tickable, Ticks};
-use crate::types::{Byte, LatchingEvent};
+use crate::types::{Byte, LatchingEvent, MouseEvent};
 use crate::util::take_from_accumulator;
 
 use anyhow::Result;
@@ -196,6 +199,12 @@ where
         if let Some((addr, value)) = model.disable_memtest() {
             info!("Skipping memory test");
             bus.write_ram(addr, value);
+        }
+
+        // Initialize ADB devices
+        if model.has_adb() {
+            bus.via.adb.add_device(AdbMouse::new());
+            bus.via.adb.add_device(AdbKeyboard::new());
         }
 
         bus
@@ -387,10 +396,19 @@ where
 
     /// Updates the mouse position (relative coordinates) and button state
     pub fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) {
+        if self.mouse_mode == MouseMode::Disabled {
+            return;
+        }
+
         if let Some(b) = button {
             if !self.model.has_adb() {
                 // Mouse button through VIA I/O
                 self.via.b_in.set_sw(!b);
+            } else {
+                self.via.adb.event(&AdbEvent::Mouse(MouseEvent {
+                    button,
+                    rel_movement: None,
+                }));
             }
         }
 
@@ -400,21 +418,20 @@ where
 
         match self.mouse_mode {
             MouseMode::Absolute => {
-                let old_x = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_X);
-                let old_y = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_Y);
-                let new_x = old_x.wrapping_add_signed(relx);
-                let new_y = old_y.wrapping_add_signed(rely);
-                self.mouse_update_abs(new_x, new_y);
+                // Handled through mouse_update_abs()
             }
             MouseMode::RelativeHw if !self.model.has_adb() => {
                 self.plusmouse_rel_x = self.plusmouse_rel_x.saturating_add(relx.into());
                 self.plusmouse_rel_y = self.plusmouse_rel_y.saturating_add(rely.into());
             }
             MouseMode::RelativeHw => {
-                // If ADB, this is not called but handled through the mouse
-                // event channel
+                // ADB
+                self.via.adb.event(&AdbEvent::Mouse(MouseEvent {
+                    button: None,
+                    rel_movement: Some((relx.into(), rely.into())),
+                }));
             }
-            MouseMode::Disabled => (),
+            MouseMode::Disabled => unreachable!(),
         }
     }
 
@@ -525,6 +542,19 @@ where
             }
             self.scc.set_dcd(SccCh::B, !dcd_b);
         }
+    }
+
+    /// Dispatches a key event to the keyboard
+    pub fn keyboard_event(&mut self, ke: KeyEvent) {
+        if !self.model.has_adb() {
+            self.via.keyboard.event(ke);
+        } else {
+            self.via.adb.event(&AdbEvent::Key(ke));
+        }
+    }
+
+    pub fn rtc_mut(&mut self) -> &mut Rtc {
+        &mut self.via.rtc
     }
 }
 

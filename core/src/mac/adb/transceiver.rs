@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::debuggable::{Debuggable, DebuggableProperties};
-use crate::mac::adb::AdbDeviceResponse;
+use crate::mac::adb::{AdbDeviceResponse, AdbEvent};
 
 use super::{AdbDevice, AdbDeviceInstance};
 
@@ -52,6 +52,12 @@ pub struct AdbTransceiver {
 }
 
 impl AdbTransceiver {
+    pub fn event(&mut self, event: &AdbEvent) {
+        for d in &mut self.devices {
+            d.event(event);
+        }
+    }
+
     pub fn add_device<T>(&mut self, device: T)
     where
         T: AdbDevice + Send + 'static,

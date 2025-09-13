@@ -1,5 +1,9 @@
-use crate::keymap::KeyEvent;
-use crate::types::{KeyEventReceiver, KeyEventSender};
+use std::collections::VecDeque;
+
+use crate::{
+    keymap::{KeyEvent, Keymap},
+    mac::adb::AdbEvent,
+};
 
 use super::{AdbDevice, AdbDeviceResponse, AdbReg3};
 
@@ -44,8 +48,7 @@ const SC_DELETE: u8 = 0x75;
 pub struct AdbKeyboard {
     address: u8,
 
-    #[serde(skip)]
-    key_recv: Option<KeyEventReceiver>,
+    event_queue: VecDeque<KeyEvent>,
 
     #[serde(with = "BigArray")]
     keystate: [bool; 256],
@@ -55,23 +58,26 @@ pub struct AdbKeyboard {
 
 impl AdbKeyboard {
     pub const INITIAL_ADDRESS: u8 = 2;
+    pub const KEYMAP: Keymap = Keymap::AekM0115;
 
-    pub fn new() -> (Self, KeyEventSender) {
-        let (s, key_recv) = crossbeam_channel::unbounded();
-        (
-            Self {
-                key_recv: Some(key_recv),
-                address: Self::INITIAL_ADDRESS,
-                keystate: [false; 256],
-                capslock: false,
-            },
-            s,
-        )
+    pub fn new() -> Self {
+        Self {
+            event_queue: VecDeque::new(),
+            address: Self::INITIAL_ADDRESS,
+            keystate: [false; 256],
+            capslock: false,
+        }
     }
 }
 
 #[typetag::serde]
 impl AdbDevice for AdbKeyboard {
+    fn event(&mut self, event: &AdbEvent) {
+        if let AdbEvent::Key(ke) = event {
+            self.event_queue.push_back(*ke);
+        }
+    }
+
     fn get_address(&self) -> u8 {
         self.address
     }
@@ -82,21 +88,19 @@ impl AdbDevice for AdbKeyboard {
     }
 
     fn flush(&mut self) {
-        let key_recv = self.key_recv.as_ref().unwrap();
-
-        while !key_recv.is_empty() {
-            let _ = key_recv.recv();
-        }
+        self.event_queue.clear();
     }
 
     fn talk(&mut self, reg: u8) -> AdbDeviceResponse {
-        let key_recv = self.key_recv.as_ref().unwrap();
-
         match reg {
             0 => {
                 let mut response = AdbDeviceResponse::default();
                 for _ in 0..2 {
-                    if let Ok(ke) = key_recv.try_recv() {
+                    if let Some(ke) = self
+                        .event_queue
+                        .pop_front()
+                        .and_then(|ke| ke.translate_scancode(Self::KEYMAP))
+                    {
                         match ke {
                             KeyEvent::KeyDown(sc) => {
                                 self.keystate[sc as usize] = true;
@@ -187,6 +191,6 @@ impl AdbDevice for AdbKeyboard {
     }
 
     fn get_srq(&self) -> bool {
-        !self.key_recv.as_ref().unwrap().is_empty()
+        !self.event_queue.is_empty()
     }
 }

@@ -1,7 +1,6 @@
-use crate::{
-    types::{MouseEventReceiver, MouseEventSender},
-    util::take_from_accumulator,
-};
+use std::collections::VecDeque;
+
+use crate::{mac::adb::AdbEvent, types::MouseEvent, util::take_from_accumulator};
 
 use super::{AdbDevice, AdbDeviceResponse, AdbReg3};
 
@@ -30,8 +29,7 @@ const MOUSE_FACTOR: i32 = 1;
 pub struct AdbMouse {
     address: u8,
 
-    #[serde(skip)]
-    event_recv: Option<MouseEventReceiver>,
+    event_queue: VecDeque<MouseEvent>,
 
     button: bool,
     rel_move_x: i32,
@@ -41,23 +39,25 @@ pub struct AdbMouse {
 impl AdbMouse {
     pub const INITIAL_ADDRESS: u8 = 3;
 
-    pub fn new() -> (Self, MouseEventSender) {
-        let (s, button_recv) = crossbeam_channel::unbounded();
-        (
-            Self {
-                event_recv: Some(button_recv),
-                address: Self::INITIAL_ADDRESS,
-                button: false,
-                rel_move_x: 0,
-                rel_move_y: 0,
-            },
-            s,
-        )
+    pub fn new() -> Self {
+        Self {
+            event_queue: VecDeque::new(),
+            address: Self::INITIAL_ADDRESS,
+            button: false,
+            rel_move_x: 0,
+            rel_move_y: 0,
+        }
     }
 }
 
 #[typetag::serde]
 impl AdbDevice for AdbMouse {
+    fn event(&mut self, event: &AdbEvent) {
+        if let AdbEvent::Mouse(me) = event {
+            self.event_queue.push_back(me.clone());
+        }
+    }
+
     fn get_address(&self) -> u8 {
         self.address
     }
@@ -68,24 +68,17 @@ impl AdbDevice for AdbMouse {
     }
 
     fn flush(&mut self) {
-        let event_recv = self.event_recv.as_ref().unwrap();
-
-        while !event_recv.is_empty() {
-            let _ = event_recv.recv();
-        }
+        self.event_queue.clear();
         self.rel_move_x = 0;
         self.rel_move_y = 0;
         self.button = false;
     }
 
     fn talk(&mut self, reg: u8) -> AdbDeviceResponse {
-        let event_recv = self.event_recv.as_ref().unwrap();
-
         match reg {
             0 => {
                 if self.get_srq() {
-                    while !event_recv.is_empty() {
-                        let event = event_recv.recv().unwrap();
+                    while let Some(event) = self.event_queue.pop_front() {
                         if let Some(btn) = event.button {
                             self.button = btn;
                         }
@@ -150,8 +143,6 @@ impl AdbDevice for AdbMouse {
     }
 
     fn get_srq(&self) -> bool {
-        !self.event_recv.as_ref().unwrap().is_empty()
-            || self.rel_move_x != 0
-            || self.rel_move_y != 0
+        !self.event_queue.is_empty() || self.rel_move_x != 0 || self.rel_move_y != 0
     }
 }
