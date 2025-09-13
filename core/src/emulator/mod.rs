@@ -1,4 +1,5 @@
 pub mod comm;
+mod save;
 
 use serde::{Deserialize, Serialize};
 use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof};
@@ -15,6 +16,7 @@ use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use crate::cpu_m68k::{CpuM68000, CpuM68020, CpuM68020Pmmu};
 use crate::debuggable::{Debuggable, DebuggableProperties};
+use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
 use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
 use crate::mac::macii::bus::MacIIBus;
@@ -378,10 +380,7 @@ impl Emulator {
             .unwrap_or_default();
         let f = File::open(path)?;
 
-        // TODO remove static buffer once postcard supports it, tracking issue:
-        // https://github.com/jamesmunns/postcard/issues/162
-        let mut buf = [0; 1024];
-        let mut config: EmulatorConfig = postcard::from_io((&f, &mut buf))?.0;
+        let mut config = load_state_from(f)?;
         config.after_deserialize(renderer);
 
         let model = config.model();
@@ -635,7 +634,9 @@ impl Emulator {
     fn save_state(&self, p: &Path) -> Result<()> {
         let mut f = File::create(p)?;
         let time = Instant::now();
-        postcard::to_io(&self.config, &f)?;
+
+        save_state_to(&f, &self.config)?;
+
         log::info!(
             "Wrote state to {} in {:?} ({} bytes)",
             p.file_name()
