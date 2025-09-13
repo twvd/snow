@@ -459,14 +459,19 @@ impl SnowGui {
             });
             ui.menu_button("Machine", |ui| {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
-                if ui.button("Load ROM").clicked() {
+                if ui.button("Load ROM...").clicked() {
                     self.model_dialog.open(
                         self.settings.get_last_roms(),
                         self.settings.get_last_display_roms(),
                     );
                     ui.close_menu();
                 }
-                if self.emu.is_initialized() {
+                if !self.emu.is_initialized() {
+                    if ui.button("Load state...").clicked() {
+                        self.state_dialog.pick_file();
+                        ui.close_menu();
+                    }
+                } else {
                     ui.separator();
 
                     if ui.button("Reset").clicked() {
@@ -501,6 +506,10 @@ impl SnowGui {
                     }
 
                     ui.separator();
+                    if ui.button("Load state...").clicked() {
+                        self.state_dialog.pick_file();
+                        ui.close_menu();
+                    }
                     if ui.button("Save state...").clicked() {
                         self.state_dialog.save_file();
                         ui.close_menu();
@@ -1786,7 +1795,10 @@ impl eframe::App for SnowGui {
             if self.state_dialog.mode() == egui_file_dialog::DialogMode::SaveFile {
                 self.emu.save_state(&path);
             } else {
-                todo!();
+                match self.emu.init_from_statefile(path) {
+                    Ok(p) => self.framebuffer.connect_receiver(p.frame_receiver),
+                    Err(e) => self.show_error(&format!("Failed to load state file: {:?}", e)),
+                }
             }
         }
         self.ui_active &= self.state_dialog.state() != egui_file_dialog::DialogState::Open;

@@ -67,7 +67,7 @@ pub enum Bpp {
 #[serde(bound = "")]
 pub struct Mdc12<TRenderer: Renderer> {
     #[serde(skip)]
-    renderer: Option<TRenderer>,
+    pub renderer: Option<TRenderer>,
 
     monitor: MacMonitor,
     rom: Vec<u8>,

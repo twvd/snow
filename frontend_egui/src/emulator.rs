@@ -279,6 +279,24 @@ impl EmulatorState {
             emulator.persist_pram(pram_path);
         }
 
+        self.init_finalize(emulator, frame_recv, cmd)
+    }
+
+    pub fn init_from_statefile<P: AsRef<Path>>(&mut self, path: P) -> Result<EmulatorInitResult> {
+        // Terminate running emulator (if any)
+        self.deinit();
+
+        let (emulator, frame_recv) = Emulator::load_state(path)?;
+        let cmd = emulator.create_cmd_sender();
+        self.init_finalize(emulator, frame_recv, cmd)
+    }
+
+    fn init_finalize(
+        &mut self,
+        mut emulator: Emulator,
+        frame_recv: crossbeam_channel::Receiver<DisplayBuffer>,
+        cmd: EmulatorCommandSender,
+    ) -> Result<EmulatorInitResult> {
         cmd.send(EmulatorCommand::Run)?;
 
         self.eventrecv = Some(emulator.create_event_recv());
