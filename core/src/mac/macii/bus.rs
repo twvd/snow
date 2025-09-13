@@ -6,8 +6,11 @@ use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::MouseMode;
+use crate::keymap::KeyEvent;
+use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::asc::Asc;
 use crate::mac::nubus::mdc12::Mdc12;
+use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::swim::Swim;
@@ -15,7 +18,7 @@ use crate::mac::via::Via;
 use crate::mac::{MacModel, MacMonitor};
 use crate::renderer::{AudioReceiver, Renderer};
 use crate::tickable::{Tickable, Ticks};
-use crate::types::{Byte, LatchingEvent};
+use crate::types::{Byte, LatchingEvent, MouseEvent};
 
 use anyhow::Result;
 use bit_set::BitSet;
@@ -154,6 +157,10 @@ where
             info!("Skipping memory test");
             bus.write_ram(addr, value);
         }
+
+        // Initialize ADB devices
+        bus.via1.adb.add_device(AdbMouse::new());
+        bus.via1.adb.add_device(AdbKeyboard::new());
 
         bus
     }
@@ -317,38 +324,33 @@ where
     }
 
     /// Updates the mouse position (relative coordinates) and button state
-    pub fn mouse_update_rel(&mut self, relx: i16, rely: i16, _button: Option<bool>) {
-        if self.mouse_mode != MouseMode::Absolute {
+    pub fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) {
+        if self.mouse_mode == MouseMode::Disabled {
             return;
         }
 
-        let old_x = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_X);
-        let old_y = self.read_ram::<u16>(Self::ADDR_RAWMOUSE_Y);
+        if button.is_some() {
+            self.via1.adb.event(&AdbEvent::Mouse(MouseEvent {
+                button,
+                rel_movement: None,
+            }));
+        }
 
-        if !self.mouse_ready && (old_x != 15 || old_y != 15) {
-            // Wait until the boot process has initialized the mouse position so we don't
-            // interfere with the memory test.
+        if relx == 0 && rely == 0 {
             return;
         }
-        self.mouse_ready = true;
 
-        if relx != 0 || rely != 0 {
-            let new_x = old_x.wrapping_add_signed(relx);
-            let new_y = old_y.wrapping_add_signed(rely);
-
-            // Report updated mouse coordinates to OS
-            self.write_ram(Self::ADDR_MTEMP_X, new_x);
-            self.write_ram(Self::ADDR_MTEMP_Y, new_y);
-            if self.model >= MacModel::SE {
-                // SE+ needs to see even a small difference between the current (RawMouse)
-                // and new (MTemp) position, otherwise the change is ignored.
-                self.write_ram(Self::ADDR_RAWMOUSE_X, new_x - 1);
-                self.write_ram(Self::ADDR_RAWMOUSE_Y, new_y + 1);
-            } else {
-                self.write_ram(Self::ADDR_RAWMOUSE_X, new_x);
-                self.write_ram(Self::ADDR_RAWMOUSE_Y, new_y);
+        match self.mouse_mode {
+            MouseMode::Absolute => {
+                // Handled through mouse_update_abs()
             }
-            self.write_ram(Self::ADDR_CRSRNEW, 1_u8);
+            MouseMode::RelativeHw => {
+                self.via1.adb.event(&AdbEvent::Mouse(MouseEvent {
+                    button: None,
+                    rel_movement: Some((relx.into(), rely.into())),
+                }));
+            }
+            MouseMode::Disabled => unreachable!(),
         }
     }
 
@@ -426,6 +428,15 @@ where
             d.blank()?;
         }
         Ok(())
+    }
+
+    /// Dispatches a key event to the keyboard
+    pub fn keyboard_event(&mut self, ke: KeyEvent) {
+        self.via1.adb.event(&AdbEvent::Key(ke));
+    }
+
+    pub fn rtc_mut(&mut self) -> &mut Rtc {
+        &mut self.via1.rtc
     }
 }
 

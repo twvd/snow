@@ -4,7 +4,7 @@ use anyhow::Result;
 use log::*;
 use serde::{Deserialize, Serialize};
 
-use crate::keymap::KeyEvent;
+use crate::keymap::{KeyEvent, Keymap};
 
 /// Apple M0110 keyboard, for the 512K/Plus
 #[derive(Default, Serialize, Deserialize)]
@@ -23,20 +23,25 @@ pub const SC_APPLE: u8 = 0x6F;
 pub const SC_SPACE: u8 = 0x63;
 
 impl PlusKeyboard {
+    const KEYMAP: Keymap = Keymap::AkM0110;
+
     pub fn pending_events(&self) -> bool {
         !self.event_queue.is_empty()
     }
 
-    pub fn event(&mut self, ev: KeyEvent) -> Result<()> {
+    pub fn event(&mut self, ev: KeyEvent) {
         self.event_queue.push_back(ev);
-        Ok(())
     }
 
     pub fn cmd(&mut self, cmd: u8) -> Result<u8> {
         match cmd {
             // Inquire/Instant
             0x10 | 0x14 => {
-                if let Some(ev) = self.event_queue.pop_front() {
+                if let Some(ev) = self
+                    .event_queue
+                    .pop_front()
+                    .and_then(|ke| ke.translate_scancode(Self::KEYMAP))
+                {
                     let result = match ev {
                         KeyEvent::KeyDown(sc) => sc,
                         KeyEvent::KeyUp(sc) => 0x80 | sc,
