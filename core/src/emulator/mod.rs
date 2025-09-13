@@ -168,6 +168,7 @@ dispatch! {
     }
 
     immutable_calls {
+        fn model(&self) -> MacModel { bus.model() }
         fn cpu_cycles(&self) -> Ticks { cycles }
         fn cpu_breakpoints(&self) -> &[Breakpoint] { breakpoints() }
         fn cpu_get_step_over(&self) -> Option<Address> { get_step_over() }
@@ -193,6 +194,7 @@ dispatch! {
         fn cpu_reset(&mut self) -> Result<()> { reset() }
 
         fn bus_reset(&mut self) -> Result<()> { bus.reset(true) }
+        fn after_deserialize(&mut self, renderer: ChannelRenderer) -> () { bus.after_deserialize(renderer) }
         fn bus_write(&mut self, addr: Address, val: Byte) -> crate::bus::BusResult<Byte> { bus.write(addr, val) }
         fn bus_inspect_read(&mut self, addr: Address) -> Option<Byte> { bus.inspect_read(addr) }
         fn bus_inspect_write(&mut self, addr: Address, val: Byte) -> Option<()> { bus.inspect_write(addr, val) }
@@ -256,7 +258,7 @@ impl Emulator {
         let renderer = ChannelRenderer::new(0, 0)?;
         let frame_recv = renderer.get_receiver();
 
-        let config = match model {
+        let mut config = match model {
             MacModel::Early128K
             | MacModel::Early512K
             | MacModel::Early512Ke
@@ -282,9 +284,8 @@ impl Emulator {
                     ram_size,
                     override_fdd_type,
                 );
-                let mut cpu = Box::new(CpuM68000::new(bus));
+                let cpu = Box::new(CpuM68000::new(bus));
                 assert_eq!(cpu.get_type(), model.cpu_type());
-                cpu.reset()?;
 
                 EmulatorConfig::Compact(cpu)
             }
@@ -316,9 +317,8 @@ impl Emulator {
                         mouse_mode,
                         ram_size,
                     );
-                    let mut cpu = Box::new(CpuM68020::new(bus));
+                    let cpu = Box::new(CpuM68020::new(bus));
                     assert_eq!(cpu.get_type(), model.cpu_type());
-                    cpu.reset()?;
 
                     EmulatorConfig::MacII(cpu)
                 } else {
@@ -333,14 +333,15 @@ impl Emulator {
                         mouse_mode,
                         ram_size,
                     );
-                    let mut cpu = Box::new(CpuM68020Pmmu::new(bus));
+                    let cpu = Box::new(CpuM68020Pmmu::new(bus));
                     assert_eq!(cpu.get_type(), model.cpu_type());
-                    cpu.reset()?;
 
                     EmulatorConfig::MacIIPmmu(cpu)
                 }
             }
         };
+
+        config.cpu_reset()?;
 
         let mut emu = Self {
             config,
@@ -356,6 +357,55 @@ impl Emulator {
             peripheral_debug: false,
         };
         emu.status_update()?;
+
+        Ok((emu, frame_recv))
+    }
+
+    /// Restores a saved emulator state into a new Emulator instance
+    pub fn load_state<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<(Self, crossbeam_channel::Receiver<DisplayBuffer>)> {
+        let (cmds, cmdr) = crossbeam_channel::unbounded();
+        let (statuss, statusr) = crossbeam_channel::unbounded();
+        let renderer = ChannelRenderer::new(0, 0)?;
+        let frame_recv = renderer.get_receiver();
+        let time = Instant::now();
+
+        let fstr = path
+            .as_ref()
+            .file_name()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let f = File::open(path)?;
+
+        // TODO remove static buffer once postcard supports it, tracking issue:
+        // https://github.com/jamesmunns/postcard/issues/162
+        let mut buf = [0; 1024];
+        let mut config: EmulatorConfig = postcard::from_io((&f, &mut buf))?.0;
+        config.after_deserialize(renderer);
+
+        let model = config.model();
+
+        let mut emu = Self {
+            config,
+            command_recv: cmdr,
+            command_sender: cmds,
+            event_sender: statuss,
+            event_recv: statusr,
+            run: false,
+            last_update: Instant::now(),
+            model,
+            record_input: None,
+            replay_input: VecDeque::default(),
+            peripheral_debug: false,
+        };
+        emu.status_update()?;
+        log::info!(
+            "Restored save state {} ({}) in {:?}",
+            fstr,
+            model,
+            time.elapsed()
+        );
 
         Ok((emu, frame_recv))
     }

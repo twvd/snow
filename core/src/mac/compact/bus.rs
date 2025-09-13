@@ -210,6 +210,15 @@ where
         bus
     }
 
+    /// Reinstalls things that can't be serialized upon deserialization
+    pub fn after_deserialize(&mut self, renderer: TRenderer) {
+        self.video.renderer = Some(renderer);
+    }
+
+    pub fn model(&self) -> MacModel {
+        self.model
+    }
+
     pub(crate) fn get_audio_channel(&self) -> AudioReceiver {
         self.audio.receiver.as_ref().unwrap().clone()
     }
