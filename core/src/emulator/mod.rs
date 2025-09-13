@@ -1,11 +1,15 @@
 pub mod comm;
+
+#[cfg(feature = "savestates")]
 mod save;
 
 use serde::{Deserialize, Serialize};
 use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof};
 use snow_floppy::Floppy;
 use std::collections::VecDeque;
+#[cfg(feature = "savestates")]
 use std::fs::File;
+#[cfg(feature = "savestates")]
 use std::io::Seek;
 use std::path::Path;
 use std::thread;
@@ -16,6 +20,7 @@ use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use crate::cpu_m68k::{CpuM68000, CpuM68020, CpuM68020Pmmu};
 use crate::debuggable::{Debuggable, DebuggableProperties};
+#[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
 use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
@@ -364,6 +369,7 @@ impl Emulator {
     }
 
     /// Restores a saved emulator state into a new Emulator instance
+    #[cfg(feature = "savestates")]
     pub fn load_state<P: AsRef<Path>>(
         path: P,
     ) -> Result<(Self, crossbeam_channel::Receiver<DisplayBuffer>)> {
@@ -631,6 +637,7 @@ impl Emulator {
         info!("SCSI ID #{}: CD-ROM drive attached", id);
     }
 
+    #[cfg(feature = "savestates")]
     fn save_state(&self, p: &Path) -> Result<()> {
         let mut f = File::create(p)?;
         let time = Instant::now();
@@ -923,6 +930,7 @@ impl Tickable for Emulator {
                     EmulatorCommand::SccReceiveData(ch, data) => {
                         self.config.scc_mut().push_rx(ch, &data);
                     }
+                    #[cfg(feature = "savestates")]
                     EmulatorCommand::SaveState(path) => {
                         if let Err(e) = self.save_state(&path) {
                             self.user_error(&format!("Failed to save state: {:?}", e));
