@@ -68,6 +68,7 @@ pub enum EmulatorCommand {
     SetPeripheralDebug(bool),
     SccReceiveData(SccCh, Vec<u8>),
     SetSystrapHistory(bool),
+    #[cfg(feature = "savestates")]
     SaveState(PathBuf),
 }
 
