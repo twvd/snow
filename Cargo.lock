@@ -573,7 +573,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d4bca59c20d6f40c2cc0802afbe1e788b89096f61bdf7aeea6bf00f10c2909b"
 dependencies = [
  "array-init",
- "binrw_derive",
+ "binrw_derive 0.14.1",
+ "bytemuck",
+]
+
+[[package]]
+name = "binrw"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81419ff39e6ed10a92a7f125290859776ced35d9a08a665ae40b23e7ca702f30"
+dependencies = [
+ "array-init",
+ "binrw_derive 0.15.0",
  "bytemuck",
 ]
 
@@ -584,10 +595,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8ba42866ce5bced2645bfa15e97eef2c62d2bdb530510538de8dd3d04efff3c"
 dependencies = [
  "either",
- "owo-colors",
+ "owo-colors 3.5.0",
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "binrw_derive"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "376404e55ec40d0d6f8b4b7df3f87b87954bd987f0cf9a7207ea3b6ea5c9add4"
+dependencies = [
+ "either",
+ "owo-colors 4.2.2",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.100",
 ]
 
 [[package]]
@@ -1666,7 +1690,7 @@ name = "fluxfox"
 version = "0.2.0"
 source = "git+https://github.com/dbalsom/fluxfox.git?rev=6498fe59fd5a5cc4c1f2b7ee5ab795515c52febd#6498fe59fd5a5cc4c1f2b7ee5ab795515c52febd"
 dependencies = [
- "binrw",
+ "binrw 0.14.1",
  "bit-vec 0.8.0",
  "bitflags 2.9.3",
  "bytemuck",
@@ -3299,6 +3323,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1b04fb49957986fdce4d6ee7a65027d55d4b6d2265e5848bbb507b58ccfdb6f"
 
 [[package]]
+name = "owo-colors"
+version = "4.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "48dd4f4a2c8405440fd0462561f0e5806bd0f77e86f51c761481bdd4018b545e"
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4041,6 +4071,7 @@ dependencies = [
  "anyhow",
  "arpfloat",
  "arrayvec",
+ "binrw 0.15.0",
  "bit-set",
  "built",
  "chrono",
@@ -4068,6 +4099,7 @@ dependencies = [
  "strum 0.26.3",
  "thiserror 1.0.69",
  "typetag",
+ "zstd",
 ]
 
 [[package]]
@@ -4075,7 +4107,7 @@ name = "snow_floppy"
 version = "1.0.0"
 dependencies = [
  "anyhow",
- "binrw",
+ "binrw 0.14.1",
  "built",
  "crc",
  "fluxfox",
@@ -5717,9 +5749,9 @@ dependencies = [
 
 [[package]]
 name = "zstd"
-version = "0.13.2"
+version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcf2b778a664581e31e389454a7072dab1647606d44f7feea22cd5abb9c9f3f9"
+checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
 dependencies = [
  "zstd-safe",
 ]
