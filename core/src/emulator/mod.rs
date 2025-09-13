@@ -15,8 +15,7 @@ use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use crate::cpu_m68k::{CpuM68000, CpuM68020, CpuM68020Pmmu};
 use crate::debuggable::{Debuggable, DebuggableProperties};
-use crate::keymap::{KeyEvent, Keymap};
-use crate::mac::adb::{AdbKeyboard, AdbMouse};
+use crate::keymap::KeyEvent;
 use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
 use crate::mac::macii::bus::MacIIBus;
 use crate::mac::scc::Scc;
@@ -27,7 +26,7 @@ use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::AudioReceiver;
 use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
-use crate::types::{Byte, KeyEventSender, MouseEvent, MouseEventSender};
+use crate::types::Byte;
 
 use anyhow::{bail, Context, Result};
 use bit_set::BitSet;
@@ -200,27 +199,11 @@ dispatch! {
 
         fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) -> () { bus.mouse_update_rel(relx, rely, button) }
         fn mouse_update_abs(&mut self, x: u16, y: u16) -> () { bus.mouse_update_abs(x, y) }
+        fn keyboard_event(&mut self, ke: KeyEvent) -> () { bus.keyboard_event(ke) }
         fn progkey(&mut self) -> () { bus.progkey() }
         fn video_blank(&mut self) -> Result<()> { bus.video_blank() }
-    }
-}
 
-// Special cases that differ between variants
-// TODO clean these up
-impl EmulatorConfig {
-    pub fn keyboard_event(&mut self, ev: KeyEvent) -> Result<()> {
-        match self {
-            Self::Compact(cpu) => cpu.bus.via.keyboard.event(ev),
-            Self::MacII(_) | Self::MacIIPmmu(_) => unreachable!(), // MacII uses ADB, not direct keyboard events
-        }
-    }
-
-    pub fn rtc_mut(&mut self) -> &mut Rtc {
-        match self {
-            Self::Compact(cpu) => &mut cpu.bus.via.rtc,
-            Self::MacII(cpu) => &mut cpu.bus.via1.rtc,
-            Self::MacIIPmmu(cpu) => &mut cpu.bus.via1.rtc,
-        }
+        fn rtc_mut(&mut self) -> &mut Rtc { bus.rtc_mut() }
     }
 }
 
@@ -233,8 +216,6 @@ pub struct Emulator {
     event_recv: EmulatorEventReceiver,
     run: bool,
     last_update: Instant,
-    adbmouse_sender: Option<MouseEventSender>,
-    adbkeyboard_sender: Option<KeyEventSender>,
     model: MacModel,
     record_input: Option<InputRecording>,
     replay_input: VecDeque<(Ticks, EmulatorCommand)>,
@@ -275,7 +256,7 @@ impl Emulator {
         let renderer = ChannelRenderer::new(0, 0)?;
         let frame_recv = renderer.get_receiver();
 
-        let (config, adbkeyboard_sender, adbmouse_sender) = match model {
+        let config = match model {
             MacModel::Early128K
             | MacModel::Early512K
             | MacModel::Early512Ke
@@ -303,28 +284,9 @@ impl Emulator {
                 );
                 let mut cpu = Box::new(CpuM68000::new(bus));
                 assert_eq!(cpu.get_type(), model.cpu_type());
-
-                // Initialize input devices
-                let adbmouse_sender = if model.has_adb() {
-                    let (mouse, mouse_sender) = AdbMouse::new();
-                    cpu.bus.via.adb.add_device(mouse);
-                    Some(mouse_sender)
-                } else {
-                    None
-                };
-                let adbkeyboard_sender = if model.has_adb() {
-                    let (keyboard, sender) = AdbKeyboard::new();
-                    cpu.bus.via.adb.add_device(keyboard);
-                    Some(sender)
-                } else {
-                    None
-                };
                 cpu.reset()?;
-                (
-                    EmulatorConfig::Compact(cpu),
-                    adbkeyboard_sender,
-                    adbmouse_sender,
-                )
+
+                EmulatorConfig::Compact(cpu)
             }
             MacModel::MacII | MacModel::MacIIFDHD => {
                 assert!(override_fdd_type.is_none());
@@ -356,28 +318,9 @@ impl Emulator {
                     );
                     let mut cpu = Box::new(CpuM68020::new(bus));
                     assert_eq!(cpu.get_type(), model.cpu_type());
-
-                    // Initialize input devices
-                    let adbmouse_sender = if model.has_adb() {
-                        let (mouse, mouse_sender) = AdbMouse::new();
-                        cpu.bus.via1.adb.add_device(mouse);
-                        Some(mouse_sender)
-                    } else {
-                        None
-                    };
-                    let adbkeyboard_sender = if model.has_adb() {
-                        let (keyboard, sender) = AdbKeyboard::new();
-                        cpu.bus.via1.adb.add_device(keyboard);
-                        Some(sender)
-                    } else {
-                        None
-                    };
                     cpu.reset()?;
-                    (
-                        EmulatorConfig::MacII(cpu),
-                        adbkeyboard_sender,
-                        adbmouse_sender,
-                    )
+
+                    EmulatorConfig::MacII(cpu)
                 } else {
                     // Initialize bus and CPU
                     let bus = MacIIBus::new(
@@ -392,28 +335,9 @@ impl Emulator {
                     );
                     let mut cpu = Box::new(CpuM68020Pmmu::new(bus));
                     assert_eq!(cpu.get_type(), model.cpu_type());
-
-                    // Initialize input devices
-                    let adbmouse_sender = if model.has_adb() {
-                        let (mouse, mouse_sender) = AdbMouse::new();
-                        cpu.bus.via1.adb.add_device(mouse);
-                        Some(mouse_sender)
-                    } else {
-                        None
-                    };
-                    let adbkeyboard_sender = if model.has_adb() {
-                        let (keyboard, sender) = AdbKeyboard::new();
-                        cpu.bus.via1.adb.add_device(keyboard);
-                        Some(sender)
-                    } else {
-                        None
-                    };
                     cpu.reset()?;
-                    (
-                        EmulatorConfig::MacIIPmmu(cpu),
-                        adbkeyboard_sender,
-                        adbmouse_sender,
-                    )
+
+                    EmulatorConfig::MacIIPmmu(cpu)
                 }
             }
         };
@@ -426,8 +350,6 @@ impl Emulator {
             event_recv: statusr,
             run: false,
             last_update: Instant::now(),
-            adbmouse_sender,
-            adbkeyboard_sender,
             model,
             record_input: None,
             replay_input: VecDeque::default(),
@@ -688,12 +610,6 @@ impl Tickable for Emulator {
                             r.push((cycles, cmd));
                         }
 
-                        if let Some(s) = self.adbmouse_sender.as_ref() {
-                            s.send(MouseEvent {
-                                button: btn,
-                                rel_movement: Some((relx.into(), rely.into())),
-                            })?;
-                        }
                         self.config.mouse_update_rel(relx, rely, btn);
                     }
                     EmulatorCommand::MouseUpdateAbsolute { x, y } => {
@@ -896,12 +812,8 @@ impl Tickable for Emulator {
 
                         if !self.run {
                             info!("Ignoring keyboard input while stopped");
-                        } else if let Some(sender) = self.adbkeyboard_sender.as_ref() {
-                            if let Some(e) = e.translate_scancode(Keymap::AekM0115) {
-                                sender.send(e)?;
-                            }
-                        } else if let Some(e) = e.translate_scancode(Keymap::AkM0110) {
-                            self.config.keyboard_event(e)?;
+                        } else {
+                            self.config.keyboard_event(e);
                         }
                     }
                     EmulatorCommand::CpuSetPC(val) => self.config.cpu_set_pc(val)?,
