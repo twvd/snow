@@ -4042,6 +4042,7 @@ dependencies = [
  "arpfloat",
  "arrayvec",
  "bit-set",
+ "built",
  "chrono",
  "crossbeam",
  "crossbeam-channel",
@@ -4092,7 +4093,6 @@ name = "snow_frontend_egui"
 version = "1.0.0"
 dependencies = [
  "anyhow",
- "built",
  "chrono",
  "clap",
  "crossbeam-channel",

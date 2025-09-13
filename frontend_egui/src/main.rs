@@ -21,10 +21,6 @@ use log::LevelFilter;
 
 const SNOW_ICON: &[u8] = include_bytes!("../../docs/images/snow_icon.png");
 
-pub mod built_info {
-    include!(concat!(env!("OUT_DIR"), "/built.rs"));
-}
-
 #[derive(Parser)]
 #[command(
     about = "Snow - Classic Macintosh emulator",
@@ -43,23 +39,6 @@ struct Args {
     fullscreen: bool,
 }
 
-pub fn version_string() -> String {
-    if built_info::GIT_COMMIT_HASH_SHORT.is_some() {
-        format!(
-            "{}-{}{}",
-            built_info::PKG_VERSION,
-            built_info::GIT_COMMIT_HASH_SHORT.expect("Git version unavailable"),
-            if built_info::GIT_DIRTY.expect("Git version unavailable") {
-                "-dirty"
-            } else {
-                ""
-            }
-        )
-    } else {
-        built_info::PKG_VERSION.to_string()
-    }
-}
-
 fn main() -> eframe::Result {
     let args = Args::parse();
 
@@ -73,9 +52,9 @@ fn main() -> eframe::Result {
 
     log::info!(
         "Snow v{} ({} {})",
-        version_string(),
-        built_info::TARGET,
-        built_info::PROFILE,
+        snow_core::build_version(),
+        snow_core::built_info::TARGET,
+        snow_core::built_info::PROFILE,
     );
 
     // The egui frontend uses a patched version of egui-winit that allows hooking

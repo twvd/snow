@@ -72,11 +72,14 @@ impl AboutDialog {
                     );
                     ui.label(format!(
                         "Version {} ({} {})",
-                        crate::version_string(),
-                        crate::built_info::CFG_TARGET_ARCH,
-                        crate::built_info::PROFILE
+                        snow_core::build_version(),
+                        snow_core::built_info::CFG_TARGET_ARCH,
+                        snow_core::built_info::PROFILE
                     ));
-                    ui.label(format!("Built on {}", crate::built_info::BUILT_TIME_UTC));
+                    ui.label(format!(
+                        "Built on {}",
+                        snow_core::built_info::BUILT_TIME_UTC
+                    ));
 
                     ui.add_space(16.0);
 
