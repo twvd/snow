@@ -1,5 +1,6 @@
 use crate::dialogs::about::AboutDialog;
 use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
+use crate::emulator::EmulatorState;
 use crate::keymap::map_winit_keycode;
 use crate::settings::AppSettings;
 use crate::uniform::{UniformAction, UNIFORM_ACTION};
@@ -9,11 +10,11 @@ use crate::widgets::framebuffer::{FramebufferWidget, ScalingAlgorithm};
 use crate::widgets::instruction_history::InstructionHistoryWidget;
 use crate::widgets::memory::MemoryViewerWidget;
 use crate::widgets::peripherals::PeripheralsWidget;
+use crate::widgets::registers::RegistersWidget;
 use crate::widgets::systrap_history::SystrapHistoryWidget;
 use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::Workspace;
-use crate::{emulator::EmulatorState, version_string, widgets::registers::RegistersWidget};
 use snow_core::bus::Address;
 use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::MacModel;
@@ -1168,7 +1169,7 @@ impl SnowGui {
             if let Some(m) = self.emu.get_model() {
                 format!(
                     "Snow v{} - {} - {} ({})",
-                    version_string(),
+                    snow_core::build_version(),
                     wsname,
                     m,
                     if self.emu.is_running() {
@@ -1178,7 +1179,7 @@ impl SnowGui {
                     }
                 )
             } else {
-                format!("Snow v{} - {}", version_string(), wsname)
+                format!("Snow v{} - {}", snow_core::build_version(), wsname)
             },
         ));
     }

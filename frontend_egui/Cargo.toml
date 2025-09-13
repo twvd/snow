@@ -2,10 +2,6 @@
 name = "snow_frontend_egui"
 version = "1.0.0"
 edition = "2021"
-build = "build.rs"
-
-[build-dependencies]
-built = { version = "0.8.0", features = ["chrono", "git2"] }
 
 [features]
 default = []
@@ -13,7 +9,6 @@ sdl2-bundled = ["sdl2/bundled"]
 
 [dependencies]
 anyhow = "1.0.95"
-built = { version = "0.8.0", features = ["chrono", "git2"] }
 chrono = "0.4.40"
 clap = { version = "4.5.23", features = ["derive"] }
 crossbeam-channel = "0.5.15"

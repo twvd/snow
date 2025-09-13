@@ -2,6 +2,10 @@
 name = "snow_core"
 version = "1.0.0"
 edition = "2021"
+build = "build.rs"
+
+[build-dependencies]
+built = { version = "0.8.0", features = ["chrono", "git2"] }
 
 [features]
 mmap = ["dep:fs2", "dep:memmap2"]
@@ -12,6 +16,7 @@ workspace = true
 [dependencies]
 anyhow = { version = "1.0.86", features = ["backtrace"] }
 arrayvec = { version = "0.7.4", features = ["serde"] }
+built = { version = "0.8.0", features = ["chrono", "git2"] }
 chrono = "0.4.38"
 crossbeam = "0.8.4"
 crossbeam-channel = "0.5.15"
