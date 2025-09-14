@@ -24,6 +24,8 @@ pub enum ScsiTargetEvent {
 /// An abstraction of a generic SCSI target
 #[typetag::serde(tag = "type")]
 pub(crate) trait ScsiTarget: Send {
+    fn after_deserialize(&mut self, imgfn: &Path) -> Result<()>;
+
     fn set_cc(&mut self, code: u8, asc: u16);
     fn set_blocksize(&mut self, blocksize: usize) -> bool;
     fn take_event(&mut self) -> Option<ScsiTargetEvent>;
@@ -46,6 +48,7 @@ pub(crate) trait ScsiTarget: Send {
     fn write(&mut self, block_offset: usize, data: &[u8]);
     fn image_fn(&self) -> Option<&Path>;
     fn load_media(&mut self, path: &Path) -> Result<()>;
+    fn media(&self) -> Option<&[u8]>;
 
     /// Device-specific commands
     fn specific_cmd(&mut self, cmd: &[u8], outdata: Option<&[u8]>) -> Result<ScsiCmdResult>;
