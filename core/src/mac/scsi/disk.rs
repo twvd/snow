@@ -16,15 +16,16 @@ use crate::mac::scsi::STATUS_GOOD;
 
 pub const DISK_BLOCKSIZE: usize = 512;
 
-fn todo_fixme() -> MmapMut {
+#[cfg(feature = "mmap")]
+fn empty_mmap() -> MmapMut {
     MmapMut::map_anon(0).unwrap()
 }
 
 #[derive(Serialize, Deserialize)]
-pub(super) struct ScsiTargetDisk {
+pub(crate) struct ScsiTargetDisk {
     /// Disk contents
     #[cfg(feature = "mmap")]
-    #[serde(skip, default = "todo_fixme")] // TODO serde
+    #[serde(skip, default = "empty_mmap")]
     pub(super) disk: MmapMut,
 
     #[cfg(not(feature = "mmap"))]
@@ -48,44 +49,7 @@ impl ScsiTargetDisk {
     /// at the discretion of the operating system.
     #[cfg(feature = "mmap")]
     pub(super) fn load_disk(filename: &Path) -> Result<Self> {
-        use fs2::FileExt;
-        use std::{
-            fs::OpenOptions,
-            io::{Seek, SeekFrom},
-        };
-
-        if !Path::new(filename).exists() {
-            bail!("File not found: {}", filename.display());
-        }
-
-        let mut f = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(filename)
-            .with_context(|| format!("Failed to open {}", filename.display()))?;
-
-        let file_size = f.seek(SeekFrom::End(0))? as usize;
-        f.seek(SeekFrom::Start(0))?;
-
-        if file_size % DISK_BLOCKSIZE != 0 {
-            bail!(
-                "Cannot load disk image {}: not multiple of {}",
-                filename.display(),
-                DISK_BLOCKSIZE
-            );
-        }
-
-        f.try_lock_exclusive()
-            .with_context(|| format!("Failed to lock {}", filename.display()))?;
-
-        let mmapped = unsafe {
-            use memmap2::MmapOptions;
-
-            MmapOptions::new()
-                .len(file_size)
-                .map_mut(&f)
-                .with_context(|| format!("Failed to mmap file {}", filename.display()))?
-        };
+        let mmapped = Self::mmap_file(filename)?;
 
         Ok(Self {
             disk: mmapped,
@@ -121,12 +85,53 @@ impl ScsiTargetDisk {
             cc_asc: 0,
         })
     }
+
+    #[cfg(feature = "mmap")]
+    fn mmap_file(filename: &Path) -> Result<MmapMut> {
+        use fs2::FileExt;
+        use std::{
+            fs::OpenOptions,
+            io::{Seek, SeekFrom},
+        };
+        if !Path::new(filename).exists() {
+            bail!("File not found: {}", filename.display());
+        }
+        let mut f = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(filename)
+            .with_context(|| format!("Failed to open {}", filename.display()))?;
+        let file_size = f.seek(SeekFrom::End(0))? as usize;
+        f.seek(SeekFrom::Start(0))?;
+        if file_size % DISK_BLOCKSIZE != 0 {
+            bail!(
+                "Cannot load disk image {}: not multiple of {}",
+                filename.display(),
+                DISK_BLOCKSIZE
+            );
+        }
+        f.try_lock_exclusive()
+            .with_context(|| format!("Failed to lock {}", filename.display()))?;
+        let mmapped = unsafe {
+            use memmap2::MmapOptions;
+
+            MmapOptions::new()
+                .len(file_size)
+                .map_mut(&f)
+                .with_context(|| format!("Failed to mmap file {}", filename.display()))?
+        };
+        Ok(mmapped)
+    }
 }
 
 #[typetag::serde]
 impl ScsiTarget for ScsiTargetDisk {
     fn load_media(&mut self, _path: &Path) -> Result<()> {
         bail!("load_media on non-removable disk");
+    }
+
+    fn media(&self) -> Option<&[u8]> {
+        Some(&self.disk)
     }
 
     fn take_event(&mut self) -> Option<super::target::ScsiTargetEvent> {
@@ -242,5 +247,11 @@ impl ScsiTarget for ScsiTargetDisk {
 
     fn set_blocksize(&mut self, _blocksize: usize) -> bool {
         false
+    }
+
+    fn after_deserialize(&mut self, imgfn: &Path) -> Result<()> {
+        self.disk = Self::mmap_file(imgfn)?;
+        self.path = imgfn.to_path_buf();
+        Ok(())
     }
 }

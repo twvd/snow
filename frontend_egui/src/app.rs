@@ -343,7 +343,14 @@ impl SnowGui {
             settings: AppSettings::load(),
             emu: EmulatorState::default(),
 
-            temp_files: vec![],
+            // Always clean up images created by restoring save states
+            temp_files: Vec::from_iter(
+                (0..snow_core::mac::scsi::controller::ScsiController::MAX_TARGETS).map(|i| {
+                    let mut pb = env::temp_dir();
+                    pb.push(format!("snow_state_{}.img", i));
+                    pb
+                }),
+            ),
         };
 
         if let Some(filename) = initial_file {
@@ -2094,6 +2101,10 @@ impl eframe::App for SnowGui {
 impl Drop for SnowGui {
     fn drop(&mut self) {
         for f in &self.temp_files {
+            if !f.exists() {
+                continue;
+            }
+
             if let Err(e) = std::fs::remove_file(f) {
                 log::error!("Cannot delete temp file {}: {:?}", f.display(), e);
             } else {

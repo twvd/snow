@@ -176,7 +176,7 @@ pub struct ScsiController {
 }
 
 impl ScsiController {
-    const MAX_TARGETS: usize = 7;
+    pub const MAX_TARGETS: usize = 7;
 
     pub fn get_irq(&self) -> bool {
         self.reg_bsr.irq()

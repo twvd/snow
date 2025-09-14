@@ -226,6 +226,10 @@ impl ScsiTarget for ScsiTargetCdrom {
         Ok(())
     }
 
+    fn media(&self) -> Option<&[u8]> {
+        self.disk.as_deref()
+    }
+
     fn take_event(&mut self) -> Option<ScsiTargetEvent> {
         if self.event_eject.get_clear() {
             Some(ScsiTargetEvent::MediaEjected)
@@ -396,5 +400,10 @@ impl ScsiTarget for ScsiTargetCdrom {
             return true;
         }
         false
+    }
+
+    fn after_deserialize(&mut self, imgfn: &Path) -> Result<()> {
+        self.load_media(imgfn)?;
+        Ok(())
     }
 }

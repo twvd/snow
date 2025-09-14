@@ -370,8 +370,9 @@ impl Emulator {
 
     /// Restores a saved emulator state into a new Emulator instance
     #[cfg(feature = "savestates")]
-    pub fn load_state<P: AsRef<Path>>(
+    pub fn load_state<P: AsRef<Path>, PT: AsRef<Path>>(
         path: P,
+        tmpdir: PT,
     ) -> Result<(Self, crossbeam_channel::Receiver<DisplayBuffer>)> {
         let (cmds, cmdr) = crossbeam_channel::unbounded();
         let (statuss, statusr) = crossbeam_channel::unbounded();
@@ -386,7 +387,7 @@ impl Emulator {
             .unwrap_or_default();
         let f = File::open(path)?;
 
-        let mut config = load_state_from(f)?;
+        let mut config = load_state_from(f, tmpdir)?;
         config.after_deserialize(renderer);
 
         let model = config.model();

@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
-use std::{fs, thread};
+use std::{env, fs, thread};
 
 use anyhow::{anyhow, Result};
 use crossbeam_channel::Receiver;
@@ -286,7 +286,7 @@ impl EmulatorState {
         // Terminate running emulator (if any)
         self.deinit();
 
-        let (emulator, frame_recv) = Emulator::load_state(path)?;
+        let (emulator, frame_recv) = Emulator::load_state(path, env::temp_dir())?;
         let cmd = emulator.create_cmd_sender();
         self.init_finalize(emulator, frame_recv, cmd)
     }
