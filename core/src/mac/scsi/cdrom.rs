@@ -402,6 +402,7 @@ impl ScsiTarget for ScsiTargetCdrom {
         false
     }
 
+    #[cfg(feature = "savestates")]
     fn after_deserialize(&mut self, imgfn: &Path) -> Result<()> {
         self.load_media(imgfn)?;
         Ok(())

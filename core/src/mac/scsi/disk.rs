@@ -249,6 +249,7 @@ impl ScsiTarget for ScsiTargetDisk {
         false
     }
 
+    #[cfg(feature = "savestates")]
     fn after_deserialize(&mut self, imgfn: &Path) -> Result<()> {
         self.disk = Self::mmap_file(imgfn)?;
         self.path = imgfn.to_path_buf();
