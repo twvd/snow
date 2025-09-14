@@ -347,7 +347,7 @@ impl SnowGui {
             temp_files: Vec::from_iter(
                 (0..snow_core::mac::scsi::controller::ScsiController::MAX_TARGETS).map(|i| {
                     let mut pb = env::temp_dir();
-                    pb.push(format!("snow_state_{}.img", i));
+                    pb.push(format!("snow_state_{}_{}.img", std::process::id(), i));
                     pb
                 }),
             ),

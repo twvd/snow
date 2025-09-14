@@ -121,7 +121,7 @@ pub fn load_state_from<R: std::io::Read + std::io::Seek, P: AsRef<std::path::Pat
         // Write the image out to a temporary file we can then continue
         // working out of. The file is lost on shutdown.
         let mut filename = tmpdir.as_ref().to_path_buf();
-        filename.push(format!("snow_state_{}.img", id));
+        filename.push(format!("snow_state_{}_{}.img", std::process::id(), id));
         {
             let mut outfile = File::create(&filename)?;
             let mut img_reader = decompressor.take(sz);
@@ -141,6 +141,10 @@ pub fn load_state_from<R: std::io::Read + std::io::Seek, P: AsRef<std::path::Pat
         if eofcbuf != END_OF_CHUNK {
             bail!("Expected end of chunk but did not find it");
         }
+    }
+
+    if decompressor.bytes().next().is_some() {
+        bail!("Expected EOF but found more data");
     }
 
     Ok(config)

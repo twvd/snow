@@ -24,6 +24,7 @@ pub enum ScsiTargetEvent {
 /// An abstraction of a generic SCSI target
 #[typetag::serde(tag = "type")]
 pub(crate) trait ScsiTarget: Send {
+    #[cfg(feature = "savestates")]
     fn after_deserialize(&mut self, imgfn: &Path) -> Result<()>;
 
     fn set_cc(&mut self, code: u8, asc: u16);
