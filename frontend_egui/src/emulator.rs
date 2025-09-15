@@ -907,12 +907,12 @@ impl EmulatorState {
         self.mouse_mode == MouseMode::RelativeHw
     }
 
-    pub fn save_state(&self, p: &Path) {
+    pub fn save_state(&self, p: &Path, screenshot: Option<Vec<u8>>) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
         sender
-            .send(EmulatorCommand::SaveState(p.to_path_buf()))
+            .send(EmulatorCommand::SaveState(p.to_path_buf(), screenshot))
             .unwrap();
     }
 }

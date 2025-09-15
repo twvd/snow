@@ -1,7 +1,7 @@
 pub mod comm;
 
 #[cfg(feature = "savestates")]
-mod save;
+pub mod save;
 
 use serde::{Deserialize, Serialize};
 use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof};
@@ -639,11 +639,11 @@ impl Emulator {
     }
 
     #[cfg(feature = "savestates")]
-    fn save_state(&self, p: &Path) -> Result<()> {
+    fn save_state(&self, p: &Path, screenshot: Option<Vec<u8>>) -> Result<()> {
         let mut f = File::create(p)?;
         let time = Instant::now();
 
-        save_state_to(&f, &self.config)?;
+        save_state_to(&f, &self.config, screenshot)?;
 
         log::info!(
             "Wrote state to {} in {:?} ({} bytes)",
@@ -932,8 +932,8 @@ impl Tickable for Emulator {
                         self.config.scc_mut().push_rx(ch, &data);
                     }
                     #[cfg(feature = "savestates")]
-                    EmulatorCommand::SaveState(path) => {
-                        if let Err(e) = self.save_state(&path) {
+                    EmulatorCommand::SaveState(path, screenshot) => {
+                        if let Err(e) = self.save_state(&path, screenshot) {
                             self.user_error(&format!("Failed to save state: {:?}", e));
                         }
                     }

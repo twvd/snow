@@ -16,13 +16,14 @@ use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::Workspace;
 use snow_core::bus::Address;
+use snow_core::emulator::save::{load_state_header, SaveHeader};
 use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::MacModel;
 use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
 
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
 use crate::emulator::{EmulatorInitArgs, ScsiTargets};
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use eframe::egui;
 use egui_file_dialog::{DialogMode, DirectoryEntry, FileDialog};
 use egui_toast::{Toast, ToastKind, ToastOptions};
@@ -160,6 +161,9 @@ pub struct SnowGui {
     model_dialog: ModelSelectionDialog,
     about_dialog: AboutDialog,
     state_dialog: FileDialog,
+    state_dialog_last: Option<DirectoryEntry>,
+    state_dialog_last_header: Option<SaveHeader>,
+    state_dialog_screenshot: egui::TextureHandle,
 
     error_dialog_open: bool,
     error_string: String,
@@ -329,6 +333,13 @@ impl SnowGui {
                 .default_save_extension("Snow state file")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir()),
+            state_dialog_last: None,
+            state_dialog_last_header: None,
+            state_dialog_screenshot: cc.egui_ctx.load_texture(
+                "state_screenshot",
+                egui::ColorImage::new([0, 0], egui::Color32::BLACK),
+                egui::TextureOptions::LINEAR,
+            ),
 
             error_dialog_open: false,
             error_string: String::new(),
@@ -1325,6 +1336,30 @@ impl SnowGui {
         Ok(())
     }
 
+    fn state_dialog_side_update(
+        &mut self,
+        ctx: &egui::Context,
+        d: Option<DirectoryEntry>,
+    ) -> Result<()> {
+        self.state_dialog_last = d.clone();
+        self.state_dialog_last_header = None;
+
+        let Some(d) = d else { return Ok(()) };
+        if !d.is_file() {
+            return Ok(());
+        }
+        let header = load_state_header(&mut File::open(d.as_path())?)?;
+        self.state_dialog_screenshot = crate::util::image::load_png_from_bytes_as_texture(
+            ctx,
+            &header.screenshot,
+            "state_screenshot",
+        )
+        .map_err(|e| anyhow!("State image load failed: {:?}", e))?;
+        self.state_dialog_last_header = Some(header);
+
+        Ok(())
+    }
+
     fn screenshot(&mut self) {
         let Some(mut p) = dirs::desktop_dir().or_else(|| std::env::current_dir().ok()) else {
             self.show_error(&"Failed finding screenshot directory");
@@ -1336,7 +1371,7 @@ impl SnowGui {
             chrono::Local::now().format("%Y-%m-%d %H-%M-%S")
         );
         p.push(&filename);
-        if let Err(e) = self.framebuffer.write_screenshot(&p) {
+        if let Err(e) = self.framebuffer.write_screenshot_file(p) {
             self.show_error(&format!("Failed to write screenshot: {}", e));
         }
         self.toasts.add(
@@ -1798,10 +1833,46 @@ impl eframe::App for SnowGui {
         self.ui_active &= self.record_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // State file picker dialog
-        self.state_dialog.update(ctx);
+        let mut last = None;
+        self.state_dialog
+            .update_with_right_panel_ui(ctx, &mut |ui, dia| {
+                if dia.selected_entry().is_some() {
+                    last = dia.selected_entry().cloned();
+                    if let Some(header) = &self.state_dialog_last_header {
+                        egui::Grid::new("state_dialog_metadata").show(ui, |ui| {
+                            ui.label(egui::RichText::new("Model").strong());
+                            ui.label(header.model.to_string());
+                            ui.end_row();
+                            ui.label(egui::RichText::new("Date/time").strong());
+                            ui.label(
+                                header
+                                    .timestamp
+                                    .to_string()
+                                    .parse::<chrono::DateTime<chrono::FixedOffset>>()
+                                    .map(|d| d.to_rfc2822())
+                                    .unwrap_or_default(),
+                            );
+                            ui.end_row();
+                            ui.label(egui::RichText::new("Snow version").strong());
+                            ui.label(header.snow_version.to_string());
+                            ui.end_row();
+                        });
+                        ui.add(
+                            egui::Image::from_texture(&self.state_dialog_screenshot)
+                                .max_width(250.0),
+                        );
+                    }
+                }
+            });
+        if last.clone().map(|d| d.to_path_buf())
+            != self.state_dialog_last.clone().map(|d| d.to_path_buf())
+        {
+            let _ = self.state_dialog_side_update(ctx, last);
+        }
         if let Some(path) = self.state_dialog.take_picked() {
             if self.state_dialog.mode() == egui_file_dialog::DialogMode::SaveFile {
-                self.emu.save_state(&path);
+                self.emu
+                    .save_state(&path, self.framebuffer.screenshot().ok());
             } else {
                 match self.emu.init_from_statefile(path) {
                     Ok(p) => self.framebuffer.connect_receiver(p.frame_receiver),

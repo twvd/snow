@@ -1,8 +1,7 @@
 //! Widget that receives frames from the emulator and draws them to a
 //! GPU texture-backed image widget.
 
-use std::fs::File;
-use std::path::Path;
+use std::{fs::File, path::Path};
 
 use anyhow::{bail, Result};
 use crossbeam_channel::Receiver;
@@ -128,12 +127,13 @@ impl FramebufferWidget {
         response
     }
 
-    pub fn write_screenshot(&self, path: &Path) -> Result<()> {
+    /// Writes a screenshot as PNG
+    pub fn write_screenshot<W: std::io::Write>(&self, writer: W) -> Result<()> {
         let Some(frame) = self.frame.as_ref() else {
             bail!("No framebuffer available");
         };
         let mut encoder = png::Encoder::new(
-            File::create(path)?,
+            writer,
             self.display_size[0].into(),
             self.display_size[1].into(),
         );
@@ -142,7 +142,21 @@ impl FramebufferWidget {
         let mut writer = encoder.write_header()?;
         writer.write_image_data(frame)?;
 
+        // png crate can't release the inner writer..
         Ok(())
+    }
+
+    /// Returns a screenshot as PNG
+    pub fn screenshot(&self) -> Result<Vec<u8>> {
+        let mut v = vec![];
+        self.write_screenshot(&mut v)?;
+
+        Ok(v)
+    }
+
+    /// Writes a screenshot as PNG to a file
+    pub fn write_screenshot_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        self.write_screenshot(File::create(path.as_ref())?)
     }
 
     pub fn rect(&self) -> egui::Rect {
