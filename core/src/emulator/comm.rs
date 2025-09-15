@@ -69,7 +69,7 @@ pub enum EmulatorCommand {
     SccReceiveData(SccCh, Vec<u8>),
     SetSystrapHistory(bool),
     #[cfg(feature = "savestates")]
-    SaveState(PathBuf),
+    SaveState(PathBuf, Option<Vec<u8>>),
 }
 
 /// Emulator speed tweak

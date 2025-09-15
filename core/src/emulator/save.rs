@@ -22,27 +22,37 @@ pub enum SaveCompression {
 
 #[binrw]
 #[brw(little, magic = b"SNOWS")]
-struct SaveHeader {
+pub struct SaveHeader {
     /// Header/file version
     pub version: u16,
     /// Type of compression used
     pub compression: SaveCompression,
     /// Level of compression
     pub compression_level: u8,
+    /// RFC3339 timestamp when the file was written
+    pub timestamp: NullString,
     /// Model as string
     pub model: NullString,
     /// Snow version (short hash)
     pub snow_version: NullString,
     /// Image sizes, per SCSI target. 0 is no image.
     pub scsi_imgs: [u64; ScsiController::MAX_TARGETS],
+    /// Optional screenshot (PNG), length.
+    /// No screenshot if 0.
+    #[bw(try_calc = screenshot.len().try_into())]
+    pub screenshot_len: u32,
+    /// Optional screenshot (PNG)
+    #[br(count = screenshot_len)]
+    pub screenshot: Vec<u8>,
 }
 
 const END_OF_CHUNK: &[u8] = b"EOFC";
 
 /// Writes a save state to the given writer
-pub fn save_state_to<W: std::io::Write + std::io::Seek>(
+pub(super) fn save_state_to<W: std::io::Write + std::io::Seek>(
     mut writer: W,
     config: &EmulatorConfig,
+    screenshot: Option<Vec<u8>>,
 ) -> Result<()> {
     let compression_level = 0; // library default
 
@@ -52,6 +62,7 @@ pub fn save_state_to<W: std::io::Write + std::io::Seek>(
         compression_level,
         model: config.model().to_string().into(),
         snow_version: crate::build_version().into(),
+        timestamp: chrono::Local::now().to_rfc3339().into(),
         scsi_imgs: core::array::from_fn(|id| {
             config
                 .scsi()
@@ -59,6 +70,7 @@ pub fn save_state_to<W: std::io::Write + std::io::Seek>(
                 .map(|n| n as u64)
                 .unwrap_or(0)
         }),
+        screenshot: screenshot.unwrap_or_default(),
     };
     header.write(&mut writer)?;
 
@@ -85,7 +97,7 @@ pub fn save_state_to<W: std::io::Write + std::io::Seek>(
 }
 
 /// Loads a save state into an EmulatorConfig from a given reader
-pub fn load_state_from<R: std::io::Read + std::io::Seek, P: AsRef<std::path::Path>>(
+pub(super) fn load_state_from<R: std::io::Read + std::io::Seek, P: AsRef<std::path::Path>>(
     mut reader: R,
     tmpdir: P,
 ) -> Result<EmulatorConfig> {
@@ -143,9 +155,15 @@ pub fn load_state_from<R: std::io::Read + std::io::Seek, P: AsRef<std::path::Pat
         }
     }
 
+    #[allow(clippy::unbuffered_bytes)]
     if decompressor.bytes().next().is_some() {
         bail!("Expected EOF but found more data");
     }
 
     Ok(config)
+}
+
+/// Returns only the header from given state file
+pub fn load_state_header<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Result<SaveHeader> {
+    Ok(SaveHeader::read(reader)?)
 }
