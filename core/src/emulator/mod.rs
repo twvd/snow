@@ -560,17 +560,19 @@ impl Emulator {
         self.config.cpu_tick(1)?;
 
         // Mac 512K: 0x402154, Mac Plus: 0x418CCC
-        //if self.cpu.regs.pc == 0x418CCC {
-        //    debug!(
-        //        "Sony_RdAddr = {}, format: {:02X}, track: {}, sector: {}",
-        //        self.cpu.regs.d[0] as i32,
-        //        self.cpu.regs.d[3] as u8,
-        //        self.cpu.regs.d[1] as u16,
-        //        self.cpu.regs.d[2] as u16,
-        //    );
-        //}
-        //if self.cpu.regs.pc == 0x418EBC {
-        //    debug!("Sony_RdData = {}", self.cpu.regs.d[0] as i32);
+        //if self.config.swim().drives[0].track == 2 {
+        //    if self.config.cpu_regs().pc == 0x418CCC {
+        //        debug!(
+        //            "Sony_RdAddr = {}, format: {:02X}, track: {}, sector: {}",
+        //            self.config.cpu_regs().d[0] as i32,
+        //            self.config.cpu_regs().d[3] as u8,
+        //            self.config.cpu_regs().d[1] as u16,
+        //            self.config.cpu_regs().d[2] as u16,
+        //        );
+        //    }
+        //    if self.config.cpu_regs().pc == 0x418EBC {
+        //        debug!("Sony_RdData = {}", self.config.cpu_regs().d[0] as i32);
+        //    }
         //}
 
         if self.run && self.config.cpu_get_clr_breakpoint_hit() {

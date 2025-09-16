@@ -287,7 +287,7 @@ impl Swim {
             // Introduce some pseudo-random jitter on the timing to emulate
             // the minor differences introduced by motor RPM instability and
             // physical movement of the disk donut.
-            let jitter = -2 + (self.cycles % 4) as i16;
+            let jitter = -3 + (self.cycles % 6) as i16;
 
             // Check bit cell window
             // TODO incorporate actual drive speed from PWM on 128K/512K?
