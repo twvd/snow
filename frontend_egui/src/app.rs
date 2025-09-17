@@ -1,6 +1,8 @@
 use crate::dialogs::about::AboutDialog;
 use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
+use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
 use crate::emulator::EmulatorState;
+use crate::emulator::{EmulatorInitArgs, ScsiTargets};
 use crate::keymap::map_winit_keycode;
 use crate::settings::AppSettings;
 use crate::uniform::{UniformAction, UNIFORM_ACTION};
@@ -16,28 +18,27 @@ use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::Workspace;
 use snow_core::bus::Address;
+use snow_core::emulator::comm::UserMessageType;
 use snow_core::emulator::save::{load_state_header, SaveHeader};
 use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::MacModel;
 use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
+use snow_floppy::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
 
-use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
-use crate::emulator::{EmulatorInitArgs, ScsiTargets};
 use anyhow::{anyhow, bail, Context, Result};
 use eframe::egui;
 use egui_file_dialog::{DialogMode, DirectoryEntry, FileDialog};
 use egui_toast::{Toast, ToastKind, ToastOptions};
 use itertools::Itertools;
 use rand::Rng;
-use snow_core::emulator::comm::UserMessageType;
-use snow_floppy::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
+use strum::IntoEnumIterator;
+
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{env, fs};
-use strum::IntoEnumIterator;
 
 macro_rules! persistent_window_s {
     ($gui:expr, $title:expr, $default_size:expr) => {{
@@ -1688,6 +1689,22 @@ impl eframe::App for SnowGui {
                             ));
                             ui.end_row();
                         });
+                        if img.count_original_track_type(OriginalTrackType::RawFlux) > 0 {
+                            egui::Frame::none()
+                                .fill(egui::Color32::ORANGE)
+                                .inner_margin(egui::Margin::same(10.0))
+                                .outer_margin(egui::Margin::same(5.0))
+                                .stroke(egui::Stroke::new(2.0, egui::Color32::RED))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(
+                                            "This is a raw flux image format, which is not designed for emulator use.\n\nSnow will load it, but you may encounter issues. It is recommended to convert it to a resolved flux format first (for example: MOOF).",
+                                        )
+                                        .strong()
+                                        .color(egui::Color32::BLACK),
+                                    );
+                                });
+                        }
 
                         ui.separator();
                         ui.add_enabled(
@@ -1839,6 +1856,7 @@ impl eframe::App for SnowGui {
                 if dia.selected_entry().is_some() {
                     last = dia.selected_entry().cloned();
                     if let Some(header) = &self.state_dialog_last_header {
+                        let version_warning = header.snow_version.to_string() != snow_core::build_version();
                         egui::Grid::new("state_dialog_metadata").show(ui, |ui| {
                             ui.label(egui::RichText::new("Model").strong());
                             ui.label(header.model.to_string());
@@ -1854,9 +1872,25 @@ impl eframe::App for SnowGui {
                             );
                             ui.end_row();
                             ui.label(egui::RichText::new("Snow version").strong());
-                            ui.label(header.snow_version.to_string());
+                            ui.label(egui::RichText::new(header.snow_version.to_string()) .color(
+                                if version_warning {
+                                    egui::Color32::RED
+                                } else {
+                                    egui::Color32::PLACEHOLDER
+                                }
+                            ));
                             ui.end_row();
                         });
+                        if version_warning {
+                            egui::Frame::none().fill(egui::Color32::ORANGE)
+                                .inner_margin(egui::Margin::same(10.0))
+                                .outer_margin(egui::Margin::same(5.0))
+                                .stroke(egui::Stroke::new(2.0, egui::Color32::RED))
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new("This save state is created by a different version of Snow.\n\nThis is incompatible and unsupported.\nExpect problems!").strong().color(egui::Color32::BLACK));
+                            });
+                        }
+                        ui.separator();
                         ui.add(
                             egui::Image::from_texture(&self.state_dialog_screenshot)
                                 .max_width(250.0),
