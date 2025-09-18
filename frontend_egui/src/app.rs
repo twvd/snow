@@ -585,6 +585,11 @@ impl SnowGui {
                         ui.close_menu();
                     }
                 }
+                ui.separator();
+                ui.checkbox(
+                    &mut self.workspace.pause_on_state_load,
+                    "Pause emulator after state load",
+                );
             });
 
             if self.emu.is_initialized() {
@@ -1577,7 +1582,10 @@ impl SnowGui {
     }
 
     fn load_statefile<P: AsRef<Path>>(&mut self, path: P) {
-        match self.emu.init_from_statefile(path.as_ref()) {
+        match self
+            .emu
+            .init_from_statefile(path.as_ref(), self.workspace.pause_on_state_load)
+        {
             Ok(p) => self.framebuffer.connect_receiver(p.frame_receiver),
             Err(e) => self.show_error(&format!("Failed to load state file: {:?}", e)),
         }

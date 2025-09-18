@@ -123,6 +123,9 @@ pub struct Workspace {
 
     /// Scaling algorithm in use
     pub scaling_algorithm: ScalingAlgorithm,
+
+    /// Pause emulator after loading a state/state file
+    pub pause_on_state_load: bool,
 }
 
 impl Default for Workspace {
@@ -151,6 +154,7 @@ impl Default for Workspace {
             model: None,
             map_cmd_ralt: true,
             scaling_algorithm: ScalingAlgorithm::Linear,
+            pause_on_state_load: false,
         }
     }
 }
