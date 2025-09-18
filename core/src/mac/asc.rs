@@ -75,10 +75,9 @@ enum AscMode {
 
 impl Default for Asc {
     fn default() -> Self {
-        let (sender, receiver) = crossbeam_channel::bounded(AUDIO_QUEUE_LEN);
-        Self {
-            sender: Some(sender),
-            receiver: Some(receiver),
+        let mut result = Self {
+            sender: None,
+            receiver: None,
             buffer: Vec::with_capacity(AUDIO_BUFFER_SIZE),
             silent: true,
             channels: Default::default(),
@@ -88,7 +87,9 @@ impl Default for Asc {
             fifo_r: VecDeque::with_capacity(FIFO_SIZE),
             fifo_status: Default::default(),
             irq: false,
-        }
+        };
+        result.init_channels();
+        result
     }
 }
 
@@ -184,6 +185,16 @@ impl Asc {
     pub const fn sample_rate(&self) -> Ticks {
         // TODO configurable sample rate
         22257
+    }
+
+    pub fn init_channels(&mut self) {
+        let (sender, receiver) = crossbeam_channel::bounded(AUDIO_QUEUE_LEN);
+        self.sender = Some(sender);
+        self.receiver = Some(receiver);
+    }
+
+    pub fn after_deserialize(&mut self) {
+        self.init_channels();
     }
 }
 

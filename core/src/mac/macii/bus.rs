@@ -50,7 +50,6 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     pub(crate) via1: Via,
     pub(crate) via2: Via2,
     pub(crate) scc: Scc,
-    #[serde(rename = "AscState")]
     pub(crate) asc: Asc,
     via_clock: Ticks,
     mouse_ready: bool,
@@ -168,6 +167,7 @@ where
     /// Reinstalls things that can't be serialized upon deserialization
     pub fn after_deserialize(&mut self, renderer: TRenderer) {
         self.nubus_devices[0].as_mut().unwrap().renderer = Some(renderer);
+        self.asc.after_deserialize();
 
         // Mark all RAM pages as dirty after deserialization to update memory display
         self.ram_dirty
