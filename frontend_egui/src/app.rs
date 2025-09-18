@@ -5,7 +5,7 @@ use crate::emulator::EmulatorState;
 use crate::emulator::{EmulatorInitArgs, ScsiTargets};
 use crate::keymap::map_winit_keycode;
 use crate::settings::AppSettings;
-use crate::uniform::{uniform_error, UniformAction, UNIFORM_ACTION};
+use crate::uniform::{UniformAction, UNIFORM_ACTION};
 use crate::widgets::breakpoints::BreakpointsWidget;
 use crate::widgets::disassembly::Disassembly;
 use crate::widgets::framebuffer::{FramebufferWidget, ScalingAlgorithm};
@@ -543,6 +543,7 @@ impl SnowGui {
                 }
                 ui.separator();
                 ui.strong("Quick load states");
+                let mut load_file = None;
                 for (i, p) in self.quick_states.iter().map(|p| p.as_ref()).enumerate() {
                     if ui
                         .add_enabled(
@@ -551,11 +552,12 @@ impl SnowGui {
                         )
                         .clicked()
                     {
-                        if let Err(e) = self.emu.init_from_statefile(p.unwrap()) {
-                            uniform_error(format!("Failed to load state file: {:?}", e));
-                        }
+                        load_file = Some(p.unwrap().clone());
                         ui.close_menu();
                     }
+                }
+                if let Some(p) = load_file {
+                    self.load_statefile(p);
                 }
                 ui.separator();
                 ui.strong("Quick save states");
@@ -1565,6 +1567,13 @@ impl SnowGui {
         hadris_iso::IsoImage::format_file(&imgpath, options)?;
         Ok(imgpath)
     }
+
+    fn load_statefile<P: AsRef<Path>>(&mut self, path: P) {
+        match self.emu.init_from_statefile(path.as_ref()) {
+            Ok(p) => self.framebuffer.connect_receiver(p.frame_receiver),
+            Err(e) => self.show_error(&format!("Failed to load state file: {:?}", e)),
+        }
+    }
 }
 
 impl eframe::App for SnowGui {
@@ -1955,10 +1964,7 @@ impl eframe::App for SnowGui {
                 self.emu
                     .save_state(&path, self.framebuffer.screenshot().ok());
             } else {
-                match self.emu.init_from_statefile(path) {
-                    Ok(p) => self.framebuffer.connect_receiver(p.frame_receiver),
-                    Err(e) => self.show_error(&format!("Failed to load state file: {:?}", e)),
-                }
+                self.load_statefile(path);
             }
         }
         self.ui_active &= self.state_dialog.state() != egui_file_dialog::DialogState::Open;

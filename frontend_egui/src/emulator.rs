@@ -214,22 +214,6 @@ impl EmulatorState {
 
         let cmd = emulator.create_cmd_sender();
 
-        // Initialize audio
-        if args.audio_disabled {
-            cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
-        } else if self.audiosink.is_none() {
-            match SDLAudioSink::new(emulator.get_audio()) {
-                Ok(sink) => self.audiosink = Some(sink),
-                Err(e) => {
-                    error!("Failed to initialize audio: {:?}", e);
-                    cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
-                }
-            }
-        } else {
-            let mut cb = self.audiosink.as_mut().unwrap().lock();
-            cb.set_receiver(emulator.get_audio());
-        }
-
         if args.start_fastforward {
             cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Uncapped))?;
         }
@@ -279,7 +263,7 @@ impl EmulatorState {
             emulator.persist_pram(pram_path);
         }
 
-        self.init_finalize(emulator, frame_recv, cmd)
+        self.init_finalize(emulator, frame_recv, cmd, args.audio_disabled)
     }
 
     pub fn init_from_statefile<P: AsRef<Path>>(&mut self, path: P) -> Result<EmulatorInitResult> {
@@ -288,7 +272,7 @@ impl EmulatorState {
 
         let (emulator, frame_recv) = Emulator::load_state(path, env::temp_dir())?;
         let cmd = emulator.create_cmd_sender();
-        self.init_finalize(emulator, frame_recv, cmd)
+        self.init_finalize(emulator, frame_recv, cmd, false)
     }
 
     fn init_finalize(
@@ -296,7 +280,24 @@ impl EmulatorState {
         mut emulator: Emulator,
         frame_recv: crossbeam_channel::Receiver<DisplayBuffer>,
         cmd: EmulatorCommandSender,
+        audio_disabled: bool,
     ) -> Result<EmulatorInitResult> {
+        // Initialize audio
+        if audio_disabled {
+            cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
+        } else if self.audiosink.is_none() {
+            match SDLAudioSink::new(emulator.get_audio()) {
+                Ok(sink) => self.audiosink = Some(sink),
+                Err(e) => {
+                    error!("Failed to initialize audio: {:?}", e);
+                    cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
+                }
+            }
+        } else {
+            let mut cb = self.audiosink.as_mut().unwrap().lock();
+            cb.set_receiver(emulator.get_audio());
+        }
+
         cmd.send(EmulatorCommand::Run)?;
 
         self.eventrecv = Some(emulator.create_event_recv());
