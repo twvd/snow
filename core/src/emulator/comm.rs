@@ -33,6 +33,7 @@ pub enum EmulatorCommand {
     SaveFloppy(usize, PathBuf),
     EjectFloppy(usize),
     ScsiAttachHdd(usize, PathBuf),
+    ScsiBranchHdd(usize, PathBuf),
     ScsiAttachCdrom(usize),
     ScsiLoadMedia(usize, PathBuf),
     DetachScsiTarget(usize),

@@ -407,4 +407,8 @@ impl ScsiTarget for ScsiTargetCdrom {
         self.load_media(imgfn)?;
         Ok(())
     }
+
+    fn branch_media(&mut self, _path: &Path) -> Result<()> {
+        bail!("Unsupported on CD-ROM");
+    }
 }

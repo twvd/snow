@@ -4,7 +4,8 @@ use anyhow::{bail, Context, Result};
 #[cfg(feature = "mmap")]
 use memmap2::MmapMut;
 use serde::{Deserialize, Serialize};
-
+use std::fs::File;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -254,5 +255,22 @@ impl ScsiTarget for ScsiTargetDisk {
         self.disk = Self::mmap_file(imgfn)?;
         self.path = imgfn.to_path_buf();
         Ok(())
+    }
+
+    #[cfg(feature = "mmap")]
+    fn branch_media(&mut self, path: &Path) -> Result<()> {
+        // Create a fresh disk file
+        {
+            let mut f = File::create(path)?;
+            f.write_all(&self.disk)?;
+        }
+        self.disk = Self::mmap_file(path)?;
+        self.path = path.to_path_buf();
+        Ok(())
+    }
+
+    #[cfg(not(feature = "mmap"))]
+    fn branch_media(&mut self, _path: &Path) -> Result<()> {
+        bail!("Requires 'mmap' feature");
     }
 }

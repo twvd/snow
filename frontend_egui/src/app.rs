@@ -244,6 +244,8 @@ impl SnowGui {
                     }),
                 )
                 .default_file_filter(hdd_filter_str)
+                .add_save_extension("Device image", "img")
+                .default_save_extension("Device image")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir()),
             hdd_dialog_idx: 0,
@@ -835,6 +837,12 @@ impl SnowGui {
                             ui.set_min_width(Self::SUBMENU_WIDTH);
                             if ui.button("Detach hard drive").clicked() {
                                 self.emu.scsi_detach_target(id);
+                                ui.close_menu();
+                            }
+                            ui.separator();
+                            if ui.button("Branch off image...").clicked() {
+                                self.hdd_dialog_idx = id;
+                                self.hdd_dialog.save_file();
                                 ui.close_menu();
                             }
                         },
@@ -1819,7 +1827,15 @@ impl eframe::App for SnowGui {
         // HDD image picker dialog
         self.hdd_dialog.update(ctx);
         if let Some(path) = self.hdd_dialog.take_picked() {
-            self.emu.scsi_attach_hdd(self.hdd_dialog_idx, &path);
+            match self.hdd_dialog.mode() {
+                DialogMode::PickFile => {
+                    self.emu.scsi_attach_hdd(self.hdd_dialog_idx, &path);
+                }
+                DialogMode::SaveFile => {
+                    self.emu.scsi_branch_hdd(self.hdd_dialog_idx, &path);
+                }
+                _ => unreachable!(),
+            }
         }
         self.ui_active &= self.hdd_dialog.state() != egui_file_dialog::DialogState::Open;
 
