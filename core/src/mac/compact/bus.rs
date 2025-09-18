@@ -213,6 +213,10 @@ where
     /// Reinstalls things that can't be serialized upon deserialization
     pub fn after_deserialize(&mut self, renderer: TRenderer) {
         self.video.renderer = Some(renderer);
+
+        // Mark all RAM pages as dirty after deserialization to update memory display
+        self.ram_dirty
+            .extend(0..(self.ram.len() / RAM_DIRTY_PAGESIZE));
     }
 
     pub fn model(&self) -> MacModel {

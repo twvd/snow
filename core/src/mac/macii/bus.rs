@@ -168,6 +168,10 @@ where
     /// Reinstalls things that can't be serialized upon deserialization
     pub fn after_deserialize(&mut self, renderer: TRenderer) {
         self.nubus_devices[0].as_mut().unwrap().renderer = Some(renderer);
+
+        // Mark all RAM pages as dirty after deserialization to update memory display
+        self.ram_dirty
+            .extend(0..(self.ram.len() / crate::mac::compact::bus::RAM_DIRTY_PAGESIZE));
     }
 
     pub fn model(&self) -> MacModel {
