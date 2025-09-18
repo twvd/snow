@@ -742,6 +742,21 @@ impl Tickable for Emulator {
                         };
                         self.status_update()?;
                     }
+                    EmulatorCommand::ScsiBranchHdd(id, filename) => {
+                        match self.config.scsi_mut().targets[id]
+                            .as_mut()
+                            .context("No target attached")?
+                            .branch_media(&filename)
+                        {
+                            Ok(_) => {
+                                info!("SCSI ID #{}: branched to file '{}'", id, filename.display());
+                            }
+                            Err(e) => {
+                                self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
+                            }
+                        };
+                        self.status_update()?;
+                    }
                     EmulatorCommand::ScsiLoadMedia(id, filename) => {
                         match self.config.scsi_mut().targets[id]
                             .as_mut()

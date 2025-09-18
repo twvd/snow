@@ -49,6 +49,7 @@ pub(crate) trait ScsiTarget: Send {
     fn write(&mut self, block_offset: usize, data: &[u8]);
     fn image_fn(&self) -> Option<&Path>;
     fn load_media(&mut self, path: &Path) -> Result<()>;
+    fn branch_media(&mut self, path: &Path) -> Result<()>;
     fn media(&self) -> Option<&[u8]>;
 
     /// Device-specific commands

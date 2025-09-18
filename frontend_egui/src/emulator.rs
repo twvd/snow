@@ -638,6 +638,17 @@ impl EmulatorState {
             .unwrap();
     }
 
+    /// Branches off a SCSI HDD image to the specified path.
+    pub fn scsi_branch_hdd(&self, id: usize, path: &Path) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        sender
+            .send(EmulatorCommand::ScsiBranchHdd(id, path.to_path_buf()))
+            .unwrap();
+    }
+
     /// Attaches a CD-ROM drive at the given ID
     pub fn scsi_attach_cdrom(&self, id: usize) {
         let Some(ref sender) = self.cmdsender else {
