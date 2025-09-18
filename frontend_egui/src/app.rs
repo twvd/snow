@@ -5,7 +5,7 @@ use crate::emulator::EmulatorState;
 use crate::emulator::{EmulatorInitArgs, ScsiTargets};
 use crate::keymap::map_winit_keycode;
 use crate::settings::AppSettings;
-use crate::uniform::{UniformAction, UNIFORM_ACTION};
+use crate::uniform::{uniform_error, UniformAction, UNIFORM_ACTION};
 use crate::widgets::breakpoints::BreakpointsWidget;
 use crate::widgets::disassembly::Disassembly;
 use crate::widgets::framebuffer::{FramebufferWidget, ScalingAlgorithm};
@@ -181,6 +181,9 @@ pub struct SnowGui {
 
     /// Temporary files that need cleanup on exit
     temp_files: Vec<PathBuf>,
+
+    /// Quick state save slots
+    quick_states: [Option<PathBuf>; 5],
 }
 
 impl SnowGui {
@@ -363,6 +366,8 @@ impl SnowGui {
                     pb
                 }),
             ),
+
+            quick_states: Default::default(),
         };
 
         if let Some(filename) = initial_file {
@@ -486,14 +491,7 @@ impl SnowGui {
                     );
                     ui.close_menu();
                 }
-                if !self.emu.is_initialized() {
-                    if ui.button("Load state...").clicked() {
-                        self.state_dialog.pick_file();
-                        ui.close_menu();
-                    }
-                } else {
-                    ui.separator();
-
+                if self.emu.is_initialized() {
                     if ui.button("Reset").clicked() {
                         self.emu.reset();
                         ui.close_menu();
@@ -524,18 +522,67 @@ impl SnowGui {
                         self.emu.progkey();
                         ui.close_menu();
                     }
+                }
+            });
 
-                    ui.separator();
-                    if ui.button("Load state...").clicked() {
-                        self.state_dialog.pick_file();
+            ui.menu_button("State", |ui| {
+                ui.set_min_width(Self::SUBMENU_WIDTH);
+                if ui.button("Load state from file...").clicked() {
+                    self.state_dialog.pick_file();
+                    ui.close_menu();
+                }
+                if ui
+                    .add_enabled(
+                        self.emu.is_initialized(),
+                        egui::Button::new("Save state to file..."),
+                    )
+                    .clicked()
+                {
+                    self.state_dialog.save_file();
+                    ui.close_menu();
+                }
+                ui.separator();
+                ui.strong("Quick load states");
+                for (i, p) in self.quick_states.iter().map(|p| p.as_ref()).enumerate() {
+                    if ui
+                        .add_enabled(
+                            self.quick_states[i].is_some(),
+                            egui::Button::new(format!("Quick state #{}", i + 1)),
+                        )
+                        .clicked()
+                    {
+                        if let Err(e) = self.emu.init_from_statefile(p.unwrap()) {
+                            uniform_error(format!("Failed to load state file: {:?}", e));
+                        }
                         ui.close_menu();
                     }
-                    if ui.button("Save state...").clicked() {
-                        self.state_dialog.save_file();
+                }
+                ui.separator();
+                ui.strong("Quick save states");
+                for (i, p) in self.quick_states.iter_mut().enumerate() {
+                    if ui
+                        .add_enabled(
+                            self.emu.is_initialized(),
+                            egui::Button::new(format!("Quick state #{}", i + 1)),
+                        )
+                        .clicked()
+                    {
+                        let mut path = env::temp_dir();
+                        path.push(format!(
+                            "snow_quickstate_{}_{}.snows",
+                            std::process::id(),
+                            i
+                        ));
+                        if !self.temp_files.contains(&path) {
+                            self.temp_files.push(path.clone());
+                        }
+                        self.emu.save_state(&path, None);
+                        *p = Some(path);
                         ui.close_menu();
                     }
                 }
             });
+
             if self.emu.is_initialized() {
                 ui.menu_button("Drives", |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH);
