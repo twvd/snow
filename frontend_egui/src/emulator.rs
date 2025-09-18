@@ -263,16 +263,20 @@ impl EmulatorState {
             emulator.persist_pram(pram_path);
         }
 
-        self.init_finalize(emulator, frame_recv, cmd, args.audio_disabled)
+        self.init_finalize(emulator, frame_recv, cmd, args.audio_disabled, false)
     }
 
-    pub fn init_from_statefile<P: AsRef<Path>>(&mut self, path: P) -> Result<EmulatorInitResult> {
+    pub fn init_from_statefile<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+        pause: bool,
+    ) -> Result<EmulatorInitResult> {
         // Terminate running emulator (if any)
         self.deinit();
 
         let (emulator, frame_recv) = Emulator::load_state(path, env::temp_dir())?;
         let cmd = emulator.create_cmd_sender();
-        self.init_finalize(emulator, frame_recv, cmd, false)
+        self.init_finalize(emulator, frame_recv, cmd, false, pause)
     }
 
     fn init_finalize(
@@ -281,6 +285,7 @@ impl EmulatorState {
         frame_recv: crossbeam_channel::Receiver<DisplayBuffer>,
         cmd: EmulatorCommandSender,
         audio_disabled: bool,
+        pause: bool,
     ) -> Result<EmulatorInitResult> {
         // Initialize audio
         if audio_disabled {
@@ -298,7 +303,11 @@ impl EmulatorState {
             cb.set_receiver(emulator.get_audio());
         }
 
-        cmd.send(EmulatorCommand::Run)?;
+        if !pause {
+            cmd.send(EmulatorCommand::Run)?;
+        } else {
+            cmd.send(EmulatorCommand::Stop)?;
+        }
 
         self.eventrecv = Some(emulator.create_event_recv());
 
