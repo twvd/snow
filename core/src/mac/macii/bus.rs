@@ -164,9 +164,12 @@ where
         bus
     }
 
-    /// Reinstalls things that can't be serialized upon deserialization
+    /// Reinstalls things that can't be serialized and does some updates upon deserialization
     pub fn after_deserialize(&mut self, renderer: TRenderer) {
         self.nubus_devices[0].as_mut().unwrap().renderer = Some(renderer);
+        // Make sure we have at least the last frame available
+        self.nubus_devices[0].as_mut().unwrap().render().unwrap();
+
         self.asc.after_deserialize();
 
         // Mark all RAM pages as dirty after deserialization to update memory display

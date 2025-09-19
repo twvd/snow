@@ -182,7 +182,7 @@ where
     }
 
     /// Prepares the image and sends it to the frontend renderer
-    fn render(&mut self) -> Result<()> {
+    pub fn render(&mut self) -> Result<()> {
         let fb = if !self.framebuffer_select {
             &self.framebuffers[0]
         } else {

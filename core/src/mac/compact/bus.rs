@@ -210,9 +210,11 @@ where
         bus
     }
 
-    /// Reinstalls things that can't be serialized upon deserialization
+    /// Reinstalls things that can't be serialized and does some updates upon deserialization
     pub fn after_deserialize(&mut self, renderer: TRenderer) {
         self.video.renderer = Some(renderer);
+        // Make sure we have at least the last frame available
+        self.video.render().unwrap();
 
         // Mark all RAM pages as dirty after deserialization to update memory display
         self.ram_dirty
