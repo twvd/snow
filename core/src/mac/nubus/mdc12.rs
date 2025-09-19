@@ -240,7 +240,7 @@ where
         Ok(())
     }
 
-    fn render(&mut self) -> Result<()> {
+    pub fn render(&mut self) -> Result<()> {
         // We have to move the renderer so we don't upset the borrow checker.
         let mut renderer = self.renderer.take().unwrap();
         self.render_to(renderer.buffer_mut());
