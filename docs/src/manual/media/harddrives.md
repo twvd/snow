@@ -41,9 +41,20 @@ it to be recognized.
 
 ## Detaching a disk
 
-To detach a mounted disk, use the 'Detach' menu action.
+To detach a mounted disk, use the 'Detach' menu item under a hard drive in
+the 'Drives' menu.
 
 Note that this is the equivalent of pulling the cable on a hard drive so
 if the disk is in use by the emulated operating system, it will likely
 crash and/or damage the image. Shut down the emulated operating system
 first.
+
+## Branching off an image
+
+Branching off an image means that the file that is currently loaded is copied
+to a new file with a different filename and possibly location, the original
+file is closed and Snow will continue working from the newly created copy.
+This function is useful when working with [save states](../savestates.md).
+
+To branch off an image, use the 'Branch off image...' menu item under a
+hard drive in the 'Drives' menu.

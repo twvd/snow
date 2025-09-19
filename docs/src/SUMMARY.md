@@ -17,6 +17,7 @@
 - [Keyboard/mouse](./manual/input.md)
 - [Workspaces](./manual/workspaces.md)
 - [Fullscreen mode](./manual/fullscreen.md)
+- [Save states](./manual/savestates.md)
 - [Debugging](./manual/debugging/README.md)
   - [Breakpoints](./manual/debugging/breakpoints.md)
   - [Registers](./manual/debugging/registers.md)
