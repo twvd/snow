@@ -31,6 +31,7 @@ use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{ExtraROMs, MacModel, MacMonitor};
 use snow_core::renderer::DisplayBuffer;
 use snow_core::tickable::{Tickable, Ticks};
+use snow_core::types::LatchingEvent;
 use snow_floppy::{Floppy, FloppyImage, FloppyType};
 
 use crate::audio::SDLAudioSink;
@@ -123,6 +124,9 @@ pub struct EmulatorState {
     instruction_history_enabled: bool,
     peripheral_debug_enabled: bool,
     systrap_history_enabled: bool,
+
+    /// Force an emulator update signal to the App even without new events available
+    force_update: LatchingEvent,
 }
 
 impl EmulatorState {
@@ -328,6 +332,9 @@ impl EmulatorState {
         while !self.poll() {}
         while self.poll() {}
 
+        // Signal the UI to always update state
+        self.force_update.set();
+
         Ok(EmulatorInitResult {
             frame_receiver: frame_recv,
         })
@@ -350,6 +357,8 @@ impl EmulatorState {
         self.instruction_history_enabled = false;
         self.systrap_history_enabled = false;
         self.peripheral_debug_enabled = false;
+
+        self.force_update.set();
     }
 
     pub fn reset(&self) {
@@ -437,7 +446,7 @@ impl EmulatorState {
             return false;
         };
         if eventrecv.is_empty() {
-            return false;
+            return self.force_update.get_clear();
         }
 
         while let Ok(event) = eventrecv.try_recv() {
