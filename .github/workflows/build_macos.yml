@@ -24,7 +24,7 @@ jobs:
         arch: [x86_64, aarch64]
 
     name: MacOS-${{ matrix.arch }}
-    runs-on: ${{ matrix.arch == 'x86_64' && 'macos-13' || 'macos-latest' }}
+    runs-on: macos-latest
 
     steps:
     - uses: actions/checkout@v4
