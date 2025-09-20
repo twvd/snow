@@ -34,9 +34,13 @@ jobs:
       run: git submodule update --init --recursive
     - name: Build release
       run: cargo build --verbose --release --all
+    - name: GUI Create packaging directory
+      run: mkdir snow-gui
+    - name: GUI Gather files
+      run: cp target/release/snow_frontend_egui snow-gui/snowemu
     - name: GUI Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: 'Snow Linux (${{ matrix.arch }})'
         if-no-files-found: error
-        path: target/release/snow_frontend_egui
+        path: snow-gui/*
