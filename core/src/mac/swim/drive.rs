@@ -363,8 +363,6 @@ impl FloppyDrive {
             }
         }
 
-        // Reset track position
-        self.track_position = 0;
         self.flux_ticks = 0;
         self.flux_ticks_left = 0;
 
