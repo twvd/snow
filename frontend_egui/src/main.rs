@@ -65,9 +65,9 @@ fn main() -> eframe::Result {
     egui_winit::install_windowevent_hook(s);
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_icon(
-            eframe::icon_data::from_png_bytes(SNOW_ICON).expect("Icon is not valid PNG"),
-        ),
+        viewport: egui::ViewportBuilder::default()
+            .with_icon(eframe::icon_data::from_png_bytes(SNOW_ICON).expect("Icon is not valid PNG"))
+            .with_drag_and_drop(true),
         ..Default::default()
     };
     eframe::run_native(

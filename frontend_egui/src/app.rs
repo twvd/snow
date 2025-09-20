@@ -1590,6 +1590,98 @@ impl SnowGui {
             Err(e) => self.show_error(&format!("Failed to load state file: {:?}", e)),
         }
     }
+
+    fn load_dropped_file(&mut self, path: &Path) {
+        let Some(ext) = path
+            .extension()
+            .map(|p| p.to_ascii_lowercase().to_string_lossy().to_string())
+        else {
+            self.toasts.add(
+                Toast::new()
+                    .text("Unrecognized file dropped")
+                    .options(
+                        egui_toast::ToastOptions::default()
+                            .duration(Self::TOAST_DURATION)
+                            .show_progress(true),
+                    )
+                    .kind(ToastKind::Warning),
+            );
+            return;
+        };
+
+        // Try to detect and load floppy images
+        if snow_floppy::loaders::ImageType::EXTENSIONS
+            .into_iter()
+            .any(|s| ext.eq_ignore_ascii_case(s))
+        {
+            let Ok(md) = fs::metadata(path) else {
+                return;
+            };
+            if md.len() < (40 * 1024 * 1024) {
+                let Ok(image) = fs::read(path) else {
+                    return;
+                };
+                if snow_floppy::loaders::Autodetect::detect(&image).is_ok() {
+                    if !self.emu.load_floppy_firstfree(path) {
+                        self.toasts.add(
+                            Toast::new()
+                                .text("Cannot load floppy image: no free drive")
+                                .kind(ToastKind::Error),
+                        );
+                    }
+                    return;
+                }
+            }
+        }
+
+        match ext.as_ref() {
+            "rom" => {
+                self.load_rom_from_path(
+                    path,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &EmulatorInitArgs::default(),
+                    None,
+                );
+            }
+            "snoww" => self.load_workspace(Some(path)),
+            "snows" => self.load_statefile(path),
+            "iso" | "toast" => {
+                if !self.emu.scsi_load_cdrom_firstfree(path) {
+                    self.toasts.add(
+                        Toast::new()
+                            .text("Cannot load CD-ROM image: no free drive")
+                            .kind(ToastKind::Error),
+                    );
+                }
+            }
+            "img" | "hda" => {
+                // If this was a floppy image (.img), it would have been caught earlier
+                // by the floppy loader already.
+                if !self.emu.scsi_attach_hdd_firstfree(path) {
+                    self.toasts.add(
+                        Toast::new()
+                            .text("Cannot load hard drive image: no free SCSI slot")
+                            .kind(ToastKind::Error),
+                    );
+                }
+            }
+            _ => {
+                self.toasts.add(
+                    Toast::new()
+                        .text("Unrecognized file dropped")
+                        .options(
+                            egui_toast::ToastOptions::default()
+                                .duration(Self::TOAST_DURATION)
+                                .show_progress(true),
+                        )
+                        .kind(ToastKind::Warning),
+                );
+            }
+        }
+    }
 }
 
 impl eframe::App for SnowGui {
@@ -1602,6 +1694,13 @@ impl eframe::App for SnowGui {
             self.update_titlebar(ctx);
             self.first_draw = false;
         }
+
+        // Check for dropped files
+        ctx.input(|i| {
+            for p in i.raw.dropped_files.iter().filter_map(|p| p.path.as_ref()) {
+                self.load_dropped_file(p);
+            }
+        });
 
         self.sync_windows(ctx);
         self.poll_winit_events(ctx);
