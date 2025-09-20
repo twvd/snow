@@ -606,6 +606,18 @@ impl EmulatorState {
         }
     }
 
+    /// Loads a floppy image from the specified path in the first free drive.
+    pub fn load_floppy_firstfree(&self, path: &Path) -> bool {
+        // Find a free floppy drive
+        for (i, d) in (0..3).filter_map(|i| self.get_fdd_status(i).map(|d| (i, d))) {
+            if d.present && d.ejected {
+                self.load_floppy(i, path, false);
+                return true;
+            }
+        }
+        false
+    }
+
     /// Reloads last ejected floppy
     pub fn reload_floppy(&self, driveidx: usize) {
         let Some(ref sender) = self.cmdsender else {
@@ -656,6 +668,21 @@ impl EmulatorState {
             .unwrap();
     }
 
+    /// Loads a SCSI HDD image from the specified path into the first free SCSI slot
+    pub fn scsi_attach_hdd_firstfree(&self, path: &Path) -> bool {
+        let Some(targets) = self.status.as_ref().map(|s| s.scsi.as_ref()) else {
+            return false;
+        };
+
+        // Find first free SCSI slot
+        let Some((id, _)) = targets.iter().enumerate().find(|(_, t)| t.is_none()) else {
+            return false;
+        };
+
+        self.scsi_attach_hdd(id, path);
+        true
+    }
+
     /// Branches off a SCSI HDD image to the specified path.
     pub fn scsi_branch_hdd(&self, id: usize, path: &Path) {
         let Some(ref sender) = self.cmdsender else {
@@ -697,6 +724,25 @@ impl EmulatorState {
         sender
             .send(EmulatorCommand::ScsiLoadMedia(id, path.to_path_buf()))
             .unwrap();
+    }
+
+    /// Loads CD-ROM media into the first free SCSI CD-ROM drive
+    pub fn scsi_load_cdrom_firstfree(&self, path: &Path) -> bool {
+        let Some(targets) = self.status.as_ref().map(|s| s.scsi.as_ref()) else {
+            return false;
+        };
+
+        // Find free CD-ROM drive
+        for (i, t) in targets.iter().enumerate() {
+            let Some(ref t) = t else {
+                continue;
+            };
+            if t.target_type == ScsiTargetType::Cdrom && t.image.is_none() {
+                self.scsi_load_cdrom(i, path);
+                return true;
+            }
+        }
+        false
     }
 
     /// Detach a target from a SCSI ID
