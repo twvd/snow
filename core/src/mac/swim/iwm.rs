@@ -149,6 +149,10 @@ impl Swim {
                 self.iwm_status.set_mode_low(self.iwm_mode.mode_low());
                 self.iwm_status.set_enable(self.enable);
 
+                // Reading status clears the shifter
+                // (used in copy protections)
+                self.shdata = 0;
+
                 self.iwm_status.0
             }
             (false, true) => {
@@ -235,12 +239,6 @@ impl Swim {
 
     /// Shifts a bit into the read data shift register
     fn iwm_shift_bit(&mut self, bit: bool) {
-        if self.q6 || self.q7 {
-            // Not in read mode, clear shifter
-            self.shdata = 0;
-            return;
-        }
-
         self.shdata <<= 1;
         if bit {
             // 1 coming off the disk
