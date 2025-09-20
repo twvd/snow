@@ -509,7 +509,7 @@ impl FloppyDrive {
                     unreachable!()
                 };
                 // Extra modulus here because RDDATAx can be read while the controller is currently
-                // has the other side selected.
+                // has the other side selected or we just changed tracks.
                 self.floppy
                     .get_track_bit(head, track, self.track_position % tracklen)
             }
