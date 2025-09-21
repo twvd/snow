@@ -2,10 +2,14 @@
 name = "snow_frontend_egui"
 version = "1.0.0"
 edition = "2021"
+build = "build.rs"
 
 [features]
 default = []
 sdl2-bundled = ["sdl2/bundled"]
+
+[build-dependencies]
+winresource = "0.1.23"
 
 [dependencies]
 anyhow = "1.0.95"
