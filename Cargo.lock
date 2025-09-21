@@ -4075,7 +4075,7 @@ dependencies = [
 
 [[package]]
 name = "snow_core"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "arpfloat",
@@ -4113,7 +4113,7 @@ dependencies = [
 
 [[package]]
 name = "snow_floppy"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "binrw 0.14.1",
@@ -4131,7 +4131,7 @@ dependencies = [
 
 [[package]]
 name = "snow_frontend_egui"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4341,7 +4341,7 @@ checksum = "8f50febec83f5ee1df3015341d8bd429f2d1cc62bcba7ea2076759d315084683"
 
 [[package]]
 name = "testrunner"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "built",
