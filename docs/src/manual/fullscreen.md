@@ -8,13 +8,18 @@ or perform other emulator actions.
 
 ![Fullscreen context menu](../images/fs_context.png)
 
+When working mostly in fullscreen mode or when playing games in fullscreen mode,
+use [relative mouse positioning mode](input.md#mouse) for the best experience.
+
+## Starting in fullscreen mode
+
 To start Snow in fullscreen mode, you can use the `-f` or `--fullscreen`
 command line argument. You have to specify a workspace or ROM to load
 when starting in fullscreen mode. For example:
 
 ```
-./snow_frontend_egui -f mymac.snoww
+./snowemu -f mymac.snoww
 ```
 ```
-./snow_frontend_egui -f macplus.rom
+./snowemu -f macplus.rom
 ```

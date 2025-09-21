@@ -28,6 +28,18 @@ recognized.
 To mount an existing image file, use the 'Load image...' menu action
 to browse for a CD image. Currently, ISO and TOAST files are supported.
 
+It is also possible to drag a file of a supported image format into
+the Snow emulator window, which will load it into the first available
+empty CD-ROM drive.
+
+## Creating an image out of files on the host system
+
+Snow can create a temporary ISO image out of existing files on the
+host system and mount it on an emulated CD-ROM drive as a means of
+transfering files from the host to the emulated system.
+
+To do this, use the 'Mount image from files...' menu item.
+
 ## Ejecting a CD
 
 To eject a CD, use the eject function in the emulated operating system

@@ -62,6 +62,27 @@ To enable or disable mapping the right ALT to Command, use the menu item
 
 ## Mouse
 
-Snow uses absolute mouse positioning to provide an intuitive way of using
+Snow supports two ways of emulating the mouse, which can be chosen under
+'Advanced' in the [Load ROM dialog](starting.md).
+
+### Absolute positioning (default)
+
+Absolute mouse positioning to provide an intuitive way of using
 the mouse. Moving the mouse cursor over the display of the emulated
-system will move the mouse on the emulated system.
+system will move the mouse on the emulated system. When entering the edge of
+display, the cursor will immediately jump to that location. The speed of
+the mouse matches that of the host system.
+
+To achieve this, Snow patches a couple of global variables in the memory of the
+Mac. This makes this mode unsuited for certain games and non-original operating
+systems and ROMs.
+
+### Relative positioning / hardware mouse emulation
+
+This mode emulates the Macintosh mouse on the lowest level, but since hardware
+mice only signal relative movement to the computer, it only passes relative
+movements to the emulated system. This may make it harder to control the mouse,
+but it provides the most accurate emulation experience and works best with
+some games (e.g. first person shooters) and non-original software.
+
+Relative positioning mode works best when using Snow [fullscreen](fullscreen.md).
