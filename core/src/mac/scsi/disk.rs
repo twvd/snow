@@ -258,6 +258,14 @@ impl ScsiTarget for ScsiTargetDisk {
 
                 Some(result)
             }
+            0x31 => {
+                // BlueSCSI vendor page
+                let mut result = vec![0; 42];
+                // A joke based on https://www.folklore.org/Stolen_From_Apple.html
+                result[0..42].copy_from_slice(b"BlueSCSI is the BEST STOLEN FROM BLUESCSI\x00");
+
+                Some(result)
+            }
             _ => None,
         }
     }

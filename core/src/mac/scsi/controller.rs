@@ -1,7 +1,7 @@
 //! NCR5380 SCSI controller
 
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 
@@ -21,6 +21,7 @@ use crate::mac::scsi::disk::ScsiTargetDisk;
 use crate::mac::scsi::scsi_cmd_len;
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::scsi::target::ScsiTargetType;
+use crate::mac::scsi::toolbox::BlueSCSI;
 use crate::mac::scsi::ScsiCmdResult;
 use crate::mac::scsi::STATUS_GOOD;
 use crate::types::LatchingEvent;
@@ -173,6 +174,10 @@ pub struct ScsiController {
     pub(crate) targets: [Option<Box<dyn ScsiTarget>>; Self::MAX_TARGETS],
 
     set_req: LatchingEvent,
+
+    #[serde(skip)]
+    toolbox: BlueSCSI,
+    scsi_debug: bool,
 }
 
 impl ScsiController {
@@ -197,6 +202,10 @@ impl ScsiController {
         self.targets[id].as_ref().map(|t| t.target_type())
     }
 
+    pub fn set_shared_dir(&mut self, path: PathBuf) {
+        self.toolbox = BlueSCSI::new(Some(path));
+    }
+
     pub fn new() -> Self {
         Self {
             busphase: ScsiBusPhase::Free,
@@ -215,6 +224,8 @@ impl ScsiController {
             status: 0,
             set_req: Default::default(),
             targets: Default::default(),
+            toolbox: BlueSCSI::default(),
+            scsi_debug: false,
         }
     }
 
@@ -332,11 +343,20 @@ impl ScsiController {
 
     fn cmd_run(&mut self, outdata: Option<&[u8]>) -> Result<()> {
         let cmd = &self.cmdbuf;
-        let Some(target) = self.targets[self.sel_id].as_mut() else {
-            bail!("SCSI command to disconnected target ID {}", self.sel_id);
+
+        let result = match cmd[0] {
+            0xD0..=0xD9 => Ok(self
+                .toolbox
+                .handle_command(cmd, outdata, &mut self.scsi_debug)),
+            _ => {
+                let Some(target) = self.targets[self.sel_id].as_mut() else {
+                    bail!("SCSI command to disconnected target ID {}", self.sel_id);
+                };
+                target.cmd(cmd, outdata)
+            }
         };
 
-        match target.cmd(cmd, outdata) {
+        match result {
             Ok(ScsiCmdResult::Status(s)) => {
                 self.status = s;
 
