@@ -83,3 +83,4 @@ jobs:
           name: Snow MacOS App Bundle (universal)
           if-no-files-found: error
           path: Snow-MacOS-universal.zip
+
