@@ -4,6 +4,7 @@ pub mod cdrom;
 pub mod controller;
 pub mod disk;
 pub mod target;
+pub mod toolbox;
 
 pub const STATUS_GOOD: u8 = 0;
 pub const STATUS_CHECK_CONDITION: u8 = 2;
@@ -54,6 +55,8 @@ const fn scsi_cmd_len(cmdnum: u8) -> Option<usize> {
         | 0x3C
         // READ TOC
         | 0x43
+        // BlueSCSI Toolbox commands
+        | 0xD0..=0xD9
         => Some(10),
         _ => {
             None

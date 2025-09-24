@@ -9,9 +9,10 @@ use snow_floppy::Floppy;
 use std::collections::VecDeque;
 #[cfg(feature = "savestates")]
 use std::fs::File;
+use std::fs;
 #[cfg(feature = "savestates")]
 use std::io::Seek;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 use strum::IntoEnumIterator;
@@ -347,6 +348,12 @@ impl Emulator {
                 }
             }
         };
+
+        let shared_dir = PathBuf::from("shared");
+        if !shared_dir.exists() {
+            fs::create_dir(&shared_dir)?;
+        }
+        config.scsi_mut().set_shared_dir(shared_dir);
 
         config.cpu_reset()?;
 
