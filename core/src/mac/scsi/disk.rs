@@ -171,6 +171,10 @@ impl ScsiTarget for ScsiTargetDisk {
 
         // 16..32 Product identification
         result[16..(16 + 11)].copy_from_slice(b"VIRTUAL HDD");
+
+        // 32..36 Revision
+        result[32..35].copy_from_slice(b"1.0");
+
         Ok(ScsiCmdResult::DataIn(result))
     }
 
