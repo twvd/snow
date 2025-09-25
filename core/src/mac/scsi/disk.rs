@@ -156,6 +156,12 @@ impl ScsiTarget for ScsiTargetDisk {
 
         // 0 Peripheral qualifier (5-7), peripheral device type (4-0)
         result[0] = 0; // Magnetic disk
+        // Device Type Modifier
+        result[1] = 0;
+
+        // SCSI version compliance
+        result[2] = 0x02; // ANSI-2
+        result[3] = 0x02; // ANSI-2
 
         // 4 Additional length (N-4), min. 32
         result[4] = result.len() as u8 - 4;
