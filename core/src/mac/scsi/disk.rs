@@ -171,21 +171,71 @@ impl ScsiTarget for ScsiTargetDisk {
     fn mode_sense(&mut self, page: u8) -> Option<Vec<u8>> {
         match page {
             0x01 => {
-                // Read/write recovery page
-
-                // Error recovery stuff, can remain at 0.
-                // Also, HD SC Setup doesn't seem to care as long as we respond to this command.
-
-                Some(vec![0; 6])
+                // Read/write error recovery page
+                Some(vec![
+                    0x01, // Page code
+                    0x0A, // Page length
+                    0b1100_0000, // DCR, DTE, PER, EER, RC, TB, ARRE, AWRE
+                    8, // Read retry count
+                    0, // Correction span
+                    0, // Head offset count
+                    0, // Data strobe offset count
+                    0, // Reserved
+                    0, // Write retry count
+                    0, // Reserved
+                    0, // Recovery time limit (MSB)
+                    0, // Recovery time limit (LSB)
+                ])
+            }
+            0x02 => {
+                // Disconnect-reconnect page
+                Some(vec![
+                    0x02, // Page code
+                    0x0E, // Page length
+                    0, // Buffer full ratio
+                    0, // Buffer empty ratio
+                    0, // Bus inactivity limit (MSB)
+                    0, // Bus inactivity limit (LSB)
+                    0, // Disconnect time limit (MSB)
+                    0, // Disconnect time limit (LSB)
+                    0, // Connect time limit (MSB)
+                    0, // Connect time limit (LSB)
+                    0, // Maximum burst size (MSB)
+                    0, // Maximum burst size (LSB)
+                    0, // DID, DTDC
+                    0, // Reserved
+                    0, // Reserved
+                    0, // Reserved
+                ])
             }
             0x03 => {
                 // Format device page
-
-                // The remaining bytes can remain at 0 as they indicate information on how many
-                // sectors/tracks are reserved for defect management.
-                // Also, HD SC Setup doesn't seem to care as long as we respond to this command.
-
-                Some(vec![0; 0x16])
+                Some(vec![
+                    0x03, // Page code
+                    0x16, // Page length
+                    0, // Reserved
+                    0, // Reserved
+                    0, // Tracks per zone (MSB)
+                    0, // Tracks per zone (LSB)
+                    0, // Alternate sectors per zone (MSB)
+                    0, // Alternate sectors per zone (LSB)
+                    0, // Alternate tracks per zone (MSB)
+                    0, // Alternate tracks per zone (LSB)
+                    0, // Alternate tracks per volume (MSB)
+                    0, // Alternate tracks per volume (LSB)
+                    0, // Sectors per track (MSB)
+                    0, // Sectors per track (LSB)
+                    (DISK_BLOCKSIZE >> 8) as u8, // Bytes per physical sector (MSB)
+                    (DISK_BLOCKSIZE & 0xFF) as u8, // Bytes per physical sector (LSB)
+                    0, // Interleave (MSB)
+                    0, // Interleave (LSB)
+                    0, // Track skew factor (MSB)
+                    0, // Track skew factor (LSB)
+                    0, // Cylinder skew factor (MSB)
+                    0, // Cylinder skew factor (LSB)
+                    0, // Flags
+                    0, // Reserved
+                ])
             }
             0x30 => {
                 // ? Non-standard mode page
