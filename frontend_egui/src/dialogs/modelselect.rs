@@ -564,25 +564,7 @@ impl ModelSelectionDialog {
                             } else {
                                 Some(PathBuf::from(&self.extension_rom_path))
                             },
-                            init_args: EmulatorInitArgs {
-                                monitor: if self.display_rom_required {
-                                    Some(self.selected_monitor)
-                                } else {
-                                    None
-                                },
-                                // Deprecated
-                                mouse_disabled: None,
-                                override_fdd_type: if matches!(
-                                    self.selected_model,
-                                    MacModel::Early128K | MacModel::Early512K
-                                ) && self.early_800k
-                                {
-                                    Some(DriveType::GCR800KPWM)
-                                } else {
-                                    None
-                                },
-                                ..self.init_args
-                            },
+                            init_args: self.init_args.clone(),
                         });
                         self.open = false;
                     }
