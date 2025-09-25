@@ -165,6 +165,7 @@ pub struct SnowGui {
     state_dialog_last: Option<DirectoryEntry>,
     state_dialog_last_header: Option<SaveHeader>,
     state_dialog_screenshot: egui::TextureHandle,
+    shared_dir_dialog: FileDialog,
 
     error_dialog_open: bool,
     error_string: String,
@@ -346,6 +347,9 @@ impl SnowGui {
                 egui::ColorImage::new([0, 0], egui::Color32::BLACK),
                 egui::TextureOptions::LINEAR,
             ),
+            shared_dir_dialog: FileDialog::new()
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
+                .initial_directory(Self::default_dir()),
 
             error_dialog_open: false,
             error_string: String::new(),
@@ -678,6 +682,26 @@ impl SnowGui {
                     self.emu.record_input_end();
                     ui.close_menu();
                 }
+                ui.separator();
+                ui.menu_button("File sharing", |ui| {
+                    ui.set_min_width(Self::SUBMENU_WIDTH + 100.0);
+                    ui.label("Shared folder (for BlueSCSI toolbox):");
+                    let shared_dir_str = self
+                        .workspace
+                        .get_shared_dir()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    ui.text_edit_singleline(&mut shared_dir_str.clone());
+                    if ui.button("Select folder...").clicked() {
+                        self.shared_dir_dialog.pick_directory();
+                        ui.close_menu();
+                    }
+                    if ui.button("Clear").clicked() {
+                        self.workspace.set_shared_dir(None);
+                        self.emu.set_shared_dir(None);
+                        ui.close_menu();
+                    }
+                });
             });
             ui.menu_button("Options", |ui| {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
@@ -1284,6 +1308,7 @@ impl SnowGui {
             pram_path,
             args,
             model,
+            self.workspace.get_shared_dir(),
         ) {
             Ok(p) => self.framebuffer.connect_receiver(p.frame_receiver),
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
@@ -2017,6 +2042,13 @@ impl eframe::App for SnowGui {
             }
         }
         self.ui_active &= self.cdrom_files_dialog.state() != egui_file_dialog::DialogState::Open;
+
+        // Shared directory picker dialog
+        self.shared_dir_dialog.update(ctx);
+        if let Some(path) = self.shared_dir_dialog.take_picked() {
+            self.workspace.set_shared_dir(Some(&path));
+            self.emu.set_shared_dir(Some(path));
+        }
 
         // Workspace picker dialog
         self.workspace_dialog.update(ctx);

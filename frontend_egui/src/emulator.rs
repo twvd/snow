@@ -140,6 +140,7 @@ impl EmulatorState {
         pram: Option<&Path>,
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
+        shared_dir: Option<PathBuf>,
     ) -> Result<EmulatorInitResult> {
         let rom = std::fs::read(filename)?;
         let display_rom = if let Some(filename) = display_rom_path {
@@ -160,6 +161,7 @@ impl EmulatorState {
             pram,
             args,
             model,
+            shared_dir,
         )
     }
 
@@ -174,6 +176,7 @@ impl EmulatorState {
         pram: Option<&Path>,
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
+        shared_dir: Option<PathBuf>,
     ) -> Result<EmulatorInitResult> {
         // Terminate running emulator (if any)
         self.deinit();
@@ -214,6 +217,7 @@ impl EmulatorState {
             args.ram_size,
             args.override_fdd_type,
             args.pmmu_enabled,
+            shared_dir,
         )?;
 
         let cmd = emulator.create_cmd_sender();
@@ -990,5 +994,12 @@ impl EmulatorState {
         sender
             .send(EmulatorCommand::SaveState(p.to_path_buf(), screenshot))
             .unwrap();
+    }
+
+    pub fn set_shared_dir(&self, path: Option<PathBuf>) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender.send(EmulatorCommand::SetSharedDir(path)).unwrap();
     }
 }
