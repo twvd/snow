@@ -8,7 +8,9 @@ pub fn load_png_from_bytes_as_texture(
 ) -> Result<egui::TextureHandle, Box<dyn std::error::Error>> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(png_bytes));
 
-    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut transformations = png::Transformations::normalize_to_color8();
+    transformations.insert(png::Transformations::ALPHA);
+    decoder.set_transformations(transformations);
 
     let mut reader = decoder.read_info()?;
     let mut buf = vec![0; reader.output_buffer_size()];

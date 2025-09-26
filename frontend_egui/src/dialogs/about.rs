@@ -42,7 +42,7 @@ impl AboutDialog {
         }
 
         egui::Modal::new(egui::Id::new("About Snow")).show(ctx, |ui| {
-            ui.set_width(500.0);
+            ui.set_width(525.0);
             ui.set_height(270.0);
 
             ui.horizontal(|ui| {
