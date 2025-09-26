@@ -4,7 +4,11 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::mac::scsi::{ScsiCmdResult, ASC_INVALID_FIELD_IN_CDB, ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE, ASC_MEDIUM_NOT_PRESENT, CC_KEY_ILLEGAL_REQUEST, CC_KEY_MEDIUM_ERROR, STATUS_CHECK_CONDITION, STATUS_GOOD};
+use crate::mac::scsi::{
+    ScsiCmdResult, ASC_INVALID_FIELD_IN_CDB, ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
+    ASC_MEDIUM_NOT_PRESENT, CC_KEY_ILLEGAL_REQUEST, CC_KEY_MEDIUM_ERROR, STATUS_CHECK_CONDITION,
+    STATUS_GOOD,
+};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 /// Enumeration of supported emulated SCSI target types (devices)
@@ -61,12 +65,15 @@ pub(crate) trait ScsiTarget: Send {
         if let Some(capacity) = self.capacity() {
             if lba as usize >= capacity / self.blocksize().unwrap() {
                 log::error!(
-                "Seeking beyond disk, lba: {}, capacity: {}, blocksize: {}",
-                lba,
-                capacity,
-                self.blocksize().unwrap()
-            );
-                self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE);
+                    "Seeking beyond disk, lba: {}, capacity: {}, blocksize: {}",
+                    lba,
+                    capacity,
+                    self.blocksize().unwrap()
+                );
+                self.set_cc(
+                    CC_KEY_ILLEGAL_REQUEST,
+                    ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
+                );
                 return false;
             }
         }
