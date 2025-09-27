@@ -715,7 +715,7 @@ where
             // not be able to service Y axis movements anymore.
             //
             // From a DCD edge to asserting the interrupt line takes the SCC ~1.5us.
-            if scanline % 8 == 0 {
+            if scanline.is_multiple_of(8) {
                 self.plusmouse_tick();
             }
 

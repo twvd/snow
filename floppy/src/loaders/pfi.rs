@@ -40,6 +40,7 @@ struct ChunkHeader {
 #[binrw]
 #[brw(big)]
 #[derive(Debug)]
+#[allow(dead_code)]
 struct ChunkTail {
     pub crc: u32,
 }
@@ -48,6 +49,7 @@ struct ChunkTail {
 #[binrw]
 #[brw(big)]
 #[derive(Debug)]
+#[allow(dead_code)]
 struct PayloadHeader {
     pub version: u8,
 }

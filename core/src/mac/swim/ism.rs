@@ -312,7 +312,9 @@ impl Swim {
     pub(super) fn ism_tick(&mut self, _ticks: usize) -> Result<()> {
         // This is only called when the drive is active and running
         if !self.ism_mode.action()
-            || self.cycles % self.get_selected_drive().get_ticks_per_bit() != 0
+            || !self
+                .cycles
+                .is_multiple_of(self.get_selected_drive().get_ticks_per_bit())
         {
             return Ok(());
         }
