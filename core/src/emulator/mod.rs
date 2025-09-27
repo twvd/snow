@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 use std::fs::File;
 #[cfg(feature = "savestates")]
 use std::io::Seek;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 use strum::IntoEnumIterator;
@@ -245,6 +245,7 @@ impl Emulator {
             None,
             None,
             false,
+            None,
         )
     }
 
@@ -258,6 +259,7 @@ impl Emulator {
         ram_size: Option<usize>,
         override_fdd_type: Option<DriveType>,
         pmmu_enabled: bool,
+        shared_dir: Option<PathBuf>,
     ) -> Result<(Self, crossbeam_channel::Receiver<DisplayBuffer>)> {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
@@ -348,6 +350,16 @@ impl Emulator {
             }
         };
 
+        let s_dir = shared_dir.or_else(|| {
+            let path = PathBuf::from("shared");
+            if path.exists() {
+                Some(path)
+            } else {
+                debug!("No shared directory set, sharing will be disabled");
+                None
+            }
+        });
+        config.scsi_mut().set_shared_dir(s_dir);
         config.cpu_reset()?;
 
         let mut emu = Self {
@@ -938,6 +950,9 @@ impl Tickable for Emulator {
                     EmulatorCommand::SetInstructionHistory(v) => self.config.cpu_enable_history(v),
                     EmulatorCommand::SetSystrapHistory(v) => {
                         self.config.cpu_enable_systrap_history(v);
+                    }
+                    EmulatorCommand::SetSharedDir(path) => {
+                        self.config.scsi_mut().set_shared_dir(path);
                     }
                     EmulatorCommand::SetPeripheralDebug(v) => {
                         self.peripheral_debug = v;
