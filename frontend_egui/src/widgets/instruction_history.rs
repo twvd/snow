@@ -244,7 +244,7 @@ impl InstructionHistoryWidget {
         ui.horizontal(|ui| {
             ui.set_max_height(row_height);
 
-            if row_idx % 2 == 0 {
+            if row_idx.is_multiple_of(2) {
                 ui.painter()
                     .rect_filled(ui.max_rect(), 0.0, ui.style().visuals.faint_bg_color);
             }

@@ -109,6 +109,7 @@ struct MoofChunkTmap {
 /// FLUX chunk (minus header)
 #[binrw]
 #[brw(little)]
+#[allow(dead_code)]
 struct MoofChunkFlux {
     pub entries: [[u8; 2]; 80],
 }

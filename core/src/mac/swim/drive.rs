@@ -487,7 +487,7 @@ impl FloppyDrive {
         let edges_per_min = pulses_per_min * 2;
         let ticks_per_min = self.base_frequency * 60;
         let ticks_per_edge = ticks_per_min / edges_per_min;
-        (self.cycles / ticks_per_edge % 2) != 0
+        !(self.cycles / ticks_per_edge).is_multiple_of(2)
     }
 
     /// Gets the active selected track offset

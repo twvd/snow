@@ -104,7 +104,7 @@ impl ScsiTargetDisk {
             .with_context(|| format!("Failed to open {}", filename.display()))?;
         let file_size = f.seek(SeekFrom::End(0))? as usize;
         f.seek(SeekFrom::Start(0))?;
-        if file_size % DISK_BLOCKSIZE != 0 {
+        if !file_size.is_multiple_of(DISK_BLOCKSIZE) {
             bail!(
                 "Cannot load disk image {}: not multiple of {}",
                 filename.display(),

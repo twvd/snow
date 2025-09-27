@@ -49,7 +49,7 @@ where
                 instr.data,
                 extword
             );
-            return self.op_linef(instr);
+            self.op_linef(instr)
         }
     }
 

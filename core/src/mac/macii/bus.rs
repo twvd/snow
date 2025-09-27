@@ -588,7 +588,7 @@ where
         }
 
         // Legacy VBlank interrupt
-        if self.cycles % (CLOCK_SPEED / 60) == 0 {
+        if self.cycles.is_multiple_of(CLOCK_SPEED / 60) {
             self.via1.ifr.set_vblank(true);
 
             if self.speed == EmulatorSpeed::Video {
@@ -608,7 +608,10 @@ where
         if self.asc.get_irq() {
             self.via2.ifr.set_asc(true);
         }
-        if self.cycles % (CLOCK_SPEED / self.asc.sample_rate()) == 0 {
+        if self
+            .cycles
+            .is_multiple_of(CLOCK_SPEED / self.asc.sample_rate())
+        {
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }
 
