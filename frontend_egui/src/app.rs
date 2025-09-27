@@ -1555,21 +1555,69 @@ impl SnowGui {
     }
 
     fn create_temp_iso<P: AsRef<Path>>(paths: &[P]) -> Result<PathBuf> {
+        // ISO-9660 interchange level 2 is max 31 characters
+        const MAX_FILENAME_LEN: usize = 30;
+
         let mut files = hadris_iso::FileInput::empty();
-        for p in paths {
-            if !p.as_ref().is_file() {
-                log::warn!("Skipping {}: not a file", p.as_ref().display());
+        for p in paths.iter().map(|p| p.as_ref()) {
+            if !p.is_file() {
+                log::warn!("Skipping {}: not a file", p.display());
                 continue;
             }
 
+            let stem = p
+                .file_stem()
+                .map(|p| p.to_string_lossy().to_string())
+                .context("Failed to parse filename")?;
+
+            // Sanitize the extension to uppercase and max 3 characters alpha-numeric
+            let mut extension = p
+                .extension()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_ascii_uppercase()
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .take(3)
+                .collect::<String>();
+            if !extension.is_empty() {
+                extension = format!(".{}", extension);
+            }
+
+            // Sanitize the filename as per ISO-9660 allowed characters and extension
+            let mut new_filename = stem
+                .chars()
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect::<String>();
+            assert!(extension.len() <= 4);
+
+            // Truncate to maximum length, before the extension
+            let max_len = MAX_FILENAME_LEN - extension.len();
+            if new_filename.len() > max_len {
+                // We have to truncate
+                for n in 1.. {
+                    let suffix = format!("_{}", n);
+                    let truncated_filename =
+                        format!("{}{}", &new_filename[..(max_len - suffix.len())], suffix);
+                    let check_filename = format!("{}{}", truncated_filename, extension);
+                    if files.get(&check_filename).is_none() {
+                        new_filename = truncated_filename;
+                        break;
+                    }
+                }
+            }
+            new_filename.push_str(&extension);
+            assert!(new_filename.len() <= MAX_FILENAME_LEN);
+
             files.append(hadris_iso::File {
-                path: p
-                    .as_ref()
-                    .file_name()
-                    .context("Cannot get basename")?
-                    .to_string_lossy()
-                    .to_string(),
-                data: hadris_iso::FileData::File(p.as_ref().to_path_buf()),
+                path: new_filename,
+                data: hadris_iso::FileData::File(p.to_path_buf()),
             });
         }
         let options = hadris_iso::FormatOption::default()
