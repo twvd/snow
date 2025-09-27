@@ -1,4 +1,5 @@
 //! BlueSCSI Toolbox vendor-specific commands
+//!
 //! This is an implementation of th BlueSCSI Toolbox v0 commands suitable for the Snow emulator.
 //! CD switching is not implemented as the emulator can do this easily via the UI.
 //! API Docs: https://github.com/BlueSCSI/BlueSCSI-v2/wiki/Toolbox-Developer-Docs
@@ -54,7 +55,7 @@ impl BlueSCSI {
         }
     }
 
-    fn toggle_debug(&mut self, cmd: &[u8], debug_enabled: &mut bool) -> ScsiCmdResult {
+    fn toggle_debug(&self, cmd: &[u8], debug_enabled: &mut bool) -> ScsiCmdResult {
         if cmd[1] == 0 {
             *debug_enabled = cmd[2] != 0;
             debug!("Set BlueSCSI debug logs to: {}", *debug_enabled);
@@ -74,12 +75,10 @@ impl BlueSCSI {
         };
 
         let mut file_count = 0;
-        for entry in entries {
-            if let Ok(entry) = entry {
-                if let Some(name) = entry.file_name().to_str() {
-                    if !name.starts_with('.') {
-                        file_count += 1;
-                    }
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if !name.starts_with('.') {
+                    file_count += 1;
                 }
             }
         }
@@ -98,30 +97,28 @@ impl BlueSCSI {
         let mut data = Vec::new();
         let mut index = 0;
 
-        for entry in entries {
-            if let Ok(entry) = entry {
-                if let Some(name_str) = entry.file_name().to_str() {
-                    if name_str.starts_with('.') {
-                        continue;
-                    }
-
-                    let mut file_entry = vec![0; ENTRY_SIZE];
-                    let metadata = entry.metadata().ok();
-                    let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-                    let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
-
-                    file_entry[0] = index;
-                    file_entry[1] = if is_dir { 0x00 } else { 0x01 };
-
-                    let name_bytes = name_str.as_bytes();
-                    let len = name_bytes.len().min(MAX_FILE_PATH);
-                    file_entry[2..2 + len].copy_from_slice(&name_bytes[..len]);
-
-                    file_entry[36..40].copy_from_slice(&(size as u32).to_be_bytes());
-
-                    data.extend_from_slice(&file_entry);
-                    index += 1;
+        for entry in entries.flatten() {
+            if let Some(name_str) = entry.file_name().to_str() {
+                if name_str.starts_with('.') {
+                    continue;
                 }
+
+                let mut file_entry = vec![0; ENTRY_SIZE];
+                let metadata = entry.metadata().ok();
+                let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+                let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+
+                file_entry[0] = index;
+                file_entry[1] = if is_dir { 0x00 } else { 0x01 };
+
+                let name_bytes = name_str.as_bytes();
+                let len = name_bytes.len().min(MAX_FILE_PATH);
+                file_entry[2..2 + len].copy_from_slice(&name_bytes[..len]);
+
+                file_entry[36..40].copy_from_slice(&(size as u32).to_be_bytes());
+
+                data.extend_from_slice(&file_entry);
+                index += 1;
             }
         }
         ScsiCmdResult::DataIn(data)
@@ -135,15 +132,13 @@ impl BlueSCSI {
             return None;
         };
         let mut count = 0;
-        for entry in entries {
-            if let Ok(entry) = entry {
-                if let Some(name) = entry.file_name().to_str() {
-                    if !name.starts_with('.') {
-                        if count == index {
-                            return Some(entry.path());
-                        }
-                        count += 1;
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if !name.starts_with('.') {
+                    if count == index {
+                        return Some(entry.path());
                     }
+                    count += 1;
                 }
             }
         }
@@ -214,10 +209,10 @@ impl BlueSCSI {
 
         if let Some(file) = &mut self.file {
             if let Some(data) = outdata {
-                if file.seek(SeekFrom::Start(offset as u64 * 512)).is_ok() {
-                    if file.write_all(&data[..bytes_sent as usize]).is_ok() {
-                        return ScsiCmdResult::Status(STATUS_GOOD);
-                    }
+                if file.seek(SeekFrom::Start(offset as u64 * 512)).is_ok()
+                    && file.write_all(&data[..bytes_sent as usize]).is_ok()
+                {
+                    return ScsiCmdResult::Status(STATUS_GOOD);
                 }
             } else {
                 return ScsiCmdResult::DataOut(bytes_sent as usize);

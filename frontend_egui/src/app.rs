@@ -686,12 +686,12 @@ impl SnowGui {
                 ui.menu_button("File sharing", |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH + 100.0);
                     ui.label("Shared folder (for BlueSCSI toolbox):");
-                    let shared_dir_str = self
+                    let mut shared_dir_str = self
                         .workspace
                         .get_shared_dir()
                         .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_default();
-                    ui.text_edit_singleline(&mut shared_dir_str.clone());
+                    ui.text_edit_singleline(&mut shared_dir_str);
                     if ui.button("Select folder...").clicked() {
                         self.shared_dir_dialog.pick_directory();
                         ui.close_menu();

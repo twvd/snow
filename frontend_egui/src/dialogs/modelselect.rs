@@ -7,7 +7,6 @@ use eframe::egui;
 use egui_file_dialog::FileDialog;
 use sha2::{Digest, Sha256};
 use snow_core::emulator::MouseMode;
-use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{MacModel, MacMonitor};
 use strum::IntoEnumIterator;
 
