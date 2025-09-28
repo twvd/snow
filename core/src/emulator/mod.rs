@@ -350,16 +350,7 @@ impl Emulator {
             }
         };
 
-        let s_dir = shared_dir.or_else(|| {
-            let path = PathBuf::from("shared");
-            if path.exists() {
-                Some(path)
-            } else {
-                debug!("No shared directory set, sharing will be disabled");
-                None
-            }
-        });
-        config.scsi_mut().set_shared_dir(s_dir);
+        config.scsi_mut().set_shared_dir(shared_dir);
         config.cpu_reset()?;
 
         let mut emu = Self {
