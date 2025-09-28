@@ -646,6 +646,33 @@ impl SnowGui {
             });
             ui.menu_button("Tools", |ui| {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
+                ui.menu_button("File sharing", |ui| {
+                    ui.set_min_width(Self::SUBMENU_WIDTH + 100.0);
+                    ui.label("Shared folder (for BlueSCSI Toolbox):");
+                    let mut shared_dir_str = self
+                        .workspace
+                        .get_shared_dir()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    ui.add_enabled(false, egui::TextEdit::singleline(&mut shared_dir_str));
+                    if ui.button("Select folder...").clicked() {
+                        self.shared_dir_dialog.pick_directory();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(
+                            !shared_dir_str.is_empty(),
+                            egui::Button::new("Disable sharing"),
+                        )
+                        .clicked()
+                    {
+                        self.workspace.set_shared_dir(None);
+                        self.emu.set_shared_dir(None);
+                        ui.close_menu();
+                    }
+                });
+                ui.separator();
                 if ui
                     .add_enabled(
                         self.emu.is_initialized(),
@@ -682,26 +709,6 @@ impl SnowGui {
                     self.emu.record_input_end();
                     ui.close_menu();
                 }
-                ui.separator();
-                ui.menu_button("File sharing", |ui| {
-                    ui.set_min_width(Self::SUBMENU_WIDTH + 100.0);
-                    ui.label("Shared folder (for BlueSCSI toolbox):");
-                    let mut shared_dir_str = self
-                        .workspace
-                        .get_shared_dir()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    ui.text_edit_singleline(&mut shared_dir_str);
-                    if ui.button("Select folder...").clicked() {
-                        self.shared_dir_dialog.pick_directory();
-                        ui.close_menu();
-                    }
-                    if ui.button("Clear").clicked() {
-                        self.workspace.set_shared_dir(None);
-                        self.emu.set_shared_dir(None);
-                        ui.close_menu();
-                    }
-                });
             });
             ui.menu_button("Options", |ui| {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
@@ -2049,6 +2056,8 @@ impl eframe::App for SnowGui {
             self.workspace.set_shared_dir(Some(&path));
             self.emu.set_shared_dir(Some(path));
         }
+
+        self.ui_active &= self.shared_dir_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // Workspace picker dialog
         self.workspace_dialog.update(ctx);

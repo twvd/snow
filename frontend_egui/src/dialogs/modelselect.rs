@@ -7,6 +7,7 @@ use eframe::egui;
 use egui_file_dialog::FileDialog;
 use sha2::{Digest, Sha256};
 use snow_core::emulator::MouseMode;
+use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{MacModel, MacMonitor};
 use strum::IntoEnumIterator;
 
@@ -563,7 +564,25 @@ impl ModelSelectionDialog {
                             } else {
                                 Some(PathBuf::from(&self.extension_rom_path))
                             },
-                            init_args: self.init_args.clone(),
+                            init_args: EmulatorInitArgs {
+                                monitor: if self.display_rom_required {
+                                    Some(self.selected_monitor)
+                                } else {
+                                    None
+                                },
+                                // Deprecated
+                                mouse_disabled: None,
+                                override_fdd_type: if matches!(
+                                    self.selected_model,
+                                    MacModel::Early128K | MacModel::Early512K
+                                ) && self.early_800k
+                                {
+                                    Some(DriveType::GCR800KPWM)
+                                } else {
+                                    None
+                                },
+                                ..self.init_args
+                            },
                         });
                         self.open = false;
                     }
