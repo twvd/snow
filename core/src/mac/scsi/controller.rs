@@ -302,6 +302,9 @@ impl ScsiController {
                 self.assert_req();
             }
             ScsiBusPhase::DataIn => {
+                if self.responsebuf.is_empty() {
+                    return self.set_phase(ScsiBusPhase::Status);
+                }
                 self.reg_csr.set_bsy(true);
                 self.reg_csr.set_cd(false);
                 self.reg_csr.set_io(true);
