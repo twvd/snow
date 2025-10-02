@@ -401,6 +401,11 @@ impl ScsiController {
                 self.dataout_len = len;
                 self.responsebuf.clear();
                 self.set_phase(ScsiBusPhase::DataOut);
+
+                if self.dataout_len == 0 {
+                    // Legal according to spec
+                    return self.cmd_run(Some(&[]));
+                }
             }
             Err(e) => return Err(e),
         }
