@@ -296,6 +296,21 @@ impl ScsiTarget for ScsiTargetCdrom {
 
                 Some(vec![0; 0x16])
             }
+            0x0E => {
+                // Audio control parameters
+
+                Some(vec![
+                    0x04, // 'Immed' bit set, 'SOTC' bit not set
+                    0x00, // reserved
+                    0x00, // reserved
+                    0x80, // 1 LBAs/sec multip
+                    0x00, 0x4B, // 75 LBAs/sec
+                    0x01, 0xFF, // output port 0 active, max volume
+                    0x02, 0xFF, // output port 1 active, max volume
+                    0x00, 0x00, // output port 2 inactive
+                    0x00, 0x00, // output port 3 inactive
+                ])
+            }
             0x30 => {
                 // ? Non-standard mode page
 
