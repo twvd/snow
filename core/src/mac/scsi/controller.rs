@@ -578,7 +578,7 @@ impl BusMember<Address> for ScsiController {
                 self.reg_bsr.set_irq(false);
                 Some(0)
             }
-            _ => Some(0),
+            NcrReg::TCR => Some(self.reg_tcr.with_last_byte_sent(self.reg_bsr.dma_end()).0),
         };
 
         if SCSI_TRACE && reg != NcrReg::CSR && reg != NcrReg::BSR {
@@ -737,7 +737,9 @@ impl Tickable for ScsiController {
 impl Debuggable for ScsiController {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
-        use crate::{dbgprop_bool, dbgprop_enum, dbgprop_group, dbgprop_header, dbgprop_udec};
+        use crate::{
+            dbgprop_bool, dbgprop_enum, dbgprop_group, dbgprop_header, dbgprop_string, dbgprop_udec,
+        };
 
         vec![
             dbgprop_group!(
@@ -756,6 +758,7 @@ impl Debuggable for ScsiController {
             dbgprop_udec!("Selected ID", self.sel_id),
             dbgprop_bool!("Attention", self.sel_atn),
             dbgprop_header!("Buffers"),
+            dbgprop_string!("Command", format!("{:02X?}", self.cmdbuf)),
             dbgprop_udec!("Command buffer len", self.cmdbuf.len()),
             dbgprop_udec!("Command length", self.cmdlen),
             dbgprop_udec!("Response buffer len", self.responsebuf.len()),
