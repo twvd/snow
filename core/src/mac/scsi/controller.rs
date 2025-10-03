@@ -448,7 +448,7 @@ impl ScsiController {
         }
         self.reg_odr = val;
 
-        if self.reg_mr.dma_mode() {
+        if self.reg_mr.dma_mode() && self.reg_icr.assert_databus() {
             self.assert_ack();
             self.deassert_ack();
         }
@@ -487,6 +487,8 @@ impl ScsiController {
     }
 
     fn deassert_ack_real(&mut self) {
+        let mut end_dma = false;
+
         match self.busphase {
             ScsiBusPhase::Command => {
                 let val = self.reg_odr;
@@ -515,12 +517,7 @@ impl ScsiController {
                 } else {
                     // Transfer completed
                     self.set_phase(ScsiBusPhase::Status);
-                    if self.reg_mr.dma_mode() {
-                        self.reg_bsr.set_dma_end(true);
-                        if self.reg_mr.eop_irq() {
-                            self.reg_bsr.set_irq(true);
-                        }
-                    }
+                    end_dma = true;
                 }
             }
             ScsiBusPhase::DataOut => {
@@ -530,23 +527,27 @@ impl ScsiController {
                     if let Err(e) = self.cmd_run(Some(&datavec)) {
                         log::error!("SCSI command run error: {:#}", e);
                     }
-                    if self.reg_mr.dma_mode() {
-                        self.reg_bsr.set_dma_end(true);
-                        if self.reg_mr.eop_irq() {
-                            self.reg_bsr.set_irq(true);
-                        }
-                    }
+                    end_dma = true;
                 } else {
                     self.assert_req();
                 }
             }
             ScsiBusPhase::Status => {
                 self.set_phase(ScsiBusPhase::MessageIn);
+                end_dma = true;
             }
             ScsiBusPhase::MessageIn => {
                 self.set_phase(ScsiBusPhase::Free);
+                end_dma = true;
             }
             _ => {}
+        }
+
+        if end_dma && self.reg_mr.dma_mode() {
+            self.reg_bsr.set_dma_end(true);
+            if self.reg_mr.eop_irq() {
+                self.reg_bsr.set_irq(true);
+            }
         }
     }
 
