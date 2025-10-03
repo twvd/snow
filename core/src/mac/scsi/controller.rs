@@ -91,6 +91,7 @@ bitfield! {
         pub assert_sel: bool @ 2,
         pub assert_bsy: bool @ 3,
         pub assert_ack: bool @ 4,
+        pub la: bool @ 5,
         /// (w) Differential enable
         pub diff_en: bool @ 5,
         /// (r) Arbitration In Progress
@@ -174,9 +175,6 @@ pub struct ScsiController {
     /// Selected SCSI ID
     sel_id: usize,
 
-    /// Selected with attention
-    sel_atn: bool,
-
     /// Command buffer
     cmdbuf: Vec<u8>,
 
@@ -239,7 +237,6 @@ impl ScsiController {
             reg_odr: 0,
             reg_tcr: NcrRegTcr(0),
             sel_id: 0,
-            sel_atn: false,
             cmdbuf: vec![],
             responsebuf: VecDeque::default(),
             cmdlen: 0,
@@ -452,6 +449,12 @@ impl ScsiController {
             self.deassert_ack_delay = 0;
         }
 
+        if self.busphase == ScsiBusPhase::Arbitration {
+            // Clear AIP once initiator ID is on the bus
+            self.reg_icr.set_aip(false);
+            self.reg_icr.set_la(false);
+        }
+
         let val = self.reg_cdr;
 
         if self.reg_mr.dma_mode() {
@@ -654,14 +657,10 @@ impl BusMember<Address> for ScsiController {
 
                             // Select this ID
                             self.sel_id = id;
-                            self.sel_atn = self.reg_odr & 0x80 != 0;
+                            self.reg_cdr = self.reg_odr;
 
                             if SCSI_TRACE {
-                                log::debug!(
-                                    "Selected SCSI ID: {:02X}, attention = {}",
-                                    self.sel_id,
-                                    self.sel_atn
-                                );
+                                log::debug!("Selected SCSI ID: {:02X}", self.sel_id,);
                             }
 
                             self.set_phase(ScsiBusPhase::Command);
@@ -757,7 +756,6 @@ impl Debuggable for ScsiController {
             ),
             dbgprop_enum!("Bus phase", self.busphase),
             dbgprop_udec!("Selected ID", self.sel_id),
-            dbgprop_bool!("Attention", self.sel_atn),
             dbgprop_header!("Buffers"),
             dbgprop_string!("Command", format!("{:02X?}", self.cmdbuf)),
             dbgprop_udec!("Command buffer len", self.cmdbuf.len()),
