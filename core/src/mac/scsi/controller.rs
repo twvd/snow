@@ -45,12 +45,13 @@ enum ScsiBusPhase {
     MessageOut,
 }
 
+/// NCR 5380 readable registers
 #[allow(non_camel_case_types)]
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy, FromPrimitive, ToPrimitive)]
-enum NcrReg {
+enum NcrReadReg {
     /// Current Data Register / Output Data Register (0)
-    CDR_ODR,
+    CDR,
     /// Initiator Command Register (10)
     ICR,
     /// Mode Register (20)
@@ -65,6 +66,29 @@ enum NcrReg {
     IDR,
     /// Reset parity/interrupt (read) / Start DMA transfer (write) (70)
     RESET,
+}
+
+/// NCR 5380 writable registers
+#[allow(non_camel_case_types)]
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, FromPrimitive, ToPrimitive)]
+enum NcrWriteReg {
+    /// Output Data Register (0)
+    ODR,
+    /// Initiator Command Register (10)
+    ICR,
+    /// Mode Register (20)
+    MR,
+    /// Target Command Register (30)
+    TCR,
+    /// Select Enable register (40)
+    SELEN,
+    /// Start DMA send (50)
+    StartDMASend,
+    /// Start DMA target receive (60)
+    StartDMATargetReceive,
+    /// Start DMA initiator receive (70)
+    StartDMAInitiatorReceive,
 }
 
 bitfield! {
@@ -555,17 +579,17 @@ impl BusMember<Address> for ScsiController {
     fn read(&mut self, addr: Address) -> Option<u8> {
         let is_write = addr & 1 != 0;
         let dack = addr & 0b0010_0000_0000 != 0;
-        let reg = NcrReg::from_u32((addr >> 4) & 0b111).unwrap();
+        let reg = NcrReadReg::from_u32((addr >> 4) & 0b111).unwrap();
 
         let val = match reg {
-            NcrReg::CDR_ODR | NcrReg::IDR => Some(self.read_datareg()),
-            NcrReg::MR => Some(self.reg_mr.0),
-            NcrReg::ICR => Some(self.reg_icr.0),
-            NcrReg::CSR => {
+            NcrReadReg::CDR | NcrReadReg::IDR => Some(self.read_datareg()),
+            NcrReadReg::MR => Some(self.reg_mr.0),
+            NcrReadReg::ICR => Some(self.reg_icr.0),
+            NcrReadReg::CSR => {
                 let val = self.reg_csr.0;
                 Some(val)
             }
-            NcrReg::BSR => {
+            NcrReadReg::BSR => {
                 let val = self
                     .reg_bsr
                     .with_dma_req(self.get_drq())
@@ -578,14 +602,14 @@ impl BusMember<Address> for ScsiController {
                 }
                 Some(val)
             }
-            NcrReg::RESET => {
+            NcrReadReg::RESET => {
                 self.reg_bsr.set_irq(false);
                 Some(0)
             }
-            NcrReg::TCR => Some(self.reg_tcr.with_last_byte_sent(self.reg_bsr.dma_end()).0),
+            NcrReadReg::TCR => Some(self.reg_tcr.with_last_byte_sent(self.reg_bsr.dma_end()).0),
         };
 
-        if SCSI_TRACE && reg != NcrReg::CSR && reg != NcrReg::BSR {
+        if SCSI_TRACE && reg != NcrReadReg::CSR && reg != NcrReadReg::BSR {
             log::debug!(
                 "SCSI read: write = {}, dack = {}, reg = {:?}, value = {:02X?}",
                 is_write,
@@ -602,7 +626,7 @@ impl BusMember<Address> for ScsiController {
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
         let is_write = addr & 1 != 0;
         let dack = addr & 0b0010_0000_0000 != 0;
-        let reg = NcrReg::from_u32((addr >> 4) & 0b111).unwrap();
+        let reg = NcrWriteReg::from_u32((addr >> 4) & 0b111).unwrap();
 
         if SCSI_TRACE {
             log::debug!(
@@ -615,11 +639,11 @@ impl BusMember<Address> for ScsiController {
         }
 
         match reg {
-            NcrReg::CDR_ODR => {
+            NcrWriteReg::ODR => {
                 self.write_datareg(val);
                 Some(())
             }
-            NcrReg::ICR => {
+            NcrWriteReg::ICR => {
                 let set = NcrRegIcr(val & !self.reg_icr.0);
                 let clr = NcrRegIcr(!val & self.reg_icr.0);
 
@@ -676,7 +700,7 @@ impl BusMember<Address> for ScsiController {
                 }
                 Some(())
             }
-            NcrReg::MR => {
+            NcrWriteReg::MR => {
                 let set = NcrRegMr(val & !self.reg_mr.0);
                 let clr = NcrRegMr(!val & self.reg_mr.0);
                 self.reg_mr.0 = val;
@@ -693,7 +717,7 @@ impl BusMember<Address> for ScsiController {
                 }
                 Some(())
             }
-            NcrReg::RESET => {
+            NcrWriteReg::StartDMASend | NcrWriteReg::StartDMAInitiatorReceive => {
                 // Start DMA transfer
                 if self.deassert_ack_delay > 0 {
                     self.deassert_ack_real();
@@ -710,12 +734,12 @@ impl BusMember<Address> for ScsiController {
                 }
                 Some(())
             }
-            NcrReg::TCR => {
+            NcrWriteReg::TCR => {
                 self.reg_tcr.0 = val;
                 Some(())
             }
             _ => {
-                //warn!("Unknown SCSI register write: {:?} = {:02X}", reg, val);
+                log::warn!("Unknown SCSI register write: {:?} = {:02X}", reg, val);
                 Some(())
             }
         }
