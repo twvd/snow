@@ -30,6 +30,7 @@ pub struct Asc {
     silent: bool,
 
     mode: AscMode,
+    ctrl: Control,
     channels: [AscChannel; 4],
     #[serde(with = "BigArray")]
     wavetables: [u8; 0x800],
@@ -47,6 +48,14 @@ bitfield! {
         pub l_fullempty: bool @ 1,
         pub r_half: bool @ 2,
         pub r_fullempty: bool @ 3,
+    }
+}
+
+bitfield! {
+    /// Control register
+    #[derive(Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+    pub struct Control(pub Byte): Debug, FromStorage, IntoStorage, DerefStorage {
+        pub stereo: bool @ 1,
     }
 }
 
@@ -87,6 +96,7 @@ impl Default for Asc {
             fifo_r: VecDeque::with_capacity(FIFO_SIZE),
             fifo_status: Default::default(),
             irq: false,
+            ctrl: Control(0),
         };
         result.init_channels();
         result
@@ -145,7 +155,11 @@ impl Asc {
     /// Sample the ASC for FIFO mode
     fn sample_fifo(&mut self) -> (u8, u8) {
         let l = self.fifo_l.pop_front().unwrap_or(0);
-        let r = self.fifo_r.pop_front().unwrap_or(0);
+        let r = if self.ctrl.stereo() {
+            self.fifo_r.pop_front().unwrap_or(0)
+        } else {
+            l
+        };
 
         // Set FIFO status bits
         if self.fifo_l.len() == FIFO_SIZE / 2 {
@@ -209,6 +223,8 @@ impl BusMember<Address> for Asc {
             0x800 => Some(0), // ASC v1
             // Mode
             0x801 => Some(self.mode.to_u8().unwrap()),
+            // Control
+            0x802 => Some(self.ctrl.0),
             // FIFO status
             0x804 => {
                 self.irq = false;
@@ -257,6 +273,8 @@ impl BusMember<Address> for Asc {
             0x000..=0x7FF => Some(()),
             // Mode
             0x801 => Some(self.mode = AscMode::from_u8(val).unwrap_or(AscMode::Off)),
+            // Control
+            0x802 => Some(self.ctrl.0 = val),
             // FIFO control
             0x803 => {
                 if val & 0x80 != 0 {
