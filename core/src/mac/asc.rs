@@ -38,6 +38,12 @@ pub struct Asc {
     irq: bool,
     fifo_l: VecDeque<u8>,
     fifo_r: VecDeque<u8>,
+
+    /// Last sample played on left channel
+    l_last: u8,
+
+    /// Last sample played on right channel
+    r_last: u8,
 }
 
 bitfield! {
@@ -97,6 +103,8 @@ impl Default for Asc {
             fifo_status: Default::default(),
             irq: false,
             ctrl: Control(0),
+            l_last: 0,
+            r_last: 0,
         };
         result.init_channels();
         result
@@ -154,12 +162,15 @@ impl Asc {
 
     /// Sample the ASC for FIFO mode
     fn sample_fifo(&mut self) -> (u8, u8) {
-        let l = self.fifo_l.pop_front().unwrap_or(0);
+        // If a FIFO is empty, the ASC will continue to output the last sample of that channel
+        let l = self.fifo_l.pop_front().unwrap_or(self.l_last);
         let r = if self.ctrl.stereo() {
-            self.fifo_r.pop_front().unwrap_or(0)
+            self.fifo_r.pop_front().unwrap_or(self.r_last)
         } else {
             l
         };
+        self.l_last = l;
+        self.r_last = r;
 
         // Set FIFO status bits
         if self.fifo_l.len() == FIFO_SIZE / 2 {
