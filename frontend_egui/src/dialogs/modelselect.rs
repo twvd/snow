@@ -94,6 +94,7 @@ impl Default for ModelSelectionDialog {
                     }),
                 )
                 .default_file_filter("ROM files (*.rom, *.bin)")
+                .show_pinned_folders(false)
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
 
             display_rom_path: String::new(),
@@ -111,6 +112,7 @@ impl Default for ModelSelectionDialog {
                     }),
                 )
                 .default_file_filter("ROM files (*.rom, *.bin)")
+                .show_pinned_folders(false)
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
             display_rom_required: false,
 
@@ -118,6 +120,7 @@ impl Default for ModelSelectionDialog {
             pram_dialog: FileDialog::new()
                 .add_save_extension("PRAM files", "pram")
                 .default_save_extension("PRAM files")
+                .show_pinned_folders(false)
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
             pram_path: String::new(),
 

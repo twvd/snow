@@ -1,4 +1,5 @@
 use anyhow::Result;
+use egui_file_dialog::FileDialogStorage;
 use serde::{Deserialize, Serialize};
 use snow_core::mac::MacModel;
 use std::path::{Path, PathBuf};
@@ -14,6 +15,15 @@ pub struct AppSettings {
     pub recent_cd_images: Vec<PathBuf>,
     pub last_roms: Vec<(MacModel, PathBuf)>,
     pub last_display_roms: Vec<(MacModel, PathBuf)>,
+
+    pub fd_hdd: FileDialogStorage,
+    pub fd_cdrom: FileDialogStorage,
+    pub fd_cdrom_files: FileDialogStorage,
+    pub fd_floppy: FileDialogStorage,
+    pub fd_record: FileDialogStorage,
+    pub fd_workspace: FileDialogStorage,
+    pub fd_state: FileDialogStorage,
+    pub fd_shared_dir: FileDialogStorage,
 }
 
 impl AppSettings {
