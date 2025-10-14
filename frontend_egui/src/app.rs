@@ -1776,11 +1776,15 @@ impl eframe::App for SnowGui {
         }
 
         // Check for dropped files
-        ctx.input(|i| {
-            for p in i.raw.dropped_files.iter().filter_map(|p| p.path.as_ref()) {
-                self.load_dropped_file(p);
-            }
-        });
+        // Only do this if there's no file dialogs open to avoid the drag-drop event
+        // to be handled twice.
+        if self.ui_active {
+            ctx.input(|i| {
+                for p in i.raw.dropped_files.iter().filter_map(|p| p.path.as_ref()) {
+                    self.load_dropped_file(p);
+                }
+            });
+        }
 
         self.sync_windows(ctx);
         self.poll_winit_events(ctx);
