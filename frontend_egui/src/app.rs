@@ -211,8 +211,10 @@ impl SnowGui {
         );
         let hdd_filter_str = "HDD images (*.img, *.hda)";
         let cdrom_filter_str = "CD-ROM images (*.iso, *.toast)";
+        let settings = AppSettings::load();
 
         let mut app = Self {
+            settings: settings.clone(),
             workspace: Default::default(),
             workspace_file: None,
             load_windows: false,
@@ -248,7 +250,8 @@ impl SnowGui {
                 .add_save_extension("Device image", "img")
                 .default_save_extension("Device image")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
-                .initial_directory(Self::default_dir()),
+                .initial_directory(Self::default_dir())
+                .storage(settings.fd_hdd),
             hdd_dialog_idx: 0,
             cdrom_dialog: FileDialog::new()
                 .add_file_filter(
@@ -264,11 +267,13 @@ impl SnowGui {
                 )
                 .default_file_filter(cdrom_filter_str)
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
-                .initial_directory(Self::default_dir()),
+                .initial_directory(Self::default_dir())
+                .storage(settings.fd_cdrom),
             cdrom_dialog_idx: 0,
             cdrom_files_dialog: FileDialog::new()
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
-                .initial_directory(Self::default_dir()),
+                .initial_directory(Self::default_dir())
+                .storage(settings.fd_cdrom_files),
             floppy_dialog: FileDialog::new()
                 .add_file_filter(
                     &floppy_filter_str,
@@ -288,7 +293,8 @@ impl SnowGui {
                 .add_save_extension("Applesauce MOOF", "moof")
                 .default_save_extension("Applesauce MOOF")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
-                .initial_directory(Self::default_dir()),
+                .initial_directory(Self::default_dir())
+                .storage(settings.fd_floppy),
             record_dialog: FileDialog::new()
                 .allow_path_edit_to_save_file_without_extension(false)
                 .add_save_extension("Snow recording", "snowr")
@@ -303,7 +309,8 @@ impl SnowGui {
                 )
                 .default_file_filter("Snow recording (*.snowr)")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
-                .initial_directory(Self::default_dir()),
+                .initial_directory(Self::default_dir())
+                .storage(settings.fd_record),
             floppy_dialog_target: FloppyDialogTarget::Drive(0),
             floppy_dialog_last: None,
             floppy_dialog_last_image: None,
@@ -322,7 +329,8 @@ impl SnowGui {
                 .add_save_extension("Snow workspace", "snoww")
                 .default_save_extension("Snow workspace")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
-                .initial_directory(Self::default_dir()),
+                .initial_directory(Self::default_dir())
+                .storage(settings.fd_workspace),
             create_disk_dialog: Default::default(),
             model_dialog: Default::default(),
             about_dialog: AboutDialog::new(&cc.egui_ctx),
@@ -339,7 +347,8 @@ impl SnowGui {
                 .add_save_extension("Snow state file", "snows")
                 .default_save_extension("Snow state file")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
-                .initial_directory(Self::default_dir()),
+                .initial_directory(Self::default_dir())
+                .storage(settings.fd_state),
             state_dialog_last: None,
             state_dialog_last_header: None,
             state_dialog_screenshot: cc.egui_ctx.load_texture(
@@ -349,7 +358,8 @@ impl SnowGui {
             ),
             shared_dir_dialog: FileDialog::new()
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
-                .initial_directory(Self::default_dir()),
+                .initial_directory(Self::default_dir())
+                .storage(settings.fd_shared_dir),
 
             error_dialog_open: false,
             error_string: String::new(),
@@ -361,7 +371,6 @@ impl SnowGui {
             last_snowflake_time: Instant::now(),
             snowflake_spawn_timer: 0.0,
 
-            settings: AppSettings::load(),
             emu: EmulatorState::default(),
 
             // Always clean up images created by restoring save states
@@ -2012,6 +2021,9 @@ impl eframe::App for SnowGui {
                 }
                 _ => unreachable!(),
             }
+
+            self.settings.fd_floppy = self.floppy_dialog.storage_mut().clone();
+            self.settings.save();
         }
         self.ui_active &= self.floppy_dialog.state() != egui_file_dialog::DialogState::Open;
 
@@ -2027,6 +2039,9 @@ impl eframe::App for SnowGui {
                 }
                 _ => unreachable!(),
             }
+
+            self.settings.fd_hdd = self.hdd_dialog.storage_mut().clone();
+            self.settings.save();
         }
         self.ui_active &= self.hdd_dialog.state() != egui_file_dialog::DialogState::Open;
 
@@ -2035,6 +2050,9 @@ impl eframe::App for SnowGui {
         if let Some(path) = self.cdrom_dialog.take_picked() {
             self.emu.scsi_load_cdrom(self.cdrom_dialog_idx, &path);
             self.settings.add_recent_cd_image(&path);
+
+            self.settings.fd_cdrom = self.cdrom_dialog.storage_mut().clone();
+            self.settings.save();
         }
         self.ui_active &= self.cdrom_dialog.state() != egui_file_dialog::DialogState::Open;
 
@@ -2051,6 +2069,9 @@ impl eframe::App for SnowGui {
                     self.show_error(&format!("Error creating image: {:?}", e));
                 }
             }
+
+            self.settings.fd_cdrom_files = self.cdrom_files_dialog.storage_mut().clone();
+            self.settings.save();
         }
         self.ui_active &= self.cdrom_files_dialog.state() != egui_file_dialog::DialogState::Open;
 
@@ -2059,6 +2080,9 @@ impl eframe::App for SnowGui {
         if let Some(path) = self.shared_dir_dialog.take_picked() {
             self.workspace.set_shared_dir(Some(&path));
             self.emu.set_shared_dir(Some(path));
+
+            self.settings.fd_shared_dir = self.shared_dir_dialog.storage_mut().clone();
+            self.settings.save();
         }
 
         self.ui_active &= self.shared_dir_dialog.state() != egui_file_dialog::DialogState::Open;
@@ -2101,6 +2125,9 @@ impl eframe::App for SnowGui {
 
                 self.update_titlebar(ctx);
             }
+
+            self.settings.fd_workspace = self.workspace_dialog.storage_mut().clone();
+            self.settings.save();
         }
         self.ui_active &= self.workspace_dialog.state() != egui_file_dialog::DialogState::Open;
 
@@ -2118,6 +2145,9 @@ impl eframe::App for SnowGui {
             } else if let Err(e) = self.emu.replay_input(&path) {
                 self.show_error(&e);
             }
+
+            self.settings.fd_record = self.record_dialog.storage_mut().clone();
+            self.settings.save();
         }
         self.ui_active &= self.record_dialog.state() != egui_file_dialog::DialogState::Open;
 
@@ -2182,6 +2212,9 @@ impl eframe::App for SnowGui {
             } else {
                 self.load_statefile(path);
             }
+
+            self.settings.fd_state = self.state_dialog.storage_mut().clone();
+            self.settings.save();
         }
         self.ui_active &= self.state_dialog.state() != egui_file_dialog::DialogState::Open;
 
