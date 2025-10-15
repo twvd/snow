@@ -10,6 +10,8 @@ use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::asc::Asc;
 use crate::mac::nubus::mdc12::Mdc12;
+use crate::mac::nubus::se30video::SE30Video;
+use crate::mac::nubus::NubusCard;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
@@ -75,7 +77,7 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     progkey_pressed: LatchingEvent,
 
     /// NuBus cards (base address: $9)
-    nubus_devices: [Option<Mdc12<TRenderer>>; 6],
+    nubus_devices: [Option<NubusCard<TRenderer>>; 6],
 
     /// Mouse mode
     mouse_mode: MouseMode,
@@ -104,7 +106,7 @@ where
     pub fn new(
         model: MacModel,
         rom: &[u8],
-        mdcrom: &[u8],
+        videorom: &[u8],
         extension_rom: Option<&[u8]>,
         mut renderers: Vec<TRenderer>,
         monitor: MacMonitor,
@@ -145,9 +147,25 @@ where
             //vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
 
-            nubus_devices: core::array::from_fn(|_| {
-                renderers.pop().map(|r| Mdc12::new(mdcrom, r, monitor))
-            }),
+            nubus_devices: if model == MacModel::SE30 {
+                [
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(NubusCard::SE30Video(SE30Video::new(
+                        videorom,
+                        renderers.pop().unwrap(),
+                    ))),
+                ]
+            } else {
+                core::array::from_fn(|_| {
+                    renderers
+                        .pop()
+                        .map(|r| NubusCard::MDC12(Mdc12::new(videorom, r, monitor)))
+                })
+            },
             mouse_mode,
         };
 
@@ -166,9 +184,15 @@ where
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
     pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        self.nubus_devices[0].as_mut().unwrap().renderer = Some(renderer);
-        // Make sure we have at least the last frame available
-        self.nubus_devices[0].as_mut().unwrap().render().unwrap();
+        if let Some(NubusCard::MDC12(c)) = self.nubus_devices[0].as_mut() {
+            c.renderer = Some(renderer);
+            // Make sure we have at least the last frame available
+            c.render().unwrap();
+        } else if let Some(NubusCard::SE30Video(c)) = self.nubus_devices[5].as_mut() {
+            c.renderer = Some(renderer);
+            // Make sure we have at least the last frame available
+            c.render().unwrap();
+        }
 
         self.asc.after_deserialize();
 
@@ -227,6 +251,14 @@ where
             // I/O region (repeats)
             0x5000_0000..=0x51FF_FFFF => match addr & 0x1_FFFF {
                 // VIA 1
+                0x0000_0000..=0x0000_1FFF if self.model == MacModel::SE30 => {
+                    let result = self.via1.write(addr, val);
+                    let Some(NubusCard::SE30Video(d)) = self.nubus_devices[5].as_mut() else {
+                        unreachable!()
+                    };
+                    d.vblank_enable = !self.via1.b_out.se30_vblank_enable();
+                    result
+                }
                 0x0000_0000..=0x0000_1FFF => self.via1.write(addr, val),
                 // VIA 2
                 0x0000_2000..=0x0000_3FFF => self.via2.write(addr, val),
@@ -253,7 +285,10 @@ where
                     None
                 } else if let Some(dev) = self.nubus_devices[(nubus_addr - 0x09) as usize].as_mut()
                 {
-                    dev.write(addr & 0xFF_FFFF, val)
+                    match dev {
+                        NubusCard::MDC12(dev) => dev.write(addr & 0xFF_FFFF, val),
+                        NubusCard::SE30Video(dev) => dev.write(addr & 0xFF_FFFF, val),
+                    }
                 } else {
                     None
                 }
@@ -330,7 +365,10 @@ where
                     None
                 } else if let Some(dev) = self.nubus_devices[(nubus_addr - 0x09) as usize].as_mut()
                 {
-                    dev.read(addr & 0xFF_FFFF)
+                    match dev {
+                        NubusCard::MDC12(dev) => dev.read(addr & 0xFF_FFFF),
+                        NubusCard::SE30Video(dev) => dev.read(addr & 0xFF_FFFF),
+                    }
                 } else {
                     None
                 }
@@ -441,7 +479,10 @@ where
 
     pub fn video_blank(&mut self) -> Result<()> {
         for d in self.nubus_devices.iter_mut().flatten() {
-            d.blank()?;
+            match d {
+                NubusCard::MDC12(d) => d.blank()?,
+                NubusCard::SE30Video(d) => d.blank()?,
+            }
         }
         Ok(())
     }
