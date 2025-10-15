@@ -48,6 +48,9 @@ bitfield! {
         /// (true = main, false = alternate)
         pub page2: bool @ 6,
 
+        /// Another model sense bit
+        pub model6: bool @ 6,
+
         /// SCC Wait/Request (false)
         pub sccwrreq: bool @ 7,
     }

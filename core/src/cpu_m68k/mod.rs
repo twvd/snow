@@ -27,12 +27,18 @@ pub const M68020_SR_MASK: u16 = 0b1011011100011111;
 /// Motorola 68020 + 68851 PMMU co-processor
 pub type CpuM68020Pmmu<TBus> = cpu::CpuM68k<TBus, M68020_ADDRESS_MASK, M68020, true>;
 
+/// Motorola 68030
+pub type CpuM68030<TBus> = cpu::CpuM68k<TBus, M68030_ADDRESS_MASK, M68030, true>;
+pub const M68030_ADDRESS_MASK: Address = 0xFFFFFFFF;
+pub const M68030_SR_MASK: u16 = 0b1011011100011111;
+
 // CPU type constants for the CPU_TYPE const generic parameter of CpuM68k
 // Should be replaced witb enum const generic if that ever comes to Rust..
 pub type CpuM68kType = usize;
 pub const M68000: CpuM68kType = 68000;
 pub const M68010: CpuM68kType = 68010;
 pub const M68020: CpuM68kType = 68020;
+pub const M68030: CpuM68kType = 68030;
 
 /// Trait to deal with the differently sized instructions for:
 /// Byte (u8)
