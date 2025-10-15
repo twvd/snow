@@ -14,7 +14,7 @@ use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
 use crate::cpu_m68k::regs::RegisterCACR;
-use crate::cpu_m68k::M68000_SR_MASK;
+use crate::cpu_m68k::{M68000_SR_MASK, M68030};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
 
@@ -24,7 +24,8 @@ use super::instruction::{
 };
 use super::regs::{Register, RegisterFile, RegisterSR};
 use super::{
-    CpuM68kType, CpuSized, M68000, M68010, M68020, M68020_SR_MASK, TORDER_HIGHLOW, TORDER_LOWHIGH,
+    CpuM68kType, CpuSized, M68000, M68010, M68020, M68020_SR_MASK, M68030_SR_MASK, TORDER_HIGHLOW,
+    TORDER_LOWHIGH,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -329,7 +330,7 @@ where
     pub const HISTORY_SIZE: usize = 10000;
 
     pub fn new(bus: TBus) -> Self {
-        assert!([M68000, M68020].contains(&CPU_TYPE));
+        assert!([M68000, M68020, M68030].contains(&CPU_TYPE));
 
         Self {
             bus,
@@ -730,6 +731,7 @@ where
         self.regs.sr.set_sr(match CPU_TYPE {
             M68000 => sr & M68000_SR_MASK,
             M68020 => sr & M68020_SR_MASK,
+            M68030 => sr & M68030_SR_MASK,
             _ => unreachable!(),
         });
     }
