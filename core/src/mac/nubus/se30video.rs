@@ -55,11 +55,11 @@ where
     }
 
     pub fn get_irq(&self) -> bool {
-        self.vblank_irq
+        self.vblank_irq && self.vblank_enable
     }
 
     pub fn framebuffer(&self) -> &[u8] {
-        &self.vram[0x8000..]
+        &self.vram[0..]
     }
 
     /// Renders current dislayed frame to target DisplayBuffer
@@ -109,10 +109,8 @@ where
             0x00_0000..=0x00_FFFF | 0xE0_0000..=0xE0_FFFF => {
                 Some(self.vram[(addr & 0xFFFF) as usize])
             }
-            // ROM (byte lane 3)
-            0xFE_0000..=0xFF_FFFF if addr % 4 == 3 => {
-                Some(self.rom[((addr - 0xFE_0000) / 4) as usize % self.rom.len()])
-            }
+            // ROM
+            0xFE_0000..=0xFF_FFFF => Some(self.rom[(addr - 0xFE_0000) as usize % self.rom.len()]),
             _ => None,
         }
     }
