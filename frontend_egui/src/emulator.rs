@@ -194,7 +194,11 @@ impl EmulatorState {
         // Build extra ROMs array
         let mut extra_roms = Vec::new();
         if let Some(display_rom) = display_rom {
-            extra_roms.push(ExtraROMs::MDC12(display_rom));
+            if model == MacModel::SE30 {
+                extra_roms.push(ExtraROMs::SE30Video(display_rom));
+            } else {
+                extra_roms.push(ExtraROMs::MDC12(display_rom));
+            }
         }
         if let Some(extension_rom) = extension_rom {
             extra_roms.push(ExtraROMs::ExtensionROM(extension_rom));
