@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use swim::drive::DriveType;
 
 use crate::bus::Address;
-use crate::cpu_m68k::{CpuM68kType, M68000, M68020};
+use crate::cpu_m68k::{CpuM68kType, M68000, M68020, M68030};
 use crate::keymap::Keymap;
 use crate::tickable::Ticks;
 
@@ -45,6 +45,8 @@ pub enum MacModel {
     MacII,
     /// Macintosh II FDHD
     MacIIFDHD,
+    /// Macintosh SE/30
+    SE30,
 }
 
 #[allow(clippy::match_like_matches_macro)]
@@ -73,8 +75,8 @@ impl MacModel {
         ("cc6d754cfa7841644971718ada1121bc5f94ff954918f502a75abb0e6fd90540", &[Self::MacII]),
         // Macintosh II v2
         ("97f2a22bdb8972bfcc1f16aff1ebbe157887c26787a1c81747a9842fa7b97a06", &[Self::MacII]),
-        // Macintosh II FDHD
-        ("79fae48e2d5cfde68520e46616503963f8c16430903f410514b62c1379af20cb", &[Self::MacIIFDHD]),
+        // Macintosh II FDHD / IIx / IIcx / SE/30
+        ("79fae48e2d5cfde68520e46616503963f8c16430903f410514b62c1379af20cb", &[Self::MacIIFDHD, Self::SE30]),
     ];
 
     pub const fn has_adb(self) -> bool {
@@ -90,7 +92,7 @@ impl MacModel {
             Self::Early128K => 128 * 1024,
             Self::Early512K | Self::Early512Ke => 512 * 1024,
             Self::Plus | Self::SE | Self::SeFdhd | Self::Classic => 4096 * 1024,
-            Self::MacII | Self::MacIIFDHD => 8 * 1024 * 1024,
+            Self::MacII | Self::MacIIFDHD | Self::SE30 => 8 * 1024 * 1024,
         }
     }
 
@@ -108,7 +110,7 @@ impl MacModel {
                 // implementing the SIMM sense lines
                 &[8 * 1024 * 1024]
             }
-            Self::MacIIFDHD => {
+            Self::MacIIFDHD | Self::SE30 => {
                 &[
                     8 * 1024 * 1024,
                     // Configurations > 8MB require 32-bit addressing mode
@@ -128,7 +130,7 @@ impl MacModel {
             Self::Early128K | Self::Early512K | Self::Early512Ke | Self::Plus | Self::SE => false,
             Self::SeFdhd | Self::Classic => true,
             Self::MacII => false,
-            Self::MacIIFDHD => true,
+            Self::MacIIFDHD | Self::SE30 => true,
         }
     }
 
@@ -145,7 +147,7 @@ impl MacModel {
             ],
             Self::Classic => &[DriveType::SuperDrive, DriveType::SuperDrive],
             Self::MacII => &[DriveType::GCR800K, DriveType::GCR800K],
-            Self::MacIIFDHD => &[DriveType::SuperDrive, DriveType::SuperDrive],
+            Self::MacIIFDHD | Self::SE30 => &[DriveType::SuperDrive, DriveType::SuperDrive],
         }
     }
 
@@ -171,8 +173,8 @@ impl MacModel {
             Self::Early128K | Self::Early512K | Self::Early512Ke | Self::Plus => cycles % 8 >= 4,
             // 75/25 for SE and onwards
             Self::SE | Self::SeFdhd | Self::Classic => cycles % 16 >= 4,
-            // No interleave for MacII
-            Self::MacII | Self::MacIIFDHD => true,
+            // No interleave for MacII (and probably onwards)
+            _ => true,
         }
     }
 
@@ -180,9 +182,12 @@ impl MacModel {
         match self {
             Self::Early128K | Self::Early512K => None,
             Self::Early512Ke | Self::Plus => Some((0x0002AE, 0x0040_0000)),
-            Self::SE | Self::SeFdhd | Self::Classic | Self::MacII | Self::MacIIFDHD => {
-                Some((0x000CFC, 0x574C5343))
-            }
+            Self::SE
+            | Self::SeFdhd
+            | Self::Classic
+            | Self::MacII
+            | Self::MacIIFDHD
+            | Self::SE30 => Some((0x000CFC, 0x574C5343)),
         }
     }
 
@@ -196,6 +201,7 @@ impl MacModel {
             | Self::SeFdhd
             | Self::Classic => M68000,
             Self::MacII | Self::MacIIFDHD => M68020,
+            Self::SE30 => M68030,
         }
     }
 
@@ -212,6 +218,7 @@ impl MacModel {
                 via::RegisterA(0xFF).with_sndpg2(false)
             }
             Self::MacII | Self::MacIIFDHD => via::RegisterA(0).with_model(1),
+            Self::SE30 => via::RegisterA(0).with_model(0).with_model6(true),
         }
     }
 }
@@ -261,6 +268,7 @@ impl Display for MacModel {
                 Self::Classic => "Macintosh Classic",
                 Self::MacII => "Macintosh II",
                 Self::MacIIFDHD => "Macintosh II (FDHD)",
+                Self::SE30 => "Macintosh SE/30",
             }
         )
     }
@@ -270,6 +278,8 @@ impl Display for MacModel {
 pub enum ExtraROMs<'a> {
     /// Macintosh Display Card 8-24
     MDC12(&'a [u8]),
+    /// SE/30 video ROM
+    SE30Video(&'a [u8]),
     /// Extension ROM
     ExtensionROM(&'a [u8]),
 }
