@@ -19,6 +19,7 @@ pub struct SE30Video<TRenderer: Renderer> {
     rom: Vec<u8>,
     vblank_irq: bool,
     pub vblank_enable: bool,
+    pub fb_select: bool,
     vblank_ticks: Ticks,
     pub vram: Vec<u8>,
     pub render: LatchingEvent,
@@ -43,6 +44,7 @@ where
             rom: rom.to_owned(),
             vblank_irq: false,
             vblank_enable: false,
+            fb_select: false,
             vram: vec![0; 0xFFFF],
             vblank_ticks: 0,
             render: LatchingEvent::default(),
@@ -52,14 +54,18 @@ where
     pub fn reset(&mut self) {
         self.vblank_irq = false;
         self.vblank_enable = false;
+        self.fb_select = false;
     }
 
     pub fn get_irq(&self) -> bool {
-        self.vblank_irq && self.vblank_enable
+        self.vblank_irq
     }
 
     pub fn framebuffer(&self) -> &[u8] {
-        &self.vram[0..]
+        let base_offset = if !self.fb_select { 0 } else { 0x8000 };
+
+        // Skip top scanline
+        &self.vram[(base_offset + (Self::H_VISIBLE_DOTS / 8))..]
     }
 
     /// Renders current dislayed frame to target DisplayBuffer
@@ -119,7 +125,7 @@ where
         // Assume normal slot, not super slot
         match addr & 0xFF_FFFF {
             0x00_0000..=0x00_FFFF | 0xE0_0000..=0xE0_FFFF => {
-                self.vram[addr as usize] = val;
+                self.vram[(addr as usize) & 0xFFFF] = val;
                 Some(())
             }
             _ => None,
@@ -133,6 +139,9 @@ where
 {
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
         self.vblank_ticks += ticks;
+        if !self.vblank_enable {
+            self.vblank_irq = false;
+        }
         if self.vblank_ticks > 16_000_000 / 60 {
             self.render()?;
 
@@ -156,6 +165,7 @@ where
         vec![
             dbgprop_bool!("VBlank enable", self.vblank_enable),
             dbgprop_bool!("VBlank IRQ", self.vblank_irq),
+            dbgprop_bool!("Framebuffer select", self.vblank_enable),
         ]
     }
 }

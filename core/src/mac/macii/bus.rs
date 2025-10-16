@@ -257,6 +257,7 @@ where
                         unreachable!()
                     };
                     d.vblank_enable = !self.via1.b_out.se30_vblank_enable();
+                    d.fb_select = self.via1.a_out.page2();
                     result
                 }
                 0x0000_0000..=0x0000_1FFF => self.via1.write(addr, val),
