@@ -1,21 +1,19 @@
 //! M68k CPU - Effective Address / Addressing modes handling
 
+use crate::cpu_m68k::FpuM68kType;
 use anyhow::{bail, Result};
 use arrayvec::ArrayVec;
 
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::instruction::MemoryIndirectAction;
+use crate::impl_cpu;
 use crate::types::Long;
 
 use super::cpu::CpuM68k;
 use super::instruction::{AddressingMode, IndexSize, Instruction, Xn};
 use super::{CpuM68kType, CpuSized, M68020, TORDER_HIGHLOW};
 
-impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
-    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
-where
-    TBus: Bus<Address, u8> + IrqSource,
-{
+impl_cpu! {
     /// Calculates address from effective addressing mode, based on operand type
     #[inline(always)]
     pub(in crate::cpu_m68k) fn calc_ea_addr<T: CpuSized>(
