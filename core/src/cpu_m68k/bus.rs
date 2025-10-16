@@ -2,10 +2,12 @@
 
 use crate::bus::{Address, Bus, BusResult, IrqSource};
 use crate::cpu_m68k::cpu::{Breakpoint, BusBreakpoint, CpuError, CpuM68k, Group0Details};
+use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::{CpuM68kType, CpuSized, M68000, M68020, TORDER_HIGHLOW, TORDER_LOWHIGH};
 use crate::types::Long;
 use crate::types::Word;
 
+use crate::impl_cpu;
 use anyhow::{anyhow, bail, Result};
 
 // M68k UM 3.8
@@ -16,11 +18,7 @@ pub const FC_SUPERVISOR_DATA: u8 = 5;
 pub const FC_SUPERVISOR_PROGRAM: u8 = 6;
 pub const FC_MASK: u8 = 0b1111;
 
-impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
-    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
-where
-    TBus: Bus<Address, u8> + IrqSource,
-{
+impl_cpu! {
     #[inline(always)]
     fn fc_data(&self) -> u8 {
         if PMMU {

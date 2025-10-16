@@ -18,7 +18,7 @@ use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
-use crate::cpu_m68k::{CpuM68000, CpuM68020, CpuM68020Pmmu, CpuM68030};
+use crate::cpu_m68k::{CpuM68000, CpuM68020Fpu, CpuM68020Pmmu, CpuM68030Fpu};
 use crate::debuggable::{Debuggable, DebuggableProperties};
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
@@ -154,11 +154,11 @@ enum EmulatorConfig {
     /// Compact series - Mac 128K, 512K, Plus, SE, Classic
     Compact(Box<CpuM68000<CompactMacBus<ChannelRenderer>>>),
     /// Macintosh II (AMU)
-    MacII(Box<CpuM68020<MacIIBus<ChannelRenderer, true>>>),
+    MacII(Box<CpuM68020Fpu<MacIIBus<ChannelRenderer, true>>>),
     /// Macintosh II (PMMU)
     MacIIPmmu(Box<CpuM68020Pmmu<MacIIBus<ChannelRenderer, false>>>),
     /// Macintosh SE/30 and 68030-based Macintosh IIs
-    MacII30(Box<CpuM68030<MacIIBus<ChannelRenderer, false>>>),
+    MacII30(Box<CpuM68030Fpu<MacIIBus<ChannelRenderer, false>>>),
 }
 
 dispatch! {
@@ -332,7 +332,7 @@ impl Emulator {
                         mouse_mode,
                         ram_size,
                     );
-                    let cpu = Box::new(CpuM68020::new(bus));
+                    let cpu = Box::new(CpuM68020Fpu::new(bus));
                     assert_eq!(cpu.get_type(), model.cpu_type());
 
                     EmulatorConfig::MacII(cpu)
@@ -382,7 +382,7 @@ impl Emulator {
                     mouse_mode,
                     ram_size,
                 );
-                let cpu = Box::new(CpuM68030::new(bus));
+                let cpu = Box::new(CpuM68030Fpu::new(bus));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
                 EmulatorConfig::MacII30(cpu)

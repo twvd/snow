@@ -1,3 +1,4 @@
+use crate::cpu_m68k::FpuM68kType;
 use anyhow::{bail, Result};
 use arpfloat::Float;
 use either::Either;
@@ -11,7 +12,8 @@ use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord};
 use crate::cpu_m68k::fpu::math::FloatMath;
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
-use crate::cpu_m68k::CpuM68kType;
+use crate::cpu_m68k::{CpuM68kType, FPU_M68881, FPU_M68882};
+use crate::impl_cpu;
 use crate::types::{Byte, Long, Word};
 
 use super::storage::{DOUBLE_SIZE, EXTENDED_SIZE, SINGLE_SIZE};
@@ -27,11 +29,7 @@ pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_EXTENDED: usize = 4;
 pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_PACKED: usize = 5;
 pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_LEN: usize = 6;
 
-impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
-    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
-where
-    TBus: Bus<Address, u8> + IrqSource,
-{
+impl_cpu! {
     /// FNOP
     pub(in crate::cpu_m68k) fn op_fnop(&mut self, _instr: &Instruction) -> Result<()> {
         // Fetch second word (0000)
@@ -45,8 +43,12 @@ where
     /// FSAVE
     pub(in crate::cpu_m68k) fn op_fsave(&mut self, instr: &Instruction) -> Result<()> {
         // Idle state frame
-        // 0x1F = 68881
-        self.write_ea(instr, instr.get_op2(), 0x1F180000u32)?;
+        let stateframe: Long = match FPU_TYPE {
+            FPU_M68881 => 0x1F180000,
+            FPU_M68882 => 0x1F380000,
+            _ => todo!(),
+        };
+        self.write_ea(instr, instr.get_op2(), stateframe)?;
 
         self.advance_cycles(50)?;
 
@@ -56,7 +58,7 @@ where
     /// FRESTORE
     pub(in crate::cpu_m68k) fn op_frestore(&mut self, instr: &Instruction) -> Result<()> {
         let state = self.read_ea::<Long>(instr, instr.get_op2())?;
-        if state != 0 && state != 0x1F180000 {
+        if state != 0 && state != 0x1F180000 && state != 0x1F380000 {
             log::warn!("TODO FPU state frame restored: {:08X}", state);
         }
 
@@ -550,7 +552,7 @@ where
         Ok(())
     }
 
-    /// FMOVEM EA to registers  
+    /// FMOVEM EA to registers
     fn op_fmovem_ea_to_regs(
         &mut self,
         instr: &Instruction,
