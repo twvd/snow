@@ -354,6 +354,38 @@ impl Emulator {
                     EmulatorConfig::MacIIPmmu(cpu)
                 }
             }
+            MacModel::MacIIx | MacModel::MacIIcx => {
+                assert!(override_fdd_type.is_none());
+
+                // Find display card ROM
+                let Some(ExtraROMs::MDC12(mdcrom)) =
+                    extra_roms.iter().find(|p| matches!(p, ExtraROMs::MDC12(_)))
+                else {
+                    bail!("Macintosh II requires display card ROM")
+                };
+
+                // Find extension ROM if present
+                let extension_rom = extra_roms.iter().find_map(|p| match p {
+                    ExtraROMs::ExtensionROM(data) => Some(*data),
+                    _ => None,
+                });
+
+                // Initialize bus and CPU
+                let bus = MacIIBus::new(
+                    model,
+                    rom,
+                    mdcrom,
+                    extension_rom,
+                    vec![renderer],
+                    monitor.unwrap_or_default(),
+                    mouse_mode,
+                    ram_size,
+                );
+                let cpu = Box::new(CpuM68030Fpu::new(bus));
+                assert_eq!(cpu.get_type(), model.cpu_type());
+
+                EmulatorConfig::MacII30(cpu)
+            }
             MacModel::SE30 => {
                 assert!(override_fdd_type.is_none());
 
