@@ -1,3 +1,4 @@
+use crate::cpu_m68k::FpuM68kType;
 use anyhow::Result;
 use arpfloat::{BigInt, Float};
 use arrayvec::ArrayVec;
@@ -6,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::{cpu::CpuM68k, CpuM68kType};
+use crate::impl_cpu;
 use crate::types::{Long, Word};
 
 use super::SEMANTICS_EXTENDED;
@@ -192,11 +194,7 @@ impl From<BitsExtReal> for Float {
     }
 }
 
-impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
-    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
-where
-    TBus: Bus<Address, u8> + IrqSource,
-{
+impl_cpu! {
     /// Read FPU extended precision value from memory
     pub(in crate::cpu_m68k) fn read_fpu_extended(&mut self, addr: Address) -> Result<Float> {
         // Extended precision format: 96 bits (12 bytes)
@@ -309,7 +307,7 @@ where
 mod tests {
     use crate::bus::testbus::Testbus;
     use crate::bus::Address;
-    use crate::cpu_m68k::{CpuM68020, M68020_ADDRESS_MASK};
+    use crate::cpu_m68k::{CpuM68020Fpu, M68020_ADDRESS_MASK};
     use crate::types::Byte;
 
     use super::*;
@@ -352,7 +350,7 @@ mod tests {
             eprintln!("Testing {} / {:?}", &v, &v);
 
             let mut cpu =
-                CpuM68020::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
+                CpuM68020Fpu::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
 
             // Ensure _something_ was written
             for a in 0..12 {
@@ -393,7 +391,7 @@ mod tests {
             eprintln!("Testing {} / {:?}", &v, &v);
 
             let mut cpu =
-                CpuM68020::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
+                CpuM68020Fpu::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
 
             // Ensure _something_ was written
             for a in 0..8 {
@@ -434,7 +432,7 @@ mod tests {
             eprintln!("Testing {} / {:?}", &v, &v);
 
             let mut cpu =
-                CpuM68020::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
+                CpuM68020Fpu::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
 
             // Ensure _something_ was written
             for a in 0..4 {
@@ -912,7 +910,8 @@ mod tests {
     #[test]
     fn test_memory_bias_persistence() {
         // Test that bias is correctly preserved when storing/loading from memory
-        let mut cpu = CpuM68020::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
+        let mut cpu =
+            CpuM68020Fpu::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
 
         let test_exponents = vec![-1000, -1, 0, 1, 1000];
 

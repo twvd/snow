@@ -1,3 +1,4 @@
+use crate::cpu_m68k::FpuM68kType;
 use std::collections::VecDeque;
 
 use anyhow::{bail, Result};
@@ -17,6 +18,7 @@ use crate::cpu_m68k::regs::RegisterCACR;
 use crate::cpu_m68k::{M68000_SR_MASK, M68020_CACR_MASK, M68030, M68030_CACR_MASK};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
+use crate::{impl_cpu, impl_cpu_trait};
 
 use super::instruction::{
     AddressingMode, BfxExtWord, Direction, DivlExtWord, Instruction, InstructionMnemonic,
@@ -235,8 +237,13 @@ pub struct SystrapHistoryEntry {
 
 /// Motorola 680x0
 #[derive(Serialize, Deserialize)]
-pub struct CpuM68k<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
-where
+pub struct CpuM68k<
+    TBus,
+    const ADDRESS_MASK: Address,
+    const CPU_TYPE: CpuM68kType,
+    const FPU_TYPE: FpuM68kType,
+    const PMMU: bool,
+> where
     TBus: Bus<Address, u8> + IrqSource,
 {
     /// Exception occured this step
@@ -321,11 +328,7 @@ where
     pub(in crate::cpu_m68k) restart_regs: Option<RegisterFile>,
 }
 
-impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
-    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
-where
-    TBus: Bus<Address, u8> + IrqSource,
-{
+impl_cpu! {
     /// Instruction history size
     pub const HISTORY_SIZE: usize = 10000;
 
@@ -3932,22 +3935,18 @@ where
     }
 }
 
-impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool> Tickable
-    for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
-where
-    TBus: Bus<Address, u8> + IrqSource,
-{
+impl_cpu_trait!(Tickable, {
     fn tick(&mut self, _ticks: Ticks) -> Result<Ticks> {
         self.step()?;
 
         Ok(0)
     }
-}
+});
 
 #[cfg(test)]
 mod tests {
     use crate::bus::testbus::Testbus;
-    use crate::cpu_m68k::{CpuM68000, CpuM68020, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK};
+    use crate::cpu_m68k::{CpuM68000, CpuM68020Fpu, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK};
 
     use super::*;
 
@@ -3960,7 +3959,8 @@ mod tests {
 
     #[test]
     fn sr_68020() {
-        let mut cpu = CpuM68020::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
+        let mut cpu =
+            CpuM68020Fpu::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
         cpu.set_sr(0xFFFF);
         assert!(cpu.regs.sr.m());
     }
