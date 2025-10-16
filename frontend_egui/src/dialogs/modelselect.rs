@@ -202,7 +202,11 @@ impl ModelSelectionDialog {
     fn update_display_rom_requirement(&mut self) {
         self.display_rom_required = matches!(
             self.selected_model,
-            MacModel::MacII | MacModel::MacIIFDHD | MacModel::SE30
+            MacModel::MacII
+                | MacModel::MacIIFDHD
+                | MacModel::MacIIx
+                | MacModel::MacIIcx
+                | MacModel::SE30
         );
         if !self.display_rom_required {
             self.display_rom_path.clear();
