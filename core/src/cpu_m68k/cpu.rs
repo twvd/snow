@@ -14,7 +14,7 @@ use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
 use crate::cpu_m68k::regs::RegisterCACR;
-use crate::cpu_m68k::{M68000_SR_MASK, M68030};
+use crate::cpu_m68k::{M68000_SR_MASK, M68020_CACR_MASK, M68030, M68030_CACR_MASK};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
 
@@ -2940,8 +2940,15 @@ where
             let destreg: Register = instr.movec_ctrlreg()?.into();
 
             if destreg == Register::CACR {
-                // I-cache operations
+                // Cache operations
+                let mask = match CPU_TYPE {
+                    M68020 => M68020_CACR_MASK,
+                    M68030 => M68030_CACR_MASK,
+                    _ => unreachable!(),
+                };
                 let val = RegisterCACR(val);
+
+                // I-cache operations
                 if val.c() {
                     // Full clear
                     self.icache_tags.fill(ICACHE_TAG_INVALID);
@@ -2952,7 +2959,10 @@ where
                     self.icache_tags[index] = ICACHE_TAG_INVALID;
                 }
 
-                self.regs.write(destreg, val.with_c(false).with_ce(false).0);
+                // TODO 68030 D-cache
+
+                self.regs
+                    .write(destreg, val.with_c(false).with_ce(false).0 & mask);
             } else {
                 self.regs.write(destreg, val);
             }
