@@ -191,7 +191,7 @@ impl Via2 {
             a_out: RegisterA(0),
             b_out: RegisterB(0),
             a_in: RegisterA(0xFF),
-            b_in: RegisterB(0xFF),
+            b_in: model.via2_b_in(),
             ddra: RegisterA(0),
             ddrb: RegisterB(0),
             ier: RegisterIRQ(0),

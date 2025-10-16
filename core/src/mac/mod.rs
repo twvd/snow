@@ -221,6 +221,20 @@ impl MacModel {
             Self::SE30 => via::RegisterA(0).with_model(0).with_model6(true),
         }
     }
+
+    pub fn via2_b_in(self) -> macii::via2::RegisterB {
+        match self {
+            Self::Early128K
+            | Self::Early512K
+            | Self::Early512Ke
+            | Self::Plus
+            | Self::SE
+            | Self::SeFdhd
+            | Self::Classic => panic!("Invalid operation for this model"),
+            Self::MacII | Self::MacIIFDHD => macii::via2::RegisterB(0xFF),
+            Self::SE30 => macii::via2::RegisterB(0x87),
+        }
+    }
 }
 
 impl MacModel {
