@@ -23,6 +23,7 @@ pub const M68000_SR_MASK: u16 = 0b1010011100011111;
 pub type CpuM68020<TBus> = cpu::CpuM68k<TBus, M68020_ADDRESS_MASK, M68020, false>;
 pub const M68020_ADDRESS_MASK: Address = 0xFFFFFFFF;
 pub const M68020_SR_MASK: u16 = 0b1011011100011111;
+pub const M68020_CACR_MASK: u32 = 0b1111;
 
 /// Motorola 68020 + 68851 PMMU co-processor
 pub type CpuM68020Pmmu<TBus> = cpu::CpuM68k<TBus, M68020_ADDRESS_MASK, M68020, true>;
@@ -31,6 +32,7 @@ pub type CpuM68020Pmmu<TBus> = cpu::CpuM68k<TBus, M68020_ADDRESS_MASK, M68020, t
 pub type CpuM68030<TBus> = cpu::CpuM68k<TBus, M68030_ADDRESS_MASK, M68030, true>;
 pub const M68030_ADDRESS_MASK: Address = 0xFFFFFFFF;
 pub const M68030_SR_MASK: u16 = 0b1011011100011111;
+pub const M68030_CACR_MASK: u32 = 0b11111100011111;
 
 // CPU type constants for the CPU_TYPE const generic parameter of CpuM68k
 // Should be replaced witb enum const generic if that ever comes to Rust..
