@@ -97,7 +97,7 @@ impl_cpu! {
     }
 
     #[inline(always)]
-    fn read_ticks_generic<T: CpuSized, const PHYSICAL: bool>(
+    pub(in crate::cpu_m68k) fn read_ticks_generic<T: CpuSized, const PHYSICAL: bool>(
         &mut self,
         fc: u8,
         o_addr: Address,
@@ -262,7 +262,7 @@ impl_cpu! {
     }
 
     #[inline(always)]
-    fn write_ticks_order_generic<T: CpuSized, const TORDER: usize, const PHYSICAL: bool>(
+    pub(in crate::cpu_m68k) fn write_ticks_order_generic<T: CpuSized, const TORDER: usize, const PHYSICAL: bool>(
         &mut self,
         fc: u8,
         o_addr: Address,
