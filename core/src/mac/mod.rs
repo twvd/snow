@@ -81,6 +81,8 @@ impl MacModel {
         ("97f2a22bdb8972bfcc1f16aff1ebbe157887c26787a1c81747a9842fa7b97a06", &[Self::MacII]),
         // Macintosh II FDHD / IIx / IIcx / SE/30
         ("79fae48e2d5cfde68520e46616503963f8c16430903f410514b62c1379af20cb", &[Self::MacIIFDHD, Self::MacIIx, Self::MacIIcx, Self::SE30]),
+        // ROMinator II (default)
+        ("adb794a53976b5ddfe7e580c4071a2f38a89d0b8583bf5d342306228c1d58a4f", &[Self::SE30]),
     ];
 
     pub const fn has_adb(self) -> bool {
