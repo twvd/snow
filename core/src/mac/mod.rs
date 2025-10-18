@@ -229,7 +229,7 @@ impl MacModel {
             }
             Self::MacII | Self::MacIIFDHD => via::RegisterA(0).with_model(1),
             Self::MacIIx => via::RegisterA(0).with_model(0),
-            Self::MacIIcx | Self::SE30 => via::RegisterA(0).with_model(0).with_model6(true),
+            Self::MacIIcx | Self::SE30 => via::RegisterA(0).with_model(0x03).with_model6(true),
         }
     }
 
