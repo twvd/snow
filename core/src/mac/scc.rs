@@ -229,6 +229,8 @@ struct SccChannel {
     dcd: bool,
     dcd_ie: bool,
 
+    reg12: u8,
+    reg13: u8,
     reg15: u8,
 
     tx_queue: VecDeque<u8>,
@@ -327,6 +329,8 @@ impl Scc {
                 // Misc. status bits
                 0
             }
+            (12, _) => self.ch[chi].reg12,
+            (13, _) => self.ch[chi].reg13,
             (15, _) => self.ch[chi].reg15,
             _ => {
                 warn!("Ch {:?} unimplemented ctrl read {}", ch, self.reg);
@@ -397,6 +401,12 @@ impl Scc {
             }
             9 => {
                 self.mic.0 = val;
+            }
+            12 => {
+                self.ch[chi].reg12 = val;
+            }
+            13 => {
+                self.ch[chi].reg13 = val;
             }
             14 => {
                 // DPLL/baudrate generator
