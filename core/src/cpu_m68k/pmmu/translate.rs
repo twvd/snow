@@ -34,6 +34,32 @@ bitfield! {
 }
 
 bitfield! {
+    /// Long format page descriptor (type 1 and 2)
+    #[derive(Clone, Copy, PartialEq, Eq, Default)]
+    pub struct PmmuLongPageDescriptor(pub u64): Debug, FromStorage, IntoStorage, DerefStorage {
+        pub lsl: u32 @ 0..=31,
+        pub msl: u32 @ 32..=63,
+
+        /// Page address (physical address)
+        pub page_addr: u32 @ 8..=31,
+
+        pub dt: u8 @ 32..=33,
+        pub wp: bool @ 34,
+        pub u: bool @ 35,
+        pub m: bool @ 36,
+        pub l: bool @ 37,
+        pub ci: bool @ 38,
+        pub g: bool @ 39,
+        pub s: bool @ 40,
+        pub sg: bool @ 41,
+        pub wal: u8 @ 42..=44,
+        pub ral: u8 @ 45..=47,
+        pub limit: u8 @ 56..=62,
+        pub lu: bool @ 63,
+    }
+}
+
+bitfield! {
     /// Short format table descriptor
     #[derive(Clone, Copy, PartialEq, Eq, Default)]
     pub struct PmmuShortTableDescriptor(pub u32): Debug, FromStorage, IntoStorage, DerefStorage {
@@ -43,6 +69,28 @@ bitfield! {
         pub dt: u8 @ 0..=1,
         pub wp: bool @ 2,
         pub u: bool @ 3,
+    }
+}
+
+bitfield! {
+    /// Long format table descriptor
+    #[derive(Clone, Copy, PartialEq, Eq, Default)]
+    pub struct PmmuLongTableDescriptor(pub u64): Debug, FromStorage, IntoStorage, DerefStorage {
+        pub lsl: u32 @ 0..=31,
+        pub msl: u32 @ 32..=63,
+
+        /// Table address (physical address)
+        pub table_addr: u32 @ 4..=31,
+
+        pub dt: u8 @ 32..=33,
+        pub wp: bool @ 34,
+        pub u: bool @ 35,
+        pub s: bool @ 40,
+        pub sg: bool @ 41,
+        pub wal: u8 @ 42..=44,
+        pub ral: u8 @ 45..=47,
+        pub limit: u8 @ 56..=62,
+        pub lu: bool @ 63,
     }
 }
 
@@ -97,9 +145,20 @@ impl_cpu! {
         tis: &mut ArrayVec<u8, 4>,
         used_bits: &mut Address,
     ) -> Result<Address> {
-        if dt != PmmuPageDescriptorType::Valid4b {
-            bail!("Unimplemented DT {:?}", dt);
+        match dt {
+            PmmuPageDescriptorType::Valid4b => self.pmmu_fetch_table_short(vaddr, table_addr, tis, used_bits),
+            PmmuPageDescriptorType::Valid8b => self.pmmu_fetch_table_long(vaddr, table_addr, tis, used_bits),
+            _ => bail!("Unimplemented DT {:?}", dt),
         }
+    }
+
+    fn pmmu_fetch_table_short(
+        &mut self,
+        vaddr: Address,
+        table_addr: Address,
+        tis: &mut ArrayVec<u8, 4>,
+        used_bits: &mut Address,
+    ) -> Result<Address> {
         let Some(ti) = tis.pop() else {
             bail!("PMMU table search beyond maximum depth");
         };
@@ -108,6 +167,7 @@ impl_cpu! {
         // Table index
         let idx = vaddr >> (32 - ti);
         let entry_addr = table_addr.wrapping_add(idx * 4);
+
         self.regs.pmmu.last_desc = entry_addr;
 
         let entry_word = self.read_ticks_physical::<Long>(entry_addr)?;
@@ -126,12 +186,55 @@ impl_cpu! {
                 }
                 Ok(entry.page_addr() << 8)
             }
-            PmmuPageDescriptorType::Valid4b => {
+            PmmuPageDescriptorType::Valid4b | PmmuPageDescriptorType::Valid8b => {
                 // Recurse to child
                 let entry = PmmuShortTableDescriptor(entry_word);
-                self.pmmu_fetch_table(vaddr << ti, entry.table_addr() << 4, dt, tis, used_bits)
+                self.pmmu_fetch_table(vaddr << ti, entry.table_addr() << 4, child_dt, tis, used_bits)
             }
-            PmmuPageDescriptorType::Valid8b => todo!(),
+        }
+    }
+
+    fn pmmu_fetch_table_long(
+        &mut self,
+        vaddr: Address,
+        table_addr: Address,
+        tis: &mut ArrayVec<u8, 4>,
+        used_bits: &mut Address,
+    ) -> Result<Address> {
+        let Some(ti) = tis.pop() else {
+            bail!("PMMU table search beyond maximum depth");
+        };
+        *used_bits += ti as Address;
+
+        // Table index
+        let idx = vaddr >> (32 - ti);
+        let entry_addr = table_addr.wrapping_add(idx * 8);
+
+        self.regs.pmmu.last_desc = entry_addr;
+
+        let entry_word1 = self.read_ticks_physical::<Long>(entry_addr)?;
+        let entry_word2 = self.read_ticks_physical::<Long>(entry_addr + 4)?;
+
+        let child_dt = PmmuPageDescriptorType::from_u32(entry_word1 & 0b11).unwrap();
+        match child_dt {
+            PmmuPageDescriptorType::Invalid => {
+                bail!(CpuError::Pagefault);
+            }
+            PmmuPageDescriptorType::PageDescriptor => {
+                // Done
+                // TODO page size??
+                let entry = PmmuLongPageDescriptor(0).with_msl(entry_word1).with_lsl(entry_word2);
+                // TODO protection
+                if tis.len() <= 2 {
+                    //log::debug!("level {} entry {:?}", tis.len(), entry);
+                }
+                Ok(entry.page_addr() << 8)
+            }
+            PmmuPageDescriptorType::Valid4b | PmmuPageDescriptorType::Valid8b => {
+                // Recurse to child
+                let entry = PmmuLongTableDescriptor(0).with_msl(entry_word1).with_lsl(entry_word2);
+                self.pmmu_fetch_table(vaddr << ti, entry.table_addr() << 4, child_dt, tis, used_bits)
+            }
         }
     }
 
