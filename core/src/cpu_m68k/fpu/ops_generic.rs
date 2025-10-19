@@ -16,7 +16,7 @@ use crate::cpu_m68k::{CpuM68kType, FPU_M68881, FPU_M68882};
 use crate::impl_cpu;
 use crate::types::{Byte, Long, Word};
 
-use super::storage::{DOUBLE_SIZE, EXTENDED_SIZE, SINGLE_SIZE};
+use super::storage::{DOUBLE_SIZE, EXTENDED_SIZE, PACKED_SIZE, SINGLE_SIZE};
 
 // Cycle counts returned from fpu_alu_op
 // [FPn to FPn, integer, single, double, extended, packed]
@@ -25,7 +25,6 @@ pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_INT: usize = 1;
 pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_SINGLE: usize = 2;
 pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_DOUBLE: usize = 3;
 pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_EXTENDED: usize = 4;
-#[allow(dead_code)]
 pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_PACKED: usize = 5;
 pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_LEN: usize = 6;
 
@@ -232,6 +231,15 @@ impl_cpu! {
                         // Not sure how many cycles this costs, assuming its cheap
                         return Ok(());
                     }
+                    0b011 => {
+                        // BCD packed decimal real
+                        let ea = self.calc_ea_addr_sz::<PACKED_SIZE>(
+                            instr,
+                            instr.get_addr_mode()?,
+                            instr.get_op2(),
+                        )?;
+                        (self.read_fpu_packed(ea)?, FPU_CYCLES_MEM_PACKED)
+                    }
                     _ => {
                         bail!(
                             "EA to reg unimplemented src spec {:03b}",
@@ -381,6 +389,37 @@ impl_cpu! {
 
                         self.advance_cycles(80)?;
                         self.write_fpu_single(ea, &self.regs.fpu.fp[fpx].clone())?;
+                    }
+                    0b011 => {
+                        // Packed decimal real with static K-factor
+                        let ea = self.calc_ea_addr_sz::<PACKED_SIZE>(
+                            instr,
+                            instr.get_addr_mode()?,
+                            instr.get_op2(),
+                        )?;
+                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_inex2(false);
+                        self.regs.fpu.fpsr.exs_mut().set_inex1(false);
+
+                        self.advance_cycles(80)?; // todo
+                        self.write_fpu_packed(ea, &self.regs.fpu.fp[fpx].clone(), extword.k_factor())?;
+                    }
+                    0b111 => {
+                        // Packed decimal real with dynamic K-factor
+                        let ea = self.calc_ea_addr_sz::<PACKED_SIZE>(
+                            instr,
+                            instr.get_addr_mode()?,
+                            instr.get_op2(),
+                        )?;
+                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_inex2(false);
+                        self.regs.fpu.fpsr.exs_mut().set_inex1(false);
+
+                        let k = self.regs.read_d::<Byte>(extword.k_factor() as usize >> 4 & 0b111) as i8;
+                        self.advance_cycles(80)?; // todo
+                        self.write_fpu_packed(ea, &self.regs.fpu.fp[fpx].clone(), k)?;
                     }
                     _ => {
                         bail!(

@@ -53,7 +53,7 @@ bitfield! {
         pub src_reg: usize @ 7..=9,
 
         /// (Register to EA) K-factor
-        pub k_factor: u8 @ 0..=6,
+        pub k_factor: i8 @ 0..=6,
 
         /// (FMOVEM) Direction: 1=register to EA, 0=EA to register
         pub movem_dir: bool @ 13,
