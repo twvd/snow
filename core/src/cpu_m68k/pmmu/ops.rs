@@ -1,6 +1,6 @@
 //! M68851 PMMU - Opcode implementations
 
-use crate::cpu_m68k::FpuM68kType;
+use crate::cpu_m68k::{FpuM68kType, M68030};
 use anyhow::{bail, Result};
 
 use crate::bus::{Address, Bus, IrqSource};
@@ -10,7 +10,7 @@ use crate::cpu_m68k::instruction::Instruction;
 use crate::cpu_m68k::pmmu::instruction::{Pmove3Extword, PtestExtword};
 use crate::cpu_m68k::CpuM68kType;
 use crate::impl_cpu;
-use crate::types::{DoubleLong, Word};
+use crate::types::{DoubleLong, Long, Word};
 
 use super::instruction::Pmove1Extword;
 use super::regs::TcReg;
@@ -21,7 +21,7 @@ impl_cpu! {
             return self.op_linef(instr);
         }
 
-        let extword = self.fetch_immediate::<Word>()?;
+        let extword = self.fetch()?; //self.fetch_immediate::<Word>()?;
 
         if extword & 0b1110_0001_0000_0000 == 0b0010_0000_0000_0000 {
             // PFLUSH
@@ -40,6 +40,12 @@ impl_cpu! {
         } else if extword & 0b1110_0000_0000_0000 == 0b1000_0000_0000_0000 {
             // PTEST
             self.op_ptest(instr, extword)
+        } else if extword & 0b0000_1000_0000_0000 == 0b0000_1000_0000_0000 && CPU_TYPE >= M68030 {
+            // PMOVE TT regs (68030+)
+            let tt = self.read_ea::<Long>(instr, instr.get_op2())?;
+            log::warn!("TODO PMOVE to TT {:016b} {:08x}", extword, tt);
+            self.pmmu_cache_invalidate();
+            Ok(())
         } else {
             // Unknown instruction
             log::warn!(
