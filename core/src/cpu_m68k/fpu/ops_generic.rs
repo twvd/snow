@@ -13,7 +13,6 @@ use crate::cpu_m68k::fpu::math::FloatMath;
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
 use crate::cpu_m68k::{CpuM68kType, FPU_M68881, FPU_M68882};
-use crate::impl_cpu;
 use crate::types::{Byte, Long, Word};
 
 use super::storage::{DOUBLE_SIZE, EXTENDED_SIZE, PACKED_SIZE, SINGLE_SIZE};
@@ -28,7 +27,16 @@ pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_EXTENDED: usize = 4;
 pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_PACKED: usize = 5;
 pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_LEN: usize = 6;
 
-impl_cpu! {
+impl<
+        TBus,
+        const ADDRESS_MASK: Address,
+        const CPU_TYPE: CpuM68kType,
+        const FPU_TYPE: FpuM68kType,
+        const PMMU: bool,
+    > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+where
+    TBus: Bus<Address, u8> + IrqSource,
+{
     /// FNOP
     pub(in crate::cpu_m68k) fn op_fnop(&mut self, _instr: &Instruction) -> Result<()> {
         // Fetch second word (0000)
@@ -407,7 +415,11 @@ impl_cpu! {
                         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
 
                         self.advance_cycles(80)?; // todo
-                        self.write_fpu_packed(ea, &self.regs.fpu.fp[fpx].clone(), extword.k_factor())?;
+                        self.write_fpu_packed(
+                            ea,
+                            &self.regs.fpu.fp[fpx].clone(),
+                            extword.k_factor(),
+                        )?;
                     }
                     0b111 => {
                         // Packed decimal real with dynamic K-factor
@@ -421,7 +433,10 @@ impl_cpu! {
                         self.regs.fpu.fpsr.exs_mut().set_inex2(false);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
 
-                        let k = self.regs.read_d::<Byte>(extword.k_factor() as usize >> 4 & 0b111) as i8;
+                        let k = self
+                            .regs
+                            .read_d::<Byte>(extword.k_factor() as usize >> 4 & 0b111)
+                            as i8;
                         self.advance_cycles(80)?; // todo
                         self.write_fpu_packed(ea, &self.regs.fpu.fp[fpx].clone(), k)?;
                     }

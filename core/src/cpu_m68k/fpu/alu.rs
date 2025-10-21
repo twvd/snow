@@ -9,12 +9,20 @@ use crate::cpu_m68k::fpu::math::FloatMath;
 use crate::cpu_m68k::fpu::ops_generic::FPU_CYCLES_LEN;
 use crate::cpu_m68k::fpu::trig::FloatTrig;
 use crate::cpu_m68k::CpuM68kType;
-use crate::impl_cpu;
 use crate::tickable::Ticks;
 
 use super::{SEMANTICS_DOUBLE, SEMANTICS_EXTENDED, SEMANTICS_SINGLE};
 
-impl_cpu! {
+impl<
+        TBus,
+        const ADDRESS_MASK: Address,
+        const CPU_TYPE: CpuM68kType,
+        const FPU_TYPE: FpuM68kType,
+        const PMMU: bool,
+    > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+where
+    TBus: Bus<Address, u8> + IrqSource,
+{
     fn fpu_rounding_mode(&self) -> RoundingMode {
         // 3.5.2 Rounding modes
         // Table 3-21

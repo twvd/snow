@@ -9,13 +9,21 @@ use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_PRIVILEGE_VIOLATION};
 use crate::cpu_m68k::instruction::Instruction;
 use crate::cpu_m68k::pmmu::instruction::{Pmove3Extword, PtestExtword};
 use crate::cpu_m68k::CpuM68kType;
-use crate::impl_cpu;
 use crate::types::{DoubleLong, Long, Word};
 
 use super::instruction::Pmove1Extword;
 use super::regs::TcReg;
 
-impl_cpu! {
+impl<
+        TBus,
+        const ADDRESS_MASK: Address,
+        const CPU_TYPE: CpuM68kType,
+        const FPU_TYPE: FpuM68kType,
+        const PMMU: bool,
+    > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+where
+    TBus: Bus<Address, u8> + IrqSource,
+{
     pub(in crate::cpu_m68k) fn op_pop_000(&mut self, instr: &Instruction) -> Result<()> {
         if !PMMU {
             return self.op_linef(instr);
@@ -51,7 +59,7 @@ impl_cpu! {
             self.op_pmove_68030(instr, extword)
         } else if extword & 0b1111_1000_1111_1111 == 0b0000_1000_0000_0000 && CPU_TYPE >= M68030 {
             // PMOVE TT regs (68030+)
-            let write = extword & (1<<9) != 0;
+            let write = extword & (1 << 9) != 0;
             if !write {
                 // EA to MMU reg
                 let tt = self.read_ea::<Long>(instr, instr.get_op2())?;
@@ -209,13 +217,14 @@ impl_cpu! {
             (0b000, false) => {
                 let newval = TcReg(self.read_ea(instr, instr.get_op2())?);
                 self.regs.pmmu.tc = newval;
-                if newval.enable() && newval.is()
-                    + newval.tia() as u32
-                    + newval.tib() as u32
-                    + newval.tic() as u32
-                    + newval.tid() as u32
-                    + newval.ps() as u32
-                    != 32
+                if newval.enable()
+                    && newval.is()
+                        + newval.tia() as u32
+                        + newval.tib() as u32
+                        + newval.tic() as u32
+                        + newval.tid() as u32
+                        + newval.ps() as u32
+                        != 32
                 {
                     bail!("Invalid PMMU configuration: {:?}", newval);
                 }

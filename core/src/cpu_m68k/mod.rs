@@ -48,40 +48,6 @@ pub const FPU_NONE: FpuM68kType = 0;
 pub const FPU_M68881: FpuM68kType = 68881;
 pub const FPU_M68882: FpuM68kType = 68882;
 
-/// Macro for everywhere a part of the CPU is implemented to avoid many repetitions of the generic
-/// parameters.
-#[macro_export]
-macro_rules! impl_cpu {
-    // Blanket impl (no trait)
-    ($($body:tt)*) => {
-        impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const FPU_TYPE: FpuM68kType,
-        const PMMU: bool>
-            CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
-        where
-            TBus: Bus<Address, u8> + IrqSource,
-        {
-            $($body)*
-        }
-    };
-}
-
-/// Macro for everywhere a trait for the CPU is implemented to avoid many repetitions of the generic
-/// parameters.
-#[macro_export]
-macro_rules! impl_cpu_trait {
-    // Trait impl
-    ($trait:path, { $($body:tt)* }) => {
-        impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const FPU_TYPE: FpuM68kType,
-        const PMMU: bool>
-            $trait for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
-        where
-            TBus: Bus<Address, u8> + IrqSource,
-        {
-            $($body)*
-        }
-    };
-}
-
 /// Trait to deal with the differently sized instructions for:
 /// Byte (u8)
 /// Word (u16)

@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::{cpu::CpuM68k, CpuM68kType};
-use crate::impl_cpu;
 use crate::types::{Long, Word};
 
 use super::SEMANTICS_EXTENDED;
@@ -195,7 +194,16 @@ impl From<BitsExtReal> for Float {
     }
 }
 
-impl_cpu! {
+impl<
+        TBus,
+        const ADDRESS_MASK: Address,
+        const CPU_TYPE: CpuM68kType,
+        const FPU_TYPE: FpuM68kType,
+        const PMMU: bool,
+    > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+where
+    TBus: Bus<Address, u8> + IrqSource,
+{
     /// Read FPU extended precision value from memory
     pub(in crate::cpu_m68k) fn read_fpu_extended(&mut self, addr: Address) -> Result<Float> {
         // Extended precision format: 96 bits (12 bytes)
@@ -364,6 +372,7 @@ impl_cpu! {
     fn format_packed(value: &Float, k: i8) -> (u32, u32, u32) {
         // K-factor masks for packed BCD writes
         // pkmask2: masks for dw2 (middle 8 mantissa digits)
+        #[rustfmt::skip]
         const PKMASK2: [u32; 18] = [
             0x00000000, // k=0: no digits
             0x00000000, // k=1: 1 digit (in dw1 only)
@@ -386,6 +395,7 @@ impl_cpu! {
         ];
 
         // pkmask3: masks for dw3 (last 8 mantissa digits)
+        #[rustfmt::skip]
         const PKMASK3: [u32; 18] = [
             0x00000000, // k=0-9: no dw3 digits
             0x00000000,
@@ -470,7 +480,10 @@ impl_cpu! {
             let round_pos = k_abs + (exp as usize) - 1;
 
             // Round up if next digit >= 5
-            if round_pos < mantissa_digits.len() && round_pos + 1 < mantissa_digits.len() && mantissa_digits[round_pos + 1] >= '5' {
+            if round_pos < mantissa_digits.len()
+                && round_pos + 1 < mantissa_digits.len()
+                && mantissa_digits[round_pos + 1] >= '5'
+            {
                 // Increment digit at round_pos
                 if mantissa_digits[round_pos] < '9' {
                     mantissa_digits[round_pos] = (mantissa_digits[round_pos] as u8 + 1) as char;

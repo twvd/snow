@@ -5,7 +5,6 @@ use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::FpuM68kType;
 use crate::types::Long;
 
-use crate::impl_cpu;
 use anyhow::{anyhow, bail, Result};
 use arrayvec::ArrayVec;
 use num_traits::FromPrimitive;
@@ -94,14 +93,24 @@ bitfield! {
     }
 }
 
-impl_cpu! {
+impl<
+        TBus,
+        const ADDRESS_MASK: Address,
+        const CPU_TYPE: CpuM68kType,
+        const FPU_TYPE: FpuM68kType,
+        const PMMU: bool,
+    > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+where
+    TBus: Bus<Address, u8> + IrqSource,
+{
     pub(in crate::cpu_m68k) fn pmmu_cache_invalidate(&mut self) {
         if !self.regs.pmmu.tc.enable() {
             return;
         }
 
         let cache_size =
-            (Address::MAX >> (self.regs.pmmu.tc.is() + self.regs.pmmu.tc.ps() as Address)) as usize + 1;
+            (Address::MAX >> (self.regs.pmmu.tc.is() + self.regs.pmmu.tc.ps() as Address)) as usize
+                + 1;
         if self.pmmu_atc.iter().map(|atc| atc.len()).min().unwrap() < cache_size {
             log::debug!("Expanding cache size: {}", cache_size);
             self.pmmu_atc
@@ -146,8 +155,12 @@ impl_cpu! {
         used_bits: &mut Address,
     ) -> Result<Address> {
         match dt {
-            PmmuPageDescriptorType::Valid4b => self.pmmu_fetch_table_short(vaddr, table_addr, tis, used_bits),
-            PmmuPageDescriptorType::Valid8b => self.pmmu_fetch_table_long(vaddr, table_addr, tis, used_bits),
+            PmmuPageDescriptorType::Valid4b => {
+                self.pmmu_fetch_table_short(vaddr, table_addr, tis, used_bits)
+            }
+            PmmuPageDescriptorType::Valid8b => {
+                self.pmmu_fetch_table_long(vaddr, table_addr, tis, used_bits)
+            }
             _ => bail!("Unimplemented DT {:?}", dt),
         }
     }
@@ -189,7 +202,13 @@ impl_cpu! {
             PmmuPageDescriptorType::Valid4b | PmmuPageDescriptorType::Valid8b => {
                 // Recurse to child
                 let entry = PmmuShortTableDescriptor(entry_word);
-                self.pmmu_fetch_table(vaddr << ti, entry.table_addr() << 4, child_dt, tis, used_bits)
+                self.pmmu_fetch_table(
+                    vaddr << ti,
+                    entry.table_addr() << 4,
+                    child_dt,
+                    tis,
+                    used_bits,
+                )
             }
         }
     }
@@ -223,7 +242,9 @@ impl_cpu! {
             PmmuPageDescriptorType::PageDescriptor => {
                 // Done
                 // TODO page size??
-                let entry = PmmuLongPageDescriptor(0).with_msl(entry_word1).with_lsl(entry_word2);
+                let entry = PmmuLongPageDescriptor(0)
+                    .with_msl(entry_word1)
+                    .with_lsl(entry_word2);
                 // TODO protection
                 if tis.len() <= 2 {
                     //log::debug!("level {} entry {:?}", tis.len(), entry);
@@ -232,8 +253,16 @@ impl_cpu! {
             }
             PmmuPageDescriptorType::Valid4b | PmmuPageDescriptorType::Valid8b => {
                 // Recurse to child
-                let entry = PmmuLongTableDescriptor(0).with_msl(entry_word1).with_lsl(entry_word2);
-                self.pmmu_fetch_table(vaddr << ti, entry.table_addr() << 4, child_dt, tis, used_bits)
+                let entry = PmmuLongTableDescriptor(0)
+                    .with_msl(entry_word1)
+                    .with_lsl(entry_word2);
+                self.pmmu_fetch_table(
+                    vaddr << ti,
+                    entry.table_addr() << 4,
+                    child_dt,
+                    tis,
+                    used_bits,
+                )
             }
         }
     }
