@@ -18,7 +18,6 @@ use crate::cpu_m68k::regs::RegisterCACR;
 use crate::cpu_m68k::{M68000_SR_MASK, M68020_CACR_MASK, M68030, M68030_CACR_MASK};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
-use crate::{impl_cpu, impl_cpu_trait};
 
 use super::instruction::{
     AddressingMode, BfxExtWord, Direction, DivlExtWord, Instruction, InstructionMnemonic,
@@ -328,7 +327,16 @@ pub struct CpuM68k<
     pub(in crate::cpu_m68k) restart_regs: Option<RegisterFile>,
 }
 
-impl_cpu! {
+impl<
+        TBus,
+        const ADDRESS_MASK: Address,
+        const CPU_TYPE: CpuM68kType,
+        const FPU_TYPE: FpuM68kType,
+        const PMMU: bool,
+    > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+where
+    TBus: Bus<Address, u8> + IrqSource,
+{
     /// Instruction history size
     pub const HISTORY_SIZE: usize = 10000;
 
@@ -3019,7 +3027,11 @@ impl_cpu! {
                 self.regs.read_d::<T>(reg_num as usize)
             };
 
-            self.write_ticks_order_generic::<T, TORDER_LOWHIGH, false>(self.regs.dfc as u8, ea, value)?;
+            self.write_ticks_order_generic::<T, TORDER_LOWHIGH, false>(
+                self.regs.dfc as u8,
+                ea,
+                value,
+            )?;
 
             // 68020+ additional cycles for long transfers
             if CPU_TYPE >= M68020 && std::mem::size_of::<T>() == 4 {
@@ -3991,13 +4003,22 @@ impl_cpu! {
     }
 }
 
-impl_cpu_trait!(Tickable, {
+impl<
+        TBus,
+        const ADDRESS_MASK: Address,
+        const CPU_TYPE: CpuM68kType,
+        const FPU_TYPE: FpuM68kType,
+        const PMMU: bool,
+    > Tickable for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+where
+    TBus: Bus<Address, u8> + IrqSource,
+{
     fn tick(&mut self, _ticks: Ticks) -> Result<Ticks> {
         self.step()?;
 
         Ok(0)
     }
-});
+}
 
 #[cfg(test)]
 mod tests {
