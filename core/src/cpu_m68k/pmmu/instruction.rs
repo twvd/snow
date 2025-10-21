@@ -8,6 +8,8 @@ bitfield! {
     /// PMOVE format 1
     #[derive(Clone, Copy, PartialEq, Eq)]
     pub struct Pmove1Extword(pub Word): Debug, FromStorage, IntoStorage, DerefStorage {
+        pub fd: bool @ 8,
+
         /// True: register to EA
         /// False: EA to register
         pub write: bool @ 9,

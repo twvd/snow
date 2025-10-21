@@ -97,6 +97,30 @@ bitfield! {
 }
 
 bitfield! {
+    /// Transparent translation register (TTx)
+    #[derive(Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+    pub struct TrTranslationReg(pub u32): Debug, FromStorage, IntoStorage, DerefStorage {
+        pub fc_mask: u8 @ 0..=2,
+        pub fc_base: u8 @ 4..=6,
+
+        /// Read/write mask
+        pub rwm: bool @ 8,
+        /// Read/write (true = write)
+        pub rw: bool @ 9,
+        /// Caching inhibit
+        pub ci: bool @ 10,
+        /// Enable
+        pub e: bool @ 15,
+
+        /// Logical address mask (A31-A24)
+        pub le_mask: Address @ 16..=23,
+
+        /// Logical address base (A31-A24)
+        pub le_base: Address @ 24..=31,
+    }
+}
+
+bitfield! {
     /// PMMU status register
     #[derive(Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
     pub struct RegisterPSR(pub u16): Debug, FromStorage, IntoStorage, DerefStorage {
@@ -128,6 +152,7 @@ pub struct PmmuRegisterFile {
     pub psr: RegisterPSR,
 
     pub last_desc: Address,
+    //pub tt: [TrTranslationReg; 2],
 }
 
 impl PmmuRegisterFile {
