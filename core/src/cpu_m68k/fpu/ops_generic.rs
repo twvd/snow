@@ -231,6 +231,10 @@ impl_cpu! {
                         // Not sure how many cycles this costs, assuming its cheap
                         return Ok(());
                     }
+                    0b011 if instr.get_addr_mode()? == AddressingMode::Immediate => {
+                        // BCD packed decimal real (immediate)
+                        (self.read_fpu_packed_imm()?, FPU_CYCLES_MEM_PACKED)
+                    }
                     0b011 => {
                         // BCD packed decimal real
                         let ea = self.calc_ea_addr_sz::<PACKED_SIZE>(
