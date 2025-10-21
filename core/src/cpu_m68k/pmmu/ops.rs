@@ -21,15 +21,21 @@ impl_cpu! {
             return self.op_linef(instr);
         }
 
-        let extword = self.fetch()?; //self.fetch_immediate::<Word>()?;
+        let extword = self.fetch_immediate::<Word>()?;
 
-        if extword & 0b1110_0001_0000_0000 == 0b0010_0000_0000_0000 {
+        if extword & 0b1110_0011_0000_0000 == 0b0010_0000_0000_0000 {
             // PFLUSH
             self.pmmu_cache_invalidate();
             Ok(())
         } else if extword == 0b1010_0000_0000_0000 {
             // PFLUSHR
+            // TODO specific flush
+            self.read_ea_sz::<8>(instr, instr.get_op2())?;
             self.pmmu_cache_invalidate();
+            Ok(())
+        } else if extword & 0b1111_1101_1110_0000 == 0b0010_0000_0000_0000 {
+            // PLOAD
+            self.read_ea_sz::<8>(instr, instr.get_op2())?;
             Ok(())
         } else if extword & 0b1110_0001_1111_1111 == 0b0100_0000_0000_0000 {
             // PMOVE (format 1)
@@ -40,11 +46,22 @@ impl_cpu! {
         } else if extword & 0b1110_0000_0000_0000 == 0b1000_0000_0000_0000 {
             // PTEST
             self.op_ptest(instr, extword)
-        } else if extword & 0b0000_1000_0000_0000 == 0b0000_1000_0000_0000 && CPU_TYPE >= M68030 {
+        } else if extword & 0b1110_0000_1111_1111 == 0b0100_0000_0000_0000 && CPU_TYPE >= M68030 {
+            // PMOVE 68030 version
+            self.op_pmove_68030(instr, extword)
+        } else if extword & 0b1111_1000_1111_1111 == 0b0000_1000_0000_0000 && CPU_TYPE >= M68030 {
             // PMOVE TT regs (68030+)
-            let tt = self.read_ea::<Long>(instr, instr.get_op2())?;
-            log::warn!("TODO PMOVE to TT {:016b} {:08x}", extword, tt);
-            self.pmmu_cache_invalidate();
+            let write = extword & (1<<9) != 0;
+            if !write {
+                // EA to MMU reg
+                let tt = self.read_ea::<Long>(instr, instr.get_op2())?;
+                if tt != 0 {
+                    bail!("TODO write to TTx regs");
+                }
+            } else {
+                // Always write back 0 for now
+                self.write_ea::<Long>(instr, instr.get_op2(), 0)?;
+            }
             Ok(())
         } else {
             // Unknown instruction
@@ -168,6 +185,60 @@ impl_cpu! {
                 self.regs.pmmu.pcsr.0 = self.read_ea(instr, instr.get_op2())?;
             }
             _ => bail!("PMOVE3 invalid Preg: {}", extword.preg()),
+        }
+
+        Ok(())
+    }
+
+    pub(in crate::cpu_m68k) fn op_pmove_68030(
+        &mut self,
+        instr: &Instruction,
+        extword: Word,
+    ) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+
+        let extword = Pmove1Extword(extword);
+
+        match (extword.preg(), extword.write()) {
+            (0b000, true) => {
+                self.write_ea(instr, instr.get_op2(), self.regs.pmmu.tc.0)?;
+            }
+            (0b000, false) => {
+                let newval = TcReg(self.read_ea(instr, instr.get_op2())?);
+                self.regs.pmmu.tc = newval;
+                if newval.enable() && newval.is()
+                    + newval.tia() as u32
+                    + newval.tib() as u32
+                    + newval.tic() as u32
+                    + newval.tid() as u32
+                    + newval.ps() as u32
+                    != 32
+                {
+                    bail!("Invalid PMMU configuration: {:?}", newval);
+                }
+            }
+            (0b010, true) => {
+                self.write_ea_sz::<8>(instr, instr.get_op2(), self.regs.pmmu.srp.0.to_be_bytes())?;
+            }
+            (0b010, false) => {
+                self.regs.pmmu.srp.0 =
+                    DoubleLong::from_be_bytes(self.read_ea_sz::<8>(instr, instr.get_op2())?);
+            }
+            (0b011, true) => {
+                self.write_ea_sz::<8>(instr, instr.get_op2(), self.regs.pmmu.crp.0.to_be_bytes())?;
+            }
+            (0b011, false) => {
+                self.regs.pmmu.crp.0 =
+                    DoubleLong::from_be_bytes(self.read_ea_sz::<8>(instr, instr.get_op2())?);
+            }
+            _ => bail!("PMOVE 68030 invalid Preg: {}", extword.preg()),
+        }
+
+        if !extword.fd() {
+            self.pmmu_cache_invalidate();
         }
 
         Ok(())
