@@ -446,9 +446,8 @@ impl_cpu! {
         // Find exponent
         let mut exp = 0;
         let mut exp_negative = false;
-        while idx < chars.len() && (chars[idx] == 'e' || chars[idx] == 'E') {
+        if idx < chars.len() && (chars[idx] == 'e' || chars[idx] == 'E') {
             idx += 1;
-            break;
         }
         if idx < chars.len() && chars[idx] == '-' {
             exp_negative = true;
@@ -465,23 +464,22 @@ impl_cpu! {
         }
 
         // Handle negative k-factor (rounding)
+        #[allow(clippy::manual_range_contains)]
         let k = if k <= 0 && k >= -13 {
             let k_abs = (-k) as usize;
             let round_pos = k_abs + (exp as usize) - 1;
 
             // Round up if next digit >= 5
-            if round_pos < mantissa_digits.len() && round_pos + 1 < mantissa_digits.len() {
-                if mantissa_digits[round_pos + 1] >= '5' {
-                    // Increment digit at round_pos
-                    if mantissa_digits[round_pos] < '9' {
-                        mantissa_digits[round_pos] = (mantissa_digits[round_pos] as u8 + 1) as char;
-                    }
+            if round_pos < mantissa_digits.len() && round_pos + 1 < mantissa_digits.len() && mantissa_digits[round_pos + 1] >= '5' {
+                // Increment digit at round_pos
+                if mantissa_digits[round_pos] < '9' {
+                    mantissa_digits[round_pos] = (mantissa_digits[round_pos] as u8 + 1) as char;
                 }
             }
 
             // Zero out trailing mantissa digits
-            for j in (round_pos + 1)..mantissa_digits.len() {
-                mantissa_digits[j] = '0';
+            for digit in mantissa_digits.iter_mut().skip(round_pos + 1) {
+                *digit = '0';
             }
 
             0 // Reset k to avoid masking below
