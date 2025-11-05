@@ -24,6 +24,7 @@ use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
 use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
+use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::macii::bus::MacIIBus;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
@@ -101,6 +102,7 @@ macro_rules! dispatch {
                 pub fn $ref_method(&self) -> $ref_ret {
                     match self {
                         Self::Compact(inner) => &inner.$($ref_target)*,
+                        Self::Portable(inner) => &inner.$($ref_target)*,
                         Self::MacII(inner) => &inner.$($ref_target)*,
                         Self::MacIIPmmu(inner) => &inner.$($ref_target)*,
                     }
@@ -112,6 +114,7 @@ macro_rules! dispatch {
                 pub fn $mut_ref_method(&mut self) -> $mut_ref_ret {
                     match self {
                         Self::Compact(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::Portable(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacII(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacIIPmmu(inner) => &mut inner.$($mut_ref_target)*,
                     }
@@ -123,6 +126,7 @@ macro_rules! dispatch {
                 pub fn $immut_call_method(&self $(, $immut_arg: $immut_arg_ty)*) -> $immut_call_ret {
                     match self {
                         Self::Compact(inner) => inner.$($immut_call_target)*,
+                        Self::Portable(inner) => inner.$($immut_call_target)*,
                         Self::MacII(inner) => inner.$($immut_call_target)*,
                         Self::MacIIPmmu(inner) => inner.$($immut_call_target)*,
                     }
@@ -134,6 +138,7 @@ macro_rules! dispatch {
                 pub fn $mut_call_method(&mut self $(, $mut_arg: $mut_arg_ty)*) -> $mut_call_ret {
                     match self {
                         Self::Compact(inner) => inner.$($mut_call_target)*,
+                        Self::Portable(inner) => inner.$($mut_call_target)*,
                         Self::MacII(inner) => inner.$($mut_call_target)*,
                         Self::MacIIPmmu(inner) => inner.$($mut_call_target)*,
                     }
@@ -149,6 +154,8 @@ macro_rules! dispatch {
 enum EmulatorConfig {
     /// Compact series - Mac 128K, 512K, Plus, SE, Classic
     Compact(Box<CpuM68000<CompactMacBus<ChannelRenderer>>>),
+    /// Macintosh Portable
+    Portable(Box<CpuM68000<MacPortableBus<ChannelRenderer>>>),
     /// Macintosh II (AMU)
     MacII(Box<CpuM68020<MacIIBus<ChannelRenderer, true>>>),
     /// Macintosh II (PMMU)
@@ -297,6 +304,29 @@ impl Emulator {
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
                 EmulatorConfig::Compact(cpu)
+            }
+            | MacModel::Portable => {
+                assert!(!pmmu_enabled, "PMMU not available on compact models");
+
+                // Find extension ROM if present
+                let extension_rom = extra_roms.iter().find_map(|p| match p {
+                    ExtraROMs::ExtensionROM(data) => Some(*data),
+                    _ => None,
+                });
+
+                // Initialize bus and CPU
+                let bus = MacPortableBus::new(
+                    model,
+                    rom,
+                    extension_rom,
+                    renderer,
+                    mouse_mode,
+                    ram_size,
+                );
+                let cpu = Box::new(CpuM68000::new(bus));
+                assert_eq!(cpu.get_type(), model.cpu_type());
+
+                EmulatorConfig::Portable(cpu)
             }
             MacModel::MacII | MacModel::MacIIFDHD => {
                 assert!(override_fdd_type.is_none());
