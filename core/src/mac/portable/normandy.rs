@@ -1,4 +1,7 @@
 //! Normandy decoder implementation for the Macintosh Portable and PowerBook 100.
+//! Also known as the "CPU GLU" or "Coarse Address Decode and GLU".
+//! Aside from the address decoding duties, this chip also handled mapping and timing for the
+//! SLIM card system.
 
 use crate::bus::{Address, BusMember};
 use crate::dbgprop_bool;
@@ -13,6 +16,7 @@ bitfield! {
     struct SlimMapper(u8): {
         bit0: bool @ 0,
         bit1: bool @ 1,
+        /// Controls whether the memory range is mapped to SLIM_CS0 or SLIM_CS1
         bit2: bool @ 2,
     }
 }
@@ -28,7 +32,9 @@ bitfield! {
 bitfield! {
     #[derive(Serialize, Deserialize)]
     struct SlimStatus(u8): {
+        /// SLIM card is read-only
         readonly: bool @ 2,
+        /// SLIM card is inserted
         inserted: bool @ 3,
     }
 }
@@ -44,7 +50,7 @@ bitfield! {
 bitfield! {
     #[derive(Serialize, Deserialize)]
     struct SlimProtect(u8): {
-        /// Write protected
+        /// SLIM card is write protected
         protect: bool @ 3,
     }
 }
