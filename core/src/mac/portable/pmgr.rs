@@ -293,7 +293,7 @@ impl Pmgr {
             0x82 => self.wake_clear(),
             // Read wake up time
             0x88..=0x8F => self.wake_read(),
-            // Possible invalid timer commands TODO
+            // Possible invalid timer commands, used sometimes by the host but will not do anything
             0x81 | 0x83..=0x87 => (Ok(()), None),
             // Set sound
             0x90..=0x97 => self.sound_set(),
@@ -310,7 +310,7 @@ impl Pmgr {
             // Soft reset
             0xEF => self.soft_reset(),
             _ => {
-                println!("Unknown command: {:X}", cmd);
+                warn!("Unknown command: {:X}", cmd);
                 (Ok(()), None)
             }
         }
@@ -386,6 +386,7 @@ impl Pmgr {
                     self.length = 3;
                     (Ok(()), Some(vec![self.last_adb, self.adb_status.0, 3]))
                 } else {
+                    // The ADB device asserting SRQ is the same as the last
                     self.srq_waiting = false;
                     adb_response = device.talk(0);
                     self.length = 3 + adb_response.len() as Byte;
@@ -395,6 +396,7 @@ impl Pmgr {
                     (Ok(()), Some(result))
                 }
             } else {
+                // In this case srq_waiting is true, but there is no device asserting SRQ
                 self.srq_waiting = false;
                 self.length = 3 + self.adb_response.len() as Byte;
                 let mut result = vec![
@@ -502,8 +504,11 @@ impl Pmgr {
                 self.contrast = val;
                 (Ok(()), None)
             }
-            // Bad contrast value
-            _ => (Ok(()), None),
+            _ => {
+                // Bad contrast value
+                warn!("Received bad contrast value: {:X}", val);
+                (Ok(()), None)
+            }
         }
     }
 
@@ -705,8 +710,10 @@ impl Pmgr {
                     }
                     0x0C | 0x0D => {
                         if !srq_waiting {
+                            // If we're not waiting for an SRQ, talk to the device
                             self.adb_response = device.talk(cmd & 3);
                         }
+                        // Otherwise do nothing, as the SRQ will be handled in adb_status
                     }
                     _ => {
                         warn!("Unknown ADB command: {:X}", cmd);
@@ -752,6 +759,8 @@ impl Pmgr {
         self.adb_devices.push(Box::new(device));
     }
 
+    /// Send events from the emulator to the ADB devices
+    pub(crate) fn adb_send_event(&mut self, event: &AdbEvent) {}
     pub fn adb_event(&mut self, event: &AdbEvent) {
         for device in &mut self.adb_devices {
             device.event(event);
@@ -776,6 +785,8 @@ impl Pmgr {
 
 impl Tickable for Pmgr {
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+
+        // Handle the one-second signal to the VIA
         if self.onesec & !self.onesec_latch {
             self.time += 1;
             self.onesec_latch = true;
@@ -783,6 +794,7 @@ impl Tickable for Pmgr {
             self.onesec_latch = false;
         }
 
+        // Check for interrupts
         if (self.interrupt_flags.0 != 0) & self.adb_ready {
             self.interrupt = true;
         } else {
@@ -801,11 +813,15 @@ impl Tickable for Pmgr {
 
         // Power Manager communication state machine
         match self.state {
+
+            // Idle: Wait for the host to start a handshake
             State::Idle => {
                 if !self.pmreq {
                     self.state = State::GetCommand;
                 }
             }
+
+            // GetCommand: Receive a command byte from the host
             State::GetCommand => {
                 if self.pmack {
                     let cmd = self.a_out;
@@ -822,11 +838,15 @@ impl Tickable for Pmgr {
                     self.state = State::WaitLength;
                 }
             }
+
+            // WaitLength: Wait for pmreq to be asserted to receive the length of the command
             State::WaitLength => {
                 if !self.pmreq {
                     self.state = State::GetLength;
                 }
             }
+
+            // GetLength: Receive the length of the data
             State::GetLength => {
                 if self.pmack {
                     self.length = self.a_out;
@@ -842,11 +862,15 @@ impl Tickable for Pmgr {
                     }
                 }
             }
+
+            // WaitData: Wait for pmreq to be asserted to receive the data
             State::WaitData => {
                 if !self.pmreq {
                     self.state = State::GetData;
                 }
             }
+
+            // GetData: Receive the data
             State::GetData => {
                 if self.pmack {
                     self.data[self.data_pointer] = self.a_out;
@@ -864,6 +888,8 @@ impl Tickable for Pmgr {
                     }
                 }
             }
+
+            // WaitCommand: Wait for the host to be ready to handshake in the other direction
             State::WaitCommand => {
                 if self.wait_count <= 0 {
                     self.state = State::DoCommand;
@@ -871,6 +897,8 @@ impl Tickable for Pmgr {
                     self.wait_count -= 1;
                 }
             }
+
+            // DoCommand: Execute the command
             State::DoCommand => {
                 self.data = self
                     .cmd(self.cmd, self.data.to_owned())
@@ -882,6 +910,8 @@ impl Tickable for Pmgr {
                     self.state = State::Cleanup;
                 }
             }
+
+            // ReturnCmd: Send the command byte back to the host
             State::ReturnCmd => {
                 if self.pmreq & self.pmack {
                     self.pmack = false;
@@ -893,6 +923,8 @@ impl Tickable for Pmgr {
                     self.state = State::ReturnCmdWait;
                 }
             }
+
+            // ReturnCmdWait: Wait for the host to be ready to handshake in the other direction
             State::ReturnCmdWait => {
                 if self.wait_count <= 0 {
                     self.state = State::ReturnLength;
@@ -900,6 +932,8 @@ impl Tickable for Pmgr {
                     self.wait_count -= 1;
                 }
             }
+
+            // ReturnLength: Send the length of the data back to the host
             State::ReturnLength => {
                 if self.pmreq & self.pmack {
                     self.pmack = false;
@@ -915,6 +949,8 @@ impl Tickable for Pmgr {
                     }
                 }
             }
+
+            // ReturnDataWait: Wait for the host to be ready to handshake in the other direction
             State::ReturnDataWait => {
                 if self.wait_count <= 0 {
                     self.state = State::ReturnData;
@@ -922,6 +958,8 @@ impl Tickable for Pmgr {
                     self.wait_count -= 1;
                 }
             }
+
+            // ReturnData: Send the data back to the host
             State::ReturnData => {
                 if self.pmreq & self.pmack {
                     self.pmack = false;
@@ -938,6 +976,8 @@ impl Tickable for Pmgr {
                     }
                 }
             }
+
+            // Cleanup: Clear variables for the next run
             State::Cleanup => {
                 self.cmd = 0x00;
                 self.length = 0x00;
@@ -946,6 +986,8 @@ impl Tickable for Pmgr {
                 self.wait_count = 100;
                 self.state = State::CleanupWait;
             }
+
+            // CleanupWait: Wait for the host to finish receiving the last byte
             State::CleanupWait => {
                 if self.wait_count <= 0 {
                     self.state = State::Cleanup2;
@@ -953,7 +995,8 @@ impl Tickable for Pmgr {
                     self.wait_count -= 1;
                 }
             }
-            // Pull the communication bus high
+
+            // Cleanup2: Pull the communication bus high and return to idle
             State::Cleanup2 => {
                 self.a_in = 0xFF;
                 self.state = State::Idle;

@@ -24,8 +24,8 @@ use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
 use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
-use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::macii::bus::MacIIBus;
+use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
 use crate::mac::swim::drive::DriveType;
@@ -305,7 +305,7 @@ impl Emulator {
 
                 EmulatorConfig::Compact(cpu)
             }
-            | MacModel::Portable => {
+            MacModel::Portable => {
                 assert!(!pmmu_enabled, "PMMU not available on compact models");
 
                 // Find extension ROM if present
@@ -315,14 +315,8 @@ impl Emulator {
                 });
 
                 // Initialize bus and CPU
-                let bus = MacPortableBus::new(
-                    model,
-                    rom,
-                    extension_rom,
-                    renderer,
-                    mouse_mode,
-                    ram_size,
-                );
+                let bus =
+                    MacPortableBus::new(model, rom, extension_rom, renderer, mouse_mode, ram_size);
                 let cpu = Box::new(CpuM68000::new(bus));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 

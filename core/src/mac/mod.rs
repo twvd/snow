@@ -111,17 +111,15 @@ impl MacModel {
             Self::Plus | Self::SE | Self::SeFdhd | Self::Classic => {
                 &[1024 * 1024, 2048 * 1024, 4096 * 1024]
             }
-            Self::Portable => {
-                &[
-                    1 * 1024 * 1024,
-                    2 * 1024 * 1024,
-                    3 * 1024 * 1024,
-                    4 * 1024 * 1024,
-                    5 * 1024 * 1024,
-                    8 * 1024 * 1024,
-                    9 * 1024 * 1024,
-                ]
-            }
+            Self::Portable => &[
+                1 * 1024 * 1024,
+                2 * 1024 * 1024,
+                3 * 1024 * 1024,
+                4 * 1024 * 1024,
+                5 * 1024 * 1024,
+                8 * 1024 * 1024,
+                9 * 1024 * 1024,
+            ],
             Self::MacII => {
                 // TODO Mac II supports more RAM configurations but that requires
                 // implementing the SIMM sense lines
@@ -205,9 +203,12 @@ impl MacModel {
         match self {
             Self::Early128K | Self::Early512K => None,
             Self::Early512Ke | Self::Plus => Some((0x0002AE, 0x0040_0000)),
-            Self::SE | Self::SeFdhd | Self::Classic | Self::Portable | Self::MacII | Self::MacIIFDHD => {
-                Some((0x000CFC, 0x574C5343))
-            }
+            Self::SE
+            | Self::SeFdhd
+            | Self::Classic
+            | Self::Portable
+            | Self::MacII
+            | Self::MacIIFDHD => Some((0x000CFC, 0x574C5343)),
         }
     }
 
