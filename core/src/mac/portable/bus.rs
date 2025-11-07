@@ -43,6 +43,7 @@ pub struct MacPortableBus<TRenderer: Renderer> {
     /// The currently emulated Macintosh model
     model: MacModel,
 
+    rom_mask: usize,
     rom: Vec<u8>,
     extension_rom: Vec<u8>,
     pub(crate) ram: Vec<u8>,
@@ -60,8 +61,6 @@ pub struct MacPortableBus<TRenderer: Renderer> {
     pub(crate) scsi: ScsiController,
     pub(crate) pmgr: Pmgr,
     normandy: Normandy,
-
-    rom_mask: usize,
 
     overlay: bool,
 
@@ -114,11 +113,31 @@ where
             log::info!("Extension ROM present");
         }
 
+        let rom = {
+            let mut rom = rom.to_vec();
+
+            // Patch the ROM if using the 15MB RAM mod
+            if model == MacModel::Portable15MB {
+                rom[0x01..=0x03].copy_from_slice(&[0xC9, 0xE4, 0xB1]);
+                rom[0x05..=0x07].copy_from_slice(&[0xF3, 0xFF, 0x70]);
+                rom[0x67] = 0xF0;
+                rom[0x3EBD] = 0xA0;
+                rom[0x29D33] = 0xF8;
+                rom[0x29DB3] = 0xF8;
+                rom[0x3FF70..=0x3FF7B].copy_from_slice(&[
+                    0x4A, 0x39, 0x00, 0x90, 0x00, 0x2A, 0x4E, 0xF9, 0x00, 0xF0, 0x00, 0x2A,
+                ])
+            }
+
+            rom
+        };
+
         let mut bus = Self {
             cycles: 0,
             model,
 
-            rom: Vec::from(rom),
+            rom_mask: rom.len() - 1,
+            rom,
             extension_rom: extension_rom.map(Vec::from).unwrap_or_default(),
             ram: vec![0; ram_size],
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
@@ -131,7 +150,6 @@ where
             asc: Asc::default(),
             mouse_ready: false,
 
-            rom_mask: rom.len() - 1,
             overlay: true,
             speed: EmulatorSpeed::Accurate,
             vblank_time: Instant::now(),
@@ -206,19 +224,41 @@ where
     fn write_normal(&mut self, addr: Address, val: Byte) -> Option<()> {
         match addr {
             // RAM
-            0x0000_0000..=0x008F_FFFF => {
-                if addr < self.ram.len() as u32 {
-                    let idx = addr as usize;
-                    self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
-                    Some(self.ram[idx] = val)
+            0x0000_0000..=0x008F_FFFF => self.normal_ram_write(addr, val),
+            // ROM, or Remapped RAM for 15MB RAM Mod
+            0x0090_0000..=0x009F_FFFF => {
+                if self.model == MacModel::Portable15MB {
+                    self.normal_ram_write(addr, val)
                 } else {
                     Some(())
                 }
             }
-            // ROM
-            0x0090_0000..=0x009F_FFFF => Some(()),
-            // SLIM/Normandy
-            0x00F0_0000..=0x00F0_FFFF => self.normandy.write(addr, val),
+            // ROM Disks, or Remapped RAM for 15MB RAM Mod
+            0x00A0_0000..=0x00DF_FFFF => {
+                if self.model == MacModel::Portable15MB {
+                    self.normal_ram_write(addr, val)
+                } else {
+                    Some(())
+                }
+            }
+            // SLIM ROM, or Remapped RAM for 15MB RAM Mod
+            0x00E0_0000..=0x00EF_FFFF => {
+                if self.model == MacModel::Portable15MB {
+                    self.normal_ram_write(addr, val)
+                } else {
+                    Some(())
+                }
+            }
+            // SLIM/Normandy, or Remapped ROM for 15MB RAM Mod
+            0x00F0_0000..=0x00F0_FFFF => {
+                if self.model == MacModel::Portable15MB {
+                    self.normal_ram_write(addr, val)
+                } else {
+                    self.normandy.write(addr, val)
+                }
+            }
+            // Remapped ROM for 15MB RAM Mod
+            0x00F1_0000..=0x00F3_FFFF => Some(()),
             // SWIM
             0x00F6_0000..=0x00F6_FFFF => self.swim.write(addr, val),
             // VIA
@@ -258,21 +298,47 @@ where
 
     fn read_normal(&mut self, addr: Address) -> Option<Byte> {
         let result = match addr {
-            0x0000_0000..=0x008F_FFFF => {
-                if addr < self.ram.len() as u32 {
-                    Some(self.ram[addr as usize])
+            0x0000_0000..=0x008F_FFFF => self.normal_ram_read(addr),
+            // ROM, or Remapped RAM for 15MB RAM Mod
+            0x0090_0000..=0x009F_FFFF => {
+                if self.model == MacModel::Portable15MB {
+                    self.normal_ram_read(addr)
                 } else {
-                    Some(0x00)
+                    Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
                 }
             }
-            // ROM
-            0x0090_0000..=0x009F_FFFF => {
-                Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
+            // ROM Disks, or Remapped RAM for 15MB RAM Mod
+            0x00A0_0000..=0x00DF_FFFF => {
+                if self.model == MacModel::Portable15MB {
+                    self.normal_ram_read(addr)
+                } else {
+                    None
+                }
             }
-            0x00A0_0000..=0x00DF_FFFF => None,
-            0x00E0_0000..=0x00EF_FFFF => self.normandy.read(addr),
-            // SLIM/Normandy
-            0x00F0_0000..=0x00F0_FFFF => self.normandy.read(addr),
+            // SLIM ROM, or Remapped RAM for 15MB RAM Mod
+            0x00E0_0000..=0x00EF_FFFF => {
+                if self.model == MacModel::Portable15MB {
+                    self.normal_ram_read(addr)
+                } else {
+                    self.normandy.read(addr)
+                }
+            }
+            // SLIM/Normandy, or Remapped ROM for 15MB RAM Mod
+            0x00F0_0000..=0x00F0_FFFF => {
+                if self.model == MacModel::Portable15MB {
+                    Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
+                } else {
+                    self.normandy.read(addr)
+                }
+            }
+            // Remapped ROM for 15MB RAM Mod
+            0x00F1_0000..=0x00F3_FFFF => {
+                if self.model == MacModel::Portable15MB {
+                    Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
+                } else {
+                    None
+                }
+            }
             // SWIM
             0x00F6_0000..=0x00F6_FFFF => self.swim.read(addr),
             // VIA
@@ -302,6 +368,24 @@ where
             _ => None,
         };
         result
+    }
+
+    fn normal_ram_write(&mut self, addr: Address, val: Byte) -> Option<()> {
+        if addr < self.ram.len() as u32 {
+            let idx = addr as usize;
+            self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
+            Some(self.ram[idx] = val)
+        } else {
+            Some(())
+        }
+    }
+
+    fn normal_ram_read(&self, addr: Address) -> Option<Byte> {
+        if addr < self.ram.len() as u32 {
+            Some(self.ram[addr as usize])
+        } else {
+            Some(0x00)
+        }
     }
 
     /// Updates the mouse position (relative coordinates) and button state

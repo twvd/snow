@@ -305,7 +305,7 @@ impl Emulator {
 
                 EmulatorConfig::Compact(cpu)
             }
-            MacModel::Portable => {
+            MacModel::Portable | MacModel::Portable15MB => {
                 assert!(!pmmu_enabled, "PMMU not available on compact models");
 
                 // Find extension ROM if present

@@ -44,6 +44,8 @@ pub enum MacModel {
     Classic,
     /// Macintosh Portable
     Portable,
+    /// Macintosh Portable (15MB RAM Mod)
+    Portable15MB,
     /// Macintosh II
     MacII,
     /// Macintosh II FDHD
@@ -73,7 +75,7 @@ impl MacModel {
         // Macintosh Classic
         ("c1c47260bacac2473e21849925fbfdf48e5ab584aaef7c6d54569d0cb6b41cce", &[Self::Classic]),
         // Macintosh Portable
-        ("3de29198fc61859ed6146dae0b84cec6c980045f4e3efd64a683aab4db8e04a4", &[Self::Portable]),
+        ("3de29198fc61859ed6146dae0b84cec6c980045f4e3efd64a683aab4db8e04a4", &[Self::Portable, Self::Portable15MB]),
         // PowerBook 100
         ("62558d5faae58e1d6642a8b046f5ec432fe99073e018ac46597ec024b773b6a8", &[Self::Portable]),
         // Macintosh II v1
@@ -98,6 +100,7 @@ impl MacModel {
             Self::Early512K | Self::Early512Ke => 512 * 1024,
             Self::Plus | Self::SE | Self::SeFdhd | Self::Classic => 4096 * 1024,
             Self::Portable => 8 * 1024 * 1024,
+            Self::Portable15MB => 15 * 1024 * 1024,
             Self::MacII | Self::MacIIFDHD => 8 * 1024 * 1024,
         }
     }
@@ -119,6 +122,21 @@ impl MacModel {
                 5 * 1024 * 1024,
                 8 * 1024 * 1024,
                 9 * 1024 * 1024,
+            ],
+            Self::Portable15MB => &[
+                1 * 1024 * 1024,
+                2 * 1024 * 1024,
+                3 * 1024 * 1024,
+                4 * 1024 * 1024,
+                5 * 1024 * 1024,
+                8 * 1024 * 1024,
+                9 * 1024 * 1024,
+                10 * 1024 * 1024,
+                11 * 1024 * 1024,
+                12 * 1024 * 1024,
+                13 * 1024 * 1024,
+                14 * 1024 * 1024,
+                15 * 1024 * 1024,
             ],
             Self::MacII => {
                 // TODO Mac II supports more RAM configurations but that requires
@@ -143,8 +161,7 @@ impl MacModel {
     pub const fn fdd_hd(self) -> bool {
         match self {
             Self::Early128K | Self::Early512K | Self::Early512Ke | Self::Plus | Self::SE => false,
-            Self::SeFdhd | Self::Classic => true,
-            Self::Portable => true,
+            Self::SeFdhd | Self::Classic | Self::Portable | Self::Portable15MB => true,
             Self::MacII => false,
             Self::MacIIFDHD => true,
         }
@@ -162,7 +179,7 @@ impl MacModel {
                 DriveType::SuperDrive,
             ],
             Self::Classic => &[DriveType::SuperDrive, DriveType::SuperDrive],
-            Self::Portable => &[
+            Self::Portable | Self::Portable15MB => &[
                 DriveType::SuperDrive,
                 DriveType::SuperDrive,
                 DriveType::SuperDrive,
@@ -195,7 +212,7 @@ impl MacModel {
             // 75/25 for SE and onwards
             Self::SE | Self::SeFdhd | Self::Classic => cycles % 16 >= 4,
             // No interleave for Portable and MacII
-            Self::Portable | Self::MacII | Self::MacIIFDHD => true,
+            Self::Portable | Self::Portable15MB | Self::MacII | Self::MacIIFDHD => true,
         }
     }
 
@@ -207,6 +224,7 @@ impl MacModel {
             | Self::SeFdhd
             | Self::Classic
             | Self::Portable
+            | Self::Portable15MB
             | Self::MacII
             | Self::MacIIFDHD => Some((0x000CFC, 0x574C5343)),
         }
@@ -221,7 +239,8 @@ impl MacModel {
             | Self::SE
             | Self::SeFdhd
             | Self::Classic
-            | Self::Portable => M68000,
+            | Self::Portable
+            | Self::Portable15MB => M68000,
             Self::MacII | Self::MacIIFDHD => M68020,
         }
     }
@@ -234,7 +253,8 @@ impl MacModel {
             | Self::Plus
             | Self::SE
             | Self::SeFdhd
-            | Self::Portable => via::RegisterA(0xFF),
+            | Self::Portable
+            | Self::Portable15MB => via::RegisterA(0xFF),
             Self::Classic => {
                 // Mac Classic has a pulldown (R79) as model identifier
                 via::RegisterA(0xFF).with_sndpg2(false)
@@ -288,6 +308,7 @@ impl Display for MacModel {
                 Self::SeFdhd => "Macintosh SE (FDHD)",
                 Self::Classic => "Macintosh Classic",
                 Self::Portable => "Macintosh Portable",
+                Self::Portable15MB => "Macintosh Portable (15MB RAM Mod)",
                 Self::MacII => "Macintosh II",
                 Self::MacIIFDHD => "Macintosh II (FDHD)",
             }
