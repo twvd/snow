@@ -785,7 +785,6 @@ impl Pmgr {
 
 impl Tickable for Pmgr {
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
-
         // Handle the one-second signal to the VIA
         if self.onesec & !self.onesec_latch {
             self.time += 1;
@@ -813,7 +812,6 @@ impl Tickable for Pmgr {
 
         // Power Manager communication state machine
         match self.state {
-
             // Idle: Wait for the host to start a handshake
             State::Idle => {
                 if !self.pmreq {

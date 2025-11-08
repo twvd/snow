@@ -143,6 +143,19 @@ impl Via {
             onesec: 0,
         }
     }
+
+    pub fn reset(&mut self) {
+        self.a_out = RegisterA(0);
+        self.b_out = RegisterB(0);
+        self.a_in = RegisterA(0xFF);
+        self.b_in = RegisterB(0xFF);
+        self.ddra = RegisterA(0);
+        self.ddrb = RegisterB(0);
+        self.ier = RegisterIRQ(0);
+        self.ifr = RegisterIRQ(0);
+        self.acr = RegisterACR(0);
+        self.pcr = RegisterPCR(0);
+    }
 }
 
 impl BusMember<Address> for Via {

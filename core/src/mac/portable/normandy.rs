@@ -7,7 +7,7 @@ use crate::bus::{Address, BusMember};
 use crate::dbgprop_bool;
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::tickable::{Tickable, Ticks};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
@@ -58,7 +58,9 @@ bitfield! {
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct Normandy {
+    // Idle speed register
     pub idle_speed: bool,
+    // SLIM DTACK loag register
     pub slim_dtack: bool,
     slim_mapper: Vec<SlimMapper>,
 
@@ -140,6 +142,7 @@ impl BusMember<Address> for Normandy {
                 0x202..=0x203 => Some(0x00),
                 _ => None,
             },
+            // Idle speed register
             0xFE_0000..=0xFE_FFFF => match addr & 0x202 {
                 0x000 => {
                     self.idle_speed = false;
@@ -174,6 +177,7 @@ impl BusMember<Address> for Normandy {
                 0x202..=0x203 => Some(()),
                 _ => None,
             },
+            // Idle speed register
             0xFE_0000..=0xFE_FFFF => match addr & 0x202 {
                 0x000 => {
                     self.idle_speed = false;

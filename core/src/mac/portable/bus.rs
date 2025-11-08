@@ -579,6 +579,7 @@ where
         self.pmgr.reset();
 
         self.scc = Scc::new();
+        self.via.reset();
         self.asc.reset();
         self.mouse_ready = false;
         self.overlay = true;
