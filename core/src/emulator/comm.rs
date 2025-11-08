@@ -136,7 +136,7 @@ pub enum EmulatorEvent {
     UserMessage(UserMessageType, String),
     FloppyEjected(usize, Box<FloppyImage>),
     ScsiMediaEjected(usize),
-    Memory((Address, Vec<u8>)),
+    Memory((Address, Vec<u8>, usize)),
     RecordedInput(InputRecording),
     InstructionHistory(Vec<HistoryEntry>),
     PeripheralDebug(DebuggableProperties),
