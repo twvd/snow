@@ -38,6 +38,9 @@ where
     /// Total visible dots in one frame.
     const FRAME_VISIBLE_DOTS: usize = Self::H_VISIBLE_DOTS * Self::V_VISIBLE_LINES;
 
+    /// Amount of VRAM present
+    const VRAM_SIZE: usize = 0x10000;
+
     pub fn new(rom: &[u8], renderer: TRenderer) -> Self {
         Self {
             renderer: Some(renderer),
@@ -45,7 +48,7 @@ where
             vblank_irq: false,
             vblank_enable: false,
             fb_select: false,
-            vram: vec![0; 0xFFFF],
+            vram: vec![0; Self::VRAM_SIZE],
             vblank_ticks: 0,
             render: LatchingEvent::default(),
         }
