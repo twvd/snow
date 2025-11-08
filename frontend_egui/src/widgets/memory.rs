@@ -60,13 +60,11 @@ impl Default for MemoryViewerWidget {
 
 impl MemoryViewerWidget {
     /// Update the memory data to display
-    pub fn update_memory(&mut self, addr: Address, data: &[u8]) {
+    pub fn update_memory(&mut self, addr: Address, data: &[u8], size: usize) {
         let addr = addr as usize;
         let end = addr + data.len();
 
-        if self.memory.len() < end {
-            self.memory.resize(end, 0);
-        }
+        self.memory.resize(size, 0);
 
         // Update change highlights
         let expires = Instant::now() + Duration::from_secs(1);

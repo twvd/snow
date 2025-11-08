@@ -112,7 +112,7 @@ pub struct EmulatorState {
     disasm_code: DisassemblyListing,
     messages: VecDeque<(UserMessageType, String)>,
     pub last_images: [RefCell<Option<Box<FloppyImage>>>; 3],
-    ram_update: VecDeque<(Address, Vec<u8>)>,
+    ram_update: VecDeque<(Address, Vec<u8>, usize)>,
     record_input_path: Option<PathBuf>,
     instruction_history: Vec<HistoryEntry>,
     systrap_history: Vec<SystrapHistoryEntry>,
@@ -858,7 +858,7 @@ impl EmulatorState {
             .unwrap();
     }
 
-    pub fn take_mem_update(&mut self) -> Option<(Address, Vec<u8>)> {
+    pub fn take_mem_update(&mut self) -> Option<(Address, Vec<u8>, usize)> {
         self.ram_update.pop_front()
     }
 

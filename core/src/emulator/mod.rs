@@ -500,6 +500,7 @@ impl Emulator {
             self.event_sender.send(EmulatorEvent::Memory((
                 r.start as Address,
                 self.config.ram()[r].to_vec(),
+                self.config.ram().len(),
             )))?;
         }
         self.config.ram_dirty_mut().clear();
