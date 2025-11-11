@@ -103,16 +103,16 @@ pub struct CompactMacBus<TRenderer: Renderer> {
 
     /// Early/Plus mouse motion accumulator for Y coordinate
     plusmouse_rel_y: i32,
+
+    /// Tracks the last values of the (16-bit) data bus to produce accurate
+    /// echoes for open bus reads.
+    openbus: [Byte; 2],
 }
 
 impl<TRenderer> CompactMacBus<TRenderer>
 where
     TRenderer: Renderer,
 {
-    /// Value to return on open bus
-    /// Certain applications (e.g. Animation Toolkit) rely on this.
-    const OPENBUS: u8 = 0;
-
     /// Main sound buffer offset (from end of RAM)
     const SOUND_MAIN_OFFSET: usize = 0x0300;
     /// Alternate sound buffer offset (from end of RAM)
@@ -193,6 +193,7 @@ where
             mouse_mode,
             plusmouse_rel_x: 0,
             plusmouse_rel_y: 0,
+            openbus: Default::default(),
         };
 
         // Disable memory test
@@ -331,7 +332,7 @@ where
                     *self
                         .rom
                         .get(addr as usize & self.rom_mask)
-                        .unwrap_or(&Self::OPENBUS),
+                        .unwrap_or(&self.openbus[(addr & 1) as usize]),
                 )
             }
             // SCSI
@@ -339,7 +340,7 @@ where
             // RAM
             0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
             // Phase adjust (ignore)
-            0x009F_FFF7 | 0x009F_FFF9 => Some(Self::OPENBUS),
+            0x009F_FFF7 | 0x009F_FFF9 => Some(0),
             // SCC
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr >> 1),
             // IWM
@@ -347,13 +348,13 @@ where
             // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
             // Phase read (ignore)
-            0x00F0_0000..=0x00F7_FFFF => Some(Self::OPENBUS),
+            0x00F0_0000..=0x00F7_FFFF => Some(0),
             // Test software region / extension ROM
             0x00F8_0000..=0x00F9_FFFF => Some(
                 *self
                     .extension_rom
                     .get((addr - 0xF8_0000) as usize)
-                    .unwrap_or(&Self::OPENBUS),
+                    .unwrap_or(&self.openbus[(addr & 1) as usize]),
             ),
 
             _ => None,
@@ -371,7 +372,7 @@ where
                 *self
                     .rom
                     .get(addr as usize & self.rom_mask)
-                    .unwrap_or(&Self::OPENBUS),
+                    .unwrap_or(&self.openbus[(addr & 1) as usize]),
             ),
             0x0044_0000..=0x004F_FFFF => {
                 if self.model == MacModel::Plus {
@@ -379,13 +380,13 @@ where
                     // indication of SCSI controller present.
                     //
                     // 512Ke (using Plus ROM) does have repeated ROM images
-                    Some(Self::OPENBUS)
+                    Some(self.openbus[(addr & 1) as usize])
                 } else {
                     Some(
                         *self
                             .rom
                             .get(addr as usize & self.rom_mask)
-                            .unwrap_or(&Self::OPENBUS),
+                            .unwrap_or(&self.openbus[(addr & 1) as usize]),
                     )
                 }
             }
@@ -402,7 +403,7 @@ where
                 *self
                     .extension_rom
                     .get((addr - 0xF8_0000) as usize)
-                    .unwrap_or(&Self::OPENBUS),
+                    .unwrap_or(&self.openbus[(addr & 1) as usize]),
             ),
 
             _ => None,
@@ -593,10 +594,11 @@ where
         };
 
         if let Some(v) = val {
+            self.openbus[(addr & 1) as usize] = v;
             BusResult::Ok(v)
         } else {
             warn!("Read from unimplemented address: {:08X}", addr);
-            BusResult::Ok(Self::OPENBUS)
+            BusResult::Ok(self.openbus[(addr & 1) as usize])
         }
     }
 
@@ -622,6 +624,8 @@ where
         if written.is_none() {
             warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
         }
+
+        self.openbus[(addr & 1) as usize] = val;
         BusResult::Ok(val)
     }
 
