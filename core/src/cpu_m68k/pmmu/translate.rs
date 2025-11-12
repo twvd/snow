@@ -2,8 +2,10 @@ use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::cpu::{CpuError, CpuM68k, Group0Details, HistoryEntry};
 use crate::cpu_m68k::pmmu::regs::{PmmuPageDescriptorType, RegisterPSR, RootPointerReg};
 use crate::cpu_m68k::CpuM68kType;
+use crate::cpu_m68k::FpuM68kType;
 use crate::types::Long;
 
+use crate::impl_cpu;
 use anyhow::{anyhow, bail, Result};
 use arrayvec::ArrayVec;
 use num_traits::FromPrimitive;
@@ -44,11 +46,7 @@ bitfield! {
     }
 }
 
-impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
-    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
-where
-    TBus: Bus<Address, u8> + IrqSource,
-{
+impl_cpu! {
     pub(in crate::cpu_m68k) fn pmmu_cache_invalidate(&mut self) {
         if !self.regs.pmmu.tc.enable() {
             return;

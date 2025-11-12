@@ -105,7 +105,7 @@ impl Default for ModelSelectionDialog {
                     std::sync::Arc::new(|p| {
                         if let Some(ext) = p.extension() {
                             let ext_str = ext.to_string_lossy().to_lowercase();
-                            ext_str == "rom" || ext_str == "bin"
+                            ext_str == "rom" || ext_str == "bin" || ext_str == "uk6"
                         } else {
                             false
                         }
@@ -200,8 +200,14 @@ impl ModelSelectionDialog {
     }
 
     fn update_display_rom_requirement(&mut self) {
-        self.display_rom_required =
-            matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD);
+        self.display_rom_required = matches!(
+            self.selected_model,
+            MacModel::MacII
+                | MacModel::MacIIFDHD
+                | MacModel::MacIIx
+                | MacModel::MacIIcx
+                | MacModel::SE30
+        );
         if !self.display_rom_required {
             self.display_rom_path.clear();
             self.display_rom_valid = false;
@@ -267,8 +273,16 @@ impl ModelSelectionDialog {
         );
         let digest = hash.finalize();
 
-        if digest[..]
-            == hex_literal::hex!("e2e763a6b432c9196f619a9f90107726ab1a84a1d54242fe5f5182bf3c97b238")
+        if (self.selected_model != MacModel::SE30
+            && digest[..]
+                == hex_literal::hex!(
+                    "e2e763a6b432c9196f619a9f90107726ab1a84a1d54242fe5f5182bf3c97b238"
+                ))
+            || (self.selected_model == MacModel::SE30
+                && digest[..]
+                    == hex_literal::hex!(
+                        "8af892fd7fff89c2151bb3027f3dc61e531f24e4adb0e3face95c90daece4409"
+                    ))
         {
             self.display_rom_valid = true;
             Ok(())
@@ -396,7 +410,11 @@ impl ModelSelectionDialog {
 
                 // Display Card ROM selection (Mac II only)
                 if self.display_rom_required {
-                    ui.label("Macintosh Display Card 8-24 ROM (341-0868)");
+                    if self.selected_model == MacModel::SE30 {
+                        ui.label("SE/30 video ROM");
+                    } else {
+                        ui.label("Macintosh Display Card 8-24 ROM (341-0868)");
+                    }
                     ui.horizontal(|ui| {
                         if ui
                             .text_edit_singleline(&mut self.display_rom_path)
@@ -431,18 +449,20 @@ impl ModelSelectionDialog {
                     ui.label(egui::RichText::from("Select peripherals").strong());
                     ui.end_row();
 
-                    ui.label("Monitor");
-                    egui::ComboBox::new(egui::Id::new("Select monitor"), "")
-                        .selected_text(format!("{}", self.selected_monitor))
-                        .show_ui(ui, |ui| {
-                            for monitor in MacMonitor::iter() {
-                                ui.selectable_value(
-                                    &mut self.selected_monitor,
-                                    monitor,
-                                    monitor.to_string(),
-                                );
-                            }
-                        });
+                    if self.selected_model != MacModel::SE30 {
+                        ui.label("Monitor");
+                        egui::ComboBox::new(egui::Id::new("Select monitor"), "")
+                            .selected_text(format!("{}", self.selected_monitor))
+                            .show_ui(ui, |ui| {
+                                for monitor in MacMonitor::iter() {
+                                    ui.selectable_value(
+                                        &mut self.selected_monitor,
+                                        monitor,
+                                        monitor.to_string(),
+                                    );
+                                }
+                            });
+                    }
                     ui.end_row();
                 }
             });
@@ -510,6 +530,10 @@ impl ModelSelectionDialog {
                             &mut self.init_args.start_fastforward,
                             "Start in fast-forward mode",
                         );
+                        if self.selected_model == MacModel::SE30 {
+                            let mut x = false;
+                            ui.checkbox(&mut x, "Emulate exploded PRAM battery");
+                        }
                     });
                 });
             });

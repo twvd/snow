@@ -18,7 +18,7 @@ use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
-use crate::cpu_m68k::{CpuM68000, CpuM68020, CpuM68020Pmmu};
+use crate::cpu_m68k::{CpuM68000, CpuM68020Fpu, CpuM68020Pmmu, CpuM68030Fpu};
 use crate::debuggable::{Debuggable, DebuggableProperties};
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
@@ -103,6 +103,7 @@ macro_rules! dispatch {
                         Self::Compact(inner) => &inner.$($ref_target)*,
                         Self::MacII(inner) => &inner.$($ref_target)*,
                         Self::MacIIPmmu(inner) => &inner.$($ref_target)*,
+                        Self::MacII30(inner) => &inner.$($ref_target)*,
                     }
                 }
             )*
@@ -114,6 +115,7 @@ macro_rules! dispatch {
                         Self::Compact(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacII(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacIIPmmu(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::MacII30(inner) => &mut inner.$($mut_ref_target)*,
                     }
                 }
             )*
@@ -125,6 +127,7 @@ macro_rules! dispatch {
                         Self::Compact(inner) => inner.$($immut_call_target)*,
                         Self::MacII(inner) => inner.$($immut_call_target)*,
                         Self::MacIIPmmu(inner) => inner.$($immut_call_target)*,
+                        Self::MacII30(inner) => inner.$($immut_call_target)*,
                     }
                 }
             )*
@@ -136,6 +139,7 @@ macro_rules! dispatch {
                         Self::Compact(inner) => inner.$($mut_call_target)*,
                         Self::MacII(inner) => inner.$($mut_call_target)*,
                         Self::MacIIPmmu(inner) => inner.$($mut_call_target)*,
+                        Self::MacII30(inner) => inner.$($mut_call_target)*,
                     }
                 }
             )*
@@ -150,9 +154,11 @@ enum EmulatorConfig {
     /// Compact series - Mac 128K, 512K, Plus, SE, Classic
     Compact(Box<CpuM68000<CompactMacBus<ChannelRenderer>>>),
     /// Macintosh II (AMU)
-    MacII(Box<CpuM68020<MacIIBus<ChannelRenderer, true>>>),
+    MacII(Box<CpuM68020Fpu<MacIIBus<ChannelRenderer, true>>>),
     /// Macintosh II (PMMU)
     MacIIPmmu(Box<CpuM68020Pmmu<MacIIBus<ChannelRenderer, false>>>),
+    /// Macintosh SE/30 and 68030-based Macintosh IIs
+    MacII30(Box<CpuM68030Fpu<MacIIBus<ChannelRenderer, false>>>),
 }
 
 dispatch! {
@@ -326,7 +332,7 @@ impl Emulator {
                         mouse_mode,
                         ram_size,
                     );
-                    let cpu = Box::new(CpuM68020::new(bus));
+                    let cpu = Box::new(CpuM68020Fpu::new(bus));
                     assert_eq!(cpu.get_type(), model.cpu_type());
 
                     EmulatorConfig::MacII(cpu)
@@ -347,6 +353,71 @@ impl Emulator {
 
                     EmulatorConfig::MacIIPmmu(cpu)
                 }
+            }
+            MacModel::MacIIx | MacModel::MacIIcx => {
+                assert!(override_fdd_type.is_none());
+
+                // Find display card ROM
+                let Some(ExtraROMs::MDC12(mdcrom)) =
+                    extra_roms.iter().find(|p| matches!(p, ExtraROMs::MDC12(_)))
+                else {
+                    bail!("Macintosh II requires display card ROM")
+                };
+
+                // Find extension ROM if present
+                let extension_rom = extra_roms.iter().find_map(|p| match p {
+                    ExtraROMs::ExtensionROM(data) => Some(*data),
+                    _ => None,
+                });
+
+                // Initialize bus and CPU
+                let bus = MacIIBus::new(
+                    model,
+                    rom,
+                    mdcrom,
+                    extension_rom,
+                    vec![renderer],
+                    monitor.unwrap_or_default(),
+                    mouse_mode,
+                    ram_size,
+                );
+                let cpu = Box::new(CpuM68030Fpu::new(bus));
+                assert_eq!(cpu.get_type(), model.cpu_type());
+
+                EmulatorConfig::MacII30(cpu)
+            }
+            MacModel::SE30 => {
+                assert!(override_fdd_type.is_none());
+
+                // Find video ROM
+                let Some(ExtraROMs::SE30Video(vrom)) = extra_roms
+                    .iter()
+                    .find(|p| matches!(p, ExtraROMs::SE30Video(_)))
+                else {
+                    bail!("Macintosh SE/30 requires video ROM")
+                };
+
+                // Find extension ROM if present
+                let extension_rom = extra_roms.iter().find_map(|p| match p {
+                    ExtraROMs::ExtensionROM(data) => Some(*data),
+                    _ => None,
+                });
+
+                // Initialize bus and CPU
+                let bus = MacIIBus::new(
+                    model,
+                    rom,
+                    vrom,
+                    extension_rom,
+                    vec![renderer],
+                    monitor.unwrap_or_default(),
+                    mouse_mode,
+                    ram_size,
+                );
+                let cpu = Box::new(CpuM68030Fpu::new(bus));
+                assert_eq!(cpu.get_type(), model.cpu_type());
+
+                EmulatorConfig::MacII30(cpu)
             }
         };
 

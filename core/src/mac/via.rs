@@ -48,6 +48,9 @@ bitfield! {
         /// (true = main, false = alternate)
         pub page2: bool @ 6,
 
+        /// Another model sense bit
+        pub model6: bool @ 6,
+
         /// SCC Wait/Request (false)
         pub sccwrreq: bool @ 7,
     }
@@ -89,6 +92,9 @@ bitfield! {
 
         /// SCSI interrupt (false = enabled) (SE+)
         pub scsi_int: bool @ 6,
+
+        /// VBlank enable for SE/30
+        pub se30_vblank_enable: bool @ 6,
 
         /// Sound enable
         pub sndenb: bool @ 7,

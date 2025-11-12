@@ -1,5 +1,6 @@
 //! M68851 PMMU - Opcode implementations
 
+use crate::cpu_m68k::FpuM68kType;
 use anyhow::{bail, Result};
 
 use crate::bus::{Address, Bus, IrqSource};
@@ -8,16 +9,13 @@ use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_PRIVILEGE_VIOLATION};
 use crate::cpu_m68k::instruction::Instruction;
 use crate::cpu_m68k::pmmu::instruction::{Pmove3Extword, PtestExtword};
 use crate::cpu_m68k::CpuM68kType;
+use crate::impl_cpu;
 use crate::types::{DoubleLong, Word};
 
 use super::instruction::Pmove1Extword;
 use super::regs::TcReg;
 
-impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
-    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
-where
-    TBus: Bus<Address, u8> + IrqSource,
-{
+impl_cpu! {
     pub(in crate::cpu_m68k) fn op_pop_000(&mut self, instr: &Instruction) -> Result<()> {
         if !PMMU {
             return self.op_linef(instr);
