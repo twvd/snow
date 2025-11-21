@@ -1,6 +1,6 @@
 # Introduction
 
-![Snowy macintosh](images/snowmac.png)
+![Snowy Macintosh](images/snowmac.png)
 
 Thank you for checking out Snow! Snow is a classic Macintosh emulator,
 emulating Motorola 68k-based Macintosh models. It aims to be user-friendly
@@ -17,6 +17,7 @@ It currently emulates the following Macintosh models:
  * Macintosh SE (non-FDHD and FDHD)
  * Macintosh Classic
  * Macintosh II (non-FDHD and FDHD)
+ * Macintosh IIx, IIcx, SE/30
 
 If you're looking to obtain Snow, head over to [Obtaining binaries](./getting_started/binaries.md).
 

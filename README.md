@@ -21,11 +21,13 @@ It currently supports the following models:
 * Macintosh SE (both non-FDHD and FDHD)
 * Macintosh Classic
 * Macintosh II (both non-FDHD and FDHD)
+* Macintosh IIx, IIcx, SE/30
 
 Currently supported hardware:
 
-* Motorola 68000 and 68020 CPUs
-* Motorola 68881 FPU (Mac II)
+* Motorola 68000, 68020, 68030 CPUs
+* Motorola 68881, 68882 FPUs
+* Motorola 68851 PMMU
 * IWM and SWIM floppy controllers
 * GCR 400K/800K floppy disk drives (up to 3 on SE)
 * GCR/MFM 1.44MB 'SuperDrive' floppy disk drive (currently read-only)
@@ -34,8 +36,8 @@ Currently supported hardware:
 * Macintosh Real-Time Clock
 * Macintosh keyboard/mouse
 * ADB keyboard/mouse
-* Audio output (PWM-based audio on compact Macs and ASC on Mac II)
-* Macintosh Display Card 8-24 with various monitor types (Mac II)
+* Audio output (PWM-based audio on compact Macs and ASC on newer models)
+* Macintosh Display Card 8-24 with various monitor types (models with NuBus)
 
 Supported floppy image formats:
 
