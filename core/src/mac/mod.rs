@@ -111,19 +111,23 @@ impl MacModel {
             Self::Plus | Self::SE | Self::SeFdhd | Self::Classic => {
                 &[1024 * 1024, 2048 * 1024, 4096 * 1024]
             }
-            Self::MacII => {
-                // TODO Mac II supports more RAM configurations but that requires
-                // implementing the SIMM sense lines
-                &[8 * 1024 * 1024]
-            }
+            Self::MacII => &[
+                /* 1 * */ 1024 * 1024,
+                2 * 1024 * 1024,
+                4 * 1024 * 1024,
+                8 * 1024 * 1024,
+                // Original Mac II ROM breaks > 8 MB; SCSI stops working.
+            ],
             Self::MacIIFDHD | Self::MacIIx | Self::MacIIcx | Self::SE30 => {
                 &[
+                    /* 1 * */ 1024 * 1024,
+                    2 * 1024 * 1024,
+                    4 * 1024 * 1024,
                     8 * 1024 * 1024,
                     // Configurations > 8MB require 32-bit addressing mode
                     // and the MODE32 extension.
                     16 * 1024 * 1024,
                     32 * 1024 * 1024,
-                    64 * 1024 * 1024,
                     128 * 1024 * 1024,
                 ]
             }

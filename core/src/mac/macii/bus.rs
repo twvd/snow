@@ -34,6 +34,17 @@ pub const CLOCK_SPEED: Ticks = 16_000_000;
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
+struct RamConfig {
+    size: usize,
+    expected_sz: u8,
+    mirror: bool,
+}
+
+const RAMSZ_256K: u8 = 0;
+const RAMSZ_1M: u8 = 1;
+const RAMSZ_4M: u8 = 2;
+const RAMSZ_16M: u8 = 3;
+
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
@@ -59,6 +70,8 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     pub(crate) scsi: ScsiController,
 
     ram_mask: usize,
+    ram_mirror: bool,
+    ram_expected_ramsiz: u8,
     rom_mask: usize,
 
     overlay: bool,
@@ -87,6 +100,52 @@ impl<TRenderer, const AMU: bool> MacIIBus<TRenderer, AMU>
 where
     TRenderer: Renderer,
 {
+    /// RAM configuration properties
+    const RAM_CONFIG: [RamConfig; 8] = [
+        RamConfig {
+            #[allow(clippy::identity_op)]
+            size: 1 * 1024 * 1024,
+            expected_sz: RAMSZ_256K,
+            mirror: false,
+        },
+        RamConfig {
+            size: 2 * 1024 * 1024,
+            expected_sz: RAMSZ_256K,
+            mirror: true,
+        },
+        RamConfig {
+            size: 4 * 1024 * 1024,
+            expected_sz: RAMSZ_1M,
+            mirror: false,
+        },
+        RamConfig {
+            size: 8 * 1024 * 1024,
+            expected_sz: RAMSZ_1M,
+            mirror: true,
+        },
+        RamConfig {
+            size: 16 * 1024 * 1024,
+            expected_sz: RAMSZ_4M,
+            mirror: false,
+        },
+        RamConfig {
+            size: 32 * 1024 * 1024,
+            expected_sz: RAMSZ_4M,
+            mirror: true,
+        },
+        RamConfig {
+            // Doesn't work on MacII? Works on IIsi
+            size: 64 * 1024 * 1024,
+            expected_sz: RAMSZ_16M,
+            mirror: false,
+        },
+        RamConfig {
+            size: 128 * 1024 * 1024,
+            expected_sz: RAMSZ_16M,
+            mirror: true,
+        },
+    ];
+
     /// Value to return on open bus
     /// Certain applications (e.g. Animation Toolkit) rely on this.
     const OPENBUS: u8 = 0;
@@ -114,6 +173,10 @@ where
         ram_size: Option<usize>,
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
+        let ram_config = Self::RAM_CONFIG
+            .iter()
+            .find(|c| c.size == ram_size)
+            .unwrap_or_else(|| panic!("Unsupported RAM size: {}", ram_size));
 
         if extension_rom.is_some() {
             log::info!("Extension ROM present");
@@ -136,7 +199,9 @@ where
             asc: Asc::default(),
             mouse_ready: false,
 
-            ram_mask: (ram_size - 1),
+            ram_mask: usize::MAX,
+            ram_mirror: ram_config.mirror,
+            ram_expected_ramsiz: ram_config.expected_sz,
             rom_mask: rom.len() - 1,
 
             overlay: true,
@@ -243,8 +308,13 @@ where
             // RAM
             0x0000_0000..=0x3FFF_FFFF => {
                 let idx = addr as usize & self.ram_mask;
-                self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
-                Some(self.ram[idx] = val)
+                if idx >= self.ram.len() {
+                    // Ignore silently to avoid a lot of spam during memory tests
+                    Some(())
+                } else {
+                    self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
+                    Some(self.ram[idx] = val)
+                }
             }
             // ROM
             0x4000_0000..=0x4FFF_FFFF => Some(()),
@@ -262,7 +332,33 @@ where
                 }
                 0x0000_0000..=0x0000_1FFF => self.via1.write(addr, val),
                 // VIA 2
-                0x0000_2000..=0x0000_3FFF => self.via2.write(addr, val),
+                0x0000_2000..=0x0000_3FFF => {
+                    let result = self.via2.write(addr, val);
+
+                    // Lazy update ramsize
+                    if self.via2.a_out.v2ram0() == self.ram_expected_ramsiz {
+                        self.ram_mask = if self.ram_mirror {
+                            self.ram.len() - 1
+                        } else {
+                            usize::MAX
+                        };
+                    } else {
+                        self.ram_mask = match self.model {
+                            MacModel::MacII => {
+                                // Just cut everything short to 1MB so the detection proceeds
+                                (/* 1 * */1024 * 1024) - 1
+                            }
+                            _ => {
+                                // Newer models need all RAM visible and do detection differently
+                                // Mirroring breaks RAM detection on IIsi, SE/30, etc.
+                                // Probably a difference in the newer FDHD ROM and up
+                                usize::MAX
+                            }
+                        };
+                    }
+
+                    result
+                }
                 // SCC
                 0x0000_4000..=0x0000_5FFF => self.scc.write(addr >> 1, val),
                 // SCSI
@@ -322,7 +418,15 @@ where
     fn read_32bit(&mut self, addr: Address) -> Option<Byte> {
         match addr {
             // RAM
-            0x0000_0000..=0x3FFF_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
+            0x0000_0000..=0x3FFF_FFFF => {
+                let idx = addr as usize & self.ram_mask;
+                if idx >= self.ram.len() {
+                    // Ignore silently to avoid a lot of spam during memory tests
+                    Some(Self::OPENBUS)
+                } else {
+                    Some(self.ram[idx])
+                }
+            }
             // ROM
             0x4000_0000..=0x4FFF_FFFF => Some(
                 *self
