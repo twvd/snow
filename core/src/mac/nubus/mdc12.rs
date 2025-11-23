@@ -315,7 +315,7 @@ where
 
             // ROM (byte lane 3)
             0xFE_0000..=0xFF_FFFF if addr % 4 == 3 => {
-                Some(self.rom[((addr - 0xFE_0000) / 4) as usize])
+                self.rom.get(((addr - 0xFE_0000) / 4) as usize).copied()
             }
             _ => None,
         }
