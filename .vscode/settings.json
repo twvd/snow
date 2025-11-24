@@ -1,0 +1,13 @@
+{
+  
+  "terminal.integrated.profiles.windows": {
+    "MSYS2 MinGW64": {
+      "path": "C:\\msys64\\usr\\bin\\bash.exe",
+      "args": ["-lc", "env MSYSTEM=MINGW64 /usr/bin/bash -l -i"],
+      "env": { "PATH" : "C:\\msys64\\usr\\bin;%USERPROFILE%\\.cargo\\bin;${env:PATH}"}
+    }
+  },
+  "terminal.integrated.defaultProfile.windows": "MSYS2 MinGW64",
+  "rust-analyzer.cargo.sysroot": "discover",
+  "rust-analyzer.server.extraEnv": {"PATH":"C:\\msys64\\mingw64\\bin;%USERPROFILE%\\.cargo\\bin;${env:PATH}"}
+}
