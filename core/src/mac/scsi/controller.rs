@@ -179,6 +179,7 @@ pub struct ScsiController {
     reg_cdr: u8,
     reg_odr: u8,
     reg_bsr: NcrRegBsr,
+    reg_selen: u8,
     status: u8,
 
     /// Selected SCSI ID
@@ -253,6 +254,7 @@ impl ScsiController {
             reg_bsr: NcrRegBsr(0).with_phase_match(true),
             reg_cdr: 0,
             reg_odr: 0,
+            reg_selen: 0,
             sel_id: 0,
             sel_atn: false,
             cmdbuf: vec![],
@@ -389,6 +391,10 @@ impl ScsiController {
             return;
         }
 
+        // Selection interrupt
+        if self.reg_selen == self.reg_odr {
+            self.reg_bsr.set_irq(true);
+        }
         self.sel_id = id;
         self.sel_atn = self.reg_icr.assert_atn();
         self.set_phase(ScsiBusPhase::Command);
@@ -713,11 +719,9 @@ impl BusMember<Address> for ScsiController {
                 match self.busphase {
                     ScsiBusPhase::Arbitration => {
                         if set.assert_sel() {
-                            self.reg_bsr.set_irq(true);
                             self.set_phase(ScsiBusPhase::Selection);
                         }
                     }
-
                     _ => (),
                 }
                 Some(())
@@ -737,6 +741,10 @@ impl BusMember<Address> for ScsiController {
                 if clr.arbitrate() {
                     self.try_complete_selection();
                 }
+                Some(())
+            }
+            NcrWriteReg::SELEN => {
+                self.reg_selen = val;
                 Some(())
             }
             _ => {
