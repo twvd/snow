@@ -196,6 +196,7 @@ pub struct ScsiController {
     reg_odr: u8,
     reg_bsr: NcrRegBsr,
     reg_tcr: NcrRegTcr,
+    reg_selen: u8,
     status: u8,
 
     /// Selected SCSI ID
@@ -262,6 +263,7 @@ impl ScsiController {
             reg_cdr: 0,
             reg_odr: 0,
             reg_tcr: NcrRegTcr(0),
+            reg_selen: 0,
             sel_id: 0,
             cmdbuf: vec![],
             responsebuf: VecDeque::default(),
@@ -667,7 +669,6 @@ impl BusMember<Address> for ScsiController {
                 match self.busphase {
                     ScsiBusPhase::Arbitration => {
                         if set.assert_sel() {
-                            self.reg_bsr.set_irq(true);
                             self.set_phase(ScsiBusPhase::Selection);
                         }
                     }
@@ -690,6 +691,11 @@ impl BusMember<Address> for ScsiController {
                             // Select this ID
                             self.sel_id = id;
                             self.reg_cdr = self.reg_odr;
+
+                            // Selection interrupt
+                            if self.reg_selen == self.reg_odr {
+                                self.reg_bsr.set_irq(true);
+                            }
 
                             if SCSI_TRACE {
                                 log::debug!("Selected SCSI ID: {:02X}", self.sel_id,);
@@ -746,6 +752,11 @@ impl BusMember<Address> for ScsiController {
                 self.reg_tcr.0 = val;
                 Some(())
             }
+            NcrWriteReg::SELEN => {
+                self.reg_selen = val;
+                Some(())
+            }
+
             _ => {
                 log::warn!("Unknown SCSI register write: {:?} = {:02X}", reg, val);
                 Some(())
