@@ -63,6 +63,42 @@ use crate::types::LatchingEvent;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+/// Visible dots in one scanline
+const H_VISIBLE_DOTS: usize = 512;
+
+/// Length of HBlank, in dots.
+const HBLANK_DOTS: usize = 192;
+
+/// Total scanline length, including HBlank, in dots.
+const H_DOTS: usize = H_VISIBLE_DOTS + HBLANK_DOTS;
+
+/// Visible lines in one frame
+const V_VISIBLE_LINES: usize = 342;
+
+/// Length of VBlank, in lines.
+const VBLANK_LINES: usize = 28;
+
+/// Total scanlines, including VBlank.
+const V_LINES: usize = V_VISIBLE_LINES + VBLANK_LINES;
+
+/// Total dots in one frame, including blanking periods.
+const FRAME_DOTS: usize = H_DOTS * V_LINES;
+
+/// Total visible dots in one frame.
+const FRAME_VISIBLE_DOTS: usize = H_VISIBLE_DOTS * V_VISIBLE_LINES;
+
+/// Offset in dots of where the visible area begins.
+const FRAME_VISIBLE_OFFSET: usize = VBLANK_LINES * H_DOTS;
+
+/// Size (in bytes) of a single framebuffer.
+pub const FRAMEBUFFER_SIZE: usize = FRAME_DOTS / 8;
+
+/// Offset of main framebuffer (from END of RAM)
+pub const FRAMEBUFFER_MAIN_OFFSET: Address = 0xD900;
+
+/// Offset of alternate framebuffer (from END of RAM)
+pub const FRAMEBUFFER_ALT_OFFSET: Address = 0x5900;
+
 /// CRT/video circuitry state
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
@@ -86,48 +122,15 @@ pub struct Video<T: Renderer> {
     /// (true = main, false = alternate)
     /// (lives in VIA, copied here)
     pub framebuffer_select: bool,
+
+    /// Debug mode: both framebuffers
+    pub debug_framebuffers: bool,
 }
 
 impl<T> Video<T>
 where
     T: Renderer,
 {
-    /// Visible dots in one scanline
-    const H_VISIBLE_DOTS: usize = 512;
-
-    /// Length of HBlank, in dots.
-    const HBLANK_DOTS: usize = 192;
-
-    /// Total scanline length, including HBlank, in dots.
-    const H_DOTS: usize = Self::H_VISIBLE_DOTS + Self::HBLANK_DOTS;
-
-    /// Visible lines in one frame
-    const V_VISIBLE_LINES: usize = 342;
-
-    /// Length of VBlank, in lines.
-    const VBLANK_LINES: usize = 28;
-
-    /// Total scanlines, including VBlank.
-    const V_LINES: usize = Self::V_VISIBLE_LINES + Self::VBLANK_LINES;
-
-    /// Total dots in one frame, including blanking periods.
-    const FRAME_DOTS: usize = Self::H_DOTS * Self::V_LINES;
-
-    /// Total visible dots in one frame.
-    const FRAME_VISIBLE_DOTS: usize = Self::H_VISIBLE_DOTS * Self::V_VISIBLE_LINES;
-
-    /// Offset in dots of where the visible area begins.
-    const FRAME_VISIBLE_OFFSET: usize = Self::VBLANK_LINES * Self::H_DOTS;
-
-    /// Size (in bytes) of a single framebuffer.
-    pub const FRAMEBUFFER_SIZE: usize = Self::FRAME_DOTS / 8;
-
-    /// Offset of main framebuffer (from END of RAM)
-    pub const FRAMEBUFFER_MAIN_OFFSET: Address = 0xD900;
-
-    /// Offset of alternate framebuffer (from END of RAM)
-    pub const FRAMEBUFFER_ALT_OFFSET: Address = 0x5900;
-
     /// Tests if currently in any blanking period.
     pub fn in_blanking_period(&self) -> bool {
         self.in_hblank() || self.in_vblank()
@@ -135,17 +138,17 @@ where
 
     /// Tests if currently in VBlank period.
     pub fn in_vblank(&self) -> bool {
-        self.dots < Self::FRAME_VISIBLE_OFFSET
+        self.dots < FRAME_VISIBLE_OFFSET
     }
 
     /// Tests if currently in HBlank period (also during VBlank)
     pub fn in_hblank(&self) -> bool {
-        self.dots % Self::H_DOTS >= Self::H_VISIBLE_DOTS
+        self.dots % H_DOTS >= H_VISIBLE_DOTS
     }
 
     /// Gets the current active scanline
     pub fn get_scanline(&self) -> usize {
-        self.dots / Self::H_DOTS
+        self.dots / H_DOTS
     }
 
     /// Gets the current scanline, offset from the top of the visible frame.
@@ -153,7 +156,7 @@ where
         if self.in_vblank() {
             None
         } else {
-            Some(self.get_scanline() - Self::VBLANK_LINES)
+            Some(self.get_scanline() - VBLANK_LINES)
         }
     }
 
@@ -163,11 +166,9 @@ where
             dots: 0,
             event_vblank: LatchingEvent::default(),
             event_hblank: LatchingEvent::default(),
-            framebuffers: [
-                vec![0xFF; Self::FRAMEBUFFER_SIZE],
-                vec![0xFF; Self::FRAMEBUFFER_SIZE],
-            ],
+            framebuffers: [vec![0xFF; FRAMEBUFFER_SIZE], vec![0xFF; FRAMEBUFFER_SIZE]],
             framebuffer_select: false,
+            debug_framebuffers: false,
         }
     }
 
@@ -181,32 +182,70 @@ where
         self.event_hblank.get_clear()
     }
 
+    #[inline(always)]
+    fn render_buf_to<const LINE_LIMIT: usize, const LINE_OFFSET: usize>(
+        fb: &[u8],
+        buf: &mut [u8],
+        white: u8,
+        black: u8,
+    ) {
+        for i in 0..FRAME_VISIBLE_DOTS {
+            let scanline = i / H_VISIBLE_DOTS;
+            let byte = i / 8;
+            let bit = i % 8;
+            let out_offset = if LINE_LIMIT > 0 {
+                ((scanline * (LINE_LIMIT * 2)) + LINE_OFFSET + (i % LINE_LIMIT)) * 4
+            } else {
+                i * 4
+            };
+
+            if fb[byte] & (1 << (7 - bit)) == 0 {
+                buf[out_offset] = white;
+                buf[out_offset + 1] = white;
+                buf[out_offset + 2] = white;
+            } else {
+                buf[out_offset] = black;
+                buf[out_offset + 1] = black;
+                buf[out_offset + 2] = black;
+            }
+            buf[out_offset + 3] = 0xFF;
+        }
+    }
+
     /// Prepares the image and sends it to the frontend renderer
     pub fn render(&mut self) -> Result<()> {
-        let fb = if !self.framebuffer_select {
-            &self.framebuffers[0]
-        } else {
-            &self.framebuffers[1]
-        };
+        const WHITE: u8 = 0xEE;
+        const DIM: u8 = 0x99;
+        const BLACK: u8 = 0x22;
 
         let renderer = self.renderer.as_mut().unwrap();
         let buf = renderer.buffer_mut();
-        buf.set_size(Self::H_VISIBLE_DOTS, Self::V_VISIBLE_LINES);
 
-        for idx in 0..Self::FRAME_VISIBLE_DOTS {
-            let byte = idx / 8;
-            let bit = idx % 8;
-            if fb[byte] & (1 << (7 - bit)) == 0 {
-                buf[idx * 4] = 0xEE;
-                buf[idx * 4 + 1] = 0xEE;
-                buf[idx * 4 + 2] = 0xEE;
+        if self.debug_framebuffers {
+            buf.set_size(H_VISIBLE_DOTS * 2, V_VISIBLE_LINES);
+            Self::render_buf_to::<{ H_VISIBLE_DOTS }, 0>(
+                &self.framebuffers[0],
+                buf,
+                if !self.framebuffer_select { WHITE } else { DIM },
+                BLACK,
+            );
+            Self::render_buf_to::<{ H_VISIBLE_DOTS }, { H_VISIBLE_DOTS }>(
+                &self.framebuffers[1],
+                buf,
+                if self.framebuffer_select { WHITE } else { DIM },
+                BLACK,
+            );
+        } else {
+            buf.set_size(H_VISIBLE_DOTS, V_VISIBLE_LINES);
+
+            let fb = if !self.framebuffer_select {
+                &self.framebuffers[0]
             } else {
-                buf[idx * 4] = 0x22;
-                buf[idx * 4 + 1] = 0x22;
-                buf[idx * 4 + 2] = 0x22;
-            }
-            buf[idx * 4 + 3] = 0xFF;
+                &self.framebuffers[1]
+            };
+            Self::render_buf_to::<0, 0>(fb, buf, WHITE, BLACK);
         }
+
         renderer.update()?;
 
         Ok(())
@@ -228,7 +267,7 @@ where
         let before_hblank = self.in_hblank();
 
         // Update beam position
-        self.dots = (self.dots + ticks) % Self::FRAME_DOTS;
+        self.dots = (self.dots + ticks) % FRAME_DOTS;
 
         if !before_vblank && self.in_vblank() {
             // Just entered VBlank
@@ -269,7 +308,7 @@ where
             dbgprop_bool!("In VBlank", self.in_vblank()),
             dbgprop_bool!("In HBlank", self.in_hblank()),
             dbgprop_header!("Beam position"),
-            dbgprop_udec!("Horizontal", self.dots % Self::H_DOTS),
+            dbgprop_udec!("Horizontal", self.dots % H_DOTS),
             dbgprop_udec!("Vertical", self.get_scanline()),
         ]
     }

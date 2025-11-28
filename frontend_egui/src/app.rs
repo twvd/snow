@@ -763,6 +763,29 @@ impl SnowGui {
                     ui.close_menu();
                 }
                 ui.separator();
+                if ui
+                    .add_enabled(
+                        matches!(
+                            self.emu.get_model(),
+                            Some(MacModel::Early128K)
+                                | Some(MacModel::Early512K)
+                                | Some(MacModel::Early512Ke)
+                                | Some(MacModel::Plus)
+                                | Some(MacModel::SE)
+                                | Some(MacModel::SeFdhd)
+                                | Some(MacModel::Classic)
+                        ),
+                        egui::Checkbox::new(
+                            &mut self.emu.debug_framebuffers,
+                            "Show all framebuffers",
+                        ),
+                    )
+                    .clicked()
+                {
+                    self.emu.set_debug_framebuffers(self.emu.debug_framebuffers);
+                    ui.close_menu();
+                }
+                ui.separator();
                 if ui.checkbox(&mut self.workspace.log_open, "Log").clicked() {
                     ui.close_menu();
                 }
