@@ -93,14 +93,12 @@ impl<'a> Disassembly<'a> {
             }
             _ => None,
         } {
-            self.function_names.clear();
-            self.label_names.clear();
             if let Some(map_file) = self.map_files.get(map_filename) {
                 for line in map_file.lines() {
                     let parts: Vec<&str> = line.split_whitespace().collect();
                     if parts.len() >= 2 {
                         if let Ok(addr) = u32::from_str_radix(parts[1], 16) {
-                            if parts.get(2).map_or(false, |&t| t == "f") {
+                            if parts.get(2).is_some_and(|&t| t == "f") {
                                 self.function_names.insert(addr, parts[0].to_string());
                             } else {
                                 self.label_names.insert(addr, parts[0].to_string());
@@ -109,9 +107,6 @@ impl<'a> Disassembly<'a> {
                     }
                 }
             }
-        } else {
-            self.function_names.clear();
-            self.label_names.clear();
         }
 
         // Load low memory labels
@@ -174,7 +169,7 @@ impl<'a> Disassembly<'a> {
                                     if addr >= table_start && addr <= table_start.saturating_add(rom_size) && self.label_names.contains_key(&addr) {
                                         modified_text = modified_text.replace(part, &format!("@{}", name));
                                     }
-                                    modified_text = modified_text.replace(part, &format!("{}", name));
+                                    modified_text = modified_text.replace(part, name);
                                 }
                             }
                         }

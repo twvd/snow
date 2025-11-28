@@ -29,8 +29,7 @@ fn main() {
         }
     }
 
-    output.push_str("    map_files\n");
-    output.push_str("}");
+    output.push_str("    map_files\n}");
 
     fs::write(output_path, output).expect("Failed to write map_files.rs.inc");
 
