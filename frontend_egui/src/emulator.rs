@@ -124,6 +124,7 @@ pub struct EmulatorState {
     instruction_history_enabled: bool,
     peripheral_debug_enabled: bool,
     systrap_history_enabled: bool,
+    pub debug_framebuffers: bool,
 
     /// Force an emulator update signal to the App even without new events available
     force_update: LatchingEvent,
@@ -365,6 +366,7 @@ impl EmulatorState {
         self.instruction_history_enabled = false;
         self.systrap_history_enabled = false;
         self.peripheral_debug_enabled = false;
+        self.debug_framebuffers = false;
 
         self.force_update.set();
     }
@@ -1005,5 +1007,15 @@ impl EmulatorState {
             return;
         };
         sender.send(EmulatorCommand::SetSharedDir(path)).unwrap();
+    }
+
+    pub fn set_debug_framebuffers(&mut self, v: bool) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender
+            .send(EmulatorCommand::SetDebugFramebuffers(v))
+            .unwrap();
+        self.debug_framebuffers = v;
     }
 }

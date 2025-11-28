@@ -1030,6 +1030,11 @@ impl Tickable for Emulator {
                             self.user_error(&format!("Failed to save state: {:?}", e));
                         }
                     }
+                    EmulatorCommand::SetDebugFramebuffers(v) => {
+                        if let EmulatorConfig::Compact(ref mut c) = &mut self.config {
+                            c.bus.video.debug_framebuffers = v;
+                        }
+                    }
                 }
             }
         }

@@ -142,8 +142,9 @@ where
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
 
-        let fb_alt_start = ram_size as Address - Video::<TRenderer>::FRAMEBUFFER_ALT_OFFSET;
-        let fb_main_start = ram_size as Address - Video::<TRenderer>::FRAMEBUFFER_MAIN_OFFSET;
+        let fb_alt_start = ram_size as Address - crate::mac::compact::video::FRAMEBUFFER_ALT_OFFSET;
+        let fb_main_start =
+            ram_size as Address - crate::mac::compact::video::FRAMEBUFFER_MAIN_OFFSET;
         let sound_alt_start = ram_size - Self::SOUND_ALT_OFFSET;
         let sound_main_start = ram_size - Self::SOUND_MAIN_OFFSET;
 
@@ -178,8 +179,9 @@ where
             rom_mask: rom.len() - 1,
 
             fb_main: fb_main_start
-                ..(fb_main_start + Video::<TRenderer>::FRAMEBUFFER_SIZE as Address),
-            fb_alt: fb_alt_start..(fb_alt_start + Video::<TRenderer>::FRAMEBUFFER_SIZE as Address),
+                ..(fb_main_start + crate::mac::compact::video::FRAMEBUFFER_SIZE as Address),
+            fb_alt: fb_alt_start
+                ..(fb_alt_start + crate::mac::compact::video::FRAMEBUFFER_SIZE as Address),
 
             soundbuf_main: sound_main_start..(sound_main_start + Self::SOUNDBUF_SIZE),
             soundbuf_alt: sound_alt_start..(sound_alt_start + Self::SOUNDBUF_SIZE),

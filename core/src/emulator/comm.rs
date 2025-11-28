@@ -72,6 +72,7 @@ pub enum EmulatorCommand {
     SetSharedDir(Option<PathBuf>),
     #[cfg(feature = "savestates")]
     SaveState(PathBuf, Option<Vec<u8>>),
+    SetDebugFramebuffers(bool),
 }
 
 /// Emulator speed tweak
