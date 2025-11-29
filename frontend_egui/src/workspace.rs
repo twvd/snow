@@ -129,6 +129,9 @@ pub struct Workspace {
 
     /// Shared directory for BlueSCSI toolbox
     shared_dir: Option<RelativePath>,
+
+    /// Show labels in disassembly
+    pub disassembly_labels: bool,
 }
 
 impl Default for Workspace {
@@ -159,6 +162,7 @@ impl Default for Workspace {
             scaling_algorithm: ScalingAlgorithm::Linear,
             pause_on_state_load: false,
             shared_dir: None,
+            disassembly_labels: true,
         }
     }
 }

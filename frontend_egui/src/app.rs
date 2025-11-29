@@ -755,6 +755,17 @@ impl SnowGui {
                 {
                     ui.close_menu();
                 }
+
+                ui.separator();
+                if ui
+                    .checkbox(
+                        &mut self.workspace.disassembly_labels,
+                        "Show labels in disassembly",
+                    )
+                    .clicked()
+                {
+                    ui.close_menu();
+                }
             });
             ui.menu_button("View", |ui| {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
@@ -2333,7 +2344,7 @@ impl eframe::App for SnowGui {
                     .open(&mut self.workspace.disassembly_open)
                     .show(ctx, |ui| {
                         ui.horizontal_top(|ui| {
-                            Disassembly::new().draw(ui, &self.emu);
+                            Disassembly::new().draw(ui, &self.emu, self.workspace.disassembly_labels);
                         });
                     });
 
