@@ -4,7 +4,7 @@ use snow_core::cpu_m68k::cpu::Breakpoint;
 use snow_core::mac::MacModel;
 use std::collections::{BTreeMap, HashMap};
 
-pub struct Disassembly<'a> {
+pub struct DisassemblyWidget {
     /// Low memory addresses and names
     low_memory: BTreeMap<u32, String>,
     /// Function addresses and names
@@ -12,10 +12,10 @@ pub struct Disassembly<'a> {
     /// Label addresses and names
     label_names: BTreeMap<u32, String>,
     /// List of embedded map files
-    map_files: HashMap<&'a str, &'a str>,
+    map_files: HashMap<&'static str, &'static str>,
 }
 
-impl<'a> Disassembly<'a> {
+impl DisassemblyWidget {
     pub fn new() -> Self {
         let low_memory: BTreeMap<u32, String> = BTreeMap::new();
         let function_names: BTreeMap<u32, String> = BTreeMap::new();
