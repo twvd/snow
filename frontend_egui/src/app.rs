@@ -7,7 +7,7 @@ use crate::keymap::map_winit_keycode;
 use crate::settings::AppSettings;
 use crate::uniform::{UniformAction, UNIFORM_ACTION};
 use crate::widgets::breakpoints::BreakpointsWidget;
-use crate::widgets::disassembly::Disassembly;
+use crate::widgets::disassembly::DisassemblyWidget;
 use crate::widgets::framebuffer::{FramebufferWidget, ScalingAlgorithm};
 use crate::widgets::instruction_history::InstructionHistoryWidget;
 use crate::widgets::memory::MemoryViewerWidget;
@@ -144,6 +144,7 @@ pub struct SnowGui {
     instruction_history: InstructionHistoryWidget,
     systrap_history: SystrapHistoryWidget,
     terminal: [TerminalWidget; 2],
+    disassembly: DisassemblyWidget,
 
     workspace_dialog: FileDialog,
     hdd_dialog: FileDialog,
@@ -233,6 +234,7 @@ impl SnowGui {
             instruction_history: InstructionHistoryWidget::default(),
             systrap_history: SystrapHistoryWidget::default(),
             terminal: Default::default(),
+            disassembly: DisassemblyWidget::new(),
 
             hdd_dialog: FileDialog::new()
                 .add_file_filter(
@@ -2344,7 +2346,8 @@ impl eframe::App for SnowGui {
                     .open(&mut self.workspace.disassembly_open)
                     .show(ctx, |ui| {
                         ui.horizontal_top(|ui| {
-                            Disassembly::new().draw(ui, &self.emu, self.workspace.disassembly_labels);
+                            self.disassembly
+                                .draw(ui, &self.emu, self.workspace.disassembly_labels);
                         });
                     });
 
