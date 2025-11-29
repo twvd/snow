@@ -64,13 +64,17 @@ impl<'a> Disassembly<'a> {
         }
     }
 
-    pub fn draw(&mut self, ui: &mut egui::Ui, state: &EmulatorState) {
+    pub fn draw(&mut self, ui: &mut egui::Ui, state: &EmulatorState, labels: bool) {
         use egui_extras::{Column, TableBuilder};
 
         let code = state.get_disassembly();
         let pc = state.get_pc();
+        let Some(model) = state.get_model() else {
+            // Emulator not initialized
+            return;
+        };
 
-        let rom_size = match state.get_model().unwrap_or(MacModel::Early128K) {
+        let rom_size = match model {
             MacModel::Plus => 0x20000,
             MacModel::SE
             | MacModel::SeFdhd
@@ -83,7 +87,7 @@ impl<'a> Disassembly<'a> {
         };
 
         // Get the map file for this model and load into the tables
-        if let Some(map_filename) = match state.get_model().unwrap() {
+        if let Some(map_filename) = match model {
             MacModel::Plus => Some("MacPlusROM"),
             MacModel::SE | MacModel::SeFdhd => Some("MacSEROM"),
             MacModel::Classic => Some("MacClassicROM"),
@@ -110,14 +114,12 @@ impl<'a> Disassembly<'a> {
         }
 
         // Load low memory labels
-        {
-            if let Some(map_file) = self.map_files.get("LowMem") {
-                for line in map_file.lines() {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() >= 2 {
-                        if let Ok(addr) = u32::from_str_radix(parts[1], 16) {
-                            self.low_memory.insert(addr, parts[0].to_string());
-                        }
+        if let Some(map_file) = self.map_files.get("LowMem") {
+            for line in map_file.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    if let Ok(addr) = u32::from_str_radix(parts[1], 16) {
+                        self.low_memory.insert(addr, parts[0].to_string());
                     }
                 }
             }
@@ -134,49 +136,36 @@ impl<'a> Disassembly<'a> {
             .column(Column::remainder())
             .striped(true)
             .body(|mut body| {
-                // If we're in the function table, show the nearest function + distance at the top
-                if let Some(first_instruction) = code.first() {
-                    let addr = first_instruction.addr;
-                    let table_start = *self.function_names.first_key_value().map_or(&0xFFFFFFFF, |(addr, _)| addr);
-                    if addr >= table_start && addr <= table_start.saturating_add(rom_size) {
-                        body.row(12.0, |mut row| {
-                            row.col(|_ui| {});
-                            row.col(|_ui| {});
-                            row.col(|ui| {
-                                ui.label(
-                                    egui::RichText::new(self.get_nearest_function_with_distance(addr).as_str())
-                                        .family(egui::FontFamily::Monospace)
-                                        .size(10.0)
-                                        .strong(),
-                                );
+                if labels {
+                    // If we're in the function table, show the nearest function + distance at the top
+                    if let Some(first_instruction) = code.first() {
+                        let addr = first_instruction.addr;
+                        let table_start = *self.function_names.first_key_value().map_or(&0xFFFFFFFF, |(addr, _)| addr);
+                        if addr >= table_start && addr <= table_start.saturating_add(rom_size) {
+                            body.row(12.0, |mut row| {
+                                row.col(|_ui| {});
+                                row.col(|_ui| {});
+                                row.col(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(self.get_nearest_function_with_distance(addr).as_str())
+                                            .family(egui::FontFamily::Monospace)
+                                            .size(10.0)
+                                            .strong(),
+                                    );
+                                });
                             });
-                        });
+                        }
                     }
                 }
                 for c in code {
                     let mut text = c.str.to_string();
-                    let mut modified_text = text.clone();
 
-                    // Replace addresses in disassembly with labels
-                    let parts: Vec<&str> = text.split(|c: char| !c.is_ascii_hexdigit() && c != '$').collect();
-                    // TODO: prevent replacement of literals and offsets
-                    for part in parts {
-                        let clean_part = part.trim_matches(|c: char| !c.is_ascii_hexdigit());
-                        if clean_part.len() >= 4 && clean_part.len() <= 8 {
-                            if let Ok(addr) = u32::from_str_radix(clean_part, 16) {
-                                if let Some(name) = self.get_name_for_address(addr) {
-                                    let table_start = *self.function_names.first_key_value().map_or(&0xFFFFFFFF, |(addr, _)| addr);
-                                    if addr >= table_start && addr <= table_start.saturating_add(rom_size) && self.label_names.contains_key(&addr) {
-                                        modified_text = modified_text.replace(part, &format!("@{}", name));
-                                    }
-                                    modified_text = modified_text.replace(part, name);
-                                }
-                            }
-                        }
+                    if labels {
+                        text = self.label_code(rom_size, &text);
                     }
-                    text = modified_text;
 
                     // Display labels for the execution address
+                    if labels {
                     if let Some(name) = self.get_name_for_address(c.addr) {
                         body.row(12.0, |mut row| {
                             row.col(|_ui| {});
@@ -194,6 +183,7 @@ impl<'a> Disassembly<'a> {
                                 );
                             });
                         });
+                    }
                     }
 
                     if c.is_linea() {
@@ -257,5 +247,37 @@ impl<'a> Disassembly<'a> {
                     });
                 }
             });
+    }
+
+    fn label_code(&self, rom_size: u32, text: &str) -> String {
+        let mut modified_text = text.to_string();
+
+        // Replace addresses in disassembly with labels
+        let parts: Vec<&str> = text
+            .split(|c: char| !c.is_ascii_hexdigit() && c != '$')
+            .collect();
+        // TODO: prevent replacement of literals and offsets
+        for part in parts {
+            let clean_part = part.trim_matches(|c: char| !c.is_ascii_hexdigit());
+            if clean_part.len() >= 4 && clean_part.len() <= 8 {
+                if let Ok(addr) = u32::from_str_radix(clean_part, 16) {
+                    if let Some(name) = self.get_name_for_address(addr) {
+                        let table_start = *self
+                            .function_names
+                            .first_key_value()
+                            .map_or(&0xFFFFFFFF, |(addr, _)| addr);
+                        if addr >= table_start
+                            && addr <= table_start.saturating_add(rom_size)
+                            && self.label_names.contains_key(&addr)
+                        {
+                            modified_text = modified_text.replace(part, &format!("@{}", name));
+                        }
+                        modified_text = modified_text.replace(part, name);
+                    }
+                }
+            }
+        }
+
+        modified_text
     }
 }
