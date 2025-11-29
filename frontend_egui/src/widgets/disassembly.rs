@@ -153,6 +153,7 @@ impl DisassemblyWidget {
                                             .strong(),
                                     );
                                 });
+                                row.col(|_ui| {});
                             });
                         }
                     }
@@ -166,24 +167,25 @@ impl DisassemblyWidget {
 
                     // Display labels for the execution address
                     if labels {
-                    if let Some(name) = self.get_name_for_address(c.addr) {
-                        body.row(12.0, |mut row| {
-                            row.col(|_ui| {});
-                            row.col(|_ui| {});
-                            row.col(|ui| {
-                                ui.label(
-                                    egui::RichText::new(
-                                        format!("{}{}:",
-                                                if !self.function_names.contains_key(&c.addr)
-                                                && !self.low_memory.contains_key(&c.addr) { "@" } else { "" },
-                                                name))
-                                        .family(egui::FontFamily::Monospace)
-                                        .size(10.0)
-                                        .strong(),
-                                );
+                        if let Some(name) = self.get_name_for_address(c.addr) {
+                            body.row(12.0, |mut row| {
+                                row.col(|_ui| {});
+                                row.col(|_ui| {});
+                                row.col(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(
+                                            format!("{}{}:",
+                                                    if !self.function_names.contains_key(&c.addr)
+                                                    && !self.low_memory.contains_key(&c.addr) { "@" } else { "" },
+                                                    name))
+                                            .family(egui::FontFamily::Monospace)
+                                            .size(10.0)
+                                            .strong(),
+                                    );
+                                });
+                                row.col(|_ui| {});
                             });
-                        });
-                    }
+                        }
                     }
 
                     if c.is_linea() {
