@@ -3,6 +3,39 @@
 use eframe::glow;
 use eframe::glow::HasContext;
 
+/// crt-lottes-fast.glsl parameters
+#[derive(Clone, Copy, Debug)]
+pub struct CrtShaderParams {
+    pub crt_gamma: f32,
+    pub scanline_thinness: f32,
+    pub scan_blur: f32,
+    pub mask_intensity: f32,
+    pub curvature: f32,
+    pub corner: f32,
+
+    /// 0.0 - no mask
+    /// 1.0 - aperture grille
+    /// 2.0 - aperture grille light
+    /// 3.0 - shadow mask
+    pub mask: f32,
+    pub trinitron_curve: f32,
+}
+
+impl Default for CrtShaderParams {
+    fn default() -> Self {
+        Self {
+            crt_gamma: 2.1,
+            scanline_thinness: 0.5,
+            scan_blur: 2.5,
+            mask_intensity: 0.20,
+            curvature: 0.00,
+            corner: 0.0,
+            mask: 2.0,
+            trinitron_curve: 0.0,
+        }
+    }
+}
+
 const VERTEX_SHADER: &str = r#"
 #version 140
 in vec2 position;
@@ -129,6 +162,7 @@ impl CrtShader {
         gl: &glow::Context,
         input_texture: glow::Texture,
         texture_size: [u32; 2],
+        params: &CrtShaderParams,
     ) -> Option<Vec<u8>> {
         unsafe {
             // Recreate output texture if size changed
@@ -214,19 +248,14 @@ impl CrtShader {
             );
 
             // Shader parameters
-            self.set_param(gl, "CRT_GAMMA", 2.4);
-            self.set_param(gl, "SCANLINE_THINNESS", 0.5);
-            self.set_param(gl, "SCAN_BLUR", -2.5);
-            self.set_param(gl, "MASK_INTENSITY", 0.54);
-            self.set_param(gl, "CURVATURE", 0.02);
-            self.set_param(gl, "CORNER", 0.0);
-
-            // 0.0 - no mask
-            // 1.0 - aperture grille
-            // 2.0 - aperture grille light
-            // 3.0 - shadow mask
-            self.set_param(gl, "MASK", 1.0);
-            self.set_param(gl, "TRINITRON_CURVE", 0.0);
+            self.set_param(gl, "CRT_GAMMA", params.crt_gamma);
+            self.set_param(gl, "SCANLINE_THINNESS", params.scanline_thinness);
+            self.set_param(gl, "SCAN_BLUR", -params.scan_blur);
+            self.set_param(gl, "MASK_INTENSITY", params.mask_intensity);
+            self.set_param(gl, "CURVATURE", params.curvature);
+            self.set_param(gl, "CORNER", params.corner);
+            self.set_param(gl, "MASK", params.mask);
+            self.set_param(gl, "TRINITRON_CURVE", params.trinitron_curve);
 
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_elements(glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0);

@@ -15,7 +15,7 @@ use std::fmt::Display;
 use std::sync::Arc;
 use strum::EnumIter;
 
-use super::crt_shader::CrtShader;
+use super::crt_shader::{CrtShader, CrtShaderParams};
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, EnumIter, Eq, PartialEq)]
 pub enum ScalingAlgorithm {
@@ -53,6 +53,7 @@ pub struct FramebufferWidget {
 
     // CRT shader
     pub crt_enabled: bool,
+    pub crt_params: CrtShaderParams,
     crt_shader: Arc<Mutex<Option<CrtShader>>>,
     crt_output_texture: Option<egui::TextureHandle>,
 }
@@ -72,6 +73,7 @@ impl FramebufferWidget {
             scaling_algorithm: ScalingAlgorithm::Linear,
             display_size: [0, 0],
             crt_enabled: false,
+            crt_params: CrtShaderParams::default(),
             crt_shader: Arc::new(Mutex::new(None)),
             crt_output_texture: None,
         }
@@ -158,6 +160,7 @@ impl FramebufferWidget {
         let ctx = ui.ctx().clone();
         let texture_size = self.viewport_texture.size();
         let output_handle = Arc::new(Mutex::new(self.crt_output_texture.clone()));
+        let params = self.crt_params;
 
         // Use a callback to get painter access (use full available rect to ensure it's not culled)
         let callback = egui::PaintCallback {
@@ -187,6 +190,7 @@ impl FramebufferWidget {
                             gl,
                             input_tex,
                             [texture_size[0] as u32, texture_size[1] as u32],
+                            &params,
                         ) {
                             // Update egui texture with processed pixels
                             let mut handle_lock = output_handle.lock();
