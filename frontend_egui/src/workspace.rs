@@ -132,6 +132,9 @@ pub struct Workspace {
 
     /// Show labels in disassembly
     pub disassembly_labels: bool,
+
+    /// Floppy disk images to auto-insert on workspace load
+    floppy_images: Vec<RelativePath>,
 }
 
 impl Default for Workspace {
@@ -163,6 +166,7 @@ impl Default for Workspace {
             pause_on_state_load: false,
             shared_dir: None,
             disassembly_labels: true,
+            floppy_images: Vec::new(),
         }
     }
 }
@@ -218,6 +222,10 @@ impl Workspace {
         }
         result.disks = core::array::from_fn(|_| None);
 
+        for p in &mut result.floppy_images {
+            p.after_deserialize(parent)?;
+        }
+
         Ok(result)
     }
 
@@ -245,6 +253,9 @@ impl Workspace {
                 WorkspaceScsiTarget::Disk(ref mut p) => p.before_serialize(parent)?,
                 WorkspaceScsiTarget::None | WorkspaceScsiTarget::Cdrom => (),
             }
+        }
+        for p in &mut self.floppy_images {
+            p.before_serialize(parent)?;
         }
 
         let file = File::create(path)?;
@@ -297,6 +308,13 @@ impl Workspace {
 
     pub fn get_shared_dir(&self) -> Option<PathBuf> {
         self.shared_dir.clone().map(|d| d.get_absolute())
+    }
+
+    pub fn get_floppy_images(&self) -> Vec<PathBuf> {
+        self.floppy_images
+            .iter()
+            .map(|p| p.get_absolute())
+            .collect()
     }
 
     /// Persists a window location

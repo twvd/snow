@@ -1421,6 +1421,17 @@ impl SnowGui {
                 &init_args,
                 model,
             );
+
+            if let Some(floppy_path) = self.workspace.get_floppy_images().first() {
+                if floppy_path.exists() {
+                    if !self.emu.load_floppy_firstfree(floppy_path) {
+                        self.show_error(&format!(
+                            "Cannot load floppy image: no free drive for {:?}",
+                            floppy_path
+                        ));
+                    }
+                }
+            }
         } else {
             self.emu.deinit();
         }
