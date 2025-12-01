@@ -7,10 +7,15 @@ use anyhow::{bail, Result};
 use crossbeam_channel::Receiver;
 use eframe::egui;
 use eframe::egui::Vec2;
+use eframe::egui_glow;
+use egui::mutex::Mutex;
 use serde::{Deserialize, Serialize};
 use snow_core::renderer::DisplayBuffer;
 use std::fmt::Display;
+use std::sync::Arc;
 use strum::EnumIter;
+
+use super::crt_shader::CrtShader;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, EnumIter, Eq, PartialEq)]
 pub enum ScalingAlgorithm {
@@ -45,6 +50,11 @@ pub struct FramebufferWidget {
     display_size: [u16; 2],
 
     response: Option<egui::Response>,
+
+    // CRT shader
+    pub crt_enabled: bool,
+    crt_shader: Arc<Mutex<Option<CrtShader>>>,
+    crt_output_texture: Option<egui::TextureHandle>,
 }
 
 impl FramebufferWidget {
@@ -61,6 +71,9 @@ impl FramebufferWidget {
             scale: 1.5,
             scaling_algorithm: ScalingAlgorithm::Linear,
             display_size: [0, 0],
+            crt_enabled: false,
+            crt_shader: Arc::new(Mutex::new(None)),
+            crt_output_texture: None,
         }
     }
 
@@ -110,8 +123,20 @@ impl FramebufferWidget {
             }
         }
 
-        let size = self.viewport_texture.size_vec2();
-        let sized_texture = egui::load::SizedTexture::new(&mut self.viewport_texture, size);
+        // Process with CRT shader if enabled (using invisible callback)
+        if self.crt_enabled {
+            self.process_crt_with_callback(ui);
+        }
+
+        // Choose which texture to display
+        let display_texture = if self.crt_enabled && self.crt_output_texture.is_some() {
+            self.crt_output_texture.as_mut().unwrap()
+        } else {
+            &mut self.viewport_texture
+        };
+
+        let size = display_texture.size_vec2();
+        let sized_texture = egui::load::SizedTexture::new(display_texture, size);
         let size = if fullscreen {
             ui.available_size()
         } else {
@@ -125,6 +150,67 @@ impl FramebufferWidget {
         );
         self.response = Some(response.clone());
         response
+    }
+
+    fn process_crt_with_callback(&mut self, ui: &egui::Ui) {
+        let texture_id = self.viewport_texture.id();
+        let shader = self.crt_shader.clone();
+        let ctx = ui.ctx().clone();
+        let texture_size = self.viewport_texture.size();
+        let output_handle = Arc::new(Mutex::new(self.crt_output_texture.clone()));
+
+        // Use a callback to get painter access (use full available rect to ensure it's not culled)
+        let callback = egui::PaintCallback {
+            rect: ui.available_rect_before_wrap(),
+            callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
+                let gl = painter.gl();
+
+                // Initialize shader if needed
+                let mut shader_lock = shader.lock();
+                if shader_lock.is_none() {
+                    match CrtShader::new(gl) {
+                        Ok(s) => {
+                            log::info!("CRT shader initialized");
+                            *shader_lock = Some(s);
+                        }
+                        Err(e) => {
+                            log::error!("CRT shader failed: {}", e);
+                            return;
+                        }
+                    }
+                }
+
+                if let Some(crt_shader) = shader_lock.as_mut() {
+                    if let Some(input_tex) = painter.texture(texture_id) {
+                        // Process and read back pixels
+                        if let Some(pixels) = crt_shader.process_texture_to_pixels(
+                            gl,
+                            input_tex,
+                            [texture_size[0] as u32, texture_size[1] as u32],
+                        ) {
+                            // Update egui texture with processed pixels
+                            let mut handle_lock = output_handle.lock();
+                            if let Some(ref mut handle) = *handle_lock {
+                                let image =
+                                    egui::ColorImage::from_rgba_unmultiplied(texture_size, &pixels);
+                                handle.set(image, egui::TextureOptions::LINEAR);
+                            }
+                        }
+                    }
+                }
+            })),
+        };
+
+        ui.painter().add(callback);
+
+        // Create output texture if needed
+        if self.crt_output_texture.is_none() {
+            self.crt_output_texture = Some(ctx.load_texture(
+                "crt_output",
+                egui::ColorImage::new(texture_size, egui::Color32::BLACK),
+                egui::TextureOptions::LINEAR,
+            ));
+        }
     }
 
     /// Writes a screenshot as PNG
