@@ -749,6 +749,77 @@ impl SnowGui {
                     &mut self.framebuffer.crt_enabled,
                     "CRT shader effect",
                 ));
+
+                if self.framebuffer.crt_enabled {
+                    ui.menu_button("Shader settings", |ui| {
+                        ui.add(
+                            egui::Slider::new(&mut self.framebuffer.crt_params.mask, 0.0..=3.0)
+                                .step_by(1.0)
+                                .text("Mask Type")
+                                .custom_formatter(|n, _| match n as i32 {
+                                    0 => "None".to_string(),
+                                    1 => "Aperture Grille".to_string(),
+                                    2 => "Aperture Grille Lite".to_string(),
+                                    3 => "Shadow Mask".to_string(),
+                                    _ => n.to_string(),
+                                }),
+                        );
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.framebuffer.crt_params.mask_intensity,
+                                0.0..=1.0,
+                            )
+                            .step_by(0.05)
+                            .text("Mask Intensity"),
+                        );
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.framebuffer.crt_params.scanline_thinness,
+                                0.0..=1.0,
+                            )
+                            .step_by(0.1)
+                            .text("Scanline Intensity"),
+                        );
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.framebuffer.crt_params.scan_blur,
+                                1.0..=3.0,
+                            )
+                            .step_by(0.1)
+                            .text("Sharpness"),
+                        );
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.framebuffer.crt_params.curvature,
+                                0.0..=0.25,
+                            )
+                            .step_by(0.01)
+                            .text("Curvature"),
+                        );
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.framebuffer.crt_params.trinitron_curve,
+                                0.0..=1.0,
+                            )
+                            .step_by(1.0)
+                            .text("Trinitron Curve"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut self.framebuffer.crt_params.corner, 0.0..=11.0)
+                                .step_by(1.0)
+                                .text("Corner Round"),
+                        );
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.framebuffer.crt_params.crt_gamma,
+                                0.0..=5.0,
+                            )
+                            .step_by(0.1)
+                            .text("CRT Gamma"),
+                        );
+                    });
+                }
+
                 ui.add(egui::Checkbox::new(
                     &mut self.workspace.center_viewport_v,
                     "Center display vertically",
