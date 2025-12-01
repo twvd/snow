@@ -746,6 +746,10 @@ impl SnowGui {
                     egui::Slider::new(&mut self.framebuffer.scale, 0.5..=4.0).text("Display scale"),
                 );
                 ui.add(egui::Checkbox::new(
+                    &mut self.framebuffer.crt_enabled,
+                    "CRT shader effect",
+                ));
+                ui.add(egui::Checkbox::new(
                     &mut self.workspace.center_viewport_v,
                     "Center display vertically",
                 ));
