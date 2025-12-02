@@ -183,8 +183,6 @@ impl ScsiTarget for ScsiTargetDisk {
             0x01 => {
                 // Read/write error recovery page
                 Some(vec![
-                    0x01,        // Page code
-                    0x0A,        // Page length
                     0b1100_0000, // DCR, DTE, PER, EER, RC, TB, ARRE, AWRE
                     8,           // Read retry count
                     0,           // Correction span
@@ -200,29 +198,25 @@ impl ScsiTarget for ScsiTargetDisk {
             0x02 => {
                 // Disconnect-reconnect page
                 Some(vec![
-                    0x02, // Page code
-                    0x0E, // Page length
-                    0,    // Buffer full ratio
-                    0,    // Buffer empty ratio
-                    0,    // Bus inactivity limit (MSB)
-                    0,    // Bus inactivity limit (LSB)
-                    0,    // Disconnect time limit (MSB)
-                    0,    // Disconnect time limit (LSB)
-                    0,    // Connect time limit (MSB)
-                    0,    // Connect time limit (LSB)
-                    0,    // Maximum burst size (MSB)
-                    0,    // Maximum burst size (LSB)
-                    0,    // DID, DTDC
-                    0,    // Reserved
-                    0,    // Reserved
-                    0,    // Reserved
+                    0, // Buffer full ratio
+                    0, // Buffer empty ratio
+                    0, // Bus inactivity limit (MSB)
+                    0, // Bus inactivity limit (LSB)
+                    0, // Disconnect time limit (MSB)
+                    0, // Disconnect time limit (LSB)
+                    0, // Connect time limit (MSB)
+                    0, // Connect time limit (LSB)
+                    0, // Maximum burst size (MSB)
+                    0, // Maximum burst size (LSB)
+                    0, // DID, DTDC
+                    0, // Reserved
+                    0, // Reserved
+                    0, // Reserved
                 ])
             }
             0x03 => {
                 // Format device page
                 Some(vec![
-                    0x03,                          // Page code
-                    0x16,                          // Page length
                     0,                             // Reserved
                     0,                             // Reserved
                     0,                             // Tracks per zone (MSB)
