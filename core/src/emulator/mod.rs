@@ -496,6 +496,12 @@ impl Emulator {
         self.config.rtc_mut().load_pram(pram_path);
     }
 
+    /// Sets the RTC to a specific date/time.
+    /// This can be used to test date-dependent software behavior (e.g., easter eggs).
+    pub fn set_datetime(&mut self, dt: chrono::NaiveDateTime) {
+        self.config.rtc_mut().set_datetime(dt);
+    }
+
     pub fn create_cmd_sender(&self) -> EmulatorCommandSender {
         self.command_sender.clone()
     }

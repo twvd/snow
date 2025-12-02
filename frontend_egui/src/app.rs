@@ -1352,6 +1352,21 @@ impl SnowGui {
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
     ) {
+        // Parse custom datetime from workspace if specified
+        let custom_datetime = self.workspace.custom_datetime.as_ref().and_then(|s| {
+            // Try parsing with time first, then date-only
+            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                .or_else(|_| {
+                    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                        .map(|d| d.and_hms_opt(12, 0, 0).unwrap())
+                })
+                .map_err(|e| {
+                    log::warn!("Failed to parse custom_datetime '{}': {}", s, e);
+                    e
+                })
+                .ok()
+        });
+
         match self.emu.init_from_rom(
             path,
             display_rom_path,
@@ -1361,6 +1376,7 @@ impl SnowGui {
             args,
             model,
             self.workspace.get_shared_dir(),
+            custom_datetime,
         ) {
             Ok(p) => self.framebuffer.connect_receiver(p.frame_receiver),
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),

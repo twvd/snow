@@ -142,6 +142,7 @@ impl EmulatorState {
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
         shared_dir: Option<PathBuf>,
+        custom_datetime: Option<chrono::NaiveDateTime>,
     ) -> Result<EmulatorInitResult> {
         let rom = std::fs::read(filename)?;
         let display_rom = if let Some(filename) = display_rom_path {
@@ -163,6 +164,7 @@ impl EmulatorState {
             args,
             model,
             shared_dir,
+            custom_datetime,
         )
     }
 
@@ -178,6 +180,7 @@ impl EmulatorState {
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
         shared_dir: Option<PathBuf>,
+        custom_datetime: Option<chrono::NaiveDateTime>,
     ) -> Result<EmulatorInitResult> {
         // Terminate running emulator (if any)
         self.deinit();
@@ -274,6 +277,11 @@ impl EmulatorState {
 
         if let Some(pram_path) = pram {
             emulator.persist_pram(pram_path);
+        }
+
+        if let Some(dt) = custom_datetime {
+            emulator.set_datetime(dt);
+            info!("RTC set to custom date/time: {}", dt);
         }
 
         self.init_finalize(emulator, frame_recv, cmd, args.audio_disabled, false)
