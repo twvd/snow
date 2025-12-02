@@ -194,6 +194,16 @@ impl Rtc {
         self.data.pram = pram;
     }
 
+    /// Sets the RTC to a specific date/time.
+    /// This can be used to test date-dependent software behavior (e.g., easter eggs).
+    pub fn set_datetime(&mut self, dt: chrono::NaiveDateTime) {
+        let mac_epoch = NaiveDate::from_ymd_opt(1904, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        self.data.seconds = dt.signed_duration_since(mac_epoch).num_seconds() as u32;
+    }
+
     /// Pokes the RTC that one second has passed
     /// In the emulator, one second interrupt is driven by the VIA for ease.
     pub fn second(&mut self) {

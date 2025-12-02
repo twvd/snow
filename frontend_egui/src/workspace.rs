@@ -135,6 +135,11 @@ pub struct Workspace {
 
     /// Floppy disk images to auto-insert on workspace load
     floppy_images: Vec<RelativePath>,
+
+    /// Custom date/time to set the RTC to on startup.
+    /// Format: "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
+    /// Useful for testing date-dependent software (e.g., easter eggs).
+    pub custom_datetime: Option<String>,
 }
 
 impl Default for Workspace {
@@ -167,6 +172,7 @@ impl Default for Workspace {
             shared_dir: None,
             disassembly_labels: true,
             floppy_images: Vec::new(),
+            custom_datetime: None,
         }
     }
 }
