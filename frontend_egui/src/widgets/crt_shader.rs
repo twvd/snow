@@ -63,7 +63,10 @@ impl CrtShader {
         unsafe {
             // Compile shaders
             let fragment_source = format!(
-                "#version 140\n#define FRAGMENT\n#define PARAMETER_UNIFORM\n{}",
+                // Enable Inigo Quilez's improved texture interpolation (CRTS_2_TAP)
+                // because otherwise the floating point flooring used in the shader
+                // causes a distorted image on certain resolutions (and OpenGL versions/GPUs).
+                "#version 140\n#define FRAGMENT\n#define PARAMETER_UNIFORM\n#define CRTS_2_TAP 1{}",
                 FRAGMENT_SHADER_SOURCE
             );
 
