@@ -6,7 +6,9 @@ use crate::mac::adb::{AdbDeviceResponse, AdbEvent};
 use super::{AdbDevice, AdbDeviceInstance};
 
 /// ADB Bus/transceiver states
-#[derive(Clone, Copy, PartialEq, Eq, Debug, strum::IntoStaticStr, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, Debug, Default, strum::IntoStaticStr, Serialize, Deserialize,
+)]
 enum AdbBusState {
     /// Send command - ST0 = 0, ST1 = 0
     Command,
@@ -15,6 +17,7 @@ enum AdbBusState {
     /// Send/receive data from ADB device - ST0 = 0, ST1 = 1
     Data2,
     /// Idle - ST0 = 1, ST1 = 1
+    #[default]
     Idle,
 }
 
@@ -26,12 +29,6 @@ impl AdbBusState {
             (false, true) => Self::Data2,
             (true, true) => Self::Idle,
         }
-    }
-}
-
-impl Default for AdbBusState {
-    fn default() -> Self {
-        Self::Idle
     }
 }
 

@@ -1360,9 +1360,8 @@ impl SnowGui {
                     chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
                         .map(|d| d.and_hms_opt(12, 0, 0).unwrap())
                 })
-                .map_err(|e| {
+                .inspect_err(|e| {
                     log::warn!("Failed to parse custom_datetime '{}': {}", s, e);
-                    e
                 })
                 .ok()
         });
@@ -1439,13 +1438,11 @@ impl SnowGui {
             );
 
             if let Some(floppy_path) = self.workspace.get_floppy_images().first() {
-                if floppy_path.exists() {
-                    if !self.emu.load_floppy_firstfree(floppy_path) {
-                        self.show_error(&format!(
-                            "Cannot load floppy image: no free drive for {:?}",
-                            floppy_path
-                        ));
-                    }
+                if floppy_path.exists() && !self.emu.load_floppy_firstfree(floppy_path) {
+                    self.show_error(&format!(
+                        "Cannot load floppy image: no free drive for {:?}",
+                        floppy_path
+                    ));
                 }
             }
         } else {
