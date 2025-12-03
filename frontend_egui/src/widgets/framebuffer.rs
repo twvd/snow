@@ -125,9 +125,9 @@ impl FramebufferWidget {
             }
         }
 
-        // Process with CRT shader if enabled (using invisible callback)
+        // Run the framebuffer through the CRT shader if enabled
         if self.crt_enabled {
-            self.process_crt_with_callback(ui);
+            self.trigger_crt_shader(ui);
         }
 
         // Choose which texture to display
@@ -154,7 +154,8 @@ impl FramebufferWidget {
         response
     }
 
-    fn process_crt_with_callback(&mut self, ui: &egui::Ui) {
+    fn trigger_crt_shader(&mut self, ui: &egui::Ui) {
+        // Copy references to move into the callback
         let texture_id = self.viewport_texture.id();
         let shader = self.crt_shader.clone();
         let ctx = ui.ctx().clone();
@@ -164,6 +165,8 @@ impl FramebufferWidget {
 
         // Use a callback to get painter access (use full available rect to ensure it's not culled)
         let callback = egui::PaintCallback {
+            // This can be any arbitrary rectangle as long as it's not 0; we just need the callback
+            // for access to the GL context.
             rect: ui.available_rect_before_wrap(),
             callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
                 let gl = painter.gl();
@@ -193,6 +196,8 @@ impl FramebufferWidget {
                             &params,
                         ) {
                             // Update egui texture with processed pixels
+                            // TODO skip the unneccesary copies from VRAM and present the output
+                            // texture directly?
                             let mut handle_lock = output_handle.lock();
                             if let Some(ref mut handle) = *handle_lock {
                                 let image =
