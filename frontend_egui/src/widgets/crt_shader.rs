@@ -106,10 +106,15 @@ impl CrtShader {
             let vao = gl.create_vertex_array()?;
             gl.bind_vertex_array(Some(vao));
 
+            // Vertices for rendering a full framebuffer quad
             let vertices: [f32; 16] = [
-                -1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 0.0, 1.0,
+                -1.0, -1.0, 0.0, 0.0, // Bottom-left: position (-1,-1), texcoord (0,0)
+                1.0, -1.0, 1.0, 0.0, // Bottom-right: position (1,-1), texcoord (1,0)
+                1.0, 1.0, 1.0, 1.0, // Top-right: position (1,1), texcoord (1,1)
+                -1.0, 1.0, 0.0, 1.0, // Top-left: position (-1,1), texcoord (0,1)
             ];
 
+            // Upload quad vertices to GPU
             let vbo = gl.create_buffer()?;
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
             gl.buffer_data_u8_slice(
@@ -121,7 +126,11 @@ impl CrtShader {
                 glow::STATIC_DRAW,
             );
 
-            let indices: [u32; 6] = [0, 1, 2, 2, 3, 0];
+            // Triangle indices
+            let indices: [u32; 6] = [
+                0, 1, 2, // Triangle 1: bottom-left, bottom-right,top-right
+                2, 3, 0, // Triangle 2: top-right, top-left, bottom-left
+            ];
             let ebo = gl.create_buffer()?;
             gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ebo));
             gl.buffer_data_u8_slice(
@@ -261,9 +270,14 @@ impl CrtShader {
             self.set_param(gl, "TRINITRON_CURVE", params.trinitron_curve);
 
             gl.bind_vertex_array(Some(self.vao));
+
+            // Draws two triangles, covering the entire FBO, with the shader applied
             gl.draw_elements(glow::TRIANGLES, 6, glow::UNSIGNED_INT, 0);
 
             // Read pixels back from FBO
+            // TODO does this need GL_UNPACK_ALIGNMENT?
+            // TODO extracting the framebuffer back from VRAM is not optimal. Better present this
+            // texture directly in egui?
             let mut pixels = vec![0u8; (texture_size[0] * texture_size[1] * 4) as usize];
             gl.read_pixels(
                 0,
