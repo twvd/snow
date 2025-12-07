@@ -211,7 +211,7 @@ enum DriveWriteReg {
 pub(crate) struct FloppyDrive {
     idx: usize,
     base_frequency: Ticks,
-    pub(super) drive_type: DriveType,
+    pub(crate) drive_type: DriveType,
     pub(super) cycles: Ticks,
 
     pub(crate) floppy_inserted: bool,
@@ -245,6 +245,9 @@ pub(crate) struct FloppyDrive {
     pub(super) pwm_avg_sum: i64,
     pub(super) pwm_avg_count: usize,
     pub(super) pwm_dutycycle: Ticks,
+
+    /// RPM adjustment for PWM-controlled drives
+    pub(crate) rpm_adjustment: i32,
 }
 
 impl FloppyDrive {
@@ -281,6 +284,7 @@ impl FloppyDrive {
             pwm_avg_sum: 0,
             pwm_avg_count: 0,
             pwm_dutycycle: 0,
+            rpm_adjustment: 0,
         }
     }
 
@@ -444,10 +448,13 @@ impl FloppyDrive {
             if self.pwm_dutycycle < DUTY_T0 {
                 return 0;
             }
-            ((self.pwm_dutycycle - DUTY_T0) * (SPEED_T79 * 100 + SPEED_T0 * 100)
+            let base_rpm = ((self.pwm_dutycycle - DUTY_T0) * (SPEED_T79 * 100 + SPEED_T0 * 100)
                 / (DUTY_T79 - DUTY_T0))
                 / 100
-                + SPEED_T0
+                + SPEED_T0;
+
+            // Apply RPM adjustment only for PWM-controlled drives
+            (base_rpm as i32 + self.rpm_adjustment).max(0) as Ticks
         } else {
             // Macintosh CLV
             // Automatic spindle motor speed control

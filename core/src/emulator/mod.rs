@@ -549,6 +549,7 @@ impl Emulator {
                     track: self.config.swim().drives[i].track,
                     image_title: self.config.swim().drives[i].floppy.get_title().to_owned(),
                     dirty: self.config.swim().drives[i].floppy.is_dirty(),
+                    drive_type: self.config.swim().drives[i].drive_type,
                 }),
                 model: self.model,
                 scsi: core::array::from_fn(|i| {
@@ -1039,6 +1040,11 @@ impl Tickable for Emulator {
                     EmulatorCommand::SetDebugFramebuffers(v) => {
                         if let EmulatorConfig::Compact(ref mut c) = &mut self.config {
                             c.bus.video.debug_framebuffers = v;
+                        }
+                    }
+                    EmulatorCommand::SetFloppyRpmAdjustment(drive, adjustment) => {
+                        if drive < self.config.swim_mut().drives.len() {
+                            self.config.swim_mut().drives[drive].rpm_adjustment = adjustment;
                         }
                     }
                 }

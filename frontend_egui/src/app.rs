@@ -181,6 +181,8 @@ pub struct SnowGui {
     settings: AppSettings,
     emu: EmulatorState,
 
+    floppy_rpm_adjustment: [i32; 3],
+
     /// Temporary files that need cleanup on exit
     temp_files: Vec<PathBuf>,
 
@@ -374,6 +376,8 @@ impl SnowGui {
             snowflake_spawn_timer: 0.0,
 
             emu: EmulatorState::default(),
+
+            floppy_rpm_adjustment: [0, 0, 0],
 
             // Always clean up images created by restoring save states
             temp_files: Vec::from_iter(
@@ -1196,12 +1200,28 @@ impl SnowGui {
                         ui.close_menu();
                     }
                     ui.separator();
+
                     if ui
                         .add_enabled(!d.ejected, egui::Button::new("Force eject"))
                         .clicked()
                     {
                         self.emu.force_eject(i);
                         ui.close_menu();
+                    }
+
+                    if d.drive_type.has_pwm_control() {
+                        ui.separator();
+                        ui.label("Simulate drive RPM variance");
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut self.floppy_rpm_adjustment[i], -100..=100)
+                                    .suffix(" RPM"),
+                            )
+                            .changed()
+                        {
+                            self.emu
+                                .set_floppy_rpm_adjustment(i, self.floppy_rpm_adjustment[i]);
+                        }
                     }
                 },
             );
