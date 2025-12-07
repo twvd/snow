@@ -73,6 +73,7 @@ pub enum EmulatorCommand {
     #[cfg(feature = "savestates")]
     SaveState(PathBuf, Option<Vec<u8>>),
     SetDebugFramebuffers(bool),
+    SetFloppyRpmAdjustment(usize, i32),
 }
 
 /// Emulator speed tweak
@@ -118,6 +119,7 @@ pub struct FddStatus {
     pub track: usize,
     pub image_title: String,
     pub dirty: bool,
+    pub drive_type: crate::mac::swim::drive::DriveType,
 }
 
 /// A friendly message ready for display to a user

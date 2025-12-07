@@ -1026,4 +1026,13 @@ impl EmulatorState {
             .unwrap();
         self.debug_framebuffers = v;
     }
+
+    pub fn set_floppy_rpm_adjustment(&self, drive: usize, adjustment: i32) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender
+            .send(EmulatorCommand::SetFloppyRpmAdjustment(drive, adjustment))
+            .unwrap();
+    }
 }
