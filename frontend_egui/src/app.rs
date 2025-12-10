@@ -1210,6 +1210,16 @@ impl SnowGui {
                     .enable_serial_bridge(ch, SerialBridgeConfig::Tcp(port));
                 ui.close_menu();
             }
+
+            if ui
+                .add_enabled(emu_ready, egui::Button::new("Enable LocalTalk (UDP)"))
+                .clicked()
+            {
+                let _ = self
+                    .emu
+                    .enable_serial_bridge(ch, SerialBridgeConfig::LocalTalk);
+                ui.close_menu();
+            }
         }
     }
 
