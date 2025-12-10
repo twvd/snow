@@ -12,6 +12,7 @@ use crate::debuggable::DebuggableProperties;
 use crate::keymap::KeyEvent;
 use crate::mac::scc::SccCh;
 use crate::mac::scsi::target::ScsiTargetType;
+use crate::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use crate::mac::MacModel;
 use crate::tickable::Ticks;
 
@@ -74,6 +75,9 @@ pub enum EmulatorCommand {
     SaveState(PathBuf, Option<Vec<u8>>),
     SetDebugFramebuffers(bool),
     SetFloppyRpmAdjustment(usize, i32),
+    #[serde(skip)]
+    SerialBridgeEnable(SccCh, SerialBridgeConfig),
+    SerialBridgeDisable(SccCh),
 }
 
 /// Emulator speed tweak
@@ -145,4 +149,6 @@ pub enum EmulatorEvent {
     PeripheralDebug(DebuggableProperties),
     SccTransmitData(SccCh, Vec<u8>),
     SystrapHistory(Vec<SystrapHistoryEntry>),
+    /// Serial bridge status update
+    SerialBridgeStatus(SccCh, Option<SerialBridgeStatus>),
 }

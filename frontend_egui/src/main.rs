@@ -37,6 +37,16 @@ struct Args {
     /// Start in fullscreen (specify ROM or workspace)
     #[arg(long, short)]
     fullscreen: bool,
+
+    /// Enable serial bridge on SCC channel A (modem port).
+    /// Values: "pty" for PTY mode (Unix only), "tcp:PORT" for TCP mode
+    #[arg(long, value_name = "MODE")]
+    serial_bridge_a: Option<String>,
+
+    /// Enable serial bridge on SCC channel B (printer port).
+    /// Values: "pty" for PTY mode (Unix only), "tcp:PORT" for TCP mode
+    #[arg(long, value_name = "MODE")]
+    serial_bridge_b: Option<String>,
 }
 
 fn main() -> eframe::Result {
@@ -83,6 +93,8 @@ fn main() -> eframe::Result {
                 args.filename,
                 args.ui_scale,
                 args.fullscreen,
+                args.serial_bridge_a.as_deref(),
+                args.serial_bridge_b.as_deref(),
             )))
         }),
     )

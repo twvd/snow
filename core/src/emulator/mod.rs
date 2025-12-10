@@ -27,6 +27,7 @@ use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
 use crate::mac::macii::bus::MacIIBus;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
+use crate::mac::serial_bridge::{SerialBridge, SerialBridgeStatus};
 use crate::mac::swim::drive::DriveType;
 use crate::mac::{ExtraROMs, MacModel, MacMonitor};
 use crate::renderer::channel::ChannelRenderer;
@@ -235,6 +236,8 @@ pub struct Emulator {
     record_input: Option<InputRecording>,
     replay_input: VecDeque<(Ticks, EmulatorCommand)>,
     peripheral_debug: bool,
+    /// Serial bridges for SCC channels (index 0 = Channel A, index 1 = Channel B)
+    serial_bridges: [Option<SerialBridge>; 2],
 }
 
 impl Emulator {
@@ -436,6 +439,7 @@ impl Emulator {
             record_input: None,
             replay_input: VecDeque::default(),
             peripheral_debug: false,
+            serial_bridges: [None, None],
         };
         emu.status_update()?;
 
@@ -478,6 +482,7 @@ impl Emulator {
             record_input: None,
             replay_input: VecDeque::default(),
             peripheral_debug: false,
+            serial_bridges: [None, None],
         };
         emu.status_update()?;
         log::info!(
@@ -1031,6 +1036,38 @@ impl Tickable for Emulator {
                     EmulatorCommand::SccReceiveData(ch, data) => {
                         self.config.scc_mut().push_rx(ch, &data);
                     }
+                    EmulatorCommand::SerialBridgeEnable(ch, config) => {
+                        let ch_idx = ch as usize;
+                        match SerialBridge::new(&config) {
+                            Ok(bridge) => {
+                                let status = bridge.status();
+                                info!("Serial bridge enabled on channel {:?}: {}", ch, status);
+                                if let SerialBridgeStatus::Pty(ref path) = status {
+                                    self.user_notice(&format!(
+                                        "Serial bridge PTY: {}",
+                                        path.display()
+                                    ));
+                                }
+                                self.serial_bridges[ch_idx] = Some(bridge);
+                                self.event_sender
+                                    .send(EmulatorEvent::SerialBridgeStatus(ch, Some(status)))?;
+                            }
+                            Err(e) => {
+                                self.user_error(&format!(
+                                    "Failed to enable serial bridge on channel {:?}: {}",
+                                    ch, e
+                                ));
+                            }
+                        }
+                    }
+                    EmulatorCommand::SerialBridgeDisable(ch) => {
+                        let ch_idx = ch as usize;
+                        if self.serial_bridges[ch_idx].take().is_some() {
+                            info!("Serial bridge disabled on channel {:?}", ch);
+                            self.event_sender
+                                .send(EmulatorEvent::SerialBridgeStatus(ch, None))?;
+                        }
+                    }
                     #[cfg(feature = "savestates")]
                     EmulatorCommand::SaveState(path, screenshot) => {
                         if let Err(e) = self.save_state(&path, screenshot) {
@@ -1058,10 +1095,34 @@ impl Tickable for Emulator {
 
                 for ch in crate::mac::scc::SccCh::iter() {
                     if self.config.scc().has_tx_data(ch) {
-                        self.event_sender.send(EmulatorEvent::SccTransmitData(
-                            ch,
-                            self.config.scc_mut().take_tx(ch),
-                        ))?;
+                        let tx_data = self.config.scc_mut().take_tx(ch);
+                        let ch_idx = ch as usize;
+
+                        // Route through serial bridge if active, otherwise send to frontend
+                        if let Some(ref mut bridge) = self.serial_bridges[ch_idx] {
+                            bridge.write_from_scc(&tx_data);
+                        } else {
+                            self.event_sender
+                                .send(EmulatorEvent::SccTransmitData(ch, tx_data))?;
+                        }
+                    }
+                }
+            }
+
+            // Poll serial bridges for incoming data and status changes
+            for ch in crate::mac::scc::SccCh::iter() {
+                let ch_idx = ch as usize;
+                if let Some(ref mut bridge) = self.serial_bridges[ch_idx] {
+                    // Check for state changes (e.g., new TCP connection)
+                    if bridge.poll() {
+                        self.event_sender
+                            .send(EmulatorEvent::SerialBridgeStatus(ch, Some(bridge.status())))?;
+                    }
+
+                    // Read incoming data from bridge and send to SCC
+                    let rx_data = bridge.read_to_scc();
+                    if !rx_data.is_empty() {
+                        self.config.scc_mut().push_rx(ch, &rx_data);
                     }
                 }
             }

@@ -19,6 +19,7 @@ pub mod pluskbd;
 pub mod rtc;
 pub mod scc;
 pub mod scsi;
+pub mod serial_bridge;
 pub mod swim;
 pub mod via;
 

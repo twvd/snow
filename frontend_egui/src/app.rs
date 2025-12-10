@@ -20,7 +20,9 @@ use crate::workspace::Workspace;
 use snow_core::bus::Address;
 use snow_core::emulator::comm::UserMessageType;
 use snow_core::emulator::save::{load_state_header, SaveHeader};
+use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
+use snow_core::mac::serial_bridge::SerialBridgeConfig;
 use snow_core::mac::MacModel;
 use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
 use snow_floppy::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
@@ -188,6 +190,12 @@ pub struct SnowGui {
 
     /// Quick state save slots
     quick_states: [Option<PathBuf>; 5],
+
+    /// Pending serial bridge configurations from CLI args (applied after emulator starts)
+    pending_serial_bridges: [Option<SerialBridgeConfig>; 2],
+
+    /// Whether CLI serial bridges have been applied (to avoid re-applying on each frame)
+    serial_bridges_applied: bool,
 }
 
 impl SnowGui {
@@ -195,12 +203,30 @@ impl SnowGui {
     const ZOOM_FACTORS: [f32; 8] = [0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0];
     const SUBMENU_WIDTH: f32 = 175.0;
 
+    /// Parse serial bridge mode string from CLI argument
+    fn parse_serial_bridge_mode(mode: &str) -> Option<SerialBridgeConfig> {
+        let mode = mode.to_lowercase();
+        if mode == "pty" {
+            Some(SerialBridgeConfig::Pty)
+        } else if let Some(port_str) = mode.strip_prefix("tcp:") {
+            port_str.parse::<u16>().ok().map(SerialBridgeConfig::Tcp)
+        } else {
+            log::warn!(
+                "Invalid serial bridge mode: '{}'. Use 'pty' or 'tcp:PORT'",
+                mode
+            );
+            None
+        }
+    }
+
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
         initial_file: Option<String>,
         zoom_factor: f32,
         fullscreen: bool,
+        serial_bridge_a: Option<&str>,
+        serial_bridge_b: Option<&str>,
     ) -> Self {
         egui_material_icons::initialize(&cc.egui_ctx);
         cc.egui_ctx.set_zoom_factor(zoom_factor);
@@ -389,6 +415,13 @@ impl SnowGui {
             ),
 
             quick_states: Default::default(),
+
+            pending_serial_bridges: [
+                serial_bridge_a.and_then(Self::parse_serial_bridge_mode),
+                serial_bridge_b.and_then(Self::parse_serial_bridge_mode),
+            ],
+
+            serial_bridges_applied: false,
         };
 
         if let Some(filename) = initial_file {
@@ -641,6 +674,8 @@ impl SnowGui {
                         {
                             ui.close_menu();
                         }
+                        ui.separator();
+                        self.draw_serial_bridge_menu(ui, SccCh::A);
                     },
                 );
                 ui.menu_button(
@@ -656,6 +691,8 @@ impl SnowGui {
                         {
                             ui.close_menu();
                         }
+                        ui.separator();
+                        self.draw_serial_bridge_menu(ui, SccCh::B);
                     },
                 );
             });
@@ -1108,6 +1145,54 @@ impl SnowGui {
                     }
                 },
             );
+        }
+    }
+
+    fn draw_serial_bridge_menu(&self, ui: &mut egui::Ui, ch: SccCh) {
+        let is_enabled = self.emu.is_serial_bridge_enabled(ch);
+        let emu_ready = self.emu.is_initialized();
+
+        if is_enabled {
+            // Bridge is active - show status and disable option
+            if let Some(status) = self.emu.get_serial_bridge_status(ch) {
+                ui.label(format!("Bridge: {}", status));
+            }
+            if ui
+                .add_enabled(emu_ready, egui::Button::new("Disable bridge"))
+                .clicked()
+            {
+                let _ = self.emu.disable_serial_bridge(ch);
+                ui.close_menu();
+            }
+        } else {
+            // Bridge is inactive - show enable options
+            ui.strong("Serial Bridge");
+
+            #[cfg(unix)]
+            if ui
+                .add_enabled(emu_ready, egui::Button::new("Enable PTY bridge"))
+                .clicked()
+            {
+                let _ = self.emu.enable_serial_bridge(ch, SerialBridgeConfig::Pty);
+                ui.close_menu();
+            }
+
+            let port = match ch {
+                SccCh::A => 1984,
+                SccCh::B => 1985,
+            };
+            if ui
+                .add_enabled(
+                    emu_ready,
+                    egui::Button::new(format!("Enable TCP bridge (port {})", port)),
+                )
+                .clicked()
+            {
+                let _ = self
+                    .emu
+                    .enable_serial_bridge(ch, SerialBridgeConfig::Tcp(port));
+                ui.close_menu();
+            }
         }
     }
 
@@ -1961,6 +2046,16 @@ impl eframe::App for SnowGui {
                 self.update_titlebar(ctx);
             }
             self.registers.update_regs(self.emu.get_regs().clone());
+
+            // Apply pending serial bridges from CLI args (once, when emulator initializes)
+            if self.emu.is_initialized() && !self.serial_bridges_applied {
+                for (idx, ch) in [SccCh::A, SccCh::B].iter().enumerate() {
+                    if let Some(config) = self.pending_serial_bridges[idx].take() {
+                        let _ = self.emu.enable_serial_bridge(*ch, config);
+                    }
+                }
+                self.serial_bridges_applied = true;
+            }
 
             while let Some((t, msg)) = self.emu.take_message() {
                 self.toasts.add(match t {

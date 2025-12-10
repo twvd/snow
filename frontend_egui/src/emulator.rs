@@ -27,6 +27,7 @@ use snow_core::emulator::{Emulator, MouseMode};
 use snow_core::keymap::Scancode;
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
+use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{ExtraROMs, MacModel, MacMonitor};
 use snow_core::renderer::DisplayBuffer;
@@ -128,6 +129,9 @@ pub struct EmulatorState {
 
     /// Force an emulator update signal to the App even without new events available
     force_update: LatchingEvent,
+
+    /// Serial bridge status for SCC channels (index 0 = Channel A, index 1 = Channel B)
+    serial_bridge_status: [Option<SerialBridgeStatus>; 2],
 }
 
 impl EmulatorState {
@@ -508,6 +512,9 @@ impl EmulatorState {
                 EmulatorEvent::PeripheralDebug(d) => self.peripheral_debug = d,
                 EmulatorEvent::SccTransmitData(ch, data) => {
                     self.scc_tx[ch.to_usize().unwrap()].extend(&data);
+                }
+                EmulatorEvent::SerialBridgeStatus(ch, status) => {
+                    self.serial_bridge_status[ch.to_usize().unwrap()] = status;
                 }
             }
         }
@@ -1034,5 +1041,27 @@ impl EmulatorState {
         sender
             .send(EmulatorCommand::SetFloppyRpmAdjustment(drive, adjustment))
             .unwrap();
+    }
+
+    pub fn enable_serial_bridge(&self, ch: SccCh, config: SerialBridgeConfig) -> Result<()> {
+        let Some(ref sender) = self.cmdsender else {
+            return Ok(());
+        };
+        Ok(sender.send(EmulatorCommand::SerialBridgeEnable(ch, config))?)
+    }
+
+    pub fn disable_serial_bridge(&self, ch: SccCh) -> Result<()> {
+        let Some(ref sender) = self.cmdsender else {
+            return Ok(());
+        };
+        Ok(sender.send(EmulatorCommand::SerialBridgeDisable(ch))?)
+    }
+
+    pub fn get_serial_bridge_status(&self, ch: SccCh) -> Option<&SerialBridgeStatus> {
+        self.serial_bridge_status[ch.to_usize().unwrap()].as_ref()
+    }
+
+    pub fn is_serial_bridge_enabled(&self, ch: SccCh) -> bool {
+        self.serial_bridge_status[ch.to_usize().unwrap()].is_some()
     }
 }
