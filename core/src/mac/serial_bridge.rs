@@ -4,15 +4,18 @@
 //! system, allowing external tools like Retro68's LaunchAPPL to communicate
 //! with software running inside the emulated Mac.
 //!
-//! Supports two modes:
+//! Supports three modes:
 //! - PTY mode (Unix): Creates a pseudo-terminal that appears as a serial port
 //! - TCP mode: Listens on a TCP port for connections
+//! - LocalTalk mode: LocalTalk over UDP multicast for AppleTalk networking
 
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
 use log::*;
 use serde::{Deserialize, Serialize};
+
+use super::localtalk_bridge::LocalTalkStatus;
 
 /// Configuration for a serial bridge
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,6 +24,8 @@ pub enum SerialBridgeConfig {
     Pty,
     /// Listen on a TCP port
     Tcp(u16),
+    /// LocalTalk over UDP multicast
+    LocalTalk,
 }
 
 impl std::fmt::Display for SerialBridgeConfig {
@@ -28,6 +33,7 @@ impl std::fmt::Display for SerialBridgeConfig {
         match self {
             Self::Pty => write!(f, "PTY"),
             Self::Tcp(port) => write!(f, "TCP:{}", port),
+            Self::LocalTalk => write!(f, "LocalTalk"),
         }
     }
 }
@@ -41,6 +47,8 @@ pub enum SerialBridgeStatus {
     TcpListening(u16),
     /// TCP bridge with connected client
     TcpConnected(u16, String),
+    /// LocalTalk bridge active
+    LocalTalk(LocalTalkStatus),
 }
 
 impl std::fmt::Display for SerialBridgeStatus {
@@ -49,6 +57,7 @@ impl std::fmt::Display for SerialBridgeStatus {
             Self::Pty(path) => write!(f, "PTY: {}", path.display()),
             Self::TcpListening(port) => write!(f, "TCP:{} (listening)", port),
             Self::TcpConnected(port, addr) => write!(f, "TCP:{} ({})", port, addr),
+            Self::LocalTalk(status) => write!(f, "{}", status),
         }
     }
 }
@@ -295,6 +304,7 @@ pub struct SerialBridge {
 
 impl SerialBridge {
     /// Create a new serial bridge with the given configuration
+    /// Note: LocalTalk should use SccBridge::new() instead
     pub fn new(config: &SerialBridgeConfig) -> io::Result<Self> {
         let backend: Box<dyn SerialBridgeBackend> = match config {
             #[cfg(unix)]
@@ -307,6 +317,12 @@ impl SerialBridge {
                 ));
             }
             SerialBridgeConfig::Tcp(port) => Box::new(tcp::TcpBridge::new(*port)?),
+            SerialBridgeConfig::LocalTalk => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "LocalTalk should use SccBridge::new() instead",
+                ));
+            }
         };
 
         Ok(Self {
@@ -361,5 +377,62 @@ impl SerialBridge {
     /// Poll for state changes (e.g., new TCP connections)
     pub fn poll(&mut self) -> bool {
         self.backend.poll()
+    }
+}
+
+/// Unified bridge that can be either serial (PTY/TCP) or LocalTalk
+pub enum SccBridge {
+    /// Serial bridge (PTY or TCP)
+    Serial(SerialBridge),
+    /// LocalTalk over UDP
+    LocalTalk(super::localtalk_bridge::LocalTalkBridge),
+}
+
+impl SccBridge {
+    /// Create a new bridge with the given configuration
+    pub fn new(config: &SerialBridgeConfig) -> io::Result<Self> {
+        match config {
+            SerialBridgeConfig::LocalTalk => Ok(Self::LocalTalk(
+                super::localtalk_bridge::LocalTalkBridge::new()?,
+            )),
+            _ => Ok(Self::Serial(SerialBridge::new(config)?)),
+        }
+    }
+
+    /// Write data from the SCC TX queue to the bridge
+    pub fn write_from_scc(&mut self, data: &[u8]) {
+        match self {
+            Self::Serial(bridge) => bridge.write_from_scc(data),
+            Self::LocalTalk(bridge) => bridge.write_from_scc(data),
+        }
+    }
+
+    /// Read data from the bridge to inject into SCC RX queue
+    pub fn read_to_scc(&mut self) -> Vec<u8> {
+        match self {
+            Self::Serial(bridge) => bridge.read_to_scc(),
+            Self::LocalTalk(bridge) => bridge.read_to_scc().unwrap_or_default(),
+        }
+    }
+
+    /// Poll for state changes
+    pub fn poll(&mut self) -> bool {
+        match self {
+            Self::Serial(bridge) => bridge.poll(),
+            Self::LocalTalk(bridge) => bridge.poll(),
+        }
+    }
+
+    /// Get current bridge status
+    pub fn status(&self) -> SerialBridgeStatus {
+        match self {
+            Self::Serial(bridge) => bridge.status(),
+            Self::LocalTalk(bridge) => SerialBridgeStatus::LocalTalk(bridge.status()),
+        }
+    }
+
+    /// Check if this bridge is a LocalTalk bridge
+    pub fn is_localtalk(&self) -> bool {
+        matches!(self, Self::LocalTalk(_))
     }
 }

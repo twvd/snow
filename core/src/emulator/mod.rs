@@ -27,7 +27,7 @@ use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
 use crate::mac::macii::bus::MacIIBus;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
-use crate::mac::serial_bridge::{SerialBridge, SerialBridgeStatus};
+use crate::mac::serial_bridge::{SccBridge, SerialBridgeStatus};
 use crate::mac::swim::drive::DriveType;
 use crate::mac::{ExtraROMs, MacModel, MacMonitor};
 use crate::renderer::channel::ChannelRenderer;
@@ -237,7 +237,7 @@ pub struct Emulator {
     replay_input: VecDeque<(Ticks, EmulatorCommand)>,
     peripheral_debug: bool,
     /// Serial bridges for SCC channels (index 0 = Channel A, index 1 = Channel B)
-    serial_bridges: [Option<SerialBridge>; 2],
+    serial_bridges: [Option<SccBridge>; 2],
 }
 
 impl Emulator {
@@ -1037,15 +1037,21 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::SerialBridgeEnable(ch, config) => {
                         let ch_idx = ch as usize;
-                        match SerialBridge::new(&config) {
+                        match SccBridge::new(&config) {
                             Ok(bridge) => {
                                 let status = bridge.status();
-                                info!("Serial bridge enabled on channel {:?}: {}", ch, status);
-                                if let SerialBridgeStatus::Pty(ref path) = status {
-                                    self.user_notice(&format!(
-                                        "Serial bridge PTY: {}",
-                                        path.display()
-                                    ));
+                                info!("SCC bridge enabled on channel {:?}: {}", ch, status);
+                                match &status {
+                                    SerialBridgeStatus::Pty(ref path) => {
+                                        self.user_notice(&format!(
+                                            "Serial bridge PTY: {}",
+                                            path.display()
+                                        ));
+                                    }
+                                    SerialBridgeStatus::LocalTalk(_) => {
+                                        self.user_notice("LocalTalk bridge enabled");
+                                    }
+                                    _ => {}
                                 }
                                 self.serial_bridges[ch_idx] = Some(bridge);
                                 self.event_sender
@@ -1053,7 +1059,7 @@ impl Tickable for Emulator {
                             }
                             Err(e) => {
                                 self.user_error(&format!(
-                                    "Failed to enable serial bridge on channel {:?}: {}",
+                                    "Failed to enable SCC bridge on channel {:?}: {}",
                                     ch, e
                                 ));
                             }
@@ -1091,29 +1097,31 @@ impl Tickable for Emulator {
             if self.last_update.elapsed() > Duration::from_millis(500) {
                 self.last_update = Instant::now();
                 self.status_update()?;
-
-                for ch in crate::mac::scc::SccCh::iter() {
-                    if self.config.scc().has_tx_data(ch) {
-                        let tx_data = self.config.scc_mut().take_tx(ch);
-                        let ch_idx = ch as usize;
-
-                        // Route through serial bridge if active, otherwise send to frontend
-                        if let Some(ref mut bridge) = self.serial_bridges[ch_idx] {
-                            bridge.write_from_scc(&tx_data);
-                        } else {
-                            self.event_sender
-                                .send(EmulatorEvent::SccTransmitData(ch, tx_data))?;
-                        }
-                    }
-                }
             }
 
-            // Poll serial bridges for incoming data and status changes
+            // Poll SCC TX data and serial/LocalTalk bridges every tick batch
+            // This needs to be frequent for LocalTalk to work properly
             for ch in crate::mac::scc::SccCh::iter() {
                 let ch_idx = ch as usize;
+
+                // Check for TX data from SCC
+                if self.config.scc().has_tx_data(ch) {
+                    let tx_data = self.config.scc_mut().take_tx(ch);
+
+                    // Route through bridge if active, otherwise send to frontend
+                    if let Some(ref mut bridge) = self.serial_bridges[ch_idx] {
+                        bridge.write_from_scc(&tx_data);
+                    } else {
+                        self.event_sender
+                            .send(EmulatorEvent::SccTransmitData(ch, tx_data))?;
+                    }
+                }
+
+                // Poll bridges for incoming data and status changes
                 if let Some(ref mut bridge) = self.serial_bridges[ch_idx] {
-                    // Check for state changes (e.g., new TCP connection)
-                    if bridge.poll() {
+                    // Check for state changes (e.g., new TCP connection, LocalTalk status)
+                    let has_data = bridge.poll();
+                    if has_data {
                         self.event_sender
                             .send(EmulatorEvent::SerialBridgeStatus(ch, Some(bridge.status())))?;
                     }
@@ -1140,6 +1148,40 @@ impl Tickable for Emulator {
                     break;
                 }
                 self.try_step();
+
+                // Demand-driven LocalTalk polling: poll immediately when Mac re-enables RX
+                // Only poll if RX is enabled and no character is available (ready for new packet)
+                if self
+                    .config
+                    .scc_mut()
+                    .take_localtalk_poll_needed(crate::mac::scc::SccCh::B)
+                    && self
+                        .config
+                        .scc()
+                        .is_rx_ready_for_data(crate::mac::scc::SccCh::B)
+                {
+                    if let Some(ref mut bridge) = self.serial_bridges[1] {
+                        if bridge.is_localtalk() {
+                            // First, flush any pending TX data to the bridge
+                            // This ensures RTS is processed and CTS is synthesized
+                            // before we poll for responses
+                            if self.config.scc().has_tx_data(crate::mac::scc::SccCh::B) {
+                                let tx_data =
+                                    self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
+                                bridge.write_from_scc(&tx_data);
+                            }
+
+                            // Now poll for incoming data and pending CTS
+                            bridge.poll();
+                            let rx_data = bridge.read_to_scc();
+                            if !rx_data.is_empty() {
+                                self.config
+                                    .scc_mut()
+                                    .push_rx(crate::mac::scc::SccCh::B, &rx_data);
+                            }
+                        }
+                    }
+                }
             }
         } else {
             thread::sleep(Duration::from_millis(100));
