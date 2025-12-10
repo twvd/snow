@@ -4171,6 +4171,7 @@ dependencies = [
  "itertools 0.13.0",
  "log",
  "memmap2",
+ "nix",
  "num",
  "num-derive 0.4.2",
  "num-traits",
@@ -4182,6 +4183,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "snow_floppy",
+ "socket2",
  "strum 0.26.3",
  "thiserror 1.0.69",
  "typetag",
@@ -4245,6 +4247,16 @@ dependencies = [
  "snow_floppy",
  "strum 0.26.3",
  "winresource",
+]
+
+[[package]]
+name = "socket2"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17129e116933cf371d018bb80ae557e889637989d8638274fb25622827b03881"
+dependencies = [
+ "libc",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
