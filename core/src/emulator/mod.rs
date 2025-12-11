@@ -443,6 +443,11 @@ impl Emulator {
         };
         emu.status_update()?;
 
+        for ch in crate::mac::scc::SccCh::iter() {
+            emu.event_sender
+                .send(EmulatorEvent::SerialBridgeStatus(ch, None))?;
+        }
+
         Ok((emu, frame_recv))
     }
 
@@ -485,6 +490,12 @@ impl Emulator {
             serial_bridges: [None, None],
         };
         emu.status_update()?;
+
+        for ch in crate::mac::scc::SccCh::iter() {
+            emu.event_sender
+                .send(EmulatorEvent::SerialBridgeStatus(ch, None))?;
+        }
+
         log::info!(
             "Restored save state {} ({}) in {:?}",
             fstr,
