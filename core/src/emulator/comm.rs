@@ -27,10 +27,13 @@ pub type InputRecording = Vec<(Ticks, EmulatorCommand)>;
 #[derive(Serialize, Deserialize, Clone)]
 pub enum EmulatorCommand {
     Quit,
-    InsertFloppy(usize, String),
-    InsertFloppyWriteProtected(usize, String),
+    /// Inserts a floppy image, passing the image as boxed object.
+    /// Parameters: drive id, image, write-protect
+    InsertFloppy(usize, String, bool),
+    /// Inserts a floppy image, passing the image as boxed object.
+    /// Parameters: drive id, image, write-protect
     #[serde(skip)]
-    InsertFloppyImage(usize, Box<FloppyImage>),
+    InsertFloppyImage(usize, Box<FloppyImage>, bool),
     SaveFloppy(usize, PathBuf),
     EjectFloppy(usize),
     ScsiAttachHdd(usize, PathBuf),

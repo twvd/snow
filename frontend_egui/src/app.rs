@@ -700,14 +700,20 @@ impl SnowGui {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
                 ui.menu_button("File sharing", |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH + 100.0);
-                    ui.label("Shared folder (for BlueSCSI Toolbox):");
+                    ui.label("Shared folder:");
                     let mut shared_dir_str = self
                         .workspace
                         .get_shared_dir()
                         .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_default();
                     ui.add_enabled(false, egui::TextEdit::singleline(&mut shared_dir_str));
-                    if ui.button("Select folder...").clicked() {
+                    if ui
+                        .add_enabled(
+                            self.emu.is_initialized(),
+                            egui::Button::new("Select folder..."),
+                        )
+                        .clicked()
+                    {
                         self.shared_dir_dialog.pick_directory();
                         ui.close_menu();
                     }
@@ -721,6 +727,17 @@ impl SnowGui {
                     {
                         self.workspace.set_shared_dir(None);
                         self.emu.set_shared_dir(None);
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(
+                            self.emu.is_initialized(),
+                            egui::Button::new("Insert toolbox floppy"),
+                        )
+                        .clicked()
+                    {
+                        self.emu.load_toolbox_floppy();
                         ui.close_menu();
                     }
                 });
