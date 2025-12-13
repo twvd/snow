@@ -1574,7 +1574,11 @@ impl SnowGui {
             self.workspace.get_shared_dir(),
             custom_datetime,
         ) {
-            Ok(p) => self.framebuffer.connect_receiver(p.frame_receiver),
+            Ok(p) => {
+                self.framebuffer
+                    .load_shader_defaults(self.emu.get_model().unwrap());
+                self.framebuffer.connect_receiver(p.frame_receiver);
+            }
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
         }
 
@@ -1932,7 +1936,11 @@ impl SnowGui {
             .emu
             .init_from_statefile(path.as_ref(), self.workspace.pause_on_state_load)
         {
-            Ok(p) => self.framebuffer.connect_receiver(p.frame_receiver),
+            Ok(p) => {
+                self.framebuffer
+                    .load_shader_defaults(self.emu.get_model().unwrap());
+                self.framebuffer.connect_receiver(p.frame_receiver);
+            }
             Err(e) => self.show_error(&format!("Failed to load state file: {:?}", e)),
         }
     }
