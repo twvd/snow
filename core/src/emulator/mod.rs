@@ -770,10 +770,13 @@ impl Tickable for Emulator {
                         self.config.video_blank()?;
                         return Ok(0);
                     }
-                    EmulatorCommand::InsertFloppy(drive, filename) => {
+                    EmulatorCommand::InsertFloppy(drive, filename, wp) => {
                         let image = Autodetect::load_file(&filename);
                         match image {
-                            Ok(img) => {
+                            Ok(mut img) => {
+                                if wp {
+                                    img.set_force_wp();
+                                }
                                 if let Err(e) = self.config.swim_mut().disk_insert(drive, img) {
                                     self.user_error(&format!("Cannot insert disk: {}", e));
                                 }
@@ -787,25 +790,10 @@ impl Tickable for Emulator {
                         }
                         self.status_update()?;
                     }
-                    EmulatorCommand::InsertFloppyWriteProtected(drive, filename) => {
-                        let image = Autodetect::load_file(&filename);
-                        match image {
-                            Ok(mut img) => {
-                                img.set_force_wp();
-                                if let Err(e) = self.config.swim_mut().disk_insert(drive, img) {
-                                    self.user_error(&format!("Cannot insert disk: {}", e));
-                                }
-                            }
-                            Err(e) => {
-                                self.user_error(&format!(
-                                    "Cannot load image '{}': {}",
-                                    filename, e
-                                ));
-                            }
+                    EmulatorCommand::InsertFloppyImage(drive, mut img, wp) => {
+                        if wp {
+                            img.set_force_wp();
                         }
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::InsertFloppyImage(drive, img) => {
                         if let Err(e) = self.config.swim_mut().disk_insert(drive, *img) {
                             self.user_error(&format!("Cannot insert disk: {}", e));
                         }

@@ -1,5 +1,6 @@
 //! Emulator state management
 
+use snow_floppy::loaders::FloppyImageLoader;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -614,21 +615,13 @@ impl EmulatorState {
             return;
         };
 
-        if wp {
-            sender
-                .send(EmulatorCommand::InsertFloppyWriteProtected(
-                    driveidx,
-                    path.to_string_lossy().to_string(),
-                ))
-                .unwrap();
-        } else {
-            sender
-                .send(EmulatorCommand::InsertFloppy(
-                    driveidx,
-                    path.to_string_lossy().to_string(),
-                ))
-                .unwrap();
-        }
+        sender
+            .send(EmulatorCommand::InsertFloppy(
+                driveidx,
+                path.to_string_lossy().to_string(),
+                wp,
+            ))
+            .unwrap();
     }
 
     /// Loads a floppy image from the specified path in the first free drive.
@@ -637,6 +630,34 @@ impl EmulatorState {
         for (i, d) in (0..3).filter_map(|i| self.get_fdd_status(i).map(|d| (i, d))) {
             if d.present && d.ejected {
                 self.load_floppy(i, path, false);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Loads the included toolbox floppy.
+    pub fn load_toolbox_floppy(&self) -> bool {
+        let Some(ref sender) = self.cmdsender else {
+            return false;
+        };
+
+        // Find a free floppy drive
+        for (i, d) in (0..3).filter_map(|i| self.get_fdd_status(i).map(|d| (i, d))) {
+            if d.present && d.ejected {
+                sender
+                    .send(EmulatorCommand::InsertFloppyImage(
+                        i,
+                        Box::new(
+                            snow_floppy::loaders::Moof::load(
+                                include_bytes!("../assets/BlueSCSI Toolbox.moof"),
+                                None,
+                            )
+                            .unwrap(),
+                        ),
+                        true,
+                    ))
+                    .unwrap();
                 return true;
             }
         }
@@ -653,6 +674,7 @@ impl EmulatorState {
             .send(EmulatorCommand::InsertFloppyImage(
                 driveidx,
                 self.last_images[driveidx].borrow_mut().take().unwrap(),
+                false,
             ))
             .unwrap();
     }
@@ -667,6 +689,7 @@ impl EmulatorState {
             .send(EmulatorCommand::InsertFloppyImage(
                 driveidx,
                 Box::new(FloppyImage::new(t, "Blank")),
+                false,
             ))
             .unwrap();
     }
