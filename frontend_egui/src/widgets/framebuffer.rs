@@ -3,6 +3,7 @@
 
 use std::{fs::File, path::Path};
 
+use super::crt_shader::{CrtShader, CrtShaderParams};
 use anyhow::{bail, Result};
 use crossbeam_channel::Receiver;
 use eframe::egui;
@@ -10,12 +11,11 @@ use eframe::egui::Vec2;
 use eframe::egui_glow;
 use egui::mutex::Mutex;
 use serde::{Deserialize, Serialize};
+use snow_core::mac::MacModel;
 use snow_core::renderer::DisplayBuffer;
 use std::fmt::Display;
 use std::sync::Arc;
 use strum::EnumIter;
-
-use super::crt_shader::{CrtShader, CrtShaderParams};
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, EnumIter, Eq, PartialEq)]
 pub enum ScalingAlgorithm {
@@ -263,6 +263,42 @@ impl FramebufferWidget {
             resp.contains_pointer()
         } else {
             false
+        }
+    }
+
+    /// Loads CRT shader defaults for particular Mac models
+    pub fn load_shader_defaults(&mut self, model: MacModel) {
+        self.crt_params = match model {
+            MacModel::Early128K
+            | MacModel::Early512K
+            | MacModel::Early512Ke
+            | MacModel::Plus
+            | MacModel::SE
+            | MacModel::SeFdhd
+            | MacModel::Classic
+            | MacModel::SE30 => CrtShaderParams {
+                crt_gamma: 2.1,
+                // TODO need more pronounced scanlines..
+                scanline_thinness: 1.00,
+                scan_blur: 1.6,
+                mask_intensity: 0.00,
+                curvature: 0.00,
+                corner: 3.0,
+                mask: 0.0,
+                trinitron_curve: 0.0,
+            },
+            MacModel::MacII | MacModel::MacIIFDHD | MacModel::MacIIx | MacModel::MacIIcx => {
+                CrtShaderParams {
+                    crt_gamma: 2.1,
+                    scanline_thinness: 0.5,
+                    scan_blur: 2.5,
+                    mask_intensity: 0.20,
+                    curvature: 0.00,
+                    corner: 0.0,
+                    mask: 2.0,
+                    trinitron_curve: 0.0,
+                }
+            }
         }
     }
 }
