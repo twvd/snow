@@ -1131,6 +1131,23 @@ impl SnowGui {
                         );
                     }
                 }
+                #[cfg(feature = "ethernet")]
+                ScsiTargetType::Ethernet => {
+                    ui.menu_button(
+                        format!(
+                            "{} SCSI #{}: Ethernet",
+                            egui_material_icons::icons::ICON_SETTINGS_ETHERNET,
+                            id,
+                        ),
+                        |ui| {
+                            ui.set_min_width(Self::SUBMENU_WIDTH);
+                            if ui.button("Detach").clicked() {
+                                self.emu.scsi_detach_target(id);
+                                ui.close_menu();
+                            }
+                        },
+                    );
+                }
             }
         } else {
             ui.menu_button(
@@ -1159,6 +1176,14 @@ impl SnowGui {
                     if ui.button("Attach CD-ROM drive (empty)").clicked() {
                         self.emu.scsi_attach_cdrom(id);
                         ui.close_menu();
+                    }
+                    #[cfg(feature = "ethernet")]
+                    {
+                        ui.separator();
+                        if ui.button("Attach Ethernet controller").clicked() {
+                            self.emu.scsi_attach_ethernet(id);
+                            ui.close_menu();
+                        }
                     }
                 },
             );

@@ -273,6 +273,13 @@ impl EmulatorState {
                     } => {
                         emulator.attach_cdrom(id);
                     }
+                    #[cfg(feature = "ethernet")]
+                    ScsiTarget {
+                        target_type: Some(ScsiTargetType::Ethernet),
+                        ..
+                    } => {
+                        emulator.attach_ethernet(id);
+                    }
                     ScsiTarget {
                         target_type: None, ..
                     } => (),
@@ -1086,5 +1093,16 @@ impl EmulatorState {
 
     pub fn is_serial_bridge_enabled(&self, ch: SccCh) -> bool {
         self.serial_bridge_status[ch.to_usize().unwrap()].is_some()
+    }
+    
+    #[cfg(feature = "ethernet")]
+    pub fn scsi_attach_ethernet(&self, id: usize) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        sender
+            .send(EmulatorCommand::ScsiAttachEthernet(id))
+            .unwrap();
     }
 }

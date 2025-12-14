@@ -736,6 +736,12 @@ impl Emulator {
         info!("SCSI ID #{}: CD-ROM drive attached", id);
     }
 
+    #[cfg(feature = "ethernet")]
+    pub fn attach_ethernet(&mut self, id: usize) {
+        self.config.scsi_mut().attach_ethernet_at(id);
+        info!("SCSI ID #{}: Ethernet controller attached", id);
+    }
+
     #[cfg(feature = "savestates")]
     fn save_state(&self, p: &Path, screenshot: Option<Vec<u8>>) -> Result<()> {
         let mut f = File::create(p)?;
@@ -860,6 +866,11 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::ScsiAttachCdrom(id) => {
                         self.attach_cdrom(id);
+                        self.status_update()?;
+                    }
+                    #[cfg(feature = "ethernet")]
+                    EmulatorCommand::ScsiAttachEthernet(id) => {
+                        self.attach_ethernet(id);
                         self.status_update()?;
                     }
                     EmulatorCommand::DetachScsiTarget(id) => {
