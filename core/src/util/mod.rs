@@ -1,7 +1,5 @@
-use std::{
-    ops::{Mul, SubAssign},
-    time::Instant,
-};
+use std::ops::{Mul, SubAssign};
+use std::time::Instant;
 
 use num::{PrimInt, Signed};
 

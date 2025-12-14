@@ -5,11 +5,13 @@ use crate::mac::scsi::ScsiCmdResult;
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use std::path::Path;
+
+type BasicPacket = Vec<u8>;
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct ScsiTargetEthernet {
@@ -21,16 +23,43 @@ pub(crate) struct ScsiTargetEthernet {
 
     /// MAC address
     macaddress: [u8; 6],
+
+    /// Transmit queue (Mac -> network)
+    #[serde(skip)]
+    tx: Option<crossbeam_channel::Sender<BasicPacket>>,
+
+    /// Receive queue (network -> Mac)
+    #[serde(skip)]
+    rx: Option<crossbeam_channel::Receiver<BasicPacket>>,
 }
 
 impl Default for ScsiTargetEthernet {
     fn default() -> Self {
+        // TODO hook this up
+        let (s, r) = crossbeam_channel::unbounded();
         let mut rand = rand::rng();
         
         Self {
             cc_code: 0,
             cc_asc: 0,
             macaddress: [0x00, 0x80, 0x19, rand.random(), rand.random(), rand.random()],
+            tx: Some(s),
+            rx: Some(r),
+        }
+    }
+}
+
+impl ScsiTargetEthernet {
+    fn tx_packet(&self, packet: &[u8]) {
+        use pnet::packet::Packet;
+        let p = pnet::packet::ethernet::EthernetPacket::new(packet).unwrap();
+        log::debug!("TX: {:02X?} {:?}", packet, p);
+        if p.get_ethertype() == pnet::packet::ethernet::EtherTypes::Arp {
+            log::debug!("ARP {:?}", pnet::packet::arp::ArpPacket::new(p.payload()));
+        }
+        
+        if let Some(ref tx) = self.tx {
+            tx.send(packet.to_owned()).unwrap();
         }
     }
 }
@@ -59,7 +88,6 @@ impl ScsiTarget for ScsiTargetEthernet {
     }
 
     fn inquiry(&mut self, cmd: &[u8]) -> Result<ScsiCmdResult> {
-        log::debug!("Eth inquiry: {:02X?}", cmd);
         let mut result = vec![0; 36];
 
         // 0 Peripheral qualifier (5-7), peripheral device type (4-0)
@@ -84,7 +112,6 @@ impl ScsiTarget for ScsiTargetEthernet {
         result[32..36].copy_from_slice(b"2.0f");
 
         result.resize(cmd[4].min(36).into(), 0);
-        log::debug!("Result {} {} {:02X?}", cmd[4], result.len(), result);
         Ok(ScsiCmdResult::DataIn(result))
     }
 
@@ -146,11 +173,36 @@ impl ScsiTarget for ScsiTargetEthernet {
         None
     }
 
-    fn specific_cmd(&mut self, cmd: &[u8], _outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
+    fn specific_cmd(&mut self, cmd: &[u8], outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
         match cmd[0] {
             0x08 => {
                 // READ(6)
-                Ok(ScsiCmdResult::Status(STATUS_GOOD))
+                let read_len = ((cmd[3] as usize) << 8) | (cmd[4] as usize);
+                
+                if let Some(packet) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+                    log::debug!("RX: {:02X?}", &packet);
+                    let packet_len = packet.len().max(64);
+                    let resp_len = 6 + packet_len;
+                    if read_len < resp_len {
+                        log::error!("RX packet too large (is {}, have {}): {:02X?}", resp_len, read_len, &packet);
+                        return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                    }
+                    
+                    let mut response = vec![0; resp_len];
+                    response[6..(6 + packet.len())].copy_from_slice(&packet);
+
+                    // Length
+                    response[0] = (packet_len >> 8) as u8;
+                    response[1] = packet_len as u8;
+                    if !self.rx.as_ref().unwrap().is_empty() {
+                        // More packets available to read
+                        response[5] = 0x10;
+                    }
+                    Ok(ScsiCmdResult::DataIn(response))
+                } else {
+                    // No data
+                    Ok(ScsiCmdResult::DataIn(vec![0; 6]))
+                }
             }
             0x09 => {
                 // Stats
@@ -160,7 +212,24 @@ impl ScsiTarget for ScsiTargetEthernet {
             }
             0x0A => {
                 // WRITE(6)
-                Ok(ScsiCmdResult::Status(STATUS_GOOD))
+                if let Some(od) = outdata {
+                    if cmd[5] & 0x80 != 0 {
+                        let len = ((od[0] as usize) << 8) | (od[1] as usize);
+                        if od.len() < (len + 4) {
+                            bail!("Invalid write len {} <> {}", len, od.len());
+                        }
+                        self.tx_packet(&od[4..(len + 4)]);
+                    } else {
+                        self.tx_packet(od);
+                    }
+                    Ok(ScsiCmdResult::Status(STATUS_GOOD))
+                } else {
+                    let mut write_len = ((cmd[3] as usize) << 8) | (cmd[4] as usize);
+                    if cmd[5] & 0x80 != 0 {
+                        write_len += 8;
+                    }
+                    Ok(ScsiCmdResult::DataOut(write_len))
+                }
             }
             0x0E => {
                 // Enable/disable interface
