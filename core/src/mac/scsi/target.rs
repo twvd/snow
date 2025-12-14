@@ -15,6 +15,8 @@ use crate::mac::scsi::{
 pub enum ScsiTargetType {
     Disk,
     Cdrom,
+    #[cfg(feature = "ethernet")]
+    Ethernet,
 }
 
 /// Some events that may occur to feed to the UI through EmulatorEvent
@@ -81,6 +83,10 @@ pub(crate) trait ScsiTarget: Send {
     }
 
     fn cmd(&mut self, cmd: &[u8], outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
+        #[cfg(feature = "ethernet")]
+        if self.target_type() == ScsiTargetType::Ethernet {
+            log::debug!("Cmd {:02X?}", cmd);
+        }
         match cmd[0] {
             0x00 => {
                 // UNIT READY
@@ -101,9 +107,7 @@ pub(crate) trait ScsiTarget: Send {
             0x08 => {
                 // READ(6)
                 let Some(blocks) = self.blocks() else {
-                    log::warn!("READ(6) command to non-block device");
-                    self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
-                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                    return self.specific_cmd(cmd, outdata);
                 };
                 let blocknum = (u32::from_be_bytes(cmd[0..4].try_into()?) & 0x1F_FFFF) as usize;
                 let blockcnt = if cmd[4] == 0 { 256 } else { cmd[4] as usize };
@@ -120,9 +124,7 @@ pub(crate) trait ScsiTarget: Send {
             0x0A => {
                 // WRITE(6)
                 let (Some(blocksize), Some(blocks)) = (self.blocksize(), self.blocks()) else {
-                    log::warn!("WRITE(6) command to non-block device");
-                    self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
-                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                    return self.specific_cmd(cmd, outdata);
                 };
                 let blocknum = (u32::from_be_bytes(cmd[0..4].try_into()?) & 0x1F_FFFF) as usize;
                 let blockcnt = if cmd[4] == 0 { 256 } else { cmd[4] as usize };

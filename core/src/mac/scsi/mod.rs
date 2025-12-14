@@ -3,6 +3,8 @@
 pub mod cdrom;
 pub mod controller;
 pub mod disk;
+#[cfg(feature = "ethernet")]
+pub mod ethernet;
 pub mod target;
 pub mod toolbox;
 
@@ -26,8 +28,12 @@ const fn scsi_cmd_len(cmdnum: u8) -> Option<usize> {
         | 0x04
         // READ(6)
         | 0x08
+        // Non-standard (stats for Ethernet)
+        | 0x09
         // WRITE(6)
         | 0x0A
+        // Non-standard (enable interface for Ethernet)
+        | 0x0E
         // INQUIRY
         | 0x12
         // MODE SELECT(6)

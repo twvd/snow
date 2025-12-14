@@ -344,6 +344,11 @@ impl ScsiTarget for ScsiTargetCdrom {
 
     fn specific_cmd(&mut self, cmd: &[u8], _outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
         match cmd[0] {
+            // READ(6) (no media)
+            0x08 => {
+                self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+            }
             // START/STOP UNIT
             0x1B => {
                 // LoEj + !start = eject

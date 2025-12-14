@@ -6,6 +6,7 @@ build = "build.rs"
 
 [features]
 default = []
+ethernet = ["snow_core/ethernet"]
 sdl2-bundled = ["sdl2/bundled"]
 
 [build-dependencies]

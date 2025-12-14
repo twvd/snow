@@ -40,6 +40,8 @@ pub enum EmulatorCommand {
     ScsiBranchHdd(usize, PathBuf),
     ScsiAttachCdrom(usize),
     ScsiLoadMedia(usize, PathBuf),
+    #[cfg(feature = "ethernet")]
+    ScsiAttachEthernet(usize),
     DetachScsiTarget(usize),
     MouseUpdateAbsolute {
         x: u16,
