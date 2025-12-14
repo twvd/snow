@@ -83,10 +83,6 @@ pub(crate) trait ScsiTarget: Send {
     }
 
     fn cmd(&mut self, cmd: &[u8], outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
-        #[cfg(feature = "ethernet")]
-        if self.target_type() == ScsiTargetType::Ethernet {
-            log::debug!("Cmd {:02X?}", cmd);
-        }
         match cmd[0] {
             0x00 => {
                 // UNIT READY
