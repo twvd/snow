@@ -35,16 +35,37 @@ pub(crate) struct ScsiTargetEthernet {
 
 impl Default for ScsiTargetEthernet {
     fn default() -> Self {
-        // TODO hook this up
-        let (s, r) = crossbeam_channel::unbounded();
+        let (nat_tx, emulator_rx) = crossbeam_channel::unbounded();
+        let (emulator_tx, nat_rx) = crossbeam_channel::unbounded();
         let mut rand = rand::rng();
-        
+
+        #[cfg(feature = "ethernet_nat")]
+        {
+            let mut nat = snow_nat::NatEngine::new(
+                nat_tx,
+                nat_rx,
+                [0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA],
+                [10, 0, 0, 1],
+                24,
+            );
+            std::thread::spawn(move || {
+                nat.run();
+            });
+        }
+
         Self {
             cc_code: 0,
             cc_asc: 0,
-            macaddress: [0x00, 0x80, 0x19, rand.random(), rand.random(), rand.random()],
-            tx: Some(s),
-            rx: Some(r),
+            macaddress: [
+                0x00,
+                0x80,
+                0x19,
+                rand.random(),
+                rand.random(),
+                rand.random(),
+            ],
+            tx: Some(emulator_tx),
+            rx: Some(emulator_rx),
         }
     }
 }
@@ -57,7 +78,7 @@ impl ScsiTargetEthernet {
         if p.get_ethertype() == pnet::packet::ethernet::EtherTypes::Arp {
             log::debug!("ARP {:?}", pnet::packet::arp::ArpPacket::new(p.payload()));
         }
-        
+
         if let Some(ref tx) = self.tx {
             tx.send(packet.to_owned()).unwrap();
         }
@@ -178,16 +199,21 @@ impl ScsiTarget for ScsiTargetEthernet {
             0x08 => {
                 // READ(6)
                 let read_len = ((cmd[3] as usize) << 8) | (cmd[4] as usize);
-                
+
                 if let Some(packet) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
                     log::debug!("RX: {:02X?}", &packet);
                     let packet_len = packet.len().max(64);
                     let resp_len = 6 + packet_len;
                     if read_len < resp_len {
-                        log::error!("RX packet too large (is {}, have {}): {:02X?}", resp_len, read_len, &packet);
+                        log::error!(
+                            "RX packet too large (is {}, have {}): {:02X?}",
+                            resp_len,
+                            read_len,
+                            &packet
+                        );
                         return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                     }
-                    
+
                     let mut response = vec![0; resp_len];
                     response[6..(6 + packet.len())].copy_from_slice(&packet);
 

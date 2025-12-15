@@ -1,7 +1,7 @@
 [workspace]
 default-members = ["frontend_egui"]
 resolver = '2'
-members = ["core", "floppy", "frontend_egui", "testrunner"]
+members = ["core", "floppy", "frontend_egui", "nat", "testrunner"]
 
 [workspace.lints.clippy]
 nursery = { level = "deny", priority = -1 }
