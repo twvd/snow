@@ -1094,7 +1094,7 @@ impl EmulatorState {
     pub fn is_serial_bridge_enabled(&self, ch: SccCh) -> bool {
         self.serial_bridge_status[ch.to_usize().unwrap()].is_some()
     }
-    
+
     #[cfg(feature = "ethernet")]
     pub fn scsi_attach_ethernet(&self, id: usize) {
         let Some(ref sender) = self.cmdsender else {
