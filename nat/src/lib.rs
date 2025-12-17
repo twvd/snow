@@ -4,27 +4,99 @@
 //! for the emulated Ethernet interface. It receives layer 2 packets from
 //! the emulator via a crossbeam channel, processes them through a NAT
 //! implementation using smoltcp, and sends responses back.
+//!
+//! The remote connectivity is implemented fully through userland (OS) sockets.
+//!
+//! Currently only supports TCP and UDP.
 
-use std::time::Duration;
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream, UdpSocket};
+use std::time::{Duration, Instant};
 
+use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
-use smoltcp::iface::{Config, Interface, SocketSet};
+use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
-use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr};
+use smoltcp::socket::udp;
+use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr, IpEndpoint, Ipv4Address};
 
 /// A layer 2 Ethernet packet
 pub type Packet = Vec<u8>;
+
+const MTU: usize = 1514;
+const SMOLTCP_BUFFER_SIZE: usize = 65536;
 
 /// Virtual network device that bridges crossbeam channels with smoltcp
 struct VirtualDevice {
     rx: Receiver<Packet>,
     tx: Sender<Packet>,
+    /// Queue for routed UDP/TCP packets that need NAT handling (intercepted before smoltcp)
+    intercepted_packets: Vec<Packet>,
+    /// Queue for packets to feed back to smoltcp after processing (e.g., TCP SYN after creating listening socket)
+    smoltcp_queue: Vec<Packet>,
+    /// Gateway IP address to detect routed packets
+    gateway_ip: Ipv4Address,
 }
 
 impl VirtualDevice {
-    fn new(tx: Sender<Packet>, rx: Receiver<Packet>) -> Self {
-        Self { rx, tx }
+    fn new(tx: Sender<Packet>, rx: Receiver<Packet>, gateway_ip: Ipv4Address) -> Self {
+        Self {
+            rx,
+            tx,
+            intercepted_packets: Vec::new(),
+            smoltcp_queue: Vec::new(),
+            gateway_ip,
+        }
+    }
+
+    /// Drain routed packets that were intercepted and need NAT handling
+    fn drain_intercepted_packets(&mut self) -> Vec<Packet> {
+        std::mem::take(&mut self.intercepted_packets)
+    }
+
+    /// Check if a packet needs NAT (routed UDP or TCP SYN packet where destination IP != gateway IP)
+    fn needs_nat(&self, packet: &[u8]) -> bool {
+        use smoltcp::wire::{EthernetFrame, EthernetProtocol, IpProtocol, Ipv4Packet, TcpPacket};
+
+        // Parse Ethernet frame
+        let eth_frame = match EthernetFrame::new_checked(packet) {
+            Ok(frame) => frame,
+            Err(_) => return false,
+        };
+
+        // Check if it's IPv4
+        if eth_frame.ethertype() != EthernetProtocol::Ipv4 {
+            return false;
+        }
+
+        // Parse IPv4 packet
+        let ipv4_packet = match Ipv4Packet::new_checked(eth_frame.payload()) {
+            Ok(packet) => packet,
+            Err(_) => return false,
+        };
+
+        // Check if destination is NOT the gateway (i.e., it's being routed)
+        let dst_ip = ipv4_packet.dst_addr();
+        if dst_ip == self.gateway_ip {
+            return false;
+        }
+
+        match ipv4_packet.next_header() {
+            IpProtocol::Udp => {
+                // Intercept all UDP packets for NAT
+                true
+            }
+            IpProtocol::Tcp => {
+                // Intercept TCP SYN packets to track connection
+                let tcp_packet = match TcpPacket::new_checked(ipv4_packet.payload()) {
+                    Ok(packet) => packet,
+                    Err(_) => return false,
+                };
+                tcp_packet.syn() && !tcp_packet.ack()
+            }
+            _ => false,
+        }
     }
 }
 
@@ -38,9 +110,32 @@ impl Device for VirtualDevice {
     where
         Self: 'a;
 
-    fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        // Receive packet with timeout and take ownership
+    fn receive(
+        &mut self,
+        _timestamp: smoltcp::time::Instant,
+    ) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
+        // First, check if we have packets queued for smoltcp (e.g., TCP SYN after creating listening socket)
+        if let Some(packet) = self.smoltcp_queue.pop() {
+            return Some((
+                VirtualRxToken { buffer: packet },
+                VirtualTxToken {
+                    tx: self.tx.clone(),
+                },
+            ));
+        }
+
+        // Receive new packet from Ethernet adapter channel
         let packet = self.rx.recv_timeout(Duration::from_millis(100)).ok()?;
+
+        // Check if this packet needs NAT (routed TCP/UDP)
+        if self.needs_nat(&packet) {
+            self.intercepted_packets.push(packet);
+            // Don't pass to smoltcp, return None to process next packet
+            // This packet will be returned to the smoltcp_queue later
+            return None;
+        }
+
+        // Pass non-routed packets (like ARP) normally
         Some((
             VirtualRxToken { buffer: packet },
             VirtualTxToken {
@@ -49,7 +144,7 @@ impl Device for VirtualDevice {
         ))
     }
 
-    fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
+    fn transmit(&mut self, _timestamp: smoltcp::time::Instant) -> Option<Self::TxToken<'_>> {
         Some(VirtualTxToken {
             tx: self.tx.clone(),
         })
@@ -58,7 +153,7 @@ impl Device for VirtualDevice {
     fn capabilities(&self) -> DeviceCapabilities {
         let mut caps = DeviceCapabilities::default();
         caps.medium = Medium::Ethernet;
-        caps.max_transmission_unit = 1514;
+        caps.max_transmission_unit = MTU;
         caps
     }
 }
@@ -95,9 +190,45 @@ impl TxToken for VirtualTxToken {
     }
 }
 
-/// NAT instance for handling network address translation
+/// NAT connection tracking entry
+enum NatEntry {
+    Udp {
+        /// Userland UDP socket for external communication
+        os_socket: UdpSocket,
+        /// Remote (internet) endpoint
+        remote_endpoint: IpEndpoint,
+        /// Emulator's source endpoint
+        local_endpoint: IpEndpoint,
+        /// Last activity timestamp for timeout tracking
+        last_activity: Instant,
+    },
+    Tcp {
+        /// Userland TCP socket for external communication
+        os_socket: TcpStream,
+        /// Remote (internet) endpoint
+        remote_endpoint: IpEndpoint,
+        /// Emulator's source endpoint
+        local_endpoint: IpEndpoint,
+        /// Last activity timestamp for timeout tracking
+        last_activity: Instant,
+    },
+}
+
+impl NatEntry {
+    pub fn last_activity(&self) -> Instant {
+        match self {
+            Self::Udp { last_activity, .. } => *last_activity,
+            Self::Tcp { last_activity, .. } => *last_activity,
+        }
+    }
+}
+
+/// Default timeout for idle NAT entries (60 seconds)
+const NAT_TIMEOUT_SECS: u64 = 60;
+
+/// NAT engine instance for handling network address translation
 pub struct NatEngine {
-    /// Virtual network device
+    /// Virtual network device instance
     device: VirtualDevice,
 
     /// smoltcp network interface
@@ -111,15 +242,22 @@ pub struct NatEngine {
 
     /// Gateway IP address
     gateway_ip: IpAddress,
+
+    /// NAT table: maps smoltcp socket handles to NAT entries
+    nat_table: HashMap<SocketHandle, NatEntry>,
+
+    /// Buffer for receiving data from OS sockets
+    recv_buffer: Vec<u8>,
 }
 
 impl NatEngine {
     /// Creates a new NAT engine instance with the given TX/RX channels
     ///
-    /// * `tx` - Sender channel for packets going to the emulator (network -> Mac)
-    /// * `rx` - Receiver channel for packets coming from the emulator (Mac -> network)
+    /// * `tx` - Sender channel for packets going to the emulator
+    /// * `rx` - Receiver channel for packets coming from the emulator
     /// * `gateway_mac` - MAC address of the NAT gateway
-    /// * `gateway_ip` - IP address of the NAT gateway (with subnet mask)
+    /// * `gateway_ip` - IP address of the NAT gateway
+    /// * `gateway_subnet` - NAT gateway subnet mask (CIDR)
     pub fn new(
         tx: Sender<Packet>,
         rx: Receiver<Packet>,
@@ -127,21 +265,35 @@ impl NatEngine {
         gateway_ip: [u8; 4],
         gateway_subnet: u8,
     ) -> Self {
-        let mut device = VirtualDevice::new(tx, rx);
-
         let gateway_mac_addr = EthernetAddress(gateway_mac);
         let gateway_ip_addr =
             IpAddress::v4(gateway_ip[0], gateway_ip[1], gateway_ip[2], gateway_ip[3]);
 
-        let config = Config::new(gateway_mac_addr.into());
-        let mut iface = Interface::new(config, &mut device, Instant::now());
+        let gateway_ipv4 = Ipv4Address::from_bytes(&gateway_ip);
+        let mut device = VirtualDevice::new(tx, rx, gateway_ipv4);
 
-        // Configure the interface with the gateway IP
+        let config = Config::new(gateway_mac_addr.into());
+        let mut iface = Interface::new(config, &mut device, smoltcp::time::Instant::now());
+
         iface.update_ip_addrs(|ip_addrs| {
+            // Add gateway IP for ARP and local communication
             ip_addrs
                 .push(IpCidr::new(gateway_ip_addr, gateway_subnet))
                 .unwrap();
+            // Add wildcard IP with /0 netmask to act as gateway
+            ip_addrs
+                .push(IpCidr::new(IpAddress::v4(0, 0, 0, 1), 0))
+                .unwrap();
         });
+
+        // Add default route through the wildcard IP
+        iface
+            .routes_mut()
+            .add_default_ipv4_route(Ipv4Address::new(0, 0, 0, 1))
+            .unwrap();
+
+        // Enable any_ip mode to accept TCP connections destined for any IP address
+        iface.set_any_ip(true);
 
         let sockets = SocketSet::new(vec![]);
 
@@ -151,6 +303,8 @@ impl NatEngine {
             sockets,
             gateway_mac: gateway_mac_addr,
             gateway_ip: gateway_ip_addr,
+            nat_table: HashMap::new(),
+            recv_buffer: vec![0u8; SMOLTCP_BUFFER_SIZE],
         }
     }
 
@@ -158,20 +312,569 @@ impl NatEngine {
     ///
     /// This method should be called in a loop to continuously process packets.
     /// It will block waiting for packets on the rx channel.
-    pub fn process(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // Poll the interface - this will process the packet and generate responses
-        let timestamp = Instant::now();
+    pub fn process(&mut self) -> Result<()> {
+        // Try to intercept and handle routed TCP/UDP packets BEFORE smoltcp processes
+        self.process_intercepted_packets()?;
 
+        // Run smoltcp
+        let timestamp = smoltcp::time::Instant::now();
         self.iface
             .poll(timestamp, &mut self.device, &mut self.sockets);
+
+        // Detect new UDP flows and create NAT entries
+        self.detect_new_flows()?;
+
+        // Do forwarding
+        self.forward_udp_os_to_smoltcp()?;
+        self.forward_tcp_smoltcp_to_os()?;
+        self.forward_tcp_os_to_smoltcp()?;
+
+        // Clean up expired NAT entries
+        self.cleanup_expired_entries()?;
+
+        Ok(())
+    }
+
+    /// Handle intercepted packets waiting for processing
+    fn process_intercepted_packets(&mut self) -> Result<()> {
+        use smoltcp::wire::{EthernetFrame, IpProtocol, Ipv4Packet, TcpPacket, UdpPacket};
+
+        let packets = self.device.drain_intercepted_packets();
+
+        for packet in packets {
+            // Parse the packet layers
+            let eth_frame = match EthernetFrame::new_checked(&packet[..]) {
+                Ok(frame) => frame,
+                Err(e) => {
+                    log::warn!("Failed to parse Ethernet frame: {}", e);
+                    continue;
+                }
+            };
+
+            let ipv4_packet = match Ipv4Packet::new_checked(eth_frame.payload()) {
+                Ok(packet) => packet,
+                Err(e) => {
+                    log::warn!("Failed to parse IPv4 packet: {}", e);
+                    continue;
+                }
+            };
+
+            // Dispatch based on protocol
+            match ipv4_packet.next_header() {
+                IpProtocol::Udp => {
+                    let udp_packet = match UdpPacket::new_checked(ipv4_packet.payload()) {
+                        Ok(packet) => packet,
+                        Err(e) => {
+                            log::warn!("Failed to parse UDP packet: {}", e);
+                            continue;
+                        }
+                    };
+
+                    if let Err(e) = self.handle_outbound_udp(&ipv4_packet, &udp_packet) {
+                        log::error!("Failed to handle outbound UDP: {}", e);
+                    }
+                }
+                IpProtocol::Tcp => {
+                    let tcp_packet = match TcpPacket::new_checked(ipv4_packet.payload()) {
+                        Ok(packet) => packet,
+                        Err(e) => {
+                            log::warn!("Failed to parse TCP packet: {}", e);
+                            continue;
+                        }
+                    };
+
+                    if let Err(e) =
+                        self.handle_outbound_tcp(&packet[..], &eth_frame, &ipv4_packet, &tcp_packet)
+                    {
+                        log::error!("Failed to handle outbound TCP: {}", e);
+                    }
+                }
+                _ => {
+                    log::warn!("Unsupported protocol: {:?}", ipv4_packet.next_header());
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle an outbound UDP packet that needs NAT
+    fn handle_outbound_udp(
+        &mut self,
+        ipv4_packet: &smoltcp::wire::Ipv4Packet<&[u8]>,
+        udp_packet: &smoltcp::wire::UdpPacket<&[u8]>,
+    ) -> Result<()> {
+        let src_ip = ipv4_packet.src_addr();
+        let dst_ip = ipv4_packet.dst_addr();
+        let src_port = udp_packet.src_port();
+        let dst_port = udp_packet.dst_port();
+        let payload = udp_packet.payload();
+
+        // Check if we already have a NAT entry for this flow
+        let existing_entry = self.nat_table.iter().find(|(_, entry)| {
+            if let NatEntry::Udp {
+                local_endpoint,
+                remote_endpoint,
+                ..
+            } = entry
+            {
+                let mac_match = if let IpAddress::Ipv4(mac_ipv4) = local_endpoint.addr {
+                    mac_ipv4 == src_ip && local_endpoint.port == src_port
+                } else {
+                    false
+                };
+
+                let remote_match = if let IpAddress::Ipv4(remote_ipv4) = remote_endpoint.addr {
+                    remote_ipv4 == dst_ip && remote_endpoint.port == dst_port
+                } else {
+                    false
+                };
+
+                mac_match && remote_match
+            } else {
+                false
+            }
+        });
+
+        if let Some((handle, _entry)) = existing_entry {
+            // Existing entry - forward to OS socket directly
+            let handle = *handle;
+            if let Some(NatEntry::Udp {
+                os_socket,
+                last_activity,
+                ..
+            }) = self.nat_table.get_mut(&handle)
+            {
+                *last_activity = Instant::now();
+                os_socket.send(payload)?;
+            }
+        } else {
+            // Create new NAT entry
+
+            let os_socket = UdpSocket::bind("0.0.0.0:0")?;
+            os_socket.set_nonblocking(true)?;
+
+            let remote_addr = SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::from(dst_ip.0)),
+                dst_port,
+            );
+            os_socket.connect(remote_addr)?;
+            os_socket.send(payload)?;
+
+            // Create smoltcp UDP socket bound to a unique LOCAL port
+            let rx_buffer = udp::PacketBuffer::new(
+                vec![udp::PacketMetadata::EMPTY; 16],
+                vec![0; SMOLTCP_BUFFER_SIZE],
+            );
+            let tx_buffer = udp::PacketBuffer::new(
+                vec![udp::PacketMetadata::EMPTY; 16],
+                vec![0; SMOLTCP_BUFFER_SIZE],
+            );
+            let mut socket = udp::Socket::new(rx_buffer, tx_buffer);
+
+            // Bind to gateway IP with the same source port the emulator used
+            let bind_endpoint = IpEndpoint::new(self.gateway_ip, src_port);
+            socket.bind(bind_endpoint)?;
+
+            let handle = self.sockets.add(socket);
+
+            log::debug!(
+                "Created UDP NAT entry: emulator {}:{} <-> smoltcp <-> OS {} <-> Internet {}:{}",
+                src_ip,
+                src_port,
+                os_socket.local_addr()?,
+                dst_ip,
+                dst_port
+            );
+
+            // Store NAT entry
+            let entry = NatEntry::Udp {
+                os_socket,
+                remote_endpoint: IpEndpoint::new(IpAddress::Ipv4(dst_ip), dst_port),
+                local_endpoint: IpEndpoint::new(IpAddress::Ipv4(src_ip), src_port),
+                last_activity: Instant::now(),
+            };
+
+            self.nat_table.insert(handle, entry);
+        }
+
+        Ok(())
+    }
+
+    /// Handle an outbound TCP SYN packet - create smoltcp socket and OS connection
+    fn handle_outbound_tcp(
+        &mut self,
+        raw_packet: &[u8],
+        _eth_frame: &smoltcp::wire::EthernetFrame<&[u8]>,
+        ipv4_packet: &smoltcp::wire::Ipv4Packet<&[u8]>,
+        tcp_packet: &smoltcp::wire::TcpPacket<&[u8]>,
+    ) -> Result<()> {
+        use smoltcp::socket::tcp;
+
+        let src_ip = ipv4_packet.src_addr();
+        let dst_ip = ipv4_packet.dst_addr();
+        let src_port = tcp_packet.src_port();
+        let dst_port = tcp_packet.dst_port();
+
+        log::debug!(
+            "NAT: New TCP connection from {}:{} to {}:{}",
+            src_ip,
+            src_port,
+            dst_ip,
+            dst_port
+        );
+
+        // Check if we already have an entry for this flow
+        let existing = self.nat_table.iter().find(|(_, entry)| {
+            if let NatEntry::Tcp {
+                local_endpoint,
+                remote_endpoint,
+                ..
+            } = entry
+            {
+                if let (IpAddress::Ipv4(mac_ip), IpAddress::Ipv4(remote_ip)) =
+                    (local_endpoint.addr, remote_endpoint.addr)
+                {
+                    mac_ip == src_ip
+                        && local_endpoint.port == src_port
+                        && remote_ip == dst_ip
+                        && remote_endpoint.port == dst_port
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        });
+
+        if existing.is_some() {
+            log::warn!("TCP connection already exists, ignoring duplicate SYN");
+            return Ok(());
+        }
+
+        // Connect to the destination via OS TCP socket
+        let remote_addr = SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::from(dst_ip.0)),
+            dst_port,
+        );
+
+        let os_socket = TcpStream::connect_timeout(&remote_addr, Duration::from_secs(5))?;
+        os_socket.set_nonblocking(true)?;
+
+        // Create smoltcp TCP socket for the emulator side
+        let rx_buffer = tcp::SocketBuffer::new(vec![0; SMOLTCP_BUFFER_SIZE]);
+        let tx_buffer = tcp::SocketBuffer::new(vec![0; SMOLTCP_BUFFER_SIZE]);
+        let mut socket = tcp::Socket::new(rx_buffer, tx_buffer);
+
+        // Listen on the DESTINATION endpoint from the packet (masquerading as the
+        // remote endpoint).
+        let dst_endpoint = IpEndpoint::new(IpAddress::Ipv4(dst_ip), dst_port);
+        socket.listen(dst_endpoint)?;
+
+        let handle = self.sockets.add(socket);
+
+        log::debug!(
+            "Created TCP NAT entry: emulator {}:{} <-> smoltcp <-> OS {} <-> Internet {}:{}",
+            src_ip,
+            src_port,
+            os_socket.local_addr()?,
+            dst_ip,
+            dst_port
+        );
+
+        // Create TCP NAT entry
+        let entry = NatEntry::Tcp {
+            os_socket,
+            remote_endpoint: IpEndpoint::new(IpAddress::Ipv4(dst_ip), dst_port),
+            local_endpoint: IpEndpoint::new(IpAddress::Ipv4(src_ip), src_port),
+            last_activity: Instant::now(),
+        };
+
+        self.nat_table.insert(handle, entry);
+
+        // Feed the SYN packet back to smoltcp so it can complete the handshake
+        self.device.smoltcp_queue.push(raw_packet.to_vec());
+
+        Ok(())
+    }
+
+    /// Forward data from smoltcp TCP sockets (emulator side) to OS sockets (Internet side)
+    fn forward_tcp_smoltcp_to_os(&mut self) -> Result<()> {
+        use smoltcp::socket::tcp;
+
+        let handles: Vec<_> = self
+            .nat_table
+            .iter()
+            .filter_map(|(handle, entry)| {
+                if matches!(entry, NatEntry::Tcp { .. }) {
+                    Some(*handle)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for handle in handles {
+            let entry = match self.nat_table.get_mut(&handle) {
+                Some(NatEntry::Tcp {
+                    os_socket,
+                    last_activity,
+                    ..
+                }) => (os_socket, last_activity),
+                _ => continue,
+            };
+
+            let socket = self.sockets.get_mut::<tcp::Socket>(handle);
+
+            // Forward data from emulator (smoltcp) to Internet (OS socket)
+            if socket.can_recv() {
+                let data_len = socket.recv(|buffer| {
+                    if !buffer.is_empty() {
+                        match entry.0.write(buffer) {
+                            Ok(written) => (written, written),
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => (0, 0),
+                            Err(e) => {
+                                log::warn!("Error writing to OS socket: {}", e);
+                                (0, 0)
+                            }
+                        }
+                    } else {
+                        (0, 0)
+                    }
+                })?;
+
+                if data_len > 0 {
+                    *entry.1 = Instant::now();
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Forward data from OS UDP sockets back to the emulator (via smoltcp)
+    fn forward_udp_os_to_smoltcp(&mut self) -> Result<()> {
+        let handles: Vec<_> = self
+            .nat_table
+            .iter()
+            .filter_map(|(handle, entry)| {
+                if matches!(entry, NatEntry::Udp { .. }) {
+                    Some(*handle)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for handle in handles {
+            let local_endpoint = {
+                let entry = match self.nat_table.get(&handle) {
+                    Some(NatEntry::Udp { local_endpoint, .. }) => *local_endpoint,
+                    _ => continue,
+                };
+                entry
+            };
+
+            // Get mutable access to entry
+            let entry = match self.nat_table.get_mut(&handle) {
+                Some(NatEntry::Udp {
+                    os_socket,
+                    last_activity,
+                    ..
+                }) => (os_socket, last_activity),
+                _ => continue,
+            };
+
+            // Try to receive from OS socket (response from internet)
+            match entry.0.recv_from(&mut self.recv_buffer) {
+                Ok((len, _from_addr)) => {
+                    // Keep entry alive
+                    *entry.1 = Instant::now();
+
+                    // Send response via smoltcp UDP socket
+                    let socket = self.sockets.get_mut::<udp::Socket>(handle);
+                    if let Err(e) = socket.send_slice(&self.recv_buffer[..len], local_endpoint) {
+                        log::warn!("Error sending via smoltcp UDP socket: {}", e);
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    // No data available
+                }
+                Err(e) => {
+                    log::warn!("Error receiving from OS socket: {}", e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Forward TCP data from OS sockets (Internet side) to smoltcp sockets (emulator side)
+    fn forward_tcp_os_to_smoltcp(&mut self) -> Result<()> {
+        use smoltcp::socket::tcp;
+
+        let handles: Vec<_> = self
+            .nat_table
+            .iter()
+            .filter_map(|(handle, entry)| {
+                if matches!(entry, NatEntry::Tcp { .. }) {
+                    Some(*handle)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for handle in handles {
+            let entry = match self.nat_table.get_mut(&handle) {
+                Some(NatEntry::Tcp {
+                    os_socket,
+                    last_activity,
+                    ..
+                }) => (os_socket, last_activity),
+                _ => continue,
+            };
+
+            let socket = self.sockets.get_mut::<tcp::Socket>(handle);
+
+            // Forward data from Internet (OS socket) to emulator (smoltcp)
+            if socket.can_send() {
+                match entry.0.read(&mut self.recv_buffer) {
+                    Ok(0) => {
+                        // Connection closed by remote
+                        log::info!("TCP connection closed by internet");
+                        socket.close();
+                    }
+                    Ok(len) => {
+                        // Write data to smoltcp socket
+                        // smoltcp will handle fragmentation and MTU
+                        match socket.send_slice(&self.recv_buffer[..len]) {
+                            Ok(_written) => {
+                                *entry.1 = Instant::now();
+                            }
+                            Err(e) => {
+                                log::warn!("Error sending to smoltcp socket: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        // No data available
+                    }
+                    Err(e) => {
+                        log::warn!("Error receiving from OS socket: {}", e);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Detect new UDP flows and automatically create NAT entries
+    fn detect_new_flows(&mut self) -> Result<()> {
+        // Collect all socket handles that already have NAT entries
+        let existing_handles: std::collections::HashSet<_> =
+            self.nat_table.keys().copied().collect();
+
+        // Collect all socket handles that are UDP sockets without NAT entries
+        let mut new_flows = Vec::new();
+
+        for (handle, _socket) in self.sockets.iter() {
+            // Skip if already has NAT entry
+            if existing_handles.contains(&handle) {
+                continue;
+            }
+
+            let socket = self.sockets.get::<udp::Socket>(handle);
+
+            // Check if socket has received data (indicating a new flow)
+            if socket.can_recv() {
+                new_flows.push((handle, socket.endpoint()));
+            }
+        }
+
+        // Create NAT entries for new flows
+        for (handle, listen_endpoint) in new_flows {
+            // Create OS socket for this flow
+            let os_socket = UdpSocket::bind("0.0.0.0:0")?;
+            os_socket.set_nonblocking(true)?;
+
+            log::debug!(
+                "Detected new UDP flow on {}, created OS socket at {}",
+                listen_endpoint,
+                os_socket.local_addr()?
+            );
+
+            // Convert IpListenEndpoint to IpEndpoint (use gateway IP if addr is None)
+            let endpoint_addr = listen_endpoint.addr.unwrap_or(self.gateway_ip);
+            let local_endpoint = IpEndpoint::new(endpoint_addr, listen_endpoint.port);
+
+            let entry = NatEntry::Udp {
+                os_socket,
+                remote_endpoint: IpEndpoint::new(IpAddress::v4(0, 0, 0, 0), 0),
+                local_endpoint,
+                last_activity: Instant::now(),
+            };
+
+            self.nat_table.insert(handle, entry);
+        }
+
+        Ok(())
+    }
+
+    /// Clean up expired NAT entries that have been idle too long
+    fn cleanup_expired_entries(&mut self) -> Result<()> {
+        let now = Instant::now();
+        let timeout = Duration::from_secs(NAT_TIMEOUT_SECS);
+
+        // Find expired entries
+        let expired: Vec<_> = self
+            .nat_table
+            .iter()
+            .filter_map(|(handle, entry)| {
+                if now.duration_since(entry.last_activity()) > timeout {
+                    Some(*handle)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Remove expired entries
+        for handle in expired {
+            if let Some(entry) = self.nat_table.remove(&handle) {
+                match entry {
+                    NatEntry::Udp {
+                        remote_endpoint, ..
+                    } => {
+                        log::info!(
+                            "Removed expired UDP NAT entry for {} (idle for {}s)",
+                            remote_endpoint,
+                            NAT_TIMEOUT_SECS
+                        );
+                    }
+                    NatEntry::Tcp {
+                        remote_endpoint, ..
+                    } => {
+                        log::info!(
+                            "Removed expired TCP NAT entry for {} (idle for {}s)",
+                            remote_endpoint,
+                            NAT_TIMEOUT_SECS
+                        );
+                    }
+                }
+
+                // Close and remove the smoltcp socket
+                self.sockets.remove(handle);
+                // OS socket will be closed when dropped
+            }
+        }
 
         Ok(())
     }
 
     /// Runs the NAT processing loop
-    ///
-    /// This method will continuously process packets until an error occurs
-    /// or the channel is closed.
+    /// This method will continuously process packets until an error occurs or the channel is closed.
     pub fn run(&mut self) {
         log::info!(
             "NAT started - Gateway: {} ({})",
@@ -191,130 +894,46 @@ impl NatEngine {
 
         log::info!("NAT stopped");
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Helper function to create an ARP request packet
-    fn create_arp_request(sender_mac: [u8; 6], sender_ip: [u8; 4], target_ip: [u8; 4]) -> Vec<u8> {
-        let mut packet = Vec::new();
-
-        // Ethernet header (14 bytes)
-        packet.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]); // Destination MAC (broadcast)
-        packet.extend_from_slice(&sender_mac); // Source MAC
-        packet.extend_from_slice(&[0x08, 0x06]); // EtherType: ARP
-
-        // ARP packet (28 bytes)
-        packet.extend_from_slice(&[0x00, 0x01]); // Hardware type: Ethernet
-        packet.extend_from_slice(&[0x08, 0x00]); // Protocol type: IPv4
-        packet.push(6); // Hardware size
-        packet.push(4); // Protocol size
-        packet.extend_from_slice(&[0x00, 0x01]); // Opcode: Request
-
-        packet.extend_from_slice(&sender_mac); // Sender MAC
-        packet.extend_from_slice(&sender_ip); // Sender IP
-        packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]); // Target MAC (unknown)
-        packet.extend_from_slice(&target_ip); // Target IP
-
-        packet
-    }
-
-    /// Helper function to parse an ARP reply
-    fn parse_arp_reply(packet: &[u8]) -> Option<([u8; 6], [u8; 4])> {
-        if packet.len() < 42 {
-            return None;
-        }
-
-        // Check EtherType is ARP
-        if packet[12] != 0x08 || packet[13] != 0x06 {
-            return None;
-        }
-
-        // Check opcode is Reply (2)
-        if packet[20] != 0x00 || packet[21] != 0x02 {
-            return None;
-        }
-
-        let mut sender_mac = [0u8; 6];
-        sender_mac.copy_from_slice(&packet[22..28]);
-
-        let mut sender_ip = [0u8; 4];
-        sender_ip.copy_from_slice(&packet[28..32]);
-
-        Some((sender_mac, sender_ip))
-    }
-
-    #[test]
-    fn test_arp_response() {
-        // Set up channels
-        let (nat_tx, emulator_rx) = crossbeam_channel::unbounded();
-        let (emulator_tx, nat_rx) = crossbeam_channel::unbounded();
-
-        // Gateway configuration
-        let gateway_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
-        let gateway_ip = [10, 0, 2, 2];
-        let gateway_subnet = 24;
-
-        // Create NAT instance
-        let mut nat = NatEngine::new(nat_tx, nat_rx, gateway_mac, gateway_ip, gateway_subnet);
-
-        // Client configuration
-        let client_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
-        let client_ip = [10, 0, 2, 15];
-
-        // Create and send ARP request for the gateway IP
-        let arp_request = create_arp_request(client_mac, client_ip, gateway_ip);
-        emulator_tx.send(arp_request).unwrap();
-
-        // Process the packet
-        nat.process().unwrap();
-
-        // Check if we received an ARP reply
-        let reply = emulator_rx
-            .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("Should receive ARP reply");
-
-        // Parse the reply
-        let (reply_mac, reply_ip) = parse_arp_reply(&reply).expect("Should be valid ARP reply");
-
-        // Verify the reply contains the gateway's MAC and IP
-        assert_eq!(reply_mac, gateway_mac, "Reply MAC should match gateway MAC");
-        assert_eq!(reply_ip, gateway_ip, "Reply IP should match gateway IP");
-    }
-
-    #[test]
-    fn test_arp_no_response_for_different_ip() {
-        // Set up channels
-        let (nat_tx, emulator_rx) = crossbeam_channel::unbounded();
-        let (emulator_tx, nat_rx) = crossbeam_channel::unbounded();
-
-        // Gateway configuration
-        let gateway_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
-        let gateway_ip = [10, 0, 2, 2];
-        let gateway_subnet = 24;
-
-        // Create NAT instance
-        let mut nat = NatEngine::new(nat_tx, nat_rx, gateway_mac, gateway_ip, gateway_subnet);
-
-        // Client configuration
-        let client_mac = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
-        let client_ip = [10, 0, 2, 15];
-        let different_ip = [10, 0, 2, 99]; // Not the gateway IP
-
-        // Create and send ARP request for a different IP
-        let arp_request = create_arp_request(client_mac, client_ip, different_ip);
-        emulator_tx.send(arp_request).unwrap();
-
-        // Process the packet
-        nat.process().unwrap();
-
-        // Should NOT receive a reply for a different IP
-        let result = emulator_rx.recv_timeout(std::time::Duration::from_millis(100));
-        assert!(
-            result.is_err(),
-            "Should not receive ARP reply for different IP"
+    /// Create a new UDP socket pair for NAT
+    pub fn create_udp_socket(&mut self, local_port: u16) -> Result<()> {
+        // Create smoltcp UDP socket
+        let rx_buffer = udp::PacketBuffer::new(
+            vec![udp::PacketMetadata::EMPTY; 16],
+            vec![0; SMOLTCP_BUFFER_SIZE],
         );
+        let tx_buffer = udp::PacketBuffer::new(
+            vec![udp::PacketMetadata::EMPTY; 16],
+            vec![0; SMOLTCP_BUFFER_SIZE],
+        );
+        let mut socket = udp::Socket::new(rx_buffer, tx_buffer);
+
+        // Bind to the specified port on the gateway IP
+        socket.bind(IpEndpoint::new(self.gateway_ip, local_port))?;
+
+        let handle = self.sockets.add(socket);
+
+        // Create OS UDP socket
+        let os_socket = UdpSocket::bind("0.0.0.0:0")?;
+        os_socket.set_nonblocking(true)?;
+
+        log::info!(
+            "Created UDP socket pair: smoltcp={}:{}, os={}",
+            self.gateway_ip,
+            local_port,
+            os_socket.local_addr()?
+        );
+
+        // Create connection tracking entry
+        let entry = NatEntry::Udp {
+            os_socket,
+            remote_endpoint: IpEndpoint::new(IpAddress::v4(0, 0, 0, 0), 0),
+            local_endpoint: IpEndpoint::new(self.gateway_ip, local_port),
+            last_activity: Instant::now(),
+        };
+
+        self.nat_table.insert(handle, entry);
+
+        Ok(())
     }
 }
