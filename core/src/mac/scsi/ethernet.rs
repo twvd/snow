@@ -72,13 +72,6 @@ impl Default for ScsiTargetEthernet {
 
 impl ScsiTargetEthernet {
     fn tx_packet(&self, packet: &[u8]) {
-        use pnet::packet::Packet;
-        let p = pnet::packet::ethernet::EthernetPacket::new(packet).unwrap();
-        log::debug!("TX: {:02X?} {:?}", packet, p);
-        if p.get_ethertype() == pnet::packet::ethernet::EtherTypes::Arp {
-            log::debug!("ARP {:?}", pnet::packet::arp::ArpPacket::new(p.payload()));
-        }
-
         if let Some(ref tx) = self.tx {
             tx.send(packet.to_owned()).unwrap();
         }
@@ -201,7 +194,6 @@ impl ScsiTarget for ScsiTargetEthernet {
                 let read_len = ((cmd[3] as usize) << 8) | (cmd[4] as usize);
 
                 if let Some(packet) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
-                    log::debug!("RX: {:02X?}", &packet);
                     let packet_len = packet.len().max(64);
                     let resp_len = 6 + packet_len;
                     if read_len < resp_len {
@@ -222,7 +214,8 @@ impl ScsiTarget for ScsiTargetEthernet {
                     response[1] = packet_len as u8;
                     if !self.rx.as_ref().unwrap().is_empty() {
                         // More packets available to read
-                        response[5] = 0x10;
+                        // TODO this causes SCSI Manager issues
+                        //response[5] = 0x10;
                     }
                     Ok(ScsiCmdResult::DataIn(response))
                 } else {
