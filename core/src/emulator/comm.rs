@@ -11,6 +11,8 @@ use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::debuggable::DebuggableProperties;
 use crate::keymap::KeyEvent;
 use crate::mac::scc::SccCh;
+#[cfg(feature = "ethernet")]
+use crate::mac::scsi::ethernet::EthernetLinkType;
 use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use crate::mac::MacModel;
@@ -42,6 +44,8 @@ pub enum EmulatorCommand {
     ScsiLoadMedia(usize, PathBuf),
     #[cfg(feature = "ethernet")]
     ScsiAttachEthernet(usize),
+    #[cfg(feature = "ethernet")]
+    EthernetSetLink(usize, EthernetLinkType),
     DetachScsiTarget(usize),
     MouseUpdateAbsolute {
         x: u16,
@@ -117,6 +121,8 @@ pub struct ScsiTargetStatus {
     pub target_type: ScsiTargetType,
     pub image: Option<PathBuf>,
     pub capacity: Option<usize>,
+    #[cfg(feature = "ethernet")]
+    pub link_type: Option<EthernetLinkType>,
 }
 
 #[derive(Debug)]

@@ -13,6 +13,16 @@ use std::path::Path;
 
 type BasicPacket = Vec<u8>;
 
+#[derive(Default, Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+pub enum EthernetLinkType {
+    #[default]
+    Down,
+    #[cfg(feature = "ethernet_nat")]
+    NAT,
+    #[cfg(feature = "ethernet_raw")]
+    Bridge(u32),
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct ScsiTargetEthernet {
     /// Check condition code
@@ -31,27 +41,15 @@ pub(crate) struct ScsiTargetEthernet {
     /// Receive queue (network -> Mac)
     #[serde(skip)]
     rx: Option<crossbeam_channel::Receiver<BasicPacket>>,
+
+    /// Link type
+    #[serde(skip)]
+    link: EthernetLinkType,
 }
 
 impl Default for ScsiTargetEthernet {
     fn default() -> Self {
-        let (nat_tx, emulator_rx) = crossbeam_channel::unbounded();
-        let (emulator_tx, nat_rx) = crossbeam_channel::unbounded();
         let mut rand = rand::rng();
-
-        #[cfg(feature = "ethernet_nat")]
-        {
-            let mut nat = snow_nat::NatEngine::new(
-                nat_tx,
-                nat_rx,
-                [0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA],
-                [10, 0, 0, 1],
-                24,
-            );
-            std::thread::spawn(move || {
-                nat.run();
-            });
-        }
 
         Self {
             cc_code: 0,
@@ -64,8 +62,9 @@ impl Default for ScsiTargetEthernet {
                 rand.random(),
                 rand.random(),
             ],
-            tx: Some(emulator_tx),
-            rx: Some(emulator_rx),
+            tx: None,
+            rx: None,
+            link: Default::default(),
         }
     }
 }
@@ -73,8 +72,100 @@ impl Default for ScsiTargetEthernet {
 impl ScsiTargetEthernet {
     fn tx_packet(&self, packet: &[u8]) {
         if let Some(ref tx) = self.tx {
-            tx.send(packet.to_owned()).unwrap();
+            match tx.send(packet.to_owned()) {
+                Ok(_) => {}
+                Err(e) => log::error!("Failed to send packet {:?}", e),
+            }
         }
+    }
+
+    #[cfg(feature = "ethernet_raw")]
+    fn start_bridge(&mut self, ifidx: u32) -> Result<()> {
+        let Some(interface) = pnet::datalink::interfaces()
+            .into_iter()
+            .find(|i| i.index == ifidx)
+        else {
+            bail!("Cannot find interface index {}", ifidx)
+        };
+
+        let (bridge_tx, emulator_rx) = crossbeam_channel::unbounded();
+        let (emulator_tx, bridge_rx) = crossbeam_channel::unbounded();
+        self.tx = Some(emulator_tx);
+        self.rx = Some(emulator_rx);
+
+        let bridge_config = pnet::datalink::Config {
+            promiscuous: true,
+            ..Default::default()
+        };
+
+        match pnet::datalink::channel(&interface, bridge_config) {
+            Ok(pnet::datalink::Channel::Ethernet(mut physical_tx, mut physical_rx)) => {
+                log::info!(
+                    "Starting ethernet bridge for interface '{}'",
+                    interface.name
+                );
+
+                // Physical RX -> Virtual RX
+                let t_mac = self.macaddress;
+                std::thread::spawn(move || loop {
+                    match physical_rx.next() {
+                        Ok(packet) => {
+                            // Squelch echos and filter on packets destined for us
+                            let Some(ethpacket) =
+                                pnet::packet::ethernet::EthernetPacket::new(packet)
+                            else {
+                                log::warn!("Dropped invalid packet: {:02X?}", packet);
+                                continue;
+                            };
+                            let dest = ethpacket.get_destination();
+                            let src = ethpacket.get_source();
+                            if (dest != t_mac && !dest.is_broadcast()) || src == t_mac {
+                                continue;
+                            }
+                            log::debug!("Physical RX: {:?} {:02X?}", &ethpacket, &packet);
+
+                            match bridge_tx.send(packet.to_vec()) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    log::info!("Bridge terminated (bridge_tx closed: {})", e);
+                                    return;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::info!("Bridge terminated (physical_rx closed: {})", e);
+                        }
+                    }
+                });
+                // Virtual TX -> Physical TX
+                std::thread::spawn(move || loop {
+                    match bridge_rx.recv() {
+                        Ok(packet) => {
+                            log::debug!("Physical TX: {:02X?}", packet);
+
+                            match physical_tx.send_to(&packet, None).unwrap() {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    log::info!("Bridge terminated (physical_tx closed: {})", e);
+                                    return;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::info!("Bridge terminated (bridge_rx closed: {})", e);
+                        }
+                    }
+                });
+            }
+            Ok(_) => {
+                bail!("Failed opening bridge channel");
+            }
+            Err(e) => {
+                bail!("Failed opening bridge channel: {:?}", e);
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -258,5 +349,47 @@ impl ScsiTarget for ScsiTargetEthernet {
             }
             _ => Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION)),
         }
+    }
+
+    fn eth_set_link(&mut self, link: EthernetLinkType) -> Result<()> {
+        // Terminate active links
+        // Dropping the senders will cause the channel to close and the receiver threads to terminate
+        self.rx = None;
+        self.tx = None;
+
+        self.link = link;
+        match link {
+            EthernetLinkType::Down => {
+                log::info!("Ethernet link down");
+            }
+            #[cfg(feature = "ethernet_raw")]
+            EthernetLinkType::Bridge(i) => {
+                log::info!("Ethernet link bridge to interface {}", i);
+                self.start_bridge(i)?;
+            }
+            #[cfg(feature = "ethernet_nat")]
+            EthernetLinkType::NAT => {
+                let (nat_tx, emulator_rx) = crossbeam_channel::unbounded();
+                let (emulator_tx, nat_rx) = crossbeam_channel::unbounded();
+
+                let mut nat = snow_nat::NatEngine::new(
+                    nat_tx,
+                    nat_rx,
+                    [0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA],
+                    [10, 0, 0, 1],
+                    24,
+                );
+                self.rx = Some(emulator_rx);
+                self.tx = Some(emulator_tx);
+                std::thread::spawn(move || {
+                    nat.run();
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn eth_link(&self) -> Option<EthernetLinkType> {
+        Some(self.link)
     }
 }

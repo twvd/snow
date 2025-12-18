@@ -416,4 +416,14 @@ impl ScsiTarget for ScsiTargetCdrom {
     fn branch_media(&mut self, _path: &Path) -> Result<()> {
         bail!("Unsupported on CD-ROM");
     }
+
+    #[cfg(feature = "ethernet")]
+    fn eth_set_link(&mut self, _link: super::ethernet::EthernetLinkType) -> Result<()> {
+        unreachable!()
+    }
+
+    #[cfg(feature = "ethernet")]
+    fn eth_link(&self) -> Option<super::ethernet::EthernetLinkType> {
+        None
+    }
 }

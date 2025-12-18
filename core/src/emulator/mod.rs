@@ -580,6 +580,10 @@ impl Emulator {
                                 .scsi()
                                 .get_disk_imagefn(i)
                                 .map(|p| p.to_path_buf()),
+                            #[cfg(feature = "ethernet")]
+                            link_type: self.config.scsi().targets[i]
+                                .as_ref()
+                                .and_then(|d| d.eth_link()),
                         })
                 }),
                 speed: self.config.speed(),
@@ -1099,6 +1103,13 @@ impl Tickable for Emulator {
                         if drive < self.config.swim_mut().drives.len() {
                             self.config.swim_mut().drives[drive].rpm_adjustment = adjustment;
                         }
+                    }
+                    #[cfg(feature = "ethernet")]
+                    EmulatorCommand::EthernetSetLink(idx, link) => {
+                        self.config.scsi_mut().targets[idx]
+                            .as_mut()
+                            .context("Setting link on non-ethernet device")?
+                            .eth_set_link(link)?;
                     }
                 }
             }

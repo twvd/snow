@@ -42,6 +42,11 @@ pub(crate) trait ScsiTarget: Send {
     fn ms_media_type(&self) -> u8;
     fn ms_device_specific(&self) -> u8;
 
+    #[cfg(feature = "ethernet")]
+    fn eth_set_link(&mut self, link: super::ethernet::EthernetLinkType) -> Result<()>;
+    #[cfg(feature = "ethernet")]
+    fn eth_link(&self) -> Option<super::ethernet::EthernetLinkType>;
+
     /// Request sense result (code, asc, ascq)
     fn req_sense(&mut self) -> (u8, u16);
 

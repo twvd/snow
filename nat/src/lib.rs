@@ -184,7 +184,9 @@ impl TxToken for VirtualTxToken {
         let result = f(&mut buffer);
 
         // Send the packet back to the emulator
-        self.tx.send(buffer).unwrap();
+        // Ignore errors, if the channel closes the next time we try to read from rx the thread will
+        // terminate.
+        let _ = self.tx.send(buffer);
 
         result
     }
@@ -742,7 +744,6 @@ impl NatEngine {
                 match entry.0.read(&mut self.recv_buffer) {
                     Ok(0) => {
                         // Connection closed by remote
-                        log::info!("TCP connection closed by internet");
                         socket.close();
                     }
                     Ok(len) => {
