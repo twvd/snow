@@ -8,7 +8,8 @@ build = "build.rs"
 built = { version = "0.8.0", features = ["chrono", "git2"] }
 
 [features]
-ethernet = ["dep:pnet"]
+ethernet = []
+ethernet_raw = ["ethernet", "dep:pnet"]
 ethernet_nat = ["ethernet", "dep:snow_nat"]
 mmap = ["dep:fs2", "dep:memmap2"]
 savestates = ["dep:binrw", "dep:postcard", "dep:zstd"]

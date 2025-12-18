@@ -1105,4 +1105,15 @@ impl EmulatorState {
             .send(EmulatorCommand::ScsiAttachEthernet(id))
             .unwrap();
     }
+
+    #[cfg(feature = "ethernet")]
+    pub fn set_eth_link(&self, id: usize, link: snow_core::mac::scsi::ethernet::EthernetLinkType) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        sender
+            .send(EmulatorCommand::EthernetSetLink(id, link))
+            .unwrap();
+    }
 }

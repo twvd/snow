@@ -1140,7 +1140,37 @@ impl SnowGui {
                             id,
                         ),
                         |ui| {
+                            use snow_core::mac::scsi::ethernet::EthernetLinkType;
+
                             ui.set_min_width(Self::SUBMENU_WIDTH);
+                            ui.strong("Link type");
+
+                            let link_type = target.link_type.unwrap();
+                            let mut new_link_type = link_type;
+                            ui.radio_value(&mut new_link_type, EthernetLinkType::Down, "Down");
+                            #[cfg(feature = "ethernet_nat")]
+                            {
+                                ui.radio_value(&mut new_link_type, EthernetLinkType::NAT, "NAT");
+                            }
+                            #[cfg(feature = "ethernet_raw")]
+                            {
+                                for interface in pnet::datalink::interfaces()
+                                    .into_iter()
+                                    .filter(|i| i.is_up() && !i.ips.is_empty() && !i.is_loopback())
+                                {
+                                    ui.radio_value(
+                                        &mut new_link_type,
+                                        EthernetLinkType::Bridge(interface.index),
+                                        format!("Bridge: {}", interface.name),
+                                    );
+                                }
+                            }
+
+                            if new_link_type != link_type {
+                                self.emu.set_eth_link(id, new_link_type);
+                            }
+
+                            ui.separator();
                             if ui.button("Detach").clicked() {
                                 self.emu.scsi_detach_target(id);
                                 ui.close_menu();
