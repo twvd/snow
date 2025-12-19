@@ -4377,6 +4377,7 @@ dependencies = [
  "bit-set",
  "built",
  "chrono",
+ "crc",
  "crossbeam",
  "crossbeam-channel",
  "either",
