@@ -106,23 +106,31 @@ impl ScsiTargetEthernet {
                 );
 
                 // Physical RX -> Virtual RX
-                let t_mac = self.macaddress;
+                let t_host_mac = interface.mac.unwrap();
+                let t_emu_mac = self.macaddress;
                 std::thread::spawn(move || loop {
                     match physical_rx.next() {
                         Ok(packet) => {
                             // Squelch echos and filter on packets destined for us
-                            let Some(ethpacket) =
-                                pnet::packet::ethernet::EthernetPacket::new(packet)
+                            let mut packet = packet.to_vec();
+                            let Some(mut ethpacket) =
+                                pnet::packet::ethernet::MutableEthernetPacket::new(&mut packet)
                             else {
-                                log::warn!("Dropped invalid packet: {:02X?}", packet);
+                                log::warn!("Dropped RX invalid packet: {:02X?}", packet);
                                 continue;
                             };
                             let dest = ethpacket.get_destination();
                             let src = ethpacket.get_source();
-                            if (dest != t_mac && !dest.is_broadcast()) || src == t_mac {
+                            if (dest != t_host_mac && !dest.is_broadcast()) || src == t_host_mac {
                                 continue;
                             }
-                            log::debug!("Physical RX: {:?} {:02X?}", &ethpacket, &packet);
+
+                            // Rewrite MAC-addresses
+                            if dest == t_host_mac {
+                                ethpacket.set_destination(t_emu_mac.into());
+                            }
+
+                            //log::debug!("Physical RX: {:?} {:02X?}", &ethpacket, &packet);
 
                             match bridge_tx.send(packet.to_vec()) {
                                 Ok(_) => {}
@@ -134,16 +142,43 @@ impl ScsiTargetEthernet {
                         }
                         Err(e) => {
                             log::info!("Bridge terminated (physical_rx closed: {})", e);
+                            return;
                         }
                     }
                 });
                 // Virtual TX -> Physical TX
                 std::thread::spawn(move || loop {
-                    match bridge_rx.recv() {
-                        Ok(packet) => {
-                            log::debug!("Physical TX: {:02X?}", packet);
+                    use pnet::packet::{MutablePacket, Packet};
 
-                            match physical_tx.send_to(&packet, None).unwrap() {
+                    match bridge_rx.recv() {
+                        Ok(mut packet) => {
+                            let Some(mut ethpacket) =
+                                pnet::packet::ethernet::MutableEthernetPacket::new(&mut packet)
+                            else {
+                                log::warn!("Dropped TX invalid packet: {:02X?}", packet);
+                                continue;
+                            };
+                            if ethpacket.get_source() == t_emu_mac {
+                                ethpacket.set_source(t_host_mac);
+                            }
+                            if ethpacket.get_ethertype() == pnet::packet::ethernet::EtherTypes::Arp
+                            {
+                                if let Some(mut arppacket) =
+                                    pnet::packet::arp::MutableArpPacket::new(
+                                        ethpacket.payload_mut(),
+                                    )
+                                {
+                                    arppacket.set_sender_hw_addr(t_host_mac);
+                                }
+                            }
+
+                            // Minimum frame size
+                            //if out_packet.len() < 64 {
+                            //    out_packet.resize(64, 0);
+                            //}
+                            log::debug!("Physical TX: {:02X?}", &ethpacket);
+
+                            match physical_tx.send_to(ethpacket.packet(), None).unwrap() {
                                 Ok(_) => {}
                                 Err(e) => {
                                     log::info!("Bridge terminated (physical_tx closed: {})", e);
@@ -153,6 +188,7 @@ impl ScsiTargetEthernet {
                         }
                         Err(e) => {
                             log::info!("Bridge terminated (bridge_rx closed: {})", e);
+                            return;
                         }
                     }
                 });
@@ -285,8 +321,10 @@ impl ScsiTarget for ScsiTargetEthernet {
                 let read_len = ((cmd[3] as usize) << 8) | (cmd[4] as usize);
 
                 if let Some(packet) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+                    const FCS: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
+
                     let packet_len = packet.len().max(64);
-                    let resp_len = 6 + packet_len;
+                    let resp_len = 6 + packet_len + 4;
                     if read_len < resp_len {
                         log::error!(
                             "RX packet too large (is {}, have {}): {:02X?}",
@@ -299,6 +337,8 @@ impl ScsiTarget for ScsiTargetEthernet {
 
                     let mut response = vec![0; resp_len];
                     response[6..(6 + packet.len())].copy_from_slice(&packet);
+                    response[(6 + packet_len)..resp_len]
+                        .copy_from_slice(&FCS.checksum(&packet).to_be_bytes());
 
                     // Length
                     response[0] = (packet_len >> 8) as u8;
