@@ -50,7 +50,7 @@ Supported floppy image formats:
 * Raw images (sector-based)
 * Any format (Mac 1.44MB or PC) supported by [Fluxfox](https://github.com/dbalsom/fluxfox)
 
-Emulator and debugging features:
+Debugging features:
 
 * Breakpoints (execution, bus access, system trap, exception, interrupt level)
 * Watchpoints with editing
@@ -62,6 +62,12 @@ Emulator and debugging features:
 * System trap history viewer
 * Peripheral debug view
 * Terminal for the serial ports
+
+Networking and interfacing features:
+
+* TCP and PTY bridges for serial ports
+* LocalTalk over UDP
+* Emulated Ethernet adapter with userland NAT
 
 ## Building
 
