@@ -550,7 +550,7 @@ impl NatEngine {
         });
 
         if existing.is_some() {
-            log::warn!("TCP connection already exists, ignoring duplicate SYN");
+            // Already in connection tracking table
             return Ok(());
         }
 
@@ -833,7 +833,7 @@ impl NatEngine {
             .nat_table
             .iter()
             .filter_map(|(handle, entry)| {
-                if now.duration_since(entry.last_activity()) > timeout {
+                if now.duration_since(entry.last_activity()) >= timeout {
                     Some(*handle)
                 } else {
                     None
@@ -843,32 +843,11 @@ impl NatEngine {
 
         // Remove expired entries
         for handle in expired {
-            if let Some(entry) = self.nat_table.remove(&handle) {
-                match entry {
-                    NatEntry::Udp {
-                        remote_endpoint, ..
-                    } => {
-                        log::info!(
-                            "Removed expired UDP NAT entry for {} (idle for {}s)",
-                            remote_endpoint,
-                            NAT_TIMEOUT_SECS
-                        );
-                    }
-                    NatEntry::Tcp {
-                        remote_endpoint, ..
-                    } => {
-                        log::info!(
-                            "Removed expired TCP NAT entry for {} (idle for {}s)",
-                            remote_endpoint,
-                            NAT_TIMEOUT_SECS
-                        );
-                    }
-                }
+            self.nat_table.remove(&handle);
 
-                // Close and remove the smoltcp socket
-                self.sockets.remove(handle);
-                // OS socket will be closed when dropped
-            }
+            // Close and remove the smoltcp socket
+            self.sockets.remove(handle);
+            // OS socket will be closed when dropped
         }
 
         Ok(())
