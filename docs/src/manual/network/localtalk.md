@@ -1,3 +1,0 @@
-# LocalTalk
-
-Placeholder

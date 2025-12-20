@@ -19,7 +19,7 @@
 - [File sharing](./manual/sharing.md)
 - [Ports](./manual/ports.md)
 - [Networking](./manual/network/README.md)
-    - [LocalTalk](./manual/network/localtalk.md)
+    - [LocalTalk over UDP](./manual/network/ltoudp.md)
     - [Ethernet](./manual/network/ethernet.md)
 - [Fullscreen mode](./manual/fullscreen.md)
 - [Save states](./manual/savestates.md)
