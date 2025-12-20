@@ -1210,7 +1210,21 @@ impl SnowGui {
                     #[cfg(feature = "ethernet")]
                     {
                         ui.separator();
-                        if ui.button("Attach Ethernet controller").clicked() {
+                        if ui
+                            .add_enabled(
+                                !self
+                                    .emu
+                                    .get_scsi_targets()
+                                    .map(|t| {
+                                        t.iter().any(|i| {
+                                            matches!(i.target_type, Some(ScsiTargetType::Ethernet))
+                                        })
+                                    })
+                                    .unwrap_or(false),
+                                egui::Button::new("Attach Ethernet controller"),
+                            )
+                            .clicked()
+                        {
                             self.emu.scsi_attach_ethernet(id);
                             ui.close_menu();
                         }
