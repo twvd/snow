@@ -13,14 +13,28 @@ use std::path::Path;
 
 type BasicPacket = Vec<u8>;
 
-#[derive(Default, Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
 pub enum EthernetLinkType {
-    #[default]
     Down,
     #[cfg(feature = "ethernet_nat")]
     NAT,
     #[cfg(feature = "ethernet_raw")]
     Bridge(u32),
+}
+
+// Clippy is wrong, I don't think you can conditionally tag #[default] on an enum based on features
+#[allow(clippy::derivable_impls)]
+impl Default for EthernetLinkType {
+    fn default() -> Self {
+        #[cfg(feature = "ethernet_nat")]
+        {
+            Self::NAT
+        }
+        #[cfg(not(feature = "ethernet_nat"))]
+        {
+            Self::Down
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -70,7 +84,14 @@ impl Default for ScsiTargetEthernet {
 }
 
 impl ScsiTargetEthernet {
-    fn tx_packet(&self, packet: &[u8]) {
+    fn tx_packet(&mut self, packet: &[u8]) {
+        if self.rx.is_none() && self.tx.is_none() && self.link != EthernetLinkType::Down {
+            // Initialize link
+            if let Err(e) = self.eth_set_link(self.link) {
+                log::error!("Failed to set ethernet link: {}", e);
+            }
+        }
+
         if let Some(ref tx) = self.tx {
             match tx.send(packet.to_owned()) {
                 Ok(_) => {}
@@ -81,6 +102,16 @@ impl ScsiTargetEthernet {
 
     #[cfg(feature = "ethernet_raw")]
     fn start_bridge(&mut self, ifidx: u32) -> Result<()> {
+        // This all doesn't work very well:
+        //  - without MAC rewrite enabled, it doesn't work on some (all?) adapters
+        //  - on modern adapters with TSO, GSO, etc, the Mac receives way too large packets
+        //  - with MAC rewrite enabled, the Mac will see all of the hosts packets
+        //    (better not be streaming 4K while running the emulator!)
+        // Code kept for posterity
+
+        // Enable to rewrite MAC-addresses of the emulated system to the hosts MAC-address
+        const REWRITE_MACS: bool = false;
+
         let Some(interface) = pnet::datalink::interfaces()
             .into_iter()
             .find(|i| i.index == ifidx)
@@ -106,8 +137,12 @@ impl ScsiTargetEthernet {
                 );
 
                 // Physical RX -> Virtual RX
-                let t_host_mac = interface.mac.unwrap();
                 let t_emu_mac = self.macaddress;
+                let t_physical_mac: pnet::datalink::MacAddr = if REWRITE_MACS {
+                    interface.mac.unwrap()
+                } else {
+                    t_emu_mac.into()
+                };
                 std::thread::spawn(move || loop {
                     match physical_rx.next() {
                         Ok(packet) => {
@@ -121,12 +156,14 @@ impl ScsiTargetEthernet {
                             };
                             let dest = ethpacket.get_destination();
                             let src = ethpacket.get_source();
-                            if (dest != t_host_mac && !dest.is_broadcast()) || src == t_host_mac {
+                            if (dest != t_physical_mac && !dest.is_broadcast())
+                                || src == t_physical_mac
+                            {
                                 continue;
                             }
 
                             // Rewrite MAC-addresses
-                            if dest == t_host_mac {
+                            if REWRITE_MACS && dest == t_physical_mac {
                                 ethpacket.set_destination(t_emu_mac.into());
                             }
 
@@ -158,17 +195,19 @@ impl ScsiTargetEthernet {
                                 log::warn!("Dropped TX invalid packet: {:02X?}", packet);
                                 continue;
                             };
-                            if ethpacket.get_source() == t_emu_mac {
-                                ethpacket.set_source(t_host_mac);
+                            if REWRITE_MACS && ethpacket.get_source() == t_emu_mac {
+                                ethpacket.set_source(t_physical_mac);
                             }
-                            if ethpacket.get_ethertype() == pnet::packet::ethernet::EtherTypes::Arp
+                            if REWRITE_MACS
+                                && ethpacket.get_ethertype()
+                                    == pnet::packet::ethernet::EtherTypes::Arp
                             {
                                 if let Some(mut arppacket) =
                                     pnet::packet::arp::MutableArpPacket::new(
                                         ethpacket.payload_mut(),
                                     )
                                 {
-                                    arppacket.set_sender_hw_addr(t_host_mac);
+                                    arppacket.set_sender_hw_addr(t_physical_mac);
                                 }
                             }
 
@@ -176,7 +215,7 @@ impl ScsiTargetEthernet {
                             //if out_packet.len() < 64 {
                             //    out_packet.resize(64, 0);
                             //}
-                            log::debug!("Physical TX: {:02X?}", &ethpacket);
+                            //log::debug!("Physical TX: {:02X?}", &ethpacket);
 
                             match physical_tx.send_to(ethpacket.packet(), None).unwrap() {
                                 Ok(_) => {}

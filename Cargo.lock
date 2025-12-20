@@ -4384,7 +4384,6 @@ dependencies = [
  "flate2",
  "fs2",
  "hex",
- "hex-literal",
  "itertools 0.13.0",
  "log",
  "memmap2",

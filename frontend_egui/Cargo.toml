@@ -5,7 +5,7 @@ edition = "2021"
 build = "build.rs"
 
 [features]
-default = []
+default = ["ethernet", "ethernet_nat"]
 ethernet = ["snow_core/ethernet"]
 ethernet_nat = ["ethernet", "snow_core/ethernet_nat"]
 ethernet_raw = ["ethernet", "snow_core/ethernet_raw", "dep:pnet"]
