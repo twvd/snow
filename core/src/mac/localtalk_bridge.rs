@@ -113,10 +113,11 @@ impl LocalTalkBridge {
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
 
         // Enable address reuse for multiple instances on same machine
-        // Both options needed for multicast on Linux
         socket.set_reuse_address(true)?;
-        #[cfg(unix)]
-        socket.set_reuse_port(true)?;
+        #[cfg(not(target_os = "windows"))]
+        if let Err(e) = socket.set_reuse_port(true) {
+            warn!("SO_REUSEPORT failed: {}", e);
+        }
 
         // Bind to the LToUDP port
         let addr: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, LTOUDP_PORT);
