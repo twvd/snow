@@ -7,6 +7,8 @@ use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
 
 use anyhow::{bail, Result};
+#[cfg(feature = "ethernet_raw")]
+use crossbeam_channel::TrySendError;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "ethernet_nat")]
@@ -17,6 +19,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 type BasicPacket = Vec<u8>;
+
+/// Maximum amount of packets to buffer in the RX/TX queues
+const PACKET_QUEUE_SIZE: usize = 512;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
 pub enum EthernetLinkType {
@@ -69,6 +74,9 @@ pub(crate) struct ScsiTargetEthernet {
     #[cfg(feature = "ethernet_nat")]
     #[serde(skip)]
     nat_stats: Option<Arc<NatEngineStats>>,
+
+    /// Interface enabled
+    enabled: bool,
 }
 
 impl Default for ScsiTargetEthernet {
@@ -90,6 +98,7 @@ impl Default for ScsiTargetEthernet {
             rx: None,
             link: Default::default(),
             nat_stats: None,
+            enabled: false,
         }
     }
 }
@@ -104,7 +113,7 @@ impl ScsiTargetEthernet {
         }
 
         if let Some(ref tx) = self.tx {
-            match tx.send(packet.to_owned()) {
+            match tx.try_send(packet.to_owned()) {
                 Ok(_) => {}
                 Err(e) => log::error!("Failed to send packet {:?}", e),
             }
@@ -130,8 +139,8 @@ impl ScsiTargetEthernet {
             bail!("Cannot find interface index {}", ifidx)
         };
 
-        let (bridge_tx, emulator_rx) = crossbeam_channel::unbounded();
-        let (emulator_tx, bridge_rx) = crossbeam_channel::unbounded();
+        let (bridge_tx, emulator_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
+        let (emulator_tx, bridge_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
         self.tx = Some(emulator_tx);
         self.rx = Some(emulator_rx);
 
@@ -180,11 +189,14 @@ impl ScsiTargetEthernet {
 
                             //log::debug!("Physical RX: {:?} {:02X?}", &ethpacket, &packet);
 
-                            match bridge_tx.send(packet.to_vec()) {
+                            match bridge_tx.try_send(packet.to_vec()) {
                                 Ok(_) => {}
-                                Err(e) => {
-                                    log::info!("Bridge terminated (bridge_tx closed: {})", e);
+                                Err(TrySendError::Disconnected(_)) => {
+                                    log::info!("Bridge terminated (bridge_tx closed)");
                                     return;
+                                }
+                                Err(TrySendError::Full(_)) => {
+                                    log::error!("bridge_tx queue overflow");
                                 }
                             }
                         }
@@ -435,6 +447,16 @@ impl ScsiTarget for ScsiTargetEthernet {
                 // Enable/disable interface
                 let enable = cmd[5] & 0x80 != 0;
                 log::debug!("Interface enable: {}", enable);
+
+                if !self.enabled && enable {
+                    // Drain RX queue
+                    if let Some(rx) = &self.rx {
+                        while rx.try_recv().is_ok() {}
+                    }
+                }
+
+                self.enabled = enable;
+
                 Ok(ScsiCmdResult::Status(STATUS_GOOD))
             }
             _ => Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION)),
@@ -460,8 +482,8 @@ impl ScsiTarget for ScsiTargetEthernet {
             }
             #[cfg(feature = "ethernet_nat")]
             EthernetLinkType::NAT => {
-                let (nat_tx, emulator_rx) = crossbeam_channel::unbounded();
-                let (emulator_tx, nat_rx) = crossbeam_channel::unbounded();
+                let (nat_tx, emulator_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
+                let (emulator_tx, nat_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
 
                 let mut nat = snow_nat::NatEngine::new(
                     nat_tx,
