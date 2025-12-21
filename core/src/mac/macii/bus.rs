@@ -722,6 +722,8 @@ where
             self.amu_active = self.via2.ddrb.vfc3() && !self.via2.b_out.vfc3();
         }
 
+        self.scsi.tick(ticks)?;
+
         // The Mac II generates the VIA clock through some dividers on the logic board.
         // This same logic generates wait states when the VIAs are accessed.
         self.via_clock += ticks;
