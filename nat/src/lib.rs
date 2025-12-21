@@ -8,6 +8,11 @@
 //! The remote connectivity is implemented fully through userland (OS) sockets.
 //!
 //! Currently only supports TCP and UDP.
+//!
+//! The MacOS TCP/IP stack seems to struggle with ARP requests during already
+//! active TCP sessions which can stall connections and leave smoltcp in a
+//! 'neighbor discovery pending' state. To avoid this, we send unsolicited ARP
+//! replies to smoltcp regularly to keep the neighbor cache entry from being evicted.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -21,7 +26,10 @@ use crossbeam_channel::{Receiver, Sender, TrySendError};
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::socket::udp;
-use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr, IpEndpoint, Ipv4Address};
+use smoltcp::wire::{
+    ArpOperation, ArpPacket, ArpRepr, EthernetAddress, EthernetFrame, EthernetProtocol, IpAddress,
+    IpCidr, IpEndpoint, Ipv4Address,
+};
 
 /// A layer 2 Ethernet packet
 pub type Packet = Vec<u8>;
@@ -39,6 +47,9 @@ const NAT_TIMEOUT_TCP_OPEN: Duration = Duration::from_secs(900);
 /// We keep the connection around for a bit for backlog to clear up and the FIN to arrive.
 const NAT_TIMEOUT_TCP_CLOSED: Duration = Duration::from_secs(45);
 
+/// Interval of gratuitous ARP on behalf of the emulator to smoltcp
+const GRATUITOUS_ARP_INTERVAL: Duration = Duration::from_secs(10);
+
 /// Virtual network device that bridges crossbeam channels with smoltcp
 struct VirtualDevice {
     rx: Receiver<Packet>,
@@ -50,6 +61,10 @@ struct VirtualDevice {
     smoltcp_queue: Vec<Packet>,
     /// Gateway IP address to detect routed packets
     gateway_ip: Ipv4Address,
+    /// Learned local node (for gratuitous ARP)
+    local_node: Option<(EthernetAddress, Ipv4Address)>,
+    /// Next time gratuitous ARP should be sent
+    next_gratuitous_arp: Instant,
 }
 
 impl VirtualDevice {
@@ -66,6 +81,8 @@ impl VirtualDevice {
             intercepted_packets: Vec::new(),
             smoltcp_queue: Vec::new(),
             gateway_ip,
+            local_node: None,
+            next_gratuitous_arp: Instant::now(),
         }
     }
 
@@ -76,7 +93,7 @@ impl VirtualDevice {
 
     /// Check if a packet needs NAT (routed UDP or TCP SYN packet where destination IP != gateway IP)
     fn needs_nat(&self, packet: &[u8]) -> bool {
-        use smoltcp::wire::{EthernetFrame, EthernetProtocol, IpProtocol, Ipv4Packet, TcpPacket};
+        use smoltcp::wire::{EthernetFrame, IpProtocol, Ipv4Packet, TcpPacket};
 
         // Parse Ethernet frame
         let eth_frame = match EthernetFrame::new_checked(packet) {
@@ -144,6 +161,42 @@ impl Device for VirtualDevice {
             ));
         }
 
+        // Check if it is time to send gratuitous ARP
+        if let Some((local_mac, local_ip)) = self.local_node {
+            let now = Instant::now();
+            if self.next_gratuitous_arp < now {
+                self.next_gratuitous_arp = now + GRATUITOUS_ARP_INTERVAL;
+
+                let mut buffer = vec![0; 42];
+                let mut eth_frame = EthernetFrame::new_unchecked(&mut buffer);
+                eth_frame.set_src_addr(local_mac);
+                eth_frame.set_dst_addr(EthernetAddress::BROADCAST);
+                eth_frame.set_ethertype(EthernetProtocol::Arp);
+                let mut arp_packet = ArpPacket::new_unchecked(eth_frame.payload_mut());
+
+                let arp_repr = ArpRepr::EthernetIpv4 {
+                    // Not a gratuitous ARP as per RFC 5227 but more of an
+                    // 'unsollicited ARP reply'. smoltcp responds better to this than a
+                    // by-the-book gratuitous ARP, which seems to be ignored.
+                    operation: ArpOperation::Reply,
+                    source_hardware_addr: local_mac,
+                    source_protocol_addr: local_ip,
+                    target_hardware_addr: EthernetAddress::BROADCAST,
+                    target_protocol_addr: self.gateway_ip,
+                };
+
+                arp_repr.emit(&mut arp_packet);
+
+                return Some((
+                    VirtualRxToken { buffer },
+                    VirtualTxToken {
+                        tx: self.tx.clone(),
+                        stats: self.stats.clone(),
+                    },
+                ));
+            }
+        }
+
         // Receive new packet from Ethernet adapter channel
         let packet = self.rx.recv_timeout(Duration::from_millis(100)).ok()?;
         self.stats.rx_packets.fetch_add(1, Ordering::Release);
@@ -157,6 +210,33 @@ impl Device for VirtualDevice {
             // Don't pass to smoltcp, return None to process next packet
             // This packet will be returned to the smoltcp_queue later
             return None;
+        }
+
+        // Try to learn the emulator's IP address from ARP traffic so we can keep the neighbor cache entry alive
+        if let Ok(ArpRepr::EthernetIpv4 {
+            operation,
+            source_hardware_addr,
+            source_protocol_addr,
+            target_protocol_addr,
+            ..
+        }) = EthernetFrame::new_checked(&packet)
+            .and_then(|p| ArpPacket::new_checked(p.payload()))
+            .and_then(|p| ArpRepr::parse(&p))
+        {
+            if operation == ArpOperation::Request
+                && target_protocol_addr == self.gateway_ip
+                && self.local_node.is_none_or(|(mac, ip)| {
+                    mac != source_hardware_addr || ip != source_protocol_addr
+                })
+            {
+                self.local_node = Some((source_hardware_addr, source_protocol_addr));
+                self.next_gratuitous_arp = Instant::now() + GRATUITOUS_ARP_INTERVAL;
+                log::debug!(
+                    "Learned local MAC address {} - IP address: {}",
+                    source_hardware_addr,
+                    source_protocol_addr
+                );
+            }
         }
 
         // Pass non-routed packets (like ARP) normally
