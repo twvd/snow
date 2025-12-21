@@ -468,7 +468,7 @@ impl ScsiTarget for ScsiTargetEthernet {
                     nat_rx,
                     [0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA],
                     [10, 0, 0, 1],
-                    24,
+                    8,
                 );
                 self.rx = Some(emulator_rx);
                 self.tx = Some(emulator_tx);
