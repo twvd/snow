@@ -29,8 +29,15 @@ pub type Packet = Vec<u8>;
 const MTU: usize = 1514;
 const SMOLTCP_BUFFER_SIZE: usize = 65536;
 
-/// Default timeout for idle NAT entries (60 seconds)
-const NAT_TIMEOUT_SECS: u64 = 60;
+/// Default timeout for UDP connection tracking
+const NAT_TIMEOUT_UDP: Duration = Duration::from_secs(300);
+
+/// Default timeout for TCP connection tracking, while the connection is alive
+const NAT_TIMEOUT_TCP_OPEN: Duration = Duration::from_secs(900);
+
+/// Default timeout for TCP connection tracking, after the connection is closed.
+/// We keep the connection around for a bit for backlog to clear up and the FIN to arrive.
+const NAT_TIMEOUT_TCP_CLOSED: Duration = Duration::from_secs(45);
 
 /// Virtual network device that bridges crossbeam channels with smoltcp
 struct VirtualDevice {
@@ -232,8 +239,8 @@ enum NatEntry {
         remote_endpoint: IpEndpoint,
         /// Emulator's source endpoint
         local_endpoint: IpEndpoint,
-        /// Last activity timestamp for timeout tracking
-        last_activity: Instant,
+        /// Time at which this entry expires
+        expires_at: Instant,
     },
     Tcp {
         /// Userland TCP socket for external communication
@@ -242,17 +249,21 @@ enum NatEntry {
         remote_endpoint: IpEndpoint,
         /// Emulator's source endpoint
         local_endpoint: IpEndpoint,
-        /// Last activity timestamp for timeout tracking
-        last_activity: Instant,
+        /// Time at which this entry expires
+        expires_at: Instant,
     },
 }
 
 impl NatEntry {
-    pub fn last_activity(&self) -> Instant {
+    pub fn expires_at(&self) -> Instant {
         match self {
-            Self::Udp { last_activity, .. } => *last_activity,
-            Self::Tcp { last_activity, .. } => *last_activity,
+            Self::Udp { expires_at, .. } => *expires_at,
+            Self::Tcp { expires_at, .. } => *expires_at,
         }
+    }
+
+    pub fn is_expired(&self, now: &Instant) -> bool {
+        &self.expires_at() <= now
     }
 }
 
@@ -518,11 +529,11 @@ impl NatEngine {
             let handle = *handle;
             if let Some(NatEntry::Udp {
                 os_socket,
-                last_activity,
+                expires_at,
                 ..
             }) = self.nat_table.get_mut(&handle)
             {
-                *last_activity = Instant::now();
+                *expires_at = Instant::now() + NAT_TIMEOUT_UDP;
                 os_socket.send(payload)?;
             }
         } else {
@@ -569,7 +580,7 @@ impl NatEngine {
                 os_socket,
                 remote_endpoint: IpEndpoint::new(IpAddress::Ipv4(dst_ip), dst_port),
                 local_endpoint: IpEndpoint::new(IpAddress::Ipv4(src_ip), src_port),
-                last_activity: Instant::now(),
+                expires_at: Instant::now() + NAT_TIMEOUT_UDP,
             };
 
             self.nat_table.insert(handle, entry);
@@ -667,7 +678,7 @@ impl NatEngine {
             os_socket,
             remote_endpoint: IpEndpoint::new(IpAddress::Ipv4(dst_ip), dst_port),
             local_endpoint: IpEndpoint::new(IpAddress::Ipv4(src_ip), src_port),
-            last_activity: Instant::now(),
+            expires_at: Instant::now() + NAT_TIMEOUT_TCP_OPEN,
         };
 
         self.nat_table.insert(handle, entry);
@@ -699,9 +710,9 @@ impl NatEngine {
             let entry = match self.nat_table.get_mut(&handle) {
                 Some(NatEntry::Tcp {
                     os_socket,
-                    last_activity,
+                    expires_at,
                     ..
-                }) => (os_socket, last_activity),
+                }) => (os_socket, expires_at),
                 _ => continue,
             };
 
@@ -725,7 +736,7 @@ impl NatEngine {
                 })?;
 
                 if data_len > 0 {
-                    *entry.1 = Instant::now();
+                    *entry.1 = Instant::now() + NAT_TIMEOUT_TCP_OPEN;
                 }
             }
         }
@@ -760,9 +771,9 @@ impl NatEngine {
             let entry = match self.nat_table.get_mut(&handle) {
                 Some(NatEntry::Udp {
                     os_socket,
-                    last_activity,
+                    expires_at,
                     ..
-                }) => (os_socket, last_activity),
+                }) => (os_socket, expires_at),
                 _ => continue,
             };
 
@@ -770,7 +781,7 @@ impl NatEngine {
             match entry.0.recv_from(&mut self.recv_buffer) {
                 Ok((len, _from_addr)) => {
                     // Keep entry alive
-                    *entry.1 = Instant::now();
+                    *entry.1 = Instant::now() + NAT_TIMEOUT_UDP;
 
                     // Send response via smoltcp UDP socket
                     let socket = self.sockets.get_mut::<udp::Socket>(handle);
@@ -810,9 +821,9 @@ impl NatEngine {
             let entry = match self.nat_table.get_mut(&handle) {
                 Some(NatEntry::Tcp {
                     os_socket,
-                    last_activity,
+                    expires_at,
                     ..
-                }) => (os_socket, last_activity),
+                }) => (os_socket, expires_at),
                 _ => continue,
             };
 
@@ -827,13 +838,14 @@ impl NatEngine {
                             .nat_tcp_fin_remote
                             .fetch_add(1, Ordering::Release);
                         socket.close();
+                        *entry.1 = Instant::now() + NAT_TIMEOUT_TCP_CLOSED;
                     }
                     Ok(len) => {
                         // Write data to smoltcp socket
                         // smoltcp will handle fragmentation and MTU
                         match socket.send_slice(&self.recv_buffer[..len]) {
                             Ok(_written) => {
-                                *entry.1 = Instant::now();
+                                *entry.1 = Instant::now() + NAT_TIMEOUT_TCP_OPEN;
                             }
                             Err(e) => {
                                 log::warn!("Error sending to smoltcp socket: {}", e);
@@ -896,7 +908,7 @@ impl NatEngine {
                 os_socket,
                 remote_endpoint: IpEndpoint::new(IpAddress::v4(0, 0, 0, 0), 0),
                 local_endpoint,
-                last_activity: Instant::now(),
+                expires_at: Instant::now() + NAT_TIMEOUT_UDP,
             };
 
             self.nat_table.insert(handle, entry);
@@ -908,14 +920,13 @@ impl NatEngine {
     /// Clean up expired NAT entries that have been idle too long
     fn cleanup_expired_entries(&mut self) -> Result<()> {
         let now = Instant::now();
-        let timeout = Duration::from_secs(NAT_TIMEOUT_SECS);
 
         // Find expired entries
         let expired: Vec<_> = self
             .nat_table
             .iter()
             .filter_map(|(handle, entry)| {
-                if now.duration_since(entry.last_activity()) >= timeout {
+                if entry.is_expired(&now) {
                     Some(*handle)
                 } else {
                     None
