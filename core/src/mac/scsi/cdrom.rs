@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::debuggable::Debuggable;
 use crate::types::LatchingEvent;
 
 use super::target::ScsiTarget;
@@ -425,5 +426,11 @@ impl ScsiTarget for ScsiTargetCdrom {
     #[cfg(feature = "ethernet")]
     fn eth_link(&self) -> Option<super::ethernet::EthernetLinkType> {
         None
+    }
+}
+
+impl Debuggable for ScsiTargetCdrom {
+    fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        vec![]
     }
 }

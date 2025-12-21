@@ -1,5 +1,6 @@
 //! Daynaport SCSI Ethernet adapter
 
+use crate::debuggable::Debuggable;
 use crate::mac::scsi::target::{ScsiTarget, ScsiTargetEvent, ScsiTargetType};
 use crate::mac::scsi::ScsiCmdResult;
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
@@ -8,8 +9,12 @@ use crate::mac::scsi::STATUS_GOOD;
 use anyhow::{bail, Result};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ethernet_nat")]
+use snow_nat::NatEngineStats;
 
 use std::path::Path;
+#[cfg(feature = "ethernet_nat")]
+use std::sync::Arc;
 
 type BasicPacket = Vec<u8>;
 
@@ -59,6 +64,11 @@ pub(crate) struct ScsiTargetEthernet {
     /// Link type
     #[serde(skip)]
     link: EthernetLinkType,
+
+    /// NAT engine statistics
+    #[cfg(feature = "ethernet_nat")]
+    #[serde(skip)]
+    nat_stats: Option<Arc<NatEngineStats>>,
 }
 
 impl Default for ScsiTargetEthernet {
@@ -79,6 +89,7 @@ impl Default for ScsiTargetEthernet {
             tx: None,
             rx: None,
             link: Default::default(),
+            nat_stats: None,
         }
     }
 }
@@ -435,6 +446,7 @@ impl ScsiTarget for ScsiTargetEthernet {
         // Dropping the senders will cause the channel to close and the receiver threads to terminate
         self.rx = None;
         self.tx = None;
+        self.nat_stats = None;
 
         self.link = link;
         match link {
@@ -460,6 +472,7 @@ impl ScsiTarget for ScsiTargetEthernet {
                 );
                 self.rx = Some(emulator_rx);
                 self.tx = Some(emulator_tx);
+                self.nat_stats = Some(nat.stats());
                 std::thread::spawn(move || {
                     nat.run();
                 });
@@ -470,5 +483,89 @@ impl ScsiTarget for ScsiTargetEthernet {
 
     fn eth_link(&self) -> Option<EthernetLinkType> {
         Some(self.link)
+    }
+}
+
+impl Debuggable for ScsiTargetEthernet {
+    fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        use crate::debuggable::*;
+        use crate::{dbgprop_group, dbgprop_str, dbgprop_string, dbgprop_udec};
+        use std::sync::atomic::Ordering;
+
+        let mut result = vec![dbgprop_string!(
+            "MAC address",
+            format!(
+                "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                self.macaddress[0],
+                self.macaddress[1],
+                self.macaddress[2],
+                self.macaddress[3],
+                self.macaddress[4],
+                self.macaddress[5],
+            )
+        )];
+
+        if let Some(tx) = &self.tx {
+            result.push(dbgprop_udec!("TX queue length", tx.len()));
+        }
+        if let Some(rx) = &self.rx {
+            result.push(dbgprop_udec!("RX queue length", rx.len()));
+        }
+        #[cfg(feature = "ethernet_nat")]
+        if let Some(stats) = &self.nat_stats {
+            result.push(dbgprop_group!(
+                "NAT engine",
+                vec![
+                    dbgprop_udec!(
+                        "Emu -> remote packets",
+                        stats.rx_packets.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!(
+                        "Emu -> remote bytes",
+                        stats.rx_bytes.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!(
+                        "Remote -> emu packets",
+                        stats.tx_packets.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!(
+                        "Remote -> emu bytes",
+                        stats.tx_bytes.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!(
+                        "Active TCP connections",
+                        stats.nat_active_tcp.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!(
+                        "Active UDP connections",
+                        stats.nat_active_udp.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!(
+                        "Total TCP connections",
+                        stats.nat_total_tcp.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!(
+                        "Total UDP connections",
+                        stats.nat_total_udp.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!(
+                        "Expired connections",
+                        stats.nat_expired.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!("TCP SYNs seen", stats.nat_tcp_syn.load(Ordering::Acquire)),
+                    dbgprop_udec!(
+                        "TCP FINs from emulator seen",
+                        stats.nat_tcp_fin_local.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!(
+                        "TCP FINs from remote seen",
+                        stats.nat_tcp_fin_remote.load(Ordering::Acquire)
+                    ),
+                ]
+            ));
+        } else {
+            result.push(dbgprop_str!("NAT engine", "Inactive"));
+        }
+        result
     }
 }

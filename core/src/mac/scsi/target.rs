@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
+use crate::debuggable::Debuggable;
 use crate::mac::scsi::{
     ScsiCmdResult, ASC_INVALID_FIELD_IN_CDB, ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
     ASC_MEDIUM_NOT_PRESENT, CC_KEY_ILLEGAL_REQUEST, CC_KEY_MEDIUM_ERROR, STATUS_CHECK_CONDITION,
@@ -26,7 +27,7 @@ pub enum ScsiTargetEvent {
 
 /// An abstraction of a generic SCSI target
 #[typetag::serde(tag = "type")]
-pub(crate) trait ScsiTarget: Send {
+pub(crate) trait ScsiTarget: Send + Debuggable {
     #[cfg(feature = "savestates")]
     fn after_deserialize(&mut self, imgfn: &Path) -> Result<()>;
 

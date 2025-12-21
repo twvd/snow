@@ -639,9 +639,24 @@ impl BusMember<Address> for ScsiController {
 impl Debuggable for ScsiController {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
-        use crate::{dbgprop_bool, dbgprop_enum, dbgprop_group, dbgprop_header, dbgprop_udec};
+        use crate::{
+            dbgprop_bool, dbgprop_enum, dbgprop_group, dbgprop_header, dbgprop_nest, dbgprop_udec,
+        };
+
+        let mut targets = vec![];
+        for (id, o_t) in self.targets.iter().enumerate() {
+            if let Some(t) = o_t {
+                targets.push(dbgprop_nest!(
+                    format!("ID #{} - {:?}", id, t.target_type()),
+                    t
+                ));
+            } else {
+                targets.push(dbgprop_group!(format!("ID #{} - (no device)", id), vec![]));
+            }
+        }
 
         vec![
+            dbgprop_group!("Targets", targets),
             dbgprop_group!(
                 "Registers",
                 vec![
