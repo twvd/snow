@@ -800,8 +800,10 @@ impl NatEngine {
 
             // Forward data from emulator (smoltcp) to Internet (OS socket)
             if socket.can_recv() {
-                let data_len = socket.recv(|buffer| {
+                match socket.recv(|buffer| {
                     if !buffer.is_empty() {
+                        // Write to OS socket and only consume as much as we could push
+                        // out from the smoltcp receive buffer
                         match entry.0.write(buffer) {
                             Ok(written) => (written, written),
                             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => (0, 0),
@@ -813,11 +815,18 @@ impl NatEngine {
                     } else {
                         (0, 0)
                     }
-                })?;
-
-                if data_len > 0 {
-                    *entry.1 = Instant::now() + NAT_TIMEOUT_TCP_OPEN;
-                }
+                }) {
+                    Ok(_) => {
+                        *entry.1 = Instant::now() + NAT_TIMEOUT_TCP_OPEN;
+                    }
+                    Err(smoltcp::socket::tcp::RecvError::Finished) => {
+                        *entry.1 = Instant::now() + NAT_TIMEOUT_TCP_CLOSED;
+                        self.stats.nat_tcp_fin_local.fetch_add(1, Ordering::Release);
+                    }
+                    Err(e) => {
+                        log::error!("TCP error receiving from emulator: {:?}", e);
+                    }
+                };
             }
         }
 
