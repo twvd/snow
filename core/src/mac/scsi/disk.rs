@@ -9,6 +9,7 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::debuggable::Debuggable;
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::scsi::ScsiCmdResult;
@@ -344,5 +345,11 @@ impl ScsiTarget for ScsiTargetDisk {
     #[cfg(feature = "ethernet")]
     fn eth_link(&self) -> Option<super::ethernet::EthernetLinkType> {
         None
+    }
+}
+
+impl Debuggable for ScsiTargetDisk {
+    fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        vec![]
     }
 }

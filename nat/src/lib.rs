@@ -12,10 +12,12 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, TrySendError};
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::socket::udp;
@@ -27,10 +29,14 @@ pub type Packet = Vec<u8>;
 const MTU: usize = 1514;
 const SMOLTCP_BUFFER_SIZE: usize = 65536;
 
+/// Default timeout for idle NAT entries (60 seconds)
+const NAT_TIMEOUT_SECS: u64 = 60;
+
 /// Virtual network device that bridges crossbeam channels with smoltcp
 struct VirtualDevice {
     rx: Receiver<Packet>,
     tx: Sender<Packet>,
+    stats: Arc<NatEngineStats>,
     /// Queue for routed UDP/TCP packets that need NAT handling (intercepted before smoltcp)
     intercepted_packets: Vec<Packet>,
     /// Queue for packets to feed back to smoltcp after processing (e.g., TCP SYN after creating listening socket)
@@ -40,10 +46,16 @@ struct VirtualDevice {
 }
 
 impl VirtualDevice {
-    fn new(tx: Sender<Packet>, rx: Receiver<Packet>, gateway_ip: Ipv4Address) -> Self {
+    fn new(
+        tx: Sender<Packet>,
+        rx: Receiver<Packet>,
+        stats: Arc<NatEngineStats>,
+        gateway_ip: Ipv4Address,
+    ) -> Self {
         Self {
             rx,
             tx,
+            stats,
             intercepted_packets: Vec::new(),
             smoltcp_queue: Vec::new(),
             gateway_ip,
@@ -120,12 +132,17 @@ impl Device for VirtualDevice {
                 VirtualRxToken { buffer: packet },
                 VirtualTxToken {
                     tx: self.tx.clone(),
+                    stats: self.stats.clone(),
                 },
             ));
         }
 
         // Receive new packet from Ethernet adapter channel
         let packet = self.rx.recv_timeout(Duration::from_millis(100)).ok()?;
+        self.stats.rx_packets.fetch_add(1, Ordering::Release);
+        self.stats
+            .rx_bytes
+            .fetch_add(packet.len(), Ordering::Release);
 
         // Check if this packet needs NAT (routed TCP/UDP)
         if self.needs_nat(&packet) {
@@ -140,6 +157,7 @@ impl Device for VirtualDevice {
             VirtualRxToken { buffer: packet },
             VirtualTxToken {
                 tx: self.tx.clone(),
+                stats: self.stats.clone(),
             },
         ))
     }
@@ -147,6 +165,7 @@ impl Device for VirtualDevice {
     fn transmit(&mut self, _timestamp: smoltcp::time::Instant) -> Option<Self::TxToken<'_>> {
         Some(VirtualTxToken {
             tx: self.tx.clone(),
+            stats: self.stats.clone(),
         })
     }
 
@@ -173,6 +192,7 @@ impl RxToken for VirtualRxToken {
 
 struct VirtualTxToken {
     tx: Sender<Packet>,
+    stats: Arc<NatEngineStats>,
 }
 
 impl TxToken for VirtualTxToken {
@@ -184,9 +204,20 @@ impl TxToken for VirtualTxToken {
         let result = f(&mut buffer);
 
         // Send the packet back to the emulator
-        // Ignore errors, if the channel closes the next time we try to read from rx the thread will
-        // terminate.
-        let _ = self.tx.send(buffer);
+        let send_len = buffer.len();
+        match self.tx.try_send(buffer) {
+            Ok(()) => {
+                self.stats.tx_packets.fetch_add(1, Ordering::Release);
+                self.stats.tx_bytes.fetch_add(send_len, Ordering::Release);
+            }
+            Err(TrySendError::Full(_)) => {
+                self.stats.tx_dropped.fetch_add(1, Ordering::Release);
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                // Ignore errors, if the channel closes the next time we try to
+                // read from rx the thread will terminate.
+            }
+        }
 
         result
     }
@@ -225,8 +256,26 @@ impl NatEntry {
     }
 }
 
-/// Default timeout for idle NAT entries (60 seconds)
-const NAT_TIMEOUT_SECS: u64 = 60;
+pub type NatEngineStatCounter = std::sync::atomic::AtomicUsize;
+
+/// NAT engine statistics
+/// Only individually synchronized when reading
+#[derive(Default)]
+pub struct NatEngineStats {
+    pub rx_packets: NatEngineStatCounter,
+    pub rx_bytes: NatEngineStatCounter,
+    pub tx_packets: NatEngineStatCounter,
+    pub tx_bytes: NatEngineStatCounter,
+    pub tx_dropped: NatEngineStatCounter,
+    pub nat_active_tcp: NatEngineStatCounter,
+    pub nat_total_tcp: NatEngineStatCounter,
+    pub nat_active_udp: NatEngineStatCounter,
+    pub nat_total_udp: NatEngineStatCounter,
+    pub nat_tcp_syn: NatEngineStatCounter,
+    pub nat_tcp_fin_local: NatEngineStatCounter,
+    pub nat_tcp_fin_remote: NatEngineStatCounter,
+    pub nat_expired: NatEngineStatCounter,
+}
 
 /// NAT engine instance for handling network address translation
 pub struct NatEngine {
@@ -250,6 +299,9 @@ pub struct NatEngine {
 
     /// Buffer for receiving data from OS sockets
     recv_buffer: Vec<u8>,
+
+    /// Statistics
+    stats: Arc<NatEngineStats>,
 }
 
 impl NatEngine {
@@ -267,12 +319,13 @@ impl NatEngine {
         gateway_ip: [u8; 4],
         gateway_subnet: u8,
     ) -> Self {
+        let stats = Arc::new(NatEngineStats::default());
         let gateway_mac_addr = EthernetAddress(gateway_mac);
         let gateway_ip_addr =
             IpAddress::v4(gateway_ip[0], gateway_ip[1], gateway_ip[2], gateway_ip[3]);
 
         let gateway_ipv4 = Ipv4Address::from_bytes(&gateway_ip);
-        let mut device = VirtualDevice::new(tx, rx, gateway_ipv4);
+        let mut device = VirtualDevice::new(tx, rx, stats.clone(), gateway_ipv4);
 
         let config = Config::new(gateway_mac_addr.into());
         let mut iface = Interface::new(config, &mut device, smoltcp::time::Instant::now());
@@ -307,7 +360,13 @@ impl NatEngine {
             gateway_ip: gateway_ip_addr,
             nat_table: HashMap::new(),
             recv_buffer: vec![0u8; SMOLTCP_BUFFER_SIZE],
+            stats,
         }
+    }
+
+    /// Obtains a reference to the statistics of this engine instance
+    pub fn stats(&self) -> Arc<NatEngineStats> {
+        self.stats.clone()
     }
 
     /// Processes incoming packets from the emulator
@@ -333,6 +392,22 @@ impl NatEngine {
 
         // Clean up expired NAT entries
         self.cleanup_expired_entries()?;
+
+        // Update active connections statistics
+        self.stats.nat_active_tcp.store(
+            self.nat_table
+                .iter()
+                .filter(|(_, e)| matches!(e, NatEntry::Tcp { .. }))
+                .count(),
+            Ordering::Release,
+        );
+        self.stats.nat_active_udp.store(
+            self.nat_table
+                .iter()
+                .filter(|(_, e)| matches!(e, NatEntry::Udp { .. }))
+                .count(),
+            Ordering::Release,
+        );
 
         Ok(())
     }
@@ -498,6 +573,7 @@ impl NatEngine {
             };
 
             self.nat_table.insert(handle, entry);
+            self.stats.nat_total_udp.fetch_add(1, Ordering::Release);
         }
 
         Ok(())
@@ -512,6 +588,8 @@ impl NatEngine {
         tcp_packet: &smoltcp::wire::TcpPacket<&[u8]>,
     ) -> Result<()> {
         use smoltcp::socket::tcp;
+
+        self.stats.nat_tcp_syn.fetch_add(1, Ordering::Release);
 
         let src_ip = ipv4_packet.src_addr();
         let dst_ip = ipv4_packet.dst_addr();
@@ -593,6 +671,7 @@ impl NatEngine {
         };
 
         self.nat_table.insert(handle, entry);
+        self.stats.nat_total_tcp.fetch_add(1, Ordering::Release);
 
         // Feed the SYN packet back to smoltcp so it can complete the handshake
         self.device.smoltcp_queue.push(raw_packet.to_vec());
@@ -744,6 +823,9 @@ impl NatEngine {
                 match entry.0.read(&mut self.recv_buffer) {
                     Ok(0) => {
                         // Connection closed by remote
+                        self.stats
+                            .nat_tcp_fin_remote
+                            .fetch_add(1, Ordering::Release);
                         socket.close();
                     }
                     Ok(len) => {
@@ -842,6 +924,9 @@ impl NatEngine {
             .collect();
 
         // Remove expired entries
+        self.stats
+            .nat_expired
+            .fetch_add(expired.len(), Ordering::Release);
         for handle in expired {
             self.nat_table.remove(&handle);
 
@@ -873,47 +958,5 @@ impl NatEngine {
         }
 
         log::info!("NAT stopped");
-    }
-
-    /// Create a new UDP socket pair for NAT
-    pub fn create_udp_socket(&mut self, local_port: u16) -> Result<()> {
-        // Create smoltcp UDP socket
-        let rx_buffer = udp::PacketBuffer::new(
-            vec![udp::PacketMetadata::EMPTY; 16],
-            vec![0; SMOLTCP_BUFFER_SIZE],
-        );
-        let tx_buffer = udp::PacketBuffer::new(
-            vec![udp::PacketMetadata::EMPTY; 16],
-            vec![0; SMOLTCP_BUFFER_SIZE],
-        );
-        let mut socket = udp::Socket::new(rx_buffer, tx_buffer);
-
-        // Bind to the specified port on the gateway IP
-        socket.bind(IpEndpoint::new(self.gateway_ip, local_port))?;
-
-        let handle = self.sockets.add(socket);
-
-        // Create OS UDP socket
-        let os_socket = UdpSocket::bind("0.0.0.0:0")?;
-        os_socket.set_nonblocking(true)?;
-
-        log::info!(
-            "Created UDP socket pair: smoltcp={}:{}, os={}",
-            self.gateway_ip,
-            local_port,
-            os_socket.local_addr()?
-        );
-
-        // Create connection tracking entry
-        let entry = NatEntry::Udp {
-            os_socket,
-            remote_endpoint: IpEndpoint::new(IpAddress::v4(0, 0, 0, 0), 0),
-            local_endpoint: IpEndpoint::new(self.gateway_ip, local_port),
-            last_activity: Instant::now(),
-        };
-
-        self.nat_table.insert(handle, entry);
-
-        Ok(())
     }
 }
