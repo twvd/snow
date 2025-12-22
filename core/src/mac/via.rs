@@ -48,6 +48,9 @@ bitfield! {
         /// (true = main, false = alternate)
         pub page2: bool @ 6,
 
+        /// Another model sense bit
+        pub model6: bool @ 6,
+
         /// SCC Wait/Request (false)
         pub sccwrreq: bool @ 7,
     }
@@ -90,8 +93,20 @@ bitfield! {
         /// SCSI interrupt (false = enabled) (SE+)
         pub scsi_int: bool @ 6,
 
+        /// VBlank enable for SE/30
+        pub se30_vblank_enable: bool @ 6,
+
         /// Sound enable
         pub sndenb: bool @ 7,
+
+        pub pb0: bool @ 0,
+        pub pb1: bool @ 1,
+        pub pb2: bool @ 2,
+        pub pb3: bool @ 3,
+        pub pb4: bool @ 4,
+        pub pb5: bool @ 5,
+        pub pb6: bool @ 6,
+        pub pb7: bool @ 7,
     }
 }
 
@@ -111,8 +126,11 @@ bitfield! {
         /// Timer T2 interrupts
         pub t2: bool @ 5,
 
-        /// Timer T1 interrupts
-        pub t1: u8 @ 6..=7,
+        /// Timer T1 free-running mode
+        pub t1_freerun: bool @ 6,
+
+        /// Timer T1 output enable
+        pub t1_output_en: bool @ 7,
     }
 }
 
@@ -222,6 +240,9 @@ pub struct Via {
     kbdshift_out_time: Ticks,
 
     t1_enable: bool,
+
+    /// T1 output state is separate from the actual PB7 output
+    t1_output: bool,
     t2_enable: bool,
 
     /// Timer 1 Counter
@@ -258,6 +279,7 @@ impl Via {
             t1cnt: Field16(0),
             t1latch: Field16(0),
             t1_enable: false,
+            t1_output: false,
 
             onesec: 0,
             sr: 0,
@@ -399,6 +421,10 @@ impl BusMember<Address> for Via {
 
                 // Start timer
                 self.t1_enable = true;
+                self.t1_output = false;
+                if self.acr.t1_output_en() {
+                    self.b_out.set_pb7(false);
+                }
                 Some(())
             }
 
@@ -515,16 +541,17 @@ impl Tickable for Via {
 
         if t1ovf && self.t1_enable {
             self.ifr.set_t1(true);
-            match self.acr.t1() {
+            if !self.acr.t1_freerun() {
                 // Single shot mode
-                0 | 2 => {
-                    self.t1_enable = false;
-                }
-                1 | 3 => {
-                    // Free running mode
-                    self.t1cnt.0 = self.t1latch.0;
-                }
-                _ => unreachable!(),
+                self.t1_enable = false;
+                self.t1_output = true;
+            } else {
+                // Free running mode
+                self.t1cnt.0 = self.t1latch.0;
+                self.t1_output = !self.t1_output;
+            }
+            if self.acr.t1_output_en() {
+                self.b_out.set_pb7(self.t1_output);
             }
         }
 

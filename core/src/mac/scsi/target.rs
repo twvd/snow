@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
+use crate::debuggable::Debuggable;
 use crate::mac::scsi::{
     ScsiCmdResult, ASC_INVALID_FIELD_IN_CDB, ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
     ASC_MEDIUM_NOT_PRESENT, CC_KEY_ILLEGAL_REQUEST, CC_KEY_MEDIUM_ERROR, STATUS_CHECK_CONDITION,
@@ -15,6 +16,8 @@ use crate::mac::scsi::{
 pub enum ScsiTargetType {
     Disk,
     Cdrom,
+    #[cfg(feature = "ethernet")]
+    Ethernet,
 }
 
 /// Some events that may occur to feed to the UI through EmulatorEvent
@@ -24,7 +27,7 @@ pub enum ScsiTargetEvent {
 
 /// An abstraction of a generic SCSI target
 #[typetag::serde(tag = "type")]
-pub(crate) trait ScsiTarget: Send {
+pub(crate) trait ScsiTarget: Send + Debuggable {
     #[cfg(feature = "savestates")]
     fn after_deserialize(&mut self, imgfn: &Path) -> Result<()>;
 
@@ -39,6 +42,11 @@ pub(crate) trait ScsiTarget: Send {
     fn ms_density(&self) -> u8;
     fn ms_media_type(&self) -> u8;
     fn ms_device_specific(&self) -> u8;
+
+    #[cfg(feature = "ethernet")]
+    fn eth_set_link(&mut self, link: super::ethernet::EthernetLinkType) -> Result<()>;
+    #[cfg(feature = "ethernet")]
+    fn eth_link(&self) -> Option<super::ethernet::EthernetLinkType>;
 
     /// Request sense result (code, asc, ascq)
     fn req_sense(&mut self) -> (u8, u16);
@@ -101,9 +109,7 @@ pub(crate) trait ScsiTarget: Send {
             0x08 => {
                 // READ(6)
                 let Some(blocks) = self.blocks() else {
-                    log::warn!("READ(6) command to non-block device");
-                    self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
-                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                    return self.specific_cmd(cmd, outdata);
                 };
                 let blocknum = (u32::from_be_bytes(cmd[0..4].try_into()?) & 0x1F_FFFF) as usize;
                 let blockcnt = if cmd[4] == 0 { 256 } else { cmd[4] as usize };
@@ -120,9 +126,7 @@ pub(crate) trait ScsiTarget: Send {
             0x0A => {
                 // WRITE(6)
                 let (Some(blocksize), Some(blocks)) = (self.blocksize(), self.blocks()) else {
-                    log::warn!("WRITE(6) command to non-block device");
-                    self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
-                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                    return self.specific_cmd(cmd, outdata);
                 };
                 let blocknum = (u32::from_be_bytes(cmd[0..4].try_into()?) & 0x1F_FFFF) as usize;
                 let blockcnt = if cmd[4] == 0 { 256 } else { cmd[4] as usize };

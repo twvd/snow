@@ -64,11 +64,12 @@ fn main() -> Result<()> {
             secondary_fn.extension().unwrap().to_string_lossy()
         ));
 
-        cmd.send(EmulatorCommand::InsertFloppy(0, floppy_fn))?;
+        cmd.send(EmulatorCommand::InsertFloppy(0, floppy_fn, false))?;
         if secondary_fn.exists() {
             cmd.send(EmulatorCommand::InsertFloppy(
                 1,
                 secondary_fn.to_string_lossy().to_string(),
+                false,
             ))?;
         }
 

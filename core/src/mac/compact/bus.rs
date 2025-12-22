@@ -103,16 +103,16 @@ pub struct CompactMacBus<TRenderer: Renderer> {
 
     /// Early/Plus mouse motion accumulator for Y coordinate
     plusmouse_rel_y: i32,
+
+    /// Tracks the last values of the (16-bit) data bus to produce accurate
+    /// echoes for open bus reads.
+    openbus: [Byte; 2],
 }
 
 impl<TRenderer> CompactMacBus<TRenderer>
 where
     TRenderer: Renderer,
 {
-    /// Value to return on open bus
-    /// Certain applications (e.g. Animation Toolkit) rely on this.
-    const OPENBUS: u8 = 0;
-
     /// Main sound buffer offset (from end of RAM)
     const SOUND_MAIN_OFFSET: usize = 0x0300;
     /// Alternate sound buffer offset (from end of RAM)
@@ -142,8 +142,9 @@ where
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
 
-        let fb_alt_start = ram_size as Address - Video::<TRenderer>::FRAMEBUFFER_ALT_OFFSET;
-        let fb_main_start = ram_size as Address - Video::<TRenderer>::FRAMEBUFFER_MAIN_OFFSET;
+        let fb_alt_start = ram_size as Address - crate::mac::compact::video::FRAMEBUFFER_ALT_OFFSET;
+        let fb_main_start =
+            ram_size as Address - crate::mac::compact::video::FRAMEBUFFER_MAIN_OFFSET;
         let sound_alt_start = ram_size - Self::SOUND_ALT_OFFSET;
         let sound_main_start = ram_size - Self::SOUND_MAIN_OFFSET;
 
@@ -178,8 +179,9 @@ where
             rom_mask: rom.len() - 1,
 
             fb_main: fb_main_start
-                ..(fb_main_start + Video::<TRenderer>::FRAMEBUFFER_SIZE as Address),
-            fb_alt: fb_alt_start..(fb_alt_start + Video::<TRenderer>::FRAMEBUFFER_SIZE as Address),
+                ..(fb_main_start + crate::mac::compact::video::FRAMEBUFFER_SIZE as Address),
+            fb_alt: fb_alt_start
+                ..(fb_alt_start + crate::mac::compact::video::FRAMEBUFFER_SIZE as Address),
 
             soundbuf_main: sound_main_start..(sound_main_start + Self::SOUNDBUF_SIZE),
             soundbuf_alt: sound_alt_start..(sound_alt_start + Self::SOUNDBUF_SIZE),
@@ -193,6 +195,7 @@ where
             mouse_mode,
             plusmouse_rel_x: 0,
             plusmouse_rel_y: 0,
+            openbus: Default::default(),
         };
 
         // Disable memory test
@@ -331,7 +334,7 @@ where
                     *self
                         .rom
                         .get(addr as usize & self.rom_mask)
-                        .unwrap_or(&Self::OPENBUS),
+                        .unwrap_or(&self.openbus[(addr & 1) as usize]),
                 )
             }
             // SCSI
@@ -339,7 +342,7 @@ where
             // RAM
             0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
             // Phase adjust (ignore)
-            0x009F_FFF7 | 0x009F_FFF9 => Some(Self::OPENBUS),
+            0x009F_FFF7 | 0x009F_FFF9 => Some(0),
             // SCC
             0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr >> 1),
             // IWM
@@ -347,13 +350,13 @@ where
             // VIA
             0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
             // Phase read (ignore)
-            0x00F0_0000..=0x00F7_FFFF => Some(Self::OPENBUS),
+            0x00F0_0000..=0x00F7_FFFF => Some(0),
             // Test software region / extension ROM
             0x00F8_0000..=0x00F9_FFFF => Some(
                 *self
                     .extension_rom
                     .get((addr - 0xF8_0000) as usize)
-                    .unwrap_or(&Self::OPENBUS),
+                    .unwrap_or(&self.openbus[(addr & 1) as usize]),
             ),
 
             _ => None,
@@ -371,7 +374,7 @@ where
                 *self
                     .rom
                     .get(addr as usize & self.rom_mask)
-                    .unwrap_or(&Self::OPENBUS),
+                    .unwrap_or(&self.openbus[(addr & 1) as usize]),
             ),
             0x0044_0000..=0x004F_FFFF => {
                 if self.model == MacModel::Plus {
@@ -379,13 +382,13 @@ where
                     // indication of SCSI controller present.
                     //
                     // 512Ke (using Plus ROM) does have repeated ROM images
-                    Some(Self::OPENBUS)
+                    Some(self.openbus[(addr & 1) as usize])
                 } else {
                     Some(
                         *self
                             .rom
                             .get(addr as usize & self.rom_mask)
-                            .unwrap_or(&Self::OPENBUS),
+                            .unwrap_or(&self.openbus[(addr & 1) as usize]),
                     )
                 }
             }
@@ -402,7 +405,7 @@ where
                 *self
                     .extension_rom
                     .get((addr - 0xF8_0000) as usize)
-                    .unwrap_or(&Self::OPENBUS),
+                    .unwrap_or(&self.openbus[(addr & 1) as usize]),
             ),
 
             _ => None,
@@ -593,10 +596,11 @@ where
         };
 
         if let Some(v) = val {
+            self.openbus[(addr & 1) as usize] = v;
             BusResult::Ok(v)
         } else {
             warn!("Read from unimplemented address: {:08X}", addr);
-            BusResult::Ok(Self::OPENBUS)
+            BusResult::Ok(self.openbus[(addr & 1) as usize])
         }
     }
 
@@ -622,6 +626,8 @@ where
         if written.is_none() {
             warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
         }
+
+        self.openbus[(addr & 1) as usize] = val;
         BusResult::Ok(val)
     }
 
@@ -637,6 +643,8 @@ where
 
             self.ram_dirty
                 .extend(0..(self.ram.len() / RAM_DIRTY_PAGESIZE));
+
+            self.overlay = true;
         }
 
         // Keep the RTC and ADB for PRAM and event channels
@@ -645,7 +653,6 @@ where
         self.via.rtc = rtc;
 
         self.scc = Scc::new();
-        self.overlay = true;
         Ok(())
     }
 }
@@ -699,7 +706,8 @@ where
         if self.video.get_clr_hblank() {
             // Update floppy drive PWM and send next audio sample
             let scanline = self.video.get_scanline();
-            let soundon = self.via.a_out.sound() > 0 && !self.via.b_out.sndenb();
+            let soundon =
+                self.via.a_out.sound() > 0 && self.via.ddrb.sndenb() && !self.via.b_out.sndenb();
             let soundbuf = self.soundbuf();
             let pwm = soundbuf[scanline * 2 + 1];
             let audiosample = if soundon { soundbuf[scanline * 2] } else { 0 };

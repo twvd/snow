@@ -1,5 +1,6 @@
 //! Emulator state management
 
+use snow_floppy::loaders::FloppyImageLoader;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -27,6 +28,7 @@ use snow_core::emulator::{Emulator, MouseMode};
 use snow_core::keymap::Scancode;
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
+use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{ExtraROMs, MacModel, MacMonitor};
 use snow_core::renderer::DisplayBuffer;
@@ -112,7 +114,7 @@ pub struct EmulatorState {
     disasm_code: DisassemblyListing,
     messages: VecDeque<(UserMessageType, String)>,
     pub last_images: [RefCell<Option<Box<FloppyImage>>>; 3],
-    ram_update: VecDeque<(Address, Vec<u8>)>,
+    ram_update: VecDeque<(Address, Vec<u8>, usize)>,
     record_input_path: Option<PathBuf>,
     instruction_history: Vec<HistoryEntry>,
     systrap_history: Vec<SystrapHistoryEntry>,
@@ -124,9 +126,13 @@ pub struct EmulatorState {
     instruction_history_enabled: bool,
     peripheral_debug_enabled: bool,
     systrap_history_enabled: bool,
+    pub debug_framebuffers: bool,
 
     /// Force an emulator update signal to the App even without new events available
     force_update: LatchingEvent,
+
+    /// Serial bridge status for SCC channels (index 0 = Channel A, index 1 = Channel B)
+    serial_bridge_status: [Option<SerialBridgeStatus>; 2],
 }
 
 impl EmulatorState {
@@ -141,6 +147,7 @@ impl EmulatorState {
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
         shared_dir: Option<PathBuf>,
+        custom_datetime: Option<chrono::NaiveDateTime>,
     ) -> Result<EmulatorInitResult> {
         let rom = std::fs::read(filename)?;
         let display_rom = if let Some(filename) = display_rom_path {
@@ -162,6 +169,7 @@ impl EmulatorState {
             args,
             model,
             shared_dir,
+            custom_datetime,
         )
     }
 
@@ -177,6 +185,7 @@ impl EmulatorState {
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
         shared_dir: Option<PathBuf>,
+        custom_datetime: Option<chrono::NaiveDateTime>,
     ) -> Result<EmulatorInitResult> {
         // Terminate running emulator (if any)
         self.deinit();
@@ -194,7 +203,11 @@ impl EmulatorState {
         // Build extra ROMs array
         let mut extra_roms = Vec::new();
         if let Some(display_rom) = display_rom {
-            extra_roms.push(ExtraROMs::MDC12(display_rom));
+            if model == MacModel::SE30 {
+                extra_roms.push(ExtraROMs::SE30Video(display_rom));
+            } else {
+                extra_roms.push(ExtraROMs::MDC12(display_rom));
+            }
         }
         if let Some(extension_rom) = extension_rom {
             extra_roms.push(ExtraROMs::ExtensionROM(extension_rom));
@@ -260,6 +273,13 @@ impl EmulatorState {
                     } => {
                         emulator.attach_cdrom(id);
                     }
+                    #[cfg(feature = "ethernet")]
+                    ScsiTarget {
+                        target_type: Some(ScsiTargetType::Ethernet),
+                        ..
+                    } => {
+                        emulator.attach_ethernet(id);
+                    }
                     ScsiTarget {
                         target_type: None, ..
                     } => (),
@@ -269,6 +289,11 @@ impl EmulatorState {
 
         if let Some(pram_path) = pram {
             emulator.persist_pram(pram_path);
+        }
+
+        if let Some(dt) = custom_datetime {
+            emulator.set_datetime(dt);
+            info!("RTC set to custom date/time: {}", dt);
         }
 
         self.init_finalize(emulator, frame_recv, cmd, args.audio_disabled, false)
@@ -361,6 +386,7 @@ impl EmulatorState {
         self.instruction_history_enabled = false;
         self.systrap_history_enabled = false;
         self.peripheral_debug_enabled = false;
+        self.debug_framebuffers = false;
 
         self.force_update.set();
     }
@@ -495,6 +521,9 @@ impl EmulatorState {
                 EmulatorEvent::SccTransmitData(ch, data) => {
                     self.scc_tx[ch.to_usize().unwrap()].extend(&data);
                 }
+                EmulatorEvent::SerialBridgeStatus(ch, status) => {
+                    self.serial_bridge_status[ch.to_usize().unwrap()] = status;
+                }
             }
         }
 
@@ -593,21 +622,13 @@ impl EmulatorState {
             return;
         };
 
-        if wp {
-            sender
-                .send(EmulatorCommand::InsertFloppyWriteProtected(
-                    driveidx,
-                    path.to_string_lossy().to_string(),
-                ))
-                .unwrap();
-        } else {
-            sender
-                .send(EmulatorCommand::InsertFloppy(
-                    driveidx,
-                    path.to_string_lossy().to_string(),
-                ))
-                .unwrap();
-        }
+        sender
+            .send(EmulatorCommand::InsertFloppy(
+                driveidx,
+                path.to_string_lossy().to_string(),
+                wp,
+            ))
+            .unwrap();
     }
 
     /// Loads a floppy image from the specified path in the first free drive.
@@ -616,6 +637,34 @@ impl EmulatorState {
         for (i, d) in (0..3).filter_map(|i| self.get_fdd_status(i).map(|d| (i, d))) {
             if d.present && d.ejected {
                 self.load_floppy(i, path, false);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Loads the included toolbox floppy.
+    pub fn load_toolbox_floppy(&self) -> bool {
+        let Some(ref sender) = self.cmdsender else {
+            return false;
+        };
+
+        // Find a free floppy drive
+        for (i, d) in (0..3).filter_map(|i| self.get_fdd_status(i).map(|d| (i, d))) {
+            if d.present && d.ejected {
+                sender
+                    .send(EmulatorCommand::InsertFloppyImage(
+                        i,
+                        Box::new(
+                            snow_floppy::loaders::Moof::load(
+                                include_bytes!("../assets/BlueSCSI Toolbox.moof"),
+                                None,
+                            )
+                            .unwrap(),
+                        ),
+                        true,
+                    ))
+                    .unwrap();
                 return true;
             }
         }
@@ -632,6 +681,7 @@ impl EmulatorState {
             .send(EmulatorCommand::InsertFloppyImage(
                 driveidx,
                 self.last_images[driveidx].borrow_mut().take().unwrap(),
+                false,
             ))
             .unwrap();
     }
@@ -646,6 +696,7 @@ impl EmulatorState {
             .send(EmulatorCommand::InsertFloppyImage(
                 driveidx,
                 Box::new(FloppyImage::new(t, "Blank")),
+                false,
             ))
             .unwrap();
     }
@@ -858,7 +909,7 @@ impl EmulatorState {
             .unwrap();
     }
 
-    pub fn take_mem_update(&mut self) -> Option<(Address, Vec<u8>)> {
+    pub fn take_mem_update(&mut self) -> Option<(Address, Vec<u8>, usize)> {
         self.ram_update.pop_front()
     }
 
@@ -1001,5 +1052,68 @@ impl EmulatorState {
             return;
         };
         sender.send(EmulatorCommand::SetSharedDir(path)).unwrap();
+    }
+
+    pub fn set_debug_framebuffers(&mut self, v: bool) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender
+            .send(EmulatorCommand::SetDebugFramebuffers(v))
+            .unwrap();
+        self.debug_framebuffers = v;
+    }
+
+    pub fn set_floppy_rpm_adjustment(&self, drive: usize, adjustment: i32) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender
+            .send(EmulatorCommand::SetFloppyRpmAdjustment(drive, adjustment))
+            .unwrap();
+    }
+
+    pub fn enable_serial_bridge(&self, ch: SccCh, config: SerialBridgeConfig) -> Result<()> {
+        let Some(ref sender) = self.cmdsender else {
+            return Ok(());
+        };
+        Ok(sender.send(EmulatorCommand::SerialBridgeEnable(ch, config))?)
+    }
+
+    pub fn disable_serial_bridge(&self, ch: SccCh) -> Result<()> {
+        let Some(ref sender) = self.cmdsender else {
+            return Ok(());
+        };
+        Ok(sender.send(EmulatorCommand::SerialBridgeDisable(ch))?)
+    }
+
+    pub fn get_serial_bridge_status(&self, ch: SccCh) -> Option<&SerialBridgeStatus> {
+        self.serial_bridge_status[ch.to_usize().unwrap()].as_ref()
+    }
+
+    pub fn is_serial_bridge_enabled(&self, ch: SccCh) -> bool {
+        self.serial_bridge_status[ch.to_usize().unwrap()].is_some()
+    }
+
+    #[cfg(feature = "ethernet")]
+    pub fn scsi_attach_ethernet(&self, id: usize) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        sender
+            .send(EmulatorCommand::ScsiAttachEthernet(id))
+            .unwrap();
+    }
+
+    #[cfg(feature = "ethernet")]
+    pub fn set_eth_link(&self, id: usize, link: snow_core::mac::scsi::ethernet::EthernetLinkType) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        sender
+            .send(EmulatorCommand::EthernetSetLink(id, link))
+            .unwrap();
     }
 }

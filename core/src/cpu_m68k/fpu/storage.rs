@@ -1,3 +1,4 @@
+use crate::cpu_m68k::FpuM68kType;
 use anyhow::Result;
 use arpfloat::{BigInt, Float};
 use arrayvec::ArrayVec;
@@ -16,6 +17,7 @@ const EXPONENT_MAX: u64 = 0x7FFF;
 pub const SINGLE_SIZE: usize = 4;
 pub const DOUBLE_SIZE: usize = 8;
 pub const EXTENDED_SIZE: usize = 12;
+pub const PACKED_SIZE: usize = 12;
 
 /// Serde adapter for arpfloat::Float (as M68881 extended precision float format)
 pub mod float_as_ext_real {
@@ -192,8 +194,13 @@ impl From<BitsExtReal> for Float {
     }
 }
 
-impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
-    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
+impl<
+        TBus,
+        const ADDRESS_MASK: Address,
+        const CPU_TYPE: CpuM68kType,
+        const FPU_TYPE: FpuM68kType,
+        const PMMU: bool,
+    > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
@@ -303,13 +310,276 @@ where
     ) -> Result<()> {
         self.write_ticks::<Long>(addr, value.as_f32().to_bits())
     }
+
+    /// Parse BCD packed decimal format into Float with full precision
+    fn parse_packed_bcd(dw1: u32, dw2: u32, dw3: u32) -> Result<Float> {
+        // Packed BCD format (12 bytes):
+        // dw1: bits 31=mantissa sign, 30=exponent sign, 24-27=exp digit 1, 20-23=exp digit 2,
+        //      16-19=exp digit 3, 0-3=mantissa digit 1
+        // dw2: 8 mantissa digits (4 bits each, high to low)
+        // dw3: 8 mantissa digits (4 bits each, high to low)
+        // Total: 17 mantissa digits, 3 exponent digits
+        // String format: [-]D.DDDDDDDDDDDDDDDE[-]DDD
+
+        let mut s = String::with_capacity(24);
+
+        // Mantissa sign (bit 31)
+        if dw1 & 0x8000_0000 != 0 {
+            s.push('-');
+        }
+
+        // First mantissa digit (bits 0-3 of dw1)
+        s.push((b'0' + ((dw1 & 0xF) as u8)) as char);
+        s.push('.');
+
+        // Next 8 mantissa digits from dw2 (high nibble to low)
+        s.push((b'0' + (((dw2 >> 28) & 0xF) as u8)) as char);
+        s.push((b'0' + (((dw2 >> 24) & 0xF) as u8)) as char);
+        s.push((b'0' + (((dw2 >> 20) & 0xF) as u8)) as char);
+        s.push((b'0' + (((dw2 >> 16) & 0xF) as u8)) as char);
+        s.push((b'0' + (((dw2 >> 12) & 0xF) as u8)) as char);
+        s.push((b'0' + (((dw2 >> 8) & 0xF) as u8)) as char);
+        s.push((b'0' + (((dw2 >> 4) & 0xF) as u8)) as char);
+        s.push((b'0' + ((dw2 & 0xF) as u8)) as char);
+
+        // Next 8 mantissa digits from dw3 (high nibble to low)
+        s.push((b'0' + (((dw3 >> 28) & 0xF) as u8)) as char);
+        s.push((b'0' + (((dw3 >> 24) & 0xF) as u8)) as char);
+        s.push((b'0' + (((dw3 >> 20) & 0xF) as u8)) as char);
+        s.push((b'0' + (((dw3 >> 16) & 0xF) as u8)) as char);
+        s.push((b'0' + (((dw3 >> 12) & 0xF) as u8)) as char);
+        s.push((b'0' + (((dw3 >> 8) & 0xF) as u8)) as char);
+        s.push((b'0' + (((dw3 >> 4) & 0xF) as u8)) as char);
+        s.push((b'0' + ((dw3 & 0xF) as u8)) as char);
+
+        s.push('E');
+
+        // Exponent sign (bit 30)
+        if dw1 & 0x4000_0000 != 0 {
+            s.push('-');
+        }
+
+        // 3-digit exponent (bits 24-27, 20-23, 16-19 of dw1)
+        s.push((b'0' + (((dw1 >> 24) & 0xF) as u8)) as char);
+        s.push((b'0' + (((dw1 >> 20) & 0xF) as u8)) as char);
+        s.push((b'0' + (((dw1 >> 16) & 0xF) as u8)) as char);
+
+        Float::try_from_str(&s, SEMANTICS_EXTENDED)
+            .map_err(|e| anyhow::anyhow!("Invalid BCD packed decimal format '{}': {}", s, e))
+    }
+
+    /// Convert Float to packed BCD format with k-factor
+    fn format_packed(value: &Float, k: i8) -> (u32, u32, u32) {
+        // K-factor masks for packed BCD writes
+        // pkmask2: masks for dw2 (middle 8 mantissa digits)
+        #[rustfmt::skip]
+        const PKMASK2: [u32; 18] = [
+            0x00000000, // k=0: no digits
+            0x00000000, // k=1: 1 digit (in dw1 only)
+            0xF0000000, // k=2: 2 digits (1 in dw1, 1 in dw2)
+            0xFF000000, // k=3: 3 digits
+            0xFFF00000, // k=4: 4 digits
+            0xFFFF0000, // k=5: 5 digits
+            0xFFFFF000, // k=6: 6 digits
+            0xFFFFFF00, // k=7: 7 digits
+            0xFFFFFFF0, // k=8: 8 digits
+            0xFFFFFFFF, // k=9: 9 digits (1 in dw1, 8 in dw2)
+            0xFFFFFFFF, // k=10+: all dw2 digits
+            0xFFFFFFFF,
+            0xFFFFFFFF,
+            0xFFFFFFFF,
+            0xFFFFFFFF,
+            0xFFFFFFFF,
+            0xFFFFFFFF,
+            0xFFFFFFFF, // k=17: all digits
+        ];
+
+        // pkmask3: masks for dw3 (last 8 mantissa digits)
+        #[rustfmt::skip]
+        const PKMASK3: [u32; 18] = [
+            0x00000000, // k=0-9: no dw3 digits
+            0x00000000,
+            0x00000000,
+            0x00000000,
+            0x00000000,
+            0x00000000,
+            0x00000000,
+            0x00000000,
+            0x00000000,
+            0x00000000,
+            0xF0000000, // k=10: 10 digits (1 in dw1, 8 in dw2, 1 in dw3)
+            0xFF000000, // k=11: 11 digits
+            0xFFF00000, // k=12: 12 digits
+            0xFFFF0000, // k=13: 13 digits
+            0xFFFFF000, // k=14: 14 digits
+            0xFFFFFF00, // k=15: 15 digits
+            0xFFFFFFF0, // k=16: 16 digits
+            0xFFFFFFFF, // k=17: all 17 digits
+        ];
+
+        let mut dw1: u32 = 0;
+        let mut dw2: u32 = 0;
+        let mut dw3: u32 = 0;
+
+        // Convert to string with 16 digits of precision in scientific notation
+        // Format: [-]D.DDDDDDDDDDDDDDDDe[+/-]DDD
+        let s = format!("{:.16e}", value.as_f64());
+        let chars: Vec<char> = s.chars().collect();
+        let mut idx = 0;
+
+        // Handle mantissa sign
+        if idx < chars.len() && chars[idx] == '-' {
+            dw1 |= 0x8000_0000;
+            idx += 1;
+        } else if idx < chars.len() && chars[idx] == '+' {
+            idx += 1;
+        }
+
+        // First mantissa digit (before decimal point)
+        if idx < chars.len() && chars[idx].is_ascii_digit() {
+            dw1 |= (chars[idx] as u32 - '0' as u32) & 0xF;
+            idx += 1;
+        }
+
+        // Skip decimal point
+        if idx < chars.len() && chars[idx] == '.' {
+            idx += 1;
+        }
+
+        // Collect mantissa digits (up to 16 more)
+        let mut mantissa_digits = Vec::new();
+        while idx < chars.len() && chars[idx].is_ascii_digit() && mantissa_digits.len() < 16 {
+            mantissa_digits.push(chars[idx]);
+            idx += 1;
+        }
+
+        // Find exponent
+        let mut exp = 0;
+        let mut exp_negative = false;
+        if idx < chars.len() && (chars[idx] == 'e' || chars[idx] == 'E') {
+            idx += 1;
+        }
+        if idx < chars.len() && chars[idx] == '-' {
+            exp_negative = true;
+            idx += 1;
+        } else if idx < chars.len() && chars[idx] == '+' {
+            idx += 1;
+        }
+        while idx < chars.len() && chars[idx].is_ascii_digit() {
+            exp = exp * 10 + (chars[idx] as i32 - '0' as i32);
+            idx += 1;
+        }
+        if exp_negative {
+            exp = -exp;
+        }
+
+        // Handle negative k-factor (rounding)
+        #[allow(clippy::manual_range_contains)]
+        let k = if k <= 0 && k >= -13 {
+            let k_abs = (-k) as usize;
+            let round_pos = k_abs + (exp as usize) - 1;
+
+            // Round up if next digit >= 5
+            if round_pos < mantissa_digits.len()
+                && round_pos + 1 < mantissa_digits.len()
+                && mantissa_digits[round_pos + 1] >= '5'
+            {
+                // Increment digit at round_pos
+                if mantissa_digits[round_pos] < '9' {
+                    mantissa_digits[round_pos] = (mantissa_digits[round_pos] as u8 + 1) as char;
+                }
+            }
+
+            // Zero out trailing mantissa digits
+            for digit in mantissa_digits.iter_mut().skip(round_pos + 1) {
+                *digit = '0';
+            }
+
+            0 // Reset k to avoid masking below
+        } else {
+            k
+        };
+
+        // Pack 8 mantissa digits into dw2
+        for i in 0..8 {
+            dw2 <<= 4;
+            if i < mantissa_digits.len() && mantissa_digits[i].is_ascii_digit() {
+                dw2 |= (mantissa_digits[i] as u32 - '0' as u32) & 0xF;
+            }
+        }
+
+        // Pack next 8 mantissa digits into dw3
+        for i in 8..16 {
+            dw3 <<= 4;
+            if i < mantissa_digits.len() && mantissa_digits[i].is_ascii_digit() {
+                dw3 |= (mantissa_digits[i] as u32 - '0' as u32) & 0xF;
+            }
+        }
+
+        // Apply k-factor masking for positive k
+        if k >= 1 {
+            let k_idx = if k <= 17 { k as usize } else { 17 };
+            dw2 &= PKMASK2[k_idx];
+            dw3 &= PKMASK3[k_idx];
+        }
+
+        // Pack exponent
+        if exp_negative {
+            dw1 |= 0x4000_0000;
+        }
+        let exp_abs = exp.unsigned_abs();
+        let exp_d1 = (exp_abs / 100) % 10;
+        let exp_d2 = (exp_abs / 10) % 10;
+        let exp_d3 = exp_abs % 10;
+        dw1 |= (exp_d1 << 24) | (exp_d2 << 20) | (exp_d3 << 16);
+
+        (dw1, dw2, dw3)
+    }
+
+    /// Read FPU packed BCD real from memory
+    pub(in crate::cpu_m68k) fn read_fpu_packed(&mut self, addr: Address) -> Result<Float> {
+        // Packed BCD format: 96 bits (12 bytes)
+        // Read as 3 longs
+        let dw1 = self.read_ticks::<Long>(addr)?;
+        let dw2 = self.read_ticks::<Long>(addr.wrapping_add(4))?;
+        let dw3 = self.read_ticks::<Long>(addr.wrapping_add(8))?;
+
+        Self::parse_packed_bcd(dw1, dw2, dw3)
+    }
+
+    /// Read FPU packed BCD real immediate
+    pub(in crate::cpu_m68k) fn read_fpu_packed_imm(&mut self) -> Result<Float> {
+        // Packed BCD format: 96 bits (12 bytes)
+        // Read as 3 longs
+        let dw1 = self.fetch_immediate::<Long>()?;
+        let dw2 = self.fetch_immediate::<Long>()?;
+        let dw3 = self.fetch_immediate::<Long>()?;
+
+        Self::parse_packed_bcd(dw1, dw2, dw3)
+    }
+
+    /// Write FPU packed BCD real to memory
+    pub(in crate::cpu_m68k) fn write_fpu_packed(
+        &mut self,
+        addr: Address,
+        value: &Float,
+        k: i8,
+    ) -> Result<()> {
+        let (dw1, dw2, dw3) = Self::format_packed(value, k);
+
+        self.write_ticks::<Long>(addr, dw1)?;
+        self.write_ticks::<Long>(addr.wrapping_add(4), dw2)?;
+        self.write_ticks::<Long>(addr.wrapping_add(8), dw3)?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::bus::testbus::Testbus;
     use crate::bus::Address;
-    use crate::cpu_m68k::{CpuM68020, M68020_ADDRESS_MASK};
+    use crate::cpu_m68k::{CpuM68020Fpu, M68020_ADDRESS_MASK};
     use crate::types::Byte;
 
     use super::*;
@@ -352,7 +622,7 @@ mod tests {
             eprintln!("Testing {} / {:?}", &v, &v);
 
             let mut cpu =
-                CpuM68020::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
+                CpuM68020Fpu::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
 
             // Ensure _something_ was written
             for a in 0..12 {
@@ -393,7 +663,7 @@ mod tests {
             eprintln!("Testing {} / {:?}", &v, &v);
 
             let mut cpu =
-                CpuM68020::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
+                CpuM68020Fpu::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
 
             // Ensure _something_ was written
             for a in 0..8 {
@@ -434,7 +704,7 @@ mod tests {
             eprintln!("Testing {} / {:?}", &v, &v);
 
             let mut cpu =
-                CpuM68020::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
+                CpuM68020Fpu::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
 
             // Ensure _something_ was written
             for a in 0..4 {
@@ -912,7 +1182,8 @@ mod tests {
     #[test]
     fn test_memory_bias_persistence() {
         // Test that bias is correctly preserved when storing/loading from memory
-        let mut cpu = CpuM68020::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
+        let mut cpu =
+            CpuM68020Fpu::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
 
         let test_exponents = vec![-1000, -1, 0, 1, 1000];
 

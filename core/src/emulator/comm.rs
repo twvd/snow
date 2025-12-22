@@ -11,7 +11,10 @@ use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::debuggable::DebuggableProperties;
 use crate::keymap::KeyEvent;
 use crate::mac::scc::SccCh;
+#[cfg(feature = "ethernet")]
+use crate::mac::scsi::ethernet::EthernetLinkType;
 use crate::mac::scsi::target::ScsiTargetType;
+use crate::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use crate::mac::MacModel;
 use crate::tickable::Ticks;
 
@@ -26,16 +29,23 @@ pub type InputRecording = Vec<(Ticks, EmulatorCommand)>;
 #[derive(Serialize, Deserialize, Clone)]
 pub enum EmulatorCommand {
     Quit,
-    InsertFloppy(usize, String),
-    InsertFloppyWriteProtected(usize, String),
+    /// Inserts a floppy image, passing the image as boxed object.
+    /// Parameters: drive id, image, write-protect
+    InsertFloppy(usize, String, bool),
+    /// Inserts a floppy image, passing the image as boxed object.
+    /// Parameters: drive id, image, write-protect
     #[serde(skip)]
-    InsertFloppyImage(usize, Box<FloppyImage>),
+    InsertFloppyImage(usize, Box<FloppyImage>, bool),
     SaveFloppy(usize, PathBuf),
     EjectFloppy(usize),
     ScsiAttachHdd(usize, PathBuf),
     ScsiBranchHdd(usize, PathBuf),
     ScsiAttachCdrom(usize),
     ScsiLoadMedia(usize, PathBuf),
+    #[cfg(feature = "ethernet")]
+    ScsiAttachEthernet(usize),
+    #[cfg(feature = "ethernet")]
+    EthernetSetLink(usize, EthernetLinkType),
     DetachScsiTarget(usize),
     MouseUpdateAbsolute {
         x: u16,
@@ -72,6 +82,11 @@ pub enum EmulatorCommand {
     SetSharedDir(Option<PathBuf>),
     #[cfg(feature = "savestates")]
     SaveState(PathBuf, Option<Vec<u8>>),
+    SetDebugFramebuffers(bool),
+    SetFloppyRpmAdjustment(usize, i32),
+    #[serde(skip)]
+    SerialBridgeEnable(SccCh, SerialBridgeConfig),
+    SerialBridgeDisable(SccCh),
 }
 
 /// Emulator speed tweak
@@ -106,6 +121,8 @@ pub struct ScsiTargetStatus {
     pub target_type: ScsiTargetType,
     pub image: Option<PathBuf>,
     pub capacity: Option<usize>,
+    #[cfg(feature = "ethernet")]
+    pub link_type: Option<EthernetLinkType>,
 }
 
 #[derive(Debug)]
@@ -117,6 +134,7 @@ pub struct FddStatus {
     pub track: usize,
     pub image_title: String,
     pub dirty: bool,
+    pub drive_type: crate::mac::swim::drive::DriveType,
 }
 
 /// A friendly message ready for display to a user
@@ -136,10 +154,12 @@ pub enum EmulatorEvent {
     UserMessage(UserMessageType, String),
     FloppyEjected(usize, Box<FloppyImage>),
     ScsiMediaEjected(usize),
-    Memory((Address, Vec<u8>)),
+    Memory((Address, Vec<u8>, usize)),
     RecordedInput(InputRecording),
     InstructionHistory(Vec<HistoryEntry>),
     PeripheralDebug(DebuggableProperties),
     SccTransmitData(SccCh, Vec<u8>),
     SystrapHistory(Vec<SystrapHistoryEntry>),
+    /// Serial bridge status update
+    SerialBridgeStatus(SccCh, Option<SerialBridgeStatus>),
 }

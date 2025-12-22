@@ -1,4 +1,5 @@
 pub mod breakpoints;
+pub mod crt_shader;
 pub mod disassembly;
 pub mod framebuffer;
 pub mod instruction_history;

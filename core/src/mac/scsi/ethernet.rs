@@ -1,0 +1,593 @@
+//! Daynaport SCSI Ethernet adapter
+
+use crate::debuggable::Debuggable;
+use crate::mac::scsi::target::{ScsiTarget, ScsiTargetEvent, ScsiTargetType};
+use crate::mac::scsi::ScsiCmdResult;
+use crate::mac::scsi::STATUS_CHECK_CONDITION;
+use crate::mac::scsi::STATUS_GOOD;
+
+use anyhow::{bail, Result};
+#[cfg(feature = "ethernet_raw")]
+use crossbeam_channel::TrySendError;
+use rand::Rng;
+use serde::{Deserialize, Serialize};
+#[cfg(feature = "ethernet_nat")]
+use snow_nat::NatEngineStats;
+
+use std::path::Path;
+#[cfg(feature = "ethernet_nat")]
+use std::sync::Arc;
+
+type BasicPacket = Vec<u8>;
+
+/// Maximum amount of packets to buffer in the RX/TX queues
+const PACKET_QUEUE_SIZE: usize = 512;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+pub enum EthernetLinkType {
+    Down,
+    #[cfg(feature = "ethernet_nat")]
+    NAT,
+    #[cfg(feature = "ethernet_raw")]
+    Bridge(u32),
+}
+
+// Clippy is wrong, I don't think you can conditionally tag #[default] on an enum based on features
+#[allow(clippy::derivable_impls)]
+impl Default for EthernetLinkType {
+    fn default() -> Self {
+        #[cfg(feature = "ethernet_nat")]
+        {
+            Self::NAT
+        }
+        #[cfg(not(feature = "ethernet_nat"))]
+        {
+            Self::Down
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct ScsiTargetEthernet {
+    /// Check condition code
+    cc_code: u8,
+
+    /// Check condition ASC
+    cc_asc: u16,
+
+    /// MAC address
+    macaddress: [u8; 6],
+
+    /// Transmit queue (Mac -> network)
+    #[serde(skip)]
+    tx: Option<crossbeam_channel::Sender<BasicPacket>>,
+
+    /// Receive queue (network -> Mac)
+    #[serde(skip)]
+    rx: Option<crossbeam_channel::Receiver<BasicPacket>>,
+
+    /// Link type
+    #[serde(skip)]
+    link: EthernetLinkType,
+
+    /// NAT engine statistics
+    #[cfg(feature = "ethernet_nat")]
+    #[serde(skip)]
+    nat_stats: Option<Arc<NatEngineStats>>,
+
+    /// Interface enabled
+    enabled: bool,
+}
+
+impl Default for ScsiTargetEthernet {
+    fn default() -> Self {
+        let mut rand = rand::rng();
+
+        Self {
+            cc_code: 0,
+            cc_asc: 0,
+            macaddress: [
+                0x00,
+                0x80,
+                0x19,
+                rand.random(),
+                rand.random(),
+                rand.random(),
+            ],
+            tx: None,
+            rx: None,
+            link: Default::default(),
+            nat_stats: None,
+            enabled: false,
+        }
+    }
+}
+
+impl ScsiTargetEthernet {
+    fn tx_packet(&mut self, packet: &[u8]) {
+        if self.rx.is_none() && self.tx.is_none() && self.link != EthernetLinkType::Down {
+            // Initialize link
+            if let Err(e) = self.eth_set_link(self.link) {
+                log::error!("Failed to set ethernet link: {}", e);
+            }
+        }
+
+        if let Some(ref tx) = self.tx {
+            match tx.try_send(packet.to_owned()) {
+                Ok(_) => {}
+                Err(e) => log::error!("Failed to send packet {:?}", e),
+            }
+        }
+    }
+
+    #[cfg(feature = "ethernet_raw")]
+    fn start_bridge(&mut self, ifidx: u32) -> Result<()> {
+        // This all doesn't work very well:
+        //  - without MAC rewrite enabled, it doesn't work on some (all?) adapters
+        //  - on modern adapters with TSO, GSO, etc, the Mac receives way too large packets
+        //  - with MAC rewrite enabled, the Mac will see all of the hosts packets
+        //    (better not be streaming 4K while running the emulator!)
+        // Code kept for posterity
+
+        // Enable to rewrite MAC-addresses of the emulated system to the hosts MAC-address
+        const REWRITE_MACS: bool = false;
+
+        let Some(interface) = pnet::datalink::interfaces()
+            .into_iter()
+            .find(|i| i.index == ifidx)
+        else {
+            bail!("Cannot find interface index {}", ifidx)
+        };
+
+        let (bridge_tx, emulator_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
+        let (emulator_tx, bridge_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
+        self.tx = Some(emulator_tx);
+        self.rx = Some(emulator_rx);
+
+        let bridge_config = pnet::datalink::Config {
+            promiscuous: true,
+            ..Default::default()
+        };
+
+        match pnet::datalink::channel(&interface, bridge_config) {
+            Ok(pnet::datalink::Channel::Ethernet(mut physical_tx, mut physical_rx)) => {
+                log::info!(
+                    "Starting ethernet bridge for interface '{}'",
+                    interface.name
+                );
+
+                // Physical RX -> Virtual RX
+                let t_emu_mac = self.macaddress;
+                let t_physical_mac: pnet::datalink::MacAddr = if REWRITE_MACS {
+                    interface.mac.unwrap()
+                } else {
+                    t_emu_mac.into()
+                };
+                std::thread::spawn(move || loop {
+                    match physical_rx.next() {
+                        Ok(packet) => {
+                            // Squelch echos and filter on packets destined for us
+                            let mut packet = packet.to_vec();
+                            let Some(mut ethpacket) =
+                                pnet::packet::ethernet::MutableEthernetPacket::new(&mut packet)
+                            else {
+                                log::warn!("Dropped RX invalid packet: {:02X?}", packet);
+                                continue;
+                            };
+                            let dest = ethpacket.get_destination();
+                            let src = ethpacket.get_source();
+                            if (dest != t_physical_mac && !dest.is_broadcast())
+                                || src == t_physical_mac
+                            {
+                                continue;
+                            }
+
+                            // Rewrite MAC-addresses
+                            if REWRITE_MACS && dest == t_physical_mac {
+                                ethpacket.set_destination(t_emu_mac.into());
+                            }
+
+                            //log::debug!("Physical RX: {:?} {:02X?}", &ethpacket, &packet);
+
+                            match bridge_tx.try_send(packet.to_vec()) {
+                                Ok(_) => {}
+                                Err(TrySendError::Disconnected(_)) => {
+                                    log::info!("Bridge terminated (bridge_tx closed)");
+                                    return;
+                                }
+                                Err(TrySendError::Full(_)) => {
+                                    log::error!("bridge_tx queue overflow");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::info!("Bridge terminated (physical_rx closed: {})", e);
+                            return;
+                        }
+                    }
+                });
+                // Virtual TX -> Physical TX
+                std::thread::spawn(move || loop {
+                    use pnet::packet::{MutablePacket, Packet};
+
+                    match bridge_rx.recv() {
+                        Ok(mut packet) => {
+                            let Some(mut ethpacket) =
+                                pnet::packet::ethernet::MutableEthernetPacket::new(&mut packet)
+                            else {
+                                log::warn!("Dropped TX invalid packet: {:02X?}", packet);
+                                continue;
+                            };
+                            if REWRITE_MACS && ethpacket.get_source() == t_emu_mac {
+                                ethpacket.set_source(t_physical_mac);
+                            }
+                            if REWRITE_MACS
+                                && ethpacket.get_ethertype()
+                                    == pnet::packet::ethernet::EtherTypes::Arp
+                            {
+                                if let Some(mut arppacket) =
+                                    pnet::packet::arp::MutableArpPacket::new(
+                                        ethpacket.payload_mut(),
+                                    )
+                                {
+                                    arppacket.set_sender_hw_addr(t_physical_mac);
+                                }
+                            }
+
+                            // Minimum frame size
+                            //if out_packet.len() < 64 {
+                            //    out_packet.resize(64, 0);
+                            //}
+                            //log::debug!("Physical TX: {:02X?}", &ethpacket);
+
+                            match physical_tx.send_to(ethpacket.packet(), None).unwrap() {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    log::info!("Bridge terminated (physical_tx closed: {})", e);
+                                    return;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::info!("Bridge terminated (bridge_rx closed: {})", e);
+                            return;
+                        }
+                    }
+                });
+            }
+            Ok(_) => {
+                bail!("Failed opening bridge channel");
+            }
+            Err(e) => {
+                bail!("Failed opening bridge channel: {:?}", e);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[typetag::serde]
+impl ScsiTarget for ScsiTargetEthernet {
+    #[cfg(feature = "savestates")]
+    fn after_deserialize(&mut self, _imgfn: &Path) -> Result<()> {
+        todo!()
+    }
+
+    fn set_blocksize(&mut self, _blocksize: usize) -> bool {
+        false
+    }
+
+    fn take_event(&mut self) -> Option<ScsiTargetEvent> {
+        None
+    }
+
+    fn target_type(&self) -> ScsiTargetType {
+        ScsiTargetType::Ethernet
+    }
+
+    fn unit_ready(&mut self) -> Result<ScsiCmdResult> {
+        Ok(ScsiCmdResult::Status(STATUS_GOOD))
+    }
+
+    fn inquiry(&mut self, cmd: &[u8]) -> Result<ScsiCmdResult> {
+        let mut result = vec![0; 36];
+
+        // 0 Peripheral qualifier (5-7), peripheral device type (4-0)
+        result[0] = 3; // Processor
+        result[1] = 0;
+
+        // SCSI version compliance
+        result[2] = 0x01;
+        result[3] = 0x02;
+
+        // 4 Additional length (N-4), min. 32
+        result[4] = 31; //result.len() as u8 - 4;
+        result[7] = 0x18;
+
+        // 8..16 Vendor identification
+        result[8..16].copy_from_slice(b"Dayna   ");
+
+        // 16..32 Product identification
+        result[16..32].copy_from_slice(b"SCSI/Link       ");
+
+        // 32..36 Revision
+        result[32..36].copy_from_slice(b"2.0f");
+
+        result.resize(cmd[4].min(36).into(), 0);
+        Ok(ScsiCmdResult::DataIn(result))
+    }
+
+    fn mode_sense(&mut self, page: u8) -> Option<Vec<u8>> {
+        log::debug!("Mode sense: {:02X}", page);
+        None
+    }
+
+    fn ms_density(&self) -> u8 {
+        0
+    }
+
+    fn ms_media_type(&self) -> u8 {
+        0
+    }
+
+    fn ms_device_specific(&self) -> u8 {
+        0
+    }
+
+    fn set_cc(&mut self, code: u8, asc: u16) {
+        self.cc_code = code;
+        self.cc_asc = asc;
+    }
+
+    fn req_sense(&mut self) -> (u8, u16) {
+        (self.cc_code, self.cc_asc)
+    }
+
+    fn blocksize(&self) -> Option<usize> {
+        None
+    }
+
+    fn blocks(&self) -> Option<usize> {
+        None
+    }
+
+    fn read(&self, _block_offset: usize, _block_count: usize) -> Vec<u8> {
+        unreachable!()
+    }
+
+    fn write(&mut self, _block_offset: usize, _data: &[u8]) {
+        unreachable!()
+    }
+
+    fn image_fn(&self) -> Option<&Path> {
+        None
+    }
+
+    fn load_media(&mut self, _path: &Path) -> Result<()> {
+        unreachable!()
+    }
+
+    fn branch_media(&mut self, _path: &Path) -> Result<()> {
+        unreachable!()
+    }
+
+    fn media(&self) -> Option<&[u8]> {
+        None
+    }
+
+    fn specific_cmd(&mut self, cmd: &[u8], outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
+        match cmd[0] {
+            0x08 => {
+                // READ(6)
+                let read_len = ((cmd[3] as usize) << 8) | (cmd[4] as usize);
+
+                if let Some(packet) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+                    const FCS: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
+
+                    let packet_len = packet.len().max(64);
+                    let resp_len = 6 + packet_len + 4;
+                    if read_len < resp_len {
+                        log::error!(
+                            "RX packet too large (is {}, have {}): {:02X?}",
+                            resp_len,
+                            read_len,
+                            &packet
+                        );
+                        return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                    }
+
+                    let mut response = vec![0; resp_len];
+                    response[6..(6 + packet.len())].copy_from_slice(&packet);
+                    response[(6 + packet_len)..resp_len]
+                        .copy_from_slice(&FCS.checksum(&packet).to_be_bytes());
+
+                    // Length
+                    response[0] = (packet_len >> 8) as u8;
+                    response[1] = packet_len as u8;
+                    if !self.rx.as_ref().unwrap().is_empty() {
+                        // More packets available to read
+                        // TODO this causes SCSI Manager issues
+                        //response[5] = 0x10;
+                    }
+                    Ok(ScsiCmdResult::DataIn(response))
+                } else {
+                    // No data
+                    Ok(ScsiCmdResult::DataIn(vec![0; 6]))
+                }
+            }
+            0x09 => {
+                // Stats
+                let mut result = vec![0; 18];
+                result[0..6].copy_from_slice(&self.macaddress);
+                Ok(ScsiCmdResult::DataIn(result))
+            }
+            0x0A => {
+                // WRITE(6)
+                if let Some(od) = outdata {
+                    if cmd[5] & 0x80 != 0 {
+                        let len = ((od[0] as usize) << 8) | (od[1] as usize);
+                        if od.len() < (len + 4) {
+                            bail!("Invalid write len {} <> {}", len, od.len());
+                        }
+                        self.tx_packet(&od[4..(len + 4)]);
+                    } else {
+                        self.tx_packet(od);
+                    }
+                    Ok(ScsiCmdResult::Status(STATUS_GOOD))
+                } else {
+                    let mut write_len = ((cmd[3] as usize) << 8) | (cmd[4] as usize);
+                    if cmd[5] & 0x80 != 0 {
+                        write_len += 8;
+                    }
+                    Ok(ScsiCmdResult::DataOut(write_len))
+                }
+            }
+            0x0E => {
+                // Enable/disable interface
+                let enable = cmd[5] & 0x80 != 0;
+                log::debug!("Interface enable: {}", enable);
+
+                if !self.enabled && enable {
+                    // Drain RX queue
+                    if let Some(rx) = &self.rx {
+                        while rx.try_recv().is_ok() {}
+                    }
+                }
+
+                self.enabled = enable;
+
+                Ok(ScsiCmdResult::Status(STATUS_GOOD))
+            }
+            _ => Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION)),
+        }
+    }
+
+    fn eth_set_link(&mut self, link: EthernetLinkType) -> Result<()> {
+        // Terminate active links
+        // Dropping the senders will cause the channel to close and the receiver threads to terminate
+        self.rx = None;
+        self.tx = None;
+        self.nat_stats = None;
+
+        self.link = link;
+        match link {
+            EthernetLinkType::Down => {
+                log::info!("Ethernet link down");
+            }
+            #[cfg(feature = "ethernet_raw")]
+            EthernetLinkType::Bridge(i) => {
+                log::info!("Ethernet link bridge to interface {}", i);
+                self.start_bridge(i)?;
+            }
+            #[cfg(feature = "ethernet_nat")]
+            EthernetLinkType::NAT => {
+                let (nat_tx, emulator_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
+                let (emulator_tx, nat_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
+
+                let mut nat = snow_nat::NatEngine::new(
+                    nat_tx,
+                    nat_rx,
+                    [0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA],
+                    [10, 0, 0, 1],
+                    8,
+                );
+                self.rx = Some(emulator_rx);
+                self.tx = Some(emulator_tx);
+                self.nat_stats = Some(nat.stats());
+                std::thread::spawn(move || {
+                    nat.run();
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn eth_link(&self) -> Option<EthernetLinkType> {
+        Some(self.link)
+    }
+}
+
+impl Debuggable for ScsiTargetEthernet {
+    fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        use crate::debuggable::*;
+        use crate::{dbgprop_group, dbgprop_str, dbgprop_string, dbgprop_udec};
+        use std::sync::atomic::Ordering;
+
+        let mut result = vec![dbgprop_string!(
+            "MAC address",
+            format!(
+                "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                self.macaddress[0],
+                self.macaddress[1],
+                self.macaddress[2],
+                self.macaddress[3],
+                self.macaddress[4],
+                self.macaddress[5],
+            )
+        )];
+
+        if let Some(tx) = &self.tx {
+            result.push(dbgprop_udec!("TX queue length", tx.len()));
+        }
+        if let Some(rx) = &self.rx {
+            result.push(dbgprop_udec!("RX queue length", rx.len()));
+        }
+        #[cfg(feature = "ethernet_nat")]
+        if let Some(stats) = &self.nat_stats {
+            result.push(dbgprop_group!(
+                "NAT engine",
+                vec![
+                    dbgprop_udec!(
+                        "Emu -> remote packets",
+                        stats.rx_packets.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!(
+                        "Emu -> remote bytes",
+                        stats.rx_bytes.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!(
+                        "Remote -> emu packets",
+                        stats.tx_packets.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!(
+                        "Remote -> emu bytes",
+                        stats.tx_bytes.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!(
+                        "Active TCP connections",
+                        stats.nat_active_tcp.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!(
+                        "Active UDP connections",
+                        stats.nat_active_udp.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!(
+                        "Total TCP connections",
+                        stats.nat_total_tcp.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!(
+                        "Total UDP connections",
+                        stats.nat_total_udp.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!(
+                        "Expired connections",
+                        stats.nat_expired.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!("TCP SYNs seen", stats.nat_tcp_syn.load(Ordering::Acquire)),
+                    dbgprop_udec!(
+                        "TCP FINs from emulator seen",
+                        stats.nat_tcp_fin_local.load(Ordering::Acquire)
+                    ),
+                    dbgprop_udec!(
+                        "TCP FINs from remote seen",
+                        stats.nat_tcp_fin_remote.load(Ordering::Acquire)
+                    ),
+                ]
+            ));
+        } else {
+            result.push(dbgprop_str!("NAT engine", "Inactive"));
+        }
+        result
+    }
+}

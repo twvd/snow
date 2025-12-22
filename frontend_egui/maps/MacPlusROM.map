@@ -1,0 +1,581 @@
+BaseOfRom 400000 l
+RomRsrc 40001A f
+ResetEntry 40002A f
+StartBoot 400042 f
+noDiagRom 400062 l
+InitSCC 40082C f
+InitFS 400C7A f
+InitEvents 400D4C f
+PutIcon 400EC4 f
+SysError 401142
+SysBeep 4011DC
+Enqueue 4019CA f
+Dequeue 4019F0 f
+ScrnBitMap 401E72
+PinRect 401F38 f
+Dispatch 401F4A
+SetTrapAddress 401FBA f
+GetTrapAddress 40200A f
+Read 4023BE f
+Write 40242E f
+Control 402442 f
+Status 402450 f
+KillIO 402476 f
+DrvrInstall 4024CA f
+DrvrRemove 402528 f
+AddDrive 402558 f
+OSEventAvail 402764 f
+GetOSEvent 4027EC f
+FlushEvents 40280A f
+Trap1_32 40280A
+InitQueue 402A6C f
+MountVol 402DF8 f
+Offline 40343A f
+Eject 4034E0 f
+UnmountVol 4035B4 f
+FlushVol 4035FC f
+GetVolInfo 403824 f
+SetVol 403ADA f
+create 4041E2
+Delete 40440C
+SetFilType 404852 f
+SetFilLock 40488A f
+RstFilLock 404894 f
+SetFileInfo 4048D6 f
+GetFileInfo 404AE2 f
+GetFPos 404F10 f
+SetFPos 404F14 f
+FlushFile 405144 f
+GetEOF 405340 f
+Allocate 40548E f
+SetEOF 4054C0 f
+InitCursor 4082C6 f
+SetCursor 4082D6 f
+HideCursor 4082F2 f
+ShowCursor 4082F8 f
+ShieldCursor 4082FE f
+ObscureCursor 40832E f
+BitNot 408334 f
+BitAnd 40833C f
+BitXOr 408344 f
+BitOr 40834E f
+BitShift 408356 f
+BitTst 40836C f
+BitSet 40837A f
+BitClr 408384 f
+random 40839C
+ForeColor 4083EE f
+BackColor 4083F2 f
+ColorBit 408400 f
+GetMaskTable 40840E f
+GetPixel 4085D4 f
+stuffhex 408608
+InitGraf 4087A6 f
+OpenPort 40886C f
+InitPort 408884 f
+ClosePort 408904 f
+SetStdProcs 40891C
+LocalToGlobal 408956 f
+GlobalToLocal 40895E f
+addpt 40898A
+subpt 408992
+SetPort 4089B0 f
+GetPort 4089B8 f
+GrafDevice 4089C2
+SetPBits 4089C8
+BackPat 4089E0
+PortSize 4089EE
+MovePortTo 408A0E f
+SetOrigin 408A3A
+ClipRect 408A6E f
+SetClip 408A80 f
+SetPt 408AA0
+equalpt 408AAA
+StdText 408AB6 f
+TextFace 408C62
+DrawChar 408C6E f
+CharWidth 408C7C
+TextFont 408C94
+TextMode 408C98
+TextSize 408C9C
+SpaceExtra 408CA2
+drawstring 408CAE
+DrawText 408CC0 f
+stringwidth 408CD8
+TextWidth 408CE8 f
+StdTxMeas 408D50
+MeasureText 408DF6
+GetFontInfo 408E84 f
+stdline 409668
+LineTo 4096FA
+Line 409710
+MoveTo 409728
+Move 409734
+HidePen 4097C0 f
+ShowPen 4097C4 f
+GetPenState 4097D0 f
+SetPenState 4097D4 f
+GetPen 4097F6 f
+PenSize 409806 f
+PenMode 409814 f
+PenPat 40981A f
+PenNormal 40982E f
+StdRect 409E7E
+FillRect 409F12
+FrameRect 409F28
+PaintRect 409F2C
+EraseRect 409F30
+InverRect 409F34
+SetRect 40A082
+EqualRect 40A090
+EmptyRect 40A0AA
+OffsetRect 40A0C4 f
+InsetRect 40A0D6 f
+UnionRect 40A184 f
+pt2rect 40A1C2
+ptinrect 40A1F8
+StdRRect 40AC70
+FrameRoundRect 40AD02 f
+PaintRoundRect 40AD06 f
+EraseRoundRect 40AD0A f
+InverRoundRect 40AD0E f
+FillRoundRect 40AD12 f
+StdOval 40AD4C f
+FrameOval 40ADD4 f
+PaintOval 40ADD8 f
+EraseOval 40ADDC f
+InvertOval 40ADE0 f
+FillOval 40ADE4 f
+StdArc 40AF58 f
+FrameArc 40AFD6 f
+PaintArc 40AFDA f
+EraseArc 40AFDE f
+InvertArc 40AFE2
+FillArc 40AFE6 f
+AngleFromSlope 40B790 f
+SlopeFromAngle 40B7CE f
+pttoangle 40B8F2
+StdPoly 40B982
+FramePoly 40B9F8 f
+PaintPoly 40B9FC f
+ErasePoly 40BA00 f
+InvertPoly 40BA04 f
+FillPoly 40BA08 f
+OpenPoly 40BA3E f
+ClosePoly 40BA72 f
+KillPoly 40BAE0 f
+OffsetPoly 40BAE8 f
+MapPoly 40BB04 f
+StdRgn 40BBF6 f
+FrameRgn 40BC5C f
+PaintRgn 40BC60 f
+EraseRgn 40BC64 f
+InverRgn 40BC68 f
+FillRgn 40BC6C f
+NewRgn 40BD4E f
+DisposRgn 40BD72 f
+OpenRgn 40BD7A f
+CloseRgn 40BDA8 f
+CopyRgn 40BDFE f
+SetEmptyRgn 40BE4C f
+SetRecRgn 40BE58
+RectRgn 40BEB4 f
+OfsetRgn 40BEC2
+InsetRgn 40BEF4 f
+EmptyRgn 40BF90 f
+EqualRgn 40BFA0 f
+SectRgn 40BFDE f
+UnionRgn 40BFE2 f
+DiffRgn 40BFE6 f
+XorRgn 40BFEA f
+PtInRgn 40C0D4 f
+RectInRgn 40C134 f
+MapRgn 40C218 f
+StdBits 40C8CC
+CopyBits 40CA4A f
+CopyMask 40CAF0 f
+SeedFill 40CD30 f
+CalcMask 40CD38
+ScrollRect 40CE8E
+PackBits 40CF8C f
+UnpackBits 40D01C
+StdComment 40D8D0
+StdGetPic 40D930 f
+StdPutPic 40D956 f
+PicComment 40D9D6
+OpenPicture 40D9EC f
+ClosePicture 40DAA8 f
+KillPicture 40DAE4 f
+DrawPicture 40DAEC f
+ScalePt 40E512
+MapPt 40E56A
+MapRect 40E5CC
+InitFonts 40E5E4 f
+GetFNum 40F166 f
+SetFontLock 40F1D8 f
+RealFont 40F20E
+SetFScaleDisabl 40F260
+FontMetrics 40F274 f
+UnloadSeg 40F4E0 f
+Chain 40F556 f
+Launch 40F55C f
+GoodByeLoop 40F576 l
+NextGoodBye 40F590 l
+LaunchCom 40F59C l
+SkipClose 40F5BA l
+GoInitAZone 40F5E2 l
+SetNewStack 40F66E l
+SetA5 40F674 l
+vSegStack 40F67A f
+ExitToShell 40F6D8 f
+BadOpen 40F70A f
+GetAppParms 40F710 f
+InstallRDrivers 40F72C f
+IRDLoop 40F73A l
+Trap0_37 40F790
+WriteParam 40F7AA f
+ReadDateTime 40F7CA f
+SetDateTime 40F7D4 f
+Delay 40F7DC f
+CmpString 40F7EE f
+uprstring 40F878
+Trap1_54 40F878
+InitUtil 40FCC2 f
+ReadXPRam 40FE18 f
+WriteXPRam 40FE22 f
+SetAppBase 40FE76
+GetZone 40FFA4 f
+Trap1_1A 40FFA4
+Trap1_1B 40FFAA
+SetZone 40FFAA f
+CompactMem 40FFBE f
+Trap1_4C 40FFBE
+PurgeMem 40FFEE f
+PurgeSpace 41000A f
+FreeMem 410014 f
+Trap1_1D 41003C
+MaxMem 41003C f
+SetGrowZone 410070 f
+SetApplLimit 41007A f
+StackSpace 41009E
+MaxApplZone 4100AE f
+Trap1_1E 4100D6
+DisposPtr 4100F2
+GetPtrSize 410108 f
+PtrZone 41011C f
+NewEmptyHandle 41013A f
+Trap1_22 41014E
+Trap1_23 410170
+Trap1_25 410190
+GetHandleSize 410190 f
+Trap1_24 41019C
+EmptyHandle 4101DC f
+Trap1_29 410230
+Trap1_2A 41023A
+HUnlock 41023A f
+HPurge 410244 f
+HNoPurge 41024E f
+MoreMasters 410274 f
+DerefHandle 41045E
+MMHPrologue 4104C6
+PurgeHeap 410570 f
+BFindS 4106A2 f
+CompactHp 4107B2 f
+BlockMove 410CC0 f
+GetKeys 410F30 f
+Button 410F4C
+TickCount 410F5E
+GetMouse 410FA0
+StillDown 410FB6
+WaitMouseUp 410FDE f
+EventAvail 410FFC
+GetNextEvent 411000 f
+newstring 4111AC
+setstring 4111C4
+CalcVis 411238 f
+CalcVBehind 411290 f
+ClipAbove 4112D4
+PaintOne 4112F8 f
+PaintBehind 4113A2 f
+SaveOld 41140E f
+DrawNew 41143C f
+ShowHide 41149C f
+GetWMgrPort 4114DE
+CheckUpdate 4114E8
+InitWindows 41157C
+newwindow 411642
+CloseWindow 411776 f
+DisposWindow 411804
+ShowWindow 411812
+HideWindow 41183A f
+GetWRefCon 411864
+SetWRefCon 411872
+SetWindowPic 411882 f
+GetWindowPic 411888 f
+getwtitle 41188E
+setwtitle 4118A6
+deltapoint 411924
+MoveWindow 411974
+HiliteWindow 411A84
+SizeWindow 411AC4 f
+ZoomWindow 411B18 f
+trackgoaway 411B7E
+trackbox 411B86
+SelectWindow 411BF4 f
+BringToFront 411C24 f
+SendBehind 411CC0
+BeginUpdate 411D16
+EndUpdate 411D50
+FrontWindow 411D72
+dragwindow 411D9C
+InvalRgn 411F8E
+InvalRect 411FCE
+ValidRgn 411FEC
+ValidRect 411FF0
+growwindow 411FF4
+findwindow 4120F6
+DrawGrowIcon 41217A
+InitMenus 412198 f
+ClearMenuBar 4121FE f
+InsertMenu 41220E f
+DeleteMenu 4122AE f
+DrawMenuBar 412350 f
+HiliteMenu 4123DA f
+EnableItem 412404 f
+DisableItem 412420 f
+MenuSelect 41246E f
+GetMenuBar 41279E f
+SetMenuBar 4127B2 f
+DisposMenu 4127C2
+FlashMenuBar 4127D8 f
+GetItmIcon 4128AC
+SetItmIcon 4128B0
+GetItmStyle 4128B4
+SetItmStyle 4128B8
+GetItmMark 4128BC
+SetItmMark 4128C0
+CheckItem 4128C4 f
+MenuKey 4128E4 f
+GetItem 412960 f
+CalcMenuSize 412994
+newmenu 4129CA
+appendmenu 412A1A
+insmenuitem 412A22
+GetMHandle 412B7E
+DelMenuItem 412B9E
+SetItem 412BD0 f
+SetMFlash 412C16
+AddResMenu 412C20 f
+InsertResMenu 412C28
+CountMItems 412CFC
+PlotIcon 412D18 f
+newcontrol 412D54
+DisposControl 412E96
+KillControls 412EBA f
+Trap1_16D 412ECC
+ShowControl 412ED6 f
+HideControl 412EF4 f
+MoveControl 412F0E f
+GetCRefCon 412F4C
+SetCRefCon 412F5A
+GetCtlAction 412F6A f
+SetCtlAction 412F6E f
+SizeControl 412F72
+HiliteControl 412F9A f
+getctitle 412FC6
+setctitle 412FDE
+GetCtlValue 413020
+GetMinCtl 41302E
+GetMaxCtl 413032
+SetCtlValue 413036
+SetMinCtl 413078
+SetMaxCtl 41307C
+testcontrol 413080
+dragcontrol 4130AE
+trackcontrol 413160
+UpdtControls 41324E
+DrawControls 41325E
+findcontrol 4132E6
+InitResources 413376
+RsrcZoneInit 413708
+createresfile 4137A6
+openrfperm 41381A
+UseResFile 41382E
+GetResFileAttrs 413838 f
+SetResFileAttrs 413844 f
+UpdateResFile 413910 f
+CloseResFile 413BD2 f
+Count1Resources 413C76
+CountResources 413C7A
+Get1IxResource 413CA0
+GetIndResource 413CA4 f
+Count1Types 413D3C f
+CountTypes 413D40 f
+Get1IxType 413D86
+GetIndType 413D8A f
+Unique1ID 413DAC f
+UniqueID 413DB0 f
+Get1Resource 413DEA f
+Get1NamedResour 413E2E
+GetNamedResource 413E32 f
+LoadResource 4143CC f
+ReleaseResource 41440A f
+DetachResource 414434 f
+ChangedResource 41444C
+WriteResource 414482 f
+HomeResFile 4144BC
+SetResPurge 4144E4 f
+SetResLoad 414504 f
+CurResFile 41450E
+ResError 414516
+Trap1_1AC 41451E
+Trap1_1AE 41452E
+GetResAttrs 414538
+SetResAttrs 41454C
+getresinfo 41457E
+setresinfo 4145C4
+addresource 41460E
+RmveResource 4146E8
+SizeRsrc 414864 f
+MaxSizeRsrc 414886
+Trap1_1C5 41489A
+InitDialogs 4148B2 f
+StopAlert 414968 f
+NoteAlert 41496C f
+CautionAlert 414970 f
+Alert 414974 f
+GetNewDialog 414A90 f
+NewDialog 414AC8 f
+IsDialogEvent 414B60
+DialogSelect 414B9A f
+ModalDialog 414BDA f
+DrawDialog 414C68 f
+UpdtDialog 414C80 f
+CloseDialog 414C9E f
+DisposDialog 414D24 f
+CouldDialog 414D5A f
+CouldAlert 414D68 f
+FreeDialog 414DB4 f
+FreeAlert 414DC2 f
+ParamText 414E0E f
+ErrorSound 414E32 f
+GetDItem 414E3A f
+SetDItem 414E80 f
+GetIText 414EB6 f
+SetIText 414ED6 f
+SelIText 414F38 f
+HideDItem 414F92 f
+ShowDItem 414FF0 f
+FindDItem 415064 f
+Munger 415588 f
+XMunger 4155B6 f
+HandToHand 4156EC f
+PtrToXHand 41570A f
+PtrToHand 415712 f
+HandAndHand 41572C f
+PtrAndHand 415750 f
+MethodDispatch 415760 f
+LongMul 4157B2 f
+FracMul 4157DE f
+FixMul 4157E6 f
+FracDiv 4158B0 f
+FixDiv 4158B6 f
+FracSqrt 415900 f
+LoWord 415974 f
+HiWord 41597C f
+FixRound 415986 f
+FracCos 4159A6 f
+FracSin 4159AE f
+FixATan2 415A56 f
+Fix2X 415B18 f
+Frac2X 415B1E f
+X2Fix 415B4A f
+X2Frac 415B50 f
+Fix2Long 415BAC f
+Frac2Fix 415BB0 f
+Long2Fix 415BCC f
+Fix2Frac 415BD0 f
+SystemClick 415CA0 f
+SystemTask 415D72 f
+SystemMenu 415DEE f
+SysEdit 415E36 f
+OpenDeskAcc 415E64 f
+CloseDeskAcc 415EB2 f
+GetPattern 415ECC f
+GetCursor 415EE6 f
+GetString 415EEE f
+GetIcon 415EF6 f
+GetPicture 415EFE f
+GetNewWindow 415F06 f
+GetNewControl 415F5C f
+GetRMenu 415FAC f
+GetNewMBar 41602A f
+TEGetText 41608E f
+TEInit 41609A f
+TEDispose 4160C0 f
+TextBox 4160DE f
+TESetText 4161BC f
+TECalText 416200 f
+TESetSelect 41623A
+TENew 416266 f
+TEUpdate 4162E0
+teclick 41630E
+TECopy 4167AE f
+TECut 4167D4 f
+TEDelete 4167E2 f
+TEActivate 416A62
+TEDeactivate 416A84
+TEIdle 416A9A f
+TEPaste 416AC2 f
+TEInsert 416B80 f
+TESetJust 416BEC f
+TEScroll 416C12 f
+TEPinScroll 416C54 f
+TESelView 416CC0 f
+TEAutoView 416D2C f
+InfoScrap 416DAC f
+UnloadScrap 416E26 f
+LodeScrap 416E5A f
+ZeroScrap 416E8E f
+GetScrap 416EDA f
+PutScrap 416F4A f
+InitPack 416F90 f
+InitAllPacks 416FB2 f
+Pack0 417032 f
+Pack1 417034 f
+Pack2 417036 f
+Pack3 417038 f
+Pack4 41703A f
+Pack5 41703C f
+Pack6 41703E f
+Pack7 417040 f
+Pack8 417042 f
+Pack9 417044 f
+Pack10 417046 f
+Pack11 417048 f
+Pack12 41704A f
+Pack13 41704C f
+Pack14 41704E f
+Pack15 417050 f
+Secs2Date 417052 f
+Date2Secs 4170CA f
+InsTime 4175D2 f
+RmvTime 4175E0 f
+PrimeTime 4175FA f
+_DRVR_2_.Print 41784C
+_DRVR_3_.Sound 4179C0
+_DRVR_4_.Sony 417D30
+_DRVR_10_.ATP 419DA0
+_DRVR_9_.MPP 41A6FA
+_SERD_0_ 41B6D0
+_MDEF_0_ 41BF40
+_WDEF_0_ 41C346
+_PACK_7_ 41C9E0
+_PACK_5_ 41CF2E
+_PACK_4_ 41DF94
+_CURS_2_ 41F154
+_CURS_3_ 41F1A0
+_CURS_1_ 41F1EC
+_CURS_4_ 41F238
+_FONT_0_Chicago 41F284
+_FONT_12_ 41F28C

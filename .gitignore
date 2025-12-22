@@ -1,10 +1,12 @@
 /.idea
+/.vscode
 /floppies
 /target
 /shared
 *.swp
 *.swo
 *.rom
+*.uk6
 *.bin
 *.dsk
 *.moof
@@ -13,3 +15,4 @@
 *.dc42
 *.snoww
 Snow screenshot*.png
+frontend_egui/map_files.rs.inc

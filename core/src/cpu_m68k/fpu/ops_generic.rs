@@ -1,3 +1,4 @@
+use crate::cpu_m68k::FpuM68kType;
 use anyhow::{bail, Result};
 use arpfloat::Float;
 use either::Either;
@@ -11,10 +12,10 @@ use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord};
 use crate::cpu_m68k::fpu::math::FloatMath;
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
-use crate::cpu_m68k::CpuM68kType;
+use crate::cpu_m68k::{CpuM68kType, FPU_M68881, FPU_M68882};
 use crate::types::{Byte, Long, Word};
 
-use super::storage::{DOUBLE_SIZE, EXTENDED_SIZE, SINGLE_SIZE};
+use super::storage::{DOUBLE_SIZE, EXTENDED_SIZE, PACKED_SIZE, SINGLE_SIZE};
 
 // Cycle counts returned from fpu_alu_op
 // [FPn to FPn, integer, single, double, extended, packed]
@@ -23,12 +24,16 @@ pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_INT: usize = 1;
 pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_SINGLE: usize = 2;
 pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_DOUBLE: usize = 3;
 pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_EXTENDED: usize = 4;
-#[allow(dead_code)]
 pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_PACKED: usize = 5;
 pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_LEN: usize = 6;
 
-impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
-    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
+impl<
+        TBus,
+        const ADDRESS_MASK: Address,
+        const CPU_TYPE: CpuM68kType,
+        const FPU_TYPE: FpuM68kType,
+        const PMMU: bool,
+    > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
@@ -45,8 +50,12 @@ where
     /// FSAVE
     pub(in crate::cpu_m68k) fn op_fsave(&mut self, instr: &Instruction) -> Result<()> {
         // Idle state frame
-        // 0x1F = 68881
-        self.write_ea(instr, instr.get_op2(), 0x1F180000u32)?;
+        let stateframe: Long = match FPU_TYPE {
+            FPU_M68881 => 0x1F180000,
+            FPU_M68882 => 0x1F380000,
+            _ => todo!(),
+        };
+        self.write_ea(instr, instr.get_op2(), stateframe)?;
 
         self.advance_cycles(50)?;
 
@@ -56,7 +65,7 @@ where
     /// FRESTORE
     pub(in crate::cpu_m68k) fn op_frestore(&mut self, instr: &Instruction) -> Result<()> {
         let state = self.read_ea::<Long>(instr, instr.get_op2())?;
-        if state != 0 && state != 0x1F180000 {
+        if state != 0 && state != 0x1F180000 && state != 0x1F380000 {
             log::warn!("TODO FPU state frame restored: {:08X}", state);
         }
 
@@ -230,6 +239,19 @@ where
                         // Not sure how many cycles this costs, assuming its cheap
                         return Ok(());
                     }
+                    0b011 if instr.get_addr_mode()? == AddressingMode::Immediate => {
+                        // BCD packed decimal real (immediate)
+                        (self.read_fpu_packed_imm()?, FPU_CYCLES_MEM_PACKED)
+                    }
+                    0b011 => {
+                        // BCD packed decimal real
+                        let ea = self.calc_ea_addr_sz::<PACKED_SIZE>(
+                            instr,
+                            instr.get_addr_mode()?,
+                            instr.get_op2(),
+                        )?;
+                        (self.read_fpu_packed(ea)?, FPU_CYCLES_MEM_PACKED)
+                    }
                     _ => {
                         bail!(
                             "EA to reg unimplemented src spec {:03b}",
@@ -308,6 +330,33 @@ where
                         self.advance_cycles(100)?;
                         self.write_ticks(ea, out as Word)?;
                     }
+                    0b110 => {
+                        // Byte
+                        let ea = self.calc_ea_addr::<Word>(
+                            instr,
+                            instr.get_addr_mode()?,
+                            instr.get_op2(),
+                        )?;
+                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
+
+                        let out64 = self.regs.fpu.fp[fpx].to_i64();
+                        let (out, inex) = if out64 > i8::MAX.into() {
+                            // Overflow
+                            (i8::MAX, true)
+                        } else if out64 < i8::MIN.into() {
+                            // Underflow
+                            (i8::MIN, true)
+                        } else {
+                            // We're good
+                            (out64 as i8, false)
+                        };
+                        self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
+                        self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
+
+                        self.advance_cycles(100)?;
+                        self.write_ticks(ea, out as Byte)?;
+                    }
                     0b010 => {
                         // Extended-precision real
                         let ea = self.calc_ea_addr_sz::<EXTENDED_SIZE>(
@@ -352,6 +401,44 @@ where
 
                         self.advance_cycles(80)?;
                         self.write_fpu_single(ea, &self.regs.fpu.fp[fpx].clone())?;
+                    }
+                    0b011 => {
+                        // Packed decimal real with static K-factor
+                        let ea = self.calc_ea_addr_sz::<PACKED_SIZE>(
+                            instr,
+                            instr.get_addr_mode()?,
+                            instr.get_op2(),
+                        )?;
+                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_inex2(false);
+                        self.regs.fpu.fpsr.exs_mut().set_inex1(false);
+
+                        self.advance_cycles(80)?; // todo
+                        self.write_fpu_packed(
+                            ea,
+                            &self.regs.fpu.fp[fpx].clone(),
+                            extword.k_factor(),
+                        )?;
+                    }
+                    0b111 => {
+                        // Packed decimal real with dynamic K-factor
+                        let ea = self.calc_ea_addr_sz::<PACKED_SIZE>(
+                            instr,
+                            instr.get_addr_mode()?,
+                            instr.get_op2(),
+                        )?;
+                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_inex2(false);
+                        self.regs.fpu.fpsr.exs_mut().set_inex1(false);
+
+                        let k = self
+                            .regs
+                            .read_d::<Byte>(extword.k_factor() as usize >> 4 & 0b111)
+                            as i8;
+                        self.advance_cycles(80)?; // todo
+                        self.write_fpu_packed(ea, &self.regs.fpu.fp[fpx].clone(), k)?;
                     }
                     _ => {
                         bail!(
@@ -550,7 +637,7 @@ where
         Ok(())
     }
 
-    /// FMOVEM EA to registers  
+    /// FMOVEM EA to registers
     fn op_fmovem_ea_to_regs(
         &mut self,
         instr: &Instruction,

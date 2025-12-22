@@ -18,6 +18,8 @@ use crate::dbgprop_byte;
 use crate::debuggable::Debuggable;
 use crate::mac::scsi::cdrom::ScsiTargetCdrom;
 use crate::mac::scsi::disk::ScsiTargetDisk;
+#[cfg(feature = "ethernet")]
+use crate::mac::scsi::ethernet::ScsiTargetEthernet;
 use crate::mac::scsi::scsi_cmd_len;
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::scsi::target::ScsiTargetType;
@@ -244,6 +246,12 @@ impl ScsiController {
     /// Attaches a CD-ROM drive at the given SCSI ID
     pub fn attach_cdrom_at(&mut self, scsi_id: usize) {
         self.targets[scsi_id] = Some(Box::new(ScsiTargetCdrom::default()));
+    }
+
+    /// Attaches an Ethernet adapter at the given SCSI ID
+    #[cfg(feature = "ethernet")]
+    pub fn attach_ethernet_at(&mut self, scsi_id: usize) {
+        self.targets[scsi_id] = Some(Box::new(ScsiTargetEthernet::default()));
     }
 
     /// Detaches a target from the given SCSI ID
@@ -631,9 +639,24 @@ impl BusMember<Address> for ScsiController {
 impl Debuggable for ScsiController {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
-        use crate::{dbgprop_bool, dbgprop_enum, dbgprop_group, dbgprop_header, dbgprop_udec};
+        use crate::{
+            dbgprop_bool, dbgprop_enum, dbgprop_group, dbgprop_header, dbgprop_nest, dbgprop_udec,
+        };
+
+        let mut targets = vec![];
+        for (id, o_t) in self.targets.iter().enumerate() {
+            if let Some(t) = o_t {
+                targets.push(dbgprop_nest!(
+                    format!("ID #{} - {:?}", id, t.target_type()),
+                    t
+                ));
+            } else {
+                targets.push(dbgprop_group!(format!("ID #{} - (no device)", id), vec![]));
+            }
+        }
 
         vec![
+            dbgprop_group!("Targets", targets),
             dbgprop_group!(
                 "Registers",
                 vec![

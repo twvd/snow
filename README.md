@@ -21,11 +21,13 @@ It currently supports the following models:
 * Macintosh SE (both non-FDHD and FDHD)
 * Macintosh Classic
 * Macintosh II (both non-FDHD and FDHD)
+* Macintosh IIx, IIcx, SE/30
 
 Currently supported hardware:
 
-* Motorola 68000 and 68020 CPUs
-* Motorola 68881 FPU (Mac II)
+* Motorola 68000, 68020, 68030 CPUs
+* Motorola 68881, 68882 FPUs
+* Motorola 68851 PMMU
 * IWM and SWIM floppy controllers
 * GCR 400K/800K floppy disk drives (up to 3 on SE)
 * GCR/MFM 1.44MB 'SuperDrive' floppy disk drive (currently read-only)
@@ -34,8 +36,8 @@ Currently supported hardware:
 * Macintosh Real-Time Clock
 * Macintosh keyboard/mouse
 * ADB keyboard/mouse
-* Audio output (PWM-based audio on compact Macs and ASC on Mac II)
-* Macintosh Display Card 8-24 with various monitor types (Mac II)
+* Audio output (PWM-based audio on compact Macs and ASC on newer models)
+* Macintosh Display Card 8-24 with various monitor types (models with NuBus)
 
 Supported floppy image formats:
 
@@ -48,7 +50,7 @@ Supported floppy image formats:
 * Raw images (sector-based)
 * Any format (Mac 1.44MB or PC) supported by [Fluxfox](https://github.com/dbalsom/fluxfox)
 
-Emulator and debugging features:
+Debugging features:
 
 * Breakpoints (execution, bus access, system trap, exception, interrupt level)
 * Watchpoints with editing
@@ -61,6 +63,12 @@ Emulator and debugging features:
 * Peripheral debug view
 * Terminal for the serial ports
 
+Networking and interfacing features:
+
+* TCP and PTY bridges for serial ports
+* LocalTalk over UDP
+* Emulated Ethernet adapter with userland NAT
+
 ## Building
 
 See the [BUILDING.md](docs/BUILDING.md) file for instructions on building.
@@ -68,7 +76,10 @@ See the [BUILDING.md](docs/BUILDING.md) file for instructions on building.
 ## Acknowledgements
 
 * Thanks to raddad772 for the excellent [68000 JSON test suite](https://github.com/SingleStepTests/m68000)
-* Thanks to Daniel Balsom for creating the Snow mascot art and for the [Fluxfox](https://github.com/dbalsom/fluxfox) library
+* Thanks to Daniel Balsom for creating the Snow mascot art and for the [Fluxfox](https://github.com/dbalsom/fluxfox)
+  library
 * Thanks to Andrew Yaros for contributing the application icon
 * Thanks to the people of the Emudev and [Applesauce](https://applesaucefdc.com/) communities for their infinite wisdom
-* The [Musashi](https://github.com/kstenerud/Musashi) (by Karl Stenerud) and [MAME](https://github.com/mamedev/mame) (many authors) projects have been used as a reference for poorly documented components
+* The [Musashi](https://github.com/kstenerud/Musashi) (by Karl Stenerud) and [MAME](https://github.com/mamedev/mame) (
+  many authors) projects have been used as a reference for poorly documented components
+* The BlueSCSI Toolbox protocol and software is used in and distributed with Snow with permission of Eric Helgeson

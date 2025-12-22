@@ -1,3 +1,4 @@
+use crate::cpu_m68k::FpuM68kType;
 use std::collections::VecDeque;
 
 use anyhow::{bail, Result};
@@ -14,7 +15,7 @@ use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
 use crate::cpu_m68k::regs::RegisterCACR;
-use crate::cpu_m68k::M68000_SR_MASK;
+use crate::cpu_m68k::{M68000_SR_MASK, M68020_CACR_MASK, M68030, M68030_CACR_MASK};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
 
@@ -24,7 +25,8 @@ use super::instruction::{
 };
 use super::regs::{Register, RegisterFile, RegisterSR};
 use super::{
-    CpuM68kType, CpuSized, M68000, M68010, M68020, M68020_SR_MASK, TORDER_HIGHLOW, TORDER_LOWHIGH,
+    CpuM68kType, CpuSized, M68000, M68010, M68020, M68020_SR_MASK, M68030_SR_MASK, TORDER_HIGHLOW,
+    TORDER_LOWHIGH,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -234,8 +236,13 @@ pub struct SystrapHistoryEntry {
 
 /// Motorola 680x0
 #[derive(Serialize, Deserialize)]
-pub struct CpuM68k<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
-where
+pub struct CpuM68k<
+    TBus,
+    const ADDRESS_MASK: Address,
+    const CPU_TYPE: CpuM68kType,
+    const FPU_TYPE: FpuM68kType,
+    const PMMU: bool,
+> where
     TBus: Bus<Address, u8> + IrqSource,
 {
     /// Exception occured this step
@@ -320,8 +327,13 @@ where
     pub(in crate::cpu_m68k) restart_regs: Option<RegisterFile>,
 }
 
-impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
-    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
+impl<
+        TBus,
+        const ADDRESS_MASK: Address,
+        const CPU_TYPE: CpuM68kType,
+        const FPU_TYPE: FpuM68kType,
+        const PMMU: bool,
+    > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
@@ -329,7 +341,7 @@ where
     pub const HISTORY_SIZE: usize = 10000;
 
     pub fn new(bus: TBus) -> Self {
-        assert!([M68000, M68020].contains(&CPU_TYPE));
+        assert!([M68000, M68020, M68030].contains(&CPU_TYPE));
 
         Self {
             bus,
@@ -730,6 +742,7 @@ where
         self.regs.sr.set_sr(match CPU_TYPE {
             M68000 => sr & M68000_SR_MASK,
             M68020 => sr & M68020_SR_MASK,
+            M68030 => sr & M68030_SR_MASK,
             _ => unreachable!(),
         });
     }
@@ -1145,6 +1158,9 @@ where
             InstructionMnemonic::MOVEtoCCR => self.op_move_to_ccr(instr),
             InstructionMnemonic::MOVEtoUSP => self.op_move_to_usp(instr),
             InstructionMnemonic::MOVEfromUSP => self.op_move_from_usp(instr),
+            InstructionMnemonic::MOVES_l => self.op_moves::<Long>(instr),
+            InstructionMnemonic::MOVES_w => self.op_moves::<Word>(instr),
+            InstructionMnemonic::MOVES_b => self.op_moves::<Byte>(instr),
             InstructionMnemonic::NEG_l => self.op_alu_zero::<Long>(instr, Self::alu_sub),
             InstructionMnemonic::NEG_w => self.op_alu_zero::<Word>(instr, Self::alu_sub),
             InstructionMnemonic::NEG_b => self.op_alu_zero::<Byte>(instr, Self::alu_sub),
@@ -2938,8 +2954,15 @@ where
             let destreg: Register = instr.movec_ctrlreg()?.into();
 
             if destreg == Register::CACR {
-                // I-cache operations
+                // Cache operations
+                let mask = match CPU_TYPE {
+                    M68020 => M68020_CACR_MASK,
+                    M68030 => M68030_CACR_MASK,
+                    _ => unreachable!(),
+                };
                 let val = RegisterCACR(val);
+
+                // I-cache operations
                 if val.c() {
                     // Full clear
                     self.icache_tags.fill(ICACHE_TAG_INVALID);
@@ -2950,13 +2973,73 @@ where
                     self.icache_tags[index] = ICACHE_TAG_INVALID;
                 }
 
-                self.regs.write(destreg, val.with_c(false).with_ce(false).0);
+                // TODO 68030 D-cache
+
+                self.regs
+                    .write(destreg, val.with_c(false).with_ce(false).0 & mask);
             } else {
                 self.regs.write(destreg, val);
             }
             self.advance_cycles(2)?;
         }
 
+        Ok(())
+    }
+
+    /// MOVES - Move data to/from address space
+    fn op_moves<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+        // Fetch/decode the extension word
+        instr.fetch_extword(|| self.fetch())?;
+        let ext_word = instr.get_extword().unwrap().data;
+        let reg_num = (ext_word >> 12) & 15;
+        let is_addr_reg = (ext_word & 0x8000) != 0;
+        let dir_mem_to_reg = (ext_word & 0x0800) == 0;
+
+        if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+
+        let ea = self.calc_ea_addr::<T>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+
+        if dir_mem_to_reg {
+            // Memory to register transfer
+            let value = self.read_ticks_generic::<T, false>(self.regs.sfc as u8, ea)?;
+
+            if is_addr_reg {
+                // Memory to address register - sign extend
+                self.regs
+                    .write_a(reg_num as usize, value.expand_sign_extend());
+            } else {
+                // Memory to data register
+                self.regs.write_d::<T>(reg_num as usize, value);
+            }
+
+            // 68020+ additional cycles
+            if CPU_TYPE >= M68020 {
+                self.advance_cycles(2)?;
+            }
+        } else {
+            // Register to memory transfer
+            let value = if is_addr_reg {
+                T::chop(self.regs.read_a(reg_num as usize))
+            } else {
+                self.regs.read_d::<T>(reg_num as usize)
+            };
+
+            self.write_ticks_order_generic::<T, TORDER_LOWHIGH, false>(
+                self.regs.dfc as u8,
+                ea,
+                value,
+            )?;
+
+            // 68020+ additional cycles for long transfers
+            if CPU_TYPE >= M68020 && std::mem::size_of::<T>() == 4 {
+                self.advance_cycles(2)?;
+            }
+        }
+
+        self.prefetch_pump()?;
         Ok(())
     }
 
@@ -3920,8 +4003,13 @@ where
     }
 }
 
-impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool> Tickable
-    for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
+impl<
+        TBus,
+        const ADDRESS_MASK: Address,
+        const CPU_TYPE: CpuM68kType,
+        const FPU_TYPE: FpuM68kType,
+        const PMMU: bool,
+    > Tickable for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
@@ -3935,7 +4023,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::bus::testbus::Testbus;
-    use crate::cpu_m68k::{CpuM68000, CpuM68020, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK};
+    use crate::cpu_m68k::{CpuM68000, CpuM68020Fpu, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK};
 
     use super::*;
 
@@ -3948,7 +4036,8 @@ mod tests {
 
     #[test]
     fn sr_68020() {
-        let mut cpu = CpuM68020::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
+        let mut cpu =
+            CpuM68020Fpu::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
         cpu.set_sr(0xFFFF);
         assert!(cpu.regs.sr.m());
     }

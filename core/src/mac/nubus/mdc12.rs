@@ -39,7 +39,7 @@ bitfield! {
     /// RAMDAC control register
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct RamdacCtrlReg(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
-        pub mode: u8 @ 1..=5,
+        pub mode: u8 @ 1..=4,
         pub conv: bool @ 0,
     }
 }
@@ -166,6 +166,7 @@ where
     }
 
     /// Renders current dislayed frame to target DisplayBuffer
+    #[allow(clippy::branches_sharing_code)]
     pub fn render_to(&self, buf: &mut DisplayBuffer) {
         let fb = self.framebuffer();
         let palette = &self.palette;
@@ -193,10 +194,17 @@ where
                     let shift = 6 - (idx % 4) * 2;
                     let color = palette[usize::from(fb[byte] >> shift) & 0x03];
 
-                    buf[idx * 4] = color as u8;
-                    buf[idx * 4 + 1] = (color >> 8) as u8;
-                    buf[idx * 4 + 2] = (color >> 16) as u8;
-                    buf[idx * 4 + 3] = 0xFF;
+                    if self.monitor.has_color() {
+                        buf[idx * 4] = color as u8;
+                        buf[idx * 4 + 1] = (color >> 8) as u8;
+                        buf[idx * 4 + 2] = (color >> 16) as u8;
+                        buf[idx * 4 + 3] = 0xFF;
+                    } else {
+                        buf[idx * 4] = (color >> 16) as u8;
+                        buf[idx * 4 + 1] = (color >> 16) as u8;
+                        buf[idx * 4 + 2] = (color >> 16) as u8;
+                        buf[idx * 4 + 3] = 0xFF;
+                    }
                 }
             }
             Bpp::Four => {
@@ -205,10 +213,17 @@ where
                     let shift = 4 - (idx % 2) * 4;
                     let color = palette[usize::from(fb[byte] >> shift) & 0x0F];
 
-                    buf[idx * 4] = color as u8;
-                    buf[idx * 4 + 1] = (color >> 8) as u8;
-                    buf[idx * 4 + 2] = (color >> 16) as u8;
-                    buf[idx * 4 + 3] = 0xFF;
+                    if self.monitor.has_color() {
+                        buf[idx * 4] = color as u8;
+                        buf[idx * 4 + 1] = (color >> 8) as u8;
+                        buf[idx * 4 + 2] = (color >> 16) as u8;
+                        buf[idx * 4 + 3] = 0xFF;
+                    } else {
+                        buf[idx * 4] = (color >> 16) as u8;
+                        buf[idx * 4 + 1] = (color >> 16) as u8;
+                        buf[idx * 4 + 2] = (color >> 16) as u8;
+                        buf[idx * 4 + 3] = 0xFF;
+                    }
                 }
             }
             Bpp::Eight => {
@@ -216,13 +231,21 @@ where
                     let byte = fb[idx];
                     let color = palette[byte as usize];
 
-                    buf[idx * 4] = color as u8;
-                    buf[idx * 4 + 1] = (color >> 8) as u8;
-                    buf[idx * 4 + 2] = (color >> 16) as u8;
-                    buf[idx * 4 + 3] = 0xFF;
+                    if self.monitor.has_color() {
+                        buf[idx * 4] = color as u8;
+                        buf[idx * 4 + 1] = (color >> 8) as u8;
+                        buf[idx * 4 + 2] = (color >> 16) as u8;
+                        buf[idx * 4 + 3] = 0xFF;
+                    } else {
+                        buf[idx * 4] = (color >> 16) as u8;
+                        buf[idx * 4 + 1] = (color >> 16) as u8;
+                        buf[idx * 4 + 2] = (color >> 16) as u8;
+                        buf[idx * 4 + 3] = 0xFF;
+                    }
                 }
             }
             Bpp::TwentyFour => {
+                assert!(self.monitor.has_color());
                 for idx in 0..(self.monitor.width() * self.monitor.height()) {
                     buf[idx * 4] = fb[idx * 4 + 1];
                     buf[idx * 4 + 1] = fb[idx * 4 + 2];
@@ -292,7 +315,7 @@ where
 
             // ROM (byte lane 3)
             0xFE_0000..=0xFF_FFFF if addr % 4 == 3 => {
-                Some(self.rom[((addr - 0xFE_0000) / 4) as usize])
+                self.rom.get(((addr - 0xFE_0000) / 4) as usize).copied()
             }
             _ => None,
         }

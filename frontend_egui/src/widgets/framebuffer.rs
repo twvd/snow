@@ -3,13 +3,18 @@
 
 use std::{fs::File, path::Path};
 
+use super::crt_shader::{CrtShader, CrtShaderParams};
 use anyhow::{bail, Result};
 use crossbeam_channel::Receiver;
 use eframe::egui;
 use eframe::egui::Vec2;
+use eframe::egui_glow;
+use egui::mutex::Mutex;
 use serde::{Deserialize, Serialize};
+use snow_core::mac::MacModel;
 use snow_core::renderer::DisplayBuffer;
 use std::fmt::Display;
+use std::sync::Arc;
 use strum::EnumIter;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, EnumIter, Eq, PartialEq)]
@@ -45,6 +50,12 @@ pub struct FramebufferWidget {
     display_size: [u16; 2],
 
     response: Option<egui::Response>,
+
+    // CRT shader
+    pub crt_enabled: bool,
+    pub crt_params: CrtShaderParams,
+    crt_shader: Arc<Mutex<Option<CrtShader>>>,
+    crt_output_texture: Option<egui::TextureHandle>,
 }
 
 impl FramebufferWidget {
@@ -61,6 +72,10 @@ impl FramebufferWidget {
             scale: 1.5,
             scaling_algorithm: ScalingAlgorithm::Linear,
             display_size: [0, 0],
+            crt_enabled: false,
+            crt_params: CrtShaderParams::default(),
+            crt_shader: Arc::new(Mutex::new(None)),
+            crt_output_texture: None,
         }
     }
 
@@ -110,8 +125,20 @@ impl FramebufferWidget {
             }
         }
 
-        let size = self.viewport_texture.size_vec2();
-        let sized_texture = egui::load::SizedTexture::new(&mut self.viewport_texture, size);
+        // Run the framebuffer through the CRT shader if enabled
+        if self.crt_enabled {
+            self.trigger_crt_shader(ui);
+        }
+
+        // Choose which texture to display
+        let display_texture = if self.crt_enabled && self.crt_output_texture.is_some() {
+            self.crt_output_texture.as_mut().unwrap()
+        } else {
+            &mut self.viewport_texture
+        };
+
+        let size = display_texture.size_vec2();
+        let sized_texture = egui::load::SizedTexture::new(display_texture, size);
         let size = if fullscreen {
             ui.available_size()
         } else {
@@ -125,6 +152,74 @@ impl FramebufferWidget {
         );
         self.response = Some(response.clone());
         response
+    }
+
+    fn trigger_crt_shader(&mut self, ui: &egui::Ui) {
+        // Copy references to move into the callback
+        let texture_id = self.viewport_texture.id();
+        let shader = self.crt_shader.clone();
+        let ctx = ui.ctx().clone();
+        let texture_size = self.viewport_texture.size();
+        let output_handle = Arc::new(Mutex::new(self.crt_output_texture.clone()));
+        let params = self.crt_params;
+
+        // Use a callback to get painter access (use full available rect to ensure it's not culled)
+        let callback = egui::PaintCallback {
+            // This can be any arbitrary rectangle as long as it's not 0; we just need the callback
+            // for access to the GL context.
+            rect: ui.available_rect_before_wrap(),
+            callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
+                let gl = painter.gl();
+
+                // Initialize shader if needed
+                let mut shader_lock = shader.lock();
+                if shader_lock.is_none() {
+                    match CrtShader::new(gl) {
+                        Ok(s) => {
+                            log::info!("CRT shader initialized");
+                            *shader_lock = Some(s);
+                        }
+                        Err(e) => {
+                            log::error!("CRT shader failed: {}", e);
+                            return;
+                        }
+                    }
+                }
+
+                if let Some(crt_shader) = shader_lock.as_mut() {
+                    if let Some(input_tex) = painter.texture(texture_id) {
+                        // Process and read back pixels
+                        if let Some(pixels) = crt_shader.process_texture_to_pixels(
+                            gl,
+                            input_tex,
+                            [texture_size[0] as u32, texture_size[1] as u32],
+                            &params,
+                        ) {
+                            // Update egui texture with processed pixels
+                            // TODO skip the unneccesary copies from VRAM and present the output
+                            // texture directly?
+                            let mut handle_lock = output_handle.lock();
+                            if let Some(ref mut handle) = *handle_lock {
+                                let image =
+                                    egui::ColorImage::from_rgba_unmultiplied(texture_size, &pixels);
+                                handle.set(image, egui::TextureOptions::LINEAR);
+                            }
+                        }
+                    }
+                }
+            })),
+        };
+
+        ui.painter().add(callback);
+
+        // Create output texture if needed
+        if self.crt_output_texture.is_none() {
+            self.crt_output_texture = Some(ctx.load_texture(
+                "crt_output",
+                egui::ColorImage::new(texture_size, egui::Color32::BLACK),
+                egui::TextureOptions::LINEAR,
+            ));
+        }
     }
 
     /// Writes a screenshot as PNG
@@ -168,6 +263,42 @@ impl FramebufferWidget {
             resp.contains_pointer()
         } else {
             false
+        }
+    }
+
+    /// Loads CRT shader defaults for particular Mac models
+    pub fn load_shader_defaults(&mut self, model: MacModel) {
+        self.crt_params = match model {
+            MacModel::Early128K
+            | MacModel::Early512K
+            | MacModel::Early512Ke
+            | MacModel::Plus
+            | MacModel::SE
+            | MacModel::SeFdhd
+            | MacModel::Classic
+            | MacModel::SE30 => CrtShaderParams {
+                crt_gamma: 2.1,
+                // TODO need more pronounced scanlines..
+                scanline_thinness: 1.00,
+                scan_blur: 1.6,
+                mask_intensity: 0.00,
+                curvature: 0.00,
+                corner: 3.0,
+                mask: 0.0,
+                trinitron_curve: 0.0,
+            },
+            MacModel::MacII | MacModel::MacIIFDHD | MacModel::MacIIx | MacModel::MacIIcx => {
+                CrtShaderParams {
+                    crt_gamma: 2.1,
+                    scanline_thinness: 0.5,
+                    scan_blur: 2.5,
+                    mask_intensity: 0.20,
+                    curvature: 0.00,
+                    corner: 0.0,
+                    mask: 2.0,
+                    trinitron_curve: 0.0,
+                }
+            }
         }
     }
 }

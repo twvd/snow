@@ -18,6 +18,9 @@ pub enum WorkspaceScsiTarget {
     None,
     Disk(RelativePath),
     Cdrom,
+    // Do not feature gate Ethernet here to avoid problems with loading
+    // workspaces on builds without the ethernet feature
+    Ethernet,
 }
 
 impl TryFrom<ScsiTarget> for WorkspaceScsiTarget {
@@ -29,6 +32,8 @@ impl TryFrom<ScsiTarget> for WorkspaceScsiTarget {
                 Self::Disk(RelativePath::from_absolute(&value.image_path.ok_or(())?))
             }
             ScsiTargetType::Cdrom => Self::Cdrom,
+            #[cfg(feature = "ethernet")]
+            ScsiTargetType::Ethernet => Self::Ethernet,
         })
     }
 }
@@ -60,6 +65,16 @@ impl Into<ScsiTarget> for WorkspaceScsiTarget {
             Self::Disk(p) => ScsiTarget {
                 target_type: Some(ScsiTargetType::Disk),
                 image_path: Some(p.get_absolute()),
+            },
+            #[cfg(feature = "ethernet")]
+            Self::Ethernet => ScsiTarget {
+                target_type: Some(ScsiTargetType::Ethernet),
+                image_path: None,
+            },
+            #[cfg(not(feature = "ethernet"))]
+            Self::Ethernet => ScsiTarget {
+                target_type: None,
+                image_path: None,
             },
         }
     }
@@ -129,6 +144,17 @@ pub struct Workspace {
 
     /// Shared directory for BlueSCSI toolbox
     shared_dir: Option<RelativePath>,
+
+    /// Show labels in disassembly
+    pub disassembly_labels: bool,
+
+    /// Floppy disk images to auto-insert on workspace load
+    floppy_images: Vec<RelativePath>,
+
+    /// Custom date/time to set the RTC to on startup.
+    /// Format: "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
+    /// Useful for testing date-dependent software (e.g., easter eggs).
+    pub custom_datetime: Option<String>,
 }
 
 impl Default for Workspace {
@@ -159,6 +185,9 @@ impl Default for Workspace {
             scaling_algorithm: ScalingAlgorithm::Linear,
             pause_on_state_load: false,
             shared_dir: None,
+            disassembly_labels: true,
+            floppy_images: Vec::new(),
+            custom_datetime: None,
         }
     }
 }
@@ -201,7 +230,9 @@ impl Workspace {
         for d in &mut result.scsi_targets {
             match d {
                 WorkspaceScsiTarget::Disk(ref mut p) => p.after_deserialize(parent)?,
-                WorkspaceScsiTarget::None | WorkspaceScsiTarget::Cdrom => (),
+                WorkspaceScsiTarget::None
+                | WorkspaceScsiTarget::Cdrom
+                | WorkspaceScsiTarget::Ethernet => (),
             }
         }
         for (i, d) in result.disks.iter_mut().enumerate() {
@@ -213,6 +244,10 @@ impl Workspace {
             }
         }
         result.disks = core::array::from_fn(|_| None);
+
+        for p in &mut result.floppy_images {
+            p.after_deserialize(parent)?;
+        }
 
         Ok(result)
     }
@@ -239,8 +274,13 @@ impl Workspace {
         for d in &mut self.scsi_targets {
             match d {
                 WorkspaceScsiTarget::Disk(ref mut p) => p.before_serialize(parent)?,
-                WorkspaceScsiTarget::None | WorkspaceScsiTarget::Cdrom => (),
+                WorkspaceScsiTarget::None
+                | WorkspaceScsiTarget::Cdrom
+                | WorkspaceScsiTarget::Ethernet => (),
             }
+        }
+        for p in &mut self.floppy_images {
+            p.before_serialize(parent)?;
         }
 
         let file = File::create(path)?;
@@ -293,6 +333,13 @@ impl Workspace {
 
     pub fn get_shared_dir(&self) -> Option<PathBuf> {
         self.shared_dir.clone().map(|d| d.get_absolute())
+    }
+
+    pub fn get_floppy_images(&self) -> Vec<PathBuf> {
+        self.floppy_images
+            .iter()
+            .map(|p| p.get_absolute())
+            .collect()
     }
 
     /// Persists a window location

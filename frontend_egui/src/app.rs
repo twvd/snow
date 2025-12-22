@@ -7,7 +7,7 @@ use crate::keymap::map_winit_keycode;
 use crate::settings::AppSettings;
 use crate::uniform::{UniformAction, UNIFORM_ACTION};
 use crate::widgets::breakpoints::BreakpointsWidget;
-use crate::widgets::disassembly::Disassembly;
+use crate::widgets::disassembly::DisassemblyWidget;
 use crate::widgets::framebuffer::{FramebufferWidget, ScalingAlgorithm};
 use crate::widgets::instruction_history::InstructionHistoryWidget;
 use crate::widgets::memory::MemoryViewerWidget;
@@ -20,7 +20,9 @@ use crate::workspace::Workspace;
 use snow_core::bus::Address;
 use snow_core::emulator::comm::UserMessageType;
 use snow_core::emulator::save::{load_state_header, SaveHeader};
+use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
+use snow_core::mac::serial_bridge::SerialBridgeConfig;
 use snow_core::mac::MacModel;
 use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
 use snow_floppy::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
@@ -144,6 +146,7 @@ pub struct SnowGui {
     instruction_history: InstructionHistoryWidget,
     systrap_history: SystrapHistoryWidget,
     terminal: [TerminalWidget; 2],
+    disassembly: DisassemblyWidget,
 
     workspace_dialog: FileDialog,
     hdd_dialog: FileDialog,
@@ -180,11 +183,19 @@ pub struct SnowGui {
     settings: AppSettings,
     emu: EmulatorState,
 
+    floppy_rpm_adjustment: [i32; 3],
+
     /// Temporary files that need cleanup on exit
     temp_files: Vec<PathBuf>,
 
     /// Quick state save slots
     quick_states: [Option<PathBuf>; 5],
+
+    /// Pending serial bridge configurations from CLI args (applied after emulator starts)
+    pending_serial_bridges: [Option<SerialBridgeConfig>; 2],
+
+    /// Whether CLI serial bridges have been applied (to avoid re-applying on each frame)
+    serial_bridges_applied: bool,
 }
 
 impl SnowGui {
@@ -192,12 +203,30 @@ impl SnowGui {
     const ZOOM_FACTORS: [f32; 8] = [0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0];
     const SUBMENU_WIDTH: f32 = 175.0;
 
+    /// Parse serial bridge mode string from CLI argument
+    fn parse_serial_bridge_mode(mode: &str) -> Option<SerialBridgeConfig> {
+        let mode = mode.to_lowercase();
+        if mode == "pty" {
+            Some(SerialBridgeConfig::Pty)
+        } else if let Some(port_str) = mode.strip_prefix("tcp:") {
+            port_str.parse::<u16>().ok().map(SerialBridgeConfig::Tcp)
+        } else {
+            log::warn!(
+                "Invalid serial bridge mode: '{}'. Use 'pty' or 'tcp:PORT'",
+                mode
+            );
+            None
+        }
+    }
+
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
         initial_file: Option<String>,
         zoom_factor: f32,
         fullscreen: bool,
+        serial_bridge_a: Option<&str>,
+        serial_bridge_b: Option<&str>,
     ) -> Self {
         egui_material_icons::initialize(&cc.egui_ctx);
         cc.egui_ctx.set_zoom_factor(zoom_factor);
@@ -233,6 +262,7 @@ impl SnowGui {
             instruction_history: InstructionHistoryWidget::default(),
             systrap_history: SystrapHistoryWidget::default(),
             terminal: Default::default(),
+            disassembly: DisassemblyWidget::new(),
 
             hdd_dialog: FileDialog::new()
                 .add_file_filter(
@@ -373,6 +403,8 @@ impl SnowGui {
 
             emu: EmulatorState::default(),
 
+            floppy_rpm_adjustment: [0, 0, 0],
+
             // Always clean up images created by restoring save states
             temp_files: Vec::from_iter(
                 (0..snow_core::mac::scsi::controller::ScsiController::MAX_TARGETS).map(|i| {
@@ -383,6 +415,13 @@ impl SnowGui {
             ),
 
             quick_states: Default::default(),
+
+            pending_serial_bridges: [
+                serial_bridge_a.and_then(Self::parse_serial_bridge_mode),
+                serial_bridge_b.and_then(Self::parse_serial_bridge_mode),
+            ],
+
+            serial_bridges_applied: false,
         };
 
         if let Some(filename) = initial_file {
@@ -635,6 +674,8 @@ impl SnowGui {
                         {
                             ui.close_menu();
                         }
+                        ui.separator();
+                        self.draw_serial_bridge_menu(ui, SccCh::A);
                     },
                 );
                 ui.menu_button(
@@ -650,6 +691,8 @@ impl SnowGui {
                         {
                             ui.close_menu();
                         }
+                        ui.separator();
+                        self.draw_serial_bridge_menu(ui, SccCh::B);
                     },
                 );
             });
@@ -657,14 +700,20 @@ impl SnowGui {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
                 ui.menu_button("File sharing", |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH + 100.0);
-                    ui.label("Shared folder (for BlueSCSI Toolbox):");
+                    ui.label("Shared folder:");
                     let mut shared_dir_str = self
                         .workspace
                         .get_shared_dir()
                         .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_default();
                     ui.add_enabled(false, egui::TextEdit::singleline(&mut shared_dir_str));
-                    if ui.button("Select folder...").clicked() {
+                    if ui
+                        .add_enabled(
+                            self.emu.is_initialized(),
+                            egui::Button::new("Select folder..."),
+                        )
+                        .clicked()
+                    {
                         self.shared_dir_dialog.pick_directory();
                         ui.close_menu();
                     }
@@ -678,6 +727,17 @@ impl SnowGui {
                     {
                         self.workspace.set_shared_dir(None);
                         self.emu.set_shared_dir(None);
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(
+                            self.emu.is_initialized(),
+                            egui::Button::new("Insert toolbox floppy"),
+                        )
+                        .clicked()
+                    {
+                        self.emu.load_toolbox_floppy();
                         ui.close_menu();
                     }
                 });
@@ -744,6 +804,81 @@ impl SnowGui {
                     egui::Slider::new(&mut self.framebuffer.scale, 0.5..=4.0).text("Display scale"),
                 );
                 ui.add(egui::Checkbox::new(
+                    &mut self.framebuffer.crt_enabled,
+                    "CRT shader effect",
+                ));
+
+                if self.framebuffer.crt_enabled {
+                    ui.menu_button("Shader settings", |ui| {
+                        ui.add(
+                            egui::Slider::new(&mut self.framebuffer.crt_params.mask, 0.0..=3.0)
+                                .step_by(1.0)
+                                .text("Mask Type")
+                                .custom_formatter(|n, _| match n as i32 {
+                                    0 => "None".to_string(),
+                                    1 => "Aperture Grille".to_string(),
+                                    2 => "Aperture Grille Lite".to_string(),
+                                    3 => "Shadow Mask".to_string(),
+                                    _ => n.to_string(),
+                                }),
+                        );
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.framebuffer.crt_params.mask_intensity,
+                                0.0..=1.0,
+                            )
+                            .step_by(0.05)
+                            .text("Mask Intensity"),
+                        );
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.framebuffer.crt_params.scanline_thinness,
+                                0.0..=1.0,
+                            )
+                            .step_by(0.1)
+                            .text("Scanline Intensity"),
+                        );
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.framebuffer.crt_params.scan_blur,
+                                1.0..=3.0,
+                            )
+                            .step_by(0.1)
+                            .text("Sharpness"),
+                        );
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.framebuffer.crt_params.curvature,
+                                0.0..=0.25,
+                            )
+                            .step_by(0.01)
+                            .text("Curvature"),
+                        );
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.framebuffer.crt_params.trinitron_curve,
+                                0.0..=1.0,
+                            )
+                            .step_by(1.0)
+                            .text("Trinitron Curve"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut self.framebuffer.crt_params.corner, 0.0..=11.0)
+                                .step_by(1.0)
+                                .text("Corner Round"),
+                        );
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.framebuffer.crt_params.crt_gamma,
+                                0.0..=5.0,
+                            )
+                            .step_by(0.1)
+                            .text("CRT Gamma"),
+                        );
+                    });
+                }
+
+                ui.add(egui::Checkbox::new(
                     &mut self.workspace.center_viewport_v,
                     "Center display vertically",
                 ));
@@ -755,11 +890,45 @@ impl SnowGui {
                 {
                     ui.close_menu();
                 }
+
+                ui.separator();
+                if ui
+                    .checkbox(
+                        &mut self.workspace.disassembly_labels,
+                        "Show labels in disassembly",
+                    )
+                    .clicked()
+                {
+                    ui.close_menu();
+                }
             });
             ui.menu_button("View", |ui| {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
                 if ui.button("Enter fullscreen").clicked() {
                     self.enter_fullscreen(ctx);
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui
+                    .add_enabled(
+                        matches!(
+                            self.emu.get_model(),
+                            Some(MacModel::Early128K)
+                                | Some(MacModel::Early512K)
+                                | Some(MacModel::Early512Ke)
+                                | Some(MacModel::Plus)
+                                | Some(MacModel::SE)
+                                | Some(MacModel::SeFdhd)
+                                | Some(MacModel::Classic)
+                        ),
+                        egui::Checkbox::new(
+                            &mut self.emu.debug_framebuffers,
+                            "Show all framebuffers",
+                        ),
+                    )
+                    .clicked()
+                {
+                    self.emu.set_debug_framebuffers(self.emu.debug_framebuffers);
                     ui.close_menu();
                 }
                 ui.separator();
@@ -962,6 +1131,53 @@ impl SnowGui {
                         );
                     }
                 }
+                #[cfg(feature = "ethernet")]
+                ScsiTargetType::Ethernet => {
+                    ui.menu_button(
+                        format!(
+                            "{} SCSI #{}: Ethernet",
+                            egui_material_icons::icons::ICON_SETTINGS_ETHERNET,
+                            id,
+                        ),
+                        |ui| {
+                            use snow_core::mac::scsi::ethernet::EthernetLinkType;
+
+                            ui.set_min_width(Self::SUBMENU_WIDTH);
+                            ui.strong("Link type");
+
+                            let link_type = target.link_type.unwrap();
+                            let mut new_link_type = link_type;
+                            ui.radio_value(&mut new_link_type, EthernetLinkType::Down, "Down");
+                            #[cfg(feature = "ethernet_nat")]
+                            {
+                                ui.radio_value(&mut new_link_type, EthernetLinkType::NAT, "NAT");
+                            }
+                            #[cfg(feature = "ethernet_raw")]
+                            {
+                                for interface in pnet::datalink::interfaces()
+                                    .into_iter()
+                                    .filter(|i| i.is_up() && !i.ips.is_empty() && !i.is_loopback())
+                                {
+                                    ui.radio_value(
+                                        &mut new_link_type,
+                                        EthernetLinkType::Bridge(interface.index),
+                                        format!("Bridge: {}", interface.name),
+                                    );
+                                }
+                            }
+
+                            if new_link_type != link_type {
+                                self.emu.set_eth_link(id, new_link_type);
+                            }
+
+                            ui.separator();
+                            if ui.button("Detach").clicked() {
+                                self.emu.scsi_detach_target(id);
+                                ui.close_menu();
+                            }
+                        },
+                    );
+                }
             }
         } else {
             ui.menu_button(
@@ -991,8 +1207,88 @@ impl SnowGui {
                         self.emu.scsi_attach_cdrom(id);
                         ui.close_menu();
                     }
+                    #[cfg(feature = "ethernet")]
+                    {
+                        ui.separator();
+                        if ui
+                            .add_enabled(
+                                !self
+                                    .emu
+                                    .get_scsi_targets()
+                                    .map(|t| {
+                                        t.iter().any(|i| {
+                                            matches!(i.target_type, Some(ScsiTargetType::Ethernet))
+                                        })
+                                    })
+                                    .unwrap_or(false),
+                                egui::Button::new("Attach Ethernet controller"),
+                            )
+                            .clicked()
+                        {
+                            self.emu.scsi_attach_ethernet(id);
+                            ui.close_menu();
+                        }
+                    }
                 },
             );
+        }
+    }
+
+    fn draw_serial_bridge_menu(&self, ui: &mut egui::Ui, ch: SccCh) {
+        let is_enabled = self.emu.is_serial_bridge_enabled(ch);
+        let emu_ready = self.emu.is_initialized();
+
+        if is_enabled {
+            // Bridge is active - show status and disable option
+            if let Some(status) = self.emu.get_serial_bridge_status(ch) {
+                ui.label(format!("Bridge: {}", status));
+            }
+            if ui
+                .add_enabled(emu_ready, egui::Button::new("Disable bridge"))
+                .clicked()
+            {
+                let _ = self.emu.disable_serial_bridge(ch);
+                ui.close_menu();
+            }
+        } else {
+            // Bridge is inactive - show enable options
+            ui.strong("Serial Bridge");
+
+            #[cfg(unix)]
+            if ui
+                .add_enabled(emu_ready, egui::Button::new("Enable PTY bridge"))
+                .clicked()
+            {
+                let _ = self.emu.enable_serial_bridge(ch, SerialBridgeConfig::Pty);
+                ui.close_menu();
+            }
+
+            let port = match ch {
+                SccCh::A => 1984,
+                SccCh::B => 1985,
+            };
+            if ui
+                .add_enabled(
+                    emu_ready,
+                    egui::Button::new(format!("Enable TCP bridge (port {})", port)),
+                )
+                .clicked()
+            {
+                let _ = self
+                    .emu
+                    .enable_serial_bridge(ch, SerialBridgeConfig::Tcp(port));
+                ui.close_menu();
+            }
+
+            if ui
+                .add_enabled(emu_ready, egui::Button::new("Enable LocalTalk (UDP)"))
+                .clicked()
+            {
+                let _ = self
+                    .emu
+                    .enable_serial_bridge(ch, SerialBridgeConfig::LocalTalk);
+                ui.close_menu();
+            }
         }
     }
 
@@ -1085,12 +1381,28 @@ impl SnowGui {
                         ui.close_menu();
                     }
                     ui.separator();
+
                     if ui
                         .add_enabled(!d.ejected, egui::Button::new("Force eject"))
                         .clicked()
                     {
                         self.emu.force_eject(i);
                         ui.close_menu();
+                    }
+
+                    if d.drive_type.has_pwm_control() {
+                        ui.separator();
+                        ui.label("Simulate drive RPM variance");
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut self.floppy_rpm_adjustment[i], -100..=100)
+                                    .suffix(" RPM"),
+                            )
+                            .changed()
+                        {
+                            self.emu
+                                .set_floppy_rpm_adjustment(i, self.floppy_rpm_adjustment[i]);
+                        }
                     }
                 },
             );
@@ -1316,6 +1628,20 @@ impl SnowGui {
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
     ) {
+        // Parse custom datetime from workspace if specified
+        let custom_datetime = self.workspace.custom_datetime.as_ref().and_then(|s| {
+            // Try parsing with time first, then date-only
+            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                .or_else(|_| {
+                    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                        .map(|d| d.and_hms_opt(12, 0, 0).unwrap())
+                })
+                .inspect_err(|e| {
+                    log::warn!("Failed to parse custom_datetime '{}': {}", s, e);
+                })
+                .ok()
+        });
+
         match self.emu.init_from_rom(
             path,
             display_rom_path,
@@ -1325,8 +1651,13 @@ impl SnowGui {
             args,
             model,
             self.workspace.get_shared_dir(),
+            custom_datetime,
         ) {
-            Ok(p) => self.framebuffer.connect_receiver(p.frame_receiver),
+            Ok(p) => {
+                self.framebuffer
+                    .load_shader_defaults(self.emu.get_model().unwrap());
+                self.framebuffer.connect_receiver(p.frame_receiver);
+            }
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
         }
 
@@ -1385,6 +1716,15 @@ impl SnowGui {
                 &init_args,
                 model,
             );
+
+            if let Some(floppy_path) = self.workspace.get_floppy_images().first() {
+                if floppy_path.exists() && !self.emu.load_floppy_firstfree(floppy_path) {
+                    self.show_error(&format!(
+                        "Cannot load floppy image: no free drive for {:?}",
+                        floppy_path
+                    ));
+                }
+            }
         } else {
             self.emu.deinit();
         }
@@ -1675,7 +2015,11 @@ impl SnowGui {
             .emu
             .init_from_statefile(path.as_ref(), self.workspace.pause_on_state_load)
         {
-            Ok(p) => self.framebuffer.connect_receiver(p.frame_receiver),
+            Ok(p) => {
+                self.framebuffer
+                    .load_shader_defaults(self.emu.get_model().unwrap());
+                self.framebuffer.connect_receiver(p.frame_receiver);
+            }
             Err(e) => self.show_error(&format!("Failed to load state file: {:?}", e)),
         }
     }
@@ -1807,6 +2151,16 @@ impl eframe::App for SnowGui {
             }
             self.registers.update_regs(self.emu.get_regs().clone());
 
+            // Apply pending serial bridges from CLI args (once, when emulator initializes)
+            if self.emu.is_initialized() && !self.serial_bridges_applied {
+                for (idx, ch) in [SccCh::A, SccCh::B].iter().enumerate() {
+                    if let Some(config) = self.pending_serial_bridges[idx].take() {
+                        let _ = self.emu.enable_serial_bridge(*ch, config);
+                    }
+                }
+                self.serial_bridges_applied = true;
+            }
+
             while let Some((t, msg)) = self.emu.take_message() {
                 self.toasts.add(match t {
                     UserMessageType::Success => Toast::default()
@@ -1839,8 +2193,8 @@ impl eframe::App for SnowGui {
                         .kind(ToastKind::Error),
                 });
             }
-            while let Some((addr, data)) = self.emu.take_mem_update() {
-                self.memory.update_memory(addr, &data);
+            while let Some((addr, data, size)) = self.emu.take_mem_update() {
+                self.memory.update_memory(addr, &data, size);
             }
         }
 
@@ -2310,7 +2664,8 @@ impl eframe::App for SnowGui {
                     .open(&mut self.workspace.disassembly_open)
                     .show(ctx, |ui| {
                         ui.horizontal_top(|ui| {
-                            Disassembly::new().draw(ui, &self.emu);
+                            self.disassembly
+                                .draw(ui, &self.emu, self.workspace.disassembly_labels);
                         });
                     });
 

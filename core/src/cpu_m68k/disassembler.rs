@@ -1117,12 +1117,16 @@ impl<'a> Disassembler<'a> {
             InstructionMnemonic::POP_000 => {
                 let extword = self.get16()?;
 
-                if extword & 0b1110_0001_0000_0000 == 0b0010_0000_0000_0000 {
+                if extword & 0b1110_0011_0000_0000 == 0b0010_0000_0000_0000 {
                     // PFLUSH
                     "PFLUSH".to_string()
+                } else if extword & 0b1111_1101_1110_0000 == 0b0010_0000_0000_0000 {
+                    // PLOAD
+                    let fc = extword & 0b11111;
+                    format!("PLOAD #{}, {}", fc, self.ea(instr)?)
                 } else if extword == 0b1010_0000_0000_0000 {
                     // PFLUSHR
-                    "PFLUSHR".to_string()
+                    format!("PFLUSHR {}", self.ea(instr)?)
                 } else if extword & 0b1110_0001_1111_1111 == 0b0100_0000_0000_0000 {
                     // PMOVE (format 1)
                     let extword = Pmove1Extword(extword);
@@ -1148,6 +1152,39 @@ impl<'a> Disassembler<'a> {
                 } else if extword & 0b1110_0011_1111_1111 == 0b0110_0000_0000_0000 {
                     // PMOVE (format 3)
                     "PMOVE3".to_string()
+                } else if extword & 0b1110_0000_1111_1111 == 0b0100_0000_0000_0000 {
+                    // PMOVE (68030 version)
+                    let extword = Pmove1Extword(extword);
+                    let preg = match extword.preg() {
+                        0b000 => "PTC",
+                        0b010 => "PSRP",
+                        0b011 => "PCRP",
+                        _ => unreachable!(),
+                    };
+                    if extword.write() {
+                        format!(
+                            "PMOVE{} {},{}",
+                            if extword.fd() { "FD" } else { "" },
+                            preg,
+                            self.ea(instr)?
+                        )
+                    } else {
+                        format!(
+                            "PMOVE{} {},{}",
+                            if extword.fd() { "FD" } else { "" },
+                            self.ea(instr)?,
+                            preg
+                        )
+                    }
+                } else if extword & 0b1111_1000_1111_1111 == 0b0000_1000_0000_0000 {
+                    // PMOVE TT regs (68030+)
+                    let write = extword & (1 << 9) != 0;
+                    let ttreg = (extword >> 10) & 1;
+                    if write {
+                        format!("PMOVE {},{}", ttreg, self.ea(instr)?)
+                    } else {
+                        format!("PMOVE {},TT{}", self.ea(instr)?, ttreg)
+                    }
                 } else if extword & 0b1110_0000_0000_0000 == 0b1000_0000_0000_0000 {
                     // PTEST
                     let extword = PtestExtword(extword);
@@ -1175,6 +1212,26 @@ impl<'a> Disassembler<'a> {
                     )
                 } else {
                     format!("P??? {:04X}", extword)
+                }
+            }
+            InstructionMnemonic::MOVES_b
+            | InstructionMnemonic::MOVES_w
+            | InstructionMnemonic::MOVES_l => {
+                let extword = self.get16()?;
+                let reg_num = (extword >> 12) & 15;
+                let is_addr_reg = (extword & 0x8000) != 0;
+                let dir_mem_to_reg = (extword & 0x0800) == 0;
+
+                let reg_name = if is_addr_reg {
+                    format!("A{}", reg_num & 7)
+                } else {
+                    format!("D{}", reg_num & 7)
+                };
+
+                if dir_mem_to_reg {
+                    format!("{} {},{}", mnemonic, self.ea(instr)?, reg_name)
+                } else {
+                    format!("{} {},{}", mnemonic, reg_name, self.ea(instr)?)
                 }
             }
         };

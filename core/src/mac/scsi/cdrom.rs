@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::debuggable::Debuggable;
 use crate::types::LatchingEvent;
 
 use super::target::ScsiTarget;
@@ -344,6 +345,11 @@ impl ScsiTarget for ScsiTargetCdrom {
 
     fn specific_cmd(&mut self, cmd: &[u8], _outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
         match cmd[0] {
+            // READ(6) (no media)
+            0x08 => {
+                self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+            }
             // START/STOP UNIT
             0x1B => {
                 // LoEj + !start = eject
@@ -410,5 +416,21 @@ impl ScsiTarget for ScsiTargetCdrom {
 
     fn branch_media(&mut self, _path: &Path) -> Result<()> {
         bail!("Unsupported on CD-ROM");
+    }
+
+    #[cfg(feature = "ethernet")]
+    fn eth_set_link(&mut self, _link: super::ethernet::EthernetLinkType) -> Result<()> {
+        unreachable!()
+    }
+
+    #[cfg(feature = "ethernet")]
+    fn eth_link(&self) -> Option<super::ethernet::EthernetLinkType> {
+        None
+    }
+}
+
+impl Debuggable for ScsiTargetCdrom {
+    fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        vec![]
     }
 }

@@ -18,7 +18,7 @@ use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
-use crate::cpu_m68k::{CpuM68000, CpuM68020, CpuM68020Pmmu};
+use crate::cpu_m68k::{CpuM68000, CpuM68020Fpu, CpuM68020Pmmu, CpuM68030Fpu};
 use crate::debuggable::{Debuggable, DebuggableProperties};
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
@@ -28,6 +28,7 @@ use crate::mac::macii::bus::MacIIBus;
 use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
+use crate::mac::serial_bridge::{SccBridge, SerialBridgeStatus};
 use crate::mac::swim::drive::DriveType;
 use crate::mac::{ExtraROMs, MacModel, MacMonitor};
 use crate::renderer::channel::ChannelRenderer;
@@ -105,6 +106,7 @@ macro_rules! dispatch {
                         Self::Portable(inner) => &inner.$($ref_target)*,
                         Self::MacII(inner) => &inner.$($ref_target)*,
                         Self::MacIIPmmu(inner) => &inner.$($ref_target)*,
+                        Self::MacII30(inner) => &inner.$($ref_target)*,
                     }
                 }
             )*
@@ -117,6 +119,7 @@ macro_rules! dispatch {
                         Self::Portable(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacII(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacIIPmmu(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::MacII30(inner) => &mut inner.$($mut_ref_target)*,
                     }
                 }
             )*
@@ -129,6 +132,7 @@ macro_rules! dispatch {
                         Self::Portable(inner) => inner.$($immut_call_target)*,
                         Self::MacII(inner) => inner.$($immut_call_target)*,
                         Self::MacIIPmmu(inner) => inner.$($immut_call_target)*,
+                        Self::MacII30(inner) => inner.$($immut_call_target)*,
                     }
                 }
             )*
@@ -141,6 +145,7 @@ macro_rules! dispatch {
                         Self::Portable(inner) => inner.$($mut_call_target)*,
                         Self::MacII(inner) => inner.$($mut_call_target)*,
                         Self::MacIIPmmu(inner) => inner.$($mut_call_target)*,
+                        Self::MacII30(inner) => inner.$($mut_call_target)*,
                     }
                 }
             )*
@@ -157,9 +162,11 @@ enum EmulatorConfig {
     /// Macintosh Portable
     Portable(Box<CpuM68000<MacPortableBus<ChannelRenderer>>>),
     /// Macintosh II (AMU)
-    MacII(Box<CpuM68020<MacIIBus<ChannelRenderer, true>>>),
+    MacII(Box<CpuM68020Fpu<MacIIBus<ChannelRenderer, true>>>),
     /// Macintosh II (PMMU)
     MacIIPmmu(Box<CpuM68020Pmmu<MacIIBus<ChannelRenderer, false>>>),
+    /// Macintosh SE/30 and 68030-based Macintosh IIs
+    MacII30(Box<CpuM68030Fpu<MacIIBus<ChannelRenderer, false>>>),
 }
 
 dispatch! {
@@ -236,6 +243,8 @@ pub struct Emulator {
     record_input: Option<InputRecording>,
     replay_input: VecDeque<(Ticks, EmulatorCommand)>,
     peripheral_debug: bool,
+    /// Serial bridges for SCC channels (index 0 = Channel A, index 1 = Channel B)
+    serial_bridges: [Option<SccBridge>; 2],
 }
 
 impl Emulator {
@@ -350,7 +359,7 @@ impl Emulator {
                         mouse_mode,
                         ram_size,
                     );
-                    let cpu = Box::new(CpuM68020::new(bus));
+                    let cpu = Box::new(CpuM68020Fpu::new(bus));
                     assert_eq!(cpu.get_type(), model.cpu_type());
 
                     EmulatorConfig::MacII(cpu)
@@ -372,6 +381,71 @@ impl Emulator {
                     EmulatorConfig::MacIIPmmu(cpu)
                 }
             }
+            MacModel::MacIIx | MacModel::MacIIcx => {
+                assert!(override_fdd_type.is_none());
+
+                // Find display card ROM
+                let Some(ExtraROMs::MDC12(mdcrom)) =
+                    extra_roms.iter().find(|p| matches!(p, ExtraROMs::MDC12(_)))
+                else {
+                    bail!("Macintosh II requires display card ROM")
+                };
+
+                // Find extension ROM if present
+                let extension_rom = extra_roms.iter().find_map(|p| match p {
+                    ExtraROMs::ExtensionROM(data) => Some(*data),
+                    _ => None,
+                });
+
+                // Initialize bus and CPU
+                let bus = MacIIBus::new(
+                    model,
+                    rom,
+                    mdcrom,
+                    extension_rom,
+                    vec![renderer],
+                    monitor.unwrap_or_default(),
+                    mouse_mode,
+                    ram_size,
+                );
+                let cpu = Box::new(CpuM68030Fpu::new(bus));
+                assert_eq!(cpu.get_type(), model.cpu_type());
+
+                EmulatorConfig::MacII30(cpu)
+            }
+            MacModel::SE30 => {
+                assert!(override_fdd_type.is_none());
+
+                // Find video ROM
+                let Some(ExtraROMs::SE30Video(vrom)) = extra_roms
+                    .iter()
+                    .find(|p| matches!(p, ExtraROMs::SE30Video(_)))
+                else {
+                    bail!("Macintosh SE/30 requires video ROM")
+                };
+
+                // Find extension ROM if present
+                let extension_rom = extra_roms.iter().find_map(|p| match p {
+                    ExtraROMs::ExtensionROM(data) => Some(*data),
+                    _ => None,
+                });
+
+                // Initialize bus and CPU
+                let bus = MacIIBus::new(
+                    model,
+                    rom,
+                    vrom,
+                    extension_rom,
+                    vec![renderer],
+                    monitor.unwrap_or_default(),
+                    mouse_mode,
+                    ram_size,
+                );
+                let cpu = Box::new(CpuM68030Fpu::new(bus));
+                assert_eq!(cpu.get_type(), model.cpu_type());
+
+                EmulatorConfig::MacII30(cpu)
+            }
         };
 
         config.scsi_mut().set_shared_dir(shared_dir);
@@ -389,8 +463,14 @@ impl Emulator {
             record_input: None,
             replay_input: VecDeque::default(),
             peripheral_debug: false,
+            serial_bridges: [None, None],
         };
         emu.status_update()?;
+
+        for ch in crate::mac::scc::SccCh::iter() {
+            emu.event_sender
+                .send(EmulatorEvent::SerialBridgeStatus(ch, None))?;
+        }
 
         Ok((emu, frame_recv))
     }
@@ -431,8 +511,15 @@ impl Emulator {
             record_input: None,
             replay_input: VecDeque::default(),
             peripheral_debug: false,
+            serial_bridges: [None, None],
         };
         emu.status_update()?;
+
+        for ch in crate::mac::scc::SccCh::iter() {
+            emu.event_sender
+                .send(EmulatorEvent::SerialBridgeStatus(ch, None))?;
+        }
+
         log::info!(
             "Restored save state {} ({}) in {:?}",
             fstr,
@@ -447,6 +534,12 @@ impl Emulator {
     /// file is created. The PRAM file is continuously updated.
     pub fn persist_pram(&mut self, pram_path: &Path) {
         self.config.rtc_mut().load_pram(pram_path);
+    }
+
+    /// Sets the RTC to a specific date/time.
+    /// This can be used to test date-dependent software behavior (e.g., easter eggs).
+    pub fn set_datetime(&mut self, dt: chrono::NaiveDateTime) {
+        self.config.rtc_mut().set_datetime(dt);
     }
 
     pub fn create_cmd_sender(&self) -> EmulatorCommandSender {
@@ -496,6 +589,7 @@ impl Emulator {
                     track: self.config.swim().drives[i].track,
                     image_title: self.config.swim().drives[i].floppy.get_title().to_owned(),
                     dirty: self.config.swim().drives[i].floppy.is_dirty(),
+                    drive_type: self.config.swim().drives[i].drive_type,
                 }),
                 model: self.model,
                 scsi: core::array::from_fn(|i| {
@@ -510,6 +604,10 @@ impl Emulator {
                                 .scsi()
                                 .get_disk_imagefn(i)
                                 .map(|p| p.to_path_buf()),
+                            #[cfg(feature = "ethernet")]
+                            link_type: self.config.scsi().targets[i]
+                                .as_ref()
+                                .and_then(|d| d.eth_link()),
                         })
                 }),
                 speed: self.config.speed(),
@@ -524,6 +622,7 @@ impl Emulator {
             self.event_sender.send(EmulatorEvent::Memory((
                 r.start as Address,
                 self.config.ram()[r].to_vec(),
+                self.config.ram().len(),
             )))?;
         }
         self.config.ram_dirty_mut().clear();
@@ -665,6 +764,12 @@ impl Emulator {
         info!("SCSI ID #{}: CD-ROM drive attached", id);
     }
 
+    #[cfg(feature = "ethernet")]
+    pub fn attach_ethernet(&mut self, id: usize) {
+        self.config.scsi_mut().attach_ethernet_at(id);
+        info!("SCSI ID #{}: Ethernet controller attached", id);
+    }
+
     #[cfg(feature = "savestates")]
     fn save_state(&self, p: &Path, screenshot: Option<Vec<u8>>) -> Result<()> {
         let mut f = File::create(p)?;
@@ -710,10 +815,13 @@ impl Tickable for Emulator {
                         self.config.video_blank()?;
                         return Ok(0);
                     }
-                    EmulatorCommand::InsertFloppy(drive, filename) => {
+                    EmulatorCommand::InsertFloppy(drive, filename, wp) => {
                         let image = Autodetect::load_file(&filename);
                         match image {
-                            Ok(img) => {
+                            Ok(mut img) => {
+                                if wp {
+                                    img.set_force_wp();
+                                }
                                 if let Err(e) = self.config.swim_mut().disk_insert(drive, img) {
                                     self.user_error(&format!("Cannot insert disk: {}", e));
                                 }
@@ -727,25 +835,10 @@ impl Tickable for Emulator {
                         }
                         self.status_update()?;
                     }
-                    EmulatorCommand::InsertFloppyWriteProtected(drive, filename) => {
-                        let image = Autodetect::load_file(&filename);
-                        match image {
-                            Ok(mut img) => {
-                                img.set_force_wp();
-                                if let Err(e) = self.config.swim_mut().disk_insert(drive, img) {
-                                    self.user_error(&format!("Cannot insert disk: {}", e));
-                                }
-                            }
-                            Err(e) => {
-                                self.user_error(&format!(
-                                    "Cannot load image '{}': {}",
-                                    filename, e
-                                ));
-                            }
+                    EmulatorCommand::InsertFloppyImage(drive, mut img, wp) => {
+                        if wp {
+                            img.set_force_wp();
                         }
-                        self.status_update()?;
-                    }
-                    EmulatorCommand::InsertFloppyImage(drive, img) => {
                         if let Err(e) = self.config.swim_mut().disk_insert(drive, *img) {
                             self.user_error(&format!("Cannot insert disk: {}", e));
                         }
@@ -801,6 +894,11 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::ScsiAttachCdrom(id) => {
                         self.attach_cdrom(id);
+                        self.status_update()?;
+                    }
+                    #[cfg(feature = "ethernet")]
+                    EmulatorCommand::ScsiAttachEthernet(id) => {
+                        self.attach_ethernet(id);
                         self.status_update()?;
                     }
                     EmulatorCommand::DetachScsiTarget(id) => {
@@ -976,11 +1074,66 @@ impl Tickable for Emulator {
                     EmulatorCommand::SccReceiveData(ch, data) => {
                         self.config.scc_mut().push_rx(ch, &data);
                     }
+                    EmulatorCommand::SerialBridgeEnable(ch, config) => {
+                        let ch_idx = ch as usize;
+                        match SccBridge::new(&config) {
+                            Ok(bridge) => {
+                                let status = bridge.status();
+                                info!("SCC bridge enabled on channel {:?}: {}", ch, status);
+                                match &status {
+                                    SerialBridgeStatus::Pty(ref path) => {
+                                        self.user_notice(&format!(
+                                            "Serial bridge PTY: {}",
+                                            path.display()
+                                        ));
+                                    }
+                                    SerialBridgeStatus::LocalTalk(_) => {
+                                        self.user_notice("LocalTalk bridge enabled");
+                                    }
+                                    _ => {}
+                                }
+                                self.serial_bridges[ch_idx] = Some(bridge);
+                                self.event_sender
+                                    .send(EmulatorEvent::SerialBridgeStatus(ch, Some(status)))?;
+                            }
+                            Err(e) => {
+                                self.user_error(&format!(
+                                    "Failed to enable SCC bridge on channel {:?}: {}",
+                                    ch, e
+                                ));
+                            }
+                        }
+                    }
+                    EmulatorCommand::SerialBridgeDisable(ch) => {
+                        let ch_idx = ch as usize;
+                        if self.serial_bridges[ch_idx].take().is_some() {
+                            info!("Serial bridge disabled on channel {:?}", ch);
+                            self.event_sender
+                                .send(EmulatorEvent::SerialBridgeStatus(ch, None))?;
+                        }
+                    }
                     #[cfg(feature = "savestates")]
                     EmulatorCommand::SaveState(path, screenshot) => {
                         if let Err(e) = self.save_state(&path, screenshot) {
                             self.user_error(&format!("Failed to save state: {:?}", e));
                         }
+                    }
+                    EmulatorCommand::SetDebugFramebuffers(v) => {
+                        if let EmulatorConfig::Compact(ref mut c) = &mut self.config {
+                            c.bus.video.debug_framebuffers = v;
+                        }
+                    }
+                    EmulatorCommand::SetFloppyRpmAdjustment(drive, adjustment) => {
+                        if drive < self.config.swim_mut().drives.len() {
+                            self.config.swim_mut().drives[drive].rpm_adjustment = adjustment;
+                        }
+                    }
+                    #[cfg(feature = "ethernet")]
+                    EmulatorCommand::EthernetSetLink(idx, link) => {
+                        self.config.scsi_mut().targets[idx]
+                            .as_mut()
+                            .context("Setting link on non-ethernet device")?
+                            .eth_set_link(link)?;
                     }
                 }
             }
@@ -990,13 +1143,39 @@ impl Tickable for Emulator {
             if self.last_update.elapsed() > Duration::from_millis(500) {
                 self.last_update = Instant::now();
                 self.status_update()?;
+            }
 
-                for ch in crate::mac::scc::SccCh::iter() {
-                    if self.config.scc().has_tx_data(ch) {
-                        self.event_sender.send(EmulatorEvent::SccTransmitData(
-                            ch,
-                            self.config.scc_mut().take_tx(ch),
-                        ))?;
+            // Poll SCC TX data and serial/LocalTalk bridges every tick batch
+            // This needs to be frequent for LocalTalk to work properly
+            for ch in crate::mac::scc::SccCh::iter() {
+                let ch_idx = ch as usize;
+
+                // Check for TX data from SCC
+                if self.config.scc().has_tx_data(ch) {
+                    let tx_data = self.config.scc_mut().take_tx(ch);
+
+                    // Route through bridge if active, otherwise send to frontend
+                    if let Some(ref mut bridge) = self.serial_bridges[ch_idx] {
+                        bridge.write_from_scc(&tx_data);
+                    } else {
+                        self.event_sender
+                            .send(EmulatorEvent::SccTransmitData(ch, tx_data))?;
+                    }
+                }
+
+                // Poll bridges for incoming data and status changes
+                if let Some(ref mut bridge) = self.serial_bridges[ch_idx] {
+                    // Check for state changes (e.g., new TCP connection, LocalTalk status)
+                    let has_data = bridge.poll();
+                    if has_data {
+                        self.event_sender
+                            .send(EmulatorEvent::SerialBridgeStatus(ch, Some(bridge.status())))?;
+                    }
+
+                    // Read incoming data from bridge and send to SCC
+                    let rx_data = bridge.read_to_scc();
+                    if !rx_data.is_empty() {
+                        self.config.scc_mut().push_rx(ch, &rx_data);
                     }
                 }
             }
@@ -1015,6 +1194,40 @@ impl Tickable for Emulator {
                     break;
                 }
                 self.try_step();
+
+                // Demand-driven LocalTalk polling: poll immediately when Mac re-enables RX
+                // Only poll if RX is enabled and no character is available (ready for new packet)
+                if self
+                    .config
+                    .scc_mut()
+                    .take_localtalk_poll_needed(crate::mac::scc::SccCh::B)
+                    && self
+                        .config
+                        .scc()
+                        .is_rx_ready_for_data(crate::mac::scc::SccCh::B)
+                {
+                    if let Some(ref mut bridge) = self.serial_bridges[1] {
+                        if bridge.is_localtalk() {
+                            // First, flush any pending TX data to the bridge
+                            // This ensures RTS is processed and CTS is synthesized
+                            // before we poll for responses
+                            if self.config.scc().has_tx_data(crate::mac::scc::SccCh::B) {
+                                let tx_data =
+                                    self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
+                                bridge.write_from_scc(&tx_data);
+                            }
+
+                            // Now poll for incoming data and pending CTS
+                            bridge.poll();
+                            let rx_data = bridge.read_to_scc();
+                            if !rx_data.is_empty() {
+                                self.config
+                                    .scc_mut()
+                                    .push_rx(crate::mac::scc::SccCh::B, &rx_data);
+                            }
+                        }
+                    }
+                }
             }
         } else {
             thread::sleep(Duration::from_millis(100));

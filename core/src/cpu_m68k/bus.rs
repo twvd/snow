@@ -2,6 +2,7 @@
 
 use crate::bus::{Address, Bus, BusResult, IrqSource};
 use crate::cpu_m68k::cpu::{Breakpoint, BusBreakpoint, CpuError, CpuM68k, Group0Details};
+use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::{CpuM68kType, CpuSized, M68000, M68020, TORDER_HIGHLOW, TORDER_LOWHIGH};
 use crate::types::Long;
 use crate::types::Word;
@@ -16,8 +17,13 @@ pub const FC_SUPERVISOR_DATA: u8 = 5;
 pub const FC_SUPERVISOR_PROGRAM: u8 = 6;
 pub const FC_MASK: u8 = 0b1111;
 
-impl<TBus, const ADDRESS_MASK: Address, const CPU_TYPE: CpuM68kType, const PMMU: bool>
-    CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, PMMU>
+impl<
+        TBus,
+        const ADDRESS_MASK: Address,
+        const CPU_TYPE: CpuM68kType,
+        const FPU_TYPE: FpuM68kType,
+        const PMMU: bool,
+    > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
@@ -99,7 +105,7 @@ where
     }
 
     #[inline(always)]
-    fn read_ticks_generic<T: CpuSized, const PHYSICAL: bool>(
+    pub(in crate::cpu_m68k) fn read_ticks_generic<T: CpuSized, const PHYSICAL: bool>(
         &mut self,
         fc: u8,
         o_addr: Address,
@@ -264,7 +270,11 @@ where
     }
 
     #[inline(always)]
-    fn write_ticks_order_generic<T: CpuSized, const TORDER: usize, const PHYSICAL: bool>(
+    pub(in crate::cpu_m68k) fn write_ticks_order_generic<
+        T: CpuSized,
+        const TORDER: usize,
+        const PHYSICAL: bool,
+    >(
         &mut self,
         fc: u8,
         o_addr: Address,
