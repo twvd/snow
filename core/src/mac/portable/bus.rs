@@ -34,9 +34,6 @@ pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
 pub const CLOCK_SPEED: Ticks = 16_000_000;
 
-const IDLE_DTACK_DELAY: u8 = 64;
-const SLIM_DTACK_DELAY: u8 = 16;
-
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct MacPortableBus<TRenderer: Renderer> {
@@ -112,7 +109,7 @@ where
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
 
         if extension_rom.is_some() {
-            log::info!("Extension ROM present");
+            info!("Extension ROM present");
         }
 
         let rom = {
@@ -128,7 +125,7 @@ where
                 rom[0x29DB3] = 0xF8;
                 rom[0x3FF70..=0x3FF7B].copy_from_slice(&[
                     0x4A, 0x39, 0x00, 0x90, 0x00, 0x2A, 0x4E, 0xF9, 0x00, 0xF0, 0x00, 0x2A,
-                ])
+                ]);
             }
 
             rom
@@ -409,7 +406,7 @@ where
             self.pmgr.adb_event(&AdbEvent::Mouse(MouseEvent {
                 button,
                 rel_movement: None,
-            }))
+            }));
         }
 
         if relx == 0 && rely == 0 {
@@ -476,41 +473,7 @@ where
     /// Tests for wait states on bus access
     fn in_waitstate(&mut self, addr: Address) -> bool {
         match addr {
-            0x0000_0000..=0x008F_FFFF => {
-                if self.normandy.idle_speed {
-                    match self.normandy.dtack_counter {
-                        0 => {
-                            self.normandy.dtack_counter = IDLE_DTACK_DELAY;
-                            true
-                        }
-                        1 => {
-                            self.normandy.dtack_counter -= 1;
-                            false
-                        }
-                        _ => {
-                            self.normandy.dtack_counter -= 1;
-                            true
-                        }
-                    }
-                } else if !self.normandy.slim_dtack & (0x0050_0000..=0x008F_FFFF).contains(&addr) {
-                    match self.normandy.dtack_counter {
-                        0 => {
-                            self.normandy.dtack_counter = SLIM_DTACK_DELAY;
-                            true
-                        }
-                        1 => {
-                            self.normandy.dtack_counter -= 1;
-                            false
-                        }
-                        _ => {
-                            self.normandy.dtack_counter -= 1;
-                            true
-                        }
-                    }
-                } else {
-                    false
-                }
-            }
+            0x0000_0000..=0x009F_FFFF => self.normandy.waitstate(addr),
             _ => false,
         }
     }
@@ -537,10 +500,6 @@ impl<TRenderer> Bus<Address, Byte> for MacPortableBus<TRenderer>
 where
     TRenderer: Renderer,
 {
-    fn get_mask(&self) -> Address {
-        0x00FFFFFF
-    }
-
     fn read(&mut self, addr: Address) -> BusResult<Byte> {
         if self.in_waitstate(addr) {
             return BusResult::WaitState;
@@ -578,6 +537,10 @@ where
             warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
         }
         BusResult::Ok(val)
+    }
+
+    fn get_mask(&self) -> Address {
+        0x00FFFFFF
     }
 
     fn reset(&mut self, hard: bool) -> Result<bool> {
