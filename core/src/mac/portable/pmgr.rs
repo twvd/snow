@@ -1,13 +1,14 @@
 //! Power manager implementation for the Macintosh Portable and PowerBook 100.
 
+use std::ops::DerefMut;
 use crate::debuggable::Debuggable;
 use crate::mac::adb::{AdbDevice, AdbDeviceInstance, AdbDeviceResponse, AdbEvent};
 use crate::mac::rtc::Rtc as MacRtc;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use chrono::{Local, NaiveDate};
-use log::{info, warn};
+use log::warn;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
@@ -175,7 +176,7 @@ pub struct Pmgr {
 }
 
 impl Pmgr {
-    pub(crate) fn new() -> Pmgr {
+    pub(crate) fn new() -> Self {
         Self {
             low_level: DEFAULT_LOW_LEVEL as u8,
             cutoff_level: DEFAULT_CUTOFF_LEVEL as u8,
@@ -247,24 +248,24 @@ impl Pmgr {
         }
     }
 
-    fn cmd(&mut self, cmd: Byte, data: Vec<Byte>) -> (Result<()>, Option<Vec<Byte>>) {
+    fn cmd(&mut self, cmd: Byte, data: &[Byte]) -> (Result<()>, Option<Vec<Byte>>) {
         match cmd {
             // Power control
             0x10..=0x17 => self.power_control_set(data[0]),
             // Power status
             0x18..=0x1F => self.power_control_get(),
             // ADB command
-            0x20 => self.adb_cmd(data[0], data[1], data[2], data[3..].to_owned()),
+            0x20 => self.adb_cmd(data[0], data[1], data[2], &data[3..]),
             // ADB off
             0x21 => self.adb_off(),
             // ADB status
             0x28 => self.adb_status(),
             // Clock set
-            0x30 => self.clock_set(data.to_vec()),
+            0x30 => self.clock_set(&data),
             // Write PRAM
-            0x31 => self.pram_write(data[0..].to_owned()),
+            0x31 => self.pram_write(&data),
             // Write XPRAM
-            0x32..=0x37 => self.xpram_write(data[0], data[1], data[2..].to_owned()),
+            0x32..=0x37 => self.xpram_write(data[0], data[1], &data[2..]),
             // Clock read
             0x38 => self.clock_read(),
             // Read PRAM
@@ -284,7 +285,7 @@ impl Pmgr {
             // Read battery with update
             0x69 => self.battery_read_now(),
             // Sleep request
-            0x70 => self.sleep_request(data[0..=3].to_owned()),
+            0x70 => self.sleep_request(&data),
             // Read interrupts
             0x78 => self.read_interrupts(),
             // Set wake up time
@@ -345,7 +346,7 @@ impl Pmgr {
         cmd: Byte,
         flags: Byte,
         len: Byte,
-        data: Vec<Byte>,
+        data: &[Byte],
     ) -> (Result<()>, Option<Vec<Byte>>) {
         self.last_adb = cmd;
         self.adb_status.0 = flags;
@@ -392,7 +393,7 @@ impl Pmgr {
                     self.length = 3 + adb_response.len() as Byte;
                     let mut result =
                         vec![self.last_adb, self.adb_status.0, adb_response.len() as Byte];
-                    result.extend(adb_response.to_owned());
+                    result.extend(adb_response);
                     (Ok(()), Some(result))
                 }
             } else {
@@ -420,7 +421,7 @@ impl Pmgr {
     }
 
     /// Set the current time
-    fn clock_set(&mut self, time: Vec<Byte>) -> (Result<()>, Option<Vec<Byte>>) {
+    fn clock_set(&mut self, time: &[Byte]) -> (Result<()>, Option<Vec<Byte>>) {
         if time.len() == 4 {
             let mut bytes = [0u8; 4];
             bytes.copy_from_slice(&time[0..4]);
@@ -430,7 +431,7 @@ impl Pmgr {
     }
 
     /// Write the initial 20 bytes of PRAM
-    fn pram_write(&mut self, data: Vec<Byte>) -> (Result<()>, Option<Vec<Byte>>) {
+    fn pram_write(&mut self, data: &[Byte]) -> (Result<()>, Option<Vec<Byte>>) {
         if data.len() < 20 {
             warn!("PRAM write too short, length {} bytes", data.len());
             return (Ok(()), None);
@@ -449,7 +450,7 @@ impl Pmgr {
         &mut self,
         loc: Byte,
         len: Byte,
-        data: Vec<Byte>,
+        data: &[Byte],
     ) -> (Result<()>, Option<Vec<Byte>>) {
         match loc + len - 1 {
             0x00..=0x7F => {
@@ -528,11 +529,7 @@ impl Pmgr {
             self.power_plane.set_modem_power(false);
             self.power_plane.set_negative_power(false);
         }
-        if val & 0x02 == 0x02 {
-            self.modem_ab = true;
-        } else {
-            self.modem_ab = false;
-        }
+        self.modem_ab = val & 0x02 == 0x02;
         if val & 0x04 == 0x04 {
             self.unknown_flags.set_ring_wake_on(true);
         } else {
@@ -582,7 +579,7 @@ impl Pmgr {
     }
 
     /// Request to enter sleep mode
-    fn sleep_request(&mut self, string: Vec<Byte>) -> (Result<()>, Option<Vec<Byte>>) {
+    fn sleep_request(&mut self, string: &[Byte]) -> (Result<()>, Option<Vec<Byte>>) {
         if string == b"MATT".to_vec() {
             // TODO Sleep now
         } else {
@@ -628,20 +625,20 @@ impl Pmgr {
     }
 
     /// Set sound control bits
-    fn sound_set(&mut self) -> (Result<()>, Option<Vec<Byte>>) {
+    fn sound_set(&self) -> (Result<()>, Option<Vec<Byte>>) {
         // TODO
         (Ok(()), None)
     }
 
     /// Read sound control bits
-    fn sound_read(&mut self) -> (Result<()>, Option<Vec<Byte>>) {
+    fn sound_read(&self) -> (Result<()>, Option<Vec<Byte>>) {
         // TODO
         (Ok(()), Some(vec![0x00]))
     }
 
     /// Write to internal power manager memory
     fn internal_write(
-        &mut self,
+        &self,
         _loch: Byte,
         _locl: Byte,
         _data: Vec<Byte>,
@@ -652,7 +649,7 @@ impl Pmgr {
 
     /// Read from internal power manager memory
     fn internal_read(
-        &mut self,
+        &self,
         _loch: Byte,
         _locl: Byte,
         _len: Byte,
@@ -760,7 +757,6 @@ impl Pmgr {
     }
 
     /// Send events from the emulator to the ADB devices
-    pub(crate) fn adb_send_event(&mut self, event: &AdbEvent) {}
     pub fn adb_event(&mut self, event: &AdbEvent) {
         for device in &mut self.adb_devices {
             device.event(event);
@@ -794,11 +790,7 @@ impl Tickable for Pmgr {
         }
 
         // Check for interrupts
-        if (self.interrupt_flags.0 != 0) & self.adb_ready {
-            self.interrupt = true;
-        } else {
-            self.interrupt = false;
-        }
+        self.interrupt = (self.interrupt_flags.0 != 0) & self.adb_ready;
 
         // Check if we're waiting to process an ADB command
         if self.adb_status.new() {
@@ -889,7 +881,7 @@ impl Tickable for Pmgr {
 
             // WaitCommand: Wait for the host to be ready to handshake in the other direction
             State::WaitCommand => {
-                if self.wait_count <= 0 {
+                if self.wait_count == 0 {
                     self.state = State::DoCommand;
                 } else {
                     self.wait_count -= 1;
@@ -898,10 +890,11 @@ impl Tickable for Pmgr {
 
             // DoCommand: Execute the command
             State::DoCommand => {
+                let data_copy = self.data.clone();
                 self.data = self
-                    .cmd(self.cmd, self.data.to_owned())
+                    .cmd(self.cmd, &data_copy)
                     .1
-                    .unwrap_or(vec![0; 4]);
+                    .unwrap_or_else(||vec![0; 4]);
                 if self.read {
                     self.state = State::ReturnCmd;
                 } else {
@@ -924,7 +917,7 @@ impl Tickable for Pmgr {
 
             // ReturnCmdWait: Wait for the host to be ready to handshake in the other direction
             State::ReturnCmdWait => {
-                if self.wait_count <= 0 {
+                if self.wait_count == 0 {
                     self.state = State::ReturnLength;
                 } else {
                     self.wait_count -= 1;
@@ -950,7 +943,7 @@ impl Tickable for Pmgr {
 
             // ReturnDataWait: Wait for the host to be ready to handshake in the other direction
             State::ReturnDataWait => {
-                if self.wait_count <= 0 {
+                if self.wait_count == 0 {
                     self.state = State::ReturnData;
                 } else {
                     self.wait_count -= 1;
@@ -987,7 +980,7 @@ impl Tickable for Pmgr {
 
             // CleanupWait: Wait for the host to finish receiving the last byte
             State::CleanupWait => {
-                if self.wait_count <= 0 {
+                if self.wait_count == 0 {
                     self.state = State::Cleanup2;
                 } else {
                     self.wait_count -= 1;

@@ -11,6 +11,10 @@ use anyhow::Result;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
+const IDLE_DTACK_DELAY: u8 = 64;
+const SLIM_DTACK_DELAY: u8 = 16;
+const ROM_DTACK_DELAY: u8 = 2;
+
 bitfield! {
     #[derive(Clone, Serialize, Deserialize)]
     struct SlimMapper(u8): {
@@ -97,6 +101,61 @@ impl Normandy {
             dtack_counter: 0,
         }
     }
+
+    pub(crate) fn waitstate(&mut self, addr: Address) -> bool {
+        match addr {
+            0x0000_0000..=0x008F_FFFF => {
+                if self.idle_speed {
+                    match self.dtack_counter {
+                        0 => {
+                            self.dtack_counter = IDLE_DTACK_DELAY;
+                            true
+                        }
+                        1 => {
+                            self.dtack_counter = 0;
+                            false
+                        }
+                        _ => {
+                            self.dtack_counter -= 1;
+                            true
+                        }
+                    }
+                } else if !self.slim_dtack & (0x0050_0000..=0x0050_FFFF).contains(&addr) {
+                    match self.dtack_counter {
+                        0 => {
+                            self.dtack_counter = SLIM_DTACK_DELAY;
+                            true
+                        }
+                        1 => {
+                            self.dtack_counter = 0;
+                            false
+                        }
+                        _ => {
+                            self.dtack_counter -= 1;
+                            true
+                        }
+                    }
+                } else {
+                    false
+                }
+            },
+            // 0x0090_0000..=0x0090_FFFF => match self.dtack_counter {
+            //     0 => {
+            //         self.dtack_counter = ROM_DTACK_DELAY;
+            //         true
+            //     }
+            //     1 => {
+            //         self.dtack_counter = 0;
+            //         false
+            //     }
+            //     _ => {
+            //         self.dtack_counter -= 1;
+            //         true
+            //     }
+            // },
+            _ => false,
+        }
+    }
 }
 
 impl BusMember<Address> for Normandy {
@@ -165,10 +224,8 @@ impl BusMember<Address> for Normandy {
                 0x000..=0x01F => {
                     if addr & 0x1 != 0 {
                         self.slim_mapper[((addr & 0x1F) >> 1) as usize].0 = val & 0x7;
-                        Some(())
-                    } else {
-                        Some(())
                     }
+                    Some(())
                 }
                 0x200..=0x201 => {
                     self.slim_dtack = true;
