@@ -73,8 +73,15 @@ impl AdbKeyboard {
 #[typetag::serde]
 impl AdbDevice for AdbKeyboard {
     fn event(&mut self, event: &AdbEvent) {
-        if let AdbEvent::Key(ke) = event {
-            self.event_queue.push_back(*ke);
+        match event {
+            AdbEvent::Key(ke) => self.event_queue.push_back(*ke),
+            AdbEvent::ReleaseAll => {
+                for (sc, _) in self.keystate.iter().enumerate().filter(|(_, &s)| s) {
+                    self.event_queue
+                        .push_back(KeyEvent::KeyUp(sc.try_into().unwrap(), Self::KEYMAP));
+                }
+            }
+            _ => (),
         }
     }
 
@@ -102,7 +109,7 @@ impl AdbDevice for AdbKeyboard {
                         .and_then(|ke| ke.translate_scancode(Self::KEYMAP))
                     {
                         match ke {
-                            KeyEvent::KeyDown(sc) => {
+                            KeyEvent::KeyDown(sc, _) => {
                                 self.keystate[sc as usize] = true;
                                 if sc == SC_CAPSLOCK {
                                     // Capslock is a mechanical sticking key
@@ -117,7 +124,7 @@ impl AdbDevice for AdbKeyboard {
                                     response.push(sc);
                                 }
                             }
-                            KeyEvent::KeyUp(sc) => {
+                            KeyEvent::KeyUp(sc, _) => {
                                 self.keystate[sc as usize] = false;
                                 if sc != SC_CAPSLOCK {
                                     response.push(0x80 | sc);

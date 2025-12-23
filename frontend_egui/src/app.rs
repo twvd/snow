@@ -2854,6 +2854,9 @@ impl eframe::App for SnowGui {
                         self.emu.update_mouse(Some(&abs_p), &egui::Pos2::default());
                     }
                 }
+                egui::Event::WindowFocused(false) => {
+                    self.emu.release_all_inputs();
+                }
                 _ => (),
             }
         }
