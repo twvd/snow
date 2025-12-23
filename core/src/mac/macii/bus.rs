@@ -597,6 +597,11 @@ where
         self.via1.adb.event(&AdbEvent::Key(ke));
     }
 
+    /// Releases all pressed inputs
+    pub fn input_release_all(&mut self) {
+        self.via1.adb.event(&AdbEvent::ReleaseAll);
+    }
+
     pub fn rtc_mut(&mut self) -> &mut Rtc {
         &mut self.via1.rtc
     }

@@ -571,6 +571,16 @@ where
         }
     }
 
+    /// Releases all pressed inputs
+    pub fn input_release_all(&mut self) {
+        if !self.model.has_adb() {
+            self.via.keyboard.release_all();
+            self.mouse_update_rel(0, 0, Some(false));
+        } else {
+            self.via.adb.event(&AdbEvent::ReleaseAll);
+        }
+    }
+
     pub fn rtc_mut(&mut self) -> &mut Rtc {
         &mut self.via.rtc
     }

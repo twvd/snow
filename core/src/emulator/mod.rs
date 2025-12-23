@@ -216,6 +216,7 @@ dispatch! {
         fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) -> () { bus.mouse_update_rel(relx, rely, button) }
         fn mouse_update_abs(&mut self, x: u16, y: u16) -> () { bus.mouse_update_abs(x, y) }
         fn keyboard_event(&mut self, ke: KeyEvent) -> () { bus.keyboard_event(ke) }
+        fn input_release_all(&mut self) -> () { bus.input_release_all() }
         fn progkey(&mut self) -> () { bus.progkey() }
         fn video_blank(&mut self) -> Result<()> { bus.video_blank() }
 
@@ -991,6 +992,9 @@ impl Tickable for Emulator {
                         } else {
                             self.config.keyboard_event(e);
                         }
+                    }
+                    EmulatorCommand::ReleaseAllInputs => {
+                        self.config.input_release_all();
                     }
                     EmulatorCommand::CpuSetPC(val) => self.config.cpu_set_pc(val)?,
                     EmulatorCommand::SetSpeed(s) => self.config.set_speed(s),

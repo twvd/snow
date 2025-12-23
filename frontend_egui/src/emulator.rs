@@ -449,6 +449,8 @@ impl EmulatorState {
     }
 
     pub fn update_key(&self, key: Scancode, pressed: bool) {
+        use snow_core::keymap::{KeyEvent, Keymap};
+
         if !self.is_running() {
             return;
         }
@@ -456,15 +458,17 @@ impl EmulatorState {
         if let Some(ref sender) = self.cmdsender {
             if pressed {
                 sender
-                    .send(EmulatorCommand::KeyEvent(
-                        snow_core::keymap::KeyEvent::KeyDown(key),
-                    ))
+                    .send(EmulatorCommand::KeyEvent(KeyEvent::KeyDown(
+                        key,
+                        Keymap::Universal,
+                    )))
                     .unwrap();
             } else {
                 sender
-                    .send(EmulatorCommand::KeyEvent(
-                        snow_core::keymap::KeyEvent::KeyUp(key),
-                    ))
+                    .send(EmulatorCommand::KeyEvent(KeyEvent::KeyUp(
+                        key,
+                        Keymap::Universal,
+                    )))
                     .unwrap();
             }
         }
@@ -1115,5 +1119,13 @@ impl EmulatorState {
         sender
             .send(EmulatorCommand::EthernetSetLink(id, link))
             .unwrap();
+    }
+
+    pub fn release_all_inputs(&self) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        sender.send(EmulatorCommand::ReleaseAllInputs).unwrap();
     }
 }
