@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::time::Instant;
 
 use anyhow::{bail, Result};
 use clap::Parser;
@@ -10,7 +11,7 @@ use log::*;
 
 use snow_core::emulator::comm::{EmulatorCommand, EmulatorEvent, EmulatorSpeed};
 use snow_core::emulator::Emulator;
-use snow_core::mac::MacModel;
+use snow_core::mac::{ExtraROMs, MacModel};
 use snow_core::tickable::{Tickable, Ticks};
 
 const DISPLAY_WIDTH: u16 = 512;
@@ -24,6 +25,12 @@ struct Args {
     fn_prefix: String,
     control_frame: String,
     out_dir: String,
+
+    #[arg(long)]
+    model: Option<MacModel>,
+
+    #[arg(long)]
+    display_rom: Option<String>,
 }
 
 fn deduplicate_with_counts<T: Clone + Eq>(arr: &[T]) -> Vec<(T, usize)> {
@@ -42,10 +49,20 @@ fn main() -> Result<()> {
 
     // Initialize ROM
     let rom = fs::read(&args.rom)?;
-    let model = MacModel::detect_from_rom(&rom).expect("Cannot detect model from ROM file");
+    let model = args.model.unwrap_or_else(|| {
+        MacModel::detect_from_rom(&rom).expect("Cannot detect model from ROM file")
+    });
 
     // Initialize emulator
-    let (mut emulator, frame_recv) = Emulator::new(&rom, model)?;
+    let mut extra_roms = vec![];
+    if let Some(display_rom) = args.display_rom.as_deref() {
+        if model == MacModel::SE30 {
+            extra_roms.push(ExtraROMs::SE30Video(display_rom.as_bytes()));
+        } else {
+            extra_roms.push(ExtraROMs::MDC12(display_rom.as_bytes()));
+        }
+    }
+    let (mut emulator, frame_recv) = Emulator::new(&rom, &extra_roms, model)?;
     let cmd = emulator.create_cmd_sender();
     let event_recv = emulator.create_event_recv();
     if let Some(floppy_fn) = args.floppy {
@@ -119,6 +136,7 @@ fn main() -> Result<()> {
     let mut last_delay = 0;
     let mut control_seen = false;
     info!("Starting");
+    let start = Instant::now();
     while emulator.get_cycles() < args.cycles {
         while let Ok(buf) = frame_recv.try_recv() {
             let frame = buf.into_inner();
@@ -155,6 +173,11 @@ fn main() -> Result<()> {
         }
         emulator.tick(1)?;
     }
+    log::info!(
+        "Completed {} cycles in {:0.04}s",
+        args.cycles,
+        (Instant::now() - start).as_secs_f64()
+    );
 
     if !frames.is_empty() {
         // Finish full recording

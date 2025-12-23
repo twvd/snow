@@ -243,11 +243,12 @@ pub struct Emulator {
 impl Emulator {
     pub fn new(
         rom: &[u8],
+        extra_roms: &[ExtraROMs],
         model: MacModel,
     ) -> Result<(Self, crossbeam_channel::Receiver<DisplayBuffer>)> {
         Self::new_with_extra(
             rom,
-            &[],
+            extra_roms,
             model,
             None,
             MouseMode::default(),
