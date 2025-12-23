@@ -4,8 +4,6 @@ use anyhow::{bail, Context, Result};
 #[cfg(feature = "mmap")]
 use memmap2::MmapMut;
 use serde::{Deserialize, Serialize};
-use std::fs::File;
-use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -91,10 +89,9 @@ impl ScsiTargetDisk {
     #[cfg(feature = "mmap")]
     fn mmap_file(filename: &Path) -> Result<MmapMut> {
         use fs2::FileExt;
-        use std::{
-            fs::OpenOptions,
-            io::{Seek, SeekFrom},
-        };
+        use std::fs::OpenOptions;
+        use std::io::{Seek, SeekFrom};
+
         if !Path::new(filename).exists() {
             bail!("File not found: {}", filename.display());
         }
@@ -322,6 +319,9 @@ impl ScsiTarget for ScsiTargetDisk {
 
     #[cfg(feature = "mmap")]
     fn branch_media(&mut self, path: &Path) -> Result<()> {
+        use std::fs::File;
+        use std::io::Write;
+
         // Create a fresh disk file
         {
             let mut f = File::create(path)?;
