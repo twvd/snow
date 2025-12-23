@@ -23,7 +23,7 @@ use super::instruction::{
     AddressingMode, BfxExtWord, Direction, DivlExtWord, Instruction, InstructionMnemonic,
     MulxExtWord,
 };
-use super::regs::{Register, RegisterFile, RegisterSR};
+use super::regs::{Register, RegisterFile, RegisterSR, RestartRegisterFile};
 use super::{
     CpuM68kType, CpuSized, M68000, M68010, M68020, M68020_SR_MASK, M68030_SR_MASK, TORDER_HIGHLOW,
     TORDER_LOWHIGH,
@@ -324,7 +324,7 @@ pub struct CpuM68k<
     /// Register state at the beginning of an instruction to allow
     /// restarting an instruction that caused a mid-instruction
     /// bus fault.
-    pub(in crate::cpu_m68k) restart_regs: Option<RegisterFile>,
+    pub(in crate::cpu_m68k) restart_regs: Option<RestartRegisterFile>,
 }
 
 impl<
@@ -546,8 +546,7 @@ where
         self.step_ea_load = None;
 
         if PMMU {
-            // TODO this is incredibly expensive..
-            self.restart_regs = Some(self.regs.clone());
+            self.restart_regs = Some(RestartRegisterFile::from(&self.regs));
         }
 
         // Flag exceptions before executing the instruction to act on them later
@@ -889,7 +888,7 @@ where
                     _ => {
                         if let Some(regs) = self.restart_regs.take() {
                             saved_sr = regs.sr.sr();
-                            self.regs = regs;
+                            regs.restore(&mut self.regs);
                             self.regs.sr.set_supervisor(true);
                             self.regs.sr.set_trace(false);
                         } else {
