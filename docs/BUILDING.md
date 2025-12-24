@@ -21,6 +21,22 @@ Ubuntu, you can run:
 sudo apt install libsdl2-dev pkg-config
 ```
 
+On Fedora, you can run:
+
+```shell
+sudo dnf install sdl2-compat-devel
+```
+
+## Building from source
+
+To build after checking out the source, simply run:
+
+```
+cargo build
+```
+
+This will place the `snow_frontend_egui` binary into `target/release`.
+
 ## Building and running from source
 
 To build and run the GUI after checking out the source, simply run:
