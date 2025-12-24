@@ -768,21 +768,19 @@ where
 
         // NuBus slot IRQs and ticks
         let mut slot_irqs = 0;
-        for (slot, dev) in self
-            .nubus_devices
-            .iter_mut()
-            .enumerate()
-            .filter_map(|(i, o)| o.as_mut().map(|d| (i, d)))
-        {
-            dev.tick(ticks)?;
-            if dev.get_irq() {
-                slot_irqs |= 1 << slot;
+        for slot in 0..(self.nubus_devices.len()) {
+            if let Some(dev) = self.nubus_devices[slot].as_mut() {
+                dev.tick(ticks)?;
+                if dev.get_irq() {
+                    slot_irqs |= 1 << slot;
+                }
             }
         }
         self.via2.a_in.set_v2irqs(!slot_irqs);
         if slot_irqs > 0 {
             self.via2.ifr.set_slot(true);
         }
+
         self.via2.ifr.set_scsi_irq(self.scsi.get_irq());
         self.via2.ifr.set_scsi_drq(self.scsi.get_drq());
 
