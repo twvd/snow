@@ -2044,7 +2044,7 @@ where
         let addr: Address = self
             .regs
             .read_a::<Address>(instr.get_op2())
-            .wrapping_add_signed(instr.get_displacement()?)
+            .wrapping_add_signed(instr.get_displacement())
             & ADDRESS_MASK;
 
         if instr.get_direction_movep() == Direction::Right {
@@ -2385,7 +2385,7 @@ where
         self.regs.write_a(instr.get_op2(), sp);
         self.regs.read_a_predec::<Address>(7, 4);
         self.regs
-            .write_a(7, sp.wrapping_add_signed(instr.get_displacement()?));
+            .write_a(7, sp.wrapping_add_signed(instr.get_displacement()));
 
         Ok(())
     }
@@ -2768,7 +2768,7 @@ where
     /// DBcc
     fn op_dbcc(&mut self, instr: &Instruction) -> Result<()> {
         instr.fetch_extword(|| self.fetch())?;
-        let displacement = instr.get_displacement()?;
+        let displacement = instr.get_displacement();
 
         self.advance_cycles(2)?; // idle
 
@@ -2805,7 +2805,7 @@ where
     fn op_bcc<const BSR: bool>(&mut self, instr: &Instruction) -> Result<()> {
         let displacement = if instr.get_bxx_displacement() == 0 {
             instr.fetch_extword(|| self.fetch())?;
-            instr.get_displacement()?
+            instr.get_displacement()
         } else if CPU_TYPE >= M68020 && instr.get_bxx_displacement_raw() == 0xFF {
             let msb = self.fetch_pump()? as Address;
             let lsb = self.fetch_pump()? as Address;
@@ -2946,10 +2946,10 @@ where
 
         if instr.movec_ctrl_to_gen() {
             let val = self.regs.read::<Long>(instr.movec_ctrlreg()?.into());
-            self.regs.write(instr.movec_reg()?, val);
+            self.regs.write(instr.movec_reg(), val);
             self.advance_cycles(4)?;
         } else {
-            let val = self.regs.read::<Long>(instr.movec_reg()?);
+            let val = self.regs.read::<Long>(instr.movec_reg());
             let destreg: Register = instr.movec_ctrlreg()?.into();
 
             if destreg == Register::CACR {
@@ -2989,7 +2989,7 @@ where
     fn op_moves<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         // Fetch/decode the extension word
         instr.fetch_extword(|| self.fetch())?;
-        let ext_word = instr.get_extword().unwrap().data;
+        let ext_word = instr.get_extword().data;
         let reg_num = (ext_word >> 12) & 15;
         let is_addr_reg = (ext_word & 0x8000) != 0;
         let dir_mem_to_reg = (ext_word & 0x0800) == 0;
