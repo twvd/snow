@@ -32,7 +32,7 @@ sudo dnf install sdl2-compat-devel pkgconf-pkg-config
 To build after checking out the source, simply run:
 
 ```
-cargo build
+cargo build -r
 ```
 
 This will place the `snow_frontend_egui` binary into `target/release`.
