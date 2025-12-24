@@ -1,5 +1,6 @@
+use std::cell::Cell;
+
 use anyhow::{anyhow, bail, Context, Result};
-use crossbeam::atomic::AtomicCell;
 use either::Either;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -458,7 +459,7 @@ impl ExtWord {
     }
 
     pub fn full_index_register(&self) -> Option<Register> {
-        assert!(self.is_full());
+        debug_assert!(self.is_full());
         if self.data & (1 << 6) != 0 {
             // IS - Index Suppress
             None
@@ -470,12 +471,12 @@ impl ExtWord {
     }
 
     pub fn full_scale(&self) -> Word {
-        assert!(self.is_full());
+        debug_assert!(self.is_full());
         self.brief_get_scale()
     }
 
     pub fn full_index_size(&self) -> IndexSize {
-        assert!(self.is_full());
+        debug_assert!(self.is_full());
         self.brief_get_index_size()
     }
 
@@ -484,7 +485,7 @@ impl ExtWord {
     }
 
     pub fn full_memindirectmode(&self) -> Result<MemoryIndirectAction> {
-        assert!(self.is_full());
+        debug_assert!(self.is_full());
         let is = self.data & (1 << 6) != 0;
         let i = self.data & 0b111;
 
@@ -550,18 +551,16 @@ bitfield! {
 pub struct Instruction {
     pub mnemonic: InstructionMnemonic,
     pub data: u16,
-    pub extword: AtomicCell<Option<ExtWord>>,
+    pub extword: Cell<Option<ExtWord>>,
 }
 
 impl Clone for Instruction {
     fn clone(&self) -> Self {
         // Clone drops the loaded extension word
-        // TODO rip the Cell out..
-        // TODO make generic on CPU type?
         Self {
             mnemonic: self.mnemonic,
             data: self.data,
-            extword: AtomicCell::new(None),
+            extword: Cell::new(None),
         }
     }
 }
@@ -792,7 +791,7 @@ impl Instruction {
                 return Ok(Self {
                     mnemonic,
                     data,
-                    extword: AtomicCell::new(None),
+                    extword: Cell::new(None),
                 });
             }
         }
@@ -897,21 +896,21 @@ impl Instruction {
     {
         // This check is to handle 'MOVE mem, (xxx).L' properly.
         if !self.has_extword() {
-            self.extword.store(Some(ExtWord::from(fetch()?)));
+            self.extword.set(Some(ExtWord::from(fetch()?)));
         }
         Ok(())
     }
 
     pub fn clear_extword(&self) {
-        self.extword.store(None);
+        self.extword.set(None);
     }
 
     pub fn has_extword(&self) -> bool {
-        self.extword.load().is_some()
+        self.extword.get().is_some()
     }
 
     pub fn get_extword(&self) -> Result<ExtWord> {
-        self.extword.load().context("Ext word not fetched")
+        self.extword.get().context("Ext word not fetched")
     }
 
     pub fn needs_extword(&self) -> bool {
@@ -940,7 +939,7 @@ impl Instruction {
                 || self.mnemonic == InstructionMnemonic::DBcc
                 || self.mnemonic == InstructionMnemonic::BSR
         );
-        debug_assert!(self.extword.load().is_some());
+        debug_assert!(self.extword.get().is_some());
 
         Ok(self.get_extword()?.into())
     }
@@ -1247,7 +1246,7 @@ impl Instruction {
         F: FnMut() -> Result<u16>,
     {
         let extword = self.get_extword()?;
-        assert!(extword.is_full());
+        debug_assert!(extword.is_full());
         //assert_eq!(self.get_addr_mode()?, AddressingMode::IndirectIndex);
 
         // Base displacement size
