@@ -14,9 +14,6 @@ use snow_core::emulator::Emulator;
 use snow_core::mac::{ExtraROMs, MacModel};
 use snow_core::tickable::{Tickable, Ticks};
 
-const DISPLAY_WIDTH: u16 = 512;
-const DISPLAY_HEIGHT: u16 = 342;
-
 #[derive(Parser)]
 struct Args {
     rom: String,
@@ -42,6 +39,9 @@ fn deduplicate_with_counts<T: Clone + Eq>(arr: &[T]) -> Vec<(T, usize)> {
 }
 
 fn main() -> Result<()> {
+    let mut display_width = 0;
+    let mut display_height = 0;
+
     env_logger::Builder::from_default_env()
         .filter_level(log::LevelFilter::Debug)
         .init();
@@ -124,13 +124,7 @@ fn main() -> Result<()> {
         );
     }
 
-    let mut fullgifencoder = gif::Encoder::new(
-        File::create(format!("{}/{}-full.gif", args.out_dir, args.fn_prefix))?,
-        DISPLAY_WIDTH,
-        DISPLAY_HEIGHT,
-        &[],
-    )?;
-    fullgifencoder.set_repeat(gif::Repeat::Infinite)?;
+    let mut fullgifencoder = None;
 
     let mut frames = VecDeque::<Vec<u8>>::new();
     let mut last_delay = 0;
@@ -139,15 +133,33 @@ fn main() -> Result<()> {
     let start = Instant::now();
     while emulator.get_cycles() < args.cycles {
         while let Ok(buf) = frame_recv.try_recv() {
+            assert!(display_height == 0 || display_height == buf.height());
+            assert!(display_width == 0 || display_width == buf.width());
+            display_height = buf.height();
+            display_width = buf.width();
+
+            if fullgifencoder.is_none() {
+                fullgifencoder = Some(gif::Encoder::new(
+                    File::create(format!("{}/{}-full.gif", args.out_dir, args.fn_prefix))?,
+                    display_width,
+                    display_height,
+                    &[],
+                )?);
+                fullgifencoder
+                    .as_mut()
+                    .unwrap()
+                    .set_repeat(gif::Repeat::Infinite)?;
+            }
+
             let frame = buf.into_inner();
 
             if !frames.is_empty() && frame == *frames.back().unwrap() {
                 last_delay += 1;
             } else {
                 let mut fcopy = frame.clone();
-                let mut gframe = gif::Frame::from_rgba(DISPLAY_WIDTH, DISPLAY_HEIGHT, &mut fcopy);
+                let mut gframe = gif::Frame::from_rgba(display_width, display_height, &mut fcopy);
                 gframe.delay = last_delay;
-                fullgifencoder.write_frame(&gframe)?;
+                fullgifencoder.as_mut().unwrap().write_frame(&gframe)?;
                 last_delay = 0;
             }
 
@@ -173,27 +185,30 @@ fn main() -> Result<()> {
         }
         emulator.tick(1)?;
     }
+
+    let duration = (Instant::now() - start).as_secs_f64();
     log::info!(
-        "Completed {} cycles in {:0.04}s",
+        "Completed {} cycles in {:0.04}s ({:0.04} cycles/sec)",
         args.cycles,
-        (Instant::now() - start).as_secs_f64()
+        duration,
+        args.cycles as f64 / duration,
     );
 
     if !frames.is_empty() {
         // Finish full recording
         if last_delay > 0 {
             let mut fcopy = frames.back().unwrap().clone();
-            let mut gframe = gif::Frame::from_rgba(DISPLAY_WIDTH, DISPLAY_HEIGHT, &mut fcopy);
+            let mut gframe = gif::Frame::from_rgba(display_width, display_height, &mut fcopy);
             gframe.delay = last_delay;
-            fullgifencoder.write_frame(&gframe)?;
+            fullgifencoder.as_mut().unwrap().write_frame(&gframe)?;
         }
 
         // Write still screenshot
         let frame = frames.back().unwrap();
         let mut encoder = png::Encoder::new(
             File::create(format!("{}/{}.png", args.out_dir, args.fn_prefix))?,
-            DISPLAY_WIDTH as u32,
-            DISPLAY_HEIGHT as u32,
+            display_width as u32,
+            display_height as u32,
         );
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
@@ -205,8 +220,8 @@ fn main() -> Result<()> {
         // Write animated short
         write_gif(
             format!("{}/{}.gif", args.out_dir, args.fn_prefix),
-            DISPLAY_WIDTH,
-            DISPLAY_HEIGHT,
+            display_width,
+            display_height,
             &mut frames,
         )?;
     }
