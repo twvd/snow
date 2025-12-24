@@ -24,7 +24,7 @@ sudo apt install libsdl2-dev pkg-config
 On Fedora, you can run:
 
 ```shell
-sudo dnf install sdl2-compat-devel
+sudo dnf install sdl2-compat-devel pkgconf-pkg-config
 ```
 
 ## Building from source
