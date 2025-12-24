@@ -909,8 +909,8 @@ impl Instruction {
         self.extword.get().is_some()
     }
 
-    pub fn get_extword(&self) -> Result<ExtWord> {
-        self.extword.get().context("Ext word not fetched")
+    pub fn get_extword(&self) -> ExtWord {
+        self.extword.get().expect("Ext word not fetched")
     }
 
     pub fn needs_extword(&self) -> bool {
@@ -923,7 +923,7 @@ impl Instruction {
         ) || matches!(self.mnemonic, InstructionMnemonic::MOVEC_l)
     }
 
-    pub fn get_displacement(&self) -> Result<i32> {
+    pub fn get_displacement(&self) -> i32 {
         debug_assert!(
             (((self.mnemonic == InstructionMnemonic::MOVE_b)
                 || (self.mnemonic == InstructionMnemonic::MOVE_l)
@@ -941,7 +941,7 @@ impl Instruction {
         );
         debug_assert!(self.extword.get().is_some());
 
-        Ok(self.get_extword()?.into())
+        self.get_extword().into()
     }
 
     /// Displacement as part of the instruction for BRA/BSR/Bcc
@@ -1220,23 +1220,23 @@ impl Instruction {
     }
 
     /// MOVEC general register
-    pub fn movec_reg(&self) -> Result<Register> {
+    pub fn movec_reg(&self) -> Register {
         debug_assert!(self.mnemonic == InstructionMnemonic::MOVEC_l);
 
-        let extword = usize::from(self.get_extword()?);
+        let extword = usize::from(self.get_extword());
 
         let regnum = (extword >> 12) & 0b111;
-        Ok(if extword & (1 << 15) == 0 {
+        if extword & (1 << 15) == 0 {
             Register::Dn(regnum)
         } else {
             Register::An(regnum)
-        })
+        }
     }
 
     /// MOVEC control register
     pub fn movec_ctrlreg(&self) -> Result<MovecCtrlReg> {
         debug_assert!(self.mnemonic == InstructionMnemonic::MOVEC_l);
-        MovecCtrlReg::from_u16(u16::from(self.get_extword()?) & 0xFFF)
+        MovecCtrlReg::from_u16(u16::from(self.get_extword()) & 0xFFF)
             .context("Invalid control register")
     }
 
@@ -1245,7 +1245,7 @@ impl Instruction {
     where
         F: FnMut() -> Result<u16>,
     {
-        let extword = self.get_extword()?;
+        let extword = self.get_extword();
         debug_assert!(extword.is_full());
         //assert_eq!(self.get_addr_mode()?, AddressingMode::IndirectIndex);
 
@@ -1281,6 +1281,6 @@ mod tests {
 
         let i = Instruction::try_decode(M68000, v.remove(0)).unwrap();
         i.fetch_extword(|| Ok(v.remove(0))).unwrap();
-        assert_eq!(i.get_displacement().unwrap(), -1_i32);
+        assert_eq!(i.get_displacement(), -1_i32);
     }
 }
