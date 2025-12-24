@@ -568,22 +568,21 @@ where
         let opcode = self.fetch()?;
 
         if self.decode_cache[opcode as usize].is_none() {
-            let instr = Instruction::try_decode(CPU_TYPE, opcode);
-            if instr.is_err() {
-                if self.history_enabled {
-                    self.history_current = Default::default();
+            match Instruction::try_decode(CPU_TYPE, opcode) {
+                Ok(instr) => {
+                    self.decode_cache[opcode as usize] = Some(instr);
                 }
-                debug!(
-                    "Illegal instruction PC {:08X}: {:04X} {:016b} {}",
-                    self.regs.pc,
-                    opcode,
-                    opcode,
-                    instr.unwrap_err()
-                );
-                return self.raise_illegal_instruction();
+                Err(e) => {
+                    if self.history_enabled {
+                        self.history_current = Default::default();
+                    }
+                    debug!(
+                        "Illegal instruction PC {:08X}: {:04X} {:016b} {}",
+                        self.regs.pc, opcode, opcode, e
+                    );
+                    return self.raise_illegal_instruction();
+                }
             }
-
-            self.decode_cache[opcode as usize] = Some(instr.unwrap());
         }
 
         if self.history_enabled {
