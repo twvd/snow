@@ -16,6 +16,7 @@ env:
   CARGO_TERM_COLOR: always
   # Required to build bundled SDL2 on the current MacOS CMake (tested up to 4.1.1)
   CMAKE_POLICY_VERSION_MINIMUM: 3.5
+  CARGO_PROFILE_RELEASE_LTO: fat
 
 jobs:
   build:
