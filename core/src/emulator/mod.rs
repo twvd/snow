@@ -278,7 +278,7 @@ impl Emulator {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::large_stack_frames)]
     pub fn new_with_extra(
         rom: &[u8],
         extra_roms: &[ExtraROMs],

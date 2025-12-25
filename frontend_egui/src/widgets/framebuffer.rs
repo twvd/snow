@@ -341,6 +341,7 @@ impl FramebufferWidget {
                         .build(),
                 ]
             }
+            MacModel::Portable | MacModel::Portable15MB => vec![],
         }
     }
 
