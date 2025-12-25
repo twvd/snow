@@ -5,10 +5,11 @@ edition = "2021"
 build = "build.rs"
 
 [features]
-default = ["ethernet", "ethernet_nat"]
+default = ["ethernet", "ethernet_nat", "ethernet_tap"]
 ethernet = ["snow_core/ethernet"]
 ethernet_nat = ["ethernet", "snow_core/ethernet_nat"]
 ethernet_raw = ["ethernet", "snow_core/ethernet_raw", "dep:pnet"]
+ethernet_tap = ["ethernet", "snow_core/ethernet_tap", "dep:pnet"]
 sdl2-bundled = ["sdl2/bundled"]
 
 [build-dependencies]
