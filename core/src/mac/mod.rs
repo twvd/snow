@@ -238,6 +238,8 @@ impl MacModel {
             Self::Early512Ke | Self::Plus => Some((0x0002AE, 0x0040_0000)),
             Self::SE
             | Self::SeFdhd
+            | Self::Portable
+            | Self::Portable15MB
             | Self::Classic
             | Self::MacII
             | Self::MacIIFDHD
@@ -291,6 +293,8 @@ impl MacModel {
             | Self::Plus
             | Self::SE
             | Self::SeFdhd
+            | Self::Portable
+            | Self::Portable15MB
             | Self::Classic => panic!("Invalid operation for this model"),
             Self::MacII | Self::MacIIFDHD | Self::MacIIcx => macii::via2::RegisterB(0xFF),
             Self::MacIIx | Self::SE30 => macii::via2::RegisterB(0x87),

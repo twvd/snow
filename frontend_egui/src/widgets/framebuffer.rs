@@ -299,6 +299,18 @@ impl FramebufferWidget {
                     trinitron_curve: 0.0,
                 }
             }
+            MacModel::Portable | MacModel::Portable15MB => {
+                CrtShaderParams {
+                    crt_gamma: 2.1,
+                    scanline_thinness: 1.0,
+                    scan_blur: 0.0,
+                    mask_intensity: 0.00,
+                    curvature: 0.00,
+                    corner: 0.0,
+                    mask: 0.0,
+                    trinitron_curve: 0.0,
+                }
+            }
         }
     }
 }
