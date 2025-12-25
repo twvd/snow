@@ -1153,8 +1153,8 @@ impl SnowGui {
                             ui.set_min_width(Self::SUBMENU_WIDTH);
                             ui.strong("Link type");
 
-                            let link_type = target.link_type.unwrap();
-                            let mut new_link_type = link_type;
+                            let link_type = target.link_type.clone().unwrap();
+                            let mut new_link_type = link_type.clone();
                             ui.radio_value(&mut new_link_type, EthernetLinkType::Down, "Down");
                             #[cfg(feature = "ethernet_nat")]
                             {
@@ -1171,6 +1171,27 @@ impl SnowGui {
                                         EthernetLinkType::Bridge(interface.index),
                                         format!("Bridge: {}", interface.name),
                                     );
+                                }
+                            }
+                            #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+                            {
+                                let tap_devices: Vec<_> = pnet::datalink::interfaces()
+                                    .into_iter()
+                                    .filter(|i| {
+                                        i.name.starts_with("tap") || i.name.starts_with("snow")
+                                    })
+                                    .collect();
+
+                                if tap_devices.is_empty() {
+                                    ui.weak("TAP devices: No TAP devices found");
+                                } else {
+                                    for interface in tap_devices {
+                                        ui.radio_value(
+                                            &mut new_link_type,
+                                            EthernetLinkType::TapBridge(interface.name.clone()),
+                                            format!("TAP device: {}", interface.name),
+                                        );
+                                    }
                                 }
                             }
 
