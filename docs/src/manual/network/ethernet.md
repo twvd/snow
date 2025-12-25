@@ -67,3 +67,39 @@ information to use the DNS server of your choice. Then click 'OK'.
 In this screen, enter the IP-address for the emulated system, which needs to be in the 10.0.0.0/8 network (for example:
 10.0.0.2). Close the MacTCP control panel and reboot the emulated system. You should now be able to go online within
 the emulated system.
+
+### Using tap interfaces (Linux only)
+
+On Linux hosts, Snow can attach the virtual Ethernet adapter to a tap adapter, supporting all layer 2 and higher
+protocols. This is a feature which allows advanced users to create more complex network setups and requires more
+advanced networking and Linux knowledge.
+
+First, you need to create a tap interface that is owned by your user. For a tap interface to show up in Snow, the
+interface name needs to start with either 'tap' or 'snow'. By making your user own the interface, you do not need to run
+Snow as root for this to work.
+
+For example, to create a tap interface owned by your current user:
+
+```shell
+sudo ip tuntap add dev tap0 mode tap user $UID
+```
+
+Then, you can select the tap interface in Snow through the menu: 'Drives' -> 'SCSI #<n>: Ethernet' -> 'TAP device:
+tap<n>'.
+
+![Selecting tap0 tap device](../../images/ethernet_tap.png)
+
+As an example, to set up your host system as an internet gateway for the emulated system (gateway IP 10.0.0.1, emulated
+system in the 10.0.0.2-10.0.0.254 range, external DNS server), you can configure your host system as follows:
+
+```shell
+# Bring tap interface up and assign an IP
+sudo ip addr add 10.0.0.1/24 dev tap0
+sudo ip link set tap0 up
+
+# Allow forwarding between tap0 and eth0
+sudo sysctl -w net.ipv4.ip_forward=1
+sudo iptables -A FORWARD -i tap0 -o eth0 -j ACCEPT
+sudo iptables -A FORWARD -i eth0 -o tap0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+sudo iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+```
