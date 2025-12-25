@@ -17,20 +17,40 @@ pub type Scancode = u8;
 /// A keyboard event. Inner value is the scancode
 #[derive(Serialize, Deserialize, Copy, Clone)]
 pub enum KeyEvent {
-    KeyDown(u8),
-    KeyUp(u8),
+    KeyDown(u8, Keymap),
+    KeyUp(u8, Keymap),
 }
 
 impl KeyEvent {
     pub fn translate_scancode(self, to_map: Keymap) -> Option<Self> {
         Some(match self {
-            Self::KeyDown(sc) => Self::KeyDown(to_map.translate(sc)?),
-            Self::KeyUp(sc) => Self::KeyUp(to_map.translate(sc)?),
+            Self::KeyDown(sc, km) => {
+                if km != to_map {
+                    Self::KeyDown(to_map.translate(sc)?, to_map)
+                } else {
+                    self
+                }
+            }
+            Self::KeyUp(sc, km) => {
+                if km != to_map {
+                    Self::KeyUp(to_map.translate(sc)?, to_map)
+                } else {
+                    self
+                }
+            }
         })
+    }
+
+    pub fn as_scancode(self) -> u8 {
+        match self {
+            Self::KeyDown(sc, _) => sc,
+            Self::KeyUp(sc, _) => sc,
+        }
     }
 }
 
 /// A keyboard mapping
+#[derive(Serialize, Deserialize, Copy, Clone, Eq, PartialEq)]
 pub enum Keymap {
     /// Snow universal
     Universal,

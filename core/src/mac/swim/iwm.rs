@@ -328,7 +328,7 @@ impl Swim {
     }
 
     fn iwm_tick_bitstream(&mut self, ticks: usize) -> Result<()> {
-        assert_eq!(ticks, 1);
+        debug_assert_eq!(ticks, 1);
         if !self
             .cycles
             .is_multiple_of(self.get_selected_drive().get_ticks_per_bit())

@@ -16,6 +16,7 @@ env:
   CARGO_TERM_COLOR: always
   # Workaround for 'the SSL certificate is invalid; class=Ssl (16)'
   CARGO_NET_GIT_FETCH_WITH_CLI: true
+  CARGO_PROFILE_RELEASE_LTO: fat
 
 jobs:
   build:

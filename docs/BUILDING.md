@@ -1,4 +1,5 @@
 # Prerequisites
+
 Snow is written in the [Rust](https://www.rust-lang.org/) programming language. To install the official Rust toolchain,
 simply follow the steps on [rustup.rs](https://rustup.rs/).
 
@@ -21,6 +22,22 @@ Ubuntu, you can run:
 sudo apt install libsdl2-dev pkg-config
 ```
 
+On Fedora, you can run:
+
+```shell
+sudo dnf install sdl2-compat-devel pkgconf-pkg-config
+```
+
+## Building from source
+
+To build after checking out the source, simply run:
+
+```
+cargo build -r
+```
+
+This will place the `snow_frontend_egui` binary into `target/release`.
+
 ## Building and running from source
 
 To build and run the GUI after checking out the source, simply run:
@@ -30,20 +47,8 @@ cargo run -r
 ```
 
 Make sure you always pass the `-r` or `--release` flag to create a release build. The debug build is unoptimized and
-will
-therefore be very slow.
+will therefore be very slow.
 
-## Building and running the TUI version
-
-Note that the TUI version is deprecated and will at some point probably be removed. To build and run the TUI version,
-run:
-
-```
-cargo run -r -p snow_frontend_tui -- <rom image filename> [floppy image filename]
-```
-
-There are other command line options you can pass. To see a full list, run:
-
-```
-cargo run -r -p snow_frontend_tui -- --help
-```
+If you want to build with Link Time Optimization (LTO) enabled, set the environment variable
+`CARGO_PROFILE_RELEASE_LTO=fat`. LTO increases compilation time but generates a slightly faster (more optimized)
+executable.

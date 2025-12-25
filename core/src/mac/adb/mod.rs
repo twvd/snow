@@ -20,6 +20,7 @@ pub type AdbDeviceResponse = ArrayVec<u8, 8>;
 pub enum AdbEvent {
     Key(KeyEvent),
     Mouse(MouseEvent),
+    ReleaseAll,
 }
 
 #[typetag::serde(tag = "type")]

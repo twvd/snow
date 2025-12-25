@@ -1,3 +1,4 @@
+use serde_big_array::BigArray;
 use std::collections::VecDeque;
 
 use anyhow::Result;
@@ -7,9 +8,21 @@ use serde::{Deserialize, Serialize};
 use crate::keymap::{KeyEvent, Keymap};
 
 /// Apple M0110 keyboard, for the 512K/Plus
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct PlusKeyboard {
     event_queue: VecDeque<KeyEvent>,
+
+    #[serde(with = "BigArray")]
+    keystate: [bool; 256],
+}
+
+impl Default for PlusKeyboard {
+    fn default() -> Self {
+        Self {
+            event_queue: Default::default(),
+            keystate: [false; 256],
+        }
+    }
 }
 
 // Scancodes
@@ -33,6 +46,13 @@ impl PlusKeyboard {
         self.event_queue.push_back(ev);
     }
 
+    pub fn release_all(&mut self) {
+        for (sc, _) in self.keystate.iter().enumerate().filter(|(_, &s)| s) {
+            self.event_queue
+                .push_back(KeyEvent::KeyUp(sc.try_into().unwrap(), Self::KEYMAP));
+        }
+    }
+
     pub fn cmd(&mut self, cmd: u8) -> Result<u8> {
         match cmd {
             // Inquire/Instant
@@ -43,8 +63,14 @@ impl PlusKeyboard {
                     .and_then(|ke| ke.translate_scancode(Self::KEYMAP))
                 {
                     let result = match ev {
-                        KeyEvent::KeyDown(sc) => sc,
-                        KeyEvent::KeyUp(sc) => 0x80 | sc,
+                        KeyEvent::KeyDown(sc, _) => {
+                            self.keystate[sc as usize] = true;
+                            sc
+                        }
+                        KeyEvent::KeyUp(sc, _) => {
+                            self.keystate[sc as usize] = false;
+                            0x80 | sc
+                        }
                     };
                     Ok(result | 0x01)
                 } else {

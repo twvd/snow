@@ -264,7 +264,7 @@ impl<'a> Disassembler<'a> {
             AddressingMode::IndirectPostInc => format!("(A{})+", op),
             AddressingMode::IndirectDisplacement => {
                 instr.fetch_extword(|| self.get16())?;
-                format!("(${:04X},A{})", instr.get_displacement()?, op)
+                format!("(${:04X},A{})", instr.get_displacement(), op)
             }
             AddressingMode::AbsoluteShort => format!("(${:04X})", self.get16()?),
             AddressingMode::AbsoluteLong => format!("(${:08X})", self.get32()?),
@@ -272,12 +272,12 @@ impl<'a> Disassembler<'a> {
                 instr.fetch_extword(|| self.get16())?;
                 format!(
                     "${:08X}",
-                    self.addr.wrapping_add_signed(instr.get_displacement()? + 2)
+                    self.addr.wrapping_add_signed(instr.get_displacement() + 2)
                 )
             }
             AddressingMode::IndirectIndex => {
                 instr.fetch_extword(|| self.get16())?;
-                let extword = instr.get_extword()?;
+                let extword = instr.get_extword();
 
                 if extword.is_full() {
                     // AddressingMode::IndirectIndexBase and friends
@@ -703,7 +703,7 @@ impl<'a> Disassembler<'a> {
 
             InstructionMnemonic::MOVEP_w | InstructionMnemonic::MOVEP_l => {
                 instr.fetch_extword(|| self.get16())?;
-                let addr = format!("(A{}+${:04X})", instr.get_op2(), instr.get_displacement()?);
+                let addr = format!("(A{}+${:04X})", instr.get_op2(), instr.get_displacement());
                 match instr.get_direction_movep() {
                     Direction::Left => format!("{}.{} {},D{}", mnemonic, sz, addr, instr.get_op1()),
                     Direction::Right => {
@@ -790,7 +790,7 @@ impl<'a> Disassembler<'a> {
                     mnemonic,
                     sz,
                     instr.get_op2(),
-                    instr.get_displacement()?
+                    instr.get_displacement()
                 )
             }
 
@@ -826,11 +826,11 @@ impl<'a> Disassembler<'a> {
                 let (left, right) = if instr.movec_ctrl_to_gen() {
                     (
                         instr.movec_ctrlreg()?.to_string(),
-                        instr.movec_reg()?.to_string(),
+                        instr.movec_reg().to_string(),
                     )
                 } else {
                     (
-                        instr.movec_reg()?.to_string(),
+                        instr.movec_reg().to_string(),
                         instr.movec_ctrlreg()?.to_string(),
                     )
                 };

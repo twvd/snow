@@ -248,6 +248,9 @@ pub(crate) struct FloppyDrive {
 
     /// RPM adjustment for PWM-controlled drives
     pub(crate) rpm_adjustment: i32,
+
+    /// Cached ticks-per-bit
+    ticks_per_bit: Ticks,
 }
 
 impl FloppyDrive {
@@ -285,6 +288,7 @@ impl FloppyDrive {
             pwm_avg_count: 0,
             pwm_dutycycle: 0,
             rpm_adjustment: 0,
+            ticks_per_bit: Ticks::MAX,
         }
     }
 
@@ -411,6 +415,8 @@ impl FloppyDrive {
                 warn!("Unimplemented register write {:?} {:0b}", reg, regraw);
             }
         }
+
+        self.update_ticks_per_bit();
     }
 
     /// Inserts a disk into the disk drive
@@ -473,13 +479,18 @@ impl FloppyDrive {
 
     /// Gets the amount of ticks a physical bit is under the drive head
     pub fn get_ticks_per_bit(&self) -> Ticks {
-        if self.get_track_rpm() == 0 || !self.floppy_inserted {
-            return Ticks::MAX;
+        self.ticks_per_bit
+    }
+
+    fn update_ticks_per_bit(&mut self) {
+        self.ticks_per_bit = if self.get_track_rpm() == 0 || !self.floppy_inserted {
+            Ticks::MAX
+        } else {
+            ((self.base_frequency * 60)
+                / self.get_track_rpm()
+                / self.floppy.get_type().get_approx_track_length(self.track))
+                + 1
         }
-        ((self.base_frequency * 60)
-            / self.get_track_rpm()
-            / self.floppy.get_type().get_approx_track_length(self.track))
-            + 1
     }
 
     /// Gets the current state of the TACH (spindle motor tachometer) signal

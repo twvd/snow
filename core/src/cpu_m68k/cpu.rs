@@ -23,7 +23,7 @@ use super::instruction::{
     AddressingMode, BfxExtWord, Direction, DivlExtWord, Instruction, InstructionMnemonic,
     MulxExtWord,
 };
-use super::regs::{Register, RegisterFile, RegisterSR};
+use super::regs::{Register, RegisterFile, RegisterSR, RestartRegisterFile};
 use super::{
     CpuM68kType, CpuSized, M68000, M68010, M68020, M68020_SR_MASK, M68030_SR_MASK, TORDER_HIGHLOW,
     TORDER_LOWHIGH,
@@ -324,7 +324,7 @@ pub struct CpuM68k<
     /// Register state at the beginning of an instruction to allow
     /// restarting an instruction that caused a mid-instruction
     /// bus fault.
-    pub(in crate::cpu_m68k) restart_regs: Option<RegisterFile>,
+    pub(in crate::cpu_m68k) restart_regs: Option<RestartRegisterFile>,
 }
 
 impl<
@@ -546,8 +546,7 @@ where
         self.step_ea_load = None;
 
         if PMMU {
-            // TODO this is incredibly expensive..
-            self.restart_regs = Some(self.regs.clone());
+            self.restart_regs = Some(RestartRegisterFile::from(&self.regs));
         }
 
         // Flag exceptions before executing the instruction to act on them later
@@ -569,22 +568,21 @@ where
         let opcode = self.fetch()?;
 
         if self.decode_cache[opcode as usize].is_none() {
-            let instr = Instruction::try_decode(CPU_TYPE, opcode);
-            if instr.is_err() {
-                if self.history_enabled {
-                    self.history_current = Default::default();
+            match Instruction::try_decode(CPU_TYPE, opcode) {
+                Ok(instr) => {
+                    self.decode_cache[opcode as usize] = Some(instr);
                 }
-                debug!(
-                    "Illegal instruction PC {:08X}: {:04X} {:016b} {}",
-                    self.regs.pc,
-                    opcode,
-                    opcode,
-                    instr.unwrap_err()
-                );
-                return self.raise_illegal_instruction();
+                Err(e) => {
+                    if self.history_enabled {
+                        self.history_current = Default::default();
+                    }
+                    debug!(
+                        "Illegal instruction PC {:08X}: {:04X} {:016b} {}",
+                        self.regs.pc, opcode, opcode, e
+                    );
+                    return self.raise_illegal_instruction();
+                }
             }
-
-            self.decode_cache[opcode as usize] = Some(instr.unwrap());
         }
 
         if self.history_enabled {
@@ -889,7 +887,7 @@ where
                     _ => {
                         if let Some(regs) = self.restart_regs.take() {
                             saved_sr = regs.sr.sr();
-                            self.regs = regs;
+                            regs.restore(&mut self.regs);
                             self.regs.sr.set_supervisor(true);
                             self.regs.sr.set_trace(false);
                         } else {
@@ -2045,7 +2043,7 @@ where
         let addr: Address = self
             .regs
             .read_a::<Address>(instr.get_op2())
-            .wrapping_add_signed(instr.get_displacement()?)
+            .wrapping_add_signed(instr.get_displacement())
             & ADDRESS_MASK;
 
         if instr.get_direction_movep() == Direction::Right {
@@ -2386,7 +2384,7 @@ where
         self.regs.write_a(instr.get_op2(), sp);
         self.regs.read_a_predec::<Address>(7, 4);
         self.regs
-            .write_a(7, sp.wrapping_add_signed(instr.get_displacement()?));
+            .write_a(7, sp.wrapping_add_signed(instr.get_displacement()));
 
         Ok(())
     }
@@ -2769,7 +2767,7 @@ where
     /// DBcc
     fn op_dbcc(&mut self, instr: &Instruction) -> Result<()> {
         instr.fetch_extword(|| self.fetch())?;
-        let displacement = instr.get_displacement()?;
+        let displacement = instr.get_displacement();
 
         self.advance_cycles(2)?; // idle
 
@@ -2806,7 +2804,7 @@ where
     fn op_bcc<const BSR: bool>(&mut self, instr: &Instruction) -> Result<()> {
         let displacement = if instr.get_bxx_displacement() == 0 {
             instr.fetch_extword(|| self.fetch())?;
-            instr.get_displacement()?
+            instr.get_displacement()
         } else if CPU_TYPE >= M68020 && instr.get_bxx_displacement_raw() == 0xFF {
             let msb = self.fetch_pump()? as Address;
             let lsb = self.fetch_pump()? as Address;
@@ -2947,10 +2945,10 @@ where
 
         if instr.movec_ctrl_to_gen() {
             let val = self.regs.read::<Long>(instr.movec_ctrlreg()?.into());
-            self.regs.write(instr.movec_reg()?, val);
+            self.regs.write(instr.movec_reg(), val);
             self.advance_cycles(4)?;
         } else {
-            let val = self.regs.read::<Long>(instr.movec_reg()?);
+            let val = self.regs.read::<Long>(instr.movec_reg());
             let destreg: Register = instr.movec_ctrlreg()?.into();
 
             if destreg == Register::CACR {
@@ -2990,7 +2988,7 @@ where
     fn op_moves<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         // Fetch/decode the extension word
         instr.fetch_extword(|| self.fetch())?;
-        let ext_word = instr.get_extword().unwrap().data;
+        let ext_word = instr.get_extword().data;
         let reg_num = (ext_word >> 12) & 15;
         let is_addr_reg = (ext_word & 0x8000) != 0;
         let dir_mem_to_reg = (ext_word & 0x0800) == 0;

@@ -53,8 +53,15 @@ impl AdbMouse {
 #[typetag::serde]
 impl AdbDevice for AdbMouse {
     fn event(&mut self, event: &AdbEvent) {
-        if let AdbEvent::Mouse(me) = event {
-            self.event_queue.push_back(me.clone());
+        match event {
+            AdbEvent::Mouse(me) => self.event_queue.push_back(me.clone()),
+            AdbEvent::ReleaseAll => {
+                self.event_queue.push_back(MouseEvent {
+                    button: Some(false),
+                    ..Default::default()
+                });
+            }
+            _ => (),
         }
     }
 

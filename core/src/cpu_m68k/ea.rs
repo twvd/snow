@@ -113,14 +113,14 @@ where
             AddressingMode::IndirectDisplacement => {
                 instr.fetch_extword(|| self.fetch_pump())?;
                 let addr = self.regs.read_a::<Address>(ea_in);
-                let displacement = instr.get_displacement()?;
+                let displacement = instr.get_displacement();
                 Address::from(addr.wrapping_add_signed(displacement))
             }
             AddressingMode::IndirectIndex => {
                 self.advance_cycles(2)?; // 2x idle
                 instr.fetch_extword(|| self.fetch_pump())?;
 
-                let extword = instr.get_extword()?;
+                let extword = instr.get_extword();
                 if extword.is_full() && CPU_TYPE >= M68020 {
                     // Actually IndirectIndexBase
                     return self.calc_ea_addr_sz_ex::<SZ, HOLD>(
@@ -148,13 +148,13 @@ where
             AddressingMode::PCDisplacement => {
                 instr.fetch_extword(|| self.fetch_pump())?;
                 let addr = self.regs.pc;
-                let displacement = instr.get_displacement()?;
+                let displacement = instr.get_displacement();
                 Address::from(addr.wrapping_add_signed(displacement))
             }
             AddressingMode::PCIndex => {
                 self.advance_cycles(2)?; // 2x idle
                 instr.fetch_extword(|| self.fetch_pump())?;
-                let extword = instr.get_extword()?;
+                let extword = instr.get_extword();
                 if extword.is_full() && CPU_TYPE >= M68020 {
                     return self.calc_ea_addr_sz_ex::<SZ, HOLD>(
                         instr,
@@ -189,8 +189,8 @@ where
             AddressingMode::IndirectIndexBase | AddressingMode::PCIndexBase => {
                 // also Memory Indirect modes
                 // TODO cycles?
-                assert!(instr.has_extword());
-                let extword = instr.get_extword()?;
+                debug_assert!(instr.has_extword());
+                let extword = instr.get_extword();
 
                 let addr = if extword.full_base_suppress() {
                     0

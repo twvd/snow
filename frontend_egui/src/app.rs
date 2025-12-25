@@ -452,6 +452,14 @@ impl SnowGui {
             }
         }
 
+        #[cfg(debug_assertions)]
+        {
+            app.toasts.add(Toast::default()
+                .text("You are running a DEBUG BUILD of Snow which will be very, very SLOW!\n\nSee docs/BUILDING.md for instructions on building Snow in release mode")
+                .options(ToastOptions::default())
+                .kind(ToastKind::Warning));
+        }
+
         app
     }
 
@@ -2853,6 +2861,9 @@ impl eframe::App for SnowGui {
                         // No relative motion in this event
                         self.emu.update_mouse(Some(&abs_p), &egui::Pos2::default());
                     }
+                }
+                egui::Event::WindowFocused(false) => {
+                    self.emu.release_all_inputs();
                 }
                 _ => (),
             }

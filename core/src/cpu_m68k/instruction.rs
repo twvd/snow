@@ -1,5 +1,6 @@
+use std::cell::Cell;
+
 use anyhow::{anyhow, bail, Context, Result};
-use crossbeam::atomic::AtomicCell;
 use either::Either;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -458,7 +459,7 @@ impl ExtWord {
     }
 
     pub fn full_index_register(&self) -> Option<Register> {
-        assert!(self.is_full());
+        debug_assert!(self.is_full());
         if self.data & (1 << 6) != 0 {
             // IS - Index Suppress
             None
@@ -470,12 +471,12 @@ impl ExtWord {
     }
 
     pub fn full_scale(&self) -> Word {
-        assert!(self.is_full());
+        debug_assert!(self.is_full());
         self.brief_get_scale()
     }
 
     pub fn full_index_size(&self) -> IndexSize {
-        assert!(self.is_full());
+        debug_assert!(self.is_full());
         self.brief_get_index_size()
     }
 
@@ -484,7 +485,7 @@ impl ExtWord {
     }
 
     pub fn full_memindirectmode(&self) -> Result<MemoryIndirectAction> {
-        assert!(self.is_full());
+        debug_assert!(self.is_full());
         let is = self.data & (1 << 6) != 0;
         let i = self.data & 0b111;
 
@@ -550,18 +551,16 @@ bitfield! {
 pub struct Instruction {
     pub mnemonic: InstructionMnemonic,
     pub data: u16,
-    pub extword: AtomicCell<Option<ExtWord>>,
+    pub extword: Cell<Option<ExtWord>>,
 }
 
 impl Clone for Instruction {
     fn clone(&self) -> Self {
         // Clone drops the loaded extension word
-        // TODO rip the Cell out..
-        // TODO make generic on CPU type?
         Self {
             mnemonic: self.mnemonic,
             data: self.data,
-            extword: AtomicCell::new(None),
+            extword: Cell::new(None),
         }
     }
 }
@@ -792,7 +791,7 @@ impl Instruction {
                 return Ok(Self {
                     mnemonic,
                     data,
-                    extword: AtomicCell::new(None),
+                    extword: Cell::new(None),
                 });
             }
         }
@@ -897,21 +896,21 @@ impl Instruction {
     {
         // This check is to handle 'MOVE mem, (xxx).L' properly.
         if !self.has_extword() {
-            self.extword.store(Some(ExtWord::from(fetch()?)));
+            self.extword.set(Some(ExtWord::from(fetch()?)));
         }
         Ok(())
     }
 
     pub fn clear_extword(&self) {
-        self.extword.store(None);
+        self.extword.set(None);
     }
 
     pub fn has_extword(&self) -> bool {
-        self.extword.load().is_some()
+        self.extword.get().is_some()
     }
 
-    pub fn get_extword(&self) -> Result<ExtWord> {
-        self.extword.load().context("Ext word not fetched")
+    pub fn get_extword(&self) -> ExtWord {
+        self.extword.get().expect("Ext word not fetched")
     }
 
     pub fn needs_extword(&self) -> bool {
@@ -924,7 +923,7 @@ impl Instruction {
         ) || matches!(self.mnemonic, InstructionMnemonic::MOVEC_l)
     }
 
-    pub fn get_displacement(&self) -> Result<i32> {
+    pub fn get_displacement(&self) -> i32 {
         debug_assert!(
             (((self.mnemonic == InstructionMnemonic::MOVE_b)
                 || (self.mnemonic == InstructionMnemonic::MOVE_l)
@@ -940,9 +939,9 @@ impl Instruction {
                 || self.mnemonic == InstructionMnemonic::DBcc
                 || self.mnemonic == InstructionMnemonic::BSR
         );
-        debug_assert!(self.extword.load().is_some());
+        debug_assert!(self.extword.get().is_some());
 
-        Ok(self.get_extword()?.into())
+        self.get_extword().into()
     }
 
     /// Displacement as part of the instruction for BRA/BSR/Bcc
@@ -1221,23 +1220,23 @@ impl Instruction {
     }
 
     /// MOVEC general register
-    pub fn movec_reg(&self) -> Result<Register> {
+    pub fn movec_reg(&self) -> Register {
         debug_assert!(self.mnemonic == InstructionMnemonic::MOVEC_l);
 
-        let extword = usize::from(self.get_extword()?);
+        let extword = usize::from(self.get_extword());
 
         let regnum = (extword >> 12) & 0b111;
-        Ok(if extword & (1 << 15) == 0 {
+        if extword & (1 << 15) == 0 {
             Register::Dn(regnum)
         } else {
             Register::An(regnum)
-        })
+        }
     }
 
     /// MOVEC control register
     pub fn movec_ctrlreg(&self) -> Result<MovecCtrlReg> {
         debug_assert!(self.mnemonic == InstructionMnemonic::MOVEC_l);
-        MovecCtrlReg::from_u16(u16::from(self.get_extword()?) & 0xFFF)
+        MovecCtrlReg::from_u16(u16::from(self.get_extword()) & 0xFFF)
             .context("Invalid control register")
     }
 
@@ -1246,8 +1245,8 @@ impl Instruction {
     where
         F: FnMut() -> Result<u16>,
     {
-        let extword = self.get_extword()?;
-        assert!(extword.is_full());
+        let extword = self.get_extword();
+        debug_assert!(extword.is_full());
         //assert_eq!(self.get_addr_mode()?, AddressingMode::IndirectIndex);
 
         // Base displacement size
@@ -1282,6 +1281,6 @@ mod tests {
 
         let i = Instruction::try_decode(M68000, v.remove(0)).unwrap();
         i.fetch_extword(|| Ok(v.remove(0))).unwrap();
-        assert_eq!(i.get_displacement().unwrap(), -1_i32);
+        assert_eq!(i.get_displacement(), -1_i32);
     }
 }

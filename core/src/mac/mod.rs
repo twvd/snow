@@ -27,7 +27,17 @@ pub mod via;
 
 /// Differentiation of Macintosh models and their features
 #[derive(
-    Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq, strum::EnumIter, Serialize, Deserialize,
+    Debug,
+    Copy,
+    Clone,
+    PartialOrd,
+    Ord,
+    PartialEq,
+    Eq,
+    strum::EnumIter,
+    Serialize,
+    Deserialize,
+    strum::EnumString,
 )]
 pub enum MacModel {
     /// Macintosh 128K
