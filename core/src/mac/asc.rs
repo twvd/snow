@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use crate::audio_filter::AudioFilter;
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::renderer::AUDIO_BUFFER_SIZE;
@@ -16,7 +17,7 @@ use serde_big_array::BigArray;
 pub const AUDIO_QUEUE_LEN: usize = 2;
 const FIFO_SIZE: usize = 0x400;
 
-pub type AudioBuffer = Box<[u8]>;
+pub type AudioBuffer = Box<[f32]>;
 
 /// Apple Sound Chip
 #[derive(Serialize, Deserialize)]
@@ -26,7 +27,7 @@ pub struct Asc {
     #[serde(skip)]
     pub receiver: Option<Receiver<AudioBuffer>>,
 
-    buffer: Vec<u8>,
+    buffer: Vec<f32>,
     silent: bool,
 
     mode: AscMode,
@@ -48,6 +49,8 @@ pub struct Asc {
     /// Countdown to generate IRQs only every FIFO_SIZE (empty) samples when
     /// FIFO is empty
     empty_cycles: Ticks,
+
+    filter: AudioFilter,
 }
 
 bitfield! {
@@ -110,6 +113,7 @@ impl Default for Asc {
             l_last: 0,
             r_last: 0,
             empty_cycles: 0,
+            filter: AudioFilter::new(),
         };
         result.init_channels();
         result
@@ -125,6 +129,7 @@ impl Asc {
         self.fifo_r.clear();
         self.wavetables.fill(0);
         self.empty_cycles = 0;
+        self.filter.reset();
     }
 
     pub fn is_silent(&self) -> bool {
@@ -140,12 +145,19 @@ impl Asc {
             self.silent = false;
         }
 
-        self.buffer.push(l);
-        self.buffer.push(r);
+        // Convert u8 (0-255) to f32 in standard audio range (-1.0 to 1.0)
+        let sample_l = ((l as f32) - 128.0) / 128.0;
+        let sample_r = ((r as f32) - 128.0) / 128.0;
+
+        // Apply filters
+        let (filtered_l, filtered_r) = self.filter.filter_stereo(sample_l, sample_r);
+
+        self.buffer.push(filtered_l);
+        self.buffer.push(filtered_r);
         // Assuming we're always aligned to 2 here
         if self.buffer.len() >= AUDIO_BUFFER_SIZE {
             let buffer = std::mem::replace(&mut self.buffer, Vec::with_capacity(AUDIO_BUFFER_SIZE));
-            self.silent = buffer.iter().all(|&s| s == buffer[0]);
+            self.silent = buffer.iter().all(|&s| s.abs() < 0.01);
             self.sender
                 .as_ref()
                 .unwrap()

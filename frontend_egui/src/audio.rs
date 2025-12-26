@@ -22,14 +22,15 @@ thread_local! {
 
 pub struct SDLAudioSink {
     recv: AudioReceiver,
-    last_sample: u8,
+    last_sample: f32,
 }
 
 impl AudioCallback for SDLAudioSink {
-    type Channel = i16;
+    type Channel = f32;
 
-    fn callback(&mut self, out: &mut [i16]) {
-        // The formula below SHOULD be ((s as i16) - 128) * 256, but for some reason
+    fn callback(&mut self, out: &mut [f32]) {
+        // Audio samples are already in standard f32 range (-1.0 to 1.0)
+        // The amplitude is reduced from theoretical 1.0 to 0.5 because
         // if the audio clips on MacOS hosts with CERTAIN audio outputs, the sound
         // in the OS will be distorted for as long as the emulator is running.
         // Reducing the maximum sample amplitude seems to not trigger this, so that
@@ -40,12 +41,12 @@ impl AudioCallback for SDLAudioSink {
         if let Ok(buffer) = self.recv.try_recv() {
             self.last_sample = buffer.last().copied().unwrap();
             for i in 0..out.len() {
-                out[i] = ((buffer[i] as i16) - 128) * 128;
+                out[i] = buffer[i].clamp(-1.0, 1.0) * 0.5;
             }
         } else {
             // Audio is late. Continue the last output sample to reduce
             // pops and other abrupt noises.
-            out.fill(((self.last_sample as i16) - 128) * 128);
+            out.fill(self.last_sample.clamp(-1.0, 1.0) * 0.5);
         }
     }
 }
@@ -70,7 +71,7 @@ impl SDLAudioSink {
                     debug!("Audio spec: {:?}", spec);
                     Self {
                         recv: audioch,
-                        last_sample: 0,
+                        last_sample: 0.0,
                     }
                 })
                 .map_err(|e| anyhow!(e))?;
