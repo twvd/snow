@@ -130,6 +130,7 @@ impl MacModel {
     }
 
     /// Selectable RAM size configurations
+    #[allow(clippy::identity_op)]
     pub const fn ram_size_options(self) -> &'static [usize] {
         match self {
             Self::Early128K => &[128 * 1024],
@@ -163,7 +164,7 @@ impl MacModel {
                 15 * 1024 * 1024,
             ],
             Self::MacII => &[
-                /* 1 * */ 1024 * 1024,
+                1 * 1024 * 1024,
                 2 * 1024 * 1024,
                 4 * 1024 * 1024,
                 8 * 1024 * 1024,
@@ -171,7 +172,7 @@ impl MacModel {
             ],
             Self::MacIIFDHD | Self::MacIIx | Self::MacIIcx | Self::SE30 => {
                 &[
-                    /* 1 * */ 1024 * 1024,
+                    1 * 1024 * 1024,
                     2 * 1024 * 1024,
                     4 * 1024 * 1024,
                     8 * 1024 * 1024,
