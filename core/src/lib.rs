@@ -1,3 +1,4 @@
+pub mod audio_filter;
 pub mod bus;
 pub mod cpu_m68k;
 pub mod debuggable;

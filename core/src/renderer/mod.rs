@@ -6,7 +6,7 @@ use crossbeam_channel::Receiver;
 use std::ops::{Deref, DerefMut};
 
 /// Audio frame channel receiver
-pub type AudioReceiver = Receiver<Box<[u8]>>;
+pub type AudioReceiver = Receiver<Box<[f32]>>;
 
 /// Amount of samples in the audio buffer
 pub const AUDIO_BUFFER_SAMPLES: usize = 512;

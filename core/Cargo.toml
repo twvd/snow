@@ -26,6 +26,7 @@ workspace = true
 [dependencies]
 anyhow = { version = "1.0.86", features = ["backtrace"] }
 arrayvec = { version = "0.7.4", features = ["serde"] }
+biquad = "0.4.2"
 built = { version = "0.8.0", features = ["chrono", "git2"] }
 chrono = "0.4.38"
 crc = { version = "3.2.1", optional = true }
