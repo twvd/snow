@@ -334,6 +334,7 @@ impl ScsiTargetEthernet {
 
         let rx_tap_stop = self.tap_stop.clone();
         let tx_tap_stop = self.tap_stop.clone();
+        let t_mac = self.macaddress;
 
         // TAP RX -> Emulator RX (Physical -> Virtual)
         std::thread::spawn(move || {
@@ -354,6 +355,18 @@ impl ScsiTargetEthernet {
                         }
                         Ok(size) => {
                             let packet = buffer[..size].to_vec();
+                            let Some(ethpacket) =
+                                pnet::packet::ethernet::EthernetPacket::new(&packet)
+                            else {
+                                log::warn!("Dropped RX invalid packet: {:02X?}", packet);
+                                continue;
+                            };
+                            let dest = ethpacket.get_destination();
+                            let src = ethpacket.get_source();
+                            if (dest != t_mac && !dest.is_broadcast()) || src == t_mac {
+                                continue;
+                            }
+
                             match bridge_tx.try_send(packet) {
                                 Ok(_) => {}
                                 Err(TrySendError::Disconnected(_)) => {
