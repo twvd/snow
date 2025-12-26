@@ -77,7 +77,7 @@ pub struct MacPortableBus<TRenderer: Renderer> {
     mouse_mode: MouseMode,
 }
 
-impl<TRenderer: Renderer> MacPortableBus<TRenderer>
+impl<TRenderer> MacPortableBus<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -169,7 +169,7 @@ where
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, renderer: TRenderer) {
+    pub fn after_deserialize(&mut self, _renderer: TRenderer) {
         self.asc.after_deserialize();
 
         // Mark all RAM pages as dirty after deserialization to update memory display
@@ -433,10 +433,12 @@ where
         self.mouse_ready = true;
 
         // Trigger ADB update to disable idle
-        self.pmgr.adb_event(&AdbEvent::Mouse(MouseEvent {
-            button: None,
-            rel_movement: None,
-        }));
+        if self.normandy.idle_speed {
+            self.pmgr.adb_event(&AdbEvent::Mouse(MouseEvent {
+                button: None,
+                rel_movement: None,
+            }));
+        }
 
         // Report updated mouse coordinates to OS
         self.write_ram(Self::ADDR_MTEMP_X, x);
@@ -458,9 +460,7 @@ where
     /// Tests for wait states on bus access
     fn in_waitstate(&mut self, addr: Address) -> bool {
         match addr {
-            0x0000_0000..=0x009F_FFFF => {
-                self.normandy.waitstate(addr)
-            }
+            0x0000_0000..=0x009F_FFFF => self.normandy.waitstate(addr),
             _ => false,
         }
     }
@@ -476,6 +476,10 @@ where
 
     pub fn keyboard_event(&mut self, ke: KeyEvent) {
         self.pmgr.adb_event(&AdbEvent::Key(ke));
+    }
+
+    pub fn input_release_all(&mut self) {
+        self.pmgr.adb_event(&AdbEvent::ReleaseAll);
     }
 
     pub fn rtc_mut(&mut self) -> &mut Rtc {
@@ -572,7 +576,7 @@ where
         self.video.tick(1)?;
 
         // Legacy VBlank interrupt
-        if self.cycles % (CLOCK_SPEED / 60) == 0 {
+        if self.cycles.is_multiple_of(CLOCK_SPEED / 60) {
             self.via.ifr.set_vblank(true);
 
             if self.speed == EmulatorSpeed::Video {
@@ -588,7 +592,10 @@ where
             }
         }
 
-        if self.cycles % (CLOCK_SPEED / self.asc.sample_rate()) == 0 {
+        if self
+            .cycles
+            .is_multiple_of(CLOCK_SPEED / self.asc.sample_rate())
+        {
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }
 

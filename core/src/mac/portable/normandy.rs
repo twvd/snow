@@ -4,7 +4,6 @@
 //! SLIM card system.
 
 use crate::bus::{Address, BusMember};
-use crate::dbgprop_bool;
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::tickable::{Tickable, Ticks};
 use anyhow::Result;
@@ -13,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 const IDLE_DTACK_DELAY: u8 = 64;
 const SLIM_DTACK_DELAY: u8 = 16;
-const ROM_DTACK_DELAY: u8 = 2;
+//const ROM_DTACK_DELAY: u8 = 2;
 
 bitfield! {
     #[derive(Clone, Serialize, Deserialize)]
@@ -138,21 +137,7 @@ impl Normandy {
                 } else {
                     false
                 }
-            },
-            // 0x0090_0000..=0x0090_FFFF => match self.dtack_counter {
-            //     0 => {
-            //         self.dtack_counter = ROM_DTACK_DELAY;
-            //         true
-            //     }
-            //     1 => {
-            //         self.dtack_counter = 0;
-            //         false
-            //     }
-            //     _ => {
-            //         self.dtack_counter -= 1;
-            //         true
-            //     }
-            // },
+            }
             _ => false,
         }
     }

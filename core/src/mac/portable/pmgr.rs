@@ -1,6 +1,5 @@
 //! Power manager implementation for the Macintosh Portable and PowerBook 100.
 
-use std::ops::DerefMut;
 use crate::debuggable::Debuggable;
 use crate::mac::adb::{AdbDevice, AdbDeviceInstance, AdbDeviceResponse, AdbEvent};
 use crate::mac::rtc::Rtc as MacRtc;
@@ -261,9 +260,9 @@ impl Pmgr {
             // ADB status
             0x28 => self.adb_status(),
             // Clock set
-            0x30 => self.clock_set(&data),
+            0x30 => self.clock_set(data),
             // Write PRAM
-            0x31 => self.pram_write(&data),
+            0x31 => self.pram_write(data),
             // Write XPRAM
             0x32..=0x37 => self.xpram_write(data[0], data[1], &data[2..]),
             // Clock read
@@ -285,7 +284,7 @@ impl Pmgr {
             // Read battery with update
             0x69 => self.battery_read_now(),
             // Sleep request
-            0x70 => self.sleep_request(&data),
+            0x70 => self.sleep_request(data),
             // Read interrupts
             0x78 => self.read_interrupts(),
             // Set wake up time
@@ -373,8 +372,6 @@ impl Pmgr {
 
     /// Get ADB status
     fn adb_status(&mut self) -> (Result<()>, Option<Vec<Byte>>) {
-        let mut adb_response: AdbDeviceResponse = AdbDeviceResponse::new();
-
         self.interrupt_flags.set_adbint(false);
 
         if self.srq_waiting {
@@ -389,7 +386,7 @@ impl Pmgr {
                 } else {
                     // The ADB device asserting SRQ is the same as the last
                     self.srq_waiting = false;
-                    adb_response = device.talk(0);
+                    let adb_response = device.talk(0);
                     self.length = 3 + adb_response.len() as Byte;
                     let mut result =
                         vec![self.last_adb, self.adb_status.0, adb_response.len() as Byte];
@@ -697,7 +694,7 @@ impl Pmgr {
             let adb_data = self.adb_data.clone();
             let len = self.adb_data_length;
             let srq_waiting = self.srq_waiting;
-            if let Some(device) = self.adb_find_device(cmd >> 4) {
+            if let Some(device) = self.adb_find_device() {
                 match cmd & 0x0D {
                     0x01 => {
                         device.flush();
@@ -721,7 +718,7 @@ impl Pmgr {
         }
     }
 
-    fn adb_find_device(&mut self, address: Byte) -> Option<&mut AdbDeviceInstance> {
+    fn adb_find_device(&mut self) -> Option<&mut AdbDeviceInstance> {
         let Some(device) = self
             .adb_devices
             .iter_mut()
@@ -737,7 +734,7 @@ impl Pmgr {
     /// Handle ADB SRQ
     fn adb_srq(&mut self) {
         if self.adb_devices.iter().any(|d| d.get_srq()) & !self.interrupt_flags.adbint() {
-            if let Some(device) = self.adb_devices.iter_mut().find(|d| d.get_srq()) {
+            if self.adb_devices.iter_mut().any(|d| d.get_srq()) {
                 self.srq_waiting = true;
                 self.interrupt_flags.set_adbint(true);
 
@@ -894,7 +891,7 @@ impl Tickable for Pmgr {
                 self.data = self
                     .cmd(self.cmd, &data_copy)
                     .1
-                    .unwrap_or_else(||vec![0; 4]);
+                    .unwrap_or_else(|| vec![0; 4]);
                 if self.read {
                     self.state = State::ReturnCmd;
                 } else {
