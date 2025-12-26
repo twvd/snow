@@ -1,12 +1,5 @@
 //! Emulator state management
 
-use snow_floppy::loaders::FloppyImageLoader;
-use std::cell::RefCell;
-use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
-use std::thread::JoinHandle;
-use std::{env, fs, thread};
-
 use anyhow::{anyhow, Result};
 use crossbeam_channel::Receiver;
 use eframe::egui;
@@ -34,9 +27,16 @@ use snow_core::mac::{ExtraROMs, MacModel, MacMonitor};
 use snow_core::renderer::DisplayBuffer;
 use snow_core::tickable::{Tickable, Ticks};
 use snow_core::types::LatchingEvent;
+use snow_floppy::loaders::FloppyImageLoader;
 use snow_floppy::{Floppy, FloppyImage, FloppyType};
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::{env, fs, thread};
 
-use crate::audio::SDLAudioSink;
+use crate::audio::{AudioSinkExchange, SDLAudioSink};
 
 pub type DisassemblyListing = Vec<DisassemblyEntry>;
 pub type ScsiTargets = [ScsiTarget; 7];
@@ -110,6 +110,7 @@ pub struct EmulatorState {
     eventrecv: Option<EmulatorEventReceiver>,
     status: Option<EmulatorStatus>,
     audiosink: Option<AudioDevice<SDLAudioSink>>,
+    audiosink_exchange: Option<Arc<AudioSinkExchange>>,
     disasm_address: Address,
     disasm_code: DisassemblyListing,
     messages: VecDeque<(UserMessageType, String)>,
@@ -325,7 +326,10 @@ impl EmulatorState {
             cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
         } else if self.audiosink.is_none() {
             match SDLAudioSink::new(emulator.get_audio()) {
-                Ok(sink) => self.audiosink = Some(sink),
+                Ok((sink, exch)) => {
+                    self.audiosink = Some(sink);
+                    self.audiosink_exchange = Some(exch);
+                }
                 Err(e) => {
                     error!("Failed to initialize audio: {:?}", e);
                     cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
@@ -1127,5 +1131,27 @@ impl EmulatorState {
         };
 
         sender.send(EmulatorCommand::ReleaseAllInputs).unwrap();
+    }
+
+    pub fn audio_mute(&self, muted: bool) {
+        if let Some(exch) = self.audiosink_exchange.as_ref() {
+            exch.set_mute(muted);
+        }
+    }
+
+    pub fn audio_is_muted(&self) -> bool {
+        if let Some(exch) = self.audiosink_exchange.as_ref() {
+            exch.is_muted()
+        } else {
+            false
+        }
+    }
+
+    pub fn audio_is_slow(&self) -> bool {
+        if let Some(exch) = self.audiosink_exchange.as_ref() {
+            exch.is_slow()
+        } else {
+            false
+        }
     }
 }

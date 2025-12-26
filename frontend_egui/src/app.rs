@@ -1503,6 +1503,24 @@ impl SnowGui {
                 }
 
                 ui.separator();
+                let audio_muted = self.emu.audio_is_muted();
+                let audio_slow = self.emu.audio_is_slow();
+                if ui.add_enabled(!audio_slow, egui::Button::new(
+                    if audio_muted {
+                        egui_material_icons::icons::ICON_VOLUME_OFF
+                    } else {
+                        egui_material_icons::icons::ICON_VOLUME_UP
+                    }
+                    ))
+                    .on_hover_text(if audio_muted {
+                        "Unmute audio"
+                    } else {
+                        "Mute audio"
+                    })
+                    .on_disabled_hover_text("Audio has been disabled because the emulator is paused or performance is insufficient").clicked()
+                {
+                    self.emu.audio_mute(!audio_muted);
+                }
                 if ui
                     .add(egui::Button::new(
                         egui_material_icons::icons::ICON_PHOTO_CAMERA,
