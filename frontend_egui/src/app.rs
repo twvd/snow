@@ -1455,69 +1455,81 @@ impl SnowGui {
                     {
                         self.emu.stop();
                     }
-                    if ui
-                        .add(
-                            egui::Button::new(egui_material_icons::icons::ICON_FAST_FORWARD)
-                                .selected(self.emu.is_fastforward()),
-                        )
-                        .on_hover_text("Fast-forward execution")
-                        .clicked()
-                    {
-                        self.emu.toggle_fastforward();
-                    }
-                } else if !self.emu.is_running() {
-                    if ui
-                        .add(egui::Button::new(
-                            egui_material_icons::icons::ICON_PLAY_ARROW,
-                        ))
-                        .on_hover_text("Resume execution")
-                        .clicked()
-                    {
-                        self.emu.run();
-                    }
-                    if ui
-                        .add(egui::Button::new(
-                            egui_material_icons::icons::ICON_STEP_INTO,
-                        ))
-                        .on_hover_text("Step into")
-                        .clicked()
-                    {
-                        self.emu.step();
-                    }
-                    if ui
-                        .add(egui::Button::new(
-                            egui_material_icons::icons::ICON_STEP_OVER,
-                        ))
-                        .on_hover_text("Step over")
-                        .clicked()
-                    {
-                        self.emu.step_over();
-                    }
-                    if ui
-                        .add(egui::Button::new(egui_material_icons::icons::ICON_STEP_OUT))
-                        .on_hover_text("Step out")
-                        .clicked()
-                    {
-                        self.emu.step_out();
-                    }
+                } else if ui
+                    .add(egui::Button::new(
+                        egui_material_icons::icons::ICON_PLAY_ARROW,
+                    ))
+                    .on_hover_text("Resume execution")
+                    .clicked()
+                {
+                    self.emu.run();
+                }
+
+                if ui
+                    .add_enabled(
+                        self.emu.is_running(),
+                        egui::Button::new(egui_material_icons::icons::ICON_FAST_FORWARD)
+                            .selected(self.emu.is_fastforward()),
+                    )
+                    .on_hover_text("Fast-forward execution")
+                    .clicked()
+                {
+                    self.emu.toggle_fastforward();
+                }
+
+                if ui
+                    .add_enabled(
+                        !self.emu.is_running(),
+                        egui::Button::new(egui_material_icons::icons::ICON_STEP_INTO),
+                    )
+                    .on_hover_text("Step into")
+                    .clicked()
+                {
+                    self.emu.step();
+                }
+                if ui
+                    .add_enabled(
+                        !self.emu.is_running(),
+                        egui::Button::new(egui_material_icons::icons::ICON_STEP_OVER),
+                    )
+                    .on_hover_text("Step over")
+                    .clicked()
+                {
+                    self.emu.step_over();
+                }
+                if ui
+                    .add_enabled(
+                        !self.emu.is_running(),
+                        egui::Button::new(egui_material_icons::icons::ICON_STEP_OUT),
+                    )
+                    .on_hover_text("Step out")
+                    .clicked()
+                {
+                    self.emu.step_out();
                 }
 
                 ui.separator();
                 let audio_muted = self.emu.audio_is_muted();
                 let audio_slow = self.emu.audio_is_slow();
-                if ui.add_enabled(!audio_slow, egui::Button::new(
-                    if audio_muted {
-                        egui_material_icons::icons::ICON_VOLUME_OFF
-                    } else {
-                        egui_material_icons::icons::ICON_VOLUME_UP
-                    }
-                    ))
+                if ui
+                    .add_enabled(
+                        !audio_slow,
+                        egui::Button::new(if audio_muted {
+                            egui_material_icons::icons::ICON_VOLUME_OFF
+                        } else {
+                            egui_material_icons::icons::ICON_VOLUME_UP
+                        }),
+                    )
                     .on_hover_text(if audio_muted {
                         "Unmute audio"
                     } else {
                         "Mute audio"
                     })
-                    .on_disabled_hover_text("Audio has been disabled because the emulator is paused or performance is insufficient").clicked()
+                    .on_disabled_hover_text(
+                        "Audio has been disabled because the emulator is \
+                                            paused or performance is insufficient",
+                    )
+                    .clicked()
                 {
                     self.emu.audio_mute(!audio_muted);
                 }
@@ -2344,8 +2356,8 @@ impl eframe::App for SnowGui {
                                         egui::RichText::new(
                                             "This is a raw flux image format, which is not designed for emulator use.\n\nSnow will load it, but you may encounter issues. It is recommended to convert it to a resolved flux format first (for example: MOOF).",
                                         )
-                                        .strong()
-                                        .color(egui::Color32::BLACK),
+                                            .strong()
+                                            .color(egui::Color32::BLACK),
                                     );
                                 });
                         }
@@ -2554,7 +2566,7 @@ impl eframe::App for SnowGui {
                             );
                             ui.end_row();
                             ui.label(egui::RichText::new("Snow version").strong());
-                            ui.label(egui::RichText::new(header.snow_version.to_string()) .color(
+                            ui.label(egui::RichText::new(header.snow_version.to_string()).color(
                                 if version_warning {
                                     egui::Color32::RED
                                 } else {
@@ -2568,9 +2580,9 @@ impl eframe::App for SnowGui {
                                 .inner_margin(egui::Margin::same(10.0))
                                 .outer_margin(egui::Margin::same(5.0))
                                 .stroke(egui::Stroke::new(2.0, egui::Color32::RED))
-                            .show(ui, |ui| {
-                                ui.label(egui::RichText::new("This save state is created by a different version of Snow.\n\nThis is incompatible and unsupported.\nExpect problems!").strong().color(egui::Color32::BLACK));
-                            });
+                                .show(ui, |ui| {
+                                    ui.label(egui::RichText::new("This save state is created by a different version of Snow.\n\nThis is incompatible and unsupported.\nExpect problems!").strong().color(egui::Color32::BLACK));
+                                });
                         }
                         ui.separator();
                         ui.add(
