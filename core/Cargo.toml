@@ -15,7 +15,7 @@ ethernet_raw = ["ethernet", "dep:pnet"]
 # Enables Ethernet over userland NAT
 ethernet_nat = ["ethernet", "dep:snow_nat"]
 # Enables Ethernet bridging via TAP interface (Linux only)
-ethernet_tap = ["ethernet", "dep:tun", "nix/poll"]
+ethernet_tap = ["ethernet", "dep:tun", "nix/poll", "dep:pnet"]
 # Enables memory mapped files for SCSI devices and RTC PRAM
 # Without this feature, disks will be read-only.
 mmap = ["dep:fs2", "dep:memmap2"]
