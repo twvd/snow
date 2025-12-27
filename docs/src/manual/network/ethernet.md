@@ -6,7 +6,7 @@ can use this adapter on any emulated Mac model that supports SCSI.
 ## Installation
 
 To attach the emulated Ethernet adapter, use the 'Attach Ethernet adapter' option at any given SCSI ID in the menu:
-'Drives' -> 'SCSI ID #<n>' -> 'Attach Ethernet adapter'.
+'Drives' -> 'SCSI ID #_n_' -> 'Attach Ethernet adapter'.
 
 <div class="warning">
 Known issue: DaynaPORT drivers may not recognize the adapter. If you come across this, try to attach the Ethernet adapter
@@ -43,7 +43,7 @@ afterwards.
 Snow currently supports a NAT-based ethernet link that runs in userland on the host system. This link only supports
 TCP and UDP connections.
 
-You can select the Ethernet link type through the Drives menu: 'Drives' -> 'SCSI ID #<n>'.
+You can select the Ethernet link type through the Drives menu: 'Drives' -> 'SCSI ID #_n_'.
 
 ![Ethernet link menu](../../images/ethernet_link.png)
 
@@ -72,7 +72,7 @@ the emulated system.
 
 On Linux hosts, Snow can attach the virtual Ethernet adapter to a tap adapter, supporting all layer 2 and higher
 protocols. This is a feature which allows advanced users to create more complex network setups and requires more
-advanced networking and Linux knowledge.
+advanced networking and Linux knowledge. This also allows for the use of EtherTalk.
 
 First, you need to create a tap interface that is owned by your user. For a tap interface to show up in Snow, the
 interface name needs to start with either 'tap' or 'snow'. By making your user own the interface, you do not need to run
@@ -84,22 +84,16 @@ For example, to create a tap interface owned by your current user:
 sudo ip tuntap add dev tap0 mode tap user $UID
 ```
 
-Then, you can select the tap interface in Snow through the menu: 'Drives' -> 'SCSI #<n>: Ethernet' -> 'TAP device:
-tap<n>'.
+Then, you can select the tap interface in Snow through the menu: 'Drives' -> 'SCSI #_n_: Ethernet' -> 'TAP device:
+tap_n_'.
 
 ![Selecting tap0 tap device](../../images/ethernet_tap.png)
 
-As an example, to set up your host system as an internet gateway for the emulated system (gateway IP 10.0.0.1, emulated
-system in the 10.0.0.2-10.0.0.254 range, external DNS server), you can configure your host system as follows:
+For some examples of how to set up a network, see [Tap bridge network setups](../../guides/tapbridgesetups.md)
 
-```shell
-# Bring tap interface up and assign an IP
-sudo ip addr add 10.0.0.1/24 dev tap0
-sudo ip link set tap0 up
+For troubleshooting and diagnostics of a tap-attached Ethernet adapter,
+open ['View' -> 'Peripherals'](../debugging/peripherals.md)
+and extend 'SCSI Controller', 'Targets', 'ID #_n_ - Ethernet'. This will show the interface status, MAC address of the
+emulated adapter and some statistics on transmitted/received packets.
 
-# Allow forwarding between tap0 and eth0
-sudo sysctl -w net.ipv4.ip_forward=1
-sudo iptables -A FORWARD -i tap0 -o eth0 -j ACCEPT
-sudo iptables -A FORWARD -i eth0 -o tap0 -m state --state RELATED,ESTABLISHED -j ACCEPT
-sudo iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-```
+![Ethernet peripheral view](../../images/ethernet_debug.png)
