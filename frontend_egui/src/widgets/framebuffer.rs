@@ -105,6 +105,9 @@ impl FramebufferWidget {
     }
 
     pub fn draw(&mut self, ui: &mut egui::Ui, fullscreen: bool) -> egui::Response {
+        // Align on whole physical pixels to avoid graphical glitches
+        ui.add_space(-ui.cursor().min.y.fract());
+
         if let Some(ref frame_recv) = self.frame_recv {
             if !frame_recv.is_empty() {
                 let frame = frame_recv.recv().unwrap();
