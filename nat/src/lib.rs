@@ -199,10 +199,10 @@ impl Device for VirtualDevice {
 
         // Receive new packet from Ethernet adapter channel
         let packet = self.rx.recv_timeout(Duration::from_millis(100)).ok()?;
-        self.stats.rx_packets.fetch_add(1, Ordering::Release);
+        self.stats.rx_packets.fetch_add(1, Ordering::Relaxed);
         self.stats
             .rx_bytes
-            .fetch_add(packet.len(), Ordering::Release);
+            .fetch_add(packet.len(), Ordering::Relaxed);
 
         // Check if this packet needs NAT (routed TCP/UDP)
         if self.needs_nat(&packet) {
@@ -294,11 +294,11 @@ impl TxToken for VirtualTxToken {
         let send_len = buffer.len();
         match self.tx.try_send(buffer) {
             Ok(()) => {
-                self.stats.tx_packets.fetch_add(1, Ordering::Release);
-                self.stats.tx_bytes.fetch_add(send_len, Ordering::Release);
+                self.stats.tx_packets.fetch_add(1, Ordering::Relaxed);
+                self.stats.tx_bytes.fetch_add(send_len, Ordering::Relaxed);
             }
             Err(TrySendError::Full(_)) => {
-                self.stats.tx_dropped.fetch_add(1, Ordering::Release);
+                self.stats.tx_dropped.fetch_add(1, Ordering::Relaxed);
             }
             Err(TrySendError::Disconnected(_)) => {
                 // Ignore errors, if the channel closes the next time we try to
@@ -490,14 +490,14 @@ impl NatEngine {
                 .iter()
                 .filter(|(_, e)| matches!(e, NatEntry::Tcp { .. }))
                 .count(),
-            Ordering::Release,
+            Ordering::Relaxed,
         );
         self.stats.nat_active_udp.store(
             self.nat_table
                 .iter()
                 .filter(|(_, e)| matches!(e, NatEntry::Udp { .. }))
                 .count(),
-            Ordering::Release,
+            Ordering::Relaxed,
         );
 
         Ok(())
@@ -664,7 +664,7 @@ impl NatEngine {
             };
 
             self.nat_table.insert(handle, entry);
-            self.stats.nat_total_udp.fetch_add(1, Ordering::Release);
+            self.stats.nat_total_udp.fetch_add(1, Ordering::Relaxed);
         }
 
         Ok(())
@@ -680,7 +680,7 @@ impl NatEngine {
     ) -> Result<()> {
         use smoltcp::socket::tcp;
 
-        self.stats.nat_tcp_syn.fetch_add(1, Ordering::Release);
+        self.stats.nat_tcp_syn.fetch_add(1, Ordering::Relaxed);
 
         let src_ip = ipv4_packet.src_addr();
         let dst_ip = ipv4_packet.dst_addr();
@@ -762,7 +762,7 @@ impl NatEngine {
         };
 
         self.nat_table.insert(handle, entry);
-        self.stats.nat_total_tcp.fetch_add(1, Ordering::Release);
+        self.stats.nat_total_tcp.fetch_add(1, Ordering::Relaxed);
 
         // Feed the SYN packet back to smoltcp so it can complete the handshake
         self.device.smoltcp_queue.push(raw_packet.to_vec());
@@ -821,7 +821,7 @@ impl NatEngine {
                     }
                     Err(smoltcp::socket::tcp::RecvError::Finished) => {
                         *entry.1 = Instant::now() + NAT_TIMEOUT_TCP_CLOSED;
-                        self.stats.nat_tcp_fin_local.fetch_add(1, Ordering::Release);
+                        self.stats.nat_tcp_fin_local.fetch_add(1, Ordering::Relaxed);
                     }
                     Err(e) => {
                         log::error!("TCP error receiving from emulator: {:?}", e);
@@ -925,7 +925,7 @@ impl NatEngine {
                         // Connection closed by remote
                         self.stats
                             .nat_tcp_fin_remote
-                            .fetch_add(1, Ordering::Release);
+                            .fetch_add(1, Ordering::Relaxed);
                         socket.close();
                         *entry.1 = Instant::now() + NAT_TIMEOUT_TCP_CLOSED;
                     }
@@ -1026,7 +1026,7 @@ impl NatEngine {
         // Remove expired entries
         self.stats
             .nat_expired
-            .fetch_add(expired.len(), Ordering::Release);
+            .fetch_add(expired.len(), Ordering::Relaxed);
         for handle in expired {
             self.nat_table.remove(&handle);
 
