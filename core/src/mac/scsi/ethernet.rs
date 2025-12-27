@@ -19,8 +19,13 @@ use serde::{Deserialize, Serialize};
 use snow_nat::NatEngineStats;
 
 use std::path::Path;
+#[cfg(any(
+    feature = "ethernet_nat",
+    all(feature = "ethernet_tap", target_os = "linux")
+))]
+use std::sync::atomic::Ordering;
 #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, RwLock};
 
 type BasicPacket = Vec<u8>;
@@ -28,13 +33,18 @@ type BasicPacket = Vec<u8>;
 /// Maximum amount of packets to buffer in the RX/TX queues
 const PACKET_QUEUE_SIZE: usize = 512;
 
+/// Link mode for ethernet device
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub enum EthernetLinkType {
+    /// No link
     Down,
+    /// Userland NAT
     #[cfg(feature = "ethernet_nat")]
     NAT,
+    /// Raw sockets based bridge
     #[cfg(feature = "ethernet_raw")]
     Bridge(u32),
+    /// Tap interface based bridge
     #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
     TapBridge(String),
 }
@@ -54,6 +64,25 @@ impl Default for EthernetLinkType {
     }
 }
 
+/// Statistics for tap bridge
+#[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+#[derive(Default)]
+struct BridgeStats {
+    rx_total: AtomicUsize,
+    rx_total_bytes: AtomicUsize,
+    rx_unicast: AtomicUsize,
+    rx_multicast: AtomicUsize,
+    rx_broadcast: AtomicUsize,
+    rx_dropped_filtered: AtomicUsize,
+    rx_dropped_too_large: AtomicUsize,
+    rx_dropped_invalid: AtomicUsize,
+    rx_dropped_full: AtomicUsize,
+
+    tx_total: AtomicUsize,
+    tx_total_bytes: AtomicUsize,
+}
+
+/// DaynaPORT SCSI/Link Ethernet adapter
 #[derive(Serialize, Deserialize)]
 pub(crate) struct ScsiTargetEthernet {
     /// Check condition code
@@ -86,6 +115,11 @@ pub(crate) struct ScsiTargetEthernet {
     #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
     #[serde(skip)]
     tap_device: Option<tun::Device>,
+
+    /// Tap bridge statistics
+    #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+    #[serde(skip)]
+    tap_stats: Option<Arc<BridgeStats>>,
 
     /// TAP stop signal
     #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
@@ -128,6 +162,8 @@ impl Default for ScsiTargetEthernet {
             enabled: false,
             #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
             tap_stop: Arc::new(AtomicBool::new(false)),
+            #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+            tap_stats: None,
             multicast_groups: Default::default(),
         }
     }
@@ -306,6 +342,9 @@ impl ScsiTargetEthernet {
         // This creates a new bool, rather than flipping a possibly still used one back to false.
         self.tap_stop = Arc::new(AtomicBool::new(false));
 
+        let tap_stats = Arc::new(BridgeStats::default());
+        self.tap_stats = Some(tap_stats.clone());
+
         log::info!("Opening TAP device '{}'", tap_name);
 
         // Open the existing TAP device
@@ -342,6 +381,8 @@ impl ScsiTargetEthernet {
 
         let rx_tap_stop = self.tap_stop.clone();
         let tx_tap_stop = self.tap_stop.clone();
+        let tx_stats = tap_stats.clone();
+        let rx_stats = tap_stats;
         let t_mac = self.macaddress;
         let t_multicast_groups = Arc::clone(&self.multicast_groups);
 
@@ -364,12 +405,25 @@ impl ScsiTargetEthernet {
                         }
                         Ok(size) => {
                             let packet = buffer[..size].to_vec();
+                            rx_stats.rx_total.fetch_add(1, Ordering::Relaxed);
+                            rx_stats.rx_total_bytes.fetch_add(size, Ordering::Relaxed);
+
                             let Some(ethpacket) =
                                 pnet::packet::ethernet::EthernetPacket::new(&packet)
                             else {
                                 log::warn!("Dropped RX invalid packet: {:02X?}", packet);
+                                rx_stats.rx_dropped_invalid.fetch_add(1, Ordering::Relaxed);
                                 continue;
                             };
+
+                            if packet.len() > 1514 {
+                                log::warn!("Dropped RX too large packet ({})", size);
+                                rx_stats
+                                    .rx_dropped_too_large
+                                    .fetch_add(1, Ordering::Relaxed);
+                                continue;
+                            }
+
                             let dest = ethpacket.get_destination();
                             let src = ethpacket.get_source();
                             let multicast_sub =
@@ -377,9 +431,21 @@ impl ScsiTargetEthernet {
                             if (dest != t_mac && !dest.is_broadcast() && !multicast_sub)
                                 || src == t_mac
                             {
+                                // Not for us or echo (filtered)
+                                rx_stats.rx_dropped_filtered.fetch_add(1, Ordering::Relaxed);
                                 continue;
                             }
 
+                            // Packet accepted
+                            if multicast_sub {
+                                rx_stats.rx_multicast.fetch_add(1, Ordering::Relaxed);
+                            } else if dest.is_broadcast() {
+                                rx_stats.rx_broadcast.fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                rx_stats.rx_unicast.fetch_add(1, Ordering::Relaxed);
+                            }
+
+                            // Send to emulator
                             match bridge_tx.try_send(packet) {
                                 Ok(_) => {}
                                 Err(TrySendError::Disconnected(_)) => {
@@ -387,6 +453,7 @@ impl ScsiTargetEthernet {
                                     return;
                                 }
                                 Err(TrySendError::Full(_)) => {
+                                    rx_stats.rx_dropped_full.fetch_add(1, Ordering::Relaxed);
                                     log::error!("bridge_tx queue overflow");
                                 }
                             }
@@ -418,13 +485,19 @@ impl ScsiTargetEthernet {
 
             loop {
                 match bridge_rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                    Ok(packet) => match writer.write_all(&packet) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            log::info!("TAP bridge terminated (write error: {})", e);
-                            return;
+                    Ok(packet) => {
+                        tx_stats.tx_total.fetch_add(1, Ordering::Relaxed);
+                        tx_stats
+                            .tx_total_bytes
+                            .fetch_add(packet.len(), Ordering::Relaxed);
+                        match writer.write_all(&packet) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                log::info!("TAP bridge terminated (write error: {})", e);
+                                return;
+                            }
                         }
-                    },
+                    }
                     Err(RecvTimeoutError::Timeout) => (),
                     Err(e) => {
                         log::info!("TAP bridge terminated (bridge_rx closed: {})", e);
@@ -731,24 +804,25 @@ impl ScsiTarget for ScsiTargetEthernet {
 impl Debuggable for ScsiTargetEthernet {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
+        use crate::{dbgprop_bool, dbgprop_string, dbgprop_udec};
         #[cfg(feature = "ethernet_nat")]
         use crate::{dbgprop_group, dbgprop_str};
-        use crate::{dbgprop_string, dbgprop_udec};
-        #[cfg(feature = "ethernet_nat")]
-        use std::sync::atomic::Ordering;
 
-        let mut result = vec![dbgprop_string!(
-            "MAC address",
-            format!(
-                "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-                self.macaddress[0],
-                self.macaddress[1],
-                self.macaddress[2],
-                self.macaddress[3],
-                self.macaddress[4],
-                self.macaddress[5],
-            )
-        )];
+        let mut result = vec![
+            dbgprop_string!(
+                "MAC address",
+                format!(
+                    "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                    self.macaddress[0],
+                    self.macaddress[1],
+                    self.macaddress[2],
+                    self.macaddress[3],
+                    self.macaddress[4],
+                    self.macaddress[5],
+                )
+            ),
+            dbgprop_bool!("Interface enabled", self.enabled),
+        ];
 
         if let Some(tx) = &self.tx {
             result.push(dbgprop_udec!("TX queue length", tx.len()));
@@ -822,6 +896,55 @@ impl Debuggable for ScsiTargetEthernet {
             ));
         } else {
             result.push(dbgprop_str!("NAT engine", "Inactive"));
+        }
+
+        #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+        if let Some(stats) = &self.tap_stats {
+            result.push(dbgprop_group!(
+                "Tap bridge",
+                vec![
+                    dbgprop_udec!("RX total (packets)", stats.rx_total.load(Ordering::Relaxed)),
+                    dbgprop_udec!(
+                        "RX total (bytes)",
+                        stats.rx_total_bytes.load(Ordering::Relaxed)
+                    ),
+                    dbgprop_udec!(
+                        "RX accepted: unicast",
+                        stats.rx_unicast.load(Ordering::Relaxed)
+                    ),
+                    dbgprop_udec!(
+                        "RX accepted: multicast",
+                        stats.rx_multicast.load(Ordering::Relaxed)
+                    ),
+                    dbgprop_udec!(
+                        "RX accepted: broadcast",
+                        stats.rx_broadcast.load(Ordering::Relaxed)
+                    ),
+                    dbgprop_udec!(
+                        "RX dropped: filtered",
+                        stats.rx_dropped_filtered.load(Ordering::Relaxed)
+                    ),
+                    dbgprop_udec!(
+                        "RX dropped: too large",
+                        stats.rx_dropped_too_large.load(Ordering::Relaxed)
+                    ),
+                    dbgprop_udec!(
+                        "RX dropped: invalid frame",
+                        stats.rx_dropped_invalid.load(Ordering::Relaxed)
+                    ),
+                    dbgprop_udec!(
+                        "RX dropped: queue full",
+                        stats.rx_dropped_full.load(Ordering::Relaxed)
+                    ),
+                    dbgprop_udec!("TX total (packets)", stats.tx_total.load(Ordering::Relaxed)),
+                    dbgprop_udec!(
+                        "TX total (bytes)",
+                        stats.tx_total_bytes.load(Ordering::Relaxed)
+                    ),
+                ]
+            ));
+        } else {
+            result.push(dbgprop_str!("Tap bridge", "Inactive"));
         }
         result
     }
