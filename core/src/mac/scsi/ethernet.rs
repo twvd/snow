@@ -5,6 +5,7 @@ use crate::mac::scsi::target::{ScsiTarget, ScsiTargetEvent, ScsiTargetType};
 use crate::mac::scsi::ScsiCmdResult;
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
+use crate::util::{deserialize_arc_rwlock, serialize_arc_rwlock};
 
 use anyhow::{bail, Result};
 #[cfg(any(
@@ -20,8 +21,7 @@ use snow_nat::NatEngineStats;
 use std::path::Path;
 #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
 use std::sync::atomic::AtomicBool;
-#[cfg(feature = "ethernet_nat")]
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 type BasicPacket = Vec<u8>;
 
@@ -94,6 +94,13 @@ pub(crate) struct ScsiTargetEthernet {
 
     /// Interface enabled
     enabled: bool,
+
+    /// Subscribed layer 2 multicast groups
+    #[serde(
+        serialize_with = "serialize_arc_rwlock",
+        deserialize_with = "deserialize_arc_rwlock"
+    )]
+    multicast_groups: Arc<RwLock<Vec<[u8; 6]>>>,
 }
 
 impl Default for ScsiTargetEthernet {
@@ -121,6 +128,7 @@ impl Default for ScsiTargetEthernet {
             enabled: false,
             #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
             tap_stop: Arc::new(AtomicBool::new(false)),
+            multicast_groups: Default::default(),
         }
     }
 }
@@ -335,6 +343,7 @@ impl ScsiTargetEthernet {
         let rx_tap_stop = self.tap_stop.clone();
         let tx_tap_stop = self.tap_stop.clone();
         let t_mac = self.macaddress;
+        let t_multicast_groups = Arc::clone(&self.multicast_groups);
 
         // TAP RX -> Emulator RX (Physical -> Virtual)
         std::thread::spawn(move || {
@@ -363,7 +372,11 @@ impl ScsiTargetEthernet {
                             };
                             let dest = ethpacket.get_destination();
                             let src = ethpacket.get_source();
-                            if (dest != t_mac && !dest.is_broadcast()) || src == t_mac {
+                            let multicast_sub =
+                                t_multicast_groups.read().unwrap().contains(&dest.octets());
+                            if (dest != t_mac && !dest.is_broadcast() && !multicast_sub)
+                                || src == t_mac
+                            {
                                 continue;
                             }
 
@@ -608,6 +621,34 @@ impl ScsiTarget for ScsiTargetEthernet {
                     Ok(ScsiCmdResult::DataOut(write_len))
                 }
             }
+            0x0D => {
+                // Multicast subscribe
+                if let Some(od) = outdata {
+                    let mac: [u8; 6] = od[0..6].try_into().unwrap();
+
+                    log::info!(
+                        "Subscribed to multicast group {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                        mac[0],
+                        mac[1],
+                        mac[2],
+                        mac[3],
+                        mac[4],
+                        mac[5]
+                    );
+
+                    let mut groups = self.multicast_groups.write().unwrap();
+                    if !groups.contains(&mac) {
+                        groups.push(mac);
+
+                        // clippy is eager..
+                        drop(groups);
+                    }
+
+                    Ok(ScsiCmdResult::Status(STATUS_GOOD))
+                } else {
+                    Ok(ScsiCmdResult::DataOut(6))
+                }
+            }
             0x0E => {
                 // Enable/disable interface
                 let enable = cmd[5] & 0x80 != 0;
@@ -715,6 +756,18 @@ impl Debuggable for ScsiTargetEthernet {
         if let Some(rx) = &self.rx {
             result.push(dbgprop_udec!("RX queue length", rx.len()));
         }
+        result.push(dbgprop_group!(
+            "Multicast groups",
+            Vec::from_iter(self.multicast_groups.read().unwrap().iter().map(
+                |mac| dbgprop_string!(
+                    "Member of",
+                    format!(
+                        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+                    )
+                )
+            ))
+        ));
         #[cfg(feature = "ethernet_nat")]
         if let Some(stats) = &self.nat_stats {
             result.push(dbgprop_group!(
