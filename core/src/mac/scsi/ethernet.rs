@@ -5,9 +5,13 @@ use crate::mac::scsi::target::{ScsiTarget, ScsiTargetEvent, ScsiTargetType};
 use crate::mac::scsi::ScsiCmdResult;
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
+use crate::util::{deserialize_arc_rwlock, serialize_arc_rwlock};
 
 use anyhow::{bail, Result};
-#[cfg(feature = "ethernet_raw")]
+#[cfg(any(
+    feature = "ethernet_raw",
+    all(feature = "ethernet_tap", target_os = "linux")
+))]
 use crossbeam_channel::TrySendError;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -15,21 +19,24 @@ use serde::{Deserialize, Serialize};
 use snow_nat::NatEngineStats;
 
 use std::path::Path;
-#[cfg(feature = "ethernet_nat")]
-use std::sync::Arc;
+#[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, RwLock};
 
 type BasicPacket = Vec<u8>;
 
 /// Maximum amount of packets to buffer in the RX/TX queues
 const PACKET_QUEUE_SIZE: usize = 512;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub enum EthernetLinkType {
     Down,
     #[cfg(feature = "ethernet_nat")]
     NAT,
     #[cfg(feature = "ethernet_raw")]
     Bridge(u32),
+    #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+    TapBridge(String),
 }
 
 // Clippy is wrong, I don't think you can conditionally tag #[default] on an enum based on features
@@ -75,8 +82,25 @@ pub(crate) struct ScsiTargetEthernet {
     #[serde(skip)]
     nat_stats: Option<Arc<NatEngineStats>>,
 
+    /// TAP device (kept alive for cleanup)
+    #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+    #[serde(skip)]
+    tap_device: Option<tun::Device>,
+
+    /// TAP stop signal
+    #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+    #[serde(skip)]
+    tap_stop: Arc<AtomicBool>,
+
     /// Interface enabled
     enabled: bool,
+
+    /// Subscribed layer 2 multicast groups
+    #[serde(
+        serialize_with = "serialize_arc_rwlock",
+        deserialize_with = "deserialize_arc_rwlock"
+    )]
+    multicast_groups: Arc<RwLock<Vec<[u8; 6]>>>,
 }
 
 impl Default for ScsiTargetEthernet {
@@ -97,8 +121,14 @@ impl Default for ScsiTargetEthernet {
             tx: None,
             rx: None,
             link: Default::default(),
+            #[cfg(feature = "ethernet_nat")]
             nat_stats: None,
+            #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+            tap_device: None,
             enabled: false,
+            #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+            tap_stop: Arc::new(AtomicBool::new(false)),
+            multicast_groups: Default::default(),
         }
     }
 }
@@ -107,7 +137,8 @@ impl ScsiTargetEthernet {
     fn tx_packet(&mut self, packet: &[u8]) {
         if self.rx.is_none() && self.tx.is_none() && self.link != EthernetLinkType::Down {
             // Initialize link
-            if let Err(e) = self.eth_set_link(self.link) {
+            let link = self.link.clone();
+            if let Err(e) = self.eth_set_link(link) {
                 log::error!("Failed to set ethernet link: {}", e);
             }
         }
@@ -262,6 +293,153 @@ impl ScsiTargetEthernet {
                 bail!("Failed opening bridge channel: {:?}", e);
             }
         }
+
+        Ok(())
+    }
+
+    #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+    fn start_tap_bridge(&mut self, tap_name: &str) -> Result<()> {
+        use nix::libc;
+        use std::io::{Read, Write};
+        use std::os::fd::AsRawFd;
+
+        // This creates a new bool, rather than flipping a possibly still used one back to false.
+        self.tap_stop = Arc::new(AtomicBool::new(false));
+
+        log::info!("Opening TAP device '{}'", tap_name);
+
+        // Open the existing TAP device
+        let mut config = tun::Configuration::default();
+        config.layer(tun::Layer::L2).tun_name(tap_name);
+
+        config.platform_config(|config| {
+            config.ensure_root_privileges(true);
+        });
+
+        let dev = match tun::create(&config) {
+            Ok(dev) => dev,
+            Err(e) => {
+                log::error!("Failed to open TAP device '{}': {}", tap_name, e);
+                return Ok(());
+            }
+        };
+
+        log::info!("TAP device '{}' opened successfully", tap_name);
+
+        let (bridge_tx, emulator_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
+        let (emulator_tx, bridge_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
+        self.tx = Some(emulator_tx);
+        self.rx = Some(emulator_rx);
+
+        // Duplicate the file descriptor for separate read/write threads
+        let fd = dev.as_raw_fd();
+        let read_fd = unsafe { libc::dup(fd) };
+        let write_fd = unsafe { libc::dup(fd) };
+
+        if read_fd < 0 || write_fd < 0 {
+            bail!("Failed to duplicate TAP device file descriptor");
+        }
+
+        let rx_tap_stop = self.tap_stop.clone();
+        let tx_tap_stop = self.tap_stop.clone();
+        let t_mac = self.macaddress;
+        let t_multicast_groups = Arc::clone(&self.multicast_groups);
+
+        // TAP RX -> Emulator RX (Physical -> Virtual)
+        std::thread::spawn(move || {
+            use nix::errno::Errno;
+            use nix::poll;
+            use std::os::fd::{AsFd, FromRawFd};
+
+            let mut reader = unsafe { std::fs::File::from_raw_fd(read_fd) };
+            let mut buffer = vec![0u8; 65536];
+
+            loop {
+                let mut pfd = [poll::PollFd::new(reader.as_fd(), poll::PollFlags::POLLIN)];
+                match poll::poll(&mut pfd, 100_u16) {
+                    Ok(1) => match reader.read(&mut buffer) {
+                        Ok(0) => {
+                            log::info!("TAP bridge terminated (TAP device closed)");
+                            return;
+                        }
+                        Ok(size) => {
+                            let packet = buffer[..size].to_vec();
+                            let Some(ethpacket) =
+                                pnet::packet::ethernet::EthernetPacket::new(&packet)
+                            else {
+                                log::warn!("Dropped RX invalid packet: {:02X?}", packet);
+                                continue;
+                            };
+                            let dest = ethpacket.get_destination();
+                            let src = ethpacket.get_source();
+                            let multicast_sub =
+                                t_multicast_groups.read().unwrap().contains(&dest.octets());
+                            if (dest != t_mac && !dest.is_broadcast() && !multicast_sub)
+                                || src == t_mac
+                            {
+                                continue;
+                            }
+
+                            match bridge_tx.try_send(packet) {
+                                Ok(_) => {}
+                                Err(TrySendError::Disconnected(_)) => {
+                                    log::info!("TAP bridge terminated (bridge_tx closed)");
+                                    return;
+                                }
+                                Err(TrySendError::Full(_)) => {
+                                    log::error!("bridge_tx queue overflow");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::info!("TAP bridge terminated (read error: {})", e);
+                            return;
+                        }
+                    },
+                    Ok(_) | Err(Errno::EAGAIN) | Err(Errno::EINTR) => {}
+                    Err(e) => {
+                        log::error!("TAP bridge poll() error: {:?}", e);
+                        return;
+                    }
+                }
+
+                if rx_tap_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    log::info!("TAP bridge terminated (tap_stop)");
+                    return;
+                }
+            }
+        });
+
+        // Emulator TX -> TAP TX (Virtual -> Physical)
+        std::thread::spawn(move || {
+            use crossbeam_channel::RecvTimeoutError;
+            use std::os::fd::FromRawFd;
+            let mut writer = unsafe { std::fs::File::from_raw_fd(write_fd) };
+
+            loop {
+                match bridge_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                    Ok(packet) => match writer.write_all(&packet) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            log::info!("TAP bridge terminated (write error: {})", e);
+                            return;
+                        }
+                    },
+                    Err(RecvTimeoutError::Timeout) => (),
+                    Err(e) => {
+                        log::info!("TAP bridge terminated (bridge_rx closed: {})", e);
+                        return;
+                    }
+                }
+
+                if tx_tap_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    log::info!("TAP bridge terminated (tap_stop)");
+                }
+            }
+        });
+
+        // Store the device so it can be properly dropped when link changes
+        self.tap_device = Some(dev);
 
         Ok(())
     }
@@ -443,6 +621,34 @@ impl ScsiTarget for ScsiTargetEthernet {
                     Ok(ScsiCmdResult::DataOut(write_len))
                 }
             }
+            0x0D => {
+                // Multicast subscribe
+                if let Some(od) = outdata {
+                    let mac: [u8; 6] = od[0..6].try_into().unwrap();
+
+                    log::info!(
+                        "Subscribed to multicast group {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                        mac[0],
+                        mac[1],
+                        mac[2],
+                        mac[3],
+                        mac[4],
+                        mac[5]
+                    );
+
+                    let mut groups = self.multicast_groups.write().unwrap();
+                    if !groups.contains(&mac) {
+                        groups.push(mac);
+
+                        // clippy is eager..
+                        drop(groups);
+                    }
+
+                    Ok(ScsiCmdResult::Status(STATUS_GOOD))
+                } else {
+                    Ok(ScsiCmdResult::DataOut(6))
+                }
+            }
             0x0E => {
                 // Enable/disable interface
                 let enable = cmd[5] & 0x80 != 0;
@@ -468,17 +674,30 @@ impl ScsiTarget for ScsiTargetEthernet {
         // Dropping the senders will cause the channel to close and the receiver threads to terminate
         self.rx = None;
         self.tx = None;
-        self.nat_stats = None;
+        #[cfg(feature = "ethernet_nat")]
+        {
+            self.nat_stats = None;
+        }
+        #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+        {
+            self.tap_device = None; // Drop TAP device, closing the interface
+            self.tap_stop
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
 
-        self.link = link;
-        match link {
+        match &link {
             EthernetLinkType::Down => {
                 log::info!("Ethernet link down");
             }
             #[cfg(feature = "ethernet_raw")]
             EthernetLinkType::Bridge(i) => {
                 log::info!("Ethernet link bridge to interface {}", i);
-                self.start_bridge(i)?;
+                self.start_bridge(*i)?;
+            }
+            #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
+            EthernetLinkType::TapBridge(name) => {
+                log::info!("Ethernet link TAP bridge: {}", name);
+                self.start_tap_bridge(name)?;
             }
             #[cfg(feature = "ethernet_nat")]
             EthernetLinkType::NAT => {
@@ -500,18 +719,22 @@ impl ScsiTarget for ScsiTargetEthernet {
                 });
             }
         }
+        self.link = link;
         Ok(())
     }
 
     fn eth_link(&self) -> Option<EthernetLinkType> {
-        Some(self.link)
+        Some(self.link.clone())
     }
 }
 
 impl Debuggable for ScsiTargetEthernet {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
-        use crate::{dbgprop_group, dbgprop_str, dbgprop_string, dbgprop_udec};
+        #[cfg(feature = "ethernet_nat")]
+        use crate::{dbgprop_group, dbgprop_str};
+        use crate::{dbgprop_string, dbgprop_udec};
+        #[cfg(feature = "ethernet_nat")]
         use std::sync::atomic::Ordering;
 
         let mut result = vec![dbgprop_string!(
@@ -533,6 +756,18 @@ impl Debuggable for ScsiTargetEthernet {
         if let Some(rx) = &self.rx {
             result.push(dbgprop_udec!("RX queue length", rx.len()));
         }
+        result.push(dbgprop_group!(
+            "Multicast groups",
+            Vec::from_iter(self.multicast_groups.read().unwrap().iter().map(
+                |mac| dbgprop_string!(
+                    "Member of",
+                    format!(
+                        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+                    )
+                )
+            ))
+        ));
         #[cfg(feature = "ethernet_nat")]
         if let Some(stats) = &self.nat_stats {
             result.push(dbgprop_group!(

@@ -32,6 +32,8 @@ const fn scsi_cmd_len(cmdnum: u8) -> Option<usize> {
         | 0x09
         // WRITE(6)
         | 0x0A
+        // Non-standard (multicast mutation for Ethernet)
+        | 0x0D
         // Non-standard (enable interface for Ethernet)
         | 0x0E
         // INQUIRY
