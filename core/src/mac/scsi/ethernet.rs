@@ -849,48 +849,48 @@ impl Debuggable for ScsiTargetEthernet {
                 vec![
                     dbgprop_udec!(
                         "Emu -> remote packets",
-                        stats.rx_packets.load(Ordering::Acquire)
+                        stats.rx_packets.load(Ordering::Relaxed)
                     ),
                     dbgprop_udec!(
                         "Emu -> remote bytes",
-                        stats.rx_bytes.load(Ordering::Acquire)
+                        stats.rx_bytes.load(Ordering::Relaxed)
                     ),
                     dbgprop_udec!(
                         "Remote -> emu packets",
-                        stats.tx_packets.load(Ordering::Acquire)
+                        stats.tx_packets.load(Ordering::Relaxed)
                     ),
                     dbgprop_udec!(
                         "Remote -> emu bytes",
-                        stats.tx_bytes.load(Ordering::Acquire)
+                        stats.tx_bytes.load(Ordering::Relaxed)
                     ),
                     dbgprop_udec!(
                         "Active TCP connections",
-                        stats.nat_active_tcp.load(Ordering::Acquire)
+                        stats.nat_active_tcp.load(Ordering::Relaxed)
                     ),
                     dbgprop_udec!(
                         "Active UDP connections",
-                        stats.nat_active_udp.load(Ordering::Acquire)
+                        stats.nat_active_udp.load(Ordering::Relaxed)
                     ),
                     dbgprop_udec!(
                         "Total TCP connections",
-                        stats.nat_total_tcp.load(Ordering::Acquire)
+                        stats.nat_total_tcp.load(Ordering::Relaxed)
                     ),
                     dbgprop_udec!(
                         "Total UDP connections",
-                        stats.nat_total_udp.load(Ordering::Acquire)
+                        stats.nat_total_udp.load(Ordering::Relaxed)
                     ),
                     dbgprop_udec!(
                         "Expired connections",
-                        stats.nat_expired.load(Ordering::Acquire)
+                        stats.nat_expired.load(Ordering::Relaxed)
                     ),
-                    dbgprop_udec!("TCP SYNs seen", stats.nat_tcp_syn.load(Ordering::Acquire)),
+                    dbgprop_udec!("TCP SYNs seen", stats.nat_tcp_syn.load(Ordering::Relaxed)),
                     dbgprop_udec!(
                         "TCP FINs from emulator seen",
-                        stats.nat_tcp_fin_local.load(Ordering::Acquire)
+                        stats.nat_tcp_fin_local.load(Ordering::Relaxed)
                     ),
                     dbgprop_udec!(
                         "TCP FINs from remote seen",
-                        stats.nat_tcp_fin_remote.load(Ordering::Acquire)
+                        stats.nat_tcp_fin_remote.load(Ordering::Relaxed)
                     ),
                 ]
             ));
