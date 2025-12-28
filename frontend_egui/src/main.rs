@@ -77,6 +77,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_icon(eframe::icon_data::from_png_bytes(SNOW_ICON).expect("Icon is not valid PNG"))
+            .with_inner_size([1000.0, 750.0])
             .with_drag_and_drop(true),
         ..Default::default()
     };
