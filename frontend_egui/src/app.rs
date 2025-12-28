@@ -16,7 +16,7 @@ use crate::widgets::registers::RegistersWidget;
 use crate::widgets::systrap_history::SystrapHistoryWidget;
 use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
-use crate::workspace::Workspace;
+use crate::workspace::{FramebufferMode, Workspace};
 use snow_core::bus::Address;
 use snow_core::emulator::comm::UserMessageType;
 use snow_core::emulator::save::{load_state_header, SaveHeader};
@@ -798,6 +798,40 @@ impl SnowGui {
                         }
                     }
                 });
+                ui.separator();
+                ui.strong("Viewport options");
+                ui.menu_button("Display position", |ui| {
+                    if ui
+                        .radio_value(
+                            &mut self.workspace.framebuffer_mode,
+                            FramebufferMode::CenteredHorizontally,
+                            "Centered horizontally",
+                        )
+                        .clicked()
+                    {
+                        ui.close_menu();
+                    }
+                    if ui
+                        .radio_value(
+                            &mut self.workspace.framebuffer_mode,
+                            FramebufferMode::Centered,
+                            "Centered",
+                        )
+                        .clicked()
+                    {
+                        ui.close_menu();
+                    }
+                    if ui
+                        .radio_value(
+                            &mut self.workspace.framebuffer_mode,
+                            FramebufferMode::Detached,
+                            "Detached",
+                        )
+                        .clicked()
+                    {
+                        ui.close_menu();
+                    }
+                });
                 ui.menu_button("Scaling algorithm", |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH);
                     for algorithm in ScalingAlgorithm::iter() {
@@ -815,7 +849,6 @@ impl SnowGui {
                     &mut self.framebuffer.crt_enabled,
                     "CRT shader effect",
                 ));
-
                 if self.framebuffer.crt_enabled {
                     ui.menu_button("Shader settings", |ui| {
                         ui.add(
@@ -885,12 +918,28 @@ impl SnowGui {
                         );
                     });
                 }
-
-                ui.add(egui::Checkbox::new(
-                    &mut self.workspace.center_viewport_v,
-                    "Center display vertically",
-                ));
-
+                if ui
+                    .add_enabled(
+                        matches!(
+                            self.emu.get_model(),
+                            Some(MacModel::Early128K)
+                                | Some(MacModel::Early512K)
+                                | Some(MacModel::Early512Ke)
+                                | Some(MacModel::Plus)
+                                | Some(MacModel::SE)
+                                | Some(MacModel::SeFdhd)
+                                | Some(MacModel::Classic)
+                        ),
+                        egui::Checkbox::new(
+                            &mut self.emu.debug_framebuffers,
+                            "Show all framebuffers",
+                        ),
+                    )
+                    .clicked()
+                {
+                    self.emu.set_debug_framebuffers(self.emu.debug_framebuffers);
+                    ui.close_menu();
+                }
                 ui.separator();
                 if ui
                     .checkbox(&mut self.workspace.map_cmd_ralt, "Map right ALT to Cmd")
@@ -914,29 +963,6 @@ impl SnowGui {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
                 if ui.button("Enter fullscreen").clicked() {
                     self.enter_fullscreen(ctx);
-                    ui.close_menu();
-                }
-                ui.separator();
-                if ui
-                    .add_enabled(
-                        matches!(
-                            self.emu.get_model(),
-                            Some(MacModel::Early128K)
-                                | Some(MacModel::Early512K)
-                                | Some(MacModel::Early512Ke)
-                                | Some(MacModel::Plus)
-                                | Some(MacModel::SE)
-                                | Some(MacModel::SeFdhd)
-                                | Some(MacModel::Classic)
-                        ),
-                        egui::Checkbox::new(
-                            &mut self.emu.debug_framebuffers,
-                            "Show all framebuffers",
-                        ),
-                    )
-                    .clicked()
-                {
-                    self.emu.set_debug_framebuffers(self.emu.debug_framebuffers);
                     ui.close_menu();
                 }
                 ui.separator();
@@ -2646,34 +2672,45 @@ impl eframe::App for SnowGui {
             }
 
             // Framebuffer display
-            let response = ui.vertical_centered(|ui| {
-                // Align framebuffer vertically
-                if self.in_fullscreen {
-                    const GUEST_ASPECT_RATIO: f32 = 4.0 / 3.0;
-                    let host_aspect_ratio = ui.available_width() / ui.available_height();
+            let response = if !self.in_fullscreen
+                && self.workspace.framebuffer_mode == FramebufferMode::Detached
+            {
+                // Render framebuffer in a floating window
+                egui::InnerResponse {
+                    inner: (),
+                    response: ui.allocate_response(ui.available_size(), egui::Sense::hover()),
+                }
+            } else {
+                // Render framebuffer inline on the background
+                ui.vertical_centered(|ui| {
+                    // Align framebuffer vertically
+                    if self.in_fullscreen {
+                        const GUEST_ASPECT_RATIO: f32 = 4.0 / 3.0;
+                        let host_aspect_ratio = ui.available_width() / ui.available_height();
 
-                    if host_aspect_ratio < GUEST_ASPECT_RATIO {
-                        let screen_height = 3.0 * ui.available_width() / 4.0;
-                        let padding_height = (ui.available_height() - screen_height) / 2.0;
+                        if host_aspect_ratio < GUEST_ASPECT_RATIO {
+                            let screen_height = 3.0 * ui.available_width() / 4.0;
+                            let padding_height = (ui.available_height() - screen_height) / 2.0;
 
+                            if padding_height > 0.0 {
+                                ui.allocate_space(egui::Vec2::from([1.0, padding_height]));
+                            }
+                        }
+                    } else if self.workspace.framebuffer_mode == FramebufferMode::Centered {
+                        let padding_height =
+                            (ui.available_height() - self.framebuffer.max_height()) / 2.0;
                         if padding_height > 0.0 {
                             ui.allocate_space(egui::Vec2::from([1.0, padding_height]));
                         }
                     }
-                } else if self.workspace.center_viewport_v {
-                    let padding_height =
-                        (ui.available_height() - self.framebuffer.max_height()) / 2.0;
-                    if padding_height > 0.0 {
-                        ui.allocate_space(egui::Vec2::from([1.0, padding_height]));
-                    }
-                }
 
-                self.framebuffer.draw(ui, self.in_fullscreen);
-                if self.in_fullscreen {
-                    // To fill the screen with hitbox for the context menu
-                    ui.allocate_space(ui.available_size());
-                }
-            });
+                    self.framebuffer.draw(ui, self.in_fullscreen);
+                    if self.in_fullscreen {
+                        // To fill the screen with hitbox for the context menu
+                        ui.allocate_space(ui.available_size());
+                    }
+                })
+            };
             if self.in_fullscreen {
                 response.response.context_menu(|ui| {
                     // Show the mouse cursor so the user can interact with the menu
@@ -2843,6 +2880,24 @@ impl eframe::App for SnowGui {
                 if let Some(data) = self.emu.scc_take_tx(snow_core::mac::scc::SccCh::B) {
                     self.terminal[1].push_rx(&data);
                 }
+            }
+
+            // Floating framebuffer window
+            if !self.in_fullscreen && self.workspace.framebuffer_mode == FramebufferMode::Detached {
+                persistent_window_s!(self, "Display", [800.0, 600.0])
+                    .resizable(true)
+                    .show(ctx, |ui| {
+                        // Draw framebuffer in a vertical container to prevent window dragging on content
+                        ui.vertical(|ui| {
+                            let response = self.framebuffer.draw(ui, false);
+                            // Consume drag events on the framebuffer to prevent window dragging
+                            ui.interact(
+                                response.rect,
+                                ui.id().with("fb_drag_blocker"),
+                                egui::Sense::drag(),
+                            );
+                        });
+                    });
             }
         });
 
