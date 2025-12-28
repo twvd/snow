@@ -404,25 +404,24 @@ impl ScsiTargetEthernet {
                             return;
                         }
                         Ok(size) => {
-                            let packet = buffer[..size].to_vec();
                             rx_stats.rx_total.fetch_add(1, Ordering::Relaxed);
                             rx_stats.rx_total_bytes.fetch_add(size, Ordering::Relaxed);
 
-                            let Some(ethpacket) =
-                                pnet::packet::ethernet::EthernetPacket::new(&packet)
-                            else {
-                                log::warn!("Dropped RX invalid packet: {:02X?}", packet);
-                                rx_stats.rx_dropped_invalid.fetch_add(1, Ordering::Relaxed);
-                                continue;
-                            };
-
-                            if packet.len() > 1514 {
+                            if size > 1514 {
                                 log::warn!("Dropped RX too large packet ({})", size);
                                 rx_stats
                                     .rx_dropped_too_large
                                     .fetch_add(1, Ordering::Relaxed);
                                 continue;
                             }
+
+                            let Some(ethpacket) =
+                                pnet::packet::ethernet::EthernetPacket::new(&buffer)
+                            else {
+                                log::warn!("Dropped RX invalid packet: {:02X?}", &buffer);
+                                rx_stats.rx_dropped_invalid.fetch_add(1, Ordering::Relaxed);
+                                continue;
+                            };
 
                             let dest = ethpacket.get_destination();
                             let src = ethpacket.get_source();
@@ -446,7 +445,7 @@ impl ScsiTargetEthernet {
                             }
 
                             // Send to emulator
-                            match bridge_tx.try_send(packet) {
+                            match bridge_tx.try_send(buffer[..size].to_vec()) {
                                 Ok(_) => {}
                                 Err(TrySendError::Disconnected(_)) => {
                                     log::info!("TAP bridge terminated (bridge_tx closed)");
