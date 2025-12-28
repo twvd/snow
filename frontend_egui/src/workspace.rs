@@ -12,6 +12,14 @@ use serde::{Deserialize, Serialize};
 use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::MacModel;
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FramebufferMode {
+    #[default]
+    CenteredHorizontally,
+    Centered,
+    Detached,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub enum WorkspaceScsiTarget {
     #[default]
@@ -101,7 +109,11 @@ pub struct Workspace {
     pub systrap_history_open: bool,
     pub peripheral_debug_open: bool,
     pub terminal_open: [bool; 2],
-    pub center_viewport_v: bool,
+
+    /// Deprecated
+    #[serde(skip_serializing)]
+    center_viewport_v: bool,
+
     pub viewport_scale: f32,
 
     /// Last opened Mac ROM
@@ -155,6 +167,9 @@ pub struct Workspace {
     /// Format: "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
     /// Useful for testing date-dependent software (e.g., easter eggs).
     pub custom_datetime: Option<String>,
+
+    /// Framebuffer positioning mode
+    pub framebuffer_mode: FramebufferMode,
 }
 
 impl Default for Workspace {
@@ -188,6 +203,7 @@ impl Default for Workspace {
             disassembly_labels: true,
             floppy_images: Vec::new(),
             custom_datetime: None,
+            framebuffer_mode: FramebufferMode::default(),
         }
     }
 }
@@ -204,6 +220,7 @@ impl Workspace {
         "Instruction history",
         "System trap history",
         "Peripherals",
+        "Display",
     ];
 
     pub fn from_file(path: &Path) -> Result<Self> {
@@ -247,6 +264,13 @@ impl Workspace {
 
         for p in &mut result.floppy_images {
             p.after_deserialize(parent)?;
+        }
+
+        // Migrate old framebuffer positioning fields to new enum
+        if result.center_viewport_v {
+            result.framebuffer_mode = FramebufferMode::Centered;
+        } else {
+            result.framebuffer_mode = FramebufferMode::CenteredHorizontally;
         }
 
         Ok(result)

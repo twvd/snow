@@ -165,9 +165,8 @@ impl FramebufferWidget {
 
         // Use a callback to get painter access (use full available rect to ensure it's not culled)
         let callback = egui::PaintCallback {
-            // This can be any arbitrary rectangle as long as it's not 0; we just need the callback
-            // for access to the GL context.
-            rect: ui.available_rect_before_wrap(),
+            // Use a simple 1x1 rect to ensure the callback always fires
+            rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::new(1.0, 1.0)),
             callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
                 let gl = painter.gl();
 
@@ -210,7 +209,8 @@ impl FramebufferWidget {
             })),
         };
 
-        ui.painter().add(callback);
+        // Using the debug painter guarantees callback will be called
+        ui.ctx().debug_painter().add(callback);
 
         // Create output texture if needed
         if self.crt_output_texture.is_none() {
