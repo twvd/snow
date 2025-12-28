@@ -69,7 +69,7 @@ impl FramebufferWidget {
                 egui::TextureOptions::NEAREST,
             ),
             response: None,
-            scale: 1.5,
+            scale: 2.0,
             scaling_algorithm: ScalingAlgorithm::Linear,
             display_size: [0, 0],
             crt_enabled: false,

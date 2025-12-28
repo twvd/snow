@@ -14,8 +14,8 @@ use snow_core::mac::MacModel;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum FramebufferMode {
-    #[default]
     CenteredHorizontally,
+    #[default]
     Centered,
     Detached,
 }
@@ -175,7 +175,7 @@ pub struct Workspace {
 impl Default for Workspace {
     fn default() -> Self {
         Self {
-            viewport_scale: 1.5,
+            viewport_scale: 2.0,
             log_open: false,
             disassembly_open: false,
             registers_open: false,
