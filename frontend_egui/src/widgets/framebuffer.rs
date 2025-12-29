@@ -3,7 +3,7 @@
 
 use std::{fs::File, path::Path};
 
-use super::crt_shader::{CrtShader, CrtShaderParams};
+use crate::shader_pipeline::{ShaderConfig, ShaderId, ShaderPipeline};
 use anyhow::{bail, Result};
 use crossbeam_channel::Receiver;
 use eframe::egui;
@@ -51,10 +51,10 @@ pub struct FramebufferWidget {
 
     response: Option<egui::Response>,
 
-    // CRT shader
+    // Shader pipeline
     pub crt_enabled: bool,
-    pub crt_params: CrtShaderParams,
-    crt_shader: Arc<Mutex<Option<CrtShader>>>,
+    shader_pipeline: Arc<Mutex<Option<ShaderPipeline>>>,
+    pub shader_configs: Vec<ShaderConfig>,
     crt_output_texture: Option<egui::TextureHandle>,
 }
 
@@ -73,8 +73,8 @@ impl FramebufferWidget {
             scaling_algorithm: ScalingAlgorithm::Linear,
             display_size: [0, 0],
             crt_enabled: false,
-            crt_params: CrtShaderParams::default(),
-            crt_shader: Arc::new(Mutex::new(None)),
+            shader_pipeline: Arc::new(Mutex::new(None)),
+            shader_configs: Self::default_shader_configs(MacModel::Plus),
             crt_output_texture: None,
         }
     }
@@ -131,11 +131,14 @@ impl FramebufferWidget {
         }
 
         // Choose which texture to display
-        let display_texture = if self.crt_enabled && self.crt_output_texture.is_some() {
-            self.crt_output_texture.as_mut().unwrap()
-        } else {
-            &mut self.viewport_texture
-        };
+        // Only use shader output if at least one shader pass is enabled
+        let any_shader_enabled = self.shader_configs.iter().any(|c| c.enabled);
+        let display_texture =
+            if self.crt_enabled && any_shader_enabled && self.crt_output_texture.is_some() {
+                self.crt_output_texture.as_mut().unwrap()
+            } else {
+                &mut self.viewport_texture
+            };
 
         let size = display_texture.size_vec2();
         let sized_texture = egui::load::SizedTexture::new(display_texture, size);
@@ -157,11 +160,11 @@ impl FramebufferWidget {
     fn trigger_crt_shader(&mut self, ui: &egui::Ui) {
         // Copy references to move into the callback
         let texture_id = self.viewport_texture.id();
-        let shader = self.crt_shader.clone();
+        let pipeline = self.shader_pipeline.clone();
         let ctx = ui.ctx().clone();
         let texture_size = self.viewport_texture.size();
         let output_handle = Arc::new(Mutex::new(self.crt_output_texture.clone()));
-        let params = self.crt_params;
+        let configs = self.shader_configs.clone();
 
         // Use a callback to get painter access (use full available rect to ensure it's not culled)
         let callback = egui::PaintCallback {
@@ -170,29 +173,46 @@ impl FramebufferWidget {
             callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
                 let gl = painter.gl();
 
-                // Initialize shader if needed
-                let mut shader_lock = shader.lock();
-                if shader_lock.is_none() {
-                    match CrtShader::new(gl) {
-                        Ok(s) => {
-                            log::info!("CRT shader initialized");
-                            *shader_lock = Some(s);
+                // Initialize shader pipeline if needed
+                let mut pipeline_lock = pipeline.lock();
+                if pipeline_lock.is_none() {
+                    match ShaderPipeline::new(gl) {
+                        Ok(mut p) => {
+                            // Add shaders based on configs
+                            for config in &configs {
+                                match config.id.create_shader(gl) {
+                                    Ok(shader) => {
+                                        p.add_pass(shader, config.clone());
+                                    }
+                                    Err(e) => {
+                                        log::error!(
+                                            "Failed to create {} shader: {}",
+                                            config.id.display_name(),
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+
+                            log::info!("Shader pipeline initialized");
+                            *pipeline_lock = Some(p);
                         }
                         Err(e) => {
-                            log::error!("CRT shader failed: {}", e);
+                            log::error!("Shader pipeline failed: {}", e);
                             return;
                         }
                     }
                 }
 
-                if let Some(crt_shader) = shader_lock.as_mut() {
+                if let Some(pipeline) = pipeline_lock.as_mut() {
+                    pipeline.update_configs(&configs);
+
                     if let Some(input_tex) = painter.texture(texture_id) {
-                        // Process and read back pixels
-                        if let Some(pixels) = crt_shader.process_texture_to_pixels(
+                        // Process through shader pipeline
+                        if let Some(pixels) = pipeline.process_texture_to_pixels(
                             gl,
                             input_tex,
                             [texture_size[0] as u32, texture_size[1] as u32],
-                            &params,
                         ) {
                             // Update egui texture with processed pixels
                             // TODO skip the unneccesary copies from VRAM and present the output
@@ -266,9 +286,9 @@ impl FramebufferWidget {
         }
     }
 
-    /// Loads CRT shader defaults for particular Mac models
-    pub fn load_shader_defaults(&mut self, model: MacModel) {
-        self.crt_params = match model {
+    /// Creates default shader configs for a given Mac model
+    fn default_shader_configs(model: MacModel) -> Vec<ShaderConfig> {
+        match model {
             MacModel::Early128K
             | MacModel::Early512K
             | MacModel::Early512Ke
@@ -276,29 +296,49 @@ impl FramebufferWidget {
             | MacModel::SE
             | MacModel::SeFdhd
             | MacModel::Classic
-            | MacModel::SE30 => CrtShaderParams {
-                crt_gamma: 2.1,
-                // TODO need more pronounced scanlines..
-                scanline_thinness: 1.00,
-                scan_blur: 1.6,
-                mask_intensity: 0.00,
-                curvature: 0.00,
-                corner: 3.0,
-                mask: 0.0,
-                trinitron_curve: 0.0,
-            },
+            | MacModel::SE30 => {
+                vec![
+                    ShaderConfig::builder(ShaderId::GdvScanlines)
+                        .param("BEAM", 5.0)
+                        .param("SCANLINE", 1.00)
+                        .build(),
+                    ShaderConfig::builder(ShaderId::CrtLottes)
+                        .param("CRT_GAMMA", 2.1)
+                        .param("SCANLINE_THINNESS", 0.70)
+                        .param("SCAN_BLUR", 1.6)
+                        .param("MASK_INTENSITY", 0.00)
+                        .param("CURVATURE", 0.00)
+                        .param("CORNER", 2.0)
+                        .param("MASK", 0.0)
+                        .param("TRINITRON_CURVE", 0.0)
+                        .build(),
+                ]
+            }
             MacModel::MacII | MacModel::MacIIFDHD | MacModel::MacIIx | MacModel::MacIIcx => {
-                CrtShaderParams {
-                    crt_gamma: 2.1,
-                    scanline_thinness: 0.5,
-                    scan_blur: 2.5,
-                    mask_intensity: 0.20,
-                    curvature: 0.00,
-                    corner: 0.0,
-                    mask: 2.0,
-                    trinitron_curve: 0.0,
-                }
+                vec![
+                    ShaderConfig::builder(ShaderId::GdvScanlines)
+                        .param("BEAM", 5.0)
+                        .param("SCANLINE", 0.85)
+                        .build(),
+                    ShaderConfig::builder(ShaderId::CrtLottes)
+                        .param("CRT_GAMMA", 2.1)
+                        .param("SCANLINE_THINNESS", 0.5)
+                        .param("SCAN_BLUR", 2.5)
+                        .param("MASK_INTENSITY", 0.10)
+                        .param("CURVATURE", 0.00)
+                        .param("CORNER", 1.0)
+                        .param("MASK", 2.0)
+                        .param("TRINITRON_CURVE", 0.0)
+                        .build(),
+                ]
             }
         }
+    }
+
+    /// Loads CRT shader defaults for particular Mac models
+    pub fn load_shader_defaults(&mut self, model: MacModel) {
+        self.shader_configs = Self::default_shader_configs(model);
+        // Clear the pipeline to force reinitialization with new configs
+        *self.shader_pipeline.lock() = None;
     }
 }
