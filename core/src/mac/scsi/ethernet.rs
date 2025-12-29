@@ -111,11 +111,6 @@ pub(crate) struct ScsiTargetEthernet {
     #[serde(skip)]
     nat_stats: Option<Arc<NatEngineStats>>,
 
-    /// TAP device (kept alive for cleanup)
-    #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
-    #[serde(skip)]
-    tap_device: Option<tun::Device>,
-
     /// Tap bridge statistics
     #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
     #[serde(skip)]
@@ -157,8 +152,6 @@ impl Default for ScsiTargetEthernet {
             link: Default::default(),
             #[cfg(feature = "ethernet_nat")]
             nat_stats: None,
-            #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
-            tap_device: None,
             enabled: false,
             #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
             tap_stop: Arc::new(AtomicBool::new(false)),
@@ -335,7 +328,6 @@ impl ScsiTargetEthernet {
 
     #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
     fn start_tap_bridge(&mut self, tap_name: &str) -> Result<()> {
-        use nix::libc;
         use std::io::{Read, Write};
         use std::os::fd::AsRawFd;
 
@@ -370,14 +362,7 @@ impl ScsiTargetEthernet {
         self.tx = Some(emulator_tx);
         self.rx = Some(emulator_rx);
 
-        // Duplicate the file descriptor for separate read/write threads
-        let fd = dev.as_raw_fd();
-        let read_fd = unsafe { libc::dup(fd) };
-        let write_fd = unsafe { libc::dup(fd) };
-
-        if read_fd < 0 || write_fd < 0 {
-            bail!("Failed to duplicate TAP device file descriptor");
-        }
+        let (mut reader, mut writer) = dev.split();
 
         let rx_tap_stop = self.tap_stop.clone();
         let tx_tap_stop = self.tap_stop.clone();
@@ -390,13 +375,15 @@ impl ScsiTargetEthernet {
         std::thread::spawn(move || {
             use nix::errno::Errno;
             use nix::poll;
-            use std::os::fd::{AsFd, FromRawFd};
+            use std::os::fd::BorrowedFd;
 
-            let mut reader = unsafe { std::fs::File::from_raw_fd(read_fd) };
+            // reader must remain alive as long as fd
+            let fd = unsafe { BorrowedFd::borrow_raw(reader.as_raw_fd()) };
+
             let mut buffer = vec![0u8; 65536];
 
             loop {
-                let mut pfd = [poll::PollFd::new(reader.as_fd(), poll::PollFlags::POLLIN)];
+                let mut pfd = [poll::PollFd::new(fd, poll::PollFlags::POLLIN)];
                 match poll::poll(&mut pfd, 100_u16) {
                     Ok(1) => match reader.read(&mut buffer) {
                         Ok(0) => {
@@ -479,8 +466,6 @@ impl ScsiTargetEthernet {
         // Emulator TX -> TAP TX (Virtual -> Physical)
         std::thread::spawn(move || {
             use crossbeam_channel::RecvTimeoutError;
-            use std::os::fd::FromRawFd;
-            let mut writer = unsafe { std::fs::File::from_raw_fd(write_fd) };
 
             loop {
                 match bridge_rx.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -509,9 +494,6 @@ impl ScsiTargetEthernet {
                 }
             }
         });
-
-        // Store the device so it can be properly dropped when link changes
-        self.tap_device = Some(dev);
 
         Ok(())
     }
@@ -635,6 +617,7 @@ impl ScsiTarget for ScsiTargetEthernet {
                 if let Some(packet) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
                     const FCS: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
 
+                    let more = !self.rx.as_ref().unwrap().is_empty();
                     let packet_len = packet.len().max(64);
                     let resp_len = 6 + packet_len + 4;
                     if read_len < resp_len {
@@ -651,11 +634,12 @@ impl ScsiTarget for ScsiTargetEthernet {
                     response[6..(6 + packet.len())].copy_from_slice(&packet);
                     response[(6 + packet_len)..resp_len]
                         .copy_from_slice(&FCS.checksum(&packet).to_be_bytes());
+                    log::debug!("read {} {} more = {}", packet_len, resp_len, more);
 
                     // Length
                     response[0] = (packet_len >> 8) as u8;
                     response[1] = packet_len as u8;
-                    if !self.rx.as_ref().unwrap().is_empty() {
+                    if more {
                         // More packets available to read
                         // TODO this causes SCSI Manager issues
                         //response[5] = 0x10;
@@ -684,12 +668,14 @@ impl ScsiTarget for ScsiTargetEthernet {
                     } else {
                         self.tx_packet(od);
                     }
+                    log::debug!("write finished {:02X?}", od);
                     Ok(ScsiCmdResult::Status(STATUS_GOOD))
                 } else {
                     let mut write_len = ((cmd[3] as usize) << 8) | (cmd[4] as usize);
                     if cmd[5] & 0x80 != 0 {
                         write_len += 8;
                     }
+                    log::debug!("write start {} {}", write_len, cmd[5] & 0x80 != 0);
                     Ok(ScsiCmdResult::DataOut(write_len))
                 }
             }
@@ -752,7 +738,6 @@ impl ScsiTarget for ScsiTargetEthernet {
         }
         #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
         {
-            self.tap_device = None; // Drop TAP device, closing the interface
             self.tap_stop
                 .store(true, std::sync::atomic::Ordering::Release);
         }
