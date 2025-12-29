@@ -851,71 +851,42 @@ impl SnowGui {
                 ));
                 if self.framebuffer.crt_enabled {
                     ui.menu_button("Shader settings", |ui| {
-                        ui.add(
-                            egui::Slider::new(&mut self.framebuffer.crt_params.mask, 0.0..=3.0)
-                                .step_by(1.0)
-                                .text("Mask Type")
-                                .custom_formatter(|n, _| match n as i32 {
-                                    0 => "None".to_string(),
-                                    1 => "Aperture Grille".to_string(),
-                                    2 => "Aperture Grille Lite".to_string(),
-                                    3 => "Shadow Mask".to_string(),
-                                    _ => n.to_string(),
-                                }),
-                        );
-                        ui.add(
-                            egui::Slider::new(
-                                &mut self.framebuffer.crt_params.mask_intensity,
-                                0.0..=1.0,
-                            )
-                            .step_by(0.05)
-                            .text("Mask Intensity"),
-                        );
-                        ui.add(
-                            egui::Slider::new(
-                                &mut self.framebuffer.crt_params.scanline_thinness,
-                                0.0..=1.0,
-                            )
-                            .step_by(0.1)
-                            .text("Scanline Intensity"),
-                        );
-                        ui.add(
-                            egui::Slider::new(
-                                &mut self.framebuffer.crt_params.scan_blur,
-                                1.0..=3.0,
-                            )
-                            .step_by(0.1)
-                            .text("Sharpness"),
-                        );
-                        ui.add(
-                            egui::Slider::new(
-                                &mut self.framebuffer.crt_params.curvature,
-                                0.0..=0.25,
-                            )
-                            .step_by(0.01)
-                            .text("Curvature"),
-                        );
-                        ui.add(
-                            egui::Slider::new(
-                                &mut self.framebuffer.crt_params.trinitron_curve,
-                                0.0..=1.0,
-                            )
-                            .step_by(1.0)
-                            .text("Trinitron Curve"),
-                        );
-                        ui.add(
-                            egui::Slider::new(&mut self.framebuffer.crt_params.corner, 0.0..=11.0)
-                                .step_by(1.0)
-                                .text("Corner Round"),
-                        );
-                        ui.add(
-                            egui::Slider::new(
-                                &mut self.framebuffer.crt_params.crt_gamma,
-                                0.0..=5.0,
-                            )
-                            .step_by(0.1)
-                            .text("CRT Gamma"),
-                        );
+                        // Dynamically generate UI for each shader in the pipeline
+                        for config in &mut self.framebuffer.shader_configs {
+                            ui.collapsing(config.id.display_name(), |ui| {
+                                ui.checkbox(&mut config.enabled, "Enabled");
+                                ui.separator();
+
+                                // Get cached parameter metadata
+                                let params = config.id.parameters();
+
+                                // Generate sliders for each parameter
+                                for param in params {
+                                    let value = config
+                                        .parameters
+                                        .entry(param.name.clone())
+                                        .or_insert(param.default);
+
+                                    let mut slider =
+                                        egui::Slider::new(value, param.min..=param.max)
+                                            .step_by(param.step as f64)
+                                            .text(&param.display_name);
+
+                                    // Special formatter for MASK parameter
+                                    if param.name == "MASK" {
+                                        slider = slider.custom_formatter(|n, _| match n as i32 {
+                                            0 => "None".to_string(),
+                                            1 => "Aperture Grille".to_string(),
+                                            2 => "Aperture Grille Lite".to_string(),
+                                            3 => "Shadow Mask".to_string(),
+                                            _ => n.to_string(),
+                                        });
+                                    }
+
+                                    ui.add(slider);
+                                }
+                            });
+                        }
                     });
                 }
                 if ui

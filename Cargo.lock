@@ -4509,6 +4509,7 @@ dependencies = [
  "num-traits",
  "objc2-app-kit 0.3.1",
  "objc2-foundation 0.3.1",
+ "once_cell",
  "pathdiff",
  "pnet",
  "png 0.17.16",

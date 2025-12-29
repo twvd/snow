@@ -8,6 +8,7 @@ mod emulator;
 mod helpers;
 mod keymap;
 mod settings;
+mod shader_pipeline;
 mod uniform;
 mod util;
 mod widgets;
