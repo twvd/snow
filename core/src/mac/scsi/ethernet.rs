@@ -634,7 +634,7 @@ impl ScsiTarget for ScsiTargetEthernet {
                     response[6..(6 + packet.len())].copy_from_slice(&packet);
                     response[(6 + packet_len)..resp_len]
                         .copy_from_slice(&FCS.checksum(&packet).to_be_bytes());
-                    log::debug!("read {} {} more = {}", packet_len, resp_len, more);
+                    //log::debug!("read {} {} more = {}", packet_len, resp_len, more);
 
                     // Length
                     response[0] = (packet_len >> 8) as u8;
@@ -668,14 +668,14 @@ impl ScsiTarget for ScsiTargetEthernet {
                     } else {
                         self.tx_packet(od);
                     }
-                    log::debug!("write finished {:02X?}", od);
+                    //log::debug!("write finished {:02X?}", od);
                     Ok(ScsiCmdResult::Status(STATUS_GOOD))
                 } else {
                     let mut write_len = ((cmd[3] as usize) << 8) | (cmd[4] as usize);
                     if cmd[5] & 0x80 != 0 {
                         write_len += 8;
                     }
-                    log::debug!("write start {} {}", write_len, cmd[5] & 0x80 != 0);
+                    //log::debug!("write start {} {}", write_len, cmd[5] & 0x80 != 0);
                     Ok(ScsiCmdResult::DataOut(write_len))
                 }
             }

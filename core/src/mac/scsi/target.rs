@@ -181,6 +181,14 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
             }
             0x1A => {
                 // MODE SENSE(6)
+                let Some(blocksize) = self.blocksize() else {
+                    log::error!(
+                        "MODE SENSE on non-block device type {:?}",
+                        self.target_type()
+                    );
+                    self.set_cc(CC_KEY_ILLEGAL_REQUEST, 0);
+                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                };
                 let page = cmd[2] & 0x3F;
                 let _subpage = cmd[3];
                 let dbd = cmd[1] & (1 << 3) != 0;
@@ -210,7 +218,6 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                     result.extend_from_slice(&[0, 0, 0, 0]);
 
                     // Block size
-                    let blocksize = self.blocksize().unwrap() as u32;
                     result.push((blocksize >> 16) as u8);
                     result.push((blocksize >> 8) as u8);
                     result.push(blocksize as u8);
