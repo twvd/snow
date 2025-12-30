@@ -800,6 +800,9 @@ impl SnowGui {
                 });
                 ui.separator();
                 ui.strong("Viewport options");
+                ui.add(
+                    egui::Slider::new(&mut self.framebuffer.scale, 0.5..=4.0).text("Display scale"),
+                );
                 ui.menu_button("Display position", |ui| {
                     if ui
                         .radio_value(
@@ -842,9 +845,29 @@ impl SnowGui {
                         );
                     }
                 });
-                ui.add(
-                    egui::Slider::new(&mut self.framebuffer.scale, 0.5..=4.0).text("Display scale"),
-                );
+
+                if ui
+                    .add_enabled(
+                        matches!(
+                            self.emu.get_model(),
+                            Some(MacModel::Early128K)
+                                | Some(MacModel::Early512K)
+                                | Some(MacModel::Early512Ke)
+                                | Some(MacModel::Plus)
+                                | Some(MacModel::SE)
+                                | Some(MacModel::SeFdhd)
+                                | Some(MacModel::Classic)
+                        ),
+                        egui::Checkbox::new(
+                            &mut self.emu.debug_framebuffers,
+                            "Show all framebuffers",
+                        ),
+                    )
+                    .clicked()
+                {
+                    self.emu.set_debug_framebuffers(self.emu.debug_framebuffers);
+                    ui.close_menu();
+                }
                 ui.add(egui::Checkbox::new(
                     &mut self.framebuffer.crt_enabled,
                     "CRT shader effect",
@@ -853,7 +876,16 @@ impl SnowGui {
                     ui.menu_button("Shader settings", |ui| {
                         // Dynamically generate UI for each shader in the pipeline
                         for config in &mut self.framebuffer.shader_configs {
-                            ui.collapsing(config.id.display_name(), |ui| {
+                            let heading = format!(
+                                "{} ({})",
+                                config.id.display_name(),
+                                if config.enabled {
+                                    "enabled"
+                                } else {
+                                    "disabled"
+                                }
+                            );
+                            ui.collapsing(heading, |ui| {
                                 ui.checkbox(&mut config.enabled, "Enabled");
                                 ui.separator();
 
@@ -888,28 +920,6 @@ impl SnowGui {
                             });
                         }
                     });
-                }
-                if ui
-                    .add_enabled(
-                        matches!(
-                            self.emu.get_model(),
-                            Some(MacModel::Early128K)
-                                | Some(MacModel::Early512K)
-                                | Some(MacModel::Early512Ke)
-                                | Some(MacModel::Plus)
-                                | Some(MacModel::SE)
-                                | Some(MacModel::SeFdhd)
-                                | Some(MacModel::Classic)
-                        ),
-                        egui::Checkbox::new(
-                            &mut self.emu.debug_framebuffers,
-                            "Show all framebuffers",
-                        ),
-                    )
-                    .clicked()
-                {
-                    self.emu.set_debug_framebuffers(self.emu.debug_framebuffers);
-                    ui.close_menu();
                 }
                 ui.separator();
                 if ui
