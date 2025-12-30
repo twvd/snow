@@ -9,9 +9,31 @@ use crate::util::relativepath::RelativePath;
 use crate::widgets::framebuffer::ScalingAlgorithm;
 use anyhow::{Context, Result};
 use eframe::egui;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::MacModel;
+
+/// Custom deserializer that skips invalid shader configs instead of failing entirely
+fn deserialize_shader_configs_lenient<'de, D>(
+    deserializer: D,
+) -> Result<Vec<ShaderConfig>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values: Vec<serde_json::Value> = Vec::deserialize(deserializer)?;
+    let mut configs = Vec::new();
+
+    for (i, value) in values.into_iter().enumerate() {
+        match serde_json::from_value::<ShaderConfig>(value) {
+            Ok(config) => configs.push(config),
+            Err(e) => {
+                log::warn!("Skipping invalid shader config at index {}: {}", i, e);
+            }
+        }
+    }
+
+    Ok(configs)
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum FramebufferMode {
@@ -176,6 +198,7 @@ pub struct Workspace {
     pub shader_enabled: bool,
 
     /// Shader pipeline configuration
+    #[serde(deserialize_with = "deserialize_shader_configs_lenient")]
     pub shader_configs: Vec<ShaderConfig>,
 }
 
