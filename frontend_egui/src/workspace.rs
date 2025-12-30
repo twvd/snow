@@ -4,6 +4,7 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use crate::emulator::{EmulatorInitArgs, ScsiTarget};
+use crate::shader_pipeline::ShaderConfig;
 use crate::util::relativepath::RelativePath;
 use crate::widgets::framebuffer::ScalingAlgorithm;
 use anyhow::{Context, Result};
@@ -170,6 +171,12 @@ pub struct Workspace {
 
     /// Framebuffer positioning mode
     pub framebuffer_mode: FramebufferMode,
+
+    /// CRT shader enabled
+    pub shader_enabled: bool,
+
+    /// Shader pipeline configuration
+    pub shader_configs: Vec<ShaderConfig>,
 }
 
 impl Default for Workspace {
@@ -204,6 +211,8 @@ impl Default for Workspace {
             floppy_images: Vec::new(),
             custom_datetime: None,
             framebuffer_mode: FramebufferMode::default(),
+            shader_enabled: false,
+            shader_configs: Vec::new(),
         }
     }
 }

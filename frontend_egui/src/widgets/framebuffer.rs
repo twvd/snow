@@ -52,9 +52,9 @@ pub struct FramebufferWidget {
     response: Option<egui::Response>,
 
     // Shader pipeline
-    pub crt_enabled: bool,
+    pub shader_enabled: bool,
     shader_pipeline: Arc<Mutex<Option<ShaderPipeline>>>,
-    pub shader_configs: Vec<ShaderConfig>,
+    shader_configs: Vec<ShaderConfig>,
     crt_output_texture: Option<egui::TextureHandle>,
 }
 
@@ -72,7 +72,7 @@ impl FramebufferWidget {
             scale: 2.0,
             scaling_algorithm: ScalingAlgorithm::Linear,
             display_size: [0, 0],
-            crt_enabled: false,
+            shader_enabled: false,
             shader_pipeline: Arc::new(Mutex::new(None)),
             shader_configs: Self::default_shader_configs(MacModel::Plus),
             crt_output_texture: None,
@@ -126,7 +126,7 @@ impl FramebufferWidget {
         }
 
         // Run the framebuffer through the CRT shader if enabled
-        if self.crt_enabled {
+        if self.shader_enabled {
             self.trigger_crt_shader(ui);
         }
 
@@ -134,7 +134,7 @@ impl FramebufferWidget {
         // Only use shader output if at least one shader pass is enabled
         let any_shader_enabled = self.shader_configs.iter().any(|c| c.enabled);
         let display_texture =
-            if self.crt_enabled && any_shader_enabled && self.crt_output_texture.is_some() {
+            if self.shader_enabled && any_shader_enabled && self.crt_output_texture.is_some() {
                 self.crt_output_texture.as_mut().unwrap()
             } else {
                 &mut self.viewport_texture
@@ -346,6 +346,27 @@ impl FramebufferWidget {
     pub fn load_shader_defaults(&mut self, model: MacModel) {
         self.shader_configs = Self::default_shader_configs(model);
         // Clear the pipeline to force reinitialization with new configs
+        self.reset_pipeline();
+    }
+
+    /// Clears the shader pipeline, forcing reinitialization on next render
+    pub fn reset_pipeline(&self) {
         *self.shader_pipeline.lock() = None;
+    }
+
+    /// Exports the current shader configuration
+    pub fn export_config(&self) -> Vec<ShaderConfig> {
+        self.shader_configs.clone()
+    }
+
+    /// Imports shader configuration and resets the pipeline
+    pub fn import_config(&mut self, configs: Vec<ShaderConfig>) {
+        self.shader_configs = configs;
+        self.reset_pipeline();
+    }
+
+    /// Returns a mutable reference to shader configs
+    pub fn shader_configs_mut(&mut self) -> &mut Vec<ShaderConfig> {
+        &mut self.shader_configs
     }
 }
