@@ -1040,11 +1040,23 @@ impl SnowGui {
             });
             ui.menu_button("View", |ui| {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
-                if ui.button("Enter fullscreen").clicked() {
+                if ui
+                    .add_enabled(
+                        self.emu.is_initialized(),
+                        egui::Button::new("Enter fullscreen"),
+                    )
+                    .clicked()
+                {
                     self.enter_fullscreen(ctx);
                     ui.close_menu();
                 }
-                if ui.button("Enter Zen mode").clicked() {
+                if ui
+                    .add_enabled(
+                        self.emu.is_initialized(),
+                        egui::Button::new("Enter Zen mode"),
+                    )
+                    .clicked()
+                {
                     self.enter_zen_mode();
                     ui.close_menu();
                 }
