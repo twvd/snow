@@ -134,6 +134,7 @@ pub struct SnowGui {
     load_windows: bool,
     first_draw: bool,
     in_fullscreen: bool,
+    in_zen_mode: bool,
 
     wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
 
@@ -219,12 +220,14 @@ impl SnowGui {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
         initial_file: Option<String>,
         zoom_factor: f32,
         fullscreen: bool,
+        zen: bool,
         serial_bridge_a: Option<&str>,
         serial_bridge_b: Option<&str>,
     ) -> Self {
@@ -249,6 +252,7 @@ impl SnowGui {
             load_windows: false,
             first_draw: true,
             in_fullscreen: false,
+            in_zen_mode: false,
 
             wev_recv,
             toasts: egui_toast::Toasts::new()
@@ -449,6 +453,8 @@ impl SnowGui {
             }
             if fullscreen {
                 app.enter_fullscreen(&cc.egui_ctx);
+            } else if zen {
+                app.enter_zen_mode();
             }
         }
 
@@ -480,6 +486,27 @@ impl SnowGui {
     fn exit_fullscreen(&mut self, ctx: &egui::Context) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
         self.in_fullscreen = false;
+    }
+
+    fn enter_zen_mode(&mut self) {
+        self.in_zen_mode = true;
+        self.toasts.add(
+            egui_toast::Toast::default()
+                .text("RIGHT-CLICK for actions")
+                .options(
+                    egui_toast::ToastOptions::default()
+                        .duration(Self::TOAST_DURATION)
+                        .show_progress(true),
+                ),
+        );
+    }
+
+    fn exit_zen_mode(&mut self) {
+        self.in_zen_mode = false;
+    }
+
+    fn is_ui_hidden(&self) -> bool {
+        self.in_fullscreen || self.in_zen_mode
     }
 
     fn try_create_image(&self, result: &DiskImageDialogResult) -> Result<()> {
@@ -1015,6 +1042,10 @@ impl SnowGui {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
                 if ui.button("Enter fullscreen").clicked() {
                     self.enter_fullscreen(ctx);
+                    ui.close_menu();
+                }
+                if ui.button("Enter Zen mode").clicked() {
+                    self.enter_zen_mode();
                     ui.close_menu();
                 }
                 ui.separator();
@@ -1649,6 +1680,15 @@ impl SnowGui {
                     .clicked()
                 {
                     self.enter_fullscreen(ctx);
+                }
+                if ui
+                    .add(egui::Button::new(
+                        egui_material_icons::icons::ICON_FILTER_CENTER_FOCUS,
+                    ))
+                    .on_hover_text("Enter Zen mode")
+                    .clicked()
+                {
+                    self.enter_zen_mode();
                 }
             }
         });
@@ -2726,7 +2766,7 @@ impl eframe::App for SnowGui {
                 ui.disable();
             }
 
-            if !self.in_fullscreen {
+            if !self.is_ui_hidden() {
                 self.draw_menubar(ctx, ui);
                 ui.separator();
                 self.draw_toolbar(ctx, ui);
@@ -2734,7 +2774,7 @@ impl eframe::App for SnowGui {
             }
 
             // Framebuffer display
-            let response = if !self.in_fullscreen
+            let response = if !self.is_ui_hidden()
                 && self.workspace.framebuffer_mode == FramebufferMode::Detached
             {
                 // Render framebuffer in a floating window
@@ -2746,7 +2786,7 @@ impl eframe::App for SnowGui {
                 // Render framebuffer inline on the background
                 ui.vertical_centered(|ui| {
                     // Align framebuffer vertically
-                    if self.in_fullscreen {
+                    if self.is_ui_hidden() {
                         const GUEST_ASPECT_RATIO: f32 = 4.0 / 3.0;
                         let host_aspect_ratio = ui.available_width() / ui.available_height();
 
@@ -2766,21 +2806,25 @@ impl eframe::App for SnowGui {
                         }
                     }
 
-                    self.framebuffer.draw(ui, self.in_fullscreen);
-                    if self.in_fullscreen {
+                    self.framebuffer.draw(ui, self.is_ui_hidden());
+                    if self.is_ui_hidden() {
                         // To fill the screen with hitbox for the context menu
                         ui.allocate_space(ui.available_size());
                     }
                 })
             };
-            if self.in_fullscreen {
+            if self.is_ui_hidden() {
                 response.response.context_menu(|ui| {
                     // Show the mouse cursor so the user can interact with the menu
                     self.ui_active = false;
 
                     ui.set_min_width(Self::SUBMENU_WIDTH);
-                    if ui.button("Exit fullscreen").clicked() {
+                    if self.in_fullscreen && ui.button("Exit fullscreen").clicked() {
                         self.exit_fullscreen(ctx);
+                        ui.close_menu();
+                    }
+                    if self.in_zen_mode && ui.button("Exit Zen mode").clicked() {
+                        self.exit_zen_mode();
                         ui.close_menu();
                     }
                     if ui.button("Take screenshot").clicked() {
@@ -2816,7 +2860,7 @@ impl eframe::App for SnowGui {
             self.draw_snowflakes(ui);
 
             // Debugger views
-            if self.emu.is_initialized() && !self.in_fullscreen {
+            if self.emu.is_initialized() && !self.is_ui_hidden() {
                 persistent_window!(self, "Disassembly")
                     .resizable([true, true])
                     .open(&mut self.workspace.disassembly_open)
@@ -2945,7 +2989,8 @@ impl eframe::App for SnowGui {
             }
 
             // Floating framebuffer window
-            if !self.in_fullscreen && self.workspace.framebuffer_mode == FramebufferMode::Detached {
+            if !self.is_ui_hidden() && self.workspace.framebuffer_mode == FramebufferMode::Detached
+            {
                 persistent_window_s!(self, "Display", [800.0, 600.0])
                     .resizable(true)
                     .show(ctx, |ui| {
