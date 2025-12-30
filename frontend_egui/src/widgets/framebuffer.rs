@@ -165,6 +165,7 @@ impl FramebufferWidget {
         let texture_size = self.viewport_texture.size();
         let output_handle = Arc::new(Mutex::new(self.crt_output_texture.clone()));
         let configs = self.shader_configs.clone();
+        let scaling_algorithm = self.scaling_algorithm;
 
         // Use a callback to get painter access (use full available rect to ensure it's not culled)
         let callback = egui::PaintCallback {
@@ -221,7 +222,7 @@ impl FramebufferWidget {
                             if let Some(ref mut handle) = *handle_lock {
                                 let image =
                                     egui::ColorImage::from_rgba_unmultiplied(texture_size, &pixels);
-                                handle.set(image, egui::TextureOptions::LINEAR);
+                                handle.set(image, scaling_algorithm.texture_options());
                             }
                         }
                     }
