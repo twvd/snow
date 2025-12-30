@@ -298,6 +298,9 @@ impl FramebufferWidget {
             | MacModel::Classic
             | MacModel::SE30 => {
                 vec![
+                    ShaderConfig::builder(ShaderId::ImageAdjustment)
+                        .enabled(false)
+                        .build(),
                     ShaderConfig::builder(ShaderId::GdvScanlines)
                         .param("BEAM", 5.0)
                         .param("SCANLINE", 1.00)
@@ -316,6 +319,9 @@ impl FramebufferWidget {
             }
             MacModel::MacII | MacModel::MacIIFDHD | MacModel::MacIIx | MacModel::MacIIcx => {
                 vec![
+                    ShaderConfig::builder(ShaderId::ImageAdjustment)
+                        .enabled(false)
+                        .build(),
                     ShaderConfig::builder(ShaderId::GdvScanlines)
                         .param("BEAM", 5.0)
                         .param("SCANLINE", 0.85)
