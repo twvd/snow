@@ -151,13 +151,16 @@ pub trait ShaderPass: Send + Sync {
     }
 }
 
+/// A configured shader pass (shader implementation + configuration)
+struct ConfiguredPass {
+    shader: Box<dyn ShaderPass>,
+    config: ShaderConfig,
+}
+
 /// Shader pipeline manager
 pub struct ShaderPipeline {
-    /// Ordered list of shader passes
-    passes: Vec<Box<dyn ShaderPass>>,
-
-    /// Configuration for each pass
-    configs: Vec<ShaderConfig>,
+    /// Ordered list of configured shader passes
+    passes: Vec<ConfiguredPass>,
 
     /// Shared fullscreen quad VAO
     vao: glow::VertexArray,
@@ -229,7 +232,6 @@ impl ShaderPipeline {
 
             Ok(Self {
                 passes: vec![],
-                configs: vec![],
                 vao,
                 intermediate_fbos: vec![],
                 intermediate_textures: vec![],
@@ -241,16 +243,15 @@ impl ShaderPipeline {
     }
 
     /// Add a shader pass to the pipeline
-    pub fn add_pass(&mut self, pass: Box<dyn ShaderPass>, config: ShaderConfig) {
-        self.passes.push(pass);
-        self.configs.push(config);
+    pub fn add_pass(&mut self, shader: Box<dyn ShaderPass>, config: ShaderConfig) {
+        self.passes.push(ConfiguredPass { shader, config });
     }
 
     /// Update the pipeline's configs
     pub fn update_configs(&mut self, new_configs: &[ShaderConfig]) {
         for (i, new_config) in new_configs.iter().enumerate() {
-            assert_eq!(self.configs[i].id, new_config.id);
-            self.configs[i] = new_config.clone();
+            assert_eq!(self.passes[i].config.id, new_config.id);
+            self.passes[i].config = new_config.clone();
         }
     }
 
@@ -261,7 +262,7 @@ impl ShaderPipeline {
         texture_size: [u32; 2],
     ) -> Option<()> {
         // Check if we need to reallocate
-        let enabled_count = self.configs.iter().filter(|c| c.enabled).count();
+        let enabled_count = self.passes.iter().filter(|p| p.config.enabled).count();
         let needs_realloc = self.output_size != texture_size
             || self.intermediate_fbos.len() != enabled_count.saturating_sub(1);
 
@@ -356,7 +357,7 @@ impl ShaderPipeline {
         input_texture: glow::Texture,
         texture_size: [u32; 2],
     ) -> Option<Vec<u8>> {
-        let enabled_count = self.configs.iter().filter(|c| c.enabled).count();
+        let enabled_count = self.passes.iter().filter(|p| p.config.enabled).count();
 
         if enabled_count == 0 {
             return None;
@@ -369,13 +370,9 @@ impl ShaderPipeline {
         let mut current_input = input_texture;
 
         // Run enabled passes
-        for (i, (pass, config)) in self
-            .passes
-            .iter()
-            .zip(&self.configs)
-            .filter(|(_, c)| c.enabled)
-            .enumerate()
-        {
+        for (i, configured_pass) in self.passes.iter().filter(|p| p.config.enabled).enumerate() {
+            let pass = &configured_pass.shader;
+            let config = &configured_pass.config;
             let program = pass.program();
 
             let is_last = i == enabled_count - 1;
