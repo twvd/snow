@@ -874,7 +874,11 @@ impl SnowGui {
                 ));
                 if self.framebuffer.shader_enabled {
                     ui.menu_button("Shader effect settings", |ui| {
+                        ui.set_min_width(Self::SUBMENU_WIDTH);
+
                         let mut move_action: Option<(usize, bool)> = None; // (index, move_up)
+                        let mut remove_index: Option<usize> = None;
+                        let mut add_shader: Option<crate::shader_pipeline::ShaderId> = None;
 
                         // Dynamically generate UI for each shader in the pipeline
                         let shader_count = self.framebuffer.shader_config_count();
@@ -891,7 +895,6 @@ impl SnowGui {
                                 }
                             );
                             ui.collapsing(heading, |ui| {
-                                // Reorder buttons
                                 ui.horizontal(|ui| {
                                     if ui
                                         .add_enabled(
@@ -916,6 +919,12 @@ impl SnowGui {
                                     {
                                         move_action = Some((i, false));
                                     }
+
+                                    if ui.button(egui_material_icons::icons::ICON_DELETE).clicked()
+                                    {
+                                        remove_index = Some(i);
+                                    }
+
                                     ui.checkbox(&mut config.enabled, "Enabled");
                                 });
 
@@ -952,12 +961,34 @@ impl SnowGui {
                             });
                         }
 
+                        // Add shader menu
+                        let available_shaders = self.framebuffer.available_shaders();
+                        if !available_shaders.is_empty() {
+                            ui.separator();
+                            ui.menu_button("Add shader", |ui| {
+                                ui.set_min_width(Self::SUBMENU_WIDTH);
+
+                                for id in available_shaders {
+                                    if ui.button(id.display_name()).clicked() {
+                                        add_shader = Some(id);
+                                        ui.close_menu();
+                                    }
+                                }
+                            });
+                        }
+
                         if let Some((index, move_up)) = move_action {
                             if move_up {
                                 self.framebuffer.move_shader_up(index);
                             } else {
                                 self.framebuffer.move_shader_down(index);
                             }
+                        }
+                        if let Some(index) = remove_index {
+                            self.framebuffer.remove_shader(index);
+                        }
+                        if let Some(id) = add_shader {
+                            self.framebuffer.add_shader(id);
                         }
                     });
                 }

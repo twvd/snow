@@ -396,4 +396,30 @@ impl FramebufferWidget {
             false
         }
     }
+
+    /// Removes a shader from the pipeline at the given index
+    pub fn remove_shader(&mut self, index: usize) -> bool {
+        if index < self.shader_configs.len() {
+            self.shader_configs.remove(index);
+            self.reset_pipeline();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Adds a new shader to the end of the pipeline with default settings
+    pub fn add_shader(&mut self, id: ShaderId) {
+        let config = ShaderConfig::builder(id).build();
+        self.shader_configs.push(config);
+        self.reset_pipeline();
+    }
+
+    /// Returns a list of shader IDs that are not currently in the pipeline
+    pub fn available_shaders(&self) -> Vec<ShaderId> {
+        use strum::IntoEnumIterator;
+        ShaderId::iter()
+            .filter(|id| !self.shader_configs.iter().any(|c| c.id == *id))
+            .collect()
+    }
 }

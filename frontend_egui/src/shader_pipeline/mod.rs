@@ -12,7 +12,7 @@ pub mod image_adjustment;
 pub mod parser;
 
 /// Identifies a specific shader in the pipeline
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, strum::EnumIter)]
 pub enum ShaderId {
     GdvScanlines,
     CrtLottes,
