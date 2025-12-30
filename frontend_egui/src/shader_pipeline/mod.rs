@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 pub mod crt_lottes;
 pub mod gdv_scanlines;
+pub mod image_adjustment;
 pub mod parser;
 
 /// Identifies a specific shader in the pipeline
@@ -15,6 +16,7 @@ pub mod parser;
 pub enum ShaderId {
     GdvScanlines,
     CrtLottes,
+    ImageAdjustment,
 }
 
 impl ShaderId {
@@ -23,6 +25,7 @@ impl ShaderId {
         match self {
             Self::GdvScanlines => "GDV Mini Scanlines",
             Self::CrtLottes => "CRT Lottes",
+            Self::ImageAdjustment => "Image Adjustment",
         }
     }
 
@@ -36,9 +39,13 @@ impl ShaderId {
         static LOTTES_PARAMS: Lazy<Vec<ShaderParameter>> =
             Lazy::new(|| parser::parse_shader_parameters(crt_lottes::SHADER_SOURCE));
 
+        static IMAGE_ADJUSTMENT_PARAMS: Lazy<Vec<ShaderParameter>> =
+            Lazy::new(|| parser::parse_shader_parameters(image_adjustment::SHADER_SOURCE));
+
         match self {
             Self::GdvScanlines => &GDV_PARAMS,
             Self::CrtLottes => &LOTTES_PARAMS,
+            Self::ImageAdjustment => &IMAGE_ADJUSTMENT_PARAMS,
         }
     }
 
@@ -47,6 +54,9 @@ impl ShaderId {
         match self {
             Self::GdvScanlines => Ok(Box::new(gdv_scanlines::GdvScanlinesShader::new(gl)?)),
             Self::CrtLottes => Ok(Box::new(crt_lottes::CrtLottesShader::new(gl)?)),
+            Self::ImageAdjustment => {
+                Ok(Box::new(image_adjustment::ImageAdjustmentShader::new(gl)?))
+            }
         }
     }
 }
