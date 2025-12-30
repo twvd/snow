@@ -521,7 +521,10 @@ impl ModelSelectionDialog {
                                 "Enable PMMU (experimental!)",
                             );
                         }
-                        ui.checkbox(&mut self.init_args.audio_disabled, "Disable audio");
+                        ui.checkbox(
+                            &mut self.init_args.audio_disabled,
+                            "Disable audio (sync to video)",
+                        );
                         ui.checkbox(
                             &mut self.disable_rom_validation,
                             "Disable ROM validation (allow loading any ROM)",
