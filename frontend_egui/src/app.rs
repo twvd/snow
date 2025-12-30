@@ -869,13 +869,13 @@ impl SnowGui {
                     ui.close_menu();
                 }
                 ui.add(egui::Checkbox::new(
-                    &mut self.framebuffer.crt_enabled,
-                    "CRT shader effect",
+                    &mut self.framebuffer.shader_enabled,
+                    "Shader effects",
                 ));
-                if self.framebuffer.crt_enabled {
-                    ui.menu_button("Shader settings", |ui| {
+                if self.framebuffer.shader_enabled {
+                    ui.menu_button("Shader effect settings", |ui| {
                         // Dynamically generate UI for each shader in the pipeline
-                        for config in &mut self.framebuffer.shader_configs {
+                        for config in self.framebuffer.shader_configs_mut() {
                             let heading = format!(
                                 "{} ({})",
                                 config.id.display_name(),
@@ -1765,6 +1765,7 @@ impl SnowGui {
         self.load_windows = true;
         self.framebuffer.scale = self.workspace.viewport_scale;
         self.framebuffer.scaling_algorithm = self.workspace.scaling_algorithm;
+        self.framebuffer.shader_enabled = self.workspace.shader_enabled;
         if let Some(rompath) = self.workspace.get_rom_path() {
             let display_rom_path = self.workspace.get_display_card_rom_path();
             let extension_rom_path = self.workspace.get_extension_rom_path();
@@ -1794,11 +1795,20 @@ impl SnowGui {
         } else {
             self.emu.deinit();
         }
+
+        // Do this after the emulator is initialized so the shader defaults that get loaded are
+        // overwritten.
+        if !self.workspace.shader_configs.is_empty() {
+            self.framebuffer
+                .import_config(self.workspace.shader_configs.clone());
+        }
     }
 
     fn save_workspace(&mut self, path: &Path) {
         self.workspace.viewport_scale = self.framebuffer.scale;
         self.workspace.scaling_algorithm = self.framebuffer.scaling_algorithm;
+        self.workspace.shader_enabled = self.framebuffer.shader_enabled;
+        self.workspace.shader_configs = self.framebuffer.export_config();
         if let Some(targets) = self.emu.get_scsi_target_status().as_ref() {
             for (i, d) in targets.iter().enumerate() {
                 self.workspace.set_scsi_target(i, d.clone());
