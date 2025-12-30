@@ -874,10 +874,15 @@ impl SnowGui {
                 ));
                 if self.framebuffer.shader_enabled {
                     ui.menu_button("Shader effect settings", |ui| {
+                        let mut move_action: Option<(usize, bool)> = None; // (index, move_up)
+
                         // Dynamically generate UI for each shader in the pipeline
-                        for config in self.framebuffer.shader_configs_mut() {
+                        let shader_count = self.framebuffer.shader_config_count();
+                        for i in 0..shader_count {
+                            let config = &mut self.framebuffer.shader_configs_mut()[i];
                             let heading = format!(
-                                "{} ({})",
+                                "{}. {} ({})",
+                                i + 1,
                                 config.id.display_name(),
                                 if config.enabled {
                                     "enabled"
@@ -886,7 +891,34 @@ impl SnowGui {
                                 }
                             );
                             ui.collapsing(heading, |ui| {
-                                ui.checkbox(&mut config.enabled, "Enabled");
+                                // Reorder buttons
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add_enabled(
+                                            i > 0,
+                                            egui::Button::new(
+                                                egui_material_icons::icons::ICON_ARROW_UPWARD,
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        move_action = Some((i, true));
+                                    }
+
+                                    if ui
+                                        .add_enabled(
+                                            i < shader_count - 1,
+                                            egui::Button::new(
+                                                egui_material_icons::icons::ICON_ARROW_DOWNWARD,
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        move_action = Some((i, false));
+                                    }
+                                    ui.checkbox(&mut config.enabled, "Enabled");
+                                });
+
                                 ui.separator();
 
                                 // Get cached parameter metadata
@@ -918,6 +950,14 @@ impl SnowGui {
                                     ui.add(slider);
                                 }
                             });
+                        }
+
+                        if let Some((index, move_up)) = move_action {
+                            if move_up {
+                                self.framebuffer.move_shader_up(index);
+                            } else {
+                                self.framebuffer.move_shader_down(index);
+                            }
                         }
                     });
                 }
