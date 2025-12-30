@@ -2772,7 +2772,12 @@ impl eframe::App for SnowGui {
         self.ui_active &= self.state_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // Actual UI
-        egui::CentralPanel::default().show(ctx, |ui| {
+        let mut central_panel = egui::CentralPanel::default();
+        if self.is_ui_hidden() {
+            // Remove margins from the window edges
+            central_panel = central_panel.frame(egui::Frame::default().inner_margin(0.0));
+        }
+        central_panel.show(ctx, |ui| {
             if !self.ui_active {
                 // Deactivate UI if a modal is showing
                 ui.disable();
