@@ -369,4 +369,31 @@ impl FramebufferWidget {
     pub fn shader_configs_mut(&mut self) -> &mut Vec<ShaderConfig> {
         &mut self.shader_configs
     }
+
+    /// Returns the number of shader configs
+    pub fn shader_config_count(&self) -> usize {
+        self.shader_configs.len()
+    }
+
+    /// Moves a shader config up in the pipeline (towards index 0)
+    pub fn move_shader_up(&mut self, index: usize) -> bool {
+        if index > 0 && index < self.shader_configs.len() {
+            self.shader_configs.swap(index, index - 1);
+            self.reset_pipeline();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Moves a shader config down in the pipeline (towards end)
+    pub fn move_shader_down(&mut self, index: usize) -> bool {
+        if index < self.shader_configs.len().saturating_sub(1) {
+            self.shader_configs.swap(index, index + 1);
+            self.reset_pipeline();
+            true
+        } else {
+            false
+        }
+    }
 }
