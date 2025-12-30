@@ -1143,7 +1143,7 @@ impl EmulatorState {
         if let Some(exch) = self.audiosink_exchange.as_ref() {
             exch.is_muted()
         } else {
-            false
+            self.audiosink.is_none()
         }
     }
 
@@ -1151,7 +1151,7 @@ impl EmulatorState {
         if let Some(exch) = self.audiosink_exchange.as_ref() {
             exch.is_slow()
         } else {
-            false
+            self.audiosink.is_none()
         }
     }
 }
