@@ -612,14 +612,31 @@ impl ScsiTarget for ScsiTargetEthernet {
         match cmd[0] {
             0x08 => {
                 // READ(6)
+                const FCS: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
+
                 let read_len = ((cmd[3] as usize) << 8) | (cmd[4] as usize);
+                if read_len == 1 {
+                    // ROM trying to address adapter as disk at boot
+                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                }
 
-                if let Some(packet) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
-                    const FCS: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
+                let Some(rx) = self.rx.as_ref() else {
+                    // Link down
+                    return Ok(ScsiCmdResult::DataIn(vec![0; 6]));
+                };
 
-                    let more = !self.rx.as_ref().unwrap().is_empty();
+                if rx.is_empty() {
+                    // No data
+                    return Ok(ScsiCmdResult::DataIn(vec![0; 6]));
+                }
+
+                let mut response = vec![];
+                loop {
+                    let packet = rx.try_recv()?;
+                    let more = !rx.is_empty();
                     let packet_len = packet.len().max(64);
-                    let resp_len = 6 + packet_len + 4;
+                    let frame_len = packet_len + 4; // FCS
+                    let resp_len = 6 + frame_len;
                     if read_len < resp_len {
                         log::error!(
                             "RX packet too large (is {}, have {}): {:02X?}",
@@ -630,25 +647,21 @@ impl ScsiTarget for ScsiTargetEthernet {
                         return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                     }
 
-                    let mut response = vec![0; resp_len];
-                    response[6..(6 + packet.len())].copy_from_slice(&packet);
-                    response[(6 + packet_len)..resp_len]
-                        .copy_from_slice(&FCS.checksum(&packet).to_be_bytes());
-                    //log::debug!("read {} {} more = {}", packet_len, resp_len, more);
+                    let checksum = FCS.checksum(&packet).to_be_bytes();
+                    response.push((frame_len >> 8) as u8);
+                    response.push(frame_len as u8);
+                    response.push(0);
+                    response.push(0);
+                    response.push(0);
+                    response.push(if more { 0x10 } else { 0 });
+                    response.extend(packet);
+                    response.extend(checksum);
 
-                    // Length
-                    response[0] = (packet_len >> 8) as u8;
-                    response[1] = packet_len as u8;
-                    if more {
-                        // More packets available to read
-                        // TODO this causes SCSI Manager issues
-                        //response[5] = 0x10;
+                    if !more {
+                        break;
                     }
-                    Ok(ScsiCmdResult::DataIn(response))
-                } else {
-                    // No data
-                    Ok(ScsiCmdResult::DataIn(vec![0; 6]))
                 }
+                Ok(ScsiCmdResult::DataIn(response))
             }
             0x09 => {
                 // Stats
