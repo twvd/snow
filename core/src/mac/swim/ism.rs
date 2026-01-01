@@ -422,10 +422,9 @@ impl Swim {
 
     pub(super) fn ism_tick(&mut self, _ticks: usize) -> Result<()> {
         // This is only called when the drive is active and running
-        if !self.ism_mode.action()
-            || !self
-                .cycles
-                .is_multiple_of(self.get_selected_drive().get_ticks_per_bit())
+        if !self
+            .cycles
+            .is_multiple_of(self.get_selected_drive().get_ticks_per_bit())
         {
             return Ok(());
         }
@@ -447,6 +446,11 @@ impl Swim {
             self.ism_shreg |= 1;
         }
         self.ism_shreg_cnt += 1;
+
+        // Action mode must be enabled for ISM read/write operations
+        if !self.ism_mode.action() {
+            return Ok(());
+        }
 
         if self.ism_mode.write() {
             // Handle write mode
@@ -485,7 +489,6 @@ impl Swim {
             }
 
             if self.ism_fifo.len() > 2 {
-                warn!("ISM read underrun (CPU not reading fast enough)");
                 self.ism_error.set_underrun(true);
                 self.ism_fifo.pop_front();
             }
