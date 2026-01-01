@@ -47,7 +47,7 @@ bitfield! {
 
 bitfield! {
     /// ISM error register
-    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
     pub struct IsmError(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
         pub underrun: bool @ 0,
         pub mark_from_dr: bool @ 1,
@@ -118,14 +118,25 @@ impl IsmRegister {
 #[derive(Debug, strum::Display, Serialize, Deserialize)]
 pub(super) enum IsmFifoEntry {
     Marker(u8),
-    Data(u8),
+    Data { value: u8, crc_valid: bool },
+    Crc,
+    CrcLow(u8),
 }
 
 impl IsmFifoEntry {
     pub fn inner(&self) -> u8 {
         match self {
             Self::Marker(d) => *d,
-            Self::Data(d) => *d,
+            Self::Data { value, .. } => *value,
+            Self::Crc => 0, // Will be replaced with actual CRC
+            Self::CrcLow(b) => *b,
+        }
+    }
+
+    pub fn crc_valid(&self) -> bool {
+        match self {
+            Self::Marker(_) | Self::Crc | Self::CrcLow(_) => false,
+            Self::Data { crc_valid, .. } => *crc_valid,
         }
     }
 }
@@ -133,6 +144,27 @@ impl IsmFifoEntry {
 impl Swim {
     /// MFM sync marker (0xA1 with dropped clock)
     const MFM_SYNC_MARKER: u16 = 0b01_00_01_00_10_00_10_01u16;
+    /// ISM CRC-CCITT polynomial
+    const ISM_CRC_POLYNOMIAL: u16 = 0x1021;
+    /// ISM CRC initialization value
+    pub(super) const ISM_CRC_INIT: u16 = 0xcdb4;
+
+    /// Update CRC with a single bit
+    fn ism_crc_update(&mut self, bit: bool) {
+        if (self.ism_crc ^ (if bit { 0x8000 } else { 0x0000 })) & 0x8000 != 0 {
+            self.ism_crc = (self.ism_crc << 1) ^ Self::ISM_CRC_POLYNOMIAL;
+        } else {
+            self.ism_crc <<= 1;
+        }
+    }
+
+    /// Update CRC, takes an MFM decoded byte
+    fn ism_crc_update_byte(&mut self, byte: u8) {
+        for i in (0..8).rev() {
+            let bit = (byte >> i) & 1 != 0;
+            self.ism_crc_update(bit);
+        }
+    }
 
     fn ism_mfm_decode(mfm: u16) -> u8 {
         let mut out = 0;
@@ -144,10 +176,44 @@ impl Swim {
         out
     }
 
+    /// Encodes a byte using MFM encoding.
+    /// MFM places clock bits between data bits: C7 D7 C6 D6 ... C0 D0
+    /// Clock bit is 1 only when both previous and current data bits are 0.
+    /// Returns (encoded 16-bit word, last data bit for chaining)
+    fn ism_mfm_encode(data: u8, prev_bit: bool) -> (u16, bool) {
+        let mut out: u16 = 0;
+        let mut last_bit = prev_bit;
+
+        // Process bits from MSB to LSB (bit 7 to bit 0)
+        for i in (0..8).rev() {
+            let data_bit = (data >> i) & 1 != 0;
+            let bit_pos = i * 2; // Data bit position in output
+
+            // Set data bit
+            if data_bit {
+                out |= 1 << bit_pos;
+            }
+
+            // Set clock bit (position is bit_pos + 1)
+            // Clock is 1 only if both previous data bit and current data bit are 0
+            if !last_bit && !data_bit {
+                out |= 1 << (bit_pos + 1);
+            }
+
+            last_bit = data_bit;
+        }
+
+        (out, last_bit)
+    }
+
     fn ism_fifo_pop(&mut self, expect_marker: bool) -> Option<(bool, u8)> {
         match self.ism_fifo.pop_front()? {
-            IsmFifoEntry::Data(d) => Some((false, d)),
+            IsmFifoEntry::Data { value, .. } => Some((false, value)),
             IsmFifoEntry::Marker(d) => Some((!expect_marker, d)),
+            IsmFifoEntry::Crc | IsmFifoEntry::CrcLow(_) => {
+                log::error!("CRC FIFO entry in read mode");
+                Some((false, 0))
+            }
         }
     }
 
@@ -161,6 +227,9 @@ impl Swim {
                     if !self.ism_mode.action() {
                         return Some(0xFF);
                     }
+                    if self.ism_mode.write() {
+                        log::warn!("Reading data/mark while in write mode??");
+                    }
                     if let Some((e, v)) = self.ism_fifo_pop(matches!(reg, IsmRegister::Mark)) {
                         if e {
                             self.ism_error.set_mark_from_dr(true);
@@ -172,33 +241,47 @@ impl Swim {
                         Some(0xFF)
                     }
                 }
-                IsmRegister::Error => Some(mem::replace(&mut self.ism_error, IsmError(0)).0),
+                IsmRegister::Error => Some(mem::take(&mut self.ism_error).0),
                 IsmRegister::Status => Some(self.ism_mode.0),
                 IsmRegister::Phase => Some(self.ism_read_phases()),
-                IsmRegister::Handshake => Some(
-                    IsmHandshake(0)
-                        .with_mark(matches!(
-                            *self.ism_fifo.front().unwrap_or(&IsmFifoEntry::Data(0)),
-                            IsmFifoEntry::Marker(_)
-                        ))
-                        .with_sense(
-                            !self.get_selected_drive().is_present()
-                                || self
-                                    .get_selected_drive()
-                                    .read_sense(self.get_selected_drive_reg_u8()),
-                        )
-                        .with_motoron(self.get_selected_drive().motor)
-                        .with_error(self.ism_error.0 != 0)
-                        .with_fifo_two(
-                            // TODO write mode
-                            self.ism_fifo.len() >= 2,
-                        )
-                        .with_fifo_one(
-                            // TODO write mode
-                            !self.ism_fifo.is_empty(),
-                        )
-                        .0,
-                ),
+                IsmRegister::Handshake => {
+                    let default_entry = IsmFifoEntry::Data {
+                        value: 0,
+                        crc_valid: false,
+                    };
+                    let last_entry = self.ism_fifo.back().unwrap_or(&default_entry);
+                    Some(
+                        IsmHandshake(0)
+                            .with_mark(matches!(
+                                *self.ism_fifo.front().unwrap_or(&default_entry),
+                                IsmFifoEntry::Marker(_)
+                            ))
+                            .with_crc_error(!last_entry.crc_valid())
+                            .with_sense(
+                                !self.get_selected_drive().is_present()
+                                    || self
+                                        .get_selected_drive()
+                                        .read_sense(self.get_selected_drive_reg_u8()),
+                            )
+                            .with_motoron(self.get_selected_drive().motor)
+                            .with_error(self.ism_error.0 != 0)
+                            .with_fifo_two(if self.ism_mode.write() {
+                                // In write mode, indicates FIFO has room for 2+ bytes
+                                self.ism_fifo.is_empty()
+                            } else {
+                                // In read mode, indicates FIFO has 2+ bytes available
+                                self.ism_fifo.len() >= 2
+                            })
+                            .with_fifo_one(if self.ism_mode.write() {
+                                // In write mode, indicates FIFO has room for 1+ byte
+                                self.ism_fifo.len() < 2
+                            } else {
+                                // In read mode, indicates FIFO has 1+ byte available
+                                !self.ism_fifo.is_empty()
+                            })
+                            .0,
+                    )
+                }
                 IsmRegister::Parameter => {
                     let value = self.ism_params[self.ism_param_idx];
                     self.ism_param_idx = (self.ism_param_idx + 1) % self.ism_params.len();
@@ -227,13 +310,26 @@ impl Swim {
     pub(super) fn ism_write(&mut self, addr: Address, value: Byte) {
         let offset = (addr >> 9) & 0x0F;
 
-        if let Some(reg) = IsmRegister::from(offset, false, true) {
+        if let Some(reg) = IsmRegister::from(offset, self.ism_mode.action(), true) {
             //debug!(
             //    "ISM write {:06X} {:02X} {:?}: {:02X}",
             //    addr, offset, reg, value
             //);
             match reg {
-                IsmRegister::Data | IsmRegister::Mark => (),
+                IsmRegister::Data | IsmRegister::Mark => {
+                    // In write mode, push data to FIFO for writing to disk
+                    if self.ism_fifo.len() >= 2 {
+                        warn!("ISM write FIFO overrun");
+                        self.ism_error.set_overrun(true);
+                    } else if matches!(reg, IsmRegister::Mark) {
+                        self.ism_fifo.push_back(IsmFifoEntry::Marker(value));
+                    } else {
+                        self.ism_fifo.push_back(IsmFifoEntry::Data {
+                            value,
+                            crc_valid: false,
+                        });
+                    }
+                }
                 IsmRegister::Phase => self.ism_write_phases(value),
                 IsmRegister::ModeZero => {
                     self.ism_param_idx = 0;
@@ -241,6 +337,7 @@ impl Swim {
                     let clr = IsmStatus(value & self.ism_mode.0);
                     if clr.clear_fifo() {
                         self.ism_fifo.clear();
+                        self.ism_crc = Self::ISM_CRC_INIT;
                     }
                     if clr.ism() {
                         self.mode = SwimMode::Iwm;
@@ -251,14 +348,18 @@ impl Swim {
                 IsmRegister::ModeOne => {
                     let set = IsmStatus(value & !self.ism_mode.0);
                     if set.action() {
-                        if self.ism_mode.write() {
-                            error!("Entered write mode, TODO");
-                        }
-
-                        // Entered read/write mode, reset sync/shifter
                         self.ism_synced = false;
-                        self.ism_shreg = 0;
-                        self.ism_shreg_cnt = 0;
+
+                        if self.ism_mode.write() {
+                            // Entering write mode - initialize write state
+                            self.ism_write_shreg = 0;
+                            self.ism_write_shreg_cnt = 0;
+                            self.ism_write_prev_bit = false;
+                        } else {
+                            // Entering read mode - reset sync/shifter
+                            self.ism_shreg = 0;
+                            self.ism_shreg_cnt = 0;
+                        }
                     }
                     self.ism_mode.0 |= value;
                 }
@@ -268,6 +369,16 @@ impl Swim {
                 }
                 IsmRegister::Setup => {
                     self.ism_setup.0 = value;
+                }
+                IsmRegister::Crc => {
+                    // In write mode, push CRC entry to FIFO
+                    // Hardware will automatically write actual CRC bytes
+                    if self.ism_fifo.len() >= 2 {
+                        log::warn!("ISM write FIFO overrun");
+                        self.ism_error.set_overrun(true);
+                    } else {
+                        self.ism_fifo.push_back(IsmFifoEntry::Crc);
+                    }
                 }
                 _ => (),
             }
@@ -311,10 +422,9 @@ impl Swim {
 
     pub(super) fn ism_tick(&mut self, _ticks: usize) -> Result<()> {
         // This is only called when the drive is active and running
-        if !self.ism_mode.action()
-            || !self
-                .cycles
-                .is_multiple_of(self.get_selected_drive().get_ticks_per_bit())
+        if !self
+            .cycles
+            .is_multiple_of(self.get_selected_drive().get_ticks_per_bit())
         {
             return Ok(());
         }
@@ -328,6 +438,7 @@ impl Swim {
             return Ok(());
         }
 
+        // Progress head over the track
         let head = self.get_active_head();
         let bit = self.get_selected_drive_mut().next_bit(head);
         self.ism_shreg <<= 1;
@@ -336,11 +447,23 @@ impl Swim {
         }
         self.ism_shreg_cnt += 1;
 
+        // Action mode must be enabled for ISM read/write operations
+        if !self.ism_mode.action() {
+            return Ok(());
+        }
+
+        if self.ism_mode.write() {
+            // Handle write mode
+            return self.ism_tick_write();
+        }
+
+        // Read mode
         if !self.ism_synced && self.ism_shreg == Self::MFM_SYNC_MARKER {
             // Synchronized to the markers now, get ready to clock out bytes
             self.ism_shreg_cnt = 0;
             self.ism_shreg = 0;
             self.ism_synced = true;
+            self.ism_crc = Self::ISM_CRC_INIT;
 
             self.ism_fifo
                 .push_back(IsmFifoEntry::Marker(Self::ism_mfm_decode(
@@ -349,16 +472,23 @@ impl Swim {
         }
 
         if self.ism_synced && self.ism_shreg_cnt == 16 {
-            if self.ism_shreg != Self::MFM_SYNC_MARKER {
-                self.ism_fifo
-                    .push_back(IsmFifoEntry::Data(Self::ism_mfm_decode(self.ism_shreg)));
+            let decoded_byte = Self::ism_mfm_decode(self.ism_shreg);
+            let is_marker = self.ism_shreg == Self::MFM_SYNC_MARKER;
+
+            if !is_marker {
+                // Data
+                self.ism_crc_update_byte(decoded_byte);
+                self.ism_fifo.push_back(IsmFifoEntry::Data {
+                    value: decoded_byte,
+                    crc_valid: self.ism_crc == 0,
+                });
             } else {
-                self.ism_fifo
-                    .push_back(IsmFifoEntry::Marker(Self::ism_mfm_decode(self.ism_shreg)));
+                // Reset CRC when another marker is detected
+                self.ism_crc = Self::ISM_CRC_INIT;
+                self.ism_fifo.push_back(IsmFifoEntry::Marker(decoded_byte));
             }
 
             if self.ism_fifo.len() > 2 {
-                warn!("ISM read underrun (CPU not reading fast enough)");
                 self.ism_error.set_underrun(true);
                 self.ism_fifo.pop_front();
             }
@@ -366,6 +496,85 @@ impl Swim {
             self.ism_shreg = 0;
             self.ism_shreg_cnt = 0;
         }
+
+        Ok(())
+    }
+
+    /// Handle ISM write mode tick
+    fn ism_tick_write(&mut self) -> Result<()> {
+        let head = self.get_active_head();
+
+        if self.ism_write_shreg_cnt == 0 {
+            // Load next data from FIFO
+            let Some(entry) = self.ism_fifo.pop_front() else {
+                // FIFO empty - underrun, end of write
+                self.ism_error.set_underrun(true);
+                self.ism_mode.set_action(false);
+                return Ok(());
+            };
+            //log::debug!(
+            //    "ISM write track {} head {} {:?}",
+            //    self.get_selected_drive().track,
+            //    head,
+            //    entry
+            //);
+
+            match entry {
+                IsmFifoEntry::Marker(data) => {
+                    // Markers use pre-encoded sync pattern (0xA1 with missing clock)
+                    // Reset CRC when marker is encountered
+                    self.ism_crc = Self::ISM_CRC_INIT;
+
+                    if data == 0xA1 {
+                        // Default encoded sync marker
+                        self.ism_write_shreg = Self::MFM_SYNC_MARKER;
+                        // For sync marker, the last data bit is 1 (0xA1 = 10100001)
+                        self.ism_write_prev_bit = true;
+                    } else {
+                        // Other markers are MFM encoded normally
+                        let (encoded, prev) = Self::ism_mfm_encode(data, self.ism_write_prev_bit);
+                        self.ism_write_shreg = encoded;
+                        self.ism_write_prev_bit = prev;
+                    }
+                    self.ism_write_shreg_cnt = 16;
+                }
+                IsmFifoEntry::Data { value: data, .. } => {
+                    self.ism_crc_update_byte(data);
+
+                    let (encoded, prev) = Self::ism_mfm_encode(data, self.ism_write_prev_bit);
+                    self.ism_write_shreg = encoded;
+                    self.ism_write_prev_bit = prev;
+                    self.ism_write_shreg_cnt = 16;
+                }
+                IsmFifoEntry::Crc => {
+                    // Write CRC, high byte
+                    let high_byte = (self.ism_crc >> 8) as u8;
+                    let low_byte = self.ism_crc as u8;
+
+                    // Queue low byte to be written next
+                    self.ism_fifo.push_front(IsmFifoEntry::CrcLow(low_byte));
+
+                    // Encode and push high byte to shift register for writing
+                    let (encoded, prev) = Self::ism_mfm_encode(high_byte, self.ism_write_prev_bit);
+                    self.ism_write_shreg = encoded;
+                    self.ism_write_prev_bit = prev;
+                    self.ism_write_shreg_cnt = 16;
+                }
+                IsmFifoEntry::CrcLow(byte) => {
+                    // Write CRC low byte
+                    let (encoded, prev) = Self::ism_mfm_encode(byte, self.ism_write_prev_bit);
+                    self.ism_write_shreg = encoded;
+                    self.ism_write_prev_bit = prev;
+                    self.ism_write_shreg_cnt = 16;
+                }
+            }
+        }
+
+        // Write one bit from shift register (MSB first)
+        let bit = (self.ism_write_shreg >> 15) & 1 != 0;
+        self.get_selected_drive_mut().write_bit(head, bit);
+        self.ism_write_shreg <<= 1;
+        self.ism_write_shreg_cnt -= 1;
 
         Ok(())
     }

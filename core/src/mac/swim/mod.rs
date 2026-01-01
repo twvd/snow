@@ -132,6 +132,13 @@ pub struct Swim {
     ism_shreg: u16,
     ism_synced: bool,
     ism_shreg_cnt: usize,
+    ism_crc: u16,
+    /// ISM write shift register (16-bit MFM encoded data)
+    ism_write_shreg: u16,
+    /// Bits remaining in write shift register
+    ism_write_shreg_cnt: u8,
+    /// Previous data bit for MFM clock calculation
+    ism_write_prev_bit: bool,
 
     pub(crate) drives: [FloppyDrive; 3],
 
@@ -186,6 +193,10 @@ impl Swim {
             ism_shreg: 0,
             ism_synced: false,
             ism_shreg_cnt: 0,
+            ism_crc: Self::ISM_CRC_INIT,
+            ism_write_shreg: 0,
+            ism_write_shreg_cnt: 0,
+            ism_write_prev_bit: false,
 
             enable: false,
             dbg_pc: 0,
@@ -341,7 +352,8 @@ impl Debuggable for Swim {
         use crate::debuggable::*;
         use crate::{
             dbgprop_bool, dbgprop_byte, dbgprop_byte_bin, dbgprop_enum, dbgprop_group,
-            dbgprop_header, dbgprop_nest, dbgprop_string, dbgprop_udec, dbgprop_word_bin,
+            dbgprop_header, dbgprop_nest, dbgprop_string, dbgprop_udec, dbgprop_word,
+            dbgprop_word_bin,
         };
 
         vec![
@@ -410,6 +422,7 @@ impl Debuggable for Swim {
                     dbgprop_word_bin!("Shifter", self.ism_shreg),
                     dbgprop_udec!("Shifter bits", self.ism_shreg_cnt),
                     dbgprop_bool!("Synchronized", self.ism_synced),
+                    dbgprop_word!("CRC", self.ism_crc),
                 ]
             ),
             dbgprop_nest!(

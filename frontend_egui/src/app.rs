@@ -1467,17 +1467,16 @@ impl SnowGui {
                         self.emu.insert_blank_floppy(i, FloppyType::Mac800K);
                         ui.close_menu();
                     }
-                    // TODO write support on ISM
-                    //if ui
-                    //    .add_enabled(
-                    //        self.emu.get_model().unwrap().fdd_hd(),
-                    //        egui::Button::new("Insert blank 1.44MB floppy"),
-                    //    )
-                    //    .clicked()
-                    //{
-                    //    self.emu.insert_blank_floppy(i, FloppyType::Mfm144M);
-                    //    ui.close_menu();
-                    //}
+                    if ui
+                        .add_enabled(
+                            self.emu.get_model().unwrap().fdd_hd(),
+                            egui::Button::new("Insert blank 1.44MB floppy"),
+                        )
+                        .clicked()
+                    {
+                        self.emu.insert_blank_floppy(i, FloppyType::Mfm144M);
+                        ui.close_menu();
+                    }
                     ui.separator();
                     if ui.button("Load image...").clicked() {
                         self.floppy_dialog_target = FloppyDialogTarget::Drive(i);
