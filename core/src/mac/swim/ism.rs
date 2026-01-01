@@ -227,6 +227,9 @@ impl Swim {
                     if !self.ism_mode.action() {
                         return Some(0xFF);
                     }
+                    if self.ism_mode.write() {
+                        log::warn!("Reading data/mark while in write mode??");
+                    }
                     if let Some((e, v)) = self.ism_fifo_pop(matches!(reg, IsmRegister::Mark)) {
                         if e {
                             self.ism_error.set_mark_from_dr(true);
@@ -334,6 +337,7 @@ impl Swim {
                     let clr = IsmStatus(value & self.ism_mode.0);
                     if clr.clear_fifo() {
                         self.ism_fifo.clear();
+                        self.ism_crc = Self::ISM_CRC_INIT;
                     }
                     if clr.ism() {
                         self.mode = SwimMode::Iwm;
@@ -344,6 +348,8 @@ impl Swim {
                 IsmRegister::ModeOne => {
                     let set = IsmStatus(value & !self.ism_mode.0);
                     if set.action() {
+                        self.ism_synced = false;
+
                         if self.ism_mode.write() {
                             // Entering write mode - initialize write state
                             self.ism_write_shreg = 0;
@@ -351,12 +357,9 @@ impl Swim {
                             self.ism_write_prev_bit = false;
                         } else {
                             // Entering read mode - reset sync/shifter
-                            self.ism_synced = false;
                             self.ism_shreg = 0;
                             self.ism_shreg_cnt = 0;
                         }
-
-                        self.ism_crc = Self::ISM_CRC_INIT;
                     }
                     self.ism_mode.0 |= value;
                 }
