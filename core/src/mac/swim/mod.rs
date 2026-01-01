@@ -133,6 +133,12 @@ pub struct Swim {
     ism_synced: bool,
     ism_shreg_cnt: usize,
     ism_crc: u16,
+    /// ISM write shift register (16-bit MFM encoded data)
+    ism_write_shreg: u16,
+    /// Bits remaining in write shift register
+    ism_write_shreg_cnt: u8,
+    /// Previous data bit for MFM clock calculation
+    ism_write_prev_bit: bool,
 
     pub(crate) drives: [FloppyDrive; 3],
 
@@ -188,6 +194,9 @@ impl Swim {
             ism_synced: false,
             ism_shreg_cnt: 0,
             ism_crc: Self::ISM_CRC_INIT,
+            ism_write_shreg: 0,
+            ism_write_shreg_cnt: 0,
+            ism_write_prev_bit: false,
 
             enable: false,
             dbg_pc: 0,
