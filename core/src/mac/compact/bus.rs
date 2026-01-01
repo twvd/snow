@@ -676,6 +676,8 @@ where
         assert_eq!(ticks, 1);
         self.cycles += ticks;
 
+        self.scsi.tick(ticks)?;
+
         self.eclock += ticks;
         while self.eclock >= 10 {
             // The E Clock is roughly 1/10th of the CPU clock
