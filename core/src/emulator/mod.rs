@@ -187,6 +187,7 @@ dispatch! {
         fn cpu_breakpoints(&self) -> &[Breakpoint] { breakpoints() }
         fn cpu_get_step_over(&self) -> Option<Address> { get_step_over() }
         fn speed(&self) -> EmulatorSpeed { bus.speed }
+        fn effective_speed(&self) -> f64 { bus.get_effective_speed() }
         fn debug_properties(&self) -> DebuggableProperties { bus.get_debug_properties() }
         fn get_audio_channel(&self) -> AudioReceiver { bus.get_audio_channel() }
     }
@@ -589,6 +590,7 @@ impl Emulator {
                         })
                 }),
                 speed: self.config.speed(),
+                effective_speed: self.config.effective_speed(),
             })))?;
 
         // Next code stream for disassembly listing

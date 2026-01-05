@@ -270,6 +270,10 @@ where
         self.model
     }
 
+    pub fn get_effective_speed(&self) -> f64 {
+        self.via1.rtc.effective_speed()
+    }
+
     pub(crate) fn get_audio_channel(&self) -> AudioReceiver {
         self.asc.receiver.as_ref().unwrap().clone()
     }

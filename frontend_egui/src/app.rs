@@ -1558,6 +1558,40 @@ impl SnowGui {
         }
     }
 
+    fn draw_fast_forward_button(&self, ui: &mut egui::Ui) -> egui::Response {
+        let is_active = self.emu.is_fastforward();
+        let selection_color = ui.visuals().selection.stroke.color;
+        let icon = egui_material_icons::icons::ICON_FAST_FORWARD;
+        let mut text = egui::RichText::new(icon);
+        if is_active {
+            text = text.color(selection_color);
+        }
+
+        let response = ui
+            .add_enabled(self.emu.is_running(), egui::Button::new(text))
+            .on_hover_text("Fast-forward execution");
+
+        if is_active {
+            let font_id = egui::FontId::proportional(9.0);
+            let badge_text = egui::WidgetText::from(
+                egui::RichText::new(self.emu.effective_speed_label()).font(font_id),
+            );
+            let galley = badge_text.into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                f32::MAX,
+                egui::FontSelection::Default,
+            );
+            let badge_pos = egui::pos2(
+                response.rect.right() - galley.size().x - 1.0,
+                response.rect.top() + 1.0,
+            );
+            ui.painter().galley(badge_pos, galley, selection_color);
+        }
+
+        response
+    }
+
     fn draw_toolbar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.style_mut().text_styles.insert(
@@ -1606,15 +1640,7 @@ impl SnowGui {
                     self.emu.run();
                 }
 
-                if ui
-                    .add_enabled(
-                        self.emu.is_running(),
-                        egui::Button::new(egui_material_icons::icons::ICON_FAST_FORWARD)
-                            .selected(self.emu.is_fastforward()),
-                    )
-                    .on_hover_text("Fast-forward execution")
-                    .clicked()
-                {
+                if self.draw_fast_forward_button(ui).clicked() {
                     self.emu.toggle_fastforward();
                 }
 
