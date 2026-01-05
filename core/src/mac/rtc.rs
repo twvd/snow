@@ -60,6 +60,16 @@ pub struct Rtc {
     data_out: Option<u8>,
 
     data: RtcData,
+
+    // Computed on the fly, no need to save the state.
+    #[serde(skip, default = "default_effective_speed")]
+    effective_speed: f64,
+    #[serde(skip)]
+    last_second_real_time_ms: Option<i64>,
+}
+
+fn default_effective_speed() -> f64 {
+    1.0
 }
 
 #[derive(Serialize, Deserialize)]
@@ -175,6 +185,8 @@ impl Default for Rtc {
                 seconds,
                 pram: RtcData::empty_pram(),
             },
+            effective_speed: 1.0,
+            last_second_real_time_ms: Some(Local::now().timestamp_millis()),
         }
     }
 }
@@ -202,12 +214,27 @@ impl Rtc {
             .and_hms_opt(0, 0, 0)
             .unwrap();
         self.data.seconds = dt.signed_duration_since(mac_epoch).num_seconds() as u32;
+        self.last_second_real_time_ms = Some(Local::now().timestamp_millis());
     }
 
     /// Pokes the RTC that one second has passed
     /// In the emulator, one second interrupt is driven by the VIA for ease.
     pub fn second(&mut self) {
         self.data.seconds = self.data.seconds.wrapping_add(1);
+
+        let now_ms = Local::now().timestamp_millis();
+        if let Some(last_ms) = self.last_second_real_time_ms {
+            let real_elapsed_secs = (now_ms - last_ms) as f64 / 1000.0;
+            if real_elapsed_secs > 0.0 {
+                let instantaneous = 1.0 / real_elapsed_secs;
+                self.effective_speed = self.effective_speed.mul_add(0.8, instantaneous * 0.2);
+            }
+        }
+        self.last_second_real_time_ms = Some(now_ms);
+    }
+
+    pub fn effective_speed(&self) -> f64 {
+        self.effective_speed
     }
 
     /// Updates RTC I/O lines from the VIA.

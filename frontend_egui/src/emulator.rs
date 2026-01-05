@@ -854,6 +854,16 @@ impl EmulatorState {
         }
     }
 
+    pub fn effective_speed_label(&self) -> String {
+        let Some(ref status) = self.status else {
+            return String::new();
+        };
+        if status.speed == EmulatorSpeed::Accurate {
+            return String::new();
+        }
+        format!("{:.1}x", status.effective_speed)
+    }
+
     /// Returns the currently emulated Macintosh model
     pub fn get_model(&self) -> Option<MacModel> {
         let status = self.status.as_ref()?;
