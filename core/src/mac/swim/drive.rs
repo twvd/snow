@@ -309,10 +309,10 @@ impl FloppyDrive {
     pub(super) fn at_index(&self) -> bool {
         debug_assert!(self.mfm);
 
-        // Disk spins at 300rpm, 192992 bits, index pulse ~2ms
-        // 300 / 60 = 5 revs/sec * 192992 bits = 964960 bits/sec
-        // 964960 * 0.002 (s) = ~1929 bits pulse length
-        self.is_running() && (0..1929).contains(&self.track_position)
+        // Disk spins at 300rpm, 200000 bits, index pulse ~2ms
+        // 300 / 60 = 5 revs/sec * 200000 bits = 1.000.000 bits/sec
+        // = ~2000 bits pulse length
+        self.is_running() && (0..2000).contains(&self.track_position)
     }
 
     /// Reads from the currently selected drive register
