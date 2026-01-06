@@ -144,9 +144,11 @@ enum DriveReg {
     /// Tachometer
     /// 60 pulses/revolution
     TACH = 0b0111,
-    /// Read data, low head
+    /// Read data, low head (GCR)
+    /// Index pulse (MFM), active low
     RDDATA0 = 0b1000,
-    /// Read data, upper head
+    /// Read data, upper head (GCR)
+    /// Index pulse (MFM), active low
     RDDATA1 = 0b1001,
     /// SuperDrive
     SUPERDRIVE = 0b1010,
@@ -302,6 +304,17 @@ impl FloppyDrive {
         self.floppy_inserted && self.motor
     }
 
+    /// Returns true if disk is at index (MFM only)
+    #[inline(always)]
+    pub(super) fn at_index(&self) -> bool {
+        debug_assert!(self.mfm);
+
+        // Disk spins at 300rpm, 192992 bits, index pulse ~2ms
+        // 300 / 60 = 5 revs/sec * 192992 bits = 964960 bits/sec
+        // 964960 * 0.002 (s) = ~1929 bits pulse length
+        self.is_running() && (0..1929).contains(&self.track_position)
+    }
+
     /// Reads from the currently selected drive register
     pub(super) fn read_sense(&self, regraw: u8) -> bool {
         let reg = DriveReg::from_u8(regraw).unwrap_or(DriveReg::UNKNOWN);
@@ -324,14 +337,10 @@ impl FloppyDrive {
             DriveReg::TKO => true,
             DriveReg::STEP => self.stepping == 0,
             DriveReg::TACH => self.get_tacho(),
+            DriveReg::RDDATA0 | DriveReg::RDDATA1 if self.mfm && self.motor => !self.at_index(),
             DriveReg::RDDATA0 => self.get_head_bit(0),
-            DriveReg::RDDATA1 => {
-                if self.motor {
-                    self.get_head_bit(1)
-                } else {
-                    self.drive_type.io_rddata1()
-                }
-            }
+            DriveReg::RDDATA1 if self.motor => self.get_head_bit(1),
+            DriveReg::RDDATA1 => self.drive_type.io_rddata1(),
             DriveReg::MFM => self.mfm,
             DriveReg::SUPERDRIVE => self.drive_type.io_superdrive(),
             DriveReg::WRTPRT => !self.floppy.get_write_protect(),
@@ -581,6 +590,7 @@ impl Debuggable for FloppyDrive {
             dbgprop_udec!("Head stepping timer", self.stepping),
             dbgprop_udec!("Track", self.track),
             dbgprop_udec!("Track position", self.track_position),
+            dbgprop_bool!("Index signal", self.mfm && self.at_index()),
             dbgprop_udec!("Track RPM", self.get_track_rpm()),
             dbgprop_udec!("Ticks per bit", self.get_ticks_per_bit()),
             dbgprop_sdec!("Flux transition len", self.flux_ticks.into()),
