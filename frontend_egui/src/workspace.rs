@@ -135,7 +135,7 @@ pub struct Workspace {
 
     /// Deprecated
     #[serde(skip_serializing)]
-    center_viewport_v: bool,
+    center_viewport_v: Option<bool>,
 
     pub viewport_scale: f32,
 
@@ -216,7 +216,7 @@ impl Default for Workspace {
             systrap_history_open: false,
             peripheral_debug_open: false,
             terminal_open: [false; 2],
-            center_viewport_v: false,
+            center_viewport_v: None,
             rom_path: None,
             display_card_rom_path: None,
             pram_path: None,
@@ -299,10 +299,12 @@ impl Workspace {
         }
 
         // Migrate old framebuffer positioning fields to new enum
-        if result.center_viewport_v {
-            result.framebuffer_mode = FramebufferMode::Centered;
-        } else {
-            result.framebuffer_mode = FramebufferMode::CenteredHorizontally;
+        if let Some(v) = result.center_viewport_v {
+            if v {
+                result.framebuffer_mode = FramebufferMode::Centered;
+            } else {
+                result.framebuffer_mode = FramebufferMode::CenteredHorizontally;
+            }
         }
 
         Ok(result)
