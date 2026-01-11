@@ -35,7 +35,7 @@ jobs:
       run: rustup target add ${{ matrix.arch }}-apple-darwin
     - name: Build release
       # Build with bundled SDL2 to avoid issues with sdl2 on brew breaking
-      run: cargo build --verbose --release --target ${{ matrix.arch }}-apple-darwin -F sdl2-bundled
+      run: cargo build --verbose --release --target ${{ matrix.arch }}-apple-darwin -F sdl2-bundled -F sdl2-static
     - name: Install bundle dependencies
       run: brew install dylibbundler imagemagick
     - name: Run bundle script
