@@ -2816,17 +2816,26 @@ impl eframe::App for SnowGui {
             }
 
             // Framebuffer display
-            let response = if !self.is_ui_hidden()
-                && self.workspace.framebuffer_mode == FramebufferMode::Detached
+            if !self.is_ui_hidden() && self.workspace.framebuffer_mode == FramebufferMode::Detached
             {
                 // Render framebuffer in a floating window
-                egui::InnerResponse {
-                    inner: (),
-                    response: ui.allocate_response(ui.available_size(), egui::Sense::hover()),
-                }
+                persistent_window_s!(self, "Display", [800.0, 600.0])
+                    .resizable(true)
+                    .show(ctx, |ui| {
+                        ui.vertical_centered(|ui| {
+                            let response = self.framebuffer.draw(ui, true);
+                            // Consume drag events on the framebuffer to prevent window dragging
+                            ui.interact(
+                                response.rect,
+                                ui.id().with("fb_drag_blocker"),
+                                egui::Sense::drag(),
+                            );
+                        });
+                        //ui.allocate_space(ui.available_size());
+                    });
             } else {
                 // Render framebuffer inline on the background
-                ui.vertical_centered(|ui| {
+                let response = ui.vertical_centered(|ui| {
                     // Align framebuffer vertically
                     if self.is_ui_hidden() {
                         const GUEST_ASPECT_RATIO: f32 = 4.0 / 3.0;
@@ -2853,49 +2862,49 @@ impl eframe::App for SnowGui {
                         // To fill the screen with hitbox for the context menu
                         ui.allocate_space(ui.available_size());
                     }
-                })
-            };
-            if self.is_ui_hidden() {
-                response.response.context_menu(|ui| {
-                    // Show the mouse cursor so the user can interact with the menu
-                    self.ui_active = false;
-
-                    ui.set_min_width(Self::SUBMENU_WIDTH);
-                    if self.in_fullscreen && ui.button("Exit fullscreen").clicked() {
-                        self.exit_fullscreen(ctx);
-                        ui.close_menu();
-                    }
-                    if self.in_zen_mode && ui.button("Exit Zen mode").clicked() {
-                        self.exit_zen_mode();
-                        ui.close_menu();
-                    }
-                    if ui.button("Take screenshot").clicked() {
-                        self.screenshot();
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    self.draw_menu_floppies(ui);
-                    let targets = self.emu.get_scsi_target_status().map(|d| d.to_owned());
-                    if let Some(targets) = targets {
-                        for (id, target) in targets
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(i, t)| t.as_ref().map(|t| (i, t)))
-                            .filter(|(_, t)| t.target_type == ScsiTargetType::Cdrom)
-                        {
-                            self.draw_scsi_target_menu(ui, id, Some(target), false);
-                        }
-                    }
-                    ui.separator();
-                    let mut ff = self.emu.is_fastforward();
-                    if ui.checkbox(&mut ff, "Fast-forward").clicked() {
-                        self.emu.toggle_fastforward();
-                        ui.close_menu();
-                    }
-                    if ui.button("Reset machine").clicked() {
-                        self.emu.reset();
-                    }
                 });
+                if self.is_ui_hidden() {
+                    response.response.context_menu(|ui| {
+                        // Show the mouse cursor so the user can interact with the menu
+                        self.ui_active = false;
+
+                        ui.set_min_width(Self::SUBMENU_WIDTH);
+                        if self.in_fullscreen && ui.button("Exit fullscreen").clicked() {
+                            self.exit_fullscreen(ctx);
+                            ui.close_menu();
+                        }
+                        if self.in_zen_mode && ui.button("Exit Zen mode").clicked() {
+                            self.exit_zen_mode();
+                            ui.close_menu();
+                        }
+                        if ui.button("Take screenshot").clicked() {
+                            self.screenshot();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        self.draw_menu_floppies(ui);
+                        let targets = self.emu.get_scsi_target_status().map(|d| d.to_owned());
+                        if let Some(targets) = targets {
+                            for (id, target) in targets
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(i, t)| t.as_ref().map(|t| (i, t)))
+                                .filter(|(_, t)| t.target_type == ScsiTargetType::Cdrom)
+                            {
+                                self.draw_scsi_target_menu(ui, id, Some(target), false);
+                            }
+                        }
+                        ui.separator();
+                        let mut ff = self.emu.is_fastforward();
+                        if ui.checkbox(&mut ff, "Fast-forward").clicked() {
+                            self.emu.toggle_fastforward();
+                            ui.close_menu();
+                        }
+                        if ui.button("Reset machine").clicked() {
+                            self.emu.reset();
+                        }
+                    });
+                }
             }
 
             // Draw snowflakes behind the dialogs
@@ -3028,25 +3037,6 @@ impl eframe::App for SnowGui {
                 if let Some(data) = self.emu.scc_take_tx(snow_core::mac::scc::SccCh::B) {
                     self.terminal[1].push_rx(&data);
                 }
-            }
-
-            // Floating framebuffer window
-            if !self.is_ui_hidden() && self.workspace.framebuffer_mode == FramebufferMode::Detached
-            {
-                persistent_window_s!(self, "Display", [800.0, 600.0])
-                    .resizable(true)
-                    .show(ctx, |ui| {
-                        // Draw framebuffer in a vertical container to prevent window dragging on content
-                        ui.vertical(|ui| {
-                            let response = self.framebuffer.draw(ui, false);
-                            // Consume drag events on the framebuffer to prevent window dragging
-                            ui.interact(
-                                response.rect,
-                                ui.id().with("fb_drag_blocker"),
-                                egui::Sense::drag(),
-                            );
-                        });
-                    });
             }
         });
 
