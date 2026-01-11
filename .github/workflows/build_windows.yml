@@ -48,7 +48,7 @@ jobs:
           SDL2:p
           pkg-config:p
     - name: Build release
-      run: cargo build --verbose --release --all
+      run: cargo build --verbose --release --all -F sdl2-static
     - name: GUI Create packaging directory
       run: mkdir snow-gui
     - name: GUI Gather files

@@ -34,7 +34,7 @@ jobs:
     - name: Fetch submodules
       run: git submodule update --init --recursive
     - name: Build release
-      run: cargo build --verbose --release --all
+      run: cargo build --verbose --release --all -F sdl2-static
     - name: GUI Create packaging directory
       run: mkdir snow-gui
     - name: GUI Gather files
