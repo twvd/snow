@@ -2432,12 +2432,15 @@ where
         self.prefetch_refill()?;
 
         // Pull on reset
-        self.bus.reset(false)?;
+        let halt_asserted = self.bus.reset(false)?;
 
-        // The (external) FPU and PMMU are connected to the RESET line,
-        // so we reset them here.
-        // Not for the models with a CPU with a built-in FPU.
-        if CPU_TYPE == M68020 {
+        if halt_asserted {
+            // HALT was asserted, so hard-reset the CPU as well.
+            self.reset()?;
+        } else if CPU_TYPE == M68020 {
+            // The (external) FPU and PMMU are connected to the RESET line,
+            // so we reset them here.
+            // Not for the models with a CPU with a built-in FPU.
             self.regs.fpu = FpuRegisterFile::default();
             self.regs.pmmu = PmmuRegisterFile::default();
         }
