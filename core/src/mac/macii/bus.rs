@@ -685,7 +685,7 @@ where
         BusResult::Ok(val)
     }
 
-    fn reset(&mut self, hard: bool) -> Result<()> {
+    fn reset(&mut self, hard: bool) -> Result<bool> {
         if hard {
             // Clear RAM
             self.ram.fill(0);
@@ -714,7 +714,7 @@ where
         self.amu_active = false;
         self.mouse_ready = false;
         self.overlay = true;
-        Ok(())
+        Ok(false)
     }
 }
 

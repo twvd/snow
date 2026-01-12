@@ -31,8 +31,11 @@ pub trait Bus<TA: PrimInt + WrappingAdd, TD: PrimInt>: Tickable {
     fn get_mask(&self) -> TA;
 
     /// RESET line triggered by 68k RESET instruction (soft) or
-    /// reset caused by CPU external reset (hard)
-    fn reset(&mut self, hard: bool) -> Result<()>;
+    /// reset caused by CPU external reset (hard).
+    ///
+    /// Returns 'true' if the reset asserted the HALT line which
+    /// in turn should hard-reset the CPU itself.
+    fn reset(&mut self, hard: bool) -> Result<bool>;
 }
 
 /// Inspectable provides an interface to debugging/memory views.
