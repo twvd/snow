@@ -7,7 +7,7 @@ use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
 use crate::util::{deserialize_arc_rwlock, serialize_arc_rwlock};
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 #[cfg(any(
     feature = "ethernet_raw",
     all(feature = "ethernet_tap", target_os = "linux")
@@ -673,23 +673,40 @@ impl ScsiTarget for ScsiTargetEthernet {
                 // WRITE(6)
                 if let Some(od) = outdata {
                     if cmd[5] & 0x80 != 0 {
-                        let len = ((od[0] as usize) << 8) | (od[1] as usize);
-                        if od.len() < (len + 4) {
-                            bail!("Invalid write len {} <> {}", len, od.len());
+                        // Multiple packet mode
+                        let next_len = if od.len() == 4 {
+                            // First DataOut, read packet next
+                            ((od[0] as usize) << 8) | (od[1] as usize)
+                        } else {
+                            // Packet + 4 byte next header
+                            let packet_len = od.len() - 4;
+                            self.tx_packet(&od[0..packet_len]);
+
+                            ((od[packet_len] as usize) << 8) | (od[packet_len + 1] as usize)
+                        };
+
+                        if next_len == 0 {
+                            Ok(ScsiCmdResult::Status(STATUS_GOOD))
+                        } else {
+                            // Next: packet + next header
+                            Ok(ScsiCmdResult::DataOut(next_len + 4))
                         }
-                        self.tx_packet(&od[4..(len + 4)]);
                     } else {
                         self.tx_packet(od);
+                        Ok(ScsiCmdResult::Status(STATUS_GOOD))
                     }
-                    //log::debug!("write finished {:02X?}", od);
-                    Ok(ScsiCmdResult::Status(STATUS_GOOD))
                 } else {
-                    let mut write_len = ((cmd[3] as usize) << 8) | (cmd[4] as usize);
+                    // After command phase..
+
                     if cmd[5] & 0x80 != 0 {
-                        write_len += 8;
+                        // Multiple packet mode has a 4 byte header
+                        // Read the first header, and from then on start reading
+                        Ok(ScsiCmdResult::DataOut(4))
+                    } else {
+                        // Single packet mode
+                        let write_len = ((cmd[3] as usize) << 8) | (cmd[4] as usize);
+                        Ok(ScsiCmdResult::DataOut(write_len))
                     }
-                    //log::debug!("write start {} {}", write_len, cmd[5] & 0x80 != 0);
-                    Ok(ScsiCmdResult::DataOut(write_len))
                 }
             }
             0x0D => {
