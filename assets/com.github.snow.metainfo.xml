@@ -6,7 +6,7 @@
   <name>Snow</name>
   <summary>Classic Macintosh emulator</summary>
   <developer id="com.github.twvd">
-    <name>twvd</name>
+    <name>Thomas W.</name>
   </developer>
   <icon
         type="local"
@@ -31,7 +31,7 @@
 
   <launchable type="desktop-id">snow.desktop</launchable>
 
-  <url type="homepage">https://github.com/twvd/snow</url>
+  <url type="homepage">https://snowemu.com/</url>
   <url type="bugtracker">https://github.com/twvd/snow/issues</url>
   <url type="donation">https://ko-fi.com/twvd</url>
 
