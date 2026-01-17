@@ -48,7 +48,8 @@ pub struct ModelSelectionDialog {
     disable_rom_validation: bool,
 
     // Error state
-    error_message: String,
+    main_rom_error: String,
+    display_rom_error: String,
 }
 
 fn format_ram(sz: usize) -> String {
@@ -142,7 +143,8 @@ impl Default for ModelSelectionDialog {
 
             result: None,
             disable_rom_validation: false,
-            error_message: String::new(),
+            main_rom_error: String::new(),
+            display_rom_error: String::new(),
         }
     }
 }
@@ -156,7 +158,8 @@ impl ModelSelectionDialog {
         self.open = true;
         self.last_roms = last_roms;
         self.last_display_roms = last_display_roms;
-        self.error_message.clear();
+        self.main_rom_error.clear();
+        self.display_rom_error.clear();
         self.result = None;
 
         self.do_model_changed();
@@ -214,6 +217,14 @@ impl ModelSelectionDialog {
         }
     }
 
+    fn video_rom_description(&self) -> &str {
+        if self.selected_model == MacModel::SE30 {
+            "SE/30 video ROM"
+        } else {
+            "Macintosh Display Card 8-24 ROM (341-0868)"
+        }
+    }
+
     fn validate_main_rom(&mut self) -> Result<()> {
         self.main_rom_valid = false;
         if self.main_rom_path.is_empty() {
@@ -260,7 +271,7 @@ impl ModelSelectionDialog {
         if self.disable_rom_validation {
             // Just check if the file exists and is readable
             let _rom_data = std::fs::read(&self.display_rom_path)
-                .map_err(|e| anyhow!("Cannot read Display Card ROM: {}", e))?;
+                .map_err(|e| anyhow!("Cannot read {}: {}", self.video_rom_description(), e))?;
             self.display_rom_valid = true;
             return Ok(());
         }
@@ -269,7 +280,7 @@ impl ModelSelectionDialog {
         let mut hash = Sha256::new();
         hash.update(
             std::fs::read(&self.display_rom_path)
-                .map_err(|e| anyhow!("Invalid Display Card ROM: {}", e))?,
+                .map_err(|e| anyhow!("Invalid {}: {}", self.video_rom_description(), e))?,
         );
         let digest = hash.finalize();
 
@@ -288,7 +299,7 @@ impl ModelSelectionDialog {
             Ok(())
         } else {
             self.display_rom_valid = false;
-            bail!("Invalid Display Card ROM. Expected Macintosh Display Card 8-24 (341-0868) ROM.")
+            bail!("Invalid {}.", self.video_rom_description())
         }
     }
 
@@ -410,11 +421,7 @@ impl ModelSelectionDialog {
 
                 // Display Card ROM selection (Mac II only)
                 if self.display_rom_required {
-                    if self.selected_model == MacModel::SE30 {
-                        ui.label("SE/30 video ROM");
-                    } else {
-                        ui.label("Macintosh Display Card 8-24 ROM (341-0868)");
-                    }
+                    ui.label(self.video_rom_description());
                     ui.horizontal(|ui| {
                         if ui
                             .text_edit_singleline(&mut self.display_rom_path)
@@ -541,18 +548,30 @@ impl ModelSelectionDialog {
                 });
             });
 
-            // Error message
-            if !self.error_message.is_empty() {
+            // Error messages
+            if !self.main_rom_error.is_empty() || !self.display_rom_error.is_empty() {
                 ui.separator();
                 ui.add_space(10.0);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "    {} {}",
-                        egui_material_icons::icons::ICON_ERROR,
-                        &self.error_message
-                    ))
-                    .color(egui::Color32::RED),
-                );
+                if !self.main_rom_error.is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "    {} {}",
+                            egui_material_icons::icons::ICON_ERROR,
+                            &self.main_rom_error
+                        ))
+                        .color(egui::Color32::RED),
+                    );
+                }
+                if !self.display_rom_error.is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "    {} {}",
+                            egui_material_icons::icons::ICON_ERROR,
+                            &self.display_rom_error
+                        ))
+                        .color(egui::Color32::RED),
+                    );
+                }
                 ui.add_space(10.0);
             }
 
@@ -644,25 +663,17 @@ impl ModelSelectionDialog {
         }
 
         if let Err(e) = self.validate_main_rom() {
-            self.error_message = e.to_string();
+            self.main_rom_error = e.to_string();
         } else {
-            self.error_message.clear();
+            self.main_rom_error.clear();
         }
     }
 
     fn do_validate_display_rom(&mut self) {
-        if (self.display_rom_path.is_empty() || !self.display_rom_required)
-            && self.error_message.starts_with("Invalid Display Card")
-        {
-            self.error_message.clear();
-        }
-
         if let Err(e) = self.validate_display_rom() {
-            self.error_message = e.to_string();
-        } else if !self.main_rom_path.is_empty()
-            && self.error_message.starts_with("Invalid Display Card")
-        {
-            self.error_message.clear();
+            self.display_rom_error = e.to_string();
+        } else {
+            self.display_rom_error.clear();
         }
     }
 }
