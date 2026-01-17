@@ -20,7 +20,7 @@ use clap::Parser;
 use eframe::egui;
 use log::LevelFilter;
 
-const SNOW_ICON: &[u8] = include_bytes!("../../docs/images/snow_icon.png");
+const SNOW_ICON: &[u8] = include_bytes!("../../assets/snow_icon.png");
 
 #[derive(Parser)]
 #[command(

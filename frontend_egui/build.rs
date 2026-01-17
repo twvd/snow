@@ -37,7 +37,7 @@ fn main() {
 
     if env::var_os("CARGO_CFG_WINDOWS").is_some() {
         winresource::WindowsResource::new()
-            .set_icon("../docs/images/snow.ico")
+            .set_icon("../assets/snow.ico")
             .compile()
             .expect("Failed to embed icon (Windows)");
     }
