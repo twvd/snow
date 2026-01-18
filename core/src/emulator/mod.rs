@@ -45,6 +45,7 @@ use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::emulator::comm::{EmulatorSpeed, UserMessageType};
 use crate::mac::rtc::Rtc;
 use crate::mac::scsi::controller::ScsiController;
+use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::swim::Swim;
 use comm::{
     Breakpoint, EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver,
@@ -678,6 +679,14 @@ impl Emulator {
 
     pub fn load_hdd_image(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {
         self.config.scsi_mut().attach_hdd_at(filename, scsi_id)
+    }
+
+    pub fn attach_disk_image_at(
+        &mut self,
+        image: Box<dyn DiskImage>,
+        scsi_id: usize,
+    ) -> Result<()> {
+        self.config.scsi_mut().attach_disk_image_at(image, scsi_id)
     }
 
     fn user_error(&self, msg: &str) {

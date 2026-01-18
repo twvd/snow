@@ -1,13 +1,11 @@
 //! SCSI hard disk drive (block device)
 
-use anyhow::{bail, Context, Result};
-#[cfg(feature = "mmap")]
-use memmap2::MmapMut;
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::path::PathBuf;
 
 use crate::debuggable::Debuggable;
+use crate::mac::scsi::disk_image::{DiskImage, FileDiskImage};
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::scsi::ScsiCmdResult;
@@ -16,23 +14,10 @@ use crate::mac::scsi::STATUS_GOOD;
 
 pub const DISK_BLOCKSIZE: usize = 512;
 
-#[cfg(feature = "mmap")]
-fn empty_mmap() -> MmapMut {
-    MmapMut::map_anon(0).unwrap()
-}
-
 #[derive(Serialize, Deserialize)]
-pub(crate) struct ScsiTargetDisk {
-    /// Disk contents
-    #[cfg(feature = "mmap")]
-    #[serde(skip, default = "empty_mmap")]
-    pub(super) disk: MmapMut,
-
-    #[cfg(not(feature = "mmap"))]
-    pub(super) disk: Vec<u8>,
-
-    /// Path where the original image resides
-    pub(super) path: PathBuf,
+pub struct ScsiTargetDisk {
+    #[serde(skip)]
+    backend: Option<Box<dyn DiskImage>>,
 
     /// Check condition code
     cc_code: u8,
@@ -42,84 +27,34 @@ pub(crate) struct ScsiTargetDisk {
 }
 
 impl ScsiTargetDisk {
+    pub fn new(backend: Box<dyn DiskImage>) -> Self {
+        Self {
+            backend: Some(backend),
+            cc_code: 0,
+            cc_asc: 0,
+        }
+    }
+
     /// Try to load a disk image, given the filename of the image.
     ///
     /// This locks the file on disk and memory maps the file for use by
     /// the emulator for fast access and automatic writes back to disk,
     /// at the discretion of the operating system.
-    #[cfg(feature = "mmap")]
     pub(super) fn load_disk(filename: &Path) -> Result<Self> {
-        let mmapped = Self::mmap_file(filename)?;
-
-        Ok(Self {
-            disk: mmapped,
-            path: filename.to_path_buf(),
-            cc_code: 0,
-            cc_asc: 0,
-        })
+        Ok(Self::new(Box::new(FileDiskImage::open(
+            filename,
+            DISK_BLOCKSIZE,
+        )?)))
     }
 
-    #[cfg(not(feature = "mmap"))]
-    pub(super) fn load_disk(filename: &Path) -> Result<Self> {
-        use std::fs;
-
-        if !Path::new(filename).exists() {
-            bail!("File not found: {}", filename.display());
-        }
-
-        let disk = fs::read(filename)
-            .with_context(|| format!("Failed to open file {}", filename.display()))?;
-
-        if disk.len() % DISK_BLOCKSIZE != 0 {
-            bail!(
-                "Cannot load disk image {}: not multiple of {}",
-                filename.display(),
-                DISK_BLOCKSIZE
-            );
-        }
-
-        Ok(Self {
-            disk,
-            path: filename.to_path_buf(),
-            cc_code: 0,
-            cc_asc: 0,
-        })
+    fn backend(&self) -> &dyn DiskImage {
+        self.backend.as_deref().expect("SCSI disk backend missing")
     }
 
-    #[cfg(feature = "mmap")]
-    fn mmap_file(filename: &Path) -> Result<MmapMut> {
-        use fs2::FileExt;
-        use std::fs::OpenOptions;
-        use std::io::{Seek, SeekFrom};
-
-        if !Path::new(filename).exists() {
-            bail!("File not found: {}", filename.display());
-        }
-        let mut f = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(filename)
-            .with_context(|| format!("Failed to open {}", filename.display()))?;
-        let file_size = f.seek(SeekFrom::End(0))? as usize;
-        f.seek(SeekFrom::Start(0))?;
-        if !file_size.is_multiple_of(DISK_BLOCKSIZE) {
-            bail!(
-                "Cannot load disk image {}: not multiple of {}",
-                filename.display(),
-                DISK_BLOCKSIZE
-            );
-        }
-        f.try_lock_exclusive()
-            .with_context(|| format!("Failed to lock {}", filename.display()))?;
-        let mmapped = unsafe {
-            use memmap2::MmapOptions;
-
-            MmapOptions::new()
-                .len(file_size)
-                .map_mut(&f)
-                .with_context(|| format!("Failed to mmap file {}", filename.display()))?
-        };
-        Ok(mmapped)
+    fn backend_mut(&mut self) -> &mut dyn DiskImage {
+        self.backend
+            .as_deref_mut()
+            .expect("SCSI disk backend missing")
     }
 }
 
@@ -130,7 +65,7 @@ impl ScsiTarget for ScsiTargetDisk {
     }
 
     fn media(&self) -> Option<&[u8]> {
-        Some(&self.disk)
+        self.backend().media_bytes()
     }
 
     fn take_event(&mut self) -> Option<super::target::ScsiTargetEvent> {
@@ -267,21 +202,22 @@ impl ScsiTarget for ScsiTargetDisk {
     }
 
     fn blocks(&self) -> Option<usize> {
-        Some(self.disk.len() / DISK_BLOCKSIZE)
+        Some(self.backend().byte_len() / DISK_BLOCKSIZE)
     }
 
     fn read(&self, block_offset: usize, block_count: usize) -> Vec<u8> {
-        self.disk[(block_offset * DISK_BLOCKSIZE)..((block_offset + block_count) * DISK_BLOCKSIZE)]
-            .to_vec()
+        let offset = block_offset * DISK_BLOCKSIZE;
+        let length = block_count * DISK_BLOCKSIZE;
+        self.backend().read_bytes(offset, length)
     }
 
     fn write(&mut self, block_offset: usize, data: &[u8]) {
         let offset = block_offset * DISK_BLOCKSIZE;
-        self.disk[offset..(offset + data.len())].copy_from_slice(data);
+        self.backend_mut().write_bytes(offset, data);
     }
 
     fn image_fn(&self) -> Option<&Path> {
-        Some(self.path.as_ref())
+        self.backend().image_path()
     }
 
     fn specific_cmd(&mut self, cmd: &[u8], _outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
@@ -312,29 +248,12 @@ impl ScsiTarget for ScsiTargetDisk {
 
     #[cfg(feature = "savestates")]
     fn after_deserialize(&mut self, imgfn: &Path) -> Result<()> {
-        self.disk = Self::mmap_file(imgfn)?;
-        self.path = imgfn.to_path_buf();
+        self.backend = Some(Box::new(FileDiskImage::open(imgfn, DISK_BLOCKSIZE)?));
         Ok(())
     }
 
-    #[cfg(feature = "mmap")]
     fn branch_media(&mut self, path: &Path) -> Result<()> {
-        use std::fs::File;
-        use std::io::Write;
-
-        // Create a fresh disk file
-        {
-            let mut f = File::create(path)?;
-            f.write_all(&self.disk)?;
-        }
-        self.disk = Self::mmap_file(path)?;
-        self.path = path.to_path_buf();
-        Ok(())
-    }
-
-    #[cfg(not(feature = "mmap"))]
-    fn branch_media(&mut self, _path: &Path) -> Result<()> {
-        bail!("Requires 'mmap' feature");
+        self.backend_mut().branch_media(path)
     }
 
     #[cfg(feature = "ethernet")]

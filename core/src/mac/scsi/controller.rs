@@ -18,6 +18,7 @@ use crate::dbgprop_byte;
 use crate::debuggable::Debuggable;
 use crate::mac::scsi::cdrom::ScsiTargetCdrom;
 use crate::mac::scsi::disk::ScsiTargetDisk;
+use crate::mac::scsi::disk_image::DiskImage;
 #[cfg(feature = "ethernet")]
 use crate::mac::scsi::ethernet::ScsiTargetEthernet;
 use crate::mac::scsi::scsi_cmd_len;
@@ -240,6 +241,19 @@ impl ScsiController {
             bail!("File {} does not exist", filename.to_string_lossy());
         }
         self.targets[scsi_id] = Some(Box::new(ScsiTargetDisk::load_disk(filename)?));
+        Ok(())
+    }
+
+    /// Attaches a disk backed by a custom disk image at the given SCSI ID.
+    pub(crate) fn attach_disk_image_at(
+        &mut self,
+        image: Box<dyn DiskImage>,
+        scsi_id: usize,
+    ) -> Result<()> {
+        if scsi_id >= Self::MAX_TARGETS {
+            bail!("SCSI ID out of range: {}", scsi_id);
+        }
+        self.targets[scsi_id] = Some(Box::new(ScsiTargetDisk::new(image)));
         Ok(())
     }
 

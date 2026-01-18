@@ -3,6 +3,7 @@
 pub mod cdrom;
 pub mod controller;
 pub mod disk;
+pub mod disk_image;
 #[cfg(feature = "ethernet")]
 pub mod ethernet;
 pub mod target;
