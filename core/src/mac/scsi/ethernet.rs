@@ -41,6 +41,9 @@ pub enum EthernetLinkType {
     /// Userland NAT
     #[cfg(feature = "ethernet_nat")]
     NAT,
+    /// Userland NAT with HTTPS stripping
+    #[cfg(feature = "ethernet_nat_https_stripping")]
+    NATHttpsStripping,
     /// Raw sockets based bridge
     #[cfg(feature = "ethernet_raw")]
     Bridge(u32),
@@ -797,6 +800,28 @@ impl ScsiTarget for ScsiTargetEthernet {
                     [0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA],
                     [10, 0, 0, 1],
                     8,
+                    #[cfg(feature = "ethernet_nat_https_stripping")]
+                    false,
+                );
+                self.rx = Some(emulator_rx);
+                self.tx = Some(emulator_tx);
+                self.nat_stats = Some(nat.stats());
+                std::thread::spawn(move || {
+                    nat.run();
+                });
+            }
+            #[cfg(feature = "ethernet_nat_https_stripping")]
+            EthernetLinkType::NATHttpsStripping => {
+                let (nat_tx, emulator_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
+                let (emulator_tx, nat_rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
+
+                let mut nat = snow_nat::NatEngine::new(
+                    nat_tx,
+                    nat_rx,
+                    [0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA],
+                    [10, 0, 0, 1],
+                    8,
+                    true, // Enable HTTPS stripping
                 );
                 self.rx = Some(emulator_rx);
                 self.tx = Some(emulator_tx);
