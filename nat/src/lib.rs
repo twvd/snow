@@ -959,6 +959,9 @@ impl NatEngine {
             })
             .collect();
 
+        // Track handles that failed TLS establishment and should be aborted
+        let mut failed_handles = Vec::new();
+
         for handle in https_handles {
             let socket = self.sockets.get_mut::<tcp::Socket>(handle);
 
@@ -975,29 +978,32 @@ impl NatEngine {
                     _ => continue,
                 };
 
+                let mut tls_failed = false;
+
                 match socket.recv(|buffer| {
-                        if buffer.is_empty() {
-                            return (0, 0);
-                        }
+                    if buffer.is_empty() {
+                        return (0, 0);
+                    }
 
-                        // If TLS connection not yet established, buffer data and try to extract Host
-                        if entry.0.is_none() {
-                            // Append to initial buffer
-                            entry.1.extend_from_slice(buffer);
+                    // If TLS connection not yet established, buffer data and try to extract Host
+                    if entry.0.is_none() {
+                        // Append to initial buffer
+                        entry.1.extend_from_slice(buffer);
 
-                            // Try to parse Host header
-                            match https_stripping::extract_http_host(entry.1) {
-                                Ok(hostname) => {
-                                    log::debug!("HTTPS stripping: Extracted Host: {}", hostname);
+                        // Try to parse Host header
+                        match https_stripping::extract_http_host(entry.1) {
+                            Ok(hostname) => {
+                                log::debug!("HTTPS stripping: Extracted Host: {}", hostname);
 
                                 // Establish TLS connection using the hostname for SNI
                                 let dst_ip_addr = match entry.3.addr {
-                                    IpAddress::Ipv4(ip) => std::net::IpAddr::V4(
-                                        std::net::Ipv4Addr::from(ip.0),
-                                    ),
+                                    IpAddress::Ipv4(ip) => {
+                                        std::net::IpAddr::V4(std::net::Ipv4Addr::from(ip.0))
+                                    }
                                     _ => {
                                         log::error!("Non-IPv4 address in HTTPS stripping");
-                                        return (0, buffer.len());
+                                        tls_failed = true;
+                                        return (buffer.len(), buffer.len());
                                     }
                                 };
 
@@ -1007,13 +1013,12 @@ impl NatEngine {
                                     443,
                                 ) {
                                     Ok(mut tls_stream) => {
-                                        log::info!(
-                                            "Established TLS connection to {} ({}:443) for HTTPS stripping",
+                                        log::debug!(
+                                            "Established TLS connection to {} ({}:443)",
                                             hostname,
                                             dst_ip_addr
                                         );
 
-                                        // Send buffered data (in blocking mode to ensure it all gets written)
                                         match tls_stream.write_all(entry.1) {
                                             Ok(_) => {
                                                 // Now switch to non-blocking mode for ongoing forwarding
@@ -1022,7 +1027,8 @@ impl NatEngine {
                                                         "Failed to set TLS stream non-blocking: {}",
                                                         e
                                                     );
-                                                    return (0, buffer.len());
+                                                    tls_failed = true;
+                                                    return (buffer.len(), buffer.len());
                                                 }
 
                                                 **entry.0 = Some(tls_stream);
@@ -1032,7 +1038,8 @@ impl NatEngine {
                                             }
                                             Err(e) => {
                                                 log::error!("Failed to write buffered data: {}", e);
-                                                return (0, buffer.len());
+                                                tls_failed = true;
+                                                return (buffer.len(), buffer.len());
                                             }
                                         }
                                     }
@@ -1042,48 +1049,66 @@ impl NatEngine {
                                             hostname,
                                             e
                                         );
-                                        return (0, buffer.len());
+                                        tls_failed = true;
+                                        return (buffer.len(), buffer.len());
                                     }
                                 }
-                                }
-                                Err(_e) => {
-                                    // Not enough data yet or parse error, don't consume
-                                    return (0, 0);
-                                }
                             }
-                        }
-
-                        // TLS connection is established, forward data
-                        if let Some(ref mut tls_socket) = **entry.0 {
-                            match tls_socket.write(buffer) {
-                                Ok(written) => {
-                                    *entry.2 = Instant::now() + NAT_TIMEOUT_TCP_OPEN;
-                                    (written, written)
-                                }
-                                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => (0, 0),
-                                Err(e) => {
-                                    log::warn!("Error writing to TLS socket: {}", e);
-                                    (0, 0)
-                                }
+                            Err(_e) => {
+                                // Not enough data yet or parse error, don't consume
+                                return (0, 0);
                             }
-                        } else {
-                            (0, 0)
-                        }
-                    }) {
-                        Ok(_) => {}
-                        Err(smoltcp::socket::tcp::RecvError::Finished) => {
-                            if let Some(NatEntry::TcpHttpsStripping { expires_at, .. }) =
-                                self.nat_table.get_mut(&handle)
-                            {
-                                *expires_at = Instant::now() + NAT_TIMEOUT_TCP_CLOSED;
-                                self.stats.nat_tcp_fin_local.fetch_add(1, Ordering::Relaxed);
-                            }
-                        }
-                        Err(e) => {
-                            log::error!("TCP error receiving from emulator (HTTPS stripping): {:?}", e);
                         }
                     }
+
+                    // TLS connection is established, forward data
+                    if let Some(ref mut tls_socket) = **entry.0 {
+                        match tls_socket.write(buffer) {
+                            Ok(written) => {
+                                *entry.2 = Instant::now() + NAT_TIMEOUT_TCP_OPEN;
+                                (written, written)
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => (0, 0),
+                            Err(e) => {
+                                log::warn!("Error writing to TLS socket: {}", e);
+                                (0, 0)
+                            }
+                        }
+                    } else {
+                        (0, 0)
+                    }
+                }) {
+                    Ok(_) => {}
+                    Err(smoltcp::socket::tcp::RecvError::Finished) => {
+                        if let Some(NatEntry::TcpHttpsStripping { expires_at, .. }) =
+                            self.nat_table.get_mut(&handle)
+                        {
+                            *expires_at = Instant::now() + NAT_TIMEOUT_TCP_CLOSED;
+                            self.stats.nat_tcp_fin_local.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "TCP error receiving from emulator (HTTPS stripping): {:?}",
+                            e
+                        );
+                    }
+                }
+
+                // If TLS failed, mark for abort
+                if tls_failed {
+                    failed_handles.push(handle);
+                }
             }
+        }
+
+        // Abort connections that failed TLS establishment
+        for handle in failed_handles {
+            log::error!("Aborting connection due to TLS failure");
+            let socket = self.sockets.get_mut::<tcp::Socket>(handle);
+            socket.abort();
+            self.nat_table.remove(&handle);
+            self.sockets.remove(handle);
         }
 
         Ok(())
@@ -1260,19 +1285,14 @@ impl NatEngine {
                     *entry.1 = Instant::now() + NAT_TIMEOUT_TCP_CLOSED;
                 }
                 Ok(len) => {
-                    log::debug!("HTTPS stripping: received {} bytes from TLS socket", len);
                     // Write data to smoltcp socket
                     // The rewriting already happened in the Read impl
                     match socket.send_slice(&self.recv_buffer[..len]) {
-                        Ok(written) => {
-                            log::debug!(
-                                "HTTPS stripping: sent {} bytes to emulator (smoltcp)",
-                                written
-                            );
+                        Ok(_written) => {
                             *entry.1 = Instant::now() + NAT_TIMEOUT_TCP_OPEN;
                         }
                         Err(e) => {
-                            log::warn!("HTTPS stripping: Error sending to smoltcp socket: {}", e);
+                            log::error!("HTTPS stripping: Error sending to smoltcp socket: {}", e);
                         }
                     }
                 }
@@ -1280,7 +1300,7 @@ impl NatEngine {
                     // No data available
                 }
                 Err(e) => {
-                    log::warn!("Error receiving from TLS socket: {}", e);
+                    log::error!("Error receiving from TLS socket: {}", e);
                 }
             }
         }
