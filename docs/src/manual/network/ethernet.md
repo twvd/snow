@@ -68,6 +68,19 @@ In this screen, enter the IP-address for the emulated system, which needs to be 
 10.0.0.2). Close the MacTCP control panel and reboot the emulated system. You should now be able to go online within
 the emulated system.
 
+### Stripping HTTPS connections
+
+Snow can strip HTTPS and expose HTTPS-only sites to the emulated system in a transparent
+fashion. To use this, select the 'NAT (HTTPS stripping)' link mode. Snow supports TLS 1.2 and higher.
+
+This works transparently in the same way as the normal NAT mode. To visit a website, just
+visit an http link (e.g. `http://www.spacejam.com/1996/`).
+
+<div class="warning">
+By using this mode, you lose encryption for part of the network route. Be aware of the risks before you
+submit any sensitive information over the internet from within the emulated system.
+</div>
+
 ### Using tap interfaces (Linux only)
 
 On Linux hosts, Snow can attach the virtual Ethernet adapter to a tap adapter, supporting all layer 2 and higher
