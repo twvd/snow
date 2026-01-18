@@ -14,6 +14,8 @@ ethernet = ["dep:crc"]
 ethernet_raw = ["ethernet", "dep:pnet"]
 # Enables Ethernet over userland NAT
 ethernet_nat = ["ethernet", "dep:snow_nat"]
+# Enables HTTPS stripping proxy in NAT
+ethernet_nat_https_stripping = ["ethernet_nat", "snow_nat/https_stripping"]
 # Enables Ethernet bridging via TAP interface (Linux only)
 ethernet_tap = ["ethernet", "dep:tun", "nix/poll", "dep:pnet"]
 # Enables memory mapped files for SCSI devices and RTC PRAM

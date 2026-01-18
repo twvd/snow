@@ -1281,6 +1281,14 @@ impl SnowGui {
                             {
                                 ui.radio_value(&mut new_link_type, EthernetLinkType::NAT, "NAT");
                             }
+                            #[cfg(feature = "ethernet_nat_https_stripping")]
+                            {
+                                ui.radio_value(
+                                    &mut new_link_type,
+                                    EthernetLinkType::NATHttpsStripping,
+                                    "NAT (HTTPS stripping)",
+                                );
+                            }
                             #[cfg(feature = "ethernet_raw")]
                             {
                                 for interface in pnet::datalink::interfaces()
