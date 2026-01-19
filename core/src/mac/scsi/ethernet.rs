@@ -618,6 +618,7 @@ impl ScsiTarget for ScsiTargetEthernet {
             0x08 => {
                 // READ(6)
                 const FCS: crc::Crc<u32> = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
+                const MAX_PACKETS_PER_READ: usize = 8;
 
                 let read_len = ((cmd[3] as usize) << 8) | (cmd[4] as usize);
                 if read_len == 1 {
@@ -636,9 +637,11 @@ impl ScsiTarget for ScsiTargetEthernet {
                 }
 
                 let mut response = vec![];
+                let mut packet_count = 0;
                 loop {
                     let packet = rx.try_recv()?;
-                    let more = !rx.is_empty();
+                    packet_count += 1;
+                    let more = !rx.is_empty() && packet_count < MAX_PACKETS_PER_READ;
                     let packet_len = packet.len().max(64);
                     let frame_len = packet_len + 4; // FCS
                     let resp_len = 6 + frame_len;
@@ -990,5 +993,95 @@ impl Debuggable for ScsiTargetEthernet {
             result.push(dbgprop_str!("Tap bridge", "Inactive"));
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_read_max_8_packets() {
+        // Create a ScsiTargetEthernet instance
+        let mut eth = ScsiTargetEthernet::default();
+
+        // Create channels for testing
+        let (tx, rx) = crossbeam_channel::bounded(PACKET_QUEUE_SIZE);
+        eth.rx = Some(rx);
+
+        // Send 10 test packets to the RX queue
+        for i in 0..10 {
+            let packet = vec![
+                0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // dest MAC (broadcast)
+                0x00, 0x80, 0x19, 0x01, 0x02, 0x03, // src MAC
+                0x08, 0x00, // EtherType (IP)
+                i,
+            ]; // payload with packet number
+            tx.send(packet).unwrap();
+        }
+
+        // Create READ(6) command with sufficient buffer size
+        // READ(6) format: [0x08, 0, 0, length_high, length_low, 0]
+        let cmd = [0x08, 0, 0, 0xFF, 0xFF, 0]; // Large buffer
+
+        // Execute the READ(6) command
+        let result = eth.specific_cmd(&cmd, None).unwrap();
+
+        // Verify we got data back
+        if let ScsiCmdResult::DataIn(data) = result {
+            // Count how many packets were returned by looking for packet headers
+            // Each packet has a 6-byte header starting with frame length
+            let mut packet_count = 0;
+            let mut offset = 0;
+
+            while offset < data.len() {
+                if offset + 6 > data.len() {
+                    break;
+                }
+
+                // Read frame length from header
+                let frame_len = ((data[offset] as usize) << 8) | (data[offset + 1] as usize);
+
+                // Check if this is a valid header (not just zeros)
+                if frame_len == 0 {
+                    break;
+                }
+
+                packet_count += 1;
+
+                // Move to next packet (6-byte header + frame_len)
+                offset += 6 + frame_len;
+            }
+
+            // Verify exactly 8 packets were returned
+            assert_eq!(packet_count, 8, "Expected 8 packets, got {}", packet_count);
+
+            // Verify the "more" flag is set correctly on the 8th packet
+            // The "more" flag should be 0 (not set) for the last packet
+            let mut offset = 0;
+            for i in 0..8 {
+                let frame_len = ((data[offset] as usize) << 8) | (data[offset + 1] as usize);
+                let more_flag = data[offset + 5];
+
+                if i < 7 {
+                    // First 7 packets should have "more" flag set (0x10)
+                    assert_eq!(more_flag, 0x10, "Packet {} should have 'more' flag set", i);
+                } else {
+                    // 8th packet should NOT have "more" flag set
+                    assert_eq!(more_flag, 0, "Packet {} should NOT have 'more' flag set", i);
+                }
+
+                offset += 6 + frame_len;
+            }
+
+            // Verify 2 packets remain in the queue
+            assert_eq!(
+                eth.rx.as_ref().unwrap().len(),
+                2,
+                "Expected 2 packets remaining in queue"
+            );
+        } else {
+            panic!("Expected DataIn result");
+        }
     }
 }
