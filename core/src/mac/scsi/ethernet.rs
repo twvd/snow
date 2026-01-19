@@ -192,6 +192,8 @@ impl ScsiTargetEthernet {
         //    (better not be streaming 4K while running the emulator!)
         // Code kept for posterity
 
+        use anyhow::bail;
+
         // Enable to rewrite MAC-addresses of the emulated system to the hosts MAC-address
         const REWRITE_MACS: bool = false;
 
@@ -657,7 +659,9 @@ impl ScsiTarget for ScsiTargetEthernet {
                     response.push(0);
                     response.push(0);
                     response.push(if more { 0x10 } else { 0 });
-                    response.extend(packet);
+                    response.extend(&packet);
+                    // Pad to minimum packet size if needed
+                    response.resize(response.len() + (packet_len - packet.len()), 0);
                     response.extend(checksum);
 
                     if !more {
