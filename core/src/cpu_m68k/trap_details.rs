@@ -1,5 +1,7 @@
 use crate::bus::Address;
-use crate::types::Word;
+use crate::cpu_m68k::CpuSized;
+use crate::types::{Long, Word};
+use num_traits::FromBytes;
 
 use super::regs::RegisterFile;
 
@@ -18,6 +20,19 @@ impl TrapDetails {
         }
     }
 
+    /// Value/address on stack
+    fn stack<F, T>(regs: &RegisterFile, mut read_mem: F, offset: Address) -> Option<T>
+    where
+        F: FnMut(Address, usize) -> Option<Vec<u8>>,
+        T: CpuSized,
+        for<'a> &'a <T as FromBytes>::Bytes: TryFrom<&'a [u8]>,
+    {
+        let sp = regs.read_a::<Address>(7);
+        let bytes = read_mem(sp.wrapping_add(offset), std::mem::size_of::<T>())?;
+        let arr_ref: &<T as FromBytes>::Bytes = bytes.as_slice().try_into().ok()?;
+        Some(T::from_be_bytes(arr_ref))
+    }
+
     /// Get a formatted string describing the trap arguments
     /// This is called when entering a trap (when the trap instruction is executed)
     pub fn format_arguments<F>(regs: &RegisterFile, trap: Word, mut read_mem: F) -> String
@@ -27,11 +42,30 @@ impl TrapDetails {
         let cleaned_trap = Self::clean_trap(trap);
 
         // Dispatch to specific trap handlers
+        //
+        // Types:
+        // Size/Ptr = 4 bytes
         match cleaned_trap {
+            // BlockMove
+            0xA02E => {
+                format!(
+                    "sourcePtr=${:08X} destPtr=${:08X} byteCount={}",
+                    regs.a[0], regs.a[1], regs.d[0]
+                )
+            }
             // VInstall
             0xA033 => Self::format_vbl_task(regs.a[0], &mut read_mem),
             // VRemove
             0xA034 => Self::format_vbl_task(regs.a[0], &mut read_mem),
+            // SwapMMUMode
+            0xA05D => Self::format_swapmmumode(regs.d[0]),
+            // DrawString
+            0xA884 => {
+                let Some(addr) = Self::stack(regs, &mut read_mem, 0) else {
+                    return "(unreadable from stack)".to_string();
+                };
+                Self::format_str255(addr, &mut read_mem)
+            }
             _ => Self::format_generic_arguments(regs),
         }
     }
@@ -46,6 +80,7 @@ impl TrapDetails {
 
         // Dispatch to specific trap handlers
         match cleaned_trap {
+            // BlockMove (0xA02E) default
             // VInstall
             0xA033 => {
                 let d0 = regs.d[0] as i16;
@@ -62,14 +97,19 @@ impl TrapDetails {
             // VRemove
             0xA034 => {
                 let d0 = regs.d[0] as i16;
-                format!("D0=${:04X} ({})",d0,
-                match d0 {
-                    0 => "noErr",
-                    -1 => "qErr",
-                    -2 => "vTypErr",
-                    _ => "?"
-                })
+                format!(
+                    "D0=${:04X} ({})",
+                    d0,
+                    match d0 {
+                        0 => "noErr",
+                        -1 => "qErr",
+                        -2 => "vTypErr",
+                        _ => "?",
+                    }
+                )
             }
+            // SwapMMUMode
+            0xA05D => Self::format_swapmmumode(regs.d[0]),
             _ => Self::format_generic_return_value(regs),
         }
     }
@@ -100,7 +140,14 @@ impl TrapDetails {
 
     /// Generic return value formatter
     fn format_generic_return_value(regs: &RegisterFile) -> String {
-        format!("D0=${:08X}", regs.d[0])
+        format!(
+            "D0=${:08X} ({})",
+            regs.d[0],
+            match regs.d[0] {
+                0 => "noErr",
+                _ => "?",
+            }
+        )
     }
 
     /// Generic success
@@ -126,5 +173,29 @@ impl TrapDetails {
         } else {
             format!("vblTaskPtr=${:08X} (unreadable)", vbl_task_ptr)
         }
+    }
+
+    /// SwapMMUMode arguments/return value
+    fn format_swapmmumode(d0: Long) -> String {
+        match d0 {
+            0 => "24-bit addressing mode".to_string(),
+            1 => "32-bit addressing mode".to_string(),
+            _ => "?".to_string(),
+        }
+    }
+
+    /// Str255 type - 'Pascal string', one byte length + data
+    fn format_str255<F>(addr: Address, read_mem: &mut F) -> String
+    where
+        F: FnMut(Address, usize) -> Option<Vec<u8>>,
+    {
+        let Some(len) = read_mem(addr, 1).and_then(|v| v.first().copied()) else {
+            return format!("(unreadable in format_string @ ${:08X})", addr);
+        };
+        let Some(bytes) = read_mem(addr.wrapping_add(1), len as usize) else {
+            return format!("(unreadable in format_string @ ${:08X})", addr);
+        };
+
+        format!("${:08X} {{\"{}\"}}", addr, String::from_utf8_lossy(&bytes))
     }
 }

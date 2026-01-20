@@ -792,6 +792,8 @@ where
     TRenderer: Renderer,
 {
     fn inspect_read(&mut self, addr: Address) -> Option<Byte> {
+        let addr = addr & 0xFF_FFFF;
+
         // Everything up to 0x800000 is safe (RAM/ROM only)
         if addr >= 0x80_0000 {
             None
@@ -803,6 +805,8 @@ where
     }
 
     fn inspect_write(&mut self, addr: Address, val: Byte) -> Option<()> {
+        let addr = addr & 0xFF_FFFF;
+
         // Everything up to 0x800000 is safe (RAM/ROM only)
         if addr >= 0x80_0000 {
             None
