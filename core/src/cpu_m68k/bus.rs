@@ -1,6 +1,6 @@
 //! M68k CPU - Bus access functionality
 
-use crate::bus::{Address, Bus, BusResult, IrqSource};
+use crate::bus::{Address, Bus, BusResult, InspectableBus, IrqSource};
 use crate::cpu_m68k::cpu::{Breakpoint, BusBreakpoint, CpuError, CpuM68k, Group0Details};
 use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::{CpuM68kType, CpuSized, M68000, M68020, TORDER_HIGHLOW, TORDER_LOWHIGH};
@@ -25,7 +25,7 @@ impl<
         const PMMU: bool,
     > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
-    TBus: Bus<Address, u8> + IrqSource,
+    TBus: Bus<Address, u8> + IrqSource + InspectableBus<Address, u8>,
 {
     #[inline(always)]
     fn fc_data(&self) -> u8 {

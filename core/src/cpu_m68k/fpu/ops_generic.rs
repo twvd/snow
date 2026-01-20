@@ -5,7 +5,7 @@ use either::Either;
 use num_traits::ToPrimitive;
 use strum::IntoEnumIterator;
 
-use crate::bus::{Address, Bus, IrqSource};
+use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord};
@@ -35,7 +35,7 @@ impl<
         const PMMU: bool,
     > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
-    TBus: Bus<Address, u8> + IrqSource,
+    TBus: Bus<Address, u8> + IrqSource + InspectableBus<Address, u8>,
 {
     /// FNOP
     pub(in crate::cpu_m68k) fn op_fnop(&mut self, _instr: &Instruction) -> Result<()> {

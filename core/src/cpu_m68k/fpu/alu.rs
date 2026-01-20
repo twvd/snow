@@ -2,7 +2,7 @@ use crate::cpu_m68k::FpuM68kType;
 use anyhow::{bail, Result};
 use arpfloat::{Float, RoundingMode, Semantics};
 
-use crate::bus::{Address, Bus, IrqSource};
+use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::cpu_m68k::fpu::math::FloatMath;
@@ -21,7 +21,7 @@ impl<
         const PMMU: bool,
     > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
-    TBus: Bus<Address, u8> + IrqSource,
+    TBus: Bus<Address, u8> + IrqSource + InspectableBus<Address, u8>,
 {
     fn fpu_rounding_mode(&self) -> RoundingMode {
         // 3.5.2 Rounding modes

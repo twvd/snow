@@ -3,7 +3,7 @@
 use crate::cpu_m68k::{FpuM68kType, M68030};
 use anyhow::{bail, Result};
 
-use crate::bus::{Address, Bus, IrqSource};
+use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 use crate::cpu_m68k::bus::FC_MASK;
 use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_PRIVILEGE_VIOLATION};
 use crate::cpu_m68k::instruction::Instruction;
@@ -22,7 +22,7 @@ impl<
         const PMMU: bool,
     > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
-    TBus: Bus<Address, u8> + IrqSource,
+    TBus: Bus<Address, u8> + IrqSource + InspectableBus<Address, u8>,
 {
     pub(in crate::cpu_m68k) fn op_pop_000(&mut self, instr: &Instruction) -> Result<()> {
         if !PMMU {

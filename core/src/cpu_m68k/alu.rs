@@ -3,7 +3,7 @@ use super::regs::RegisterSR;
 use super::{CpuM68kType, CpuSized};
 use crate::cpu_m68k::FpuM68kType;
 
-use crate::bus::{Address, Bus, IrqSource};
+use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 use crate::types::{Byte, Long, Word};
 
 impl<
@@ -14,7 +14,7 @@ impl<
         const PMMU: bool,
     > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
-    TBus: Bus<Address, u8> + IrqSource,
+    TBus: Bus<Address, u8> + IrqSource + InspectableBus<Address, u8>,
 {
     /// Add (a + b = c)
     pub(super) fn alu_add<T: CpuSized>(a: T, b: T, f: RegisterSR) -> (T, u8) {

@@ -4,7 +4,7 @@ use crate::cpu_m68k::FpuM68kType;
 use anyhow::{bail, Result};
 use arrayvec::ArrayVec;
 
-use crate::bus::{Address, Bus, IrqSource};
+use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 use crate::cpu_m68k::instruction::MemoryIndirectAction;
 use crate::types::Long;
 
@@ -20,7 +20,7 @@ impl<
         const PMMU: bool,
     > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
-    TBus: Bus<Address, u8> + IrqSource,
+    TBus: Bus<Address, u8> + IrqSource + InspectableBus<Address, u8>,
 {
     /// Calculates address from effective addressing mode, based on operand type
     #[inline(always)]

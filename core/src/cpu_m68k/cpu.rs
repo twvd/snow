@@ -11,10 +11,11 @@ use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 use thiserror::Error;
 
-use crate::bus::{Address, Bus, IrqSource};
+use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
 use crate::cpu_m68k::regs::RegisterCACR;
+use crate::cpu_m68k::trap_details::TrapDetails;
 use crate::cpu_m68k::{M68000_SR_MASK, M68020_CACR_MASK, M68030, M68030_CACR_MASK};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
@@ -246,7 +247,7 @@ pub struct CpuM68k<
     const FPU_TYPE: FpuM68kType,
     const PMMU: bool,
 > where
-    TBus: Bus<Address, u8> + IrqSource,
+    TBus: Bus<Address, u8> + IrqSource + InspectableBus<Address, u8>,
 {
     /// Exception occured this step
     pub step_exception: bool,
@@ -342,7 +343,7 @@ impl<
         const PMMU: bool,
     > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
-    TBus: Bus<Address, u8> + IrqSource,
+    TBus: Bus<Address, u8> + IrqSource + InspectableBus<Address, u8>,
 {
     /// Instruction history size
     pub const HISTORY_SIZE: usize = 10000;
@@ -480,13 +481,23 @@ where
 
                 if let Some((trap, is_empty)) = trap_value {
                     if is_empty {
+                        let mut read_mem = |addr: Address, size: usize| {
+                            let mut data = Vec::with_capacity(size);
+                            for i in 0..size {
+                                if let Some(byte) =
+                                    self.bus.inspect_read(addr.wrapping_add(i as Address))
+                                {
+                                    data.push(byte);
+                                } else {
+                                    return None;
+                                }
+                            }
+                            Some(data)
+                        };
+
                         let return_value =
-                            crate::cpu_m68k::trap_details::TrapDetails::format_return_value(
-                                &self.regs, trap,
-                            );
-                        let success = crate::cpu_m68k::trap_details::TrapDetails::check_success(
-                            &self.regs, trap,
-                        );
+                            TrapDetails::format_return_value(&self.regs, trap, &mut read_mem);
+                        let success = TrapDetails::check_success(&self.regs, trap, &mut read_mem);
 
                         if let Some(last_entry) = self.systrap_history.back_mut() {
                             last_entry.return_value = return_value;
@@ -1302,9 +1313,20 @@ where
                     while self.systrap_history.len() >= Self::HISTORY_SIZE {
                         self.systrap_history.pop_front();
                     }
-                    let arguments = crate::cpu_m68k::trap_details::TrapDetails::format_arguments(
-                        &self.regs, instr.data,
-                    );
+                    let arguments =
+                        TrapDetails::format_arguments(&self.regs, instr.data, |addr, size| {
+                            let mut data = Vec::with_capacity(size);
+                            for i in 0..size {
+                                if let Some(byte) =
+                                    self.bus.inspect_read(addr.wrapping_add(i as Address))
+                                {
+                                    data.push(byte);
+                                } else {
+                                    return None;
+                                }
+                            }
+                            Some(data)
+                        });
                     self.systrap_history.push_back(SystrapHistoryEntry {
                         trap: instr.data,
                         cycles: self.cycles,
@@ -4071,7 +4093,7 @@ impl<
         const PMMU: bool,
     > Tickable for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
-    TBus: Bus<Address, u8> + IrqSource,
+    TBus: Bus<Address, u8> + IrqSource + InspectableBus<Address, u8>,
 {
     fn tick(&mut self, _ticks: Ticks) -> Result<Ticks> {
         self.step()?;
