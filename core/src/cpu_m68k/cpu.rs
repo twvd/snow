@@ -232,6 +232,9 @@ pub struct SystrapHistoryEntry {
     pub trap: Word,
     pub cycles: Ticks,
     pub pc: Address,
+    pub arguments: String,
+    pub return_value: String,
+    pub success: Option<bool>,
 }
 
 /// Motorola 680x0
@@ -303,6 +306,10 @@ pub struct CpuM68k<
     #[serde(skip)]
     systrap_history_enabled: bool,
 
+    /// Stack pointer when entering the most recent trap (for tracking trap exit)
+    #[serde(skip)]
+    systrap_entry_sp: Option<Address>,
+
     /// PMMU address translation caches
     /// The index is either PMMU_ATC_URP or PMMU_ATC_SRP, depending on which root
     /// pointer is used in the translation.
@@ -361,6 +368,7 @@ where
             history_enabled: false,
             systrap_history: VecDeque::with_capacity(Self::HISTORY_SIZE),
             systrap_history_enabled: false,
+            systrap_entry_sp: None,
             pmmu_atc: Default::default(),
             icache_lines: core::array::from_fn(|_| Default::default()),
             icache_tags: [ICACHE_TAG_INVALID; ICACHE_LINES],
@@ -449,6 +457,46 @@ where
             Some(self.systrap_history.make_contiguous())
         } else {
             None
+        }
+    }
+
+    /// Updates the return value for the most recent trap if we've returned from it
+    fn update_systrap_return_value(&mut self) {
+        if !self.systrap_history_enabled {
+            return;
+        }
+
+        // Check if we have a trap entry SP and if the current SP has returned to or exceeded it
+        if let Some(entry_sp) = self.systrap_entry_sp {
+            let current_sp = self.regs.read_a::<Address>(7);
+
+            // If SP has returned to or exceeded the entry level, we've returned from the trap
+            if current_sp >= entry_sp {
+                // Get the trap value first to avoid borrow conflicts
+                let trap_value = self
+                    .systrap_history
+                    .back()
+                    .map(|entry| (entry.trap, entry.return_value.is_empty()));
+
+                if let Some((trap, is_empty)) = trap_value {
+                    if is_empty {
+                        let return_value =
+                            crate::cpu_m68k::trap_details::TrapDetails::format_return_value(
+                                &self.regs, trap,
+                            );
+                        let success = crate::cpu_m68k::trap_details::TrapDetails::check_success(
+                            &self.regs, trap,
+                        );
+
+                        if let Some(last_entry) = self.systrap_history.back_mut() {
+                            last_entry.return_value = return_value;
+                            last_entry.success = Some(success);
+                        }
+                    }
+                }
+                // Clear the entry SP since we've returned
+                self.systrap_entry_sp = None;
+            }
         }
     }
 
@@ -694,6 +742,9 @@ where
             self.breakpoint_hit.set();
             self.clear_breakpoint(Breakpoint::StepOver(self.regs.pc));
         }
+
+        // Check if we've returned from a trap
+        self.update_systrap_return_value();
 
         Ok(())
     }
@@ -1251,11 +1302,19 @@ where
                     while self.systrap_history.len() >= Self::HISTORY_SIZE {
                         self.systrap_history.pop_front();
                     }
+                    let arguments = crate::cpu_m68k::trap_details::TrapDetails::format_arguments(
+                        &self.regs, instr.data,
+                    );
                     self.systrap_history.push_back(SystrapHistoryEntry {
                         trap: instr.data,
                         cycles: self.cycles,
                         pc: self.regs.pc,
+                        arguments,
+                        return_value: String::new(),
+                        success: None,
                     });
+                    // Save the current stack pointer to track when we exit the trap
+                    self.systrap_entry_sp = Some(self.regs.read_a::<Address>(7));
                 }
 
                 self.advance_cycles(4)?;

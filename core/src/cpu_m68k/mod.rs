@@ -7,6 +7,7 @@ pub mod fpu;
 pub mod instruction;
 pub mod pmmu;
 pub mod regs;
+pub mod trap_details;
 
 use num_traits::{FromBytes, PrimInt, ToBytes, WrappingAdd, WrappingShl, WrappingShr};
 

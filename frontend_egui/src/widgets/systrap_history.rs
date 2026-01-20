@@ -33,8 +33,18 @@ impl SystrapHistoryWidget {
                 );
                 left_sized(
                     ui,
-                    [200.0, 20.0],
+                    [150.0, 20.0],
                     egui::Label::new(egui::RichText::new("System trap").strong()),
+                );
+                left_sized(
+                    ui,
+                    [100.0, 20.0],
+                    egui::Label::new(egui::RichText::new("Return").strong()),
+                );
+                left_sized(
+                    ui,
+                    [400.0, 20.0],
+                    egui::Label::new(egui::RichText::new("Arguments").strong()),
                 );
             });
 
@@ -123,7 +133,7 @@ impl SystrapHistoryWidget {
                 // Mask auto-pop bit
                 entry.trap & 0b1111_1011_1111_1111
             };
-            left_sized_f(ui, [200.0, row_height], |ui| {
+            left_sized_f(ui, [150.0, row_height], |ui| {
                 ui.add(
                     egui::Label::new(
                         egui::RichText::new(
@@ -140,6 +150,33 @@ impl SystrapHistoryWidget {
                 )
                 .context_linea(entry.trap);
             });
+
+            // Return value column
+            left_sized(
+                ui,
+                [100.0, row_height],
+                egui::Label::new(
+                    egui::RichText::new(&entry.return_value)
+                        .family(egui::FontFamily::Monospace)
+                        .size(10.0)
+                        .color(match entry.success {
+                            Some(true) => egui::Color32::GREEN,
+                            Some(false) => egui::Color32::DARK_RED,
+                            None => egui::Color32::DARK_GRAY, // Gray for unknown/pending
+                        }),
+                ),
+            );
+
+            // Arguments column
+            left_sized(
+                ui,
+                [400.0, row_height],
+                egui::Label::new(
+                    egui::RichText::new(&entry.arguments)
+                        .family(egui::FontFamily::Monospace)
+                        .size(10.0),
+                ),
+            );
         });
     }
 }
