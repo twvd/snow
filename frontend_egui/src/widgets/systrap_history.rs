@@ -38,7 +38,7 @@ impl SystrapHistoryWidget {
                 );
                 left_sized(
                     ui,
-                    [150.0, 20.0],
+                    [180.0, 20.0],
                     egui::Label::new(egui::RichText::new("Return").strong()),
                 );
                 left_sized(
@@ -154,7 +154,7 @@ impl SystrapHistoryWidget {
             // Return value column
             left_sized(
                 ui,
-                [150.0, row_height],
+                [180.0, row_height],
                 egui::Label::new(
                     egui::RichText::new(&entry.return_value)
                         .family(egui::FontFamily::Monospace)

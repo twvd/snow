@@ -59,6 +59,8 @@ impl TrapDetails {
             0xA034 => Self::format_vbl_task(regs.a[0], &mut read_mem),
             // SwapMMUMode
             0xA05D => Self::format_swapmmumode(regs.d[0]),
+            // SCSIDispatch
+            0xA815 => Self::format_scsi_dispatch_args(regs, trap, &mut read_mem),
             // DrawString
             0xA884 => {
                 let Some(addr) = Self::stack(regs, &mut read_mem, 0) else {
@@ -110,6 +112,8 @@ impl TrapDetails {
             }
             // SwapMMUMode
             0xA05D => Self::format_swapmmumode(regs.d[0]),
+            // SCSIDispatch
+            0xA815 => Self::format_scsi_dispatch_return(regs, trap, &mut _read_mem),
             _ => Self::format_generic_return_value(regs),
         }
     }
@@ -126,6 +130,8 @@ impl TrapDetails {
         match cleaned_trap {
             // VInstall and VRemove - success is noErr (0)
             0xA033 | 0xA034 => (regs.d[0] as i16) == 0,
+            // SCSIDispatch - success is noErr (0)
+            0xA815 => (regs.d[0] as i16) == 0,
             _ => Self::check_generic_success(regs),
         }
     }
@@ -197,5 +203,299 @@ impl TrapDetails {
         };
 
         format!("${:08X} {{\"{}\"}}", addr, String::from_utf8_lossy(&bytes))
+    }
+
+    /// Format SCSIDispatch arguments based on selector
+    fn format_scsi_dispatch_args<F>(regs: &RegisterFile, trap: Word, read_mem: &mut F) -> String
+    where
+        F: FnMut(Address, usize) -> Option<Vec<u8>>,
+    {
+        // Two possible calling conventions based on bit 10 (auto-pop bit):
+        // 1. 0xA815 (bit 10=0): C inline asm: (SP+0)=selector (2 bytes), (SP+2)=first param
+        // 2. 0xAC15 (bit 10=1): Pascal macro: (SP+0)=return addr (4 bytes), (SP+4)=selector, (SP+6)=params
+
+        // Check bit 10 (auto-pop bit) of the original trap number
+        let auto_pop = (trap & 0x0400) != 0;
+        let (selector_offset, param_offset) = if auto_pop {
+            // Pascal convention: selector at SP+4, params at SP+6
+            (4, 6)
+        } else {
+            // C convention: selector at SP+0, params at SP+2
+            (0, 2)
+        };
+
+        let Some(selector): Option<Word> = Self::stack(regs, &mut *read_mem, selector_offset) else {
+            return format!("selector=(unreadable from stack at offset {})", selector_offset);
+        };
+
+        let selector_name = match selector {
+            0 => "scsiReset",
+            1 => "scsiGet",
+            2 => "scsiSelect",
+            3 => "scsiCmd",
+            4 => "scsiComplete",
+            5 => "scsiRead",
+            6 => "scsiWrite",
+            7 => "scsiInstall",
+            8 => "scsiRBlind",
+            9 => "scsiWBlind",
+            10 => "scsiStat",
+            11 => "scsiSelAtn",
+            12 => "scsiMsgIn",
+            13 => "scsiMsgOut",
+            _ => "unknown",
+        };
+
+        match selector {
+            0 => format!("selector={} ({})", selector, selector_name),
+            1 => format!("selector={} ({})", selector, selector_name),
+            2 | 11 => {
+                // scsiSelect, scsiSelAtn: targetID (short) after selector
+                let Some(target_id): Option<Word> = Self::stack(regs, &mut *read_mem, param_offset) else {
+                    return format!(
+                        "selector={} ({}) targetID=(unreadable)",
+                        selector, selector_name
+                    );
+                };
+                format!(
+                    "selector={} ({}) targetID={}",
+                    selector, selector_name, target_id
+                )
+            }
+            3 => {
+                // scsiCmd: buffer (Ptr), count (short)
+                // Pascal convention: leftmost param pushed first, so farther from SP
+                let Some(count): Option<Word> = Self::stack(regs, &mut *read_mem, param_offset) else {
+                    return format!(
+                        "selector={} ({}) count=(unreadable)",
+                        selector, selector_name
+                    );
+                };
+                let Some(buffer): Option<Long> = Self::stack(regs, &mut *read_mem, param_offset + 2) else {
+                    return format!(
+                        "selector={} ({}) count={} buffer=(unreadable)",
+                        selector, selector_name, count
+                    );
+                };
+                format!(
+                    "selector={} ({})\n  buffer=${:08X} count={}",
+                    selector, selector_name, buffer, count
+                )
+            }
+            4 => {
+                // scsiComplete: stat (short*), message (short*), wait (ulong)
+                // Pascal convention: pushed left-to-right, so wait is closest to SP
+                let Some(wait): Option<Long> = Self::stack(regs, &mut *read_mem, param_offset) else {
+                    return format!(
+                        "selector={} ({}) wait=(unreadable)",
+                        selector, selector_name
+                    );
+                };
+                let Some(msg_ptr): Option<Long> = Self::stack(regs, &mut *read_mem, param_offset + 4) else {
+                    return format!(
+                        "selector={} ({}) wait={} message=(unreadable)",
+                        selector, selector_name, wait
+                    );
+                };
+                let Some(stat_ptr): Option<Long> = Self::stack(regs, &mut *read_mem, param_offset + 8) else {
+                    return format!(
+                        "selector={} ({}) wait={} message=${:08X} stat=(unreadable)",
+                        selector, selector_name, wait, msg_ptr
+                    );
+                };
+                format!(
+                    "selector={} ({})\n  stat=${:08X} message=${:08X} wait={}",
+                    selector, selector_name, stat_ptr, msg_ptr, wait
+                )
+            }
+            5 | 6 | 8 | 9 => {
+                // scsiRead, scsiWrite, scsiRBlind, scsiWBlind: tibPtr (Ptr)
+                let Some(tib_ptr): Option<Long> = Self::stack(regs, &mut *read_mem, param_offset) else {
+                    return format!(
+                        "selector={} ({}) tibPtr=(unreadable)",
+                        selector, selector_name
+                    );
+                };
+                let tib_details = Self::format_tib(tib_ptr, &mut *read_mem);
+                format!(
+                    "selector={} ({}) tibPtr=${:08X}\n{}",
+                    selector, selector_name, tib_ptr, tib_details
+                )
+            }
+            10 => format!("selector={} ({})", selector, selector_name),
+            12 => {
+                // scsiMsgIn: message (short*)
+                let Some(msg_ptr): Option<Long> = Self::stack(regs, &mut *read_mem, param_offset) else {
+                    return format!(
+                        "selector={} ({}) message=(unreadable)",
+                        selector, selector_name
+                    );
+                };
+                format!(
+                    "selector={} ({}) message=${:08X}",
+                    selector, selector_name, msg_ptr
+                )
+            }
+            13 => {
+                // scsiMsgOut: message (short)
+                let Some(message): Option<Word> = Self::stack(regs, &mut *read_mem, param_offset) else {
+                    return format!(
+                        "selector={} ({}) message=(unreadable)",
+                        selector, selector_name
+                    );
+                };
+                format!(
+                    "selector={} ({}) message=${:04X}",
+                    selector, selector_name, message
+                )
+            }
+            _ => format!("selector={} (unknown)", selector),
+        }
+    }
+
+    /// Format SCSIDispatch return value
+    fn format_scsi_dispatch_return<F>(regs: &RegisterFile, trap: Word, read_mem: &mut F) -> String
+    where
+        F: FnMut(Address, usize) -> Option<Vec<u8>>,
+    {
+        // Check bit 10 (auto-pop bit) of the original trap number
+        let auto_pop = (trap & 0x0400) != 0;
+        let (selector_offset, param_offset) = if auto_pop {
+            (4, 6)
+        } else {
+            (0, 2)
+        };
+
+        let Some(selector): Option<Word> = Self::stack(regs, &mut *read_mem, selector_offset) else {
+            return Self::format_scsi_error(regs.d[0] as i16);
+        };
+
+        match selector {
+            10 => {
+                // scsiStat returns status in D0 (not an error code)
+                format!("D0=${:04X} (status byte)", regs.d[0] as u16)
+            }
+            4 => {
+                // scsiComplete: read back stat and message values
+                // Pascal convention: wait at param_offset, msg at +4, stat at +8
+                let Some(msg_ptr): Option<Long> = Self::stack(regs, &mut *read_mem, param_offset + 4) else {
+                    return Self::format_scsi_error(regs.d[0] as i16);
+                };
+                let Some(stat_ptr): Option<Long> = Self::stack(regs, &mut *read_mem, param_offset + 8) else {
+                    return Self::format_scsi_error(regs.d[0] as i16);
+                };
+
+                let stat = read_mem(stat_ptr, 2)
+                    .map(|v| i16::from_be_bytes([v[0], v[1]]))
+                    .unwrap_or(-1);
+                let msg = read_mem(msg_ptr, 2)
+                    .map(|v| i16::from_be_bytes([v[0], v[1]]))
+                    .unwrap_or(-1);
+
+                format!(
+                    "{}\n  stat=${:04X} message=${:04X}",
+                    Self::format_scsi_error(regs.d[0] as i16),
+                    stat as u16,
+                    msg as u16
+                )
+            }
+            12 => {
+                // scsiMsgIn: read back message value
+                let Some(msg_ptr): Option<Long> = Self::stack(regs, &mut *read_mem, param_offset) else {
+                    return Self::format_scsi_error(regs.d[0] as i16);
+                };
+
+                let msg = read_mem(msg_ptr, 2)
+                    .map(|v| i16::from_be_bytes([v[0], v[1]]))
+                    .unwrap_or(-1);
+
+                format!(
+                    "{}\n  message=${:04X}",
+                    Self::format_scsi_error(regs.d[0] as i16),
+                    msg as u16
+                )
+            }
+            _ => Self::format_scsi_error(regs.d[0] as i16),
+        }
+    }
+
+    /// Format TIB (Transfer Instruction Block)
+    fn format_tib<F>(tib_ptr: Address, read_mem: &mut F) -> String
+    where
+        F: FnMut(Address, usize) -> Option<Vec<u8>>,
+    {
+        const TIB_SIZE: usize = 10; // 2 bytes opcode + 4 bytes param1 + 4 bytes param2
+        const MAX_INSTRUCTIONS: usize = 8; // Limit how many we display
+
+        let mut result = String::new();
+        let mut offset = 0;
+
+        for i in 0..MAX_INSTRUCTIONS {
+            let Some(instr_bytes) = read_mem(tib_ptr.wrapping_add(offset), TIB_SIZE) else {
+                result.push_str(&format!("  TIB[{}]: (unreadable)\n", i));
+                break;
+            };
+
+            let opcode = u16::from_be_bytes([instr_bytes[0], instr_bytes[1]]);
+            let param1 = u32::from_be_bytes([instr_bytes[2], instr_bytes[3], instr_bytes[4], instr_bytes[5]]);
+            let param2 = u32::from_be_bytes([instr_bytes[6], instr_bytes[7], instr_bytes[8], instr_bytes[9]]);
+
+            let opcode_name = match opcode {
+                1 => "scInc",
+                2 => "scNoInc",
+                3 => "scAdd",
+                4 => "scMove",
+                5 => "scLoop",
+                6 => "scNop",
+                7 => "scStop",
+                8 => "scComp",
+                _ => "unknown",
+            };
+
+            let detail = match opcode {
+                1 => format!("addr=${:08X} count={}", param1, param2),
+                2 => format!("addr=${:08X} count={}", param1, param2),
+                3 => format!("addr=${:08X} count={}", param1, param2),
+                4 => format!("src=${:08X} dst=${:08X}", param1, param2),
+                5 => format!("count={} offset={}", param1, param2 as i32),
+                6 => "".to_string(),
+                7 => "".to_string(),
+                8 => format!("addr=${:08X} count={}", param1, param2),
+                _ => format!("param1=${:08X} param2=${:08X}", param1, param2),
+            };
+
+            if detail.is_empty() {
+                result.push_str(&format!("  TIB[{}]: {} ({})\n", i, opcode, opcode_name));
+            } else {
+                result.push_str(&format!("  TIB[{}]: {} ({}) {}\n", i, opcode, opcode_name, detail));
+            }
+
+            offset += TIB_SIZE as u32;
+
+            // Stop if we hit scStop opcode
+            if opcode == 7 {
+                break;
+            }
+        }
+
+        result
+    }
+
+    /// Format SCSI error code
+    fn format_scsi_error(err: i16) -> String {
+        let err_name = match err {
+            0 => "noErr",
+            2 => "scCommErr",
+            3 => "scArbNBErr",
+            4 => "scBadParmsErr",
+            5 => "scPhaseErr",
+            6 => "scCompareErr",
+            7 => "scMgrBusyErr",
+            8 => "scSequenceErr",
+            9 => "scBusTOErr",
+            10 => "scComplPhaseErr",
+            _ => "?",
+        };
+        format!("D0=${:04X} ({})", err as u16, err_name)
     }
 }
