@@ -46,6 +46,14 @@ impl TrapDetails {
         // Types:
         // Size/Ptr = 4 bytes
         match cleaned_trap {
+            // Open
+            0xA000 => Self::format_open(regs.a[0], &mut read_mem),
+            // Close
+            0xA001 => Self::format_close(regs.a[0], &mut read_mem),
+            // Read
+            0xA002 => Self::format_read_write(regs.a[0], "Read", &mut read_mem),
+            // Write
+            0xA003 => Self::format_read_write(regs.a[0], "Write", &mut read_mem),
             // BlockMove
             0xA02E => {
                 format!(
@@ -82,6 +90,15 @@ impl TrapDetails {
 
         // Dispatch to specific trap handlers
         match cleaned_trap {
+            // Open - show refnum assigned
+            0xA000 => Self::format_open_return(regs.a[0], &mut _read_mem),
+            // Close - show result
+            0xA001 => Self::format_file_result(regs.a[0], &mut _read_mem),
+            // Read/Write - show actual count transferred
+            0xA002 | 0xA003 => {
+                let op_name = if cleaned_trap == 0xA002 { "Read" } else { "Write" };
+                Self::format_read_write_return(regs.a[0], op_name, &mut _read_mem)
+            }
             // BlockMove (0xA02E) default
             // VInstall
             0xA033 => {
@@ -128,6 +145,16 @@ impl TrapDetails {
 
         // Dispatch to specific trap handlers
         match cleaned_trap {
+            // Open/Close/Read/Write - check ioResult field in param block
+            0xA000..=0xA003 => {
+                const IO_RESULT_OFFSET: Address = 16;
+                if let Some(result_bytes) = _read_mem(regs.a[0].wrapping_add(IO_RESULT_OFFSET), 2) {
+                    let result = i16::from_be_bytes([result_bytes[0], result_bytes[1]]);
+                    result == 0
+                } else {
+                    false
+                }
+            }
             // VInstall and VRemove - success is noErr (0)
             0xA033 | 0xA034 => (regs.d[0] as i16) == 0,
             // SCSIDispatch - success is noErr (0)
@@ -497,5 +524,234 @@ impl TrapDetails {
             _ => "?",
         };
         format!("D0=${:04X} ({})", err as u16, err_name)
+    }
+
+    /// Format Open arguments
+    fn format_open<F>(pb_ptr: Address, read_mem: &mut F) -> String
+    where
+        F: FnMut(Address, usize) -> Option<Vec<u8>>,
+    {
+        // ParamBlockHeader offsets
+        const IO_NAMEPTR_OFFSET: Address = 18;
+        const IO_VREFNUM_OFFSET: Address = 22;
+        // IOParam offsets (after ParamBlockHeader which is 24 bytes)
+        const IO_PERMSSN_OFFSET: Address = 26;
+
+        let Some(name_ptr_bytes) = read_mem(pb_ptr.wrapping_add(IO_NAMEPTR_OFFSET), 4) else {
+            return format!("paramBlock=${:08X} (unreadable)", pb_ptr);
+        };
+        let name_ptr = u32::from_be_bytes([name_ptr_bytes[0], name_ptr_bytes[1], name_ptr_bytes[2], name_ptr_bytes[3]]);
+
+        let Some(vref_num_bytes) = read_mem(pb_ptr.wrapping_add(IO_VREFNUM_OFFSET), 2) else {
+            return format!("paramBlock=${:08X} namePtr=${:08X} (vRefNum unreadable)", pb_ptr, name_ptr);
+        };
+        let vref_num = i16::from_be_bytes([vref_num_bytes[0], vref_num_bytes[1]]);
+
+        let Some(permssn_byte) = read_mem(pb_ptr.wrapping_add(IO_PERMSSN_OFFSET), 1) else {
+            return format!(
+                "paramBlock=${:08X} namePtr=${:08X} vRefNum={}",
+                pb_ptr, name_ptr, vref_num
+            );
+        };
+        let permssn = permssn_byte[0];
+
+        let permssn_str = match permssn {
+            0 => "fsCurPerm",
+            1 => "fsRdPerm",
+            2 => "fsWrPerm",
+            3 => "fsRdWrPerm",
+            _ => "?",
+        };
+
+        // Try to read the filename
+        let filename = Self::format_str255(name_ptr, read_mem);
+
+        format!(
+            "paramBlock=${:08X}\n  fileName={}\n  vRefNum={} permission={} ({})",
+            pb_ptr, filename, vref_num, permssn, permssn_str
+        )
+    }
+
+    /// Format Close arguments
+    fn format_close<F>(pb_ptr: Address, read_mem: &mut F) -> String
+    where
+        F: FnMut(Address, usize) -> Option<Vec<u8>>,
+    {
+        // IOParam offsets (after ParamBlockHeader which is 24 bytes)
+        const IO_REFNUM_OFFSET: Address = 24;
+
+        let Some(ref_num_bytes) = read_mem(pb_ptr.wrapping_add(IO_REFNUM_OFFSET), 2) else {
+            return format!("paramBlock=${:08X} (unreadable)", pb_ptr);
+        };
+        let ref_num = i16::from_be_bytes([ref_num_bytes[0], ref_num_bytes[1]]);
+
+        format!("paramBlock=${:08X} refNum={}", pb_ptr, ref_num)
+    }
+
+    /// Format Read/Write arguments
+    fn format_read_write<F>(pb_ptr: Address, _op_name: &str, read_mem: &mut F) -> String
+    where
+        F: FnMut(Address, usize) -> Option<Vec<u8>>,
+    {
+        // IOParam structure offsets (after ParamBlockHeader which is 24 bytes)
+        const IO_REFNUM_OFFSET: Address = 24;
+        const IO_BUFFER_OFFSET: Address = 32;
+        const IO_REQCOUNT_OFFSET: Address = 36;
+        const IO_POSMODE_OFFSET: Address = 44;
+        const IO_POSOFFSET_OFFSET: Address = 46;
+
+        let Some(ref_num_bytes) = read_mem(pb_ptr.wrapping_add(IO_REFNUM_OFFSET), 2) else {
+            return format!("paramBlock=${:08X} (unreadable)", pb_ptr);
+        };
+        let ref_num = i16::from_be_bytes([ref_num_bytes[0], ref_num_bytes[1]]);
+
+        let Some(buffer_bytes) = read_mem(pb_ptr.wrapping_add(IO_BUFFER_OFFSET), 4) else {
+            return format!(
+                "paramBlock=${:08X} refNum={} (buffer unreadable)",
+                pb_ptr, ref_num
+            );
+        };
+        let buffer = u32::from_be_bytes([buffer_bytes[0], buffer_bytes[1], buffer_bytes[2], buffer_bytes[3]]);
+
+        let Some(req_count_bytes) = read_mem(pb_ptr.wrapping_add(IO_REQCOUNT_OFFSET), 4) else {
+            return format!(
+                "paramBlock=${:08X} refNum={} buffer=${:08X} (count unreadable)",
+                pb_ptr, ref_num, buffer
+            );
+        };
+        let req_count = u32::from_be_bytes([req_count_bytes[0], req_count_bytes[1], req_count_bytes[2], req_count_bytes[3]]);
+
+        let Some(pos_mode_bytes) = read_mem(pb_ptr.wrapping_add(IO_POSMODE_OFFSET), 2) else {
+            return format!(
+                "paramBlock=${:08X}\n  refNum={} buffer=${:08X} count={}",
+                pb_ptr, ref_num, buffer, req_count
+            );
+        };
+        let pos_mode = i16::from_be_bytes([pos_mode_bytes[0], pos_mode_bytes[1]]);
+
+        let Some(pos_offset_bytes) = read_mem(pb_ptr.wrapping_add(IO_POSOFFSET_OFFSET), 4) else {
+            return format!(
+                "paramBlock=${:08X}\n  refNum={} buffer=${:08X} count={} posMode={}",
+                pb_ptr, ref_num, buffer, req_count, pos_mode
+            );
+        };
+        let pos_offset = i32::from_be_bytes([pos_offset_bytes[0], pos_offset_bytes[1], pos_offset_bytes[2], pos_offset_bytes[3]]);
+
+        let pos_mode_str = match pos_mode {
+            1 => "fsAtMark",
+            2 => "fsFromStart",
+            3 => "fsFromLEOF",
+            4 => "fsFromMark",
+            _ => "?",
+        };
+
+        format!(
+            "paramBlock=${:08X}\n  refNum={} buffer=${:08X} count={}\n  posMode={} ({}) posOffset={}",
+            pb_ptr, ref_num, buffer, req_count, pos_mode, pos_mode_str, pos_offset
+        )
+    }
+
+    /// Format Open return value
+    fn format_open_return<F>(pb_ptr: Address, read_mem: &mut F) -> String
+    where
+        F: FnMut(Address, usize) -> Option<Vec<u8>>,
+    {
+        // IOParam structure offsets
+        const IO_RESULT_OFFSET: Address = 16;
+        const IO_REFNUM_OFFSET: Address = 24;
+
+        let Some(result_bytes) = read_mem(pb_ptr.wrapping_add(IO_RESULT_OFFSET), 2) else {
+            return format!("paramBlock=${:08X} (result unreadable)", pb_ptr);
+        };
+        let result = i16::from_be_bytes([result_bytes[0], result_bytes[1]]);
+
+        let Some(ref_num_bytes) = read_mem(pb_ptr.wrapping_add(IO_REFNUM_OFFSET), 2) else {
+            return Self::format_file_error(result);
+        };
+        let ref_num = i16::from_be_bytes([ref_num_bytes[0], ref_num_bytes[1]]);
+
+        format!(
+            "{}\n  refNum={}",
+            Self::format_file_error(result),
+            ref_num
+        )
+    }
+
+    /// Format generic file operation result (just error code)
+    fn format_file_result<F>(pb_ptr: Address, read_mem: &mut F) -> String
+    where
+        F: FnMut(Address, usize) -> Option<Vec<u8>>,
+    {
+        const IO_RESULT_OFFSET: Address = 16;
+
+        let Some(result_bytes) = read_mem(pb_ptr.wrapping_add(IO_RESULT_OFFSET), 2) else {
+            return format!("paramBlock=${:08X} (result unreadable)", pb_ptr);
+        };
+        let result = i16::from_be_bytes([result_bytes[0], result_bytes[1]]);
+
+        Self::format_file_error(result)
+    }
+
+    /// Format Read/Write return value
+    fn format_read_write_return<F>(pb_ptr: Address, _op_name: &str, read_mem: &mut F) -> String
+    where
+        F: FnMut(Address, usize) -> Option<Vec<u8>>,
+    {
+        // IOParam structure offsets
+        const IO_RESULT_OFFSET: Address = 16;
+        const IO_ACTCOUNT_OFFSET: Address = 40;
+
+        let Some(result_bytes) = read_mem(pb_ptr.wrapping_add(IO_RESULT_OFFSET), 2) else {
+            return format!("paramBlock=${:08X} (result unreadable)", pb_ptr);
+        };
+        let result = i16::from_be_bytes([result_bytes[0], result_bytes[1]]);
+
+        let Some(act_count_bytes) = read_mem(pb_ptr.wrapping_add(IO_ACTCOUNT_OFFSET), 4) else {
+            return Self::format_file_error(result);
+        };
+        let act_count = u32::from_be_bytes([act_count_bytes[0], act_count_bytes[1], act_count_bytes[2], act_count_bytes[3]]);
+
+        format!(
+            "{}\n  actualCount={}",
+            Self::format_file_error(result),
+            act_count
+        )
+    }
+
+    /// Format File Manager error code
+    fn format_file_error(err: i16) -> String {
+        let err_name = match err {
+            0 => "noErr",
+            -33 => "dirFulErr",
+            -34 => "dskFulErr",
+            -35 => "nsvErr",
+            -36 => "ioErr",
+            -37 => "bdNamErr",
+            -38 => "fnOpnErr",
+            -39 => "eofErr",
+            -40 => "posErr",
+            -42 => "tmfoErr",
+            -43 => "fnfErr",
+            -44 => "wPrErr",
+            -45 => "fLckdErr",
+            -46 => "vLckdErr",
+            -47 => "fBsyErr",
+            -48 => "dupFNErr",
+            -49 => "opWrErr",
+            -50 => "paramErr",
+            -51 => "rfNumErr",
+            -52 => "gfpErr",
+            -53 => "volOffLinErr",
+            -54 => "permErr",
+            -55 => "volOnLinErr",
+            -56 => "nsDrvErr",
+            -57 => "noMacDskErr",
+            -58 => "extFSErr",
+            -59 => "fsRnErr",
+            -60 => "badMDBErr",
+            -61 => "wrPermErr",
+            _ => "?",
+        };
+        format!("ioResult=${:04X} ({})", err as u16, err_name)
     }
 }
