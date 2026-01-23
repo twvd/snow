@@ -248,6 +248,9 @@ pub struct CpuM68k<
     /// Exception occured this step
     pub step_exception: bool,
 
+    /// Trace exception must be inhibited after this instruction
+    step_inhibit_trace: bool,
+
     /// External address/data bus
     pub bus: TBus,
 
@@ -350,6 +353,7 @@ where
             prefetch: VecDeque::with_capacity(3),
             step_ea_addr: None,
             step_exception: false,
+            step_inhibit_trace: false,
             step_ea_load: None,
             decode_cache: empty_decode_cache(),
             trace_mask: false,
@@ -542,6 +546,7 @@ where
 
         self.step_ea_addr = None;
         self.step_exception = false;
+        self.step_inhibit_trace = false;
         self.step_over_addr = None;
         self.step_ea_load = None;
 
@@ -651,7 +656,7 @@ where
         self.prefetch_refill()?;
 
         // Check pending trace
-        if trace_exception {
+        if trace_exception && !self.step_inhibit_trace {
             self.raise_exception(ExceptionGroup::Group1, VECTOR_TRACE, None)?;
         }
 
@@ -755,6 +760,10 @@ where
 
     /// Raises an illegal instruction exception
     fn raise_illegal_instruction(&mut self) -> Result<()> {
+        // "If the instruction is not executed because the instruction is illegal or privileged,
+        // the trace exception does not occur."
+        self.step_inhibit_trace = true;
+
         warn!("Illegal instruction at PC ${:08X}", self.regs.pc);
         self.advance_cycles(4)?;
         self.raise_exception(ExceptionGroup::Group1, VECTOR_ILLEGAL, None)?;
@@ -763,6 +772,10 @@ where
 
     /// Raises a privilege violation exception
     fn raise_privilege_violation(&mut self) -> Result<()> {
+        // "If the instruction is not executed because the instruction is illegal or privileged,
+        // the trace exception does not occur."
+        self.step_inhibit_trace = true;
+
         self.advance_cycles(4)?;
         self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None)?;
         Ok(())
