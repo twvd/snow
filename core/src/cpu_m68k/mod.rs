@@ -7,6 +7,8 @@ pub mod fpu;
 pub mod instruction;
 pub mod pmmu;
 pub mod regs;
+#[cfg(test)]
+pub mod tests;
 
 use num_traits::{FromBytes, PrimInt, ToBytes, WrappingAdd, WrappingShl, WrappingShr};
 
