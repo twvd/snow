@@ -1858,12 +1858,13 @@ where
 
         if divisor == 0 {
             // Division by zero
-            self.advance_cycles(4)?;
+            self.advance_cycles(8)?;
             self.regs.sr.set_n(false);
             self.regs.sr.set_c(false);
             self.regs.sr.set_z(false);
             self.regs.sr.set_v(false);
 
+            self.regs.pc = self.regs.pc.wrapping_add(2);
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_DIV_ZERO, None);
         }
 
@@ -1920,12 +1921,13 @@ where
 
         if divisor == 0 {
             // Division by zero
-            self.advance_cycles(4)?;
+            self.advance_cycles(8)?;
             self.regs.sr.set_n(false);
             self.regs.sr.set_c(false);
             self.regs.sr.set_z(false);
             self.regs.sr.set_v(false);
 
+            self.regs.pc = self.regs.pc.wrapping_add(2);
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_DIV_ZERO, None);
         }
 
@@ -3854,7 +3856,7 @@ where
 
         if divisor == 0 {
             // Division by zero
-            self.advance_cycles(4)?;
+            self.advance_cycles(8)?;
             self.regs.sr.set_n(false);
             self.regs.sr.set_c(false);
             self.regs.sr.set_z(false);
