@@ -551,11 +551,7 @@ where
 
         // Flag exceptions before executing the instruction to act on them later
         let trace_exception = self.regs.sr.trace() && !self.trace_mask;
-        let irq_exception = match self.bus.get_irq() {
-            Some(7) => 7,
-            Some(level) if level > self.regs.sr.int_prio_mask() => level,
-            _ => 0,
-        };
+        let irq_exception = self.bus.get_irq();
 
         // Start of instruction execution
         if self.history_enabled {
@@ -660,8 +656,13 @@ where
         }
 
         // Check pending interrupts
-        if irq_exception != 0 {
-            let level = irq_exception;
+        let irq_exception_masked = match irq_exception {
+            Some(7) => 7,
+            Some(level) if level > self.regs.sr.int_prio_mask() => level,
+            _ => 0,
+        };
+        if irq_exception_masked != 0 {
+            let level = irq_exception_masked;
             if self
                 .breakpoints
                 .contains(&Breakpoint::InterruptLevel(level))
