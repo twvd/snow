@@ -10,9 +10,6 @@ pub mod tickable;
 pub mod types;
 pub mod util;
 
-#[cfg(test)]
-pub mod test;
-
 pub mod built_info {
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
 }
