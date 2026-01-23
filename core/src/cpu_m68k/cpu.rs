@@ -1192,7 +1192,7 @@ where
             InstructionMnemonic::RTE => self.op_rte(instr),
             InstructionMnemonic::RTS => self.op_rts(instr),
             InstructionMnemonic::RTR => self.op_rtr(instr),
-            InstructionMnemonic::STOP => bail!("STOP instruction encountered"),
+            InstructionMnemonic::STOP => self.op_stop(instr),
             InstructionMnemonic::TRAPV => self.op_trapv(instr),
             InstructionMnemonic::JSR => self.op_jmp_jsr(instr),
             InstructionMnemonic::JMP => self.op_jmp_jsr(instr),
@@ -2449,6 +2449,22 @@ where
         }
 
         Ok(())
+    }
+
+    /// STOP - Load immediate data into SR and wait for interrupt
+    fn op_stop(&mut self, _instr: &Instruction) -> Result<()> {
+        let new_sr = self.fetch()?;
+
+        if !self.regs.sr.supervisor() {
+            return self.raise_privilege_violation();
+        }
+
+        // Now load the new SR value
+        self.prefetch_pump()?;
+        self.set_sr(new_sr);
+
+        // TODO STOP loads SR and then enters a stopped state waiting for an interrupt.
+        bail!("STOP #${:04X} instruction encountered", new_sr);
     }
 
     /// RTE
