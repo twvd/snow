@@ -3,5 +3,5 @@ Categories=System;Emulator;
 Comment=Classic Macintosh emulator
 Exec=snowemu
 Icon=snow_icon
-Name=snow
+Name=Snow
 Type=Application
