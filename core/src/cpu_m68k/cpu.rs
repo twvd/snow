@@ -328,6 +328,9 @@ pub struct CpuM68k<
     /// restarting an instruction that caused a mid-instruction
     /// bus fault.
     pub(in crate::cpu_m68k) restart_regs: Option<RestartRegisterFile>,
+
+    /// NMI edge trigger level
+    in_nmi: bool,
 }
 
 impl<
@@ -369,6 +372,7 @@ where
             icache_lines: core::array::from_fn(|_| Default::default()),
             icache_tags: [ICACHE_TAG_INVALID; ICACHE_LINES],
             restart_regs: None,
+            in_nmi: false,
         }
     }
 
@@ -661,8 +665,19 @@ where
         }
 
         // Check pending interrupts
+        // NMI is edge-triggered
+        if irq_exception != Some(7) {
+            self.in_nmi = false;
+        }
         let irq_exception_masked = match irq_exception {
-            Some(7) => 7,
+            Some(7) => {
+                if !self.in_nmi {
+                    self.in_nmi = true;
+                    7
+                } else {
+                    0
+                }
+            }
             Some(level) if level > self.regs.sr.int_prio_mask() => level,
             _ => 0,
         };
