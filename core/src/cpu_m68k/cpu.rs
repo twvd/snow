@@ -2367,6 +2367,18 @@ where
 
     /// TAS
     pub fn op_tas(&mut self, instr: &Instruction) -> Result<()> {
+        // 68k reserved illegal opcodes (invalid modes for TAS)
+        if [
+            AddressingMode::AddressRegister,
+            AddressingMode::Immediate,
+            AddressingMode::PCIndex,
+            AddressingMode::PCDisplacement,
+        ]
+        .contains(&instr.get_addr_mode()?)
+        {
+            return self.raise_illegal_instruction();
+        }
+
         let v = self.read_ea::<Byte>(instr, instr.get_op2())?;
         if instr.get_addr_mode()? != AddressingMode::DataRegister {
             self.advance_cycles(2)?;
