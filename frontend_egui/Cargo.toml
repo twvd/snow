@@ -13,6 +13,7 @@ ethernet_raw = ["ethernet", "snow_core/ethernet_raw", "dep:pnet"]
 ethernet_tap = ["ethernet", "snow_core/ethernet_tap", "dep:pnet"]
 sdl2-bundled = ["sdl2/bundled"]
 sdl2-static = ["sdl2/static-link"]
+rpc = ["snow_core/rpc"]
 
 [build-dependencies]
 winresource = "0.1.23"

@@ -134,6 +134,12 @@ pub struct EmulatorState {
 
     /// Serial bridge status for SCC channels (index 0 = Channel A, index 1 = Channel B)
     serial_bridge_status: [Option<SerialBridgeStatus>; 2],
+
+    /// Configured monitor for Mac II series (None for compact Macs)
+    monitor: Option<MacMonitor>,
+
+    /// Configured RAM size in bytes
+    ram_size: Option<usize>,
 }
 
 impl EmulatorState {
@@ -297,6 +303,10 @@ impl EmulatorState {
             info!("RTC set to custom date/time: {}", dt);
         }
 
+        // Store monitor and RAM size for RPC status reporting
+        self.monitor = args.monitor;
+        self.ram_size = args.ram_size;
+
         self.init_finalize(emulator, frame_recv, cmd, args.audio_disabled, false)
     }
 
@@ -391,6 +401,8 @@ impl EmulatorState {
         self.systrap_history_enabled = false;
         self.peripheral_debug_enabled = false;
         self.debug_framebuffers = false;
+        self.monitor = None;
+        self.ram_size = None;
 
         self.force_update.set();
     }
@@ -480,7 +492,7 @@ impl EmulatorState {
 
     /// Polls and empties the emulator event channel. Returns `true` if events were received.
     pub fn poll(&mut self) -> bool {
-        let Some(ref eventrecv) = self.eventrecv else {
+        let Some(eventrecv) = self.eventrecv.clone() else {
             return false;
         };
         if eventrecv.is_empty() {
@@ -488,54 +500,59 @@ impl EmulatorState {
         }
 
         while let Ok(event) = eventrecv.try_recv() {
-            match event {
-                EmulatorEvent::Status(s) => {
-                    self.status = Some(*s);
-                }
-                EmulatorEvent::NextCode((address, code)) => {
-                    self.disasm_address = address;
-                    self.disasm_code =
-                        Vec::from_iter(Disassembler::from(&mut code.into_iter(), address));
-                }
-                EmulatorEvent::FloppyEjected(idx, img) => {
-                    self.messages.push_back((
-                        UserMessageType::Notice,
-                        format!("Floppy #{} ejected ({})", idx + 1, img.get_title()),
-                    ));
-                    *self.last_images[idx].borrow_mut() = Some(img);
-                }
-                EmulatorEvent::ScsiMediaEjected(id) => {
-                    self.messages
-                        .push_back((UserMessageType::Notice, format!("CD-ROM #{} ejected", id)));
-                }
-                EmulatorEvent::UserMessage(t, s) => self.messages.push_back((t, s)),
-                EmulatorEvent::Memory(update) => {
-                    self.ram_update.push_back(update);
-                }
-                EmulatorEvent::RecordedInput(i) => {
-                    if let Err(e) = std::fs::write(
-                        self.record_input_path.take().unwrap(),
-                        serde_json::to_string(&i).unwrap(),
-                    ) {
-                        self.messages.push_back((
-                            UserMessageType::Error,
-                            format!("Cannot save recording: {}", e),
-                        ));
-                    }
-                }
-                EmulatorEvent::InstructionHistory(h) => self.instruction_history = h,
-                EmulatorEvent::SystrapHistory(h) => self.systrap_history = h,
-                EmulatorEvent::PeripheralDebug(d) => self.peripheral_debug = d,
-                EmulatorEvent::SccTransmitData(ch, data) => {
-                    self.scc_tx[ch.to_usize().unwrap()].extend(&data);
-                }
-                EmulatorEvent::SerialBridgeStatus(ch, status) => {
-                    self.serial_bridge_status[ch.to_usize().unwrap()] = status;
-                }
-            }
+            self.handle_event(event);
         }
 
         true
+    }
+
+    /// Handle a single emulator event
+    fn handle_event(&mut self, event: EmulatorEvent) {
+        match event {
+            EmulatorEvent::Status(s) => {
+                self.status = Some(*s);
+            }
+            EmulatorEvent::NextCode((address, code)) => {
+                self.disasm_address = address;
+                self.disasm_code =
+                    Vec::from_iter(Disassembler::from(&mut code.into_iter(), address));
+            }
+            EmulatorEvent::FloppyEjected(idx, img) => {
+                self.messages.push_back((
+                    UserMessageType::Notice,
+                    format!("Floppy #{} ejected ({})", idx + 1, img.get_title()),
+                ));
+                *self.last_images[idx].borrow_mut() = Some(img);
+            }
+            EmulatorEvent::ScsiMediaEjected(id) => {
+                self.messages
+                    .push_back((UserMessageType::Notice, format!("CD-ROM #{} ejected", id)));
+            }
+            EmulatorEvent::UserMessage(t, s) => self.messages.push_back((t, s)),
+            EmulatorEvent::Memory(update) => {
+                self.ram_update.push_back(update);
+            }
+            EmulatorEvent::RecordedInput(i) => {
+                if let Err(e) = std::fs::write(
+                    self.record_input_path.take().unwrap(),
+                    serde_json::to_string(&i).unwrap(),
+                ) {
+                    self.messages.push_back((
+                        UserMessageType::Error,
+                        format!("Cannot save recording: {}", e),
+                    ));
+                }
+            }
+            EmulatorEvent::InstructionHistory(h) => self.instruction_history = h,
+            EmulatorEvent::SystrapHistory(h) => self.systrap_history = h,
+            EmulatorEvent::PeripheralDebug(d) => self.peripheral_debug = d,
+            EmulatorEvent::SccTransmitData(ch, data) => {
+                self.scc_tx[ch.to_usize().unwrap()].extend(&data);
+            }
+            EmulatorEvent::SerialBridgeStatus(ch, status) => {
+                self.serial_bridge_status[ch.to_usize().unwrap()] = status;
+            }
+        }
     }
 
     /// Stops emulator execution
@@ -870,6 +887,18 @@ impl EmulatorState {
         Some(status.model)
     }
 
+    /// Returns the configured monitor (None for compact Macs or if not set)
+    #[cfg(feature = "rpc")]
+    pub fn get_monitor(&self) -> Option<MacMonitor> {
+        self.monitor
+    }
+
+    /// Returns the configured RAM size in bytes
+    #[cfg(feature = "rpc")]
+    pub fn get_ram_size(&self) -> Option<usize> {
+        self.ram_size
+    }
+
     /// Returns current disassembly listing
     pub fn get_disassembly(&self) -> &DisassemblyListing {
         &self.disasm_code
@@ -1096,6 +1125,55 @@ impl EmulatorState {
             return Ok(());
         };
         Ok(sender.send(EmulatorCommand::SerialBridgeEnable(ch, config))?)
+    }
+
+    /// Enable serial bridge and wait for the status event with a timeout.
+    /// Returns the status if received within the timeout, or None if timed out.
+    #[cfg(feature = "rpc")]
+    pub fn enable_serial_bridge_wait(
+        &mut self,
+        ch: SccCh,
+        config: SerialBridgeConfig,
+        timeout: std::time::Duration,
+    ) -> Result<Option<SerialBridgeStatus>> {
+        use snow_core::emulator::comm::EmulatorEvent;
+
+        let Some(ref sender) = self.cmdsender else {
+            return Ok(None);
+        };
+        let Some(eventrecv) = self.eventrecv.clone() else {
+            return Ok(None);
+        };
+
+        sender.send(EmulatorCommand::SerialBridgeEnable(ch, config))?;
+
+        let deadline = std::time::Instant::now() + timeout;
+
+        // Wait for the SerialBridgeStatus event, processing other events as they arrive
+        while std::time::Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            match eventrecv.recv_timeout(remaining) {
+                Ok(EmulatorEvent::SerialBridgeStatus(event_ch, status)) => {
+                    let chi = event_ch.to_usize().unwrap();
+                    self.serial_bridge_status[chi] = status.clone();
+                    if event_ch == ch {
+                        return Ok(status);
+                    }
+                }
+                Ok(event) => {
+                    // Process other events normally
+                    self.handle_event(event);
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    return Ok(None);
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    return Ok(None);
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     pub fn disable_serial_bridge(&self, ch: SccCh) -> Result<()> {
