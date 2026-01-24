@@ -39,3 +39,7 @@
 
 - [Converting volume disk images](./guides/volume.md)
 - [Tap bridge network setups](./guides/tapbridgesetups.md)
+
+# Remote Control
+
+- [RPC Interface](./rpc.md)
