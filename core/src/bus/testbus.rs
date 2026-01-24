@@ -31,6 +31,7 @@ pub struct Testbus<TA: PrimInt + WrappingAdd + Hash + Debug, TD: PrimInt> {
     cycles: usize,
     trace_enabled: bool,
     mask: TA,
+    pub irq_level: Option<u8>,
 }
 
 impl<TA, TD> Testbus<TA, TD>
@@ -45,6 +46,7 @@ where
             cycles: 0,
             trace_enabled: false,
             mask,
+            irq_level: None,
         }
     }
 
@@ -125,7 +127,7 @@ where
     TD: PrimInt,
 {
     fn get_irq(&mut self) -> Option<u8> {
-        None
+        self.irq_level
     }
 }
 
