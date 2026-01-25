@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<component type="desktop-application">
+  <id>com.github.snow</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Snow</name>
+  <summary>Classic Macintosh emulator</summary>
+  <developer id="com.github.twvd">
+    <name>Thomas W.</name>
+  </developer>
+  <icon
+        type="local"
+    >/usr/share/icons/hicolor/1024x1024/apps/snow_icon.png</icon>
+  <screenshots>
+    <screenshot type="default">
+      <image
+                type="source"
+            >https://raw.githubusercontent.com/twvd/snow/master/docs/images/egui_macii.png</image>
+      <caption>Snow application</caption>
+    </screenshot>
+  </screenshots>
+
+  <description>
+    <p>
+    Snow emulates classic (Motorola 68k-based) Macintosh computers.
+    It features a graphical user interface to operate and debug the emulated machine.
+    The aim of this project is to emulate the Macintosh on a hardware-level as much as possible,
+    as opposed to emulators that patch the ROM or intercept system calls.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">snow.desktop</launchable>
+
+  <url type="homepage">https://snowemu.com/</url>
+  <url type="bugtracker">https://github.com/twvd/snow/issues</url>
+  <url type="donation">https://ko-fi.com/twvd</url>
+
+  <provides>
+    <binary>snowemu</binary>
+  </provides>
+
+  <keywords>
+    <keyword>macintosh</keyword>
+    <keyword>emulator</keyword>
+    <keyword>vintage</keyword>
+  </keywords>
+
+  <releases>
+    <release version="1.2.0" date="2025-12-17" />
+  </releases>
+</component>
