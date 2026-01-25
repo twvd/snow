@@ -5,7 +5,7 @@
   <project_license>MIT</project_license>
   <name>Snow</name>
   <summary>Classic Macintosh emulator</summary>
-  <developer id="com.github.twvd">
+  <developer id="dev.thomasw">
     <name>Thomas W.</name>
   </developer>
   <icon
