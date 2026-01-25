@@ -30,7 +30,7 @@ Currently supported hardware:
 * Motorola 68851 PMMU
 * IWM and SWIM floppy controllers
 * GCR 400K/800K floppy disk drives (up to 3 on SE)
-* GCR/MFM 1.44MB 'SuperDrive' floppy disk drive (currently read-only)
+* GCR/MFM 1.44MB 'SuperDrive' floppy disk drive
 * SCSI hard disk drives (up to 7)
 * SCSI CD-ROM drive
 * Macintosh Real-Time Clock
@@ -38,6 +38,7 @@ Currently supported hardware:
 * ADB keyboard/mouse
 * Audio output (PWM-based audio on compact Macs and ASC on newer models)
 * Macintosh Display Card 8-24 with various monitor types (models with NuBus)
+* DaynaPORT SCSI/Link Ethernet adapter
 
 Supported floppy image formats:
 
@@ -67,7 +68,9 @@ Networking and interfacing features:
 
 * TCP and PTY bridges for serial ports
 * LocalTalk over UDP
-* Emulated Ethernet adapter with userland NAT
+* Ethernet, linkable to:
+  * Userland NAT and HTTPS stripping
+  * tap interfaces (Linux only)
 
 ## Building
 
