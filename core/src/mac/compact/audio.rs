@@ -1,20 +1,13 @@
 use anyhow::Result;
-use crossbeam_channel::{Receiver, Sender};
 use serde::{Deserialize, Serialize};
 
 use crate::audio_filter::AudioFilter;
-use crate::renderer::{AUDIO_BUFFER_SIZE, AUDIO_CHANNELS};
-
-pub const AUDIO_QUEUE_LEN: usize = 2;
-
-pub type AudioBuffer = Box<[f32]>;
+use crate::renderer::{default_audio_sink, AudioSink, AUDIO_BUFFER_SIZE, AUDIO_CHANNELS};
 
 #[derive(Serialize, Deserialize)]
 pub struct AudioState {
-    #[serde(skip)]
-    sender: Option<Sender<AudioBuffer>>,
-    #[serde(skip)]
-    pub receiver: Option<Receiver<AudioBuffer>>,
+    #[serde(skip, default = "default_audio_sink")]
+    sink: Box<dyn AudioSink>,
     buffer: Vec<f32>,
     silent: bool,
     filter: AudioFilter,
@@ -22,10 +15,8 @@ pub struct AudioState {
 
 impl Default for AudioState {
     fn default() -> Self {
-        let (sender, receiver) = crossbeam_channel::bounded(AUDIO_QUEUE_LEN);
         Self {
-            sender: Some(sender),
-            receiver: Some(receiver),
+            sink: default_audio_sink(),
             buffer: Vec::with_capacity(AUDIO_BUFFER_SIZE),
             silent: true,
             filter: AudioFilter::new(),
@@ -34,6 +25,10 @@ impl Default for AudioState {
 }
 
 impl AudioState {
+    pub fn set_sink(&mut self, sink: Box<dyn AudioSink>) {
+        self.sink = sink;
+    }
+
     pub fn push(&mut self, val: u8) -> Result<()> {
         if val != 0 && val != 0xFF {
             self.silent = false;
@@ -51,10 +46,7 @@ impl AudioState {
         if self.buffer.len() >= AUDIO_BUFFER_SIZE {
             let buffer = std::mem::replace(&mut self.buffer, Vec::with_capacity(AUDIO_BUFFER_SIZE));
             self.silent = buffer.iter().all(|&s| s.abs() < 0.01);
-            self.sender
-                .as_ref()
-                .unwrap()
-                .send(buffer.into_boxed_slice())?;
+            self.sink.send(buffer.into_boxed_slice())?;
         }
         Ok(())
     }

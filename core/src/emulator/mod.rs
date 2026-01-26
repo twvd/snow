@@ -31,7 +31,7 @@ use crate::mac::serial_bridge::{SccBridge, SerialBridgeStatus};
 use crate::mac::swim::drive::DriveType;
 use crate::mac::{ExtraROMs, MacModel, MacMonitor};
 use crate::renderer::channel::ChannelRenderer;
-use crate::renderer::AudioReceiver;
+use crate::renderer::AudioSink;
 use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
@@ -190,11 +190,11 @@ dispatch! {
         fn speed(&self) -> EmulatorSpeed { bus.speed }
         fn effective_speed(&self) -> f64 { bus.get_effective_speed() }
         fn debug_properties(&self) -> DebuggableProperties { bus.get_debug_properties() }
-        fn get_audio_channel(&self) -> AudioReceiver { bus.get_audio_channel() }
     }
 
     mutable_calls {
         fn set_speed(&mut self, speed: EmulatorSpeed) -> () { bus.set_speed(speed) }
+        fn set_audio_sink(&mut self, sink: Box<dyn AudioSink>) -> () { bus.set_audio_sink(sink) }
 
         fn cpu_tick(&mut self, ticks: Ticks) -> Result<Ticks> { tick(ticks) }
         fn cpu_set_breakpoint(&mut self, bp: Breakpoint) -> () { set_breakpoint(bp) }
@@ -673,8 +673,8 @@ impl Emulator {
         Ok(())
     }
 
-    pub fn get_audio(&mut self) -> AudioReceiver {
-        self.config.get_audio_channel()
+    pub fn set_audio_sink(&mut self, sink: Box<dyn AudioSink>) {
+        self.config.set_audio_sink(sink);
     }
 
     pub fn load_hdd_image(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {

@@ -1,12 +1,18 @@
 pub mod channel;
 
 use anyhow::Result;
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 
 use std::ops::{Deref, DerefMut};
 
+/// Audio frame buffer
+pub type AudioBuffer = Box<[f32]>;
+
 /// Audio frame channel receiver
-pub type AudioReceiver = Receiver<Box<[f32]>>;
+pub type AudioReceiver = Receiver<AudioBuffer>;
+
+/// Audio channel queue length
+pub const AUDIO_QUEUE_LEN: usize = 2;
 
 /// Amount of samples in the audio buffer
 pub const AUDIO_BUFFER_SAMPLES: usize = 512;
@@ -16,6 +22,39 @@ pub const AUDIO_BUFFER_SIZE: usize = AUDIO_BUFFER_SAMPLES * AUDIO_CHANNELS;
 
 /// Audio channels
 pub const AUDIO_CHANNELS: usize = 2;
+
+/// Audio sink for produced buffers
+pub trait AudioSink: Send {
+    fn send(&mut self, buffer: AudioBuffer) -> Result<()>;
+}
+
+/// Crossbeam-backed audio sink
+pub struct ChannelAudioSink {
+    sender: Sender<AudioBuffer>,
+    receiver: Receiver<AudioBuffer>,
+}
+
+impl ChannelAudioSink {
+    pub fn new() -> Self {
+        let (sender, receiver) = crossbeam_channel::bounded(AUDIO_QUEUE_LEN);
+        Self { sender, receiver }
+    }
+
+    pub fn receiver(&self) -> AudioReceiver {
+        self.receiver.clone()
+    }
+}
+
+impl AudioSink for ChannelAudioSink {
+    fn send(&mut self, buffer: AudioBuffer) -> Result<()> {
+        self.sender.send(buffer)?;
+        Ok(())
+    }
+}
+
+pub fn default_audio_sink() -> Box<dyn AudioSink> {
+    Box::new(ChannelAudioSink::new())
+}
 
 /// Display buffer for a single frame
 /// Always 24-bit color, RRGGBBAA

@@ -18,7 +18,7 @@ use crate::mac::scsi::controller::ScsiController;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::{MacModel, MacMonitor};
-use crate::renderer::{AudioReceiver, Renderer};
+use crate::renderer::{AudioSink, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 
@@ -274,8 +274,8 @@ where
         self.via1.rtc.effective_speed()
     }
 
-    pub(crate) fn get_audio_channel(&self) -> AudioReceiver {
-        self.asc.receiver.as_ref().unwrap().clone()
+    pub(crate) fn set_audio_sink(&mut self, sink: Box<dyn AudioSink>) {
+        self.asc.set_sink(sink);
     }
 
     #[allow(clippy::needless_pass_by_value)]
