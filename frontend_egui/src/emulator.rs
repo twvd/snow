@@ -24,7 +24,7 @@ use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{ExtraROMs, MacModel, MacMonitor};
-use snow_core::renderer::DisplayBuffer;
+use snow_core::renderer::{ChannelAudioSink, DisplayBuffer};
 use snow_core::tickable::{Tickable, Ticks};
 use snow_core::types::LatchingEvent;
 use snow_floppy::loaders::FloppyImageLoader;
@@ -324,20 +324,31 @@ impl EmulatorState {
         // Initialize audio
         if audio_disabled {
             cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
-        } else if self.audiosink.is_none() {
-            match SDLAudioSink::new(emulator.get_audio()) {
-                Ok((sink, exch)) => {
-                    self.audiosink = Some(sink);
-                    self.audiosink_exchange = Some(exch);
-                }
-                Err(e) => {
-                    error!("Failed to initialize audio: {:?}", e);
-                    cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
-                }
-            }
         } else {
-            let mut cb = self.audiosink.as_mut().unwrap().lock();
-            cb.set_receiver(emulator.get_audio());
+            let channel_sink = ChannelAudioSink::new();
+            let receiver = channel_sink.receiver();
+            let mut audio_ready = true;
+
+            if self.audiosink.is_none() {
+                match SDLAudioSink::new(receiver) {
+                    Ok((sink, exch)) => {
+                        self.audiosink = Some(sink);
+                        self.audiosink_exchange = Some(exch);
+                    }
+                    Err(e) => {
+                        error!("Failed to initialize audio: {:?}", e);
+                        cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
+                        audio_ready = false;
+                    }
+                }
+            } else {
+                let mut cb = self.audiosink.as_mut().unwrap().lock();
+                cb.set_receiver(receiver);
+            }
+
+            if audio_ready {
+                emulator.set_audio_sink(Box::new(channel_sink));
+            }
         }
 
         if !pause {

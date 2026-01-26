@@ -3,29 +3,23 @@ use std::collections::VecDeque;
 use crate::audio_filter::AudioFilter;
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
-use crate::renderer::AUDIO_BUFFER_SIZE;
+use crate::renderer::{default_audio_sink, AudioSink, AUDIO_BUFFER_SIZE};
 use crate::tickable::Ticks;
 use crate::types::{Byte, Field32};
 use anyhow::Result;
-use crossbeam_channel::{Receiver, Sender};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 
-pub const AUDIO_QUEUE_LEN: usize = 2;
 const FIFO_SIZE: usize = 0x400;
-
-pub type AudioBuffer = Box<[f32]>;
 
 /// Apple Sound Chip
 #[derive(Serialize, Deserialize)]
 pub struct Asc {
-    #[serde(skip)]
-    sender: Option<Sender<AudioBuffer>>,
-    #[serde(skip)]
-    pub receiver: Option<Receiver<AudioBuffer>>,
+    #[serde(skip, default = "default_audio_sink")]
+    sink: Box<dyn AudioSink>,
 
     buffer: Vec<f32>,
     silent: bool,
@@ -97,9 +91,8 @@ enum AscMode {
 
 impl Default for Asc {
     fn default() -> Self {
-        let mut result = Self {
-            sender: None,
-            receiver: None,
+        Self {
+            sink: default_audio_sink(),
             buffer: Vec::with_capacity(AUDIO_BUFFER_SIZE),
             silent: true,
             channels: Default::default(),
@@ -114,9 +107,7 @@ impl Default for Asc {
             r_last: 0,
             empty_cycles: 0,
             filter: AudioFilter::new(),
-        };
-        result.init_channels();
-        result
+        }
     }
 }
 
@@ -158,10 +149,7 @@ impl Asc {
         if self.buffer.len() >= AUDIO_BUFFER_SIZE {
             let buffer = std::mem::replace(&mut self.buffer, Vec::with_capacity(AUDIO_BUFFER_SIZE));
             self.silent = buffer.iter().all(|&s| s.abs() < 0.01);
-            self.sender
-                .as_ref()
-                .unwrap()
-                .send(buffer.into_boxed_slice())?;
+            self.sink.send(buffer.into_boxed_slice())?;
         }
         Ok(())
     }
@@ -241,14 +229,12 @@ impl Asc {
         22257
     }
 
-    pub fn init_channels(&mut self) {
-        let (sender, receiver) = crossbeam_channel::bounded(AUDIO_QUEUE_LEN);
-        self.sender = Some(sender);
-        self.receiver = Some(receiver);
+    pub fn set_sink(&mut self, sink: Box<dyn AudioSink>) {
+        self.sink = sink;
     }
 
     pub fn after_deserialize(&mut self) {
-        self.init_channels();
+        self.set_sink(default_audio_sink());
     }
 }
 

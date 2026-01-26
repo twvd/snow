@@ -17,7 +17,7 @@ use crate::mac::swim::drive::DriveType;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::MacModel;
-use crate::renderer::{AudioReceiver, Renderer};
+use crate::renderer::{AudioSink, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 use crate::util::take_from_accumulator;
@@ -232,8 +232,8 @@ where
         self.via.rtc.effective_speed()
     }
 
-    pub(crate) fn get_audio_channel(&self) -> AudioReceiver {
-        self.audio.receiver.as_ref().unwrap().clone()
+    pub(crate) fn set_audio_sink(&mut self, sink: Box<dyn AudioSink>) {
+        self.audio.set_sink(sink);
     }
 
     fn soundbuf(&mut self) -> &mut [u8] {
