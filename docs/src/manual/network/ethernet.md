@@ -74,7 +74,19 @@ Snow can strip HTTPS and expose HTTPS-only sites to the emulated system in a tra
 fashion. To use this, select the 'NAT (HTTPS stripping)' link mode. Snow supports TLS 1.2 and higher.
 
 This works transparently in the same way as the normal NAT mode. To visit a website, just
-visit an http link (e.g. `http://www.spacejam.com/1996/`).
+visit an http link (e.g. `http://www.spacejam.com/1996/`) for the https site you want to
+visit.
+
+When this mode is enabled, Snow will listen for connections the emulated system
+establishes to TCP port 80 (http) and instead set up a TLS connection to that host on
+port 443 and send the plaintext back and forth, basically doing TLS offloading in
+a transparent fashion.
+
+Snow waits for the first HTTP request to arrive before setting up
+the TLS connection to retrieve the `Host:` header from the request to use in TLS Server
+Name Indication (SNI). In the following plaintext stream, Snow will scan for `https://`
+and rewrite that to ` http://` so hyperlinks follow the correct protocol from the
+emulated system side.
 
 <div class="warning">
 By using this mode, you lose encryption for part of the network route. Be aware of the risks before you
