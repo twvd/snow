@@ -1039,8 +1039,8 @@ impl NatEngine {
                                 }
                             }
                             Err(_e) => {
-                                // Not enough data yet or parse error, don't consume
-                                return (0, 0);
+                                // Not enough data yet or parse error
+                                return (buffer.len(), buffer.len());
                             }
                         }
                     }
