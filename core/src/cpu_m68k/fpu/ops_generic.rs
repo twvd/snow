@@ -10,6 +10,7 @@ use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord};
 use crate::cpu_m68k::fpu::math::FloatMath;
+use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
 use crate::cpu_m68k::{CpuM68kType, FPU_M68881, FPU_M68882};
@@ -50,12 +51,19 @@ where
     /// FSAVE
     pub(in crate::cpu_m68k) fn op_fsave(&mut self, instr: &Instruction) -> Result<()> {
         // Idle state frame
-        let stateframe: Long = match FPU_TYPE {
-            FPU_M68881 => 0x1F180000,
-            FPU_M68882 => 0x1F380000,
+        match FPU_TYPE {
+            FPU_M68881 => {
+                let mut stateframe = [0u8; 28];
+                stateframe[0..4].copy_from_slice(&0x1F180000u32.to_be_bytes());
+                self.write_ea_sz(instr, instr.get_op2(), stateframe)?;
+            }
+            FPU_M68882 => {
+                let mut stateframe = [0u8; 60];
+                stateframe[0..4].copy_from_slice(&0x1F380000u32.to_be_bytes());
+                self.write_ea_sz(instr, instr.get_op2(), stateframe)?;
+            }
             _ => todo!(),
         };
-        self.write_ea(instr, instr.get_op2(), stateframe)?;
 
         self.advance_cycles(50)?;
 
@@ -65,8 +73,24 @@ where
     /// FRESTORE
     pub(in crate::cpu_m68k) fn op_frestore(&mut self, instr: &Instruction) -> Result<()> {
         let state = self.read_ea::<Long>(instr, instr.get_op2())?;
-        if state != 0 && state != 0x1F180000 && state != 0x1F380000 {
-            log::warn!("TODO FPU state frame restored: {:08X}", state);
+        if state & 0xFF000000 == 0 {
+            // NULL state frame, reset FPU
+            self.regs.fpu = FpuRegisterFile::default();
+        } else if state & 0xFF000000 == 0x1F000000 {
+            // Idle state frame
+            // We've already read 4 bytes
+            self.step_ea_addr = None;
+            match FPU_TYPE {
+                FPU_M68881 => {
+                    self.read_ea_sz::<{ 28 - 4 }>(instr, instr.get_op2())?;
+                }
+                FPU_M68882 => {
+                    self.read_ea_sz::<{ 60 - 4 }>(instr, instr.get_op2())?;
+                }
+                _ => todo!(),
+            };
+        } else {
+            bail!("Unknown FPU state frame restored: {:08X}", state);
         }
 
         self.advance_cycles(55)?;
