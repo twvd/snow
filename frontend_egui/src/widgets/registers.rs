@@ -5,6 +5,12 @@ use snow_core::types::Long;
 
 use crate::uniform::UniformMethods;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegisterTab {
+    Cpu,
+    Fpu,
+}
+
 /// egui widget to display Motorola 68000 register state
 pub struct RegistersWidget {
     regs: RegisterFile,
@@ -12,6 +18,7 @@ pub struct RegistersWidget {
     // Track editing state using the CpuRegister enum
     editing: Option<(Register, String)>, // (register, current_edit_value)
     edited: Option<(Register, Long)>,    // (register, new_value) - when edit is completed
+    selected_tab: RegisterTab,
 }
 
 impl RegistersWidget {
@@ -24,6 +31,7 @@ impl RegistersWidget {
             lastregs: RegisterFile::new(),
             editing: None,
             edited: None,
+            selected_tab: RegisterTab::Cpu,
         }
     }
 
@@ -39,9 +47,31 @@ impl RegistersWidget {
     }
 
     pub fn draw(&mut self, ui: &mut egui::Ui, cpu_type: CpuM68kType) {
-        use egui_extras::{Column, TableBuilder};
+        ui.vertical(|ui| {
+            // Tab selection
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.selected_tab, RegisterTab::Cpu, "CPU");
+                ui.selectable_value(&mut self.selected_tab, RegisterTab::Fpu, "FPU");
+            });
 
-        let available_height = ui.available_height();
+            ui.separator();
+
+            let available_height = ui.available_height();
+
+            match self.selected_tab {
+                RegisterTab::Cpu => self.draw_cpu_registers(ui, cpu_type, available_height),
+                RegisterTab::Fpu => self.draw_fpu_registers(ui, cpu_type, available_height),
+            }
+        });
+    }
+
+    fn draw_cpu_registers(
+        &mut self,
+        ui: &mut egui::Ui,
+        cpu_type: CpuM68kType,
+        available_height: f32,
+    ) {
+        use egui_extras::{Column, TableBuilder};
 
         TableBuilder::new(ui)
             .max_scroll_height(available_height)
@@ -252,6 +282,154 @@ impl RegistersWidget {
                         });
                     });
                 });
+            });
+    }
+
+    fn draw_fpu_registers(
+        &mut self,
+        ui: &mut egui::Ui,
+        cpu_type: CpuM68kType,
+        available_height: f32,
+    ) {
+        use egui_extras::{Column, TableBuilder};
+
+        if cpu_type < M68020 {
+            ui.centered_and_justified(|ui| {
+                ui.label("FPU not installed");
+            });
+            return;
+        }
+
+        TableBuilder::new(ui)
+            .max_scroll_height(available_height)
+            .column(Column::exact(50.0))
+            .column(Column::remainder().at_least(150.0))
+            .striped(true)
+            .body(|mut body| {
+                // FP0-FP7 floating point registers
+                for i in 0..8 {
+                    let fp_current = &self.regs.fpu.fp[i];
+                    let fp_last = &self.lastregs.fpu.fp[i];
+
+                    // Check if value changed
+                    let changed = fp_current.is_inf() != fp_last.is_inf()
+                        || fp_current.is_nan() != fp_last.is_nan()
+                        || (!fp_current.is_nan()
+                            && !fp_current.is_inf()
+                            && fp_current.as_f64() != fp_last.as_f64());
+
+                    let color = if changed {
+                        Self::COLOR_CHANGED
+                    } else {
+                        Self::COLOR_VALUE
+                    };
+
+                    body.row(20.0, |mut row| {
+                        // Register name
+                        row.col(|ui| {
+                            ui.label(egui::RichText::new(format!("FP{}", i)));
+                        });
+
+                        // Value as floating point
+                        row.col(|ui| {
+                            let value_str = if fp_current.is_nan() {
+                                "NaN".to_string()
+                            } else if fp_current.is_inf() {
+                                if fp_current.is_negative() {
+                                    "-Infinity".to_string()
+                                } else {
+                                    "+Infinity".to_string()
+                                }
+                            } else {
+                                format!("{:+.17e}", fp_current.as_f64())
+                            };
+
+                            ui.label(
+                                egui::RichText::new(value_str)
+                                    .family(egui::FontFamily::Monospace)
+                                    .color(color),
+                            );
+                        });
+                    });
+                }
+
+                // Add a separator before control registers
+                body.row(10.0, |mut row| {
+                    row.col(|_| {});
+                    row.col(|_| {});
+                });
+
+                // Helper function for displaying FPU control register rows
+                let mut register_row =
+                    |name: &str, reg: Register, value_fn: &dyn Fn(&RegisterFile) -> Long| {
+                        let changed = value_fn(&self.regs) != value_fn(&self.lastregs);
+                        let color = if changed {
+                            Self::COLOR_CHANGED
+                        } else {
+                            Self::COLOR_VALUE
+                        };
+
+                        body.row(20.0, |mut row| {
+                            // Register name
+                            row.col(|ui| {
+                                ui.label(egui::RichText::new(name));
+                            });
+
+                            // Check if this register is being edited
+                            if let Some((edit_reg, ref mut edit_value)) = &mut self.editing {
+                                let mut clear_editing = false;
+
+                                if *edit_reg == reg {
+                                    // This register is being edited, show text input
+                                    row.col(|ui| {
+                                        let response = ui.text_edit_singleline(edit_value);
+
+                                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                            // Escape is cancel
+                                            clear_editing = true;
+                                        } else if response.lost_focus()
+                                            || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                        {
+                                            // Try to parse the value
+                                            if let Ok(new_value) =
+                                                Long::from_str_radix(edit_value, 16)
+                                            {
+                                                self.edited = Some((reg, new_value));
+                                            }
+                                            clear_editing = true;
+                                        }
+                                    });
+
+                                    if clear_editing {
+                                        self.editing = None;
+                                    }
+
+                                    return;
+                                }
+                            }
+
+                            // Normal display (not editing)
+                            row.col(|ui| {
+                                let value = value_fn(&self.regs);
+                                let text = egui::RichText::new(format!("{:08X}", value))
+                                    .family(egui::FontFamily::Monospace)
+                                    .color(color);
+
+                                let response =
+                                    ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+
+                                if response.clicked() {
+                                    // Start editing this register
+                                    self.editing = Some((reg, format!("{:08X}", value)));
+                                }
+                            });
+                        });
+                    };
+
+                // Display FPU control registers
+                register_row("FPCR", Register::FPCR, &|r: &RegisterFile| r.fpu.fpcr.0);
+                register_row("FPSR", Register::FPSR, &|r: &RegisterFile| r.fpu.fpsr.0);
+                register_row("FPIAR", Register::FPIAR, &|r: &RegisterFile| r.fpu.fpiar);
             });
     }
 }
