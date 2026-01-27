@@ -4,6 +4,10 @@ version = "1.3.0"
 edition = "2021"
 build = "build.rs"
 
+[[bin]]
+name = "snowemu"
+path = "src/main.rs"
+
 [features]
 default = ["ethernet", "ethernet_nat", "ethernet_nat_https_stripping", "ethernet_tap"]
 ethernet = ["snow_core/ethernet"]

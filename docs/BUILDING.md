@@ -36,7 +36,7 @@ To build after checking out the source, simply run:
 cargo build -r
 ```
 
-This will place the `snow_frontend_egui` binary into `target/release`.
+This will place the `snowemu` binary into `target/release`.
 
 ## Building and running from source
 

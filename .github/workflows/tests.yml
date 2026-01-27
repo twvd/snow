@@ -45,7 +45,7 @@ jobs:
       # snow_frontend_egui excluded due to https://github.com/Smithay/wayland-rs/issues/717
       run: cargo llvm-cov --workspace --exclude snow_frontend_egui --codecov --output-path codecov.json
     - name: Test snow_frontend_egui separately
-      run: cargo test --bin snow_frontend_egui
+      run: cargo test -p snow_frontend_egui
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v3
       with:

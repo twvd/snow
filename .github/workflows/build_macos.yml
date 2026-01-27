@@ -39,7 +39,7 @@ jobs:
     - name: Install bundle dependencies
       run: brew install dylibbundler imagemagick
     - name: Run bundle script
-      run: ./.github/mac-bundle.sh "target/${{ matrix.arch }}-apple-darwin/release/snow_frontend_egui"
+      run: ./.github/mac-bundle.sh "target/${{ matrix.arch }}-apple-darwin/release/snowemu"
     - name: Sign the App
       run: codesign --force -s - -vvvv Snow.app
     - name: Zip it up

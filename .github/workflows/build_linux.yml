@@ -38,7 +38,7 @@ jobs:
     - name: GUI Create packaging directory
       run: mkdir snow-gui
     - name: GUI Gather files
-      run: cp target/release/snow_frontend_egui snow-gui/snowemu
+      run: cp target/release/snowemu snow-gui/snowemu
     - name: GUI Upload artifact
       uses: actions/upload-artifact@v4
       with:
