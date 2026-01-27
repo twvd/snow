@@ -1,0 +1,25 @@
+[package]
+name = "snow_rpc_cli"
+version = "1.2.0"
+edition = "2024"
+description = "Command-line interface for Snow RPC"
+license = "MIT"
+
+[[bin]]
+name = "snow-rpc"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+[target.'cfg(unix)'.dependencies]
+# Unix socket support is in std
+
+[target.'cfg(windows)'.dependencies]
+# Windows uses TCP only
+
+[lints]
+workspace = true
