@@ -62,6 +62,12 @@ where
         debug_assert_eq!(source.get_semantics(), SEMANTICS_EXTENDED);
         debug_assert_eq!(dest.get_semantics(), SEMANTICS_EXTENDED);
 
+        // Apply FPCR rounding mode and precision to operands
+        // Operations will automatically use these semantics
+        let sem = self.fpu_rounding_mode_precision()?;
+        let source = &source.cast(sem);
+        let dest = &dest.cast(sem);
+
         // Cycles row (source/destination data type):
         // [FPn to FPn, integer, single, double, extended, packed]
         //
@@ -83,20 +89,20 @@ where
             0b0100011 => (dest * source, [71, 100, 92, 98, 96, 895]),
             // FDIV
             0b0100000 => (dest / source, [105, 132, 124, 130, 128, 940]),
-            // FSGLMUL
-            0b0100111 => (
-                (dest * source)
-                    .cast(SEMANTICS_SINGLE)
-                    .cast(SEMANTICS_EXTENDED),
-                [59, 88, 80, 86, 84, 895],
-            ),
-            // FSGLDIV
-            0b0100100 => (
-                (dest / source)
-                    .cast(SEMANTICS_SINGLE)
-                    .cast(SEMANTICS_EXTENDED),
-                [69, 98, 90, 96, 94, 936],
-            ),
+            // FSGLMUL - single precision with FPCR rounding mode
+            0b0100111 => {
+                let sem = SEMANTICS_SINGLE.with_rm(self.fpu_rounding_mode());
+                let source = &source.cast(sem);
+                let dest = &dest.cast(sem);
+                (dest * source, [59, 88, 80, 86, 84, 895])
+            }
+            // FSGLDIV - single precision with FPCR rounding mode
+            0b0100100 => {
+                let sem = SEMANTICS_SINGLE.with_rm(self.fpu_rounding_mode());
+                let source = &source.cast(sem);
+                let dest = &dest.cast(sem);
+                (dest / source, [69, 98, 90, 96, 94, 936])
+            },
             // FINT
             0b0000001 => (
                 source
@@ -118,22 +124,24 @@ where
                 let result = dest - source;
                 self.fpu_condition_codes(&result);
                 // TODO flags
-                return Ok((dest.clone(), [35, 62, 54, 60, 58, 870]));
+                return Ok((dest.cast(SEMANTICS_EXTENDED), [35, 62, 54, 60, 58, 870]));
             }
-            // FREM
+            // FREM - always uses round-to-nearest regardless of FPCR
             0b0100101 => {
-                assert_eq!(dest.get_rounding_mode(), RoundingMode::NearestTiesToEven);
-                assert_eq!(source.get_rounding_mode(), RoundingMode::NearestTiesToEven);
+                let sem = SEMANTICS_EXTENDED.with_rm(RoundingMode::NearestTiesToEven);
+                let dest = &dest.cast(sem);
+                let source = &source.cast(sem);
                 let quotient = dest / source;
                 let n = quotient.round();
                 self.regs.fpu.fpsr.set_quotient(n.to_i64() as u8);
                 self.regs.fpu.fpsr.set_quotient_s(n.is_negative());
                 (dest - (source * n), [100, 129, 121, 127, 125, 937])
             }
-            // FMOD
+            // FMOD - always uses round-toward-zero regardless of FPCR
             0b0100001 => {
-                assert_eq!(dest.get_rounding_mode(), RoundingMode::NearestTiesToEven);
-                assert_eq!(source.get_rounding_mode(), RoundingMode::NearestTiesToEven);
+                let sem = SEMANTICS_EXTENDED.with_rm(RoundingMode::Zero);
+                let dest = &dest.cast(sem);
+                let source = &source.cast(sem);
                 let quotient = dest / source;
                 let n = quotient.trunc();
                 self.regs.fpu.fpsr.set_quotient(n.to_i64() as u8);
@@ -151,7 +159,7 @@ where
             // FTST
             0b0111010 => {
                 self.fpu_condition_codes(source);
-                return Ok((dest.clone(), [33, 60, 52, 58, 56, 870]));
+                return Ok((dest.cast(SEMANTICS_EXTENDED), [33, 60, 52, 58, 56, 870]));
             }
             // FNEG
             0b0011010 => (source.neg(), [35, 62, 54, 60, 58, 872]),
@@ -240,7 +248,8 @@ where
         // Condition codes (3.6.2)
         self.fpu_condition_codes(&result);
 
-        Ok((result, cycles))
+        // Cast result back to EXTENDED for storage in FPU registers
+        Ok((result.cast(SEMANTICS_EXTENDED), cycles))
     }
 
     fn fpu_condition_codes(&mut self, result: &Float) {
