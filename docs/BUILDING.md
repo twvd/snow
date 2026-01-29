@@ -28,6 +28,8 @@ On Fedora, you can run:
 sudo dnf install sdl2-compat-devel pkgconf-pkg-config
 ```
 
+On Windows, you'll need to obtain an SDL2 build (either by compiling it yourself or downloading a prebuilt binary). At the time of writing, the latest release is available [here](https://github.com/libsdl-org/SDL/releases/tag/release-2.32.10). Make sure to download the correct binaries for your platform - typically x64. Copy `SDL2.dll` and `SDL2.lib` into Snow's project root directory.
+
 ## Building from source
 
 To build after checking out the source, simply run:
