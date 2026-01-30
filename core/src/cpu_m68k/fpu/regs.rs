@@ -64,6 +64,17 @@ bitfield! {
     }
 }
 
+impl FpuAccruedExceptions {
+    pub fn accrue(&mut self, exc: &FpuExceptions) {
+        // 2.3.4
+        self.set_iop(self.iop() || exc.bsun() || exc.snan() || exc.operr());
+        self.set_ovfl(self.ovfl() || exc.ovfl());
+        self.set_unfl(self.unfl() || (exc.unfl() && exc.inex2()));
+        self.set_dz(self.dz() || exc.dz());
+        self.set_inex(self.inex() || exc.inex1() || exc.inex2() || exc.ovfl());
+    }
+}
+
 bitfield! {
     /// Floating Point Control Register
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
