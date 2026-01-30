@@ -183,12 +183,23 @@ impl From<BitsExtReal> for Float {
             // Convert M68881 biased exponent back to unbiased for arpfloat
             let biased_exp = value.e() as i64;
             let unbiased_exp = biased_exp - EXPONENT_BIAS as i64;
+            let raw_mantissa = value.raw_mantissa();
+
+            if raw_mantissa == 0 {
+                // Pseudo-zero (non-zero exponent but zero mantissa)
+                return Self::zero(SEMANTICS_EXTENDED, value.s());
+            }
+
+            // Normalize the mantissa if needed (handles unnormals where i=0)
+            let leading_zeros = raw_mantissa.leading_zeros() as i64;
+            let normalized_mantissa = raw_mantissa << leading_zeros;
+            let adjusted_exp = unbiased_exp - leading_zeros;
 
             Self::from_parts(
                 SEMANTICS_EXTENDED,
                 value.s(),
-                unbiased_exp,
-                BigInt::from_u64(value.raw_mantissa()),
+                adjusted_exp,
+                BigInt::from_u64(normalized_mantissa),
             )
         }
     }
