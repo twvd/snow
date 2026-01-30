@@ -244,6 +244,8 @@ where
         self.regs.fpu.fpsr.exs_mut().set_unfl(false); // * X denormalized
         self.regs.fpu.fpsr.exs_mut().set_inex2(false); // * L, D, X
         self.regs.fpu.fpsr.exs_mut().set_inex1(false); // * P
+        let excs = self.regs.fpu.fpsr;
+        self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
 
         // Condition codes (3.6.2)
         self.fpu_condition_codes(&result);
