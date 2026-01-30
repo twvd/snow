@@ -102,7 +102,7 @@ where
                 let source = &source.cast(sem);
                 let dest = &dest.cast(sem);
                 (dest / source, [69, 98, 90, 96, 94, 936])
-            },
+            }
             // FINT
             0b0000001 => (
                 source
