@@ -356,7 +356,7 @@ where
                     }
                     0b110 => {
                         // Byte
-                        let ea = self.calc_ea_addr::<Word>(
+                        let ea = self.calc_ea_addr::<Byte>(
                             instr,
                             instr.get_addr_mode()?,
                             instr.get_op2(),
