@@ -104,13 +104,21 @@ where
                 (dest / source, [69, 98, 90, 96, 94, 936])
             }
             // FINT
-            0b0000001 => (
-                source
-                    .cast(self.fpu_rounding_mode_precision()?)
-                    .round()
-                    .cast(SEMANTICS_EXTENDED),
-                [65, 92, 74, 80, 78, 892],
-            ),
+            0b0000001 => {
+                let sem = self.fpu_rounding_mode_precision()?;
+                let casted = source.cast(sem);
+
+                // Round to integer based on rounding mode
+                let rounded = match self.fpu_rounding_mode() {
+                    RoundingMode::NearestTiesToEven => casted.round(),
+                    RoundingMode::Zero => casted.trunc(),
+                    RoundingMode::Negative => casted.floor(),
+                    RoundingMode::Positive => casted.ceil(),
+                    RoundingMode::None | RoundingMode::NearestTiesToAway => unreachable!(),
+                };
+
+                (rounded.cast(SEMANTICS_EXTENDED), [65, 92, 74, 80, 78, 892])
+            }
             // FINTRZ
             0b0000011 => (
                 source
