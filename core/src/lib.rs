@@ -6,6 +6,8 @@ pub mod emulator;
 pub mod keymap;
 pub mod mac;
 pub mod renderer;
+#[cfg(feature = "rpc")]
+pub mod rpc;
 pub mod tickable;
 pub mod types;
 pub mod util;

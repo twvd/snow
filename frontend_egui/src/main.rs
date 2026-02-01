@@ -7,6 +7,8 @@ mod dialogs;
 mod emulator;
 mod helpers;
 mod keymap;
+#[cfg(feature = "rpc")]
+mod rpc;
 mod settings;
 mod shader_pipeline;
 mod uniform;
@@ -52,6 +54,21 @@ struct Args {
     /// Values: "pty" for PTY mode (Unix only), "tcp:PORT" for TCP mode
     #[arg(long, value_name = "MODE")]
     serial_bridge_b: Option<String>,
+
+    /// Enable RPC server for external control
+    #[cfg(feature = "rpc")]
+    #[arg(long)]
+    rpc: bool,
+
+    /// Custom Unix socket path for RPC server
+    #[cfg(feature = "rpc")]
+    #[arg(long, value_name = "PATH")]
+    rpc_socket: Option<String>,
+
+    /// TCP port for RPC server (in addition to Unix socket)
+    #[cfg(feature = "rpc")]
+    #[arg(long, value_name = "PORT")]
+    rpc_tcp: Option<u16>,
 }
 
 fn main() -> eframe::Result {
@@ -102,6 +119,12 @@ fn main() -> eframe::Result {
                 args.zen,
                 args.serial_bridge_a.as_deref(),
                 args.serial_bridge_b.as_deref(),
+                #[cfg(feature = "rpc")]
+                args.rpc,
+                #[cfg(feature = "rpc")]
+                args.rpc_socket.as_deref(),
+                #[cfg(feature = "rpc")]
+                args.rpc_tcp,
             )))
         }),
     )

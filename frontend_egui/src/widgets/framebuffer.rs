@@ -104,6 +104,12 @@ impl FramebufferWidget {
         self.frame_recv = Some(recv);
     }
 
+    /// Returns a reference to the current frame buffer, if any
+    #[cfg(feature = "rpc")]
+    pub fn get_current_frame(&self) -> Option<&DisplayBuffer> {
+        self.frame.as_ref()
+    }
+
     pub fn draw(&mut self, ui: &mut egui::Ui, fullscreen: bool) -> egui::Response {
         if let Some(ref frame_recv) = self.frame_recv {
             if !frame_recv.is_empty() {
