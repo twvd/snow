@@ -26,20 +26,32 @@ pub(crate) struct FileDiskImage {
 
     /// Path where the original image resides
     path: PathBuf,
-
-    /// Only used when mmap is enabled
-    #[allow(dead_code)]
-    block_size: usize,
 }
 
 impl FileDiskImage {
-    pub(super) fn open(filename: &Path, block_size: usize) -> Result<Self> {
+    pub(super) fn open(filename: &Path) -> Result<Self> {
+        Self::open_file(filename)
+    }
+
+    pub(super) fn open_block_sized(filename: &Path, block_size: usize) -> Result<Self> {
+        let image = Self::open_file(filename)?;
+        if !image.byte_len().is_multiple_of(block_size) {
+            bail!(
+                "Cannot load disk image {}: not multiple of {}",
+                filename.display(),
+                block_size
+            );
+        }
+        Ok(image)
+    }
+
+    fn open_file(filename: &Path) -> Result<Self> {
         if !filename.exists() {
             bail!("File not found: {}", filename.display());
         }
 
         #[cfg(feature = "mmap")]
-        let disk = Self::mmap_file(filename, block_size)?;
+        let disk = Self::mmap_file(filename)?;
 
         #[cfg(not(feature = "mmap"))]
         let disk = {
@@ -47,25 +59,17 @@ impl FileDiskImage {
 
             let disk = fs::read(filename)
                 .with_context(|| format!("Failed to open file {}", filename.display()))?;
-            if !disk.len().is_multiple_of(block_size) {
-                bail!(
-                    "Cannot load disk image {}: not multiple of {}",
-                    filename.display(),
-                    block_size
-                );
-            }
             disk
         };
 
         Ok(Self {
-            block_size,
             disk,
             path: filename.to_path_buf(),
         })
     }
 
     #[cfg(feature = "mmap")]
-    fn mmap_file(filename: &Path, block_size: usize) -> Result<MmapMut> {
+    fn mmap_file(filename: &Path) -> Result<MmapMut> {
         use fs2::FileExt;
         use std::fs::OpenOptions;
         use std::io::{Seek, SeekFrom};
@@ -80,14 +84,6 @@ impl FileDiskImage {
             .with_context(|| format!("Failed to open {}", filename.display()))?;
         let file_size = f.seek(SeekFrom::End(0))? as usize;
         f.seek(SeekFrom::Start(0))?;
-        if !file_size.is_multiple_of(block_size) {
-            bail!(
-                "Cannot load disk image {}: not multiple of {}",
-                filename.display(),
-                block_size
-            );
-        }
-
         f.try_lock_exclusive()
             .with_context(|| format!("Failed to lock {}", filename.display()))?;
         let mmapped = unsafe {
@@ -134,7 +130,7 @@ impl DiskImage for FileDiskImage {
                 let mut f = File::create(path)?;
                 f.write_all(&self.disk)?;
             }
-            self.disk = Self::mmap_file(path, self.block_size)?;
+            self.disk = Self::mmap_file(path)?;
             self.path = path.to_path_buf();
             Ok(())
         }

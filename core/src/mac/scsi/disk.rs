@@ -15,7 +15,7 @@ use crate::mac::scsi::STATUS_GOOD;
 pub const DISK_BLOCKSIZE: usize = 512;
 
 #[derive(Serialize, Deserialize)]
-pub struct ScsiTargetDisk {
+pub(super) struct ScsiTargetDisk {
     #[serde(skip)]
     backend: Option<Box<dyn DiskImage>>,
 
@@ -41,7 +41,7 @@ impl ScsiTargetDisk {
     /// the emulator for fast access and automatic writes back to disk,
     /// at the discretion of the operating system.
     pub(super) fn load_disk(filename: &Path) -> Result<Self> {
-        Ok(Self::new(Box::new(FileDiskImage::open(
+        Ok(Self::new(Box::new(FileDiskImage::open_block_sized(
             filename,
             DISK_BLOCKSIZE,
         )?)))
@@ -62,6 +62,10 @@ impl ScsiTargetDisk {
 impl ScsiTarget for ScsiTargetDisk {
     fn load_media(&mut self, _path: &Path) -> Result<()> {
         bail!("load_media on non-removable disk");
+    }
+
+    fn load_image(&mut self, _image: Box<dyn DiskImage>) -> Result<()> {
+        bail!("load_image on non-removable disk");
     }
 
     fn media(&self) -> Option<&[u8]> {
@@ -248,7 +252,10 @@ impl ScsiTarget for ScsiTargetDisk {
 
     #[cfg(feature = "savestates")]
     fn after_deserialize(&mut self, imgfn: &Path) -> Result<()> {
-        self.backend = Some(Box::new(FileDiskImage::open(imgfn, DISK_BLOCKSIZE)?));
+        self.backend = Some(Box::new(FileDiskImage::open_block_sized(
+            imgfn,
+            DISK_BLOCKSIZE,
+        )?));
         Ok(())
     }
 

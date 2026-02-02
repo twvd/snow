@@ -689,6 +689,14 @@ impl Emulator {
         self.config.scsi_mut().attach_disk_image_at(image, scsi_id)
     }
 
+    pub fn insert_cdrom_image_at(
+        &mut self,
+        image: Box<dyn DiskImage>,
+        scsi_id: usize,
+    ) -> Result<()> {
+        self.config.scsi_mut().insert_cdrom_image_at(image, scsi_id)
+    }
+
     fn user_error(&self, msg: &str) {
         self.event_sender
             .send(EmulatorEvent::UserMessage(

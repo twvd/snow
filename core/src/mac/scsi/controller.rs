@@ -262,6 +262,21 @@ impl ScsiController {
         self.targets[scsi_id] = Some(Box::new(ScsiTargetCdrom::default()));
     }
 
+    /// Inserts a CD-ROM with the custom disk image at the given SCSI ID.
+    pub fn insert_cdrom_image_at(
+        &mut self,
+        image: Box<dyn DiskImage>,
+        scsi_id: usize,
+    ) -> Result<()> {
+        if scsi_id >= Self::MAX_TARGETS {
+            bail!("SCSI ID out of range: {}", scsi_id);
+        }
+        let Some(target) = self.targets[scsi_id].as_mut() else {
+            bail!("No target attached at SCSI ID {}", scsi_id);
+        };
+        target.load_image(image)
+    }
+
     /// Attaches an Ethernet adapter at the given SCSI ID
     #[cfg(feature = "ethernet")]
     pub fn attach_ethernet_at(&mut self, scsi_id: usize) {

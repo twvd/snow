@@ -605,6 +605,13 @@ impl ScsiTarget for ScsiTargetEthernet {
         unreachable!()
     }
 
+    fn load_image(
+        &mut self,
+        _image: Box<dyn crate::mac::scsi::disk_image::DiskImage>,
+    ) -> Result<()> {
+        unreachable!()
+    }
+
     fn branch_media(&mut self, _path: &Path) -> Result<()> {
         unreachable!()
     }
