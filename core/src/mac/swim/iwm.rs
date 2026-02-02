@@ -10,6 +10,7 @@ use snow_floppy::{TrackLength, TrackType};
 
 use super::{FluxTransitionTime, Swim, SwimMode};
 use crate::bus::Address;
+use crate::tickable::Ticks;
 use crate::types::Byte;
 
 bitfield! {
@@ -269,7 +270,7 @@ impl Swim {
         }
     }
 
-    fn iwm_tick_flux(&mut self, ticks: usize) -> Result<()> {
+    fn iwm_tick_flux(&mut self, ticks: Ticks) -> Result<()> {
         let side = self.get_active_head();
         let track = self.get_selected_drive().get_active_track();
         self.get_selected_drive_mut().flux_ticks_left -= ticks as i16;
@@ -327,7 +328,7 @@ impl Swim {
         Ok(())
     }
 
-    fn iwm_tick_bitstream(&mut self, ticks: usize) -> Result<()> {
+    fn iwm_tick_bitstream(&mut self, ticks: Ticks) -> Result<()> {
         debug_assert_eq!(ticks, 1);
         if !self
             .cycles
@@ -363,7 +364,7 @@ impl Swim {
         Ok(())
     }
 
-    pub(super) fn iwm_tick(&mut self, ticks: usize) -> Result<()> {
+    pub(super) fn iwm_tick(&mut self, ticks: Ticks) -> Result<()> {
         match self.get_selected_drive().floppy.get_track_type(
             self.get_active_head(),
             self.get_selected_drive().get_active_track(),

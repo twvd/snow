@@ -2967,7 +2967,7 @@ where
         self.regs.write_d(instr.get_op2(), result);
         self.regs.sr.set_ccr(ccr);
 
-        self.advance_cycles(2 * count)?;
+        self.advance_cycles(2 * count as Ticks)?;
 
         match std::mem::size_of::<T>() {
             4 => self.advance_cycles(4)?,
