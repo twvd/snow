@@ -8,6 +8,7 @@ use snow_floppy::TrackType;
 
 use crate::bus::Address;
 use crate::mac::swim::SwimMode;
+use crate::tickable::Ticks;
 use crate::types::Byte;
 
 use super::Swim;
@@ -420,7 +421,7 @@ impl Swim {
         self.lstrb = outputs & (1 << 3) != 0;
     }
 
-    pub(super) fn ism_tick(&mut self, _ticks: usize) -> Result<()> {
+    pub(super) fn ism_tick(&mut self, _ticks: Ticks) -> Result<()> {
         // This is only called when the drive is active and running
         if !self
             .cycles
