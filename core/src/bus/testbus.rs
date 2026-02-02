@@ -22,13 +22,13 @@ pub struct TraceEntry<TA: PrimInt + WrappingAdd, TD: PrimInt> {
     pub addr: TA,
     pub access: Access,
     pub val: TD,
-    pub cycle: usize,
+    pub cycle: Ticks,
 }
 
 pub struct Testbus<TA: PrimInt + WrappingAdd + Hash + Debug, TD: PrimInt> {
     pub mem: HashMap<TA, TD>,
     trace: RefCell<Vec<TraceEntry<TA, TD>>>,
-    cycles: usize,
+    cycles: Ticks,
     trace_enabled: bool,
     mask: TA,
     pub irq_level: Option<u8>,

@@ -199,7 +199,7 @@ impl Asc {
                     .with_l_fullempty(true)
                     .with_r_fullempty(true);
                 self.irq = true;
-                self.empty_cycles = FIFO_SIZE;
+                self.empty_cycles = FIFO_SIZE as Ticks;
             } else {
                 self.empty_cycles -= 1;
             }
