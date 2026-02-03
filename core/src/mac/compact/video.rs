@@ -263,25 +263,28 @@ where
     T: Renderer,
 {
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
-        let before_vblank = self.in_vblank();
-        let before_hblank = self.in_hblank();
+        // Simulate ticks one-at-a-time to ensure we don't miss a vblank or hblank.
+        for _ in 0..ticks {
+            let before_vblank = self.in_vblank();
+            let before_hblank = self.in_hblank();
 
-        // Update beam position
-        self.dots = (self.dots + ticks) % FRAME_DOTS as u64;
+            // Update beam position
+            self.dots = (self.dots + ticks) % FRAME_DOTS as u64;
 
-        if !before_vblank && self.in_vblank() {
-            // Just entered VBlank
-            self.event_vblank.set();
-        }
+            if !before_vblank && self.in_vblank() {
+                // Just entered VBlank
+                self.event_vblank.set();
+            }
 
-        if !before_hblank && self.in_hblank() {
-            // Just entered HBlank
-            self.event_hblank.set();
-        }
+            if !before_hblank && self.in_hblank() {
+                // Just entered HBlank
+                self.event_hblank.set();
+            }
 
-        if before_vblank && !self.in_vblank() {
-            // Just left VBlank
-            self.render()?;
+            if before_vblank && !self.in_vblank() {
+                // Just left VBlank
+                self.render()?;
+            }
         }
 
         Ok(ticks)
