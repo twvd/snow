@@ -329,13 +329,12 @@ impl Swim {
     }
 
     fn iwm_tick_bitstream(&mut self, ticks: Ticks) -> Result<()> {
-        debug_assert_eq!(ticks, 1);
-        if !self
-            .cycles
-            .is_multiple_of(self.get_selected_drive().get_ticks_per_bit())
-        {
+        self.bit_cycles += ticks;
+        if self.bit_cycles < self.get_selected_drive().get_ticks_per_bit() {
             return Ok(());
         }
+
+        self.bit_cycles -= self.get_selected_drive().get_ticks_per_bit();
 
         let head = self.get_active_head();
 

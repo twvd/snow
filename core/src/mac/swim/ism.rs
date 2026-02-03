@@ -421,14 +421,13 @@ impl Swim {
         self.lstrb = outputs & (1 << 3) != 0;
     }
 
-    pub(super) fn ism_tick(&mut self, _ticks: Ticks) -> Result<()> {
-        // This is only called when the drive is active and running
-        if !self
-            .cycles
-            .is_multiple_of(self.get_selected_drive().get_ticks_per_bit())
-        {
+    pub(super) fn ism_tick(&mut self, ticks: Ticks) -> Result<()> {
+        self.bit_cycles += ticks;
+        if self.bit_cycles < self.get_selected_drive().get_ticks_per_bit() {
             return Ok(());
         }
+
+        self.bit_cycles -= self.get_selected_drive().get_ticks_per_bit();
 
         if self.get_selected_drive().floppy.get_track_type(
             self.get_active_head(),
