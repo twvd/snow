@@ -54,7 +54,10 @@ macro_rules! dbgprop_long {
 #[macro_export]
 macro_rules! dbgprop_udec {
     ($name:expr, $val:expr) => {
-        DebuggableProperty::new($name, DebuggablePropertyValue::UnsignedDecimal(($val).try_into().unwrap()))
+        DebuggableProperty::new(
+            $name,
+            DebuggablePropertyValue::UnsignedDecimal(($val).try_into().unwrap()),
+        )
     };
 }
 
