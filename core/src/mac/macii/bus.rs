@@ -748,7 +748,7 @@ where
         self.vblank_clock += ticks;
         while self.vblank_clock >= CLOCK_SPEED / 60 {
             self.vblank_clock -= CLOCK_SPEED / 60;
-            
+
             self.via1.ifr.set_vblank(true);
 
             if self.speed == EmulatorSpeed::Video {
@@ -768,7 +768,7 @@ where
         if self.asc.get_irq() {
             self.via2.ifr.set_asc(true);
         }
-        
+
         self.asc_clock += ticks;
         while self.asc_clock >= CLOCK_SPEED / self.asc.sample_rate() {
             self.asc_clock -= CLOCK_SPEED / self.asc.sample_rate();
