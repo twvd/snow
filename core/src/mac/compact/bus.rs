@@ -722,8 +722,9 @@ where
             if self.video.get_clr_hblank() {
                 // Update floppy drive PWM and send next audio sample
                 let scanline = self.video.get_scanline();
-                let soundon =
-                    self.via.a_out.sound() > 0 && self.via.ddrb.sndenb() && !self.via.b_out.sndenb();
+                let soundon = self.via.a_out.sound() > 0
+                    && self.via.ddrb.sndenb()
+                    && !self.via.b_out.sndenb();
                 let soundbuf = self.soundbuf();
                 let pwm = soundbuf[scanline * 2 + 1];
                 let audiosample = if soundon { soundbuf[scanline * 2] } else { 0 };
