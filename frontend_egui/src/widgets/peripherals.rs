@@ -70,14 +70,14 @@ impl PeripheralsWidget {
                                         format!("${:08X}", v)
                                     }
                                     DebuggablePropertyValue::SignedDecimal(v) => {
-                                        if *v == isize::MAX {
+                                        if *v == i64::MAX {
                                             "∞".to_string()
                                         } else {
                                             format!("{}", v)
                                         }
                                     }
                                     DebuggablePropertyValue::UnsignedDecimal(v) => {
-                                        if *v == usize::MAX {
+                                        if *v == u64::MAX {
                                             "∞".to_string()
                                         } else {
                                             format!("{}", v)
