@@ -52,6 +52,10 @@ struct Args {
     /// Values: "pty" for PTY mode (Unix only), "tcp:PORT" for TCP mode
     #[arg(long, value_name = "MODE")]
     serial_bridge_b: Option<String>,
+
+    /// Floppy image(s) to load at start (can be specified multiple times)
+    #[arg(long)]
+    floppy: Vec<String>,
 }
 
 fn main() -> eframe::Result {
@@ -102,6 +106,7 @@ fn main() -> eframe::Result {
                 args.zen,
                 args.serial_bridge_a.as_deref(),
                 args.serial_bridge_b.as_deref(),
+                &args.floppy,
             )))
         }),
     )
