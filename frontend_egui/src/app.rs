@@ -230,6 +230,7 @@ impl SnowGui {
         zen: bool,
         serial_bridge_a: Option<&str>,
         serial_bridge_b: Option<&str>,
+        floppies: &[String],
     ) -> Self {
         egui_material_icons::initialize(&cc.egui_ctx);
         cc.egui_ctx.set_zoom_factor(zoom_factor);
@@ -455,6 +456,19 @@ impl SnowGui {
                 app.enter_fullscreen(&cc.egui_ctx);
             } else if zen {
                 app.enter_zen_mode();
+            }
+
+            // Load floppy images from CLI args (only if emulator was initialized)
+            if app.emu.is_initialized() {
+                for floppy_path in floppies {
+                    let path = Path::new(floppy_path);
+                    if !app.emu.load_floppy_firstfree(path) {
+                        log::warn!(
+                            "Failed to load floppy '{}': no available drives",
+                            path.display()
+                        );
+                    }
+                }
             }
         }
 
