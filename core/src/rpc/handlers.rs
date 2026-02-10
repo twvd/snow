@@ -2,7 +2,7 @@
 
 use super::types::*;
 use crate::emulator::comm::EmulatorSpeed;
-use crate::keymap::{KeyEvent, Keymap, Scancode};
+use crate::keymap::{KeyEvent, KeyStroke, Keymap, Scancode, char_to_keystroke};
 use crate::mac::scc::SccCh;
 use crate::mac::serial_bridge::SerialBridgeConfig;
 use crate::renderer::DisplayBuffer;
@@ -11,6 +11,51 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};
+
+/// Parses required request parameters, mapping deserialization errors to an
+/// `invalid_params` response.
+fn parse_params<T: serde::de::DeserializeOwned>(
+    id: &Option<serde_json::Value>,
+    params: &serde_json::Value,
+) -> Result<T, Box<RpcResponse>> {
+    serde_json::from_value(params.clone())
+        .map_err(|e| Box::new(RpcResponse::invalid_params(id.clone(), &e.to_string())))
+}
+
+/// Like [parse_params], but treats absent/null parameters as an empty object
+/// so field defaults apply. Present-but-malformed parameters are still rejected.
+fn parse_params_opt<T: serde::de::DeserializeOwned>(
+    id: &Option<serde_json::Value>,
+    params: &serde_json::Value,
+) -> Result<T, Box<RpcResponse>> {
+    if params.is_null() {
+        parse_params(id, &serde_json::Value::Object(serde_json::Map::new()))
+    } else {
+        parse_params(id, params)
+    }
+}
+
+/// Parses required request parameters or returns an `invalid_params` response
+/// from the enclosing handler.
+macro_rules! parse_params {
+    ($id:expr, $params:expr) => {
+        match parse_params($id, $params) {
+            Ok(p) => p,
+            Err(resp) => return *resp,
+        }
+    };
+}
+
+/// Parses optional request parameters or returns an `invalid_params` response
+/// from the enclosing handler.
+macro_rules! parse_params_opt {
+    ($id:expr, $params:expr) => {
+        match parse_params_opt($id, $params) {
+            Ok(p) => p,
+            Err(resp) => return *resp,
+        }
+    };
+}
 
 /// Key name to scancode mapping (Apple Extended Keyboard M0115)
 fn build_key_map() -> HashMap<&'static str, Scancode> {
@@ -138,54 +183,22 @@ pub fn resolve_key(key: &str) -> Option<Scancode> {
     KEY_MAP.get(key.to_lowercase().as_str()).copied()
 }
 
-/// Converts a character to a scancode, optionally returning whether shift is needed
-pub fn char_to_scancode(c: char) -> Option<(Scancode, bool)> {
-    let (key, shift) = match c {
-        'a'..='z' => (c.to_string(), false),
-        'A'..='Z' => (c.to_ascii_lowercase().to_string(), true),
-        '0'..='9' => (c.to_string(), false),
-        ' ' => ("space".to_string(), false),
-        '\n' => ("return".to_string(), false),
-        '\t' => ("tab".to_string(), false),
-        '!' => ("1".to_string(), true),
-        '@' => ("2".to_string(), true),
-        '#' => ("3".to_string(), true),
-        '$' => ("4".to_string(), true),
-        '%' => ("5".to_string(), true),
-        '^' => ("6".to_string(), true),
-        '&' => ("7".to_string(), true),
-        '*' => ("8".to_string(), true),
-        '(' => ("9".to_string(), true),
-        ')' => ("0".to_string(), true),
-        '-' => ("-".to_string(), false),
-        '_' => ("-".to_string(), true),
-        '=' => ("=".to_string(), false),
-        '+' => ("=".to_string(), true),
-        '[' => ("[".to_string(), false),
-        '{' => ("[".to_string(), true),
-        ']' => ("]".to_string(), false),
-        '}' => ("]".to_string(), true),
-        '\\' => ("\\".to_string(), false),
-        '|' => ("\\".to_string(), true),
-        ';' => (";".to_string(), false),
-        ':' => (";".to_string(), true),
-        '\'' => ("'".to_string(), false),
-        '"' => ("'".to_string(), true),
-        '`' => ("`".to_string(), false),
-        '~' => ("`".to_string(), true),
-        ',' => (",".to_string(), false),
-        '<' => (",".to_string(), true),
-        '.' => (".".to_string(), false),
-        '>' => (".".to_string(), true),
-        '/' => ("/".to_string(), false),
-        '?' => ("/".to_string(), true),
-        _ => {
-            debug!("No scancode mapping for character: {:?}", c);
-            return None;
-        }
-    };
+/// Maximum per-event delay accepted in timed input sequences
+const MAX_INPUT_DELAY_MS: u64 = 1000;
 
-    resolve_key(&key).map(|sc| (sc, shift))
+/// A single input event that can be queued for delayed delivery
+#[derive(Clone, Copy)]
+pub enum InputEvent {
+    Key(KeyEvent),
+    MouseButton(bool),
+}
+
+/// An input event with a delivery delay
+#[derive(Clone, Copy)]
+pub struct TimedInput {
+    /// Delay before delivering this event, in milliseconds
+    pub delay_ms: u64,
+    pub event: InputEvent,
 }
 
 /// Trait that must be implemented by the frontend to handle RPC requests
@@ -228,6 +241,13 @@ pub trait RpcHandler {
 
     /// Send key event
     fn send_key_event(&mut self, event: KeyEvent);
+
+    /// Queue a sequence of timed input events for asynchronous delivery.
+    /// Implementations must deliver the events in order, waiting at least
+    /// the given delay before delivering each event. The request handler
+    /// must not block while the sequence is delivered. Returns false if
+    /// the emulator cannot accept input.
+    fn queue_input_sequence(&mut self, events: Vec<TimedInput>) -> bool;
 
     /// Release all keys
     fn release_all_keys(&mut self);
@@ -416,10 +436,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: ConfigSetSharedDirParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: ConfigSetSharedDirParams = parse_params!(&id, params);
 
         let success = self.set_shared_dir(params.path);
         RpcResponse::success(id, ConfigSetSharedDirResult { success })
@@ -430,10 +447,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: ConfigSerialGetParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: ConfigSerialGetParams = parse_params!(&id, params);
 
         let channel = match params.channel {
             SerialChannel::A => SccCh::A,
@@ -451,10 +465,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: ConfigSerialEnableParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: ConfigSerialEnableParams = parse_params!(&id, params);
 
         let channel = match params.channel {
             SerialChannel::A => SccCh::A,
@@ -498,10 +509,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: ConfigSerialDisableParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: ConfigSerialDisableParams = parse_params!(&id, params);
 
         let channel = match params.channel {
             SerialChannel::A => SccCh::A,
@@ -517,7 +525,7 @@ pub trait RpcHandler {
             Some((speed, effective)) => RpcResponse::success(
                 id,
                 SpeedGetResult {
-                    mode: format!("{:?}", speed),
+                    mode: speed,
                     effective_speed: effective,
                 },
             ),
@@ -530,23 +538,14 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: SpeedSetParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: SpeedSetParams = parse_params!(&id, params);
 
-        let speed = match params.mode {
-            SpeedMode::Accurate => EmulatorSpeed::Accurate,
-            SpeedMode::Uncapped => EmulatorSpeed::Uncapped,
-            SpeedMode::Video => EmulatorSpeed::Video,
-        };
-
-        match self.set_speed(speed) {
+        match self.set_speed(params.mode) {
             Some(prev) => RpcResponse::success(
                 id,
                 SpeedSetResult {
                     success: true,
-                    previous: format!("{:?}", prev),
+                    previous: prev,
                 },
             ),
             None => RpcResponse::internal_error(id, "Emulator not initialized"),
@@ -565,10 +564,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: MouseSetPositionParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: MouseSetPositionParams = parse_params!(&id, params);
 
         let success = self.set_mouse_position(params.x, params.y);
         RpcResponse::success(id, MouseSetPositionResult { success })
@@ -579,10 +575,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: MouseMoveParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: MouseMoveParams = parse_params!(&id, params);
 
         let success = self.move_mouse(params.dx, params.dy);
         RpcResponse::success(id, MouseMoveResult { success })
@@ -593,19 +586,27 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: MouseClickParams = serde_json::from_value(params.clone()).unwrap_or_default();
+        let params: MouseClickParams = parse_params_opt!(&id, params);
 
         // Move to position if specified
         if let (Some(x), Some(y)) = (params.x, params.y) {
             self.set_mouse_position(x, y);
         }
 
-        // Click: press and release
-        self.set_mouse_button(true);
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        self.set_mouse_button(false);
+        // Click: press, then release after a short delay. The sequence is
+        // queued so the request does not block while the click registers.
+        let success = self.queue_input_sequence(vec![
+            TimedInput {
+                delay_ms: 0,
+                event: InputEvent::MouseButton(true),
+            },
+            TimedInput {
+                delay_ms: 50,
+                event: InputEvent::MouseButton(false),
+            },
+        ]);
 
-        RpcResponse::success(id, MouseClickResult { success: true })
+        RpcResponse::success(id, MouseClickResult { success })
     }
 
     fn handle_mouse_button(
@@ -613,10 +614,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: MouseButtonParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: MouseButtonParams = parse_params!(&id, params);
 
         let down = params.state == ButtonState::Down;
         let success = self.set_mouse_button(down);
@@ -628,37 +626,46 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: KeyboardTypeParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: KeyboardTypeParams = parse_params!(&id, params);
 
-        let delay = std::time::Duration::from_millis(params.delay_ms);
+        let delay = params.delay_ms.min(MAX_INPUT_DELAY_MS);
 
+        let mut events = Vec::new();
+        // Delay carried over from the previous keystroke
+        let mut gap = 0;
         for c in params.text.chars() {
-            if let Some((scancode, shift)) = char_to_scancode(c) {
-                if shift {
-                    self.send_key_event(KeyEvent::KeyDown(0x38, Keymap::Universal));
-                    // Shift down
-                }
-                self.send_key_event(KeyEvent::KeyDown(scancode, Keymap::Universal));
-                if params.delay_ms > 0 {
-                    std::thread::sleep(delay);
-                }
-                self.send_key_event(KeyEvent::KeyUp(scancode, Keymap::Universal));
-                if shift {
-                    self.send_key_event(KeyEvent::KeyUp(0x38, Keymap::Universal));
-                    // Shift up
-                }
-                if params.delay_ms > 0 {
-                    std::thread::sleep(delay);
-                }
-            } else {
+            let Some(KeyStroke { scancode, shift }) = char_to_keystroke(c) else {
                 debug!("Unknown character in keyboard.type: {:?}", c);
+                continue;
+            };
+            if shift {
+                // Shift down
+                events.push(TimedInput {
+                    delay_ms: gap,
+                    event: InputEvent::Key(KeyEvent::KeyDown(0x38, Keymap::Universal)),
+                });
+                gap = 0;
             }
+            events.push(TimedInput {
+                delay_ms: gap,
+                event: InputEvent::Key(KeyEvent::KeyDown(scancode, Keymap::Universal)),
+            });
+            events.push(TimedInput {
+                delay_ms: delay,
+                event: InputEvent::Key(KeyEvent::KeyUp(scancode, Keymap::Universal)),
+            });
+            if shift {
+                // Shift up
+                events.push(TimedInput {
+                    delay_ms: 0,
+                    event: InputEvent::Key(KeyEvent::KeyUp(0x38, Keymap::Universal)),
+                });
+            }
+            gap = delay;
         }
 
-        RpcResponse::success(id, KeyboardTypeResult { success: true })
+        let success = self.queue_input_sequence(events);
+        RpcResponse::success(id, KeyboardTypeResult { success })
     }
 
     fn handle_keyboard_combo(
@@ -666,12 +673,9 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: KeyboardComboParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: KeyboardComboParams = parse_params!(&id, params);
 
-        let delay = std::time::Duration::from_millis(params.delay_ms);
+        let delay = params.delay_ms.min(MAX_INPUT_DELAY_MS);
 
         // Resolve all keys first
         let scancodes: Vec<Scancode> = params.keys.iter().filter_map(|k| resolve_key(k)).collect();
@@ -680,23 +684,26 @@ pub trait RpcHandler {
             return RpcResponse::invalid_params(id, "Unknown key name in combo");
         }
 
+        let mut events = Vec::new();
+
         // Press all keys
-        for &scancode in &scancodes {
-            self.send_key_event(KeyEvent::KeyDown(scancode, Keymap::Universal));
-            if params.delay_ms > 0 {
-                std::thread::sleep(delay);
-            }
+        for (i, &scancode) in scancodes.iter().enumerate() {
+            events.push(TimedInput {
+                delay_ms: if i == 0 { 0 } else { delay },
+                event: InputEvent::Key(KeyEvent::KeyDown(scancode, Keymap::Universal)),
+            });
         }
 
         // Release all keys in reverse order
         for &scancode in scancodes.iter().rev() {
-            self.send_key_event(KeyEvent::KeyUp(scancode, Keymap::Universal));
-            if params.delay_ms > 0 {
-                std::thread::sleep(delay);
-            }
+            events.push(TimedInput {
+                delay_ms: delay,
+                event: InputEvent::Key(KeyEvent::KeyUp(scancode, Keymap::Universal)),
+            });
         }
 
-        RpcResponse::success(id, KeyboardComboResult { success: true })
+        let success = self.queue_input_sequence(events);
+        RpcResponse::success(id, KeyboardComboResult { success })
     }
 
     fn handle_keyboard_key(
@@ -704,10 +711,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: KeyboardKeyParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: KeyboardKeyParams = parse_params!(&id, params);
 
         let scancode = match params.key {
             KeySpec::Name(ref name) => match resolve_key(name) {
@@ -752,8 +756,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: ScreenshotGetParams =
-            serde_json::from_value(params.clone()).unwrap_or_default();
+        let params: ScreenshotGetParams = parse_params_opt!(&id, params);
 
         let frame_buffer = match self.get_frame_buffer() {
             Some(fb) => fb,
@@ -790,7 +793,7 @@ pub trait RpcHandler {
                     (data, "png")
                 }
                 Err(e) => {
-                    return RpcResponse::internal_error(id, &format!("PNG encoding failed: {}", e))
+                    return RpcResponse::internal_error(id, &format!("PNG encoding failed: {}", e));
                 }
             },
         };
@@ -812,10 +815,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: ScreenshotSaveParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: ScreenshotSaveParams = parse_params!(&id, params);
 
         let frame_buffer = match self.get_frame_buffer() {
             Some(fb) => fb,
@@ -849,10 +849,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: FloppyInsertParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: FloppyInsertParams = parse_params!(&id, params);
 
         let success = self.floppy_insert(params.drive, &params.path, params.write_protect);
         RpcResponse::success(id, FloppyInsertResult { success })
@@ -863,10 +860,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: FloppyEjectParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: FloppyEjectParams = parse_params!(&id, params);
 
         let success = self.floppy_eject(params.drive);
         RpcResponse::success(id, FloppyEjectResult { success })
@@ -877,10 +871,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: CdromInsertParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: CdromInsertParams = parse_params!(&id, params);
 
         let success = self.cdrom_insert(params.id, &params.path);
         RpcResponse::success(id, CdromInsertResult { success })
@@ -891,10 +882,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: CdromEjectParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: CdromEjectParams = parse_params!(&id, params);
 
         let success = self.cdrom_eject(params.id);
         RpcResponse::success(id, CdromEjectResult { success })
@@ -905,10 +893,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: ScsiAttachHddParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: ScsiAttachHddParams = parse_params!(&id, params);
 
         let success = self.scsi_attach_hdd(params.id, &params.path);
         RpcResponse::success(id, ScsiAttachHddResult { success })
@@ -919,10 +904,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: ScsiAttachCdromParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: ScsiAttachCdromParams = parse_params!(&id, params);
 
         let success = self.scsi_attach_cdrom(params.id);
         RpcResponse::success(id, ScsiAttachCdromResult { success })
@@ -933,10 +915,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: ScsiDetachParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: ScsiDetachParams = parse_params!(&id, params);
 
         let success = self.scsi_detach(params.id);
         RpcResponse::success(id, ScsiDetachResult { success })
@@ -966,10 +945,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: BreakpointSetParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: BreakpointSetParams = parse_params!(&id, params);
 
         let success = self.breakpoint_set(params.address, params.bp_type);
         RpcResponse::success(id, BreakpointSetResult { success })
@@ -985,10 +961,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: BreakpointRemoveParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: BreakpointRemoveParams = parse_params!(&id, params);
 
         let success = self.breakpoint_remove(params.address, params.bp_type);
         RpcResponse::success(id, BreakpointRemoveResult { success })
@@ -999,10 +972,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: BreakpointToggleParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: BreakpointToggleParams = parse_params!(&id, params);
 
         let (success, enabled) = self.breakpoint_toggle(params.address, params.bp_type);
         RpcResponse::success(id, BreakpointToggleResult { success, enabled })
@@ -1015,10 +985,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: MemoryReadParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: MemoryReadParams = parse_params!(&id, params);
 
         match self.memory_read(params.address, params.length) {
             Some(data) => {
@@ -1042,10 +1009,15 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: MemoryWriteParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: MemoryWriteParams = parse_params!(&id, params);
+
+        const MAX_WRITE_SIZE: usize = 16 * 1024 * 1024;
+        if params.data.len() > MAX_WRITE_SIZE {
+            return RpcResponse::invalid_params(id, "data exceeds maximum write size");
+        }
+        if u64::from(params.address) + params.data.len() as u64 > u64::from(u32::MAX) + 1 {
+            return RpcResponse::invalid_params(id, "write extends past end of address space");
+        }
 
         let bytes_written = params.data.len();
         let success = self.memory_write(params.address, &params.data);
@@ -1065,7 +1037,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: RegistersGetParams = serde_json::from_value(params.clone()).unwrap_or_default();
+        let params: RegistersGetParams = parse_params_opt!(&id, params);
 
         if let Some(ref reg_name) = params.register {
             // Get a single register
@@ -1093,10 +1065,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: RegistersSetParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: RegistersSetParams = parse_params!(&id, params);
 
         let success = self.register_set(&params.register, params.value);
         if success {
@@ -1113,11 +1082,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: DisassemblyGetParams =
-            serde_json::from_value(params.clone()).unwrap_or(DisassemblyGetParams {
-                address: None,
-                count: 20,
-            });
+        let params: DisassemblyGetParams = parse_params_opt!(&id, params);
 
         let entries = self.disassembly_get(params.address, params.count);
         RpcResponse::success(id, DisassemblyGetResult { entries })
@@ -1135,10 +1100,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: AudioSetMuteParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: AudioSetMuteParams = parse_params!(&id, params);
 
         let success = self.audio_set_mute(params.muted);
         let muted = self.audio_get_mute();
@@ -1152,8 +1114,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: RecordingStartParams =
-            serde_json::from_value(params.clone()).unwrap_or(RecordingStartParams { path: None });
+        let params: RecordingStartParams = parse_params_opt!(&id, params);
 
         match self.recording_start(params.path) {
             Some(path) => RpcResponse::success(
@@ -1183,10 +1144,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: RecordingPlayParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: RecordingPlayParams = parse_params!(&id, params);
 
         let success = self.recording_play(&params.path);
         RpcResponse::success(id, RecordingPlayResult { success })
@@ -1199,10 +1157,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: HistoryEnableParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: HistoryEnableParams = parse_params!(&id, params);
 
         let success = self.history_instruction_enable(params.enabled);
         let enabled = self.history_instruction_is_enabled();
@@ -1214,7 +1169,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: HistoryGetParams = serde_json::from_value(params.clone()).unwrap_or_default();
+        let params: HistoryGetParams = parse_params_opt!(&id, params);
 
         let entries = self.history_instruction_get(params.count);
         let enabled = self.history_instruction_is_enabled();
@@ -1226,10 +1181,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: HistoryEnableParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: HistoryEnableParams = parse_params!(&id, params);
 
         let success = self.history_systrap_enable(params.enabled);
         let enabled = self.history_systrap_is_enabled();
@@ -1241,7 +1193,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: HistoryGetParams = serde_json::from_value(params.clone()).unwrap_or_default();
+        let params: HistoryGetParams = parse_params_opt!(&id, params);
 
         let entries = self.history_systrap_get(params.count);
         let enabled = self.history_systrap_is_enabled();
@@ -1255,10 +1207,7 @@ pub trait RpcHandler {
         id: Option<serde_json::Value>,
         params: &serde_json::Value,
     ) -> RpcResponse {
-        let params: PeripheralDebugEnableParams = match serde_json::from_value(params.clone()) {
-            Ok(p) => p,
-            Err(e) => return RpcResponse::invalid_params(id, &e.to_string()),
-        };
+        let params: PeripheralDebugEnableParams = parse_params!(&id, params);
 
         let success = self.peripheral_debug_enable(params.enabled);
         let enabled = self.peripheral_debug_is_enabled();
@@ -1300,17 +1249,7 @@ pub trait RpcHandler {
 /// Encode a DisplayBuffer as PNG
 fn encode_png(buffer: &DisplayBuffer) -> Result<Vec<u8>, png::EncodingError> {
     let mut output = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(
-            Cursor::new(&mut output),
-            buffer.width() as u32,
-            buffer.height() as u32,
-        );
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header()?;
-        writer.write_image_data(buffer.as_ref())?;
-    }
+    crate::renderer::write_png(buffer, Cursor::new(&mut output))?;
     Ok(output)
 }
 
@@ -1320,11 +1259,6 @@ fn save_png(
     path: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let file = std::fs::File::create(path)?;
-    let buf_writer = std::io::BufWriter::new(file);
-    let mut encoder = png::Encoder::new(buf_writer, buffer.width() as u32, buffer.height() as u32);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header()?;
-    writer.write_image_data(buffer.as_ref())?;
+    crate::renderer::write_png(buffer, std::io::BufWriter::new(file))?;
     Ok(())
 }

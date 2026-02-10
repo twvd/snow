@@ -11,12 +11,12 @@ use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::debuggable::DebuggableProperties;
 use crate::emulator::MouseMode;
 use crate::keymap::KeyEvent;
-use crate::mac::MacModel;
 use crate::mac::scc::SccCh;
 #[cfg(feature = "ethernet")]
 use crate::mac::scsi::ethernet::EthernetLinkType;
 use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
+use crate::mac::{MacModel, MacMonitor};
 use crate::tickable::Ticks;
 
 pub use crate::cpu_m68k::cpu::{Breakpoint, BusBreakpoint};
@@ -129,6 +129,10 @@ pub struct EmulatorStatus {
 
     pub fdd: [FddStatus; 3],
     pub model: MacModel,
+    /// Monitor connected to the video card (Mac II family), if any
+    pub monitor: Option<MacMonitor>,
+    /// Installed RAM size in bytes
+    pub ram_size: usize,
     pub speed: EmulatorSpeed,
     pub effective_speed: f64,
     pub scsi: [Option<ScsiTargetStatus>; 7],

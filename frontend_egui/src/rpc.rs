@@ -3,6 +3,7 @@
 //! This module provides the RPC server integration and implements the RpcHandler trait
 //! for the emulator state.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -12,19 +13,30 @@ use snow_core::mac::scc::SccCh;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
 use snow_core::renderer::DisplayBuffer;
 use snow_core::rpc::{
-    BreakpointInfo, BreakpointType, DisassemblyEntry, FloppyInfo, InstructionHistoryEntry,
-    PeripheralInfo, PropertyInfo, RegistersGetResult, RpcConfig, RpcHandler, RpcMessage, RpcServer,
-    ScreenInfo, ScsiTargetInfo, SerialBridgeStatusInfo, SerialPortInfo, StatusGetResult,
-    SystrapHistoryEntry,
+    BreakpointInfo, BreakpointType, DisassemblyEntry, FloppyInfo, InputEvent,
+    InstructionHistoryEntry, PeripheralInfo, PropertyInfo, RegistersGetResult, RpcConfig,
+    RpcHandler, RpcMessage, RpcServer, ScreenInfo, ScsiTargetInfo, SerialBridgeStatusInfo,
+    SerialPortInfo, StatusGetResult, SystrapHistoryEntry, TimedInput,
 };
 
 use crate::emulator::EmulatorState;
+
+/// Approximate GUI frame duration used to convert input delays to frames
+const FRAME_DURATION_MS: u64 = 16;
+
+/// An input event queued for frame-based delivery
+pub struct QueuedInput {
+    /// Frames to wait before delivering this event
+    delay_frames: u64,
+    event: InputEvent,
+}
 
 /// Wrapper around EmulatorState that implements RpcHandler
 pub struct EmulatorRpcHandler<'a> {
     state: &'a mut EmulatorState,
     frame_buffer: Arc<Mutex<Option<DisplayBuffer>>>,
     shared_dir: Option<PathBuf>,
+    input_queue: &'a mut VecDeque<QueuedInput>,
 }
 
 impl<'a> EmulatorRpcHandler<'a> {
@@ -32,18 +44,20 @@ impl<'a> EmulatorRpcHandler<'a> {
         state: &'a mut EmulatorState,
         frame_buffer: Arc<Mutex<Option<DisplayBuffer>>>,
         shared_dir: Option<PathBuf>,
+        input_queue: &'a mut VecDeque<QueuedInput>,
     ) -> Self {
         Self {
             state,
             frame_buffer,
             shared_dir,
+            input_queue,
         }
     }
 }
 
 impl RpcHandler for EmulatorRpcHandler<'_> {
     fn get_status(&self) -> Option<StatusGetResult> {
-        use snow_core::cpu_m68k::M68000;
+        use snow_core::mac::MacModel;
 
         let model = self.state.get_model()?;
 
@@ -97,22 +111,40 @@ impl RpcHandler for EmulatorRpcHandler<'_> {
             },
         ];
 
-        // Get screen info based on CPU type
-        let screen = if model.cpu_type() == M68000 {
-            // Compact Mac - fixed resolution 512x342 B&W
-            ScreenInfo {
+        // Get screen info based on model
+        // Use explicit match without default case so new models cause compile errors
+        let screen = match model {
+            // Compact Macs - fixed resolution 512x342 B&W
+            MacModel::Early128K
+            | MacModel::Early512K
+            | MacModel::Early512Ke
+            | MacModel::Plus
+            | MacModel::SE
+            | MacModel::SeFdhd
+            | MacModel::Classic => ScreenInfo {
                 width: 512,
                 height: 342,
                 color: false,
-            }
-        } else {
-            // Mac II series - get from configured monitor
-            let monitor = self.state.get_monitor().unwrap_or_default();
-            ScreenInfo {
-                width: monitor.width() as u32,
-                height: monitor.height() as u32,
-                color: monitor.has_color(),
-            }
+            },
+            // SE/30 and Mac II series - monitor reported by the emulator's
+            // installed video card; the SE/30's internal video has no
+            // configurable monitor and matches the compact Mac display
+            MacModel::SE30
+            | MacModel::MacII
+            | MacModel::MacIIFDHD
+            | MacModel::MacIIx
+            | MacModel::MacIIcx => match self.state.get_monitor() {
+                Some(monitor) => ScreenInfo {
+                    width: monitor.width() as u32,
+                    height: monitor.height() as u32,
+                    color: monitor.has_color(),
+                },
+                None => ScreenInfo {
+                    width: 512,
+                    height: 342,
+                    color: false,
+                },
+            },
         };
 
         // Get RAM size - use configured size or model default
@@ -134,13 +166,12 @@ impl RpcHandler for EmulatorRpcHandler<'_> {
             has_adb: model.has_adb(),
             has_scsi: model.has_scsi(),
             hd_floppy: model.fdd_hd(),
-            speed: if self.state.is_fastforward() {
-                "Uncapped".to_string()
-            } else {
-                "Accurate".to_string()
-            },
-            effective_speed: 1.0, // TODO: get actual effective speed
-            cycles: self.state.get_cycles() as u64,
+            speed: self
+                .state
+                .get_speed()
+                .map_or_else(|| "Unknown".to_string(), |(s, _)| s.to_string()),
+            effective_speed: self.state.get_speed().map_or(1.0, |(_, e)| e),
+            cycles: self.state.get_cycles(),
             scsi,
             floppy,
             serial,
@@ -158,43 +189,12 @@ impl RpcHandler for EmulatorRpcHandler<'_> {
     }
 
     fn get_speed(&self) -> Option<(EmulatorSpeed, f64)> {
-        if !self.state.is_initialized() {
-            return None;
-        }
-        let speed = if self.state.is_fastforward() {
-            EmulatorSpeed::Uncapped
-        } else {
-            EmulatorSpeed::Accurate
-        };
-        Some((speed, 1.0)) // TODO: get actual effective speed
+        self.state.get_speed()
     }
 
     fn set_speed(&mut self, speed: EmulatorSpeed) -> Option<EmulatorSpeed> {
-        if !self.state.is_initialized() {
-            return None;
-        }
-        let prev = if self.state.is_fastforward() {
-            EmulatorSpeed::Uncapped
-        } else {
-            EmulatorSpeed::Accurate
-        };
-
-        match speed {
-            EmulatorSpeed::Uncapped => {
-                if !self.state.is_fastforward() {
-                    self.state.toggle_fastforward(None);
-                }
-            }
-            EmulatorSpeed::FastForward(limit) => {
-                self.state.set_speed(EmulatorSpeed::FastForward(limit));
-            }
-            EmulatorSpeed::Accurate | EmulatorSpeed::Video | EmulatorSpeed::Dynamic => {
-                if self.state.is_fastforward() {
-                    self.state.toggle_fastforward(None);
-                }
-            }
-        }
-
+        let (prev, _) = self.state.get_speed()?;
+        self.state.set_speed(speed);
         Some(prev)
     }
 
@@ -259,6 +259,19 @@ impl RpcHandler for EmulatorRpcHandler<'_> {
         }
 
         self.state.update_mouse_button(down);
+        true
+    }
+
+    fn queue_input_sequence(&mut self, events: Vec<TimedInput>) -> bool {
+        if !self.state.is_initialized() || !self.state.is_running() {
+            return false;
+        }
+
+        self.input_queue
+            .extend(events.into_iter().map(|t| QueuedInput {
+                delay_frames: t.delay_ms.div_ceil(FRAME_DURATION_MS),
+                event: t.event,
+            }));
         true
     }
 
@@ -721,13 +734,13 @@ impl RpcHandler for EmulatorRpcHandler<'_> {
                     InstructionHistoryEntry {
                         address: inst.pc,
                         instruction,
-                        cycles: inst.cycles as u64,
+                        cycles: inst.cycles,
                     }
                 }
                 CoreHistoryEntry::Exception { vector, cycles } => InstructionHistoryEntry {
                     address: *vector,
                     instruction: format!("EXCEPTION vector={:#X}", vector),
-                    cycles: *cycles as u64,
+                    cycles: *cycles,
                 },
                 CoreHistoryEntry::Pagefault { address, write } => InstructionHistoryEntry {
                     address: *address,
@@ -765,7 +778,7 @@ impl RpcHandler for EmulatorRpcHandler<'_> {
                 address: entry.pc,
                 trap_word: entry.trap,
                 trap_name: format!("${:04X}", entry.trap), // Could be enhanced with trap name lookup
-                cycles: entry.cycles as u64,
+                cycles: entry.cycles,
             })
             .collect();
         entries.reverse();
@@ -833,7 +846,7 @@ impl RpcHandler for EmulatorRpcHandler<'_> {
         if !self.state.is_initialized() {
             return None;
         }
-        Some(self.state.get_cycles() as u64)
+        Some(self.state.get_cycles())
     }
 
     fn emulator_programmer_key(&mut self) -> bool {
@@ -868,17 +881,15 @@ pub struct RpcState {
     pub config: RpcConfig,
     fullscreen_request: Option<FullscreenRequest>,
     fullscreen_state: bool,
+    /// Queued input events delivered frame by frame
+    input_queue: VecDeque<QueuedInput>,
+    /// Frames remaining before the next queued input event is delivered
+    input_delay_frames: u64,
 }
 
 impl Default for RpcState {
     fn default() -> Self {
-        Self {
-            server: None,
-            frame_buffer: Arc::new(Mutex::new(None)),
-            config: RpcConfig::default(),
-            fullscreen_request: None,
-            fullscreen_state: false,
-        }
+        Self::new(RpcConfig::default())
     }
 }
 
@@ -890,6 +901,8 @@ impl RpcState {
             config,
             fullscreen_request: None,
             fullscreen_state: false,
+            input_queue: VecDeque::new(),
+            input_delay_frames: 0,
         }
     }
 
@@ -898,6 +911,11 @@ impl RpcState {
         server.start()?;
         self.server = Some(server);
         Ok(())
+    }
+
+    /// Returns whether the RPC server is running
+    pub fn is_running(&self) -> bool {
+        self.server.is_some()
     }
 
     #[allow(dead_code)]
@@ -925,6 +943,43 @@ impl RpcState {
     /// Take pending fullscreen request (returns None if no request pending)
     pub fn take_fullscreen_request(&mut self) -> Option<FullscreenRequest> {
         self.fullscreen_request.take()
+    }
+
+    /// Delivers queued input events, one batch per frame, honoring delays
+    pub fn process_input_queue(&mut self, state: &EmulatorState) {
+        if self.input_queue.is_empty() {
+            return;
+        }
+        if !state.is_initialized() || !state.is_running() {
+            // Input can no longer be delivered; drop the queue
+            self.input_queue.clear();
+            self.input_delay_frames = 0;
+            return;
+        }
+        if self.input_delay_frames > 0 {
+            self.input_delay_frames -= 1;
+            return;
+        }
+
+        while let Some(front) = self.input_queue.front_mut() {
+            if front.delay_frames > 0 {
+                self.input_delay_frames = front.delay_frames;
+                front.delay_frames = 0;
+                return;
+            }
+            let queued = self.input_queue.pop_front().unwrap();
+            match queued.event {
+                InputEvent::Key(KeyEvent::KeyDown(scancode, _)) => {
+                    state.update_key(scancode, true);
+                }
+                InputEvent::Key(KeyEvent::KeyUp(scancode, _)) => {
+                    state.update_key(scancode, false);
+                }
+                InputEvent::MouseButton(down) => {
+                    state.update_mouse_button(down);
+                }
+            }
+        }
     }
 
     /// Process pending RPC requests
@@ -960,6 +1015,11 @@ impl RpcState {
                             } else {
                                 FullscreenRequest::Exit
                             });
+                            // Reflect the requested state immediately so a
+                            // subsequent get_fullscreen in the same batch is
+                            // consistent; the per-frame sync from the app
+                            // corrects it once the request is applied.
+                            self.fullscreen_state = fullscreen;
                             snow_core::rpc::RpcResponse::success(
                                 request.id.clone(),
                                 serde_json::json!({
@@ -970,11 +1030,12 @@ impl RpcState {
                         }
                         "window.toggle_fullscreen" => {
                             self.fullscreen_request = Some(FullscreenRequest::Toggle);
+                            self.fullscreen_state = !self.fullscreen_state;
                             snow_core::rpc::RpcResponse::success(
                                 request.id.clone(),
                                 serde_json::json!({
                                     "success": true,
-                                    "fullscreen": !self.fullscreen_state
+                                    "fullscreen": self.fullscreen_state
                                 }),
                             )
                         }
@@ -984,6 +1045,7 @@ impl RpcState {
                                 state,
                                 self.frame_buffer.clone(),
                                 shared_dir.clone(),
+                                &mut self.input_queue,
                             );
                             handler.handle_request(&request)
                         }

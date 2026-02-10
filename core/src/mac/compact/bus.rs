@@ -230,6 +230,12 @@ where
         self.model
     }
 
+    /// Returns the monitor connected to the video card, if any.
+    /// Compact Macs have a fixed internal display, so this is always None.
+    pub const fn monitor(&self) -> Option<crate::mac::MacMonitor> {
+        None
+    }
+
     pub fn get_effective_speed(&self) -> f64 {
         self.via.rtc.effective_speed()
     }

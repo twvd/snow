@@ -2,12 +2,12 @@
 //!
 //! Handles Unix domain socket (and optionally TCP) connections for JSON-RPC 2.0 requests.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use std::{env, fs, process};
@@ -83,6 +83,9 @@ pub struct RpcServer {
 }
 
 impl RpcServer {
+    /// Maximum size of a single JSON-RPC request line
+    const MAX_REQUEST_SIZE: u64 = 16 * 1024 * 1024;
+
     /// Creates a new RPC server with the given configuration
     pub fn new(config: RpcConfig) -> Self {
         let (request_tx, request_rx) = crossbeam_channel::unbounded();
@@ -279,10 +282,18 @@ impl RpcServer {
         request_tx: Sender<RpcMessage>,
     ) -> anyhow::Result<()> {
         let mut line = String::new();
-        while reader.read_line(&mut line)? > 0 {
+        loop {
+            line.clear();
+            let len = Read::take(&mut *reader, Self::MAX_REQUEST_SIZE).read_line(&mut line)?;
+            if len == 0 {
+                break;
+            }
+            if len as u64 >= Self::MAX_REQUEST_SIZE && !line.ends_with('\n') {
+                anyhow::bail!("RPC request exceeds maximum size");
+            }
+
             let line_trimmed = line.trim();
             if line_trimmed.is_empty() {
-                line.clear();
                 continue;
             }
 
@@ -293,6 +304,7 @@ impl RpcServer {
                         RpcResponse::invalid_request(request.id)
                     } else {
                         // Send request to handler and wait for response
+                        let request_id = request.id.clone();
                         let (response_tx, response_rx) = crossbeam_channel::bounded(1);
                         request_tx.send(RpcMessage::Request {
                             request,
@@ -302,7 +314,7 @@ impl RpcServer {
                         // Wait for response with timeout
                         match response_rx.recv_timeout(Duration::from_secs(30)) {
                             Ok(response) => response,
-                            Err(_) => RpcResponse::internal_error(None, "Handler timeout"),
+                            Err(_) => RpcResponse::internal_error(request_id, "Handler timeout"),
                         }
                     }
                 }
@@ -316,8 +328,6 @@ impl RpcServer {
             let response_json = serde_json::to_string(&response)?;
             writeln!(writer, "{}", response_json)?;
             writer.flush()?;
-
-            line.clear();
         }
 
         Ok(())

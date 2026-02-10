@@ -141,12 +141,6 @@ pub struct EmulatorState {
 
     /// Currently selected audio device on the host
     host_audio_device: Option<cpal::DeviceId>,
-
-    /// Configured monitor for Mac II series (None for compact Macs)
-    monitor: Option<MacMonitor>,
-
-    /// Configured RAM size in bytes
-    ram_size: Option<usize>,
 }
 
 impl EmulatorState {
@@ -320,10 +314,6 @@ impl EmulatorState {
             info!("RTC set to custom date/time: {}", dt);
         }
 
-        // Store monitor and RAM size for RPC status reporting
-        self.monitor = args.monitor;
-        self.ram_size = args.ram_size;
-
         self.init_finalize(emulator, frame_recv, cmd, args.audio_disabled, false)
     }
 
@@ -431,8 +421,6 @@ impl EmulatorState {
         self.systrap_history_enabled = false;
         self.peripheral_debug_enabled = false;
         self.debug_framebuffers = false;
-        self.monitor = None;
-        self.ram_size = None;
 
         self.force_update.set();
     }
@@ -988,16 +976,22 @@ impl EmulatorState {
         Some(status.model)
     }
 
-    /// Returns the configured monitor (None for compact Macs or if not set)
+    /// Returns the current speed mode and effective speed multiplier
     #[cfg(feature = "rpc")]
-    pub fn get_monitor(&self) -> Option<MacMonitor> {
-        self.monitor
+    pub fn get_speed(&self) -> Option<(EmulatorSpeed, f64)> {
+        self.status.as_ref().map(|s| (s.speed, s.effective_speed))
     }
 
-    /// Returns the configured RAM size in bytes
+    /// Returns the connected monitor (None for compact Macs)
+    #[cfg(feature = "rpc")]
+    pub fn get_monitor(&self) -> Option<MacMonitor> {
+        self.status.as_ref().and_then(|s| s.monitor)
+    }
+
+    /// Returns the installed RAM size in bytes
     #[cfg(feature = "rpc")]
     pub fn get_ram_size(&self) -> Option<usize> {
-        self.ram_size
+        self.status.as_ref().map(|s| s.ram_size)
     }
 
     /// Returns current disassembly listing

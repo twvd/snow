@@ -4,16 +4,10 @@ Snow provides an optional RPC interface for external control of the emulator via
 
 ## Enabling RPC
 
-Build Snow with the `rpc` feature enabled:
+Build and run Snow with the `rpc` feature enabled:
 
 ```bash
-cargo build -r --features rpc
-```
-
-Start Snow with the `--rpc` flag to enable the RPC server:
-
-```bash
-./target/release/snow --rpc
+cargo run -r -F rpc -- --rpc
 ```
 
 The server will create a Unix socket at `$XDG_RUNTIME_DIR/snow-<PID>.sock` or `/tmp/snow-<PID>.sock`.
@@ -96,7 +90,7 @@ The `status.get` method returns a comprehensive status object:
 - `has_adb` - Whether the model has ADB (Apple Desktop Bus)
 - `has_scsi` - Whether the model has SCSI
 - `hd_floppy` - Whether the model supports HD (high-density) floppies
-- `speed` - Current speed mode ("Accurate", "Uncapped", or "Video")
+- `speed` - Current speed mode ("Accurate", "Dynamic", "Uncapped", "Video", or "FastForward")
 - `effective_speed` - Actual emulation speed multiplier
 - `cycles` - Total CPU cycles executed
 - `shared_dir` - Path to shared directory (or null if not set)
@@ -114,7 +108,7 @@ The `serial` array contains two entries for channels A and B:
 | Method | Params | Returns | Description |
 |--------|--------|---------|-------------|
 | `speed.get` | - | `{ mode, effective_speed }` | Get current speed mode |
-| `speed.set` | `{ mode: "Accurate"\|"Uncapped"\|"Video" }` | `{ success, previous }` | Set speed mode |
+| `speed.set` | `{ mode: "Accurate"\|"Dynamic"\|"Uncapped"\|"Video"\|{"FastForward": factor} }` | `{ success, previous }` | Set speed mode |
 
 ### Screenshot
 
@@ -141,6 +135,10 @@ The `serial` array contains two entries for channels A and B:
 | `keyboard.combo` | `{ keys: ["command", "q"], delay_ms?: 50 }` | `{ success }` | Press key combination |
 | `keyboard.key` | `{ key: string\|scancode, state: "down"\|"up" }` | `{ success }` | Press/release single key |
 | `keyboard.release_all` | - | `{ success }` | Release all pressed keys |
+
+`mouse.click`, `keyboard.type` and `keyboard.combo` queue their input sequence
+and return immediately; the events are delivered to the emulated machine over
+the following frames, honoring `delay_ms` (capped at 1000ms) between events.
 
 ### Floppy Disk
 

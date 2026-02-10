@@ -7,32 +7,32 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use snow_core::rpc::{RpcRequest, RpcResponse};
 
 #[derive(Parser)]
-#[command(name = "snow-rpc")]
+#[command(name = "snowemu-rpc")]
 #[command(about = "Snow RPC Command Line Interface", long_about = None)]
 #[command(after_help = r#"EXAMPLES:
-    snow-rpc status                          Get emulator status
-    snow-rpc run                             Resume emulation
-    snow-rpc stop                            Pause emulation
-    snow-rpc reset                           Reset emulator
-    snow-rpc speed Uncapped                  Set speed mode
-    snow-rpc type "Hello"                    Type text
-    snow-rpc combo command q                 Press Cmd+Q
-    snow-rpc combo command shift s           Press Cmd+Shift+S
-    snow-rpc key return down                 Press Return key
-    snow-rpc screenshot /tmp/screen.png      Save screenshot
-    snow-rpc floppy-insert 0 /path/disk.img  Insert floppy
-    snow-rpc floppy-eject 0                  Eject floppy
-    snow-rpc serial-enable A pty             Enable PTY on channel A
-    snow-rpc serial-enable B tcp --port 2000 Enable TCP on channel B
-    snow-rpc serial-enable B localtalk       Enable LocalTalk on channel B
-    snow-rpc serial-disable A                Disable channel A
-    snow-rpc fullscreen                      Enter fullscreen mode
-    snow-rpc windowed                        Exit fullscreen mode
-    snow-rpc toggle-fullscreen               Toggle fullscreen mode
+    snowemu-rpc status                          Get emulator status
+    snowemu-rpc run                             Resume emulation
+    snowemu-rpc stop                            Pause emulation
+    snowemu-rpc reset                           Reset emulator
+    snowemu-rpc speed Uncapped                  Set speed mode
+    snowemu-rpc type "Hello"                    Type text
+    snowemu-rpc combo command q                 Press Cmd+Q
+    snowemu-rpc combo command shift s           Press Cmd+Shift+S
+    snowemu-rpc key return down                 Press Return key
+    snowemu-rpc screenshot /tmp/screen.png      Save screenshot
+    snowemu-rpc floppy-insert 0 /path/disk.img  Insert floppy
+    snowemu-rpc floppy-eject 0                  Eject floppy
+    snowemu-rpc serial-enable A pty             Enable PTY on channel A
+    snowemu-rpc serial-enable B tcp --port 2000 Enable TCP on channel B
+    snowemu-rpc serial-enable B localtalk       Enable LocalTalk on channel B
+    snowemu-rpc serial-disable A                Disable channel A
+    snowemu-rpc fullscreen                      Enter fullscreen mode
+    snowemu-rpc windowed                        Exit fullscreen mode
+    snowemu-rpc toggle-fullscreen               Toggle fullscreen mode
 "#)]
 struct Cli {
     /// RPC socket path (Unix) or host:port (TCP)
@@ -68,8 +68,11 @@ enum Commands {
 
     /// Get or set speed mode
     Speed {
-        /// Speed mode: Accurate, Uncapped, or Video
+        /// Speed mode: Accurate, Dynamic, Uncapped, Video, or FastForward
         mode: Option<String>,
+
+        /// Maximum speedup multiplier (FastForward mode only)
+        factor: Option<f64>,
     },
 
     /// Take a screenshot
@@ -241,25 +244,6 @@ enum Commands {
     },
 }
 
-#[derive(Serialize)]
-struct RpcRequest {
-    jsonrpc: &'static str,
-    method: String,
-    params: Value,
-    id: u32,
-}
-
-#[derive(Deserialize)]
-struct RpcResponse {
-    result: Option<Value>,
-    error: Option<RpcError>,
-}
-
-#[derive(Deserialize)]
-struct RpcError {
-    message: String,
-}
-
 /// Find Snow RPC socket on Unix systems
 #[cfg(unix)]
 fn find_socket() -> Option<String> {
@@ -299,10 +283,10 @@ fn find_socket() -> Option<String> {
 /// Connect to the RPC server and send a request
 fn rpc_call(socket: &str, tcp: bool, method: &str, params: Value) -> Result<Value> {
     let request = RpcRequest {
-        jsonrpc: "2.0",
+        jsonrpc: "2.0".to_string(),
         method: method.to_string(),
         params,
-        id: 1,
+        id: Some(Value::from(1)),
     };
 
     let request_json = serde_json::to_string(&request)?;
@@ -329,6 +313,17 @@ fn rpc_call(socket: &str, tcp: bool, method: &str, params: Value) -> Result<Valu
     response
         .result
         .ok_or_else(|| anyhow!("No result in response"))
+}
+
+/// Prints a command result: pretty JSON in `--json` mode, otherwise the
+/// provided human-readable output.
+fn print_result(json: bool, result: &Value, human: impl FnOnce()) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(result)?);
+    } else {
+        human();
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -490,51 +485,55 @@ fn main() -> Result<()> {
 
         Commands::Run => {
             let result = rpc_call(&socket, cli.tcp, "emulator.run", Value::Null)?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
+            print_result(cli.json, &result, || {
                 println!("Emulator running");
-            }
+            })?;
         }
 
         Commands::Stop => {
             let result = rpc_call(&socket, cli.tcp, "emulator.stop", Value::Null)?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
+            print_result(cli.json, &result, || {
                 println!("Emulator stopped");
-            }
+            })?;
         }
 
         Commands::Reset => {
             let result = rpc_call(&socket, cli.tcp, "emulator.reset", Value::Null)?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
+            print_result(cli.json, &result, || {
                 println!("Emulator reset");
-            }
+            })?;
         }
 
-        Commands::Speed { mode } => {
+        Commands::Speed { mode, factor } => {
             if let Some(mode) = mode {
+                // Unit modes serialize as a plain string; FastForward carries
+                // its speedup factor as {"FastForward": factor}
+                let mode_value = match factor {
+                    Some(factor) if mode.eq_ignore_ascii_case("fastforward") => {
+                        serde_json::json!({ "FastForward": factor })
+                    }
+                    Some(_) => {
+                        anyhow::bail!("a speed factor is only valid for FastForward mode")
+                    }
+                    None if mode.eq_ignore_ascii_case("fastforward") => {
+                        anyhow::bail!("FastForward mode requires a speed factor")
+                    }
+                    None => serde_json::json!(mode),
+                };
                 let result = rpc_call(
                     &socket,
                     cli.tcp,
                     "speed.set",
-                    serde_json::json!({ "mode": mode }),
+                    serde_json::json!({ "mode": mode_value }),
                 )?;
-                if cli.json {
-                    println!("{}", serde_json::to_string_pretty(&result)?);
-                } else {
+                print_result(cli.json, &result, || {
                     println!("Speed changed from {} to {}", result["previous"], mode);
-                }
+                })?;
             } else {
                 let result = rpc_call(&socket, cli.tcp, "speed.get", Value::Null)?;
-                if cli.json {
-                    println!("{}", serde_json::to_string_pretty(&result)?);
-                } else {
+                print_result(cli.json, &result, || {
                     println!("Speed: {}", result["mode"]);
-                }
+                })?;
             }
         }
 
@@ -546,11 +545,9 @@ fn main() -> Result<()> {
                     "screenshot.save",
                     serde_json::json!({ "path": path }),
                 )?;
-                if cli.json {
-                    println!("{}", serde_json::to_string_pretty(&result)?);
-                } else {
+                print_result(cli.json, &result, || {
                     println!("Screenshot saved to {}", result["path"]);
-                }
+                })?;
             } else {
                 let result = rpc_call(
                     &socket,
@@ -558,12 +555,10 @@ fn main() -> Result<()> {
                     "screenshot.get",
                     serde_json::json!({ "format": format }),
                 )?;
-                if cli.json {
-                    println!("{}", serde_json::to_string_pretty(&result)?);
-                } else {
+                print_result(cli.json, &result, || {
                     // Print base64 data
                     println!("{}", result["data"]);
-                }
+                })?;
             }
         }
 
@@ -573,11 +568,9 @@ fn main() -> Result<()> {
                 params["delay_ms"] = d.into();
             }
             let result = rpc_call(&socket, cli.tcp, "keyboard.type", params)?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
+            print_result(cli.json, &result, || {
                 println!("Typed: {}", text);
-            }
+            })?;
         }
 
         Commands::Combo { keys, delay } => {
@@ -586,11 +579,9 @@ fn main() -> Result<()> {
                 params["delay_ms"] = d.into();
             }
             let result = rpc_call(&socket, cli.tcp, "keyboard.combo", params)?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
+            print_result(cli.json, &result, || {
                 println!("Pressed: {}", keys.join("+"));
-            }
+            })?;
         }
 
         Commands::Key { key, state } => {
@@ -600,20 +591,16 @@ fn main() -> Result<()> {
                 "keyboard.key",
                 serde_json::json!({ "key": key, "state": state }),
             )?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
+            print_result(cli.json, &result, || {
                 println!("Key {} {}", key, state);
-            }
+            })?;
         }
 
         Commands::ReleaseKeys => {
             let result = rpc_call(&socket, cli.tcp, "keyboard.release_all", Value::Null)?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
+            print_result(cli.json, &result, || {
                 println!("All keys released");
-            }
+            })?;
         }
 
         Commands::MouseMove { x, y, absolute } => {
@@ -647,11 +634,9 @@ fn main() -> Result<()> {
                 _ => Value::Null,
             };
             let result = rpc_call(&socket, cli.tcp, "mouse.click", params)?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
+            print_result(cli.json, &result, || {
                 println!("Mouse clicked");
-            }
+            })?;
         }
 
         Commands::MouseButton { state } => {
@@ -661,11 +646,9 @@ fn main() -> Result<()> {
                 "mouse.button",
                 serde_json::json!({ "state": state }),
             )?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
+            print_result(cli.json, &result, || {
                 println!("Mouse button {}", state);
-            }
+            })?;
         }
 
         Commands::FloppyInsert {
@@ -683,11 +666,9 @@ fn main() -> Result<()> {
                     "write_protect": write_protect
                 }),
             )?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
+            print_result(cli.json, &result, || {
                 println!("Floppy inserted in drive {}: {}", drive, path.display());
-            }
+            })?;
         }
 
         Commands::FloppyEject { drive } => {
@@ -697,11 +678,9 @@ fn main() -> Result<()> {
                 "floppy.eject",
                 serde_json::json!({ "drive": drive }),
             )?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
+            print_result(cli.json, &result, || {
                 println!("Floppy ejected from drive {}", drive);
-            }
+            })?;
         }
 
         Commands::CdromInsert { id, path } => {
@@ -711,11 +690,9 @@ fn main() -> Result<()> {
                 "cdrom.insert",
                 serde_json::json!({ "id": id, "path": path }),
             )?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
+            print_result(cli.json, &result, || {
                 println!("CD-ROM inserted in SCSI {}: {}", id, path.display());
-            }
+            })?;
         }
 
         Commands::CdromEject { id } => {
@@ -725,11 +702,9 @@ fn main() -> Result<()> {
                 "cdrom.eject",
                 serde_json::json!({ "id": id }),
             )?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
+            print_result(cli.json, &result, || {
                 println!("CD-ROM ejected from SCSI {}", id);
-            }
+            })?;
         }
 
         Commands::ScsiAttachHdd { id, path } => {
@@ -739,11 +714,9 @@ fn main() -> Result<()> {
                 "scsi.attach_hdd",
                 serde_json::json!({ "id": id, "path": path }),
             )?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
+            print_result(cli.json, &result, || {
                 println!("SCSI HDD attached at ID {}: {}", id, path.display());
-            }
+            })?;
         }
 
         Commands::ScsiAttachCdrom { id } => {
@@ -753,11 +726,9 @@ fn main() -> Result<()> {
                 "scsi.attach_cdrom",
                 serde_json::json!({ "id": id }),
             )?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
+            print_result(cli.json, &result, || {
                 println!("SCSI CD-ROM drive attached at ID {}", id);
-            }
+            })?;
         }
 
         Commands::ScsiDetach { id } => {
@@ -767,11 +738,9 @@ fn main() -> Result<()> {
                 "scsi.detach",
                 serde_json::json!({ "id": id }),
             )?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
+            print_result(cli.json, &result, || {
                 println!("SCSI device detached from ID {}", id);
-            }
+            })?;
         }
 
         Commands::SharedDir { path } => {
@@ -877,11 +846,9 @@ fn main() -> Result<()> {
                 "config.serial.disable",
                 serde_json::json!({ "channel": channel_upper }),
             )?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
+            print_result(cli.json, &result, || {
                 println!("Serial {} disabled", channel_upper);
-            }
+            })?;
         }
 
         Commands::Fullscreen => {
@@ -891,11 +858,9 @@ fn main() -> Result<()> {
                 "window.set_fullscreen",
                 serde_json::json!({ "fullscreen": true }),
             )?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
+            print_result(cli.json, &result, || {
                 println!("Entered fullscreen");
-            }
+            })?;
         }
 
         Commands::Windowed => {
@@ -905,11 +870,9 @@ fn main() -> Result<()> {
                 "window.set_fullscreen",
                 serde_json::json!({ "fullscreen": false }),
             )?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
+            print_result(cli.json, &result, || {
                 println!("Exited fullscreen");
-            }
+            })?;
         }
 
         Commands::ToggleFullscreen => {

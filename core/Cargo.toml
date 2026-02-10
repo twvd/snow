@@ -28,7 +28,7 @@ mmap = ["dep:fs2", "dep:memmap2"]
 # Enables save state saving and loading
 savestates = ["dep:binrw", "dep:postcard", "dep:zstd"]
 # Enables RPC interface for external control
-rpc = ["dep:png", "dep:base64"]
+rpc = ["dep:base64"]
 
 [lints]
 workspace = true
@@ -77,7 +77,7 @@ socket2 = { version = "0.6", features = ["all"] }
 pnet = { version = "0.35.0", optional = true }
 tun = { version = "0.7", optional = true, default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
-png = { version = "0.17", optional = true }
+png = "0.17"
 base64 = { version = "0.22", optional = true }
 
 [target.'cfg(unix)'.dependencies]

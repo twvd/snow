@@ -18,6 +18,6 @@ mod handlers;
 mod server;
 mod types;
 
-pub use handlers::RpcHandler;
+pub use handlers::{InputEvent, RpcHandler, TimedInput};
 pub use server::{RpcConfig, RpcMessage, RpcServer};
 pub use types::*;

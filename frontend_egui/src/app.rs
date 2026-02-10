@@ -568,11 +568,9 @@ impl SnowGui {
 
         // Start RPC server if enabled
         #[cfg(feature = "rpc")]
-        if rpc_enabled {
-            if let Err(e) = app.rpc_state.start() {
-                log::error!("Failed to start RPC server: {}", e);
-                eprintln!("Failed to start RPC server: {}", e);
-            }
+        if rpc_enabled && let Err(e) = app.rpc_state.start() {
+            log::error!("Failed to start RPC server: {}", e);
+            eprintln!("Failed to start RPC server: {}", e);
         }
 
         app
@@ -3121,14 +3119,17 @@ impl eframe::App for SnowGui {
 
         // Process RPC requests and update frame buffer for screenshots
         #[cfg(feature = "rpc")]
-        {
-            // Update frame buffer for screenshots
-            if let Some(frame) = self.framebuffer.get_current_frame() {
+        if self.rpc_state.is_running() {
+            // Update frame buffer for screenshots (only when a new frame arrives)
+            if let Some(frame) = self.framebuffer.take_new_frame() {
                 self.rpc_state.update_frame_buffer(frame);
             }
 
             // Keep RPC state in sync with fullscreen state
             self.rpc_state.set_fullscreen_state(self.in_fullscreen);
+
+            // Deliver queued input events (typed text, clicks) frame by frame
+            self.rpc_state.process_input_queue(&self.emu);
 
             // Process pending RPC requests
             self.rpc_state
@@ -3155,6 +3156,9 @@ impl eframe::App for SnowGui {
                         }
                     }
                 }
+                // Fullscreen changes apply synchronously; re-sync so RPC
+                // clients immediately observe the applied state
+                self.rpc_state.set_fullscreen_state(self.in_fullscreen);
             }
         }
 

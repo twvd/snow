@@ -113,6 +113,11 @@ where
         }
     }
 
+    /// Returns the monitor connected to this card
+    pub const fn monitor(&self) -> MacMonitor {
+        self.monitor
+    }
+
     pub fn reset(&mut self) {
         self.vblank_irq = false;
         self.vblank_enable = false;

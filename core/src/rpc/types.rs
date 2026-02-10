@@ -3,8 +3,10 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::emulator::comm::EmulatorSpeed;
+
 /// JSON-RPC 2.0 request
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RpcRequest {
     pub jsonrpc: String,
     pub method: String,
@@ -14,12 +16,12 @@ pub struct RpcRequest {
 }
 
 /// JSON-RPC 2.0 response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RpcResponse {
     pub jsonrpc: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<RpcError>,
     pub id: Option<serde_json::Value>,
 }
@@ -69,11 +71,11 @@ impl RpcResponse {
 }
 
 /// JSON-RPC 2.0 error
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RpcError {
     pub code: i32,
     pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
 }
 
@@ -250,26 +252,19 @@ pub struct ConfigSerialDisableResult {
 
 #[derive(Debug, Serialize)]
 pub struct SpeedGetResult {
-    pub mode: String,
+    pub mode: EmulatorSpeed,
     pub effective_speed: f64,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct SpeedSetParams {
-    pub mode: SpeedMode,
-}
-
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
-pub enum SpeedMode {
-    Accurate,
-    Uncapped,
-    Video,
+    pub mode: EmulatorSpeed,
 }
 
 #[derive(Debug, Serialize)]
 pub struct SpeedSetResult {
     pub success: bool,
-    pub previous: String,
+    pub previous: EmulatorSpeed,
 }
 
 // Mouse types

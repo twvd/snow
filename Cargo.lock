@@ -5075,6 +5075,7 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
+ "snow_core",
 ]
 
 [[package]]
