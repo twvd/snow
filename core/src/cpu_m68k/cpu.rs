@@ -759,6 +759,7 @@ where
     /// Advances by the given amount of cycles
     pub(in crate::cpu_m68k) fn advance_cycles(&mut self, ticks: Ticks) -> Result<()> {
         self.cycles += ticks;
+        self.bus.cpu_tick(ticks)?;
         Ok(())
     }
 
