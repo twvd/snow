@@ -22,13 +22,14 @@ pub struct TraceEntry<TA: PrimInt + WrappingAdd, TD: PrimInt> {
     pub addr: TA,
     pub access: Access,
     pub val: TD,
-    pub cycle: Ticks,
+    pub cpu_cycle: Ticks,
 }
 
 pub struct Testbus<TA: PrimInt + WrappingAdd + Hash + Debug, TD: PrimInt> {
     pub mem: HashMap<TA, TD>,
     trace: RefCell<Vec<TraceEntry<TA, TD>>>,
-    cycles: Ticks,
+    bus_cycles: Ticks,
+    cpu_cycles: Ticks,
     trace_enabled: bool,
     mask: TA,
     pub irq_level: Option<u8>,
@@ -43,7 +44,8 @@ where
         Self {
             mem: HashMap::new(),
             trace: RefCell::new(vec![]),
-            cycles: 0,
+            bus_cycles: 0,
+            cpu_cycles: 0,
             trace_enabled: false,
             mask,
             irq_level: None,
@@ -84,7 +86,7 @@ where
                 addr,
                 access: Access::Read,
                 val,
-                cycle: self.cycles,
+                cpu_cycle: self.cpu_cycles,
             });
         }
         BusResult::Ok(val)
@@ -98,7 +100,7 @@ where
                 addr,
                 access: Access::Write,
                 val,
-                cycle: self.cycles,
+                cpu_cycle: self.cpu_cycles,
             });
         }
         self.mem.insert(addr, val);
@@ -108,6 +110,11 @@ where
     fn reset(&mut self, _hard: bool) -> Result<bool> {
         Ok(false)
     }
+
+    fn cpu_tick(&mut self, ticks: Ticks) -> Result<()> {
+        self.cpu_cycles += ticks;
+        Ok(())
+    }
 }
 
 impl<TA, TD> Tickable for Testbus<TA, TD>
@@ -116,7 +123,7 @@ where
     TD: PrimInt,
 {
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
-        self.cycles += ticks;
+        self.bus_cycles += ticks;
         Ok(ticks)
     }
 }
