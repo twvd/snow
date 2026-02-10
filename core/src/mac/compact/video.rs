@@ -269,7 +269,7 @@ where
             let before_hblank = self.in_hblank();
 
             // Update beam position
-            self.dots = (self.dots + ticks) % FRAME_DOTS as u64;
+            self.dots = (self.dots + 1) % FRAME_DOTS as u64;
 
             if !before_vblank && self.in_vblank() {
                 // Just entered VBlank
