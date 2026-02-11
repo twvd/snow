@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 
-use log::*;
 use num_derive::FromPrimitive;
 use num_derive::ToPrimitive;
 use num_traits::FromPrimitive;
@@ -27,7 +26,9 @@ use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::scsi::toolbox::BlueSCSI;
 use crate::mac::scsi::ScsiCmdResult;
 use crate::mac::scsi::STATUS_GOOD;
-use crate::types::LatchingEvent;
+use crate::tickable::{Tickable, Ticks};
+
+const SCSI_TRACE: bool = false;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq, strum::IntoStaticStr, Serialize, Deserialize)]
@@ -47,26 +48,50 @@ enum ScsiBusPhase {
     MessageOut,
 }
 
+/// NCR 5380 readable registers
 #[allow(non_camel_case_types)]
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy, FromPrimitive, ToPrimitive)]
-enum NcrReg {
-    /// Current Data Register / Output Data Register
-    CDR_ODR,
-    /// Initiator Command Register
+enum NcrReadReg {
+    /// Current Data Register / Output Data Register (0)
+    CDR,
+    /// Initiator Command Register (10)
     ICR,
-    /// Mode Register
+    /// Mode Register (20)
     MR,
-    /// Target Command Register
+    /// Target Command Register (30)
     TCR,
-    /// Current SCSI bus status
+    /// Current SCSI bus status (40)
     CSR,
-    /// Bus and Status register
+    /// Bus and Status register (50)
     BSR,
-    /// Input Data Register
+    /// Input Data Register (60)
     IDR,
-    /// Reset parity/interrupt
+    /// Reset parity/interrupt (read) / Start DMA transfer (write) (70)
     RESET,
+}
+
+/// NCR 5380 writable registers
+#[allow(non_camel_case_types)]
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, FromPrimitive, ToPrimitive)]
+enum NcrWriteReg {
+    /// Output Data Register (0)
+    ODR,
+    /// Initiator Command Register (10)
+    ICR,
+    /// Mode Register (20)
+    MR,
+    /// Target Command Register (30)
+    TCR,
+    /// Select Enable register (40)
+    SELEN,
+    /// Start DMA send (50)
+    StartDMASend,
+    /// Start DMA target receive (60)
+    StartDMATargetReceive,
+    /// Start DMA initiator receive (70)
+    StartDMAInitiatorReceive,
 }
 
 bitfield! {
@@ -76,8 +101,8 @@ bitfield! {
         pub arbitrate: bool @ 0,
         pub dma_mode: bool @ 1,
         pub monitor_busy: bool @ 2,
-        pub eop_int: bool @ 3,
-        pub parity_int: bool @ 4,
+        pub eop_irq: bool @ 3,
+        pub parity_irq: bool @ 4,
         pub parity_check: bool @ 5,
         pub target_mode: bool @ 6,
         pub block_dma: bool @ 7,
@@ -93,6 +118,7 @@ bitfield! {
         pub assert_sel: bool @ 2,
         pub assert_bsy: bool @ 3,
         pub assert_ack: bool @ 4,
+        pub la: bool @ 5,
         /// (w) Differential enable
         pub diff_en: bool @ 5,
         /// (r) Arbitration In Progress
@@ -105,6 +131,8 @@ bitfield! {
     /// NCR 5380 SCSI Bus Status
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     struct NcrRegCsr(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
+        pub phase_match_bits: u8 @ 2..=4,
+
         pub dbp: bool @ 0,
         pub sel: bool @ 1,
         pub io: bool @ 2,
@@ -142,6 +170,22 @@ bitfield! {
     }
 }
 
+bitfield! {
+    /// NCR 5380 Target Control Register
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    struct NcrRegTcr(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
+        pub phase_match_bits: u8 @ 0..=2,
+
+        pub assert_io: bool @ 0,
+        pub assert_cd: bool @ 1,
+        pub assert_msg: bool @ 2,
+        pub assert_req: bool @ 3,
+
+        // 53C80 only
+        pub last_byte_sent: bool @ 7,
+    }
+}
+
 /// NCR 5380 SCSI controller
 #[derive(Serialize, Deserialize)]
 pub struct ScsiController {
@@ -152,13 +196,12 @@ pub struct ScsiController {
     reg_cdr: u8,
     reg_odr: u8,
     reg_bsr: NcrRegBsr,
+    reg_tcr: NcrRegTcr,
+    reg_selen: u8,
     status: u8,
 
     /// Selected SCSI ID
     sel_id: usize,
-
-    /// Selected with attention
-    sel_atn: bool,
 
     /// Command buffer
     cmdbuf: Vec<u8>,
@@ -176,11 +219,13 @@ pub struct ScsiController {
     #[serde(with = "BigArray")]
     pub(crate) targets: [Option<Box<dyn ScsiTarget>>; Self::MAX_TARGETS],
 
-    set_req: LatchingEvent,
-
     #[serde(skip)]
     toolbox: BlueSCSI,
     scsi_debug: bool,
+
+    /// Delays response to ACK de-assert to avoid race conditions mostly
+    /// in the Mac II ROM
+    deassert_ack_delay: Ticks,
 }
 
 impl ScsiController {
@@ -215,20 +260,21 @@ impl ScsiController {
             reg_mr: NcrRegMr(0),
             reg_icr: NcrRegIcr(0),
             reg_csr: NcrRegCsr(0),
-            reg_bsr: NcrRegBsr(0).with_phase_match(true),
+            reg_bsr: NcrRegBsr(0),
             reg_cdr: 0,
             reg_odr: 0,
+            reg_tcr: NcrRegTcr(0),
+            reg_selen: 0,
             sel_id: 0,
-            sel_atn: false,
             cmdbuf: vec![],
             responsebuf: VecDeque::default(),
             cmdlen: 0,
             dataout_len: 0,
             status: 0,
-            set_req: Default::default(),
             targets: Default::default(),
             toolbox: BlueSCSI::default(),
             scsi_debug: false,
+            deassert_ack_delay: 0,
         }
     }
 
@@ -302,26 +348,24 @@ impl ScsiController {
         unreachable!()
     }
 
-    /// Asserts the REQ line (delayed)
+    /// Asserts the REQ line
     fn assert_req(&mut self) {
-        // MacII has a race condition where it will get stuck if
-        // REQ is immediately set on a Data -> Status transition.
-        self.reg_csr.set_req(false);
-        self.set_req.set();
+        self.reg_csr.set_req(true);
     }
 
     /// De-asserts the REQ line
     fn deassert_req(&mut self) {
         self.reg_csr.set_req(false);
-        self.set_req.get_clear();
     }
 
     fn set_phase(&mut self, phase: ScsiBusPhase) {
-        //debug!("Bus phase: {:?}", phase);
+        if SCSI_TRACE {
+            log::debug!("Bus phase: {:?}", phase);
+        }
 
         self.busphase = phase;
         self.reg_csr.0 = 0;
-        self.deassert_req();
+        self.deassert_ack_delay = 0;
 
         match self.busphase {
             ScsiBusPhase::Arbitration => {
@@ -377,12 +421,18 @@ impl ScsiController {
 
                 self.assert_req();
             }
+            ScsiBusPhase::Free => {
+                assert!(!self.reg_csr.req());
+            }
             _ => (),
         }
     }
 
     fn cmd_run(&mut self, outdata: Option<&[u8]>) -> Result<()> {
         let cmd = &self.cmdbuf;
+        if SCSI_TRACE {
+            log::debug!("SCSI ID {} command: {:02X?}", self.sel_id, cmd);
+        }
 
         let result = match cmd[0] {
             0xD0..=0xD9 => Ok(self
@@ -411,6 +461,11 @@ impl ScsiController {
                 self.dataout_len = len;
                 self.responsebuf.clear();
                 self.set_phase(ScsiBusPhase::DataOut);
+
+                if self.dataout_len == 0 {
+                    // Legal according to spec
+                    return self.cmd_run(Some(&[]));
+                }
             }
             Err(e) => return Err(e),
         }
@@ -419,11 +474,7 @@ impl ScsiController {
     }
 
     pub fn get_drq(&self) -> bool {
-        self.reg_mr.dma_mode()
-            && matches!(
-                self.busphase,
-                ScsiBusPhase::DataIn | ScsiBusPhase::DataOut | ScsiBusPhase::Status
-            )
+        self.reg_mr.dma_mode() && (self.reg_csr.req() || self.deassert_ack_delay > 0)
     }
 
     pub fn read_dma(&mut self) -> u8 {
@@ -435,185 +486,264 @@ impl ScsiController {
     }
 
     fn write_datareg(&mut self, val: u8) {
-        if self.busphase == ScsiBusPhase::DataOut {
-            if self.reg_mr.dma_mode() {
-                self.assert_req();
-            }
-            self.responsebuf.push_back(val);
-            self.dataout_len -= 1;
-            if self.dataout_len == 0 {
-                // TODO inefficient
-                let datavec = Vec::from_iter(self.responsebuf.iter().cloned());
-                if let Err(e) = self.cmd_run(Some(&datavec)) {
-                    log::error!("SCSI command run error: {:#}", e);
-                }
-            }
+        if self.deassert_ack_delay > 0 {
+            self.deassert_ack_real();
+            self.deassert_ack_delay = 0;
+        }
+
+        if SCSI_TRACE {
+            log::debug!(
+                "Write data register: {:02X} dma = {}",
+                val,
+                self.reg_mr.dma_mode()
+            );
         }
         self.reg_odr = val;
+
+        if self.reg_mr.dma_mode() && self.reg_icr.assert_databus() {
+            self.assert_ack();
+            self.deassert_ack();
+        }
     }
 
     fn read_datareg(&mut self) -> u8 {
-        let val = self.reg_cdr;
-        if self.busphase == ScsiBusPhase::DataIn && self.reg_mr.dma_mode() {
-            // Pump next byte to CDR for next read
-            if let Some(b) = self.responsebuf.pop_front() {
-                self.reg_cdr = b;
-                self.assert_req();
-            } else {
-                // Transfer completed
-                self.deassert_req();
+        if self.deassert_ack_delay > 0 {
+            self.deassert_ack_real();
+            self.deassert_ack_delay = 0;
+        }
 
-                self.set_phase(ScsiBusPhase::Status);
-            }
+        if self.busphase == ScsiBusPhase::Arbitration {
+            // Clear AIP once initiator ID is on the bus
+            self.reg_icr.set_aip(false);
+            self.reg_icr.set_la(false);
+        }
+
+        let val = self.reg_cdr;
+
+        if self.reg_mr.dma_mode() {
+            self.assert_ack();
+            self.deassert_ack();
         }
         val
+    }
+
+    fn assert_ack(&mut self) {
+        self.deassert_req();
+
+        match self.busphase {
+            ScsiBusPhase::DataOut => {
+                let val = self.reg_odr;
+                self.responsebuf.push_back(val);
+                self.dataout_len -= 1;
+            }
+            _ => (),
+        }
+    }
+
+    fn deassert_ack(&mut self) {
+        self.deassert_ack_delay = 5000;
+    }
+
+    fn deassert_ack_real(&mut self) {
+        let mut end_dma = false;
+
+        match self.busphase {
+            ScsiBusPhase::Command => {
+                let val = self.reg_odr;
+                if self.cmdbuf.is_empty() {
+                    self.cmdlen = scsi_cmd_len(val).unwrap_or_else(|| {
+                        log::error!("Cmd length unknown for {:02X}", val);
+                        6
+                    });
+                }
+                self.cmdbuf.push(val);
+                if self.cmdbuf.len() >= self.cmdlen {
+                    // Command complete, execute it
+
+                    if let Err(e) = self.cmd_run(None) {
+                        log::error!("SCSI command ({:02X}) error: {}", self.cmdbuf[0], e);
+                    }
+                } else {
+                    self.assert_req();
+                }
+            }
+            ScsiBusPhase::DataIn => {
+                // Pump next byte to CDR for next read
+                if let Some(b) = self.responsebuf.pop_front() {
+                    self.reg_cdr = b;
+                    self.assert_req();
+                } else {
+                    // Transfer completed
+                    self.set_phase(ScsiBusPhase::Status);
+                    end_dma = true;
+                }
+            }
+            ScsiBusPhase::DataOut => {
+                if self.dataout_len == 0 {
+                    // TODO inefficient
+                    let datavec = Vec::from_iter(self.responsebuf.iter().cloned());
+                    if let Err(e) = self.cmd_run(Some(&datavec)) {
+                        log::error!("SCSI command run error: {:#}", e);
+                    }
+                    end_dma = true;
+                } else {
+                    self.assert_req();
+                }
+            }
+            ScsiBusPhase::Status => {
+                self.set_phase(ScsiBusPhase::MessageIn);
+                end_dma = true;
+            }
+            ScsiBusPhase::MessageIn => {
+                self.set_phase(ScsiBusPhase::Free);
+                end_dma = true;
+            }
+            _ => {}
+        }
+
+        if end_dma && self.reg_mr.dma_mode() {
+            self.reg_bsr.set_dma_end(true);
+            if self.reg_mr.eop_irq() {
+                self.reg_bsr.set_irq(true);
+            }
+        }
+    }
+
+    fn phase_match(&self) -> bool {
+        self.reg_csr.phase_match_bits() == self.reg_tcr.phase_match_bits()
     }
 }
 
 impl BusMember<Address> for ScsiController {
     fn read(&mut self, addr: Address) -> Option<u8> {
-        let _is_write = addr & 1 != 0;
-        let _dack = addr & 0b0010_0000_0000 != 0;
-        let reg = NcrReg::from_u32((addr >> 4) & 0b111).unwrap();
+        let is_write = addr & 1 != 0;
+        let dack = addr & 0b0010_0000_0000 != 0;
+        let reg = NcrReadReg::from_u32((addr >> 4) & 0b111).unwrap();
 
-        //if reg != NcrReg::CSR {
-        //    debug!(
-        //        "{:06X} SCSI read: write = {}, dack = {}, reg = {:?}",
-        //        self.dbg_pc, is_write, dack, reg
-        //    );
-        //}
-
-        match reg {
-            NcrReg::CDR_ODR | NcrReg::IDR => Some(self.read_datareg()),
-            NcrReg::MR => Some(self.reg_mr.0),
-            NcrReg::ICR => Some(self.reg_icr.0),
-            NcrReg::CSR => {
+        let val = match reg {
+            NcrReadReg::CDR | NcrReadReg::IDR => Some(self.read_datareg()),
+            NcrReadReg::MR => Some(self.reg_mr.0),
+            NcrReadReg::ICR => Some(self.reg_icr.0),
+            NcrReadReg::CSR => {
                 let val = self.reg_csr.0;
-
-                // MacII has a race condition where it will get stuck if
-                // REQ is immediately set on a Data -> Status transition.
-                if self.set_req.get_clear() {
-                    self.reg_csr.set_req(true);
-                }
-
                 Some(val)
             }
-            NcrReg::BSR => Some(
-                self.reg_bsr
+            NcrReadReg::BSR => {
+                let val = self
+                    .reg_bsr
                     .with_dma_req(self.get_drq())
-                    .with_dma_end(!matches!(
-                        self.busphase,
-                        ScsiBusPhase::DataIn | ScsiBusPhase::DataOut,
-                    ))
-                    .0,
-            ),
-            NcrReg::RESET => {
+                    .with_phase_match(self.phase_match())
+                    .0;
+
+                if self.deassert_ack_delay > 0 {
+                    self.deassert_ack_real();
+                    self.deassert_ack_delay = 0;
+                }
+                Some(val)
+            }
+            NcrReadReg::RESET => {
                 self.reg_bsr.set_irq(false);
                 Some(0)
             }
-            _ => Some(0),
+            NcrReadReg::TCR => Some(self.reg_tcr.with_last_byte_sent(self.reg_bsr.dma_end()).0),
+        };
+
+        if SCSI_TRACE && reg != NcrReadReg::CSR && reg != NcrReadReg::BSR {
+            log::debug!(
+                "SCSI read: write = {}, dack = {}, reg = {:?}, value = {:02X?}",
+                is_write,
+                dack,
+                reg,
+                val
+            );
         }
+
+        val
     }
 
     #[allow(clippy::cognitive_complexity)]
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
-        let _is_write = addr & 1 != 0;
-        let _dack = addr & 0b0010_0000_0000 != 0;
-        let reg = NcrReg::from_u32((addr >> 4) & 0b111).unwrap();
+        let is_write = addr & 1 != 0;
+        let dack = addr & 0b0010_0000_0000 != 0;
+        let reg = NcrWriteReg::from_u32((addr >> 4) & 0b111).unwrap();
 
-        //debug!(
-        //    "SCSI write: val = {:02X}, write = {}, dack = {}, reg = {:?}",
-        //    val, is_write, dack, reg
-        //);
+        if SCSI_TRACE {
+            log::debug!(
+                "SCSI write: val = {:02X}, write = {}, dack = {}, reg = {:?}",
+                val,
+                is_write,
+                dack,
+                reg
+            );
+        }
 
         match reg {
-            NcrReg::CDR_ODR => {
+            NcrWriteReg::ODR => {
                 self.write_datareg(val);
                 Some(())
             }
-            NcrReg::ICR => {
+            NcrWriteReg::ICR => {
                 let set = NcrRegIcr(val & !self.reg_icr.0);
                 let clr = NcrRegIcr(!val & self.reg_icr.0);
 
                 self.reg_icr.0 = val;
 
+                if set.assert_ack() {
+                    self.assert_ack();
+                }
+                if clr.assert_ack() {
+                    self.deassert_ack();
+                }
+
                 match self.busphase {
                     ScsiBusPhase::Arbitration => {
                         if set.assert_sel() {
-                            self.reg_bsr.set_irq(true);
                             self.set_phase(ScsiBusPhase::Selection);
                         }
                     }
-                    ScsiBusPhase::Command => {
-                        if set.assert_ack() {
-                            self.deassert_req();
-                        }
-                        if clr.assert_ack() {
-                            if self.cmdbuf.is_empty() {
-                                self.cmdlen = scsi_cmd_len(self.reg_odr).unwrap_or_else(|| {
-                                    log::error!("Cmd length unknown for {:02X}", self.reg_odr);
-                                    6
-                                });
-                            }
-                            self.cmdbuf.push(self.reg_odr);
-                            if self.cmdbuf.len() >= self.cmdlen {
-                                if let Err(e) = self.cmd_run(None) {
-                                    error!("SCSI command ({:02X}) error: {}", self.cmdbuf[0], e);
+                    ScsiBusPhase::Selection => {
+                        if set.assert_databus() {
+                            let Ok(id) = Self::translate_id(self.reg_odr & 0x7F) else {
+                                log::error!("Invalid ID on bus! ODR = {:02X}", self.reg_odr);
+                                self.set_phase(ScsiBusPhase::Free);
+                                return Some(());
+                            };
+                            if self.targets[id].is_none() {
+                                // No device present at this ID
+                                if SCSI_TRACE {
+                                    log::debug!("Not selecting {},  no device", id);
                                 }
-                            } else {
-                                self.assert_req();
+                                self.set_phase(ScsiBusPhase::Free);
+                                return Some(());
                             }
-                        }
-                    }
-                    ScsiBusPhase::Status => {
-                        if set.assert_ack() {
-                            self.reg_csr.set_req(false);
-                        }
-                        if clr.assert_ack() {
-                            self.set_phase(ScsiBusPhase::MessageIn);
-                        }
-                    }
-                    ScsiBusPhase::MessageIn => {
-                        if set.assert_ack() {
-                            self.reg_csr.set_req(false);
-                        }
-                        if clr.assert_ack() {
-                            self.set_phase(ScsiBusPhase::Free);
-                        }
-                    }
-                    ScsiBusPhase::DataIn => {
-                        if set.assert_ack() {
-                            self.reg_csr.set_req(false);
-                        }
-                        if clr.assert_ack() {
-                            if let Some(b) = self.responsebuf.pop_front() {
-                                self.reg_cdr = b;
-                                self.reg_csr.set_req(true);
-                            } else {
-                                // Transfer completed
-                                self.set_phase(ScsiBusPhase::Status);
+
+                            // Select this ID
+                            self.sel_id = id;
+                            self.reg_cdr = self.reg_odr;
+
+                            // Selection interrupt
+                            if self.reg_selen == self.reg_odr {
+                                self.reg_bsr.set_irq(true);
                             }
-                        }
-                    }
-                    ScsiBusPhase::DataOut => {
-                        if set.assert_ack() {
-                            self.reg_csr.set_req(false);
-                        }
-                        if clr.assert_ack() {
-                            if self.dataout_len > 0 {
-                                self.reg_csr.set_req(true);
-                            } else {
-                                // Transfer completed
-                                self.set_phase(ScsiBusPhase::Status);
+
+                            if SCSI_TRACE {
+                                log::debug!("Selected SCSI ID: {:02X}", self.sel_id,);
                             }
+
+                            self.set_phase(ScsiBusPhase::Command);
                         }
                     }
+                    ScsiBusPhase::Command => {}
+
+                    ScsiBusPhase::MessageIn => {}
+                    ScsiBusPhase::DataIn => {}
+                    ScsiBusPhase::DataOut => if clr.assert_ack() {},
 
                     _ => (),
                 }
                 Some(())
             }
-            NcrReg::MR => {
+            NcrWriteReg::MR => {
                 let set = NcrRegMr(val & !self.reg_mr.0);
                 let clr = NcrRegMr(!val & self.reg_mr.0);
                 self.reg_mr.0 = val;
@@ -625,43 +755,54 @@ impl BusMember<Address> for ScsiController {
                     return Some(());
                 }
 
-                match self.busphase {
-                    ScsiBusPhase::Free => {}
-                    ScsiBusPhase::Selection => {
-                        if clr.arbitrate() {
-                            let Ok(id) = Self::translate_id(self.reg_odr & 0x7F) else {
-                                error!("Invalid ID on bus! ODR = {:02X}", self.reg_odr);
-                                self.set_phase(ScsiBusPhase::Free);
-                                return Some(());
-                            };
-                            if self.targets[id].is_none() {
-                                // No device present at this ID
-                                self.set_phase(ScsiBusPhase::Free);
-                                return Some(());
-                            }
-
-                            // Select this ID
-                            self.sel_id = id;
-                            self.sel_atn = self.reg_odr & 0x80 != 0;
-
-                            //trace!(
-                            //    "Selected SCSI ID: {:02X}, attention = {}",
-                            //    self.sel_id,
-                            //    self.sel_atn
-                            //);
-
-                            self.set_phase(ScsiBusPhase::Command);
-                        }
-                    }
-                    _ => (),
+                if clr.dma_mode() {
+                    self.reg_bsr.set_dma_end(false);
                 }
                 Some(())
             }
+            NcrWriteReg::StartDMASend | NcrWriteReg::StartDMAInitiatorReceive => {
+                // Start DMA transfer
+                if self.deassert_ack_delay > 0 {
+                    self.deassert_ack_real();
+                    self.deassert_ack_delay = 0;
+                }
+                if !self.phase_match() {
+                    log::warn!(
+                        "SCSI phase mismatch: {:03b} (actual) <-> {:03b} (expected)",
+                        self.reg_csr.phase_match_bits(),
+                        self.reg_tcr.phase_match_bits(),
+                    );
+                    self.reg_bsr.set_phase_match(false);
+                    self.reg_bsr.set_irq(true);
+                }
+                Some(())
+            }
+            NcrWriteReg::TCR => {
+                self.reg_tcr.0 = val;
+                Some(())
+            }
+            NcrWriteReg::SELEN => {
+                self.reg_selen = val;
+                Some(())
+            }
+
             _ => {
-                //warn!("Unknown SCSI register write: {:?} = {:02X}", reg, val);
+                log::warn!("Unknown SCSI register write: {:?} = {:02X}", reg, val);
                 Some(())
             }
         }
+    }
+}
+
+impl Tickable for ScsiController {
+    fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+        if self.deassert_ack_delay > 0 {
+            self.deassert_ack_delay -= 1;
+            if self.deassert_ack_delay == 0 {
+                self.deassert_ack_real();
+            }
+        }
+        Ok(ticks)
     }
 }
 
@@ -669,7 +810,8 @@ impl Debuggable for ScsiController {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         use crate::debuggable::*;
         use crate::{
-            dbgprop_bool, dbgprop_enum, dbgprop_group, dbgprop_header, dbgprop_nest, dbgprop_udec,
+            dbgprop_bool, dbgprop_enum, dbgprop_group, dbgprop_header, dbgprop_nest,
+            dbgprop_string, dbgprop_udec,
         };
 
         let mut targets = vec![];
@@ -700,12 +842,14 @@ impl Debuggable for ScsiController {
             ),
             dbgprop_enum!("Bus phase", self.busphase),
             dbgprop_udec!("Selected ID", self.sel_id),
-            dbgprop_bool!("Attention", self.sel_atn),
             dbgprop_header!("Buffers"),
+            dbgprop_string!("Command", format!("{:02X?}", self.cmdbuf)),
             dbgprop_udec!("Command buffer len", self.cmdbuf.len()),
             dbgprop_udec!("Command length", self.cmdlen),
             dbgprop_udec!("Response buffer len", self.responsebuf.len()),
             dbgprop_udec!("Data out len", self.dataout_len),
+            dbgprop_bool!("IRQ", self.get_irq()),
+            dbgprop_bool!("DRQ", self.get_drq()),
         ]
     }
 }
