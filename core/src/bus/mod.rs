@@ -1,6 +1,6 @@
 pub mod testbus;
 
-use crate::tickable::Tickable;
+use crate::tickable::{Tickable, Ticks};
 
 use anyhow::Result;
 use num_traits::{PrimInt, WrappingAdd};
@@ -36,6 +36,10 @@ pub trait Bus<TA: PrimInt + WrappingAdd, TD: PrimInt>: Tickable {
     /// Returns 'true' if the reset asserted the HALT line which
     /// in turn should hard-reset the CPU itself.
     fn reset(&mut self, hard: bool) -> Result<bool>;
+
+    fn cpu_tick(&mut self, _ticks: Ticks) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Inspectable provides an interface to debugging/memory views.

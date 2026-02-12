@@ -54,7 +54,10 @@ macro_rules! dbgprop_long {
 #[macro_export]
 macro_rules! dbgprop_udec {
     ($name:expr, $val:expr) => {
-        DebuggableProperty::new($name, DebuggablePropertyValue::UnsignedDecimal($val))
+        DebuggableProperty::new(
+            $name,
+            DebuggablePropertyValue::UnsignedDecimal(($val).try_into().unwrap()),
+        )
     };
 }
 
@@ -139,8 +142,8 @@ pub enum DebuggablePropertyValue {
     Word(Word),
     WordBinary(Word),
     Long(Long),
-    SignedDecimal(isize),
-    UnsignedDecimal(usize),
+    SignedDecimal(i64),
+    UnsignedDecimal(u64),
     StaticStr(&'static str),
     String(String),
 }

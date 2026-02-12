@@ -138,17 +138,17 @@ where
 
     /// Tests if currently in VBlank period.
     pub fn in_vblank(&self) -> bool {
-        self.dots < FRAME_VISIBLE_OFFSET
+        self.dots < FRAME_VISIBLE_OFFSET as u64
     }
 
     /// Tests if currently in HBlank period (also during VBlank)
     pub fn in_hblank(&self) -> bool {
-        self.dots % H_DOTS >= H_VISIBLE_DOTS
+        self.dots % H_DOTS as u64 >= H_VISIBLE_DOTS as u64
     }
 
     /// Gets the current active scanline
     pub fn get_scanline(&self) -> usize {
-        self.dots / H_DOTS
+        (self.dots / H_DOTS as u64).try_into().unwrap()
     }
 
     /// Gets the current scanline, offset from the top of the visible frame.
@@ -263,25 +263,28 @@ where
     T: Renderer,
 {
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
-        let before_vblank = self.in_vblank();
-        let before_hblank = self.in_hblank();
+        // Simulate ticks one-at-a-time to ensure we don't miss a vblank or hblank.
+        for _ in 0..ticks {
+            let before_vblank = self.in_vblank();
+            let before_hblank = self.in_hblank();
 
-        // Update beam position
-        self.dots = (self.dots + ticks) % FRAME_DOTS;
+            // Update beam position
+            self.dots = (self.dots + 1) % FRAME_DOTS as u64;
 
-        if !before_vblank && self.in_vblank() {
-            // Just entered VBlank
-            self.event_vblank.set();
-        }
+            if !before_vblank && self.in_vblank() {
+                // Just entered VBlank
+                self.event_vblank.set();
+            }
 
-        if !before_hblank && self.in_hblank() {
-            // Just entered HBlank
-            self.event_hblank.set();
-        }
+            if !before_hblank && self.in_hblank() {
+                // Just entered HBlank
+                self.event_hblank.set();
+            }
 
-        if before_vblank && !self.in_vblank() {
-            // Just left VBlank
-            self.render()?;
+            if before_vblank && !self.in_vblank() {
+                // Just left VBlank
+                self.render()?;
+            }
         }
 
         Ok(ticks)
@@ -308,7 +311,7 @@ where
             dbgprop_bool!("In VBlank", self.in_vblank()),
             dbgprop_bool!("In HBlank", self.in_hblank()),
             dbgprop_header!("Beam position"),
-            dbgprop_udec!("Horizontal", self.dots % H_DOTS),
+            dbgprop_udec!("Horizontal", self.dots % H_DOTS as u64),
             dbgprop_udec!("Vertical", self.get_scanline()),
         ]
     }

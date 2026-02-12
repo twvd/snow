@@ -65,6 +65,7 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     pub(crate) scc: Scc,
     pub(crate) asc: Asc,
     via_clock: Ticks,
+    asc_clock: Ticks,
     mouse_ready: bool,
     pub(crate) swim: Swim,
     pub(crate) scsi: ScsiController,
@@ -85,6 +86,7 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     /// sleep for in Video speed mode.
     #[serde(skip, default = "Instant::now")]
     vblank_time: Instant,
+    vblank_clock: Ticks,
 
     /// Programmer's key pressed
     progkey_pressed: LatchingEvent,
@@ -197,6 +199,7 @@ where
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), 16_000_000),
             scsi: ScsiController::new(),
             asc: Asc::default(),
+            asc_clock: 0,
             mouse_ready: false,
 
             ram_mask: usize::MAX,
@@ -209,6 +212,7 @@ where
             speed: EmulatorSpeed::Accurate,
             //last_audiosample: 0,
             vblank_time: Instant::now(),
+            vblank_clock: 0,
             //vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
 
@@ -723,8 +727,6 @@ where
     TRenderer: Renderer,
 {
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
-        // This is called from the CPU, at the CPU clock speed
-        assert_eq!(ticks, 1);
         self.cycles += ticks;
 
         if AMU {
@@ -743,7 +745,10 @@ where
         }
 
         // Legacy VBlank interrupt
-        if self.cycles.is_multiple_of(CLOCK_SPEED / 60) {
+        self.vblank_clock += ticks;
+        while self.vblank_clock >= CLOCK_SPEED / 60 {
+            self.vblank_clock -= CLOCK_SPEED / 60;
+
             self.via1.ifr.set_vblank(true);
 
             if self.speed == EmulatorSpeed::Video {
@@ -763,10 +768,11 @@ where
         if self.asc.get_irq() {
             self.via2.ifr.set_asc(true);
         }
-        if self
-            .cycles
-            .is_multiple_of(CLOCK_SPEED / self.asc.sample_rate())
-        {
+
+        self.asc_clock += ticks;
+        while self.asc_clock >= CLOCK_SPEED / self.asc.sample_rate() {
+            self.asc_clock -= CLOCK_SPEED / self.asc.sample_rate();
+
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }
 
@@ -789,7 +795,7 @@ where
         self.via2.ifr.set_scsi_drq(self.scsi.get_drq());
 
         self.swim.intdrive = self.via1.a_out.drivesel();
-        self.swim.tick(1)?;
+        self.swim.tick(ticks)?;
 
         Ok(1)
     }

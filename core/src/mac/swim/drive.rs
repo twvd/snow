@@ -497,7 +497,7 @@ impl FloppyDrive {
         } else {
             ((self.base_frequency * 60)
                 / self.get_track_rpm()
-                / self.floppy.get_type().get_approx_track_length(self.track))
+                / self.floppy.get_type().get_approx_track_length(self.track) as u64)
                 + 1
         }
     }
