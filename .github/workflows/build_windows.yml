@@ -2,7 +2,7 @@ name: Build - Windows
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "master", "arm-ci" ]
     paths-ignore:
       - 'README.md'
       - 'docs/**'
@@ -20,27 +20,23 @@ env:
 
 jobs:
   build:
-    runs-on: windows-2022
+    runs-on: windows-11-arm
     defaults:
       run:
         shell: msys2 {0}
-
     strategy:
       matrix:
-        environment:
-          - msystem: MINGW64
-            prefix: mingw-w64-x86_64
-
+        msystem: ['MINGW64', 'CLANGARM64']
     steps:
-    - uses: actions/checkout@v4
-    - name: Prepare MSYS2 environment
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Setup MSYS2
       uses: msys2/setup-msys2@v2
-      id: msys2
       with:
-        release: false
+        release: true
         update: true
-        msystem: ${{ matrix.environment.msystem }}
-        # Workaround for 'the SSL certificate is invalid; class=Ssl (16)'
+        msystem: ${{ matrix.msystem }}
+        cache: true
         install: >-
           git
         pacboy: >-
@@ -48,14 +44,25 @@ jobs:
           SDL2:p
           pkg-config:p
     - name: Build release
-      run: cargo build --verbose --release --all -F sdl2-static
+      run: |
+        export RUSTFLAGS="-C target-feature=+crt-static"
+        cargo build --verbose --release --all -F sdl2-static
     - name: GUI Create packaging directory
       run: mkdir snow-gui
     - name: GUI Gather files
       run: cp 'target/release/snowemu.exe' snow-gui/
+    - name: Architecture Friendly Name
+      id: arch-name
+      run: |
+        if [[ ${{ matrix.msystem }} == 'MINGW64' ]]; then
+          arch="x86_x64"
+        elif [[ ${{ matrix.msystem }} == 'CLANGARM64' ]]; then
+          arch="ARM64"
+        fi
+        echo "arch=$arch" >> "$GITHUB_OUTPUT"
     - name: GUI Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: 'Snow Windows (x86_64)'
+        name: 'Snow Windows (${{ steps.arch-name.outputs.arch }})'
         if-no-files-found: error
         path: snow-gui/*
