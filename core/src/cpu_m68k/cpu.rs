@@ -260,6 +260,9 @@ pub struct CpuM68k<
     /// Total cycle counter
     pub cycles: Ticks,
 
+    /// Time of last bus sync in cycles
+    pub last_bus_sync: Ticks,
+
     /// Current prefetch queue
     pub prefetch: VecDeque<u16>,
 
@@ -353,6 +356,7 @@ where
             bus,
             regs: RegisterFile::new(),
             cycles: 0,
+            last_bus_sync: 0,
             prefetch: VecDeque::with_capacity(3),
             step_ea_addr: None,
             step_exception: false,
@@ -386,6 +390,7 @@ where
         self.icache_tags.fill(ICACHE_TAG_INVALID);
 
         self.cycles = 0;
+        self.last_bus_sync = 0;
         let init_ssp = self.read_ticks(VECTOR_SP)?;
         let init_pc = self.read_ticks(VECTOR_RESET)?;
 
@@ -544,9 +549,21 @@ where
         Ok(v)
     }
 
+    pub fn sync_bus(&mut self) -> Result<()> {
+        let cycles_since_last_sync = self.cycles - self.last_bus_sync;
+        if cycles_since_last_sync > 0 {
+            self.last_bus_sync += cycles_since_last_sync;
+            self.bus.tick(cycles_since_last_sync)?;
+        }
+
+        Ok(())
+    }
+
     /// Executes a single CPU step.
     pub fn step(&mut self) -> Result<()> {
         debug_assert_eq!(self.prefetch.len(), 2);
+
+        self.sync_bus()?;
 
         self.step_ea_addr = None;
         self.step_exception = false;
@@ -742,10 +759,8 @@ where
 
     /// Advances by the given amount of cycles
     pub(in crate::cpu_m68k) fn advance_cycles(&mut self, ticks: Ticks) -> Result<()> {
-        for _ in 0..ticks {
-            self.cycles += 1;
-            self.bus.tick(1)?;
-        }
+        self.cycles += ticks;
+        self.bus.cpu_tick(ticks)?;
         Ok(())
     }
 
@@ -2967,7 +2982,7 @@ where
         self.regs.write_d(instr.get_op2(), result);
         self.regs.sr.set_ccr(ccr);
 
-        self.advance_cycles(2 * count)?;
+        self.advance_cycles(2 * count as Ticks)?;
 
         match std::mem::size_of::<T>() {
             4 => self.advance_cycles(4)?,

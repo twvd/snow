@@ -158,6 +158,7 @@ where
                             // Insert wait states until bus access succeeds
                             self.history_current.waitstates = true;
                             self.advance_cycles(2)?;
+                            self.sync_bus()?;
                         }
                     }
                 };
@@ -315,6 +316,7 @@ where
                         // Insert wait states until bus access succeeds
                         self.history_current.waitstates = true;
                         self.advance_cycles(2)?;
+                        self.sync_bus()?;
                     }
                     if CPU_TYPE < M68020 {
                         self.advance_cycles(2)?;
@@ -370,6 +372,7 @@ where
                         // Insert wait states until bus access succeeds
                         self.history_current.waitstates = true;
                         self.advance_cycles(2)?;
+                        self.sync_bus()?;
                     }
                     if CPU_TYPE < M68020 {
                         self.advance_cycles(2)?;

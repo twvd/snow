@@ -274,7 +274,7 @@ fn print_result(cpu: &CpuM68000<Testbus<Address, u8>>, testcase: &Testcase) {
     for tr in cpu.bus.get_trace() {
         eprintln!(
             "{:<4} {:?} {:06X} {:04X}",
-            tr.cycle, tr.access, tr.addr, tr.val
+            tr.cpu_cycle, tr.access, tr.addr, tr.val
         );
     }
 }
@@ -355,7 +355,7 @@ fn run_testcase(testcase: Testcase, level: TestLevel) {
                 TestcaseTransaction::Idle(t) => {
                     // Bus must be quiet for length
                     for cycle in abs_cycles..(abs_cycles + t.cycles) {
-                        if trace.iter().any(|&a| a.cycle == cycle) {
+                        if trace.iter().any(|&a| a.cpu_cycle == cycle) {
                             print_result(&cpu, &testcase);
                             panic!("Bus not idle at cycle {}", abs_cycles);
                         }
@@ -373,7 +373,7 @@ fn run_testcase(testcase: Testcase, level: TestLevel) {
                         if trace
                             .iter()
                             .find(|&&a| {
-                                if a.cycle == cycle
+                                if a.cpu_cycle == cycle
                                     && (a.addr & !1) == (t.address & !1)
                                     && a.access == expected_access
                                 {
