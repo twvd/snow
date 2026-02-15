@@ -390,6 +390,7 @@ where
         self.icache_tags.fill(ICACHE_TAG_INVALID);
 
         self.cycles = 0;
+        self.last_bus_sync = 0;
         let init_ssp = self.read_ticks(VECTOR_SP)?;
         let init_pc = self.read_ticks(VECTOR_RESET)?;
 
