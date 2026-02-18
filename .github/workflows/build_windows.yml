@@ -2,7 +2,7 @@ name: Build - Windows
 
 on:
   push:
-    branches: [ "master", "arm-ci" ]
+    branches: [ "master" ]
     paths-ignore:
       - 'README.md'
       - 'docs/**'
