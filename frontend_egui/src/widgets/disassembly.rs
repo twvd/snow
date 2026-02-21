@@ -90,6 +90,7 @@ impl DisassemblyWidget {
         if let Some(map_filename) = match model {
             MacModel::Plus => Some("MacPlusROM"),
             MacModel::SE | MacModel::SeFdhd => Some("MacSEROM"),
+            MacModel::Portable => Some("MacPortableROM"),
             MacModel::Classic => Some("MacClassicROM"),
             MacModel::MacII => Some("MacIIROM"),
             MacModel::MacIIFDHD | MacModel::MacIIx | MacModel::MacIIcx | MacModel::SE30 => {
