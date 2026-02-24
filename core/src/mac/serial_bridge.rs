@@ -435,4 +435,25 @@ impl SccBridge {
     pub fn is_localtalk(&self) -> bool {
         matches!(self, Self::LocalTalk(_))
     }
+
+    /// Set the node address (LocalTalk only)
+    pub fn set_node_address(&mut self, addr: u8) {
+        if let Self::LocalTalk(bridge) = self {
+            bridge.set_node_address(addr);
+        }
+    }
+
+    /// Set the SDLC address search mode (LocalTalk only)
+    pub fn set_address_search_mode(&mut self, mode: bool) {
+        if let Self::LocalTalk(bridge) = self {
+            bridge.set_address_search_mode(mode);
+        }
+    }
+
+    /// Send a complete SDLC frame (LocalTalk only)
+    pub fn send_frame(&mut self, llap: &[u8]) {
+        if let Self::LocalTalk(bridge) = self {
+            bridge.send_frame(llap);
+        }
+    }
 }

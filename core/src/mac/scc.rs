@@ -240,6 +240,11 @@ struct SccChannel {
     tx_queue: VecDeque<u8>,
     rx_queue: VecDeque<u8>,
 
+    /// SDLC station address (WR6) - used for LocalTalk node address
+    sdlc_address: u8,
+    /// SDLC address search mode (WR3 bit 2) - hardware destination filter
+    sdlc_address_search_mode: bool,
+
     // LocalTalk/SDLC frame state
     /// Current LocalTalk RX frame (complete LLAP packet)
     lt_rx_frame: Option<Vec<u8>>,
@@ -253,6 +258,12 @@ struct SccChannel {
     lt_rx_chr_avail: bool,
     /// Flag set when LocalTalk needs to be polled (RX just re-enabled)
     localtalk_poll_needed: bool,
+
+    // LocalTalk/SDLC TX frame state
+    /// SDLC TX frame accumulation buffer
+    lt_tx_frame: Vec<u8>,
+    /// Completed SDLC TX frames ready for bridge
+    lt_tx_complete: VecDeque<Vec<u8>>,
 }
 
 /// Zilog Z8530 Serial Communications Controller
@@ -340,7 +351,14 @@ impl Scc {
         if self.ch[chi].tx_enable && self.ch[chi].tx_ie && self.mic.mie() {
             self.ch[chi].tx_ip = true;
         }
+
+        // Always push to tx_queue for the byte-stream path (try_extract_packets)
         self.ch[chi].tx_queue.push_back(val);
+
+        // In SDLC mode, also accumulate for frame boundary detection
+        if self.ch[chi].sdlc {
+            self.ch[chi].lt_tx_frame.push(val);
+        }
     }
 
     fn get_irq_pending(&self) -> Option<SccIrqPending> {
@@ -512,9 +530,29 @@ impl Scc {
                         self.ch[chi].first_char = true;
                         self.ch[chi].rx_ip = false;
                     }
+                    SccCommand::SendAbort => {
+                        // Abort SDLC frame in progress
+                        self.ch[chi].lt_tx_frame.clear();
+                    }
                     _ => {
                         warn!("unimplemented command {:?}", r.cmdcode().unwrap());
                     }
+                }
+
+                // CRC reset commands (bits 6-7 of WR0)
+                match r.crcreset() {
+                    0b10 => {
+                        // Reset TX CRC Generator - prepare for new frame
+                        self.ch[chi].lt_tx_frame.clear();
+                    }
+                    0b11 => {
+                        // Reset TX Underrun/EOM Latch - signals end of SDLC frame
+                        if self.ch[chi].sdlc && !self.ch[chi].lt_tx_frame.is_empty() {
+                            let frame = std::mem::take(&mut self.ch[chi].lt_tx_frame);
+                            self.ch[chi].lt_tx_complete.push_back(frame);
+                        }
+                    }
+                    _ => {}
                 }
             }
             1 => {
@@ -546,6 +584,9 @@ impl Scc {
                     self.ch[chi].sdlc = true;
                 }
 
+                // Track SDLC address search mode for bridge filtering
+                self.ch[chi].sdlc_address_search_mode = r.sdlc_address_search();
+
                 // Enter Hunt Mode - but only clear frame if there isn't one already waiting
                 // The Mac writes hunt=1 to prepare for receiving, not to discard received data
                 if r.hunt() && self.ch[chi].lt_rx_frame.is_none() {
@@ -569,8 +610,18 @@ impl Scc {
             }
             5 => {
                 let r = WrReg5(val);
+                let was_tx_enabled = self.ch[chi].tx_enable;
                 self.ch[chi].tx_enable = r.tx_enable();
                 self.ch[chi].tx_ip = false;
+
+                // When TxEnable transitions to true in SDLC mode, clear TX frame buffer
+                if r.tx_enable() && !was_tx_enabled && self.ch[chi].sdlc {
+                    self.ch[chi].lt_tx_frame.clear();
+                }
+            }
+            6 => {
+                // WR6: SDLC station address - used for LocalTalk node address
+                self.ch[chi].sdlc_address = val;
             }
             9 => {
                 self.mic.0 = val;
@@ -721,6 +772,26 @@ impl Scc {
     pub fn get_dcd(&self, ch: SccCh) -> bool {
         let chi = ch.to_usize().unwrap();
         self.ch[chi].dcd
+    }
+
+    /// Get the SDLC station address (WR6) for a channel
+    pub fn sdlc_address(&self, ch: SccCh) -> u8 {
+        self.ch[ch.to_usize().unwrap()].sdlc_address
+    }
+
+    /// Get the SDLC address search mode state (WR3 bit 2) for a channel
+    pub fn is_address_search_mode(&self, ch: SccCh) -> bool {
+        self.ch[ch.to_usize().unwrap()].sdlc_address_search_mode
+    }
+
+    /// Take completed SDLC TX frames for a channel
+    pub fn take_tx_frames(&mut self, ch: SccCh) -> VecDeque<Vec<u8>> {
+        std::mem::take(&mut self.ch[ch.to_usize().unwrap()].lt_tx_complete)
+    }
+
+    /// Check if there are completed SDLC TX frames waiting
+    pub fn has_tx_frames(&self, ch: SccCh) -> bool {
+        !self.ch[ch.to_usize().unwrap()].lt_tx_complete.is_empty()
     }
 }
 

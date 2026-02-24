@@ -1150,7 +1150,28 @@ impl Tickable for Emulator {
             for ch in crate::mac::scc::SccCh::iter() {
                 let ch_idx = ch as usize;
 
-                // Check for TX data from SCC
+                // Poll bridges for incoming data and status changes
+                if let Some(ref mut bridge) = self.serial_bridges[ch_idx] {
+                    // Propagate SCC state to LocalTalk bridge
+                    if bridge.is_localtalk() {
+                        let sdlc_addr = self.config.scc().sdlc_address(ch);
+                        bridge.set_node_address(sdlc_addr);
+                        bridge
+                            .set_address_search_mode(self.config.scc().is_address_search_mode(ch));
+
+                        // Prefer SDLC frame-boundary path if frames are ready
+                        let frames = self.config.scc_mut().take_tx_frames(ch);
+                        if !frames.is_empty() {
+                            for frame in &frames {
+                                bridge.send_frame(frame);
+                            }
+                            // Drain tx_queue to avoid double-sending via byte-stream
+                            self.config.scc_mut().take_tx(ch);
+                        }
+                    }
+                }
+
+                // Check for TX data from SCC (byte-stream path / fallback)
                 if self.config.scc().has_tx_data(ch) {
                     let tx_data = self.config.scc_mut().take_tx(ch);
 
@@ -1163,7 +1184,6 @@ impl Tickable for Emulator {
                     }
                 }
 
-                // Poll bridges for incoming data and status changes
                 if let Some(ref mut bridge) = self.serial_bridges[ch_idx] {
                     // Check for state changes (e.g., new TCP connection, LocalTalk status)
                     let has_data = bridge.poll();
@@ -1208,9 +1228,30 @@ impl Tickable for Emulator {
                 {
                     if let Some(ref mut bridge) = self.serial_bridges[1] {
                         if bridge.is_localtalk() {
-                            // First, flush any pending TX data to the bridge
-                            // This ensures RTS is processed and CTS is synthesized
-                            // before we poll for responses
+                            // Propagate SCC state to LocalTalk bridge
+                            let sdlc_addr =
+                                self.config.scc().sdlc_address(crate::mac::scc::SccCh::B);
+                            bridge.set_node_address(sdlc_addr);
+                            bridge.set_address_search_mode(
+                                self.config
+                                    .scc()
+                                    .is_address_search_mode(crate::mac::scc::SccCh::B),
+                            );
+
+                            // Prefer SDLC frame-boundary path if frames are ready
+                            let frames = self
+                                .config
+                                .scc_mut()
+                                .take_tx_frames(crate::mac::scc::SccCh::B);
+                            if !frames.is_empty() {
+                                for frame in &frames {
+                                    bridge.send_frame(frame);
+                                }
+                                // Drain tx_queue to avoid double-sending
+                                self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
+                            }
+
+                            // Byte-stream TX path (fallback when no frame boundaries detected)
                             if self.config.scc().has_tx_data(crate::mac::scc::SccCh::B) {
                                 let tx_data =
                                     self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
