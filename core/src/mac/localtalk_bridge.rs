@@ -93,8 +93,12 @@ pub struct LocalTalkBridge {
     socket: UdpSocket,
     /// Sender ID for loopback detection (typically process ID)
     sender_id: u32,
-    /// Our node address (learned from outgoing packets)
+    /// Our node address (set from SCC WR6, also learned from outgoing packets)
     node_address: u8,
+    /// Z8530 SDLC address search mode (hardware destination filter)
+    /// When ON: only accept packets for our address or broadcast (0xFF)
+    /// When OFF: accept all packets (Mac firmware handles its own filtering)
+    address_search_mode: bool,
     /// Queue of pending CTS responses to inject (dest, src)
     pending_cts: VecDeque<(u8, u8)>,
     /// Buffer for accumulating TX data from SCC
@@ -144,6 +148,7 @@ impl LocalTalkBridge {
             socket,
             sender_id,
             node_address: 0,
+            address_search_mode: false,
             pending_cts: VecDeque::new(),
             tx_buffer: Vec::with_capacity(MAX_LLAP_SIZE),
             rx_queue: Vec::new(),
@@ -181,12 +186,10 @@ impl LocalTalkBridge {
             0x84 => {
                 // lapRTS - Request to send
                 // Don't send over network - synthesize CTS response locally
-                if dest != 0xFF {
-                    // Unicast RTS: synthesize CTS response
-                    // CTS packet: dest=original_src, src=original_dest, type=0x85
-                    self.pending_cts.push_back((src, dest));
-                }
-                // Broadcast RTS is ignored
+                // Both unicast and broadcast RTS get a CTS so the Mac proceeds to send data.
+                // On real hardware, broadcast wouldn't need CTS, but in our emulation
+                // the Mac's SCC driver waits for CTS before sending the next frame.
+                self.pending_cts.push_back((src, dest));
             }
             0x85 => {
                 // lapCTS - Clear to send
@@ -267,16 +270,51 @@ impl LocalTalkBridge {
 
         let dest = llap[0];
 
-        // Filter packets not destined for us
-        // Accept: broadcast (0xFF), our node address, or if we don't have an address yet
-        if dest != 0xFF && self.node_address != 0 && dest != self.node_address {
-            // Update our node address to match what the network expects
-            self.node_address = dest;
+        // Z8530 SDLC address search mode = hardware destination filter
+        // When ON: only accept our address + broadcast
+        // When OFF: accept all packets (Mac firmware handles its own filtering)
+        if self.address_search_mode
+            && self.node_address != 0
+            && dest != self.node_address
+            && dest != 0xFF
+        {
+            return; // Not for us, drop
+        }
+
+        let ptype = llap[2];
+        let src = llap[1];
+
+        // If we have a settled address and someone ENQs for it, respond with ACK
+        // ("that address is taken"). Still queue the ENQ for the SCC as well.
+        if ptype == 0x81
+            && dest == self.node_address
+            && self.node_address != 0
+            && !self.address_search_mode
+        {
+            let ack = vec![src, self.node_address, 0x82];
+            self.send_udp(&ack);
         }
 
         // Queue the packet for injection into SCC
         self.rx_queue.push(llap.to_vec());
         self.rx_packets += 1;
+    }
+
+    /// Set the node address (from SCC WR6 / SDLC station address)
+    pub fn set_node_address(&mut self, addr: u8) {
+        if addr != 0 {
+            self.node_address = addr;
+        }
+    }
+
+    /// Set the SDLC address search mode (from SCC WR3 bit 2)
+    pub fn set_address_search_mode(&mut self, mode: bool) {
+        self.address_search_mode = mode;
+    }
+
+    /// Send a complete LLAP frame (from SDLC TX frame boundary detection)
+    pub fn send_frame(&mut self, llap: &[u8]) {
+        self.handle_tx_packet(llap);
     }
 
     /// Read data to inject into the SCC RX path
@@ -377,10 +415,110 @@ impl LocalTalkBridge {
 mod tests {
     use super::*;
 
+    /// Create a bridge for testing (may fail if UDP port is in use)
+    fn test_bridge() -> Option<LocalTalkBridge> {
+        LocalTalkBridge::new().ok()
+    }
+
     #[test]
     fn test_llap_type_conversion() {
         assert_eq!(LlapType::try_from(0x81), Ok(LlapType::LapEnq));
         assert_eq!(LlapType::try_from(0x84), Ok(LlapType::LapRts));
         assert!(LlapType::try_from(0x99).is_err());
+    }
+
+    #[test]
+    fn test_rx_filter_address_search_mode() {
+        let Some(mut bridge) = test_bridge() else {
+            return;
+        };
+
+        bridge.set_node_address(42);
+        bridge.set_address_search_mode(true);
+
+        // Packet for our address should be accepted
+        bridge.handle_rx_packet(&[42, 10, 0x01]);
+        assert_eq!(bridge.rx_queue.len(), 1);
+
+        // Broadcast should be accepted
+        bridge.handle_rx_packet(&[0xFF, 10, 0x01]);
+        assert_eq!(bridge.rx_queue.len(), 2);
+
+        // Packet for different address should be dropped
+        bridge.handle_rx_packet(&[99, 10, 0x01]);
+        assert_eq!(bridge.rx_queue.len(), 2);
+    }
+
+    #[test]
+    fn test_rx_no_filter_when_search_mode_off() {
+        let Some(mut bridge) = test_bridge() else {
+            return;
+        };
+
+        bridge.set_node_address(42);
+        bridge.set_address_search_mode(false);
+
+        // All packets should be accepted when address search mode is off
+        bridge.handle_rx_packet(&[99, 10, 0x01]);
+        assert_eq!(bridge.rx_queue.len(), 1);
+
+        bridge.handle_rx_packet(&[42, 10, 0x01]);
+        assert_eq!(bridge.rx_queue.len(), 2);
+    }
+
+    #[test]
+    fn test_rx_no_filter_when_no_address() {
+        let Some(mut bridge) = test_bridge() else {
+            return;
+        };
+
+        // node_address = 0 (not yet assigned), search mode on
+        bridge.set_address_search_mode(true);
+
+        // All packets should be accepted when we have no address yet
+        bridge.handle_rx_packet(&[99, 10, 0x01]);
+        assert_eq!(bridge.rx_queue.len(), 1);
+    }
+
+    #[test]
+    fn test_rx_too_small_packet() {
+        let Some(mut bridge) = test_bridge() else {
+            return;
+        };
+
+        // Packets smaller than 3 bytes should be dropped
+        bridge.handle_rx_packet(&[42, 10]);
+        assert_eq!(bridge.rx_queue.len(), 0);
+
+        bridge.handle_rx_packet(&[]);
+        assert_eq!(bridge.rx_queue.len(), 0);
+    }
+
+    #[test]
+    fn test_set_node_address_ignores_zero() {
+        let Some(mut bridge) = test_bridge() else {
+            return;
+        };
+
+        bridge.set_node_address(42);
+        assert_eq!(bridge.node_address, 42);
+
+        // Setting to 0 should be ignored
+        bridge.set_node_address(0);
+        assert_eq!(bridge.node_address, 42);
+    }
+
+    #[test]
+    fn test_tx_rts_generates_cts() {
+        let Some(mut bridge) = test_bridge() else {
+            return;
+        };
+
+        // RTS from node 42 to node 10 should generate CTS
+        bridge.handle_tx_packet(&[10, 42, 0x84]);
+        assert_eq!(bridge.pending_cts.len(), 1);
+        let (dest, src) = bridge.pending_cts[0];
+        assert_eq!(dest, 42); // CTS goes back to sender
+        assert_eq!(src, 10);
     }
 }
