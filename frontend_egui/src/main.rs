@@ -18,6 +18,7 @@ use crate::app::SnowGui;
 
 use clap::Parser;
 use eframe::egui;
+use egui_winit::winit;
 use log::LevelFilter;
 
 const SNOW_ICON: &[u8] = include_bytes!("../../assets/snow_icon.png");
@@ -81,7 +82,7 @@ fn main() -> eframe::Result {
     // egui/eframe does not expose all the keys we need, currently.
     // See also https://github.com/emilk/egui/issues/3653
     let (s, r) = crossbeam_channel::unbounded();
-    egui_winit::install_windowevent_hook(s);
+    //egui_winit::install_windowevent_hook(s);
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -90,7 +91,11 @@ fn main() -> eframe::Result {
             .with_drag_and_drop(true),
         ..Default::default()
     };
-    eframe::run_native(
+
+    let event_loop = winit::event_loop::EventLoop::with_user_event()
+        .build()?;
+
+    let mut winit_app = eframe::create_native(
         "Snow",
         options,
         Box::new(|cc| {
@@ -109,5 +114,10 @@ fn main() -> eframe::Result {
                 &args.floppy,
             )))
         }),
-    )
+        &event_loop
+    );
+
+    event_loop.run_app(&mut winit_app)?;
+
+    Ok(())
 }

@@ -65,7 +65,7 @@ impl FramebufferWidget {
             frame_recv: None,
             viewport_texture: cc.egui_ctx.load_texture(
                 "viewport",
-                egui::ColorImage::new([0, 0], egui::Color32::BLACK),
+                egui::ColorImage::filled([0, 0], egui::Color32::BLACK),
                 egui::TextureOptions::NEAREST,
             ),
             response: None,
@@ -111,14 +111,14 @@ impl FramebufferWidget {
 
                 self.display_size = [frame.width(), frame.height()];
                 self.viewport_texture.set(
-                    egui::ColorImage {
-                        size: self.display_size.map(|i| i.into()),
-                        pixels: Vec::from_iter(
+                    egui::ColorImage::new(
+                        self.display_size.map(|i| i.into()),
+                        Vec::from_iter(
                             frame
                                 .chunks_exact(4)
                                 .map(|c| egui::Color32::from_rgb(c[0], c[1], c[2])),
-                        ),
-                    },
+                        )
+                    ),
                     self.scaling_algorithm.texture_options(),
                 );
                 self.frame = Some(frame);
@@ -237,7 +237,7 @@ impl FramebufferWidget {
         if self.crt_output_texture.is_none() {
             self.crt_output_texture = Some(ctx.load_texture(
                 "crt_output",
-                egui::ColorImage::new(texture_size, egui::Color32::BLACK),
+                egui::ColorImage::filled(texture_size, egui::Color32::BLACK),
                 egui::TextureOptions::LINEAR,
             ));
         }

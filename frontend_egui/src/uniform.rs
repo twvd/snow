@@ -43,11 +43,11 @@ impl UniformMethods for egui::Response {
             ui.set_min_width(150.0);
 
             if ui.button("Copy address (24-bit hex)").clicked() {
-                ui.output_mut(|o| o.copied_text = format!("{:06X}", addr & 0xFFFFFF));
+                ui.ctx().copy_text(format!("{:06X}", addr & 0xFFFFFF));
                 ui.close_menu();
             }
             if ui.button("Copy address (32-bit hex)").clicked() {
-                ui.output_mut(|o| o.copied_text = format!("{:08X}", addr));
+                ui.ctx().copy_text(format!("{:08X}", addr));
                 ui.close_menu();
             }
             ui.separator();
@@ -100,7 +100,7 @@ impl UniformMethods for egui::Response {
     fn context_linea(&self, opcode: Word) -> Option<egui::InnerResponse<()>> {
         self.context_menu(|ui| {
             if ui.button("Copy opcode (hex)").clicked() {
-                ui.output_mut(|o| o.copied_text = format!("{:04X}", opcode));
+                ui.ctx().copy_text(format!("{:04X}", opcode));
                 ui.close_menu();
             }
             ui.separator();
