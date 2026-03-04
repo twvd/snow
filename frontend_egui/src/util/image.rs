@@ -21,10 +21,7 @@ pub fn load_png_from_bytes_as_texture(
         .map(|rgba| egui::Color32::from_rgba_unmultiplied(rgba[0], rgba[1], rgba[2], rgba[3]))
         .collect();
 
-    let color_image = egui::ColorImage::new(
-        [info.width as usize, info.height as usize],
-        pixels,
-    );
+    let color_image = egui::ColorImage::new([info.width as usize, info.height as usize], pixels);
 
     Ok(ctx.load_texture(texture_name, color_image, egui::TextureOptions::default()))
 }
