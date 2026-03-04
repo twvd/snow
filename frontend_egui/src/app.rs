@@ -151,6 +151,7 @@ pub struct SnowGui {
 
     workspace_dialog: FileDialog,
     hdd_dialog: FileDialog,
+    hdd_dialog_bind: Option<egui_async::Bind<Option<rfd::FileHandle>, ()>>,
     hdd_dialog_idx: usize,
     cdrom_dialog: FileDialog,
     cdrom_dialog_idx: usize,
@@ -287,6 +288,7 @@ impl SnowGui {
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_hdd),
+            hdd_dialog_bind: None,
             hdd_dialog_idx: 0,
             cdrom_dialog: FileDialog::new()
                 .add_file_filter(
@@ -1367,7 +1369,8 @@ impl SnowGui {
                     }
                     if ui.button("Load HDD disk image...").clicked() {
                         self.hdd_dialog_idx = id;
-                        self.hdd_dialog.pick_file();
+                        self.hdd_dialog_bind = Some(Default::default());
+                        //self.hdd_dialog.pick_file();
                         ui.close_kind(egui::UiKind::Menu);
                     }
                     ui.separator();
@@ -2379,6 +2382,8 @@ impl SnowGui {
 
 impl eframe::App for SnowGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.plugin_or_default::<egui_async::EguiAsyncPlugin>();
+
         if self.first_draw {
             #[cfg(target_os = "macos")]
             {
@@ -2642,6 +2647,26 @@ impl eframe::App for SnowGui {
         self.ui_active &= *self.floppy_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // HDD image picker dialog
+        if let Some(ref mut bind) = &mut self.hdd_dialog_bind {
+            if let Some(res) = bind.read_or_request(|| async {
+                let file = rfd::AsyncFileDialog::new()
+                    .add_filter("Device image", &["img", "hda"])
+                    .pick_file()
+                    .await;
+                Ok(file)
+            }) {
+                println!("hdd dialog result: {:?}", res);
+                
+                if let Ok(Some(file)) = res {
+                    let path = file.path(); // FIXME: path is not available on WASM targets
+                    self.emu.scsi_attach_hdd(self.hdd_dialog_idx, &path);
+                }
+
+                self.hdd_dialog_bind = None;
+            }
+        }
+        self.ui_active &= self.hdd_dialog_bind.is_none();
+
         self.hdd_dialog.update(ctx);
         if let Some(path) = self.hdd_dialog.take_picked() {
             match self.hdd_dialog.mode() {
