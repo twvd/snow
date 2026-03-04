@@ -314,10 +314,10 @@ impl ModelSelectionDialog {
         self.pram_dialog.update(ctx);
         self.extension_rom_dialog.update(ctx);
 
-        if self.main_rom_dialog.state() == egui_file_dialog::DialogState::Open
-            || self.display_rom_dialog.state() == egui_file_dialog::DialogState::Open
-            || self.pram_dialog.state() == egui_file_dialog::DialogState::Open
-            || self.extension_rom_dialog.state() == egui_file_dialog::DialogState::Open
+        if *self.main_rom_dialog.state() == egui_file_dialog::DialogState::Open
+            || *self.display_rom_dialog.state() == egui_file_dialog::DialogState::Open
+            || *self.pram_dialog.state() == egui_file_dialog::DialogState::Open
+            || *self.extension_rom_dialog.state() == egui_file_dialog::DialogState::Open
         {
             return;
         }

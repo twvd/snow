@@ -28,7 +28,7 @@ impl DiskImageDialog {
         }
 
         self.browse_dialog.update(ctx);
-        if self.browse_dialog.state() == egui_file_dialog::DialogState::Open {
+        if *self.browse_dialog.state() == egui_file_dialog::DialogState::Open {
             return;
         }
         if let Some(path) = self.browse_dialog.take_picked() {
