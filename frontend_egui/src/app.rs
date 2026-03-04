@@ -17,6 +17,10 @@ use crate::widgets::systrap_history::SystrapHistoryWidget;
 use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::{FramebufferMode, Workspace};
+use egui_winit::winit::raw_window_handle::{
+    DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
+    RawWindowHandle, WindowHandle,
+};
 use snow_core::bus::Address;
 use snow_core::emulator::comm::UserMessageType;
 use snow_core::emulator::save::{load_state_header, SaveHeader};
@@ -2380,8 +2384,31 @@ impl SnowGui {
     }
 }
 
+// A special container to pass the WindowHandle and DisplayHandle to AsyncFileDialog.
+struct WindowAndDisplayHandle {
+    window_handle: RawWindowHandle,
+    display_handle: RawDisplayHandle,
+}
+
+// SAFETY: I'm honestly not sure! See FIXME note in update method.
+unsafe impl Send for WindowAndDisplayHandle {}
+
+impl HasWindowHandle for WindowAndDisplayHandle {
+    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+        // SAFETY: I'm honestly not sure! See FIXME note in update method.
+        unsafe { Ok(WindowHandle::borrow_raw(self.window_handle)) }
+    }
+}
+
+impl HasDisplayHandle for WindowAndDisplayHandle {
+    fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
+        // SAFETY: I'm honestly not sure! See FIXME note in update method.
+        unsafe { Ok(DisplayHandle::borrow_raw(self.display_handle)) }
+    }
+}
+
 impl eframe::App for SnowGui {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         ctx.plugin_or_default::<egui_async::EguiAsyncPlugin>();
 
         if self.first_draw {
@@ -2648,15 +2675,33 @@ impl eframe::App for SnowGui {
 
         // HDD image picker dialog
         if let Some(ref mut bind) = &mut self.hdd_dialog_bind {
-            if let Some(res) = bind.read_or_request(|| async {
-                let file = rfd::AsyncFileDialog::new()
-                    .add_filter("Device image", &["img", "hda"])
-                    .pick_file()
-                    .await;
-                Ok(file)
+            if let Some(res) = bind.read_or_request(|| {
+                // FIXME: In order to make the file dialog a child of Snow's window, we need
+                // to pass our window and display handles to AsyncFileDialog. This is tricky
+                // because egui's Frame cannot be borrowed into an async function.
+                //
+                // Therefore, we gather the raw handles into our own struct and pass them to
+                // the AsyncFileDialog. It is NOT clear whether this is safe or not. It should
+                // work fine on Windows but I'm not sure about other platforms.
+
+                let wd_handle = WindowAndDisplayHandle {
+                    window_handle: frame.window_handle().unwrap().as_raw(),
+                    display_handle: frame.display_handle().unwrap().as_raw(),
+                };
+
+                let promise = async move {
+                    let file = rfd::AsyncFileDialog::new()
+                        .set_parent(&wd_handle) // FIXME: set_parent is not available on WASM.
+                        .add_filter("Device image", &["img", "hda"])
+                        .pick_file()
+                        .await;
+                    Ok(file)
+                };
+
+                promise
             }) {
                 println!("hdd dialog result: {:?}", res);
-                
+
                 if let Ok(Some(file)) = res {
                     let path = file.path(); // FIXME: path is not available on WASM targets
                     self.emu.scsi_attach_hdd(self.hdd_dialog_idx, &path);
