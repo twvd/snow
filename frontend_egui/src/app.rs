@@ -122,7 +122,7 @@ impl Snowflake {
 
         ui.painter().rect_filled(
             rect,
-            egui::Rounding::same(1.0),
+            egui::CornerRadius::same(1),
             egui::Color32::from_white_alpha((self.opacity * 255.0) as u8),
         );
     }
@@ -388,7 +388,7 @@ impl SnowGui {
             state_dialog_last_header: None,
             state_dialog_screenshot: cc.egui_ctx.load_texture(
                 "state_screenshot",
-                egui::ColorImage::new([0, 0], egui::Color32::BLACK),
+                egui::ColorImage::filled([0, 0], egui::Color32::BLACK),
                 egui::TextureOptions::LINEAR,
             ),
             shared_dir_dialog: FileDialog::new()
@@ -2568,10 +2568,10 @@ impl eframe::App for SnowGui {
                             ui.end_row();
                         });
                         if img.count_original_track_type(OriginalTrackType::RawFlux) > 0 {
-                            egui::Frame::none()
+                            egui::Frame::new()
                                 .fill(egui::Color32::ORANGE)
-                                .inner_margin(egui::Margin::same(10.0))
-                                .outer_margin(egui::Margin::same(5.0))
+                                .inner_margin(egui::Margin::same(10))
+                                .outer_margin(egui::Margin::same(5))
                                 .stroke(egui::Stroke::new(2.0, egui::Color32::RED))
                                 .show(ui, |ui| {
                                     ui.label(
@@ -2639,7 +2639,7 @@ impl eframe::App for SnowGui {
             self.settings.fd_floppy = self.floppy_dialog.storage_mut().clone();
             self.settings.save();
         }
-        self.ui_active &= self.floppy_dialog.state() != egui_file_dialog::DialogState::Open;
+        self.ui_active &= *self.floppy_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // HDD image picker dialog
         self.hdd_dialog.update(ctx);
@@ -2657,7 +2657,7 @@ impl eframe::App for SnowGui {
             self.settings.fd_hdd = self.hdd_dialog.storage_mut().clone();
             self.settings.save();
         }
-        self.ui_active &= self.hdd_dialog.state() != egui_file_dialog::DialogState::Open;
+        self.ui_active &= *self.hdd_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // CD-ROM image picker dialog
         self.cdrom_dialog.update(ctx);
@@ -2668,7 +2668,7 @@ impl eframe::App for SnowGui {
             self.settings.fd_cdrom = self.cdrom_dialog.storage_mut().clone();
             self.settings.save();
         }
-        self.ui_active &= self.cdrom_dialog.state() != egui_file_dialog::DialogState::Open;
+        self.ui_active &= *self.cdrom_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // CD-ROM image creation dialog
         self.cdrom_files_dialog.update(ctx);
@@ -2687,7 +2687,7 @@ impl eframe::App for SnowGui {
             self.settings.fd_cdrom_files = self.cdrom_files_dialog.storage_mut().clone();
             self.settings.save();
         }
-        self.ui_active &= self.cdrom_files_dialog.state() != egui_file_dialog::DialogState::Open;
+        self.ui_active &= *self.cdrom_files_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // Shared directory picker dialog
         self.shared_dir_dialog.update(ctx);
@@ -2699,7 +2699,7 @@ impl eframe::App for SnowGui {
             self.settings.save();
         }
 
-        self.ui_active &= self.shared_dir_dialog.state() != egui_file_dialog::DialogState::Open;
+        self.ui_active &= *self.shared_dir_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // Workspace picker dialog
         self.workspace_dialog.update(ctx);
@@ -2743,7 +2743,7 @@ impl eframe::App for SnowGui {
             self.settings.fd_workspace = self.workspace_dialog.storage_mut().clone();
             self.settings.save();
         }
-        self.ui_active &= self.workspace_dialog.state() != egui_file_dialog::DialogState::Open;
+        self.ui_active &= *self.workspace_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // Record input dialog
         self.record_dialog.update(ctx);
@@ -2763,7 +2763,7 @@ impl eframe::App for SnowGui {
             self.settings.fd_record = self.record_dialog.storage_mut().clone();
             self.settings.save();
         }
-        self.ui_active &= self.record_dialog.state() != egui_file_dialog::DialogState::Open;
+        self.ui_active &= *self.record_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // State file picker dialog
         let mut last = None;
@@ -2798,9 +2798,9 @@ impl eframe::App for SnowGui {
                             ui.end_row();
                         });
                         if version_warning {
-                            egui::Frame::none().fill(egui::Color32::ORANGE)
-                                .inner_margin(egui::Margin::same(10.0))
-                                .outer_margin(egui::Margin::same(5.0))
+                            egui::Frame::new().fill(egui::Color32::ORANGE)
+                                .inner_margin(egui::Margin::same(10))
+                                .outer_margin(egui::Margin::same(5))
                                 .stroke(egui::Stroke::new(2.0, egui::Color32::RED))
                                 .show(ui, |ui| {
                                     ui.label(egui::RichText::new("This save state is created by a different version of Snow.\n\nThis is incompatible and unsupported.\nExpect problems!").strong().color(egui::Color32::BLACK));
@@ -2830,7 +2830,7 @@ impl eframe::App for SnowGui {
             self.settings.fd_state = self.state_dialog.storage_mut().clone();
             self.settings.save();
         }
-        self.ui_active &= self.state_dialog.state() != egui_file_dialog::DialogState::Open;
+        self.ui_active &= *self.state_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // Actual UI
         let mut central_panel = egui::CentralPanel::default();
