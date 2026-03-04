@@ -44,55 +44,55 @@ impl UniformMethods for egui::Response {
 
             if ui.button("Copy address (24-bit hex)").clicked() {
                 ui.ctx().copy_text(format!("{:06X}", addr & 0xFFFFFF));
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Copy address (32-bit hex)").clicked() {
                 ui.ctx().copy_text(format!("{:08X}", addr));
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if ui.button("Add execution breakpoint").clicked() {
                 UNIFORM_ACTION.set(UniformAction::Breakpoint(Breakpoint::Execution(addr)));
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Add read access breakpoint").clicked() {
                 UNIFORM_ACTION.set(UniformAction::Breakpoint(Breakpoint::Bus(
                     BusBreakpoint::Read,
                     addr,
                 )));
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Add write access breakpoint").clicked() {
                 UNIFORM_ACTION.set(UniformAction::Breakpoint(Breakpoint::Bus(
                     BusBreakpoint::Write,
                     addr,
                 )));
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Add read/write access breakpoint").clicked() {
                 UNIFORM_ACTION.set(UniformAction::Breakpoint(Breakpoint::Bus(
                     BusBreakpoint::ReadWrite,
                     addr,
                 )));
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if ui.button("Add watch (u8)").clicked() {
                 UNIFORM_ACTION.set(UniformAction::AddressWatch(addr, WatchpointType::U8));
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Add watch (u16)").clicked() {
                 UNIFORM_ACTION.set(UniformAction::AddressWatch(addr, WatchpointType::U16));
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Add watch (u32)").clicked() {
                 UNIFORM_ACTION.set(UniformAction::AddressWatch(addr, WatchpointType::U32));
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if ui.button("View in memory viewer").clicked() {
                 UNIFORM_ACTION.set(UniformAction::AddressMemoryViewer(addr));
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         })
     }
@@ -101,7 +101,7 @@ impl UniformMethods for egui::Response {
         self.context_menu(|ui| {
             if ui.button("Copy opcode (hex)").clicked() {
                 ui.ctx().copy_text(format!("{:04X}", opcode));
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             ui.separator();
             if ui
@@ -112,13 +112,13 @@ impl UniformMethods for egui::Response {
                 .clicked()
             {
                 UNIFORM_ACTION.set(UniformAction::Breakpoint(Breakpoint::LineA(opcode)));
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
             if ui.button("Add breakpoint for all system traps").clicked() {
                 UNIFORM_ACTION.set(UniformAction::Breakpoint(Breakpoint::ExceptionVector(
                     VECTOR_LINEA,
                 )));
-                ui.close_menu();
+                ui.close_kind(egui::UiKind::Menu);
             }
         })
     }
