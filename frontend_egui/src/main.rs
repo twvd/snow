@@ -92,8 +92,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
 
-    let event_loop = winit::event_loop::EventLoop::with_user_event()
-        .build()?;
+    let event_loop = winit::event_loop::EventLoop::with_user_event().build()?;
 
     let mut winit_app = eframe::create_native(
         "Snow",
@@ -114,18 +113,22 @@ fn main() -> eframe::Result {
                 &args.floppy,
             )))
         }),
-        &event_loop
+        &event_loop,
     );
 
     // Wrap the winit app so we can capture WindowEvents and send them to Snow.
     // This allows us to capture raw keyboard input.
     struct AppWrapper<'a>(
         &'a mut dyn ApplicationHandler<eframe::UserEvent>,
-        crossbeam_channel::Sender<winit::event::WindowEvent>
+        crossbeam_channel::Sender<winit::event::WindowEvent>,
     );
-    
+
     impl ApplicationHandler<eframe::UserEvent> for AppWrapper<'_> {
-        fn new_events(&mut self, event_loop: &winit::event_loop::ActiveEventLoop, cause: winit::event::StartCause) {
+        fn new_events(
+            &mut self,
+            event_loop: &winit::event_loop::ActiveEventLoop,
+            cause: winit::event::StartCause,
+        ) {
             self.0.new_events(event_loop, cause)
         }
 
@@ -133,10 +136,14 @@ fn main() -> eframe::Result {
             self.0.resumed(event_loop)
         }
 
-        fn user_event(&mut self, event_loop: &winit::event_loop::ActiveEventLoop, event: eframe::UserEvent) {
+        fn user_event(
+            &mut self,
+            event_loop: &winit::event_loop::ActiveEventLoop,
+            event: eframe::UserEvent,
+        ) {
             self.0.user_event(event_loop, event)
         }
-    
+
         fn window_event(
             &mut self,
             event_loop: &winit::event_loop::ActiveEventLoop,
@@ -149,10 +156,10 @@ fn main() -> eframe::Result {
         }
 
         fn device_event(
-                &mut self,
-                event_loop: &winit::event_loop::ActiveEventLoop,
-                device_id: winit::event::DeviceId,
-                event: winit::event::DeviceEvent,
+            &mut self,
+            event_loop: &winit::event_loop::ActiveEventLoop,
+            device_id: winit::event::DeviceId,
+            event: winit::event::DeviceEvent,
         ) {
             self.0.device_event(event_loop, device_id, event)
         }

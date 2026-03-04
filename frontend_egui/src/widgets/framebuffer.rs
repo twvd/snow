@@ -117,7 +117,7 @@ impl FramebufferWidget {
                             frame
                                 .chunks_exact(4)
                                 .map(|c| egui::Color32::from_rgb(c[0], c[1], c[2])),
-                        )
+                        ),
                     ),
                     self.scaling_algorithm.texture_options(),
                 );
