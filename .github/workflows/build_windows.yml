@@ -55,7 +55,7 @@ jobs:
       id: arch-name
       run: |
         if [[ ${{ matrix.msystem }} == 'MINGW64' ]]; then
-          arch="x86_x64"
+          arch="x86_64"
         elif [[ ${{ matrix.msystem }} == 'CLANGARM64' ]]; then
           arch="ARM64"
         fi
