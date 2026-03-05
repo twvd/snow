@@ -24,6 +24,8 @@ pub struct AppSettings {
     pub fd_workspace: FileDialogStorage,
     pub fd_state: FileDialogStorage,
     pub fd_shared_dir: FileDialogStorage,
+
+    pub native_file_dialogs: bool,
 }
 
 impl AppSettings {
