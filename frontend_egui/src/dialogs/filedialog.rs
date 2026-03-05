@@ -18,8 +18,8 @@ pub struct SnowFileDialog {
     picked: Option<PathBuf>,
 }
 
-impl SnowFileDialog {
-    pub fn new() -> Self {
+impl Default for SnowFileDialog {
+    fn default() -> Self {
         Self {
             efd_dialog: efd::FileDialog::new(),
             mode: efd::DialogMode::PickFile,
@@ -27,6 +27,12 @@ impl SnowFileDialog {
             rfd_bind: None,
             picked: None,
         }
+    }
+}
+
+impl SnowFileDialog {
+    pub fn new() -> Self {
+        Default::default()
     }
 
     pub fn update(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
@@ -61,6 +67,13 @@ impl SnowFileDialog {
         self
     }
 
+    pub fn allow_path_edit_to_save_file_without_extension(mut self, allow: bool) -> Self {
+        self.efd_dialog = self
+            .efd_dialog
+            .allow_path_edit_to_save_file_without_extension(allow);
+        self
+    }
+
     pub fn opening_mode(mut self, opening_mode: efd::OpeningMode) -> Self {
         self.efd_dialog = self.efd_dialog.opening_mode(opening_mode);
         self
@@ -68,6 +81,11 @@ impl SnowFileDialog {
 
     pub fn initial_directory(mut self, directory: PathBuf) -> Self {
         self.efd_dialog = self.efd_dialog.initial_directory(directory);
+        self
+    }
+
+    pub fn show_pinned_folders(mut self, show_pinned_folders: bool) -> Self {
+        self.efd_dialog = self.efd_dialog.show_pinned_folders(show_pinned_folders);
         self
     }
 

@@ -151,10 +151,9 @@ pub struct SnowGui {
     disassembly: DisassemblyWidget,
 
     workspace_dialog: SnowFileDialog,
-    hdd_dialog: FileDialog,
-    hdd_dialog_bind: Option<egui_async::Bind<Option<rfd::FileHandle>, ()>>,
+    hdd_dialog: SnowFileDialog,
     hdd_dialog_idx: usize,
-    cdrom_dialog: FileDialog,
+    cdrom_dialog: SnowFileDialog,
     cdrom_dialog_idx: usize,
     cdrom_files_dialog: FileDialog,
     floppy_dialog: FileDialog,
@@ -164,7 +163,7 @@ pub struct SnowGui {
     floppy_dialog_target: FloppyDialogTarget,
     floppy_dialog_wp: bool,
     create_disk_dialog: DiskImageDialog,
-    record_dialog: FileDialog,
+    record_dialog: SnowFileDialog,
     model_dialog: ModelSelectionDialog,
     about_dialog: AboutDialog,
     state_dialog: FileDialog,
@@ -271,38 +270,17 @@ impl SnowGui {
             terminal: Default::default(),
             disassembly: DisassemblyWidget::new(),
 
-            hdd_dialog: FileDialog::new()
-                .add_file_filter(
-                    hdd_filter_str,
-                    Arc::new(|p| {
-                        p.extension()
-                            .unwrap_or_default()
-                            .eq_ignore_ascii_case("img")
-                            || p.extension()
-                                .unwrap_or_default()
-                                .eq_ignore_ascii_case("hda")
-                    }),
-                )
+            hdd_dialog: SnowFileDialog::new()
+                .add_filter(hdd_filter_str, &["img", "hda"])
                 .default_file_filter(hdd_filter_str)
                 .add_save_extension("Device image", "img")
                 .default_save_extension("Device image")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_hdd),
-            hdd_dialog_bind: None,
             hdd_dialog_idx: 0,
-            cdrom_dialog: FileDialog::new()
-                .add_file_filter(
-                    cdrom_filter_str,
-                    Arc::new(|p| {
-                        p.extension()
-                            .unwrap_or_default()
-                            .eq_ignore_ascii_case("iso")
-                            || p.extension()
-                                .unwrap_or_default()
-                                .eq_ignore_ascii_case("toast")
-                    }),
-                )
+            cdrom_dialog: SnowFileDialog::new()
+                .add_filter(cdrom_filter_str, &["iso", "toast"])
                 .default_file_filter(cdrom_filter_str)
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
@@ -333,18 +311,11 @@ impl SnowGui {
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_floppy),
-            record_dialog: FileDialog::new()
+            record_dialog: SnowFileDialog::new()
                 .allow_path_edit_to_save_file_without_extension(false)
                 .add_save_extension("Snow recording", "snowr")
                 .default_save_extension("Snow recording")
-                .add_file_filter(
-                    "Snow recording (*.snowr)",
-                    Arc::new(|p| {
-                        p.extension()
-                            .unwrap_or_default()
-                            .eq_ignore_ascii_case("snowr")
-                    }),
-                )
+                .add_filter("Snow recording", &["snowr"])
                 .default_file_filter("Snow recording (*.snowr)")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
@@ -545,7 +516,8 @@ impl SnowGui {
                     ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.button("Load workspace").clicked() {
-                    self.workspace_dialog.pick_file(self.settings.native_file_dialogs);
+                    self.workspace_dialog
+                        .pick_file(self.settings.native_file_dialogs);
                     ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.separator();
@@ -553,12 +525,14 @@ impl SnowGui {
                     if let Some(path) = self.workspace_file.clone() {
                         self.save_workspace(&path);
                     } else {
-                        self.workspace_dialog.save_file(self.settings.native_file_dialogs);
+                        self.workspace_dialog
+                            .save_file(self.settings.native_file_dialogs);
                     }
                     ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.button("Save workspace as...").clicked() {
-                    self.workspace_dialog.save_file(self.settings.native_file_dialogs);
+                    self.workspace_dialog
+                        .save_file(self.settings.native_file_dialogs);
                     ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.separator();
@@ -806,7 +780,8 @@ impl SnowGui {
                         )
                         .clicked()
                     {
-                        self.record_dialog.save_file();
+                        self.record_dialog
+                            .save_file(self.settings.native_file_dialogs);
                         ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui
@@ -816,7 +791,8 @@ impl SnowGui {
                         )
                         .clicked()
                     {
-                        self.record_dialog.pick_file();
+                        self.record_dialog
+                            .pick_file(self.settings.native_file_dialogs);
                         ui.close_kind(egui::UiKind::Menu);
                     }
                 } else if ui.button("Stop recording").clicked() {
@@ -1052,7 +1028,7 @@ impl SnowGui {
                 if ui
                     .checkbox(
                         &mut self.settings.native_file_dialogs,
-                        "Use native file dialogs",
+                        "Native file dialogs",
                     )
                     .clicked()
                 {
@@ -1207,7 +1183,7 @@ impl SnowGui {
                             ui.separator();
                             if ui.button("Branch off image...").clicked() {
                                 self.hdd_dialog_idx = id;
-                                self.hdd_dialog.save_file();
+                                self.hdd_dialog.save_file(self.settings.native_file_dialogs);
                                 ui.close_kind(egui::UiKind::Menu);
                             }
                         },
@@ -1247,7 +1223,8 @@ impl SnowGui {
                                 ui.set_min_width(Self::SUBMENU_WIDTH);
                                 if ui.button("Load image...").clicked() {
                                     self.cdrom_dialog_idx = id;
-                                    self.cdrom_dialog.pick_file();
+                                    self.cdrom_dialog
+                                        .pick_file(self.settings.native_file_dialogs);
                                     ui.close_kind(egui::UiKind::Menu);
                                 }
                                 ui.menu_button("Load recent image", |ui| {
@@ -1375,14 +1352,14 @@ impl SnowGui {
                     }
                     if ui.button("Load HDD disk image...").clicked() {
                         self.hdd_dialog_idx = id;
-                        self.hdd_dialog_bind = Some(Default::default());
-                        //self.hdd_dialog.pick_file();
+                        self.hdd_dialog.pick_file(self.settings.native_file_dialogs);
                         ui.close_kind(egui::UiKind::Menu);
                     }
                     ui.separator();
                     if ui.button("Attach CD-ROM drive (with image)...").clicked() {
                         self.cdrom_dialog_idx = id;
-                        self.cdrom_dialog.pick_file();
+                        self.cdrom_dialog
+                            .pick_file(self.settings.native_file_dialogs);
                         ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui.button("Attach CD-ROM drive (empty)").clicked() {
@@ -2494,7 +2471,7 @@ impl eframe::App for SnowGui {
         self.ui_active &= !self.error_dialog_open;
 
         // Create disk image dialog
-        self.create_disk_dialog.update(ctx);
+        self.create_disk_dialog.update(ctx, frame, &self.settings);
         self.ui_active &= !self.create_disk_dialog.is_open();
         if let Some(result) = self.create_disk_dialog.take_result() {
             if let Err(e) = self.try_create_image(&result) {
@@ -2503,7 +2480,7 @@ impl eframe::App for SnowGui {
         }
 
         // Model selection/'Load ROM' dialog
-        self.model_dialog.update(ctx);
+        self.model_dialog.update(ctx, frame, &self.settings);
         self.ui_active &= !self.model_dialog.is_open();
         if let Some(result) = self.model_dialog.take_result() {
             self.handle_model_selection_result(&result);
@@ -2653,25 +2630,7 @@ impl eframe::App for SnowGui {
         self.ui_active &= *self.floppy_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // HDD image picker dialog
-        if let Some(ref mut bind) = &mut self.hdd_dialog_bind {
-            let rfd_task = rfd::AsyncFileDialog::new()
-                .set_parent(&frame)
-                .add_filter("Device image", &["img", "hda"])
-                .pick_file();
-            if let Some(res) = bind.read_or_request(|| async { Ok(rfd_task.await) }) {
-                println!("hdd dialog result: {:?}", res);
-
-                if let Ok(Some(file)) = res {
-                    let path = file.path(); // FIXME: path is not available on WASM targets
-                    self.emu.scsi_attach_hdd(self.hdd_dialog_idx, &path);
-                }
-
-                self.hdd_dialog_bind = None;
-            }
-        }
-        self.ui_active &= self.hdd_dialog_bind.is_none();
-
-        self.hdd_dialog.update(ctx);
+        self.hdd_dialog.update(ctx, frame);
         if let Some(path) = self.hdd_dialog.take_picked() {
             match self.hdd_dialog.mode() {
                 DialogMode::PickFile => {
@@ -2689,7 +2648,7 @@ impl eframe::App for SnowGui {
         self.ui_active &= *self.hdd_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // CD-ROM image picker dialog
-        self.cdrom_dialog.update(ctx);
+        self.cdrom_dialog.update(ctx, frame);
         if let Some(path) = self.cdrom_dialog.take_picked() {
             self.emu.scsi_load_cdrom(self.cdrom_dialog_idx, &path);
             self.settings.add_recent_cd_image(&path);
@@ -2775,7 +2734,7 @@ impl eframe::App for SnowGui {
         self.ui_active &= *self.workspace_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // Record input dialog
-        self.record_dialog.update(ctx);
+        self.record_dialog.update(ctx, frame);
         if let Some(path) = self.record_dialog.take_picked() {
             if path.exists() && !path.is_file() {
                 self.show_error(&format!(
@@ -3016,7 +2975,7 @@ impl eframe::App for SnowGui {
                     .resizable([true, true])
                     .open(&mut self.workspace.memory_open)
                     .show(ctx, |ui| {
-                        self.memory.draw(ui);
+                        self.memory.draw(ui, frame, &self.settings);
                     });
                 if let Some((addr, value)) = self.memory.take_edited() {
                     self.emu.write_bus(addr, value);
@@ -3040,7 +2999,12 @@ impl eframe::App for SnowGui {
                     .resizable([true, true])
                     .open(&mut self.workspace.instruction_history_open)
                     .show(ctx, |ui| {
-                        self.instruction_history.draw(ui, self.emu.get_history());
+                        self.instruction_history.draw(
+                            ui,
+                            frame,
+                            &self.settings,
+                            self.emu.get_history(),
+                        );
                     });
                 if self.workspace.instruction_history_open != self.emu.is_history_enabled() {
                     self.emu
