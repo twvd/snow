@@ -2705,7 +2705,7 @@ impl eframe::App for SnowGui {
         self.ui_active &= *self.shared_dir_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // Workspace picker dialog
-        self.workspace_dialog.update(ctx);
+        self.workspace_dialog.update(ctx, frame);
         if let Some(mut path) = self.workspace_dialog.take_picked() {
             if path.exists() && !path.is_file() {
                 self.show_error(&format!(
