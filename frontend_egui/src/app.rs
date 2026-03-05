@@ -545,7 +545,7 @@ impl SnowGui {
                     ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.button("Load workspace").clicked() {
-                    self.workspace_dialog.pick_file();
+                    self.workspace_dialog.pick_file(self.settings.native_file_dialogs);
                     ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.separator();
@@ -553,12 +553,12 @@ impl SnowGui {
                     if let Some(path) = self.workspace_file.clone() {
                         self.save_workspace(&path);
                     } else {
-                        self.workspace_dialog.save_file();
+                        self.workspace_dialog.save_file(self.settings.native_file_dialogs);
                     }
                     ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.button("Save workspace as...").clicked() {
-                    self.workspace_dialog.save_file();
+                    self.workspace_dialog.save_file(self.settings.native_file_dialogs);
                     ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.separator();
@@ -1045,6 +1045,18 @@ impl SnowGui {
                     )
                     .clicked()
                 {
+                    ui.close_kind(egui::UiKind::Menu);
+                }
+
+                ui.separator();
+                if ui
+                    .checkbox(
+                        &mut self.settings.native_file_dialogs,
+                        "Use native file dialogs",
+                    )
+                    .clicked()
+                {
+                    self.settings.save();
                     ui.close_kind(egui::UiKind::Menu);
                 }
             });
