@@ -1,5 +1,6 @@
 use crate::dialogs::about::AboutDialog;
 use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
+use crate::dialogs::filedialog::SnowFileDialog;
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
 use crate::emulator::EmulatorState;
 use crate::emulator::{EmulatorInitArgs, ScsiTargets};
@@ -149,7 +150,7 @@ pub struct SnowGui {
     terminal: [TerminalWidget; 2],
     disassembly: DisassemblyWidget,
 
-    workspace_dialog: FileDialog,
+    workspace_dialog: SnowFileDialog,
     hdd_dialog: FileDialog,
     hdd_dialog_bind: Option<egui_async::Bind<Option<rfd::FileHandle>, ()>>,
     hdd_dialog_idx: usize,
@@ -353,15 +354,8 @@ impl SnowGui {
             floppy_dialog_last_image: None,
             floppy_dialog_last_type: None,
             floppy_dialog_wp: false,
-            workspace_dialog: FileDialog::new()
-                .add_file_filter(
-                    "Snow workspace (*.snoww)",
-                    Arc::new(|p| {
-                        p.extension()
-                            .unwrap_or_default()
-                            .eq_ignore_ascii_case("snoww")
-                    }),
-                )
+            workspace_dialog: SnowFileDialog::new()
+                .add_filter("Snow workspace", &["snoww"])
                 .default_file_filter("Snow workspace (*.snoww)")
                 .add_save_extension("Snow workspace", "snoww")
                 .default_save_extension("Snow workspace")
