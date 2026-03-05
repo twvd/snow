@@ -1,11 +1,13 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf};
 
 use eframe::egui;
-use rfd::FileHandle;
 
 
 /// A file dialog that can be implemented using either an egui file dialog or a
 /// native file dialog provided by `rfd`, depending on user settings.
+/// 
+/// Note that egui_async must be run at the top-level App update function. See
+/// egui_async docs for more info.
 pub struct SnowFileDialog {
     // Config data is stored in the egui file dialog regardless of whether
     // `egui-file-dialog` or `rfd` are enabled.
@@ -13,6 +15,7 @@ pub struct SnowFileDialog {
     mode: egui_file_dialog::DialogMode,
     rfd_dialog: rfd::AsyncFileDialog,
     rfd_bind: Option<egui_async::Bind<Option<rfd::FileHandle>, ()>>,
+    picked: Option<PathBuf>,
 }
 
 impl SnowFileDialog {
@@ -22,12 +25,18 @@ impl SnowFileDialog {
             mode: egui_file_dialog::DialogMode::PickFile,
             rfd_dialog: rfd::AsyncFileDialog::new(),
             rfd_bind: None,
+            picked: None,
         }
     }
 
-    pub fn update(&mut self, ctx: &egui::Context) {
+    pub fn update(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         // Call update on the egui file dialog even if it isn't currently used.
         self.efd_dialog.update(ctx);
+
+        // TODO: only do this in `rfd` mode
+        if self.rfd_bind.is_some() {
+            self.picked = self.do_request(frame);
+        }
     }
 
     pub fn add_filter(mut self, name: impl Into<String>, extensions: &[impl ToString]) -> Self {
@@ -97,12 +106,16 @@ impl SnowFileDialog {
     }
 
     pub fn take_picked(&mut self) -> Option<PathBuf> {
+        self.picked.take()
+    }
+
+    fn do_request(&mut self, frame: &eframe::Frame) -> Option<PathBuf> {
         let res = match self.mode {
-            egui_file_dialog::DialogMode::PickFile => self.request_pick_file(),
-            egui_file_dialog::DialogMode::SaveFile => self.request_save_file(),
+            egui_file_dialog::DialogMode::PickFile => self.request_pick_file(frame),
+            egui_file_dialog::DialogMode::SaveFile => self.request_save_file(frame),
             _ => todo!(),
         };
-        
+
         if let Some(res) = res {
             println!("rfd_task result: {:#?}", res);
 
@@ -118,29 +131,23 @@ impl SnowFileDialog {
         None
     }
 
-    fn request_pick_file(&mut self) -> Option<&Result<Option<rfd::FileHandle>, ()>> {
+    fn request_pick_file(&mut self, frame: &eframe::Frame) -> Option<&Result<Option<rfd::FileHandle>, ()>> {
         assert_eq!(self.mode, egui_file_dialog::DialogMode::PickFile);
 
-        if let Some(ref mut rfd_bind) = self.rfd_bind {
-            rfd_bind.read_or_request(|| {
-                let rfd_task = self.rfd_dialog.clone().pick_file();
-                async { Ok(rfd_task.await) }
-            })
-        } else {
-            None
-        }
+        self.rfd_bind.as_mut().unwrap().read_or_request(|| {
+            // FIXME: Construct rfd_dialog based on current efd config
+            let rfd_task = self.rfd_dialog.clone().set_parent(frame).pick_file();
+            async { Ok(rfd_task.await) }
+        })
     }
     
-    fn request_save_file(&mut self) -> Option<&Result<Option<rfd::FileHandle>, ()>> {
+    fn request_save_file(&mut self, frame: &eframe::Frame) -> Option<&Result<Option<rfd::FileHandle>, ()>> {
         assert_eq!(self.mode, egui_file_dialog::DialogMode::SaveFile);
-
-        if let Some(ref mut rfd_bind) = self.rfd_bind {
-            rfd_bind.read_or_request(|| {
-                let rfd_task = self.rfd_dialog.clone().save_file();
-                async { Ok(rfd_task.await) }
-            })
-        } else {
-            None
-        }
+        
+        self.rfd_bind.as_mut().unwrap().read_or_request(|| {
+            // FIXME: Construct rfd_dialog based on current efd config
+            let rfd_task = self.rfd_dialog.clone().set_parent(frame).save_file();
+            async { Ok(rfd_task.await) }
+        })
     }
 }
