@@ -33,9 +33,10 @@ impl SnowFileDialog {
         // Call update on the egui file dialog even if it isn't currently used.
         self.efd_dialog.update(ctx);
 
-        // TODO: only do this in `rfd` mode
         if self.rfd_bind.is_some() {
             self.picked = self.do_rfd_request(frame);
+        } else if matches!(self.efd_dialog.state(), efd::DialogState::Picked(_)) {
+            self.picked = self.efd_dialog.take_picked();
         }
     }
 
@@ -75,18 +76,24 @@ impl SnowFileDialog {
         self
     }
 
-    pub fn pick_file(&mut self) {
+    pub fn pick_file(&mut self, use_native: bool) {
         self.mode = efd::DialogMode::PickFile;
 
-        // TODO: choose between `egui_file_dialog` or `rfd`
-        self.rfd_bind = Some(Default::default());
+        if use_native {
+            self.rfd_bind = Some(Default::default());
+        } else {
+            self.efd_dialog.pick_file();
+        }
     }
 
-    pub fn save_file(&mut self) {
+    pub fn save_file(&mut self, use_native: bool) {
         self.mode = efd::DialogMode::SaveFile;
 
-        // TODO: choose between `egui_file_dialog` or `rfd`
-        self.rfd_bind = Some(Default::default());
+        if use_native {
+            self.rfd_bind = Some(Default::default());
+        } else {
+            self.efd_dialog.save_file();
+        }
     }
 
     pub fn config_mut(&mut self) -> &mut efd::FileDialogConfig {
