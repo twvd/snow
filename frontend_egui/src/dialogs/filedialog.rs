@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use eframe::egui;
 use egui_file_dialog as efd;
@@ -68,8 +68,19 @@ impl SnowFileDialog {
     }
 
     pub fn add_filter(mut self, name: impl Into<String>, extensions: &[impl ToString]) -> Self {
-        // TODO: add filter to efd_dialog
+        let name = name.into();
+        let efd_extensions: Vec<_> = extensions.into_iter().map(|item| item.to_string()).collect();
+
+        self.efd_dialog = self.efd_dialog.add_file_filter(
+            &name,
+            Arc::new(move |p| {
+                let ext = p.extension().unwrap_or_default().to_string_lossy().to_string();
+                efd_extensions.iter().any(|s| ext.eq_ignore_ascii_case(&s.to_string()))
+            })
+        );
+
         self.rfd_dialog = self.rfd_dialog.add_filter(name, &extensions);
+
         self
     }
 
