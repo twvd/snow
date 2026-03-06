@@ -155,7 +155,7 @@ pub struct SnowGui {
     hdd_dialog_idx: usize,
     cdrom_dialog: SnowFileDialog,
     cdrom_dialog_idx: usize,
-    cdrom_files_dialog: FileDialog,
+    cdrom_files_dialog: SnowFileDialog,
     floppy_dialog: FileDialog,
     floppy_dialog_last: Option<DirectoryEntry>,
     floppy_dialog_last_image: Option<FloppyImage>,
@@ -286,7 +286,7 @@ impl SnowGui {
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_cdrom),
             cdrom_dialog_idx: 0,
-            cdrom_files_dialog: FileDialog::new()
+            cdrom_files_dialog: SnowFileDialog::new()
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_cdrom_files),
@@ -1245,7 +1245,8 @@ impl SnowGui {
                                 });
                                 if ui.button("Mount image from files...").clicked() {
                                     self.cdrom_dialog_idx = id;
-                                    self.cdrom_files_dialog.pick_multiple();
+                                    self.cdrom_files_dialog
+                                        .pick_multiple(self.settings.native_file_dialogs);
                                     ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if show_detach {
@@ -2645,7 +2646,7 @@ impl eframe::App for SnowGui {
         self.ui_active &= *self.cdrom_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // CD-ROM image creation dialog
-        self.cdrom_files_dialog.update(ctx);
+        self.cdrom_files_dialog.update(ctx, frame);
         if let Some(paths) = self.cdrom_files_dialog.take_picked_multiple() {
             match Self::create_temp_iso(&paths) {
                 Ok(isofn) => {
