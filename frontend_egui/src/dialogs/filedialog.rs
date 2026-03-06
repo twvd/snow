@@ -3,6 +3,12 @@ use std::path::PathBuf;
 use eframe::egui;
 use egui_file_dialog as efd;
 
+#[derive(Clone, Debug)]
+enum Pick {
+    Single(PathBuf),
+    Multiple(Vec<PathBuf>),
+}
+
 /// A file dialog that can be implemented using either an egui file dialog or a
 /// native file dialog provided by `rfd`, depending on user settings.
 ///
@@ -12,20 +18,20 @@ pub struct SnowFileDialog {
     // Config data is stored in the egui file dialog regardless of whether
     // `egui-file-dialog` or `rfd` are enabled.
     efd_dialog: efd::FileDialog,
-    mode: efd::DialogMode,
     rfd_dialog: rfd::AsyncFileDialog,
-    rfd_bind: Option<egui_async::Bind<Option<rfd::FileHandle>, ()>>,
-    picked: Option<PathBuf>,
+    rfd_bind: Option<egui_async::Bind<Option<Pick>, ()>>,
+    mode: efd::DialogMode,
+    pick: Option<Pick>,
 }
 
 impl Default for SnowFileDialog {
     fn default() -> Self {
         Self {
             efd_dialog: efd::FileDialog::new(),
-            mode: efd::DialogMode::PickFile,
             rfd_dialog: rfd::AsyncFileDialog::new(),
             rfd_bind: None,
-            picked: None,
+            mode: efd::DialogMode::PickFile,
+            pick: None,
         }
     }
 }
@@ -40,9 +46,13 @@ impl SnowFileDialog {
         self.efd_dialog.update(ctx);
 
         if self.rfd_bind.is_some() {
-            self.picked = self.do_rfd_request(frame);
+            self.pick = self.do_rfd_request(frame);
         } else if matches!(self.efd_dialog.state(), efd::DialogState::Picked(_)) {
-            self.picked = self.efd_dialog.take_picked();
+            self.pick = Some(Pick::Single(self.efd_dialog.take_picked().unwrap()));
+        } else if matches!(self.efd_dialog.state(), efd::DialogState::PickedMultiple(_)) {
+            self.pick = Some(Pick::Multiple(
+                self.efd_dialog.take_picked_multiple().unwrap(),
+            ))
         }
     }
 
@@ -104,6 +114,16 @@ impl SnowFileDialog {
         }
     }
 
+    pub fn pick_multiple(&mut self, use_native: bool) {
+        self.mode = efd::DialogMode::PickMultiple;
+
+        if use_native {
+            self.rfd_bind = Some(Default::default());
+        } else {
+            self.efd_dialog.pick_multiple();
+        }
+    }
+
     pub fn save_file(&mut self, use_native: bool) {
         self.mode = efd::DialogMode::SaveFile;
 
@@ -135,12 +155,33 @@ impl SnowFileDialog {
     }
 
     pub fn take_picked(&mut self) -> Option<PathBuf> {
-        self.picked.take()
+        match &self.pick {
+            Some(Pick::Single(path)) => {
+                let result = path.clone();
+                self.pick = None;
+                Some(result)
+            }
+            Some(_) => unreachable!(),
+            None => None,
+        }
     }
 
-    fn do_rfd_request(&mut self, frame: &eframe::Frame) -> Option<PathBuf> {
+    pub fn take_picked_multiple(&mut self) -> Option<Vec<PathBuf>> {
+        match &self.pick {
+            Some(Pick::Multiple(paths)) => {
+                let result = paths.clone();
+                self.pick = None;
+                Some(result)
+            }
+            Some(_) => unreachable!(),
+            None => None,
+        }
+    }
+
+    fn do_rfd_request(&mut self, frame: &eframe::Frame) -> Option<Pick> {
         let res = match self.mode {
             efd::DialogMode::PickFile => self.request_rfd_pick_file(frame),
+            efd::DialogMode::PickMultiple => self.request_rfd_pick_multiple(frame),
             efd::DialogMode::SaveFile => self.request_rfd_save_file(frame),
             _ => todo!(),
         };
@@ -149,9 +190,9 @@ impl SnowFileDialog {
             println!("rfd_task result: {:#?}", res);
 
             if let Ok(Some(file)) = res {
-                let result = Some(file.path().into());
+                let result = file.clone();
                 self.rfd_bind = None;
-                return result;
+                return Some(result);
             }
 
             self.rfd_bind = None;
@@ -163,26 +204,43 @@ impl SnowFileDialog {
     fn request_rfd_pick_file(
         &mut self,
         frame: &eframe::Frame,
-    ) -> Option<&Result<Option<rfd::FileHandle>, ()>> {
+    ) -> Option<&Result<Option<Pick>, ()>> {
         assert_eq!(self.mode, efd::DialogMode::PickFile);
 
         self.rfd_bind.as_mut().unwrap().read_or_request(|| {
             // FIXME: Construct rfd_dialog based on current efd config
             let rfd_task = self.rfd_dialog.clone().set_parent(frame).pick_file();
-            async { Ok(rfd_task.await) }
+            async { Ok(rfd_task.await.map(|item| Pick::Single(item.into()))) }
+        })
+    }
+
+    fn request_rfd_pick_multiple(
+        &mut self,
+        frame: &eframe::Frame,
+    ) -> Option<&Result<Option<Pick>, ()>> {
+        assert_eq!(self.mode, efd::DialogMode::PickMultiple);
+
+        self.rfd_bind.as_mut().unwrap().read_or_request(|| {
+            // FIXME: Construct rfd_dialog based on current efd config
+            let rfd_task = self.rfd_dialog.clone().set_parent(frame).pick_files();
+            async {
+                Ok(rfd_task
+                    .await
+                    .map(|item| Pick::Multiple(item.into_iter().map(|item| item.into()).collect())))
+            }
         })
     }
 
     fn request_rfd_save_file(
         &mut self,
         frame: &eframe::Frame,
-    ) -> Option<&Result<Option<rfd::FileHandle>, ()>> {
+    ) -> Option<&Result<Option<Pick>, ()>> {
         assert_eq!(self.mode, efd::DialogMode::SaveFile);
 
         self.rfd_bind.as_mut().unwrap().read_or_request(|| {
             // FIXME: Construct rfd_dialog based on current efd config
-            let rfd_task = self.rfd_dialog.clone().set_parent(frame).save_file();
-            async { Ok(rfd_task.await) }
+            let rfd_task = self.rfd_dialog.clone().set_parent(frame).pick_file();
+            async { Ok(rfd_task.await.map(|item| Pick::Single(item.into()))) }
         })
     }
 }
