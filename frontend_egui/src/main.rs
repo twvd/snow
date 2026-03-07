@@ -129,11 +129,11 @@ fn main() -> eframe::Result {
             event_loop: &winit::event_loop::ActiveEventLoop,
             cause: winit::event::StartCause,
         ) {
-            self.0.new_events(event_loop, cause)
+            self.0.new_events(event_loop, cause);
         }
 
         fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-            self.0.resumed(event_loop)
+            self.0.resumed(event_loop);
         }
 
         fn user_event(
@@ -141,7 +141,7 @@ fn main() -> eframe::Result {
             event_loop: &winit::event_loop::ActiveEventLoop,
             event: eframe::UserEvent,
         ) {
-            self.0.user_event(event_loop, event)
+            self.0.user_event(event_loop, event);
         }
 
         fn window_event(
@@ -152,7 +152,7 @@ fn main() -> eframe::Result {
         ) {
             // Send the WindowEvent through the channel
             let _ = self.1.send(event.clone());
-            self.0.window_event(event_loop, window_id, event)
+            self.0.window_event(event_loop, window_id, event);
         }
 
         fn device_event(
@@ -161,23 +161,23 @@ fn main() -> eframe::Result {
             device_id: winit::event::DeviceId,
             event: winit::event::DeviceEvent,
         ) {
-            self.0.device_event(event_loop, device_id, event)
+            self.0.device_event(event_loop, device_id, event);
         }
 
         fn about_to_wait(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-            self.0.about_to_wait(event_loop)
+            self.0.about_to_wait(event_loop);
         }
 
         fn suspended(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-            self.0.suspended(event_loop)
+            self.0.suspended(event_loop);
         }
 
         fn exiting(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-            self.0.exiting(event_loop)
+            self.0.exiting(event_loop);
         }
 
         fn memory_warning(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-            self.0.memory_warning(event_loop)
+            self.0.memory_warning(event_loop);
         }
     }
 
