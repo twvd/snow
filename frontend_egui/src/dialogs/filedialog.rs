@@ -12,17 +12,12 @@ enum RfdState {
     Active(egui_async::Bind<Option<Picked>, ()>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 enum Picked {
+    #[default]
     None,
     Single(PathBuf),
     Multiple(Vec<PathBuf>),
-}
-
-impl Default for Picked {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 /// A file dialog that can be implemented using either an egui file dialog or a
@@ -70,10 +65,10 @@ impl SnowFileDialog {
             }
             _ => match self.efd_dialog.state() {
                 efd::DialogState::Picked(_) => {
-                    self.picked = Picked::Single(self.efd_dialog.take_picked().unwrap())
+                    self.picked = Picked::Single(self.efd_dialog.take_picked().unwrap());
                 }
                 efd::DialogState::PickedMultiple(_) => {
-                    self.picked = Picked::Multiple(self.efd_dialog.take_picked_multiple().unwrap())
+                    self.picked = Picked::Multiple(self.efd_dialog.take_picked_multiple().unwrap());
                 }
                 _ => (),
             },
@@ -82,10 +77,7 @@ impl SnowFileDialog {
 
     pub fn add_filter(mut self, name: impl Into<String>, extensions: &[impl ToString]) -> Self {
         let name = name.into();
-        let efd_extensions: Vec<_> = extensions
-            .into_iter()
-            .map(|item| item.to_string())
-            .collect();
+        let efd_extensions: Vec<_> = extensions.iter().map(|item| item.to_string()).collect();
 
         self.efd_dialog = self.efd_dialog.add_file_filter(
             &name,
@@ -99,7 +91,7 @@ impl SnowFileDialog {
             }),
         );
 
-        self.rfd_dialog = self.rfd_dialog.add_filter(name, &extensions);
+        self.rfd_dialog = self.rfd_dialog.add_filter(name, extensions);
 
         self
     }
@@ -229,13 +221,13 @@ impl SnowFileDialog {
                 .storage_mut()
                 .last_picked_dir
                 .clone()
-                .unwrap_or(self.efd_dialog.config_mut().initial_directory.clone()),
+                .unwrap_or_else(|| self.efd_dialog.config_mut().initial_directory.clone()),
             efd::OpeningMode::LastVisitedDir => self
                 .efd_dialog
                 .storage_mut()
                 .last_visited_dir
                 .clone()
-                .unwrap_or(self.efd_dialog.config_mut().initial_directory.clone()),
+                .unwrap_or_else(|| self.efd_dialog.config_mut().initial_directory.clone()),
         };
 
         dialog = dialog.set_directory(directory);
