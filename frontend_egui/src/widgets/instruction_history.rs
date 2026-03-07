@@ -3,13 +3,14 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::consts;
+use crate::dialogs::filedialog::SnowFileDialog;
 use crate::helpers::{left_sized, left_sized_f, left_sized_icon};
+use crate::settings::AppSettings;
 use crate::uniform::{uniform_error, UniformMethods};
 
 use anyhow::Result;
 use eframe::egui;
 use eframe::egui::Ui;
-use egui_file_dialog::FileDialog;
 use snow_core::bus::Address;
 use snow_core::cpu_m68k::cpu::{HistoryEntry, HistoryEntryInstruction};
 use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
@@ -21,14 +22,14 @@ pub struct InstructionHistoryWidget {
     /// Last entry to detect changes
     last: Option<HistoryEntry>,
     /// File export dialog
-    export_dialog: FileDialog,
+    export_dialog: SnowFileDialog,
 }
 
 impl Default for InstructionHistoryWidget {
     fn default() -> Self {
         Self {
             last: Default::default(),
-            export_dialog: FileDialog::new()
+            export_dialog: SnowFileDialog::new()
                 .add_save_extension("Pipe-separated text file", "txt")
                 .default_save_extension("Pipe-separated text file")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
@@ -104,8 +105,14 @@ impl InstructionHistoryWidget {
         );
     }
 
-    pub fn draw(&mut self, ui: &mut egui::Ui, history: &[HistoryEntry]) {
-        self.export_dialog.update(ui.ctx());
+    pub fn draw(
+        &mut self,
+        ui: &mut egui::Ui,
+        frame: &eframe::Frame,
+        settings: &AppSettings,
+        history: &[HistoryEntry],
+    ) {
+        self.export_dialog.update(ui.ctx(), frame);
         if let Some(f) = self.export_dialog.take_picked() {
             if let Err(e) = self.export_file(history, &f) {
                 uniform_error(format!("Error exporting to file: {}", e));
@@ -125,7 +132,7 @@ impl InstructionHistoryWidget {
                     .on_hover_text("Export to file...")
                     .clicked()
                 {
-                    self.export_dialog.save_file();
+                    self.export_dialog.save_file(settings.native_file_dialogs);
                 }
             });
             ui.separator();

@@ -1,10 +1,11 @@
 use std::fs;
 use std::path::PathBuf;
 
+use crate::dialogs::filedialog::SnowFileDialog;
 use crate::emulator::EmulatorInitArgs;
+use crate::settings::AppSettings;
 use anyhow::{anyhow, bail, Result};
 use eframe::egui;
-use egui_file_dialog::FileDialog;
 use sha2::{Digest, Sha256};
 use snow_core::emulator::MouseMode;
 use snow_core::mac::swim::drive::DriveType;
@@ -24,22 +25,22 @@ pub struct ModelSelectionDialog {
     // Main ROM selection
     main_rom_path: String,
     main_rom_valid: bool,
-    main_rom_dialog: FileDialog,
+    main_rom_dialog: SnowFileDialog,
 
     // Display Card ROM (for Mac II only)
     display_rom_path: String,
     display_rom_valid: bool,
-    display_rom_dialog: FileDialog,
+    display_rom_dialog: SnowFileDialog,
     display_rom_required: bool,
 
     // PRAM path
     pram_enabled: bool,
     pram_path: String,
-    pram_dialog: FileDialog,
+    pram_dialog: SnowFileDialog,
 
     // Extension ROM path
     extension_rom_path: String,
-    extension_rom_dialog: FileDialog,
+    extension_rom_dialog: SnowFileDialog,
 
     // Result
     result: Option<ModelSelectionResult>,
@@ -82,43 +83,23 @@ impl Default for ModelSelectionDialog {
 
             main_rom_path: String::new(),
             main_rom_valid: false,
-            main_rom_dialog: FileDialog::new()
-                .add_file_filter(
-                    "ROM files (*.rom, *.bin)",
-                    std::sync::Arc::new(|p| {
-                        if let Some(ext) = p.extension() {
-                            let ext_str = ext.to_string_lossy().to_lowercase();
-                            ext_str == "rom" || ext_str == "bin"
-                        } else {
-                            false
-                        }
-                    }),
-                )
+            main_rom_dialog: SnowFileDialog::new()
+                .add_filter("ROM files", &["rom", "bin"])
                 .default_file_filter("ROM files (*.rom, *.bin)")
                 .show_pinned_folders(false)
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
 
             display_rom_path: String::new(),
             display_rom_valid: false,
-            display_rom_dialog: FileDialog::new()
-                .add_file_filter(
-                    "ROM files (*.rom, *.bin)",
-                    std::sync::Arc::new(|p| {
-                        if let Some(ext) = p.extension() {
-                            let ext_str = ext.to_string_lossy().to_lowercase();
-                            ext_str == "rom" || ext_str == "bin" || ext_str == "uk6"
-                        } else {
-                            false
-                        }
-                    }),
-                )
+            display_rom_dialog: SnowFileDialog::new()
+                .add_filter("ROM files", &["rom", "bin", "uk6"])
                 .default_file_filter("ROM files (*.rom, *.bin)")
                 .show_pinned_folders(false)
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
             display_rom_required: false,
 
             pram_enabled: false,
-            pram_dialog: FileDialog::new()
+            pram_dialog: SnowFileDialog::new()
                 .add_save_extension("PRAM files", "pram")
                 .default_save_extension("PRAM files")
                 .show_pinned_folders(false)
@@ -126,18 +107,8 @@ impl Default for ModelSelectionDialog {
             pram_path: String::new(),
 
             extension_rom_path: String::new(),
-            extension_rom_dialog: FileDialog::new()
-                .add_file_filter(
-                    "ROM files (*.rom, *.bin)",
-                    std::sync::Arc::new(|p| {
-                        if let Some(ext) = p.extension() {
-                            let ext_str = ext.to_string_lossy().to_lowercase();
-                            ext_str == "rom" || ext_str == "bin"
-                        } else {
-                            false
-                        }
-                    }),
-                )
+            extension_rom_dialog: SnowFileDialog::new()
+                .add_filter("ROM files", &["rom", "bin"])
                 .default_file_filter("ROM files (*.rom, *.bin)")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
 
@@ -303,21 +274,21 @@ impl ModelSelectionDialog {
         }
     }
 
-    pub fn update(&mut self, ctx: &egui::Context) {
+    pub fn update(&mut self, ctx: &egui::Context, frame: &eframe::Frame, settings: &AppSettings) {
         if !self.open {
             return;
         }
 
         // Update file dialogs
-        self.main_rom_dialog.update(ctx);
-        self.display_rom_dialog.update(ctx);
-        self.pram_dialog.update(ctx);
-        self.extension_rom_dialog.update(ctx);
+        self.main_rom_dialog.update(ctx, frame);
+        self.display_rom_dialog.update(ctx, frame);
+        self.pram_dialog.update(ctx, frame);
+        self.extension_rom_dialog.update(ctx, frame);
 
-        if self.main_rom_dialog.state() == egui_file_dialog::DialogState::Open
-            || self.display_rom_dialog.state() == egui_file_dialog::DialogState::Open
-            || self.pram_dialog.state() == egui_file_dialog::DialogState::Open
-            || self.extension_rom_dialog.state() == egui_file_dialog::DialogState::Open
+        if *self.main_rom_dialog.state() == egui_file_dialog::DialogState::Open
+            || *self.display_rom_dialog.state() == egui_file_dialog::DialogState::Open
+            || *self.pram_dialog.state() == egui_file_dialog::DialogState::Open
+            || *self.extension_rom_dialog.state() == egui_file_dialog::DialogState::Open
         {
             return;
         }
@@ -396,7 +367,7 @@ impl ModelSelectionDialog {
                         self.do_validate_main_rom();
                     }
                     if ui.button("Browse...").clicked() {
-                        self.main_rom_dialog.pick_file();
+                        self.main_rom_dialog.pick_file(settings.native_file_dialogs);
                     }
                 });
 
@@ -430,7 +401,8 @@ impl ModelSelectionDialog {
                             self.do_validate_display_rom();
                         }
                         if ui.button("Browse...").clicked() {
-                            self.display_rom_dialog.pick_file();
+                            self.display_rom_dialog
+                                .pick_file(settings.native_file_dialogs);
                         }
                     });
 
@@ -482,7 +454,7 @@ impl ModelSelectionDialog {
                             ui.horizontal(|ui| {
                                 ui.text_edit_singleline(&mut self.pram_path);
                                 if ui.button("Browse...").clicked() {
-                                    self.pram_dialog.save_file();
+                                    self.pram_dialog.save_file(settings.native_file_dialogs);
                                 }
                             });
                         }
@@ -493,7 +465,8 @@ impl ModelSelectionDialog {
                         ui.label("Extension ROM:");
                         ui.text_edit_singleline(&mut self.extension_rom_path);
                         if ui.button("Browse...").clicked() {
-                            self.extension_rom_dialog.pick_file();
+                            self.extension_rom_dialog
+                                .pick_file(settings.native_file_dialogs);
                         }
                     });
                 });

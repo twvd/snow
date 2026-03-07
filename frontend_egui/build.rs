@@ -38,7 +38,8 @@ fn main() {
     if env::var_os("CARGO_CFG_WINDOWS").is_some() {
         winresource::WindowsResource::new()
             .set_icon("../assets/snow.ico")
+            .set_manifest_file("../assets/snow.manifest")
             .compile()
-            .expect("Failed to embed icon (Windows)");
+            .expect("Failed to embed resources (Windows)");
     }
 }

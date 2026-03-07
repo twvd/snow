@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
-use egui_file_dialog::FileDialog;
+
+use crate::{dialogs::filedialog::SnowFileDialog, settings::AppSettings};
 
 /// Dialog to create a blank HDD image
 #[derive(Default)]
@@ -11,7 +12,7 @@ pub struct DiskImageDialog {
     current_size: f64,
     scsi_id: usize,
 
-    browse_dialog: FileDialog,
+    browse_dialog: SnowFileDialog,
     result: Option<DiskImageDialogResult>,
 }
 
@@ -22,13 +23,13 @@ pub struct DiskImageDialogResult {
 }
 
 impl DiskImageDialog {
-    pub fn update(&mut self, ctx: &egui::Context) {
+    pub fn update(&mut self, ctx: &egui::Context, frame: &eframe::Frame, settings: &AppSettings) {
         if !self.open {
             return;
         }
 
-        self.browse_dialog.update(ctx);
-        if self.browse_dialog.state() == egui_file_dialog::DialogState::Open {
+        self.browse_dialog.update(ctx, frame);
+        if *self.browse_dialog.state() == egui_file_dialog::DialogState::Open {
             return;
         }
         if let Some(path) = self.browse_dialog.take_picked() {
@@ -45,7 +46,7 @@ impl DiskImageDialog {
                 ui.horizontal(|ui| {
                     ui.text_edit_singleline(&mut self.current_fn);
                     if ui.button("Browse").clicked() {
-                        self.browse_dialog.save_file();
+                        self.browse_dialog.save_file(settings.native_file_dialogs);
                     }
                 });
                 ui.end_row();
