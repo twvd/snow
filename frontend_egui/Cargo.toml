@@ -50,7 +50,7 @@ num-traits = "0.2.19"
 pathdiff = "0.2.3"
 png = "0.17.16"
 rand = "0.9.1"
-rfd = "0.17.2"
+rfd = { version = "0.17.2", features = ["common-controls-v6"] }
 pnet = { version = "0.35.0", optional = true }
 sdl2 = { version = "0.37.0" }
 serde = { version = "1.0.218", features = ["derive"] }
