@@ -64,10 +64,9 @@ impl SnowFileDialog {
         match &self.rfd_state {
             RfdState::Pending => {
                 self.launch_rfd(frame);
-                self.picked = self.read_rfd();
             }
             RfdState::Active(_) => {
-                self.picked = self.read_rfd();
+                self.read_rfd();
             }
             _ => match self.efd_dialog.state() {
                 efd::DialogState::Picked(_) => {
@@ -215,8 +214,32 @@ impl SnowFileDialog {
         }
     }
 
-    fn build_rfd_dialog(&self, frame: &eframe::Frame) -> rfd::AsyncFileDialog {
-        let dialog = self.rfd_dialog.clone().set_parent(frame);
+    fn build_rfd_dialog(&mut self, frame: &eframe::Frame) -> rfd::AsyncFileDialog {
+        let mut dialog = self.rfd_dialog.clone();
+
+        dialog = dialog.set_parent(frame);
+
+        // See `get_initial_directory` in egui-file-dialog
+        let directory = match self.efd_dialog.config_mut().opening_mode {
+            efd::OpeningMode::AlwaysInitialDir => {
+                self.efd_dialog.config_mut().initial_directory.clone()
+            }
+            efd::OpeningMode::LastPickedDir => self
+                .efd_dialog
+                .storage_mut()
+                .last_picked_dir
+                .clone()
+                .unwrap_or(self.efd_dialog.config_mut().initial_directory.clone()),
+            efd::OpeningMode::LastVisitedDir => self
+                .efd_dialog
+                .storage_mut()
+                .last_visited_dir
+                .clone()
+                .unwrap_or(self.efd_dialog.config_mut().initial_directory.clone()),
+        };
+
+        dialog = dialog.set_directory(directory);
+
         dialog
     }
 
@@ -250,18 +273,35 @@ impl SnowFileDialog {
             }
             _ => unimplemented!(),
         }
+
+        self.read_rfd();
     }
 
-    fn read_rfd(&mut self) -> Picked {
+    fn read_rfd(&mut self) {
         match &mut self.rfd_state {
             RfdState::Active(bind) => match bind.read() {
                 Some(Ok(res)) => {
                     let res = res.clone();
                     self.rfd_state = RfdState::Inactive;
-                    res.unwrap_or(Picked::None)
+
+                    // Store last visited directory to efd dialog
+                    if let Some(ref res) = res {
+                        let last_visited_dir = match res {
+                            Picked::Single(path) => path.to_path_buf(),
+                            Picked::Multiple(paths) => paths[0].clone(),
+                            _ => unreachable!(),
+                        }
+                        .parent()
+                        .map(|path| path.to_path_buf());
+
+                        self.efd_dialog.storage_mut().last_visited_dir = last_visited_dir.clone();
+                        self.efd_dialog.storage_mut().last_picked_dir = last_visited_dir;
+                    }
+
+                    self.picked = res.unwrap_or(Picked::None);
                 }
                 Some(_) => unreachable!(),
-                None => Picked::None,
+                None => self.picked = Picked::None,
             },
             _ => unreachable!(),
         }
