@@ -211,6 +211,11 @@ impl SnowFileDialog {
 
         dialog = dialog.set_parent(frame);
 
+        // Always add a filter for all files.
+        // Whether to use "All files" or "All Files" is inconsistent across Windows
+        // apps, even ones designed by Microsoft.
+        dialog = dialog.add_filter("All files", &["*"]);
+
         // See `get_initial_directory` in egui-file-dialog
         let directory = match self.efd_dialog.config_mut().opening_mode {
             efd::OpeningMode::AlwaysInitialDir => {
