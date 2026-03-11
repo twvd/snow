@@ -170,7 +170,7 @@ pub struct SnowGui {
     state_dialog_last: Option<DirectoryEntry>,
     state_dialog_last_header: Option<SaveHeader>,
     state_dialog_screenshot: egui::TextureHandle,
-    shared_dir_dialog: FileDialog,
+    shared_dir_dialog: SnowFileDialog,
 
     error_dialog_open: bool,
     error_string: String,
@@ -358,7 +358,7 @@ impl SnowGui {
                 egui::ColorImage::filled([0, 0], egui::Color32::BLACK),
                 egui::TextureOptions::LINEAR,
             ),
-            shared_dir_dialog: FileDialog::new()
+            shared_dir_dialog: SnowFileDialog::new()
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_shared_dir),
@@ -733,7 +733,8 @@ impl SnowGui {
                         )
                         .clicked()
                     {
-                        self.shared_dir_dialog.pick_directory();
+                        self.shared_dir_dialog
+                            .pick_directory(self.settings.native_file_dialogs);
                         ui.close_kind(egui::UiKind::Menu);
                     }
                     ui.separator();
@@ -2679,7 +2680,7 @@ impl eframe::App for SnowGui {
         self.ui_active &= *self.cdrom_files_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // Shared directory picker dialog
-        self.shared_dir_dialog.update(ctx);
+        self.shared_dir_dialog.update(ctx, frame);
         if let Some(path) = self.shared_dir_dialog.take_picked() {
             self.workspace.set_shared_dir(Some(&path));
             self.emu.set_shared_dir(Some(path));
