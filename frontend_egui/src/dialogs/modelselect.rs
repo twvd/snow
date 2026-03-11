@@ -85,7 +85,6 @@ impl Default for ModelSelectionDialog {
             main_rom_valid: false,
             main_rom_dialog: SnowFileDialog::new()
                 .add_filter("ROM files", &["rom", "bin"])
-                .default_file_filter("ROM files (*.rom, *.bin)")
                 .show_pinned_folders(false)
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
 
@@ -93,7 +92,6 @@ impl Default for ModelSelectionDialog {
             display_rom_valid: false,
             display_rom_dialog: SnowFileDialog::new()
                 .add_filter("ROM files", &["rom", "bin", "uk6"])
-                .default_file_filter("ROM files (*.rom, *.bin)")
                 .show_pinned_folders(false)
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
             display_rom_required: false,
@@ -109,7 +107,6 @@ impl Default for ModelSelectionDialog {
             extension_rom_path: String::new(),
             extension_rom_dialog: SnowFileDialog::new()
                 .add_filter("ROM files", &["rom", "bin"])
-                .default_file_filter("ROM files (*.rom, *.bin)")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
 
             result: None,
