@@ -148,6 +148,16 @@ impl SnowFileDialog {
         }
     }
 
+    pub fn pick_directory(&mut self, use_native: bool) {
+        self.mode = efd::DialogMode::PickDirectory;
+
+        if use_native {
+            self.rfd_state = RfdState::Pending;
+        } else {
+            self.efd_dialog.pick_directory();
+        }
+    }
+
     pub fn pick_multiple(&mut self, use_native: bool) {
         self.mode = efd::DialogMode::PickMultiple;
 
@@ -252,6 +262,12 @@ impl SnowFileDialog {
                 req.request(async { Ok(rfd_task.await.map(|item| Picked::Single(item.into()))) });
                 self.rfd_state = RfdState::Active(req);
             }
+            efd::DialogMode::PickDirectory => {
+                let mut req = egui_async::Bind::<Option<Picked>, ()>::default();
+                let rfd_task = dialog.pick_folder();
+                req.request(async { Ok(rfd_task.await.map(|item| Picked::Single(item.into()))) });
+                self.rfd_state = RfdState::Active(req);
+            }
             efd::DialogMode::PickMultiple => {
                 let mut req = egui_async::Bind::<Option<Picked>, ()>::default();
                 let rfd_task = dialog.pick_files();
@@ -268,7 +284,6 @@ impl SnowFileDialog {
                 req.request(async { Ok(rfd_task.await.map(|item| Picked::Single(item.into()))) });
                 self.rfd_state = RfdState::Active(req);
             }
-            _ => unimplemented!(),
         }
 
         self.read_rfd();
@@ -287,9 +302,13 @@ impl SnowFileDialog {
                             Picked::Single(path) => path.to_path_buf(),
                             Picked::Multiple(paths) => paths[0].clone(),
                             _ => unreachable!(),
-                        }
-                        .parent()
-                        .map(|path| path.to_path_buf());
+                        };
+
+                        let last_visited_dir = if self.mode == efd::DialogMode::PickDirectory {
+                            Some(last_visited_dir)
+                        } else {
+                            last_visited_dir.parent().map(|path| path.to_path_buf())
+                        };
 
                         self.efd_dialog.storage_mut().last_visited_dir = last_visited_dir.clone();
                         self.efd_dialog.storage_mut().last_picked_dir = last_visited_dir;
