@@ -43,6 +43,11 @@ afterwards.
 Snow currently supports a NAT-based ethernet link that runs in userland on the host system. This link only supports
 TCP and UDP connections.
 
+<div class="warning">
+The NAT engine does not translate ICMP, which means you cannot ping through the NAT engine, even though TCP or UDP
+connections to the same remote host may work.
+</div>
+
 You can select the Ethernet link type through the Drives menu: 'Drives' -> 'SCSI ID #_n_'.
 
 ![Ethernet link menu](../../images/ethernet_link.png)
