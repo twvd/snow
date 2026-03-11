@@ -75,6 +75,7 @@ impl SnowFileDialog {
         }
     }
 
+    /// Add a filename filter to the dialog. The first filter added will be the default.
     pub fn add_filter(mut self, name: impl Into<String>, extensions: &[impl ToString]) -> Self {
         let name = name.into();
         let efd_extensions: Vec<_> = extensions.iter().map(|item| item.to_string()).collect();
@@ -91,13 +92,13 @@ impl SnowFileDialog {
             }),
         );
 
+        // The first filter added will be set as the default.
+        if self.efd_dialog.config_mut().default_file_filter.is_none() {
+            self.efd_dialog = self.efd_dialog.default_file_filter(&name);
+        }
+
         self.rfd_dialog = self.rfd_dialog.add_filter(name, extensions);
 
-        self
-    }
-
-    pub fn default_file_filter(mut self, name: &str) -> Self {
-        self.efd_dialog = self.efd_dialog.default_file_filter(name);
         self
     }
 

@@ -272,7 +272,6 @@ impl SnowGui {
 
             hdd_dialog: SnowFileDialog::new()
                 .add_filter(hdd_filter_str, &["img", "hda"])
-                .default_file_filter(hdd_filter_str)
                 .add_save_extension("Device image", "img")
                 .default_save_extension("Device image")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
@@ -281,7 +280,6 @@ impl SnowGui {
             hdd_dialog_idx: 0,
             cdrom_dialog: SnowFileDialog::new()
                 .add_filter(cdrom_filter_str, &["iso", "toast"])
-                .default_file_filter(cdrom_filter_str)
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_cdrom),
@@ -316,7 +314,6 @@ impl SnowGui {
                 .add_save_extension("Snow recording", "snowr")
                 .default_save_extension("Snow recording")
                 .add_filter("Snow recording", &["snowr"])
-                .default_file_filter("Snow recording (*.snowr)")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_record),
@@ -327,7 +324,6 @@ impl SnowGui {
             floppy_dialog_wp: false,
             workspace_dialog: SnowFileDialog::new()
                 .add_filter("Snow workspace", &["snoww"])
-                .default_file_filter("Snow workspace (*.snoww)")
                 .add_save_extension("Snow workspace", "snoww")
                 .default_save_extension("Snow workspace")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
