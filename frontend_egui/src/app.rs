@@ -1339,6 +1339,7 @@ impl SnowGui {
                             }
 
                             if new_link_type != link_type {
+                                self.workspace.set_ethernet_link_type(new_link_type.clone());
                                 self.emu.set_eth_link(id, new_link_type);
                             }
 
@@ -1961,6 +1962,19 @@ impl SnowGui {
                         floppy_path
                     ));
                 }
+            }
+
+            #[cfg(feature = "ethernet")]
+            if let Some((id, _)) = self
+                .emu
+                .get_scsi_targets()
+                .unwrap()
+                .iter()
+                .enumerate()
+                .find(|(_, t)| t.target_type == Some(ScsiTargetType::Ethernet))
+            {
+                self.emu
+                    .set_eth_link(id, self.workspace.get_ethernet_link_type());
             }
         } else {
             self.emu.deinit();
