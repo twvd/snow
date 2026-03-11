@@ -86,7 +86,7 @@ impl SnowFileDialog {
                 .iter()
                 .map(|ext| format!("*.{}", ext.to_string()))
                 .collect::<Vec<_>>()
-                .join(";")
+                .join(", ")
         );
 
         let efd_extensions: Vec<_> = extensions.iter().map(|item| item.to_string()).collect();

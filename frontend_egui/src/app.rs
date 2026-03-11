@@ -243,8 +243,8 @@ impl SnowGui {
                 .map(|e| format!("*.{}", e.to_ascii_uppercase()))
                 .join(", ")
         );
-        let hdd_filter_str = "HDD images (*.img, *.hda)";
-        let cdrom_filter_str = "CD-ROM images (*.iso, *.toast)";
+        let hdd_filter_str = "HDD images";
+        let cdrom_filter_str = "CD-ROM images";
         let settings = AppSettings::load();
 
         let mut app = Self {
