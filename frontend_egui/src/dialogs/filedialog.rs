@@ -47,6 +47,10 @@ impl Default for SnowFileDialog {
     }
 }
 
+/// Callback for injecting an egui UI into an egui-file-dialog. The callback will
+/// not be called for native dialogs. See FileDialogUiCallback in egui-file-dialog.
+type EfdFileDialogUiCallback<'a> = dyn FnMut(&mut egui::Ui, &mut efd::FileDialog) + 'a;
+
 impl SnowFileDialog {
     pub fn new() -> Self {
         Default::default()
@@ -55,7 +59,23 @@ impl SnowFileDialog {
     pub fn update(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         // Always call update on the egui file dialog even if it isn't currently used.
         self.efd_dialog.update(ctx);
+        self.update_common(frame);
+    }
 
+    /// Update with a custom right panel UI. The custom right panel UI is not used for
+    /// native file dialogs.
+    pub fn update_with_right_panel_ui(
+        &mut self,
+        ctx: &egui::Context,
+        frame: &eframe::Frame,
+        f: &mut EfdFileDialogUiCallback,
+    ) {
+        // Always call update on the egui file dialog even if it isn't currently used.
+        self.efd_dialog.update_with_right_panel_ui(ctx, f);
+        self.update_common(frame);
+    }
+
+    fn update_common(&mut self, frame: &eframe::Frame) {
         match &self.rfd_state {
             RfdState::Pending => {
                 self.launch_rfd(frame);
