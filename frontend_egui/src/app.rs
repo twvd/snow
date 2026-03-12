@@ -30,16 +30,14 @@ use snow_floppy::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
 
 use anyhow::{anyhow, bail, Context, Result};
 use eframe::egui;
-use egui_file_dialog::{DialogMode, DirectoryEntry, FileDialog};
+use egui_file_dialog::{DialogMode, DirectoryEntry};
 use egui_toast::{Toast, ToastKind, ToastOptions};
-use itertools::Itertools;
 use rand::Rng;
 use strum::IntoEnumIterator;
 
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{env, fs};
 
@@ -156,7 +154,7 @@ pub struct SnowGui {
     cdrom_dialog: SnowFileDialog,
     cdrom_dialog_idx: usize,
     cdrom_files_dialog: SnowFileDialog,
-    floppy_dialog: FileDialog,
+    floppy_dialog: SnowFileDialog,
     floppy_dialog_last: Option<DirectoryEntry>,
     floppy_dialog_last_image: Option<FloppyImage>,
     floppy_dialog_last_type: Option<ImageType>,
@@ -166,7 +164,7 @@ pub struct SnowGui {
     record_dialog: SnowFileDialog,
     model_dialog: ModelSelectionDialog,
     about_dialog: AboutDialog,
-    state_dialog: FileDialog,
+    state_dialog: SnowFileDialog,
     state_dialog_last: Option<DirectoryEntry>,
     state_dialog_last_header: Option<SaveHeader>,
     state_dialog_screenshot: egui::TextureHandle,
@@ -236,15 +234,6 @@ impl SnowGui {
         egui_material_icons::initialize(&cc.egui_ctx);
         cc.egui_ctx.set_zoom_factor(zoom_factor);
 
-        let floppy_filter_str = format!(
-            "Floppy images ({})",
-            snow_floppy::loaders::ImageType::EXTENSIONS
-                .into_iter()
-                .map(|e| format!("*.{}", e.to_ascii_uppercase()))
-                .join(", ")
-        );
-        let hdd_filter_str = "HDD images";
-        let cdrom_filter_str = "CD-ROM images";
         let settings = AppSettings::load();
 
         let mut app = Self {
@@ -271,7 +260,7 @@ impl SnowGui {
             disassembly: DisassemblyWidget::new(),
 
             hdd_dialog: SnowFileDialog::new()
-                .add_filter(hdd_filter_str, &["img", "hda"])
+                .add_filter("HDD images", &["img", "hda"])
                 .add_save_extension("Device image", "img")
                 .default_save_extension("Device image")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
@@ -279,7 +268,7 @@ impl SnowGui {
                 .storage(settings.fd_hdd),
             hdd_dialog_idx: 0,
             cdrom_dialog: SnowFileDialog::new()
-                .add_filter(cdrom_filter_str, &["iso", "toast"])
+                .add_filter("CD-ROM images", &["iso", "toast"])
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_cdrom),
@@ -288,22 +277,11 @@ impl SnowGui {
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_cdrom_files),
-            floppy_dialog: FileDialog::new()
-                .add_file_filter(
-                    &floppy_filter_str,
-                    Arc::new(|p| {
-                        let ext = p
-                            .extension()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string();
-
-                        snow_floppy::loaders::ImageType::EXTENSIONS
-                            .into_iter()
-                            .any(|s| ext.eq_ignore_ascii_case(s))
-                    }),
+            floppy_dialog: SnowFileDialog::new()
+                .add_filter(
+                    "Floppy images",
+                    &snow_floppy::loaders::ImageType::EXTENSIONS,
                 )
-                .default_file_filter(&floppy_filter_str)
                 .add_save_extension("Applesauce MOOF", "moof")
                 .default_save_extension("Applesauce MOOF")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
@@ -332,16 +310,8 @@ impl SnowGui {
             create_disk_dialog: Default::default(),
             model_dialog: Default::default(),
             about_dialog: AboutDialog::new(&cc.egui_ctx),
-            state_dialog: FileDialog::new()
-                .add_file_filter(
-                    "Snow state file (*.snows)",
-                    Arc::new(|p| {
-                        p.extension()
-                            .unwrap_or_default()
-                            .eq_ignore_ascii_case("snows")
-                    }),
-                )
-                .default_file_filter("Snow state file (*.snows)")
+            state_dialog: SnowFileDialog::new()
+                .add_filter("Snow state file", &["snows"])
                 .add_save_extension("Snow state file", "snows")
                 .default_save_extension("Snow state file")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
@@ -597,7 +567,8 @@ impl SnowGui {
             ui.menu_button("State", |ui| {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
                 if ui.button("Load state from file...").clicked() {
-                    self.state_dialog.pick_file();
+                    self.state_dialog
+                        .pick_file(self.settings.native_file_dialogs);
                     ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui
@@ -607,7 +578,8 @@ impl SnowGui {
                     )
                     .clicked()
                 {
-                    self.state_dialog.save_file();
+                    self.state_dialog
+                        .save_file(self.settings.native_file_dialogs);
                     ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.separator();
@@ -1487,7 +1459,8 @@ impl SnowGui {
                     ui.separator();
                     if ui.button("Load image...").clicked() {
                         self.floppy_dialog_target = FloppyDialogTarget::Drive(i);
-                        self.floppy_dialog.pick_file();
+                        self.floppy_dialog
+                            .pick_file(self.settings.native_file_dialogs);
                         ui.close_kind(egui::UiKind::Menu);
                     }
                     ui.menu_button("Load recent image", |ui| {
@@ -1521,7 +1494,8 @@ impl SnowGui {
                         .clicked()
                     {
                         self.floppy_dialog_target = FloppyDialogTarget::Drive(i);
-                        self.floppy_dialog.save_file();
+                        self.floppy_dialog
+                            .save_file(self.settings.native_file_dialogs);
                         ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui
@@ -1533,7 +1507,8 @@ impl SnowGui {
                     {
                         let img = self.emu.last_images[i].borrow().clone().unwrap();
                         self.floppy_dialog_target = FloppyDialogTarget::Image(img);
-                        self.floppy_dialog.save_file();
+                        self.floppy_dialog
+                            .save_file(self.settings.native_file_dialogs);
                         ui.close_kind(egui::UiKind::Menu);
                     }
                     ui.separator();
@@ -2502,7 +2477,7 @@ impl eframe::App for SnowGui {
         // Floppy image picker dialog
         let mut last = None;
         self.floppy_dialog
-            .update_with_right_panel_ui(ctx, &mut |ui, dia| {
+            .update_with_right_panel_ui(ctx, frame, &mut |ui, dia| {
                 if dia.selected_entry().is_some() {
                     last = dia.selected_entry().cloned();
                     if let Some(img) = &self.floppy_dialog_last_image {
@@ -2754,7 +2729,7 @@ impl eframe::App for SnowGui {
         // State file picker dialog
         let mut last = None;
         self.state_dialog
-            .update_with_right_panel_ui(ctx, &mut |ui, dia| {
+            .update_with_right_panel_ui(ctx, frame, &mut |ui, dia| {
                 if dia.selected_entry().is_some() {
                     last = dia.selected_entry().cloned();
                     if let Some(header) = &self.state_dialog_last_header {
