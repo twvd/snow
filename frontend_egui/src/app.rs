@@ -1488,6 +1488,7 @@ impl SnowGui {
                         self.emu.reload_floppy(i);
                         ui.close_kind(egui::UiKind::Menu);
                     }
+                    ui.checkbox(&mut self.floppy_dialog_wp, "Mount write-protected");
                     ui.separator();
                     if ui
                         .add_enabled(!d.ejected && d.dirty, egui::Button::new("Save image..."))
