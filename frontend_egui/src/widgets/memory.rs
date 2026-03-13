@@ -7,9 +7,10 @@ use anyhow::Result;
 use eframe::egui;
 use eframe::egui::ahash::HashMap;
 use eframe::egui::Ui;
-use egui_file_dialog::FileDialog;
 use snow_core::bus::Address;
 
+use crate::dialogs::filedialog::SnowFileDialog;
+use crate::settings::AppSettings;
 use crate::uniform::uniform_error;
 
 pub struct MemoryViewerWidget {
@@ -34,7 +35,7 @@ pub struct MemoryViewerWidget {
     /// Changed addresses for highlighting
     changes: HashMap<Address, Instant>,
     /// File export dialog
-    export_dialog: FileDialog,
+    export_dialog: SnowFileDialog,
 }
 
 impl Default for MemoryViewerWidget {
@@ -50,7 +51,7 @@ impl Default for MemoryViewerWidget {
             hexsearch_input: String::new(),
             highlight: Vec::new(),
             changes: HashMap::default(),
-            export_dialog: FileDialog::new()
+            export_dialog: SnowFileDialog::new()
                 .add_save_extension("Binary file", "bin")
                 .default_save_extension("Binary file")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
@@ -98,9 +99,9 @@ impl MemoryViewerWidget {
         Ok(())
     }
 
-    pub fn draw(&mut self, ui: &mut egui::Ui) {
+    pub fn draw(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame, settings: &AppSettings) {
         // Handle export dialog
-        self.export_dialog.update(ui.ctx());
+        self.export_dialog.update(ui.ctx(), frame);
         if let Some(f) = self.export_dialog.take_picked() {
             if let Err(e) = self.export_ram(&f) {
                 uniform_error(format!("Error exporting RAM to file: {}", e));
@@ -197,7 +198,7 @@ impl MemoryViewerWidget {
                 .on_hover_text("Export RAM to binary file...")
                 .clicked()
             {
-                self.export_dialog.save_file();
+                self.export_dialog.save_file(settings.native_file_dialogs);
             }
         });
 

@@ -28,14 +28,15 @@ chrono = "0.4.40"
 clap = { version = "4.5.23", features = ["derive"] }
 crossbeam-channel = "0.5.15"
 dirs = "6.0.0"
-eframe = "=0.30.0"
-egui-dropdown = "=0.12.0"
-egui-file-dialog = "=0.9.0"
-egui-toast = "=0.16.0"
-egui-winit = "=0.30.0"
-egui_extras = "=0.30.0"
-egui_logger = "=0.6.2"
-egui_material_icons = "=0.2.0"
+eframe = "0.33.3"
+egui-async = "0.3.4"
+egui-dropdown = "0.14.0"
+egui-file-dialog = "0.12.0"
+egui-toast = "0.19.1"
+egui-winit = "0.33.3"
+egui_extras = "0.33.3"
+egui_logger = "0.9.3"
+egui_material_icons = "0.5.0"
 env_logger = "0.11.6"
 hadris-iso = { git = "https://github.com/hxyulin/hadris", rev = "8bf2df25d7bfb2aab0b068bfa13d6ad1a244df5e" }
 hex = "0.4.3"
@@ -49,6 +50,7 @@ num-traits = "0.2.19"
 pathdiff = "0.2.3"
 png = "0.17.16"
 rand = "0.9.1"
+rfd = { version = "0.17.2", features = ["common-controls-v6"] }
 pnet = { version = "0.35.0", optional = true }
 sdl2 = { version = "0.37.0" }
 serde = { version = "1.0.218", features = ["derive"] }
