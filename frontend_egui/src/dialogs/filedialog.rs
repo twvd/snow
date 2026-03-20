@@ -255,8 +255,8 @@ impl SnowFileDialog {
 
         // If no file filters were added, add the save extensions
         if self.efd_dialog.config_mut().file_filters.is_empty() {
-            for ext in self.efd_dialog.config_mut().save_extensions.iter() {
-                dialog = dialog.add_filter(ext.name.clone(), &[ext.file_extension.clone()]);
+            for ext in &self.efd_dialog.config_mut().save_extensions {
+                dialog = dialog.add_filter(&ext.name, std::slice::from_ref(&ext.file_extension));
             }
         }
 
