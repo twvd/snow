@@ -46,6 +46,10 @@ pub enum EmulatorCommand {
     ScsiAttachEthernet(usize),
     #[cfg(feature = "ethernet")]
     EthernetSetLink(usize, EthernetLinkType),
+    #[cfg(feature = "ethernet")]
+    EthernetStartCapture(usize, PathBuf),
+    #[cfg(feature = "ethernet")]
+    EthernetStopCapture(usize),
     DetachScsiTarget(usize),
     MouseUpdateAbsolute {
         x: u16,
@@ -118,6 +122,15 @@ pub struct EmulatorStatus {
     pub scsi: [Option<ScsiTargetStatus>; 7],
 }
 
+#[cfg(feature = "ethernet")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EthernetCaptureStatus {
+    pub active: bool,
+    pub filename: Option<PathBuf>,
+    pub packet_count: usize,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ScsiTargetStatus {
     pub target_type: ScsiTargetType,
@@ -125,6 +138,8 @@ pub struct ScsiTargetStatus {
     pub capacity: Option<usize>,
     #[cfg(feature = "ethernet")]
     pub link_type: Option<EthernetLinkType>,
+    #[cfg(feature = "ethernet")]
+    pub capture_status: Option<EthernetCaptureStatus>,
 }
 
 #[derive(Debug)]

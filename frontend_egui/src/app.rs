@@ -169,6 +169,10 @@ pub struct SnowGui {
     state_dialog_last_header: Option<SaveHeader>,
     state_dialog_screenshot: egui::TextureHandle,
     shared_dir_dialog: SnowFileDialog,
+    #[cfg(feature = "ethernet")]
+    pcap_capture_dialog: SnowFileDialog,
+    #[cfg(feature = "ethernet")]
+    pcap_capture_dialog_idx: usize,
 
     error_dialog_open: bool,
     error_string: String,
@@ -328,6 +332,14 @@ impl SnowGui {
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_shared_dir),
+            #[cfg(feature = "ethernet")]
+            pcap_capture_dialog: SnowFileDialog::new()
+                .add_filter("PCAP files", &["pcap", "cap"])
+                .add_save_extension("PCAP file", "pcap")
+                .default_save_extension("pcap")
+                .initial_directory(Self::default_dir()),
+            #[cfg(feature = "ethernet")]
+            pcap_capture_dialog_idx: 0,
 
             error_dialog_open: false,
             error_string: String::new(),
@@ -1193,6 +1205,48 @@ impl SnowGui {
                             if new_link_type != link_type {
                                 self.workspace.set_ethernet_link_type(new_link_type.clone());
                                 self.emu.set_eth_link(id, new_link_type);
+                            }
+
+                            ui.separator();
+                            ui.strong("Packet capture");
+
+                            let capture_active = target
+                                .capture_status
+                                .as_ref()
+                                .map(|s| s.active)
+                                .unwrap_or(false);
+
+                            if capture_active {
+                                // Show capture information
+                                if let Some(capture) = &target.capture_status {
+                                    ui.label(format!(
+                                        "Capturing to: {}",
+                                        capture
+                                            .filename
+                                            .as_ref()
+                                            .and_then(|p| p.file_name())
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("(unknown)")
+                                    ));
+                                    ui.label(format!("Packets: {}", capture.packet_count));
+
+                                    if let Some(error) = &capture.error {
+                                        ui.colored_label(
+                                            egui::Color32::RED,
+                                            format!("Error: {}", error),
+                                        );
+                                    }
+                                }
+
+                                if ui.button("Stop capture").clicked() {
+                                    self.emu.stop_ethernet_capture(id);
+                                    ui.close_kind(egui::UiKind::Menu);
+                                }
+                            } else if ui.button("Start capture...").clicked() {
+                                self.pcap_capture_dialog_idx = id;
+                                self.pcap_capture_dialog
+                                    .save_file(self.settings.native_file_dialogs);
+                                ui.close_kind(egui::UiKind::Menu);
                             }
 
                             ui.separator();
@@ -2540,6 +2594,18 @@ impl eframe::App for SnowGui {
         }
 
         self.ui_active &= *self.shared_dir_dialog.state() != egui_file_dialog::DialogState::Open;
+
+        // Pcap capture dialog
+        #[cfg(feature = "ethernet")]
+        {
+            self.pcap_capture_dialog.update(ctx, frame);
+            if let Some(path) = self.pcap_capture_dialog.take_picked() {
+                self.emu
+                    .start_ethernet_capture(self.pcap_capture_dialog_idx, path);
+            }
+            self.ui_active &=
+                *self.pcap_capture_dialog.state() != egui_file_dialog::DialogState::Open;
+        }
 
         // Workspace picker dialog
         self.workspace_dialog.update(ctx, frame);

@@ -588,6 +588,10 @@ impl Emulator {
                             link_type: self.config.scsi().targets[i]
                                 .as_ref()
                                 .and_then(|d| d.eth_link()),
+                            #[cfg(feature = "ethernet")]
+                            capture_status: self.config.scsi().targets[i]
+                                .as_ref()
+                                .and_then(|d| d.eth_capture_status()),
                         })
                 }),
                 speed: self.config.speed(),
@@ -1134,6 +1138,50 @@ impl Tickable for Emulator {
                             .as_mut()
                             .context("Setting link on non-ethernet device")?
                             .eth_set_link(link)?;
+                    }
+                    #[cfg(feature = "ethernet")]
+                    EmulatorCommand::EthernetStartCapture(idx, filename) => {
+                        match self.config.scsi_mut().targets[idx]
+                            .as_mut()
+                            .context("No ethernet device attached")?
+                            .eth_start_capture(&filename)
+                        {
+                            Ok(_) => {
+                                self.user_success(&format!(
+                                    "SCSI #{}: Started pcap capture to '{}'",
+                                    idx,
+                                    filename.display()
+                                ));
+                            }
+                            Err(e) => {
+                                self.user_error(&format!(
+                                    "SCSI #{}: Failed to start capture: {}",
+                                    idx, e
+                                ));
+                            }
+                        }
+                        self.status_update()?;
+                    }
+                    #[cfg(feature = "ethernet")]
+                    EmulatorCommand::EthernetStopCapture(idx) => {
+                        match self.config.scsi_mut().targets[idx]
+                            .as_mut()
+                            .context("No ethernet device attached")?
+                            .eth_stop_capture()
+                        {
+                            Some((filename, count)) => {
+                                self.user_success(&format!(
+                                    "SCSI #{}: Stopped capture, wrote {} packets to '{}'",
+                                    idx,
+                                    count,
+                                    filename.display()
+                                ));
+                            }
+                            None => {
+                                self.user_warning(&format!("SCSI #{}: No capture was active", idx));
+                            }
+                        }
+                        self.status_update()?;
                     }
                 }
             }
