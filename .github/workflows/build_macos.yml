@@ -28,7 +28,7 @@ jobs:
     runs-on: macos-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
     - name: Fetch submodules
       run: git submodule update --init --recursive
     - name: Install toolchain
@@ -45,7 +45,7 @@ jobs:
     - name: Zip it up
       run: zip -r Snow-MacOS-${{ matrix.arch }} Snow.app
     - name: Upload MacOS App
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
       with:
         name: Snow MacOS App Bundle (${{ matrix.arch }})
         if-no-files-found: error
@@ -58,12 +58,12 @@ jobs:
 
     steps:
       - name: Download x86_64
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: Snow MacOS App Bundle (x86_64)
           path: x86_64
       - name: Download ARM64
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: Snow MacOS App Bundle (aarch64)
           path: arm64
@@ -79,7 +79,7 @@ jobs:
           codesign --force -s - -vvvv Snow.app
           zip -r -y Snow-MacOS-universal.zip Snow.app
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: Snow MacOS App Bundle (universal)
           if-no-files-found: error

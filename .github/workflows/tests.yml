@@ -21,13 +21,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
     - name: Update package repos
       run: sudo apt-get -y update
     - name: Install prerequisites
       run: sudo apt-get -y install libsdl2-dev
     - name: Install cargo-llvm-cov
-      uses: taiki-e/install-action@cargo-llvm-cov
+      uses: taiki-e/install-action@cff9fdfca2088e53d33015e47b75d0653d76aa25 # releases/cargo-llvm-cov
     - name: Fetch submodules
       run: git submodule update --init --recursive
     - name: Code formatting check
@@ -47,7 +47,7 @@ jobs:
     - name: Test snow_frontend_egui separately
       run: cargo test -p snow_frontend_egui
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5.5.3
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: codecov.json
