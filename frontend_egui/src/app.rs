@@ -813,183 +813,189 @@ impl SnowGui {
                     }
                 });
                 ui.separator();
-                ui.strong("Viewport options");
-                ui.add(
-                    egui::Slider::new(&mut self.framebuffer.scale, 0.5..=4.0).text("Display scale"),
-                );
-                ui.menu_button("Display position", |ui| {
-                    ui.radio_value(
-                        &mut self.workspace.framebuffer_mode,
-                        FramebufferMode::CenteredHorizontally,
-                        "Centered horizontally",
+                if self.emu.is_initialized() {
+                    ui.strong("Viewport options");
+                    ui.add(
+                        egui::Slider::new(&mut self.framebuffer.scale, 0.5..=4.0)
+                            .text("Display scale"),
                     );
-                    ui.radio_value(
-                        &mut self.workspace.framebuffer_mode,
-                        FramebufferMode::Centered,
-                        "Centered",
-                    );
-                    ui.radio_value(
-                        &mut self.workspace.framebuffer_mode,
-                        FramebufferMode::Detached,
-                        "Detached",
-                    );
-                });
-                ui.menu_button("Scaling algorithm", |ui| {
-                    ui.set_min_width(Self::SUBMENU_WIDTH);
-                    for algorithm in ScalingAlgorithm::iter() {
+                    ui.menu_button("Display position", |ui| {
                         ui.radio_value(
-                            &mut self.framebuffer.scaling_algorithm,
-                            algorithm,
-                            format!("{}", algorithm),
+                            &mut self.workspace.framebuffer_mode,
+                            FramebufferMode::CenteredHorizontally,
+                            "Centered horizontally",
                         );
-                    }
-                });
-
-                if ui
-                    .add_enabled(
-                        matches!(
-                            self.emu.get_model(),
-                            Some(MacModel::Early128K)
-                                | Some(MacModel::Early512K)
-                                | Some(MacModel::Early512Ke)
-                                | Some(MacModel::Plus)
-                                | Some(MacModel::SE)
-                                | Some(MacModel::SeFdhd)
-                                | Some(MacModel::Classic)
-                        ),
-                        egui::Checkbox::new(
-                            &mut self.emu.debug_framebuffers,
-                            "Show all framebuffers",
-                        ),
-                    )
-                    .clicked()
-                {
-                    self.emu.set_debug_framebuffers(self.emu.debug_framebuffers);
-                }
-                ui.add(egui::Checkbox::new(
-                    &mut self.framebuffer.shader_enabled,
-                    "Shader effects",
-                ));
-                if self.framebuffer.shader_enabled {
-                    ui.menu_button("Shader effect settings", |ui| {
+                        ui.radio_value(
+                            &mut self.workspace.framebuffer_mode,
+                            FramebufferMode::Centered,
+                            "Centered",
+                        );
+                        ui.radio_value(
+                            &mut self.workspace.framebuffer_mode,
+                            FramebufferMode::Detached,
+                            "Detached",
+                        );
+                    });
+                    ui.menu_button("Scaling algorithm", |ui| {
                         ui.set_min_width(Self::SUBMENU_WIDTH);
-
-                        let mut move_action: Option<(usize, bool)> = None; // (index, move_up)
-                        let mut remove_index: Option<usize> = None;
-                        let mut add_shader: Option<crate::shader_pipeline::ShaderId> = None;
-
-                        // Dynamically generate UI for each shader in the pipeline
-                        let shader_count = self.framebuffer.shader_config_count();
-                        for i in 0..shader_count {
-                            let config = &mut self.framebuffer.shader_configs_mut()[i];
-                            let heading = format!(
-                                "{}. {} ({})",
-                                i + 1,
-                                config.id.display_name(),
-                                if config.enabled {
-                                    "enabled"
-                                } else {
-                                    "disabled"
-                                }
+                        for algorithm in ScalingAlgorithm::iter() {
+                            ui.radio_value(
+                                &mut self.framebuffer.scaling_algorithm,
+                                algorithm,
+                                format!("{}", algorithm),
                             );
-                            ui.collapsing(heading, |ui| {
-                                ui.horizontal(|ui| {
-                                    if ui
-                                        .add_enabled(
-                                            i > 0,
-                                            egui::Button::new(
-                                                egui_material_icons::icons::ICON_ARROW_UPWARD,
-                                            ),
-                                        )
-                                        .clicked()
-                                    {
-                                        move_action = Some((i, true));
-                                    }
-
-                                    if ui
-                                        .add_enabled(
-                                            i < shader_count - 1,
-                                            egui::Button::new(
-                                                egui_material_icons::icons::ICON_ARROW_DOWNWARD,
-                                            ),
-                                        )
-                                        .clicked()
-                                    {
-                                        move_action = Some((i, false));
-                                    }
-
-                                    if ui.button(egui_material_icons::icons::ICON_DELETE).clicked()
-                                    {
-                                        remove_index = Some(i);
-                                    }
-
-                                    ui.checkbox(&mut config.enabled, "Enabled");
-                                });
-
-                                ui.separator();
-
-                                // Get cached parameter metadata
-                                let params = config.id.parameters();
-
-                                // Generate sliders for each parameter
-                                for param in params {
-                                    let value = config
-                                        .parameters
-                                        .entry(param.name.clone())
-                                        .or_insert(param.default);
-
-                                    let mut slider =
-                                        egui::Slider::new(value, param.min..=param.max)
-                                            .step_by(param.step as f64)
-                                            .text(&param.display_name);
-
-                                    // Special formatter for MASK parameter
-                                    if param.name == "MASK" {
-                                        slider = slider.custom_formatter(|n, _| match n as i32 {
-                                            0 => "None".to_string(),
-                                            1 => "Aperture Grille".to_string(),
-                                            2 => "Aperture Grille Lite".to_string(),
-                                            3 => "Shadow Mask".to_string(),
-                                            _ => n.to_string(),
-                                        });
-                                    }
-
-                                    ui.add(slider);
-                                }
-                            });
-                        }
-
-                        // Add shader menu
-                        let available_shaders = self.framebuffer.available_shaders();
-                        if !available_shaders.is_empty() {
-                            ui.separator();
-                            ui.menu_button("Add shader", |ui| {
-                                ui.set_min_width(Self::SUBMENU_WIDTH);
-
-                                for id in available_shaders {
-                                    if ui.button(id.display_name()).clicked() {
-                                        add_shader = Some(id);
-                                    }
-                                }
-                            });
-                        }
-
-                        if let Some((index, move_up)) = move_action {
-                            if move_up {
-                                self.framebuffer.move_shader_up(index);
-                            } else {
-                                self.framebuffer.move_shader_down(index);
-                            }
-                        }
-                        if let Some(index) = remove_index {
-                            self.framebuffer.remove_shader(index);
-                        }
-                        if let Some(id) = add_shader {
-                            self.framebuffer.add_shader(id);
                         }
                     });
+
+                    if ui
+                        .add_enabled(
+                            matches!(
+                                self.emu.get_model(),
+                                Some(MacModel::Early128K)
+                                    | Some(MacModel::Early512K)
+                                    | Some(MacModel::Early512Ke)
+                                    | Some(MacModel::Plus)
+                                    | Some(MacModel::SE)
+                                    | Some(MacModel::SeFdhd)
+                                    | Some(MacModel::Classic)
+                            ),
+                            egui::Checkbox::new(
+                                &mut self.emu.debug_framebuffers,
+                                "Show all framebuffers",
+                            ),
+                        )
+                        .clicked()
+                    {
+                        self.emu.set_debug_framebuffers(self.emu.debug_framebuffers);
+                    }
+                    ui.add(egui::Checkbox::new(
+                        &mut self.framebuffer.shader_enabled,
+                        "Shader effects",
+                    ));
+                    if self.framebuffer.shader_enabled {
+                        ui.menu_button("Shader effect settings", |ui| {
+                            ui.set_min_width(Self::SUBMENU_WIDTH);
+
+                            let mut move_action: Option<(usize, bool)> = None; // (index, move_up)
+                            let mut remove_index: Option<usize> = None;
+                            let mut add_shader: Option<crate::shader_pipeline::ShaderId> = None;
+
+                            // Dynamically generate UI for each shader in the pipeline
+                            let shader_count = self.framebuffer.shader_config_count();
+                            for i in 0..shader_count {
+                                let config = &mut self.framebuffer.shader_configs_mut()[i];
+                                let heading = format!(
+                                    "{}. {} ({})",
+                                    i + 1,
+                                    config.id.display_name(),
+                                    if config.enabled {
+                                        "enabled"
+                                    } else {
+                                        "disabled"
+                                    }
+                                );
+                                ui.collapsing(heading, |ui| {
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .add_enabled(
+                                                i > 0,
+                                                egui::Button::new(
+                                                    egui_material_icons::icons::ICON_ARROW_UPWARD,
+                                                ),
+                                            )
+                                            .clicked()
+                                        {
+                                            move_action = Some((i, true));
+                                        }
+
+                                        if ui
+                                            .add_enabled(
+                                                i < shader_count - 1,
+                                                egui::Button::new(
+                                                    egui_material_icons::icons::ICON_ARROW_DOWNWARD,
+                                                ),
+                                            )
+                                            .clicked()
+                                        {
+                                            move_action = Some((i, false));
+                                        }
+
+                                        if ui
+                                            .button(egui_material_icons::icons::ICON_DELETE)
+                                            .clicked()
+                                        {
+                                            remove_index = Some(i);
+                                        }
+
+                                        ui.checkbox(&mut config.enabled, "Enabled");
+                                    });
+
+                                    ui.separator();
+
+                                    // Get cached parameter metadata
+                                    let params = config.id.parameters();
+
+                                    // Generate sliders for each parameter
+                                    for param in params {
+                                        let value = config
+                                            .parameters
+                                            .entry(param.name.clone())
+                                            .or_insert(param.default);
+
+                                        let mut slider =
+                                            egui::Slider::new(value, param.min..=param.max)
+                                                .step_by(param.step as f64)
+                                                .text(&param.display_name);
+
+                                        // Special formatter for MASK parameter
+                                        if param.name == "MASK" {
+                                            slider =
+                                                slider.custom_formatter(|n, _| match n as i32 {
+                                                    0 => "None".to_string(),
+                                                    1 => "Aperture Grille".to_string(),
+                                                    2 => "Aperture Grille Lite".to_string(),
+                                                    3 => "Shadow Mask".to_string(),
+                                                    _ => n.to_string(),
+                                                });
+                                        }
+
+                                        ui.add(slider);
+                                    }
+                                });
+                            }
+
+                            // Add shader menu
+                            let available_shaders = self.framebuffer.available_shaders();
+                            if !available_shaders.is_empty() {
+                                ui.separator();
+                                ui.menu_button("Add shader", |ui| {
+                                    ui.set_min_width(Self::SUBMENU_WIDTH);
+
+                                    for id in available_shaders {
+                                        if ui.button(id.display_name()).clicked() {
+                                            add_shader = Some(id);
+                                        }
+                                    }
+                                });
+                            }
+
+                            if let Some((index, move_up)) = move_action {
+                                if move_up {
+                                    self.framebuffer.move_shader_up(index);
+                                } else {
+                                    self.framebuffer.move_shader_down(index);
+                                }
+                            }
+                            if let Some(index) = remove_index {
+                                self.framebuffer.remove_shader(index);
+                            }
+                            if let Some(id) = add_shader {
+                                self.framebuffer.add_shader(id);
+                            }
+                        });
+                    }
+                    ui.separator();
                 }
-                ui.separator();
                 ui.strong("Global settings");
                 ui.menu_button("Map alternate Cmd key", |ui| {
                     ui.radio_value(
