@@ -9,7 +9,7 @@ built = { version = "0.8.0", features = ["chrono", "git2"] }
 
 [features]
 # Enables the Daynaport SCSI/Link Ethernet device emulation
-ethernet = ["dep:crc"]
+ethernet = ["dep:crc", "dep:binrw"]
 # Enables Ethernet bridging (currently broken!)
 ethernet_raw = ["ethernet", "dep:pnet"]
 # Enables Ethernet over userland NAT

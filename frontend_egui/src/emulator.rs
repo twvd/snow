@@ -1146,6 +1146,31 @@ impl EmulatorState {
             .unwrap();
     }
 
+    #[cfg(feature = "ethernet")]
+    pub fn start_ethernet_capture<P: AsRef<std::path::Path>>(&self, scsi_id: usize, filename: P) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        sender
+            .send(EmulatorCommand::EthernetStartCapture(
+                scsi_id,
+                filename.as_ref().to_path_buf(),
+            ))
+            .unwrap();
+    }
+
+    #[cfg(feature = "ethernet")]
+    pub fn stop_ethernet_capture(&self, scsi_id: usize) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        sender
+            .send(EmulatorCommand::EthernetStopCapture(scsi_id))
+            .unwrap();
+    }
+
     pub fn release_all_inputs(&self) {
         let Some(ref sender) = self.cmdsender else {
             return;
