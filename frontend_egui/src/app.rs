@@ -38,6 +38,10 @@ use strum::IntoEnumIterator;
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 use std::{env, fs};
 
@@ -200,10 +204,14 @@ pub struct SnowGui {
 
     /// Whether CLI serial bridges have been applied (to avoid re-applying on each frame)
     serial_bridges_applied: bool,
+
+    /// Shared flag set when the user clicks "Do not show again" on a mode toast
+    mode_toast_hide_requested: Arc<AtomicBool>,
 }
 
 impl SnowGui {
     const TOAST_DURATION: Duration = Duration::from_secs(3);
+    const MODE_TOAST_KIND: u32 = 0;
     const ZOOM_FACTORS: [f32; 8] = [0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0];
     const SUBMENU_WIDTH: f32 = 175.0;
 
@@ -239,6 +247,7 @@ impl SnowGui {
         cc.egui_ctx.set_zoom_factor(zoom_factor);
 
         let settings = AppSettings::load();
+        let mode_toast_hide_requested = Arc::new(AtomicBool::new(false));
 
         let mut app = Self {
             settings: settings.clone(),
@@ -250,9 +259,31 @@ impl SnowGui {
             in_zen_mode: false,
 
             wev_recv,
-            toasts: egui_toast::Toasts::new()
-                .anchor(egui::Align2::CENTER_BOTTOM, (0.0, -30.0))
-                .direction(egui::Direction::BottomUp),
+            mode_toast_hide_requested: mode_toast_hide_requested.clone(),
+            toasts: {
+                let hide_flag = mode_toast_hide_requested;
+                egui_toast::Toasts::new()
+                    .anchor(egui::Align2::CENTER_BOTTOM, (0.0, -30.0))
+                    .direction(egui::Direction::BottomUp)
+                    .custom_contents(Self::MODE_TOAST_KIND, move |ui, toast| {
+                        egui::Frame::window(ui.style())
+                            .inner_margin(10.0)
+                            .stroke(egui::Stroke::NONE)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(toast.text.clone());
+                                    if ui.button("Do not show again").clicked() {
+                                        hide_flag.store(true, Ordering::Relaxed);
+                                        toast.close();
+                                    }
+                                    if ui.button(toast.style.close_button_text.clone()).clicked() {
+                                        toast.close();
+                                    }
+                                });
+                            })
+                            .response
+                    })
+            },
             framebuffer: FramebufferWidget::new(cc),
             registers: RegistersWidget::new(),
             breakpoints: BreakpointsWidget::default(),
@@ -431,15 +462,18 @@ impl SnowGui {
     fn enter_fullscreen(&mut self, ctx: &egui::Context) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         self.in_fullscreen = true;
-        self.toasts.add(
-            egui_toast::Toast::default()
-                .text("RIGHT-CLICK to exit fullscreen or other actions")
-                .options(
-                    egui_toast::ToastOptions::default()
-                        .duration(Self::TOAST_DURATION)
-                        .show_progress(true),
-                ),
-        );
+        if !self.settings.hide_mode_toasts {
+            self.toasts.add(
+                egui_toast::Toast::default()
+                    .kind(ToastKind::Custom(Self::MODE_TOAST_KIND))
+                    .text("RIGHT-CLICK to exit fullscreen or other actions")
+                    .options(
+                        egui_toast::ToastOptions::default()
+                            .duration(Self::TOAST_DURATION)
+                            .show_progress(true),
+                    ),
+            );
+        }
     }
 
     fn exit_fullscreen(&mut self, ctx: &egui::Context) {
@@ -449,15 +483,18 @@ impl SnowGui {
 
     fn enter_zen_mode(&mut self) {
         self.in_zen_mode = true;
-        self.toasts.add(
-            egui_toast::Toast::default()
-                .text("RIGHT-CLICK for actions")
-                .options(
-                    egui_toast::ToastOptions::default()
-                        .duration(Self::TOAST_DURATION)
-                        .show_progress(true),
-                ),
-        );
+        if !self.settings.hide_mode_toasts {
+            self.toasts.add(
+                egui_toast::Toast::default()
+                    .kind(ToastKind::Custom(Self::MODE_TOAST_KIND))
+                    .text("RIGHT-CLICK for actions")
+                    .options(
+                        egui_toast::ToastOptions::default()
+                            .duration(Self::TOAST_DURATION)
+                            .show_progress(true),
+                    ),
+            );
+        }
     }
 
     fn exit_zen_mode(&mut self) {
@@ -964,6 +1001,15 @@ impl SnowGui {
                     .checkbox(
                         &mut self.settings.native_file_dialogs,
                         "Native file dialogs",
+                    )
+                    .clicked()
+                {
+                    self.settings.save();
+                }
+                if ui
+                    .checkbox(
+                        &mut self.settings.hide_mode_toasts,
+                        "Hide fullscreen/zen mode toasts",
                     )
                     .clicked()
                 {
@@ -2353,6 +2399,14 @@ impl eframe::App for SnowGui {
         }
 
         self.toasts.show(ctx);
+
+        if self
+            .mode_toast_hide_requested
+            .swap(false, Ordering::Relaxed)
+        {
+            self.settings.hide_mode_toasts = true;
+            self.settings.save();
+        }
 
         self.ui_active = true;
 
