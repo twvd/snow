@@ -1682,6 +1682,7 @@ impl SnowGui {
                 {
                     self.emu.audio_mute(!audio_muted);
                 }
+                ui.separator();
                 if ui
                     .add(egui::Button::new(
                         egui_material_icons::icons::ICON_PHOTO_CAMERA,
@@ -1691,6 +1692,17 @@ impl SnowGui {
                 {
                     self.screenshot();
                 }
+                if ui
+                    .add_enabled(
+                        self.emu.is_running() && self.type_clipboard_queue.is_empty(),
+                        egui::Button::new(egui_material_icons::icons::ICON_CONTENT_PASTE),
+                    )
+                    .on_hover_text("Type clipboard contents")
+                    .clicked()
+                {
+                    self.type_clipboard();
+                }
+                ui.separator();
                 if ui
                     .add(egui::Button::new(
                         egui_material_icons::icons::ICON_FULLSCREEN,
