@@ -26,6 +26,7 @@ pub struct AppSettings {
     pub fd_shared_dir: FileDialogStorage,
 
     pub native_file_dialogs: bool,
+    pub hide_mode_toasts: bool,
 }
 
 impl AppSettings {
