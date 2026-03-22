@@ -2831,34 +2831,39 @@ impl eframe::App for SnowGui {
                     });
             } else {
                 // Render framebuffer inline on the background
-                let response = ui.vertical_centered(|ui| {
-                    // Align framebuffer vertically
-                    if self.is_ui_hidden() {
-                        const GUEST_ASPECT_RATIO: f32 = 4.0 / 3.0;
-                        let host_aspect_ratio = ui.available_width() / ui.available_height();
+                let response = ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .layout(egui::Layout::top_down(egui::Align::Center))
+                        .sense(egui::Sense::click()),
+                    |ui| {
+                        // Align framebuffer vertically
+                        if self.is_ui_hidden() {
+                            const GUEST_ASPECT_RATIO: f32 = 4.0 / 3.0;
+                            let host_aspect_ratio = ui.available_width() / ui.available_height();
 
-                        if host_aspect_ratio < GUEST_ASPECT_RATIO {
-                            let screen_height = 3.0 * ui.available_width() / 4.0;
-                            let padding_height = (ui.available_height() - screen_height) / 2.0;
+                            if host_aspect_ratio < GUEST_ASPECT_RATIO {
+                                let screen_height = 3.0 * ui.available_width() / 4.0;
+                                let padding_height = (ui.available_height() - screen_height) / 2.0;
 
+                                if padding_height > 0.0 {
+                                    ui.allocate_space(egui::Vec2::from([1.0, padding_height]));
+                                }
+                            }
+                        } else if self.workspace.framebuffer_mode == FramebufferMode::Centered {
+                            let padding_height =
+                                (ui.available_height() - self.framebuffer.max_height()) / 2.0;
                             if padding_height > 0.0 {
                                 ui.allocate_space(egui::Vec2::from([1.0, padding_height]));
                             }
                         }
-                    } else if self.workspace.framebuffer_mode == FramebufferMode::Centered {
-                        let padding_height =
-                            (ui.available_height() - self.framebuffer.max_height()) / 2.0;
-                        if padding_height > 0.0 {
-                            ui.allocate_space(egui::Vec2::from([1.0, padding_height]));
-                        }
-                    }
 
-                    self.framebuffer.draw(ui, self.is_ui_hidden());
-                    if self.is_ui_hidden() {
-                        // To fill the screen with hitbox for the context menu
-                        ui.allocate_space(ui.available_size());
-                    }
-                });
+                        self.framebuffer.draw(ui, self.is_ui_hidden());
+                        if self.is_ui_hidden() {
+                            // To fill the screen with hitbox for the context menu
+                            ui.allocate_space(ui.available_size());
+                        }
+                    },
+                );
                 if self.is_ui_hidden() {
                     response.response.context_menu(|ui| {
                         // Show the mouse cursor so the user can interact with the menu
