@@ -1,3 +1,4 @@
+use crate::workspace::CmdKeyMapping;
 use eframe::egui;
 use snow_core::keymap::Scancode;
 
@@ -147,7 +148,7 @@ pub fn map_egui_keycode(kc: egui::Key) -> Option<Scancode> {
 /// Maps a winit keycode to 'Snow universal'
 pub fn map_winit_keycode(
     kc: egui_winit::winit::keyboard::KeyCode,
-    map_cmd_ralt: bool,
+    cmd_key_mapping: CmdKeyMapping,
 ) -> Option<Scancode> {
     use egui_winit::winit::keyboard::KeyCode;
 
@@ -280,9 +281,14 @@ pub fn map_winit_keycode(
         KeyCode::SuperLeft => Some(0x37),
         KeyCode::Space => Some(0x31),
         KeyCode::SuperRight => Some(0x37),
-        KeyCode::AltRight if !map_cmd_ralt => Some(0x7C),
-        KeyCode::AltRight if map_cmd_ralt => Some(0x37),
-        KeyCode::ControlRight => Some(0x7D),
+        KeyCode::AltRight => match cmd_key_mapping {
+            CmdKeyMapping::RightAlt => Some(0x37),
+            _ => Some(0x7C),
+        },
+        KeyCode::ControlRight => match cmd_key_mapping {
+            CmdKeyMapping::RightCtrl => Some(0x37),
+            _ => Some(0x7D),
+        },
         KeyCode::ArrowLeft => Some(0x3B),
         KeyCode::ArrowDown => Some(0x3D),
         KeyCode::ArrowRight => Some(0x3C),

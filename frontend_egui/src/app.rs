@@ -17,7 +17,7 @@ use crate::widgets::registers::RegistersWidget;
 use crate::widgets::systrap_history::SystrapHistoryWidget;
 use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
-use crate::workspace::{FramebufferMode, Workspace};
+use crate::workspace::{CmdKeyMapping, FramebufferMode, Workspace};
 use snow_core::bus::Address;
 use snow_core::emulator::comm::UserMessageType;
 use snow_core::emulator::save::{load_state_header, SaveHeader};
@@ -923,7 +923,23 @@ impl SnowGui {
                     });
                 }
                 ui.separator();
-                ui.checkbox(&mut self.workspace.map_cmd_ralt, "Map right ALT to Cmd");
+                ui.menu_button("Right modifier → Cmd", |ui| {
+                    ui.radio_value(
+                        &mut self.workspace.cmd_key_mapping,
+                        CmdKeyMapping::Disabled,
+                        "Disabled",
+                    );
+                    ui.radio_value(
+                        &mut self.workspace.cmd_key_mapping,
+                        CmdKeyMapping::RightAlt,
+                        "Right Alt",
+                    );
+                    ui.radio_value(
+                        &mut self.workspace.cmd_key_mapping,
+                        CmdKeyMapping::RightCtrl,
+                        "Right Ctrl",
+                    );
+                });
 
                 ui.separator();
                 ui.checkbox(
@@ -1620,7 +1636,7 @@ impl SnowGui {
                         continue;
                     }
 
-                    if let Some(k) = map_winit_keycode(kc, self.workspace.map_cmd_ralt) {
+                    if let Some(k) = map_winit_keycode(kc, self.workspace.cmd_key_mapping) {
                         self.emu.update_key(k, state.is_pressed());
                     } else {
                         log::warn!("Unknown key {:?}", kc);
