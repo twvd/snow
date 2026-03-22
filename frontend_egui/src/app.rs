@@ -972,7 +972,8 @@ impl SnowGui {
                     });
                 }
                 ui.separator();
-                ui.menu_button("Right modifier → Cmd", |ui| {
+                ui.heading("Global settings");
+                ui.menu_button("Map alternate Cmd key", |ui| {
                     ui.radio_value(
                         &mut self.workspace.cmd_key_mapping,
                         CmdKeyMapping::Disabled,
@@ -989,14 +990,10 @@ impl SnowGui {
                         "Right Ctrl",
                     );
                 });
-
-                ui.separator();
                 ui.checkbox(
                     &mut self.workspace.disassembly_labels,
                     "Show labels in disassembly",
                 );
-
-                ui.separator();
                 if ui
                     .checkbox(
                         &mut self.settings.native_file_dialogs,
