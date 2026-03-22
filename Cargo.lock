@@ -4693,6 +4693,7 @@ name = "snow_frontend_egui"
 version = "1.3.1"
 dependencies = [
  "anyhow",
+ "arboard",
  "chrono",
  "clap",
  "crossbeam-channel",
