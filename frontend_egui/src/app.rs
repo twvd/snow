@@ -479,12 +479,10 @@ impl SnowGui {
                 if ui.button("New workspace").clicked() {
                     self.load_workspace(None);
                     self.update_titlebar(ctx);
-                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.button("Load workspace").clicked() {
                     self.workspace_dialog
                         .pick_file(self.settings.native_file_dialogs);
-                    ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.separator();
                 if ui.button("Save workspace").clicked() {
@@ -494,12 +492,10 @@ impl SnowGui {
                         self.workspace_dialog
                             .save_file(self.settings.native_file_dialogs);
                     }
-                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.button("Save workspace as...").clicked() {
                     self.workspace_dialog
                         .save_file(self.settings.native_file_dialogs);
-                    ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.separator();
                 ui.menu_button("Recent workspaces", |ui| {
@@ -509,7 +505,6 @@ impl SnowGui {
                         if ui.button(format!("{}: {}", i, display_name)).clicked() {
                             self.load_workspace(Some(&path));
                             self.update_titlebar(ctx);
-                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                     if self.settings.recent_workspaces.is_empty() {
@@ -528,38 +523,30 @@ impl SnowGui {
                         self.settings.get_last_roms(),
                         self.settings.get_last_display_roms(),
                     );
-                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if self.emu.is_initialized() {
                     if ui.button("Reset").clicked() {
                         self.emu.reset();
-                        ui.close_kind(egui::UiKind::Menu);
                     }
 
                     if self.emu.is_running() && ui.button("Stop").clicked() {
                         self.emu.stop();
-                        ui.close_kind(egui::UiKind::Menu);
                     } else if !self.emu.is_running() && ui.button("Run").clicked() {
                         self.emu.run();
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui.button("Single step").clicked() {
                         self.emu.step();
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui.button("Step over").clicked() {
                         self.emu.step_over();
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui.button("Step out").clicked() {
                         self.emu.step_out();
-                        ui.close_kind(egui::UiKind::Menu);
                     }
 
                     ui.separator();
                     if ui.button("Programmers key").clicked() {
                         self.emu.progkey();
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
             });
@@ -569,7 +556,6 @@ impl SnowGui {
                 if ui.button("Load state from file...").clicked() {
                     self.state_dialog
                         .pick_file(self.settings.native_file_dialogs);
-                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui
                     .add_enabled(
@@ -580,7 +566,6 @@ impl SnowGui {
                 {
                     self.state_dialog
                         .save_file(self.settings.native_file_dialogs);
-                    ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.separator();
                 ui.strong("Quick load states");
@@ -594,7 +579,6 @@ impl SnowGui {
                         .clicked()
                     {
                         load_file = Some(p.unwrap().clone());
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
                 if let Some(p) = load_file {
@@ -621,7 +605,6 @@ impl SnowGui {
                         }
                         self.emu.save_state(&path, None);
                         *p = Some(path);
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                 }
                 ui.separator();
@@ -655,12 +638,7 @@ impl SnowGui {
                     ),
                     |ui| {
                         ui.set_min_width(Self::SUBMENU_WIDTH);
-                        if ui
-                            .checkbox(&mut self.workspace.terminal_open[0], "Terminal")
-                            .clicked()
-                        {
-                            ui.close_kind(egui::UiKind::Menu);
-                        }
+                        ui.checkbox(&mut self.workspace.terminal_open[0], "Terminal");
                         ui.separator();
                         self.draw_serial_bridge_menu(ui, SccCh::A);
                     },
@@ -672,12 +650,7 @@ impl SnowGui {
                     ),
                     |ui| {
                         ui.set_min_width(Self::SUBMENU_WIDTH);
-                        if ui
-                            .checkbox(&mut self.workspace.terminal_open[1], "Terminal")
-                            .clicked()
-                        {
-                            ui.close_kind(egui::UiKind::Menu);
-                        }
+                        ui.checkbox(&mut self.workspace.terminal_open[1], "Terminal");
                         ui.separator();
                         self.draw_serial_bridge_menu(ui, SccCh::B);
                     },
@@ -703,7 +676,6 @@ impl SnowGui {
                     {
                         self.shared_dir_dialog
                             .pick_directory(self.settings.native_file_dialogs);
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                     ui.separator();
                     if ui
@@ -715,7 +687,6 @@ impl SnowGui {
                     {
                         self.workspace.set_shared_dir(None);
                         self.emu.set_shared_dir(None);
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                     ui.separator();
                     if ui
@@ -726,7 +697,6 @@ impl SnowGui {
                         .clicked()
                     {
                         self.emu.load_toolbox_floppy();
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                 });
                 ui.separator();
@@ -738,7 +708,6 @@ impl SnowGui {
                     .clicked()
                 {
                     self.screenshot();
-                    ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.separator();
                 if !self.emu.is_recording_input() {
@@ -751,7 +720,6 @@ impl SnowGui {
                     {
                         self.record_dialog
                             .save_file(self.settings.native_file_dialogs);
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui
                         .add_enabled(
@@ -762,11 +730,9 @@ impl SnowGui {
                     {
                         self.record_dialog
                             .pick_file(self.settings.native_file_dialogs);
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                 } else if ui.button("Stop recording").clicked() {
                     self.emu.record_input_end();
-                    ui.close_kind(egui::UiKind::Menu);
                 }
             });
             ui.menu_button("Options", |ui| {
@@ -776,7 +742,6 @@ impl SnowGui {
                     for z in Self::ZOOM_FACTORS {
                         if ui.button(format!("{:0.2}", z)).clicked() {
                             ctx.set_zoom_factor(z);
-                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                 });
@@ -786,36 +751,21 @@ impl SnowGui {
                     egui::Slider::new(&mut self.framebuffer.scale, 0.5..=4.0).text("Display scale"),
                 );
                 ui.menu_button("Display position", |ui| {
-                    if ui
-                        .radio_value(
-                            &mut self.workspace.framebuffer_mode,
-                            FramebufferMode::CenteredHorizontally,
-                            "Centered horizontally",
-                        )
-                        .clicked()
-                    {
-                        ui.close_kind(egui::UiKind::Menu);
-                    }
-                    if ui
-                        .radio_value(
-                            &mut self.workspace.framebuffer_mode,
-                            FramebufferMode::Centered,
-                            "Centered",
-                        )
-                        .clicked()
-                    {
-                        ui.close_kind(egui::UiKind::Menu);
-                    }
-                    if ui
-                        .radio_value(
-                            &mut self.workspace.framebuffer_mode,
-                            FramebufferMode::Detached,
-                            "Detached",
-                        )
-                        .clicked()
-                    {
-                        ui.close_kind(egui::UiKind::Menu);
-                    }
+                    ui.radio_value(
+                        &mut self.workspace.framebuffer_mode,
+                        FramebufferMode::CenteredHorizontally,
+                        "Centered horizontally",
+                    );
+                    ui.radio_value(
+                        &mut self.workspace.framebuffer_mode,
+                        FramebufferMode::Centered,
+                        "Centered",
+                    );
+                    ui.radio_value(
+                        &mut self.workspace.framebuffer_mode,
+                        FramebufferMode::Detached,
+                        "Detached",
+                    );
                 });
                 ui.menu_button("Scaling algorithm", |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH);
@@ -848,7 +798,6 @@ impl SnowGui {
                     .clicked()
                 {
                     self.emu.set_debug_framebuffers(self.emu.debug_framebuffers);
-                    ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.add(egui::Checkbox::new(
                     &mut self.framebuffer.shader_enabled,
@@ -953,7 +902,6 @@ impl SnowGui {
                                 for id in available_shaders {
                                     if ui.button(id.display_name()).clicked() {
                                         add_shader = Some(id);
-                                        ui.close_kind(egui::UiKind::Menu);
                                     }
                                 }
                             });
@@ -975,23 +923,13 @@ impl SnowGui {
                     });
                 }
                 ui.separator();
-                if ui
-                    .checkbox(&mut self.workspace.map_cmd_ralt, "Map right ALT to Cmd")
-                    .clicked()
-                {
-                    ui.close_kind(egui::UiKind::Menu);
-                }
+                ui.checkbox(&mut self.workspace.map_cmd_ralt, "Map right ALT to Cmd");
 
                 ui.separator();
-                if ui
-                    .checkbox(
-                        &mut self.workspace.disassembly_labels,
-                        "Show labels in disassembly",
-                    )
-                    .clicked()
-                {
-                    ui.close_kind(egui::UiKind::Menu);
-                }
+                ui.checkbox(
+                    &mut self.workspace.disassembly_labels,
+                    "Show labels in disassembly",
+                );
 
                 ui.separator();
                 if ui
@@ -1002,7 +940,6 @@ impl SnowGui {
                     .clicked()
                 {
                     self.settings.save();
-                    ui.close_kind(egui::UiKind::Menu);
                 }
             });
             ui.menu_button("View", |ui| {
@@ -1015,7 +952,6 @@ impl SnowGui {
                     .clicked()
                 {
                     self.enter_fullscreen(ctx);
-                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui
                     .add_enabled(
@@ -1025,71 +961,27 @@ impl SnowGui {
                     .clicked()
                 {
                     self.enter_zen_mode();
-                    ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.separator();
-                if ui.checkbox(&mut self.workspace.log_open, "Log").clicked() {
-                    ui.close_kind(egui::UiKind::Menu);
-                }
-                if ui
-                    .checkbox(&mut self.workspace.disassembly_open, "Disassembly")
-                    .clicked()
-                {
-                    ui.close_kind(egui::UiKind::Menu);
-                }
-                if ui
-                    .checkbox(
-                        &mut self.workspace.instruction_history_open,
-                        "Instruction history",
-                    )
-                    .clicked()
-                {
-                    ui.close_kind(egui::UiKind::Menu);
-                }
-                if ui
-                    .checkbox(
-                        &mut self.workspace.systrap_history_open,
-                        "System trap history",
-                    )
-                    .clicked()
-                {
-                    ui.close_kind(egui::UiKind::Menu);
-                }
-                if ui
-                    .checkbox(&mut self.workspace.registers_open, "Registers")
-                    .clicked()
-                {
-                    ui.close_kind(egui::UiKind::Menu);
-                }
-                if ui
-                    .checkbox(&mut self.workspace.breakpoints_open, "Breakpoints")
-                    .clicked()
-                {
-                    ui.close_kind(egui::UiKind::Menu);
-                }
-                if ui
-                    .checkbox(&mut self.workspace.memory_open, "Memory")
-                    .clicked()
-                {
-                    ui.close_kind(egui::UiKind::Menu);
-                }
-                if ui
-                    .checkbox(&mut self.workspace.watchpoints_open, "Watchpoints")
-                    .clicked()
-                {
-                    ui.close_kind(egui::UiKind::Menu);
-                }
-                if ui
-                    .checkbox(&mut self.workspace.peripheral_debug_open, "Peripherals")
-                    .clicked()
-                {
-                    ui.close_kind(egui::UiKind::Menu);
-                }
+                ui.checkbox(&mut self.workspace.log_open, "Log");
+                ui.checkbox(&mut self.workspace.disassembly_open, "Disassembly");
+                ui.checkbox(
+                    &mut self.workspace.instruction_history_open,
+                    "Instruction history",
+                );
+                ui.checkbox(
+                    &mut self.workspace.systrap_history_open,
+                    "System trap history",
+                );
+                ui.checkbox(&mut self.workspace.registers_open, "Registers");
+                ui.checkbox(&mut self.workspace.breakpoints_open, "Breakpoints");
+                ui.checkbox(&mut self.workspace.memory_open, "Memory");
+                ui.checkbox(&mut self.workspace.watchpoints_open, "Watchpoints");
+                ui.checkbox(&mut self.workspace.peripheral_debug_open, "Peripherals");
                 ui.separator();
                 if ui.button("Reset layout").clicked() {
                     self.workspace.reset_windows();
                     self.load_windows = true;
-                    ui.close_kind(egui::UiKind::Menu);
                 }
             });
             ui.menu_button("Help", |ui| {
@@ -1097,23 +989,19 @@ impl SnowGui {
 
                 if ui.button("Documentation...").clicked() {
                     ctx.open_url(egui::OpenUrl::new_tab("https://docs.snowemu.com/"));
-                    ui.close_kind(egui::UiKind::Menu);
                 }
                 if ui.button("Website...").clicked() {
                     ctx.open_url(egui::OpenUrl::new_tab("https://snowemu.com/"));
-                    ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.separator();
                 if ui.button("Report an issue...").clicked() {
                     ctx.open_url(egui::OpenUrl::new_tab(
                         "https://github.com/twvd/snow/issues/new/choose",
                     ));
-                    ui.close_kind(egui::UiKind::Menu);
                 }
                 ui.separator();
                 if ui.button("About Snow").clicked() {
                     self.about_dialog.open();
-                    ui.close_kind(egui::UiKind::Menu);
                 }
             });
         });
@@ -1147,13 +1035,11 @@ impl SnowGui {
                             ui.set_min_width(Self::SUBMENU_WIDTH);
                             if ui.button("Detach hard drive").clicked() {
                                 self.emu.scsi_detach_target(id);
-                                ui.close_kind(egui::UiKind::Menu);
                             }
                             ui.separator();
                             if ui.button("Branch off image...").clicked() {
                                 self.hdd_dialog_idx = id;
                                 self.hdd_dialog.save_file(self.settings.native_file_dialogs);
-                                ui.close_kind(egui::UiKind::Menu);
                             }
                         },
                     );
@@ -1173,7 +1059,6 @@ impl SnowGui {
                                 if show_detach {
                                     if ui.button("Detach CD-ROM drive").clicked() {
                                         self.emu.scsi_detach_target(id);
-                                        ui.close_kind(egui::UiKind::Menu);
                                     }
                                 } else {
                                     ui.disable();
@@ -1194,7 +1079,6 @@ impl SnowGui {
                                     self.cdrom_dialog_idx = id;
                                     self.cdrom_dialog
                                         .pick_file(self.settings.native_file_dialogs);
-                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 ui.menu_button("Load recent image", |ui| {
                                     ui.set_min_width(Self::SUBMENU_WIDTH);
@@ -1205,7 +1089,6 @@ impl SnowGui {
                                         {
                                             self.emu.scsi_load_cdrom(id, &path);
                                             self.settings.add_recent_cd_image(&path);
-                                            ui.close_kind(egui::UiKind::Menu);
                                         }
                                     }
                                     if self.settings.recent_cd_images.is_empty() {
@@ -1216,13 +1099,11 @@ impl SnowGui {
                                     self.cdrom_dialog_idx = id;
                                     self.cdrom_files_dialog
                                         .pick_multiple(self.settings.native_file_dialogs);
-                                    ui.close_kind(egui::UiKind::Menu);
                                 }
                                 if show_detach {
                                     ui.separator();
                                     if ui.button("Detach CD-ROM drive").clicked() {
                                         self.emu.scsi_detach_target(id);
-                                        ui.close_kind(egui::UiKind::Menu);
                                     }
                                 }
                             },
@@ -1301,7 +1182,6 @@ impl SnowGui {
                             ui.separator();
                             if ui.button("Detach").clicked() {
                                 self.emu.scsi_detach_target(id);
-                                ui.close_kind(egui::UiKind::Menu);
                             }
                         },
                     );
@@ -1318,23 +1198,19 @@ impl SnowGui {
                     ui.set_min_width(Self::SUBMENU_WIDTH + 50.0);
                     if ui.button("Create new HDD image...").clicked() {
                         self.create_disk_dialog.open(id, &self.workspace_dir());
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui.button("Load HDD disk image...").clicked() {
                         self.hdd_dialog_idx = id;
                         self.hdd_dialog.pick_file(self.settings.native_file_dialogs);
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                     ui.separator();
                     if ui.button("Attach CD-ROM drive (with image)...").clicked() {
                         self.cdrom_dialog_idx = id;
                         self.cdrom_dialog
                             .pick_file(self.settings.native_file_dialogs);
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui.button("Attach CD-ROM drive (empty)").clicked() {
                         self.emu.scsi_attach_cdrom(id);
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                     #[cfg(feature = "ethernet")]
                     {
@@ -1355,7 +1231,6 @@ impl SnowGui {
                             .clicked()
                         {
                             self.emu.scsi_attach_ethernet(id);
-                            ui.close_kind(egui::UiKind::Menu);
                         }
                     }
                 },
@@ -1377,7 +1252,6 @@ impl SnowGui {
                 .clicked()
             {
                 let _ = self.emu.disable_serial_bridge(ch);
-                ui.close_kind(egui::UiKind::Menu);
             }
         } else {
             // Bridge is inactive - show enable options
@@ -1389,7 +1263,6 @@ impl SnowGui {
                 .clicked()
             {
                 let _ = self.emu.enable_serial_bridge(ch, SerialBridgeConfig::Pty);
-                ui.close_kind(egui::UiKind::Menu);
             }
 
             let port = match ch {
@@ -1406,7 +1279,6 @@ impl SnowGui {
                 let _ = self
                     .emu
                     .enable_serial_bridge(ch, SerialBridgeConfig::Tcp(port));
-                ui.close_kind(egui::UiKind::Menu);
             }
 
             if ui
@@ -1416,7 +1288,6 @@ impl SnowGui {
                 let _ = self
                     .emu
                     .enable_serial_bridge(ch, SerialBridgeConfig::LocalTalk);
-                ui.close_kind(egui::UiKind::Menu);
             }
         }
     }
@@ -1444,7 +1315,6 @@ impl SnowGui {
                     ui.set_min_width(Self::SUBMENU_WIDTH);
                     if ui.button("Insert blank 400/800K floppy").clicked() {
                         self.emu.insert_blank_floppy(i, FloppyType::Mac800K);
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui
                         .add_enabled(
@@ -1454,14 +1324,12 @@ impl SnowGui {
                         .clicked()
                     {
                         self.emu.insert_blank_floppy(i, FloppyType::Mfm144M);
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                     ui.separator();
                     if ui.button("Load image...").clicked() {
                         self.floppy_dialog_target = FloppyDialogTarget::Drive(i);
                         self.floppy_dialog
                             .pick_file(self.settings.native_file_dialogs);
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                     ui.menu_button("Load recent image", |ui| {
                         ui.set_min_width(Self::SUBMENU_WIDTH);
@@ -1471,7 +1339,6 @@ impl SnowGui {
                             if ui.button(format!("{}: {}", idx, display_name)).clicked() {
                                 self.emu.load_floppy(i, &path, false);
                                 self.settings.add_recent_floppy_image(&path);
-                                ui.close_kind(egui::UiKind::Menu);
                             }
                         }
                         if self.settings.recent_floppy_images.is_empty() {
@@ -1486,7 +1353,6 @@ impl SnowGui {
                         .clicked()
                     {
                         self.emu.reload_floppy(i);
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                     ui.checkbox(&mut self.floppy_dialog_wp, "Mount write-protected");
                     ui.separator();
@@ -1497,7 +1363,6 @@ impl SnowGui {
                         self.floppy_dialog_target = FloppyDialogTarget::Drive(i);
                         self.floppy_dialog
                             .save_file(self.settings.native_file_dialogs);
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                     if ui
                         .add_enabled(
@@ -1510,7 +1375,6 @@ impl SnowGui {
                         self.floppy_dialog_target = FloppyDialogTarget::Image(img);
                         self.floppy_dialog
                             .save_file(self.settings.native_file_dialogs);
-                        ui.close_kind(egui::UiKind::Menu);
                     }
                     ui.separator();
 
@@ -1519,7 +1383,6 @@ impl SnowGui {
                         .clicked()
                     {
                         self.emu.force_eject(i);
-                        ui.close_kind(egui::UiKind::Menu);
                     }
 
                     if d.drive_type.has_pwm_control() {
@@ -1602,7 +1465,6 @@ impl SnowGui {
                     .clicked()
                 {
                     self.emu.reset();
-                    ui.close_kind(egui::UiKind::Menu);
                 }
 
                 if self.emu.is_running() {
@@ -2869,15 +2731,12 @@ impl eframe::App for SnowGui {
                         ui.set_min_width(Self::SUBMENU_WIDTH);
                         if self.in_fullscreen && ui.button("Exit fullscreen").clicked() {
                             self.exit_fullscreen(ctx);
-                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if self.in_zen_mode && ui.button("Exit Zen mode").clicked() {
                             self.exit_zen_mode();
-                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if ui.button("Take screenshot").clicked() {
                             self.screenshot();
-                            ui.close_kind(egui::UiKind::Menu);
                         }
                         ui.separator();
                         self.draw_menu_floppies(ui);
@@ -2896,7 +2755,6 @@ impl eframe::App for SnowGui {
                         let mut ff = self.emu.is_fastforward();
                         if ui.checkbox(&mut ff, "Fast-forward").clicked() {
                             self.emu.toggle_fastforward();
-                            ui.close_kind(egui::UiKind::Menu);
                         }
                         if ui.button("Reset machine").clicked() {
                             self.emu.reset();
