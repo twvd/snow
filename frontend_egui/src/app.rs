@@ -4,7 +4,7 @@ use crate::dialogs::filedialog::SnowFileDialog;
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
 use crate::emulator::EmulatorState;
 use crate::emulator::{EmulatorInitArgs, ScsiTargets};
-use crate::keymap::map_winit_keycode;
+use crate::keymap::{char_to_keystroke, map_winit_keycode};
 use crate::settings::AppSettings;
 use crate::uniform::{UniformAction, UNIFORM_ACTION};
 use crate::widgets::breakpoints::BreakpointsWidget;
@@ -35,6 +35,7 @@ use egui_toast::{Toast, ToastKind, ToastOptions};
 use rand::Rng;
 use strum::IntoEnumIterator;
 
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -204,6 +205,11 @@ pub struct SnowGui {
 
     /// Whether CLI serial bridges have been applied (to avoid re-applying on each frame)
     serial_bridges_applied: bool,
+
+    /// Queue of keystrokes to type from clipboard text
+    type_clipboard_queue: VecDeque<crate::keymap::KeyStroke>,
+    /// Frames to wait before sending the next keystroke
+    type_clipboard_delay: u8,
 
     /// Shared flag set when the user clicks "Do not show again" on a mode toast
     mode_toast_hide_requested: Arc<AtomicBool>,
@@ -403,6 +409,9 @@ impl SnowGui {
             ],
 
             serial_bridges_applied: false,
+
+            type_clipboard_queue: VecDeque::new(),
+            type_clipboard_delay: 0,
         };
 
         if let Some(filename) = initial_file {
@@ -758,6 +767,15 @@ impl SnowGui {
                 {
                     self.screenshot();
                 }
+                if ui
+                    .add_enabled(
+                        self.emu.is_running() && self.type_clipboard_queue.is_empty(),
+                        egui::Button::new("Type clipboard contents"),
+                    )
+                    .clicked()
+                {
+                    self.type_clipboard();
+                }
                 ui.separator();
                 if !self.emu.is_recording_input() {
                     if ui
@@ -972,7 +990,7 @@ impl SnowGui {
                     });
                 }
                 ui.separator();
-                ui.heading("Global settings");
+                ui.strong("Global settings");
                 ui.menu_button("Map alternate Cmd key", |ui| {
                     ui.radio_value(
                         &mut self.workspace.cmd_key_mapping,
@@ -2024,6 +2042,54 @@ impl SnowGui {
         );
     }
 
+    fn type_clipboard(&mut self) {
+        let text = match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
+            Ok(t) => t,
+            Err(e) => {
+                self.show_error(&format!("Failed to read clipboard: {}", e));
+                return;
+            }
+        };
+
+        if text.is_empty() {
+            return;
+        }
+
+        self.type_clipboard_queue.clear();
+        for ch in text.chars() {
+            if let Some(ks) = char_to_keystroke(ch) {
+                self.type_clipboard_queue.push_back(ks);
+            }
+        }
+        self.type_clipboard_delay = 0;
+    }
+
+    /// Processes the clipboard typing queue, sending one keystroke per frame.
+    fn process_type_clipboard_queue(&mut self) {
+        if self.type_clipboard_queue.is_empty() {
+            return;
+        }
+
+        // Delay between keystrokes to give the emulated OS time to process
+        if self.type_clipboard_delay > 0 {
+            self.type_clipboard_delay -= 1;
+            return;
+        }
+
+        if let Some(ks) = self.type_clipboard_queue.pop_front() {
+            const SHIFT_SCANCODE: u8 = 0x38;
+            if ks.shift {
+                self.emu.update_key(SHIFT_SCANCODE, true);
+            }
+            self.emu.update_key(ks.scancode, true);
+            self.emu.update_key(ks.scancode, false);
+            if ks.shift {
+                self.emu.update_key(SHIFT_SCANCODE, false);
+            }
+            self.type_clipboard_delay = 2;
+        }
+    }
+
     #[allow(clippy::needless_pass_by_value)]
     fn uniform_action(&mut self, action: UniformAction) {
         match action {
@@ -2338,6 +2404,7 @@ impl eframe::App for SnowGui {
 
         self.sync_windows(ctx);
         self.poll_winit_events(ctx);
+        self.process_type_clipboard_queue();
         self.uniform_action(UNIFORM_ACTION.take());
 
         if self.emu.poll() {
