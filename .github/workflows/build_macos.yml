@@ -33,6 +33,8 @@ jobs:
       run: git submodule update --init --recursive
     - name: Install toolchain
       run: rustup target add ${{ matrix.arch }}-apple-darwin
+    - name: Enable Rust compiler cache
+      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
     - name: Build release
       # Build with bundled SDL2 to avoid issues with sdl2 on brew breaking
       run: cargo build --verbose --release --target ${{ matrix.arch }}-apple-darwin -F sdl2-bundled -F sdl2-pkgconfig -F sdl2-static

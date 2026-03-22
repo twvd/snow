@@ -26,6 +26,10 @@ jobs:
       run: sudo apt-get -y update
     - name: Install prerequisites
       run: sudo apt-get -y install libsdl2-dev
+    - name: Download pinned Rust toolchain
+      run: rustup show
+    - name: Enable Rust compiler cache
+      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
     - name: Install cargo-llvm-cov
       uses: taiki-e/install-action@cff9fdfca2088e53d33015e47b75d0653d76aa25 # releases/cargo-llvm-cov
     - name: Fetch submodules
