@@ -29,9 +29,9 @@ jobs:
         msystem: ['MINGW64', 'CLANGARM64']
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
     - name: Setup MSYS2
-      uses: msys2/setup-msys2@v2
+      uses: msys2/setup-msys2@4f806de0a5a7294ffabaff804b38a9b435a73bda # v2.30.0
       with:
         release: true
         update: true
@@ -61,7 +61,7 @@ jobs:
         fi
         echo "arch=$arch" >> "$GITHUB_OUTPUT"
     - name: GUI Upload artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
       with:
         name: 'Snow Windows (${{ steps.arch-name.outputs.arch }})'
         if-no-files-found: error
