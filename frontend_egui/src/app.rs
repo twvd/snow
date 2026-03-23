@@ -769,8 +769,17 @@ impl SnowGui {
                 }
                 if ui
                     .add_enabled(
+                        self.emu.is_initialized(),
+                        egui::Button::new("Copy emulator clipboard to host"),
+                    )
+                    .clicked()
+                {
+                    self.copy_from_emulator();
+                }
+                if ui
+                    .add_enabled(
                         self.emu.is_running() && self.type_clipboard_queue.is_empty(),
-                        egui::Button::new("Type clipboard contents"),
+                        egui::Button::new("Type host clipboard contents"),
                     )
                     .clicked()
                 {
@@ -1693,11 +1702,20 @@ impl SnowGui {
                     self.screenshot();
                 }
                 if ui
+                    .add(egui::Button::new(
+                        egui_material_icons::icons::ICON_CONTENT_COPY,
+                    ))
+                    .on_hover_text("Copy emulator clipboard to host")
+                    .clicked()
+                {
+                    self.copy_from_emulator();
+                }
+                if ui
                     .add_enabled(
                         self.emu.is_running() && self.type_clipboard_queue.is_empty(),
                         egui::Button::new(egui_material_icons::icons::ICON_CONTENT_PASTE),
                     )
-                    .on_hover_text("Type clipboard contents")
+                    .on_hover_text("Type host clipboard contents")
                     .clicked()
                 {
                     self.type_clipboard();
@@ -2080,6 +2098,43 @@ impl SnowGui {
             }
         }
         self.type_clipboard_delay = 0;
+    }
+
+    /// Copies text from the emulated Mac's clipboard to the host clipboard.
+    fn copy_from_emulator(&mut self) {
+        match crate::util::mac::read_scrap_text(self.memory.get_memory()) {
+            Some(text) if !text.is_empty() => {
+                match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(&text)) {
+                    Ok(_) => {
+                        self.toasts.add(
+                            Toast::default()
+                                .text("Copied text from emulator to clipboard")
+                                .kind(ToastKind::Info)
+                                .options(
+                                    ToastOptions::default()
+                                        .duration(Self::TOAST_DURATION)
+                                        .show_progress(true),
+                                ),
+                        );
+                    }
+                    Err(e) => {
+                        self.show_error(&format!("Failed to write clipboard: {}", e));
+                    }
+                }
+            }
+            _ => {
+                self.toasts.add(
+                    Toast::default()
+                        .text("No text found in emulator clipboard")
+                        .kind(ToastKind::Warning)
+                        .options(
+                            ToastOptions::default()
+                                .duration(Self::TOAST_DURATION)
+                                .show_progress(true),
+                        ),
+                );
+            }
+        }
     }
 
     /// Processes the clipboard typing queue, sending one keystroke per frame.
