@@ -1,11 +1,15 @@
 //! SCSI CD-ROM drive (block device)
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
+use binrw::io::BufReader;
 use serde::{Deserialize, Serialize};
 
 use std::fs::File;
+use std::io::{BufRead, Cursor, Lines, Read};
+use std::iter::Peekable;
 use std::os::windows::fs::FileExt;
 use std::path::{Path, PathBuf};
+use std::str::Chars;
 
 use crate::debuggable::Debuggable;
 use crate::types::LatchingEvent;
@@ -91,24 +95,89 @@ impl CdromBackend for IsoCdromBackend {
     }
 }
 
+fn read_cue_token(reader: &mut Peekable<Chars>) -> Option<String> {
+    // Consume whitespace
+    while reader.peek().map(|c| c.is_whitespace()).unwrap_or(false) {
+        reader.next();
+    }
+
+    if reader.peek().is_none() {
+        return None;
+    }
+    
+    let mut result = String::new();
+
+    if *reader.peek().unwrap() == '"' {
+        // Parse quoted string
+        result.push(reader.next().unwrap());
+        // FIXME: do cue files have \" escapes?
+        while reader.peek().map(|c| *c != '"').unwrap_or(false) {
+            result.push(reader.next().unwrap());
+        }
+        // Push final " if present
+        if reader.peek().is_some() {
+            result.push(reader.next().unwrap());
+        }
+    } else {
+        while reader.peek().map(|c| !c.is_whitespace()).unwrap_or(false) {
+            result.push(reader.next().unwrap());
+        }
+    }
+
+    Some(result)
+}
+
 struct CuesheetCdromBackend {
     cue_path: PathBuf,
-    data_file: File,
+    data_files: Vec<File>,
 }
 
 impl CuesheetCdromBackend {
     fn new(path: &Path) -> Result<Self> {
-        let data_file = File::open(r"F:\Playroom\Macintosh\Marathon CD.bin")?;
+        let cue_dir = path.parent().unwrap();
+        let cue_file = BufReader::new(File::open(path)?);
+        let mut data_files = vec![];
+
+        // FIXME: I believe cue files have one command per line and never split commands across multiple lines. Is this true?
+        for line in cue_file.lines() {
+            let line = line?;
+            let mut chars = line.chars().peekable();
+
+            if let Some(command) = read_cue_token(&mut chars) {
+                match command.as_str() {
+                    "FILE" => {
+                        let data_file_path = read_cue_token(&mut chars).ok_or_else(|| anyhow!("Failed to parse FILE command"))?;
+                        let data_file_path = if data_file_path.chars().nth(0) == Some('"') {
+                            // Omit quotes
+                            &data_file_path[1..data_file_path.len()-1]
+                        } else {
+                            &data_file_path
+                        };
+                        let data_file_path = cue_dir.join(Path::new(&data_file_path));
+                        println!("Loading datafile from {}", data_file_path.to_string_lossy());
+                        let data_file = File::open(data_file_path)?;
+                        data_files.push(data_file);
+
+                        let file_type = read_cue_token(&mut chars).ok_or_else(|| anyhow!("Failed to parse FILE command"))?;
+                        if file_type != "BINARY" {
+                            bail!("Unsupported data file type in cuesheet");
+                        }
+                    }
+                    _ => log::warn!("Unknown cuesheet command {} ignored", command),
+                }
+            }
+        }
 
         Ok(Self {
             cue_path: path.into(),
-            data_file,
+            data_files,
         })
     }
 
     fn read_raw_sector(&self, sector: u32) -> Result<[u8; RAW_SECTOR_LEN]> {
         let mut result = [0; RAW_SECTOR_LEN];
-        self.data_file
+        // FIXME
+        self.data_files.get(0).ok_or_else(|| anyhow!("No data files loaded"))?
             .seek_read(&mut result, (sector * RAW_SECTOR_LEN as u32).into())?;
         Ok(result)
     }
