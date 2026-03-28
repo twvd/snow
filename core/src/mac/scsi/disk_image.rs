@@ -45,14 +45,13 @@ impl FileDiskImage {
         Ok(image)
     }
 
-    // TODO: Implement read-only mode. The memmap2 crate makes it needlessly difficult to map files as read-only.
-    fn open_file(filename: &Path, _writable: bool) -> Result<Self> {
+    fn open_file(filename: &Path, writable: bool) -> Result<Self> {
         if !filename.exists() {
             bail!("File not found: {}", filename.display());
         }
 
         #[cfg(feature = "mmap")]
-        let disk = Self::mmap_file(filename)?;
+        let disk = Self::mmap_file(filename, writable)?;
 
         #[cfg(not(feature = "mmap"))]
         let disk = {
@@ -70,7 +69,7 @@ impl FileDiskImage {
     }
 
     #[cfg(feature = "mmap")]
-    fn mmap_file(filename: &Path) -> Result<MmapMut> {
+    fn mmap_file(filename: &Path, writable: bool) -> Result<MmapMut> {
         use fs2::FileExt;
         use std::fs::OpenOptions;
         use std::io::{Seek, SeekFrom};
@@ -80,7 +79,7 @@ impl FileDiskImage {
         }
         let mut f = OpenOptions::new()
             .read(true)
-            .write(true)
+            .write(writable)
             .open(filename)
             .with_context(|| format!("Failed to open {}", filename.display()))?;
         let file_size = f.seek(SeekFrom::End(0))? as usize;
@@ -90,10 +89,15 @@ impl FileDiskImage {
         let mmapped = unsafe {
             use memmap2::MmapOptions;
 
-            MmapOptions::new()
-                .len(file_size)
-                .map_mut(&f)
-                .with_context(|| format!("Failed to mmap file {}", filename.display()))?
+            let mut mmap = MmapOptions::new();
+            let mmap = mmap.len(file_size);
+
+            if writable {
+                mmap.map_mut(&f)
+            } else {
+                // Using map_copy lets us keep the file read-only while still returning an MmapMut.
+                mmap.map_copy(&f)
+            }.with_context(|| format!("Failed to mmap file {}", filename.display()))?
         };
         Ok(mmapped)
     }
@@ -131,7 +135,7 @@ impl DiskImage for FileDiskImage {
                 let mut f = File::create(path)?;
                 f.write_all(&self.disk)?;
             }
-            self.disk = Self::mmap_file(path)?;
+            self.disk = Self::mmap_file(path, true)?;
             self.path = path.to_path_buf();
             Ok(())
         }
