@@ -33,7 +33,11 @@ impl FileDiskImage {
         Self::open_file(filename, writable)
     }
 
-    pub(super) fn open_block_sized(filename: &Path, writable: bool, block_size: usize) -> Result<Self> {
+    pub(super) fn open_block_sized(
+        filename: &Path,
+        writable: bool,
+        block_size: usize,
+    ) -> Result<Self> {
         let image = Self::open_file(filename, writable)?;
         if !image.byte_len().is_multiple_of(block_size) {
             bail!(
@@ -97,7 +101,8 @@ impl FileDiskImage {
             } else {
                 // Using map_copy lets us keep the file read-only while still returning an MmapMut.
                 mmap.map_copy(&f)
-            }.with_context(|| format!("Failed to mmap file {}", filename.display()))?
+            }
+            .with_context(|| format!("Failed to mmap file {}", filename.display()))?
         };
         Ok(mmapped)
     }

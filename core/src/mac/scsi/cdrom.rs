@@ -37,7 +37,6 @@ const AUDIO_COMPLETED: u8 = 0x13;
 const AUDIO_TRACK: u8 = 0x10; // FIXME: correct?
 const DATA_TRACK: u8 = 0x14;
 
-
 pub struct TrackInfo {
     /// The track number. Note that CD tracks don't necessarily start at number 1.
     number: u8,
@@ -61,9 +60,7 @@ struct IsoCdromBackend {
 
 impl IsoCdromBackend {
     fn new(image: Box<dyn DiskImage>) -> Self {
-        Self {
-            image
-        }
+        Self { image }
     }
 }
 
@@ -86,13 +83,11 @@ impl CdromBackend for IsoCdromBackend {
     }
 
     fn tracks(&self) -> Option<&[TrackInfo]> {
-        Some(&[
-            TrackInfo {
-                number: 1,
-                adr_control: DATA_TRACK,
-                sector: 0,
-            },
-        ])
+        Some(&[TrackInfo {
+            number: 1,
+            adr_control: DATA_TRACK,
+            sector: 0,
+        }])
     }
 }
 
@@ -113,7 +108,8 @@ impl CuesheetCdromBackend {
 
     fn read_raw_sector(&self, sector: u32) -> Result<[u8; RAW_SECTOR_LEN]> {
         let mut result = [0; RAW_SECTOR_LEN];
-        self.data_file.seek_read(&mut result, (sector * RAW_SECTOR_LEN as u32).into())?;
+        self.data_file
+            .seek_read(&mut result, (sector * RAW_SECTOR_LEN as u32).into())?;
         Ok(result)
     }
 }
@@ -231,7 +227,7 @@ impl ScsiTargetCdrom {
             let f = sector % 75;
             // [UNI-MAINZ] Table 237: MSF address format
             [
-                0, // Reserved
+                0,                     // Reserved
                 m.try_into().unwrap(), // M field
                 s.try_into().unwrap(), // S field
                 f.try_into().unwrap(), // F field
@@ -243,7 +239,13 @@ impl ScsiTargetCdrom {
         }
     }
 
-    fn read_toc(&mut self, msf: bool, format: u8, track: u8, alloc_len: usize) -> Result<ScsiCmdResult> {
+    fn read_toc(
+        &mut self,
+        msf: bool,
+        format: u8,
+        track: u8,
+        alloc_len: usize,
+    ) -> Result<ScsiCmdResult> {
         let Some(backend) = &self.backend else {
             // No CD inserted
             self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
@@ -283,7 +285,8 @@ impl ScsiTargetCdrom {
                     result.push(t.adr_control); // ADR/Control
                     result.push(t.number); // Track Number
                     result.push(0); // Reserved
-                    result.extend_from_slice(&self.sector_to_address_field(t.sector, msf)); // Absolute CD-ROM Address
+                    result.extend_from_slice(&self.sector_to_address_field(t.sector, msf));
+                    // Absolute CD-ROM Address
                 }
 
                 // Emit lead-out track descriptor (FIXME: Is this correct?)
@@ -362,7 +365,11 @@ impl ScsiTarget for ScsiTargetCdrom {
     /// the emulator for fast access and automatic writes back to disk,
     /// at the discretion of the operating system.
     fn load_media(&mut self, path: &Path) -> Result<()> {
-        if path.extension().map(|ext| ext.eq_ignore_ascii_case("cue")).unwrap_or(false) {
+        if path
+            .extension()
+            .map(|ext| ext.eq_ignore_ascii_case("cue"))
+            .unwrap_or(false)
+        {
             self.load_cue(path)
         } else {
             // Assume image is iso or toast
@@ -534,7 +541,13 @@ impl ScsiTarget for ScsiTargetCdrom {
                 let track = cmd[6];
                 let alloc_len = u16::from_be_bytes(cmd[7..=8].try_into()?) as usize;
 
-                log::warn!("READ SUB-CHANNEL sub_q {} format {}, track {}, alloc_len {}", sub_q, format, track, alloc_len);
+                log::warn!(
+                    "READ SUB-CHANNEL sub_q {} format {}, track {}, alloc_len {}",
+                    sub_q,
+                    format,
+                    track,
+                    alloc_len
+                );
 
                 let mut result = vec![];
 
@@ -559,7 +572,6 @@ impl ScsiTarget for ScsiTargetCdrom {
                 result.truncate(alloc_len);
 
                 Ok(ScsiCmdResult::DataIn(result))
-
             }
             // READ TOC
             0x43 => {
@@ -569,7 +581,14 @@ impl ScsiTarget for ScsiTargetCdrom {
                 let track = cmd[6];
                 let alloc_len = u16::from_be_bytes(cmd[7..=8].try_into()?) as usize;
 
-                log::warn!("READ TOC msf {} format {} control {} track {} alloc_len {}", msf, format, control, track, alloc_len);
+                log::warn!(
+                    "READ TOC msf {} format {} control {} track {} alloc_len {}",
+                    msf,
+                    format,
+                    control,
+                    track,
+                    alloc_len
+                );
 
                 self.read_toc(msf != 0, format, track, alloc_len)
             }
