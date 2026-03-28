@@ -45,13 +45,14 @@ impl FileDiskImage {
         Ok(image)
     }
 
-    fn open_file(filename: &Path, writable: bool) -> Result<Self> {
+    // TODO: Implement read-only mode. The memmap2 crate makes it needlessly difficult to map files as read-only.
+    fn open_file(filename: &Path, _writable: bool) -> Result<Self> {
         if !filename.exists() {
             bail!("File not found: {}", filename.display());
         }
 
         #[cfg(feature = "mmap")]
-        let disk = Self::mmap_file(filename, writable)?;
+        let disk = Self::mmap_file(filename)?;
 
         #[cfg(not(feature = "mmap"))]
         let disk = {
@@ -69,7 +70,7 @@ impl FileDiskImage {
     }
 
     #[cfg(feature = "mmap")]
-    fn mmap_file(filename: &Path, writable: bool) -> Result<MmapMut> {
+    fn mmap_file(filename: &Path) -> Result<MmapMut> {
         use fs2::FileExt;
         use std::fs::OpenOptions;
         use std::io::{Seek, SeekFrom};
@@ -79,7 +80,7 @@ impl FileDiskImage {
         }
         let mut f = OpenOptions::new()
             .read(true)
-            .write(writable)
+            .write(true)
             .open(filename)
             .with_context(|| format!("Failed to open {}", filename.display()))?;
         let file_size = f.seek(SeekFrom::End(0))? as usize;
@@ -130,7 +131,7 @@ impl DiskImage for FileDiskImage {
                 let mut f = File::create(path)?;
                 f.write_all(&self.disk)?;
             }
-            self.disk = Self::mmap_file(path, true)?;
+            self.disk = Self::mmap_file(path)?;
             self.path = path.to_path_buf();
             Ok(())
         }
