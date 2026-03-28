@@ -25,13 +25,31 @@ use super::STATUS_GOOD;
 const RAW_SECTOR_LEN: usize = 2352;
 const TRACK_LEADOUT: u8 = 0xAA;
 
+// Audio status codes
 const AUDIO_COMPLETED: u8 = 0x13;
+
+// Track ADR/Control field codes
+const DATA_TRACK: u8 = 0x14;
+
+// Reference documentation:
+//
+// [PIONEER]: <https://bitsavers.trailing-edge.com/pdf/pioneer/cdrom/OB-U0077C_CD-ROM_SCSI-2_Command_Set_V3.1_19970626.pdf>:
+
+pub struct TrackInfo {
+    /// The track number. Note that CD tracks don't necessarily start at number 1.
+    number: u8,
+    /// ADR and Control fields indicating track format
+    adr_control: u8,
+    /// Sector number where the track begins
+    sector: u32, // For pete's sake, just use the sector number... forget about this MSF/LBA nonsense.
+}
 
 pub trait CdromBackend: Send {
     fn byte_len(&self) -> usize;
     fn read_bytes(&self, offset: usize, length: usize) -> Vec<u8>;
     fn image_path(&self) -> Option<&Path>;
     fn audio_status(&self) -> u8;
+    fn tracks(&self) -> Option<&[TrackInfo]>;
 }
 
 struct IsoCdromBackend {
@@ -60,7 +78,18 @@ impl CdromBackend for IsoCdromBackend {
     }
 
     fn audio_status(&self) -> u8 {
+        // ISO's do not support audio playback.
         AUDIO_COMPLETED
+    }
+
+    fn tracks(&self) -> Option<&[TrackInfo]> {
+        Some(&[
+            TrackInfo {
+                number: 1,
+                adr_control: DATA_TRACK,
+                sector: 0,
+            }
+        ])
     }
 }
 
@@ -106,6 +135,7 @@ impl CdromBackend for CuesheetCdromBackend {
             result.extend_from_slice(sector_data);
         }
 
+        result.truncate(length);
         result
     }
 
@@ -116,6 +146,17 @@ impl CdromBackend for CuesheetCdromBackend {
     fn audio_status(&self) -> u8 {
         // TODO: implement audio playback
         AUDIO_COMPLETED
+    }
+
+    // TODO: read from cuesheet
+    fn tracks(&self) -> Option<&[TrackInfo]> {
+        Some(&[
+            TrackInfo {
+                number: 1,
+                adr_control: DATA_TRACK,
+                sector: 0,
+            }
+        ])
     }
 }
 
@@ -154,93 +195,93 @@ impl ScsiTargetCdrom {
     const VALID_BLOCKSIZES: [usize; 2] = [512, 2048];
 
     fn read_toc(&mut self, format: u8, track: u8, alloc_len: usize) -> Result<ScsiCmdResult> {
-        if self.backend.is_none() {
+        let Some(backend) = &self.backend else {
             // No CD inserted
             self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
             return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-        }
+        };
+
+        let Some(tracks) = backend.tracks() else {
+            // Media does not support tracks
+            //
+            // [PIONEER]:
+            //
+            // If the Start Track field is not valid for the currently installed medium, the command shall be
+            // terminated with Check Condition status. The sense key shall be set to ILLEGAL REQUEST and
+            // the additional sense code set to INVALID FIELD IN CDB.
+            self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+        };
+
         match format {
             0 => {
                 // SCSI-2 TOC
-                match track {
-                    0 | 1 => {
-                        let mut result = vec![0; 0x14];
+                let mut result = Vec::<u8>::with_capacity(alloc_len);
 
-                        // Length
-                        result[1] = 0x12;
-                        // First track
-                        result[2] = 1;
-                        // Last track
-                        result[3] = 1;
+                result.push(0); // TOC Data Length (will be set later)
+                result.push(0);
 
-                        // Track descriptor for track 1
-                        // 4 reserved
-                        // Digital
-                        result[5] = 0x14;
-                        // Track number
-                        result[6] = 1;
-                        // 7 reserved
-                        // 8..12 Start block number (0)
+                // FIXME: avoid unwrap
+                result.push(tracks.first().unwrap().number); // First Track Number
+                result.push(tracks.last().unwrap().number); // Last Track Number
 
-                        // Track descriptor for lead-out
-                        // 12 reserved
-                        // Digital
-                        result[13] = 0x14;
-                        // Track number
-                        result[14] = TRACK_LEADOUT;
+                // Start at the given track or the next available track
+                let track_iter = tracks.iter().skip_while(|t| t.number < track);
 
-                        result.truncate(alloc_len);
-                        Ok(ScsiCmdResult::DataIn(result))
-                    }
-                    TRACK_LEADOUT => {
-                        let mut result = vec![0; 12];
-                        // Length
-                        result[1] = 0x0A;
-                        // First track
-                        result[2] = 1;
-                        // Last track
-                        result[3] = 1;
-
-                        // Track descriptor for track 1
-                        // 4 reserved
-                        // Digital
-                        result[5] = 0x14;
-                        // Track number
-                        result[6] = TRACK_LEADOUT;
-                        // 7 reserved
-                        // 8..12 Start block number (0)
-                        result.truncate(alloc_len);
-                        Ok(ScsiCmdResult::DataIn(result))
-                    }
-                    _ => {
-                        self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
-                        Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
-                    }
+                // Emit track descriptors
+                for t in track_iter {
+                    result.push(0); // Reserved
+                    result.push(t.adr_control); // ADR/Control
+                    result.push(t.number); // Track Number
+                    result.push(0); // Reserved
+                    // TODO: Convert address to MSF or LBA format depending on parameter
+                    result.extend_from_slice(&u32::to_be_bytes(t.sector)); // Absolute CD-ROM Address
                 }
-            }
-            1 => {
-                // Session TOC
-                let mut result = vec![0; 12];
 
-                // Length
-                result[1] = 0x0A;
-                // First track
-                result[2] = 1;
-                // Last track
-                result[3] = 1;
+                // Emit lead-out track descriptor (FIXME: Is this correct?)
+                result.push(0); // Reserved
+                result.push(DATA_TRACK); // ADR/Control (FIXME: is this correct for the lead-out track?)
+                result.push(TRACK_LEADOUT); // Track Number
+                result.push(0); // Reserved
+                result.extend_from_slice(&u32::to_be_bytes(0)); // Absolute CD-ROM Address (FIXME: is this correct?)
 
-                // Track descriptor for track 1
-                // 4 reserved
-                // Digital
-                result[5] = 0x14;
-                // Track number
-                result[6] = 1;
-                // 7 reserved
-                // 8..12 Start block number (0)
+                // Set data length field
+                let data_length = result.len() - 2;
+                result[0..2].copy_from_slice(&u16::to_be_bytes(data_length.try_into()?));
 
                 result.truncate(alloc_len);
                 Ok(ScsiCmdResult::DataIn(result))
             }
+            1 => {
+                // Session TOC
+                let mut result = Vec::<u8>::with_capacity(alloc_len);
+
+                // [PIONEER] Table 2-28C: TOC Data with Format=01B
+                result.push(0); // TOC Data Length (will be set later)
+                result.push(0);
+
+                // TODO: support multi-session discs?
+                result.push(1); // First Session Number
+                result.push(1); // Last Session Number
+
+                // This command queries the "first track in the last session" apparently...
+                let first_track = tracks.last().unwrap();
+
+                // [PIONEER] Table 2-28D: Track Descriptors
+                result.push(0); // Reserved
+                result.push(first_track.adr_control); // ADR/Control
+                result.push(first_track.number); // First Track Number in Last Session
+                result.push(0); // Reserved
+                // TODO: Convert address to MSF or LBA format depending on parameter
+                result.extend_from_slice(&u32::to_be_bytes(first_track.sector)); // Absolute CD-ROM Address of the First Track in the Last Session
+
+                let data_length = result.len() - 2;
+                result[0..2].copy_from_slice(&u16::to_be_bytes(data_length.try_into()?));
+
+                result.truncate(alloc_len);
+                Ok(ScsiCmdResult::DataIn(result))
+            }
+            // TODO: implement format 2 (queried by System 7.5 upon mounting a CD)
             _ => {
                 log::error!("Unknown READ TOC format: {}", format);
 
@@ -515,6 +556,14 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn set_blocksize(&mut self, blocksize: usize) -> bool {
+        // FIXME: Do CD-ROM drives really allow the block size to be modified by software?
+        //
+        // [PIONEER]:
+        //
+        // The value of Logical Block Length returned depends on the block length set with a MODE
+        // SELECT command. The default value of the block length is 2048 bytes. The CD-ROM drives
+        // allow values of 2048 or 512 bytes to be set with an external switch on the drive.
+
         if Self::VALID_BLOCKSIZES.contains(&blocksize) {
             self.blocksize = blocksize;
             return true;
