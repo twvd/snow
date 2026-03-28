@@ -475,9 +475,13 @@ impl ScsiTarget for ScsiTargetCdrom {
             }
             // READ TOC
             0x43 => {
+                let msf = (cmd[1] >> 1) & 0x1;
                 let format = cmd[9] >> 6;
+                let control = cmd[9] & 0x3f;
                 let track = cmd[6];
-                let alloc_len = u16::from_be_bytes(cmd[7..9].try_into()?) as usize;
+                let alloc_len = u16::from_be_bytes(cmd[7..=8].try_into()?) as usize;
+
+                log::warn!("READ TOC msf {} format {} control {} track {} alloc_len {}", msf, format, control, track, alloc_len);
 
                 self.read_toc(format, track, alloc_len)
             }
