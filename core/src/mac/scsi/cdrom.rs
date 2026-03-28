@@ -167,7 +167,12 @@ impl ScsiTarget for ScsiTargetCdrom {
     /// the emulator for fast access and automatic writes back to disk,
     /// at the discretion of the operating system.
     fn load_media(&mut self, path: &Path) -> Result<()> {
-        self.load_image(Box::new(FileDiskImage::open(path)?))
+        if path.extension().map(|ext| ext == "cue").unwrap_or(false) {
+            todo!("implement cuesheet format");
+        } else {
+            // Assume image is iso or toast
+            self.load_image(Box::new(FileDiskImage::open(path)?))
+        }
     }
 
     fn load_image(&mut self, image: Box<dyn DiskImage>) -> Result<()> {
