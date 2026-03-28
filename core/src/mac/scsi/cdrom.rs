@@ -64,9 +64,11 @@ struct CuesheetCdromBackend {
 
 impl CuesheetCdromBackend {
     fn new(path: &Path) -> Result<Self> {
+        let data_file = File::open(r"F:\Playroom\Macintosh\Marathon CD.bin")?;
+
         Ok(Self {
             cue_path: path.into(),
-            data_file: File::open(r"F:\Playroom\Macintosh\The Playroom\The ManHole.bin")?,
+            data_file,
         })
     }
 
@@ -260,7 +262,7 @@ impl ScsiTarget for ScsiTargetCdrom {
     /// the emulator for fast access and automatic writes back to disk,
     /// at the discretion of the operating system.
     fn load_media(&mut self, path: &Path) -> Result<()> {
-        if path.extension().map(|ext| ext == "cue").unwrap_or(false) {
+        if path.extension().map(|ext| ext.eq_ignore_ascii_case("cue")).unwrap_or(false) {
             self.load_cue(path)
         } else {
             // Assume image is iso or toast
