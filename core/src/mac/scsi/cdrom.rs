@@ -1,11 +1,10 @@
 //! SCSI CD-ROM drive (block device)
 
 use anyhow::{anyhow, bail, Result};
-use binrw::io::BufReader;
 use serde::{Deserialize, Serialize};
 
 use std::fs::File;
-use std::io::{BufRead, Cursor, Lines, Read};
+use std::io::{BufRead, BufReader};
 use std::iter::Peekable;
 use std::os::windows::fs::FileExt;
 use std::path::{Path, PathBuf};
@@ -101,10 +100,8 @@ fn read_cue_token(reader: &mut Peekable<Chars>) -> Option<String> {
         reader.next();
     }
 
-    if reader.peek().is_none() {
-        return None;
-    }
-    
+    reader.peek()?;
+
     let mut result = String::new();
 
     if *reader.peek().unwrap() == '"' {
@@ -146,10 +143,11 @@ impl CuesheetCdromBackend {
             if let Some(command) = read_cue_token(&mut chars) {
                 match command.as_str() {
                     "FILE" => {
-                        let data_file_path = read_cue_token(&mut chars).ok_or_else(|| anyhow!("Failed to parse FILE command"))?;
+                        let data_file_path = read_cue_token(&mut chars)
+                            .ok_or_else(|| anyhow!("Failed to parse FILE command"))?;
                         let data_file_path = if data_file_path.chars().nth(0) == Some('"') {
                             // Omit quotes
-                            &data_file_path[1..data_file_path.len()-1]
+                            &data_file_path[1..data_file_path.len() - 1]
                         } else {
                             &data_file_path
                         };
@@ -158,7 +156,8 @@ impl CuesheetCdromBackend {
                         let data_file = File::open(data_file_path)?;
                         data_files.push(data_file);
 
-                        let file_type = read_cue_token(&mut chars).ok_or_else(|| anyhow!("Failed to parse FILE command"))?;
+                        let file_type = read_cue_token(&mut chars)
+                            .ok_or_else(|| anyhow!("Failed to parse FILE command"))?;
                         if file_type != "BINARY" {
                             bail!("Unsupported data file type in cuesheet");
                         }
@@ -176,8 +175,10 @@ impl CuesheetCdromBackend {
 
     fn read_raw_sector(&self, sector: u32) -> Result<[u8; RAW_SECTOR_LEN]> {
         let mut result = [0; RAW_SECTOR_LEN];
-        // FIXME
-        self.data_files.get(0).ok_or_else(|| anyhow!("No data files loaded"))?
+        // FIXME: Implement multiple data files
+        self.data_files
+            .first()
+            .ok_or_else(|| anyhow!("No data files loaded"))?
             .seek_read(&mut result, (sector * RAW_SECTOR_LEN as u32).into())?;
         Ok(result)
     }
@@ -627,13 +628,10 @@ impl ScsiTarget for ScsiTargetCdrom {
                 result.push(0);
 
                 if sub_q != 0 {
-                    match format {
-                        _ => {
-                            log::warn!("Reading unknown sub-channel format {}", format);
-                            self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
-                            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-                        }
-                    }
+                    // TODO: Implement sub-channel formats
+                    log::warn!("Reading unknown sub-channel format {}", format);
+                    self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
                 let data_len = result.len() - 4;
