@@ -3,7 +3,9 @@
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
-use std::path::Path;
+use std::fs::File;
+use std::os::windows::fs::FileExt;
+use std::path::{Path, PathBuf};
 
 use crate::debuggable::Debuggable;
 use crate::types::LatchingEvent;
@@ -20,6 +22,7 @@ use super::CC_KEY_MEDIUM_ERROR;
 use super::STATUS_CHECK_CONDITION;
 use super::STATUS_GOOD;
 
+const RAW_SECTOR_LEN: usize = 2352;
 const TRACK_LEADOUT: u8 = 0xAA;
 
 pub trait CdromBackend: Send {
@@ -51,6 +54,54 @@ impl CdromBackend for IsoCdromBackend {
 
     fn image_path(&self) -> Option<&Path> {
         self.image.image_path()
+    }
+}
+
+struct CuesheetCdromBackend {
+    cue_path: PathBuf,
+    data_file: File,
+}
+
+impl CuesheetCdromBackend {
+    fn new(path: &Path) -> Result<Self> {
+        Ok(Self {
+            cue_path: path.into(),
+            data_file: File::open(r"F:\Playroom\Macintosh\The Playroom\The ManHole.bin")?,
+        })
+    }
+
+    fn read_raw_sector(&self, sector: u32) -> Result<[u8; RAW_SECTOR_LEN]> {
+        let mut result = [0; RAW_SECTOR_LEN];
+        self.data_file.seek_read(&mut result, (sector * RAW_SECTOR_LEN as u32).into())?;
+        Ok(result)
+    }
+}
+
+impl CdromBackend for CuesheetCdromBackend {
+    fn byte_len(&self) -> usize {
+        // FIXME: What's the correct value here? Let's just say 333,000 * 2048-byte sectors.
+        333_000 * 2048
+    }
+
+    fn read_bytes(&self, offset: usize, length: usize) -> Vec<u8> {
+        println!("Reading {} bytes from offset 0x{:X}", length, offset);
+        let mut result = Vec::<u8>::with_capacity(length);
+
+        let mut sector = (offset / 2048).try_into().unwrap();
+        while result.len() < length {
+            // TODO: Better error robustness if read fails
+            let raw_sector = self.read_raw_sector(sector).unwrap();
+            sector += 1;
+            // TODO: Check sync, mode and error detection data?
+            let sector_data = &raw_sector[16..][..2048];
+            result.extend_from_slice(sector_data);
+        }
+
+        result
+    }
+
+    fn image_path(&self) -> Option<&Path> {
+        Some(&self.cue_path)
     }
 }
 
@@ -191,6 +242,16 @@ impl ScsiTargetCdrom {
     }
 }
 
+impl ScsiTargetCdrom {
+    fn load_cue(&mut self, path: &Path) -> Result<()> {
+        self.backend = Some(Box::new(CuesheetCdromBackend::new(path)?));
+        self.cc_code = 0;
+        self.cc_asc = 0;
+        self.event_eject.get_clear();
+        Ok(())
+    }
+}
+
 #[typetag::serde]
 impl ScsiTarget for ScsiTargetCdrom {
     /// Try to load a disk image, given the filename of the image.
@@ -200,7 +261,7 @@ impl ScsiTarget for ScsiTargetCdrom {
     /// at the discretion of the operating system.
     fn load_media(&mut self, path: &Path) -> Result<()> {
         if path.extension().map(|ext| ext == "cue").unwrap_or(false) {
-            todo!("implement cuesheet format");
+            self.load_cue(path)
         } else {
             // Assume image is iso or toast
             self.load_image(Box::new(FileDiskImage::open(path, false)?))
