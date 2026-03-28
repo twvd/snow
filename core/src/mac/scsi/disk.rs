@@ -43,6 +43,7 @@ impl ScsiTargetDisk {
     pub(super) fn load_disk(filename: &Path) -> Result<Self> {
         Ok(Self::new(Box::new(FileDiskImage::open_block_sized(
             filename,
+            true,
             DISK_BLOCKSIZE,
         )?)))
     }
@@ -254,6 +255,7 @@ impl ScsiTarget for ScsiTargetDisk {
     fn after_deserialize(&mut self, imgfn: &Path) -> Result<()> {
         self.backend = Some(Box::new(FileDiskImage::open_block_sized(
             imgfn,
+            true,
             DISK_BLOCKSIZE,
         )?));
         Ok(())

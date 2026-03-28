@@ -29,12 +29,12 @@ pub(crate) struct FileDiskImage {
 }
 
 impl FileDiskImage {
-    pub(super) fn open(filename: &Path) -> Result<Self> {
-        Self::open_file(filename)
+    pub(super) fn open(filename: &Path, writable: bool) -> Result<Self> {
+        Self::open_file(filename, writable)
     }
 
-    pub(super) fn open_block_sized(filename: &Path, block_size: usize) -> Result<Self> {
-        let image = Self::open_file(filename)?;
+    pub(super) fn open_block_sized(filename: &Path, writable: bool, block_size: usize) -> Result<Self> {
+        let image = Self::open_file(filename, writable)?;
         if !image.byte_len().is_multiple_of(block_size) {
             bail!(
                 "Cannot load disk image {}: not multiple of {}",
@@ -45,13 +45,13 @@ impl FileDiskImage {
         Ok(image)
     }
 
-    fn open_file(filename: &Path) -> Result<Self> {
+    fn open_file(filename: &Path, writable: bool) -> Result<Self> {
         if !filename.exists() {
             bail!("File not found: {}", filename.display());
         }
 
         #[cfg(feature = "mmap")]
-        let disk = Self::mmap_file(filename)?;
+        let disk = Self::mmap_file(filename, writable)?;
 
         #[cfg(not(feature = "mmap"))]
         let disk = {
@@ -69,7 +69,7 @@ impl FileDiskImage {
     }
 
     #[cfg(feature = "mmap")]
-    fn mmap_file(filename: &Path) -> Result<MmapMut> {
+    fn mmap_file(filename: &Path, writable: bool) -> Result<MmapMut> {
         use fs2::FileExt;
         use std::fs::OpenOptions;
         use std::io::{Seek, SeekFrom};
@@ -79,7 +79,7 @@ impl FileDiskImage {
         }
         let mut f = OpenOptions::new()
             .read(true)
-            .write(true)
+            .write(writable)
             .open(filename)
             .with_context(|| format!("Failed to open {}", filename.display()))?;
         let file_size = f.seek(SeekFrom::End(0))? as usize;
@@ -130,7 +130,7 @@ impl DiskImage for FileDiskImage {
                 let mut f = File::create(path)?;
                 f.write_all(&self.disk)?;
             }
-            self.disk = Self::mmap_file(path)?;
+            self.disk = Self::mmap_file(path, true)?;
             self.path = path.to_path_buf();
             Ok(())
         }

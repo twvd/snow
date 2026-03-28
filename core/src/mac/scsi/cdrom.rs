@@ -171,7 +171,7 @@ impl ScsiTarget for ScsiTargetCdrom {
             todo!("implement cuesheet format");
         } else {
             // Assume image is iso or toast
-            self.load_image(Box::new(FileDiskImage::open(path)?))
+            self.load_image(Box::new(FileDiskImage::open(path, false)?))
         }
     }
 
