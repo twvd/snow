@@ -354,7 +354,7 @@ impl SnowGui {
                 .storage(settings.fd_hdd),
             hdd_dialog_idx: 0,
             cdrom_dialog: SnowFileDialog::new()
-                .add_filter("CD-ROM images", &["iso", "toast"])
+                .add_filter("CD-ROM images", &["iso", "toast", "cue"])
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_cdrom),
@@ -2548,7 +2548,7 @@ impl SnowGui {
             }
             "snoww" => self.load_workspace(Some(path)),
             "snows" => self.load_statefile(path),
-            "iso" | "toast" => {
+            "iso" | "toast" | "cue" => {
                 if !self.emu.scsi_load_cdrom_firstfree(path) {
                     self.toasts.add(
                         Toast::new()
