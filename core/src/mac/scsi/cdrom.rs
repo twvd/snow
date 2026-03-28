@@ -22,6 +22,11 @@ use super::CC_KEY_MEDIUM_ERROR;
 use super::STATUS_CHECK_CONDITION;
 use super::STATUS_GOOD;
 
+// Reference documentation:
+//
+// [PIONEER]: <https://bitsavers.trailing-edge.com/pdf/pioneer/cdrom/OB-U0077C_CD-ROM_SCSI-2_Command_Set_V3.1_19970626.pdf>
+// [UNI-MAINZ]: <https://www.staff.uni-mainz.de/tacke/scsi/SCSI2-14.html>
+
 const RAW_SECTOR_LEN: usize = 2352;
 const TRACK_LEADOUT: u8 = 0xAA;
 
@@ -29,11 +34,9 @@ const TRACK_LEADOUT: u8 = 0xAA;
 const AUDIO_COMPLETED: u8 = 0x13;
 
 // Track ADR/Control field codes
+const AUDIO_TRACK: u8 = 0x10; // FIXME: correct?
 const DATA_TRACK: u8 = 0x14;
 
-// Reference documentation:
-//
-// [PIONEER]: <https://bitsavers.trailing-edge.com/pdf/pioneer/cdrom/OB-U0077C_CD-ROM_SCSI-2_Command_Set_V3.1_19970626.pdf>:
 
 pub struct TrackInfo {
     /// The track number. Note that CD tracks don't necessarily start at number 1.
@@ -88,7 +91,7 @@ impl CdromBackend for IsoCdromBackend {
                 number: 1,
                 adr_control: DATA_TRACK,
                 sector: 0,
-            }
+            },
         ])
     }
 }
@@ -155,7 +158,32 @@ impl CdromBackend for CuesheetCdromBackend {
                 number: 1,
                 adr_control: DATA_TRACK,
                 sector: 0,
-            }
+            },
+            TrackInfo {
+                number: 2,
+                adr_control: AUDIO_TRACK,
+                sector: 20_000,
+            },
+            TrackInfo {
+                number: 3,
+                adr_control: AUDIO_TRACK,
+                sector: 20_000,
+            },
+            TrackInfo {
+                number: 4,
+                adr_control: AUDIO_TRACK,
+                sector: 40_000,
+            },
+            TrackInfo {
+                number: 5,
+                adr_control: AUDIO_TRACK,
+                sector: 50_000,
+            },
+            TrackInfo {
+                number: 6,
+                adr_control: AUDIO_TRACK,
+                sector: 60_000,
+            },
         ])
     }
 }
@@ -194,7 +222,28 @@ impl Default for ScsiTargetCdrom {
 impl ScsiTargetCdrom {
     const VALID_BLOCKSIZES: [usize; 2] = [512, 2048];
 
-    fn read_toc(&mut self, format: u8, track: u8, alloc_len: usize) -> Result<ScsiCmdResult> {
+    fn sector_to_address_field(&self, sector: u32, msf: bool) -> [u8; 4] {
+        // FIXME: is 00:02:00 pre-gap involved here?
+        if msf {
+            // A sector is also known as a "frame" in CD parlance.
+            let m = sector / 75 / 60;
+            let s = (sector / 75) % 60;
+            let f = sector % 75;
+            // [UNI-MAINZ] Table 237: MSF address format
+            [
+                0, // Reserved
+                m.try_into().unwrap(), // M field
+                s.try_into().unwrap(), // S field
+                f.try_into().unwrap(), // F field
+            ]
+        } else {
+            // FIXME: is this correct? I can't find any software that sets a non-2048 blocksize.
+            let lba = sector * 2048 / self.blocksize as u32;
+            u32::to_be_bytes(lba)
+        }
+    }
+
+    fn read_toc(&mut self, msf: bool, format: u8, track: u8, alloc_len: usize) -> Result<ScsiCmdResult> {
         let Some(backend) = &self.backend else {
             // No CD inserted
             self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
@@ -234,8 +283,7 @@ impl ScsiTargetCdrom {
                     result.push(t.adr_control); // ADR/Control
                     result.push(t.number); // Track Number
                     result.push(0); // Reserved
-                    // TODO: Convert address to MSF or LBA format depending on parameter
-                    result.extend_from_slice(&u32::to_be_bytes(t.sector)); // Absolute CD-ROM Address
+                    result.extend_from_slice(&self.sector_to_address_field(t.sector, msf)); // Absolute CD-ROM Address
                 }
 
                 // Emit lead-out track descriptor (FIXME: Is this correct?)
@@ -272,8 +320,7 @@ impl ScsiTargetCdrom {
                 result.push(first_track.adr_control); // ADR/Control
                 result.push(first_track.number); // First Track Number in Last Session
                 result.push(0); // Reserved
-                // TODO: Convert address to MSF or LBA format depending on parameter
-                result.extend_from_slice(&u32::to_be_bytes(first_track.sector)); // Absolute CD-ROM Address of the First Track in the Last Session
+                result.extend_from_slice(&self.sector_to_address_field(first_track.sector, msf)); // Absolute CD-ROM Address of the First Track in the Last Session
 
                 let data_length = result.len() - 2;
                 result[0..2].copy_from_slice(&u16::to_be_bytes(data_length.try_into()?));
@@ -524,7 +571,7 @@ impl ScsiTarget for ScsiTargetCdrom {
 
                 log::warn!("READ TOC msf {} format {} control {} track {} alloc_len {}", msf, format, control, track, alloc_len);
 
-                self.read_toc(format, track, alloc_len)
+                self.read_toc(msf != 0, format, track, alloc_len)
             }
             // VENDOR SPECIFIC (EJECT)
             0xC0 => {
