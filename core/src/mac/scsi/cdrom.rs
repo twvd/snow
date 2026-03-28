@@ -25,10 +25,13 @@ use super::STATUS_GOOD;
 const RAW_SECTOR_LEN: usize = 2352;
 const TRACK_LEADOUT: u8 = 0xAA;
 
+const AUDIO_COMPLETED: u8 = 0x13;
+
 pub trait CdromBackend: Send {
     fn byte_len(&self) -> usize;
     fn read_bytes(&self, offset: usize, length: usize) -> Vec<u8>;
     fn image_path(&self) -> Option<&Path>;
+    fn audio_status(&self) -> u8;
 }
 
 struct IsoCdromBackend {
@@ -54,6 +57,10 @@ impl CdromBackend for IsoCdromBackend {
 
     fn image_path(&self) -> Option<&Path> {
         self.image.image_path()
+    }
+
+    fn audio_status(&self) -> u8 {
+        AUDIO_COMPLETED
     }
 }
 
@@ -104,6 +111,11 @@ impl CdromBackend for CuesheetCdromBackend {
 
     fn image_path(&self) -> Option<&Path> {
         Some(&self.cue_path)
+    }
+
+    fn audio_status(&self) -> u8 {
+        // TODO: implement audio playback
+        AUDIO_COMPLETED
     }
 }
 
@@ -351,6 +363,12 @@ impl ScsiTarget for ScsiTargetCdrom {
 
                 Some(vec![0; 0x16])
             }
+            0x0e => {
+                // CD-ROM audio control parameters page
+
+                // TODO: Return info about port volumes, etc.
+                Some(vec![0; 0xe])
+            }
             0x30 => {
                 // ? Non-standard mode page
 
@@ -416,6 +434,45 @@ impl ScsiTarget for ScsiTargetCdrom {
             }
             // PREVENT/ALLOW MEDIA REMOVAL
             0x1E => Ok(ScsiCmdResult::Status(STATUS_GOOD)),
+            // READ SUB-CHANNEL
+            0x42 => {
+                let Some(backend) = &self.backend else {
+                    self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                };
+
+                let sub_q = (cmd[2] >> 5) & 0x1;
+                let format = cmd[3];
+                let track = cmd[6];
+                let alloc_len = u16::from_be_bytes(cmd[7..=8].try_into()?) as usize;
+
+                log::warn!("READ SUB-CHANNEL sub_q {} format {}, track {}, alloc_len {}", sub_q, format, track, alloc_len);
+
+                let mut result = vec![];
+
+                // Sub-channel data header (common to all formats)
+                result.push(0); // Reserved
+                result.push(backend.audio_status());
+                result.push(0); // Sub-channel data length (filled later)
+                result.push(0);
+
+                if sub_q != 0 {
+                    match format {
+                        _ => {
+                            log::warn!("Reading unknown sub-channel format {}", format);
+                            self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                        }
+                    }
+                }
+
+                let data_len = result.len() - 4;
+                result[2..4].copy_from_slice(&u16::to_be_bytes(data_len.try_into()?));
+                result.truncate(alloc_len);
+
+                Ok(ScsiCmdResult::DataIn(result))
+
+            }
             // READ TOC
             0x43 => {
                 let format = cmd[9] >> 6;

@@ -62,6 +62,8 @@ const fn scsi_cmd_len(cmdnum: u8) -> Option<usize> {
         | 0x2F
         // READ BUFFER(10)
         | 0x3C
+        // READ SUB-CHANNEL
+        | 0x42
         // READ TOC
         | 0x43
         // BlueSCSI Toolbox commands
