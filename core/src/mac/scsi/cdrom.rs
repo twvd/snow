@@ -22,11 +22,43 @@ use super::STATUS_GOOD;
 
 const TRACK_LEADOUT: u8 = 0xAA;
 
+pub trait CdromBackend: Send {
+    fn byte_len(&self) -> usize;
+    fn read_bytes(&self, offset: usize, length: usize) -> Vec<u8>;
+    fn image_path(&self) -> Option<&Path>;
+}
+
+struct IsoCdromBackend {
+    image: Box<dyn DiskImage>,
+}
+
+impl IsoCdromBackend {
+    fn new(image: Box<dyn DiskImage>) -> Self {
+        Self {
+            image
+        }
+    }
+}
+
+impl CdromBackend for IsoCdromBackend {
+    fn byte_len(&self) -> usize {
+        self.image.byte_len()
+    }
+
+    fn read_bytes(&self, offset: usize, length: usize) -> Vec<u8> {
+        self.image.read_bytes(offset, length)
+    }
+
+    fn image_path(&self) -> Option<&Path> {
+        self.image.image_path()
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub(super) struct ScsiTargetCdrom {
     /// Disk contents
     #[serde(skip)]
-    pub(super) backend: Option<Box<dyn DiskImage>>,
+    pub(super) backend: Option<Box<dyn CdromBackend>>,
 
     /// Check condition code
     cc_code: u8,
@@ -176,7 +208,7 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn load_image(&mut self, image: Box<dyn DiskImage>) -> Result<()> {
-        self.backend = Some(image);
+        self.backend = Some(Box::new(IsoCdromBackend::new(image)));
         self.cc_code = 0;
         self.cc_asc = 0;
         self.event_eject.get_clear();
@@ -184,9 +216,10 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn media(&self) -> Option<&[u8]> {
-        self.backend
-            .as_ref()
-            .and_then(|backend| backend.media_bytes())
+        unreachable!("Can't call media() on a CD-ROM");
+        // self.backend
+        //     .as_ref()
+        //     .and_then(|backend| backend.media_bytes())
     }
 
     fn take_event(&mut self) -> Option<ScsiTargetEvent> {
