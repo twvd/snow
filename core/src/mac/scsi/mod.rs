@@ -66,6 +66,8 @@ const fn scsi_cmd_len(cmdnum: u8) -> Option<usize> {
         | 0x42
         // READ TOC
         | 0x43
+        // PLAY AUDIO MSF
+        | 0x47
         // BlueSCSI Toolbox commands
         | 0xD0..=0xD9
         => Some(10),

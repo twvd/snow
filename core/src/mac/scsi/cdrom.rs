@@ -25,10 +25,12 @@ use super::CC_KEY_MEDIUM_ERROR;
 use super::STATUS_CHECK_CONDITION;
 use super::STATUS_GOOD;
 
-// Reference documentation:
+// The CD-ROM SCSI protocol is often confusing. Here is some useful documentation:
 //
 // [PIONEER]: <https://bitsavers.trailing-edge.com/pdf/pioneer/cdrom/OB-U0077C_CD-ROM_SCSI-2_Command_Set_V3.1_19970626.pdf>
 // [UNI-MAINZ]: <https://www.staff.uni-mainz.de/tacke/scsi/SCSI2-14.html>
+// [MBWIKI]: <https://wiki.musicbrainz.org/Disc_ID_Calculation>
+// [LIBODRAW]: <https://github.com/libyal/libodraw/blob/main/documentation/CUE%20sheet%20format.asciidoc>
 
 const RAW_SECTOR_LEN: usize = 2352;
 const TRACK_LEADOUT: u8 = 0xAA;
@@ -37,7 +39,7 @@ const TRACK_LEADOUT: u8 = 0xAA;
 const AUDIO_COMPLETED: u8 = 0x13;
 
 // Track ADR/Control field codes
-const AUDIO_TRACK: u8 = 0x10; // FIXME: correct?
+const AUDIO_TRACK: u8 = 0x00; // FIXME: correct?
 const DATA_TRACK: u8 = 0x14;
 
 pub struct TrackInfo {
@@ -54,16 +56,37 @@ pub trait CdromBackend: Send {
     fn read_bytes(&self, offset: usize, length: usize) -> Vec<u8>;
     fn image_path(&self) -> Option<&Path>;
     fn audio_status(&self) -> u8;
+
+    /// Return a list of tracks in the table of contents.
+    ///
+    /// Track numbers are not required to start at 1, but they must increase during iteration.
+    /// The final track is the leadout track, numbered 0xAA.
     fn tracks(&self) -> Option<&[TrackInfo]>;
 }
 
 struct IsoCdromBackend {
     image: Box<dyn DiskImage>,
+    tracks: [TrackInfo; 2],
 }
 
 impl IsoCdromBackend {
-    fn new(image: Box<dyn DiskImage>) -> Self {
-        Self { image }
+    fn new(image: Box<dyn DiskImage>) -> Result<Self> {
+        let leadout_sector = image.byte_len().div_ceil(2048).try_into()?;
+        Ok(Self {
+            image,
+            tracks: [
+                TrackInfo {
+                    number: 1,
+                    adr_control: DATA_TRACK,
+                    sector: 0,
+                },
+                TrackInfo {
+                    number: TRACK_LEADOUT,
+                    adr_control: DATA_TRACK,
+                    sector: leadout_sector,
+                },
+            ],
+        })
     }
 }
 
@@ -86,11 +109,7 @@ impl CdromBackend for IsoCdromBackend {
     }
 
     fn tracks(&self) -> Option<&[TrackInfo]> {
-        Some(&[TrackInfo {
-            number: 1,
-            adr_control: DATA_TRACK,
-            sector: 0,
-        }])
+        Some(&self.tracks)
     }
 }
 
@@ -243,27 +262,32 @@ impl CdromBackend for CuesheetCdromBackend {
             TrackInfo {
                 number: 2,
                 adr_control: AUDIO_TRACK,
-                sector: 20_000,
+                sector: 300_000,
             },
             TrackInfo {
                 number: 3,
                 adr_control: AUDIO_TRACK,
-                sector: 30_000,
+                sector: 305_000,
             },
             TrackInfo {
                 number: 4,
                 adr_control: AUDIO_TRACK,
-                sector: 40_000,
+                sector: 310_000,
             },
             TrackInfo {
                 number: 5,
                 adr_control: AUDIO_TRACK,
-                sector: 50_000,
+                sector: 315_000,
             },
             TrackInfo {
                 number: 6,
                 adr_control: AUDIO_TRACK,
-                sector: 60_000,
+                sector: 320_000,
+            },
+            TrackInfo {
+                number: TRACK_LEADOUT,
+                adr_control: DATA_TRACK,
+                sector: 330_000,
             },
         ])
     }
@@ -359,7 +383,7 @@ impl ScsiTargetCdrom {
 
                 // FIXME: avoid unwrap
                 result.push(tracks.first().unwrap().number); // First Track Number
-                result.push(tracks.last().unwrap().number); // Last Track Number
+                result.push(tracks.iter().rev().nth(1).unwrap().number); // Last Track Number
 
                 // Start at the given track or the next available track
                 let track_iter = tracks.iter().skip_while(|t| t.number < track);
@@ -373,13 +397,6 @@ impl ScsiTargetCdrom {
                     result.extend_from_slice(&self.sector_to_address_field(t.sector, msf));
                     // Absolute CD-ROM Address
                 }
-
-                // Emit lead-out track descriptor (FIXME: Is this correct?)
-                result.push(0); // Reserved
-                result.push(DATA_TRACK); // ADR/Control (FIXME: is this correct for the lead-out track?)
-                result.push(TRACK_LEADOUT); // Track Number
-                result.push(0); // Reserved
-                result.extend_from_slice(&u32::to_be_bytes(0)); // Absolute CD-ROM Address (FIXME: is this correct?)
 
                 // Set data length field
                 let data_length = result.len() - 2;
@@ -401,7 +418,7 @@ impl ScsiTargetCdrom {
                 result.push(1); // Last Session Number
 
                 // This command queries the "first track in the last session" apparently...
-                let first_track = tracks.last().unwrap();
+                let first_track = tracks.first().unwrap();
 
                 // [PIONEER] Table 2-28D: Track Descriptors
                 result.push(0); // Reserved
@@ -463,7 +480,7 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn load_image(&mut self, image: Box<dyn DiskImage>) -> Result<()> {
-        self.backend = Some(Box::new(IsoCdromBackend::new(image)));
+        self.backend = Some(Box::new(IsoCdromBackend::new(image)?));
         self.cc_code = 0;
         self.cc_asc = 0;
         self.event_eject.get_clear();
@@ -626,14 +643,6 @@ impl ScsiTarget for ScsiTargetCdrom {
                 let track = cmd[6];
                 let alloc_len = u16::from_be_bytes(cmd[7..=8].try_into()?) as usize;
 
-                log::warn!(
-                    "READ SUB-CHANNEL sub_q {} format {}, track {}, alloc_len {}",
-                    sub_q,
-                    format,
-                    track,
-                    alloc_len
-                );
-
                 let mut result = vec![
                     // Sub-channel data header (common to all formats)
                     0, // Reserved
@@ -663,16 +672,28 @@ impl ScsiTarget for ScsiTargetCdrom {
                 let track = cmd[6];
                 let alloc_len = u16::from_be_bytes(cmd[7..=8].try_into()?) as usize;
 
-                log::warn!(
-                    "READ TOC msf {} format {} control {} track {} alloc_len {}",
-                    msf,
-                    format,
-                    control,
-                    track,
-                    alloc_len
-                );
+                if control != 0 {
+                    log::warn!("Unimplemented READ TOC control 0x{:X}", control);
+                }
 
                 self.read_toc(msf != 0, format, track, alloc_len)
+            }
+            // PLAY AUDIO MSF
+            0x47 => {
+                let (start_m, start_s, start_f) = (cmd[3], cmd[4], cmd[5]);
+                let (end_m, end_s, end_f) = (cmd[6], cmd[7], cmd[8]);
+
+                log::warn!(
+                    "PLAY AUDIO MSF start {}:{}:{} end {}:{}:{}",
+                    start_m,
+                    start_s,
+                    start_f,
+                    end_m,
+                    end_s,
+                    end_f
+                );
+
+                Ok(ScsiCmdResult::Status(STATUS_GOOD))
             }
             // VENDOR SPECIFIC (EJECT)
             0xC0 => {
