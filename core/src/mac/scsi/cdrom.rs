@@ -633,6 +633,7 @@ impl ScsiTarget for ScsiTargetCdrom {
             0x1E => Ok(ScsiCmdResult::Status(STATUS_GOOD)),
             // READ SUB-CHANNEL
             0x42 => {
+                // Apple Audio CD Player uses this command to query the playback position.
                 let Some(backend) = &self.backend else {
                     self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
@@ -640,7 +641,7 @@ impl ScsiTarget for ScsiTargetCdrom {
 
                 let sub_q = (cmd[2] >> 5) & 0x1;
                 let format = cmd[3];
-                let track = cmd[6];
+                let _track = cmd[6];
                 let alloc_len = u16::from_be_bytes(cmd[7..=8].try_into()?) as usize;
 
                 let mut result = vec![
