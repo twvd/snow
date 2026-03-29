@@ -806,6 +806,8 @@ where
             self.via2.ifr.set_slot(true);
         }
 
+        self.scsi.tick(ticks)?;
+
         self.via2.ifr.set_scsi_irq(self.scsi.get_irq());
         self.via2.ifr.set_scsi_drq(self.scsi.get_drq());
 

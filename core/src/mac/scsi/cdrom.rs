@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::str::Chars;
 
 use crate::debuggable::Debuggable;
+use crate::mac::macii::bus::CLOCK_SPEED;
 use crate::tickable::Ticks;
 use crate::types::LatchingEvent;
 
@@ -37,11 +38,22 @@ const RAW_SECTOR_LEN: usize = 2352;
 const TRACK_LEADOUT: u8 = 0xAA;
 
 // Audio status codes
+//
+// [TOSHIBA] Table 2-27C: Audio Status
+const AUDIO_PLAYING: u8 = 0x11;
+const AUDIO_PAUSED: u8 = 0x12;
 const AUDIO_COMPLETED: u8 = 0x13;
 
 // Track ADR/Control field codes
 const AUDIO_TRACK: u8 = 0x00; // FIXME: correct?
 const DATA_TRACK: u8 = 0x14;
+
+const AUDIO_SECTORS_PER_SEC: u64 = 75;
+
+fn msf_to_sector(m: u8, s: u8, f: u8) -> u32 {
+    // FIXME: Is 00:02:00 pregap involved here?
+    (m as u32 * 60 + s as u32) * 75 + f as u32
+}
 
 pub struct TrackInfo {
     /// The track number. Note that CD tracks don't necessarily start at number 1.
@@ -56,7 +68,6 @@ pub trait CdromBackend: Send {
     fn byte_len(&self) -> usize;
     fn read_bytes(&self, offset: usize, length: usize) -> Vec<u8>;
     fn image_path(&self) -> Option<&Path>;
-    fn audio_status(&self) -> u8;
 
     /// Return a list of tracks in the table of contents.
     ///
@@ -102,11 +113,6 @@ impl CdromBackend for IsoCdromBackend {
 
     fn image_path(&self) -> Option<&Path> {
         self.image.image_path()
-    }
-
-    fn audio_status(&self) -> u8 {
-        // ISO's do not support audio playback.
-        AUDIO_COMPLETED
     }
 
     fn tracks(&self) -> Option<&[TrackInfo]> {
@@ -241,11 +247,6 @@ impl CdromBackend for CuesheetCdromBackend {
         Some(&self.cue_path)
     }
 
-    fn audio_status(&self) -> u8 {
-        // TODO: implement audio playback
-        AUDIO_COMPLETED
-    }
-
     // TODO: read from cuesheet
     fn tracks(&self) -> Option<&[TrackInfo]> {
         Some(&[
@@ -288,6 +289,13 @@ impl CdromBackend for CuesheetCdromBackend {
     }
 }
 
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
+enum PlaybackState {
+    Stopped,
+    Paused,
+    Playing,
+}
+
 #[derive(Serialize, Deserialize)]
 pub(super) struct ScsiTargetCdrom {
     /// Disk contents
@@ -305,6 +313,18 @@ pub(super) struct ScsiTargetCdrom {
 
     /// Block size
     blocksize: usize,
+
+    /// Playback state
+    playback_state: PlaybackState,
+
+    /// Playback position in sectors
+    playback_pos: u32,
+
+    /// Playback stop sector
+    playback_stop: u32,
+
+    /// Playback clock (counts ticks up 75 audio CD frames per second)
+    playback_clock: Ticks,
 }
 
 impl Default for ScsiTargetCdrom {
@@ -315,6 +335,10 @@ impl Default for ScsiTargetCdrom {
             cc_asc: 0,
             event_eject: Default::default(),
             blocksize: 2048,
+            playback_state: PlaybackState::Stopped,
+            playback_pos: 0,
+            playback_stop: 0,
+            playback_clock: 0,
         }
     }
 }
@@ -608,6 +632,19 @@ impl ScsiTarget for ScsiTargetCdrom {
 
     fn specific_cmd(&mut self, cmd: &[u8], _outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
         match cmd[0] {
+            // REZERO UNIT
+            0x01 => {
+                // Used by Apple Audio CD Player when user presses Stop.
+                //
+                // [TOSHIBA] 2.33:
+                //
+                // The drive loads the specified logical unit (if necessary), spins up the disc (if stopped), moves the
+                // head to the start track of the disc, and holds it there until an inactivity time-out occurs. If the
+                // initiator requests a disconnect, the drive disconnects from it during load and seek operations.
+                // This command does not affect modes specified by the MODE SELECT command.
+                log::warn!("REZERO UNIT");
+                Ok(ScsiCmdResult::Status(STATUS_GOOD))
+            }
             // READ(6) (no media)
             0x08 => {
                 self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
@@ -628,36 +665,96 @@ impl ScsiTarget for ScsiTargetCdrom {
             0x1E => Ok(ScsiCmdResult::Status(STATUS_GOOD)),
             // READ SUB-CHANNEL
             0x42 => {
-                // Apple Audio CD Player uses this command to query the playback status.
+                // Used by Apple Audio CD Player to query playback status.
                 let Some(backend) = &self.backend else {
                     self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
 
+                let Some(tracks) = backend.tracks() else {
+                    self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                };
+
+                let msf = (cmd[1] >> 1) & 0x1;
                 let sub_q = (cmd[2] >> 5) & 0x1;
                 let format = cmd[3];
-                let _track = cmd[6];
+                let track = cmd[6];
                 let alloc_len = u16::from_be_bytes(cmd[7..=8].try_into()?) as usize;
 
+                log::warn!(
+                    "READ SUB-CHANNEL msf {} sub_q {} format {} track {} alloc_len {}",
+                    msf,
+                    sub_q,
+                    format,
+                    track,
+                    alloc_len
+                );
+
+                let audio_status = match self.playback_state {
+                    PlaybackState::Stopped => AUDIO_COMPLETED,
+                    PlaybackState::Paused => AUDIO_PAUSED,
+                    PlaybackState::Playing => AUDIO_PLAYING,
+                };
+
                 let mut result = vec![
-                    // Sub-channel data header (common to all formats)
+                    // [TOSHIBA] Table 2-27A: Sub-channel data header (common to all formats)
                     0, // Reserved
-                    backend.audio_status(),
+                    audio_status,
                     0, // Sub-channel data length (will be set later)
                     0,
                 ];
 
                 if sub_q != 0 {
-                    // TODO: Implement sub-channel formats
-                    log::warn!("Reading unknown sub-channel format {}", format);
+                    // TODO: Implement sub-channel data block stuff
+                    log::warn!("Reading unknown sub_q stuff, format {}", format);
                     self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
+                match format {
+                    0x01 => {
+                        // CD-ROM Current Position
+                        // Find current track at playback position
+                        // TODO: avoid unwrap
+                        let track = tracks
+                            .iter()
+                            .rev()
+                            .find(|t| t.sector <= self.playback_pos)
+                            .unwrap();
+
+                        log::warn!(
+                            "playback pos is at sector {} (in track #{} at sector {})",
+                            self.playback_pos,
+                            track.number,
+                            track.sector
+                        );
+
+                        // [TOSHIBA] Table 2-27F: CD-ROM Current Position Data Block
+                        result.push(0x01); // Sub Channel Data Format code
+                        result.push(track.adr_control); // ADR/Control
+                        result.push(track.number); // Track Number
+                        result.push(1); // Index Number (TODO: Find correct index number)
+                        result.extend_from_slice(
+                            &self.sector_to_address_field(self.playback_pos, msf != 0),
+                        );
+                        let track_relative = self.playback_pos - track.sector;
+                        result.extend_from_slice(
+                            &self.sector_to_address_field(track_relative, msf != 0),
+                        );
+                    }
+                    _ => {
+                        // TODO: Implement sub-channel data block stuff
+                        log::warn!("Reading unknown sub-channel format {}", format);
+                        self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                        return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                    }
+                }
+
                 let data_len = result.len() - 4;
                 result[2..4].copy_from_slice(&u16::to_be_bytes(data_len.try_into()?));
-                result.truncate(alloc_len);
 
+                result.truncate(alloc_len);
                 Ok(ScsiCmdResult::DataIn(result))
             }
             // READ TOC
@@ -689,11 +786,85 @@ impl ScsiTarget for ScsiTargetCdrom {
                     end_f
                 );
 
+                self.playback_pos = msf_to_sector(start_m, start_s, start_f);
+                self.playback_stop = msf_to_sector(end_m, end_s, end_f);
+                self.playback_clock = 0;
+                self.playback_state = PlaybackState::Playing;
+
+                Ok(ScsiCmdResult::Status(STATUS_GOOD))
+            }
+            // PAUSE/RESUME
+            0x4B => {
+                let resume = cmd[8] & 0x1;
+
+                log::warn!("PAUSE/RESUME resume {}", resume);
+
+                // FIXME: What happens if pause/resume is activated while no track is playing?
+                self.playback_state = if resume != 0 {
+                    PlaybackState::Playing
+                } else {
+                    PlaybackState::Paused
+                };
+
                 Ok(ScsiCmdResult::Status(STATUS_GOOD))
             }
             // VENDOR SPECIFIC (EJECT)
             0xC0 => {
                 self.eject_media();
+                Ok(ScsiCmdResult::Status(STATUS_GOOD))
+            }
+            // AUDIO SCAN (1)
+            0xCD => {
+                // Also known as fast-forward or rewind.
+
+                let Some(backend) = &self.backend else {
+                    self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                };
+
+                let Some(tracks) = backend.tracks() else {
+                    self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                };
+
+                let direct = (cmd[1] >> 4) & 0x1; // Scan forwards if set, backwards if unset.
+                let addr_type = (cmd[9] >> 6) & 0x3;
+                let start_addr = &cmd[2..=5];
+                log::warn!(
+                    "AUDIO SCAN (1) direct {} addr_type {} start_addr {:?}",
+                    direct,
+                    addr_type,
+                    start_addr
+                );
+
+                // Convert start address to sector
+                let _start_addr = match addr_type {
+                    // Logical Block Address
+                    0b00 => u32::from_be_bytes(start_addr.try_into()?),
+                    // CD absolute time
+                    0b01 => msf_to_sector(start_addr[1], start_addr[2], start_addr[3]),
+                    // Track Number
+                    0b10 => {
+                        // Start at the given track or the next available track
+                        // FIXME: what should happen if specified track is not available?
+                        // TODO: avoid unwrap
+                        let track = tracks.iter().find(|t| t.number >= start_addr[3]).unwrap();
+                        track.sector
+                    }
+                    // Reserved
+                    _ => {
+                        self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                        return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                    }
+                };
+
+                // TODO: implement audio scan
+                //
+                // [TOSHIBA] 2.1:
+                //
+                // When AUDIO SCAN (1) is executed, the drive begins a high-speed scan from the Scan Start
+                // Address. The drive plays a block as it crosses each track. Each scan is approximately 15 seconds.
+
                 Ok(ScsiCmdResult::Status(STATUS_GOOD))
             }
             _ => {
@@ -756,9 +927,20 @@ impl ScsiTarget for ScsiTargetCdrom {
         None
     }
 
-    fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
-        // TODO: implement CD audio playback
-        Ok(ticks)
+    fn tick(&mut self, ticks: Ticks) -> Result<()> {
+        if self.playback_state == PlaybackState::Playing {
+            self.playback_clock += ticks;
+            if self.playback_clock >= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC {
+                self.playback_clock -= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC;
+
+                self.playback_pos += 1;
+                if self.playback_pos >= self.playback_stop {
+                    self.playback_state = PlaybackState::Stopped;
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

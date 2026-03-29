@@ -343,7 +343,7 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
         }
     }
 
-    fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
-        Ok(ticks)
+    fn tick(&mut self, _ticks: Ticks) -> Result<()> {
+        Ok(())
     }
 }
