@@ -515,7 +515,7 @@ where
             self.read_ticks_program::<Word>(fetch_addr)?
         };
         self.prefetch.push_back(new_item);
-        self.regs.pc = (self.regs.pc + 2) & ADDRESS_MASK;
+        self.regs.pc = self.regs.pc.wrapping_add(2) & ADDRESS_MASK;
         Ok(())
     }
 
