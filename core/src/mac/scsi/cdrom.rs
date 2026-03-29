@@ -94,34 +94,49 @@ impl CdromBackend for IsoCdromBackend {
     }
 }
 
-fn read_cue_token(reader: &mut Peekable<Chars>) -> Option<String> {
-    // Consume whitespace
+fn skip_whitespace(reader: &mut Peekable<Chars>) {
     while reader.peek().map(|c| c.is_whitespace()).unwrap_or(false) {
         reader.next();
     }
+}
+
+fn read_cue_word(reader: &mut Peekable<Chars>) -> Option<String> {
+    skip_whitespace(reader);
 
     reader.peek()?;
 
     let mut result = String::new();
 
-    if *reader.peek().unwrap() == '"' {
-        // Parse quoted string
+    while reader.peek().map(|c| !c.is_whitespace()).unwrap_or(false) {
         result.push(reader.next().unwrap());
-        // FIXME: do cue files have \" escapes?
-        while reader.peek().map(|c| *c != '"').unwrap_or(false) {
-            result.push(reader.next().unwrap());
-        }
-        // Push final " if present
-        if reader.peek().is_some() {
-            result.push(reader.next().unwrap());
-        }
-    } else {
-        while reader.peek().map(|c| !c.is_whitespace()).unwrap_or(false) {
-            result.push(reader.next().unwrap());
-        }
     }
 
     Some(result)
+}
+
+fn read_cue_path(reader: &mut Peekable<Chars>) -> Option<String> {
+    skip_whitespace(reader);
+
+    reader.peek()?;
+
+    if *reader.peek().unwrap() == '"' {
+        reader.next();
+
+        let mut result = String::new();
+
+        while reader.peek().map(|c| *c != '"').unwrap_or(false) {
+            result.push(reader.next().unwrap());
+        }
+
+        // Skip final '"' if present
+        if reader.peek().is_some() {
+            reader.next();
+        }
+
+        Some(result)
+    } else {
+        read_cue_word(reader)
+    }
 }
 
 struct CuesheetCdromBackend {
@@ -140,10 +155,10 @@ impl CuesheetCdromBackend {
             let line = line?;
             let mut chars = line.chars().peekable();
 
-            if let Some(command) = read_cue_token(&mut chars) {
+            if let Some(command) = read_cue_word(&mut chars) {
                 match command.as_str() {
                     "FILE" => {
-                        let data_file_path = read_cue_token(&mut chars)
+                        let data_file_path = read_cue_path(&mut chars)
                             .ok_or_else(|| anyhow!("Failed to parse FILE command"))?;
                         let data_file_path = if data_file_path.chars().nth(0) == Some('"') {
                             // Omit quotes
@@ -156,7 +171,7 @@ impl CuesheetCdromBackend {
                         let data_file = File::open(data_file_path)?;
                         data_files.push(data_file);
 
-                        let file_type = read_cue_token(&mut chars)
+                        let file_type = read_cue_word(&mut chars)
                             .ok_or_else(|| anyhow!("Failed to parse FILE command"))?;
                         if file_type != "BINARY" {
                             bail!("Unsupported data file type in cuesheet");
@@ -233,7 +248,7 @@ impl CdromBackend for CuesheetCdromBackend {
             TrackInfo {
                 number: 3,
                 adr_control: AUDIO_TRACK,
-                sector: 20_000,
+                sector: 30_000,
             },
             TrackInfo {
                 number: 4,
@@ -619,13 +634,13 @@ impl ScsiTarget for ScsiTargetCdrom {
                     alloc_len
                 );
 
-                let mut result = vec![];
-
-                // Sub-channel data header (common to all formats)
-                result.push(0); // Reserved
-                result.push(backend.audio_status());
-                result.push(0); // Sub-channel data length (filled later)
-                result.push(0);
+                let mut result = vec![
+                    // Sub-channel data header (common to all formats)
+                    0, // Reserved
+                    backend.audio_status(),
+                    0, // Sub-channel data length (will be set later)
+                    0,
+                ];
 
                 if sub_q != 0 {
                     // TODO: Implement sub-channel formats
