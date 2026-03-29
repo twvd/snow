@@ -11,6 +11,7 @@ use crate::mac::scsi::{
     ASC_MEDIUM_NOT_PRESENT, CC_KEY_ILLEGAL_REQUEST, CC_KEY_MEDIUM_ERROR, STATUS_CHECK_CONDITION,
     STATUS_GOOD,
 };
+use crate::tickable::Ticks;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 /// Enumeration of supported emulated SCSI target types (devices)
@@ -340,5 +341,9 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
             }
             _ => self.specific_cmd(cmd, outdata),
         }
+    }
+
+    fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+        Ok(ticks)
     }
 }
