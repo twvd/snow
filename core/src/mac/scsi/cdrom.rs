@@ -39,7 +39,7 @@ const TRACK_LEADOUT: u8 = 0xAA;
 
 // Audio status codes
 //
-// [TOSHIBA] Table 2-27C: Audio Status
+// [PIONEER] Table 2-27C: Audio Status
 const AUDIO_PLAYING: u8 = 0x11;
 const AUDIO_PAUSED: u8 = 0x12;
 const AUDIO_COMPLETED: u8 = 0x13;
@@ -636,7 +636,7 @@ impl ScsiTarget for ScsiTargetCdrom {
             0x01 => {
                 // Used by Apple Audio CD Player when user presses Stop.
                 //
-                // [TOSHIBA] 2.33:
+                // [PIONEER] 2.33:
                 //
                 // The drive loads the specified logical unit (if necessary), spins up the disc (if stopped), moves the
                 // head to the start track of the disc, and holds it there until an inactivity time-out occurs. If the
@@ -698,7 +698,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 };
 
                 let mut result = vec![
-                    // [TOSHIBA] Table 2-27A: Sub-channel data header (common to all formats)
+                    // [PIONEER] Table 2-27A: Sub-channel data header (common to all formats)
                     0, // Reserved
                     audio_status,
                     0, // Sub-channel data length (will be set later)
@@ -730,7 +730,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                             track.sector
                         );
 
-                        // [TOSHIBA] Table 2-27F: CD-ROM Current Position Data Block
+                        // [PIONEER] Table 2-27F: CD-ROM Current Position Data Block
                         result.push(0x01); // Sub Channel Data Format code
                         result.push(track.adr_control); // ADR/Control
                         result.push(track.number); // Track Number
@@ -860,7 +860,7 @@ impl ScsiTarget for ScsiTargetCdrom {
 
                 // TODO: implement audio scan
                 //
-                // [TOSHIBA] 2.1:
+                // [PIONEER] 2.1:
                 //
                 // When AUDIO SCAN (1) is executed, the drive begins a high-speed scan from the Scan Start
                 // Address. The drive plays a block as it crosses each track. Each scan is approximately 15 seconds.
