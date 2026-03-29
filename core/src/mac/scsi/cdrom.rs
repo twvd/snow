@@ -290,7 +290,7 @@ impl CdromBackend for CuesheetCdromBackend {
 }
 
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
-enum PlaybackState {
+enum AudioState {
     Stopped,
     Paused,
     Playing,
@@ -314,17 +314,17 @@ pub(super) struct ScsiTargetCdrom {
     /// Block size
     blocksize: usize,
 
-    /// Playback state
-    playback_state: PlaybackState,
+    /// Audio state
+    audio_state: AudioState,
 
-    /// Playback position in sectors
-    playback_pos: u32,
+    /// Current audio sector
+    audio_pos: u32,
 
-    /// Playback stop sector
-    playback_stop: u32,
+    /// Audio stop sector
+    audio_stop: u32,
 
-    /// Playback clock (counts ticks up 75 audio CD frames per second)
-    playback_clock: Ticks,
+    /// Audio clock (counts ticks up 75 audio CD frames per second)
+    audio_clock: Ticks,
 }
 
 impl Default for ScsiTargetCdrom {
@@ -335,10 +335,10 @@ impl Default for ScsiTargetCdrom {
             cc_asc: 0,
             event_eject: Default::default(),
             blocksize: 2048,
-            playback_state: PlaybackState::Stopped,
-            playback_pos: 0,
-            playback_stop: 0,
-            playback_clock: 0,
+            audio_state: AudioState::Stopped,
+            audio_pos: 0,
+            audio_stop: 0,
+            audio_clock: 0,
         }
     }
 }
@@ -475,6 +475,13 @@ impl ScsiTargetCdrom {
         self.cc_asc = 0;
         self.event_eject.get_clear();
         Ok(())
+    }
+
+    fn get_track_at_sector(&self, sector: u32) -> Option<&TrackInfo> {
+        self.backend.as_ref()?.tracks()?
+            .iter()
+            .rev()
+            .find(|t| t.sector <= sector)
     }
 }
 
@@ -643,6 +650,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 // initiator requests a disconnect, the drive disconnects from it during load and seek operations.
                 // This command does not affect modes specified by the MODE SELECT command.
                 log::warn!("REZERO UNIT");
+                self.audio_state = AudioState::Stopped;
                 Ok(ScsiCmdResult::Status(STATUS_GOOD))
             }
             // READ(6) (no media)
@@ -691,10 +699,10 @@ impl ScsiTarget for ScsiTargetCdrom {
                     alloc_len
                 );
 
-                let audio_status = match self.playback_state {
-                    PlaybackState::Stopped => AUDIO_COMPLETED,
-                    PlaybackState::Paused => AUDIO_PAUSED,
-                    PlaybackState::Playing => AUDIO_PLAYING,
+                let audio_status = match self.audio_state {
+                    AudioState::Stopped => AUDIO_COMPLETED,
+                    AudioState::Paused => AUDIO_PAUSED,
+                    AudioState::Playing => AUDIO_PLAYING,
                 };
 
                 let mut result = vec![
@@ -716,16 +724,15 @@ impl ScsiTarget for ScsiTargetCdrom {
                     0x01 => {
                         // CD-ROM Current Position
                         // Find current track at playback position
-                        // TODO: avoid unwrap
-                        let track = tracks
-                            .iter()
-                            .rev()
-                            .find(|t| t.sector <= self.playback_pos)
-                            .unwrap();
+                        let Some(track) = self.get_track_at_sector(self.audio_pos) else {
+                            // FIXME: correct?
+                            self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                        };
 
                         log::warn!(
-                            "playback pos is at sector {} (in track #{} at sector {})",
-                            self.playback_pos,
+                            "audio pos is at sector {} (in track #{} at sector {})",
+                            self.audio_pos,
                             track.number,
                             track.sector
                         );
@@ -736,9 +743,9 @@ impl ScsiTarget for ScsiTargetCdrom {
                         result.push(track.number); // Track Number
                         result.push(1); // Index Number (TODO: Find correct index number)
                         result.extend_from_slice(
-                            &self.sector_to_address_field(self.playback_pos, msf != 0),
+                            &self.sector_to_address_field(self.audio_pos, msf != 0),
                         );
-                        let track_relative = self.playback_pos - track.sector;
+                        let track_relative = self.audio_pos - track.sector;
                         result.extend_from_slice(
                             &self.sector_to_address_field(track_relative, msf != 0),
                         );
@@ -786,10 +793,22 @@ impl ScsiTarget for ScsiTargetCdrom {
                     end_f
                 );
 
-                self.playback_pos = msf_to_sector(start_m, start_s, start_f);
-                self.playback_stop = msf_to_sector(end_m, end_s, end_f);
-                self.playback_clock = 0;
-                self.playback_state = PlaybackState::Playing;
+                let start_sector = msf_to_sector(start_m, start_s, start_f);
+                let stop_sector = msf_to_sector(end_m, end_s, end_f);
+                
+                // [PIONEER]: 2.13:
+                // If the starting address is not found, or if the address is not within an audio track, or if a not ready
+                // condition exists, the drive will terminate with a Check Condition status. 
+                let start_track = self.get_track_at_sector(start_sector);
+                if start_track.map(|t| t.adr_control != AUDIO_TRACK).unwrap_or(false) {
+                    self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                }
+
+                self.audio_pos = start_sector;
+                self.audio_stop = stop_sector;
+                self.audio_clock = 0;
+                self.audio_state = AudioState::Playing;
 
                 Ok(ScsiCmdResult::Status(STATUS_GOOD))
             }
@@ -800,10 +819,10 @@ impl ScsiTarget for ScsiTargetCdrom {
                 log::warn!("PAUSE/RESUME resume {}", resume);
 
                 // FIXME: What happens if pause/resume is activated while no track is playing?
-                self.playback_state = if resume != 0 {
-                    PlaybackState::Playing
+                self.audio_state = if resume != 0 {
+                    AudioState::Playing
                 } else {
-                    PlaybackState::Paused
+                    AudioState::Paused
                 };
 
                 Ok(ScsiCmdResult::Status(STATUS_GOOD))
@@ -928,14 +947,14 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn tick(&mut self, ticks: Ticks) -> Result<()> {
-        if self.playback_state == PlaybackState::Playing {
-            self.playback_clock += ticks;
-            if self.playback_clock >= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC {
-                self.playback_clock -= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC;
+        if self.audio_state == AudioState::Playing {
+            self.audio_clock += ticks;
+            if self.audio_clock >= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC {
+                self.audio_clock -= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC;
 
-                self.playback_pos += 1;
-                if self.playback_pos >= self.playback_stop {
-                    self.playback_state = PlaybackState::Stopped;
+                self.audio_pos += 1;
+                if self.audio_pos >= self.audio_stop {
+                    self.audio_state = AudioState::Stopped;
                 }
             }
         }
