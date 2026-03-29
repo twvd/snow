@@ -23,6 +23,8 @@ const fn scsi_cmd_len(cmdnum: u8) -> Option<usize> {
     match cmdnum {
         // UNIT READY
         0x00
+        // REZERO UNIT
+        | 0x01
         // REQUEST SENSE
         | 0x03
         // FORMAT UNIT
@@ -68,6 +70,10 @@ const fn scsi_cmd_len(cmdnum: u8) -> Option<usize> {
         | 0x43
         // PLAY AUDIO MSF
         | 0x47
+        // PAUSE/RESUME
+        | 0x4B
+        // AUDIO SCAN (1)
+        | 0xCD
         // BlueSCSI Toolbox commands
         | 0xD0..=0xD9
         => Some(10),

@@ -774,6 +774,7 @@ where
                 self.last_audiosample = audiosample;
             }
 
+            self.scsi.tick(ticks)?;
             self.swim.tick(ticks)?;
         }
 
