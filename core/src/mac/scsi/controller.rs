@@ -27,6 +27,7 @@ use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::scsi::toolbox::BlueSCSI;
 use crate::mac::scsi::ScsiCmdResult;
 use crate::mac::scsi::STATUS_GOOD;
+use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
 
 #[allow(dead_code)]
@@ -662,6 +663,16 @@ impl BusMember<Address> for ScsiController {
                 Some(())
             }
         }
+    }
+}
+
+impl Tickable for ScsiController {
+    fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+        for target in self.targets.iter_mut().flatten() {
+            target.tick(ticks)?;
+        }
+
+        Ok(ticks)
     }
 }
 

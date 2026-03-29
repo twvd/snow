@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::str::Chars;
 
 use crate::debuggable::Debuggable;
+use crate::tickable::Ticks;
 use crate::types::LatchingEvent;
 
 use super::disk_image::{DiskImage, FileDiskImage};
@@ -179,12 +180,6 @@ impl CuesheetCdromBackend {
                     "FILE" => {
                         let data_file_path = read_cue_path(&mut chars)
                             .ok_or_else(|| anyhow!("Failed to parse FILE command"))?;
-                        let data_file_path = if data_file_path.chars().nth(0) == Some('"') {
-                            // Omit quotes
-                            &data_file_path[1..data_file_path.len() - 1]
-                        } else {
-                            &data_file_path
-                        };
                         let data_file_path = cue_dir.join(Path::new(&data_file_path));
                         println!("Loading datafile from {}", data_file_path.to_string_lossy());
                         let data_file = File::open(data_file_path)?;
@@ -633,7 +628,7 @@ impl ScsiTarget for ScsiTargetCdrom {
             0x1E => Ok(ScsiCmdResult::Status(STATUS_GOOD)),
             // READ SUB-CHANNEL
             0x42 => {
-                // Apple Audio CD Player uses this command to query the playback position.
+                // Apple Audio CD Player uses this command to query the playback status.
                 let Some(backend) = &self.backend else {
                     self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
@@ -759,6 +754,11 @@ impl ScsiTarget for ScsiTargetCdrom {
     #[cfg(feature = "ethernet")]
     fn eth_link(&self) -> Option<super::ethernet::EthernetLinkType> {
         None
+    }
+
+    fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+        // TODO: implement CD audio playback
+        Ok(ticks)
     }
 }
 
