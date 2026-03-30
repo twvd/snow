@@ -235,17 +235,15 @@ where
         self.via.rtc.effective_speed()
     }
 
-    // pub(crate) fn set_audio_sink(&mut self, sink: Box<dyn AudioSink>) {
-    //     self.audio.set_sink(sink);
-    // }
-
     pub fn set_audio_provider(&mut self, provider: Arc<Mutex<dyn AudioProvider>>) {
+        let provider = provider.lock().unwrap();
+
         let sink = provider
-            .lock()
-            .unwrap()
             .create_stream()
             .unwrap_or(Box::new(ChannelAudioSink::new()));
         self.audio.set_sink(sink);
+
+        self.scsi.set_audio_provider(&*provider);
     }
 
     fn soundbuf(&mut self) -> &mut [u8] {

@@ -338,6 +338,14 @@ impl ScsiTargetCdrom {
     pub fn new(audio_provider: Option<&dyn AudioProvider>) -> Self {
         // FIXME: avoid unwrap
         let audio_sink = audio_provider.map(|ap| ap.create_stream().unwrap());
+        println!(
+            "CD audio sink: {}",
+            if audio_sink.is_some() {
+                "created"
+            } else {
+                "blank"
+            }
+        );
         Self {
             backend: None,
             cc_code: 0,
@@ -945,6 +953,12 @@ impl ScsiTarget for ScsiTargetCdrom {
 
     fn branch_media(&mut self, _path: &Path) -> Result<()> {
         bail!("Unsupported on CD-ROM");
+    }
+
+    fn set_audio_provider(&mut self, provider: &dyn AudioProvider) -> Result<()> {
+        println!("setting audio provider for CD drive");
+        self.audio_sink = Some(provider.create_stream()?);
+        Ok(())
     }
 
     #[cfg(feature = "ethernet")]

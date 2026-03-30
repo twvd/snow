@@ -280,17 +280,15 @@ where
         self.via1.rtc.effective_speed()
     }
 
-    // pub(crate) fn set_audio_sink(&mut self, sink: Box<dyn AudioSink>) {
-    //     self.asc.set_sink(sink);
-    // }
-
     pub fn set_audio_provider(&mut self, provider: Arc<Mutex<dyn AudioProvider>>) {
+        let provider = provider.lock().unwrap();
+
         let sink = provider
-            .lock()
-            .unwrap()
             .create_stream()
             .unwrap_or(Box::new(ChannelAudioSink::new()));
         self.asc.set_sink(sink);
+
+        self.scsi.set_audio_provider(&*provider);
     }
 
     #[allow(clippy::needless_pass_by_value)]
