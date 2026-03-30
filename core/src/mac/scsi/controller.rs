@@ -16,6 +16,7 @@ use serde_big_array::BigArray;
 use crate::bus::{Address, BusMember};
 use crate::dbgprop_byte;
 use crate::debuggable::Debuggable;
+use crate::mac::compact::audio;
 use crate::mac::scsi::cdrom::ScsiTargetCdrom;
 use crate::mac::scsi::disk::ScsiTargetDisk;
 use crate::mac::scsi::disk_image::DiskImage;
@@ -27,6 +28,7 @@ use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::scsi::toolbox::BlueSCSI;
 use crate::mac::scsi::ScsiCmdResult;
 use crate::mac::scsi::STATUS_GOOD;
+use crate::renderer::AudioProvider;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
 
@@ -259,8 +261,8 @@ impl ScsiController {
     }
 
     /// Attaches a CD-ROM drive at the given SCSI ID
-    pub fn attach_cdrom_at(&mut self, scsi_id: usize) {
-        self.targets[scsi_id] = Some(Box::new(ScsiTargetCdrom::default()));
+    pub fn attach_cdrom_at(&mut self, scsi_id: usize, audio_provider: Option<&dyn AudioProvider>) {
+        self.targets[scsi_id] = Some(Box::new(ScsiTargetCdrom::new(audio_provider)));
     }
 
     /// Inserts a CD-ROM with the custom disk image at the given SCSI ID.

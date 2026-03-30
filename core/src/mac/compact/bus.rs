@@ -1,5 +1,6 @@
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -238,8 +239,10 @@ where
     //     self.audio.set_sink(sink);
     // }
 
-    pub fn set_audio_provider(&mut self, provider: Rc<dyn AudioProvider>) {
+    pub fn set_audio_provider(&mut self, provider: Arc<Mutex<dyn AudioProvider>>) {
         let sink = provider
+            .lock()
+            .unwrap()
             .create_stream()
             .unwrap_or(Box::new(ChannelAudioSink::new()));
         self.audio.set_sink(sink);

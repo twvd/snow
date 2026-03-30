@@ -32,6 +32,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::{env, fs, thread};
 
@@ -108,7 +109,7 @@ pub struct EmulatorState {
     cmdsender: Option<EmulatorCommandSender>,
     eventrecv: Option<EmulatorEventReceiver>,
     status: Option<EmulatorStatus>,
-    audio_provider: Option<Rc<SDLAudioProvider>>,
+    audio_provider: Option<Arc<Mutex<SDLAudioProvider>>>,
     disasm_address: Address,
     disasm_code: DisassemblyListing,
     messages: VecDeque<(UserMessageType, String)>,
@@ -330,7 +331,7 @@ impl EmulatorState {
 
             match SDLAudioProvider::new() {
                 Ok(provider) => {
-                    let provider = Rc::new(provider);
+                    let provider = Arc::new(Mutex::new(provider));
                     self.audio_provider = Some(provider.clone());
                     emulator.set_audio_provider(provider);
                 }
@@ -1201,21 +1202,21 @@ impl EmulatorState {
 
     pub fn audio_mute(&self, muted: bool) {
         if let Some(audio_provider) = &self.audio_provider {
-            audio_provider.set_mute(muted);
+            audio_provider.lock().unwrap().set_mute(muted);
         }
     }
 
     pub fn audio_is_muted(&self) -> bool {
         self.audio_provider
             .as_ref()
-            .map(|p| p.is_muted())
+            .map(|p| p.lock().unwrap().is_muted())
             .unwrap_or(false)
     }
 
     pub fn audio_is_slow(&self) -> bool {
         self.audio_provider
             .as_ref()
-            .map(|p| p.is_slow())
+            .map(|p| p.lock().unwrap().is_slow())
             .unwrap_or(false)
     }
 }
