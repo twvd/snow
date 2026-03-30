@@ -478,7 +478,9 @@ impl ScsiTargetCdrom {
     }
 
     fn get_track_at_sector(&self, sector: u32) -> Option<&TrackInfo> {
-        self.backend.as_ref()?.tracks()?
+        self.backend
+            .as_ref()?
+            .tracks()?
             .iter()
             .rev()
             .find(|t| t.sector <= sector)
@@ -795,12 +797,15 @@ impl ScsiTarget for ScsiTargetCdrom {
 
                 let start_sector = msf_to_sector(start_m, start_s, start_f);
                 let stop_sector = msf_to_sector(end_m, end_s, end_f);
-                
+
                 // [PIONEER]: 2.13:
                 // If the starting address is not found, or if the address is not within an audio track, or if a not ready
-                // condition exists, the drive will terminate with a Check Condition status. 
+                // condition exists, the drive will terminate with a Check Condition status.
                 let start_track = self.get_track_at_sector(start_sector);
-                if start_track.map(|t| t.adr_control != AUDIO_TRACK).unwrap_or(false) {
+                if start_track
+                    .map(|t| t.adr_control != AUDIO_TRACK)
+                    .unwrap_or(false)
+                {
                     self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }

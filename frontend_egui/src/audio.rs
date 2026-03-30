@@ -22,33 +22,25 @@ thread_local! {
     });
 }
 
-pub struct SDLAudioSink {
+struct SDLAudioCallback {
     recv: AudioReceiver,
     stop_delay: Instant,
-    exch: Arc<AudioSinkExchange>,
+    exch: Arc<SDLAudioExchange>,
 }
 
+/// Exchanges state between the SDLAudioCallback and SDLAudioProvider
 #[derive(Default)]
-pub struct AudioSinkExchange {
-    pub(self) mute: AtomicBool,
-    pub(self) slow: AtomicBool,
+struct SDLAudioExchange {
+    mute: AtomicBool,
+    slow: AtomicBool,
 }
 
-impl AudioSinkExchange {
-    pub fn is_slow(&self) -> bool {
-        self.slow.load(Ordering::Relaxed)
-    }
-
-    pub fn is_muted(&self) -> bool {
-        self.mute.load(Ordering::Relaxed) || self.is_slow()
-    }
-
-    pub fn set_mute(&self, mute: bool) {
-        self.mute.store(mute, Ordering::Release);
-    }
+pub struct SDLAudioProvider {
+    device: AudioDevice<SDLAudioCallback>,
+    exch: Arc<SDLAudioExchange>,
 }
 
-impl AudioCallback for SDLAudioSink {
+impl AudioCallback for SDLAudioCallback {
     type Channel = f32;
 
     fn callback(&mut self, out: &mut [f32]) {
@@ -80,9 +72,9 @@ impl AudioCallback for SDLAudioSink {
     }
 }
 
-impl SDLAudioSink {
-    /// Creates a new audiosink
-    pub fn new(audioch: AudioReceiver) -> Result<(AudioDevice<Self>, Arc<AudioSinkExchange>)> {
+impl SDLAudioProvider {
+    /// Creates a new audio provider
+    pub fn new(audioch: AudioReceiver) -> Result<Self> {
         SDL.with(|cell| {
             let sdls = cell.borrow_mut();
             let audio_subsystem = sdls.context.audio().map_err(|e| anyhow!(e))?;
@@ -95,23 +87,32 @@ impl SDLAudioSink {
                 samples: Some(AUDIO_BUFFER_SAMPLES.try_into().unwrap()),
             };
 
-            let exch = Arc::new(AudioSinkExchange::default());
+            let exch = Arc::new(SDLAudioExchange::default());
+
             let device = audio_subsystem
                 .open_playback(None, &spec, |spec| {
                     debug!("Audio spec: {:?}", spec);
-                    Self {
+                    SDLAudioCallback {
                         recv: audioch,
                         stop_delay: Instant::now(),
-                        exch: Arc::clone(&exch),
+                        exch: exch.clone(),
                     }
                 })
                 .map_err(|e| anyhow!(e))?;
             device.resume();
-            Ok((device, exch))
+            Ok(Self { device, exch })
         })
     }
 
-    pub fn set_receiver(&mut self, recv: AudioReceiver) {
-        self.recv = recv;
+    pub fn is_slow(&self) -> bool {
+        self.exch.slow.load(Ordering::Relaxed)
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.exch.mute.load(Ordering::Relaxed) || self.is_slow()
+    }
+
+    pub fn set_mute(&self, mute: bool) {
+        self.exch.mute.store(mute, Ordering::Release);
     }
 }
