@@ -13,6 +13,7 @@ use std::fs::File;
 use std::io::Seek;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use strum::IntoEnumIterator;
@@ -195,7 +196,7 @@ dispatch! {
 
     mutable_calls {
         fn set_speed(&mut self, speed: EmulatorSpeed) -> () { bus.set_speed(speed) }
-        fn set_audio_provider(&mut self, provider: Rc<dyn AudioProvider>) -> () { bus.set_audio_provider(provider) }
+        fn set_audio_provider(&mut self, provider: Arc<Mutex<dyn AudioProvider>>) -> () { bus.set_audio_provider(provider) }
 
         fn cpu_tick(&mut self, ticks: Ticks) -> Result<Ticks> { tick(ticks) }
         fn cpu_set_breakpoint(&mut self, bp: Breakpoint) -> () { set_breakpoint(bp) }
@@ -243,6 +244,7 @@ pub struct Emulator {
     peripheral_debug: bool,
     /// Serial bridges for SCC channels (index 0 = Channel A, index 1 = Channel B)
     serial_bridges: [Option<SccBridge>; 2],
+    audio_provider: Option<Arc<Mutex<dyn AudioProvider>>>,
 }
 
 impl Emulator {
@@ -446,6 +448,7 @@ impl Emulator {
             replay_input: VecDeque::default(),
             peripheral_debug: false,
             serial_bridges: [None, None],
+            audio_provider: None,
         };
         emu.status_update()?;
 
@@ -494,6 +497,7 @@ impl Emulator {
             replay_input: VecDeque::default(),
             peripheral_debug: false,
             serial_bridges: [None, None],
+            audio_provider: None,
         };
         emu.status_update()?;
 
@@ -679,7 +683,7 @@ impl Emulator {
         Ok(())
     }
 
-    pub fn set_audio_provider(&mut self, provider: Rc<dyn AudioProvider>) {
+    pub fn set_audio_provider(&mut self, provider: Arc<Mutex<dyn AudioProvider>>) {
         self.config.set_audio_provider(provider);
     }
 
@@ -763,7 +767,13 @@ impl Emulator {
     }
 
     pub fn attach_cdrom(&mut self, id: usize) {
-        self.config.scsi_mut().attach_cdrom_at(id);
+        self.config.scsi_mut().attach_cdrom_at(
+            id,
+            self.audio_provider
+                .as_deref()
+                .map(|ap| ap.lock().unwrap())
+                .as_deref(),
+        );
         info!("SCSI ID #{}: CD-ROM drive attached", id);
     }
 

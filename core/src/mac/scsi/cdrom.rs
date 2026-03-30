@@ -12,6 +12,7 @@ use std::str::Chars;
 
 use crate::debuggable::Debuggable;
 use crate::mac::macii::bus::CLOCK_SPEED;
+use crate::renderer::{default_audio_sink, AudioProvider, AudioSink};
 use crate::tickable::Ticks;
 use crate::types::LatchingEvent;
 
@@ -325,10 +326,18 @@ pub(super) struct ScsiTargetCdrom {
 
     /// Audio clock (counts ticks up 75 audio CD frames per second)
     audio_clock: Ticks,
+
+    /// Audio sink for CD audio
+    #[serde(skip)]
+    audio_sink: Option<Box<dyn AudioSink>>,
 }
 
-impl Default for ScsiTargetCdrom {
-    fn default() -> Self {
+impl ScsiTargetCdrom {
+    const VALID_BLOCKSIZES: [usize; 2] = [512, 2048];
+
+    pub fn new(audio_provider: Option<&dyn AudioProvider>) -> Self {
+        // FIXME: avoid unwrap
+        let audio_sink = audio_provider.map(|ap| ap.create_stream().unwrap());
         Self {
             backend: None,
             cc_code: 0,
@@ -339,12 +348,9 @@ impl Default for ScsiTargetCdrom {
             audio_pos: 0,
             audio_stop: 0,
             audio_clock: 0,
+            audio_sink,
         }
     }
-}
-
-impl ScsiTargetCdrom {
-    const VALID_BLOCKSIZES: [usize; 2] = [512, 2048];
 
     fn sector_to_address_field(&self, sector: u32, msf: bool) -> [u8; 4] {
         // FIXME: is 00:02:00 pre-gap involved here?
