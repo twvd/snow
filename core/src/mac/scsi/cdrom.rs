@@ -4,15 +4,14 @@ use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
 
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::iter::Peekable;
-use std::os::windows::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::str::Chars;
 
 use crate::debuggable::Debuggable;
 use crate::mac::macii::bus::CLOCK_SPEED;
-use crate::renderer::{default_audio_sink, AudioProvider, AudioSink};
+use crate::renderer::{AudioProvider, AudioSink};
 use crate::tickable::Ticks;
 use crate::types::LatchingEvent;
 
@@ -291,10 +290,12 @@ impl CdromBackend for CuesheetCdromBackend {
     fn read_raw_sector(&self, sector: u32) -> Result<[u8; RAW_SECTOR_LEN]> {
         let mut result = [0; RAW_SECTOR_LEN];
         // FIXME: Implement multiple data files
-        self.data_files
+        let mut data_file = self
+            .data_files
             .first()
-            .ok_or_else(|| anyhow!("No data files loaded"))?
-            .seek_read(&mut result, (sector * RAW_SECTOR_LEN as u32).into())?;
+            .ok_or_else(|| anyhow!("No data files loaded"))?;
+        data_file.seek(SeekFrom::Start(sector as u64 * RAW_SECTOR_LEN as u64))?;
+        data_file.read_exact(&mut result)?;
         Ok(result)
     }
 }
@@ -999,25 +1000,12 @@ impl ScsiTarget for ScsiTargetCdrom {
                                 out_samples[i] = sample as f32 / 32768.0;
                             }
 
-                            // TODO: send samples out to sink
-                            //let _ = audio_sink.send(Box::new(out_samples));
+                            let audio_result = audio_sink.send(Box::new(out_samples));
+                            if audio_result.is_err() {
+                                println!("error when sending audio: {:?}", audio_result);
+                            }
                         }
                     }
-                }
-
-                // XXX: generate a sine wave tone for testing
-                if let Some(audio_sink) = &mut self.audio_sink {
-                    let mut out_samples = [0.0; RAW_SECTOR_LEN / 2];
-                    for i in 0..RAW_SECTOR_LEN / 2 {
-                        out_samples[i] = 0.6
-                            * f32::sin(
-                                i as f32 / (RAW_SECTOR_LEN / 2) as f32
-                                    * 110.0
-                                    * std::f32::consts::TAU,
-                            )
-                    }
-                    let audio_result = audio_sink.send(Box::new(out_samples));
-                    println!("audio cd sink send result: {:?}", audio_result);
                 }
 
                 self.audio_pos += 1;
