@@ -75,6 +75,9 @@ pub trait CdromBackend: Send {
     /// Track numbers are not required to start at 1, but they must increase during iteration.
     /// The final track is the leadout track, numbered 0xAA.
     fn tracks(&self) -> Option<&[TrackInfo]>;
+
+    /// Read a raw 2352-byte sector. Currently used only for CD audio. Other data is read by read_bytes.
+    fn read_raw_sector(&self, sector: u32) -> Result<[u8; RAW_SECTOR_LEN]>;
 }
 
 struct IsoCdromBackend {
@@ -118,6 +121,12 @@ impl CdromBackend for IsoCdromBackend {
 
     fn tracks(&self) -> Option<&[TrackInfo]> {
         Some(&self.tracks)
+    }
+
+    fn read_raw_sector(&self, _sector: u32) -> Result<[u8; RAW_SECTOR_LEN]> {
+        // TODO: reconstruct raw sectors from ISO data
+        // (probably only needed for some disc ripping software to work)
+        bail!("Reading raw sectors is not implemented for ISO files");
     }
 }
 
@@ -208,16 +217,6 @@ impl CuesheetCdromBackend {
             data_files,
         })
     }
-
-    fn read_raw_sector(&self, sector: u32) -> Result<[u8; RAW_SECTOR_LEN]> {
-        let mut result = [0; RAW_SECTOR_LEN];
-        // FIXME: Implement multiple data files
-        self.data_files
-            .first()
-            .ok_or_else(|| anyhow!("No data files loaded"))?
-            .seek_read(&mut result, (sector * RAW_SECTOR_LEN as u32).into())?;
-        Ok(result)
-    }
 }
 
 impl CdromBackend for CuesheetCdromBackend {
@@ -287,6 +286,16 @@ impl CdromBackend for CuesheetCdromBackend {
                 sector: 330_000,
             },
         ])
+    }
+
+    fn read_raw_sector(&self, sector: u32) -> Result<[u8; RAW_SECTOR_LEN]> {
+        let mut result = [0; RAW_SECTOR_LEN];
+        // FIXME: Implement multiple data files
+        self.data_files
+            .first()
+            .ok_or_else(|| anyhow!("No data files loaded"))?
+            .seek_read(&mut result, (sector * RAW_SECTOR_LEN as u32).into())?;
+        Ok(result)
     }
 }
 
@@ -976,6 +985,40 @@ impl ScsiTarget for ScsiTargetCdrom {
             self.audio_clock += ticks;
             if self.audio_clock >= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC {
                 self.audio_clock -= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC;
+
+                // Read audio and feed it to the audio sink
+                if let Some(backend) = &self.backend {
+                    if let Some(audio_sink) = &mut self.audio_sink {
+                        let samples = backend.read_raw_sector(self.audio_pos);
+                        if let Ok(samples) = samples {
+                            // FIXME: can we avoid converting to float by setting up a signed 16-bit PCM audio sink?
+                            let mut out_samples = [0.0; RAW_SECTOR_LEN / 2]; // 16-bit samples
+                            for i in 0..RAW_SECTOR_LEN / 2 {
+                                let sample =
+                                    i16::from_be_bytes(samples[2 * i..][..2].try_into().unwrap());
+                                out_samples[i] = sample as f32 / 32768.0;
+                            }
+
+                            // TODO: send samples out to sink
+                            //let _ = audio_sink.send(Box::new(out_samples));
+                        }
+                    }
+                }
+
+                // XXX: generate a sine wave tone for testing
+                if let Some(audio_sink) = &mut self.audio_sink {
+                    let mut out_samples = [0.0; RAW_SECTOR_LEN / 2];
+                    for i in 0..RAW_SECTOR_LEN / 2 {
+                        out_samples[i] = 0.6
+                            * f32::sin(
+                                i as f32 / (RAW_SECTOR_LEN / 2) as f32
+                                    * 110.0
+                                    * std::f32::consts::TAU,
+                            )
+                    }
+                    let audio_result = audio_sink.send(Box::new(out_samples));
+                    println!("audio cd sink send result: {:?}", audio_result);
+                }
 
                 self.audio_pos += 1;
                 if self.audio_pos >= self.audio_stop {
