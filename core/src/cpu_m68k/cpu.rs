@@ -515,7 +515,11 @@ where
             self.read_ticks_program::<Word>(fetch_addr)?
         };
         self.prefetch.push_back(new_item);
-        self.regs.pc = self.regs.pc.wrapping_add(2) & ADDRESS_MASK;
+        // FIXME: In rare instances, the Mac will hang on bootup.
+        // The hang seems to occur when (self.regs.pc + 2) overflows here.
+        // Instead of using wrapping_add, I'll keep "+ 2" here to ensure
+        // an error is triggered when this occurs in debug builds.
+        self.regs.pc = (self.regs.pc + 2) & ADDRESS_MASK;
         Ok(())
     }
 
