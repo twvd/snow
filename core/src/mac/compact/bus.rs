@@ -1,4 +1,5 @@
 use std::ops::Range;
+use std::rc::Rc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -17,13 +18,14 @@ use crate::mac::swim::drive::DriveType;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::MacModel;
-use crate::renderer::{AudioSink, Renderer};
+use crate::renderer::{AudioProvider, ChannelAudioSink, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 use crate::util::take_from_accumulator;
 
 use anyhow::Result;
 use bit_set::BitSet;
+use crossbeam::epoch::Pointable;
 use log::*;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
 use serde::{Deserialize, Serialize};
@@ -232,7 +234,14 @@ where
         self.via.rtc.effective_speed()
     }
 
-    pub(crate) fn set_audio_sink(&mut self, sink: Box<dyn AudioSink>) {
+    // pub(crate) fn set_audio_sink(&mut self, sink: Box<dyn AudioSink>) {
+    //     self.audio.set_sink(sink);
+    // }
+
+    pub fn set_audio_provider(&mut self, provider: Rc<dyn AudioProvider>) {
+        let sink = provider
+            .create_stream()
+            .unwrap_or(Box::new(ChannelAudioSink::new()));
         self.audio.set_sink(sink);
     }
 

@@ -2,7 +2,10 @@ use anyhow::{anyhow, Result};
 use log::*;
 use sdl2::audio::{AudioCallback, AudioDevice, AudioSpecDesired};
 use sdl2::Sdl;
-use snow_core::renderer::{AudioReceiver, AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS};
+use snow_core::renderer::{
+    AudioBuffer, AudioProvider, AudioReceiver, AudioSink, ChannelAudioSink, AUDIO_BUFFER_SAMPLES,
+    AUDIO_CHANNELS,
+};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -35,10 +38,14 @@ struct SDLAudioExchange {
     slow: AtomicBool,
 }
 
-pub struct SDLAudioProvider {
+pub struct SDLAudioStream {
     device: AudioDevice<SDLAudioCallback>,
+    channel_sink: ChannelAudioSink,
     exch: Arc<SDLAudioExchange>,
 }
+
+// FIXME: is this safe?? (no, the device field is unsafe to send between threads.)
+unsafe impl Send for SDLAudioStream {}
 
 impl AudioCallback for SDLAudioCallback {
     type Channel = f32;
@@ -72,10 +79,12 @@ impl AudioCallback for SDLAudioCallback {
     }
 }
 
-impl SDLAudioProvider {
+impl SDLAudioStream {
     /// Creates a new audio provider
-    pub fn new(audioch: AudioReceiver) -> Result<Self> {
+    pub fn new() -> Result<Self> {
         SDL.with(|cell| {
+            let channel_sink = ChannelAudioSink::new();
+
             let sdls = cell.borrow_mut();
             let audio_subsystem = sdls.context.audio().map_err(|e| anyhow!(e))?;
             let spec = AudioSpecDesired {
@@ -93,14 +102,18 @@ impl SDLAudioProvider {
                 .open_playback(None, &spec, |spec| {
                     debug!("Audio spec: {:?}", spec);
                     SDLAudioCallback {
-                        recv: audioch,
+                        recv: channel_sink.receiver(),
                         stop_delay: Instant::now(),
                         exch: exch.clone(),
                     }
                 })
                 .map_err(|e| anyhow!(e))?;
             device.resume();
-            Ok(Self { device, exch })
+            Ok(Self {
+                device,
+                channel_sink,
+                exch,
+            })
         })
     }
 
@@ -114,5 +127,39 @@ impl SDLAudioProvider {
 
     pub fn set_mute(&self, mute: bool) {
         self.exch.mute.store(mute, Ordering::Release);
+    }
+}
+
+impl AudioSink for SDLAudioStream {
+    fn send(&mut self, buffer: AudioBuffer) -> Result<()> {
+        self.channel_sink.send(buffer)
+    }
+}
+
+pub struct SDLAudioProvider {}
+
+impl SDLAudioProvider {
+    pub fn new() -> Result<Self> {
+        Ok(Self {})
+    }
+
+    pub fn is_slow(&self) -> bool {
+        // TODO: check all streams for slowdown
+        false
+    }
+
+    pub fn is_muted(&self) -> bool {
+        // TODO: check all streams for muted
+        false
+    }
+
+    pub fn set_mute(&self, _mute: bool) {
+        // TODO: mute/unmute all streams
+    }
+}
+
+impl AudioProvider for SDLAudioProvider {
+    fn create_stream(&self) -> Result<Box<dyn AudioSink>> {
+        Ok(Box::new(SDLAudioStream::new()?))
     }
 }
