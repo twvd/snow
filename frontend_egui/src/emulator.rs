@@ -23,7 +23,7 @@ use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{ExtraROMs, MacModel, MacMonitor};
-use snow_core::renderer::{ChannelAudioSink, DisplayBuffer};
+use snow_core::renderer::DisplayBuffer;
 use snow_core::tickable::{Tickable, Ticks};
 use snow_core::types::LatchingEvent;
 use snow_floppy::loaders::FloppyImageLoader;
@@ -31,6 +31,7 @@ use snow_floppy::{Floppy, FloppyImage, FloppyType};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::thread::JoinHandle;
 use std::{env, fs, thread};
 
@@ -107,7 +108,7 @@ pub struct EmulatorState {
     cmdsender: Option<EmulatorCommandSender>,
     eventrecv: Option<EmulatorEventReceiver>,
     status: Option<EmulatorStatus>,
-    audio_provider: Option<SDLAudioProvider>,
+    audio_provider: Option<Rc<SDLAudioProvider>>,
     disasm_address: Address,
     disasm_code: DisassemblyListing,
     messages: VecDeque<(UserMessageType, String)>,
@@ -322,25 +323,21 @@ impl EmulatorState {
         if audio_disabled {
             cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
         } else {
-            let channel_sink = ChannelAudioSink::new();
-            let receiver = channel_sink.receiver();
-            let mut audio_ready = true;
+            // let channel_sink = ChannelAudioSink::new();
+            // let receiver = channel_sink.receiver();
 
             drop(self.audio_provider.take());
 
-            match SDLAudioProvider::new(receiver) {
+            match SDLAudioProvider::new() {
                 Ok(provider) => {
-                    self.audio_provider = Some(provider);
+                    let provider = Rc::new(provider);
+                    self.audio_provider = Some(provider.clone());
+                    emulator.set_audio_provider(provider);
                 }
                 Err(e) => {
                     error!("Failed to initialize audio: {:?}", e);
                     cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
-                    audio_ready = false;
                 }
-            }
-
-            if audio_ready {
-                emulator.set_audio_sink(Box::new(channel_sink));
             }
         }
 
