@@ -11,6 +11,7 @@ use crate::mac::scsi::{
     ASC_MEDIUM_NOT_PRESENT, CC_KEY_ILLEGAL_REQUEST, CC_KEY_MEDIUM_ERROR, STATUS_CHECK_CONDITION,
     STATUS_GOOD,
 };
+use crate::renderer::AudioProvider;
 use crate::tickable::Ticks;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -44,6 +45,11 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
     fn ms_density(&self) -> u8;
     fn ms_media_type(&self) -> u8;
     fn ms_device_specific(&self) -> u8;
+
+    // For CD-ROM drives
+    fn set_audio_provider(&mut self, _provider: &dyn AudioProvider) -> Result<()> {
+        Ok(())
+    }
 
     #[cfg(feature = "ethernet")]
     fn eth_set_link(&mut self, link: super::ethernet::EthernetLinkType) -> Result<()>;

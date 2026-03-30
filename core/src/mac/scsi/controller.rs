@@ -291,6 +291,12 @@ impl ScsiController {
         self.targets[scsi_id] = None;
     }
 
+    pub fn set_audio_provider(&mut self, provider: &dyn AudioProvider) {
+        for t in self.targets.iter_mut().flatten() {
+            t.set_audio_provider(provider);
+        }
+    }
+
     /// Translates a SCSI ID on the bus (bit position) to a numeric ID
     fn translate_id(mut bitp: u8) -> Result<usize> {
         if bitp.count_ones() != 1 {
