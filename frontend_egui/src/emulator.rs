@@ -5,7 +5,6 @@ use crossbeam_channel::Receiver;
 use eframe::egui;
 use log::*;
 use num_traits::cast::ToPrimitive;
-use sdl2::audio::AudioDevice;
 use serde::{Deserialize, Serialize};
 use snow_core::bus::Address;
 use snow_core::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
@@ -32,11 +31,10 @@ use snow_floppy::{Floppy, FloppyImage, FloppyType};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::{env, fs, thread};
 
-use crate::audio::{AudioSinkExchange, SDLAudioSink};
+use crate::audio::SDLAudioProvider;
 
 pub type DisassemblyListing = Vec<DisassemblyEntry>;
 pub type ScsiTargets = [ScsiTarget; 7];
@@ -109,8 +107,7 @@ pub struct EmulatorState {
     cmdsender: Option<EmulatorCommandSender>,
     eventrecv: Option<EmulatorEventReceiver>,
     status: Option<EmulatorStatus>,
-    audiosink: Option<AudioDevice<SDLAudioSink>>,
-    audiosink_exchange: Option<Arc<AudioSinkExchange>>,
+    audio_provider: Option<SDLAudioProvider>,
     disasm_address: Address,
     disasm_code: DisassemblyListing,
     messages: VecDeque<(UserMessageType, String)>,
@@ -329,21 +326,17 @@ impl EmulatorState {
             let receiver = channel_sink.receiver();
             let mut audio_ready = true;
 
-            if self.audiosink.is_none() {
-                match SDLAudioSink::new(receiver) {
-                    Ok((sink, exch)) => {
-                        self.audiosink = Some(sink);
-                        self.audiosink_exchange = Some(exch);
-                    }
-                    Err(e) => {
-                        error!("Failed to initialize audio: {:?}", e);
-                        cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
-                        audio_ready = false;
-                    }
+            drop(self.audio_provider.take());
+
+            match SDLAudioProvider::new(receiver) {
+                Ok(provider) => {
+                    self.audio_provider = Some(provider);
                 }
-            } else {
-                let mut cb = self.audiosink.as_mut().unwrap().lock();
-                cb.set_receiver(receiver);
+                Err(e) => {
+                    error!("Failed to initialize audio: {:?}", e);
+                    cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
+                    audio_ready = false;
+                }
             }
 
             if audio_ready {
@@ -858,7 +851,7 @@ impl EmulatorState {
             status.speed,
             EmulatorSpeed::Uncapped | EmulatorSpeed::FastForward(_)
         ) {
-            self.set_speed(if self.audiosink.is_some() {
+            self.set_speed(if self.audio_provider.is_some() {
                 EmulatorSpeed::Accurate
             } else {
                 EmulatorSpeed::Video
@@ -874,7 +867,7 @@ impl EmulatorState {
 
     /// Returns `true` if audio output is active.
     pub fn has_audio(&self) -> bool {
-        self.audiosink.is_some()
+        self.audio_provider.is_some()
     }
 
     /// Directly sets the emulator speed
@@ -1210,24 +1203,22 @@ impl EmulatorState {
     }
 
     pub fn audio_mute(&self, muted: bool) {
-        if let Some(exch) = self.audiosink_exchange.as_ref() {
-            exch.set_mute(muted);
+        if let Some(audio_provider) = &self.audio_provider {
+            audio_provider.set_mute(muted);
         }
     }
 
     pub fn audio_is_muted(&self) -> bool {
-        if let Some(exch) = self.audiosink_exchange.as_ref() {
-            exch.is_muted()
-        } else {
-            self.audiosink.is_none()
-        }
+        self.audio_provider
+            .as_ref()
+            .map(|p| p.is_muted())
+            .unwrap_or(false)
     }
 
     pub fn audio_is_slow(&self) -> bool {
-        if let Some(exch) = self.audiosink_exchange.as_ref() {
-            exch.is_slow()
-        } else {
-            self.audiosink.is_none()
-        }
+        self.audio_provider
+            .as_ref()
+            .map(|p| p.is_slow())
+            .unwrap_or(false)
     }
 }
