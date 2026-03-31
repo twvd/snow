@@ -1134,7 +1134,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                             let mut out_samples = [0.0; RAW_SECTOR_LEN / 2]; // 16-bit samples
                             for i in 0..RAW_SECTOR_LEN / 2 {
                                 let sample =
-                                    i16::from_be_bytes(samples[2 * i..][..2].try_into().unwrap());
+                                    i16::from_le_bytes(samples[2 * i..][..2].try_into().unwrap());
                                 out_samples[i] = sample as f32 / 32768.0;
                             }
 
