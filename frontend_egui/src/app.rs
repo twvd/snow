@@ -192,6 +192,11 @@ pub struct SnowGui {
     settings: AppSettings,
     emu: EmulatorState,
 
+    /// Whether the user has fast-forward enabled.
+    ff_on: bool,
+    /// Timestamp of the last user input that triggered a dynamic fast-forward slowdown.
+    dynamic_ff_input_time: Option<Instant>,
+
     floppy_rpm_adjustment: [i32; 3],
 
     /// Temporary files that need cleanup on exit
@@ -220,6 +225,43 @@ impl SnowGui {
     const MODE_TOAST_KIND: u32 = 0;
     const ZOOM_FACTORS: [f32; 8] = [0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0];
     const SUBMENU_WIDTH: f32 = 175.0;
+    const DYNAMIC_FF_RESUME_MS: u64 = 500;
+
+    /// Returns the target fast-forward speed based on current limit settings.
+    fn ff_target_speed(&self) -> EmulatorSpeed {
+        if self.settings.fastforward_limit_enabled {
+            EmulatorSpeed::FastForward(self.settings.fastforward_limit)
+        } else {
+            EmulatorSpeed::Uncapped
+        }
+    }
+
+    /// Toggles fast-forward on/off, updating `ff_on` and clearing dynamic FF state.
+    fn toggle_ff(&mut self) {
+        self.ff_on = !self.ff_on;
+        self.dynamic_ff_input_time = None;
+        if self.ff_on {
+            self.emu.set_speed(self.ff_target_speed());
+        } else {
+            self.emu.set_speed(if self.emu.has_audio() {
+                EmulatorSpeed::Accurate
+            } else {
+                EmulatorSpeed::Video
+            });
+        }
+    }
+
+    /// Called on any user input (key press, mouse button, mouse move).
+    fn on_user_input(&mut self) {
+        if self.settings.dynamic_fastforward && self.ff_on {
+            // When dynamic fast-forward is active, slows the emulator to Video speed
+            // and records the time so it can resume after inactivity.
+            if self.dynamic_ff_input_time.is_none() {
+                self.emu.set_speed(EmulatorSpeed::Video);
+            }
+            self.dynamic_ff_input_time = Some(Instant::now());
+        }
+    }
 
     /// Parse serial bridge mode string from CLI argument
     fn parse_serial_bridge_mode(mode: &str) -> Option<SerialBridgeConfig> {
@@ -389,6 +431,8 @@ impl SnowGui {
             snowflake_spawn_timer: 0.0,
 
             emu: EmulatorState::default(),
+            ff_on: false,
+            dynamic_ff_input_time: None,
 
             floppy_rpm_adjustment: [0, 0, 0],
 
@@ -1053,13 +1097,8 @@ impl SnowGui {
                     .clicked()
                 {
                     self.settings.save();
-                    if self.emu.is_fastforward() {
-                        let newspeed = if self.settings.fastforward_limit_enabled {
-                            EmulatorSpeed::FastForward(self.settings.fastforward_limit)
-                        } else {
-                            EmulatorSpeed::Uncapped
-                        };
-                        self.emu.set_speed(newspeed);
+                    if self.ff_on && self.dynamic_ff_input_time.is_none() {
+                        self.emu.set_speed(self.ff_target_speed());
                     }
                 }
                 ui.add_enabled_ui(self.settings.fastforward_limit_enabled, |ui| {
@@ -1075,13 +1114,25 @@ impl SnowGui {
                         .changed()
                     {
                         self.settings.save();
-                        if self.emu.is_fastforward() {
-                            self.emu.set_speed(EmulatorSpeed::FastForward(
-                                self.settings.fastforward_limit,
-                            ));
+                        if self.ff_on && self.dynamic_ff_input_time.is_none() {
+                            self.emu.set_speed(self.ff_target_speed());
                         }
                     }
                 });
+                if ui
+                    .add(egui::Checkbox::new(
+                        &mut self.settings.dynamic_fastforward,
+                        "Dynamic fast-forward",
+                    ))
+                    .clicked()
+                {
+                    self.settings.save();
+                    if !self.settings.dynamic_fastforward && self.dynamic_ff_input_time.is_some() {
+                        // Was disabled mid-slowdown, resume FF immediately
+                        self.emu.set_speed(self.ff_target_speed());
+                        self.dynamic_ff_input_time = None;
+                    }
+                }
             });
             ui.menu_button("View", |ui| {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
@@ -1588,7 +1639,7 @@ impl SnowGui {
     }
 
     fn draw_fast_forward_button(&self, ui: &mut egui::Ui) -> egui::Response {
-        let is_active = self.emu.is_fastforward();
+        let is_active = self.ff_on;
         let selection_color = ui.visuals().selection.stroke.color;
         let icon = egui_material_icons::icons::ICON_FAST_FORWARD;
         let mut text = egui::RichText::new(icon);
@@ -1669,11 +1720,7 @@ impl SnowGui {
                 }
 
                 if self.draw_fast_forward_button(ui).clicked() {
-                    let limit = self
-                        .settings
-                        .fastforward_limit_enabled
-                        .then_some(self.settings.fastforward_limit);
-                    self.emu.toggle_fastforward(limit);
+                    self.toggle_ff();
                 }
 
                 if ui
@@ -1800,7 +1847,7 @@ impl SnowGui {
         self.error_string = text.to_string();
     }
 
-    fn poll_winit_events(&self, ctx: &egui::Context) {
+    fn poll_winit_events(&mut self, ctx: &egui::Context) {
         if self.wev_recv.is_empty() {
             return;
         }
@@ -1830,6 +1877,9 @@ impl SnowGui {
 
                     if let Some(k) = map_winit_keycode(kc, self.workspace.cmd_key_mapping) {
                         self.emu.update_key(k, state.is_pressed());
+                        if state.is_pressed() {
+                            self.on_user_input();
+                        }
                     } else {
                         log::warn!("Unknown key {:?}", kc);
                     }
@@ -2008,6 +2058,8 @@ impl SnowGui {
             }
         } else {
             self.emu.deinit();
+            self.ff_on = false;
+            self.dynamic_ff_input_time = None;
         }
 
         // Do this after the emulator is initialized so the shader defaults that get loaded are
@@ -2520,6 +2572,16 @@ impl eframe::App for SnowGui {
         self.poll_winit_events(ctx);
         self.process_type_clipboard_queue();
         self.uniform_action(UNIFORM_ACTION.take());
+
+        // Dynamic fast-forward: resume FF speed after inactivity
+        if self.settings.dynamic_fastforward && self.ff_on {
+            if let Some(t) = self.dynamic_ff_input_time {
+                if t.elapsed() >= Duration::from_millis(Self::DYNAMIC_FF_RESUME_MS) {
+                    self.emu.set_speed(self.ff_target_speed());
+                    self.dynamic_ff_input_time = None;
+                }
+            }
+        }
 
         if self.emu.poll() {
             // Change in emulator state
@@ -3071,13 +3133,9 @@ impl eframe::App for SnowGui {
                             }
                         }
                         ui.separator();
-                        let mut ff = self.emu.is_fastforward();
+                        let mut ff = self.ff_on;
                         if ui.checkbox(&mut ff, "Fast-forward").clicked() {
-                            let limit = self
-                                .settings
-                                .fastforward_limit_enabled
-                                .then_some(self.settings.fastforward_limit);
-                            self.emu.toggle_fastforward(limit);
+                            self.toggle_ff();
                         }
                         if ui.button("Reset machine").clicked() {
                             self.emu.reset();
@@ -3256,6 +3314,7 @@ impl eframe::App for SnowGui {
                     {
                         // Cursor is within framebuffer view area
                         self.emu.update_mouse_button(*pressed);
+                        self.on_user_input();
                     }
                 }
                 egui::Event::MouseMoved(rel_p) => {
@@ -3277,10 +3336,12 @@ impl eframe::App for SnowGui {
                     if let Some(abs_p) = self.get_machine_mouse_pos(ctx) {
                         // Cursor is within framebuffer view area
                         self.emu.update_mouse(Some(&abs_p), &relpos);
+                        self.on_user_input();
                     } else if self.in_fullscreen {
                         // Always send relative motion for the entire screen in
                         // fullscreen mode
                         self.emu.update_mouse(None, &relpos);
+                        self.on_user_input();
                     }
                 }
                 egui::Event::PointerMoved(_) => {
@@ -3289,6 +3350,7 @@ impl eframe::App for SnowGui {
                         // Cursor is within framebuffer view area
                         // No relative motion in this event
                         self.emu.update_mouse(Some(&abs_p), &egui::Pos2::default());
+                        self.on_user_input();
                     }
                 }
                 egui::Event::WindowFocused(false) => {
