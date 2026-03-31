@@ -415,7 +415,10 @@ impl ScsiTargetCdrom {
 
     pub fn new(audio_provider: Option<&dyn AudioProvider>) -> Self {
         // FIXME: avoid unwrap
-        let audio_sink = audio_provider.map(|ap| ap.create_stream().unwrap());
+        let audio_sink = audio_provider.map(|ap| {
+            ap.create_stream(44100, 2, (RAW_SECTOR_LEN / 2 / 2) as u16)
+                .unwrap()
+        });
         println!(
             "CD audio sink: {}",
             if audio_sink.is_some() {
@@ -1100,7 +1103,8 @@ impl ScsiTarget for ScsiTargetCdrom {
 
     fn set_audio_provider(&mut self, provider: &dyn AudioProvider) -> Result<()> {
         println!("setting audio provider for CD drive");
-        self.audio_sink = Some(provider.create_stream()?);
+        self.audio_sink =
+            Some(provider.create_stream(44100, 2, (RAW_SECTOR_LEN / 2 / 2) as u16)?);
         Ok(())
     }
 

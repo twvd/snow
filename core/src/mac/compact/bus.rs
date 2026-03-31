@@ -19,7 +19,9 @@ use crate::mac::swim::drive::DriveType;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::MacModel;
-use crate::renderer::{AudioProvider, ChannelAudioSink, Renderer};
+use crate::renderer::{
+    AudioProvider, ChannelAudioSink, Renderer, AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS,
+};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 use crate::util::take_from_accumulator;
@@ -238,8 +240,11 @@ where
     pub fn set_audio_provider(&mut self, provider: Arc<Mutex<dyn AudioProvider>>) {
         let provider = provider.lock().unwrap();
 
+        // Audio sample frequency is tied to monitor's horizontal sync
+        // 370 horizontal lines * 60.147 frames/sec = 22.254 KHz
+        // Round down to a safe commonly used value (22050), 0.9% off
         let sink = provider
-            .create_stream()
+            .create_stream(22050, AUDIO_CHANNELS as u8, AUDIO_BUFFER_SAMPLES as u16)
             .unwrap_or(Box::new(ChannelAudioSink::new()));
         self.audio.set_sink(sink);
 
