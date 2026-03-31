@@ -129,14 +129,12 @@ impl IsoCdromBackend {
             image,
             session: SessionInfo {
                 leadout: Msf::from_sector(leadout_sector),
-                tracks: vec![
-                    TrackInfo {
-                        tno: 1,
-                        control: DATA_TRACK,
-                        msf: Msf::new(0, 0, 0),
-                    },
-                ]
-            }
+                tracks: vec![TrackInfo {
+                    tno: 1,
+                    control: DATA_TRACK,
+                    msf: Msf::new(0, 0, 0),
+                }],
+            },
         })
     }
 }
@@ -251,44 +249,42 @@ impl CuesheetCdromBackend {
         Ok(Self {
             cue_path: path.into(),
             data_files,
-            sessions: vec![
-                SessionInfo {
-                    // XXX: for testing
-                    leadout: Msf::from_sector(330_000),
-                    tracks: vec![
-                        TrackInfo {
-                            tno: 1,
-                            control: DATA_TRACK,
-                            msf: Msf::from_sector(0),
-                        },
-                        TrackInfo {
-                            tno: 2,
-                            control: AUDIO_TRACK,
-                            msf: Msf::from_sector(300_000),
-                        },
-                        TrackInfo {
-                            tno: 3,
-                            control: AUDIO_TRACK,
-                            msf: Msf::from_sector(305_000),
-                        },
-                        TrackInfo {
-                            tno: 4,
-                            control: AUDIO_TRACK,
-                            msf: Msf::from_sector(310_000),
-                        },
-                        TrackInfo {
-                            tno: 5,
-                            control: AUDIO_TRACK,
-                            msf: Msf::from_sector(315_000),
-                        },
-                        TrackInfo {
-                            tno: 6,
-                            control: AUDIO_TRACK,
-                            msf: Msf::from_sector(320_000),
-                        },
-                    ],
-                },
-            ]
+            sessions: vec![SessionInfo {
+                // XXX: for testing
+                leadout: Msf::from_sector(330_000),
+                tracks: vec![
+                    TrackInfo {
+                        tno: 1,
+                        control: DATA_TRACK,
+                        msf: Msf::from_sector(0),
+                    },
+                    TrackInfo {
+                        tno: 2,
+                        control: AUDIO_TRACK,
+                        msf: Msf::from_sector(300_000),
+                    },
+                    TrackInfo {
+                        tno: 3,
+                        control: AUDIO_TRACK,
+                        msf: Msf::from_sector(305_000),
+                    },
+                    TrackInfo {
+                        tno: 4,
+                        control: AUDIO_TRACK,
+                        msf: Msf::from_sector(310_000),
+                    },
+                    TrackInfo {
+                        tno: 5,
+                        control: AUDIO_TRACK,
+                        msf: Msf::from_sector(315_000),
+                    },
+                    TrackInfo {
+                        tno: 6,
+                        control: AUDIO_TRACK,
+                        msf: Msf::from_sector(320_000),
+                    },
+                ],
+            }],
         })
     }
 }
@@ -517,7 +513,81 @@ impl ScsiTargetCdrom {
                 result.truncate(alloc_len);
                 Ok(ScsiCmdResult::DataIn(result))
             }
-            // TODO: implement format 2 (queried by System 7.5 upon mounting a CD)
+            2 => {
+                // Raw TOC
+                let mut result = Vec::<u8>::with_capacity(alloc_len);
+
+                result.push(0); // TOC Data Length (will be filled later)
+                result.push(0);
+
+                result.push(1); // First Complete Session Number (always 1)
+                result.push(sessions.len() as u8); // Last Complete Session Number
+
+                for (session_num, session) in sessions.iter().enumerate() {
+                    let session_num = session_num + 1; // Session Numbers start at 1
+
+                    // First track number in the program area
+                    result.push(session_num as u8); // Session Number
+                    result.push((1 << 4) | session.tracks.first().unwrap().control);
+                    result.push(0); // TNO (0 for the lead-in area)
+                    result.push(0xA0); // POINT (First Track number in the program area)
+                    result.push(0); // ATIME (0:0:0 for the lead-in area)
+                    result.push(0);
+                    result.push(0);
+                    result.push(0); // Zero
+                    result.push(session.tracks.first().unwrap().tno); // First Track Number
+                    result.push(0); // Disc Type
+                    result.push(0);
+
+                    // Last track number in the program area
+                    result.push(session_num as u8); // Session Number
+                    result.push((1 << 4) | session.tracks.first().unwrap().control);
+                    result.push(0); // TNO (0 for the lead-in area)
+                    result.push(0xA1); // POINT (First Track number in the program area)
+                    result.push(0); // ATIME (0:0:0 for the lead-in area)
+                    result.push(0);
+                    result.push(0);
+                    result.push(0); // Zero
+                    result.push(session.tracks.last().unwrap().tno); // First Track Number
+                    result.push(0);
+                    result.push(0);
+
+                    // Start location of the Lead-out area
+                    result.push(session_num as u8); // Session Number
+                    result.push((1 << 4) | session.tracks.first().unwrap().control);
+                    result.push(0); // TNO (0 for the lead-in area)
+                    result.push(0xA1); // POINT (First Track number in the program area)
+                    result.push(0); // ATIME (0:0:0 for the lead-in area)
+                    result.push(0);
+                    result.push(0);
+                    result.push(0); // Zero
+                    result.push(session.leadout.m); // Start position of Lead-out
+                    result.push(session.leadout.s);
+                    result.push(session.leadout.f);
+
+                    for track in &session.tracks {
+                        result.push(session_num as u8); // Session Number
+                        result.push((1 << 4) | track.control); // ADR/Control
+                        result.push(0); // TNO (0 for the lead-in area)
+                        result.push(track.tno); // POINT (0-99 for tracks)
+                        result.push(0); // ATIME (0:0:0 for the lead-in area)
+                        result.push(0);
+                        result.push(0);
+                        result.push(0); // Zero
+                        result.push(track.msf.m); // Start position of track
+                        result.push(track.msf.s);
+                        result.push(track.msf.f);
+                    }
+
+                    // TODO: emit POINT's 0xB0 and 0xC0 for multisession discs
+                }
+
+                let data_length = result.len() - 2;
+                result[0..2].copy_from_slice(&u16::to_be_bytes(data_length.try_into()?));
+
+                result.truncate(alloc_len);
+                Ok(ScsiCmdResult::DataIn(result))
+            }
             _ => {
                 log::error!("Unknown READ TOC format: {}", format);
 
@@ -543,9 +613,7 @@ impl ScsiTargetCdrom {
     }
 
     fn get_track_at_sector(&self, sector: u32) -> Option<&TrackInfo> {
-        self.backend
-            .as_ref()?
-            .sessions()?[0] // TODO: support multi-session discs
+        self.backend.as_ref()?.sessions()?[0] // TODO: support multi-session discs
             .tracks
             .iter()
             .rev()
