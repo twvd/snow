@@ -65,17 +65,12 @@ impl Msf {
         Msf { m, s, f }
     }
 
-    fn from_sector(sector: u32) -> Msf {
+    fn from_sector(sector: u32) -> Result<Msf> {
         // A sector is also known as a "frame" in CD parlance.
         let m = sector / 75 / 60;
         let s = (sector / 75) % 60;
         let f = sector % 75;
-        // FIXME: avoid unwrap
-        Msf::new(
-            m.try_into().unwrap(),
-            s.try_into().unwrap(),
-            f.try_into().unwrap(),
-        )
+        Ok(Msf::new(m.try_into()?, s.try_into()?, f.try_into()?))
     }
 
     fn to_sector(self) -> u32 {
@@ -129,7 +124,7 @@ impl IsoCdromBackend {
         Ok(Self {
             image,
             session: SessionInfo {
-                leadout: Msf::from_sector(leadout_sector),
+                leadout: Msf::from_sector(leadout_sector)?,
                 tracks: vec![TrackInfo {
                     tno: 1,
                     control: DATA_TRACK,
@@ -318,7 +313,7 @@ impl CuesheetCdromBackend {
                 // XXX: for testing.
                 // TODO: we'll have to autocompute the leadout sector...
                 // it isn't explicitly listed in the cuesheet.
-                leadout: Msf::from_sector(332_000),
+                leadout: Msf::from_sector(332_000)?,
                 tracks,
             }],
         })
@@ -915,11 +910,11 @@ impl ScsiTarget for ScsiTargetCdrom {
                         result.push(track.tno); // Track Number
                         result.push(1); // Index Number (TODO: Find correct index number)
                         result.extend_from_slice(
-                            &self.msf_to_address_field(Msf::from_sector(self.audio_pos), msf != 0),
+                            &self.msf_to_address_field(Msf::from_sector(self.audio_pos)?, msf != 0),
                         );
                         let track_relative = self.audio_pos - Msf::to_sector(track.msf);
                         result.extend_from_slice(
-                            &self.msf_to_address_field(Msf::from_sector(track_relative), msf != 0),
+                            &self.msf_to_address_field(Msf::from_sector(track_relative)?, msf != 0),
                         );
                     }
                     _ => {
