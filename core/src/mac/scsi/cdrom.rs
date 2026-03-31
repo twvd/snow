@@ -2,6 +2,7 @@
 
 use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
+use std::ops::Range;
 
 use core::fmt;
 use std::fs::File;
@@ -97,7 +98,46 @@ pub struct TrackInfo {
 
 pub struct SessionInfo {
     leadout: Msf,
-    tracks: Vec<TrackInfo>,
+    the_tracks: Vec<TrackInfo>,
+}
+
+impl SessionInfo {
+    /// Return the track at a given index. The argument is the 0-based index of the track, NOT the track number.
+    fn get_track(&self, idx: usize) -> Option<&TrackInfo> {
+        self.the_tracks.get(idx)
+    }
+
+    fn track_count(&self) -> usize {
+        self.the_tracks.len()
+    }
+
+    fn track_iter(&self) -> SessionTrackIterator<'_> {
+        SessionTrackIterator {
+            session: self,
+            iter: (0..self.track_count()).into_iter(),
+        }
+    }
+}
+
+struct SessionTrackIterator<'a> {
+    session: &'a SessionInfo,
+    iter: Range<usize>,
+}
+
+impl<'a> Iterator for SessionTrackIterator<'a> {
+    type Item = &'a TrackInfo;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next().map(|i| self.session.get_track(i).unwrap())
+    }
+}
+
+impl DoubleEndedIterator for SessionTrackIterator<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.iter
+            .next_back()
+            .map(|i| self.session.get_track(i).unwrap())
+    }
 }
 
 pub trait CdromBackend: Send {
@@ -125,7 +165,7 @@ impl IsoCdromBackend {
             image,
             session: SessionInfo {
                 leadout: Msf::from_sector(leadout_sector)?,
-                tracks: vec![TrackInfo {
+                the_tracks: vec![TrackInfo {
                     tno: 1,
                     control: DATA_TRACK,
                     msf: Msf::new(0, 0, 0),
@@ -243,7 +283,7 @@ impl CuesheetCdromBackend {
         let mut track_num = 0u8;
         let mut track_form = CuesheetTrackForm::Audio;
 
-        let mut tracks = vec![];
+        let mut the_tracks = vec![];
 
         // FIXME: I believe cue files have one command per line and never split commands across multiple lines. Is this true?
         for line in cue_file.lines() {
@@ -286,7 +326,7 @@ impl CuesheetCdromBackend {
                         if index_num == 1 {
                             // The track will officially begin at index 1.
                             let index_msf = read_cue_msf(&mut chars)?;
-                            tracks.push(TrackInfo {
+                            the_tracks.push(TrackInfo {
                                 tno: track_num,
                                 control: match track_form {
                                     CuesheetTrackForm::Audio => AUDIO_TRACK,
@@ -304,7 +344,7 @@ impl CuesheetCdromBackend {
             }
         }
 
-        log::info!("Read tracks from cuesheet: {:#?}", tracks);
+        log::info!("Read tracks from cuesheet: {:#?}", the_tracks);
 
         Ok(Self {
             cue_path: path.into(),
@@ -314,7 +354,7 @@ impl CuesheetCdromBackend {
                 // TODO: we'll have to autocompute the leadout sector...
                 // it isn't explicitly listed in the cuesheet.
                 leadout: Msf::from_sector(332_000)?,
-                tracks,
+                the_tracks,
             }],
         })
     }
@@ -487,14 +527,14 @@ impl ScsiTargetCdrom {
                 result.push(0);
 
                 // TODO: support multisession discs (All sessions TOC's must be combined)
-                let tracks = &sessions[0].tracks;
+                let session = &sessions[0];
 
                 // FIXME: avoid unwrap
-                result.push(tracks.first().unwrap().tno); // First Track Number
-                result.push(tracks.last().unwrap().tno); // Last Track Number
+                result.push(session.get_track(0).unwrap().tno); // First Track Number
+                result.push(session.get_track(session.track_count() - 1).unwrap().tno); // Last Track Number
 
                 // Start at the given track or the next available track
-                let track_iter = tracks.iter().skip_while(|t| t.tno < track);
+                let track_iter = session.track_iter().skip_while(|t| t.tno < track);
 
                 // Emit track descriptors
                 for t in track_iter {
@@ -508,7 +548,13 @@ impl ScsiTargetCdrom {
 
                 // Emit leadout track descriptor
                 result.push(0); // Reserved
-                result.push((1 << 4) | tracks.last().unwrap().control); // ADR/Control
+                result.push(
+                    (1 << 4)
+                        | session
+                            .get_track(session.track_count() - 1)
+                            .unwrap()
+                            .control,
+                ); // ADR/Control
                 result.push(TRACK_LEADOUT); // Track Number
                 result.push(0); // Reserved
                 result.extend_from_slice(&self.msf_to_address_field(sessions[0].leadout, msf));
@@ -532,7 +578,7 @@ impl ScsiTargetCdrom {
                 result.push(sessions.len() as u8); // Last Session Number
 
                 // This command queries the "first track in the last session" apparently...
-                let first_track = sessions.last().unwrap().tracks.first().unwrap();
+                let first_track = sessions.last().unwrap().get_track(0).unwrap();
 
                 // [PIONEER] Table 2-28D: Track Descriptors
                 result.push(0); // Reserved
@@ -562,33 +608,33 @@ impl ScsiTargetCdrom {
 
                     // First track number in the program area
                     result.push(session_num as u8); // Session Number
-                    result.push((1 << 4) | session.tracks.first().unwrap().control);
+                    result.push((1 << 4) | session.get_track(0).unwrap().control);
                     result.push(0); // TNO (0 for the lead-in area)
                     result.push(0xA0); // POINT (First Track number in the program area)
                     result.push(0); // ATIME (0:0:0 for the lead-in area)
                     result.push(0);
                     result.push(0);
                     result.push(0); // Zero
-                    result.push(session.tracks.first().unwrap().tno); // First Track Number
+                    result.push(session.get_track(0).unwrap().tno); // First Track Number
                     result.push(0); // Disc Type
                     result.push(0);
 
                     // Last track number in the program area
                     result.push(session_num as u8); // Session Number
-                    result.push((1 << 4) | session.tracks.first().unwrap().control);
+                    result.push((1 << 4) | session.get_track(0).unwrap().control);
                     result.push(0); // TNO (0 for the lead-in area)
                     result.push(0xA1); // POINT (First Track number in the program area)
                     result.push(0); // ATIME (0:0:0 for the lead-in area)
                     result.push(0);
                     result.push(0);
                     result.push(0); // Zero
-                    result.push(session.tracks.last().unwrap().tno); // First Track Number
+                    result.push(session.get_track(session.track_count() - 1).unwrap().tno); // Last Track Number
                     result.push(0);
                     result.push(0);
 
                     // Start location of the Lead-out area
                     result.push(session_num as u8); // Session Number
-                    result.push((1 << 4) | session.tracks.first().unwrap().control);
+                    result.push((1 << 4) | session.get_track(0).unwrap().control);
                     result.push(0); // TNO (0 for the lead-in area)
                     result.push(0xA1); // POINT (First Track number in the program area)
                     result.push(0); // ATIME (0:0:0 for the lead-in area)
@@ -599,7 +645,7 @@ impl ScsiTargetCdrom {
                     result.push(session.leadout.s);
                     result.push(session.leadout.f);
 
-                    for track in &session.tracks {
+                    for track in session.track_iter() {
                         result.push(session_num as u8); // Session Number
                         result.push((1 << 4) | track.control); // ADR/Control
                         result.push(0); // TNO (0 for the lead-in area)
@@ -648,8 +694,7 @@ impl ScsiTargetCdrom {
 
     fn get_track_at_sector(&self, sector: u32) -> Option<&TrackInfo> {
         self.backend.as_ref()?.sessions()?[0] // TODO: support multi-session discs
-            .tracks
-            .iter()
+            .track_iter()
             .rev()
             .find(|t| t.msf.to_sector() <= sector)
     }
@@ -844,16 +889,6 @@ impl ScsiTarget for ScsiTargetCdrom {
             // READ SUB-CHANNEL
             0x42 => {
                 // Used by Apple Audio CD Player to query playback status.
-                let Some(backend) = &self.backend else {
-                    self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
-                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-                };
-
-                let Some(sessions) = backend.sessions() else {
-                    self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
-                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-                };
-
                 let msf = (cmd[1] >> 1) & 0x1;
                 let sub_q = (cmd[2] >> 5) & 0x1;
                 let format = cmd[3];
@@ -1009,7 +1044,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 };
 
                 // TODO: support multi-session discs
-                let tracks = &sessions[0].tracks;
+                let mut tracks = sessions[0].track_iter();
 
                 let direct = (cmd[1] >> 4) & 0x1; // Scan forwards if set, backwards if unset.
                 let addr_type = (cmd[9] >> 6) & 0x3;
@@ -1032,7 +1067,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                         // Start at the given track or the next available track
                         // FIXME: what should happen if specified track is not available?
                         // TODO: avoid unwrap
-                        let track = tracks.iter().find(|t| t.tno >= start_addr[3]).unwrap();
+                        let track = tracks.find(|t| t.tno >= start_addr[3]).unwrap();
                         track.msf.to_sector()
                     }
                     // Reserved
