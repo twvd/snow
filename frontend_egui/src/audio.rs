@@ -2,10 +2,7 @@ use anyhow::{anyhow, Result};
 use log::*;
 use sdl2::audio::{AudioCallback, AudioDevice, AudioSpecDesired};
 use sdl2::Sdl;
-use snow_core::renderer::{
-    AudioBuffer, AudioProvider, AudioReceiver, AudioSink, ChannelAudioSink, AUDIO_BUFFER_SAMPLES,
-    AUDIO_CHANNELS,
-};
+use snow_core::renderer::{AudioBuffer, AudioProvider, AudioReceiver, AudioSink, ChannelAudioSink};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

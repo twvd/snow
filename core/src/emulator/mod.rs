@@ -12,7 +12,6 @@ use std::fs::File;
 #[cfg(feature = "savestates")]
 use std::io::Seek;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -33,7 +32,7 @@ use crate::mac::serial_bridge::{SccBridge, SerialBridgeStatus};
 use crate::mac::swim::drive::DriveType;
 use crate::mac::{ExtraROMs, MacModel, MacMonitor};
 use crate::renderer::channel::ChannelRenderer;
-use crate::renderer::{AudioProvider, AudioSink};
+use crate::renderer::AudioProvider;
 use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
@@ -196,7 +195,7 @@ dispatch! {
 
     mutable_calls {
         fn set_speed(&mut self, speed: EmulatorSpeed) -> () { bus.set_speed(speed) }
-        fn set_audio_provider(&mut self, provider: &dyn AudioProvider) -> () { bus.set_audio_provider(provider) }
+        fn set_audio_provider(&mut self, provider: &dyn AudioProvider) -> Result<()> { bus.set_audio_provider(provider) }
 
         fn cpu_tick(&mut self, ticks: Ticks) -> Result<Ticks> { tick(ticks) }
         fn cpu_set_breakpoint(&mut self, bp: Breakpoint) -> () { set_breakpoint(bp) }
@@ -683,8 +682,8 @@ impl Emulator {
         Ok(())
     }
 
-    pub fn set_audio_provider(&mut self, provider: &dyn AudioProvider) {
-        self.config.set_audio_provider(provider);
+    pub fn set_audio_provider(&mut self, provider: &dyn AudioProvider) -> Result<()> {
+        self.config.set_audio_provider(provider)
     }
 
     pub fn load_hdd_image(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {

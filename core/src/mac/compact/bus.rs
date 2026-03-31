@@ -1,6 +1,4 @@
 use std::ops::Range;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -28,7 +26,6 @@ use crate::util::take_from_accumulator;
 
 use anyhow::Result;
 use bit_set::BitSet;
-use crossbeam::epoch::Pointable;
 use log::*;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
 use serde::{Deserialize, Serialize};
@@ -237,7 +234,7 @@ where
         self.via.rtc.effective_speed()
     }
 
-    pub fn set_audio_provider(&mut self, provider: &dyn AudioProvider) {
+    pub fn set_audio_provider(&mut self, provider: &dyn AudioProvider) -> Result<()> {
         // Audio sample frequency is tied to monitor's horizontal sync
         // 370 horizontal lines * 60.147 frames/sec = 22.254 KHz
         // Round down to a safe commonly used value (22050), 0.9% off
@@ -246,7 +243,7 @@ where
             .unwrap_or(Box::new(ChannelAudioSink::new()));
         self.audio.set_sink(sink);
 
-        self.scsi.set_audio_provider(&*provider);
+        self.scsi.set_audio_provider(&*provider)
     }
 
     fn soundbuf(&mut self) -> &mut [u8] {
