@@ -196,7 +196,7 @@ dispatch! {
 
     mutable_calls {
         fn set_speed(&mut self, speed: EmulatorSpeed) -> () { bus.set_speed(speed) }
-        fn set_audio_provider(&mut self, provider: Arc<Mutex<dyn AudioProvider>>) -> () { bus.set_audio_provider(provider) }
+        fn set_audio_provider(&mut self, provider: &dyn AudioProvider) -> () { bus.set_audio_provider(provider) }
 
         fn cpu_tick(&mut self, ticks: Ticks) -> Result<Ticks> { tick(ticks) }
         fn cpu_set_breakpoint(&mut self, bp: Breakpoint) -> () { set_breakpoint(bp) }
@@ -683,7 +683,7 @@ impl Emulator {
         Ok(())
     }
 
-    pub fn set_audio_provider(&mut self, provider: Arc<Mutex<dyn AudioProvider>>) {
+    pub fn set_audio_provider(&mut self, provider: &dyn AudioProvider) {
         self.config.set_audio_provider(provider);
     }
 

@@ -237,9 +237,7 @@ where
         self.via.rtc.effective_speed()
     }
 
-    pub fn set_audio_provider(&mut self, provider: Arc<Mutex<dyn AudioProvider>>) {
-        let provider = provider.lock().unwrap();
-
+    pub fn set_audio_provider(&mut self, provider: &dyn AudioProvider) {
         // Audio sample frequency is tied to monitor's horizontal sync
         // 370 horizontal lines * 60.147 frames/sec = 22.254 KHz
         // Round down to a safe commonly used value (22050), 0.9% off

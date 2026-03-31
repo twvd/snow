@@ -324,16 +324,14 @@ impl EmulatorState {
         if audio_disabled {
             cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
         } else {
-            // let channel_sink = ChannelAudioSink::new();
-            // let receiver = channel_sink.receiver();
-
             drop(self.audio_provider.take());
 
             match SDLAudioProvider::new() {
                 Ok(provider) => {
                     let provider = Arc::new(Mutex::new(provider));
                     self.audio_provider = Some(provider.clone());
-                    emulator.set_audio_provider(provider);
+                    let provider = provider.lock().unwrap();
+                    emulator.set_audio_provider(&*provider);
                 }
                 Err(e) => {
                     error!("Failed to initialize audio: {:?}", e);
