@@ -363,7 +363,7 @@ impl CuesheetCdromBackend {
                             log::warn!("track {} INDEX {} ignored", track_num, index_num);
                         }
                     }
-                    // TODO: IsoBuster emits REM SESSION commands to indicate a new session.
+                    // TODO: Support multisession bin/cue's. IsoBuster emits REM SESSION commands to indicate a new session.
                     _ => log::warn!("Unknown cuesheet command {} ignored", command),
                 }
             }
@@ -371,14 +371,16 @@ impl CuesheetCdromBackend {
 
         log::info!("Read tracks from cuesheet: {:#?}", the_tracks);
 
+        let final_leadout = data_files
+            .last()
+            .map(|df| df.sector + df.sector_count)
+            .unwrap_or(0);
+
         Ok(Self {
             cue_path: path.into(),
             data_files,
             sessions: vec![SessionInfo {
-                // XXX: for testing.
-                // TODO: we'll have to autocompute the leadout sector...
-                // it isn't explicitly listed in the cuesheet.
-                leadout: Msf::from_sector(332_000)?,
+                leadout: Msf::from_sector(final_leadout)?,
                 the_tracks,
             }],
         })
