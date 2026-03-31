@@ -3,6 +3,7 @@
 use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
 
+use core::fmt;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::iter::Peekable;
@@ -29,6 +30,8 @@ use super::STATUS_GOOD;
 
 // The CD-ROM SCSI protocol is often confusing. Here is some useful documentation:
 //
+// [MMC4]: <https://13thmonkey.org/documentation/SCSI/mmc4r05a.pdf>
+// [MMC6]: <https://13thmonkey.org/documentation/SCSI/mmc6r02g.pdf>
 // [PIONEER]: <https://bitsavers.trailing-edge.com/pdf/pioneer/cdrom/OB-U0077C_CD-ROM_SCSI-2_Command_Set_V3.1_19970626.pdf>
 // [UNI-MAINZ]: <https://www.staff.uni-mainz.de/tacke/scsi/SCSI2-14.html>
 // [MBWIKI]: <https://wiki.musicbrainz.org/Disc_ID_Calculation>
@@ -44,24 +47,61 @@ const AUDIO_PLAYING: u8 = 0x11;
 const AUDIO_PAUSED: u8 = 0x12;
 const AUDIO_COMPLETED: u8 = 0x13;
 
-// Track ADR/Control field codes
-const AUDIO_TRACK: u8 = 0x00; // FIXME: correct?
-const DATA_TRACK: u8 = 0x14;
+// Track Control field codes
+const AUDIO_TRACK: u8 = 0x0;
+const DATA_TRACK: u8 = 0x4;
 
 const AUDIO_SECTORS_PER_SEC: u64 = 75;
 
-fn msf_to_sector(m: u8, s: u8, f: u8) -> u32 {
-    // FIXME: Is 00:02:00 pregap involved here?
-    (m as u32 * 60 + s as u32) * 75 + f as u32
+#[derive(Copy, Clone)]
+struct Msf {
+    m: u8,
+    s: u8,
+    f: u8,
+}
+
+impl Msf {
+    fn new(m: u8, s: u8, f: u8) -> Msf {
+        Msf { m, s, f }
+    }
+
+    fn from_sector(sector: u32) -> Msf {
+        // A sector is also known as a "frame" in CD parlance.
+        let m = sector / 75 / 60;
+        let s = (sector / 75) % 60;
+        let f = sector % 75;
+        // FIXME: avoid unwrap
+        Msf::new(
+            m.try_into().unwrap(),
+            s.try_into().unwrap(),
+            f.try_into().unwrap(),
+        )
+    }
+
+    fn to_sector(self) -> u32 {
+        // FIXME: Is 00:02:00 pregap involved here?
+        (self.m as u32 * 60 + self.s as u32) * 75 + self.f as u32
+    }
+}
+
+impl fmt::Display for Msf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}:{}", self.m, self.s, self.f)
+    }
 }
 
 pub struct TrackInfo {
     /// The track number. Note that CD tracks don't necessarily start at number 1.
-    number: u8,
-    /// ADR and Control fields indicating track format
-    adr_control: u8,
-    /// Sector number where the track begins
-    sector: u32, // For pete's sake, just use the sector number... forget about this MSF/LBA nonsense.
+    tno: u8,
+    /// Control field indicating track format
+    control: u8,
+    /// MSF address where the track begins
+    msf: Msf,
+}
+
+pub struct SessionInfo {
+    leadout: Msf,
+    tracks: Vec<TrackInfo>,
 }
 
 pub trait CdromBackend: Send {
@@ -69,11 +109,9 @@ pub trait CdromBackend: Send {
     fn read_bytes(&self, offset: usize, length: usize) -> Vec<u8>;
     fn image_path(&self) -> Option<&Path>;
 
-    /// Return a list of tracks in the table of contents.
-    ///
-    /// Track numbers are not required to start at 1, but they must increase during iteration.
-    /// The final track is the leadout track, numbered 0xAA.
-    fn tracks(&self) -> Option<&[TrackInfo]>;
+    /// Return a list of sessions, each containing a list of tracks.
+    /// Unlike tracks, sessions are always numbered starting at 1.
+    fn sessions(&self) -> Option<&[SessionInfo]>;
 
     /// Read a raw 2352-byte sector. Currently used only for CD audio. Other data is read by read_bytes.
     fn read_raw_sector(&self, sector: u32) -> Result<[u8; RAW_SECTOR_LEN]>;
@@ -81,7 +119,7 @@ pub trait CdromBackend: Send {
 
 struct IsoCdromBackend {
     image: Box<dyn DiskImage>,
-    tracks: [TrackInfo; 2],
+    session: SessionInfo,
 }
 
 impl IsoCdromBackend {
@@ -89,18 +127,16 @@ impl IsoCdromBackend {
         let leadout_sector = image.byte_len().div_ceil(2048).try_into()?;
         Ok(Self {
             image,
-            tracks: [
-                TrackInfo {
-                    number: 1,
-                    adr_control: DATA_TRACK,
-                    sector: 0,
-                },
-                TrackInfo {
-                    number: TRACK_LEADOUT,
-                    adr_control: DATA_TRACK,
-                    sector: leadout_sector,
-                },
-            ],
+            session: SessionInfo {
+                leadout: Msf::from_sector(leadout_sector),
+                tracks: vec![
+                    TrackInfo {
+                        tno: 1,
+                        control: DATA_TRACK,
+                        msf: Msf::new(0, 0, 0),
+                    },
+                ]
+            }
         })
     }
 }
@@ -118,8 +154,8 @@ impl CdromBackend for IsoCdromBackend {
         self.image.image_path()
     }
 
-    fn tracks(&self) -> Option<&[TrackInfo]> {
-        Some(&self.tracks)
+    fn sessions(&self) -> Option<&[SessionInfo]> {
+        Some(std::slice::from_ref(&self.session))
     }
 
     fn read_raw_sector(&self, _sector: u32) -> Result<[u8; RAW_SECTOR_LEN]> {
@@ -177,6 +213,7 @@ fn read_cue_path(reader: &mut Peekable<Chars>) -> Option<String> {
 struct CuesheetCdromBackend {
     cue_path: PathBuf,
     data_files: Vec<File>,
+    sessions: Vec<SessionInfo>,
 }
 
 impl CuesheetCdromBackend {
@@ -214,6 +251,44 @@ impl CuesheetCdromBackend {
         Ok(Self {
             cue_path: path.into(),
             data_files,
+            sessions: vec![
+                SessionInfo {
+                    // XXX: for testing
+                    leadout: Msf::from_sector(330_000),
+                    tracks: vec![
+                        TrackInfo {
+                            tno: 1,
+                            control: DATA_TRACK,
+                            msf: Msf::from_sector(0),
+                        },
+                        TrackInfo {
+                            tno: 2,
+                            control: AUDIO_TRACK,
+                            msf: Msf::from_sector(300_000),
+                        },
+                        TrackInfo {
+                            tno: 3,
+                            control: AUDIO_TRACK,
+                            msf: Msf::from_sector(305_000),
+                        },
+                        TrackInfo {
+                            tno: 4,
+                            control: AUDIO_TRACK,
+                            msf: Msf::from_sector(310_000),
+                        },
+                        TrackInfo {
+                            tno: 5,
+                            control: AUDIO_TRACK,
+                            msf: Msf::from_sector(315_000),
+                        },
+                        TrackInfo {
+                            tno: 6,
+                            control: AUDIO_TRACK,
+                            msf: Msf::from_sector(320_000),
+                        },
+                    ],
+                },
+            ]
         })
     }
 }
@@ -228,6 +303,9 @@ impl CdromBackend for CuesheetCdromBackend {
         println!("Reading {} bytes from offset 0x{:X}", length, offset);
         let mut result = Vec::<u8>::with_capacity(length);
 
+        // TODO: uh-oh, do we need to support CD-ROM's where the data is in session 2?
+        // Example: "Weird Al" Yankovic - Running With Scissors
+        // (the Weird Al disc also uses Form 2 sectors in its data track!)
         let mut sector = (offset / 2048).try_into().unwrap();
         while result.len() < length {
             // TODO: Better error robustness if read fails
@@ -246,45 +324,8 @@ impl CdromBackend for CuesheetCdromBackend {
         Some(&self.cue_path)
     }
 
-    // TODO: read from cuesheet
-    fn tracks(&self) -> Option<&[TrackInfo]> {
-        Some(&[
-            TrackInfo {
-                number: 1,
-                adr_control: DATA_TRACK,
-                sector: 0,
-            },
-            TrackInfo {
-                number: 2,
-                adr_control: AUDIO_TRACK,
-                sector: 300_000,
-            },
-            TrackInfo {
-                number: 3,
-                adr_control: AUDIO_TRACK,
-                sector: 305_000,
-            },
-            TrackInfo {
-                number: 4,
-                adr_control: AUDIO_TRACK,
-                sector: 310_000,
-            },
-            TrackInfo {
-                number: 5,
-                adr_control: AUDIO_TRACK,
-                sector: 315_000,
-            },
-            TrackInfo {
-                number: 6,
-                adr_control: AUDIO_TRACK,
-                sector: 320_000,
-            },
-            TrackInfo {
-                number: TRACK_LEADOUT,
-                adr_control: DATA_TRACK,
-                sector: 330_000,
-            },
-        ])
+    fn sessions(&self) -> Option<&[SessionInfo]> {
+        Some(&self.sessions)
     }
 
     fn read_raw_sector(&self, sector: u32) -> Result<[u8; RAW_SECTOR_LEN]> {
@@ -370,23 +411,14 @@ impl ScsiTargetCdrom {
         }
     }
 
-    fn sector_to_address_field(&self, sector: u32, msf: bool) -> [u8; 4] {
+    fn msf_to_address_field(&self, msf: Msf, msf_format: bool) -> [u8; 4] {
         // FIXME: is 00:02:00 pre-gap involved here?
-        if msf {
-            // A sector is also known as a "frame" in CD parlance.
-            let m = sector / 75 / 60;
-            let s = (sector / 75) % 60;
-            let f = sector % 75;
+        if msf_format {
             // [UNI-MAINZ] Table 237: MSF address format
-            [
-                0,                     // Reserved
-                m.try_into().unwrap(), // M field
-                s.try_into().unwrap(), // S field
-                f.try_into().unwrap(), // F field
-            ]
+            [0, msf.m, msf.s, msf.f]
         } else {
             // FIXME: is this correct? I can't find any software that sets a non-2048 blocksize.
-            let lba = sector * 2048 / self.blocksize as u32;
+            let lba = msf.to_sector() * 2048 / self.blocksize as u32;
             u32::to_be_bytes(lba)
         }
     }
@@ -404,7 +436,7 @@ impl ScsiTargetCdrom {
             return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
         };
 
-        let Some(tracks) = backend.tracks() else {
+        let Some(sessions) = backend.sessions() else {
             // Media does not support tracks
             //
             // [PIONEER]:
@@ -424,22 +456,32 @@ impl ScsiTargetCdrom {
                 result.push(0); // TOC Data Length (will be set later)
                 result.push(0);
 
+                // TODO: support multisession discs (All sessions TOC's must be combined)
+                let tracks = &sessions[0].tracks;
+
                 // FIXME: avoid unwrap
-                result.push(tracks.first().unwrap().number); // First Track Number
-                result.push(tracks.iter().rev().nth(1).unwrap().number); // Last Track Number
+                result.push(tracks.first().unwrap().tno); // First Track Number
+                result.push(tracks.last().unwrap().tno); // Last Track Number
 
                 // Start at the given track or the next available track
-                let track_iter = tracks.iter().skip_while(|t| t.number < track);
+                let track_iter = tracks.iter().skip_while(|t| t.tno < track);
 
                 // Emit track descriptors
                 for t in track_iter {
                     result.push(0); // Reserved
-                    result.push(t.adr_control); // ADR/Control
-                    result.push(t.number); // Track Number
+                    result.push((1 << 4) | t.control); // ADR/Control
+                    result.push(t.tno); // Track Number
                     result.push(0); // Reserved
-                    result.extend_from_slice(&self.sector_to_address_field(t.sector, msf));
+                    result.extend_from_slice(&self.msf_to_address_field(t.msf, msf));
                     // Absolute CD-ROM Address
                 }
+
+                // Emit leadout track descriptor
+                result.push(0); // Reserved
+                result.push((1 << 4) | tracks.last().unwrap().control); // ADR/Control
+                result.push(TRACK_LEADOUT); // Track Number
+                result.push(0); // Reserved
+                result.extend_from_slice(&self.msf_to_address_field(sessions[0].leadout, msf));
 
                 // Set data length field
                 let data_length = result.len() - 2;
@@ -456,19 +498,18 @@ impl ScsiTargetCdrom {
                 result.push(0); // TOC Data Length (will be set later)
                 result.push(0);
 
-                // TODO: support multi-session discs?
-                result.push(1); // First Session Number
-                result.push(1); // Last Session Number
+                result.push(1); // First Session Number (always 1)
+                result.push(sessions.len() as u8); // Last Session Number
 
                 // This command queries the "first track in the last session" apparently...
-                let first_track = tracks.first().unwrap();
+                let first_track = sessions.last().unwrap().tracks.first().unwrap();
 
                 // [PIONEER] Table 2-28D: Track Descriptors
                 result.push(0); // Reserved
-                result.push(first_track.adr_control); // ADR/Control
-                result.push(first_track.number); // First Track Number in Last Session
+                result.push((0x1 << 4) | first_track.control); // ADR/Control
+                result.push(first_track.tno); // First Track Number in Last Session
                 result.push(0); // Reserved
-                result.extend_from_slice(&self.sector_to_address_field(first_track.sector, msf)); // Absolute CD-ROM Address of the First Track in the Last Session
+                result.extend_from_slice(&self.msf_to_address_field(first_track.msf, msf)); // Absolute CD-ROM Address of the First Track in the Last Session
 
                 let data_length = result.len() - 2;
                 result[0..2].copy_from_slice(&u16::to_be_bytes(data_length.try_into()?));
@@ -504,10 +545,11 @@ impl ScsiTargetCdrom {
     fn get_track_at_sector(&self, sector: u32) -> Option<&TrackInfo> {
         self.backend
             .as_ref()?
-            .tracks()?
+            .sessions()?[0] // TODO: support multi-session discs
+            .tracks
             .iter()
             .rev()
-            .find(|t| t.sector <= sector)
+            .find(|t| t.msf.to_sector() <= sector)
     }
 }
 
@@ -705,7 +747,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
 
-                let Some(tracks) = backend.tracks() else {
+                let Some(sessions) = backend.sessions() else {
                     self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
@@ -757,23 +799,23 @@ impl ScsiTarget for ScsiTargetCdrom {
                         };
 
                         log::warn!(
-                            "audio pos is at sector {} (in track #{} at sector {})",
+                            "audio pos is at sector {} (in track #{} at msf {})",
                             self.audio_pos,
-                            track.number,
-                            track.sector
+                            track.tno,
+                            track.msf
                         );
 
                         // [PIONEER] Table 2-27F: CD-ROM Current Position Data Block
                         result.push(0x01); // Sub Channel Data Format code
-                        result.push(track.adr_control); // ADR/Control
-                        result.push(track.number); // Track Number
+                        result.push((1 << 4) | track.control); // ADR/Control
+                        result.push(track.tno); // Track Number
                         result.push(1); // Index Number (TODO: Find correct index number)
                         result.extend_from_slice(
-                            &self.sector_to_address_field(self.audio_pos, msf != 0),
+                            &self.msf_to_address_field(Msf::from_sector(self.audio_pos), msf != 0),
                         );
-                        let track_relative = self.audio_pos - track.sector;
+                        let track_relative = self.audio_pos - Msf::to_sector(track.msf);
                         result.extend_from_slice(
-                            &self.sector_to_address_field(track_relative, msf != 0),
+                            &self.msf_to_address_field(Msf::from_sector(track_relative), msf != 0),
                         );
                     }
                     _ => {
@@ -806,36 +848,25 @@ impl ScsiTarget for ScsiTargetCdrom {
             }
             // PLAY AUDIO MSF
             0x47 => {
-                let (start_m, start_s, start_f) = (cmd[3], cmd[4], cmd[5]);
-                let (end_m, end_s, end_f) = (cmd[6], cmd[7], cmd[8]);
+                let start_msf = Msf::new(cmd[3], cmd[4], cmd[5]);
+                let end_msf = Msf::new(cmd[6], cmd[7], cmd[8]);
 
-                log::warn!(
-                    "PLAY AUDIO MSF start {}:{}:{} end {}:{}:{}",
-                    start_m,
-                    start_s,
-                    start_f,
-                    end_m,
-                    end_s,
-                    end_f
-                );
-
-                let start_sector = msf_to_sector(start_m, start_s, start_f);
-                let stop_sector = msf_to_sector(end_m, end_s, end_f);
+                log::warn!("PLAY AUDIO MSF start {} end {}", start_msf, end_msf);
 
                 // [PIONEER]: 2.13:
                 // If the starting address is not found, or if the address is not within an audio track, or if a not ready
                 // condition exists, the drive will terminate with a Check Condition status.
-                let start_track = self.get_track_at_sector(start_sector);
+                let start_track = self.get_track_at_sector(start_msf.to_sector());
                 if start_track
-                    .map(|t| t.adr_control != AUDIO_TRACK)
+                    .map(|t| t.control != AUDIO_TRACK)
                     .unwrap_or(false)
                 {
                     self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
-                self.audio_pos = start_sector;
-                self.audio_stop = stop_sector;
+                self.audio_pos = start_msf.to_sector();
+                self.audio_stop = end_msf.to_sector();
                 self.audio_clock = 0;
                 self.audio_state = AudioState::Playing;
 
@@ -870,10 +901,13 @@ impl ScsiTarget for ScsiTargetCdrom {
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
 
-                let Some(tracks) = backend.tracks() else {
+                let Some(sessions) = backend.sessions() else {
                     self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
+
+                // TODO: support multi-session discs
+                let tracks = &sessions[0].tracks;
 
                 let direct = (cmd[1] >> 4) & 0x1; // Scan forwards if set, backwards if unset.
                 let addr_type = (cmd[9] >> 6) & 0x3;
@@ -890,14 +924,14 @@ impl ScsiTarget for ScsiTargetCdrom {
                     // Logical Block Address
                     0b00 => u32::from_be_bytes(start_addr.try_into()?),
                     // CD absolute time
-                    0b01 => msf_to_sector(start_addr[1], start_addr[2], start_addr[3]),
+                    0b01 => Msf::new(start_addr[1], start_addr[2], start_addr[3]).to_sector(),
                     // Track Number
                     0b10 => {
                         // Start at the given track or the next available track
                         // FIXME: what should happen if specified track is not available?
                         // TODO: avoid unwrap
-                        let track = tracks.iter().find(|t| t.number >= start_addr[3]).unwrap();
-                        track.sector
+                        let track = tracks.iter().find(|t| t.tno >= start_addr[3]).unwrap();
+                        track.msf.to_sector()
                     }
                     // Reserved
                     _ => {
