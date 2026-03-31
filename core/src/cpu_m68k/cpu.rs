@@ -515,11 +515,14 @@ where
             self.read_ticks_program::<Word>(fetch_addr)?
         };
         self.prefetch.push_back(new_item);
-        // FIXME: In rare instances, the Mac will hang on bootup.
+        // FIXME: In rare instances, the Mac will hang on bootup after
+        // displaying "Welcome to Macintosh" but before displaying the Mac OS logo.
         // The hang seems to occur when (self.regs.pc + 2) overflows here.
-        // Instead of using wrapping_add, I'll keep "+ 2" here to ensure
-        // an error is triggered when this occurs in debug builds.
-        self.regs.pc = (self.regs.pc + 2) & ADDRESS_MASK;
+        // This may indicate a logic bug in the emulator.
+        if self.regs.pc.checked_add(2).is_none() {
+            log::warn!("PC reg overflow in prefetch_pump_force. The Mac may hang.");
+        }
+        self.regs.pc = self.regs.pc.wrapping_add(2) & ADDRESS_MASK;
         Ok(())
     }
 
