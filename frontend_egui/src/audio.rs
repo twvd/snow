@@ -81,19 +81,16 @@ impl AudioCallback for SDLAudioCallback {
 
 impl SDLAudioStream {
     /// Creates a new audio provider
-    pub fn new() -> Result<Self> {
+    pub fn new(freq: i32, channels: u8, samples: u16) -> Result<Self> {
         SDL.with(|cell| {
             let channel_sink = ChannelAudioSink::new();
 
             let sdls = cell.borrow_mut();
             let audio_subsystem = sdls.context.audio().map_err(|e| anyhow!(e))?;
             let spec = AudioSpecDesired {
-                // Audio sample frequency is tied to monitor's horizontal sync
-                // 370 horizontal lines * 60.147 frames/sec = 22.254 KHz
-                // Round down to a safe commonly used value (22050), 0.9% off
-                freq: Some(22050),
-                channels: Some(AUDIO_CHANNELS.try_into().unwrap()),
-                samples: Some(AUDIO_BUFFER_SAMPLES.try_into().unwrap()),
+                freq: Some(freq),
+                channels: Some(channels),
+                samples: Some(samples),
             };
 
             let exch = Arc::new(SDLAudioExchange::default());
@@ -159,7 +156,7 @@ impl SDLAudioProvider {
 }
 
 impl AudioProvider for SDLAudioProvider {
-    fn create_stream(&self) -> Result<Box<dyn AudioSink>> {
-        Ok(Box::new(SDLAudioStream::new()?))
+    fn create_stream(&self, freq: i32, channels: u8, samples: u16) -> Result<Box<dyn AudioSink>> {
+        Ok(Box::new(SDLAudioStream::new(freq, channels, samples)?))
     }
 }

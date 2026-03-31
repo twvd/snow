@@ -24,7 +24,7 @@ pub const AUDIO_BUFFER_SIZE: usize = AUDIO_BUFFER_SAMPLES * AUDIO_CHANNELS;
 pub const AUDIO_CHANNELS: usize = 2;
 
 pub trait AudioProvider: Send {
-    fn create_stream(&self) -> Result<Box<dyn AudioSink>>;
+    fn create_stream(&self, freq: i32, channels: u8, samples: u16) -> Result<Box<dyn AudioSink>>;
 }
 
 /// Audio sink for produced buffers
