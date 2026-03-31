@@ -53,7 +53,7 @@ const DATA_TRACK: u8 = 0x4;
 
 const AUDIO_SECTORS_PER_SEC: u64 = 75;
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 struct Msf {
     m: u8,
     s: u8,
@@ -90,6 +90,7 @@ impl fmt::Display for Msf {
     }
 }
 
+#[derive(Debug)]
 pub struct TrackInfo {
     /// The track number. Note that CD tracks don't necessarily start at number 1.
     tno: u8,
@@ -208,10 +209,34 @@ fn read_cue_path(reader: &mut Peekable<Chars>) -> Option<String> {
     }
 }
 
+fn read_cue_msf(reader: &mut Peekable<Chars>) -> Result<Msf> {
+    let msf_str = read_cue_word(reader).ok_or_else(|| anyhow!("Invalid MSF timecode"))?;
+
+    let mut split = msf_str.split(':');
+    let m: u8 = split
+        .next()
+        .ok_or_else(|| anyhow!("Invalid MSF timecode"))?
+        .parse()?;
+    let s: u8 = split
+        .next()
+        .ok_or_else(|| anyhow!("Invalid MSF timecode"))?
+        .parse()?;
+    let f: u8 = split
+        .next()
+        .ok_or_else(|| anyhow!("Invalid MSF timecode"))?
+        .parse()?;
+    Ok(Msf::new(m, s, f))
+}
+
 struct CuesheetCdromBackend {
     cue_path: PathBuf,
     data_files: Vec<File>,
     sessions: Vec<SessionInfo>,
+}
+
+enum CuesheetTrackForm {
+    Audio,
+    Mode1_2352,
 }
 
 impl CuesheetCdromBackend {
@@ -219,6 +244,11 @@ impl CuesheetCdromBackend {
         let cue_dir = path.parent().unwrap();
         let cue_file = BufReader::new(File::open(path)?);
         let mut data_files = vec![];
+
+        let mut track_num = 0u8;
+        let mut track_form = CuesheetTrackForm::Audio;
+
+        let mut tracks = vec![];
 
         // FIXME: I believe cue files have one command per line and never split commands across multiple lines. Is this true?
         for line in cue_file.lines() {
@@ -241,49 +271,55 @@ impl CuesheetCdromBackend {
                             bail!("Unsupported data file type in cuesheet");
                         }
                     }
+                    "TRACK" => {
+                        track_num = read_cue_word(&mut chars)
+                            .ok_or_else(|| anyhow!("Invalid TRACK command"))?
+                            .parse()?;
+                        track_form = match read_cue_word(&mut chars)
+                            .ok_or_else(|| anyhow!("Invalid TRACK command"))?
+                            .as_str()
+                        {
+                            "AUDIO" => CuesheetTrackForm::Audio,
+                            "MODE1/2352" => CuesheetTrackForm::Mode1_2352,
+                            _ => bail!("Unsupported track form"),
+                        };
+                    }
+                    "INDEX" => {
+                        let index_num: u8 = read_cue_word(&mut chars)
+                            .ok_or_else(|| anyhow!("Invalid INDEX command"))?
+                            .parse()?;
+                        if index_num == 1 {
+                            // The track will officially begin at index 1.
+                            let index_msf = read_cue_msf(&mut chars)?;
+                            tracks.push(TrackInfo {
+                                tno: track_num,
+                                control: match track_form {
+                                    CuesheetTrackForm::Audio => AUDIO_TRACK,
+                                    CuesheetTrackForm::Mode1_2352 => DATA_TRACK,
+                                },
+                                msf: index_msf,
+                            })
+                        } else {
+                            log::warn!("track {} INDEX {} ignored", track_num, index_num);
+                        }
+                    }
+                    // TODO: IsoBuster emits REM SESSION commands to indicate a new session.
                     _ => log::warn!("Unknown cuesheet command {} ignored", command),
                 }
             }
         }
 
+        log::info!("Read tracks from cuesheet: {:#?}", tracks);
+
         Ok(Self {
             cue_path: path.into(),
             data_files,
             sessions: vec![SessionInfo {
-                // XXX: for testing
-                leadout: Msf::from_sector(330_000),
-                tracks: vec![
-                    TrackInfo {
-                        tno: 1,
-                        control: DATA_TRACK,
-                        msf: Msf::from_sector(0),
-                    },
-                    TrackInfo {
-                        tno: 2,
-                        control: AUDIO_TRACK,
-                        msf: Msf::from_sector(300_000),
-                    },
-                    TrackInfo {
-                        tno: 3,
-                        control: AUDIO_TRACK,
-                        msf: Msf::from_sector(305_000),
-                    },
-                    TrackInfo {
-                        tno: 4,
-                        control: AUDIO_TRACK,
-                        msf: Msf::from_sector(310_000),
-                    },
-                    TrackInfo {
-                        tno: 5,
-                        control: AUDIO_TRACK,
-                        msf: Msf::from_sector(315_000),
-                    },
-                    TrackInfo {
-                        tno: 6,
-                        control: AUDIO_TRACK,
-                        msf: Msf::from_sector(320_000),
-                    },
-                ],
+                // XXX: for testing.
+                // TODO: we'll have to autocompute the leadout sector...
+                // it isn't explicitly listed in the cuesheet.
+                leadout: Msf::from_sector(332_000),
+                tracks,
             }],
         })
     }
