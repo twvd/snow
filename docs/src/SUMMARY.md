@@ -22,7 +22,7 @@
 - [Networking](./manual/network/README.md)
     - [LocalTalk over UDP](./manual/network/ltoudp.md)
     - [Ethernet](./manual/network/ethernet.md)
-- [Fullscreen mode](./manual/fullscreen.md)
+- [Fullscreen and Zen mode](./manual/fullscreen.md)
 - [Save states](./manual/savestates.md)
 - [Debugging](./manual/debugging/README.md)
     - [Breakpoints](./manual/debugging/breakpoints.md)
