@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 const MAX_RECENT_WORKSPACES: usize = 10;
 const MAX_RECENT_IMAGES: usize = 10;
 
-#[derive(Serialize, Deserialize, Default, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct AppSettings {
     pub recent_workspaces: Vec<PathBuf>,
@@ -27,6 +27,32 @@ pub struct AppSettings {
 
     pub native_file_dialogs: bool,
     pub hide_mode_toasts: bool,
+    pub fastforward_limit_enabled: bool,
+    pub fastforward_limit: f64,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            recent_workspaces: Vec::new(),
+            recent_floppy_images: Vec::new(),
+            recent_cd_images: Vec::new(),
+            last_roms: Vec::new(),
+            last_display_roms: Vec::new(),
+            fd_hdd: Default::default(),
+            fd_cdrom: Default::default(),
+            fd_cdrom_files: Default::default(),
+            fd_floppy: Default::default(),
+            fd_record: Default::default(),
+            fd_workspace: Default::default(),
+            fd_state: Default::default(),
+            fd_shared_dir: Default::default(),
+            native_file_dialogs: false,
+            hide_mode_toasts: false,
+            fastforward_limit_enabled: false,
+            fastforward_limit: 2.0,
+        }
+    }
 }
 
 impl AppSettings {

@@ -840,28 +840,40 @@ impl EmulatorState {
         let Some(ref status) = self.status else {
             return false;
         };
-        status.speed == EmulatorSpeed::Uncapped
+        matches!(
+            status.speed,
+            EmulatorSpeed::Uncapped | EmulatorSpeed::FastForward(_)
+        )
     }
 
     /// Toggles emulator fast-forward mode.
-    pub fn toggle_fastforward(&self) {
+    /// `limit` optionally caps the speedup: `Some(x)` uses FastForward(x), `None` is uncapped.
+    pub fn toggle_fastforward(&self, limit: Option<f64>) {
         let Some(ref status) = self.status else {
             return;
         };
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-        if status.speed == EmulatorSpeed::Uncapped {
-            let newspeed = if self.audiosink.is_some() {
+        if matches!(
+            status.speed,
+            EmulatorSpeed::Uncapped | EmulatorSpeed::FastForward(_)
+        ) {
+            self.set_speed(if self.audiosink.is_some() {
                 EmulatorSpeed::Accurate
             } else {
                 EmulatorSpeed::Video
-            };
-            sender.send(EmulatorCommand::SetSpeed(newspeed)).unwrap();
+            });
         } else {
-            sender
-                .send(EmulatorCommand::SetSpeed(EmulatorSpeed::Uncapped))
-                .unwrap();
+            self.set_speed(if let Some(max_speed) = limit {
+                EmulatorSpeed::FastForward(max_speed)
+            } else {
+                EmulatorSpeed::Uncapped
+            });
+        }
+    }
+
+    /// Directly sets the emulator speed
+    pub fn set_speed(&self, speed: EmulatorSpeed) {
+        if let Some(ref sender) = self.cmdsender {
+            sender.send(EmulatorCommand::SetSpeed(speed)).unwrap();
         }
     }
 

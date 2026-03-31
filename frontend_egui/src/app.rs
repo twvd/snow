@@ -19,7 +19,7 @@ use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::{CmdKeyMapping, FramebufferMode, Workspace};
 use snow_core::bus::Address;
-use snow_core::emulator::comm::UserMessageType;
+use snow_core::emulator::comm::{EmulatorSpeed, UserMessageType};
 use snow_core::emulator::save::{load_state_header, SaveHeader};
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
@@ -1045,6 +1045,43 @@ impl SnowGui {
                 {
                     self.settings.save();
                 }
+                if ui
+                    .checkbox(
+                        &mut self.settings.fastforward_limit_enabled,
+                        "Limit fast-forward speed",
+                    )
+                    .clicked()
+                {
+                    self.settings.save();
+                    if self.emu.is_fastforward() {
+                        let newspeed = if self.settings.fastforward_limit_enabled {
+                            EmulatorSpeed::FastForward(self.settings.fastforward_limit)
+                        } else {
+                            EmulatorSpeed::Uncapped
+                        };
+                        self.emu.set_speed(newspeed);
+                    }
+                }
+                ui.add_enabled_ui(self.settings.fastforward_limit_enabled, |ui| {
+                    if ui
+                        .add(
+                            egui::Slider::new(
+                                &mut self.settings.fastforward_limit,
+                                1.0_f64..=10.0_f64,
+                            )
+                            .step_by(0.5)
+                            .suffix("x"),
+                        )
+                        .changed()
+                    {
+                        self.settings.save();
+                        if self.emu.is_fastforward() {
+                            self.emu.set_speed(EmulatorSpeed::FastForward(
+                                self.settings.fastforward_limit,
+                            ));
+                        }
+                    }
+                });
             });
             ui.menu_button("View", |ui| {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
@@ -1632,7 +1669,11 @@ impl SnowGui {
                 }
 
                 if self.draw_fast_forward_button(ui).clicked() {
-                    self.emu.toggle_fastforward();
+                    let limit = self
+                        .settings
+                        .fastforward_limit_enabled
+                        .then_some(self.settings.fastforward_limit);
+                    self.emu.toggle_fastforward(limit);
                 }
 
                 if ui
@@ -3032,7 +3073,11 @@ impl eframe::App for SnowGui {
                         ui.separator();
                         let mut ff = self.emu.is_fastforward();
                         if ui.checkbox(&mut ff, "Fast-forward").clicked() {
-                            self.emu.toggle_fastforward();
+                            let limit = self
+                                .settings
+                                .fastforward_limit_enabled
+                                .then_some(self.settings.fastforward_limit);
+                            self.emu.toggle_fastforward(limit);
                         }
                         if ui.button("Reset machine").clicked() {
                             self.emu.reset();
