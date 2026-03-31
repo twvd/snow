@@ -29,6 +29,7 @@ pub struct AppSettings {
     pub hide_mode_toasts: bool,
     pub fastforward_limit_enabled: bool,
     pub fastforward_limit: f64,
+    pub dynamic_fastforward: bool,
 }
 
 impl Default for AppSettings {
@@ -51,6 +52,7 @@ impl Default for AppSettings {
             hide_mode_toasts: false,
             fastforward_limit_enabled: false,
             fastforward_limit: 2.0,
+            dynamic_fastforward: false,
         }
     }
 }

@@ -836,6 +836,7 @@ impl EmulatorState {
     }
 
     /// Returns `true` if emulator in fast-forward mode.
+    #[allow(dead_code)]
     pub fn is_fastforward(&self) -> bool {
         let Some(ref status) = self.status else {
             return false;
@@ -848,6 +849,7 @@ impl EmulatorState {
 
     /// Toggles emulator fast-forward mode.
     /// `limit` optionally caps the speedup: `Some(x)` uses FastForward(x), `None` is uncapped.
+    #[allow(dead_code)]
     pub fn toggle_fastforward(&self, limit: Option<f64>) {
         let Some(ref status) = self.status else {
             return;
@@ -868,6 +870,11 @@ impl EmulatorState {
                 EmulatorSpeed::Uncapped
             });
         }
+    }
+
+    /// Returns `true` if audio output is active.
+    pub fn has_audio(&self) -> bool {
+        self.audiosink.is_some()
     }
 
     /// Directly sets the emulator speed
