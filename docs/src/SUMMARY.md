@@ -10,6 +10,7 @@
 # User manual
 
 - [Starting a system](./manual/starting.md)
+- [Controlling the emulator](./manual/emulator.md)
 - [Working with media](./manual/media/README.md)
     - [Floppies](./manual/media/floppies.md)
     - [Hard drives](./manual/media/harddrives.md)
