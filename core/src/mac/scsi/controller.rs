@@ -16,7 +16,6 @@ use serde_big_array::BigArray;
 use crate::bus::{Address, BusMember};
 use crate::dbgprop_byte;
 use crate::debuggable::Debuggable;
-use crate::mac::compact::audio;
 use crate::mac::scsi::cdrom::ScsiTargetCdrom;
 use crate::mac::scsi::disk::ScsiTargetDisk;
 use crate::mac::scsi::disk_image::DiskImage;
@@ -291,10 +290,12 @@ impl ScsiController {
         self.targets[scsi_id] = None;
     }
 
-    pub fn set_audio_provider(&mut self, provider: &dyn AudioProvider) {
+    pub fn set_audio_provider(&mut self, provider: &dyn AudioProvider) -> Result<()> {
         for t in self.targets.iter_mut().flatten() {
-            t.set_audio_provider(provider);
+            t.set_audio_provider(provider)?;
         }
+
+        Ok(())
     }
 
     /// Translates a SCSI ID on the bus (bit position) to a numeric ID

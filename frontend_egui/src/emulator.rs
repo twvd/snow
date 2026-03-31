@@ -31,7 +31,6 @@ use snow_floppy::{Floppy, FloppyImage, FloppyType};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::{env, fs, thread};
@@ -331,7 +330,10 @@ impl EmulatorState {
                     let provider = Arc::new(Mutex::new(provider));
                     self.audio_provider = Some(provider.clone());
                     let provider = provider.lock().unwrap();
-                    emulator.set_audio_provider(&*provider);
+                    if let Err(e) = emulator.set_audio_provider(&*provider) {
+                        error!("Failed to initialize audio: {:?}", e);
+                        cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
+                    }
                 }
                 Err(e) => {
                     error!("Failed to initialize audio: {:?}", e);

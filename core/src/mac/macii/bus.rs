@@ -1,5 +1,3 @@
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -282,7 +280,7 @@ where
         self.via1.rtc.effective_speed()
     }
 
-    pub fn set_audio_provider(&mut self, provider: &dyn AudioProvider) {
+    pub fn set_audio_provider(&mut self, provider: &dyn AudioProvider) -> Result<()> {
         // Audio sample frequency is tied to monitor's horizontal sync
         // 370 horizontal lines * 60.147 frames/sec = 22.254 KHz
         // Round down to a safe commonly used value (22050), 0.9% off
@@ -291,7 +289,7 @@ where
             .unwrap_or(Box::new(ChannelAudioSink::new()));
         self.asc.set_sink(sink);
 
-        self.scsi.set_audio_provider(&*provider);
+        self.scsi.set_audio_provider(&*provider)
     }
 
     #[allow(clippy::needless_pass_by_value)]
