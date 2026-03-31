@@ -55,10 +55,10 @@ On Windows and Linux hosts, you can use the right ALT key. The 'Super' key
 (the Windows key) is also mapped to the Command key, but this key is often
 not forwarded by the operating system. On Windows, you can use SHIFT+WIN to
 press the Command key, but since this is rather inconvenient, Snow provides
-the right ALT as an alternative.
+the right ALT or CTRL as an alternative.
 
-To enable or disable mapping the right ALT to Command, use the menu item
-'Options > Map right ALT to Cmd'. This option is saved in the [workspace](./workspaces.md).
+To enable or disable mapping an alternate key for Command, use the menu item
+'Options > Map alternate Cmd key'. This option persists globally.
 
 ## Mouse
 
