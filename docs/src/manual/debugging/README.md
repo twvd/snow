@@ -11,8 +11,7 @@ or their respective actions in the 'Machine' menu can be used:
 * <span class="material-symbols-rounded">play_arrow</span> - Run: resumes execution
 * <span class="material-symbols-rounded">pause</span> - Pause: pauses execution
 * <span class="material-symbols-rounded">fast_forward</span> - Fast forward:
-  runs the emulation at a faster pace, as fast as the host system allows,
-  While in this mode, sound is muted.
+  see [controlling the emulator](../emulator.md).
 * <span class="material-symbols-rounded">step_into</span> - Step into: steps
   the emulated CPU for a single instruction
 * <span class="material-symbols-rounded">step_over</span> - Step over: steps
