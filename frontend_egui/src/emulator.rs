@@ -329,8 +329,8 @@ impl EmulatorState {
                 Ok(provider) => {
                     let provider = Arc::new(Mutex::new(provider));
                     self.audio_provider = Some(provider.clone());
-                    let provider = provider.lock().unwrap();
-                    if let Err(e) = emulator.set_audio_provider(&*provider) {
+                    let mut provider = provider.lock().unwrap();
+                    if let Err(e) = emulator.set_audio_provider(&mut *provider) {
                         error!("Failed to initialize audio: {:?}", e);
                         cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
                     }

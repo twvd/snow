@@ -24,6 +24,7 @@ use crate::debuggable::{Debuggable, DebuggableProperties};
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
+use crate::mac::compact::audio;
 use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
 use crate::mac::macii::bus::MacIIBus;
 use crate::mac::scc::Scc;
@@ -195,7 +196,7 @@ dispatch! {
 
     mutable_calls {
         fn set_speed(&mut self, speed: EmulatorSpeed) -> () { bus.set_speed(speed) }
-        fn set_audio_provider(&mut self, provider: &dyn AudioProvider) -> Result<()> { bus.set_audio_provider(provider) }
+        fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> { bus.set_audio_provider(provider) }
 
         fn cpu_tick(&mut self, ticks: Ticks) -> Result<Ticks> { tick(ticks) }
         fn cpu_set_breakpoint(&mut self, bp: Breakpoint) -> () { set_breakpoint(bp) }
@@ -682,7 +683,7 @@ impl Emulator {
         Ok(())
     }
 
-    pub fn set_audio_provider(&mut self, provider: &dyn AudioProvider) -> Result<()> {
+    pub fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {
         self.config.set_audio_provider(provider)
     }
 
@@ -766,13 +767,19 @@ impl Emulator {
     }
 
     pub fn attach_cdrom(&mut self, id: usize) {
-        self.config.scsi_mut().attach_cdrom_at(
-            id,
-            self.audio_provider
-                .as_deref()
-                .map(|ap| ap.lock().unwrap())
-                .as_deref(),
-        );
+        let audio_provider = self.audio_provider.as_deref().map(|ap| ap.lock().unwrap());
+        // Rust won't let us do this the simple way...
+        match audio_provider {
+            Some(mut ap) => {
+                self.config.scsi_mut().attach_cdrom_at(id, Some(&mut *ap));
+            }
+            None => {
+                self.config.scsi_mut().attach_cdrom_at(id, None);
+            }
+        }
+        // let mut audio_provider = audio_provider.unwrap();
+        // let audio_provider = Some(&mut *audio_provider);
+        // self.config.scsi_mut().attach_cdrom_at(id, Some(&mut *audio_provider));
         info!("SCSI ID #{}: CD-ROM drive attached", id);
     }
 

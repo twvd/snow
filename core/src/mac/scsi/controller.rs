@@ -260,7 +260,11 @@ impl ScsiController {
     }
 
     /// Attaches a CD-ROM drive at the given SCSI ID
-    pub fn attach_cdrom_at(&mut self, scsi_id: usize, audio_provider: Option<&dyn AudioProvider>) {
+    pub fn attach_cdrom_at(
+        &mut self,
+        scsi_id: usize,
+        audio_provider: Option<&mut dyn AudioProvider>,
+    ) {
         self.targets[scsi_id] = Some(Box::new(ScsiTargetCdrom::new(audio_provider)));
     }
 
@@ -290,7 +294,7 @@ impl ScsiController {
         self.targets[scsi_id] = None;
     }
 
-    pub fn set_audio_provider(&mut self, provider: &dyn AudioProvider) -> Result<()> {
+    pub fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {
         for t in self.targets.iter_mut().flatten() {
             t.set_audio_provider(provider)?;
         }

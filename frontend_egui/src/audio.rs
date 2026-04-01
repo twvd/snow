@@ -5,7 +5,7 @@ use sdl2::Sdl;
 use snow_core::renderer::{AudioBuffer, AudioProvider, AudioReceiver, AudioSink, ChannelAudioSink};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub struct SDLSingleton {
@@ -124,36 +124,54 @@ impl SDLAudioStream {
     }
 }
 
-impl AudioSink for SDLAudioStream {
+struct SDLAudioStreamSink {
+    stream: Arc<Mutex<SDLAudioStream>>,
+}
+
+impl AudioSink for SDLAudioStreamSink {
     fn send(&mut self, buffer: AudioBuffer) -> Result<()> {
-        self.channel_sink.send(buffer)
+        self.stream.lock().unwrap().channel_sink.send(buffer)
     }
 }
 
-pub struct SDLAudioProvider {}
+pub struct SDLAudioProvider {
+    streams: Vec<Arc<Mutex<SDLAudioStream>>>,
+}
 
 impl SDLAudioProvider {
     pub fn new() -> Result<Self> {
-        Ok(Self {})
+        Ok(Self { streams: vec![] })
     }
 
     pub fn is_slow(&self) -> bool {
-        // TODO: check all streams for slowdown
-        false
+        self.streams
+            .iter()
+            .any(|stream| stream.lock().unwrap().is_slow())
     }
 
     pub fn is_muted(&self) -> bool {
-        // TODO: check all streams for muted
-        false
+        self.streams
+            .iter()
+            .all(|stream| stream.lock().unwrap().is_muted())
     }
 
-    pub fn set_mute(&self, _mute: bool) {
-        // TODO: mute/unmute all streams
+    pub fn set_mute(&self, mute: bool) {
+        for stream in &self.streams {
+            stream.lock().unwrap().set_mute(mute);
+        }
     }
 }
 
 impl AudioProvider for SDLAudioProvider {
-    fn create_stream(&self, freq: i32, channels: u8, samples: u16) -> Result<Box<dyn AudioSink>> {
-        Ok(Box::new(SDLAudioStream::new(freq, channels, samples)?))
+    fn create_stream(
+        &mut self,
+        freq: i32,
+        channels: u8,
+        samples: u16,
+    ) -> Result<Box<dyn AudioSink>> {
+        let stream = Arc::new(Mutex::new(SDLAudioStream::new(freq, channels, samples)?));
+        self.streams.push(stream.clone());
+        let stream_sink = SDLAudioStreamSink { stream };
+        Ok(Box::new(stream_sink))
     }
 }
