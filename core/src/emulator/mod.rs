@@ -24,7 +24,6 @@ use crate::debuggable::{Debuggable, DebuggableProperties};
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
-use crate::mac::compact::audio;
 use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
 use crate::mac::macii::bus::MacIIBus;
 use crate::mac::scc::Scc;
