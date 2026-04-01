@@ -263,7 +263,7 @@ impl ScsiController {
     pub fn attach_cdrom_at(
         &mut self,
         scsi_id: usize,
-        audio_provider: Option<&mut dyn AudioProvider>,
+        audio_provider: Option<&mut (dyn AudioProvider + '_)>,
     ) {
         self.targets[scsi_id] = Some(Box::new(ScsiTargetCdrom::new(audio_provider)));
     }
