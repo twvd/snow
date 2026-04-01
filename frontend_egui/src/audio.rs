@@ -5,7 +5,7 @@ use sdl2::Sdl;
 use snow_core::renderer::{AudioBuffer, AudioProvider, AudioReceiver, AudioSink, ChannelAudioSink};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub struct SDLSingleton {
@@ -35,14 +35,23 @@ struct SDLAudioExchange {
     slow: AtomicBool,
 }
 
+/// Holds the SDL AudioDevice solely to prevent it from being dropped.
+/// Do not access the device field, it may not be thread-safe!
+#[allow(unused)]
+struct AudioDeviceHolder(AudioDevice<SDLAudioCallback>);
+
+// SAFETY: It should be safe to declare AudioDeviceHolder Send and Sync as long
+// as it is only being held, never accessed.
+// FIXME: I'm not actually sure if this is safe at all. Seems to work though.
+unsafe impl Send for AudioDeviceHolder {}
+unsafe impl Sync for AudioDeviceHolder {}
+
 pub struct SDLAudioStream {
-    device: AudioDevice<SDLAudioCallback>,
+    #[allow(unused)]
+    device: AudioDeviceHolder,
     channel_sink: ChannelAudioSink,
     exch: Arc<SDLAudioExchange>,
 }
-
-// FIXME: is this safe?? (no, the device field is unsafe to send between threads.)
-unsafe impl Send for SDLAudioStream {}
 
 impl AudioCallback for SDLAudioCallback {
     type Channel = f32;
@@ -104,7 +113,7 @@ impl SDLAudioStream {
                 .map_err(|e| anyhow!(e))?;
             device.resume();
             Ok(Self {
-                device,
+                device: AudioDeviceHolder(device),
                 channel_sink,
                 exch,
             })
@@ -125,17 +134,17 @@ impl SDLAudioStream {
 }
 
 struct SDLAudioStreamSink {
-    stream: Arc<Mutex<SDLAudioStream>>,
+    stream: Arc<SDLAudioStream>,
 }
 
 impl AudioSink for SDLAudioStreamSink {
-    fn send(&mut self, buffer: AudioBuffer) -> Result<()> {
-        self.stream.lock().unwrap().channel_sink.send(buffer)
+    fn send(&self, buffer: AudioBuffer) -> Result<()> {
+        self.stream.channel_sink.send(buffer)
     }
 }
 
 pub struct SDLAudioProvider {
-    streams: Vec<Arc<Mutex<SDLAudioStream>>>,
+    streams: Vec<Arc<SDLAudioStream>>,
 }
 
 impl SDLAudioProvider {
@@ -144,20 +153,16 @@ impl SDLAudioProvider {
     }
 
     pub fn is_slow(&self) -> bool {
-        self.streams
-            .iter()
-            .any(|stream| stream.lock().unwrap().is_slow())
+        self.streams.iter().any(|stream| stream.is_slow())
     }
 
     pub fn is_muted(&self) -> bool {
-        self.streams
-            .iter()
-            .all(|stream| stream.lock().unwrap().is_muted())
+        self.streams.iter().all(|stream| stream.is_muted())
     }
 
     pub fn set_mute(&self, mute: bool) {
         for stream in &self.streams {
-            stream.lock().unwrap().set_mute(mute);
+            stream.set_mute(mute);
         }
     }
 }
@@ -169,7 +174,7 @@ impl AudioProvider for SDLAudioProvider {
         channels: u8,
         samples: u16,
     ) -> Result<Box<dyn AudioSink>> {
-        let stream = Arc::new(Mutex::new(SDLAudioStream::new(freq, channels, samples)?));
+        let stream = Arc::new(SDLAudioStream::new(freq, channels, samples)?);
         self.streams.push(stream.clone());
         let stream_sink = SDLAudioStreamSink { stream };
         Ok(Box::new(stream_sink))

@@ -34,7 +34,7 @@ pub trait AudioProvider: Send {
 
 /// Audio sink for produced buffers
 pub trait AudioSink: Send {
-    fn send(&mut self, buffer: AudioBuffer) -> Result<()>;
+    fn send(&self, buffer: AudioBuffer) -> Result<()>;
 }
 
 /// Crossbeam-backed audio sink
@@ -55,7 +55,7 @@ impl ChannelAudioSink {
 }
 
 impl AudioSink for ChannelAudioSink {
-    fn send(&mut self, buffer: AudioBuffer) -> Result<()> {
+    fn send(&self, buffer: AudioBuffer) -> Result<()> {
         self.sender.send(buffer)?;
         Ok(())
     }
