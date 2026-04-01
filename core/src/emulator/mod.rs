@@ -766,19 +766,9 @@ impl Emulator {
     }
 
     pub fn attach_cdrom(&mut self, id: usize) {
-        let audio_provider = self.audio_provider.as_deref().map(|ap| ap.lock().unwrap());
-        // Rust won't let us do this the simple way...
-        match audio_provider {
-            Some(mut ap) => {
-                self.config.scsi_mut().attach_cdrom_at(id, Some(&mut *ap));
-            }
-            None => {
-                self.config.scsi_mut().attach_cdrom_at(id, None);
-            }
-        }
-        // let mut audio_provider = audio_provider.unwrap();
-        // let audio_provider = Some(&mut *audio_provider);
-        // self.config.scsi_mut().attach_cdrom_at(id, Some(&mut *audio_provider));
+        let mut audio_provider = self.audio_provider.as_deref().map(|ap| ap.lock().unwrap());
+        let audio_provider = audio_provider.as_deref_mut().map(|ap| &mut *ap);
+        self.config.scsi_mut().attach_cdrom_at(id, audio_provider);
         info!("SCSI ID #{}: CD-ROM drive attached", id);
     }
 

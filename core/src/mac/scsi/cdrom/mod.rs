@@ -198,7 +198,7 @@ pub(super) struct ScsiTargetCdrom {
 impl ScsiTargetCdrom {
     const VALID_BLOCKSIZES: [usize; 2] = [512, 2048];
 
-    pub fn new(audio_provider: Option<&mut dyn AudioProvider>) -> Self {
+    pub fn new(audio_provider: Option<&mut (dyn AudioProvider + '_)>) -> Self {
         // FIXME: avoid unwrap
         let audio_sink = audio_provider.map(|ap| {
             ap.create_stream(44100, 2, (RAW_SECTOR_LEN / 2 / 2) as u16)
