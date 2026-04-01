@@ -53,7 +53,7 @@ const DATA_TRACK: u8 = 0x4;
 
 const AUDIO_SECTORS_PER_SEC: u64 = 75;
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 struct Msf {
     m: u8,
     s: u8,
@@ -645,7 +645,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 let track = cmd[6];
                 let alloc_len = u16::from_be_bytes(cmd[7..=8].try_into()?) as usize;
 
-                log::warn!(
+                log::info!(
                     "READ SUB-CHANNEL msf {} sub_q {} format {} track {} alloc_len {}",
                     msf,
                     sub_q,
@@ -685,7 +685,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                             return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                         };
 
-                        log::warn!(
+                        log::info!(
                             "audio pos is at sector {} (in track #{} at sector {})",
                             self.audio_pos,
                             track.tno,
@@ -738,7 +738,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 let start_msf = Msf::new(cmd[3], cmd[4], cmd[5]);
                 let end_msf = Msf::new(cmd[6], cmd[7], cmd[8]);
 
-                log::warn!("PLAY AUDIO MSF start {} end {}", start_msf, end_msf);
+                log::info!("PLAY AUDIO MSF start {} end {}", start_msf, end_msf);
 
                 let Some(backend) = &self.backend else {
                     self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
@@ -755,18 +755,35 @@ impl ScsiTarget for ScsiTargetCdrom {
                 // condition exists, the drive will terminate with a Check Condition status.
                 let session = &sessions[0];
                 // TODO: support multisession discs
-                let start_sector = start_msf.to_sector();
-                // Apple Audio CD Player calls PLAY AUDIO MSF to MSF 255:255:255 when the user selects a new track.
-                // It's not clear what should happen here...
-                // But we must return STATUS_GOOD or else the Player displays an error message.
+
+                // [MMC4] 6.17.2.3:
+                // If the Starting Minutes, Seconds, and Frame Fields are set to FFh, the Starting address is taken from
+                // the Current Optical Head location. This allows the Audio Ending address to be changed without
+                // interrupting the current playback operation.
+                let start_sector = if start_msf == Msf::new(255, 255, 255) {
+                    self.audio_pos
+                } else {
+                    start_msf.to_sector()
+                };
+
+                let end_sector = end_msf.to_sector();
+                if start_sector > end_sector {
+                    // [MMC4] 6.17.2.3:
+                    // If the starting MSF address is greater than the ending MSF
+                    // address, the command shall be terminated with CHECK CONDITION status and SK/ASC/ASCQ
+                    // values shall be set to ILLEGAL REQUEST/INVALID FIELD IN CDB.
+                    self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                }
+
                 if start_sector >= session.leadout.to_sector() {
+                    // TODO: find citation for this
                     log::warn!(
                         "Tried to play audio from invalid location {}; command ignored",
                         start_msf
                     );
-                    return Ok(ScsiCmdResult::Status(STATUS_GOOD));
-                    // self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
-                    // return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                    self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
                 let start_track = self.get_track_at_sector(start_sector);
@@ -774,14 +791,21 @@ impl ScsiTarget for ScsiTargetCdrom {
                     .map(|t| t.control != AUDIO_TRACK)
                     .unwrap_or(false)
                 {
+                    // TODO: find citation for this
+                    log::warn!(
+                        "Tried to play audio from non-audio track at {}; command ignored",
+                        start_msf
+                    );
                     self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
-                self.audio_pos = start_msf.to_sector();
-                self.audio_stop = end_msf.to_sector();
-                self.audio_clock = 0;
-                self.audio_state = AudioState::Playing;
+                self.audio_pos = start_sector;
+                self.audio_stop = end_sector;
+                if self.audio_state != AudioState::Playing {
+                    self.audio_state = AudioState::Playing;
+                    self.audio_clock = 0;
+                }
 
                 Ok(ScsiCmdResult::Status(STATUS_GOOD))
             }
@@ -792,11 +816,13 @@ impl ScsiTarget for ScsiTargetCdrom {
                 log::warn!("PAUSE/RESUME resume {}", resume);
 
                 // FIXME: What happens if pause/resume is activated while no track is playing?
-                self.audio_state = if resume != 0 {
-                    AudioState::Playing
+                if resume != 0 {
+                    self.audio_state = AudioState::Playing;
+                    self.audio_clock = 0;
                 } else {
-                    AudioState::Paused
-                };
+                    self.audio_state = AudioState::Paused;
+                    self.audio_clock = 0;
+                }
 
                 Ok(ScsiCmdResult::Status(STATUS_GOOD))
             }
@@ -959,6 +985,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 self.audio_pos += 1;
                 if self.audio_pos >= self.audio_stop {
                     self.audio_state = AudioState::Stopped;
+                    self.audio_clock = 0;
                 }
             }
         }
