@@ -47,7 +47,7 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
     fn ms_device_specific(&self) -> u8;
 
     // For CD-ROM drives
-    fn set_audio_provider(&mut self, _provider: &dyn AudioProvider) -> Result<()> {
+    fn set_audio_provider(&mut self, _provider: &mut dyn AudioProvider) -> Result<()> {
         Ok(())
     }
 
