@@ -955,6 +955,10 @@ impl ScsiTarget for ScsiTargetCdrom {
     fn tick(&mut self, ticks: Ticks) -> Result<()> {
         if self.audio_state == AudioState::Playing {
             if let Some(audio_sink) = &self.audio_sink {
+                if audio_sink.is_empty() {
+                    log::warn!("CD audio buffer underrun!");
+                }
+
                 if !audio_sink.is_full() {
                     // To avoid audio dropouts, keep the audio sink full
                     // TODO: skip this check if muted or uncapped speed?

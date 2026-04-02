@@ -26,9 +26,9 @@ struct SDLAudioCallback {
     recv: AudioReceiver,
     stop_delay: Instant,
     exch: Arc<SDLAudioExchange>,
-    /// Another layer of buffering to solve these problems:
-    /// - SDL audio buffers must have a power-of-2 sample count
-    /// - The user may submit audio buffers that exceed SDL's buffer size
+    /// An extra layer of buffering to solve these problems:
+    /// - SDL audio buffers must have a power-of-2 length
+    /// - Users may submit audio buffers that exceed SDL's expected length
     active_samples: Vec<f32>,
 }
 
@@ -74,7 +74,7 @@ impl AudioCallback for SDLAudioCallback {
         let slow = self.stop_delay > Instant::now();
         self.exch.slow.store(slow, Ordering::Relaxed);
 
-        // Collect audio samples into the active samples buffer
+        // Collect audio samples into the active buffer
         while self.active_samples.len() < out.len() {
             if let Ok(new_samples) = self.recv.try_recv() {
                 self.active_samples.extend_from_slice(&new_samples);
@@ -169,6 +169,10 @@ impl AudioSink for SDLAudioStreamSink {
     fn is_full(&self) -> bool {
         self.stream.channel_sink.is_full()
     }
+
+    fn is_empty(&self) -> bool {
+        self.stream.channel_sink.is_empty()
+    }
 }
 
 pub struct SDLAudioProvider {
@@ -181,7 +185,11 @@ impl SDLAudioProvider {
     }
 
     pub fn is_slow(&self) -> bool {
-        self.streams.iter().any(|stream| stream.is_slow())
+        // Only report slowness for the first stream
+        self.streams
+            .first()
+            .map(|stream| stream.is_slow())
+            .unwrap_or(false)
     }
 
     pub fn is_muted(&self) -> bool {
