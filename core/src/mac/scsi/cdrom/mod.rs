@@ -220,7 +220,7 @@ impl ScsiTargetCdrom {
             event_eject: Default::default(),
             blocksize: 2048,
             audio_state: AudioState::Stopped,
-            audio_pos: 0,
+            audio_pos: LBA_START_SECTOR,
             audio_stop: 0,
             audio_clock: 0,
             audio_sink,
@@ -619,6 +619,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 // This command does not affect modes specified by the MODE SELECT command.
                 log::warn!("REZERO UNIT");
                 self.audio_state = AudioState::Stopped;
+                self.audio_pos = LBA_START_SECTOR;
                 Ok(ScsiCmdResult::Status(STATUS_GOOD))
             }
             // READ(6) (no media)
@@ -648,7 +649,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 let track = cmd[6];
                 let alloc_len = u16::from_be_bytes(cmd[7..=8].try_into()?) as usize;
 
-                log::info!(
+                log::debug!(
                     "READ SUB-CHANNEL msf {} sub_q {} format {} track {} alloc_len {}",
                     msf,
                     sub_q,
@@ -816,7 +817,7 @@ impl ScsiTarget for ScsiTargetCdrom {
             0x4B => {
                 let resume = cmd[8] & 0x1;
 
-                log::warn!("PAUSE/RESUME resume {}", resume);
+                log::info!("PAUSE/RESUME resume {}", resume);
 
                 // FIXME: What happens if pause/resume is activated while no track is playing?
                 if resume != 0 {
@@ -965,6 +966,16 @@ impl ScsiTarget for ScsiTargetCdrom {
             if self.audio_clock >= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC {
                 self.audio_clock -= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC;
 
+                if self.audio_pos >= self.audio_stop {
+                    log::info!(
+                        "CD audio reached stopping point at sector {} (msf {})",
+                        self.audio_stop,
+                        Msf::from_sector(self.audio_stop).unwrap()
+                    );
+                    self.audio_state = AudioState::Stopped;
+                    self.audio_clock = 0;
+                }
+
                 // Read audio and feed it to the audio sink
                 if let Some(backend) = &self.backend {
                     if let Some(audio_sink) = &mut self.audio_sink {
@@ -987,10 +998,6 @@ impl ScsiTarget for ScsiTargetCdrom {
                 }
 
                 self.audio_pos += 1;
-                if self.audio_pos >= self.audio_stop {
-                    self.audio_state = AudioState::Stopped;
-                    self.audio_clock = 0;
-                }
             }
         }
 
