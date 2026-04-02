@@ -787,7 +787,7 @@ impl ScsiTarget for ScsiTargetEthernet {
         None
     }
 
-    fn read(&self, _block_offset: usize, _block_count: usize) -> Vec<u8> {
+    fn read(&mut self, _block_offset: usize, _block_count: usize) -> Result<Vec<u8>> {
         unreachable!()
     }
 

@@ -4,13 +4,13 @@ mod backends;
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
-
 use std::path::Path;
 
 use crate::debuggable::Debuggable;
 use crate::mac::macii::bus::CLOCK_SPEED;
 use crate::mac::scsi::cdrom::backends::cuesheet::CuesheetCdromBackend;
 use crate::mac::scsi::cdrom::backends::iso::IsoCdromBackend;
+use crate::mac::scsi::ASC_UNRECOVERED_READ_ERROR;
 use crate::renderer::{AudioProvider, AudioSink, AUDIO_BUFFER_SAMPLES};
 use crate::tickable::Ticks;
 use crate::types::LatchingEvent;
@@ -104,7 +104,7 @@ pub struct SessionInfo {
 
 pub trait CdromBackend: Send {
     fn byte_len(&self) -> usize;
-    fn read_bytes(&self, offset: usize, length: usize) -> Vec<u8>;
+    fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>>;
     fn image_path(&self) -> Option<&Path>;
 
     /// Return a list of sessions, each containing a list of tracks.
@@ -561,7 +561,7 @@ impl ScsiTarget for ScsiTargetCdrom {
         Some(self.backend.as_ref()?.byte_len().div_ceil(self.blocksize))
     }
 
-    fn read(&self, block_offset: usize, block_count: usize) -> Vec<u8> {
+    fn read(&mut self, block_offset: usize, block_count: usize) -> Result<Vec<u8>> {
         // If blocks() returns None this will never be called by
         // ScsiTarget::cmd
         let blocksize = self.blocksize;
@@ -570,11 +570,18 @@ impl ScsiTarget for ScsiTargetCdrom {
         let image_end_offset =
             std::cmp::min((block_offset + block_count) * blocksize, backend.byte_len());
 
-        let mut result = backend.read_bytes(start_offset, image_end_offset - start_offset);
-        // CD-ROM images may not be exactly aligned on block size
-        // Pad the end to a full block size
-        result.resize(block_count * blocksize, 0);
-        result
+        match backend.read_bytes(start_offset, image_end_offset - start_offset) {
+            Ok(mut result) => {
+                // CD-ROM images may not be exactly aligned on block size
+                // Pad the end to a full block size
+                result.resize(block_count * blocksize, 0);
+                Ok(result)
+            }
+            Err(e) => {
+                self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR);
+                Err(e)
+            }
+        }
     }
 
     fn write(&mut self, _block_offset: usize, _data: &[u8]) {

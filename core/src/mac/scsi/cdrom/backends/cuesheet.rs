@@ -218,7 +218,7 @@ impl CdromBackend for CuesheetCdromBackend {
         333_000 * 2048
     }
 
-    fn read_bytes(&self, offset: usize, length: usize) -> Vec<u8> {
+    fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>> {
         let mut result = Vec::<u8>::with_capacity(length);
 
         // TODO: uh-oh, do we need to support CD-ROM's where the data is in session 2?
@@ -228,8 +228,7 @@ impl CdromBackend for CuesheetCdromBackend {
         // FIXME: Does the drive automatically find the data track?
         let mut sector = LBA_START_SECTOR + rel_sector;
         while result.len() < length {
-            // TODO: Better error robustness if read fails
-            let raw_sector = self.read_raw_sector(sector).unwrap();
+            let raw_sector = self.read_raw_sector(sector)?;
             sector += 1;
             // TODO: Check sync, mode and error detection data?
             let sector_data = &raw_sector[16..][..2048];
@@ -237,7 +236,7 @@ impl CdromBackend for CuesheetCdromBackend {
         }
 
         result.truncate(length);
-        result
+        Ok(result)
     }
 
     fn image_path(&self) -> Option<&Path> {

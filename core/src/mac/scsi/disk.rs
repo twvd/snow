@@ -210,10 +210,10 @@ impl ScsiTarget for ScsiTargetDisk {
         Some(self.backend().byte_len() / DISK_BLOCKSIZE)
     }
 
-    fn read(&self, block_offset: usize, block_count: usize) -> Vec<u8> {
+    fn read(&mut self, block_offset: usize, block_count: usize) -> Result<Vec<u8>> {
         let offset = block_offset * DISK_BLOCKSIZE;
         let length = block_count * DISK_BLOCKSIZE;
-        self.backend().read_bytes(offset, length)
+        Ok(self.backend().read_bytes(offset, length))
     }
 
     fn write(&mut self, block_offset: usize, data: &[u8]) {
