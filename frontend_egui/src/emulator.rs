@@ -1213,10 +1213,10 @@ impl EmulatorState {
             .unwrap_or(false)
     }
 
-    pub fn audio_is_slow(&self) -> bool {
+    pub fn audio_is_underrun(&self) -> bool {
         self.audio_provider
             .as_ref()
-            .map(|p| p.lock().unwrap().is_slow())
+            .map(|p| p.lock().unwrap().is_underrun())
             .unwrap_or(false)
     }
 }

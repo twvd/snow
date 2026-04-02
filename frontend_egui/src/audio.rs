@@ -24,8 +24,11 @@ thread_local! {
 
 struct SDLAudioCallback {
     recv: AudioReceiver,
-    stop_delay: Instant,
     exch: Arc<SDLAudioExchange>,
+    /// When true, play silence while waiting for the audio receiver to fill up.
+    /// Prebuffering prevents audio interruptions if the emulator doesn't deliver
+    /// samples in time for playback.
+    prebuffering: bool,
     /// An extra layer of buffering to solve these problems:
     /// - SDL audio buffers must have a power-of-2 length
     /// - Users may submit audio buffers that exceed SDL's expected length
@@ -36,7 +39,7 @@ struct SDLAudioCallback {
 #[derive(Default)]
 struct SDLAudioExchange {
     mute: AtomicBool,
-    slow: AtomicBool,
+    underrun: AtomicBool,
 }
 
 /// Holds the SDL AudioDevice solely to prevent it from being dropped.
@@ -71,10 +74,14 @@ impl AudioCallback for SDLAudioCallback {
         //
         // Last tested on MacOS Sequoia, SDL 2.32.8.
 
-        //let slow = self.stop_delay > Instant::now();
-        // FIXME: reenable slowdown logic. this currently breaks CD audio.
-        let slow = false;
-        self.exch.slow.store(slow, Ordering::Relaxed);
+        if self.prebuffering {
+            if self.recv.is_full() {
+                self.prebuffering = false;
+            } else {
+                out.fill(0.0);
+                return;
+            }
+        }
 
         // Collect audio samples into the active buffer
         while self.active_samples.len() < out.len() {
@@ -86,26 +93,26 @@ impl AudioCallback for SDLAudioCallback {
         }
 
         if self.active_samples.len() >= out.len() {
-            if slow || self.exch.mute.load(Ordering::Relaxed) {
-                out.fill(0.0);
-            } else {
-                // Feed active samples to the SDL output
-                for (i, out_sample) in out.iter_mut().enumerate() {
-                    *out_sample = self.active_samples[i].clamp(-1.0, 1.0) * 0.5;
-                }
-                // TODO: use a circular queue or something
-                self.active_samples.copy_within(out.len().., 0);
-                self.active_samples
-                    .truncate(self.active_samples.len() - out.len());
+            // Feed active samples to the SDL output
+            for (i, out_sample) in out.iter_mut().enumerate() {
+                *out_sample = self.active_samples[i].clamp(-1.0, 1.0) * 0.5;
             }
+            // TODO: use a circular queue or something
+            self.active_samples.copy_within(out.len().., 0);
+            self.active_samples
+                .truncate(self.active_samples.len() - out.len());
+
+            self.exch.underrun.store(false, Ordering::Relaxed);
         } else {
-            // Audio is late. Play the last active samples and disable audio for a certain period.
+            // Audio is late. Play the last active samples and start prebuffering.
             for (i, out_sample) in out.iter_mut().enumerate().take(self.active_samples.len()) {
                 *out_sample = self.active_samples[i].clamp(-1.0, 1.0) * 0.5;
             }
             out[self.active_samples.len()..].fill(0.0);
             self.active_samples.clear();
-            self.stop_delay = Instant::now() + Duration::from_millis(250);
+
+            self.prebuffering = true;
+            self.exch.underrun.store(true, Ordering::Relaxed);
         }
     }
 }
@@ -131,8 +138,8 @@ impl SDLAudioStream {
                     debug!("Audio spec: {:?}", spec);
                     SDLAudioCallback {
                         recv: channel_sink.receiver(),
-                        stop_delay: Instant::now(),
                         exch: exch.clone(),
+                        prebuffering: true,
                         active_samples: vec![],
                     }
                 })
@@ -146,12 +153,12 @@ impl SDLAudioStream {
         })
     }
 
-    pub fn is_slow(&self) -> bool {
-        self.exch.slow.load(Ordering::Relaxed)
+    pub fn is_underrun(&self) -> bool {
+        self.exch.underrun.load(Ordering::Relaxed)
     }
 
     pub fn is_muted(&self) -> bool {
-        self.exch.mute.load(Ordering::Relaxed) || self.is_slow()
+        self.exch.mute.load(Ordering::Relaxed)
     }
 
     pub fn set_mute(&self, mute: bool) {
@@ -186,11 +193,11 @@ impl SDLAudioProvider {
         Ok(Self { streams: vec![] })
     }
 
-    pub fn is_slow(&self) -> bool {
-        // Only report slowness for the first stream
+    pub fn is_underrun(&self) -> bool {
+        // Only report underrun for the first stream
         self.streams
             .first()
-            .map(|stream| stream.is_slow())
+            .map(|stream| stream.is_underrun())
             .unwrap_or(false)
     }
 
