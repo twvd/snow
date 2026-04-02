@@ -104,6 +104,8 @@ impl AudioCallback for SDLAudioCallback {
 
             self.exch.underrun.store(false, Ordering::Relaxed);
         } else {
+            log::warn!("Audio buffer underrun. Audio may skip.");
+
             // Audio is late. Play the last active samples and start prebuffering.
             for (i, out_sample) in out.iter_mut().enumerate().take(self.active_samples.len()) {
                 *out_sample = self.active_samples[i].clamp(-1.0, 1.0) * 0.5;
