@@ -74,7 +74,7 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
     // For block devices
     fn blocksize(&self) -> Option<usize>;
     fn blocks(&self) -> Option<usize>;
-    fn read(&self, block_offset: usize, block_count: usize) -> Vec<u8>;
+    fn read(&mut self, block_offset: usize, block_count: usize) -> Result<Vec<u8>>;
     fn write(&mut self, block_offset: usize, data: &[u8]);
     fn image_fn(&self) -> Option<&Path>;
     fn load_media(&mut self, path: &Path) -> Result<()>;
@@ -139,9 +139,8 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                     log::error!("Reading beyond disk");
                     Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                 } else {
-                    Ok(ScsiCmdResult::DataIn(
-                        self.read(blocknum, blockcnt).to_vec(),
-                    ))
+                    self.read(blocknum, blockcnt)
+                        .map(|data| ScsiCmdResult::DataIn(data))
                 }
             }
             0x0A => {
@@ -307,9 +306,8 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                     log::error!("Reading beyond disk");
                     Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                 } else {
-                    Ok(ScsiCmdResult::DataIn(
-                        self.read(blocknum, blockcnt).to_vec(),
-                    ))
+                    self.read(blocknum, blockcnt)
+                        .map(|data| ScsiCmdResult::DataIn(data))
                 }
             }
             0x2A => {

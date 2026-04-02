@@ -42,6 +42,7 @@ struct SDLAudioExchange {
 /// Holds the SDL AudioDevice solely to prevent it from being dropped.
 /// Do not access the device field, it may not be thread-safe!
 #[allow(unused)]
+#[allow(clippy::non_send_fields_in_send_ty)]
 struct AudioDeviceHolder(AudioDevice<SDLAudioCallback>);
 
 // SAFETY: It should be safe to declare AudioDeviceHolder Send and Sync as long
@@ -87,8 +88,8 @@ impl AudioCallback for SDLAudioCallback {
                 out.fill(0.0);
             } else {
                 // Feed active samples to the SDL output
-                for i in 0..out.len() {
-                    out[i] = self.active_samples[i].clamp(-1.0, 1.0) * 0.5;
+                for (i, out_sample) in out.iter_mut().enumerate() {
+                    *out_sample = self.active_samples[i].clamp(-1.0, 1.0) * 0.5;
                 }
                 // TODO: use a circular queue or something
                 self.active_samples.copy_within(out.len().., 0);
@@ -97,8 +98,8 @@ impl AudioCallback for SDLAudioCallback {
             }
         } else {
             // Audio is late. Play the last active samples and disable audio for a certain period.
-            for i in 0..self.active_samples.len() {
-                out[i] = self.active_samples[i].clamp(-1.0, 1.0) * 0.5;
+            for (i, out_sample) in out.iter_mut().enumerate().take(self.active_samples.len()) {
+                *out_sample = self.active_samples[i].clamp(-1.0, 1.0) * 0.5;
             }
             out[self.active_samples.len()..].fill(0.0);
             self.active_samples.clear();
