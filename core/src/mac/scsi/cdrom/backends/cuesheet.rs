@@ -8,7 +8,8 @@ use std::{
 };
 
 use crate::mac::scsi::cdrom::{
-    CdromBackend, Msf, SessionInfo, TrackInfo, AUDIO_TRACK, DATA_TRACK, RAW_SECTOR_LEN,
+    CdromBackend, Msf, SessionInfo, TrackInfo, AUDIO_TRACK, DATA_TRACK, LBA_START_SECTOR,
+    RAW_SECTOR_LEN,
 };
 
 // .cue file reference:
@@ -108,7 +109,7 @@ impl CuesheetCdromBackend {
         // cannot be specified by the .bin/.cue format.
         // These sectors are usually empty, but sometimes they contain various
         // data such as CD-TEXT information.
-        let mut next_data_file_sector = Msf::new(0, 2, 0).to_sector();
+        let mut next_data_file_sector = LBA_START_SECTOR;
 
         let mut track_num = 0u8;
         let mut track_form = CuesheetTrackForm::Audio;
@@ -194,13 +195,13 @@ impl CuesheetCdromBackend {
         let final_leadout = data_files
             .last()
             .map(|df| df.sector + df.sector_count)
-            .unwrap_or(0);
+            .unwrap_or(LBA_START_SECTOR);
 
         Ok(Self {
             cue_path: path.into(),
             data_files,
             sessions: vec![SessionInfo {
-                leadout: Msf::from_sector(final_leadout)?,
+                leadout: final_leadout,
                 tracks,
             }],
         })
@@ -223,10 +224,9 @@ impl CdromBackend for CuesheetCdromBackend {
         // TODO: uh-oh, do we need to support CD-ROM's where the data is in session 2?
         // Example: "Weird Al" Yankovic - Running With Scissors
         // (the Weird Al disc also uses Form 2 sectors in its data track!)
-        const START_SECTOR: u32 = Msf::new(0, 2, 0).to_sector();
         let rel_sector: u32 = (offset / 2048).try_into().unwrap();
         // FIXME: Does the drive automatically find the data track?
-        let mut sector = START_SECTOR + rel_sector;
+        let mut sector = LBA_START_SECTOR + rel_sector;
         while result.len() < length {
             // TODO: Better error robustness if read fails
             let raw_sector = self.read_raw_sector(sector).unwrap();

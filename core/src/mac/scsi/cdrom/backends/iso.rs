@@ -2,7 +2,9 @@ use anyhow::{bail, Result};
 use std::path::Path;
 
 use crate::mac::scsi::{
-    cdrom::{CdromBackend, Msf, SessionInfo, TrackInfo, DATA_TRACK, RAW_SECTOR_LEN},
+    cdrom::{
+        CdromBackend, SessionInfo, TrackInfo, DATA_TRACK, LBA_START_SECTOR, RAW_SECTOR_LEN,
+    },
     disk_image::DiskImage,
 };
 
@@ -13,17 +15,15 @@ pub struct IsoCdromBackend {
 
 impl IsoCdromBackend {
     pub fn new(image: Box<dyn DiskImage>) -> Result<Self> {
-        const START_SECTOR: u32 = Msf::new(0, 2, 0).to_sector();
         let sector_count: u32 = image.byte_len().div_ceil(2048).try_into()?;
-        let leadout_sector = START_SECTOR + sector_count;
         Ok(Self {
             image,
             session: SessionInfo {
-                leadout: Msf::from_sector(leadout_sector)?,
+                leadout: LBA_START_SECTOR + sector_count,
                 tracks: vec![TrackInfo {
                     tno: 1,
                     control: DATA_TRACK,
-                    sector: START_SECTOR,
+                    sector: LBA_START_SECTOR,
                 }],
             },
         })

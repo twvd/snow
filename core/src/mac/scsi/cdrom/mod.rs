@@ -4,7 +4,6 @@ mod backends;
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
-use std::ops::Range;
 
 use std::path::Path;
 
@@ -89,56 +88,18 @@ impl std::fmt::Display for Msf {
 
 #[derive(Debug)]
 pub struct TrackInfo {
-    /// The track number. Note that CD tracks don't necessarily start at number 1.
+    /// The track number. Note that tracks don't necessarily start at number 1.
     tno: u8,
     /// Control field indicating track format
     control: u8,
-    /// Absolute sector number where the track begins on the CD.
+    /// Absolute sector number where the track begins
     sector: u32, // Forget about MSF/LBA; use absolute sector numbers wherever possible.
 }
 
 pub struct SessionInfo {
-    leadout: Msf,
+    /// Absolute sector number of leadout
+    leadout: u32,
     tracks: Vec<TrackInfo>,
-}
-
-impl SessionInfo {
-    /// Return the track at a given index. The argument is the 0-based index of the track, NOT the track number.
-    fn get_track(&self, idx: usize) -> Option<&TrackInfo> {
-        self.tracks.get(idx)
-    }
-
-    fn track_count(&self) -> usize {
-        self.tracks.len()
-    }
-
-    fn track_iter(&self) -> SessionTrackIterator<'_> {
-        SessionTrackIterator {
-            session: self,
-            iter: (0..self.track_count()).into_iter(),
-        }
-    }
-}
-
-struct SessionTrackIterator<'a> {
-    session: &'a SessionInfo,
-    iter: Range<usize>,
-}
-
-impl<'a> Iterator for SessionTrackIterator<'a> {
-    type Item = &'a TrackInfo;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|i| self.session.get_track(i).unwrap())
-    }
-}
-
-impl DoubleEndedIterator for SessionTrackIterator<'_> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        self.iter
-            .next_back()
-            .map(|i| self.session.get_track(i).unwrap())
-    }
 }
 
 pub trait CdromBackend: Send {
@@ -150,7 +111,7 @@ pub trait CdromBackend: Send {
     /// Unlike tracks, sessions are always numbered starting at 1.
     fn sessions(&self) -> Option<&[SessionInfo]>;
 
-    /// Read a raw 2352-byte sector. Currently used only for CD audio. Other data is read by read_bytes.
+    /// Read a raw 2352-byte sector. Currently used only for CD audio. Other data is read via read_bytes.
     fn read_raw_sector(&self, sector: u32) -> Result<[u8; RAW_SECTOR_LEN]>;
 }
 
@@ -204,20 +165,7 @@ impl ScsiTargetCdrom {
     const VALID_BLOCKSIZES: [usize; 2] = [512, 2048];
 
     pub fn new(audio_provider: Option<&mut (dyn AudioProvider + '_)>) -> Self {
-        // FIXME: avoid unwrap
-        let audio_sink = audio_provider.map(|ap| {
-            ap.create_stream(44100, 2, (RAW_SECTOR_LEN / 2 / 2) as u16)
-                .unwrap()
-        });
-        println!(
-            "CD audio sink: {}",
-            if audio_sink.is_some() {
-                "created"
-            } else {
-                "blank"
-            }
-        );
-        Self {
+        let mut self_ = Self {
             backend: None,
             cc_code: 0,
             cc_asc: 0,
@@ -228,8 +176,12 @@ impl ScsiTargetCdrom {
             real_audio_pos: LBA_START_SECTOR,
             audio_stop: 0,
             audio_clock: 0,
-            audio_sink,
+            audio_sink: None,
+        };
+        if let Some(audio_provider) = audio_provider {
+            self_.set_audio_provider(audio_provider).unwrap(); // FIXME: avoid unwrap
         }
+        self_
     }
 
     fn msf_to_address_field(&self, msf: Msf, msf_format: bool) -> [u8; 4] {
@@ -283,11 +235,11 @@ impl ScsiTargetCdrom {
                 let session = &sessions[0];
 
                 // FIXME: avoid unwrap
-                result.push(session.get_track(0).unwrap().tno); // First Track Number
-                result.push(session.get_track(session.track_count() - 1).unwrap().tno); // Last Track Number
+                result.push(session.tracks.first().unwrap().tno); // First Track Number
+                result.push(session.tracks.last().unwrap().tno); // Last Track Number
 
                 // Start at the given track or the next available track
-                let track_iter = session.track_iter().skip_while(|t| t.tno < track);
+                let track_iter = session.tracks.iter().skip_while(|t| t.tno < track);
 
                 // Emit track descriptors
                 for t in track_iter {
@@ -303,16 +255,12 @@ impl ScsiTargetCdrom {
 
                 // Emit leadout track descriptor
                 result.push(0); // Reserved
-                result.push(
-                    (1 << 4)
-                        | session
-                            .get_track(session.track_count() - 1)
-                            .unwrap()
-                            .control,
-                ); // ADR/Control
+                result.push((1 << 4) | session.tracks.last().unwrap().control); // ADR/Control
                 result.push(TRACK_LEADOUT); // Track Number
                 result.push(0); // Reserved
-                result.extend_from_slice(&self.msf_to_address_field(sessions[0].leadout, msf));
+                result.extend_from_slice(
+                    &self.msf_to_address_field(Msf::from_sector(sessions[0].leadout)?, msf),
+                );
 
                 // Set data length field
                 let data_length = result.len() - 2;
@@ -333,7 +281,7 @@ impl ScsiTargetCdrom {
                 result.push(sessions.len() as u8); // Last Session Number
 
                 // This command queries the "first track in the last session" apparently...
-                let first_track = sessions.last().unwrap().get_track(0).unwrap();
+                let first_track = sessions.last().unwrap().tracks.first().unwrap();
 
                 // [PIONEER] Table 2-28D: Track Descriptors
                 result.push(0); // Reserved
@@ -365,44 +313,45 @@ impl ScsiTargetCdrom {
 
                     // First track number in the program area
                     result.push(session_num as u8); // Session Number
-                    result.push((1 << 4) | session.get_track(0).unwrap().control);
+                    result.push((1 << 4) | session.tracks.first().unwrap().control);
                     result.push(0); // TNO (0 for the lead-in area)
                     result.push(0xA0); // POINT (First Track number in the program area)
                     result.push(0); // ATIME (0:0:0 for the lead-in area)
                     result.push(0);
                     result.push(0);
                     result.push(0); // Zero
-                    result.push(session.get_track(0).unwrap().tno); // First Track Number
+                    result.push(session.tracks.first().unwrap().tno); // First Track Number
                     result.push(0); // Disc Type
                     result.push(0);
 
                     // Last track number in the program area
                     result.push(session_num as u8); // Session Number
-                    result.push((1 << 4) | session.get_track(0).unwrap().control);
+                    result.push((1 << 4) | session.tracks.first().unwrap().control);
                     result.push(0); // TNO (0 for the lead-in area)
                     result.push(0xA1); // POINT (Last Track number in the program area)
                     result.push(0); // ATIME (0:0:0 for the lead-in area)
                     result.push(0);
                     result.push(0);
                     result.push(0); // Zero
-                    result.push(session.get_track(session.track_count() - 1).unwrap().tno); // Last Track Number
+                    result.push(session.tracks.last().unwrap().tno); // Last Track Number
                     result.push(0);
                     result.push(0);
 
                     // Start location of the Lead-out area
                     result.push(session_num as u8); // Session Number
-                    result.push((1 << 4) | session.get_track(0).unwrap().control);
+                    result.push((1 << 4) | session.tracks.first().unwrap().control);
                     result.push(0); // TNO (0 for the lead-in area)
                     result.push(0xA2); // POINT (Start location of the Lead-out area)
                     result.push(0); // ATIME (0:0:0 for the lead-in area)
                     result.push(0);
                     result.push(0);
                     result.push(0); // Zero
-                    result.push(session.leadout.m); // Start position of Lead-out
-                    result.push(session.leadout.s);
-                    result.push(session.leadout.f);
+                    let leadout = Msf::from_sector(session.leadout)?;
+                    result.push(leadout.m); // Start position of Lead-out
+                    result.push(leadout.s);
+                    result.push(leadout.f);
 
-                    for track in session.track_iter() {
+                    for track in &session.tracks {
                         result.push(session_num as u8); // Session Number
                         result.push((1 << 4) | track.control); // ADR/Control
                         result.push(0); // TNO (0 for the lead-in area)
@@ -479,7 +428,8 @@ impl ScsiTargetCdrom {
 
     fn get_track_at_sector(&self, sector: u32) -> Option<&TrackInfo> {
         self.backend.as_ref()?.sessions()?[0] // TODO: support multi-session discs
-            .track_iter()
+            .tracks
+            .iter()
             .rev()
             .find(|t| t.sector <= sector)
     }
@@ -816,7 +766,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
-                if start_sector >= session.leadout.to_sector() {
+                if start_sector >= session.leadout {
                     // TODO: find citation for this
                     log::warn!(
                         "Tried to play audio from invalid location {}; command ignored",
@@ -887,7 +837,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 };
 
                 // TODO: support multi-session discs
-                let mut tracks = sessions[0].track_iter();
+                let mut tracks = sessions[0].tracks.iter();
 
                 let direct = (cmd[1] >> 4) & 0x1; // Scan forwards if set, backwards if unset.
                 let addr_type = (cmd[9] >> 6) & 0x3;
@@ -981,7 +931,6 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {
-        println!("setting audio provider for CD drive");
         self.audio_sink = Some(provider.create_stream(44100, 2, AUDIO_BUFFER_SAMPLES as u16)?);
         Ok(())
     }
