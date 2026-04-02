@@ -12,7 +12,7 @@ pub type AudioBuffer = Box<[f32]>;
 pub type AudioReceiver = Receiver<AudioBuffer>;
 
 /// Audio channel queue length
-pub const AUDIO_QUEUE_LEN: usize = 2;
+pub const AUDIO_QUEUE_LEN: usize = 8; // TODO: make this configurable?
 
 /// Amount of samples in the audio buffer
 pub const AUDIO_BUFFER_SAMPLES: usize = 512;
