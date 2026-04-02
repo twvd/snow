@@ -218,7 +218,6 @@ impl CdromBackend for CuesheetCdromBackend {
     }
 
     fn read_bytes(&self, offset: usize, length: usize) -> Vec<u8> {
-        log::info!("Reading {} bytes from offset 0x{:X}", length, offset);
         let mut result = Vec::<u8>::with_capacity(length);
 
         // TODO: uh-oh, do we need to support CD-ROM's where the data is in session 2?
