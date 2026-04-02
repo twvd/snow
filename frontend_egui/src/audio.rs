@@ -26,6 +26,10 @@ struct SDLAudioCallback {
     recv: AudioReceiver,
     stop_delay: Instant,
     exch: Arc<SDLAudioExchange>,
+    /// Another layer of buffering to solve these problems:
+    /// - SDL audio buffers must have a power-of-2 sample count
+    /// - The user may submit audio buffers that exceed SDL's buffer size
+    active_samples: Vec<f32>,
 }
 
 /// Exchanges state between the SDLAudioCallback and SDLAudioProvider
@@ -69,18 +73,36 @@ impl AudioCallback for SDLAudioCallback {
         let slow = self.stop_delay > Instant::now();
         self.exch.slow.store(slow, Ordering::Relaxed);
 
-        if let Ok(buffer) = self.recv.try_recv() {
+        // Collect audio samples into the active samples buffer
+        while self.active_samples.len() < out.len() {
+            if let Ok(new_samples) = self.recv.try_recv() {
+                self.active_samples.extend_from_slice(&new_samples);
+            } else {
+                break;
+            }
+        }
+
+        if self.active_samples.len() >= out.len() {
             if slow || self.exch.mute.load(Ordering::Relaxed) {
                 out.fill(0.0);
             } else {
+                // Feed active samples to the SDL output
                 for i in 0..out.len() {
-                    out[i] = buffer[i].clamp(-1.0, 1.0) * 0.5;
+                    out[i] = self.active_samples[i].clamp(-1.0, 1.0) * 0.5;
                 }
+                // TODO: use a circular queue or something
+                self.active_samples.copy_within(out.len().., 0);
+                self.active_samples
+                    .truncate(self.active_samples.len() - out.len());
             }
         } else {
-            // Audio is late. Disable audio for a certain period
-            out.fill(0.0);
-            self.stop_delay = Instant::now() + Duration::from_millis(500);
+            // Audio is late. Play the last active samples and disable audio for a certain period.
+            for i in 0..self.active_samples.len() {
+                out[i] = self.active_samples[i].clamp(-1.0, 1.0) * 0.5;
+            }
+            out[self.active_samples.len()..].fill(0.0);
+            self.active_samples.clear();
+            self.stop_delay = Instant::now() + Duration::from_millis(250);
         }
     }
 }
@@ -108,6 +130,7 @@ impl SDLAudioStream {
                         recv: channel_sink.receiver(),
                         stop_delay: Instant::now(),
                         exch: exch.clone(),
+                        active_samples: vec![],
                     }
                 })
                 .map_err(|e| anyhow!(e))?;
@@ -140,6 +163,10 @@ struct SDLAudioStreamSink {
 impl AudioSink for SDLAudioStreamSink {
     fn send(&self, buffer: AudioBuffer) -> Result<()> {
         self.stream.channel_sink.send(buffer)
+    }
+
+    fn is_full(&self) -> bool {
+        self.stream.channel_sink.is_full()
     }
 }
 
