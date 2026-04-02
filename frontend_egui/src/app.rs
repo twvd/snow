@@ -1796,10 +1796,11 @@ impl SnowGui {
 
                 ui.separator();
                 let audio_muted = self.emu.audio_is_muted();
-                let audio_slow = self.emu.audio_is_slow();
+                let _audio_underrun = self.emu.audio_is_underrun();
+                // TODO: display clock graphic if audio is underrun?
                 if ui
                     .add_enabled(
-                        !audio_slow,
+                        true,
                         egui::Button::new(if audio_muted {
                             egui_material_icons::icons::ICON_VOLUME_OFF
                         } else {
