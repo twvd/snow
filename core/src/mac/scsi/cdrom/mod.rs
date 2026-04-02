@@ -49,6 +49,12 @@ const AUDIO_COMPLETED: u8 = 0x13;
 const AUDIO_TRACK: u8 = 0x0;
 const DATA_TRACK: u8 = 0x4;
 
+/// MSF timecode of Logical Block Address 0
+const LBA_START_MSF: Msf = Msf::new(0, 2, 0);
+/// Absolute sector number of Logical Block Address 0
+const LBA_START_SECTOR: u32 = LBA_START_MSF.to_sector();
+
+/// Number of sectors per second of audio
 const AUDIO_SECTORS_PER_SEC: u64 = 75;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -222,14 +228,16 @@ impl ScsiTargetCdrom {
     }
 
     fn msf_to_address_field(&self, msf: Msf, msf_format: bool) -> [u8; 4] {
-        // FIXME: is 00:02:00 pre-gap involved here?
         if msf_format {
             // [UNI-MAINZ] Table 237: MSF address format
             [0, msf.m, msf.s, msf.f]
         } else {
             // FIXME: is this correct? I can't find any software that sets a non-2048 blocksize.
-            let lba = msf.to_sector() * 2048 / self.blocksize as u32;
-            u32::to_be_bytes(lba)
+            let lba =
+                (msf.to_sector() as i32 - LBA_START_SECTOR as i32) * 2048 / self.blocksize as i32;
+            // [PIONEER] seems to imply that LBA numbers can be a negative signed integer.
+            // TODO: find citation
+            i32::to_be_bytes(lba)
         }
     }
 
