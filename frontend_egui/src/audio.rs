@@ -71,7 +71,9 @@ impl AudioCallback for SDLAudioCallback {
         //
         // Last tested on MacOS Sequoia, SDL 2.32.8.
 
-        let slow = self.stop_delay > Instant::now();
+        //let slow = self.stop_delay > Instant::now();
+        // FIXME: reenable slowdown logic. this currently breaks CD audio.
+        let slow = false;
         self.exch.slow.store(slow, Ordering::Relaxed);
 
         // Collect audio samples into the active buffer
