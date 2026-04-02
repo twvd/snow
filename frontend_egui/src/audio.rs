@@ -1,12 +1,10 @@
 use anyhow::{anyhow, Result};
-use log::*;
 use sdl2::audio::{AudioCallback, AudioDevice, AudioSpecDesired};
 use sdl2::Sdl;
 use snow_core::renderer::{AudioBuffer, AudioProvider, AudioReceiver, AudioSink, ChannelAudioSink};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 pub struct SDLSingleton {
     context: Sdl,
@@ -137,7 +135,7 @@ impl SDLAudioStream {
 
             let device = audio_subsystem
                 .open_playback(None, &spec, |spec| {
-                    debug!("Audio spec: {:?}", spec);
+                    log::debug!("Audio spec: {:?}", spec);
                     SDLAudioCallback {
                         recv: channel_sink.receiver(),
                         exch: exch.clone(),
