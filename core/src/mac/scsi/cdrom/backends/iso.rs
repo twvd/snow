@@ -13,15 +13,17 @@ pub struct IsoCdromBackend {
 
 impl IsoCdromBackend {
     pub fn new(image: Box<dyn DiskImage>) -> Result<Self> {
-        let leadout_sector = image.byte_len().div_ceil(2048).try_into()?;
+        const START_SECTOR: u32 = Msf::new(0, 2, 0).to_sector();
+        let sector_count: u32 = image.byte_len().div_ceil(2048).try_into()?;
+        let leadout_sector = START_SECTOR + sector_count;
         Ok(Self {
             image,
             session: SessionInfo {
                 leadout: Msf::from_sector(leadout_sector)?,
-                the_tracks: vec![TrackInfo {
+                tracks: vec![TrackInfo {
                     tno: 1,
                     control: DATA_TRACK,
-                    sector: 0,
+                    sector: START_SECTOR,
                 }],
             },
         })

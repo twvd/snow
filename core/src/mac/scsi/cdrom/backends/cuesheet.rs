@@ -103,12 +103,17 @@ impl CuesheetCdromBackend {
         let cue_file = BufReader::new(File::open(path)?);
 
         let mut data_files = vec![];
-        let mut next_data_file_sector = 0;
+        // Data files always start at time 00:02:00 (sector 150).
+        // This means there are 150 sectors located in the lead-in area which
+        // cannot be specified by the .bin/.cue format.
+        // These sectors are usually empty, but sometimes they contain various
+        // data such as CD-TEXT information.
+        let mut next_data_file_sector = Msf::new(0, 2, 0).to_sector();
 
         let mut track_num = 0u8;
         let mut track_form = CuesheetTrackForm::Audio;
 
-        let mut the_tracks = vec![];
+        let mut tracks = vec![];
 
         // FIXME: I believe cue files have one command per line and never split commands across multiple lines. Is this true?
         for line in cue_file.lines() {
@@ -166,7 +171,7 @@ impl CuesheetCdromBackend {
                             let curr_data_file = data_files
                                 .last()
                                 .ok_or_else(|| anyhow!("No data file loaded for INDEX command"))?;
-                            the_tracks.push(TrackInfo {
+                            tracks.push(TrackInfo {
                                 tno: track_num,
                                 control: match track_form {
                                     CuesheetTrackForm::Audio => AUDIO_TRACK,
@@ -184,7 +189,7 @@ impl CuesheetCdromBackend {
             }
         }
 
-        log::info!("Read tracks from cuesheet: {:#?}", the_tracks);
+        log::info!("Read tracks from cuesheet: {:#?}", tracks);
 
         let final_leadout = data_files
             .last()
@@ -196,7 +201,7 @@ impl CuesheetCdromBackend {
             data_files,
             sessions: vec![SessionInfo {
                 leadout: Msf::from_sector(final_leadout)?,
-                the_tracks,
+                tracks,
             }],
         })
     }
@@ -219,7 +224,10 @@ impl CdromBackend for CuesheetCdromBackend {
         // TODO: uh-oh, do we need to support CD-ROM's where the data is in session 2?
         // Example: "Weird Al" Yankovic - Running With Scissors
         // (the Weird Al disc also uses Form 2 sectors in its data track!)
-        let mut sector = (offset / 2048).try_into().unwrap();
+        const START_SECTOR: u32 = Msf::new(0, 2, 0).to_sector();
+        let rel_sector: u32 = (offset / 2048).try_into().unwrap();
+        // FIXME: Does the drive automatically find the data track?
+        let mut sector = START_SECTOR + rel_sector;
         while result.len() < length {
             // TODO: Better error robustness if read fails
             let raw_sector = self.read_raw_sector(sector).unwrap();

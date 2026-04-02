@@ -6,7 +6,6 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
 
-use core::fmt;
 use std::path::Path;
 
 use crate::debuggable::Debuggable;
@@ -34,7 +33,6 @@ use super::STATUS_GOOD;
 // [MMC4]: <https://13thmonkey.org/documentation/SCSI/mmc4r05a.pdf>
 // [MMC6]: <https://13thmonkey.org/documentation/SCSI/mmc6r02g.pdf>
 // [PIONEER]: <https://bitsavers.trailing-edge.com/pdf/pioneer/cdrom/OB-U0077C_CD-ROM_SCSI-2_Command_Set_V3.1_19970626.pdf>
-// [UNI-MAINZ]: <https://www.staff.uni-mainz.de/tacke/scsi/SCSI2-14.html>
 // [MBWIKI]: <https://wiki.musicbrainz.org/Disc_ID_Calculation>
 
 const RAW_SECTOR_LEN: usize = 2352;
@@ -61,28 +59,25 @@ struct Msf {
 }
 
 impl Msf {
-    fn new(m: u8, s: u8, f: u8) -> Msf {
+    const fn new(m: u8, s: u8, f: u8) -> Msf {
         Msf { m, s, f }
     }
 
     fn from_sector(sector: u32) -> Result<Msf> {
-        // FIXME: Is 00:02:00 pregap involved here?
-        // A sector is also known as a "frame" in CD parlance.
         let m = sector / 75 / 60;
         let s = (sector / 75) % 60;
         let f = sector % 75;
         Ok(Msf::new(m.try_into()?, s.try_into()?, f.try_into()?))
     }
 
-    fn to_sector(self) -> u32 {
-        // FIXME: Is 00:02:00 pregap involved here?
+    const fn to_sector(self) -> u32 {
         (self.m as u32 * 60 + self.s as u32) * 75 + self.f as u32
     }
 }
 
-impl fmt::Display for Msf {
+impl std::fmt::Display for Msf {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}:{}", self.m, self.s, self.f)
+        write!(f, "{:02}:{:02}:{:02}", self.m, self.s, self.f)
     }
 }
 
@@ -93,22 +88,22 @@ pub struct TrackInfo {
     /// Control field indicating track format
     control: u8,
     /// Absolute sector number where the track begins on the CD.
-    sector: u32,
+    sector: u32, // Forget about MSF/LBA; use absolute sector numbers wherever possible.
 }
 
 pub struct SessionInfo {
     leadout: Msf,
-    the_tracks: Vec<TrackInfo>,
+    tracks: Vec<TrackInfo>,
 }
 
 impl SessionInfo {
     /// Return the track at a given index. The argument is the 0-based index of the track, NOT the track number.
     fn get_track(&self, idx: usize) -> Option<&TrackInfo> {
-        self.the_tracks.get(idx)
+        self.tracks.get(idx)
     }
 
     fn track_count(&self) -> usize {
-        self.the_tracks.len()
+        self.tracks.len()
     }
 
     fn track_iter(&self) -> SessionTrackIterator<'_> {
@@ -372,7 +367,7 @@ impl ScsiTargetCdrom {
                     result.push(session_num as u8); // Session Number
                     result.push((1 << 4) | session.get_track(0).unwrap().control);
                     result.push(0); // TNO (0 for the lead-in area)
-                    result.push(0xA1); // POINT (First Track number in the program area)
+                    result.push(0xA1); // POINT (Last Track number in the program area)
                     result.push(0); // ATIME (0:0:0 for the lead-in area)
                     result.push(0);
                     result.push(0);
@@ -385,7 +380,7 @@ impl ScsiTargetCdrom {
                     result.push(session_num as u8); // Session Number
                     result.push((1 << 4) | session.get_track(0).unwrap().control);
                     result.push(0); // TNO (0 for the lead-in area)
-                    result.push(0xA1); // POINT (First Track number in the program area)
+                    result.push(0xA2); // POINT (Start location of the Lead-out area)
                     result.push(0); // ATIME (0:0:0 for the lead-in area)
                     result.push(0);
                     result.push(0);
@@ -885,6 +880,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 //
                 // When AUDIO SCAN (1) is executed, the drive begins a high-speed scan from the Scan Start
                 // Address. The drive plays a block as it crosses each track. Each scan is approximately 15 seconds.
+                log::warn!("CD audio fast-forward/rewind not implemented");
 
                 Ok(ScsiCmdResult::Status(STATUS_GOOD))
             }
