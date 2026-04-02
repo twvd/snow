@@ -91,10 +91,15 @@ impl AudioCallback for SDLAudioCallback {
         }
 
         if self.active_samples.len() >= out.len() {
-            // Feed active samples to the SDL output
-            for (i, out_sample) in out.iter_mut().enumerate() {
-                *out_sample = self.active_samples[i].clamp(-1.0, 1.0) * 0.5;
+            if self.exch.mute.load(Ordering::Relaxed) {
+                out.fill(0.0);
+            } else {
+                // Feed active samples to the SDL output
+                for (i, out_sample) in out.iter_mut().enumerate() {
+                    *out_sample = self.active_samples[i].clamp(-1.0, 1.0) * 0.5;
+                }
             }
+
             // TODO: use a circular queue or something
             self.active_samples.copy_within(out.len().., 0);
             self.active_samples
