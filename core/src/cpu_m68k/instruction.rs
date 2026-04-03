@@ -925,13 +925,21 @@ impl Instruction {
 
     pub fn get_displacement(&self) -> i32 {
         debug_assert!(
-            (((self.mnemonic == InstructionMnemonic::MOVE_b)
+            ((self.mnemonic == InstructionMnemonic::MOVE_b)
                 || (self.mnemonic == InstructionMnemonic::MOVE_l)
                 || (self.mnemonic == InstructionMnemonic::MOVE_w))
-                && (self.get_addr_mode_left().unwrap() == AddressingMode::IndirectDisplacement
-                    || self.get_addr_mode_left().unwrap() == AddressingMode::PCDisplacement))
-                || self.get_addr_mode().unwrap() == AddressingMode::IndirectDisplacement
-                || self.get_addr_mode().unwrap() == AddressingMode::PCDisplacement
+                && (matches!(
+                    self.get_addr_mode_left(),
+                    Ok(AddressingMode::IndirectDisplacement)
+                ) || matches!(
+                    self.get_addr_mode_left(),
+                    Ok(AddressingMode::PCDisplacement)
+                ))
+                || matches!(
+                    self.get_addr_mode(),
+                    Ok(AddressingMode::IndirectDisplacement)
+                )
+                || matches!(self.get_addr_mode(), Ok(AddressingMode::PCDisplacement))
                 || self.mnemonic == InstructionMnemonic::MOVEP_l
                 || self.mnemonic == InstructionMnemonic::MOVEP_w
                 || self.mnemonic == InstructionMnemonic::LINK_w
