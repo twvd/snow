@@ -141,7 +141,7 @@ impl<TRenderer> Tickable for SE30Video<TRenderer>
 where
     TRenderer: Renderer,
 {
-    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
+    fn tick(&mut self, ticks: Ticks, _ctx: &dyn EmuContext) -> Result<Ticks> {
         self.vblank_ticks += ticks;
         if !self.vblank_enable {
             self.vblank_irq = false;
