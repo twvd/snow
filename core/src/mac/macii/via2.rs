@@ -1,5 +1,6 @@
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
+use crate::emulator::EmuContext;
 use crate::mac::MacModel;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, Field16};
@@ -398,7 +399,7 @@ impl BusMember<Address> for Via2 {
 }
 
 impl Tickable for Via2 {
-    fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+    fn tick(&mut self, ticks: Ticks, _ctx: &dyn EmuContext) -> Result<Ticks> {
         // Timer 1
         let t1ovf;
         (self.t1cnt.0, t1ovf) = self.t1cnt.0.overflowing_sub(ticks.try_into()?);

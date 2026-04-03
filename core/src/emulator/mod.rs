@@ -228,6 +228,11 @@ dispatch! {
     }
 }
 
+/// An interface that allows sub-components to access emulator state (such as the speed setting)
+pub trait EmuContext {
+    fn speed(&self) -> EmulatorSpeed;
+}
+
 /// Emulator runner
 pub struct Emulator {
     config: EmulatorConfig,
@@ -795,10 +800,8 @@ impl Emulator {
         );
         Ok(())
     }
-}
 
-impl Tickable for Emulator {
-    fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+    pub fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
         if !self.command_recv.is_empty() {
             while let Ok(cmd) = self.command_recv.try_recv() {
                 let cycles = self.get_cycles();

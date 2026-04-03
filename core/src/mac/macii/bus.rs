@@ -5,7 +5,7 @@ use super::via2::Via2;
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
-use crate::emulator::MouseMode;
+use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::asc::Asc;
@@ -46,6 +46,17 @@ const RAMSZ_256K: u8 = 0;
 const RAMSZ_1M: u8 = 1;
 const RAMSZ_4M: u8 = 2;
 const RAMSZ_16M: u8 = 3;
+
+// TODO: impl EmuContext on the actual emulator, not here
+struct BusEmuContext {
+    speed: EmulatorSpeed,
+}
+
+impl EmuContext for BusEmuContext {
+    fn speed(&self) -> EmulatorSpeed {
+        self.speed
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
@@ -630,6 +641,16 @@ where
     }
 }
 
+// TODO: move speed variable somewhere else, impl EmuContext on the actual emulator
+impl<TRenderer, const AMU: bool> EmuContext for MacIIBus<TRenderer, AMU>
+where
+    TRenderer: Renderer,
+{
+    fn speed(&self) -> EmulatorSpeed {
+        self.speed
+    }
+}
+
 impl<TRenderer, const AMU: bool> Bus<Address, Byte> for MacIIBus<TRenderer, AMU>
 where
     TRenderer: Renderer,
@@ -735,13 +756,11 @@ where
         self.overlay = true;
         Ok(false)
     }
-}
 
-impl<TRenderer, const AMU: bool> Tickable for MacIIBus<TRenderer, AMU>
-where
-    TRenderer: Renderer,
-{
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+        // TODO: pass in dyn EmuContext as parameters, restore impl Tickable, etc.
+        let ctx = &BusEmuContext { speed: self.speed };
+
         self.cycles += ticks;
 
         if AMU {
@@ -755,8 +774,8 @@ where
             // TODO VIA wait states
             self.via_clock -= 20;
 
-            self.via1.tick(1)?;
-            self.via2.tick(1)?;
+            self.via1.tick(1, ctx)?;
+            self.via2.tick(1, ctx)?;
         }
 
         // Legacy VBlank interrupt
@@ -805,7 +824,7 @@ where
         let mut slot_irqs = 0;
         for slot in 0..(self.nubus_devices.len()) {
             if let Some(dev) = self.nubus_devices[slot].as_mut() {
-                dev.tick(ticks)?;
+                dev.tick(ticks, ctx)?;
                 if dev.get_irq() {
                     slot_irqs |= 1 << slot;
                 }
@@ -816,13 +835,13 @@ where
             self.via2.ifr.set_slot(true);
         }
 
-        self.scsi.tick(ticks)?;
+        self.scsi.tick(ticks, ctx)?;
 
         self.via2.ifr.set_scsi_irq(self.scsi.get_irq());
         self.via2.ifr.set_scsi_drq(self.scsi.get_drq());
 
         self.swim.intdrive = self.via1.a_out.drivesel();
-        self.swim.tick(ticks)?;
+        self.swim.tick(ticks, ctx)?;
 
         Ok(1)
     }

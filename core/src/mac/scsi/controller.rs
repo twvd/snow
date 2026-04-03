@@ -16,6 +16,7 @@ use serde_big_array::BigArray;
 use crate::bus::{Address, BusMember};
 use crate::dbgprop_byte;
 use crate::debuggable::Debuggable;
+use crate::emulator::EmuContext;
 use crate::mac::scsi::cdrom::ScsiTargetCdrom;
 use crate::mac::scsi::disk::ScsiTargetDisk;
 use crate::mac::scsi::disk_image::DiskImage;
@@ -680,9 +681,9 @@ impl BusMember<Address> for ScsiController {
 }
 
 impl Tickable for ScsiController {
-    fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
         for target in self.targets.iter_mut().flatten() {
-            target.tick(ticks)?;
+            target.tick(ticks, ctx)?;
         }
 
         Ok(ticks)

@@ -115,13 +115,7 @@ where
         self.cpu_cycles += ticks;
         Ok(())
     }
-}
 
-impl<TA, TD> Tickable for Testbus<TA, TD>
-where
-    TA: PrimInt + WrappingAdd + Hash + Debug,
-    TD: PrimInt,
-{
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
         self.bus_cycles += ticks;
         Ok(ticks)
