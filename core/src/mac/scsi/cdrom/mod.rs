@@ -584,22 +584,19 @@ impl ScsiTarget for ScsiTargetCdrom {
                 // CD Audio Control Page
 
                 // TODO: Implement Stop On Track Crossing mode.
-                // I can't find any software that enabled SOTC mode.
+                // I can't find any software that enables SOTC mode.
                 let sotc = (data[0] >> 1) & 0x1;
                 // XXX: Only Output Port 0 Volume is used. I can't find any software that
                 // adjusts port volumes independently (i.e. left/right channels).
                 let volume = data[7];
 
-                log::debug!(
-                    "CD Audio Control sotc {} volume {} data {:?}",
-                    sotc,
-                    volume,
-                    data
-                );
+                log::debug!("CD Audio Control sotc {} volume {}", sotc, volume);
 
                 self.audio_volume = volume;
                 Ok(())
             }
+            // TODO: Myst sends MODE SELECT page 0x31
+            // (vendor page; purpose unknown)
             _ => bail!("MODE SELECT page 0x{:X} not implemented", page),
         }
     }
@@ -687,7 +684,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 let msf = (cmd[1] >> 1) & 0x1;
                 let sub_q = (cmd[2] >> 5) & 0x1;
                 let format = cmd[3];
-                // let track = cmd[6];
+                let _track = cmd[6];
                 let alloc_len = u16::from_be_bytes(cmd[7..=8].try_into()?) as usize;
 
                 // log::debug!(
