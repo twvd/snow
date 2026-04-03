@@ -14,6 +14,10 @@ use crate::mac::scsi::{
 use crate::renderer::AudioProvider;
 use crate::tickable::Ticks;
 
+// Documentation:
+//
+// [SPC-3]: <https://13thmonkey.org/documentation/SCSI/spc3r23.pdf>
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 /// Enumeration of supported emulated SCSI target types (devices)
 pub enum ScsiTargetType {
@@ -201,12 +205,10 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                     }
 
                     let mut pages = &od[12..];
-                    while let (Some(page), Some(page_len)) = (pages.get(0), pages.get(1)) {
-                        let (page, page_len) = (*page, *page_len);
-
+                    while let Some([page, page_len]) = pages.get(..2) {
                         pages = &pages[2..];
 
-                        if pages.len() < page_len as usize {
+                        if pages.len() < *page_len as usize {
                             log::error!(
                                 "Incomplete page data for page {} in MODE SELECT(6) command",
                                 page
@@ -215,10 +217,14 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                             return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                         }
 
-                        let data = &pages[..page_len as usize];
-                        self.mode_select(page, data)?;
+                        let data = &pages[..*page_len as usize];
+                        // [SPC-3] 6.7 implies that if unsupported pages are present, the command shall
+                        // be terminated with ILLEGAL_REQUEST/INVALID FIELD. It isn't clear if other
+                        // pages specified in the command are applied or canceled.
+                        // TODO: set condition codes
+                        self.mode_select(*page, data)?;
 
-                        pages = &pages[page_len as usize..];
+                        pages = &pages[*page_len as usize..];
                     }
 
                     Ok(ScsiCmdResult::Status(STATUS_GOOD))

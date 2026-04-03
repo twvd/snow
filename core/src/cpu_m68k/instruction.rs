@@ -925,27 +925,30 @@ impl Instruction {
 
     pub fn get_displacement(&self) -> i32 {
         debug_assert!(
-            ((self.mnemonic == InstructionMnemonic::MOVE_b)
-                || (self.mnemonic == InstructionMnemonic::MOVE_l)
-                || (self.mnemonic == InstructionMnemonic::MOVE_w))
-                && (matches!(
+            ([
+                InstructionMnemonic::MOVE_b,
+                InstructionMnemonic::MOVE_l,
+                InstructionMnemonic::MOVE_w,
+            ]
+            .contains(&self.mnemonic)
+                && matches!(
                     self.get_addr_mode_left(),
-                    Ok(AddressingMode::IndirectDisplacement)
-                ) || matches!(
-                    self.get_addr_mode_left(),
-                    Ok(AddressingMode::PCDisplacement)
+                    Ok(AddressingMode::IndirectDisplacement) | Ok(AddressingMode::PCDisplacement)
                 ))
                 || matches!(
                     self.get_addr_mode(),
                     Ok(AddressingMode::IndirectDisplacement)
                 )
                 || matches!(self.get_addr_mode(), Ok(AddressingMode::PCDisplacement))
-                || self.mnemonic == InstructionMnemonic::MOVEP_l
-                || self.mnemonic == InstructionMnemonic::MOVEP_w
-                || self.mnemonic == InstructionMnemonic::LINK_w
-                || self.mnemonic == InstructionMnemonic::Bcc
-                || self.mnemonic == InstructionMnemonic::DBcc
-                || self.mnemonic == InstructionMnemonic::BSR
+                || [
+                    InstructionMnemonic::MOVEP_l,
+                    InstructionMnemonic::MOVEP_w,
+                    InstructionMnemonic::LINK_w,
+                    InstructionMnemonic::Bcc,
+                    InstructionMnemonic::DBcc,
+                    InstructionMnemonic::BSR,
+                ]
+                .contains(&self.mnemonic)
         );
         debug_assert!(self.extword.get().is_some());
 
