@@ -56,6 +56,7 @@
 
 use crate::bus::Address;
 use crate::debuggable::Debuggable;
+use crate::emulator::EmuContext;
 use crate::renderer::Renderer;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
@@ -262,7 +263,7 @@ impl<T> Tickable for Video<T>
 where
     T: Renderer,
 {
-    fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+    fn tick(&mut self, ticks: Ticks, _ctx: &dyn EmuContext) -> Result<Ticks> {
         // Simulate ticks one-at-a-time to ensure we don't miss a vblank or hblank.
         for _ in 0..ticks {
             let before_vblank = self.in_vblank();
@@ -327,6 +328,14 @@ mod tests {
         Video::new(NullRenderer::new(0, 0).unwrap())
     }
 
+    struct TestEmuContext();
+
+    impl EmuContext for TestEmuContext {
+        fn speed(&self) -> crate::emulator::comm::EmulatorSpeed {
+            crate::emulator::comm::EmulatorSpeed::Accurate
+        }
+    }
+
     #[test]
     fn vblank_period() {
         let mut v = video();
@@ -336,24 +345,24 @@ mod tests {
         assert!(v.in_vblank());
 
         // Last dot in VBlank
-        v.tick((28 * (512 + 192)) - 1).unwrap();
+        v.tick((28 * (512 + 192)) - 1, &TestEmuContext()).unwrap();
         assert!(v.in_vblank());
         assert_eq!(v.get_scanline(), 27);
 
         // Exit VBlank
-        v.tick(1).unwrap();
+        v.tick(1, &TestEmuContext()).unwrap();
         assert_eq!(v.get_scanline(), 28);
         assert!(!v.in_vblank());
         assert!(!v.get_clr_vblank());
 
         // Last dot in visible area before next VBlank
-        v.tick((342 * (512 + 192)) - 1).unwrap();
+        v.tick((342 * (512 + 192)) - 1, &TestEmuContext()).unwrap();
         assert_eq!(v.get_scanline(), 369);
         assert!(!v.in_vblank());
         assert!(!v.get_clr_vblank());
 
         // Enter VBlank
-        v.tick(1).unwrap();
+        v.tick(1, &TestEmuContext()).unwrap();
         assert_eq!(v.get_scanline(), 0);
         assert!(v.in_vblank());
         assert!(v.get_clr_vblank());
@@ -366,9 +375,9 @@ mod tests {
 
         for _ in 0..370 {
             assert!(!v.in_hblank());
-            v.tick(512).unwrap();
+            v.tick(512, &TestEmuContext()).unwrap();
             assert!(v.in_hblank());
-            v.tick(192).unwrap();
+            v.tick(192, &TestEmuContext()).unwrap();
         }
     }
 }

@@ -5,6 +5,7 @@ use std::path::Path;
 use anyhow::{anyhow, Result};
 
 use crate::debuggable::Debuggable;
+use crate::emulator::EmuContext;
 use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::scsi::{
     ScsiCmdResult, ASC_INVALID_FIELD_IN_CDB, ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
@@ -380,7 +381,7 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
         }
     }
 
-    fn tick(&mut self, _ticks: Ticks) -> Result<()> {
+    fn tick(&mut self, _ticks: Ticks, _ctx: &dyn EmuContext) -> Result<()> {
         Ok(())
     }
 }

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::debuggable::Debuggable;
+use crate::emulator::EmuContext;
 use crate::mac::macii::bus::CLOCK_SPEED;
 use crate::mac::scsi::cdrom::backends::cuesheet::CuesheetCdromBackend;
 use crate::mac::scsi::cdrom::backends::iso::IsoCdromBackend;
@@ -437,7 +438,7 @@ impl ScsiTargetCdrom {
 
     /// Read a frame of CD audio and send it to the audio sink.
     /// Returns None if real audio is muted or disabled (such as by running in Uncapped speed).
-    fn try_pump_audio(&mut self) -> Option<Result<()>> {
+    fn try_pump_audio(&mut self, ctx: &dyn EmuContext) -> Option<Result<()>> {
         if self.audio_sink.is_none() {
             return None;
         }
@@ -1018,9 +1019,9 @@ impl ScsiTarget for ScsiTargetCdrom {
         None
     }
 
-    fn tick(&mut self, ticks: Ticks) -> Result<()> {
+    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<()> {
         if self.audio_state == AudioState::Playing {
-            match self.try_pump_audio() {
+            match self.try_pump_audio(ctx) {
                 Some(result) => result,
                 None => {
                     // Real audio is disabled. Advance the audio position by counting bus ticks.

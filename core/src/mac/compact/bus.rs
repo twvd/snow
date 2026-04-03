@@ -7,7 +7,7 @@ use super::video::Video;
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
-use crate::emulator::MouseMode;
+use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::rtc::Rtc;
@@ -32,6 +32,17 @@ use serde::{Deserialize, Serialize};
 
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
+
+// TODO: impl EmuContext on the actual emulator, not here
+struct BusEmuContext {
+    speed: EmulatorSpeed,
+}
+
+impl EmuContext for BusEmuContext {
+    fn speed(&self) -> EmulatorSpeed {
+        self.speed
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
@@ -684,13 +695,11 @@ where
         // All compact Macs have RESET and HALT tied together
         Ok(true)
     }
-}
 
-impl<TRenderer> Tickable for CompactMacBus<TRenderer>
-where
-    TRenderer: Renderer,
-{
     fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+        // TODO: pass in dyn EmuContext, restore impl Tickable to bus
+        let ctx = &BusEmuContext { speed: self.speed };
+
         // XXX: run one tick at a time to avoid missing hblanks and vblanks
         for _ in 0..ticks {
             let ticks = 1;
@@ -703,11 +712,11 @@ where
                 // TODO ticks when VPA is asserted
                 self.eclock -= 10;
 
-                self.via.tick(1)?;
+                self.via.tick(1, ctx)?;
             }
 
             // Pixel clock (15.6672 MHz) is roughly 2x CPU speed
-            self.video.tick(2 * ticks)?;
+            self.video.tick(2 * ticks, ctx)?;
 
             // Sync VIA registers
             if self.model <= MacModel::Plus {
@@ -784,8 +793,8 @@ where
                 self.last_audiosample = audiosample;
             }
 
-            self.scsi.tick(ticks)?;
-            self.swim.tick(ticks)?;
+            self.scsi.tick(ticks, ctx)?;
+            self.swim.tick(ticks, ctx)?;
         }
 
         Ok(ticks)

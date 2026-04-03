@@ -1,6 +1,6 @@
 pub mod testbus;
 
-use crate::tickable::{Tickable, Ticks};
+use crate::tickable::Ticks;
 
 use anyhow::Result;
 use num_traits::{PrimInt, WrappingAdd};
@@ -25,7 +25,7 @@ pub trait BusMember<T: PrimInt> {
     fn write(&mut self, addr: T, val: u8) -> Option<()>;
 }
 
-pub trait Bus<TA: PrimInt + WrappingAdd, TD: PrimInt>: Tickable {
+pub trait Bus<TA: PrimInt + WrappingAdd, TD: PrimInt> {
     fn read(&mut self, addr: TA) -> BusResult<TD>;
     fn write(&mut self, addr: TA, val: TD) -> BusResult<TD>;
     fn get_mask(&self) -> TA;
@@ -40,6 +40,8 @@ pub trait Bus<TA: PrimInt + WrappingAdd, TD: PrimInt>: Tickable {
     fn cpu_tick(&mut self, _ticks: Ticks) -> Result<()> {
         Ok(())
     }
+
+    fn tick(&mut self, ticks: Ticks) -> Result<Ticks>;
 }
 
 /// Inspectable provides an interface to debugging/memory views.

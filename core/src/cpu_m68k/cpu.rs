@@ -4091,11 +4091,11 @@ impl<
         const CPU_TYPE: CpuM68kType,
         const FPU_TYPE: FpuM68kType,
         const PMMU: bool,
-    > Tickable for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
-    fn tick(&mut self, _ticks: Ticks) -> Result<Ticks> {
+    pub fn tick(&mut self, _ticks: Ticks) -> Result<Ticks> {
         self.step()?;
 
         Ok(0)
