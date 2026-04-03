@@ -29,6 +29,7 @@ use super::STATUS_GOOD;
 
 // The CD-ROM SCSI protocol is often confusing. Here is some useful documentation:
 //
+// [MMC3]: <https://13thmonkey.org/documentation/SCSI/mmc3r10g.pdf>
 // [MMC4]: <https://13thmonkey.org/documentation/SCSI/mmc4r05a.pdf>
 // [MMC6]: <https://13thmonkey.org/documentation/SCSI/mmc6r02g.pdf>
 // [PIONEER]: <https://bitsavers.trailing-edge.com/pdf/pioneer/cdrom/OB-U0077C_CD-ROM_SCSI-2_Command_Set_V3.1_19970626.pdf>
@@ -152,6 +153,8 @@ pub(super) struct ScsiTargetCdrom {
     /// Audio clock (counts ticks up 75 audio CD frames per second)
     audio_clock: Ticks,
 
+    audio_volume: u8,
+
     /// Audio sink for CD audio
     #[serde(skip)]
     audio_sink: Option<Box<dyn AudioSink>>,
@@ -171,6 +174,7 @@ impl ScsiTargetCdrom {
             audio_pos: LBA_START_SECTOR,
             audio_stop: 0,
             audio_clock: 0,
+            audio_volume: u8::MAX,
             audio_sink: None,
         };
         if let Some(audio_provider) = audio_provider {
@@ -505,10 +509,29 @@ impl ScsiTarget for ScsiTargetCdrom {
                 Some(vec![0; 0x16])
             }
             0x0e => {
-                // CD-ROM audio control parameters page
+                // [MMC3] 6.3.7: CD Audio Control Page
+                // (for some reason, this documentation went missing in later versions of MMC)
 
-                // TODO: Return info about port volumes, etc.
-                Some(vec![0; 0xe])
+                // TODO: Implement Stop On Track Crossing mode.
+                // I can't find any software that enabled SOTC mode.
+                let sotc = 0;
+
+                Some(vec![
+                    (1 << 2) | (sotc << 1), // IMMED (always 1), SOTC
+                    0,                      // Reserved
+                    0,                      // Reserved
+                    0,                      // Reserved
+                    75,                     // Obsolete (75)
+                    75,                     // Obsolete (75)
+                    0b0001, // CDDA Output Port 0 Channel Selection (attach audio channel 0)
+                    self.audio_volume, // Output Port 0 Volume Default FFh
+                    0b0010, // CDDA Output Port 1 Channel Selection (attach audio channel 1)
+                    self.audio_volume, // Output Port 1 Volume Default FFh
+                    0b0100, // CDDA Output Port 2 Channel Selection (attach audio channel 2)
+                    0x00,   // Output Port 2 Volume Default 00h
+                    0b1000, // CDDA Output Port 3 Channel Selection (attach audio channel 3)
+                    0x00,   // Output Port 3 Volume Default 00h
+                ])
             }
             0x30 => {
                 // ? Non-standard mode page
@@ -518,6 +541,29 @@ impl ScsiTarget for ScsiTargetCdrom {
                 Some(result)
             }
             _ => None,
+        }
+    }
+
+    fn mode_select(&mut self, page: u8, data: &[u8]) -> Result<()> {
+        match page {
+            0x0e => {
+                // CD Audio Control Page
+                // TODO: implement Stop On Track Change
+                let sotc = (data[0] >> 1) & 0x1;
+                // XXX: Only Output Port 0 Volume is used. I can't find any software that
+                // adjusts port volumes independently (i.e. left/right channels).
+                let volume = data[7];
+                log::debug!(
+                    "CD Audio Control sotc {} volume {} data {:?}",
+                    sotc,
+                    volume,
+                    data
+                );
+
+                self.audio_volume = volume;
+                Ok(())
+            }
+            _ => bail!("MODE SELECT page 0x{:X} not implemented", page),
         }
     }
 
@@ -603,17 +649,17 @@ impl ScsiTarget for ScsiTargetCdrom {
                 let msf = (cmd[1] >> 1) & 0x1;
                 let sub_q = (cmd[2] >> 5) & 0x1;
                 let format = cmd[3];
-                let track = cmd[6];
+                // let track = cmd[6];
                 let alloc_len = u16::from_be_bytes(cmd[7..=8].try_into()?) as usize;
 
-                log::debug!(
-                    "READ SUB-CHANNEL msf {} sub_q {} format {} track {} alloc_len {}",
-                    msf,
-                    sub_q,
-                    format,
-                    track,
-                    alloc_len
-                );
+                // log::debug!(
+                //     "READ SUB-CHANNEL msf {} sub_q {} format {} track {} alloc_len {}",
+                //     msf,
+                //     sub_q,
+                //     format,
+                //     track,
+                //     alloc_len
+                // );
 
                 let audio_status = match self.audio_state {
                     AudioState::Stopped => AUDIO_COMPLETED,
@@ -646,12 +692,12 @@ impl ScsiTarget for ScsiTargetCdrom {
                             return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                         };
 
-                        log::info!(
-                            "audio pos is at sector {} (in track #{} at sector {})",
-                            self.audio_pos,
-                            track.tno,
-                            track.sector
-                        );
+                        // log::debug!(
+                        //     "audio pos is at sector {} (in track #{} at sector {})",
+                        //     self.audio_pos,
+                        //     track.tno,
+                        //     track.sector
+                        // );
 
                         // [PIONEER] Table 2-27F: CD-ROM Current Position Data Block
                         result.push(0x01); // Sub Channel Data Format code
@@ -940,7 +986,8 @@ impl ScsiTarget for ScsiTargetCdrom {
                                     let sample = i16::from_le_bytes(
                                         samples[2 * i..][..2].try_into().unwrap(),
                                     );
-                                    out_samples[i] = sample as f32 / 32768.0;
+                                    out_samples[i] =
+                                        sample as f32 / 32768.0 * self.audio_volume as f32 / 255.0;
                                 }
 
                                 audio_sink.send(Box::new(out_samples))?;

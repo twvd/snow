@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 
 use crate::debuggable::Debuggable;
 use crate::mac::scsi::disk_image::DiskImage;
@@ -42,6 +42,9 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
     fn unit_ready(&mut self) -> Result<ScsiCmdResult>;
     fn inquiry(&mut self, cmd: &[u8]) -> Result<ScsiCmdResult>;
     fn mode_sense(&mut self, page: u8) -> Option<Vec<u8>>;
+    fn mode_select(&mut self, page: u8, _data: &[u8]) -> Result<()> {
+        Err(anyhow!("MODE SELECT page 0x{:X} not implemented", page))
+    }
     fn ms_density(&self) -> u8;
     fn ms_media_type(&self) -> u8;
     fn ms_device_specific(&self) -> u8;
@@ -186,6 +189,8 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                         log::error!("Outdata for MODE SELECT(6) too short: {}", od.len());
                         return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                     }
+
+                    // FIXME: does MODE SELECT(6) have the DBD bit?
                     if let Some(current_blocksize) = self.blocksize() {
                         let blocksize = (usize::from(od[9]) << 16)
                             | (usize::from(od[10]) << 8)
@@ -194,6 +199,28 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                             log::error!("Failed to change block size to {}", blocksize);
                         }
                     }
+
+                    let mut pages = &od[12..];
+                    while let (Some(page), Some(page_len)) = (pages.get(0), pages.get(1)) {
+                        let (page, page_len) = (*page, *page_len);
+
+                        pages = &pages[2..];
+
+                        if pages.len() < page_len as usize {
+                            log::error!(
+                                "Incomplete page data for page {} in MODE SELECT(6) command",
+                                page
+                            );
+                            // TODO: set condition codes
+                            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                        }
+
+                        let data = &pages[..page_len as usize];
+                        self.mode_select(page, data)?;
+
+                        pages = &pages[page_len as usize..];
+                    }
+
                     Ok(ScsiCmdResult::Status(STATUS_GOOD))
                 } else {
                     Ok(ScsiCmdResult::DataOut(cmd[4] as usize))
