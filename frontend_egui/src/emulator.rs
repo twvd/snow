@@ -24,7 +24,7 @@ use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{ExtraROMs, MacModel, MacMonitor};
 use snow_core::renderer::DisplayBuffer;
-use snow_core::tickable::{Tickable, Ticks};
+use snow_core::tickable::Ticks;
 use snow_core::types::LatchingEvent;
 use snow_floppy::loaders::FloppyImageLoader;
 use snow_floppy::{Floppy, FloppyImage, FloppyType};

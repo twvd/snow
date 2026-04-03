@@ -16,7 +16,7 @@ use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
 use crate::cpu_m68k::regs::RegisterCACR;
 use crate::cpu_m68k::{M68000_SR_MASK, M68020_CACR_MASK, M68030, M68030_CACR_MASK};
-use crate::tickable::{Tickable, Ticks};
+use crate::tickable::Ticks;
 use crate::types::{Byte, LatchingEvent, Long, Word};
 
 use super::instruction::{

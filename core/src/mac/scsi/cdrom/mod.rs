@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::debuggable::Debuggable;
+use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::EmuContext;
 use crate::mac::macii::bus::CLOCK_SPEED;
 use crate::mac::scsi::cdrom::backends::cuesheet::CuesheetCdromBackend;
@@ -437,13 +438,19 @@ impl ScsiTargetCdrom {
     }
 
     /// Read a frame of CD audio and send it to the audio sink.
-    /// Returns None if real audio is muted or disabled (such as by running in Uncapped speed).
+    /// Returns None if audio is disabled (such as by running at Uncapped speed).
     fn try_pump_audio(&mut self, ctx: &dyn EmuContext) -> Option<Result<()>> {
         if self.audio_sink.is_none() {
             return None;
         }
 
-        // TODO: add more checks
+        match ctx.speed() {
+            EmulatorSpeed::Accurate | EmulatorSpeed::Dynamic => (),
+            _ => {
+                // Don't pump audio in these speed modes
+                return None;
+            }
+        }
 
         Some(self.pump_audio())
     }

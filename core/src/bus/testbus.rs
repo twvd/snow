@@ -3,7 +3,7 @@ use num_traits::{PrimInt, WrappingAdd};
 
 use super::{Bus, IrqSource};
 use crate::bus::BusResult;
-use crate::tickable::{Tickable, Ticks};
+use crate::tickable::Ticks;
 
 use std::cell::RefCell;
 use std::collections::HashMap;

@@ -34,7 +34,7 @@ use crate::mac::{ExtraROMs, MacModel, MacMonitor};
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::AudioProvider;
 use crate::renderer::{DisplayBuffer, Renderer};
-use crate::tickable::{Tickable, Ticks};
+use crate::tickable::Ticks;
 use crate::types::Byte;
 
 use anyhow::{bail, Context, Result};
