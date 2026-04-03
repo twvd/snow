@@ -144,12 +144,8 @@ pub(super) struct ScsiTargetCdrom {
     /// Audio state
     audio_state: AudioState,
 
-    /// Current audio sector presented to the emulated machine.
-    /// Two different audio cursors are used to mitigate buffer underruns.
-    emu_audio_pos: u32,
-
-    /// Current audio sector of actual playback
-    real_audio_pos: u32,
+    /// Current audio sector
+    audio_pos: u32,
 
     /// Audio stop sector
     audio_stop: u32,
@@ -175,8 +171,7 @@ impl ScsiTargetCdrom {
             event_eject: Default::default(),
             blocksize: 2048,
             audio_state: AudioState::Stopped,
-            emu_audio_pos: LBA_START_SECTOR,
-            real_audio_pos: LBA_START_SECTOR,
+            audio_pos: LBA_START_SECTOR,
             audio_stop: 0,
             audio_clock: 0,
             audio_volume: u8::MAX,
@@ -393,35 +388,63 @@ impl ScsiTargetCdrom {
         self.backend = None;
     }
 
-    /// Read a frame of CD audio and send it to the audio sink
+    /// Read a frame of CD audio and send it to the audio sink.
     fn pump_audio(&mut self) -> Result<()> {
+        let audio_sink = self.audio_sink.as_ref().unwrap();
+
+        // TODO: check if real audio should be enabled, return None if not
+
+        if audio_sink.is_full() {
+            return Ok(());
+        }
+
+        let Some(backend) = &self.backend else {
+            return Ok(());
+        };
+
+        // Keep audio clock as 0 if real audio is active
+        self.audio_clock = 0;
+
         if self.audio_state != AudioState::Playing {
             return Ok(());
         }
 
-        if self.real_audio_pos >= self.audio_stop {
+        if self.audio_pos >= self.audio_stop {
+            self.audio_state = AudioState::Stopped;
             return Ok(());
         }
 
-        if let Some(backend) = &self.backend {
-            if let Some(audio_sink) = &self.audio_sink {
-                let samples = backend.read_raw_sector(self.real_audio_pos);
-                if let Ok(samples) = samples {
-                    // FIXME: can we avoid converting to float by setting up a signed 16-bit PCM audio sink?
-                    let mut out_samples = [0.0; RAW_SECTOR_LEN / 2]; // 16-bit samples
-                    for i in 0..RAW_SECTOR_LEN / 2 {
-                        let sample = i16::from_le_bytes(samples[2 * i..][..2].try_into().unwrap());
-                        out_samples[i] = sample as f32 / 32768.0 * self.audio_volume as f32 / 255.0;
-                    }
+        if audio_sink.is_full() {
+            return Ok(());
+        }
 
-                    audio_sink.send(Box::new(out_samples))?;
-
-                    self.real_audio_pos += 1;
-                }
+        let samples = backend.read_raw_sector(self.audio_pos);
+        if let Ok(samples) = samples {
+            // FIXME: can we avoid converting to float by setting up a signed 16-bit PCM audio sink?
+            let mut out_samples = [0.0; RAW_SECTOR_LEN / 2]; // 16-bit samples
+            for i in 0..RAW_SECTOR_LEN / 2 {
+                let sample = i16::from_le_bytes(samples[2 * i..][..2].try_into().unwrap());
+                out_samples[i] = sample as f32 / 32768.0 * self.audio_volume as f32 / 255.0;
             }
+
+            audio_sink.send(Box::new(out_samples))?;
+
+            self.audio_pos += 1;
         }
 
         Ok(())
+    }
+
+    /// Read a frame of CD audio and send it to the audio sink.
+    /// Returns None if real audio is muted or disabled (such as by running in Uncapped speed).
+    fn try_pump_audio(&mut self) -> Option<Result<()>> {
+        if self.audio_sink.is_none() {
+            return None;
+        }
+
+        // TODO: add more checks
+
+        Some(self.pump_audio())
     }
 }
 
@@ -656,8 +679,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 // This command does not affect modes specified by the MODE SELECT command.
                 log::warn!("REZERO UNIT");
                 self.audio_state = AudioState::Stopped;
-                self.emu_audio_pos = LBA_START_SECTOR;
-                self.real_audio_pos = LBA_START_SECTOR;
+                self.audio_pos = LBA_START_SECTOR;
                 Ok(ScsiCmdResult::Status(STATUS_GOOD))
             }
             // READ(6) (no media)
@@ -721,7 +743,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                     0x01 => {
                         // CD-ROM Current Position
                         // Find current track at playback position
-                        let Some(track) = self.get_track_at_sector(self.emu_audio_pos) else {
+                        let Some(track) = self.get_track_at_sector(self.audio_pos) else {
                             // FIXME: correct?
                             self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
                             return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
@@ -740,12 +762,9 @@ impl ScsiTarget for ScsiTargetCdrom {
                         result.push(track.tno); // Track Number
                         result.push(1); // Index Number (TODO: Find correct index number)
                         result.extend_from_slice(
-                            &self.msf_to_address_field(
-                                Msf::from_sector(self.emu_audio_pos)?,
-                                msf != 0,
-                            ),
+                            &self.msf_to_address_field(Msf::from_sector(self.audio_pos)?, msf != 0),
                         );
-                        let track_relative = self.emu_audio_pos - track.sector;
+                        let track_relative = self.audio_pos - track.sector;
                         result.extend_from_slice(
                             &self.msf_to_address_field(Msf::from_sector(track_relative)?, msf != 0),
                         );
@@ -806,7 +825,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 // the Current Optical Head location. This allows the Audio Ending address to be changed without
                 // interrupting the current playback operation.
                 let start_sector = if start_msf == Msf::new(255, 255, 255) {
-                    self.emu_audio_pos
+                    self.audio_pos
                 } else {
                     start_msf.to_sector()
                 };
@@ -845,8 +864,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
-                self.emu_audio_pos = start_sector;
-                self.real_audio_pos = start_sector;
+                self.audio_pos = start_sector;
                 self.audio_stop = end_sector;
                 if self.audio_state != AudioState::Playing {
                     self.audio_state = AudioState::Playing;
@@ -1002,31 +1020,25 @@ impl ScsiTarget for ScsiTargetCdrom {
 
     fn tick(&mut self, ticks: Ticks) -> Result<()> {
         if self.audio_state == AudioState::Playing {
-            if let Some(audio_sink) = &self.audio_sink {
-                if !audio_sink.is_full() {
-                    // To avoid buffer underruns, run CD audio semi-independently from the emulated machine.
-                    // TODO: skip this check if muted or uncapped speed?
-                    // TODO: try harder to prevent real audio cursor from falling out of sync with the emulated cursor.
-                    self.pump_audio()?;
-                }
-            }
+            match self.try_pump_audio() {
+                Some(result) => result,
+                None => {
+                    // Real audio is disabled. Advance the audio position by counting bus ticks.
+                    self.audio_clock += ticks;
+                    if self.audio_clock >= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC {
+                        self.audio_clock -= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC;
 
-            self.audio_clock += ticks;
-            if self.audio_clock >= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC {
-                self.audio_clock -= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC;
+                        if self.audio_pos >= self.audio_stop {
+                            self.audio_state = AudioState::Stopped;
+                            self.audio_clock = 0;
+                        } else {
+                            self.audio_pos += 1;
+                        }
+                    }
 
-                if self.emu_audio_pos >= self.audio_stop {
-                    log::info!(
-                        "CD audio reached stopping point at sector {} (msf {})",
-                        self.audio_stop,
-                        Msf::from_sector(self.audio_stop).unwrap()
-                    );
-                    self.audio_state = AudioState::Stopped;
-                    self.audio_clock = 0;
-                } else {
-                    self.emu_audio_pos += 1;
+                    Ok(())
                 }
-            }
+            }?;
         }
 
         Ok(())
