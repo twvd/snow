@@ -242,6 +242,7 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                     self.set_cc(CC_KEY_ILLEGAL_REQUEST, 0);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
+
                 let page = cmd[2] & 0x3F;
                 let _subpage = cmd[3];
                 let dbd = cmd[1] & (1 << 3) != 0;
@@ -295,8 +296,10 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
-                result[0] = result.len() as u8;
+                let mode_data_len: u8 = (result.len() - 1).try_into()?;
+                result[0] = mode_data_len;
                 result.truncate(alloc_len);
+
                 Ok(ScsiCmdResult::DataIn(result))
             }
             0x2B => {
@@ -373,6 +376,89 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                 let result = vec![0; 4];
                 // 0 reserved (0)
                 // 1-3 buffer length (0)
+                Ok(ScsiCmdResult::DataIn(result))
+            }
+            0x5A => {
+                // MODE SENSE(10)
+                let Some(blocksize) = self.blocksize() else {
+                    log::error!(
+                        "MODE SENSE on non-block device type {:?}",
+                        self.target_type()
+                    );
+                    self.set_cc(CC_KEY_ILLEGAL_REQUEST, 0);
+                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                };
+
+                let page = cmd[2] & 0x3F;
+                let _subpage = cmd[3];
+                let llbaa = (cmd[1] >> 4) & 0x1 != 0;
+                let dbd = (cmd[1] >> 3) & 0x1 != 0;
+                let pc = (cmd[2] >> 6) & 0b11;
+                let alloc_len = u16::from_be_bytes(cmd[7..=8].try_into()?) as usize;
+
+                log::debug!(
+                    "MODE SENSE(10) llbaa {} dbd {} alloc_len {}",
+                    llbaa,
+                    dbd,
+                    alloc_len
+                );
+
+                let mut result: Vec<u8> = vec![];
+
+                if pc != 0b00 {
+                    log::error!("MODE SENSE(10) unimplemented PC: {}", pc);
+                }
+
+                if llbaa {
+                    log::error!("MODE SENSE(10) LLBAA not implemented");
+                }
+
+                // [SPC-3] Table 240: Mode parameter header(10)
+                result.push(0); // Mode data length (placeholder)
+                result.push(0);
+                result.push(self.ms_media_type()); // Medium type
+                result.push(self.ms_device_specific()); // Device-specific parameter
+                                                        // TODO: Support LONGLBA (required if LLBAA != 0?)
+                result.push(0); // Reserved/LONGLBA
+                                // Block descriptor length
+                result.extend_from_slice(&(if dbd { 0u16 } else { 8u16 }).to_be_bytes());
+
+                if !dbd {
+                    // Block descriptor
+                    // Density
+                    result.push(self.ms_density());
+                    // 3x number of blocks + 1x reserved
+                    result.extend_from_slice(&[0, 0, 0, 0]);
+
+                    // Block size
+                    result.push((blocksize >> 16) as u8);
+                    result.push((blocksize >> 8) as u8);
+                    result.push(blocksize as u8);
+                }
+
+                if page == 0x3F {
+                    // Return all supported pages
+                    for p in 0..=0x3E {
+                        if let Some(pagedata) = self.mode_sense(p) {
+                            result.push(p);
+                            result.push(pagedata.len() as u8);
+                            result.extend_from_slice(&pagedata);
+                        }
+                    }
+                } else if let Some(pagedata) = self.mode_sense(page) {
+                    result.push(page);
+                    result.push(pagedata.len() as u8);
+                    result.extend_from_slice(&pagedata);
+                } else {
+                    log::warn!("Unknown MODE SENSE page {:02X}", page);
+                    self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                }
+
+                let mode_data_len: u16 = (result.len() - 2).try_into()?;
+                result[0..2].copy_from_slice(&mode_data_len.to_be_bytes());
+                result.truncate(alloc_len);
+
                 Ok(ScsiCmdResult::DataIn(result))
             }
             _ => self.specific_cmd(cmd, outdata),
