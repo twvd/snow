@@ -12,7 +12,7 @@ use crate::emulator::EmuContext;
 use crate::mac::macii::bus::CLOCK_SPEED;
 use crate::mac::scsi::cdrom::backends::cuesheet::CuesheetCdromBackend;
 use crate::mac::scsi::cdrom::backends::iso::IsoCdromBackend;
-use crate::mac::scsi::ASC_UNRECOVERED_READ_ERROR;
+use crate::mac::scsi::{ASC_INVALID_COMMAND, ASC_UNRECOVERED_READ_ERROR};
 use crate::renderer::{AudioProvider, AudioSink, AUDIO_BUFFER_SAMPLES};
 use crate::tickable::Ticks;
 use crate::types::LatchingEvent;
@@ -604,6 +604,11 @@ impl ScsiTarget for ScsiTargetCdrom {
                     0x00,   // Output Port 3 Volume Default 00h
                 ])
             }
+            0x2A => {
+                // [MMC4] E.3.3: MM Capabilities and Mechanical Status Page
+
+                Some(vec![0; 0x20])
+            }
             0x30 => {
                 // ? Non-standard mode page
 
@@ -983,6 +988,7 @@ impl ScsiTarget for ScsiTargetCdrom {
             }
             _ => {
                 log::error!("Unknown command {:02X}", cmd[0]);
+                self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_COMMAND);
                 Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
             }
         }
