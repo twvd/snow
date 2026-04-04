@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
-use crate::emulator::EmuContext;
 use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
@@ -141,7 +140,7 @@ impl<TRenderer> Tickable for SE30Video<TRenderer>
 where
     TRenderer: Renderer,
 {
-    fn tick(&mut self, ticks: Ticks, _ctx: &dyn EmuContext) -> Result<Ticks> {
+    fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         self.vblank_ticks += ticks;
         if !self.vblank_enable {
             self.vblank_irq = false;

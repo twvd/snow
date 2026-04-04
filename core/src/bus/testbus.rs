@@ -3,7 +3,7 @@ use num_traits::{PrimInt, WrappingAdd};
 
 use super::{Bus, IrqSource};
 use crate::bus::BusResult;
-use crate::tickable::Ticks;
+use crate::tickable::{Tickable, Ticks};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -115,8 +115,14 @@ where
         self.cpu_cycles += ticks;
         Ok(())
     }
+}
 
-    fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+impl<TA, TD> Tickable for Testbus<TA, TD>
+where
+    TA: PrimInt + WrappingAdd + Hash + Debug,
+    TD: PrimInt,
+{
+    fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         self.bus_cycles += ticks;
         Ok(ticks)
     }

@@ -20,7 +20,6 @@ use snow_floppy::{Floppy, FloppyImage};
 
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
-use crate::emulator::EmuContext;
 use crate::mac::swim::ism::IsmFifoEntry;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
@@ -308,7 +307,7 @@ impl BusMember<Address> for Swim {
 }
 
 impl Tickable for Swim {
-    fn tick(&mut self, ticks: Ticks, _ctx: &dyn EmuContext) -> Result<Ticks> {
+    fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         self.cycles += ticks;
         for drv in &mut self.drives {
             drv.cycles = self.cycles;

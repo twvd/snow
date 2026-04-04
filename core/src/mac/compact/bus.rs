@@ -695,8 +695,13 @@ where
         // All compact Macs have RESET and HALT tied together
         Ok(true)
     }
+}
 
-    fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+impl<TRenderer> Tickable for CompactMacBus<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         // TODO: pass in dyn EmuContext, restore impl Tickable to bus
         let ctx = &BusEmuContext { speed: self.speed };
 
@@ -712,11 +717,11 @@ where
                 // TODO ticks when VPA is asserted
                 self.eclock -= 10;
 
-                self.via.tick(1, ctx)?;
+                self.via.tick(1, ())?;
             }
 
             // Pixel clock (15.6672 MHz) is roughly 2x CPU speed
-            self.video.tick(2 * ticks, ctx)?;
+            self.video.tick(2 * ticks, ())?;
 
             // Sync VIA registers
             if self.model <= MacModel::Plus {
@@ -794,7 +799,7 @@ where
             }
 
             self.scsi.tick(ticks, ctx)?;
-            self.swim.tick(ticks, ctx)?;
+            self.swim.tick(ticks, ())?;
         }
 
         Ok(ticks)

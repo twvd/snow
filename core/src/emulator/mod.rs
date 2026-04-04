@@ -34,7 +34,7 @@ use crate::mac::{ExtraROMs, MacModel, MacMonitor};
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::AudioProvider;
 use crate::renderer::{DisplayBuffer, Renderer};
-use crate::tickable::Ticks;
+use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
 use anyhow::{bail, Context, Result};
@@ -197,7 +197,7 @@ dispatch! {
         fn set_speed(&mut self, speed: EmulatorSpeed) -> () { bus.set_speed(speed) }
         fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> { bus.set_audio_provider(provider) }
 
-        fn cpu_tick(&mut self, ticks: Ticks) -> Result<Ticks> { tick(ticks) }
+        fn cpu_tick(&mut self, ticks: Ticks) -> Result<Ticks> { tick(ticks, ()) }
         fn cpu_set_breakpoint(&mut self, bp: Breakpoint) -> () { set_breakpoint(bp) }
         fn cpu_breakpoints_mut(&mut self) -> &mut Vec<Breakpoint> { breakpoints_mut() }
         fn cpu_clear_breakpoint(&mut self, bp: Breakpoint) -> () { clear_breakpoint(bp) }
@@ -801,8 +801,10 @@ impl Emulator {
         );
         Ok(())
     }
+}
 
-    pub fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
+impl Tickable for Emulator {
+    fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         if !self.command_recv.is_empty() {
             while let Ok(cmd) = self.command_recv.try_recv() {
                 let cycles = self.get_cycles();

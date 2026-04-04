@@ -16,7 +16,7 @@ use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
 use crate::cpu_m68k::regs::RegisterCACR;
 use crate::cpu_m68k::{M68000_SR_MASK, M68020_CACR_MASK, M68030, M68030_CACR_MASK};
-use crate::tickable::Ticks;
+use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
 
 use super::instruction::{
@@ -560,7 +560,7 @@ where
         let cycles_since_last_sync = self.cycles - self.last_bus_sync;
         if cycles_since_last_sync > 0 {
             self.last_bus_sync += cycles_since_last_sync;
-            self.bus.tick(cycles_since_last_sync)?;
+            self.bus.tick(cycles_since_last_sync, ())?;
         }
 
         Ok(())
@@ -4091,11 +4091,11 @@ impl<
         const CPU_TYPE: CpuM68kType,
         const FPU_TYPE: FpuM68kType,
         const PMMU: bool,
-    > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    > Tickable for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
-    pub fn tick(&mut self, _ticks: Ticks) -> Result<Ticks> {
+    fn tick(&mut self, _ticks: Ticks, _: ()) -> Result<Ticks> {
         self.step()?;
 
         Ok(0)
