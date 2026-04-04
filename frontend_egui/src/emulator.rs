@@ -24,7 +24,7 @@ use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{ExtraROMs, MacModel, MacMonitor};
 use snow_core::renderer::DisplayBuffer;
-use snow_core::tickable::Ticks;
+use snow_core::tickable::{Tickable, Ticks};
 use snow_core::types::LatchingEvent;
 use snow_floppy::loaders::FloppyImageLoader;
 use snow_floppy::{Floppy, FloppyImage, FloppyType};
@@ -352,7 +352,7 @@ impl EmulatorState {
 
         // Spin up emulator thread
         let emuthread = thread::spawn(move || loop {
-            match emulator.tick(1) {
+            match emulator.tick(1, ()) {
                 Ok(0) => break,
                 Ok(_) => (),
                 Err(e) => panic!("Emulator error: {}", e),

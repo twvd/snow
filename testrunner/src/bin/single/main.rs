@@ -12,7 +12,7 @@ use log::*;
 use snow_core::emulator::comm::{EmulatorCommand, EmulatorEvent, EmulatorSpeed};
 use snow_core::emulator::Emulator;
 use snow_core::mac::{ExtraROMs, MacModel};
-use snow_core::tickable::Ticks;
+use snow_core::tickable::{Tickable, Ticks};
 
 #[derive(Parser)]
 struct Args {
@@ -183,7 +183,7 @@ fn main() -> Result<()> {
                 _ => info!("Event: {}", event),
             }
         }
-        emulator.tick(1)?;
+        emulator.tick(1, ())?;
     }
 
     let duration = (Instant::now() - start).as_secs_f64();

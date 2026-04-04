@@ -680,7 +680,7 @@ impl BusMember<Address> for ScsiController {
     }
 }
 
-impl Tickable for ScsiController {
+impl Tickable<&dyn EmuContext> for ScsiController {
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
         for target in self.targets.iter_mut().flatten() {
             target.tick(ticks, ctx)?;

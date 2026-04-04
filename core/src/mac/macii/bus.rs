@@ -756,9 +756,14 @@ where
         self.overlay = true;
         Ok(false)
     }
+}
 
-    fn tick(&mut self, ticks: Ticks) -> Result<Ticks> {
-        // TODO: pass in dyn EmuContext as parameters, restore impl Tickable, etc.
+impl<TRenderer, const AMU: bool> Tickable for MacIIBus<TRenderer, AMU>
+where
+    TRenderer: Renderer,
+{
+    fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
+        // TODO: pass in dyn EmuContext as parameters, etc.
         let ctx = &BusEmuContext { speed: self.speed };
 
         self.cycles += ticks;
@@ -774,8 +779,8 @@ where
             // TODO VIA wait states
             self.via_clock -= 20;
 
-            self.via1.tick(1, ctx)?;
-            self.via2.tick(1, ctx)?;
+            self.via1.tick(1, ())?;
+            self.via2.tick(1, ())?;
         }
 
         // Legacy VBlank interrupt
@@ -824,7 +829,7 @@ where
         let mut slot_irqs = 0;
         for slot in 0..(self.nubus_devices.len()) {
             if let Some(dev) = self.nubus_devices[slot].as_mut() {
-                dev.tick(ticks, ctx)?;
+                dev.tick(ticks, ())?;
                 if dev.get_irq() {
                     slot_irqs |= 1 << slot;
                 }
@@ -841,7 +846,7 @@ where
         self.via2.ifr.set_scsi_drq(self.scsi.get_drq());
 
         self.swim.intdrive = self.via1.a_out.drivesel();
-        self.swim.tick(ticks, ctx)?;
+        self.swim.tick(ticks, ())?;
 
         Ok(1)
     }
