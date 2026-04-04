@@ -147,8 +147,7 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                     log::error!("Reading beyond disk");
                     Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                 } else {
-                    self.read(blocknum, blockcnt)
-                        .map(|data| ScsiCmdResult::DataIn(data))
+                    self.read(blocknum, blockcnt).map(ScsiCmdResult::DataIn)
                 }
             }
             0x0A => {
@@ -340,8 +339,7 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                     log::error!("Reading beyond disk");
                     Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                 } else {
-                    self.read(blocknum, blockcnt)
-                        .map(|data| ScsiCmdResult::DataIn(data))
+                    self.read(blocknum, blockcnt).map(ScsiCmdResult::DataIn)
                 }
             }
             0x2A => {

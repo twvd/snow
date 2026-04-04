@@ -770,6 +770,7 @@ impl Emulator {
         self.config.cpu_cycles()
     }
 
+    #[allow(clippy::significant_drop_tightening)]
     pub fn attach_cdrom(&mut self, id: usize) {
         let mut audio_provider = self.audio_provider.as_deref().map(|ap| ap.lock().unwrap());
         let audio_provider = audio_provider.as_deref_mut().map(|ap| &mut *ap);

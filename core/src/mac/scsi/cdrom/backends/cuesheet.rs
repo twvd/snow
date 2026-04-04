@@ -179,7 +179,7 @@ impl CuesheetCdromBackend {
                                     CuesheetTrackForm::Mode1_2352 => DATA_TRACK,
                                 },
                                 sector: curr_data_file.sector + rel_sector,
-                            })
+                            });
                         } else {
                             log::warn!("track {} INDEX {} ignored", track_num, index_num);
                         }

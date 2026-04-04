@@ -67,15 +67,15 @@ struct Msf {
 }
 
 impl Msf {
-    const fn new(m: u8, s: u8, f: u8) -> Msf {
-        Msf { m, s, f }
+    const fn new(m: u8, s: u8, f: u8) -> Self {
+        Self { m, s, f }
     }
 
-    fn from_sector(sector: u32) -> Result<Msf> {
+    fn from_sector(sector: u32) -> Result<Self> {
         let m = sector / 75 / 60;
         let s = (sector / 75) % 60;
         let f = sector % 75;
-        Ok(Msf::new(m.try_into()?, s.try_into()?, f.try_into()?))
+        Ok(Self::new(m.try_into()?, s.try_into()?, f.try_into()?))
     }
 
     const fn to_sector(self) -> u32 {
@@ -449,9 +449,7 @@ impl ScsiTargetCdrom {
     /// Read a frame of CD audio and send it to the audio sink.
     /// Returns None if audio is disabled (such as by running at Uncapped speed).
     fn try_pump_audio(&mut self, ctx: &dyn EmuContext) -> Option<Result<()>> {
-        if self.audio_sink.is_none() {
-            return None;
-        }
+        self.audio_sink.as_ref()?;
 
         match ctx.speed() {
             EmulatorSpeed::Accurate | EmulatorSpeed::Dynamic => (),
@@ -913,11 +911,10 @@ impl ScsiTarget for ScsiTargetCdrom {
                 // FIXME: What happens if pause/resume is activated while no track is playing?
                 if resume != 0 {
                     self.audio_state = AudioState::Playing;
-                    self.audio_clock = 0;
                 } else {
                     self.audio_state = AudioState::Paused;
-                    self.audio_clock = 0;
                 }
+                self.audio_clock = 0;
 
                 Ok(ScsiCmdResult::Status(STATUS_GOOD))
             }

@@ -251,7 +251,7 @@ where
         // Round down to a safe commonly used value (22050), 0.9% off
         let sink = provider
             .create_stream(22050, AUDIO_CHANNELS as u8, AUDIO_BUFFER_SAMPLES as u16)
-            .unwrap_or(Box::new(ChannelAudioSink::new()));
+            .unwrap_or_else(|_| Box::new(ChannelAudioSink::new()));
         self.audio.set_sink(sink);
 
         self.scsi.set_audio_provider(provider)
