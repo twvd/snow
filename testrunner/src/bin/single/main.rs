@@ -12,7 +12,7 @@ use log::*;
 use snow_core::emulator::comm::{EmulatorCommand, EmulatorEvent, EmulatorSpeed};
 use snow_core::emulator::Emulator;
 use snow_core::mac::{ExtraROMs, MacModel};
-use snow_core::tickable::{Tickable, Ticks};
+use snow_core::tickable::Ticks;
 
 #[derive(Parser)]
 struct Args {
