@@ -14,7 +14,7 @@ use crate::mac::scsi::cdrom::backends::cuesheet::CuesheetCdromBackend;
 use crate::mac::scsi::cdrom::backends::iso::IsoCdromBackend;
 use crate::mac::scsi::ASC_UNRECOVERED_READ_ERROR;
 use crate::renderer::{AudioProvider, AudioSink, AUDIO_BUFFER_SAMPLES};
-use crate::tickable::{Tickable, Ticks};
+use crate::tickable::Ticks;
 use crate::types::LatchingEvent;
 
 use super::disk_image::{DiskImage, FileDiskImage};
@@ -1045,10 +1045,8 @@ impl ScsiTarget for ScsiTargetCdrom {
     fn eth_link(&self) -> Option<super::ethernet::EthernetLinkType> {
         None
     }
-}
 
-impl Tickable<&dyn EmuContext> for ScsiTargetCdrom {
-    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
+    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<()> {
         if self.audio_state == AudioState::Playing {
             match self.try_pump_audio(ctx) {
                 Some(result) => result,
@@ -1071,7 +1069,7 @@ impl Tickable<&dyn EmuContext> for ScsiTargetCdrom {
             }?;
         }
 
-        Ok(ticks)
+        Ok(())
     }
 }
 
