@@ -891,7 +891,13 @@ impl ScsiTarget for ScsiTargetCdrom {
 
                 self.audio_pos = start_sector;
                 self.audio_stop = end_sector;
-                if self.audio_state != AudioState::Playing {
+
+                // [MMC4] 6.17.2.3:
+                // A starting MSF address equal to an ending MSF address causes no audio play operation to occur.
+                // This shall not be considered an error.
+                // (Apple Audio CD Player issues such a command to set the audio cursor
+                // without initiating playback.)
+                if start_sector != end_sector && self.audio_state != AudioState::Playing {
                     self.audio_state = AudioState::Playing;
                     self.audio_clock = 0;
                 }
@@ -902,7 +908,7 @@ impl ScsiTarget for ScsiTargetCdrom {
             0x4B => {
                 let resume = cmd[8] & 0x1;
 
-                log::info!("PAUSE/RESUME resume {}", resume);
+                log::info!("PAUSE/RESUME resume {} cmd {:?}", resume, cmd);
 
                 // FIXME: What happens if pause/resume is activated while no track is playing?
                 if resume != 0 {
