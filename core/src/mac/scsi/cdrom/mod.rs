@@ -203,7 +203,7 @@ impl ScsiTargetCdrom {
         &mut self,
         msf: bool,
         format: u8,
-        track: u8,
+        track_or_session: u8, // Interpretation depends on format
         alloc_len: usize,
     ) -> Result<ScsiCmdResult> {
         let Some(backend) = &self.backend else {
@@ -226,7 +226,7 @@ impl ScsiTargetCdrom {
 
         match format {
             0 => {
-                // SCSI-2 TOC
+                // Formatted TOC
                 let mut result = Vec::<u8>::with_capacity(alloc_len);
 
                 result.push(0); // TOC Data Length (will be set later)
@@ -240,7 +240,10 @@ impl ScsiTargetCdrom {
                 result.push(session.tracks.last().unwrap().tno); // Last Track Number
 
                 // Start at the given track or the next available track
-                let track_iter = session.tracks.iter().skip_while(|t| t.tno < track);
+                let track_iter = session
+                    .tracks
+                    .iter()
+                    .skip_while(|t| t.tno < track_or_session);
 
                 // Emit track descriptors
                 for t in track_iter {
@@ -309,7 +312,13 @@ impl ScsiTargetCdrom {
                 result.push(1); // First Complete Session Number (always 1)
                 result.push(sessions.len() as u8); // Last Complete Session Number
 
-                for (session_num, session) in sessions.iter().enumerate() {
+                // track_or_session argument is the session number to start at.
+                // Session numbers start at 1.
+                let session_iter = sessions
+                    .iter()
+                    .skip(track_or_session.saturating_sub(1).into());
+
+                for (session_num, session) in session_iter.enumerate() {
                     let session_num = session_num + 1; // Session Numbers start at 1
 
                     // First track number in the program area
@@ -576,8 +585,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 Some(vec![0; 0x16])
             }
             0x0e => {
-                // [MMC3] 6.3.7: CD Audio Control Page
-                // (for some reason, this documentation went missing in later versions of MMC)
+                // [MMC4] 7.6.2: CD Audio Control Page
 
                 let sotc = 0;
 
@@ -798,6 +806,15 @@ impl ScsiTarget for ScsiTargetCdrom {
                 let control = cmd[9] & 0x3f;
                 let track = cmd[6];
                 let alloc_len = u16::from_be_bytes(cmd[7..=8].try_into()?) as usize;
+
+                log::debug!(
+                    "READ TOC msf {} format {} control {} track {} alloc_len {}",
+                    msf,
+                    format,
+                    control,
+                    track,
+                    alloc_len
+                );
 
                 if control != 0 {
                     log::warn!("Unimplemented READ TOC control 0x{:X}", control);
