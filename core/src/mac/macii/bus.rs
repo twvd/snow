@@ -641,16 +641,6 @@ where
     }
 }
 
-// TODO: move speed variable somewhere else, impl EmuContext on the actual emulator
-impl<TRenderer, const AMU: bool> EmuContext for MacIIBus<TRenderer, AMU>
-where
-    TRenderer: Renderer,
-{
-    fn speed(&self) -> EmulatorSpeed {
-        self.speed
-    }
-}
-
 impl<TRenderer, const AMU: bool> Bus<Address, Byte> for MacIIBus<TRenderer, AMU>
 where
     TRenderer: Renderer,

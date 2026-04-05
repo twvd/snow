@@ -29,7 +29,7 @@ use super::CC_KEY_MEDIUM_ERROR;
 use super::STATUS_CHECK_CONDITION;
 use super::STATUS_GOOD;
 
-// The CD-ROM SCSI protocol is often confusing. Here is some useful documentation:
+// CD-ROM protocol Documentation:
 //
 // [MMC3]: <https://13thmonkey.org/documentation/SCSI/mmc3r10g.pdf>
 // [MMC4]: <https://13thmonkey.org/documentation/SCSI/mmc4r05a.pdf>
@@ -425,10 +425,6 @@ impl ScsiTargetCdrom {
             return Ok(());
         }
 
-        if audio_sink.is_full() {
-            return Ok(());
-        }
-
         let samples = backend.read_raw_sector(self.audio_pos);
         if let Ok(samples) = samples {
             // FIXME: can we avoid converting to float by setting up a signed 16-bit PCM audio sink?
@@ -607,7 +603,17 @@ impl ScsiTarget for ScsiTargetCdrom {
             0x2A => {
                 // [MMC4] E.3.3: MM Capabilities and Mechanical Status Page
 
-                Some(vec![0; 0x20])
+                // The page data, not including the first two bytes (page code and length).
+                // [MMC4] E.3.3:
+                // If a Logical Unit does not support high speed CD-R/RW recording, the Logical Unit should not
+                // return mode page data after byte 26.
+                let mut data = vec![0; 0x18];
+                data[2] = 1; // Audio Play
+                             // TODO: support more features such as Mode2 sectors, multiple sessions, etc.
+                data[4] = (0b001 << 5) | (1 << 3); // Tray type loading mechanism; Eject
+                data[8..=9].copy_from_slice(&256u16.to_be_bytes()); // Number of Volume Levels Supported
+
+                Some(data)
             }
             0x30 => {
                 // ? Non-standard mode page
