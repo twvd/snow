@@ -2,6 +2,8 @@ use arpfloat::Float;
 
 pub trait FloatTrig {
     fn atan(&self) -> Self;
+    fn acos(&self) -> Self;
+    fn asin(&self) -> Self;
     fn relative_epsilon(&self, scale: f64) -> Float;
 
     fn sinh(&self) -> Self;
@@ -46,6 +48,82 @@ impl FloatTrig for Float {
         };
 
         atan_taylor_series(&x)
+    }
+
+    fn acos(&self) -> Self {
+        // Handle special cases
+        if self.is_nan() {
+            return self.clone();
+        }
+
+        let one = Self::one(self.get_semantics(), false);
+
+        // acos(1) = 0
+        if self == &one {
+            return Self::zero(self.get_semantics(), false);
+        }
+
+        // acos(-1) = π
+        if self == &one.neg() {
+            return Self::from_f64(std::f64::consts::PI).cast(self.get_semantics());
+        }
+
+        // |x| > 1 is undefined
+        if self.abs() > one {
+            return Self::nan(self.get_semantics(), false);
+        }
+
+        // acos(x) = atan2(√(1 - x²), x) = atan(√(1 - x²) / x) adjusted for sign
+        // Using identity: acos(x) = π/2 - atan(x / √(1 - x²))
+        let x_sq = self * self;
+        let sqrt_term = (one - x_sq).sqrt();
+        let pi_2 = Self::from_f64(std::f64::consts::FRAC_PI_2).cast(self.get_semantics());
+
+        if self.is_zero() {
+            return pi_2;
+        }
+
+        let ratio = sqrt_term / self.clone();
+        let at = ratio.atan();
+
+        if !self.is_negative() {
+            at
+        } else {
+            // For negative x: atan(√(1-x²)/x) is negative, add π
+            at + Self::from_f64(std::f64::consts::PI).cast(self.get_semantics())
+        }
+    }
+
+    fn asin(&self) -> Self {
+        // Handle special cases
+        if self.is_nan() || self.is_zero() {
+            return self.clone();
+        }
+
+        let one = Self::one(self.get_semantics(), false);
+
+        // asin(1) = π/2
+        if self == &one {
+            return Self::from_f64(std::f64::consts::FRAC_PI_2).cast(self.get_semantics());
+        }
+
+        // asin(-1) = -π/2
+        if self == &one.neg() {
+            return Self::from_f64(std::f64::consts::FRAC_PI_2)
+                .cast(self.get_semantics())
+                .neg();
+        }
+
+        // |x| > 1 is undefined
+        if self.abs() > one {
+            return Self::nan(self.get_semantics(), false);
+        }
+
+        // asin(x) = atan(x / √(1 - x²))
+        let x_sq = self * self;
+        let sqrt_term = (one - x_sq).sqrt();
+        let ratio = self.clone() / sqrt_term;
+        ratio.atan()
     }
 
     fn relative_epsilon(&self, scale: f64) -> Float {
@@ -213,6 +291,90 @@ mod tests {
                 error
             );
         }
+    }
+
+    #[test]
+    fn test_acos() {
+        let tolerance = 1e-2;
+        for i in -1000..=1000 {
+            let f = f64::from(i) / 1000.0;
+            let me = Float::from_f64(f).acos().as_f64();
+            let std = f.acos();
+            let error = (me - std).abs();
+            assert!(
+                error < tolerance,
+                "Value: {}, My result: {}, Std result: {}, Error: {}",
+                f,
+                me,
+                std,
+                error
+            );
+        }
+    }
+
+    #[test]
+    fn test_acos_special_cases() {
+        // acos(1) = 0
+        let one = Float::from_f64(1.0);
+        assert_eq!(one.acos().as_f64(), 0.0);
+
+        // acos(-1) = π
+        let neg_one = Float::from_f64(-1.0);
+        assert!((neg_one.acos().as_f64() - std::f64::consts::PI).abs() < 1e-10);
+
+        // acos(0) = π/2
+        let zero = Float::from_f64(0.0);
+        assert!((zero.acos().as_f64() - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+
+        // acos(NaN) = NaN
+        let nan = Float::from_f64(f64::NAN);
+        assert!(nan.acos().is_nan());
+
+        // acos(1.5) = NaN (out of domain)
+        let out = Float::from_f64(1.5);
+        assert!(out.acos().is_nan());
+    }
+
+    #[test]
+    fn test_asin() {
+        let tolerance = 1e-2;
+        for i in -1000..=1000 {
+            let f = f64::from(i) / 1000.0;
+            let me = Float::from_f64(f).asin().as_f64();
+            let std = f.asin();
+            let error = (me - std).abs();
+            assert!(
+                error < tolerance,
+                "Value: {}, My result: {}, Std result: {}, Error: {}",
+                f,
+                me,
+                std,
+                error
+            );
+        }
+    }
+
+    #[test]
+    fn test_asin_special_cases() {
+        // asin(0) = 0
+        let zero = Float::from_f64(0.0);
+        assert_eq!(zero.asin().as_f64(), 0.0);
+
+        // asin(1) = π/2
+        let one = Float::from_f64(1.0);
+        assert!((one.asin().as_f64() - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+
+        // asin(-1) = -π/2
+        let neg_one = Float::from_f64(-1.0);
+        assert!((neg_one.asin().as_f64() + std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+
+        // asin(NaN) = NaN
+        let nan = Float::from_f64(f64::NAN);
+        assert!(nan.asin().is_nan());
+
+        // asin(1.5) = NaN (out of domain)
+        let out = Float::from_f64(1.5);
+        assert!(out.asin().is_nan());
     }
 
     #[test]
