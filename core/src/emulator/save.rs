@@ -11,6 +11,8 @@ use crate::mac::scsi::controller::ScsiController;
 #[cfg(not(feature = "mmap"))]
 compile_error!("feature \"savestates\" requires the \"mmap\" feature");
 
+const HEADER_VERSION: u16 = 1;
+
 #[binrw]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum SaveCompression {
@@ -57,7 +59,7 @@ pub(super) fn save_state_to<W: std::io::Write + std::io::Seek>(
     let compression_level = 0; // library default
 
     let header = SaveHeader {
-        version: 1,
+        version: HEADER_VERSION,
         compression: SaveCompression::Zstd,
         compression_level,
         model: config.model().to_string().into(),
@@ -66,7 +68,7 @@ pub(super) fn save_state_to<W: std::io::Write + std::io::Seek>(
         scsi_imgs: core::array::from_fn(|id| {
             config
                 .scsi()
-                .get_disk_capacity(id)
+                .get_savestate_img_len(id)
                 .map(|n| n as u64)
                 .unwrap_or(0)
         }),
@@ -80,14 +82,14 @@ pub(super) fn save_state_to<W: std::io::Write + std::io::Seek>(
     END_OF_CHUNK.write(&mut compressor)?;
 
     for id in 0..ScsiController::MAX_TARGETS {
-        if config.scsi().get_disk_capacity(id).is_none() {
+        if config.scsi().get_savestate_img_len(id).is_none() {
             continue;
         }
 
         config.scsi().targets[id]
             .as_ref()
             .unwrap()
-            .media()
+            .savestate_img_data()
             .unwrap()
             .write(&mut compressor)?;
         END_OF_CHUNK.write(&mut compressor)?;
@@ -103,7 +105,7 @@ pub(super) fn load_state_from<R: std::io::Read + std::io::Seek, P: AsRef<std::pa
 ) -> Result<EmulatorConfig> {
     let header = SaveHeader::read(&mut reader)?;
 
-    if header.version != 1 {
+    if header.version != HEADER_VERSION {
         bail!("Invalid state file version {}", header.version);
     }
 

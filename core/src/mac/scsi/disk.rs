@@ -69,10 +69,6 @@ impl ScsiTarget for ScsiTargetDisk {
         bail!("load_image on non-removable disk");
     }
 
-    fn media(&self) -> Option<&[u8]> {
-        self.backend().media_bytes()
-    }
-
     fn take_event(&mut self) -> Option<super::target::ScsiTargetEvent> {
         None
     }
@@ -259,6 +255,16 @@ impl ScsiTarget for ScsiTargetDisk {
             DISK_BLOCKSIZE,
         )?));
         Ok(())
+    }
+
+    #[cfg(feature = "savestates")]
+    fn savestate_img_len(&self) -> Option<usize> {
+        self.capacity()
+    }
+
+    #[cfg(feature = "savestates")]
+    fn savestate_img_data(&self) -> Option<&[u8]> {
+        self.backend().media_bytes()
     }
 
     fn branch_media(&mut self, path: &Path) -> Result<()> {
