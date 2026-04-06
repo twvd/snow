@@ -36,8 +36,23 @@ pub enum ScsiTargetEvent {
 /// An abstraction of a generic SCSI target
 #[typetag::serde(tag = "type")]
 pub(crate) trait ScsiTarget: Send + Debuggable {
+    /// Called after loading a savestate to restore SCSI image data that was
+    /// previously saved by `savestate_img_data`
     #[cfg(feature = "savestates")]
     fn after_deserialize(&mut self, imgfn: &Path) -> Result<()>;
+
+    /// Returns the length of data to save to savestates or None if no data
+    #[cfg(feature = "savestates")]
+    fn savestate_img_len(&self) -> Option<usize> {
+        None
+    }
+
+    /// Returns the data to save to savestates or None if no data
+    // TODO: take a Writer argument instead of returning a potentially massive array
+    #[cfg(feature = "savestates")]
+    fn savestate_img_data(&self) -> Option<&[u8]> {
+        None
+    }
 
     fn set_cc(&mut self, code: u8, asc: u16);
     fn set_blocksize(&mut self, blocksize: usize) -> bool;
@@ -88,7 +103,6 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
     fn load_media(&mut self, path: &Path) -> Result<()>;
     fn load_image(&mut self, image: Box<dyn DiskImage>) -> Result<()>;
     fn branch_media(&mut self, path: &Path) -> Result<()>;
-    fn media(&self) -> Option<&[u8]>;
 
     /// Device-specific commands
     fn specific_cmd(&mut self, cmd: &[u8], outdata: Option<&[u8]>) -> Result<ScsiCmdResult>;

@@ -198,6 +198,14 @@ impl ScsiController {
         self.targets[id].as_ref().and_then(|t| t.capacity())
     }
 
+    /// Returns the length of image data to write to savestates or None if no data
+    #[cfg(feature = "savestates")]
+    pub fn get_savestate_img_len(&self, id: usize) -> Option<usize> {
+        self.targets[id]
+            .as_ref()
+            .and_then(|t| t.savestate_img_len())
+    }
+
     /// Returns the image filename of a target or None if detached or no media
     pub fn get_disk_imagefn(&self, id: usize) -> Option<&Path> {
         self.targets[id].as_ref().and_then(|t| t.image_fn())

@@ -505,13 +505,6 @@ impl ScsiTarget for ScsiTargetCdrom {
         Ok(())
     }
 
-    fn media(&self) -> Option<&[u8]> {
-        unreachable!("Can't call media() on a CD-ROM");
-        // self.backend
-        //     .as_ref()
-        //     .and_then(|backend| backend.media_bytes())
-    }
-
     fn take_event(&mut self) -> Option<ScsiTargetEvent> {
         if self.event_eject.get_clear() {
             Some(ScsiTargetEvent::MediaEjected)

@@ -814,10 +814,6 @@ impl ScsiTarget for ScsiTargetEthernet {
         unreachable!()
     }
 
-    fn media(&self) -> Option<&[u8]> {
-        None
-    }
-
     fn specific_cmd(&mut self, cmd: &[u8], outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
         match cmd[0] {
             0x08 => {
