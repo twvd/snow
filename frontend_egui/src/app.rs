@@ -21,6 +21,7 @@ use crate::workspace::{CmdKeyMapping, FramebufferMode, Workspace};
 use snow_core::bus::Address;
 use snow_core::emulator::comm::{EmulatorSpeed, UserMessageType};
 use snow_core::emulator::save::{load_state_header, SaveHeader};
+use snow_core::emulator::MouseMode;
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
@@ -139,7 +140,7 @@ pub struct SnowGui {
     first_draw: bool,
     in_fullscreen: bool,
     in_zen_mode: bool,
-    pre_fullscreen_mouse_mode: Option<snow_core::emulator::MouseMode>,
+    pre_fullscreen_mouse_mode: Option<MouseMode>,
 
     wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
 
@@ -519,10 +520,9 @@ impl SnowGui {
         self.in_fullscreen = true;
         if self.settings.auto_relative_mouse_fullscreen && self.emu.is_initialized() {
             let current = self.emu.mouse_mode();
-            if current != snow_core::emulator::MouseMode::Disabled {
+            if current != MouseMode::Disabled {
                 self.pre_fullscreen_mouse_mode = Some(current);
-                self.emu
-                    .set_mouse_mode(snow_core::emulator::MouseMode::RelativeHw);
+                self.emu.set_mouse_mode(MouseMode::RelativeHw);
             }
         }
         if !self.settings.hide_mode_toasts {
@@ -663,6 +663,16 @@ impl SnowGui {
                     if ui.button("Programmers key").clicked() {
                         self.emu.progkey();
                     }
+
+                    ui.separator();
+                    ui.menu_button("Mouse emulation", |ui| {
+                        let current = self.emu.mouse_mode();
+                        for mode in MouseMode::iter() {
+                            if ui.radio(current == mode, mode.to_string()).clicked() {
+                                self.emu.set_mouse_mode(mode);
+                            }
+                        }
+                    });
                 }
             });
 
