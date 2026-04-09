@@ -30,6 +30,7 @@ pub struct AppSettings {
     pub fastforward_limit_enabled: bool,
     pub fastforward_limit: f64,
     pub dynamic_fastforward: bool,
+    pub auto_relative_mouse_fullscreen: bool,
 }
 
 impl Default for AppSettings {
@@ -53,6 +54,7 @@ impl Default for AppSettings {
             fastforward_limit_enabled: false,
             fastforward_limit: 2.0,
             dynamic_fastforward: false,
+            auto_relative_mouse_fullscreen: true,
         }
     }
 }

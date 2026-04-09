@@ -1086,6 +1086,17 @@ impl EmulatorState {
         self.mouse_mode == MouseMode::RelativeHw
     }
 
+    pub fn mouse_mode(&self) -> MouseMode {
+        self.mouse_mode
+    }
+
+    pub fn set_mouse_mode(&mut self, mode: MouseMode) {
+        self.mouse_mode = mode;
+        if let Some(ref sender) = self.cmdsender {
+            let _ = sender.send(EmulatorCommand::SetMouseMode(mode));
+        }
+    }
+
     pub fn save_state(&self, p: &Path, screenshot: Option<Vec<u8>>) {
         let Some(ref sender) = self.cmdsender else {
             return;

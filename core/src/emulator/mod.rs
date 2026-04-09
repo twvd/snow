@@ -217,6 +217,7 @@ dispatch! {
 
         fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) -> () { bus.mouse_update_rel(relx, rely, button) }
         fn mouse_update_abs(&mut self, x: u16, y: u16) -> () { bus.mouse_update_abs(x, y) }
+        fn set_mouse_mode(&mut self, mode: MouseMode) -> () { bus.set_mouse_mode(mode) }
         fn keyboard_event(&mut self, ke: KeyEvent) -> () { bus.keyboard_event(ke) }
         fn input_release_all(&mut self) -> () { bus.input_release_all() }
         fn progkey(&mut self) -> () { bus.progkey() }
@@ -810,6 +811,10 @@ impl Tickable for Emulator {
                         }
 
                         self.config.mouse_update_abs(x, y);
+                    }
+                    EmulatorCommand::SetMouseMode(mode) => {
+                        log::info!("Mouse mode: {:?}", mode);
+                        self.config.set_mouse_mode(mode);
                     }
                     EmulatorCommand::Quit => {
                         info!("Emulator terminating");
