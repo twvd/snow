@@ -139,6 +139,7 @@ pub struct SnowGui {
     first_draw: bool,
     in_fullscreen: bool,
     in_zen_mode: bool,
+    pre_fullscreen_mouse_mode: Option<snow_core::emulator::MouseMode>,
 
     wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
 
@@ -305,6 +306,7 @@ impl SnowGui {
             first_draw: true,
             in_fullscreen: false,
             in_zen_mode: false,
+            pre_fullscreen_mouse_mode: None,
 
             wev_recv,
             mode_toast_hide_requested: mode_toast_hide_requested.clone(),
@@ -515,6 +517,14 @@ impl SnowGui {
     fn enter_fullscreen(&mut self, ctx: &egui::Context) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         self.in_fullscreen = true;
+        if self.settings.auto_relative_mouse_fullscreen && self.emu.is_initialized() {
+            let current = self.emu.mouse_mode();
+            if current != snow_core::emulator::MouseMode::Disabled {
+                self.pre_fullscreen_mouse_mode = Some(current);
+                self.emu
+                    .set_mouse_mode(snow_core::emulator::MouseMode::RelativeHw);
+            }
+        }
         if !self.settings.hide_mode_toasts {
             self.toasts.add(
                 egui_toast::Toast::default()
@@ -532,6 +542,9 @@ impl SnowGui {
     fn exit_fullscreen(&mut self, ctx: &egui::Context) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
         self.in_fullscreen = false;
+        if let Some(mode) = self.pre_fullscreen_mouse_mode.take() {
+            self.emu.set_mouse_mode(mode);
+        }
     }
 
     fn enter_zen_mode(&mut self) {
@@ -1084,6 +1097,18 @@ impl SnowGui {
                     .checkbox(
                         &mut self.settings.hide_mode_toasts,
                         "Hide fullscreen/zen mode toasts",
+                    )
+                    .clicked()
+                {
+                    self.settings.save();
+                }
+                if ui
+                    .checkbox(
+                        &mut self.settings.auto_relative_mouse_fullscreen,
+                        "Use relative mouse in fullscreen",
+                    )
+                    .on_hover_text(
+                        "Automatically switch to relative mouse mode when entering fullscreen",
                     )
                     .clicked()
                 {

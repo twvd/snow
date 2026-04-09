@@ -457,6 +457,11 @@ where
         }
     }
 
+    /// Sets the mouse emulation mode
+    pub fn set_mouse_mode(&mut self, mode: MouseMode) {
+        self.mouse_mode = mode;
+    }
+
     /// Updates the mouse position (absolute coordinates)
     pub fn mouse_update_abs(&mut self, x: u16, y: u16) {
         if self.mouse_mode != MouseMode::Absolute {

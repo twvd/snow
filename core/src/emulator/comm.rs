@@ -9,6 +9,7 @@ use crate::bus::Address;
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::debuggable::DebuggableProperties;
+use crate::emulator::MouseMode;
 use crate::keymap::KeyEvent;
 use crate::mac::scc::SccCh;
 #[cfg(feature = "ethernet")]
@@ -92,6 +93,7 @@ pub enum EmulatorCommand {
     #[serde(skip)]
     SerialBridgeEnable(SccCh, SerialBridgeConfig),
     SerialBridgeDisable(SccCh),
+    SetMouseMode(MouseMode),
 }
 
 /// Emulator speed tweak
