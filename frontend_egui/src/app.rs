@@ -1129,6 +1129,7 @@ impl SnowGui {
                         &mut self.settings.fastforward_limit_enabled,
                         "Limit fast-forward speed",
                     )
+                    .on_hover_text("Limits the speed increase when using fast-forward mode")
                     .clicked()
                 {
                     self.settings.save();
@@ -1155,10 +1156,14 @@ impl SnowGui {
                     }
                 });
                 if ui
-                    .add(egui::Checkbox::new(
+                    .checkbox(
                         &mut self.settings.dynamic_fastforward,
                         "Dynamic fast-forward",
-                    ))
+                    )
+                    .on_hover_text(
+                        "Pauses fast-forward mode momentarily on keyboard/mouse input \
+                        to make controlling the system easier",
+                    )
                     .clicked()
                 {
                     self.settings.save();
