@@ -48,7 +48,7 @@ struct AudioDeviceHolder(AudioDevice<SDLAudioCallback>);
 
 // SAFETY: It should be safe to declare AudioDeviceHolder Send and Sync as long
 // as it is only being held, never accessed.
-// FIXME: I'm not actually sure if this is safe at all. Seems to work though.
+// FIXME: I'm not actually sure if this is safe at all. It seems to work though.
 unsafe impl Send for AudioDeviceHolder {}
 unsafe impl Sync for AudioDeviceHolder {}
 

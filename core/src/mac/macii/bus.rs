@@ -47,17 +47,6 @@ const RAMSZ_1M: u8 = 1;
 const RAMSZ_4M: u8 = 2;
 const RAMSZ_16M: u8 = 3;
 
-// TODO: impl EmuContext on the actual emulator, not here
-struct BusEmuContext {
-    speed: EmulatorSpeed,
-}
-
-impl EmuContext for BusEmuContext {
-    fn speed(&self) -> EmulatorSpeed {
-        self.speed
-    }
-}
-
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
@@ -753,7 +742,16 @@ where
     TRenderer: Renderer,
 {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
-        // TODO: pass in dyn EmuContext as parameters, etc.
+        struct BusEmuContext {
+            speed: EmulatorSpeed,
+        }
+
+        impl EmuContext for BusEmuContext {
+            fn speed(&self) -> EmulatorSpeed {
+                self.speed
+            }
+        }
+
         let ctx = &BusEmuContext { speed: self.speed };
 
         self.cycles += ticks;

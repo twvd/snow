@@ -3,14 +3,15 @@
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
 
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
 use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::scsi::{
     ScsiCmdResult, ASC_INVALID_FIELD_IN_CDB, ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
-    ASC_MEDIUM_NOT_PRESENT, CC_KEY_ILLEGAL_REQUEST, CC_KEY_MEDIUM_ERROR, STATUS_CHECK_CONDITION,
-    STATUS_GOOD,
+    ASC_MEDIUM_NOT_PRESENT, ASC_PARAMETER_LIST_LENGTH_ERROR, CC_KEY_ILLEGAL_REQUEST,
+    CC_KEY_MEDIUM_ERROR, STATUS_CHECK_CONDITION, STATUS_GOOD,
 };
 use crate::renderer::AudioProvider;
 use crate::tickable::Ticks;
@@ -33,9 +34,36 @@ pub enum ScsiTargetEvent {
     MediaEjected,
 }
 
+/// Data common to all SCSI targets
+#[derive(Default, Serialize, Deserialize)]
+pub struct ScsiTargetCommon {
+    /// Check condition code
+    cc_code: u8,
+
+    /// Check condition ASC and ASCQ
+    cc_asc: u16,
+}
+
+impl ScsiTargetCommon {
+    pub fn set_cc(&mut self, code: u8, asc: u16) {
+        self.cc_code = code;
+        self.cc_asc = asc;
+    }
+
+    pub fn req_sense(&mut self) -> (u8, u16) {
+        (
+            std::mem::take(&mut self.cc_code),
+            std::mem::take(&mut self.cc_asc),
+        )
+    }
+}
+
 /// An abstraction of a generic SCSI target
 #[typetag::serde(tag = "type")]
 pub(crate) trait ScsiTarget: Send + Debuggable {
+    /// Return a mutable reference to the ScsiTargetCommon data
+    fn common(&mut self) -> &mut ScsiTargetCommon;
+
     /// Called after loading a savestate to restore SCSI image data that was
     /// previously saved by `savestate_img_data`
     #[cfg(feature = "savestates")]
@@ -54,7 +82,7 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
         None
     }
 
-    fn set_cc(&mut self, code: u8, asc: u16);
+    // fn set_cc(&mut self, code: u8, asc: u16);
     fn set_blocksize(&mut self, blocksize: usize) -> bool;
     fn take_event(&mut self) -> Option<ScsiTargetEvent>;
 
@@ -91,9 +119,6 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
         None
     }
 
-    /// Request sense result (code, asc, ascq)
-    fn req_sense(&mut self) -> (u8, u16);
-
     // For block devices
     fn blocksize(&self) -> Option<usize>;
     fn blocks(&self) -> Option<usize>;
@@ -121,7 +146,7 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                     capacity,
                     self.blocksize().unwrap()
                 );
-                self.set_cc(
+                self.common().set_cc(
                     CC_KEY_ILLEGAL_REQUEST,
                     ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
                 );
@@ -139,7 +164,7 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
             }
             0x03 => {
                 // REQUEST SENSE
-                let (key, asc) = self.req_sense();
+                let (key, asc) = self.common().req_sense();
                 let mut result = vec![0; 14];
                 result[2] = key & 0x0F;
                 result[12..14].copy_from_slice(&asc.to_be_bytes());
@@ -227,7 +252,12 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                                 "Incomplete page data for page {} in MODE SELECT(6) command",
                                 page
                             );
-                            // TODO: set condition codes
+                            // [SPC-3] 6.7:
+                            // If the parameter list length results in the truncation of any mode parameter header, mode parameter block
+                            // descriptor(s), or mode page, then the command shall be terminated with CHECK CONDITION status, with the
+                            // sense key set to ILLEGAL REQUEST, and the additional sense code set to PARAMETER LIST LENGTH ERROR
+                            self.common()
+                                .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_PARAMETER_LIST_LENGTH_ERROR);
                             return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                         }
 
@@ -253,7 +283,7 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                         "MODE SENSE on non-block device type {:?}",
                         self.target_type()
                     );
-                    self.set_cc(CC_KEY_ILLEGAL_REQUEST, 0);
+                    self.common().set_cc(CC_KEY_ILLEGAL_REQUEST, 0);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
 
@@ -306,7 +336,8 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                     result.extend_from_slice(&pagedata);
                 } else {
                     log::warn!("Unknown MODE SENSE page {:02X}", page);
-                    self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                    self.common()
+                        .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
@@ -334,7 +365,8 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                 let mut result = vec![0; 8];
                 let (Some(blocksize), Some(blocks)) = (self.blocksize(), self.blocks()) else {
                     log::warn!("READ CAPACITY(10) command to non-block device");
-                    self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                    self.common()
+                        .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
 
@@ -346,7 +378,8 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                 // READ(10)
                 let Some(blocks) = self.blocks() else {
                     log::warn!("READ(10) command to non-block device");
-                    self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                    self.common()
+                        .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
                 let blocknum = (u32::from_be_bytes(cmd[2..6].try_into()?)) as usize;
@@ -363,7 +396,8 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                 // WRITE(10)
                 let (Some(blocksize), Some(blocks)) = (self.blocksize(), self.blocks()) else {
                     log::warn!("WRITE(10) command to non-block device");
-                    self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                    self.common()
+                        .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
                 let blocknum = (u32::from_be_bytes(cmd[2..6].try_into()?)) as usize;
@@ -399,7 +433,7 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                         "MODE SENSE on non-block device type {:?}",
                         self.target_type()
                     );
-                    self.set_cc(CC_KEY_ILLEGAL_REQUEST, 0);
+                    self.common().set_cc(CC_KEY_ILLEGAL_REQUEST, 0);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
 
@@ -465,7 +499,8 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                     result.extend_from_slice(&pagedata);
                 } else {
                     log::warn!("Unknown MODE SENSE page {:02X}", page);
-                    self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                    self.common()
+                        .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 

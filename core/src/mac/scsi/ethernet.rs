@@ -1,7 +1,7 @@
 //! Daynaport SCSI Ethernet adapter
 
 use crate::debuggable::{Debuggable, DebuggableProperties};
-use crate::mac::scsi::target::{ScsiTarget, ScsiTargetEvent, ScsiTargetType};
+use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetEvent, ScsiTargetType};
 use crate::mac::scsi::ScsiCmdResult;
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
@@ -130,11 +130,7 @@ struct PcapCaptureState {
 /// DaynaPORT SCSI/Link Ethernet adapter
 #[derive(Serialize, Deserialize)]
 pub(crate) struct ScsiTargetEthernet {
-    /// Check condition code
-    cc_code: u8,
-
-    /// Check condition ASC
-    cc_asc: u16,
+    common: ScsiTargetCommon,
 
     /// MAC address
     macaddress: [u8; 6],
@@ -190,8 +186,7 @@ impl Default for ScsiTargetEthernet {
         let mut rand = rand::rng();
 
         Self {
-            cc_code: 0,
-            cc_asc: 0,
+            common: Default::default(),
             macaddress: [
                 0x00,
                 0x80,
@@ -704,6 +699,10 @@ impl ScsiTargetEthernet {
 
 #[typetag::serde]
 impl ScsiTarget for ScsiTargetEthernet {
+    fn common(&mut self) -> &mut ScsiTargetCommon {
+        &mut self.common
+    }
+
     #[cfg(feature = "savestates")]
     fn after_deserialize(&mut self, _imgfn: &Path) -> Result<()> {
         todo!()
@@ -768,15 +767,6 @@ impl ScsiTarget for ScsiTargetEthernet {
 
     fn ms_device_specific(&self) -> u8 {
         0
-    }
-
-    fn set_cc(&mut self, code: u8, asc: u16) {
-        self.cc_code = code;
-        self.cc_asc = asc;
-    }
-
-    fn req_sense(&mut self) -> (u8, u16) {
-        (self.cc_code, self.cc_asc)
     }
 
     fn blocksize(&self) -> Option<usize> {

@@ -2,7 +2,7 @@
 
 mod backends;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -12,7 +12,11 @@ use crate::emulator::EmuContext;
 use crate::mac::macii::bus::CLOCK_SPEED;
 use crate::mac::scsi::cdrom::backends::cuesheet::CuesheetCdromBackend;
 use crate::mac::scsi::cdrom::backends::iso::IsoCdromBackend;
-use crate::mac::scsi::{ASC_INVALID_COMMAND, ASC_UNRECOVERED_READ_ERROR};
+use crate::mac::scsi::target::ScsiTargetCommon;
+use crate::mac::scsi::{
+    ASC_ILLEGAL_MODE_FOR_THIS_TRACK, ASC_INVALID_COMMAND, ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
+    ASC_UNRECOVERED_READ_ERROR,
+};
 use crate::renderer::{AudioProvider, AudioSink, AUDIO_BUFFER_SAMPLES};
 use crate::tickable::Ticks;
 use crate::types::LatchingEvent;
@@ -127,15 +131,11 @@ enum AudioState {
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct ScsiTargetCdrom {
+    common: ScsiTargetCommon,
+
     /// Disk contents
     #[serde(skip)]
     pub(super) backend: Option<Box<dyn CdromBackend>>,
-
-    /// Check condition code
-    cc_code: u8,
-
-    /// Check condition ASC
-    cc_asc: u16,
 
     /// Media eject event
     event_eject: LatchingEvent,
@@ -167,9 +167,8 @@ impl ScsiTargetCdrom {
 
     pub fn new(audio_provider: Option<&mut (dyn AudioProvider + '_)>) -> Self {
         let mut self_ = Self {
+            common: Default::default(),
             backend: None,
-            cc_code: 0,
-            cc_asc: 0,
             event_eject: Default::default(),
             blocksize: 2048,
             audio_state: AudioState::Stopped,
@@ -194,7 +193,9 @@ impl ScsiTargetCdrom {
             let lba =
                 (msf.to_sector() as i32 - LBA_START_SECTOR as i32) * 2048 / self.blocksize as i32;
             // [PIONEER] seems to imply that LBA numbers can be a negative signed integer.
-            // TODO: find citation
+            // 2.15 (on Track Relative Logical Block Address field):
+            // Negative values indicate a starting location within the audio pause area at the
+            // beginning of the requested track.
             i32::to_be_bytes(lba)
         }
     }
@@ -208,19 +209,20 @@ impl ScsiTargetCdrom {
     ) -> Result<ScsiCmdResult> {
         let Some(backend) = &self.backend else {
             // No CD inserted
-            self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+            self.common
+                .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
             return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
         };
 
         let Some(sessions) = backend.sessions() else {
             // Media does not support tracks
             //
-            // [PIONEER]:
-            //
+            // [PIONEER] 2.28:
             // If the Start Track field is not valid for the currently installed medium, the command shall be
             // terminated with Check Condition status. The sense key shall be set to ILLEGAL REQUEST and
             // the additional sense code set to INVALID FIELD IN CDB.
-            self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+            self.common
+                .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
             return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
         };
 
@@ -235,9 +237,20 @@ impl ScsiTargetCdrom {
                 // TODO: support multisession discs (All sessions TOC's must be combined)
                 let session = &sessions[0];
 
-                // FIXME: avoid unwrap
-                result.push(session.tracks.first().unwrap().tno); // First Track Number
-                result.push(session.tracks.last().unwrap().tno); // Last Track Number
+                result.push(
+                    session
+                        .tracks
+                        .first()
+                        .ok_or_else(|| anyhow!("Track not found"))?
+                        .tno,
+                ); // First Track Number
+                result.push(
+                    session
+                        .tracks
+                        .last()
+                        .ok_or_else(|| anyhow!("Track not found"))?
+                        .tno,
+                ); // Last Track Number
 
                 // Start at the given track or the next available track
                 let track_iter = session
@@ -388,7 +401,8 @@ impl ScsiTargetCdrom {
             _ => {
                 log::error!("Unknown READ TOC format: {}", format);
 
-                self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                self.common
+                    .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
                 Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
             }
         }
@@ -402,8 +416,6 @@ impl ScsiTargetCdrom {
     /// Read a frame of CD audio and send it to the audio sink.
     fn pump_audio(&mut self) -> Result<()> {
         let audio_sink = self.audio_sink.as_ref().unwrap();
-
-        // TODO: check if real audio should be enabled, return None if not
 
         if audio_sink.is_full() {
             return Ok(());
@@ -462,8 +474,7 @@ impl ScsiTargetCdrom {
 impl ScsiTargetCdrom {
     fn load_cue(&mut self, path: &Path) -> Result<()> {
         self.backend = Some(Box::new(CuesheetCdromBackend::new(path)?));
-        self.cc_code = 0;
-        self.cc_asc = 0;
+        self.common.set_cc(0, 0);
         self.event_eject.get_clear();
         Ok(())
     }
@@ -479,6 +490,10 @@ impl ScsiTargetCdrom {
 
 #[typetag::serde]
 impl ScsiTarget for ScsiTargetCdrom {
+    fn common(&mut self) -> &mut ScsiTargetCommon {
+        &mut self.common
+    }
+
     /// Try to load a disk image, given the filename of the image.
     ///
     /// This locks the file on disk and memory maps the file for use by
@@ -499,8 +514,7 @@ impl ScsiTarget for ScsiTargetCdrom {
 
     fn load_image(&mut self, image: Box<dyn DiskImage>) -> Result<()> {
         self.backend = Some(Box::new(IsoCdromBackend::new(image)?));
-        self.cc_code = 0;
-        self.cc_asc = 0;
+        self.common.set_cc(0, 0);
         self.event_eject.get_clear();
         Ok(())
     }
@@ -523,17 +537,18 @@ impl ScsiTarget for ScsiTargetCdrom {
             Ok(ScsiCmdResult::Status(STATUS_GOOD))
         } else {
             // No CD inserted
-            self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+            self.common
+                .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
             Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
         }
     }
 
-    fn req_sense(&mut self) -> (u8, u16) {
-        (
-            std::mem::take(&mut self.cc_code),
-            std::mem::take(&mut self.cc_asc),
-        )
-    }
+    // fn req_sense(&mut self) -> (u8, u16) {
+    //     (
+    //         std::mem::take(&mut self.cc_code),
+    //         std::mem::take(&mut self.cc_asc),
+    //     )
+    // }
 
     fn inquiry(&mut self, _cmd: &[u8]) -> Result<ScsiCmdResult> {
         let mut result = vec![0; 36];
@@ -667,7 +682,8 @@ impl ScsiTarget for ScsiTargetCdrom {
                 Ok(result)
             }
             Err(e) => {
-                self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR);
+                self.common
+                    .set_cc(CC_KEY_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR);
                 Err(e)
             }
         }
@@ -702,7 +718,8 @@ impl ScsiTarget for ScsiTargetCdrom {
             }
             // READ(6) (no media)
             0x08 => {
-                self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                self.common
+                    .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
                 Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
             }
             // START/STOP UNIT
@@ -753,7 +770,8 @@ impl ScsiTarget for ScsiTargetCdrom {
                 if sub_q != 0 {
                     // TODO: Implement sub-channel data block stuff
                     log::warn!("Reading unknown sub_q stuff, format {}", format);
-                    self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                    self.common
+                        .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
@@ -763,7 +781,8 @@ impl ScsiTarget for ScsiTargetCdrom {
                         // Find current track at playback position
                         let Some(track) = self.get_track_at_sector(self.audio_pos) else {
                             // FIXME: correct?
-                            self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                            self.common
+                                .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
                             return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                         };
 
@@ -790,7 +809,8 @@ impl ScsiTarget for ScsiTargetCdrom {
                     _ => {
                         // TODO: Implement sub-channel data block stuff
                         log::warn!("Reading unknown sub-channel format {}", format);
-                        self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                        self.common
+                            .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
                         return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                     }
                 }
@@ -832,12 +852,14 @@ impl ScsiTarget for ScsiTargetCdrom {
                 log::info!("PLAY AUDIO MSF start {} end {}", start_msf, end_msf);
 
                 let Some(backend) = &self.backend else {
-                    self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                    self.common
+                        .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
 
                 let Some(sessions) = backend.sessions() else {
-                    self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                    self.common
+                        .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
 
@@ -863,17 +885,21 @@ impl ScsiTarget for ScsiTargetCdrom {
                     // If the starting MSF address is greater than the ending MSF
                     // address, the command shall be terminated with CHECK CONDITION status and SK/ASC/ASCQ
                     // values shall be set to ILLEGAL REQUEST/INVALID FIELD IN CDB.
-                    self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                    self.common
+                        .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
                 if start_sector >= session.leadout {
-                    // TODO: find citation for this
-                    log::warn!(
-                        "Tried to play audio from invalid location {}; command ignored",
-                        start_msf
+                    // [MMC4] 6.17.2.3:
+                    // If the starting address is not found the command shall be terminated with CHECK CONDITION status
+                    // and SK/ASC/ASCQ values shall be set to ILLEGAL REQUEST/LOGICAL BLOCK ADDRESS OUT
+                    // OF RANGE.
+                    log::error!("Tried to play audio from invalid location {}", start_msf);
+                    self.common.set_cc(
+                        CC_KEY_ILLEGAL_REQUEST,
+                        ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
                     );
-                    self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
@@ -882,12 +908,13 @@ impl ScsiTarget for ScsiTargetCdrom {
                     .map(|t| t.control != AUDIO_TRACK)
                     .unwrap_or(false)
                 {
-                    // TODO: find citation for this
-                    log::warn!(
-                        "Tried to play audio from non-audio track at {}; command ignored",
-                        start_msf
-                    );
-                    self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                    // [MMC4] 6.17.2.3:
+                    // If the address is not within an audio track the command shall be terminated with
+                    // CHECK CONDITION status and SK/ASC/ASCQ values shall be set to ILLEGAL REQUEST/ILLEGAL
+                    // MODE FOR THIS TRACK or ILLEGAL REQUEST/INCOMPATIBLE MEDIUM INSTALLED.
+                    log::error!("Tried to play audio from non-audio track at {}", start_msf);
+                    self.common
+                        .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_ILLEGAL_MODE_FOR_THIS_TRACK);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
@@ -932,12 +959,14 @@ impl ScsiTarget for ScsiTargetCdrom {
                 // Also known as fast-forward or rewind.
 
                 let Some(backend) = &self.backend else {
-                    self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                    self.common
+                        .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
 
                 let Some(sessions) = backend.sessions() else {
-                    self.set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                    self.common
+                        .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
 
@@ -964,13 +993,15 @@ impl ScsiTarget for ScsiTargetCdrom {
                     0b10 => {
                         // Start at the given track or the next available track
                         // FIXME: what should happen if specified track is not available?
-                        // TODO: avoid unwrap
-                        let track = tracks.find(|t| t.tno >= start_addr[3]).unwrap();
+                        let track = tracks
+                            .find(|t| t.tno >= start_addr[3])
+                            .ok_or_else(|| anyhow!("Failed to find track"))?;
                         track.sector
                     }
                     // Reserved
                     _ => {
-                        self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                        self.common
+                            .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
                         return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                     }
                 };
@@ -987,7 +1018,8 @@ impl ScsiTarget for ScsiTargetCdrom {
             }
             _ => {
                 log::error!("Unknown command {:02X}", cmd[0]);
-                self.set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_COMMAND);
+                self.common
+                    .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_COMMAND);
                 Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
             }
         }
@@ -1005,16 +1037,10 @@ impl ScsiTarget for ScsiTargetCdrom {
         0
     }
 
-    fn set_cc(&mut self, code: u8, asc: u16) {
-        self.cc_code = code;
-        self.cc_asc = asc;
-    }
-
     fn set_blocksize(&mut self, blocksize: usize) -> bool {
         // FIXME: Do CD-ROM drives really allow the block size to be modified by software?
         //
-        // [PIONEER]:
-        //
+        // [PIONEER] 2.21:
         // The value of Logical Block Length returned depends on the block length set with a MODE
         // SELECT command. The default value of the block length is 2048 bytes. The CD-ROM drives
         // allow values of 2048 or 512 bytes to be set with an external switch on the drive.
