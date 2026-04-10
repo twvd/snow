@@ -3,6 +3,7 @@ use sdl2::audio::{AudioCallback, AudioDevice, AudioSpecDesired};
 use sdl2::Sdl;
 use snow_core::renderer::{AudioBuffer, AudioProvider, AudioReceiver, AudioSink, ChannelAudioSink};
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -30,7 +31,7 @@ struct SDLAudioCallback {
     /// An extra layer of buffering to solve these problems:
     /// - SDL audio buffers must have a power-of-2 length
     /// - Users may submit audio buffers that exceed SDL's expected length
-    active_samples: Vec<f32>,
+    active_samples: VecDeque<f32>,
 }
 
 /// Exchanges state between the SDLAudioCallback and SDLAudioProvider
@@ -84,7 +85,7 @@ impl AudioCallback for SDLAudioCallback {
         // Collect audio samples into the active buffer
         while self.active_samples.len() < out.len() {
             if let Ok(new_samples) = self.recv.try_recv() {
-                self.active_samples.extend_from_slice(&new_samples);
+                self.active_samples.extend(&new_samples);
             } else {
                 break;
             }
@@ -95,25 +96,21 @@ impl AudioCallback for SDLAudioCallback {
                 out.fill(0.0);
             } else {
                 // Feed active samples to the SDL output
-                for (i, out_sample) in out.iter_mut().enumerate() {
-                    *out_sample = self.active_samples[i].clamp(-1.0, 1.0) * 0.5;
+                for out_sample in out.iter_mut() {
+                    *out_sample = self.active_samples.pop_front().unwrap().clamp(-1.0, 1.0) * 0.5;
                 }
             }
 
-            // TODO: use a circular queue or something
-            self.active_samples.copy_within(out.len().., 0);
-            self.active_samples
-                .truncate(self.active_samples.len() - out.len());
-
             self.exch.underrun.store(false, Ordering::Relaxed);
         } else {
-            log::warn!("Audio buffer underrun. Audio may skip.");
+            // log::warn!("Audio buffer underrun. Audio may skip.");
 
             // Audio is late. Play the last active samples and start prebuffering.
-            for (i, out_sample) in out.iter_mut().enumerate().take(self.active_samples.len()) {
-                *out_sample = self.active_samples[i].clamp(-1.0, 1.0) * 0.5;
+            let sample_count = self.active_samples.len();
+            for out_sample in out.iter_mut().take(sample_count) {
+                *out_sample = self.active_samples.pop_front().unwrap().clamp(-1.0, 1.0) * 0.5;
             }
-            out[self.active_samples.len()..].fill(0.0);
+            out[sample_count..].fill(0.0);
             self.active_samples.clear();
 
             self.prebuffering = true;
@@ -145,7 +142,7 @@ impl SDLAudioStream {
                         recv: channel_sink.receiver(),
                         exch: exch.clone(),
                         prebuffering: true,
-                        active_samples: vec![],
+                        active_samples: Default::default(),
                     }
                 })
                 .map_err(|e| anyhow!(e))?;

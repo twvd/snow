@@ -61,7 +61,7 @@ const LBA_START_MSF: Msf = Msf::new(0, 2, 0);
 const LBA_START_SECTOR: u32 = LBA_START_MSF.to_sector();
 
 /// Number of sectors per second of audio
-const AUDIO_SECTORS_PER_SEC: u64 = 75;
+const AUDIO_SECTORS_PER_SEC: u32 = 75;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 struct Msf {
@@ -75,15 +75,17 @@ impl Msf {
         Self { m, s, f }
     }
 
-    fn from_sector(sector: u32) -> Result<Self> {
-        let m = sector / 75 / 60;
-        let s = (sector / 75) % 60;
-        let f = sector % 75;
+    fn from_sector(mut sector: u32) -> Result<Self> {
+        let f = sector % AUDIO_SECTORS_PER_SEC;
+        sector /= AUDIO_SECTORS_PER_SEC;
+        let s = sector % 60;
+        sector /= 60;
+        let m = sector;
         Ok(Self::new(m.try_into()?, s.try_into()?, f.try_into()?))
     }
 
     const fn to_sector(self) -> u32 {
-        (self.m as u32 * 60 + self.s as u32) * 75 + self.f as u32
+        (self.m as u32 * 60 + self.s as u32) * AUDIO_SECTORS_PER_SEC + self.f as u32
     }
 }
 
@@ -456,6 +458,10 @@ impl ScsiTargetCdrom {
 
     /// Read a frame of CD audio and send it to the audio sink.
     /// Returns None if audio is disabled (such as by running at Uncapped speed).
+    ///
+    /// To ensure smooth audio playback, we run CD audio semi-independently
+    /// of the emulated Mac. If audio is disabled, playback is simulated by
+    /// counting bus ticks.
     fn try_pump_audio(&mut self, ctx: &dyn EmuContext) -> Option<Result<()>> {
         self.audio_sink.as_ref()?;
 
@@ -849,7 +855,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 let start_msf = Msf::new(cmd[3], cmd[4], cmd[5]);
                 let end_msf = Msf::new(cmd[6], cmd[7], cmd[8]);
 
-                log::info!("PLAY AUDIO MSF start {} end {}", start_msf, end_msf);
+                log::debug!("PLAY AUDIO MSF start {} end {}", start_msf, end_msf);
 
                 let Some(backend) = &self.backend else {
                     self.common
@@ -937,7 +943,7 @@ impl ScsiTarget for ScsiTargetCdrom {
             0x4B => {
                 let resume = cmd[8] & 0x1;
 
-                log::info!("PAUSE/RESUME resume {} cmd {:?}", resume, cmd);
+                log::debug!("PAUSE/RESUME resume {} cmd {:?}", resume, cmd);
 
                 // FIXME: What happens if pause/resume is activated while no track is playing?
                 if resume != 0 {
@@ -1084,8 +1090,8 @@ impl ScsiTarget for ScsiTargetCdrom {
                 None => {
                     // Real audio is disabled. Advance the audio position by counting bus ticks.
                     self.audio_clock += ticks;
-                    if self.audio_clock >= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC {
-                        self.audio_clock -= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC;
+                    if self.audio_clock >= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC as u64 {
+                        self.audio_clock -= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC as u64;
 
                         if self.audio_pos >= self.audio_stop {
                             self.audio_state = AudioState::Stopped;

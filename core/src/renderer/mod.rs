@@ -11,7 +11,8 @@ pub type AudioBuffer = Box<[f32]>;
 /// Audio frame channel receiver
 pub type AudioReceiver = Receiver<AudioBuffer>;
 
-/// Audio channel queue length
+/// Audio channel queue length.
+/// Higher values add latency to audio, but might fix underruns.
 pub const AUDIO_QUEUE_LEN: usize = 4; // TODO: make this configurable?
 
 /// Amount of samples in the audio buffer
