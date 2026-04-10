@@ -91,29 +91,30 @@ impl AudioCallback for SDLAudioCallback {
             }
         }
 
-        if self.active_samples.len() >= out.len() {
+        let submit_samples = |out: &mut [f32], active_samples: &mut VecDeque<f32>| {
             if self.exch.mute.load(Ordering::Relaxed) {
                 // Discard active samples and play silence
                 for out_sample in out.iter_mut() {
                     *out_sample = 0.0;
-                    self.active_samples.pop_front();
+                    active_samples.pop_front();
                 }
             } else {
                 // Feed active samples to the SDL output
                 for out_sample in out.iter_mut() {
-                    *out_sample = self.active_samples.pop_front().unwrap().clamp(-1.0, 1.0) * 0.5;
+                    *out_sample = active_samples.pop_front().unwrap().clamp(-1.0, 1.0) * 0.5;
                 }
             }
+        };
 
+        if self.active_samples.len() >= out.len() {
+            submit_samples(out, &mut self.active_samples);
             self.exch.underrun.store(false, Ordering::Relaxed);
         } else {
-            // log::warn!("Audio buffer underrun. Audio may skip.");
+            log::warn!("Audio buffer underrun. Audio may skip.");
 
             // Audio is late. Submit any remaining active samples and enter prebuffering mode.
             let sample_count = self.active_samples.len();
-            for out_sample in out.iter_mut().take(sample_count) {
-                *out_sample = self.active_samples.pop_front().unwrap().clamp(-1.0, 1.0) * 0.5;
-            }
+            submit_samples(&mut out[..sample_count], &mut self.active_samples);
             out[sample_count..].fill(0.0);
             self.active_samples.clear();
 
