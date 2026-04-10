@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use crate::audio_filter::AudioFilter;
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
-use crate::renderer::{default_audio_sink, AudioSink, AUDIO_BUFFER_SIZE};
+use crate::renderer::{null_audio_sink, AudioSink, AUDIO_BUFFER_SIZE};
 use crate::tickable::Ticks;
 use crate::types::{Byte, Field32};
 use anyhow::Result;
@@ -18,7 +18,7 @@ const FIFO_SIZE: usize = 0x400;
 /// Apple Sound Chip
 #[derive(Serialize, Deserialize)]
 pub struct Asc {
-    #[serde(skip, default = "default_audio_sink")]
+    #[serde(skip, default = "null_audio_sink")]
     sink: Box<dyn AudioSink>,
 
     buffer: Vec<f32>,
@@ -92,7 +92,7 @@ enum AscMode {
 impl Default for Asc {
     fn default() -> Self {
         Self {
-            sink: default_audio_sink(),
+            sink: null_audio_sink(),
             buffer: Vec::with_capacity(AUDIO_BUFFER_SIZE),
             silent: true,
             channels: Default::default(),
@@ -234,7 +234,7 @@ impl Asc {
     }
 
     pub fn after_deserialize(&mut self) {
-        self.set_sink(default_audio_sink());
+        self.set_sink(null_audio_sink());
     }
 }
 
