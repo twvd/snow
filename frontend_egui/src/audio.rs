@@ -110,7 +110,7 @@ impl AudioCallback for SDLAudioCallback {
             submit_samples(out, &mut self.active_samples);
             self.exch.underrun.store(false, Ordering::Relaxed);
         } else {
-            log::warn!("Audio buffer underrun. Audio may skip.");
+            // log::warn!("Audio buffer underrun. Audio may skip.");
 
             // Audio is late. Submit any remaining active samples and enter prebuffering mode.
             let sample_count = self.active_samples.len();
