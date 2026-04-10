@@ -93,7 +93,11 @@ impl AudioCallback for SDLAudioCallback {
 
         if self.active_samples.len() >= out.len() {
             if self.exch.mute.load(Ordering::Relaxed) {
-                out.fill(0.0);
+                // Discard active samples and play silence
+                for out_sample in out.iter_mut() {
+                    *out_sample = 0.0;
+                    self.active_samples.pop_front();
+                }
             } else {
                 // Feed active samples to the SDL output
                 for out_sample in out.iter_mut() {
@@ -105,7 +109,7 @@ impl AudioCallback for SDLAudioCallback {
         } else {
             // log::warn!("Audio buffer underrun. Audio may skip.");
 
-            // Audio is late. Play the last active samples and start prebuffering.
+            // Audio is late. Submit any remaining active samples and enter prebuffering mode.
             let sample_count = self.active_samples.len();
             for out_sample in out.iter_mut().take(sample_count) {
                 *out_sample = self.active_samples.pop_front().unwrap().clamp(-1.0, 1.0) * 0.5;
