@@ -549,13 +549,6 @@ impl ScsiTarget for ScsiTargetCdrom {
         }
     }
 
-    // fn req_sense(&mut self) -> (u8, u16) {
-    //     (
-    //         std::mem::take(&mut self.cc_code),
-    //         std::mem::take(&mut self.cc_asc),
-    //     )
-    // }
-
     fn inquiry(&mut self, _cmd: &[u8]) -> Result<ScsiCmdResult> {
         let mut result = vec![0; 36];
 

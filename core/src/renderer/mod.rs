@@ -72,8 +72,24 @@ impl AudioSink for ChannelAudioSink {
     }
 }
 
-pub fn default_audio_sink() -> Box<dyn AudioSink> {
-    Box::new(ChannelAudioSink::new())
+struct NullAudioSink();
+
+impl AudioSink for NullAudioSink {
+    fn send(&self, _buffer: AudioBuffer) -> Result<()> {
+        Ok(())
+    }
+
+    fn is_full(&self) -> bool {
+        false
+    }
+
+    fn is_empty(&self) -> bool {
+        true
+    }
+}
+
+pub fn null_audio_sink() -> Box<dyn AudioSink> {
+    Box::new(NullAudioSink())
 }
 
 /// Display buffer for a single frame

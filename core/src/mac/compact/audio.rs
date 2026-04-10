@@ -2,11 +2,11 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::audio_filter::AudioFilter;
-use crate::renderer::{default_audio_sink, AudioSink, AUDIO_BUFFER_SIZE, AUDIO_CHANNELS};
+use crate::renderer::{null_audio_sink, AudioSink, AUDIO_BUFFER_SIZE, AUDIO_CHANNELS};
 
 #[derive(Serialize, Deserialize)]
 pub struct AudioState {
-    #[serde(skip, default = "default_audio_sink")]
+    #[serde(skip, default = "null_audio_sink")]
     sink: Box<dyn AudioSink>,
     buffer: Vec<f32>,
     silent: bool,
@@ -16,7 +16,7 @@ pub struct AudioState {
 impl Default for AudioState {
     fn default() -> Self {
         Self {
-            sink: default_audio_sink(),
+            sink: null_audio_sink(),
             buffer: Vec::with_capacity(AUDIO_BUFFER_SIZE),
             silent: true,
             filter: AudioFilter::new(),
