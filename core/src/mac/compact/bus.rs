@@ -33,17 +33,6 @@ use serde::{Deserialize, Serialize};
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
-// TODO: impl EmuContext on the actual emulator, not here
-struct BusEmuContext {
-    speed: EmulatorSpeed,
-}
-
-impl EmuContext for BusEmuContext {
-    fn speed(&self) -> EmulatorSpeed {
-        self.speed
-    }
-}
-
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct CompactMacBus<TRenderer: Renderer> {
@@ -702,7 +691,16 @@ where
     TRenderer: Renderer,
 {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
-        // TODO: pass in dyn EmuContext, restore impl Tickable to bus
+        struct BusEmuContext {
+            speed: EmulatorSpeed,
+        }
+
+        impl EmuContext for BusEmuContext {
+            fn speed(&self) -> EmulatorSpeed {
+                self.speed
+            }
+        }
+
         let ctx = &BusEmuContext { speed: self.speed };
 
         // XXX: run one tick at a time to avoid missing hblanks and vblanks

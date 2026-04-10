@@ -6,8 +6,8 @@ use std::path::Path;
 
 use crate::debuggable::Debuggable;
 use crate::mac::scsi::disk_image::{DiskImage, FileDiskImage};
-use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::scsi::target::ScsiTargetType;
+use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon};
 use crate::mac::scsi::ScsiCmdResult;
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
@@ -16,22 +16,17 @@ pub const DISK_BLOCKSIZE: usize = 512;
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct ScsiTargetDisk {
+    common: ScsiTargetCommon,
+
     #[serde(skip)]
     backend: Option<Box<dyn DiskImage>>,
-
-    /// Check condition code
-    cc_code: u8,
-
-    /// Check condition ASC
-    cc_asc: u16,
 }
 
 impl ScsiTargetDisk {
     pub fn new(backend: Box<dyn DiskImage>) -> Self {
         Self {
+            common: Default::default(),
             backend: Some(backend),
-            cc_code: 0,
-            cc_asc: 0,
         }
     }
 
@@ -61,6 +56,10 @@ impl ScsiTargetDisk {
 
 #[typetag::serde]
 impl ScsiTarget for ScsiTargetDisk {
+    fn common(&mut self) -> &mut ScsiTargetCommon {
+        &mut self.common
+    }
+
     fn load_media(&mut self, _path: &Path) -> Result<()> {
         bail!("load_media on non-removable disk");
     }
@@ -75,10 +74,6 @@ impl ScsiTarget for ScsiTargetDisk {
 
     fn target_type(&self) -> ScsiTargetType {
         ScsiTargetType::Disk
-    }
-
-    fn req_sense(&mut self) -> (u8, u16) {
-        (0, 0)
     }
 
     fn unit_ready(&mut self) -> Result<ScsiCmdResult> {
@@ -236,11 +231,6 @@ impl ScsiTarget for ScsiTargetDisk {
 
     fn ms_device_specific(&self) -> u8 {
         0
-    }
-
-    fn set_cc(&mut self, code: u8, asc: u16) {
-        self.cc_code = code;
-        self.cc_asc = asc;
     }
 
     fn set_blocksize(&mut self, _blocksize: usize) -> bool {
