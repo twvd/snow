@@ -1102,7 +1102,7 @@ impl Tickable for Emulator {
                                 let status = bridge.status();
                                 info!("SCC bridge enabled on channel {:?}: {}", ch, status);
                                 match &status {
-                                    SerialBridgeStatus::Pty(ref path) => {
+                                    SerialBridgeStatus::Pty(path) => {
                                         self.user_notice(&format!(
                                             "Serial bridge PTY: {}",
                                             path.display()
@@ -1140,7 +1140,7 @@ impl Tickable for Emulator {
                         }
                     }
                     EmulatorCommand::SetDebugFramebuffers(v) => {
-                        if let EmulatorConfig::Compact(ref mut c) = &mut self.config {
+                        if let EmulatorConfig::Compact(c) = &mut self.config {
                             c.bus.video.debug_framebuffers = v;
                         }
                     }

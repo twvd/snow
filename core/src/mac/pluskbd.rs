@@ -47,7 +47,7 @@ impl PlusKeyboard {
     }
 
     pub fn release_all(&mut self) {
-        for (sc, _) in self.keystate.iter().enumerate().filter(|(_, &s)| s) {
+        for (sc, _) in self.keystate.iter().enumerate().filter(|(_, s)| **s) {
             self.event_queue
                 .push_back(KeyEvent::KeyUp(sc.try_into().unwrap(), Self::KEYMAP));
         }

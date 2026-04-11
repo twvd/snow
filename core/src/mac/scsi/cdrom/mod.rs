@@ -440,18 +440,21 @@ impl ScsiTargetCdrom {
         }
 
         let samples = backend.read_raw_sector(self.audio_pos);
-        if let Ok(samples) = samples {
-            // FIXME: can we avoid converting to float by setting up a signed 16-bit PCM audio sink?
-            let mut out_samples = [0.0; RAW_SECTOR_LEN / 2]; // 16-bit samples
-            for i in 0..RAW_SECTOR_LEN / 2 {
-                let sample = i16::from_le_bytes(samples[2 * i..][..2].try_into().unwrap());
-                out_samples[i] = sample as f32 / 32768.0 * self.audio_volume as f32 / 255.0;
+        match samples {
+            Ok(samples) => {
+                // FIXME: can we avoid converting to float by setting up a signed 16-bit PCM audio sink?
+                let mut out_samples = [0.0; RAW_SECTOR_LEN / 2]; // 16-bit samples
+                for i in 0..RAW_SECTOR_LEN / 2 {
+                    let sample = i16::from_le_bytes(samples[2 * i..][..2].try_into().unwrap());
+                    out_samples[i] = sample as f32 / 32768.0 * self.audio_volume as f32 / 255.0;
+                }
+    
+                audio_sink.send(Box::new(out_samples))?;
             }
-
-            audio_sink.send(Box::new(out_samples))?;
-
-            self.audio_pos += 1;
+            Err(e) => log::warn!("Failed to read raw samples from sector {}: {}", self.audio_pos, e)
         }
+
+        self.audio_pos += 1;
 
         Ok(())
     }
