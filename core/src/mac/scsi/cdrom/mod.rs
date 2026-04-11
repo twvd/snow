@@ -413,6 +413,8 @@ impl ScsiTargetCdrom {
     fn eject_media(&mut self) {
         self.event_eject.set();
         self.backend = None;
+        self.audio_state = AudioState::Stopped;
+        self.audio_pos = LBA_START_SECTOR;
     }
 
     /// Read a frame of CD audio and send it to the audio sink.
