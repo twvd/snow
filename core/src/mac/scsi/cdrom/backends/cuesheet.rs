@@ -333,7 +333,7 @@ impl CuesheetCdromBackend {
             .map(|e| e.sector + e.sector_count)
             .unwrap_or(LBA_START_SECTOR);
 
-        let self_ = Self {
+        Ok(Self {
             cue_path: path.into(),
             data_files,
             sessions: vec![SessionInfo {
@@ -341,20 +341,7 @@ impl CuesheetCdromBackend {
                 tracks,
             }],
             sector_map,
-        };
-
-        let test_sector = 20934;
-        let test = self_.find_map_entry_for_sector(test_sector);
-        log::debug!("map entry for sector {}: {:#?}", test_sector, test);
-        log::debug!("sector {} is at rel sector {}", test_sector, test_sector - test.unwrap().sector);
-        let test_source = match test.unwrap().source {
-            SectorSource::DataFile{ data_file_idx: _, data_file_sector } => data_file_sector,
-            _ => unreachable!()
-        };
-        let file_sector = test_source + test_sector - test.unwrap().sector;
-        log::debug!("sector {} is at file sector {} (file offset 0x{:X})", test_sector, file_sector, file_sector * 2352);
-
-        Ok(self_)
+        })
     }
 
     fn find_map_entry_for_sector(&self, sector: u32) -> Option<&SectorMapEntry> {
