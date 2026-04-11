@@ -1,6 +1,6 @@
 //! SCSI disk image abstraction
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 #[cfg(feature = "mmap")]
 use memmap2::MmapMut;
 use std::path::{Path, PathBuf};

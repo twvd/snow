@@ -1,20 +1,20 @@
 use crate::cpu_m68k::FpuM68kType;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::bus::{Address, Bus, IrqSource};
 
+use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::cpu_m68k::instruction::Instruction;
-use crate::cpu_m68k::CpuM68kType;
 use crate::types::Byte;
 
 impl<
-        TBus,
-        const ADDRESS_MASK: Address,
-        const CPU_TYPE: CpuM68kType,
-        const FPU_TYPE: FpuM68kType,
-        const PMMU: bool,
-    > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TBus,
+    const ADDRESS_MASK: Address,
+    const CPU_TYPE: CpuM68kType,
+    const FPU_TYPE: FpuM68kType,
+    const PMMU: bool,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {

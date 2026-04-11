@@ -426,11 +426,7 @@ impl RegisterFile {
 
     /// Reference to active SSP
     pub fn ssp(&self) -> &Address {
-        if self.sr.m() {
-            &self.msp
-        } else {
-            &self.isp
-        }
+        if self.sr.m() { &self.msp } else { &self.isp }
     }
 }
 

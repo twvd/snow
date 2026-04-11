@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use log::*;
 
-use super::{ScsiCmdResult, STATUS_CHECK_CONDITION, STATUS_GOOD};
+use super::{STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult};
 
 const MAX_FILE_PATH: usize = 32; // Max Macintosh File name length
 
@@ -167,14 +167,14 @@ impl BlueSCSI {
 
         if let Some(file) = &mut self.file {
             let mut buffer = vec![0; bytes_requested as usize];
-            if file.seek(SeekFrom::Start(offset * block_size)).is_ok() {
-                if let Ok(bytes_read) = file.read(&mut buffer) {
-                    buffer.truncate(bytes_read);
-                    if bytes_read == 0 {
-                        self.file = None;
-                    }
-                    return ScsiCmdResult::DataIn(buffer);
+            if file.seek(SeekFrom::Start(offset * block_size)).is_ok()
+                && let Ok(bytes_read) = file.read(&mut buffer)
+            {
+                buffer.truncate(bytes_read);
+                if bytes_read == 0 {
+                    self.file = None;
                 }
+                return ScsiCmdResult::DataIn(buffer);
             }
         }
         ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
@@ -185,17 +185,17 @@ impl BlueSCSI {
             return ScsiCmdResult::Status(STATUS_CHECK_CONDITION);
         };
         if let Some(data) = outdata {
-            if let Some(pos) = data.iter().position(|&b| b == 0) {
-                if let Ok(name) = std::str::from_utf8(&data[..pos]) {
-                    let path = shared_dir.join(name);
-                    match File::create(path) {
-                        Ok(f) => {
-                            self.file = Some(f);
-                            return ScsiCmdResult::Status(STATUS_GOOD);
-                        }
-                        Err(e) => {
-                            error!("Failed to create file: {}", e);
-                        }
+            if let Some(pos) = data.iter().position(|&b| b == 0)
+                && let Ok(name) = std::str::from_utf8(&data[..pos])
+            {
+                let path = shared_dir.join(name);
+                match File::create(path) {
+                    Ok(f) => {
+                        self.file = Some(f);
+                        return ScsiCmdResult::Status(STATUS_GOOD);
+                    }
+                    Err(e) => {
+                        error!("Failed to create file: {}", e);
                     }
                 }
             }
@@ -236,10 +236,10 @@ impl BlueSCSI {
 
     /// Match BlueSCSI behavior: no data phase, go directly to status
     fn send_file_end(&mut self) -> ScsiCmdResult {
-        if let Some(file) = self.file.take() {
-            if file.sync_all().is_ok() {
-                return ScsiCmdResult::Status(STATUS_GOOD);
-            }
+        if let Some(file) = self.file.take()
+            && file.sync_all().is_ok()
+        {
+            return ScsiCmdResult::Status(STATUS_GOOD);
         }
         ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
     }

@@ -1,7 +1,7 @@
 //! M68k CPU - Effective Address / Addressing modes handling
 
 use crate::cpu_m68k::FpuM68kType;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arrayvec::ArrayVec;
 
 use crate::bus::{Address, Bus, IrqSource};
@@ -13,12 +13,12 @@ use super::instruction::{AddressingMode, IndexSize, Instruction, Xn};
 use super::{CpuM68kType, CpuSized, M68020, TORDER_HIGHLOW};
 
 impl<
-        TBus,
-        const ADDRESS_MASK: Address,
-        const CPU_TYPE: CpuM68kType,
-        const FPU_TYPE: FpuM68kType,
-        const PMMU: bool,
-    > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TBus,
+    const ADDRESS_MASK: Address,
+    const CPU_TYPE: CpuM68kType,
+    const FPU_TYPE: FpuM68kType,
+    const PMMU: bool,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {

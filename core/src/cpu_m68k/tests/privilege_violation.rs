@@ -2,8 +2,8 @@
 //!
 //! Ported with permission from tests written by Howard Price
 
-use crate::bus::testbus::Testbus;
 use crate::bus::Address;
+use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::{CpuM68000, M68000_ADDRESS_MASK};
 use crate::types::{Long, Word};
 

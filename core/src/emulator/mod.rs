@@ -4,8 +4,8 @@ pub mod comm;
 pub mod save;
 
 use serde::{Deserialize, Serialize};
-use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof};
 use snow_floppy::Floppy;
+use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof};
 use std::collections::VecDeque;
 #[cfg(feature = "savestates")]
 use std::fs::File;
@@ -31,13 +31,13 @@ use crate::mac::scsi::target::ScsiTargetEvent;
 use crate::mac::serial_bridge::{SccBridge, SerialBridgeStatus};
 use crate::mac::swim::drive::DriveType;
 use crate::mac::{ExtraROMs, MacModel, MacMonitor};
-use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::AudioProvider;
+use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use bit_set::BitSet;
 use log::*;
 use std::fmt;
@@ -1266,11 +1266,11 @@ impl Tickable for Emulator {
             }
 
             // Replay next step in recording if currently replaying
-            if let Some((t, c)) = self.replay_input.front() {
-                if *t <= self.get_cycles() {
-                    self.command_sender.send(c.clone()).unwrap();
-                    self.replay_input.pop_front().unwrap();
-                }
+            if let Some((t, c)) = self.replay_input.front()
+                && *t <= self.get_cycles()
+            {
+                self.command_sender.send(c.clone()).unwrap();
+                self.replay_input.pop_front().unwrap();
             }
 
             // Batch 10000 steps for performance reasons
@@ -1290,48 +1290,44 @@ impl Tickable for Emulator {
                         .config
                         .scc()
                         .is_rx_ready_for_data(crate::mac::scc::SccCh::B)
+                    && let Some(ref mut bridge) = self.serial_bridges[1]
+                    && bridge.is_localtalk()
                 {
-                    if let Some(ref mut bridge) = self.serial_bridges[1] {
-                        if bridge.is_localtalk() {
-                            // Propagate SCC state to LocalTalk bridge
-                            let sdlc_addr =
-                                self.config.scc().sdlc_address(crate::mac::scc::SccCh::B);
-                            bridge.set_node_address(sdlc_addr);
-                            bridge.set_address_search_mode(
-                                self.config
-                                    .scc()
-                                    .is_address_search_mode(crate::mac::scc::SccCh::B),
-                            );
+                    // Propagate SCC state to LocalTalk bridge
+                    let sdlc_addr = self.config.scc().sdlc_address(crate::mac::scc::SccCh::B);
+                    bridge.set_node_address(sdlc_addr);
+                    bridge.set_address_search_mode(
+                        self.config
+                            .scc()
+                            .is_address_search_mode(crate::mac::scc::SccCh::B),
+                    );
 
-                            // Prefer SDLC frame-boundary path if frames are ready
-                            let frames = self
-                                .config
-                                .scc_mut()
-                                .take_tx_frames(crate::mac::scc::SccCh::B);
-                            if !frames.is_empty() {
-                                for frame in &frames {
-                                    bridge.send_frame(frame);
-                                }
-                                // Drain tx_queue to avoid double-sending
-                                self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
-                            }
-
-                            // Byte-stream TX path (fallback when no frame boundaries detected)
-                            if self.config.scc().has_tx_data(crate::mac::scc::SccCh::B) {
-                                let tx_data =
-                                    self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
-                                bridge.write_from_scc(&tx_data);
-                            }
-
-                            // Now poll for incoming data and pending CTS
-                            bridge.poll();
-                            let rx_data = bridge.read_to_scc();
-                            if !rx_data.is_empty() {
-                                self.config
-                                    .scc_mut()
-                                    .push_rx(crate::mac::scc::SccCh::B, &rx_data);
-                            }
+                    // Prefer SDLC frame-boundary path if frames are ready
+                    let frames = self
+                        .config
+                        .scc_mut()
+                        .take_tx_frames(crate::mac::scc::SccCh::B);
+                    if !frames.is_empty() {
+                        for frame in &frames {
+                            bridge.send_frame(frame);
                         }
+                        // Drain tx_queue to avoid double-sending
+                        self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
+                    }
+
+                    // Byte-stream TX path (fallback when no frame boundaries detected)
+                    if self.config.scc().has_tx_data(crate::mac::scc::SccCh::B) {
+                        let tx_data = self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
+                        bridge.write_from_scc(&tx_data);
+                    }
+
+                    // Now poll for incoming data and pending CTS
+                    bridge.poll();
+                    let rx_data = bridge.read_to_scc();
+                    if !rx_data.is_empty() {
+                        self.config
+                            .scc_mut()
+                            .push_rx(crate::mac::scc::SccCh::B, &rx_data);
                     }
                 }
             }

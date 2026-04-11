@@ -84,10 +84,10 @@ pub mod pty {
     use std::fs::File;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
-    use nix::fcntl::{fcntl, FcntlArg, OFlag};
+    use nix::fcntl::{FcntlArg, OFlag, fcntl};
     use nix::libc;
-    use nix::pty::{openpty, OpenptyResult};
-    use nix::sys::termios::{cfmakeraw, tcsetattr, SetArg};
+    use nix::pty::{OpenptyResult, openpty};
+    use nix::sys::termios::{SetArg, cfmakeraw, tcsetattr};
 
     pub struct PtyBridge {
         master: OwnedFd,

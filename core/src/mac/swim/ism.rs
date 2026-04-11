@@ -301,6 +301,7 @@ impl Swim {
             //    reg,
             //    result.unwrap()
             //);
+            #[allow(clippy::let_and_return)]
             result
         } else {
             error!("Unknown ISM register read {:04X}", offset);

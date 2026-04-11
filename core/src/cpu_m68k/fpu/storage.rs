@@ -6,7 +6,7 @@ use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
 use crate::bus::{Address, Bus, IrqSource};
-use crate::cpu_m68k::{cpu::CpuM68k, CpuM68kType};
+use crate::cpu_m68k::{CpuM68kType, cpu::CpuM68k};
 use crate::types::{Long, Word};
 
 use super::SEMANTICS_EXTENDED;
@@ -206,12 +206,12 @@ impl From<BitsExtReal> for Float {
 }
 
 impl<
-        TBus,
-        const ADDRESS_MASK: Address,
-        const CPU_TYPE: CpuM68kType,
-        const FPU_TYPE: FpuM68kType,
-        const PMMU: bool,
-    > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TBus,
+    const ADDRESS_MASK: Address,
+    const CPU_TYPE: CpuM68kType,
+    const FPU_TYPE: FpuM68kType,
+    const PMMU: bool,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
@@ -588,8 +588,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::testbus::Testbus;
     use crate::bus::Address;
+    use crate::bus::testbus::Testbus;
     use crate::cpu_m68k::{CpuM68020Fpu, M68020_ADDRESS_MASK};
     use crate::types::Byte;
 

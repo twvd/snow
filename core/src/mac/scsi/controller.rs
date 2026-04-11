@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use log::*;
 use num_derive::FromPrimitive;
@@ -17,6 +17,8 @@ use crate::bus::{Address, BusMember};
 use crate::dbgprop_byte;
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
+use crate::mac::scsi::STATUS_GOOD;
+use crate::mac::scsi::ScsiCmdResult;
 use crate::mac::scsi::cdrom::ScsiTargetCdrom;
 use crate::mac::scsi::disk::ScsiTargetDisk;
 use crate::mac::scsi::disk_image::DiskImage;
@@ -26,8 +28,6 @@ use crate::mac::scsi::scsi_cmd_len;
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::scsi::toolbox::BlueSCSI;
-use crate::mac::scsi::ScsiCmdResult;
-use crate::mac::scsi::STATUS_GOOD;
 use crate::renderer::AudioProvider;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
