@@ -11,13 +11,17 @@ toast shows.
 
 ![Fullscreen context menu](../images/fs_context.png)
 
-When working mostly in fullscreen mode or when playing games in fullscreen mode,
-use [relative mouse positioning mode](input.md#mouse) for the best experience.
+When switching to fullscreen mode, Snow will automatically switch to
+[relative mouse positioning mode](input.md#mouse) to provide the best experience
+and back to the original mode when leaving fullscreen. This behavior can be
+enabled/disabled using the 'Options > Use relative mouse in fullscreen' menu option.
+This option persists globally.
 
 ## Zen mode
 
 Zen mode is basically identical to fullscreen mode, except Snow stays windowed
-rather than expanding to be fullscreen.
+rather than expanding to be fullscreen and the mouse emulation mode remains
+untouched.
 
 To enter Zen mode, click the <span class="material-symbols-rounded">filter_center_focus</span>
 toolbar button or use the 'View > Enter Zen mode' menu item.

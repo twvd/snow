@@ -2,6 +2,7 @@
 
 Snow supports CD-ROM drives in every emulated Macintosh model
 except the Macintosh 128K/512K/512Ke (as these models never included SCSI).
+Images with CD audio are also supported (requires a CUE/BIN image).
 
 Note that in order to use a CD-ROM drive, you need to have the 'Apple CD'
 extension installed in the emulated operating system. This requires System 6
@@ -26,7 +27,7 @@ recognized.
 ## Mounting an existing image
 
 To mount an existing image file, use the 'Load image...' menu action
-to browse for a CD image. Currently, ISO and TOAST files are supported.
+to browse for a CD image. Currently, ISO, TOAST and CUE/BIN files are supported.
 
 It is also possible to drag a file of a supported image format into
 the Snow emulator window, which will load it into the first available

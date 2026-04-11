@@ -32,10 +32,8 @@ Currently supported hardware:
 * GCR 400K/800K floppy disk drives (up to 3 on SE)
 * GCR/MFM 1.44MB 'SuperDrive' floppy disk drive
 * SCSI hard disk drives (up to 7)
-* SCSI CD-ROM drive
-* Macintosh Real-Time Clock
-* Macintosh keyboard/mouse
-* ADB keyboard/mouse
+* SCSI CD-ROM drive with CD audio support
+* Original Macintosh and ADB keyboard/mouse
 * Audio output (PWM-based audio on compact Macs and ASC on newer models)
 * Macintosh Display Card 8-24 with various monitor types (models with NuBus)
 * DaynaPORT SCSI/Link Ethernet adapter
@@ -45,11 +43,21 @@ Supported floppy image formats:
 * Apple DiskCopy 4.2 (sector-based)
 * Apple Disk Archive / Retrieval Tool ('DART') (sector-based)
 * Applesauce A2R 2.x and 3.x (flux)
-* Applesauce MOOF (bitstream and flux)
+* Applesauce MOOF (bitstream and flux). Snow can also save floppies in this format.
 * PCE Flux Image (PFI, flux)
 * PCE Raw Image (PRI, bitstream)
 * Raw images (sector-based)
 * Any format (Mac 1.44MB or PC) supported by [Fluxfox](https://github.com/dbalsom/fluxfox)
+
+Supported CD-ROM image formats:
+
+ * ISO
+ * Toast
+ * CUE/BIN
+
+Supported hard drive image formats:
+
+ * Raw device image
 
 Debugging features:
 

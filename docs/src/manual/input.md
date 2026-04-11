@@ -63,7 +63,8 @@ To enable or disable mapping an alternate key for Command, use the menu item
 ## Mouse
 
 Snow supports two ways of emulating the mouse, which can be chosen under
-'Advanced' in the [Load ROM dialog](starting.md).
+'Advanced' in the [Load ROM dialog](starting.md) or in the 'Machine ->
+Mouse emulation' menu while the emulator is running.
 
 ### Absolute positioning (default)
 
@@ -86,3 +87,7 @@ but it provides the most accurate emulation experience and works best with
 some games (e.g. first person shooters) and non-original software.
 
 Relative positioning mode works best when using Snow [fullscreen](fullscreen.md).
+When switching to fullscreen mode, Snow will automatically switch to relative
+positioning mode and back to the original mode when leaving fullscreen. This
+behavior can be enabled/disabled using the 'Options > Use relative mouse in
+fullscreen' menu option. This option persists globally.
