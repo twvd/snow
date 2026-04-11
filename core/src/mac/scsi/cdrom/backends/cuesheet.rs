@@ -93,10 +93,10 @@ enum SectorSource {
     Zeros,
     /// Sectors sourced from a data file
     DataFile {
-        /// Index of file in the data_files array
-        data_file_idx: usize,
+        /// Index of file in the `files` array
+        file_idx: usize,
         /// Sector number relative to the beginning of the file
-        data_file_sector: u32,
+        file_sector: u32,
     },
 }
 
@@ -111,11 +111,11 @@ struct SectorMapBuilder {
     /// Absolute sector number
     abs_cursor: u32,
     /// Sector number within current data file
-    data_file_cursor: u32,
+    file_cursor: u32,
     /// Max sectors in current data file
-    data_file_max: u32,
-    /// Index of current data file in the cuesheet's `data_files` array
-    data_file_idx: usize,
+    file_max: u32,
+    /// Index of current data file in the cuesheet's `files` array
+    file_idx: usize,
     map: Vec<SectorMapEntry>,
 }
 
@@ -128,38 +128,38 @@ impl SectorMapBuilder {
         // data such as CD-TEXT information.
         SectorMapBuilder {
             abs_cursor: LBA_START_SECTOR,
-            data_file_cursor: 0,
-            data_file_max: 0,
-            data_file_idx: 0,
+            file_cursor: 0,
+            file_max: 0,
+            file_idx: 0,
             map: vec![],
         }
     }
 
-    fn start_new_data_file(&mut self, idx: usize, max: u32) -> Result<()> {
+    fn start_new_file(&mut self, idx: usize, max: u32) -> Result<()> {
         // If a data file exists, add the rest of its sectors before starting the new file
-        self.add_rest_of_data_file()?;
-        self.data_file_cursor = 0;
-        self.data_file_idx = idx;
-        self.data_file_max = max;
+        self.add_rest_of_file()?;
+        self.file_cursor = 0;
+        self.file_idx = idx;
+        self.file_max = max;
 
         Ok(())
     }
 
     /// Add data sectors up to a given sector number within the data file
-    fn add_data_up_to(&mut self, up_to: u32) -> Result<()> {
-        if up_to < self.data_file_cursor {
-            bail!("Data file sector number cannot decrease");
+    fn add_file_up_to(&mut self, up_to: u32) -> Result<()> {
+        if up_to < self.file_cursor {
+            bail!("File sector number cannot decrease");
         }
 
-        if up_to > self.data_file_max {
-            bail!("Data file sector number exceeded max");
+        if up_to > self.file_max {
+            bail!("File sector number exceeded max");
         }
 
-        let additional = up_to - self.data_file_cursor;
+        let additional = up_to - self.file_cursor;
 
         if let Some(entry) = self.map.last_mut()
-            && let SectorSource::DataFile { data_file_idx, .. } = entry.source
-            && data_file_idx == self.data_file_idx
+            && let SectorSource::DataFile { file_idx, .. } = entry.source
+            && file_idx == self.file_idx
         {
             // Add more sectors to the existing map entry
             entry.sector_count += additional;
@@ -169,13 +169,13 @@ impl SectorMapBuilder {
                 sector: self.abs_cursor,
                 sector_count: additional,
                 source: SectorSource::DataFile {
-                    data_file_idx: self.data_file_idx,
-                    data_file_sector: self.data_file_cursor,
+                    file_idx: self.file_idx,
+                    file_sector: self.file_cursor,
                 },
             });
         }
 
-        self.data_file_cursor += additional;
+        self.file_cursor += additional;
         self.abs_cursor += additional;
 
         Ok(())
@@ -200,19 +200,19 @@ impl SectorMapBuilder {
         self.abs_cursor += sectors;
     }
 
-    fn add_rest_of_data_file(&mut self) -> Result<()> {
-        self.add_data_up_to(self.data_file_max)
+    fn add_rest_of_file(&mut self) -> Result<()> {
+        self.add_file_up_to(self.file_max)
     }
 
     fn build(mut self) -> Result<Vec<SectorMapEntry>> {
-        self.add_rest_of_data_file()?;
+        self.add_rest_of_file()?;
         Ok(self.map)
     }
 }
 
 pub struct CuesheetCdromBackend {
     cue_path: PathBuf,
-    data_files: Vec<CuesheetDataFile>,
+    files: Vec<CuesheetDataFile>,
     sessions: Vec<SessionInfo>,
     /// Map of sectors. Entries are sorted in order of increasing `sector` field.
     /// This table maps absolute sector numbers to data files. This is NOT the
@@ -230,7 +230,7 @@ impl CuesheetCdromBackend {
         let cue_dir = path.parent().unwrap();
         let cue_file = BufReader::new(File::open(path)?);
 
-        let mut data_files: Vec<CuesheetDataFile> = vec![];
+        let mut files: Vec<CuesheetDataFile> = vec![];
         let mut sector_map = SectorMapBuilder::new();
 
         let mut track_num = 0u8;
@@ -247,29 +247,29 @@ impl CuesheetCdromBackend {
             if let Some(command) = read_cue_word(&mut chars) {
                 match command.as_str() {
                     "FILE" => {
-                        let data_file_path = read_cue_path(&mut chars)
+                        let file_path = read_cue_path(&mut chars)
                             .ok_or_else(|| anyhow!("Failed to parse FILE command"))?;
-                        let data_file_path = cue_dir.join(Path::new(&data_file_path));
+                        let file_path = cue_dir.join(Path::new(&file_path));
 
                         let file_type = read_cue_word(&mut chars)
                             .ok_or_else(|| anyhow!("Failed to parse FILE command"))?;
                         // TODO: support WAVE?
                         if file_type != "BINARY" {
-                            bail!("Unsupported data file type `{}` in cuesheet", file_type);
+                            bail!("Unsupported file type `{}` in cuesheet", file_type);
                         }
 
-                        log::info!("Loading datafile from {}", data_file_path.to_string_lossy());
+                        log::info!("Loading file from {}", file_path.to_string_lossy());
 
-                        let data_file = File::open(data_file_path)?;
-                        let data_file_len = data_file.metadata()?.len();
+                        let file = File::open(file_path)?;
+                        let file_len = file.metadata()?.len();
                         let sector_count =
-                            data_file_len.div_ceil(RAW_SECTOR_LEN as u64).try_into()?;
-                        data_files.push(CuesheetDataFile {
+                            file_len.div_ceil(RAW_SECTOR_LEN as u64).try_into()?;
+                        files.push(CuesheetDataFile {
                             sector_count,
-                            file: data_file,
+                            file,
                         });
 
-                        sector_map.start_new_data_file(data_files.len() - 1, sector_count)?;
+                        sector_map.start_new_file(files.len() - 1, sector_count)?;
                     }
                     "TRACK" => {
                         track_num = read_cue_word(&mut chars)
@@ -289,9 +289,11 @@ impl CuesheetCdromBackend {
                             .ok_or_else(|| anyhow!("Invalid INDEX command"))?
                             .parse()?;
 
-                        // Index sector is relative to the current data file.
-                        let data_file_sector = read_cue_msf(&mut chars)?.to_sector();
-                        sector_map.add_data_up_to(data_file_sector)?;
+                        // Index sector is relative to the current data file
+                        let file_sector = read_cue_msf(&mut chars)?.to_sector();
+
+                        // Add any previous file data up to this point
+                        sector_map.add_file_up_to(file_sector)?;
 
                         // Add pregaps/postgaps here
                         sector_map.add_gap(gap_sectors);
@@ -311,6 +313,7 @@ impl CuesheetCdromBackend {
                     }
                     "PREGAP" | "POSTGAP" => {
                         let duration = read_cue_msf(&mut chars)?.to_sector();
+                        // Zeros sectors will be added to the map by the INDEX command
                         gap_sectors += duration;
                     }
                     // TODO: Support multisession bin/cue's. IsoBuster emits REM SESSION commands to indicate a new session.
@@ -322,7 +325,7 @@ impl CuesheetCdromBackend {
         log::debug!("Read tracks from cuesheet: {:#?}", tracks);
 
         // In case the final track has a postgap...
-        sector_map.add_rest_of_data_file()?;
+        sector_map.add_rest_of_file()?;
         sector_map.add_gap(gap_sectors);
 
         let sector_map = sector_map.build()?;
@@ -335,7 +338,7 @@ impl CuesheetCdromBackend {
 
         Ok(Self {
             cue_path: path.into(),
-            data_files,
+            files,
             sessions: vec![SessionInfo {
                 leadout: final_leadout,
                 tracks,
@@ -399,20 +402,20 @@ impl CdromBackend for CuesheetCdromBackend {
         let result = match map_entry.source {
             SectorSource::Zeros => [0; RAW_SECTOR_LEN],
             SectorSource::DataFile {
-                data_file_idx,
-                data_file_sector,
+                file_idx,
+                file_sector,
             } => {
-                let data_file = &self.data_files[data_file_idx];
-                let sector_in_file = data_file_sector + rel_sector;
+                let file = &self.files[file_idx];
+                let sector_in_file = file_sector + rel_sector;
                 // It turns out you don't need a &mut File to seek and read!
                 // Just call seek and read on a `&File`. This will clobber the file cursor,
                 // so use with caution.
-                let mut data_file: &File = &data_file.file;
-                data_file.seek(SeekFrom::Start(
+                let mut file: &File = &file.file;
+                file.seek(SeekFrom::Start(
                     sector_in_file as u64 * RAW_SECTOR_LEN as u64,
                 ))?;
                 let mut result = [0; RAW_SECTOR_LEN];
-                data_file.read_exact(&mut result)?;
+                file.read_exact(&mut result)?;
                 result
             }
         };
