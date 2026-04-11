@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use crate::audio_filter::AudioFilter;
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
-use crate::renderer::{null_audio_sink, AudioSink, AUDIO_BUFFER_SIZE};
+use crate::renderer::{AUDIO_BUFFER_SIZE, AudioSink, null_audio_sink};
 use crate::tickable::Ticks;
 use crate::types::{Byte, Field32};
 use anyhow::Result;

@@ -1,7 +1,7 @@
 use crate::cpu_m68k::FpuM68kType;
 use std::collections::VecDeque;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arrayvec::ArrayVec;
 use either::Either;
 use log::*;
@@ -337,12 +337,12 @@ pub struct CpuM68k<
 }
 
 impl<
-        TBus,
-        const ADDRESS_MASK: Address,
-        const CPU_TYPE: CpuM68kType,
-        const FPU_TYPE: FpuM68kType,
-        const PMMU: bool,
-    > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TBus,
+    const ADDRESS_MASK: Address,
+    const CPU_TYPE: CpuM68kType,
+    const FPU_TYPE: FpuM68kType,
+    const PMMU: bool,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
@@ -4086,12 +4086,12 @@ where
 }
 
 impl<
-        TBus,
-        const ADDRESS_MASK: Address,
-        const CPU_TYPE: CpuM68kType,
-        const FPU_TYPE: FpuM68kType,
-        const PMMU: bool,
-    > Tickable for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TBus,
+    const ADDRESS_MASK: Address,
+    const CPU_TYPE: CpuM68kType,
+    const FPU_TYPE: FpuM68kType,
+    const PMMU: bool,
+> Tickable for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {

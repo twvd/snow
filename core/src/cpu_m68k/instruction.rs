@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use either::Either;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;

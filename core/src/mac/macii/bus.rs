@@ -9,9 +9,9 @@ use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::asc::Asc;
+use crate::mac::nubus::NubusCard;
 use crate::mac::nubus::mdc12::Mdc12;
 use crate::mac::nubus::se30video::SE30Video;
-use crate::mac::nubus::NubusCard;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
@@ -19,7 +19,7 @@ use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::{MacModel, MacMonitor};
 use crate::renderer::{
-    null_audio_sink, AudioProvider, Renderer, AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS,
+    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};

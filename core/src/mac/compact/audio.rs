@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::audio_filter::AudioFilter;
-use crate::renderer::{null_audio_sink, AudioSink, AUDIO_BUFFER_SIZE, AUDIO_CHANNELS};
+use crate::renderer::{AUDIO_BUFFER_SIZE, AUDIO_CHANNELS, AudioSink, null_audio_sink};
 
 #[derive(Serialize, Deserialize)]
 pub struct AudioState {

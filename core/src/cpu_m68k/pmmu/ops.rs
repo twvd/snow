@@ -1,26 +1,26 @@
 //! M68851 PMMU - Opcode implementations
 
 use crate::cpu_m68k::{FpuM68kType, M68030};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::bus::{Address, Bus, IrqSource};
+use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::bus::FC_MASK;
 use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_PRIVILEGE_VIOLATION};
 use crate::cpu_m68k::instruction::Instruction;
 use crate::cpu_m68k::pmmu::instruction::{Pmove3Extword, PtestExtword};
-use crate::cpu_m68k::CpuM68kType;
 use crate::types::{DoubleLong, Long, Word};
 
 use super::instruction::Pmove1Extword;
 use super::regs::TcReg;
 
 impl<
-        TBus,
-        const ADDRESS_MASK: Address,
-        const CPU_TYPE: CpuM68kType,
-        const FPU_TYPE: FpuM68kType,
-        const PMMU: bool,
-    > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TBus,
+    const ADDRESS_MASK: Address,
+    const CPU_TYPE: CpuM68kType,
+    const FPU_TYPE: FpuM68kType,
+    const PMMU: bool,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {

@@ -1,6 +1,6 @@
 use crate::bus::Address;
-use crate::cpu_m68k::fpu::storage::float_array_as_ext_real;
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
+use crate::cpu_m68k::fpu::storage::float_array_as_ext_real;
 use crate::types::{Byte, Long};
 use arpfloat::Float;
 use num_traits::Zero;

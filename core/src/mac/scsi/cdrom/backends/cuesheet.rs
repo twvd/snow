@@ -126,7 +126,7 @@ impl SectorMapBuilder {
         // cannot be specified by the .bin/.cue format.
         // These sectors are usually empty, but sometimes they contain various
         // data such as CD-TEXT information.
-        SectorMapBuilder {
+        Self {
             abs_cursor: LBA_START_SECTOR,
             file_cursor: 0,
             file_max: 0,
@@ -184,7 +184,7 @@ impl SectorMapBuilder {
     /// Add sectors of silence (all zeroes)
     fn add_gap(&mut self, sectors: u32) {
         if let Some(entry) = self.map.last_mut()
-            && let SectorSource::Zeros = entry.source
+            && matches!(entry.source, SectorSource::Zeros)
         {
             // Add more sectors to the existing map entry
             entry.sector_count += sectors;
@@ -262,12 +262,8 @@ impl CuesheetCdromBackend {
 
                         let file = File::open(file_path)?;
                         let file_len = file.metadata()?.len();
-                        let sector_count =
-                            file_len.div_ceil(RAW_SECTOR_LEN as u64).try_into()?;
-                        files.push(CuesheetDataFile {
-                            sector_count,
-                            file,
-                        });
+                        let sector_count = file_len.div_ceil(RAW_SECTOR_LEN as u64).try_into()?;
+                        files.push(CuesheetDataFile { sector_count, file });
 
                         sector_map.start_new_file(files.len() - 1, sector_count)?;
                     }
@@ -322,7 +318,7 @@ impl CuesheetCdromBackend {
             }
         }
 
-        log::debug!("Read tracks from cuesheet: {:#?}", tracks);
+        log::debug!("Tracks: {:#?}", tracks);
 
         // In case the final track has a postgap...
         sector_map.add_rest_of_file()?;
@@ -349,7 +345,10 @@ impl CuesheetCdromBackend {
 
     fn find_map_entry_for_sector(&self, sector: u32) -> Option<&SectorMapEntry> {
         // TODO: use partition_point?
-        let idx = self.sector_map.iter().rposition(|entry| sector >= entry.sector)?;
+        let idx = self
+            .sector_map
+            .iter()
+            .rposition(|entry| sector >= entry.sector)?;
         self.sector_map.get(idx)
     }
 }

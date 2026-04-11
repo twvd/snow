@@ -9,7 +9,7 @@ pub mod iwm;
 
 use std::collections::VecDeque;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use ism::{IsmError, IsmSetup, IsmStatus};
 
 use drive::{DriveType, FloppyDrive};
@@ -220,11 +220,7 @@ impl Swim {
             if self.ism_mode.drive2_enable() {
                 1
             } else if self.ism_mode.drive1_enable() {
-                if self.intdrive {
-                    2
-                } else {
-                    0
-                }
+                if self.intdrive { 2 } else { 0 }
             } else {
                 // ???
                 0
@@ -320,14 +316,14 @@ impl Tickable for Swim {
             if eject_ticks < self.cycles {
                 self.get_selected_drive_mut().eject();
             }
-        } else if !self.lstrb {
-            if let Some(eject_ticks) = self.get_selected_drive().ejecting {
-                log::debug!(
-                    "Eject strobe too short ({} cycles)",
-                    eject_ticks - self.cycles
-                );
-                self.get_selected_drive_mut().ejecting = None;
-            }
+        } else if !self.lstrb
+            && let Some(eject_ticks) = self.get_selected_drive().ejecting
+        {
+            log::debug!(
+                "Eject strobe too short ({} cycles)",
+                eject_ticks - self.cycles
+            );
+            self.get_selected_drive_mut().ejecting = None;
         }
 
         if self.get_selected_drive().is_running() {

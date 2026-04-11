@@ -1,4 +1,4 @@
-use biquad::{Biquad, Coefficients, DirectForm2Transposed, ToHertz, Q_BUTTERWORTH_F32};
+use biquad::{Biquad, Coefficients, DirectForm2Transposed, Q_BUTTERWORTH_F32, ToHertz};
 use serde::{Deserialize, Serialize};
 
 const SAMPLE_RATE_HZ: f32 = 22254.0;

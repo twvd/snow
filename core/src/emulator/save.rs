@@ -1,9 +1,9 @@
 use std::fs::File;
 use std::io::Read;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use binrw::io::NoSeek;
-use binrw::{binrw, BinRead, BinWrite, NullString};
+use binrw::{BinRead, BinWrite, NullString, binrw};
 
 use crate::emulator::EmulatorConfig;
 use crate::mac::scsi::controller::ScsiController;

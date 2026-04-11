@@ -9,8 +9,8 @@ use anyhow::Result;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
-use super::adb::AdbTransceiver;
 use super::MacModel;
+use super::adb::AdbTransceiver;
 
 /// Counter at which to trigger the one second interrupt
 /// (counted on the E Clock)
@@ -454,10 +454,10 @@ impl BusMember<Address> for Via {
                 );
                 self.b_in.set_rtcdata(rtcin);
 
-                if self.model.has_adb() {
-                    if let Some(b) = self.adb.io(self.b_out.adb_st0(), self.b_out.adb_st1()) {
-                        self.kbdshift_in = b;
-                    }
+                if self.model.has_adb()
+                    && let Some(b) = self.adb.io(self.b_out.adb_st0(), self.b_out.adb_st1())
+                {
+                    self.kbdshift_in = b;
                 }
 
                 Some(())

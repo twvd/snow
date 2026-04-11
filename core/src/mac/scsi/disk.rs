@@ -1,16 +1,16 @@
 //! SCSI hard disk drive (block device)
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::debuggable::Debuggable;
+use crate::mac::scsi::STATUS_CHECK_CONDITION;
+use crate::mac::scsi::STATUS_GOOD;
+use crate::mac::scsi::ScsiCmdResult;
 use crate::mac::scsi::disk_image::{DiskImage, FileDiskImage};
 use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon};
-use crate::mac::scsi::ScsiCmdResult;
-use crate::mac::scsi::STATUS_CHECK_CONDITION;
-use crate::mac::scsi::STATUS_GOOD;
 
 pub const DISK_BLOCKSIZE: usize = 512;
 
@@ -85,7 +85,7 @@ impl ScsiTarget for ScsiTargetDisk {
 
         // 0 Peripheral qualifier (5-7), peripheral device type (4-0)
         result[0] = 0; // Magnetic disk
-                       // Device Type Modifier
+        // Device Type Modifier
         result[1] = 0;
 
         // SCSI version compliance

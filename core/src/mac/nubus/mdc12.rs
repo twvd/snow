@@ -297,11 +297,7 @@ where
                 if addr == 0x20_01C3 {
                     self.toggle = !self.toggle;
                 }
-                if self.toggle {
-                    Some(0)
-                } else {
-                    Some(4)
-                }
+                if self.toggle { Some(0) } else { Some(4) }
             }
             // This has to read 0
             0x20_01C4..=0x20_01CF => Some(0),

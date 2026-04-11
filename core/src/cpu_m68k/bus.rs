@@ -1,13 +1,13 @@
 //! M68k CPU - Bus access functionality
 
 use crate::bus::{Address, Bus, BusResult, IrqSource};
-use crate::cpu_m68k::cpu::{Breakpoint, BusBreakpoint, CpuError, CpuM68k, Group0Details};
 use crate::cpu_m68k::FpuM68kType;
+use crate::cpu_m68k::cpu::{Breakpoint, BusBreakpoint, CpuError, CpuM68k, Group0Details};
 use crate::cpu_m68k::{CpuM68kType, CpuSized, M68000, M68020, TORDER_HIGHLOW, TORDER_LOWHIGH};
 use crate::types::Long;
 use crate::types::Word;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 
 // M68k UM 3.8
 pub const FC_UNUSED: u8 = 0;
@@ -18,12 +18,12 @@ pub const FC_SUPERVISOR_PROGRAM: u8 = 6;
 pub const FC_MASK: u8 = 0b1111;
 
 impl<
-        TBus,
-        const ADDRESS_MASK: Address,
-        const CPU_TYPE: CpuM68kType,
-        const FPU_TYPE: FpuM68kType,
-        const PMMU: bool,
-    > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TBus,
+    const ADDRESS_MASK: Address,
+    const CPU_TYPE: CpuM68kType,
+    const FPU_TYPE: FpuM68kType,
+    const PMMU: bool,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
@@ -137,31 +137,32 @@ where
                         _ => e,
                     })?
             };
-            let b: T =
-                loop {
-                    match self.bus.read(byte_addr) {
-                        BusResult::Ok(b) => {
-                            // Trigger bus access breakpoints
-                            if self.breakpoints.iter().any(|bp| {
-                                *bp == Breakpoint::Bus(BusBreakpoint::Read, byte_addr)
-                                    || *bp == Breakpoint::Bus(BusBreakpoint::ReadWrite, byte_addr)
-                            }) {
-                                log::info!(
+            let b: T = loop {
+                match self.bus.read(byte_addr) {
+                    BusResult::Ok(b) => {
+                        // Trigger bus access breakpoints
+                        if self.breakpoints.iter().any(|bp| {
+                            *bp == Breakpoint::Bus(BusBreakpoint::Read, byte_addr)
+                                || *bp == Breakpoint::Bus(BusBreakpoint::ReadWrite, byte_addr)
+                        }) {
+                            log::info!(
                                 "Breakpoint hit (bus read): ${:08X}, value: ${:02X}, PC: ${:08X}",
-                                byte_addr, b, self.regs.pc,
+                                byte_addr,
+                                b,
+                                self.regs.pc,
                             );
-                                self.breakpoint_hit.set();
-                            }
-                            break b.into();
+                            self.breakpoint_hit.set();
                         }
-                        BusResult::WaitState => {
-                            // Insert wait states until bus access succeeds
-                            self.history_current.waitstates = true;
-                            self.advance_cycles(2)?;
-                            self.sync_bus()?;
-                        }
+                        break b.into();
                     }
-                };
+                    BusResult::WaitState => {
+                        // Insert wait states until bus access succeeds
+                        self.history_current.waitstates = true;
+                        self.advance_cycles(2)?;
+                        self.sync_bus()?;
+                    }
+                }
+            };
             result = result.wrapping_shl(8) | b;
 
             if CPU_TYPE < M68020 {

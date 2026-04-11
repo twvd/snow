@@ -2,16 +2,16 @@
 
 use std::path::Path;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
 use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::scsi::{
-    ScsiCmdResult, ASC_INVALID_FIELD_IN_CDB, ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
-    ASC_MEDIUM_NOT_PRESENT, ASC_PARAMETER_LIST_LENGTH_ERROR, CC_KEY_ILLEGAL_REQUEST,
-    CC_KEY_MEDIUM_ERROR, STATUS_CHECK_CONDITION, STATUS_GOOD,
+    ASC_INVALID_FIELD_IN_CDB, ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE, ASC_MEDIUM_NOT_PRESENT,
+    ASC_PARAMETER_LIST_LENGTH_ERROR, CC_KEY_ILLEGAL_REQUEST, CC_KEY_MEDIUM_ERROR,
+    STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult,
 };
 use crate::renderer::AudioProvider;
 use crate::tickable::Ticks;
@@ -138,20 +138,20 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
     }
 
     fn check_lba_within_capacity(&mut self, lba: u32) -> bool {
-        if let Some(capacity) = self.capacity() {
-            if lba as usize >= capacity / self.blocksize().unwrap() {
-                log::error!(
-                    "Seeking beyond disk, lba: {}, capacity: {}, blocksize: {}",
-                    lba,
-                    capacity,
-                    self.blocksize().unwrap()
-                );
-                self.common().set_cc(
-                    CC_KEY_ILLEGAL_REQUEST,
-                    ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
-                );
-                return false;
-            }
+        if let Some(capacity) = self.capacity()
+            && lba as usize >= capacity / self.blocksize().unwrap()
+        {
+            log::error!(
+                "Seeking beyond disk, lba: {}, capacity: {}, blocksize: {}",
+                lba,
+                capacity,
+                self.blocksize().unwrap()
+            );
+            self.common().set_cc(
+                CC_KEY_ILLEGAL_REQUEST,
+                ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
+            );
+            return false;
         }
         true
     }
@@ -466,9 +466,9 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                 result.push(0);
                 result.push(self.ms_media_type()); // Medium type
                 result.push(self.ms_device_specific()); // Device-specific parameter
-                                                        // TODO: Support LONGLBA (required if LLBAA != 0?)
+                // TODO: Support LONGLBA (required if LLBAA != 0?)
                 result.push(0); // Reserved/LONGLBA
-                                // Block descriptor length
+                // Block descriptor length
                 result.extend_from_slice(&(if dbd { 0u16 } else { 8u16 }).to_be_bytes());
 
                 if !dbd {

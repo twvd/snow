@@ -1,8 +1,8 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::path::Path;
 
 use crate::mac::scsi::{
-    cdrom::{CdromBackend, SessionInfo, TrackInfo, DATA_TRACK, LBA_START_SECTOR, RAW_SECTOR_LEN},
+    cdrom::{CdromBackend, DATA_TRACK, LBA_START_SECTOR, RAW_SECTOR_LEN, SessionInfo, TrackInfo},
     disk_image::DiskImage,
 };
 

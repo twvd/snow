@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use arrayvec::ArrayVec;
 use either::Either;
 use itertools::Itertools;
@@ -15,12 +15,12 @@ use crate::cpu_m68k::pmmu::instruction::PtestExtword;
 use crate::cpu_m68k::regs::Register;
 use crate::types::{Byte, Word};
 
+use super::CpuM68kType;
 use super::fpu::instruction::{FmoveControlReg, FmoveExtWord};
 use super::instruction::{
     AddressingMode, Direction, Instruction, InstructionMnemonic, InstructionSize,
 };
 use super::pmmu::instruction::Pmove1Extword;
-use super::CpuM68kType;
 
 #[derive(Clone)]
 pub struct DisassemblyEntry {

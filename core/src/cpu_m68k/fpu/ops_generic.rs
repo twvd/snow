@@ -1,5 +1,5 @@
 use crate::cpu_m68k::FpuM68kType;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use arpfloat::Float;
 use either::Either;
 use num_traits::ToPrimitive;
@@ -8,10 +8,10 @@ use strum::IntoEnumIterator;
 use crate::bus::{Address, Bus, IrqSource};
 
 use crate::cpu_m68k::cpu::CpuM68k;
+use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord};
 use crate::cpu_m68k::fpu::math::FloatMath;
 use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
-use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
 use crate::cpu_m68k::{CpuM68kType, FPU_M68881, FPU_M68882};
 use crate::types::{Byte, Long, Word};
@@ -29,12 +29,12 @@ pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_PACKED: usize = 5;
 pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_LEN: usize = 6;
 
 impl<
-        TBus,
-        const ADDRESS_MASK: Address,
-        const CPU_TYPE: CpuM68kType,
-        const FPU_TYPE: FpuM68kType,
-        const PMMU: bool,
-    > CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TBus,
+    const ADDRESS_MASK: Address,
+    const CPU_TYPE: CpuM68kType,
+    const FPU_TYPE: FpuM68kType,
+    const PMMU: bool,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
 where
     TBus: Bus<Address, u8> + IrqSource,
 {

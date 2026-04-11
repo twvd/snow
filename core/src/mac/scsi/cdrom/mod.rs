@@ -2,13 +2,13 @@
 
 mod backends;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::debuggable::Debuggable;
-use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::EmuContext;
+use crate::emulator::comm::EmulatorSpeed;
 use crate::mac::macii::bus::CLOCK_SPEED;
 use crate::mac::scsi::cdrom::backends::cuesheet::CuesheetCdromBackend;
 use crate::mac::scsi::cdrom::backends::iso::IsoCdromBackend;
@@ -17,21 +17,21 @@ use crate::mac::scsi::{
     ASC_ILLEGAL_MODE_FOR_THIS_TRACK, ASC_INVALID_COMMAND, ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
     ASC_UNRECOVERED_READ_ERROR,
 };
-use crate::renderer::{AudioProvider, AudioSink, AUDIO_BUFFER_SAMPLES};
+use crate::renderer::{AUDIO_BUFFER_SAMPLES, AudioProvider, AudioSink};
 use crate::tickable::Ticks;
 use crate::types::LatchingEvent;
 
-use super::disk_image::{DiskImage, FileDiskImage};
-use super::target::ScsiTarget;
-use super::target::ScsiTargetEvent;
-use super::target::ScsiTargetType;
-use super::ScsiCmdResult;
 use super::ASC_INVALID_FIELD_IN_CDB;
 use super::ASC_MEDIUM_NOT_PRESENT;
 use super::CC_KEY_ILLEGAL_REQUEST;
 use super::CC_KEY_MEDIUM_ERROR;
 use super::STATUS_CHECK_CONDITION;
 use super::STATUS_GOOD;
+use super::ScsiCmdResult;
+use super::disk_image::{DiskImage, FileDiskImage};
+use super::target::ScsiTarget;
+use super::target::ScsiTargetEvent;
+use super::target::ScsiTargetType;
 
 // CD-ROM protocol Documentation:
 //
@@ -450,10 +450,14 @@ impl ScsiTargetCdrom {
                     let sample = i16::from_le_bytes(samples[2 * i..][..2].try_into().unwrap());
                     out_samples[i] = sample as f32 / 32768.0 * self.audio_volume as f32 / 255.0;
                 }
-    
+
                 audio_sink.send(Box::new(out_samples))?;
             }
-            Err(e) => log::warn!("Failed to read raw samples from sector {}: {}", self.audio_pos, e)
+            Err(e) => log::warn!(
+                "Failed to read raw samples from sector {}: {}",
+                self.audio_pos,
+                e
+            ),
         }
 
         self.audio_pos += 1;
@@ -621,7 +625,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 // return mode page data after byte 26.
                 let mut data = vec![0; 0x18];
                 data[2] = 1; // Audio Play
-                             // TODO: support more features such as Mode2 sectors, multiple sessions, etc.
+                // TODO: support more features such as Mode2 sectors, multiple sessions, etc.
                 data[4] = (0b001 << 5) | (1 << 3); // Tray type loading mechanism; Eject
                 data[8..=9].copy_from_slice(&256u16.to_be_bytes()); // Number of Volume Levels Supported
 
