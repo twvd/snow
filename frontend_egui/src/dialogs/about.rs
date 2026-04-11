@@ -19,6 +19,7 @@ impl AboutDialog {
         "Eric Helgeson",
         "Reza Fouladian",
         "KenDesigns",
+        "Nolan Check",
     ];
 
     pub fn new(ctx: &egui::Context) -> Self {
@@ -96,7 +97,7 @@ impl AboutDialog {
                     ui.label(
                         egui::RichText::new(
                             self.shuffled_thanks
-                                .chunks(4)
+                                .chunks(3)
                                 .map(|names| names.join(", "))
                                 .join("\n"),
                         )
