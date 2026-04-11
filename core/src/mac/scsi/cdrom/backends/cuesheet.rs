@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use std::{
     fs::File,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
@@ -8,8 +8,8 @@ use std::{
 };
 
 use crate::mac::scsi::cdrom::{
-    CdromBackend, Msf, SessionInfo, TrackInfo, AUDIO_TRACK, DATA_TRACK, LBA_START_SECTOR,
-    RAW_SECTOR_LEN,
+    AUDIO_TRACK, CdromBackend, DATA_TRACK, LBA_START_SECTOR, Msf, RAW_SECTOR_LEN, SessionInfo,
+    TrackInfo,
 };
 
 // .cue file reference:
@@ -81,16 +81,143 @@ fn read_cue_msf(reader: &mut Peekable<Chars>) -> Result<Msf> {
 }
 
 struct CuesheetDataFile {
-    /// Absolute sector number where the data file resides on the CD
-    sector: u32,
+    /// Number of sectors in data file (not counting pregaps and postgaps)
+    #[allow(unused)]
     sector_count: u32,
     file: File,
+}
+
+#[derive(Debug)]
+enum SectorSource {
+    /// Sectors filled with zeroes. Used for pregaps and postgaps.
+    Zeros,
+    /// Sectors sourced from a data file
+    DataFile {
+        /// Index of file in the data_files array
+        data_file_idx: usize,
+        /// Sector number relative to the beginning of the file
+        data_file_sector: u32,
+    },
+}
+
+#[derive(Debug)]
+struct SectorMapEntry {
+    sector: u32,
+    sector_count: u32,
+    source: SectorSource,
+}
+
+struct SectorMapBuilder {
+    /// Absolute sector number
+    abs_cursor: u32,
+    /// Sector number within current data file
+    data_file_cursor: u32,
+    /// Max sectors in current data file
+    data_file_max: u32,
+    /// Index of current data file in the cuesheet's `data_files` array
+    data_file_idx: usize,
+    map: Vec<SectorMapEntry>,
+}
+
+impl SectorMapBuilder {
+    fn new() -> Self {
+        // Data files always start at time 00:02:00 (sector 150).
+        // This means there are 150 sectors located in the lead-in area which
+        // cannot be specified by the .bin/.cue format.
+        // These sectors are usually empty, but sometimes they contain various
+        // data such as CD-TEXT information.
+        SectorMapBuilder {
+            abs_cursor: LBA_START_SECTOR,
+            data_file_cursor: 0,
+            data_file_max: 0,
+            data_file_idx: 0,
+            map: vec![],
+        }
+    }
+
+    fn start_new_data_file(&mut self, idx: usize, max: u32) -> Result<()> {
+        // If a data file exists, add the rest of its sectors before starting the new file
+        self.add_rest_of_data_file()?;
+        self.data_file_cursor = 0;
+        self.data_file_idx = idx;
+        self.data_file_max = max;
+
+        Ok(())
+    }
+
+    /// Add data sectors up to a given sector number within the data file
+    fn add_data_up_to(&mut self, up_to: u32) -> Result<()> {
+        if up_to < self.data_file_cursor {
+            bail!("Data file sector number cannot decrease");
+        }
+
+        if up_to > self.data_file_max {
+            bail!("Data file sector number exceeded max");
+        }
+
+        let additional = up_to - self.data_file_cursor;
+
+        if let Some(entry) = self.map.last_mut()
+            && let SectorSource::DataFile { data_file_idx, .. } = entry.source
+            && data_file_idx == self.data_file_idx
+        {
+            // Add more sectors to the existing map entry
+            entry.sector_count += additional;
+        } else if additional > 0 {
+            // Start a new map entry
+            self.map.push(SectorMapEntry {
+                sector: self.abs_cursor,
+                sector_count: additional,
+                source: SectorSource::DataFile {
+                    data_file_idx: self.data_file_idx,
+                    data_file_sector: self.data_file_cursor,
+                },
+            });
+        }
+
+        self.data_file_cursor += additional;
+        self.abs_cursor += additional;
+
+        Ok(())
+    }
+
+    /// Add sectors of silence (all zeroes)
+    fn add_gap(&mut self, sectors: u32) {
+        if let Some(entry) = self.map.last_mut()
+            && let SectorSource::Zeros = entry.source
+        {
+            // Add more sectors to the existing map entry
+            entry.sector_count += sectors;
+        } else if sectors > 0 {
+            // Start a new map entry
+            self.map.push(SectorMapEntry {
+                sector: self.abs_cursor,
+                sector_count: sectors,
+                source: SectorSource::Zeros,
+            });
+        }
+
+        self.abs_cursor += sectors;
+    }
+
+    fn add_rest_of_data_file(&mut self) -> Result<()> {
+        self.add_data_up_to(self.data_file_max)
+    }
+
+    fn build(mut self) -> Result<Vec<SectorMapEntry>> {
+        self.add_rest_of_data_file()?;
+        Ok(self.map)
+    }
 }
 
 pub struct CuesheetCdromBackend {
     cue_path: PathBuf,
     data_files: Vec<CuesheetDataFile>,
     sessions: Vec<SessionInfo>,
+    /// Map of sectors. Entries are sorted in order of increasing `sector` field.
+    /// This table maps absolute sector numbers to data files. This is NOT the
+    /// table of contents; it doesn't carry information about tracks.
+    sector_map: Vec<SectorMapEntry>,
 }
 
 enum CuesheetTrackForm {
@@ -103,16 +230,12 @@ impl CuesheetCdromBackend {
         let cue_dir = path.parent().unwrap();
         let cue_file = BufReader::new(File::open(path)?);
 
-        let mut data_files = vec![];
-        // Data files always start at time 00:02:00 (sector 150).
-        // This means there are 150 sectors located in the lead-in area which
-        // cannot be specified by the .bin/.cue format.
-        // These sectors are usually empty, but sometimes they contain various
-        // data such as CD-TEXT information.
-        let mut next_data_file_sector = LBA_START_SECTOR;
+        let mut data_files: Vec<CuesheetDataFile> = vec![];
+        let mut sector_map = SectorMapBuilder::new();
 
         let mut track_num = 0u8;
         let mut track_form = CuesheetTrackForm::Audio;
+        let mut gap_sectors = 0;
 
         let mut tracks = vec![];
 
@@ -142,11 +265,11 @@ impl CuesheetCdromBackend {
                         let sector_count =
                             data_file_len.div_ceil(RAW_SECTOR_LEN as u64).try_into()?;
                         data_files.push(CuesheetDataFile {
-                            sector: next_data_file_sector,
                             sector_count,
                             file: data_file,
                         });
-                        next_data_file_sector += sector_count;
+
+                        sector_map.start_new_data_file(data_files.len() - 1, sector_count)?;
                     }
                     "TRACK" => {
                         track_num = read_cue_word(&mut chars)
@@ -165,24 +288,30 @@ impl CuesheetCdromBackend {
                         let index_num: u8 = read_cue_word(&mut chars)
                             .ok_or_else(|| anyhow!("Invalid INDEX command"))?
                             .parse()?;
+
+                        // Index sector is relative to the current data file.
+                        let data_file_sector = read_cue_msf(&mut chars)?.to_sector();
+                        sector_map.add_data_up_to(data_file_sector)?;
+
+                        // Add pregaps/postgaps here
+                        sector_map.add_gap(gap_sectors);
+                        gap_sectors = 0;
+
                         if index_num == 1 {
                             // The track will officially begin at index 1.
-                            // Index sector is relative to the current data file.
-                            let rel_sector = read_cue_msf(&mut chars)?.to_sector();
-                            let curr_data_file = data_files
-                                .last()
-                                .ok_or_else(|| anyhow!("No data file loaded for INDEX command"))?;
                             tracks.push(TrackInfo {
                                 tno: track_num,
                                 control: match track_form {
                                     CuesheetTrackForm::Audio => AUDIO_TRACK,
                                     CuesheetTrackForm::Mode1_2352 => DATA_TRACK,
                                 },
-                                sector: curr_data_file.sector + rel_sector,
+                                sector: sector_map.abs_cursor,
                             });
-                        } else {
-                            log::warn!("track {} INDEX {} ignored", track_num, index_num);
                         }
+                    }
+                    "PREGAP" | "POSTGAP" => {
+                        let duration = read_cue_msf(&mut chars)?.to_sector();
+                        gap_sectors += duration;
                     }
                     // TODO: Support multisession bin/cue's. IsoBuster emits REM SESSION commands to indicate a new session.
                     _ => log::warn!("Unknown cuesheet command {} ignored", command),
@@ -190,25 +319,48 @@ impl CuesheetCdromBackend {
             }
         }
 
-        log::info!("Read tracks from cuesheet: {:#?}", tracks);
+        log::debug!("Read tracks from cuesheet: {:#?}", tracks);
 
-        let final_leadout = data_files
+        // In case the final track has a postgap...
+        sector_map.add_rest_of_data_file()?;
+        sector_map.add_gap(gap_sectors);
+
+        let sector_map = sector_map.build()?;
+        log::debug!("Sector map: {:#?}", sector_map);
+
+        let final_leadout = sector_map
             .last()
-            .map(|df| df.sector + df.sector_count)
+            .map(|e| e.sector + e.sector_count)
             .unwrap_or(LBA_START_SECTOR);
 
-        Ok(Self {
+        let self_ = Self {
             cue_path: path.into(),
             data_files,
             sessions: vec![SessionInfo {
                 leadout: final_leadout,
                 tracks,
             }],
-        })
+            sector_map,
+        };
+
+        let test_sector = 20934;
+        let test = self_.find_map_entry_for_sector(test_sector);
+        log::debug!("map entry for sector {}: {:#?}", test_sector, test);
+        log::debug!("sector {} is at rel sector {}", test_sector, test_sector - test.unwrap().sector);
+        let test_source = match test.unwrap().source {
+            SectorSource::DataFile{ data_file_idx: _, data_file_sector } => data_file_sector,
+            _ => unreachable!()
+        };
+        let file_sector = test_source + test_sector - test.unwrap().sector;
+        log::debug!("sector {} is at file sector {} (file offset 0x{:X})", test_sector, file_sector, file_sector * 2352);
+
+        Ok(self_)
     }
 
-    fn find_data_file_for_sector(&self, sector: u32) -> Option<&CuesheetDataFile> {
-        self.data_files.iter().rev().find(|df| df.sector <= sector)
+    fn find_map_entry_for_sector(&self, sector: u32) -> Option<&SectorMapEntry> {
+        // TODO: use partition_point?
+        let idx = self.sector_map.iter().rposition(|entry| sector >= entry.sector)?;
+        self.sector_map.get(idx)
     }
 }
 
@@ -248,17 +400,36 @@ impl CdromBackend for CuesheetCdromBackend {
     }
 
     fn read_raw_sector(&self, sector: u32) -> Result<[u8; RAW_SECTOR_LEN]> {
-        let mut result = [0; RAW_SECTOR_LEN];
-        let data_file = self
-            .find_data_file_for_sector(sector)
-            .ok_or_else(|| anyhow!("No data file contains sector {}", sector))?;
-        let rel_sector = sector - data_file.sector;
-        // It turns out you don't need a &mut File to seek and read!
-        // Just call seek and read on a `&File`. This will clobber the file cursor,
-        // so use with caution.
-        let mut data_file: &File = &data_file.file;
-        data_file.seek(SeekFrom::Start(rel_sector as u64 * RAW_SECTOR_LEN as u64))?;
-        data_file.read_exact(&mut result)?;
+        let map_entry = self
+            .find_map_entry_for_sector(sector)
+            .ok_or_else(|| anyhow!("Sector {} not found in sector map", sector))?;
+        if !(map_entry.sector..map_entry.sector + map_entry.sector_count).contains(&sector) {
+            bail!("Sector {} not found in sector map", sector);
+        }
+
+        let rel_sector = sector - map_entry.sector;
+
+        let result = match map_entry.source {
+            SectorSource::Zeros => [0; RAW_SECTOR_LEN],
+            SectorSource::DataFile {
+                data_file_idx,
+                data_file_sector,
+            } => {
+                let data_file = &self.data_files[data_file_idx];
+                let sector_in_file = data_file_sector + rel_sector;
+                // It turns out you don't need a &mut File to seek and read!
+                // Just call seek and read on a `&File`. This will clobber the file cursor,
+                // so use with caution.
+                let mut data_file: &File = &data_file.file;
+                data_file.seek(SeekFrom::Start(
+                    sector_in_file as u64 * RAW_SECTOR_LEN as u64,
+                ))?;
+                let mut result = [0; RAW_SECTOR_LEN];
+                data_file.read_exact(&mut result)?;
+                result
+            }
+        };
+
         Ok(result)
     }
 }

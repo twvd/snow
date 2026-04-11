@@ -76,7 +76,7 @@ impl AdbDevice for AdbKeyboard {
         match event {
             AdbEvent::Key(ke) => self.event_queue.push_back(*ke),
             AdbEvent::ReleaseAll => {
-                for (sc, _) in self.keystate.iter().enumerate().filter(|(_, &s)| s) {
+                for (sc, _) in self.keystate.iter().enumerate().filter(|(_, s)| **s) {
                     self.event_queue
                         .push_back(KeyEvent::KeyUp(sc.try_into().unwrap(), Self::KEYMAP));
                 }
