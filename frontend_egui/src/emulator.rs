@@ -1,7 +1,6 @@
 //! Emulator state management
 
 use anyhow::{anyhow, Result};
-use crossbeam_channel::Receiver;
 use eframe::egui;
 use log::*;
 use num_traits::cast::ToPrimitive;
@@ -67,7 +66,7 @@ impl From<Option<ScsiTargetStatus>> for ScsiTarget {
 
 /// Results of initializing the emulator, includes channels
 pub struct EmulatorInitResult {
-    pub frame_receiver: Receiver<DisplayBuffer>,
+    pub frame_receiver: Arc<Mutex<Option<DisplayBuffer>>>,
 }
 
 /// Initialization arguments for the emulator, minus filenames
@@ -314,7 +313,7 @@ impl EmulatorState {
     fn init_finalize(
         &mut self,
         mut emulator: Emulator,
-        frame_recv: crossbeam_channel::Receiver<DisplayBuffer>,
+        frame_recv: Arc<Mutex<Option<DisplayBuffer>>>,
         cmd: EmulatorCommandSender,
         audio_disabled: bool,
         pause: bool,

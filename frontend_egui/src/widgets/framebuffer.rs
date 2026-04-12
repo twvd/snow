@@ -5,7 +5,6 @@ use std::{fs::File, path::Path};
 
 use crate::shader_pipeline::{ShaderConfig, ShaderId, ShaderPipeline};
 use anyhow::{bail, Result};
-use crossbeam_channel::Receiver;
 use eframe::egui;
 use eframe::egui::Vec2;
 use eframe::egui_glow;
@@ -43,7 +42,7 @@ impl Display for ScalingAlgorithm {
 
 pub struct FramebufferWidget {
     frame: Option<DisplayBuffer>,
-    frame_recv: Option<Receiver<DisplayBuffer>>,
+    frame_recv: Option<Arc<std::sync::Mutex<Option<DisplayBuffer>>>>,
     viewport_texture: egui::TextureHandle,
     pub scale: f32,
     pub scaling_algorithm: ScalingAlgorithm,
@@ -100,15 +99,16 @@ impl FramebufferWidget {
         f32::from(self.display_size[1]) * self.scale
     }
 
-    pub fn connect_receiver(&mut self, recv: Receiver<DisplayBuffer>) {
+    pub fn connect_receiver(&mut self, recv: Arc<std::sync::Mutex<Option<DisplayBuffer>>>) {
         self.frame_recv = Some(recv);
     }
 
     pub fn draw(&mut self, ui: &mut egui::Ui, fullscreen: bool) -> egui::Response {
         if let Some(ref frame_recv) = self.frame_recv {
-            if !frame_recv.is_empty() {
-                let frame = frame_recv.recv().unwrap();
-
+            if let Some(frame) = {
+                let mut lock = frame_recv.lock().unwrap();
+                lock.take()
+            } {
                 self.display_size = [frame.width(), frame.height()];
                 self.viewport_texture.set(
                     egui::ColorImage::new(
