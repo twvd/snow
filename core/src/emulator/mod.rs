@@ -256,7 +256,7 @@ impl Emulator {
         rom: &[u8],
         extra_roms: &[ExtraROMs],
         model: MacModel,
-    ) -> Result<(Self, crossbeam_channel::Receiver<DisplayBuffer>)> {
+    ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
         Self::new_with_extra(
             rom,
             extra_roms,
@@ -281,7 +281,7 @@ impl Emulator {
         override_fdd_type: Option<DriveType>,
         pmmu_enabled: bool,
         shared_dir: Option<PathBuf>,
-    ) -> Result<(Self, crossbeam_channel::Receiver<DisplayBuffer>)> {
+    ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
         let (statuss, statusr) = crossbeam_channel::unbounded();
@@ -469,7 +469,7 @@ impl Emulator {
     pub fn load_state<P: AsRef<Path>, PT: AsRef<Path>>(
         path: P,
         tmpdir: PT,
-    ) -> Result<(Self, crossbeam_channel::Receiver<DisplayBuffer>)> {
+    ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
         let (cmds, cmdr) = crossbeam_channel::unbounded();
         let (statuss, statusr) = crossbeam_channel::unbounded();
         let renderer = ChannelRenderer::new(0, 0)?;

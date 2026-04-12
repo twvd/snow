@@ -132,7 +132,10 @@ fn main() -> Result<()> {
     info!("Starting");
     let start = Instant::now();
     while emulator.get_cycles() < args.cycles {
-        while let Ok(buf) = frame_recv.try_recv() {
+        while let Some(buf) = {
+            let mut lock = frame_recv.lock().unwrap();
+            lock.take()
+        } {
             assert!(display_height == 0 || display_height == buf.height());
             assert!(display_width == 0 || display_width == buf.width());
             display_height = buf.height();
