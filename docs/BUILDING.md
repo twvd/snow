@@ -54,3 +54,19 @@ will therefore be very slow.
 If you want to build with Link Time Optimization (LTO) enabled, set the environment variable
 `CARGO_PROFILE_RELEASE_LTO=fat`. LTO increases compilation time but generates a slightly faster (more optimized)
 executable.
+
+## Cargo feature flags
+
+The default feature set is recommended for most users. The following optional
+features can be toggled at build time via `--features` / `--no-default-features`:
+
+| Feature | Default | Description | Extra dependencies |
+|---|---|---|---|
+| `ethernet` | yes | Ethernet emulation (DaynaPORT SCSI/Link) | — |
+| `ethernet_nat` | yes | Userland NAT for Ethernet | — |
+| `ethernet_nat_https_stripping` | yes | HTTPS stripping for NAT | — |
+| `ethernet_tap` | yes | tap interface support (Linux) | `libpnet` / raw sockets |
+| `ethernet_raw` | no | Raw Ethernet socket support | `libpnet` / raw sockets |
+| `sdl2-bundled` | no | Build and statically link SDL2 | — |
+| `sdl2-pkgconfig` | no | Find SDL2 via pkg-config | — |
+| `sdl2-static` | no | Statically link SDL2 | — |
