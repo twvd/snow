@@ -495,11 +495,15 @@ impl ScsiTargetCdrom {
     }
 
     fn get_track_at_sector(&self, sector: u32) -> Option<&TrackInfo> {
-        self.backend.as_ref()?.sessions()?[0] // TODO: support multi-session discs
-            .tracks
+        // TODO: support multi-session discs
+        let tracks = &self.backend.as_ref()?.sessions()?[0].tracks;
+        tracks
             .iter()
             .rev()
             .find(|t| t.sector <= sector)
+            // XXX: if sector is before the first track, just return the first track.
+            // This occurs if Track 1 begins with an Index 0 pregap.
+            .or_else(|| tracks.first())
     }
 }
 
@@ -788,9 +792,10 @@ impl ScsiTarget for ScsiTargetCdrom {
                         // CD-ROM Current Position
                         // Find current track at playback position
                         let Some(track) = self.get_track_at_sector(self.audio_pos) else {
-                            // FIXME: correct?
+                            // No tracks available
+                            // FIXME: is this correct?
                             self.common
-                                .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                                .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
                             return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                         };
 
@@ -801,6 +806,10 @@ impl ScsiTarget for ScsiTargetCdrom {
                         //     track.sector
                         // );
 
+                        // FIXME: This code tries to guess the subchannel info based on the TOC.
+                        // Instead, the backend should return subchannel info along with
+                        // read_raw_sector.
+
                         // [PIONEER] Table 2-27F: CD-ROM Current Position Data Block
                         result.push(0x01); // Sub Channel Data Format code
                         result.push((1 << 4) | track.control); // ADR/Control
@@ -809,10 +818,31 @@ impl ScsiTarget for ScsiTargetCdrom {
                         result.extend_from_slice(
                             &self.msf_to_address_field(Msf::from_sector(self.audio_pos)?, msf != 0),
                         );
-                        let track_relative = self.audio_pos - track.sector;
-                        result.extend_from_slice(
-                            &self.msf_to_address_field(Msf::from_sector(track_relative)?, msf != 0),
-                        );
+                        // Track relative position can be negative if the audio position is in a track pregap.
+                        let track_relative = self.audio_pos as i32 - track.sector as i32;
+                        if let Ok(track_relative) = TryInto::<u32>::try_into(track_relative) {
+                            // Track relative position is positive.
+                            result.extend_from_slice(
+                                &self.msf_to_address_field(
+                                    Msf::from_sector(track_relative)?,
+                                    msf != 0,
+                                ),
+                            );
+                        } else if msf != 0 {
+                            // Track relative position is negative (MSF).
+                            // [MMC4] 6.29.3.3:
+                            // If the
+                            // TIME bit is set to one, this field is the relative TIME address from the Q Sub-channel formatted
+                            // according to Table 29.
+                            // FIXME: It isn't clear how to express a negative MSF code. Put zeros here for now.
+                            result.extend_from_slice(&[0, 0, 0, 0]);
+                        } else {
+                            // Track relative position is negative (LBA).
+                            // [MMC4] 6.29.3.3:
+                            // If the CDB TIME bit is zero, this field is a track relative LBA. If the current block is in
+                            // the pre-gap area of a track, this is a negative value, expressed as a twoís-complement number.
+                            result.extend_from_slice(&track_relative.to_be_bytes());
+                        }
                     }
                     _ => {
                         // TODO: Implement sub-channel data block stuff
