@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use log::*;
 
 use super::{STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult};
+use crate::util::mac::{macroman_to_utf8, utf8_to_macroman};
 
 const MAX_FILE_PATH: usize = 32; // Max Macintosh File name length
 
@@ -130,7 +131,7 @@ impl BlueSCSI {
                 file_entry[0] = index;
                 file_entry[1] = if is_dir { 0x00 } else { 0x01 };
 
-                let name_bytes = name_str.as_bytes();
+                let name_bytes = utf8_to_macroman(name_str);
                 let len = name_bytes.len().min(MAX_FILE_PATH);
                 file_entry[2..2 + len].copy_from_slice(&name_bytes[..len]);
 
@@ -185,9 +186,8 @@ impl BlueSCSI {
             return ScsiCmdResult::Status(STATUS_CHECK_CONDITION);
         };
         if let Some(data) = outdata {
-            if let Some(pos) = data.iter().position(|&b| b == 0)
-                && let Ok(name) = std::str::from_utf8(&data[..pos])
-            {
+            if let Some(pos) = data.iter().position(|&b| b == 0) {
+                let name = macroman_to_utf8(&data[..pos]);
                 let path = shared_dir.join(name);
                 match File::create(path) {
                     Ok(f) => {

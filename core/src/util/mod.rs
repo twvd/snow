@@ -1,4 +1,5 @@
 pub mod lossyinto;
+pub mod mac;
 
 use std::ops::{Mul, SubAssign};
 use std::sync::{Arc, RwLock};
