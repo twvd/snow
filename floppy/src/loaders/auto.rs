@@ -87,13 +87,14 @@ impl Autodetect {
             return Ok(ImageType::Raw);
         }
         // Bitfile / 'Dave format'
-        if data.len() >= 10
-            && data[0..4] == data[4..8]
-            && [0, 1].contains(&data[8])
-            && [0, 1].contains(&data[9])
-        {
-            return Ok(ImageType::Bitfile);
-        }
+        // Legacy and often leads to misdetection on HDD files, so disabled
+        //if data.len() >= 10
+        //    && data[0..4] == data[4..8]
+        //    && [0, 1].contains(&data[8])
+        //    && [0, 1].contains(&data[9])
+        //{
+        //    return Ok(ImageType::Bitfile);
+        //}
 
         #[cfg(feature = "fluxfox")]
         if Fluxfox::detect(data) {
