@@ -2561,6 +2561,14 @@ impl SnowGui {
             "img" | "hda" => {
                 // If this was a floppy image (.img), it would have been caught earlier
                 // by the floppy loader already.
+                if let Some(s) = crate::util::mac::hdd_sanitycheck(path) {
+                    self.toasts.add(
+                        Toast::default()
+                            .text(s)
+                            .options(ToastOptions::default())
+                            .kind(ToastKind::Warning),
+                    );
+                }
                 if !self.emu.scsi_attach_hdd_firstfree(path) {
                     self.toasts.add(
                         Toast::new()
@@ -2875,6 +2883,14 @@ impl eframe::App for SnowGui {
         if let Some(path) = self.hdd_dialog.take_picked() {
             match self.hdd_dialog.mode() {
                 DialogMode::PickFile => {
+                    if let Some(s) = crate::util::mac::hdd_sanitycheck(&path) {
+                        self.toasts.add(
+                            Toast::default()
+                                .text(s)
+                                .options(ToastOptions::default())
+                                .kind(ToastKind::Warning),
+                        );
+                    }
                     self.emu.scsi_attach_hdd(self.hdd_dialog_idx, &path);
                 }
                 DialogMode::SaveFile => {
