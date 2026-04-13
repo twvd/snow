@@ -145,10 +145,10 @@ where
         if !self.vblank_enable {
             self.vblank_irq = false;
         }
-        if self.vblank_ticks > 16_000_000 / 60 {
+        if self.vblank_ticks >= 16_000_000 / 60 {
             self.render()?;
 
-            self.vblank_ticks = 0;
+            self.vblank_ticks -= 16_000_000 / 60;
             if self.vblank_enable {
                 self.vblank_irq = true;
             }
