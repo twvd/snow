@@ -6,20 +6,10 @@ simply follow the steps on [rustup.rs](https://rustup.rs/).
 Snow uses a `rust-toolchain.toml` file to specify the version of the Rust toolchain it requires.
 Cargo will download and install this version automatically (if needed) when you build.
 
-Building Snow depends on having [SDL2](https://libsdl.org/) available on your system as well as `pkg-config` to find the
-library.
-
-On Mac, if you have [brew](https://brew.sh/) installed, you can install the dependencies using:
+On Linux you need the ALSA development headers; on Debian or Ubuntu:
 
 ```shell
-brew install pkg-config sdl2
-```
-
-On Linux, the name of your packages depends on your distribution, but they should be generally available. On Debian or
-Ubuntu, you can run:
-
-```shell
-sudo apt install libsdl2-dev pkg-config
+sudo apt install libasound2-dev pkg-config
 ```
 
 ## Building and running from source

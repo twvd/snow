@@ -1,77 +1,31 @@
 use anyhow::{anyhow, Result};
-use sdl2::audio::{AudioCallback, AudioDevice, AudioSpecDesired};
-use sdl2::Sdl;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{BufferSize, SampleFormat, Stream, StreamConfig};
 use snow_core::renderer::{AudioBuffer, AudioProvider, AudioReceiver, AudioSink, ChannelAudioSink};
-use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-pub struct SDLSingleton {
-    context: Sdl,
-}
-
-thread_local! {
-    static SDL: RefCell<SDLSingleton> = RefCell::new({
-        let context = sdl2::init().unwrap();
-
-        SDLSingleton {
-            context,
-        }
-    });
-}
-
-struct SDLAudioCallback {
+struct CpalAudioCallback {
     recv: AudioReceiver,
-    exch: Arc<SDLAudioExchange>,
+    exch: Arc<CpalAudioExchange>,
     /// When true, play silence while waiting for the audio receiver to fill up.
     /// Prebuffering prevents audio interruptions if the emulator doesn't deliver
     /// samples in time for playback.
     prebuffering: bool,
-    /// An extra layer of buffering to solve these problems:
-    /// - SDL audio buffers must have a power-of-2 length
-    /// - Users may submit audio buffers that exceed SDL's expected length
+    /// An extra layer of buffering to solve the problem that users may submit audio
+    /// buffers that don't line up with the host's expected callback length.
     active_samples: VecDeque<f32>,
 }
 
-/// Exchanges state between the SDLAudioCallback and SDLAudioProvider
-#[derive(Default)]
-struct SDLAudioExchange {
-    mute: AtomicBool,
-    underrun: AtomicBool,
-}
-
-/// Holds the SDL AudioDevice solely to prevent it from being dropped.
-/// Do not access the device field, it may not be thread-safe!
-#[allow(unused)]
-#[allow(clippy::non_send_fields_in_send_ty)]
-struct AudioDeviceHolder(AudioDevice<SDLAudioCallback>);
-
-// SAFETY: It should be safe to declare AudioDeviceHolder Send and Sync as long
-// as it is only being held, never accessed.
-// FIXME: I'm not actually sure if this is safe at all. It seems to work though.
-unsafe impl Send for AudioDeviceHolder {}
-unsafe impl Sync for AudioDeviceHolder {}
-
-pub struct SDLAudioStream {
-    #[allow(unused)]
-    device: AudioDeviceHolder,
-    channel_sink: ChannelAudioSink,
-    exch: Arc<SDLAudioExchange>,
-}
-
-impl AudioCallback for SDLAudioCallback {
-    type Channel = f32;
-
-    fn callback(&mut self, out: &mut [f32]) {
+impl CpalAudioCallback {
+    fn fill(&mut self, out: &mut [f32]) {
         // Audio samples are already in standard f32 range (-1.0 to 1.0)
         // The amplitude is reduced from theoretical 1.0 to 0.5 because
         // if the audio reaches max volume on MacOS hosts with CERTAIN audio outputs, the sound
         // in the OS will be distorted for as long as the emulator is running.
         // Reducing the maximum sample amplitude seems to not trigger this, so that
         // is the workaround for now.
-        //
-        // Last tested on MacOS Sequoia, SDL 2.32.8.
 
         if self.prebuffering {
             if self.recv.is_full() {
@@ -85,7 +39,7 @@ impl AudioCallback for SDLAudioCallback {
         // Collect audio samples into the active buffer
         while self.active_samples.len() < out.len() {
             if let Ok(new_samples) = self.recv.try_recv() {
-                self.active_samples.extend(&new_samples);
+                self.active_samples.extend(new_samples.iter().copied());
             } else {
                 break;
             }
@@ -99,7 +53,7 @@ impl AudioCallback for SDLAudioCallback {
                     active_samples.pop_front();
                 }
             } else {
-                // Feed active samples to the SDL output
+                // Feed active samples to the output
                 for out_sample in out.iter_mut() {
                     *out_sample = active_samples.pop_front().unwrap().clamp(-1.0, 1.0) * 0.5;
                 }
@@ -124,39 +78,86 @@ impl AudioCallback for SDLAudioCallback {
     }
 }
 
-impl SDLAudioStream {
-    /// Creates a new audio provider
+/// Exchanges state between the audio callback and the provider
+#[derive(Default)]
+struct CpalAudioExchange {
+    mute: AtomicBool,
+    underrun: AtomicBool,
+}
+
+/// Holds the cpal Stream solely to prevent it from being dropped.
+/// Do not access the stream field, it may not be thread-safe!
+#[allow(unused)]
+struct StreamHolder(Stream);
+
+pub struct CpalAudioStream {
+    #[allow(unused)]
+    stream: StreamHolder,
+    channel_sink: ChannelAudioSink,
+    exch: Arc<CpalAudioExchange>,
+}
+
+impl CpalAudioStream {
     pub fn new(freq: i32, channels: u8, samples: u16) -> Result<Self> {
-        SDL.with(|cell| {
-            let channel_sink = ChannelAudioSink::new();
+        let host = cpal::default_host();
+        let device = host
+            .default_output_device()
+            .ok_or_else(|| anyhow!("No default audio output device"))?;
 
-            let sdls = cell.borrow_mut();
-            let audio_subsystem = sdls.context.audio().map_err(|e| anyhow!(e))?;
-            let spec = AudioSpecDesired {
-                freq: Some(freq),
-                channels: Some(channels),
-                samples: Some(samples),
-            };
+        let config = StreamConfig {
+            channels: channels as u16,
+            sample_rate: freq as u32,
+            buffer_size: BufferSize::Fixed(samples as u32),
+        };
 
-            let exch = Arc::new(SDLAudioExchange::default());
+        log::debug!(
+            "Audio: device={:?} freq={} channels={} buffer={}",
+            device.description().ok(),
+            freq,
+            channels,
+            samples
+        );
 
-            let device = audio_subsystem
-                .open_playback(None, &spec, |spec| {
-                    log::debug!("Audio spec: {:?}", spec);
-                    SDLAudioCallback {
-                        recv: channel_sink.receiver(),
-                        exch: exch.clone(),
-                        prebuffering: true,
-                        active_samples: Default::default(),
-                    }
-                })
-                .map_err(|e| anyhow!(e))?;
-            device.resume();
-            Ok(Self {
-                device: AudioDeviceHolder(device),
-                channel_sink,
-                exch,
-            })
+        let channel_sink = ChannelAudioSink::new();
+        let exch = Arc::new(CpalAudioExchange::default());
+
+        let mut cb = CpalAudioCallback {
+            recv: channel_sink.receiver(),
+            exch: exch.clone(),
+            prebuffering: true,
+            active_samples: VecDeque::new(),
+        };
+
+        let err_fn = |err| log::error!("Audio stream error: {}", err);
+
+        let stream = device
+            .build_output_stream(
+                &config,
+                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| cb.fill(data),
+                err_fn,
+                None,
+            )
+            .map_err(|e| anyhow!("Failed to build audio output stream: {}", e))?;
+
+        // Sanity check the supported format. cpal will try to honor the config
+        // regardless; we only log a warning if it looks off.
+        if let Ok(supported) = device.default_output_config() {
+            if supported.sample_format() != SampleFormat::F32 {
+                log::debug!(
+                    "Default device sample format is {:?}; requesting F32 anyway.",
+                    supported.sample_format()
+                );
+            }
+        }
+
+        stream
+            .play()
+            .map_err(|e| anyhow!("Failed to start audio stream: {}", e))?;
+
+        Ok(Self {
+            stream: StreamHolder(stream),
+            channel_sink,
+            exch,
         })
     }
 
@@ -173,11 +174,11 @@ impl SDLAudioStream {
     }
 }
 
-struct SDLAudioStreamSink {
-    stream: Arc<SDLAudioStream>,
+struct CpalAudioStreamSink {
+    stream: Arc<CpalAudioStream>,
 }
 
-impl AudioSink for SDLAudioStreamSink {
+impl AudioSink for CpalAudioStreamSink {
     fn send(&self, buffer: AudioBuffer) -> Result<()> {
         self.stream.channel_sink.send(buffer)
     }
@@ -191,11 +192,11 @@ impl AudioSink for SDLAudioStreamSink {
     }
 }
 
-pub struct SDLAudioProvider {
-    streams: Vec<Arc<SDLAudioStream>>,
+pub struct CpalAudioProvider {
+    streams: Vec<Arc<CpalAudioStream>>,
 }
 
-impl SDLAudioProvider {
+impl CpalAudioProvider {
     pub fn new() -> Result<Self> {
         Ok(Self { streams: vec![] })
     }
@@ -219,16 +220,16 @@ impl SDLAudioProvider {
     }
 }
 
-impl AudioProvider for SDLAudioProvider {
+impl AudioProvider for CpalAudioProvider {
     fn create_stream(
         &mut self,
         freq: i32,
         channels: u8,
         samples: u16,
     ) -> Result<Box<dyn AudioSink>> {
-        let stream = Arc::new(SDLAudioStream::new(freq, channels, samples)?);
+        let stream = Arc::new(CpalAudioStream::new(freq, channels, samples)?);
         self.streams.push(stream.clone());
-        let stream_sink = SDLAudioStreamSink { stream };
+        let stream_sink = CpalAudioStreamSink { stream };
         Ok(Box::new(stream_sink))
     }
 }

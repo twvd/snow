@@ -23,17 +23,10 @@ The package should be called **`snowemu`**.
 See [BUILDING.md](docs/BUILDING.md) for build prerequisites, instructions, and
 available feature flags.
 
-Distribution packages should use the default feature flags. Prefer linking
-against the system SDL2 dynamically (the default behavior, or explicitly with
-the `sdl2-pkgconfig` feature). Avoid `sdl2-bundled` and `sdl2-static` in
-distribution packages.
+Distribution packages should use the default feature flags.
 
 Packaged builds must be built in release mode with LTO enabled. Debug symbols
 may be stripped if preferred.
-
-## Runtime dependencies
-
-- SDL2
 
 ## Installed files
 

@@ -30,7 +30,7 @@ jobs:
     - name: Update package repos
       run: sudo apt-get -y update
     - name: Install prerequisites
-      run: sudo apt-get -y install libsdl2-dev python3
+      run: sudo apt-get -y install libasound2-dev python3
     - name: Fetch submodules
       run: git submodule update --init --recursive
     - name: Download pinned Rust toolchain
@@ -38,7 +38,7 @@ jobs:
     - name: Enable Rust compiler cache
       uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
     - name: Build release
-      run: cargo build --verbose --release --all -F sdl2-pkgconfig -F sdl2-static
+      run: cargo build --verbose --release --all
     - name: GUI Create packaging directory
       run: mkdir snow-gui
     - name: GUI Gather files
