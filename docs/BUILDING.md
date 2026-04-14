@@ -6,29 +6,17 @@ simply follow the steps on [rustup.rs](https://rustup.rs/).
 Snow uses a `rust-toolchain.toml` file to specify the version of the Rust toolchain it requires.
 Cargo will download and install this version automatically (if needed) when you build.
 
-Building Snow depends on having [SDL2](https://libsdl.org/) available on your system as well as `pkg-config` to find the
-library.
-
-On Mac, if you have [brew](https://brew.sh/) installed, you can install the dependencies using:
+On Linux, install ALSA dev headers. On Debian or Ubuntu:
 
 ```shell
-brew install pkg-config sdl2
+sudo apt install libasound2-dev pkg-config
 ```
 
-On Linux, the name of your packages depends on your distribution, but they should be generally available. On Debian or
-Ubuntu, you can run:
+On Fedora:
 
 ```shell
-sudo apt install libsdl2-dev pkg-config
+sudo dnf install alsa-lib-devel pkgconf-pkg-config
 ```
-
-On Fedora, you can run:
-
-```shell
-sudo dnf install sdl2-compat-devel pkgconf-pkg-config
-```
-
-On Windows, you'll need to obtain an SDL2 build (either by compiling it yourself or downloading a prebuilt binary). At the time of writing, the latest release is available [here](https://github.com/libsdl-org/SDL/releases/tag/release-2.32.10). Make sure to download the correct binaries for your platform - typically x64. Copy `SDL2.dll` and `SDL2.lib` into Snow's project root directory.
 
 ## Building from source
 
@@ -67,6 +55,3 @@ features can be toggled at build time via `--features` / `--no-default-features`
 | `ethernet_nat_https_stripping` | yes | HTTPS stripping for NAT | — |
 | `ethernet_tap` | yes | tap interface support (Linux) | `libpnet` / raw sockets |
 | `ethernet_raw` | no | Raw Ethernet socket support | `libpnet` / raw sockets |
-| `sdl2-bundled` | no | Build and statically link SDL2 | — |
-| `sdl2-pkgconfig` | no | Find SDL2 via pkg-config | — |
-| `sdl2-static` | no | Statically link SDL2 | — |

@@ -40,7 +40,6 @@ This guide reproduces the GitHub Actions Windows build locally using Visual Stud
     pacman -S --noconfirm \
       mingw-w64-x86_64-toolchain \
       mingw-w64-x86_64-pkg-config \
-      mingw-w64-x86_64-SDL2 \
       mingw-w64-x86_64-cmake
     ```
 
@@ -66,11 +65,9 @@ g++ --version
 rustc --version
 cargo --version
 pkg-config --version
-pkg-config --libs --cflags sdl2
-sdl2-config --version
 cmake --version
 ```
-If `pkg-config` or `sdl2` fail, ensure you're running in the MinGW64 shell or that `C:\msys64\mingw64\bin` is on PATH.
+If `pkg-config` fails, ensure you're running in the MinGW64 shell or that `C:\msys64\mingw64\bin` is on PATH.
 
 ## 4. Configure project to use MSYS2 MinGW64 terminal
 

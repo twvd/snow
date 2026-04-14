@@ -41,7 +41,6 @@ jobs:
           git
         pacboy: >-
           rust:p
-          SDL2:p
           pkg-config:p
     # TODO use pinned toolchain
     - name: Enable Rust compiler cache
@@ -49,7 +48,7 @@ jobs:
     - name: Build release
       run: |
         export RUSTFLAGS="-C target-feature=+crt-static"
-        cargo build --verbose --release --all -F sdl2-pkgconfig -F sdl2-static
+        cargo build --verbose --release --all
     - name: GUI Create packaging directory
       run: mkdir snow-gui
     - name: GUI Gather files

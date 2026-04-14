@@ -34,7 +34,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::{env, fs, thread};
 
-use crate::audio::SDLAudioProvider;
+use crate::audio::CpalAudioProvider;
 
 pub type DisassemblyListing = Vec<DisassemblyEntry>;
 pub type ScsiTargets = [ScsiTarget; 7];
@@ -107,7 +107,7 @@ pub struct EmulatorState {
     cmdsender: Option<EmulatorCommandSender>,
     eventrecv: Option<EmulatorEventReceiver>,
     status: Option<EmulatorStatus>,
-    audio_provider: Option<Arc<Mutex<SDLAudioProvider>>>,
+    audio_provider: Option<Arc<Mutex<CpalAudioProvider>>>,
     disasm_address: Address,
     disasm_code: DisassemblyListing,
     messages: VecDeque<(UserMessageType, String)>,
@@ -324,7 +324,7 @@ impl EmulatorState {
         } else {
             drop(self.audio_provider.take());
 
-            match SDLAudioProvider::new() {
+            match CpalAudioProvider::new() {
                 Ok(provider) => {
                     let provider = Arc::new(Mutex::new(provider));
                     self.audio_provider = Some(provider.clone());
