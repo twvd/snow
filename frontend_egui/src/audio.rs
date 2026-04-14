@@ -85,14 +85,9 @@ struct CpalAudioExchange {
     underrun: AtomicBool,
 }
 
-/// Holds the cpal Stream solely to prevent it from being dropped.
-/// Do not access the stream field, it may not be thread-safe!
-#[allow(unused)]
-struct StreamHolder(Stream);
-
 pub struct CpalAudioStream {
     #[allow(unused)]
-    stream: StreamHolder,
+    stream: Stream,
     channel_sink: ChannelAudioSink,
     exch: Arc<CpalAudioExchange>,
 }
@@ -155,7 +150,7 @@ impl CpalAudioStream {
             .map_err(|e| anyhow!("Failed to start audio stream: {}", e))?;
 
         Ok(Self {
-            stream: StreamHolder(stream),
+            stream,
             channel_sink,
             exch,
         })
