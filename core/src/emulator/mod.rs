@@ -687,8 +687,10 @@ impl Emulator {
         Ok(())
     }
 
-    pub fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {
-        self.config.set_audio_provider(provider)
+    pub fn set_audio_provider(&mut self, provider: Arc<Mutex<dyn AudioProvider>>) -> Result<()> {
+        self.audio_provider = Some(provider);
+        self.config
+            .set_audio_provider(&mut *self.audio_provider.as_ref().unwrap().lock().unwrap())
     }
 
     pub fn load_hdd_image(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {

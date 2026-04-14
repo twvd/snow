@@ -327,9 +327,8 @@ impl EmulatorState {
             match CpalAudioProvider::new() {
                 Ok(provider) => {
                     let provider = Arc::new(Mutex::new(provider));
-                    self.audio_provider = Some(provider.clone());
-                    let mut provider = provider.lock().unwrap();
-                    if let Err(e) = emulator.set_audio_provider(&mut *provider) {
+                    self.audio_provider = Some(Arc::clone(&provider));
+                    if let Err(e) = emulator.set_audio_provider(provider) {
                         error!("Failed to initialize audio: {:?}", e);
                         cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Video))?;
                     }
