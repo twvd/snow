@@ -1660,7 +1660,8 @@ where
     ) -> Result<()> {
         let b = self
             .read_ea_hold::<T>(instr, instr.get_op2())?
-            .expand_sign_extend();
+            .expand_signed()
+            .cast_unsigned();
         self.ea_commit();
         let a: Long = self.regs.read_a(instr.get_op1());
         let (result, _) = calcfn(a, b, self.regs.sr);
@@ -1844,7 +1845,8 @@ where
     fn op_cmp_address<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         let b = self
             .read_ea::<T>(instr, instr.get_op2())?
-            .expand_sign_extend();
+            .expand_signed()
+            .cast_unsigned();
         let a: Long = self.regs.read_a(instr.get_op1());
 
         let (_, ccr) = Self::alu_sub(a, b, self.regs.sr);
@@ -2336,7 +2338,7 @@ where
     fn op_ext<T: CpuSized, U: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         // T: dest type, U: src type
         let value: U = self.read_ea(instr, instr.get_op2())?;
-        let result = T::chop(value.expand_sign_extend());
+        let result = T::chop(value.expand_signed().cast_unsigned());
 
         self.regs.sr.set_n(result & T::msb() != T::zero());
         self.regs.sr.set_v(false);
@@ -2625,7 +2627,7 @@ where
             AddressingMode::AbsoluteShort => {
                 self.advance_cycles(2)?;
                 self.regs.pc = self.regs.pc.wrapping_add(2) & ADDRESS_MASK;
-                self.fetch()?.expand_sign_extend()
+                self.fetch()?.expand_signed().cast_unsigned()
             }
             AddressingMode::AbsoluteLong => {
                 let h = self.fetch()? as Address;
@@ -2682,7 +2684,7 @@ where
             }
 
             let v = self.read_ticks::<T>(addr)?;
-            self.regs.write(reg, v.expand_sign_extend());
+            self.regs.write(reg, v.expand_signed().cast_unsigned());
 
             if instr.get_addr_mode()? != AddressingMode::IndirectPreDec {
                 addr = addr.wrapping_add(std::mem::size_of::<T>() as Address);
@@ -2740,10 +2742,8 @@ where
 
     /// CHK
     fn op_chk<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
-        let max = self
-            .read_ea::<T>(instr, instr.get_op2())?
-            .expand_sign_extend() as i32;
-        let value = self.regs.read_d::<T>(instr.get_op1()).expand_sign_extend() as i32;
+        let max = self.read_ea::<T>(instr, instr.get_op2())?.expand_signed();
+        let value = self.regs.read_d::<T>(instr.get_op1()).expand_signed();
 
         let (_result, ccr) =
             Self::alu_sub::<T>(T::chop(max as u32), T::chop(value as u32), self.regs.sr);
@@ -2944,7 +2944,7 @@ where
 
     /// MOVEQ
     fn op_moveq(&mut self, instr: &Instruction) -> Result<()> {
-        let value: Long = (instr.data as u8).expand_sign_extend();
+        let value: Long = (instr.data as u8).expand_signed().cast_unsigned();
 
         self.regs.write_d(instr.get_op1(), value);
 
@@ -3091,7 +3091,7 @@ where
             if is_addr_reg {
                 // Memory to address register - sign extend
                 self.regs
-                    .write_a(reg_num as usize, value.expand_sign_extend());
+                    .write_a(reg_num as usize, value.expand_signed().cast_unsigned());
             } else {
                 // Memory to data register
                 self.regs.write_d::<T>(reg_num as usize, value);
@@ -3128,7 +3128,7 @@ where
     /// RTD
     fn op_rtd(&mut self, _instr: &Instruction) -> Result<()> {
         // Bus access and cycles are an approximation based on UM/PRM
-        let displacement = self.fetch()?.expand_sign_extend() as i32;
+        let displacement = self.fetch()?.expand_signed();
         let pc = self.read_ticks(self.regs.read_a(7))?;
         let sp = self.regs.read_a::<Address>(7);
         self.regs
