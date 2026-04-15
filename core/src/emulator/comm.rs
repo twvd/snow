@@ -1,9 +1,9 @@
 //! Communication between emulator and frontend
 
-use std::path::PathBuf;
-
 use serde::{Deserialize, Serialize};
 use snow_floppy::FloppyImage;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use crate::bus::Address;
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
@@ -20,6 +20,7 @@ use crate::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use crate::tickable::Ticks;
 
 pub use crate::cpu_m68k::cpu::{Breakpoint, BusBreakpoint};
+use crate::renderer::AudioProvider;
 
 pub type EmulatorCommandSender = crossbeam_channel::Sender<EmulatorCommand>;
 pub type EmulatorEventReceiver = crossbeam_channel::Receiver<EmulatorEvent>;
@@ -94,6 +95,8 @@ pub enum EmulatorCommand {
     SerialBridgeEnable(SccCh, SerialBridgeConfig),
     SerialBridgeDisable(SccCh),
     SetMouseMode(MouseMode),
+    #[serde(skip)]
+    ReplaceAudioProvider(Arc<Mutex<dyn AudioProvider>>),
 }
 
 /// Emulator speed tweak
