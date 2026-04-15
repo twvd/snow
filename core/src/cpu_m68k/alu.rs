@@ -199,7 +199,8 @@ where
     pub(super) fn alu_asl<T: CpuSized>(value: T, count: u8, mut f: RegisterSR) -> (T, u8) {
         // Perform shift on a 64-bit value, since count is guaranteed to be in 0..=63.
         let zext_value: u64 = value.expand().into();
-        let sext_value: i64 = value.expand_signed().into();
+        // i128 is required to calculate the overflow flag
+        let sext_value: i128 = value.expand_signed().into();
 
         // Detect if the most significant bit changes at any time during the shift operation.
         let initial_upper_and_sign = sext_value >> (T::BITS - 1);
