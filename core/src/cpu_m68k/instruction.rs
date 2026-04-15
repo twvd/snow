@@ -997,10 +997,10 @@ impl Instruction {
     }
 
     /// Retrieves shift count/register for the rotate/shift instructions
-    pub fn get_sh_count(&self) -> Either<Long, Register> {
-        let rotation = (self.data >> 9) & 0b111;
+    pub fn get_sh_count(&self) -> Either<u8, Register> {
+        let rotation = ((self.data >> 9) & 0b111) as u8;
         match (self.data >> 5) & 1 {
-            0 => Either::Left(if rotation == 0 { 8 } else { rotation.into() }),
+            0 => Either::Left(if rotation == 0 { 8 } else { rotation }),
             1 => Either::Right(Register::Dn(rotation.into())),
             _ => unreachable!(),
         }

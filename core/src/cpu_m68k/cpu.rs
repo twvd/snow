@@ -2975,11 +2975,11 @@ where
     fn op_shrot<T: CpuSized>(
         &mut self,
         instr: &Instruction,
-        calcfn: fn(T, usize, RegisterSR) -> (T, u8),
+        calcfn: fn(T, u8, RegisterSR) -> (T, u8),
     ) -> Result<()> {
         let count = match instr.get_sh_count() {
-            Either::Left(i) => i as usize,
-            Either::Right(r) => (self.regs.read::<Long>(r) % 64) as usize,
+            Either::Left(i) => i,
+            Either::Right(r) => (self.regs.read::<Long>(r) % 64) as u8,
         };
 
         self.prefetch_pump()?;
@@ -3003,7 +3003,7 @@ where
     fn op_shrot_ea(
         &mut self,
         instr: &Instruction,
-        calcfn: fn(Word, usize, RegisterSR) -> (Word, u8),
+        calcfn: fn(Word, u8, RegisterSR) -> (Word, u8),
     ) -> Result<()> {
         let value = self.read_ea::<Word>(instr, instr.get_op2())?;
 
