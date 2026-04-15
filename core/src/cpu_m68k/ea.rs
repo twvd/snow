@@ -223,10 +223,10 @@ where
                         self.read_ticks(disp_addr)?
                     }
                     MemoryIndirectAction::Word => {
-                        let od = self.fetch_pump()?.expand_sign_extend();
+                        let od = self.fetch_pump()?.expand_signed();
 
                         self.read_ticks::<Address>(disp_addr)?
-                            .wrapping_add_signed(od as i32)
+                            .wrapping_add_signed(od)
                     }
                     MemoryIndirectAction::Long => {
                         let mut od = Long::from(self.fetch_pump()?) << 16;
@@ -238,10 +238,10 @@ where
                         .read_ticks::<Address>(disp_addr)?
                         .wrapping_add(index.wrapping_mul(u32::from(scale))),
                     MemoryIndirectAction::PostIndexWord => {
-                        let od = self.fetch_pump()?.expand_sign_extend();
+                        let od = self.fetch_pump()?.expand_signed();
                         self.read_ticks::<Address>(disp_addr)?
                             .wrapping_add(index.wrapping_mul(u32::from(scale)))
-                            .wrapping_add_signed(od as i32)
+                            .wrapping_add_signed(od)
                     }
                     MemoryIndirectAction::PostIndexLong => {
                         let mut od = Long::from(self.fetch_pump()?) << 16;
@@ -252,10 +252,10 @@ where
                     }
                     MemoryIndirectAction::PreIndexNull => self.read_ticks(pre_addr)?,
                     MemoryIndirectAction::PreIndexWord => {
-                        let od = self.fetch_pump()?.expand_sign_extend();
+                        let od = self.fetch_pump()?.expand_signed();
 
                         self.read_ticks::<Address>(pre_addr)?
-                            .wrapping_add_signed(od as i32)
+                            .wrapping_add_signed(od)
                     }
                     MemoryIndirectAction::PreIndexLong => {
                         let mut od = Long::from(self.fetch_pump()?) << 16;

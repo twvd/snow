@@ -1,3 +1,4 @@
+use num::PrimInt;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
@@ -12,9 +13,117 @@ pub struct MouseEvent {
 pub type AudioSampleSender = crossbeam_channel::Sender<u8>;
 
 pub type Byte = u8;
+pub type SignedByte = i8;
 pub type Word = u16;
+pub type SignedWord = i16;
 pub type Long = u32;
+pub type SignedLong = i32;
 pub type DoubleLong = u64;
+
+pub trait MyIntTraits: PrimInt {
+    /// See `u32::overflowing_add`
+    fn overflowing_add(self, rhs: Self) -> (Self, bool);
+
+    /// See `u32::overflowing_sub`
+    fn overflowing_sub(self, rhs: Self) -> (Self, bool);
+}
+
+impl MyIntTraits for Byte {
+    fn overflowing_add(self, rhs: Self) -> (Self, bool) {
+        self.overflowing_add(rhs)
+    }
+
+    fn overflowing_sub(self, rhs: Self) -> (Self, bool) {
+        self.overflowing_sub(rhs)
+    }
+}
+
+impl MyIntTraits for SignedByte {
+    fn overflowing_add(self, rhs: Self) -> (Self, bool) {
+        self.overflowing_add(rhs)
+    }
+
+    fn overflowing_sub(self, rhs: Self) -> (Self, bool) {
+        self.overflowing_sub(rhs)
+    }
+}
+
+impl MyIntTraits for Word {
+    fn overflowing_add(self, rhs: Self) -> (Self, bool) {
+        self.overflowing_add(rhs)
+    }
+
+    fn overflowing_sub(self, rhs: Self) -> (Self, bool) {
+        self.overflowing_sub(rhs)
+    }
+}
+
+impl MyIntTraits for SignedWord {
+    fn overflowing_add(self, rhs: Self) -> (Self, bool) {
+        self.overflowing_add(rhs)
+    }
+
+    fn overflowing_sub(self, rhs: Self) -> (Self, bool) {
+        self.overflowing_sub(rhs)
+    }
+}
+
+impl MyIntTraits for Long {
+    fn overflowing_add(self, rhs: Self) -> (Self, bool) {
+        self.overflowing_add(rhs)
+    }
+
+    fn overflowing_sub(self, rhs: Self) -> (Self, bool) {
+        self.overflowing_sub(rhs)
+    }
+}
+
+impl MyIntTraits for SignedLong {
+    fn overflowing_add(self, rhs: Self) -> (Self, bool) {
+        self.overflowing_add(rhs)
+    }
+
+    fn overflowing_sub(self, rhs: Self) -> (Self, bool) {
+        self.overflowing_sub(rhs)
+    }
+}
+
+pub trait MyUIntTraits: MyIntTraits {
+    type Signed: MySIntTraits;
+
+    /// Reinterpret the bits of this value as a signed integer
+    fn cast_signed(self) -> Self::Signed;
+}
+
+impl MyUIntTraits for Byte {
+    type Signed = SignedByte;
+
+    fn cast_signed(self) -> Self::Signed {
+        self.cast_signed()
+    }
+}
+
+impl MyUIntTraits for Word {
+    type Signed = SignedWord;
+
+    fn cast_signed(self) -> Self::Signed {
+        self.cast_signed()
+    }
+}
+
+impl MyUIntTraits for Long {
+    type Signed = SignedLong;
+
+    fn cast_signed(self) -> Self::Signed {
+        self.cast_signed()
+    }
+}
+
+pub trait MySIntTraits: MyIntTraits + std::convert::Into<SignedLong> {}
+
+impl MySIntTraits for SignedByte {}
+impl MySIntTraits for SignedWord {}
+impl MySIntTraits for SignedLong {}
 
 bitfield! {
     /// General purpose 16-bit field

@@ -10,10 +10,10 @@ pub mod regs;
 #[cfg(test)]
 pub mod tests;
 
-use num_traits::{FromBytes, PrimInt, ToBytes, WrappingAdd, WrappingShl, WrappingShr};
+use num_traits::{FromBytes, ToBytes, WrappingAdd, WrappingShl, WrappingShr};
 
 use crate::bus::Address;
-use crate::types::Long;
+use crate::types::{Long, MyUIntTraits, SignedLong};
 use crate::util::lossyinto::LossyInto;
 
 /// Motorola 68000
@@ -55,7 +55,7 @@ pub const FPU_M68882: FpuM68kType = 68882;
 /// Word (u16)
 /// Long (u32)
 pub trait CpuSized:
-    PrimInt
+    MyUIntTraits
     + FromBytes
     + ToBytes
     + WrappingAdd
@@ -69,12 +69,14 @@ pub trait CpuSized:
     + std::ops::ShlAssign
     + std::ops::ShrAssign
 {
+    const BITS: usize;
+
     /// Expands the value in the generic to a full register's width
     fn expand(self) -> Long;
 
     /// Expands the value in the generic to a full register's width,
     /// with sign extension.
-    fn expand_sign_extend(self) -> Long;
+    fn expand_signed(self) -> SignedLong;
 
     /// Replaces the lower bytes of the given value for types < Long
     /// or the full value for Long.
@@ -89,7 +91,7 @@ pub trait CpuSized:
 
 impl<T> CpuSized for T
 where
-    T: PrimInt
+    T: MyUIntTraits
         + FromBytes
         + ToBytes
         + WrappingAdd
@@ -106,6 +108,8 @@ where
     <T as ToBytes>::Bytes: AsMut<[u8]>,
     T: FromBytes<Bytes = <T as ToBytes>::Bytes>,
 {
+    const BITS: usize = std::mem::size_of::<T>() * 8;
+
     #[inline(always)]
     fn replace_in(self, value: Long) -> Long {
         let mask = match std::mem::size_of::<T>() {
@@ -123,18 +127,8 @@ where
     }
 
     #[inline(always)]
-    fn expand_sign_extend(self) -> Long {
-        let l = self.expand();
-        if l & T::msb().expand() != 0 {
-            match std::mem::size_of::<T>() {
-                1 => l | 0xFFFFFF00,
-                2 => l | 0xFFFF0000,
-                4 => l,
-                _ => unreachable!(),
-            }
-        } else {
-            l
-        }
+    fn expand_signed(self) -> SignedLong {
+        self.cast_signed().into()
     }
 
     #[inline(always)]
@@ -144,8 +138,7 @@ where
 
     #[inline(always)]
     fn msb() -> Self {
-        let shift = std::mem::size_of::<T>() * 8 - 1;
-        T::one() << shift
+        T::one() << (Self::BITS - 1)
     }
 }
 

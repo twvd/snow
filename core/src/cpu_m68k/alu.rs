@@ -4,7 +4,7 @@ use super::{CpuM68kType, CpuSized};
 use crate::cpu_m68k::FpuM68kType;
 
 use crate::bus::{Address, Bus, IrqSource};
-use crate::types::{Byte, Long, Word};
+use crate::types::{Byte, Long, MyIntTraits, Word};
 
 impl<
     TBus,
@@ -18,22 +18,17 @@ where
 {
     /// Add (a + b = c)
     pub(super) fn alu_add<T: CpuSized>(a: T, b: T, f: RegisterSR) -> (T, u8) {
-        let a = a.expand();
-        let b = b.expand();
-        let result: Long = a.wrapping_add(b);
-
-        let msb: Long = T::msb().into();
-        let carry: Long = a ^ b ^ result;
-        let overflow: Long = (a ^ result) & (b ^ result);
+        let (result, carry) = a.overflowing_add(b);
+        let (_, overflow) = a.cast_signed().overflowing_add(b.cast_signed());
 
         let mut new_f = f;
-        new_f.set_c((carry ^ overflow) & msb != 0);
-        new_f.set_x((carry ^ overflow) & msb != 0);
-        new_f.set_v(overflow & msb != 0);
-        new_f.set_n(result & msb != 0);
-        new_f.set_z(T::chop(result) == T::zero());
+        new_f.set_c(carry);
+        new_f.set_x(carry);
+        new_f.set_v(overflow);
+        new_f.set_n(result & T::msb() != T::zero());
+        new_f.set_z(result == T::zero());
 
-        (T::chop(result), new_f.ccr())
+        (result, new_f.ccr())
     }
 
     /// Add (a + b + x = c)
@@ -61,22 +56,17 @@ where
 
     /// Subtract (a - b = c)
     pub(super) fn alu_sub<T: CpuSized>(a: T, b: T, f: RegisterSR) -> (T, u8) {
-        let a = a.expand();
-        let b = b.expand();
-        let result: Long = a.wrapping_sub(b);
-
-        let msb: Long = T::msb().into();
-        let carry: Long = a ^ b ^ result;
-        let overflow: Long = (a ^ result) & (b ^ a);
+        let (result, carry) = a.overflowing_sub(b);
+        let (_, overflow) = a.cast_signed().overflowing_sub(b.cast_signed());
 
         let mut new_f = f;
-        new_f.set_c((carry ^ overflow) & msb != 0);
-        new_f.set_x((carry ^ overflow) & msb != 0);
-        new_f.set_v(overflow & msb != 0);
-        new_f.set_n(result & msb != 0);
-        new_f.set_z(T::chop(result) == T::zero());
+        new_f.set_c(carry);
+        new_f.set_x(carry);
+        new_f.set_v(overflow);
+        new_f.set_n(result & T::msb() != T::zero());
+        new_f.set_z(result == T::zero());
 
-        (T::chop(result), new_f.ccr())
+        (result, new_f.ccr())
     }
 
     /// Subtract with extend (a - b - x = c)

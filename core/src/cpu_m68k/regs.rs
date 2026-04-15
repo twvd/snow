@@ -334,7 +334,7 @@ impl RegisterFile {
     /// Write an An register
     pub fn write_a<T: CpuSized>(&mut self, a: usize, val: T) {
         // Writes to A as Byte or Word are sign extended
-        let adj_val = val.expand_sign_extend();
+        let adj_val = val.expand_signed().cast_unsigned();
 
         if a == 7 {
             if self.sr.supervisor() {
