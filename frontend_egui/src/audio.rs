@@ -213,6 +213,13 @@ impl CpalAudioProvider {
             stream.set_mute(mute);
         }
     }
+
+    /// Clears the sinks of all channels from samples
+    pub fn clear_channels(&self) {
+        for stream in &self.streams {
+            stream.channel_sink.clear();
+        }
+    }
 }
 
 impl AudioProvider for CpalAudioProvider {

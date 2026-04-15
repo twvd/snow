@@ -1202,6 +1202,10 @@ impl Tickable for Emulator {
                         }
                         self.status_update()?;
                     }
+
+                    EmulatorCommand::ReplaceAudioProvider(audio_provider) => {
+                        self.set_audio_provider(audio_provider)?;
+                    }
                 }
             }
         }

@@ -55,6 +55,11 @@ impl ChannelAudioSink {
     pub fn receiver(&self) -> AudioReceiver {
         self.receiver.clone()
     }
+
+    /// Clears/flushes the entire current content in the sink
+    pub fn clear(&self) {
+        while self.receiver.try_recv().is_ok() {}
+    }
 }
 
 impl AudioSink for ChannelAudioSink {
