@@ -8,7 +8,6 @@ nursery = { level = "deny", priority = -1 }
 
 cast_possible_truncation = "allow"
 cognitive_complexity = "allow"
-# I find this less readable
 comparison_chain = "allow"
 doc_markdown = "allow"
 option_if_let_else = "allow"
@@ -17,6 +16,7 @@ new_without_default = "allow"
 iter_nth_zero = "allow"
 unit_arg = "allow"
 single_match = "allow"
+collapsible_match = "allow"
 
 explicit_iter_loop = "deny"
 large_enum_variant = "deny"
