@@ -135,6 +135,8 @@ impl FramebufferWidget {
         let any_shader_enabled = self.shader_configs.iter().any(|c| c.enabled);
         let display_texture =
             if self.shader_enabled && any_shader_enabled && self.crt_output_texture.is_some() {
+                // TODO fix on Rust 2024
+                #[allow(clippy::unnecessary_unwrap)]
                 self.crt_output_texture.as_mut().unwrap()
             } else {
                 &mut self.viewport_texture
