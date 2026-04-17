@@ -8,9 +8,9 @@ use std::io::{Read, Seek, SeekFrom};
 use super::FloppyImageLoader;
 use crate::{FloppyImage, FloppyType, OriginalTrackType};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use binrw::io::Cursor;
-use binrw::{binrw, BinRead};
+use binrw::{BinRead, binrw};
 use log::*;
 
 /// Initial A2R file header

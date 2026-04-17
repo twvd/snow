@@ -2,15 +2,15 @@
 //! Sector-based image format
 //! https://www.discferret.com/wiki/Apple_DiskCopy_4.2
 
+use super::FloppyImageLoader;
 #[cfg(feature = "fluxfox")]
 use super::fluxfox::Fluxfox;
-use super::FloppyImageLoader;
 use crate::macformat::MacFormatEncoder;
 use crate::{FloppyImage, FloppyType};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use binrw::io::Cursor;
-use binrw::{binrw, BinRead};
+use binrw::{BinRead, binrw};
 
 #[binrw]
 #[derive(Debug, Clone, Copy)]

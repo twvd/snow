@@ -331,62 +331,63 @@ impl WatchpointsWidget {
 
     /// Finish editing and apply changes
     fn finish_editing(&mut self, save: bool) {
-        if let Some(editing) = self.editing.take() {
-            if save && editing.watchpoint_index < self.watchpoints.len() {
-                let watchpoint = &mut self.watchpoints[editing.watchpoint_index];
+        if let Some(editing) = self.editing.take()
+            && save
+            && editing.watchpoint_index < self.watchpoints.len()
+        {
+            let watchpoint = &mut self.watchpoints[editing.watchpoint_index];
 
-                match editing.field {
-                    EditingField::Description => {
-                        watchpoint.description = editing.value;
+            match editing.field {
+                EditingField::Description => {
+                    watchpoint.description = editing.value;
+                }
+                EditingField::Address => {
+                    if let Ok(addr) = Address::from_str_radix(&editing.value, 16) {
+                        watchpoint.address = addr;
                     }
-                    EditingField::Address => {
-                        if let Ok(addr) = Address::from_str_radix(&editing.value, 16) {
-                            watchpoint.address = addr;
+                }
+                EditingField::Type => {
+                    if let Some(new_type) = WatchpointType::from_str(&editing.value) {
+                        watchpoint.data_type = new_type;
+                    }
+                }
+                EditingField::Value => {
+                    // Parse the new value and create memory write data
+                    let data = match watchpoint.data_type {
+                        WatchpointType::U8 => {
+                            if let Ok(value) = u8::from_str_radix(&editing.value, 16) {
+                                vec![value]
+                            } else {
+                                return; // Invalid input, don't save
+                            }
                         }
-                    }
-                    EditingField::Type => {
-                        if let Some(new_type) = WatchpointType::from_str(&editing.value) {
-                            watchpoint.data_type = new_type;
+                        WatchpointType::U16 => {
+                            if let Ok(value) = u16::from_str_radix(&editing.value, 16) {
+                                value.to_be_bytes().to_vec()
+                            } else {
+                                return; // Invalid input, don't save
+                            }
                         }
-                    }
-                    EditingField::Value => {
-                        // Parse the new value and create memory write data
-                        let data = match watchpoint.data_type {
-                            WatchpointType::U8 => {
-                                if let Ok(value) = u8::from_str_radix(&editing.value, 16) {
-                                    vec![value]
-                                } else {
-                                    return; // Invalid input, don't save
-                                }
+                        WatchpointType::U32 => {
+                            if let Ok(value) = u32::from_str_radix(&editing.value, 16) {
+                                value.to_be_bytes().to_vec()
+                            } else {
+                                return; // Invalid input, don't save
                             }
-                            WatchpointType::U16 => {
-                                if let Ok(value) = u16::from_str_radix(&editing.value, 16) {
-                                    value.to_be_bytes().to_vec()
-                                } else {
-                                    return; // Invalid input, don't save
-                                }
-                            }
-                            WatchpointType::U32 => {
-                                if let Ok(value) = u32::from_str_radix(&editing.value, 16) {
-                                    value.to_be_bytes().to_vec()
-                                } else {
-                                    return; // Invalid input, don't save
-                                }
-                            }
-                            WatchpointType::String(_) => {
-                                // Convert string to bytes, null-terminated
-                                let mut bytes = editing.value.as_bytes().to_vec();
-                                bytes.push(0); // Add null terminator
-                                bytes
-                            }
-                        };
+                        }
+                        WatchpointType::String(_) => {
+                            // Convert string to bytes, null-terminated
+                            let mut bytes = editing.value.as_bytes().to_vec();
+                            bytes.push(0); // Add null terminator
+                            bytes
+                        }
+                    };
 
-                        // Store the edited value for the main app to process
-                        self.edited = Some(EditedValue {
-                            address: watchpoint.address,
-                            data,
-                        });
-                    }
+                    // Store the edited value for the main app to process
+                    self.edited = Some(EditedValue {
+                        address: watchpoint.address,
+                        data,
+                    });
                 }
             }
         }
@@ -430,10 +431,10 @@ impl WatchpointsWidget {
                     if matches!(self.selected_type, WatchpointType::String(_)) {
                         ui.label("Length:");
                         let response = ui.text_edit_singleline(&mut self.string_length_input);
-                        if response.changed() {
-                            if let Ok(len) = self.string_length_input.parse() {
-                                self.selected_type = WatchpointType::String(len);
-                            }
+                        if response.changed()
+                            && let Ok(len) = self.string_length_input.parse()
+                        {
+                            self.selected_type = WatchpointType::String(len);
                         }
                     }
                 });
@@ -447,16 +448,15 @@ impl WatchpointsWidget {
                         egui::Button::new("Add watchpoint"),
                     )
                     .clicked()
+                    && let Ok(address) = Address::from_str_radix(&self.address_input, 16)
                 {
-                    if let Ok(address) = Address::from_str_radix(&self.address_input, 16) {
-                        self.add_watchpoint(
-                            address,
-                            self.selected_type,
-                            self.description_input.clone(),
-                        );
-                        self.address_input.clear();
-                        self.description_input.clear();
-                    }
+                    self.add_watchpoint(
+                        address,
+                        self.selected_type,
+                        self.description_input.clone(),
+                    );
+                    self.address_input.clear();
+                    self.description_input.clear();
                 }
             });
             ui.collapsing("Add watchpoint on global variable", |ui| {
@@ -559,21 +559,20 @@ impl WatchpointsWidget {
 
                             // Address column (editable)
                             row.col(|ui| {
-                                if let Some(ref mut editing) = self.editing {
-                                    if editing.watchpoint_index == i
-                                        && editing.field == EditingField::Address
-                                    {
-                                        let response = ui.text_edit_singleline(&mut editing.value);
+                                if let Some(ref mut editing) = self.editing
+                                    && editing.watchpoint_index == i
+                                    && editing.field == EditingField::Address
+                                {
+                                    let response = ui.text_edit_singleline(&mut editing.value);
 
-                                        if ui.input(|i| i.key_pressed(egui::Key::Enter))
-                                            || response.lost_focus()
-                                        {
-                                            let valid =
-                                                Address::from_str_radix(&editing.value, 16).is_ok();
-                                            self.finish_editing(valid);
-                                        }
-                                        return;
+                                    if ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                        || response.lost_focus()
+                                    {
+                                        let valid =
+                                            Address::from_str_radix(&editing.value, 16).is_ok();
+                                        self.finish_editing(valid);
                                     }
+                                    return;
                                 }
 
                                 let response = ui.add(
@@ -587,21 +586,20 @@ impl WatchpointsWidget {
 
                             // Type column (editable)
                             row.col(|ui| {
-                                if let Some(ref mut editing) = self.editing {
-                                    if editing.watchpoint_index == i
-                                        && editing.field == EditingField::Type
-                                    {
-                                        let response = ui.text_edit_singleline(&mut editing.value);
+                                if let Some(ref mut editing) = self.editing
+                                    && editing.watchpoint_index == i
+                                    && editing.field == EditingField::Type
+                                {
+                                    let response = ui.text_edit_singleline(&mut editing.value);
 
-                                        if ui.input(|i| i.key_pressed(egui::Key::Enter))
-                                            || response.lost_focus()
-                                        {
-                                            let valid =
-                                                WatchpointType::from_str(&editing.value).is_some();
-                                            self.finish_editing(valid);
-                                        }
-                                        return;
+                                    if ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                        || response.lost_focus()
+                                    {
+                                        let valid =
+                                            WatchpointType::from_str(&editing.value).is_some();
+                                        self.finish_editing(valid);
                                     }
+                                    return;
                                 }
 
                                 let response = ui.add(
@@ -615,19 +613,18 @@ impl WatchpointsWidget {
 
                             // Description column (editable)
                             row.col(|ui| {
-                                if let Some(ref mut editing) = self.editing {
-                                    if editing.watchpoint_index == i
-                                        && editing.field == EditingField::Description
-                                    {
-                                        let response = ui.text_edit_singleline(&mut editing.value);
+                                if let Some(ref mut editing) = self.editing
+                                    && editing.watchpoint_index == i
+                                    && editing.field == EditingField::Description
+                                {
+                                    let response = ui.text_edit_singleline(&mut editing.value);
 
-                                        if ui.input(|i| i.key_pressed(egui::Key::Enter))
-                                            || response.lost_focus()
-                                        {
-                                            self.finish_editing(true); // Description is always valid
-                                        }
-                                        return;
+                                    if ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                        || response.lost_focus()
+                                    {
+                                        self.finish_editing(true); // Description is always valid
                                     }
+                                    return;
                                 }
 
                                 let response = ui.add(
@@ -641,32 +638,31 @@ impl WatchpointsWidget {
 
                             // Value (editable, highlight if recently changed)
                             row.col(|ui| {
-                                if let Some(ref mut editing) = self.editing {
-                                    if editing.watchpoint_index == i
-                                        && editing.field == EditingField::Value
-                                    {
-                                        let response = ui.text_edit_singleline(&mut editing.value);
+                                if let Some(ref mut editing) = self.editing
+                                    && editing.watchpoint_index == i
+                                    && editing.field == EditingField::Value
+                                {
+                                    let response = ui.text_edit_singleline(&mut editing.value);
 
-                                        if ui.input(|i| i.key_pressed(egui::Key::Enter))
-                                            || response.lost_focus()
-                                        {
-                                            // Validate input based on data type
-                                            let valid = match watchpoint.data_type {
-                                                WatchpointType::U8 => {
-                                                    u8::from_str_radix(&editing.value, 16).is_ok()
-                                                }
-                                                WatchpointType::U16 => {
-                                                    u16::from_str_radix(&editing.value, 16).is_ok()
-                                                }
-                                                WatchpointType::U32 => {
-                                                    u32::from_str_radix(&editing.value, 16).is_ok()
-                                                }
-                                                WatchpointType::String(_) => true, // String is always valid
-                                            };
-                                            self.finish_editing(valid);
-                                        }
-                                        return;
+                                    if ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                        || response.lost_focus()
+                                    {
+                                        // Validate input based on data type
+                                        let valid = match watchpoint.data_type {
+                                            WatchpointType::U8 => {
+                                                u8::from_str_radix(&editing.value, 16).is_ok()
+                                            }
+                                            WatchpointType::U16 => {
+                                                u16::from_str_radix(&editing.value, 16).is_ok()
+                                            }
+                                            WatchpointType::U32 => {
+                                                u32::from_str_radix(&editing.value, 16).is_ok()
+                                            }
+                                            WatchpointType::String(_) => true, // String is always valid
+                                        };
+                                        self.finish_editing(valid);
                                     }
+                                    return;
                                 }
 
                                 let value_text = egui::RichText::new(&watchpoint.current_value);

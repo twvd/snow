@@ -10,10 +10,10 @@ use crate::widgets::framebuffer::ScalingAlgorithm;
 use anyhow::{Context, Result};
 use eframe::egui;
 use serde::{Deserialize, Deserializer, Serialize};
+use snow_core::mac::MacModel;
 #[cfg(feature = "ethernet")]
 use snow_core::mac::scsi::ethernet::EthernetLinkType;
 use snow_core::mac::scsi::target::ScsiTargetType;
-use snow_core::mac::MacModel;
 
 /// Custom deserializer that skips invalid shader configs instead of failing entirely
 fn deserialize_shader_configs_lenient<'de, D>(
@@ -371,7 +371,7 @@ impl Workspace {
         }
         for d in &mut result.scsi_targets {
             match d {
-                WorkspaceScsiTarget::Disk(ref mut p) => p.after_deserialize(parent)?,
+                WorkspaceScsiTarget::Disk(p) => p.after_deserialize(parent)?,
                 WorkspaceScsiTarget::None
                 | WorkspaceScsiTarget::Cdrom
                 | WorkspaceScsiTarget::Ethernet => (),
@@ -433,7 +433,7 @@ impl Workspace {
         // disks is deprecated
         for d in &mut self.scsi_targets {
             match d {
-                WorkspaceScsiTarget::Disk(ref mut p) => p.before_serialize(parent)?,
+                WorkspaceScsiTarget::Disk(p) => p.before_serialize(parent)?,
                 WorkspaceScsiTarget::None
                 | WorkspaceScsiTarget::Cdrom
                 | WorkspaceScsiTarget::Ethernet => (),

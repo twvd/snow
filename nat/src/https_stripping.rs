@@ -5,7 +5,7 @@
 //!
 //! Supports SNI and will attempt to rewrite protocols
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use rustls::pki_types::ServerName;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};

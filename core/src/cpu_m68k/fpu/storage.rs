@@ -587,6 +587,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::bool_assert_comparison)]
 mod tests {
     use crate::bus::Address;
     use crate::bus::testbus::Testbus;
@@ -618,6 +619,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn read_write_extended_real() {
         let values = vec![
             Float::zero(SEMANTICS_EXTENDED, false),
@@ -659,6 +661,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn read_write_double_real() {
         let values = vec![
             Float::zero(SEMANTICS_EXTENDED, false),
@@ -700,6 +703,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn read_write_single_real() {
         let values = vec![
             Float::zero(SEMANTICS_EXTENDED, false),

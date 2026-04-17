@@ -15,16 +15,15 @@ fn main() {
     if let Ok(map_files) = fs::read_dir("./maps") {
         for map_file in map_files {
             let path = map_file.unwrap().path();
-            if let Some(extension) = path.extension() {
-                if extension == "map" {
-                    if let Ok(abs_path) = fs::canonicalize(&path) {
-                        output.push_str(&format!(
-                            "    map_files.insert(\"{}\", include_str!(\"maps/{}\"));\n",
-                            path.file_stem().unwrap().to_str().unwrap(),
-                            abs_path.file_name().unwrap().to_str().unwrap()
-                        ));
-                    }
-                }
+            if let Some(extension) = path.extension()
+                && extension == "map"
+                && let Ok(abs_path) = fs::canonicalize(&path)
+            {
+                output.push_str(&format!(
+                    "    map_files.insert(\"{}\", include_str!(\"maps/{}\"));\n",
+                    path.file_stem().unwrap().to_str().unwrap(),
+                    abs_path.file_name().unwrap().to_str().unwrap()
+                ));
             }
         }
     }

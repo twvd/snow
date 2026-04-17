@@ -4,15 +4,15 @@
 
 use std::io::Read;
 
+use super::FloppyImageLoader;
 #[cfg(feature = "fluxfox")]
 use super::fluxfox::Fluxfox;
-use super::FloppyImageLoader;
 use crate::macformat::MacFormatEncoder;
 use crate::{FloppyImage, FloppyType};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use binrw::io::Cursor;
-use binrw::{binrw, BinRead, BinReaderExt};
+use binrw::{BinRead, BinReaderExt, binrw};
 use fluxfox::io::ReadBytesExt;
 use retrocompressor::lzss_huff;
 

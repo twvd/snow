@@ -4,7 +4,7 @@
 use std::{fs::File, path::Path};
 
 use crate::shader_pipeline::{ShaderConfig, ShaderId, ShaderPipeline};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use eframe::egui;
 use eframe::egui::Vec2;
 use eframe::egui_glow;
@@ -104,25 +104,25 @@ impl FramebufferWidget {
     }
 
     pub fn draw(&mut self, ui: &mut egui::Ui, fullscreen: bool) -> egui::Response {
-        if let Some(ref frame_recv) = self.frame_recv {
-            if let Some(frame) = {
+        if let Some(ref frame_recv) = self.frame_recv
+            && let Some(frame) = {
                 let mut lock = frame_recv.lock().unwrap();
                 lock.take()
-            } {
-                self.display_size = [frame.width(), frame.height()];
-                self.viewport_texture.set(
-                    egui::ColorImage::new(
-                        self.display_size.map(|i| i.into()),
-                        Vec::from_iter(
-                            frame
-                                .chunks_exact(4)
-                                .map(|c| egui::Color32::from_rgb(c[0], c[1], c[2])),
-                        ),
-                    ),
-                    self.scaling_algorithm.texture_options(),
-                );
-                self.frame = Some(frame);
             }
+        {
+            self.display_size = [frame.width(), frame.height()];
+            self.viewport_texture.set(
+                egui::ColorImage::new(
+                    self.display_size.map(|i| i.into()),
+                    Vec::from_iter(
+                        frame
+                            .chunks_exact(4)
+                            .map(|c| egui::Color32::from_rgb(c[0], c[1], c[2])),
+                    ),
+                ),
+                self.scaling_algorithm.texture_options(),
+            );
+            self.frame = Some(frame);
         }
 
         // Run the framebuffer through the CRT shader if enabled

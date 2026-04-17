@@ -6,7 +6,7 @@ use crate::consts;
 use crate::dialogs::filedialog::SnowFileDialog;
 use crate::helpers::{left_sized, left_sized_f, left_sized_icon};
 use crate::settings::AppSettings;
-use crate::uniform::{uniform_error, UniformMethods};
+use crate::uniform::{UniformMethods, uniform_error};
 
 use anyhow::Result;
 use eframe::egui;
@@ -60,7 +60,9 @@ impl InstructionHistoryWidget {
                         pc,
                         Self::format_raw(raw),
                         cycles,
-                        Self::disassemble(raw, *pc).map(|e| e.str).unwrap_or_else(|| "<invalid>".to_string()),
+                        Self::disassemble(raw, *pc)
+                            .map(|e| e.str)
+                            .unwrap_or_else(|| "<invalid>".to_string()),
                         r.read_d::<Long>(0),
                         r.read_d::<Long>(1),
                         r.read_d::<Long>(2),
@@ -113,10 +115,10 @@ impl InstructionHistoryWidget {
         history: &[HistoryEntry],
     ) {
         self.export_dialog.update(ui.ctx(), frame);
-        if let Some(f) = self.export_dialog.take_picked() {
-            if let Err(e) = self.export_file(history, &f) {
-                uniform_error(format!("Error exporting to file: {}", e));
-            }
+        if let Some(f) = self.export_dialog.take_picked()
+            && let Err(e) = self.export_file(history, &f)
+        {
+            uniform_error(format!("Error exporting to file: {}", e));
         }
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing = [2.0, 0.0].into();

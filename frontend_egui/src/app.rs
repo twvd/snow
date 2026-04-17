@@ -6,7 +6,7 @@ use crate::emulator::EmulatorState;
 use crate::emulator::{EmulatorInitArgs, ScsiTargets};
 use crate::keymap::{char_to_keystroke, map_winit_keycode};
 use crate::settings::AppSettings;
-use crate::uniform::{UniformAction, UNIFORM_ACTION};
+use crate::uniform::{UNIFORM_ACTION, UniformAction};
 use crate::widgets::breakpoints::BreakpointsWidget;
 use crate::widgets::disassembly::DisassemblyWidget;
 use crate::widgets::framebuffer::{FramebufferWidget, ScalingAlgorithm};
@@ -19,17 +19,17 @@ use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::{CmdKeyMapping, FramebufferMode, Workspace};
 use snow_core::bus::Address;
-use snow_core::emulator::comm::{EmulatorSpeed, UserMessageType};
-use snow_core::emulator::save::{load_state_header, SaveHeader};
 use snow_core::emulator::MouseMode;
+use snow_core::emulator::comm::{EmulatorSpeed, UserMessageType};
+use snow_core::emulator::save::{SaveHeader, load_state_header};
+use snow_core::mac::MacModel;
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
-use snow_core::mac::MacModel;
 use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
 use snow_floppy::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use eframe::egui;
 use egui_file_dialog::{DialogMode, DirectoryEntry};
 use egui_toast::{Toast, ToastKind, ToastOptions};
@@ -41,8 +41,8 @@ use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
 use std::{env, fs};
@@ -573,7 +573,9 @@ impl SnowGui {
 
     fn try_create_image(&self, result: &DiskImageDialogResult) -> Result<()> {
         if result.filename.try_exists()? {
-            bail!("Cowardly refusing to overwrite existing file. Delete the file first, or choose a different filename.");
+            bail!(
+                "Cowardly refusing to overwrite existing file. Delete the file first, or choose a different filename."
+            );
         }
 
         {
@@ -2076,13 +2078,14 @@ impl SnowGui {
                 model,
             );
 
-            if let Some(floppy_path) = self.workspace.get_floppy_images().first() {
-                if floppy_path.exists() && !self.emu.load_floppy_firstfree(floppy_path) {
-                    self.show_error(&format!(
-                        "Cannot load floppy image: no free drive for {:?}",
-                        floppy_path
-                    ));
-                }
+            if let Some(floppy_path) = self.workspace.get_floppy_images().first()
+                && floppy_path.exists()
+                && !self.emu.load_floppy_firstfree(floppy_path)
+            {
+                self.show_error(&format!(
+                    "Cannot load floppy image: no free drive for {:?}",
+                    floppy_path
+                ));
             }
 
             #[cfg(feature = "ethernet")]
@@ -2381,7 +2384,7 @@ impl SnowGui {
         use objc2_app_kit::NSApplication;
         use objc2_foundation::ns_string;
 
-        extern "C" {
+        unsafe extern "C" {
             static NSApp: Option<&'static NSApplication>;
         }
 
@@ -2623,13 +2626,13 @@ impl eframe::App for SnowGui {
         self.uniform_action(UNIFORM_ACTION.take());
 
         // Dynamic fast-forward: resume FF speed after inactivity
-        if self.settings.dynamic_fastforward && self.ff_on {
-            if let Some(t) = self.dynamic_ff_input_time {
-                if t.elapsed() >= Duration::from_millis(Self::DYNAMIC_FF_RESUME_MS) {
-                    self.emu.set_speed(self.ff_target_speed());
-                    self.dynamic_ff_input_time = None;
-                }
-            }
+        if self.settings.dynamic_fastforward
+            && self.ff_on
+            && let Some(t) = self.dynamic_ff_input_time
+            && t.elapsed() >= Duration::from_millis(Self::DYNAMIC_FF_RESUME_MS)
+        {
+            self.emu.set_speed(self.ff_target_speed());
+            self.dynamic_ff_input_time = None;
         }
 
         if self.emu.poll() {
@@ -2722,10 +2725,10 @@ impl eframe::App for SnowGui {
         // Create disk image dialog
         self.create_disk_dialog.update(ctx, frame, &self.settings);
         self.ui_active &= !self.create_disk_dialog.is_open();
-        if let Some(result) = self.create_disk_dialog.take_result() {
-            if let Err(e) = self.try_create_image(&result) {
-                self.show_error(&format!("Failed to create image: {}", e));
-            }
+        if let Some(result) = self.create_disk_dialog.take_result()
+            && let Err(e) = self.try_create_image(&result)
+        {
+            self.show_error(&format!("Failed to create image: {}", e));
         }
 
         // Model selection/'Load ROM' dialog

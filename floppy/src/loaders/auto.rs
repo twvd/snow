@@ -3,11 +3,11 @@
 #[cfg(feature = "fluxfox")]
 use crate::loaders::fluxfox::Fluxfox;
 use crate::loaders::{
-    A2Rv2, A2Rv3, Bitfile, Dart, Diskcopy42, FloppyImageLoader, Moof, RawImage, PFI, PRI,
+    A2Rv2, A2Rv3, Bitfile, Dart, Diskcopy42, FloppyImageLoader, Moof, PFI, PRI, RawImage,
 };
 use crate::{FloppyImage, FloppyType};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use strum::{Display, IntoEnumIterator};
 
 /// Types of supported floppy images

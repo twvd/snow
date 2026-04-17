@@ -7,13 +7,13 @@ use std::io::{Read, Seek, SeekFrom, Write};
 
 use super::{FloppyImageLoader, FloppyImageSaver};
 use crate::{
-    built_info, Floppy, FloppyImage, FloppyType, OriginalTrackType, TrackLength, TrackType,
-    FLOPPY_MAX_SIDES, FLOPPY_MAX_TRACKS,
+    FLOPPY_MAX_SIDES, FLOPPY_MAX_TRACKS, Floppy, FloppyImage, FloppyType, OriginalTrackType,
+    TrackLength, TrackType, built_info,
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use binrw::io::Cursor;
-use binrw::{binrw, BinRead, BinWrite};
+use binrw::{BinRead, BinWrite, binrw};
 use itertools::Itertools;
 use log::*;
 

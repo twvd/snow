@@ -1,7 +1,7 @@
 //! CRT Lottes (crt-lottes-fast.glsl) shader pass
 
 use super::ShaderPass;
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use eframe::glow;
 use eframe::glow::HasContext;
 

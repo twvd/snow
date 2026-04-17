@@ -4,13 +4,13 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Instant;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::Parser;
 use itertools::Itertools;
 use log::*;
 
-use snow_core::emulator::comm::{EmulatorCommand, EmulatorEvent, EmulatorSpeed};
 use snow_core::emulator::Emulator;
+use snow_core::emulator::comm::{EmulatorCommand, EmulatorEvent, EmulatorSpeed};
 use snow_core::mac::{ExtraROMs, MacModel};
 use snow_core::tickable::{Tickable, Ticks};
 

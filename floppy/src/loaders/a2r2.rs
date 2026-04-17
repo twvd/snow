@@ -8,9 +8,9 @@ use std::io::{Read, Seek, SeekFrom};
 use super::FloppyImageLoader;
 use crate::{Floppy, FloppyImage, FloppyType, OriginalTrackType, TrackLength};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use binrw::io::Cursor;
-use binrw::{binrw, BinRead};
+use binrw::{BinRead, binrw};
 use log::*;
 
 /// Initial A2R file header
@@ -185,11 +185,11 @@ impl FloppyImageLoader for A2Rv2 {
         for capture in captures {
             let side = capture.get_side();
             let track = capture.get_track();
-            if let TrackLength::Transitions(t) = img.get_track_length(side, track) {
-                if t > 0 {
-                    // Multiple captures encountered, we just use the first and hope it's good.
-                    continue;
-                }
+            if let TrackLength::Transitions(t) = img.get_track_length(side, track)
+                && t > 0
+            {
+                // Multiple captures encountered, we just use the first and hope it's good.
+                continue;
             }
             img.origtracktype[side][track] = OriginalTrackType::RawFlux;
             let mut last = 0;

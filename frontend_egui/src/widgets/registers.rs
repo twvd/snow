@@ -97,7 +97,7 @@ impl RegistersWidget {
                         });
 
                         // Check if this register is being edited
-                        if let Some((edit_reg, ref mut edit_value)) = &mut self.editing {
+                        if let Some((edit_reg, edit_value)) = &mut self.editing {
                             let mut clear_editing = false;
 
                             if *edit_reg == reg {
@@ -213,30 +213,30 @@ impl RegistersWidget {
                     });
 
                     // Check if SR is being edited
-                    if let Some((edit_reg, ref mut edit_value)) = &mut self.editing {
-                        if *edit_reg == Register::SR {
-                            let mut clear_editing = false;
-                            row.col(|ui| {
-                                let response = ui.text_edit_singleline(edit_value);
+                    if let Some((edit_reg, edit_value)) = &mut self.editing
+                        && *edit_reg == Register::SR
+                    {
+                        let mut clear_editing = false;
+                        row.col(|ui| {
+                            let response = ui.text_edit_singleline(edit_value);
 
-                                if response.lost_focus()
-                                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                                {
-                                    if let Ok(new_value) = u16::from_str_radix(edit_value, 16) {
-                                        self.edited = Some((Register::SR, new_value as Long));
-                                    }
-                                    clear_editing = true;
+                            if response.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                            {
+                                if let Ok(new_value) = u16::from_str_radix(edit_value, 16) {
+                                    self.edited = Some((Register::SR, new_value as Long));
                                 }
-                            });
-
-                            if clear_editing {
-                                self.editing = None;
+                                clear_editing = true;
                             }
+                        });
 
-                            row.col(|_| {});
-                            // Skip the flags when editing
-                            return;
+                        if clear_editing {
+                            self.editing = None;
                         }
+
+                        row.col(|_| {});
+                        // Skip the flags when editing
+                        return;
                     }
 
                     // Normal display (not editing)
@@ -376,7 +376,7 @@ impl RegistersWidget {
                             });
 
                             // Check if this register is being edited
-                            if let Some((edit_reg, ref mut edit_value)) = &mut self.editing {
+                            if let Some((edit_reg, edit_value)) = &mut self.editing {
                                 let mut clear_editing = false;
 
                                 if *edit_reg == reg {

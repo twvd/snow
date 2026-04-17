@@ -146,7 +146,9 @@ pub trait ShaderPass: Send + Sync {
     unsafe fn bind_custom_uniforms(&self, gl: &glow::Context, params: &HashMap<String, f32>) {
         let program = self.program();
         for (name, &value) in params {
-            ShaderPipeline::set_uniform_f32(gl, program, name, value);
+            unsafe {
+                ShaderPipeline::set_uniform_f32(gl, program, name, value);
+            }
         }
     }
 }
@@ -270,26 +272,58 @@ impl ShaderPipeline {
             return Some(());
         }
 
-        // Clean up old intermediate textures and FBOs
-        for tex in self.intermediate_textures.drain(..).flatten() {
-            gl.delete_texture(tex);
-        }
-        for fbo in self.intermediate_fbos.drain(..) {
-            gl.delete_framebuffer(fbo);
-        }
+        unsafe {
+            // Clean up old intermediate textures and FBOs
+            for tex in self.intermediate_textures.drain(..).flatten() {
+                gl.delete_texture(tex);
+            }
+            for fbo in self.intermediate_fbos.drain(..) {
+                gl.delete_framebuffer(fbo);
+            }
 
-        // Clean up old output texture
-        if let Some(old_tex) = self.output_texture {
-            gl.delete_texture(old_tex);
-        }
+            // Clean up old output texture
+            if let Some(old_tex) = self.output_texture {
+                gl.delete_texture(old_tex);
+            }
 
-        // Create intermediate FBOs and textures (one for each pass except the last)
-        let intermediate_count = enabled_count.saturating_sub(1);
-        for _ in 0..intermediate_count {
-            let fbo = gl.create_framebuffer().ok()?;
-            let tex = gl.create_texture().ok()?;
+            // Create intermediate FBOs and textures (one for each pass except the last)
+            let intermediate_count = enabled_count.saturating_sub(1);
+            for _ in 0..intermediate_count {
+                let fbo = gl.create_framebuffer().ok()?;
+                let tex = gl.create_texture().ok()?;
 
-            gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+                gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+                let size = (texture_size[0] * texture_size[1] * 4) as usize;
+                let data = vec![0u8; size];
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGBA as i32,
+                    texture_size[0] as i32,
+                    texture_size[1] as i32,
+                    0,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(Some(&data)),
+                );
+                gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_MIN_FILTER,
+                    glow::LINEAR as i32,
+                );
+                gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_MAG_FILTER,
+                    glow::LINEAR as i32,
+                );
+
+                self.intermediate_fbos.push(fbo);
+                self.intermediate_textures.push(Some(tex));
+            }
+
+            // Create output texture
+            let output_tex = gl.create_texture().ok()?;
+            gl.bind_texture(glow::TEXTURE_2D, Some(output_tex));
             let size = (texture_size[0] * texture_size[1] * 4) as usize;
             let data = vec![0u8; size];
             gl.tex_image_2d(
@@ -313,41 +347,11 @@ impl ShaderPipeline {
                 glow::TEXTURE_MAG_FILTER,
                 glow::LINEAR as i32,
             );
+            self.output_texture = Some(output_tex);
 
-            self.intermediate_fbos.push(fbo);
-            self.intermediate_textures.push(Some(tex));
+            self.output_size = texture_size;
+            Some(())
         }
-
-        // Create output texture
-        let output_tex = gl.create_texture().ok()?;
-        gl.bind_texture(glow::TEXTURE_2D, Some(output_tex));
-        let size = (texture_size[0] * texture_size[1] * 4) as usize;
-        let data = vec![0u8; size];
-        gl.tex_image_2d(
-            glow::TEXTURE_2D,
-            0,
-            glow::RGBA as i32,
-            texture_size[0] as i32,
-            texture_size[1] as i32,
-            0,
-            glow::RGBA,
-            glow::UNSIGNED_BYTE,
-            glow::PixelUnpackData::Slice(Some(&data)),
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MIN_FILTER,
-            glow::LINEAR as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MAG_FILTER,
-            glow::LINEAR as i32,
-        );
-        self.output_texture = Some(output_tex);
-
-        self.output_size = texture_size;
-        Some(())
     }
 
     /// Process texture through the shader pipeline
@@ -490,10 +494,12 @@ impl ShaderPipeline {
         x: f32,
         y: f32,
     ) {
-        let Some(loc) = gl.get_uniform_location(program, name) else {
-            return;
-        };
-        gl.uniform_2_f32(Some(&loc), x, y);
+        unsafe {
+            let Some(loc) = gl.get_uniform_location(program, name) else {
+                return;
+            };
+            gl.uniform_2_f32(Some(&loc), x, y);
+        }
     }
 
     /// Helper to set a float uniform
@@ -503,9 +509,11 @@ impl ShaderPipeline {
         name: &str,
         value: f32,
     ) {
-        let Some(loc) = gl.get_uniform_location(program, name) else {
-            return;
-        };
-        gl.uniform_1_f32(Some(&loc), value);
+        unsafe {
+            let Some(loc) = gl.get_uniform_location(program, name) else {
+                return;
+            };
+            gl.uniform_1_f32(Some(&loc), value);
+        }
     }
 }

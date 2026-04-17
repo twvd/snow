@@ -1,7 +1,7 @@
 //! Emulator state management
 
 use crate::audio::CpalAudioProvider;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait};
 use eframe::egui;
 use log::*;
@@ -355,11 +355,13 @@ impl EmulatorState {
         self.eventrecv = Some(emulator.create_event_recv());
 
         // Spin up emulator thread
-        let emuthread = thread::spawn(move || loop {
-            match emulator.tick(1, ()) {
-                Ok(0) => break,
-                Ok(_) => (),
-                Err(e) => panic!("Emulator error: {}", e),
+        let emuthread = thread::spawn(move || {
+            loop {
+                match emulator.tick(1, ()) {
+                    Ok(0) => break,
+                    Ok(_) => (),
+                    Err(e) => panic!("Emulator error: {}", e),
+                }
             }
         });
 
@@ -821,16 +823,16 @@ impl EmulatorState {
             return;
         };
 
-        if let Some(status) = self.status.as_ref() {
-            if !matches!(
+        if let Some(status) = self.status.as_ref()
+            && !matches!(
                 status.scsi[id],
                 Some(ScsiTargetStatus {
                     target_type: ScsiTargetType::Cdrom,
                     ..
                 })
-            ) {
-                self.scsi_attach_cdrom(id);
-            }
+            )
+        {
+            self.scsi_attach_cdrom(id);
         }
         sender
             .send(EmulatorCommand::ScsiLoadMedia(id, path.to_path_buf()))
@@ -845,7 +847,7 @@ impl EmulatorState {
 
         // Find free CD-ROM drive
         for (i, t) in targets.iter().enumerate() {
-            let Some(ref t) = t else {
+            let Some(t) = t else {
                 continue;
             };
             if t.target_type == ScsiTargetType::Cdrom && t.image.is_none() {

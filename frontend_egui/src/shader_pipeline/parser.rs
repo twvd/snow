@@ -11,10 +11,10 @@ pub fn parse_shader_parameters(source: &str) -> Vec<ShaderParameter> {
 
     for line in source.lines() {
         let trimmed = line.trim();
-        if let Some(stripped) = trimmed.strip_prefix("#pragma parameter") {
-            if let Some(param) = parse_pragma_line(stripped.trim()) {
-                params.push(param);
-            }
+        if let Some(stripped) = trimmed.strip_prefix("#pragma parameter")
+            && let Some(param) = parse_pragma_line(stripped.trim())
+        {
+            params.push(param);
         }
     }
 

@@ -10,7 +10,7 @@
 use super::{FloppyImageLoader, FloppyImageSaver};
 use crate::{Floppy, FloppyImage, FloppyType, TrackLength};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 pub struct Bitfile {}
 

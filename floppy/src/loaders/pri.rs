@@ -8,9 +8,9 @@ use std::io::{Seek, SeekFrom};
 use super::FloppyImageLoader;
 use crate::{Floppy, FloppyImage, FloppyType, OriginalTrackType, TrackLength};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use binrw::io::Cursor;
-use binrw::{binrw, BinRead};
+use binrw::{BinRead, binrw};
 use log::*;
 
 const CRC_PRI: crc::Algorithm<u32> = crc::Algorithm {
@@ -165,11 +165,11 @@ impl FloppyImageLoader for PRI {
 
         // Fill tracks
         for ((side, track), (bitlen, data)) in tracks {
-            if let TrackLength::Bits(t) = img.get_track_length(side, track) {
-                if t > 0 {
-                    // Multiple captures encountered, we just use the first and hope it's good.
-                    continue;
-                }
+            if let TrackLength::Bits(t) = img.get_track_length(side, track)
+                && t > 0
+            {
+                // Multiple captures encountered, we just use the first and hope it's good.
+                continue;
             }
             img.origtracktype[side][track] = OriginalTrackType::Bitstream;
             img.set_actual_track_length(side, track, bitlen);

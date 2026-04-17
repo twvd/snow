@@ -1,10 +1,10 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, SampleFormat, Stream, StreamConfig};
 use snow_core::renderer::{AudioBuffer, AudioProvider, AudioReceiver, AudioSink, ChannelAudioSink};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 struct CpalAudioCallback {
     recv: AudioReceiver,
@@ -136,13 +136,13 @@ impl CpalAudioStream {
 
         // Sanity check the supported format. cpal will try to honor the config
         // regardless; we only log a warning if it looks off.
-        if let Ok(supported) = device.default_output_config() {
-            if supported.sample_format() != SampleFormat::F32 {
-                log::debug!(
-                    "Default device sample format is {:?}; requesting F32 anyway.",
-                    supported.sample_format()
-                );
-            }
+        if let Ok(supported) = device.default_output_config()
+            && supported.sample_format() != SampleFormat::F32
+        {
+            log::debug!(
+                "Default device sample format is {:?}; requesting F32 anyway.",
+                supported.sample_format()
+            );
         }
 
         stream

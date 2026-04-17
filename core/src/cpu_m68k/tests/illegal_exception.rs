@@ -111,7 +111,7 @@ fn test_illegal_exception(code: &[u16], exception_vector: Address, test_name: &s
 
     // First two handler words should have been prefetched
     assert_eq!(
-        cpu.prefetch.get(0).copied().unwrap_or(0),
+        cpu.prefetch.front().copied().unwrap_or(0),
         handler_code[0],
         "{}: First handler word not prefetched",
         test_name
@@ -202,7 +202,7 @@ fn test_illegal_exception(code: &[u16], exception_vector: Address, test_name: &s
 
     // Prefetch cache should have been refilled following RTE
     assert_eq!(
-        cpu.prefetch.get(0).copied().unwrap_or(0),
+        cpu.prefetch.front().copied().unwrap_or(0),
         code[0],
         "{}: Expect to be back on original illegal instruction after RTE.",
         test_name

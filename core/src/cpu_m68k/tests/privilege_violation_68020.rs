@@ -94,7 +94,7 @@ fn test_privilege_violation_exception_68020(code: &[u16], test_name: &str, expec
 
     // Verify first program word was fetched (prefetch is already filled by testcpu)
     assert_eq!(
-        cpu.prefetch.get(0).copied().unwrap_or(0),
+        cpu.prefetch.front().copied().unwrap_or(0),
         code[0],
         "{}: First program word was not fetched",
         test_name
@@ -143,7 +143,7 @@ fn test_privilege_violation_exception_68020(code: &[u16], test_name: &str, expec
 
     // First two handler words should have been prefetched
     assert_eq!(
-        cpu.prefetch.get(0).copied().unwrap_or(0),
+        cpu.prefetch.front().copied().unwrap_or(0),
         handler_code[0],
         "{}: First handler word not prefetched",
         test_name
@@ -237,7 +237,7 @@ fn test_privilege_violation_exception_68020(code: &[u16], test_name: &str, expec
 
     // Prefetch cache should have been refilled following RTE
     assert_eq!(
-        cpu.prefetch.get(0).copied().unwrap_or(0),
+        cpu.prefetch.front().copied().unwrap_or(0),
         code[2],
         "{}: Prefetch cache[0] has not been refilled following RTE.",
         test_name

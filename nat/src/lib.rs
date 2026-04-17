@@ -20,8 +20,8 @@ mod https_stripping;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -225,21 +225,19 @@ impl Device for VirtualDevice {
         }) = EthernetFrame::new_checked(&packet)
             .and_then(|p| ArpPacket::new_checked(p.payload()))
             .and_then(|p| ArpRepr::parse(&p))
+            && operation == ArpOperation::Request
+            && target_protocol_addr == self.gateway_ip
+            && self
+                .local_node
+                .is_none_or(|(mac, ip)| mac != source_hardware_addr || ip != source_protocol_addr)
         {
-            if operation == ArpOperation::Request
-                && target_protocol_addr == self.gateway_ip
-                && self.local_node.is_none_or(|(mac, ip)| {
-                    mac != source_hardware_addr || ip != source_protocol_addr
-                })
-            {
-                self.local_node = Some((source_hardware_addr, source_protocol_addr));
-                self.next_gratuitous_arp = Instant::now() + GRATUITOUS_ARP_INTERVAL;
-                log::debug!(
-                    "Learned local MAC address {} - IP address: {}",
-                    source_hardware_addr,
-                    source_protocol_addr
-                );
-            }
+            self.local_node = Some((source_hardware_addr, source_protocol_addr));
+            self.next_gratuitous_arp = Instant::now() + GRATUITOUS_ARP_INTERVAL;
+            log::debug!(
+                "Learned local MAC address {} - IP address: {}",
+                source_hardware_addr,
+                source_protocol_addr
+            );
         }
 
         // Pass non-routed packets (like ARP) normally
@@ -1113,12 +1111,9 @@ impl NatEngine {
             .collect();
 
         for handle in handles {
-            let local_endpoint = {
-                let entry = match self.nat_table.get(&handle) {
-                    Some(NatEntry::Udp(entry)) => entry.local_endpoint,
-                    _ => continue,
-                };
-                entry
+            let local_endpoint = match self.nat_table.get(&handle) {
+                Some(NatEntry::Udp(entry)) => entry.local_endpoint,
+                _ => continue,
             };
 
             // Get mutable access to entry
