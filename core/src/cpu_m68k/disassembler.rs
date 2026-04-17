@@ -1277,7 +1277,7 @@ mod tests {
     use super::*;
 
     fn dasm(b: &[u8]) -> String {
-        let mut iter = b.into_iter().copied();
+        let mut iter = b.iter().copied();
         let mut disasm = Disassembler::from(&mut iter, 0);
         let disasm_entry = disasm.next();
         let result = disasm_entry.unwrap().str;

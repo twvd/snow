@@ -118,7 +118,7 @@ fn test_single_interrupt(interrupt_priority_mask: u8, interrupt_pending_level: u
 
     // Capture state before interrupt processing
     assert_eq!(
-        cpu.prefetch.get(0).copied().unwrap_or(0),
+        cpu.prefetch.front().copied().unwrap_or(0),
         code[0],
         "Prefetch cache not initialised"
     );
@@ -155,7 +155,7 @@ fn test_single_interrupt(interrupt_priority_mask: u8, interrupt_pending_level: u
 
         // First two handler words should have been prefetched
         assert_eq!(
-            cpu.prefetch.get(0).copied().unwrap_or(0),
+            cpu.prefetch.front().copied().unwrap_or(0),
             handler_code[0],
             "First handler word not prefetched"
         );
@@ -236,7 +236,7 @@ fn test_single_interrupt(interrupt_priority_mask: u8, interrupt_pending_level: u
 
         // Prefetch cache should have been refilled following RTE
         assert_eq!(
-            cpu.prefetch.get(0).copied().unwrap_or(0),
+            cpu.prefetch.front().copied().unwrap_or(0),
             code[1],
             "Prefetch cache[0] not refilled following RTE"
         );
@@ -305,7 +305,7 @@ fn test_multiple_interrupts(
         }
 
         // Install interrupt handler
-        let exception_vector = 0x64 + ((i as u32 - 1) * 4);
+        let exception_vector = 0x64 + ((i - 1) * 4);
         write_long(&mut cpu, exception_vector, handler_addr);
     }
 
@@ -313,7 +313,7 @@ fn test_multiple_interrupts(
     cpu.regs.sr.set_int_prio_mask(interrupt_priority_mask);
 
     assert_eq!(
-        cpu.prefetch.get(0).copied().unwrap_or(0),
+        cpu.prefetch.front().copied().unwrap_or(0),
         code[0],
         "Prefetch cache not initialised"
     );

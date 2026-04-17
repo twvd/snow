@@ -8,9 +8,9 @@ use std::io::{Seek, SeekFrom};
 use super::FloppyImageLoader;
 use crate::{Floppy, FloppyImage, FloppyType, OriginalTrackType, TrackLength};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use binrw::io::Cursor;
-use binrw::{binrw, BinRead};
+use binrw::{BinRead, binrw};
 use log::*;
 
 const CRC_PFI: crc::Algorithm<u32> = crc::Algorithm {
@@ -152,11 +152,11 @@ impl FloppyImageLoader for PFI {
 
         // Fill tracks
         for ((side, track), data) in tracks {
-            if let TrackLength::Transitions(t) = img.get_track_length(side, track) {
-                if t > 0 {
-                    // Multiple captures encountered, we just use the first and hope it's good.
-                    continue;
-                }
+            if let TrackLength::Transitions(t) = img.get_track_length(side, track)
+                && t > 0
+            {
+                // Multiple captures encountered, we just use the first and hope it's good.
+                continue;
             }
             img.origtracktype[side][track] = OriginalTrackType::RawFlux;
 

@@ -224,9 +224,7 @@ mod tests {
 
             let error = (my_result - std_result).abs();
             // Adjust tolerance based on the simpler Taylor series implementation
-            let tolerance = if value.abs() >= 1.0 {
-                1e-2
-            } else if (value.abs() - 1.0).abs() < 0.01 {
+            let tolerance = if value.abs() >= 1.0 || (value.abs() - 1.0).abs() < 0.01 {
                 1e-2
             } else {
                 1e-3
@@ -264,8 +262,8 @@ mod tests {
             0.123456789,
             0.987654321,
             1.23456789,
-            2.71828182845904523536, // e
-            3.14159265358979323846, // pi
+            std::f64::consts::E,
+            std::f64::consts::PI,
             -0.123456789,
             -0.987654321,
             -1.23456789,

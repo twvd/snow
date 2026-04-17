@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::dialogs::filedialog::SnowFileDialog;
 use crate::emulator::EmulatorInitArgs;
 use crate::settings::AppSettings;
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use eframe::egui;
 use sha2::{Digest, Sha256};
 use snow_core::emulator::MouseMode;
@@ -149,14 +149,13 @@ impl ModelSelectionDialog {
         {
             self.main_rom_path = path.to_string_lossy().to_string();
         }
-        if self.display_rom_required {
-            if let Some((_, path)) = self
+        if self.display_rom_required
+            && let Some((_, path)) = self
                 .last_display_roms
                 .iter()
                 .find(|(m, _)| *m == self.selected_model)
-            {
-                self.display_rom_path = path.to_string_lossy().to_string();
-            }
+        {
+            self.display_rom_path = path.to_string_lossy().to_string();
         }
 
         self.do_validate_roms();

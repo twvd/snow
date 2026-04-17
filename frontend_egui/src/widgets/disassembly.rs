@@ -96,18 +96,17 @@ impl DisassemblyWidget {
                 Some("MacIIxROM")
             }
             _ => None,
-        } {
-            if let Some(map_file) = self.map_files.get(map_filename) {
-                for line in map_file.lines() {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() >= 2 {
-                        if let Ok(addr) = u32::from_str_radix(parts[1], 16) {
-                            if parts.get(2).is_some_and(|&t| t == "f") {
-                                self.function_names.insert(addr, parts[0].to_string());
-                            } else {
-                                self.label_names.insert(addr, parts[0].to_string());
-                            }
-                        }
+        } && let Some(map_file) = self.map_files.get(map_filename)
+        {
+            for line in map_file.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2
+                    && let Ok(addr) = u32::from_str_radix(parts[1], 16)
+                {
+                    if parts.get(2).is_some_and(|&t| t == "f") {
+                        self.function_names.insert(addr, parts[0].to_string());
+                    } else {
+                        self.label_names.insert(addr, parts[0].to_string());
                     }
                 }
             }
@@ -117,10 +116,10 @@ impl DisassemblyWidget {
         if let Some(map_file) = self.map_files.get("LowMem") {
             for line in map_file.lines() {
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    if let Ok(addr) = u32::from_str_radix(parts[1], 16) {
-                        self.low_memory.insert(addr, parts[0].to_string());
-                    }
+                if parts.len() >= 2
+                    && let Ok(addr) = u32::from_str_radix(parts[1], 16)
+                {
+                    self.low_memory.insert(addr, parts[0].to_string());
                 }
             }
         }
@@ -166,8 +165,8 @@ impl DisassemblyWidget {
                     }
 
                     // Display labels for the execution address
-                    if labels {
-                        if let Some(name) = self.get_name_for_address(c.addr) {
+                    if labels
+                        && let Some(name) = self.get_name_for_address(c.addr) {
                             body.row(12.0, |mut row| {
                                 row.col(|_ui| {});
                                 row.col(|_ui| {});
@@ -186,7 +185,6 @@ impl DisassemblyWidget {
                                 row.col(|_ui| {});
                             });
                         }
-                    }
 
                     if c.is_linea() {
                         // A-line annotation
@@ -261,22 +259,22 @@ impl DisassemblyWidget {
         // TODO: prevent replacement of literals and offsets
         for part in parts {
             let clean_part = part.trim_matches(|c: char| !c.is_ascii_hexdigit());
-            if clean_part.len() >= 4 && clean_part.len() <= 8 {
-                if let Ok(addr) = u32::from_str_radix(clean_part, 16) {
-                    if let Some(name) = self.get_name_for_address(addr) {
-                        let table_start = *self
-                            .function_names
-                            .first_key_value()
-                            .map_or(&0xFFFFFFFF, |(addr, _)| addr);
-                        if addr >= table_start
-                            && addr <= table_start.saturating_add(rom_size)
-                            && self.label_names.contains_key(&addr)
-                        {
-                            modified_text = modified_text.replace(part, &format!("@{}", name));
-                        }
-                        modified_text = modified_text.replace(part, name);
-                    }
+            if clean_part.len() >= 4
+                && clean_part.len() <= 8
+                && let Ok(addr) = u32::from_str_radix(clean_part, 16)
+                && let Some(name) = self.get_name_for_address(addr)
+            {
+                let table_start = *self
+                    .function_names
+                    .first_key_value()
+                    .map_or(&0xFFFFFFFF, |(addr, _)| addr);
+                if addr >= table_start
+                    && addr <= table_start.saturating_add(rom_size)
+                    && self.label_names.contains_key(&addr)
+                {
+                    modified_text = modified_text.replace(part, &format!("@{}", name));
                 }
+                modified_text = modified_text.replace(part, name);
             }
         }
 

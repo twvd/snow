@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
 
@@ -276,14 +276,14 @@ impl<'a> MacFormatEncoder<'a> {
                 format.get_logical_size()
             );
         }
-        if let Some(t) = tags.as_ref() {
-            if t.len() != format.get_sector_count() * Self::SECTOR_TAG_SIZE {
-                bail!(
-                    "Invalid tags length: {} (expected {})",
-                    t.len(),
-                    format.get_sector_count() * Self::SECTOR_TAG_SIZE
-                );
-            }
+        if let Some(t) = tags.as_ref()
+            && t.len() != format.get_sector_count() * Self::SECTOR_TAG_SIZE
+        {
+            bail!(
+                "Invalid tags length: {} (expected {})",
+                t.len(),
+                format.get_sector_count() * Self::SECTOR_TAG_SIZE
+            );
         }
 
         Ok(Self {

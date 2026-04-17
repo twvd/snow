@@ -1,12 +1,12 @@
 //! Raw, sector-based image format
 
 use super::FloppyImageLoader;
+use crate::FloppyType;
 #[cfg(feature = "fluxfox")]
 use crate::loaders::fluxfox::Fluxfox;
-use crate::FloppyType;
-use crate::{macformat::MacFormatEncoder, FloppyImage};
+use crate::{FloppyImage, macformat::MacFormatEncoder};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use strum::IntoEnumIterator;
 
 /// Raw image loader

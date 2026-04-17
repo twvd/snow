@@ -120,7 +120,7 @@ macro_rules! _cpu_test {
                     .unwrap()
             };
 
-            for testcase in testcases {
+            for testcase in &testcases {
                 run_testcase(testcase, $level);
             }
         }
@@ -279,7 +279,7 @@ fn print_result(cpu: &CpuM68000<Testbus<Address, u8>>, testcase: &Testcase) {
     }
 }
 
-fn run_testcase(testcase: Testcase, level: TestLevel) {
+fn run_testcase(testcase: &Testcase, level: TestLevel) {
     eprintln!("--- Testcase: {}", testcase.name);
 
     let regs_initial = create_regs(&testcase.initial);
@@ -296,12 +296,12 @@ fn run_testcase(testcase: Testcase, level: TestLevel) {
     cpu.prefetch = testcase.initial.prefetch.into();
     cpu.bus.reset_trace();
     if let Err(e) = cpu.step() {
-        print_result(&cpu, &testcase);
+        print_result(&cpu, testcase);
         panic!("Test {}: error: {:?}", testcase.name, e);
     }
 
     if cpu.prefetch.make_contiguous() != testcase.r#final.prefetch {
-        print_result(&cpu, &testcase);
+        print_result(&cpu, testcase);
         panic!(
             "Test {}: prefetch: expected {:?}, saw {:?}",
             testcase.name,
@@ -311,7 +311,7 @@ fn run_testcase(testcase: Testcase, level: TestLevel) {
     }
 
     if cpu.regs != regs_final && !cpu.step_exception {
-        print_result(&cpu, &testcase);
+        print_result(&cpu, testcase);
         panic!("Test {}: Registers do not match", testcase.name);
     }
 
@@ -330,7 +330,7 @@ fn run_testcase(testcase: Testcase, level: TestLevel) {
                 continue;
             }
 
-            print_result(&cpu, &testcase);
+            print_result(&cpu, testcase);
             panic!(
                 "Test {}: bus address {:06X}: expected {}, saw {}",
                 testcase.name, addr, expected, actual
@@ -339,7 +339,7 @@ fn run_testcase(testcase: Testcase, level: TestLevel) {
     }
 
     if level != TestLevel::StateOnly && cpu.cycles != testcase.length {
-        print_result(&cpu, &testcase);
+        print_result(&cpu, testcase);
         panic!(
             "Test {}: expected {} cycles, saw {}",
             testcase.name, testcase.length, cpu.cycles
@@ -356,7 +356,7 @@ fn run_testcase(testcase: Testcase, level: TestLevel) {
                     // Bus must be quiet for length
                     for cycle in abs_cycles..(abs_cycles + t.cycles) {
                         if trace.iter().any(|&a| a.cpu_cycle == cycle) {
-                            print_result(&cpu, &testcase);
+                            print_result(&cpu, testcase);
                             panic!("Bus not idle at cycle {}", abs_cycles);
                         }
                     }
@@ -370,32 +370,28 @@ fn run_testcase(testcase: Testcase, level: TestLevel) {
                     };
                     let mut found = false;
                     for cycle in abs_cycles..(abs_cycles + t.cycles) {
-                        if trace
-                            .iter()
-                            .find(|&&a| {
-                                if a.cpu_cycle == cycle
-                                    && (a.addr & !1) == (t.address & !1)
-                                    && a.access == expected_access
-                                {
-                                    if t.lds & t.uds == 0 {
-                                        // Byte access, check lower bit of address
-                                        let lsb = a.addr & 1 != 0;
-                                        (t.lds == 1 && lsb) || (t.uds == 1 && !lsb)
-                                    } else {
-                                        true
-                                    }
+                        if trace.iter().any(|&a| {
+                            if a.cpu_cycle == cycle
+                                && (a.addr & !1) == (t.address & !1)
+                                && a.access == expected_access
+                            {
+                                if t.lds & t.uds == 0 {
+                                    // Byte access, check lower bit of address
+                                    let lsb = a.addr & 1 != 0;
+                                    (t.lds == 1 && lsb) || (t.uds == 1 && !lsb)
                                 } else {
-                                    false
+                                    true
                                 }
-                            })
-                            .is_some()
-                        {
+                            } else {
+                                false
+                            }
+                        }) {
                             found = true;
                             break;
                         }
                     }
                     if !found {
-                        print_result(&cpu, &testcase);
+                        print_result(&cpu, testcase);
                         panic!("Bus access does not match at cycle {}", abs_cycles);
                     }
                     abs_cycles += t.cycles;

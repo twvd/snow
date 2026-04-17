@@ -72,12 +72,11 @@ impl AppSettings {
     }
 
     pub fn load() -> Self {
-        if let Ok(path) = Self::config_path() {
-            if let Ok(file) = std::fs::File::open(path) {
-                if let Ok(settings) = serde_json::from_reader(std::io::BufReader::new(file)) {
-                    return settings;
-                }
-            }
+        if let Ok(path) = Self::config_path()
+            && let Ok(file) = std::fs::File::open(path)
+            && let Ok(settings) = serde_json::from_reader(std::io::BufReader::new(file))
+        {
+            return settings;
         }
         Default::default()
     }

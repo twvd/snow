@@ -5,11 +5,11 @@ use super::FloppyImageLoader;
 use crate::{FloppyImage, FloppyType, OriginalTrackType};
 
 use crate::flux::{FluxTicks, NS_PER_TICK};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use binrw::io::Cursor;
+use fluxfox::DiskImage;
 use fluxfox::prelude::{TrackDataEncoding, TrackDataResolution};
 use fluxfox::types::DiskCh;
-use fluxfox::DiskImage;
 
 /// Fluxfox loader
 pub struct Fluxfox {}

@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use eframe::egui;
-use eframe::egui::ahash::HashMap;
 use eframe::egui::Ui;
+use eframe::egui::ahash::HashMap;
 use snow_core::bus::Address;
 
 use crate::dialogs::filedialog::SnowFileDialog;
@@ -102,10 +102,10 @@ impl MemoryViewerWidget {
     pub fn draw(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame, settings: &AppSettings) {
         // Handle export dialog
         self.export_dialog.update(ui.ctx(), frame);
-        if let Some(f) = self.export_dialog.take_picked() {
-            if let Err(e) = self.export_ram(&f) {
-                uniform_error(format!("Error exporting RAM to file: {}", e));
-            }
+        if let Some(f) = self.export_dialog.take_picked()
+            && let Err(e) = self.export_ram(&f)
+        {
+            uniform_error(format!("Error exporting RAM to file: {}", e));
         }
 
         // Discard expired change highlights
@@ -324,35 +324,35 @@ impl MemoryViewerWidget {
             *hl_left = hl_left.saturating_sub(1);
 
             // Check if this byte is being edited
-            if let Some((edit_offset, ref mut edit_value)) = self.editing {
-                if edit_offset == i {
-                    // This byte is being edited, show text field
-                    let edit_response = ui.add(
-                        egui::TextEdit::singleline(edit_value)
-                            .desired_width(20.0)
-                            .font(egui::TextStyle::Monospace),
-                    );
+            if let Some((edit_offset, ref mut edit_value)) = self.editing
+                && edit_offset == i
+            {
+                // This byte is being edited, show text field
+                let edit_response = ui.add(
+                    egui::TextEdit::singleline(edit_value)
+                        .desired_width(20.0)
+                        .font(egui::TextStyle::Monospace),
+                );
 
-                    // Escape is cancel
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        self.editing = None;
-                    } else if edit_response.lost_focus()
-                        || ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    {
-                        // Process result of editing
-                        if let Ok(value) = u8::from_str_radix(edit_value, 16) {
-                            // Valid hex value, update memory
-                            if i < self.memory.len() {
-                                self.memory[i] = value;
-                                self.edited = Some((i as Address, value));
-                            }
+                // Escape is cancel
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    self.editing = None;
+                } else if edit_response.lost_focus()
+                    || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                {
+                    // Process result of editing
+                    if let Ok(value) = u8::from_str_radix(edit_value, 16) {
+                        // Valid hex value, update memory
+                        if i < self.memory.len() {
+                            self.memory[i] = value;
+                            self.edited = Some((i as Address, value));
                         }
-                        // Clear editing state
-                        self.editing = None;
                     }
-
-                    continue;
+                    // Clear editing state
+                    self.editing = None;
                 }
+
+                continue;
             }
 
             // Regular byte display with click to edit
