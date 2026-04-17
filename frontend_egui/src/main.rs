@@ -65,9 +65,18 @@ fn main() -> eframe::Result {
     let logger_env = Box::new(
         env_logger::builder()
             .filter_level(LevelFilter::Debug)
+            .filter_module("tracing::span", LevelFilter::Off)
+            .filter_module("winit", LevelFilter::Off)
             .build(),
     );
-    let logger_egui = Box::new(egui_logger::builder().max_level(LevelFilter::Debug).build());
+    let logger_egui = Box::new(
+        egui_logger::builder()
+            .max_level(LevelFilter::Debug)
+            .add_blacklist("tracing::span")
+            .add_blacklist("winit::event_loop")
+            .add_blacklist("winit::window")
+            .build(),
+    );
     multi_log::MultiLogger::init(vec![logger_env, logger_egui], log::Level::Debug).unwrap();
 
     log::info!(
