@@ -665,7 +665,7 @@ impl BusMember<Address> for ScsiController {
 
                             // Select this ID
                             self.sel_id = id;
-                            self.sel_atn = self.reg_odr & 0x80 != 0;
+                            self.sel_atn = self.reg_icr.assert_atn();
 
                             //trace!(
                             //    "Selected SCSI ID: {:02X}, attention = {}",
