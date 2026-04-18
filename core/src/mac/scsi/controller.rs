@@ -485,34 +485,93 @@ impl ScsiController {
         self.reg_mr.dma_mode()
             && matches!(
                 self.busphase,
-                ScsiBusPhase::DataIn | ScsiBusPhase::DataOut | ScsiBusPhase::Status
+                ScsiBusPhase::DataIn
+                    | ScsiBusPhase::DataOut
+                    | ScsiBusPhase::Status
+                    | ScsiBusPhase::Command
+                    | ScsiBusPhase::MessageIn
+                    | ScsiBusPhase::MessageOut
             )
     }
 
     pub fn read_dma(&mut self) -> u8 {
-        self.read_datareg()
+        let v = self.read_datareg();
+        if self.scsi_debug {
+            debug!(
+                "SCSI DMA_R -> {:02X} (phase={:?}, mr={:02X}, icr={:02X})",
+                v, self.busphase, self.reg_mr.0, self.reg_icr.0
+            );
+        }
+        v
     }
 
     pub fn write_dma(&mut self, val: u8) {
+        if self.scsi_debug {
+            debug!(
+                "SCSI DMA_W {:02X} (phase={:?}, mr={:02X}, icr={:02X})",
+                val, self.busphase, self.reg_mr.0, self.reg_icr.0
+            );
+        }
         self.write_datareg(val);
     }
 
     fn write_datareg(&mut self, val: u8) {
-        if self.busphase == ScsiBusPhase::DataOut {
-            if self.reg_mr.dma_mode() {
-                self.assert_req();
+        self.reg_odr = val;
+
+        // Pseudo-DMA path: writes to the DMA window auto-pulse ACK, so we
+        // advance the REQ/ACK handshake here instead of waiting for an
+        // explicit ICR ACK toggle.
+        if self.reg_mr.dma_mode() {
+            match self.busphase {
+                ScsiBusPhase::DataOut => {
+                    self.assert_req();
+                    self.responsebuf.push_back(val);
+                    self.dataout_len -= 1;
+                    if self.dataout_len == 0 {
+                        let datavec = Vec::from_iter(self.responsebuf.iter().cloned());
+                        if let Err(e) = self.cmd_run(Some(&datavec)) {
+                            log::error!("SCSI command run error: {:#}", e);
+                        }
+                    }
+                }
+                ScsiBusPhase::Command => {
+                    if self.cmdbuf.is_empty() {
+                        self.cmdlen = scsi_cmd_len(val).unwrap_or_else(|| {
+                            log::error!("Cmd length unknown for {:02X}", val);
+                            6
+                        });
+                    }
+                    self.cmdbuf.push(val);
+                    if self.cmdbuf.len() >= self.cmdlen {
+                        if let Err(e) = self.cmd_run(None) {
+                            log::error!("SCSI command ({:02X}) error: {}", self.cmdbuf[0], e);
+                        }
+                    } else {
+                        self.assert_req();
+                    }
+                }
+                _ => {
+                    log::error!(
+                        "DMA mode write unimplemented for phase: {:?}",
+                        self.busphase
+                    );
+                }
             }
+
+            return;
+        }
+
+        // Legacy PIO DataOut path (byte buffered here, ACK handled via ICR).
+        if self.busphase == ScsiBusPhase::DataOut {
             self.responsebuf.push_back(val);
             self.dataout_len -= 1;
             if self.dataout_len == 0 {
-                // TODO inefficient
                 let datavec = Vec::from_iter(self.responsebuf.iter().cloned());
                 if let Err(e) = self.cmd_run(Some(&datavec)) {
                     log::error!("SCSI command run error: {:#}", e);
                 }
             }
         }
-        self.reg_odr = val;
     }
 
     fn read_datareg(&mut self) -> u8 {
