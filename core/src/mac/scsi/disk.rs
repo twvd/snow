@@ -80,7 +80,7 @@ impl ScsiTarget for ScsiTargetDisk {
         Ok(ScsiCmdResult::Status(STATUS_GOOD))
     }
 
-    fn inquiry(&mut self, _cmd: &[u8]) -> Result<ScsiCmdResult> {
+    fn inquiry(&mut self, cmd: &[u8]) -> Result<ScsiCmdResult> {
         let mut result = vec![0; 36];
 
         // 0 Peripheral qualifier (5-7), peripheral device type (4-0)
@@ -103,6 +103,12 @@ impl ScsiTarget for ScsiTargetDisk {
 
         // 32..36 Revision
         result[32..35].copy_from_slice(b"1.0");
+
+        // Honour the initiator's allocation length (cmd[4] for 6-byte INQUIRY).
+        let alloc = cmd.get(4).copied().unwrap_or(0) as usize;
+        if alloc > 0 && alloc < result.len() {
+            result.truncate(alloc);
+        }
 
         Ok(ScsiCmdResult::DataIn(result))
     }
