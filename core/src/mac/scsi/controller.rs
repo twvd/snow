@@ -50,26 +50,50 @@ enum ScsiBusPhase {
     MessageOut,
 }
 
+/// NCR 5380 readable registers
 #[allow(non_camel_case_types)]
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy, FromPrimitive, ToPrimitive)]
-enum NcrReg {
-    /// Current Data Register / Output Data Register
-    CDR_ODR,
-    /// Initiator Command Register
+enum NcrReadReg {
+    /// Current Data Register (0)
+    CDR,
+    /// Initiator Command Register (10)
     ICR,
-    /// Mode Register
+    /// Mode Register (20)
     MR,
-    /// Target Command Register
+    /// Target Command Register (30)
     TCR,
-    /// Current SCSI bus status
+    /// Current SCSI bus status (40)
     CSR,
-    /// Bus and Status register
+    /// Bus and Status register (50)
     BSR,
-    /// Input Data Register
+    /// Input Data Register (60)
     IDR,
-    /// Reset parity/interrupt
+    /// Reset parity/interrupt (70)
     RESET,
+}
+
+// NCR 5380 writable registers
+#[allow(non_camel_case_types)]
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, FromPrimitive, ToPrimitive)]
+enum NcrWriteReg {
+    /// Output Data Register (0)
+    ODR,
+    /// Initiator Command Register (10)
+    ICR,
+    /// Mode Register (20)
+    MR,
+    /// Target Command Register (30)
+    TCR,
+    /// Select Enable register (40)
+    SELEN,
+    /// Start DMA send (50)
+    StartDMASend,
+    /// Start DMA target receive (60)
+    StartDMATargetReceive,
+    /// Start DMA initiator receive (70)
+    StartDMAInitiatorReceive,
 }
 
 bitfield! {
@@ -617,9 +641,9 @@ impl BusMember<Address> for ScsiController {
     fn read(&mut self, addr: Address) -> Option<u8> {
         let _is_write = addr & 1 != 0;
         let _dack = addr & 0b0010_0000_0000 != 0;
-        let reg = NcrReg::from_u32((addr >> 4) & 0b111).unwrap();
+        let reg = NcrReadReg::from_u32((addr >> 4) & 0b111).unwrap();
 
-        //if reg != NcrReg::CSR {
+        //if reg != NcrReadReg::CSR {
         //    debug!(
         //        "{:06X} SCSI read: write = {}, dack = {}, reg = {:?}",
         //        self.dbg_pc, is_write, dack, reg
@@ -627,10 +651,10 @@ impl BusMember<Address> for ScsiController {
         //}
 
         match reg {
-            NcrReg::CDR_ODR | NcrReg::IDR => Some(self.read_datareg()),
-            NcrReg::MR => Some(self.reg_mr.0),
-            NcrReg::ICR => Some(self.reg_icr.0),
-            NcrReg::CSR => {
+            NcrReadReg::CDR | NcrReadReg::IDR => Some(self.read_datareg()),
+            NcrReadReg::MR => Some(self.reg_mr.0),
+            NcrReadReg::ICR => Some(self.reg_icr.0),
+            NcrReadReg::CSR => {
                 let val = self.reg_csr.0;
 
                 // MacII has a race condition where it will get stuck if
@@ -641,7 +665,7 @@ impl BusMember<Address> for ScsiController {
 
                 Some(val)
             }
-            NcrReg::BSR => Some(
+            NcrReadReg::BSR => Some(
                 self.reg_bsr
                     .with_dma_req(self.get_drq())
                     .with_dma_end(!matches!(
@@ -650,7 +674,7 @@ impl BusMember<Address> for ScsiController {
                     ))
                     .0,
             ),
-            NcrReg::RESET => {
+            NcrReadReg::RESET => {
                 self.reg_bsr.set_irq(false);
                 Some(0)
             }
@@ -658,11 +682,10 @@ impl BusMember<Address> for ScsiController {
         }
     }
 
-    #[allow(clippy::cognitive_complexity)]
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
         let _is_write = addr & 1 != 0;
         let _dack = addr & 0b0010_0000_0000 != 0;
-        let reg = NcrReg::from_u32((addr >> 4) & 0b111).unwrap();
+        let reg = NcrWriteReg::from_u32((addr >> 4) & 0b111).unwrap();
 
         //debug!(
         //    "SCSI write: val = {:02X}, write = {}, dack = {}, reg = {:?}",
@@ -670,12 +693,12 @@ impl BusMember<Address> for ScsiController {
         //);
 
         match reg {
-            NcrReg::CDR_ODR => {
+            NcrWriteReg::ODR => {
                 self.write_datareg(val);
                 self.try_complete_selection();
                 Some(())
             }
-            NcrReg::ICR => {
+            NcrWriteReg::ICR => {
                 let set = NcrRegIcr(val & !self.reg_icr.0);
                 let clr = NcrRegIcr(!val & self.reg_icr.0);
 
@@ -699,7 +722,7 @@ impl BusMember<Address> for ScsiController {
                 }
                 Some(())
             }
-            NcrReg::MR => {
+            NcrWriteReg::MR => {
                 let set = NcrRegMr(val & !self.reg_mr.0);
                 let clr = NcrRegMr(!val & self.reg_mr.0);
                 self.reg_mr.0 = val;
