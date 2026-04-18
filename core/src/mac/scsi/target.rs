@@ -286,7 +286,15 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
 
                     Ok(ScsiCmdResult::Status(STATUS_GOOD))
                 } else {
-                    Ok(ScsiCmdResult::DataOut(cmd[4] as usize))
+                    let len = cmd[4] as usize;
+                    if len == 0 {
+                        // [SPC-3] 6.7:
+                        // "A parameter list length of zero specifies that the Data-Out Buffer shall be empty. This condition
+                        // shall not be considered as an error."
+                        Ok(ScsiCmdResult::Status(STATUS_GOOD))
+                    } else {
+                        Ok(ScsiCmdResult::DataOut(len))
+                    }
                 }
             }
             0x1A => {

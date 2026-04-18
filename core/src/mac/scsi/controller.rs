@@ -464,7 +464,16 @@ impl ScsiController {
             Ok(ScsiCmdResult::DataOut(len)) => {
                 self.dataout_len = len;
                 self.responsebuf.clear();
-                self.set_phase(ScsiBusPhase::DataOut);
+                if len == 0 {
+                    // [SPC-3] 6.7:
+                    // "A parameter list length of zero specifies that the Data-Out Buffer shall be empty. This condition
+                    // shall not be considered as an error."
+                    if let Err(e) = self.cmd_run(Some(&[])) {
+                        log::error!("SCSI command run error: {:#}", e);
+                    }
+                } else {
+                    self.set_phase(ScsiBusPhase::DataOut);
+                }
             }
             Err(e) => return Err(e),
         }
