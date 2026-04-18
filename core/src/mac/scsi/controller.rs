@@ -339,6 +339,37 @@ impl ScsiController {
         self.set_req.get_clear();
     }
 
+    /// Attempts to complete selection (sample target ID) if the bus state is
+    /// valid (MR.arbitrate=0, ICR.assert_sel=1, exactly one non-initiator ID
+    /// bit on ODR). Different drivers (MacOS vs A/UX) drive the 5380 in
+    /// different orders, so instead of latching the target on a single
+    /// register-write event we re-check after each relevant Selection-phase
+    /// write.
+    fn try_complete_selection(&mut self) {
+        if self.busphase != ScsiBusPhase::Selection {
+            return;
+        }
+        if self.reg_mr.arbitrate() || !self.reg_icr.assert_sel() {
+            return;
+        }
+        let target_bits = self.reg_odr & 0x7F;
+        if target_bits.count_ones() != 1 {
+            // Initiator hasn't placed the target ID on the bus yet. Stay in
+            // Selection and wait for the next write.
+            return;
+        }
+        let id = Self::translate_id(target_bits).unwrap();
+        if self.targets[id].is_none() {
+            // No device present at this ID
+            self.set_phase(ScsiBusPhase::Free);
+            return;
+        }
+
+        self.sel_id = id;
+        self.sel_atn = self.reg_icr.assert_atn();
+        self.set_phase(ScsiBusPhase::Command);
+    }
+
     fn set_phase(&mut self, phase: ScsiBusPhase) {
         //debug!("Bus phase: {:?}", phase);
 
@@ -552,6 +583,7 @@ impl BusMember<Address> for ScsiController {
         match reg {
             NcrReg::CDR_ODR => {
                 self.write_datareg(val);
+                self.try_complete_selection();
                 Some(())
             }
             NcrReg::ICR => {
@@ -648,35 +680,8 @@ impl BusMember<Address> for ScsiController {
                     return Some(());
                 }
 
-                match self.busphase {
-                    ScsiBusPhase::Free => {}
-                    ScsiBusPhase::Selection => {
-                        if clr.arbitrate() {
-                            let Ok(id) = Self::translate_id(self.reg_odr & 0x7F) else {
-                                error!("Invalid ID on bus! ODR = {:02X}", self.reg_odr);
-                                self.set_phase(ScsiBusPhase::Free);
-                                return Some(());
-                            };
-                            if self.targets[id].is_none() {
-                                // No device present at this ID
-                                self.set_phase(ScsiBusPhase::Free);
-                                return Some(());
-                            }
-
-                            // Select this ID
-                            self.sel_id = id;
-                            self.sel_atn = self.reg_icr.assert_atn();
-
-                            //trace!(
-                            //    "Selected SCSI ID: {:02X}, attention = {}",
-                            //    self.sel_id,
-                            //    self.sel_atn
-                            //);
-
-                            self.set_phase(ScsiBusPhase::Command);
-                        }
-                    }
-                    _ => (),
+                if clr.arbitrate() {
+                    self.try_complete_selection();
                 }
                 Some(())
             }
