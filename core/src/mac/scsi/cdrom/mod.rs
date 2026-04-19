@@ -152,6 +152,12 @@ enum AudioState {
 }
 
 #[derive(Serialize, Deserialize)]
+struct AudioPort {
+    channel: u8,
+    volume: u8,
+}
+
+#[derive(Serialize, Deserialize)]
 pub(super) struct ScsiTargetCdrom {
     common: ScsiTargetCommon,
 
@@ -174,10 +180,12 @@ pub(super) struct ScsiTargetCdrom {
     /// Audio stop sector
     audio_stop: u32,
 
-    /// Audio clock (counts ticks up 75 audio CD frames per second)
-    audio_clock: Ticks,
+    /// Audio ports: Left, Right, Rear Left, Rear Right.
+    /// Quadraphonic CD's are extremely rare but apparently existed.
+    audio_ports: [AudioPort; 4],
 
-    audio_volume: u8,
+    /// Audio clock (counts bus ticks)
+    audio_clock: Ticks,
 
     /// Audio sink for CD audio
     #[serde(skip)]
@@ -197,7 +205,24 @@ impl ScsiTargetCdrom {
             audio_pos: LBA_START_SECTOR,
             audio_stop: 0,
             audio_clock: 0,
-            audio_volume: u8::MAX,
+            audio_ports: [
+                AudioPort {
+                    volume: 255,
+                    channel: 0b0001,
+                },
+                AudioPort {
+                    volume: 255,
+                    channel: 0b0010,
+                },
+                AudioPort {
+                    volume: 0,
+                    channel: 0b0100,
+                },
+                AudioPort {
+                    volume: 0,
+                    channel: 0b1000,
+                },
+            ],
             audio_sink: None,
         };
         if let Some(audio_provider) = audio_provider {
@@ -461,14 +486,33 @@ impl ScsiTargetCdrom {
             return Ok(());
         }
 
+        let make_out_sample = |port: &AudioPort, channel_samples: &[i16; 4]| -> f32 {
+            let sample = match port.channel {
+                0b0001 => channel_samples[0],
+                0b0010 => channel_samples[1],
+                0b0100 => channel_samples[2],
+                0b1000 => channel_samples[3],
+                _ => 0,
+            };
+            sample as f32 / 32768.0 * port.volume as f32 / 255.0
+        };
+
         let samples = backend.read_raw_sector(self.audio_pos);
         match samples {
             Ok(samples) => {
+                let mut samples = samples
+                    .chunks_exact(2)
+                    .map(|s| i16::from_le_bytes(s.try_into().unwrap()));
                 // FIXME: can we avoid converting to float by setting up a signed 16-bit PCM audio sink?
                 let mut out_samples = [0.0; RAW_SECTOR_LEN / 2]; // 16-bit samples
-                for i in 0..RAW_SECTOR_LEN / 2 {
-                    let sample = i16::from_le_bytes(samples[2 * i..][..2].try_into().unwrap());
-                    out_samples[i] = sample as f32 / 32768.0 * self.audio_volume as f32 / 255.0;
+                for out_samples in out_samples.chunks_exact_mut(2) {
+                    let left = samples.next().unwrap();
+                    let right = samples.next().unwrap();
+                    // FIXME: support rear-left/rear-right? Four-channel audio is indicated
+                    // by a flag in the track form field.
+                    let channel_samples = [left, right, 0, 0];
+                    out_samples[0] = make_out_sample(&self.audio_ports[0], &channel_samples);
+                    out_samples[1] = make_out_sample(&self.audio_ports[1], &channel_samples);
                 }
 
                 audio_sink.send(Box::new(out_samples))?;
@@ -624,20 +668,20 @@ impl ScsiTarget for ScsiTargetCdrom {
                 let sotc = 0;
 
                 Some(vec![
-                    (1 << 2) | (sotc << 1), // IMMED (always 1), SOTC
-                    0,                      // Reserved
-                    0,                      // Reserved
-                    0,                      // Reserved
-                    75,                     // Obsolete (75)
-                    75,                     // Obsolete (75)
-                    0b0001, // CDDA Output Port 0 Channel Selection (attach audio channel 0)
-                    self.audio_volume, // Output Port 0 Volume Default FFh
-                    0b0010, // CDDA Output Port 1 Channel Selection (attach audio channel 1)
-                    self.audio_volume, // Output Port 1 Volume Default FFh
-                    0b0100, // CDDA Output Port 2 Channel Selection (attach audio channel 2)
-                    0x00,   // Output Port 2 Volume Default 00h
-                    0b1000, // CDDA Output Port 3 Channel Selection (attach audio channel 3)
-                    0x00,   // Output Port 3 Volume Default 00h
+                    (1 << 2) | (sotc << 1),      // IMMED (always 1), SOTC
+                    0,                           // Reserved
+                    0,                           // Reserved
+                    0,                           // Reserved
+                    75,                          // Obsolete (75)
+                    75,                          // Obsolete (75)
+                    self.audio_ports[0].channel, // CDDA Output Port 0 Channel Selection (attach audio channel 0)
+                    self.audio_ports[0].volume,  // Output Port 0 Volume Default FFh
+                    self.audio_ports[1].channel, // CDDA Output Port 1 Channel Selection (attach audio channel 1)
+                    self.audio_ports[1].volume,  // Output Port 1 Volume Default FFh
+                    self.audio_ports[2].channel, // CDDA Output Port 2 Channel Selection (attach audio channel 2)
+                    self.audio_ports[2].volume,  // Output Port 2 Volume Default 00h
+                    self.audio_ports[3].channel, // CDDA Output Port 3 Channel Selection (attach audio channel 3)
+                    self.audio_ports[3].volume,  // Output Port 3 Volume Default 00h
                 ])
             }
             0x2A => {
@@ -651,6 +695,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 data[2] = 1; // Audio Play
                 // TODO: support more features such as Mode2 sectors, multiple sessions, etc.
                 data[4] = (0b001 << 5) | (1 << 3); // Tray type loading mechanism; Eject
+                data[5] = (1 << 1) | 1; // Separate Channel Mute; Separate volume levels
                 data[8..=9].copy_from_slice(&256u16.to_be_bytes()); // Number of Volume Levels Supported
 
                 Some(data)
@@ -671,16 +716,28 @@ impl ScsiTarget for ScsiTargetCdrom {
             0x0e => {
                 // CD Audio Control Page
 
+                log::debug!("CD Audio Control {:?}", data);
+
                 // TODO: Implement Stop On Track Crossing mode.
                 // I can't find any software that enables SOTC mode.
-                let sotc = (data[0] >> 1) & 0x1;
-                // XXX: Only Output Port 0 Volume is used. I can't find any software that
-                // adjusts port volumes independently (i.e. left/right channels).
-                let volume = data[7];
+                let _sotc = (data[0] >> 1) & 0x1;
+                self.audio_ports[0] = AudioPort {
+                    channel: data[6],
+                    volume: data[7],
+                };
+                self.audio_ports[1] = AudioPort {
+                    channel: data[8],
+                    volume: data[9],
+                };
+                self.audio_ports[2] = AudioPort {
+                    channel: data[10],
+                    volume: data[11],
+                };
+                self.audio_ports[3] = AudioPort {
+                    channel: data[12],
+                    volume: data[13],
+                };
 
-                log::debug!("CD Audio Control sotc {} volume {}", sotc, volume);
-
-                self.audio_volume = volume;
                 Ok(())
             }
             // TODO: Myst sends MODE SELECT page 0x31
@@ -751,7 +808,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 // head to the start track of the disc, and holds it there until an inactivity time-out occurs. If the
                 // initiator requests a disconnect, the drive disconnects from it during load and seek operations.
                 // This command does not affect modes specified by the MODE SELECT command.
-                log::warn!("REZERO UNIT");
+                log::debug!("REZERO UNIT");
                 self.audio_state = AudioState::Stopped;
                 self.audio_pos = LBA_START_SECTOR;
                 Ok(ScsiCmdResult::Status(STATUS_GOOD))
