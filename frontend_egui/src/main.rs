@@ -1,7 +1,20 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
+#[cfg(all(
+    any(
+        feature = "sdl2-bundled",
+        feature = "sdl2-pkgconfig",
+        feature = "sdl2-static"
+    ),
+    not(feature = "audio_sdl2")
+))]
+compile_error!("sdl2-* features require feature audio_sdl2");
+
 mod app;
-mod audio;
+#[cfg(not(feature = "audio_sdl2"))]
+mod audio_cpal;
+#[cfg(feature = "audio_sdl2")]
+mod audio_sdl2;
 mod consts;
 mod dialogs;
 mod emulator;
