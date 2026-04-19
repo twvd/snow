@@ -243,6 +243,15 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                         }
                     }
 
+                    // [SPC-3] 6.7: PF=0 indicates the data following the block
+                    // descriptor(s) is vendor specific, not mode pages. Apple's
+                    // HD SC Setup uses PF=0 when running its drive test, so we
+                    // accept the block-descriptor update and ignore the rest.
+                    let pf = cmd[1] & (1 << 4) != 0;
+                    if !pf {
+                        return Ok(ScsiCmdResult::Status(STATUS_GOOD));
+                    }
+
                     let mut pages = &od[12..];
                     while let Some([page, page_len]) = pages.get(..2) {
                         pages = &pages[2..];
@@ -265,8 +274,12 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                         // [SPC-3] 6.7 implies that if unsupported pages are present, the command shall
                         // be terminated with ILLEGAL_REQUEST/INVALID FIELD. It isn't clear if other
                         // pages specified in the command are applied or canceled.
-                        // TODO: set condition codes
-                        self.mode_select(*page, data)?;
+                        if self.mode_select(*page, data).is_err() {
+                            log::warn!("Unknown page ${:02X} in MODE SELECT(6)", *page);
+                            self.common()
+                                .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                        }
 
                         pages = &pages[*page_len as usize..];
                     }
