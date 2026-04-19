@@ -236,6 +236,13 @@ pub struct ScsiController {
     #[serde(skip)]
     toolbox: BlueSCSI,
     scsi_debug: bool,
+
+    #[serde(skip)]
+    scsi_trace_cdb: bool,
+    #[serde(skip)]
+    scsi_trace_phase: bool,
+    #[serde(skip)]
+    scsi_trace_irq: bool,
 }
 
 impl ScsiController {
@@ -273,6 +280,14 @@ impl ScsiController {
     }
 
     pub fn new() -> Self {
+        let env_flag = |name: &str| {
+            std::env::var(name)
+                .map(|v| v != "0" && !v.is_empty())
+                .unwrap_or(false)
+        };
+        let scsi_trace_cdb = env_flag("SNOW_SCSI_TRACE_CDB");
+        let scsi_trace_phase = env_flag("SNOW_SCSI_TRACE_PHASE");
+        let scsi_trace_irq = env_flag("SNOW_SCSI_TRACE_IRQ");
         Self {
             busphase: ScsiBusPhase::Free,
             reg_mr: NcrRegMr(0),
@@ -295,6 +310,9 @@ impl ScsiController {
             targets: Default::default(),
             toolbox: BlueSCSI::default(),
             scsi_debug: false,
+            scsi_trace_cdb,
+            scsi_trace_phase,
+            scsi_trace_irq,
         }
     }
 
@@ -422,6 +440,9 @@ impl ScsiController {
 
         // Selection interrupt
         if self.reg_selen == self.reg_odr {
+            if self.scsi_trace_irq {
+                debug!("SCSI IRQ raised (selection complete, id={})", id);
+            }
             self.reg_bsr.set_irq(true);
         }
         self.sel_id = id;
@@ -430,7 +451,12 @@ impl ScsiController {
     }
 
     fn set_phase(&mut self, phase: ScsiBusPhase) {
-        //debug!("Bus phase: {:?}", phase);
+        if self.scsi_trace_phase {
+            debug!(
+                "SCSI phase: {:?} -> {:?} (id={}, atn={})",
+                self.busphase, phase, self.sel_id, self.sel_atn
+            );
+        }
 
         let prev_phase_match = self.phase_match();
 
@@ -500,6 +526,9 @@ impl ScsiController {
         // phase-match signal raises IRQ. Drivers use this edge to detect
         // that a pseudo-DMA transfer has ended (target changed phase).
         if self.reg_mr.dma_mode() && self.dma_armed && prev_phase_match && !self.phase_match() {
+            if self.scsi_trace_irq {
+                debug!("SCSI IRQ raised (DMA phase mismatch)");
+            }
             self.reg_bsr.set_irq(true);
             self.dma_armed = false;
         }
@@ -507,8 +536,18 @@ impl ScsiController {
 
     fn cmd_run(&mut self, outdata: Option<&[u8]>) -> Result<()> {
         let cmd = &self.cmdbuf;
+        let cmd_op = cmd[0];
 
-        let result = match cmd[0] {
+        if self.scsi_trace_cdb {
+            debug!(
+                "SCSI CDB id={} {:02X?} dataout={}B",
+                self.sel_id,
+                cmd.as_slice(),
+                outdata.map(|d| d.len()).unwrap_or(0)
+            );
+        }
+
+        let result = match cmd_op {
             0xD0..=0xD9 => Ok(self
                 .toolbox
                 .handle_command(cmd, outdata, &mut self.scsi_debug)),
@@ -519,6 +558,21 @@ impl ScsiController {
                 target.cmd(cmd, outdata)
             }
         };
+
+        if self.scsi_trace_cdb {
+            match &result {
+                Ok(ScsiCmdResult::Status(s)) => {
+                    debug!("SCSI CDB {:02X} -> Status({:02X})", cmd_op, s);
+                }
+                Ok(ScsiCmdResult::DataIn(d)) => {
+                    debug!("SCSI CDB {:02X} -> DataIn {}B", cmd_op, d.len());
+                }
+                Ok(ScsiCmdResult::DataOut(n)) => {
+                    debug!("SCSI CDB {:02X} -> DataOut {}B", cmd_op, n);
+                }
+                Err(e) => debug!("SCSI CDB {:02X} -> Err: {:#}", cmd_op, e),
+            }
+        }
 
         match result {
             Ok(ScsiCmdResult::Status(s)) => {
@@ -717,6 +771,9 @@ impl BusMember<Address> for ScsiController {
                     .0,
             ),
             NcrReadReg::RESET => {
+                if self.scsi_trace_irq && self.reg_bsr.irq() {
+                    debug!("SCSI IRQ cleared (RESET register read)");
+                }
                 self.reg_bsr.set_irq(false);
                 Some(0)
             }
