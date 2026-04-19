@@ -27,6 +27,10 @@ mod util;
 mod widgets;
 mod workspace;
 
+mod built_info {
+    include!(concat!(env!("OUT_DIR"), "/built.rs"));
+}
+
 use crate::app::SnowGui;
 
 use clap::Parser;
@@ -93,10 +97,11 @@ fn main() -> eframe::Result {
     multi_log::MultiLogger::init(vec![logger_env, logger_egui], log::Level::Debug).unwrap();
 
     log::info!(
-        "Snow v{} ({} {})",
+        "Snow v{} ({} {}) [{}]",
         snow_core::build_version(),
         snow_core::built_info::TARGET,
         snow_core::built_info::PROFILE,
+        built_info::FEATURES.join(", "),
     );
 
     // egui/eframe does not expose all the keys we need, so we capture raw keyboard events

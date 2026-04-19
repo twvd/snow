@@ -34,6 +34,8 @@ fn main() {
 
     println!("cargo:rerun-if-changed=../.git/HEAD");
 
+    built::write_built_file().expect("Failed to acquire build-time information");
+
     if env::var_os("CARGO_CFG_WINDOWS").is_some() {
         winresource::WindowsResource::new()
             .set_icon("../assets/snow.ico")
