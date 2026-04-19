@@ -132,6 +132,8 @@ bitfield! {
     /// NCR 5380 SCSI Bus Status
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     struct NcrRegCsr(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
+        pub phase_match_bits: u8 @ 2..=4,
+
         pub dbp: bool @ 0,
         pub sel: bool @ 1,
         pub io: bool @ 2,
@@ -169,6 +171,23 @@ bitfield! {
     }
 }
 
+bitfield! {
+    /// NCR 5380 Target Control Register
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    struct NcrRegTcr(pub u8): Debug, FromStorage, IntoStorage, DerefStorage {
+        pub writable: u8 @ 0..=6,
+        pub phase_match_bits: u8 @ 0..=2,
+
+        pub assert_io: bool @ 0,
+        pub assert_cd: bool @ 1,
+        pub assert_msg: bool @ 2,
+        pub assert_req: bool @ 3,
+
+        // 53C80 only
+        pub last_byte_sent: bool @ 7,
+    }
+}
+
 /// NCR 5380 SCSI controller
 #[derive(Serialize, Deserialize)]
 pub struct ScsiController {
@@ -176,11 +195,19 @@ pub struct ScsiController {
     reg_mr: NcrRegMr,
     reg_icr: NcrRegIcr,
     reg_csr: NcrRegCsr,
+    reg_tcr: NcrRegTcr,
     reg_cdr: u8,
     reg_odr: u8,
     reg_bsr: NcrRegBsr,
     reg_selen: u8,
     status: u8,
+
+    /// DMA has been armed (Start DMA Send / Target Receive / Initiator
+    /// Receive register written). Gates DRQ and the phase-mismatch IRQ
+    /// per the 5380 datasheet: phase match is a polled flag, but it only
+    /// generates an interrupt while DMA mode is active and a DMA
+    /// direction has been armed.
+    dma_armed: bool,
 
     /// Selected SCSI ID
     sel_id: usize,
@@ -251,10 +278,12 @@ impl ScsiController {
             reg_mr: NcrRegMr(0),
             reg_icr: NcrRegIcr(0),
             reg_csr: NcrRegCsr(0),
-            reg_bsr: NcrRegBsr(0).with_phase_match(true),
+            reg_tcr: NcrRegTcr(0),
+            reg_bsr: NcrRegBsr(0),
             reg_cdr: 0,
             reg_odr: 0,
             reg_selen: 0,
+            dma_armed: false,
             sel_id: 0,
             sel_atn: false,
             cmdbuf: vec![],
@@ -403,6 +432,8 @@ impl ScsiController {
     fn set_phase(&mut self, phase: ScsiBusPhase) {
         //debug!("Bus phase: {:?}", phase);
 
+        let prev_phase_match = self.phase_match();
+
         self.busphase = phase;
         self.reg_csr.0 = 0;
         self.deassert_req();
@@ -463,6 +494,15 @@ impl ScsiController {
             }
             _ => (),
         }
+
+        // NCR 5380 phase-mismatch interrupt: while DMA mode is active and
+        // a DMA direction has been armed, a high->low transition of the
+        // phase-match signal raises IRQ. Drivers use this edge to detect
+        // that a pseudo-DMA transfer has ended (target changed phase).
+        if self.reg_mr.dma_mode() && self.dma_armed && prev_phase_match && !self.phase_match() {
+            self.reg_bsr.set_irq(true);
+            self.dma_armed = false;
+        }
     }
 
     fn cmd_run(&mut self, outdata: Option<&[u8]>) -> Result<()> {
@@ -512,16 +552,7 @@ impl ScsiController {
     }
 
     pub fn get_drq(&self) -> bool {
-        self.reg_mr.dma_mode()
-            && matches!(
-                self.busphase,
-                ScsiBusPhase::DataIn
-                    | ScsiBusPhase::DataOut
-                    | ScsiBusPhase::Status
-                    | ScsiBusPhase::Command
-                    | ScsiBusPhase::MessageIn
-                    | ScsiBusPhase::MessageOut
-            )
+        self.reg_csr.req() || self.set_req.peek()
     }
 
     pub fn read_dma(&mut self) -> u8 {
@@ -538,8 +569,7 @@ impl ScsiController {
         // Pseudo-DMA path: writes to the DMA window auto-pulse ACK, so we
         // advance the REQ/ACK handshake here instead of waiting for an
         // explicit ICR ACK toggle.
-        if self.reg_mr.dma_mode()
-            && matches!(self.busphase, ScsiBusPhase::DataOut | ScsiBusPhase::Command)
+        if self.dma_armed && matches!(self.busphase, ScsiBusPhase::DataOut | ScsiBusPhase::Command)
         {
             self.assert_ack();
             self.deassert_ack();
@@ -561,7 +591,7 @@ impl ScsiController {
 
     fn read_datareg(&mut self) -> u8 {
         let val = self.reg_cdr;
-        if self.busphase == ScsiBusPhase::DataIn && self.reg_mr.dma_mode() {
+        if self.busphase == ScsiBusPhase::DataIn && self.dma_armed {
             // Pump next byte to CDR for next read
             if let Some(b) = self.responsebuf.pop_front() {
                 self.reg_cdr = b;
@@ -641,6 +671,10 @@ impl ScsiController {
             _ => {}
         }
     }
+
+    fn phase_match(&self) -> bool {
+        self.reg_csr.phase_match_bits() == self.reg_tcr.phase_match_bits()
+    }
 }
 
 impl BusMember<Address> for ScsiController {
@@ -660,6 +694,7 @@ impl BusMember<Address> for ScsiController {
             NcrReadReg::CDR | NcrReadReg::IDR => Some(self.read_datareg()),
             NcrReadReg::MR => Some(self.reg_mr.0),
             NcrReadReg::ICR => Some(self.reg_icr.0),
+            NcrReadReg::TCR => Some(self.reg_tcr.0),
             NcrReadReg::CSR => {
                 let val = self.reg_csr.0;
 
@@ -678,13 +713,13 @@ impl BusMember<Address> for ScsiController {
                         self.busphase,
                         ScsiBusPhase::DataIn | ScsiBusPhase::DataOut,
                     ))
+                    .with_phase_match(self.phase_match())
                     .0,
             ),
             NcrReadReg::RESET => {
                 self.reg_bsr.set_irq(false);
                 Some(0)
             }
-            _ => Some(0),
         }
     }
 
@@ -741,14 +776,31 @@ impl BusMember<Address> for ScsiController {
                 if clr.arbitrate() {
                     self.try_complete_selection();
                 }
+
+                // Leaving DMA mode disarms any pending DMA direction.
+                if clr.dma_mode() {
+                    self.dma_armed = false;
+                }
+                Some(())
+            }
+            NcrWriteReg::TCR => {
+                self.reg_tcr.set_writable(val);
                 Some(())
             }
             NcrWriteReg::SELEN => {
                 self.reg_selen = val;
                 Some(())
             }
-            _ => {
-                //warn!("Unknown SCSI register write: {:?} = {:02X}", reg, val);
+            NcrWriteReg::StartDMASend
+            | NcrWriteReg::StartDMATargetReceive
+            | NcrWriteReg::StartDMAInitiatorReceive => {
+                // The data byte written is discarded; any write arms DMA
+                // for the selected direction. DMA mode must already be set
+                // in MR. Arming enables DRQ generation and phase-mismatch
+                // IRQ edge detection in set_phase().
+                if self.reg_mr.dma_mode() {
+                    self.dma_armed = true;
+                }
                 Some(())
             }
         }
@@ -795,7 +847,9 @@ impl Debuggable for ScsiController {
                     dbgprop_byte!("CDR", self.reg_cdr),
                     dbgprop_byte!("ODR", self.reg_odr),
                     dbgprop_byte!("BSR", self.reg_bsr.0),
+                    dbgprop_byte!("TCR", self.reg_tcr.0),
                     dbgprop_byte!("Status", self.status),
+                    dbgprop_bool!("DMA armed", self.dma_armed),
                 ]
             ),
             dbgprop_enum!("Bus phase", self.busphase),
