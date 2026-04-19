@@ -21,6 +21,7 @@ sdl2-pkgconfig = ["sdl2/use-pkgconfig"]
 sdl2-static = ["sdl2/static-link"]
 
 [build-dependencies]
+built = "0.8.0"
 winresource = "0.1.23"
 
 [dependencies]
