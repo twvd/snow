@@ -2389,17 +2389,17 @@ impl SnowGui {
         }
 
         unsafe {
-            if let Some(app) = NSApp {
-                if let Some(main_menu) = app.mainMenu() {
-                    // Find the first menubar dropdown ('Snow')
-                    if let Some(item) = main_menu.itemAtIndex(0) {
-                        if let Some(app_menu) = item.submenu() {
-                            // Find the quit item, last one in the menu
-                            if let Some(quit) = app_menu.itemAtIndex(app_menu.numberOfItems() - 1) {
-                                // Remove the keyboard shortcut so Cmd+Q doesn't terminate the emulator
-                                quit.setKeyEquivalent(ns_string!(""));
-                            }
-                        }
+            if let Some(app) = NSApp
+                && let Some(main_menu) = app.mainMenu()
+            {
+                // Find the first menubar dropdown ('Snow')
+                if let Some(item) = main_menu.itemAtIndex(0)
+                    && let Some(app_menu) = item.submenu()
+                {
+                    // Find the quit item, last one in the menu
+                    if let Some(quit) = app_menu.itemAtIndex(app_menu.numberOfItems() - 1) {
+                        // Remove the keyboard shortcut so Cmd+Q doesn't terminate the emulator
+                        quit.setKeyEquivalent(ns_string!(""));
                     }
                 }
             }
