@@ -1,6 +1,10 @@
 //! Emulator state management
 
-use crate::audio::CpalAudioProvider;
+#[cfg(not(feature = "audio_sdl2"))]
+use crate::audio_cpal::CpalAudioProvider;
+#[cfg(feature = "audio_sdl2")]
+use crate::audio_sdl2::SDLAudioProvider;
+
 use anyhow::{Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait};
 use eframe::egui;
@@ -107,6 +111,9 @@ pub struct EmulatorState {
     cmdsender: Option<EmulatorCommandSender>,
     eventrecv: Option<EmulatorEventReceiver>,
     status: Option<EmulatorStatus>,
+    #[cfg(feature = "audio_sdl2")]
+    audio_provider: Option<Arc<Mutex<SDLAudioProvider>>>,
+    #[cfg(not(feature = "audio_sdl2"))]
     audio_provider: Option<Arc<Mutex<CpalAudioProvider>>>,
     disasm_address: Address,
     disasm_code: DisassemblyListing,
@@ -327,7 +334,12 @@ impl EmulatorState {
         } else {
             drop(self.audio_provider.take());
 
-            match CpalAudioProvider::new() {
+            #[cfg(not(feature = "audio_sdl2"))]
+            let audio_provider_result = CpalAudioProvider::new();
+            #[cfg(feature = "audio_sdl2")]
+            let audio_provider_result = SDLAudioProvider::new();
+
+            match audio_provider_result {
                 Ok(provider) => {
                     self.host_audio_device = cpal::default_host()
                         .default_output_device()
@@ -492,49 +504,12 @@ impl EmulatorState {
             return false;
         };
         if eventrecv.is_empty() {
-            let result = self.force_update.get_clear();
-
             // Check if the audio device has switched. If so, replace it.
             // Do this only when there's no activity because I don't know how expensive this is
             // on every host OS.
-            let Some(device_id) = &self.host_audio_device else {
-                return result;
-            };
-            let Some(default_id) = cpal::default_host()
-                .default_output_device()
-                .and_then(|dev| dev.id().ok())
-            else {
-                return result;
-            };
-            if default_id == *device_id {
-                return result;
-            }
+            self.check_audio_output_changed();
 
-            // Default device changed, re-create the provider.
-            let Some(ref cmd) = self.cmdsender else {
-                return result;
-            };
-
-            let Ok(new_provider) = CpalAudioProvider::new() else {
-                return result;
-            };
-            log::info!(
-                "Default audio device changed from {} to {}, recreating audio provider",
-                device_id,
-                default_id
-            );
-            let new_provider = Arc::new(Mutex::new(new_provider));
-            let old_provider = self.audio_provider.replace(new_provider.clone());
-            self.host_audio_device = Some(default_id);
-            cmd.send(EmulatorCommand::ReplaceAudioProvider(new_provider))
-                .unwrap();
-
-            // Clear the audio queue so the emulator thread can actually pick up the command
-            if let Some(old_provider) = old_provider {
-                old_provider.lock().unwrap().clear_channels();
-            }
-
-            return result;
+            return self.force_update.get_clear();
         }
 
         while let Ok(event) = eventrecv.try_recv() {
@@ -586,6 +561,54 @@ impl EmulatorState {
         }
 
         true
+    }
+
+    #[cfg(feature = "audio_sdl2")]
+    /// Checks if the host device has changed its default audio output device
+    fn check_audio_output_changed(&mut self) {
+        // Not applicable for SDL2
+        return;
+    }
+
+    /// Checks if the host device has changed its default audio output device
+    #[cfg(not(feature = "audio_sdl2"))]
+    fn check_audio_output_changed(&mut self) {
+        let Some(device_id) = &self.host_audio_device else {
+            return;
+        };
+        let Some(default_id) = cpal::default_host()
+            .default_output_device()
+            .and_then(|dev| dev.id().ok())
+        else {
+            return;
+        };
+        if default_id == *device_id {
+            return;
+        }
+
+        // Default device changed, re-create the provider.
+        let Some(ref cmd) = self.cmdsender else {
+            return;
+        };
+
+        let Ok(new_provider) = CpalAudioProvider::new() else {
+            return;
+        };
+        log::info!(
+            "Default audio device changed from {} to {}, recreating audio provider",
+            device_id,
+            default_id
+        );
+        let new_provider = Arc::new(Mutex::new(new_provider));
+        let old_provider = self.audio_provider.replace(new_provider.clone());
+        self.host_audio_device = Some(default_id);
+        cmd.send(EmulatorCommand::ReplaceAudioProvider(new_provider))
+            .unwrap();
+
+        // Clear the audio queue so the emulator thread can actually pick up the command
+        if let Some(old_provider) = old_provider {
+            old_provider.lock().unwrap().clear_channels();
+        }
     }
 
     /// Stops emulator execution

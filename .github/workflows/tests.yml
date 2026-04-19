@@ -21,39 +21,41 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-    - name: Update package repos
-      run: sudo apt-get -y update
-    - name: Install prerequisites
-      run: sudo apt-get -y install libasound2-dev
-    - name: Download pinned Rust toolchain
-      run: rustup show
-    - name: Enable Rust compiler cache
-      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-    - name: Install cargo-llvm-cov
-      uses: taiki-e/install-action@cff9fdfca2088e53d33015e47b75d0653d76aa25 # releases/cargo-llvm-cov
-    - name: Fetch submodules
-      run: git submodule update --init --recursive
-    - name: Code formatting check
-      run: cargo fmt --check
-    - name: Clippy lint
-      run: cargo clippy --all -- -D warnings
-    - name: Generate test data
-      working-directory: ./testdata/m68000
-      run: python3 decode.py
-    - name: Test build with no features
-      run: cargo build --no-default-features --all
-    - name: Test build core with no features
-      run: cargo build --no-default-features -p snow_core
-    - name: Generate code coverage
-      # snow_frontend_egui excluded due to https://github.com/Smithay/wayland-rs/issues/717
-      run: cargo llvm-cov --workspace --exclude snow_frontend_egui --codecov --output-path codecov.json
-    - name: Test snow_frontend_egui separately
-      run: cargo test -p snow_frontend_egui
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5.5.3
-      with:
-        token: ${{ secrets.CODECOV_TOKEN }}
-        files: codecov.json
-        fail_ci_if_error: false
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Update package repos
+        run: sudo apt-get -y update
+      - name: Install prerequisites
+        run: sudo apt-get -y install libasound2-dev libsdl2-dev
+      - name: Download pinned Rust toolchain
+        run: rustup show
+      - name: Enable Rust compiler cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cff9fdfca2088e53d33015e47b75d0653d76aa25 # releases/cargo-llvm-cov
+      - name: Fetch submodules
+        run: git submodule update --init --recursive
+      - name: Code formatting check
+        run: cargo fmt --check
+      - name: Clippy lint
+        run: cargo clippy --all -- -D warnings
+      - name: Generate test data
+        working-directory: ./testdata/m68000
+        run: python3 decode.py
+      - name: Test build with no features
+        run: cargo build --no-default-features --all
+      - name: Test build core with no features
+        run: cargo build --no-default-features -p snow_core
+      - name: Test build with SDL2 enabled
+        run: cargo build -F audio_sdl2
+      - name: Generate code coverage
+        # snow_frontend_egui excluded due to https://github.com/Smithay/wayland-rs/issues/717
+        run: cargo llvm-cov --workspace --exclude snow_frontend_egui --codecov --output-path codecov.json
+      - name: Test snow_frontend_egui separately
+        run: cargo test -p snow_frontend_egui
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad # v5.5.3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: codecov.json
+          fail_ci_if_error: false
 
