@@ -111,9 +111,29 @@ pub struct SessionInfo {
     tracks: Vec<TrackInfo>,
 }
 
+pub enum CdromError {
+    /// SCSI read error with CC, ASC/ASCQ
+    CheckCondition(u8, u16),
+    /// Any other type of error
+    Other(anyhow::Error),
+}
+
+impl From<anyhow::Error> for CdromError {
+    fn from(value: anyhow::Error) -> Self {
+        Self::Other(value)
+    }
+}
+
 pub trait CdromBackend: Send {
     fn byte_len(&self) -> usize;
-    fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>>;
+
+    /// The SCSI CD-ROM protocol allows reading blocks with standard READ commands.
+    ///
+    /// Each sector accessed by this method is expected to be a Mode 1 or Mode 2 Form 1
+    /// sector containing 2048 bytes of user data. If the wrong type of sector is accessed,
+    /// it fails with an ILLEGAL MODE FOR THIS TRACK error.
+    fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError>;
+
     fn image_path(&self) -> Option<&Path>;
 
     /// Return a list of sessions, each containing a list of tracks.
@@ -693,7 +713,15 @@ impl ScsiTarget for ScsiTargetCdrom {
                 result.resize(block_count * blocksize, 0);
                 Ok(result)
             }
-            Err(e) => {
+            Err(CdromError::CheckCondition(cc, asc)) => {
+                self.common.set_cc(cc, asc);
+                Err(anyhow!(
+                    "CD-ROM read error with cc {:02X}h, ASC {:04X}h",
+                    cc,
+                    asc
+                ))
+            }
+            Err(CdromError::Other(e)) => {
                 self.common
                     .set_cc(CC_KEY_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR);
                 Err(e)

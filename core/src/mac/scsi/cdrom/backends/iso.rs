@@ -2,7 +2,10 @@ use anyhow::{Result, bail};
 use std::path::Path;
 
 use crate::mac::scsi::{
-    cdrom::{CdromBackend, DATA_TRACK, LBA_START_SECTOR, RAW_SECTOR_LEN, SessionInfo, TrackInfo},
+    cdrom::{
+        CdromBackend, CdromError, DATA_TRACK, LBA_START_SECTOR, RAW_SECTOR_LEN, SessionInfo,
+        TrackInfo,
+    },
     disk_image::DiskImage,
 };
 
@@ -33,7 +36,7 @@ impl CdromBackend for IsoCdromBackend {
         self.image.byte_len()
     }
 
-    fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>> {
+    fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError> {
         Ok(self.image.read_bytes(offset, length))
     }
 

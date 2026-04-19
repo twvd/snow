@@ -7,9 +7,12 @@ use std::{
     str::Chars,
 };
 
-use crate::mac::scsi::cdrom::{
-    AUDIO_TRACK, CdromBackend, DATA_TRACK, LBA_START_SECTOR, Msf, RAW_SECTOR_LEN, SessionInfo,
-    TrackInfo,
+use crate::mac::scsi::{
+    ASC_UNRECOVERED_READ_ERROR, CC_KEY_MEDIUM_ERROR,
+    cdrom::{
+        AUDIO_TRACK, CdromBackend, CdromError, DATA_TRACK, LBA_START_SECTOR, Msf, RAW_SECTOR_LEN,
+        SessionInfo, TrackInfo,
+    },
 };
 
 // .cue file reference:
@@ -359,21 +362,49 @@ impl CdromBackend for CuesheetCdromBackend {
         333_000 * 2048
     }
 
-    fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>> {
+    fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError> {
         let mut result = Vec::<u8>::with_capacity(length);
 
         // TODO: uh-oh, do we need to support CD-ROM's where the data is in session 2?
         // Example: "Weird Al" Yankovic - Running With Scissors
-        // (the Weird Al disc also uses Form 2 sectors in its data track!)
-        let rel_sector: u32 = (offset / 2048).try_into().unwrap();
-        // FIXME: Does the drive automatically find the data track?
-        let mut sector = LBA_START_SECTOR + rel_sector;
+        // (the Weird Al disc also uses Mode 2 sectors in its data track!)
+        let mut sector: u32 =
+            LBA_START_SECTOR + u32::try_from(offset / 2048).map_err(|e| anyhow!(e))?;
+        let mut data_offset = offset % 2048;
         while result.len() < length {
+            // FIXME: read_raw_sector should return the track form (audio or data); this method
+            // should fail with ILLEGAL_MODE_FOR_THIS_TRACK if this isn't a data sector.
             let raw_sector = self.read_raw_sector(sector)?;
+
+            // Check sync field
+            if raw_sector[0..12] != *b"\x00\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\x00" {
+                log::warn!("Failed to read sector {}: invalid sync field", sector);
+                return Err(CdromError::CheckCondition(
+                    CC_KEY_MEDIUM_ERROR,
+                    ASC_UNRECOVERED_READ_ERROR,
+                ));
+            }
+
+            // Check mode field
+            // TODO: support Mode 2 Form 1 sectors
+            if raw_sector[15] != 1 {
+                log::warn!(
+                    "Failed to read sector {}: unexpected mode field {}",
+                    sector,
+                    raw_sector[15]
+                );
+                return Err(CdromError::CheckCondition(
+                    CC_KEY_MEDIUM_ERROR,
+                    ASC_UNRECOVERED_READ_ERROR,
+                ));
+            }
+
+            // TODO: Check error detection codes?
+            let user_data = &raw_sector[16..][..2048];
+            result.extend_from_slice(&user_data[data_offset..]);
+
             sector += 1;
-            // TODO: Check sync, mode and error detection data?
-            let sector_data = &raw_sector[16..][..2048];
-            result.extend_from_slice(sector_data);
+            data_offset = 0;
         }
 
         result.truncate(length);
