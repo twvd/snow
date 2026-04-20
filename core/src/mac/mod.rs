@@ -258,7 +258,7 @@ impl MacModel {
             | Self::SE
             | Self::SeFdhd
             | Self::Classic => panic!("Invalid operation for this model"),
-            Self::MacII | Self::MacIIFDHD | Self::MacIIcx => macii::via2::RegisterB(0x87),
+            Self::MacII | Self::MacIIFDHD | Self::MacIIcx => macii::via2::RegisterB(0xFF),
             Self::MacIIx | Self::SE30 => macii::via2::RegisterB(0x87),
         }
     }
