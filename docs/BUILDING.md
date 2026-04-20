@@ -55,7 +55,7 @@ features can be toggled at build time via `--features` / `--no-default-features`
 | `ethernet_nat_https_stripping` | yes     | HTTPS stripping for NAT                          | —                       |
 | `ethernet_tap`                 | yes     | tap interface support (Linux)                    | `libpnet` / raw sockets |
 | `ethernet_raw`                 | no      | Raw Ethernet socket support                      | `libpnet` / raw sockets |
-| `sdl2`                         | no      | Uses SDL2 instead of cpal for audio (deprecated) | `libsdl2`               |
-| `sdl2-bundled`                 | no      | Build and statically link SDL2                   | `sdl2` feature          |
-| `sdl2-pkgconfig`               | no      | Find SDL2 via pkg-config                         | `sdl2` feature          |
-| `sdl2-static`                  | no      | Statically link SDL2                             | `sdl2` feature          |
+| `audio_sdl2`                   | no      | Uses SDL2 instead of cpal for audio (deprecated) | `libsdl2`               |
+| `sdl2-bundled`                 | no      | Build and statically link SDL2                   | `audio_sdl2` feature    |
+| `sdl2-pkgconfig`               | no      | Find SDL2 via pkg-config                         | `audio_sdl2` feature    |
+| `sdl2-static`                  | no      | Statically link SDL2                             | `audio_sdl2` feature    |
