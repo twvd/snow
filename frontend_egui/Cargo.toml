@@ -1,6 +1,6 @@
 [package]
 name = "snow_frontend_egui"
-version = "1.4.0"
+version = "1.4.1"
 edition = "2024"
 build = "build.rs"
 
@@ -60,8 +60,8 @@ sdl2 = { version = "0.37.0", optional = true }
 serde = { version = "1.0.218", features = ["derive"] }
 serde_json = "1.0.139"
 sha2 = "0.10.8"
-snow_core = { version = "1.4.0", path = "../core", features = ["mmap", "savestates"] }
-snow_floppy = { version = "1.4.0", path = "../floppy" }
+snow_core = { version = "1.4.1", path = "../core", features = ["mmap", "savestates"] }
+snow_floppy = { version = "1.4.1", path = "../floppy" }
 strum = "0.26.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
