@@ -241,6 +241,7 @@ pub struct CuesheetCdromBackend {
     cue_path: PathBuf,
     files: Vec<File>,
     sessions: Vec<SessionInfo>,
+    tracks: Vec<TrackInfo>,
     /// Map of sectors. Entries are sorted in order of increasing `sector` field.
     /// This table maps absolute sector numbers to data files. This is NOT the
     /// table of contents; it doesn't carry information about tracks.
@@ -324,6 +325,7 @@ impl CuesheetCdromBackend {
                             // The track will officially begin at index 1.
                             tracks.push(TrackInfo {
                                 tno: track_num,
+                                session: 1,
                                 control: track_control,
                                 sector: sector_map.abs_cursor,
                             });
@@ -359,9 +361,12 @@ impl CuesheetCdromBackend {
             cue_path: path.into(),
             files,
             sessions: vec![SessionInfo {
+                number: 1,
+                disc_type: 0x00,
+                leadin: 0,
                 leadout: final_leadout,
-                tracks,
             }],
+            tracks,
             sector_map,
         })
     }
@@ -474,6 +479,10 @@ impl CdromBackend for CuesheetCdromBackend {
 
     fn sessions(&self) -> Option<&[SessionInfo]> {
         Some(&self.sessions)
+    }
+
+    fn tracks(&self) -> Option<&[TrackInfo]> {
+        Some(&self.tracks)
     }
 
     fn read_raw_sector(&self, sector: u32) -> Result<[u8; RAW_SECTOR_LEN]> {
