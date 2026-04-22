@@ -106,7 +106,7 @@ enum SectorSource {
     DataFile {
         /// Index of file in the `files` array
         file_idx: usize,
-        /// Sector number relative to the beginning of the file
+        /// Byte offset within the file
         file_offset: u64,
         format: SectorSourceFormat,
     },
@@ -261,7 +261,14 @@ impl CuesheetCdromBackend {
         let mut source_format = SectorSourceFormat::Raw2352;
         let mut next_source_format = SectorSourceFormat::Raw2352;
         let mut gap_sectors = 0;
+        let mut session_has_tracks = false;
 
+        let mut sessions = vec![SessionInfo {
+            number: 1,
+            disc_type: 0x00,
+            leadin: 0,
+            leadout: LBA_START_SECTOR,
+        }];
         let mut tracks = vec![];
 
         // FIXME: I believe cue files have one command per line and never split commands across multiple lines. Is this true?
@@ -299,7 +306,11 @@ impl CuesheetCdromBackend {
                             .ok_or_else(|| anyhow!("Invalid TRACK command"))?;
                         (next_source_format, track_control) = match track_form_str.as_str() {
                             "AUDIO" => (SectorSourceFormat::Raw2352, AUDIO_TRACK),
-                            "MODE1/2352" | "MODE2/2352" => {
+                            "MODE1/2352" => (SectorSourceFormat::Raw2352, DATA_TRACK),
+                            "MODE2/2352" => {
+                                if !session_has_tracks {
+                                    sessions.last_mut().unwrap().disc_type = 0x20; // CD data XA disc with first track in Mode 2
+                                }
                                 (SectorSourceFormat::Raw2352, DATA_TRACK)
                             }
                             _ => bail!("Unsupported track form {}", track_form_str),
@@ -325,19 +336,73 @@ impl CuesheetCdromBackend {
                             // The track will officially begin at index 1.
                             tracks.push(TrackInfo {
                                 tno: track_num,
-                                session: 1,
+                                session: sessions.last().unwrap().number,
                                 control: track_control,
                                 sector: sector_map.abs_cursor,
                             });
                         }
+
+                        if !session_has_tracks {
+                            // Set the lead-in to 150 sectors before the first track
+                            // FIXME: lead-in might be set incorrectly if pregaps/postgaps are present...
+                            sessions.last_mut().unwrap().leadin =
+                                sector_map.abs_cursor.saturating_sub(LBA_START_SECTOR);
+                        }
+
+                        session_has_tracks = true;
                     }
                     "PREGAP" | "POSTGAP" => {
                         let duration = read_cue_msf(&mut chars)?.to_sector();
                         // Zeros sectors will be added to the map by the INDEX command
                         gap_sectors += duration;
                     }
-                    "REM" => (), // TODO: support REM LEAD-OUT and REM SESSION
-                    // TODO: Support multisession bin/cue's. IsoBuster emits REM SESSION commands to indicate a new session.
+                    "REM" => {
+                        if let Some(rem_cmd) = read_cue_word(&mut chars) {
+                            match rem_cmd.as_str() {
+                                "LEAD-OUT" => {
+                                    if let Ok(leadout_msf) = read_cue_msf(&mut chars) {
+                                        sector_map.add_file_up_to(
+                                            leadout_msf.to_sector(),
+                                            source_format,
+                                        )?;
+
+                                        sector_map.add_gap(gap_sectors);
+                                        gap_sectors = 0;
+
+                                        sessions.last_mut().unwrap().leadout =
+                                            sector_map.abs_cursor;
+                                    } else {
+                                        log::warn!("Failed to parse MSF in REM LEAD-OUT");
+                                    }
+                                }
+                                "SESSION" => {
+                                    if let Some(new_session) =
+                                        read_cue_word(&mut chars).and_then(|w| w.parse::<u8>().ok())
+                                    {
+                                        let last_session = sessions.last().unwrap();
+                                        if new_session == last_session.number + 1 {
+                                            sessions.push(SessionInfo {
+                                                number: new_session,
+                                                disc_type: 0x00,
+                                                leadin: last_session.leadout,
+                                                leadout: last_session.leadout,
+                                            });
+
+                                            session_has_tracks = false;
+                                        } else if !(new_session == 1 && sessions.len() == 1) {
+                                            log::warn!(
+                                                "Unexpected session number {} in REM SESSION command",
+                                                new_session
+                                            );
+                                        }
+                                    } else {
+                                        log::warn!("Unexpected token in REM SESSION command");
+                                    }
+                                }
+                                _ => (), // Just a regular REM comment; ignore
+                            }
+                        }
+                    }
                     _ => log::warn!("Unknown cuesheet command {} ignored", command),
                 }
             }
@@ -357,15 +422,16 @@ impl CuesheetCdromBackend {
             .map(|e| e.sector + e.sector_count)
             .unwrap_or(LBA_START_SECTOR);
 
+        if sessions.last().unwrap().leadout < final_leadout {
+            sessions.last_mut().unwrap().leadout = final_leadout;
+        }
+
+        log::debug!("Sessions: {:#?}", sessions);
+
         Ok(Self {
             cue_path: path.into(),
             files,
-            sessions: vec![SessionInfo {
-                number: 1,
-                disc_type: 0x00,
-                leadin: 0,
-                leadout: final_leadout,
-            }],
+            sessions,
             tracks,
             sector_map,
         })
