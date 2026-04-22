@@ -12,6 +12,7 @@ use crate::mac::scsi::{
 pub struct IsoCdromBackend {
     image: Box<dyn DiskImage>,
     session: SessionInfo,
+    track: TrackInfo,
 }
 
 impl IsoCdromBackend {
@@ -20,12 +21,16 @@ impl IsoCdromBackend {
         Ok(Self {
             image,
             session: SessionInfo {
+                number: 1,
+                disc_type: 0x00,
+                leadin: 0,
                 leadout: LBA_START_SECTOR + sector_count,
-                tracks: vec![TrackInfo {
-                    tno: 1,
-                    control: DATA_TRACK,
-                    sector: LBA_START_SECTOR,
-                }],
+            },
+            track: TrackInfo {
+                tno: 1,
+                session: 1,
+                control: DATA_TRACK,
+                sector: LBA_START_SECTOR,
             },
         })
     }
@@ -46,6 +51,10 @@ impl CdromBackend for IsoCdromBackend {
 
     fn sessions(&self) -> Option<&[SessionInfo]> {
         Some(std::slice::from_ref(&self.session))
+    }
+
+    fn tracks(&self) -> Option<&[TrackInfo]> {
+        Some(std::slice::from_ref(&self.track))
     }
 
     fn read_raw_sector(&self, _sector: u32) -> Result<[u8; RAW_SECTOR_LEN]> {

@@ -75,6 +75,14 @@ impl Msf {
         Self { m, s, f }
     }
 
+    fn from_bytes(bytes: [u8; 3]) -> Self {
+        Self::new(bytes[0], bytes[1], bytes[2])
+    }
+
+    fn to_bytes(self) -> [u8; 3] {
+        [self.m, self.s, self.f]
+    }
+
     fn from_sector(mut sector: u32) -> Result<Self> {
         let f = sector % AUDIO_SECTORS_PER_SEC;
         sector /= AUDIO_SECTORS_PER_SEC;
@@ -99,6 +107,8 @@ impl std::fmt::Display for Msf {
 pub struct TrackInfo {
     /// The track number. Note that tracks don't necessarily start at number 1.
     tno: u8,
+    /// The session number where this track resides
+    session: u8,
     /// Control field indicating track format
     control: u8,
     /// Absolute sector number where the track begins
@@ -106,9 +116,14 @@ pub struct TrackInfo {
 }
 
 pub struct SessionInfo {
-    /// Absolute sector number of leadout
+    /// Session number. Always starts at 1.
+    number: u8,
+    /// Value to put in Disc Type field ([MMC4] Table 448)
+    disc_type: u8,
+    /// Absolute sector number of lead-in
+    leadin: u32,
+    /// Absolute sector number of lead-out
     leadout: u32,
-    tracks: Vec<TrackInfo>,
 }
 
 pub enum CdromError {
@@ -136,9 +151,8 @@ pub trait CdromBackend: Send {
 
     fn image_path(&self) -> Option<&Path>;
 
-    /// Return a list of sessions, each containing a list of tracks.
-    /// Unlike tracks, sessions are always numbered starting at 1.
     fn sessions(&self) -> Option<&[SessionInfo]>;
+    fn tracks(&self) -> Option<&[TrackInfo]>;
 
     /// Read a raw 2352-byte sector. Currently used only for CD audio. Other data is read via read_bytes.
     fn read_raw_sector(&self, sector: u32) -> Result<[u8; RAW_SECTOR_LEN]>;
@@ -261,7 +275,7 @@ impl ScsiTargetCdrom {
             return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
         };
 
-        let Some(sessions) = backend.sessions() else {
+        let Some(tracks) = backend.tracks() else {
             // Media does not support tracks
             //
             // [PIONEER] 2.28:
@@ -273,6 +287,8 @@ impl ScsiTargetCdrom {
             return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
         };
 
+        let sessions = backend.sessions().unwrap();
+
         match format {
             0 => {
                 // Formatted TOC
@@ -281,29 +297,16 @@ impl ScsiTargetCdrom {
                 result.push(0); // TOC Data Length (will be set later)
                 result.push(0);
 
-                // TODO: support multisession discs (All sessions TOC's must be combined)
-                let session = &sessions[0];
-
                 result.push(
-                    session
-                        .tracks
+                    tracks
                         .first()
                         .ok_or_else(|| anyhow!("Track not found"))?
                         .tno,
                 ); // First Track Number
-                result.push(
-                    session
-                        .tracks
-                        .last()
-                        .ok_or_else(|| anyhow!("Track not found"))?
-                        .tno,
-                ); // Last Track Number
+                result.push(tracks.last().ok_or_else(|| anyhow!("Track not found"))?.tno); // Last Track Number
 
                 // Start at the given track or the next available track
-                let track_iter = session
-                    .tracks
-                    .iter()
-                    .skip_while(|t| t.tno < track_or_session);
+                let track_iter = tracks.iter().skip_while(|t| t.tno < track_or_session);
 
                 // Emit track descriptors
                 for t in track_iter {
@@ -319,12 +322,13 @@ impl ScsiTargetCdrom {
 
                 // Emit leadout track descriptor
                 result.push(0); // Reserved
-                result.push((1 << 4) | session.tracks.last().unwrap().control); // ADR/Control
+                result.push((1 << 4) | tracks.last().unwrap().control); // ADR/Control
                 result.push(TRACK_LEADOUT); // Track Number
                 result.push(0); // Reserved
-                result.extend_from_slice(
-                    &self.msf_to_address_field(Msf::from_sector(sessions[0].leadout)?, msf),
-                );
+                result.extend_from_slice(&self.msf_to_address_field(
+                    Msf::from_sector(sessions.last().unwrap().leadout)?,
+                    msf,
+                ));
 
                 // Set data length field
                 let data_length = result.len() - 2;
@@ -341,20 +345,25 @@ impl ScsiTargetCdrom {
                 result.push(0); // TOC Data Length (will be set later)
                 result.push(0);
 
-                result.push(1); // First Session Number (always 1)
-                result.push(sessions.len() as u8); // Last Session Number
+                result.push(sessions.first().unwrap().number); // First Session Number (always 1)
+                result.push(sessions.last().unwrap().number); // Last Session Number
 
-                // This command queries the "first track in the last session" apparently...
-                let first_track = sessions.last().unwrap().tracks.first().unwrap();
+                // This command queries the first track in the last session.
+                let last_session_no = sessions.last().unwrap().number;
+                let first_track_of_last_session = tracks
+                    .iter()
+                    .find(|t| t.session >= last_session_no)
+                    .unwrap();
 
                 // [PIONEER] Table 2-28D: Track Descriptors
                 result.push(0); // Reserved
-                result.push((0x1 << 4) | first_track.control); // ADR/Control
-                result.push(first_track.tno); // First Track Number in Last Session
+                result.push((0x1 << 4) | first_track_of_last_session.control); // ADR/Control
+                result.push(first_track_of_last_session.tno); // First Track Number in Last Session
                 result.push(0); // Reserved
-                result.extend_from_slice(
-                    &self.msf_to_address_field(Msf::from_sector(first_track.sector)?, msf),
-                ); // Absolute CD-ROM Address of the First Track in the Last Session
+                result.extend_from_slice(&self.msf_to_address_field(
+                    Msf::from_sector(first_track_of_last_session.sector)?,
+                    msf,
+                )); // Absolute CD-ROM Address of the First Track in the Last Session
 
                 let data_length = result.len() - 2;
                 result[0..2].copy_from_slice(&u16::to_be_bytes(data_length.try_into()?));
@@ -369,74 +378,114 @@ impl ScsiTargetCdrom {
                 result.push(0); // TOC Data Length (will be filled later)
                 result.push(0);
 
-                result.push(1); // First Complete Session Number (always 1)
-                result.push(sessions.len() as u8); // Last Complete Session Number
+                result.push(sessions.first().unwrap().number); // First Complete Session Number (always 1)
+                result.push(sessions.last().unwrap().number); // Last Complete Session Number
 
                 // track_or_session argument is the session number to start at.
-                // Session numbers start at 1.
-                let session_iter = sessions
-                    .iter()
-                    .skip(track_or_session.saturating_sub(1).into());
+                let track_iter = tracks.iter().skip_while(|t| t.session < track_or_session);
+                let mut session_no = 0;
 
-                for (session_num, session) in session_iter.enumerate() {
-                    let session_num = session_num + 1; // Session Numbers start at 1
+                let get_session = |num: u8| {
+                    (num as usize)
+                        .checked_sub(1)
+                        .and_then(|num| sessions.get(num))
+                };
 
-                    // First track number in the program area
-                    result.push(session_num as u8); // Session Number
-                    result.push((1 << 4) | session.tracks.first().unwrap().control);
-                    result.push(0); // TNO (0 for the lead-in area)
-                    result.push(0xA0); // POINT (First Track number in the program area)
-                    result.push(0); // ATIME (0:0:0 for the lead-in area)
-                    result.push(0);
-                    result.push(0);
-                    result.push(0); // Zero
-                    result.push(session.tracks.first().unwrap().tno); // First Track Number
-                    result.push(0); // Disc Type
-                    result.push(0);
+                for track in track_iter {
+                    if track.session != session_no {
+                        if session_no != 0 {
+                            // Emit descriptors for session gap
+                            // XXX: info based on Weird Al - Running with Scissors; other discs may have different session gap descriptors.
 
-                    // Last track number in the program area
-                    result.push(session_num as u8); // Session Number
-                    result.push((1 << 4) | session.tracks.first().unwrap().control);
-                    result.push(0); // TNO (0 for the lead-in area)
-                    result.push(0xA1); // POINT (Last Track number in the program area)
-                    result.push(0); // ATIME (0:0:0 for the lead-in area)
-                    result.push(0);
-                    result.push(0);
-                    result.push(0); // Zero
-                    result.push(session.tracks.last().unwrap().tno); // Last Track Number
-                    result.push(0);
-                    result.push(0);
+                            // Start time of next possible program
+                            let next_session = get_session(session_no + 1).unwrap();
+                            log::debug!(
+                                "emitting next session descriptor leadin {}",
+                                next_session.leadin
+                            );
+                            result.push(session_no); // Session Number
+                            result.push(5 << 4); // ADR; Control
+                            result.push(0); // TNO (0 for the lead-in area)
+                            result.push(0xB0); // POINT (Start time of next possible program)
+                            result.extend_from_slice(
+                                &Msf::from_sector(next_session.leadin)?.to_bytes(),
+                            ); // Start time of next possible program
+                            result.push(2); // # of pointers in Mode 5
+                            result.extend_from_slice(
+                                &Msf::from_sector(sessions.last().unwrap().leadout)?.to_bytes(),
+                            ); // Maximum start time of outer-most Lead-out area
 
-                    // Start location of the Lead-out area
-                    result.push(session_num as u8); // Session Number
-                    result.push((1 << 4) | session.tracks.first().unwrap().control);
-                    result.push(0); // TNO (0 for the lead-in area)
-                    result.push(0xA2); // POINT (Start location of the Lead-out area)
-                    result.push(0); // ATIME (0:0:0 for the lead-in area)
-                    result.push(0);
-                    result.push(0);
-                    result.push(0); // Zero
-                    let leadout = Msf::from_sector(session.leadout)?;
-                    result.push(leadout.m); // Start position of Lead-out
-                    result.push(leadout.s);
-                    result.push(leadout.f);
+                            // Start time of the first Lead-in Area of the disc
+                            result.push(session_no); // Session Number
+                            result.push(5 << 4); // ADR; Control
+                            result.push(0); // TNO (0 for the lead-in area)
+                            result.push(0xC0); // POINT (Start time of the first Lead-in Area of the disc)
+                            result.push(0); // ATIME (0:0:0 for the lead-in area)
+                            result.push(0);
+                            result.push(0);
+                            result.push(0); // Zero
+                            // FIXME: Weird Al actually puts 95:00:00 here? where does that come from?
+                            result.extend_from_slice(
+                                &Msf::from_sector(sessions.first().unwrap().leadin)?.to_bytes(),
+                            ); // Start time of the first Lead-in Area of the disc)
+                        }
 
-                    for track in &session.tracks {
-                        result.push(session_num as u8); // Session Number
-                        result.push((1 << 4) | track.control); // ADR/Control
+                        session_no = track.session;
+                        let session = get_session(session_no).unwrap();
+
+                        // First track number in the program area
+                        result.push(session_no); // Session Number
+                        result.push((1 << 4) | track.control);
                         result.push(0); // TNO (0 for the lead-in area)
-                        result.push(track.tno); // POINT (0-99 for tracks)
+                        result.push(0xA0); // POINT (First Track number in the program area)
                         result.push(0); // ATIME (0:0:0 for the lead-in area)
                         result.push(0);
                         result.push(0);
                         result.push(0); // Zero
-                        let track_msf = Msf::from_sector(track.sector)?;
-                        result.push(track_msf.m); // Start position of track
-                        result.push(track_msf.s);
-                        result.push(track_msf.f);
+                        result.push(track.tno); // First Track Number
+                        result.push(session.disc_type); // Disc Type
+                        result.push(0);
+
+                        // Last track number in the program area
+                        result.push(session_no); // Session Number
+                        result.push((1 << 4) | track.control);
+                        result.push(0); // TNO (0 for the lead-in area)
+                        result.push(0xA1); // POINT (Last Track number in the program area)
+                        result.push(0); // ATIME (0:0:0 for the lead-in area)
+                        result.push(0);
+                        result.push(0);
+                        result.push(0); // Zero
+                        let last_track_in_session = tracks
+                            .iter()
+                            .rev()
+                            .find(|t| t.session == session_no)
+                            .unwrap();
+                        result.push(last_track_in_session.tno); // Last Track Number
+                        result.push(0);
+                        result.push(0);
+
+                        // Start location of the Lead-out area
+                        result.push(session_no); // Session Number
+                        result.push((1 << 4) | track.control);
+                        result.push(0); // TNO (0 for the lead-in area)
+                        result.push(0xA2); // POINT (Start location of the Lead-out area)
+                        result.push(0); // ATIME (0:0:0 for the lead-in area)
+                        result.push(0);
+                        result.push(0);
+                        result.push(0); // Zero
+                        let leadout = Msf::from_sector(get_session(session_no).unwrap().leadout)?;
+                        result.extend_from_slice(&leadout.to_bytes()); // Start position of Lead-out
                     }
 
-                    // TODO: emit POINT's 0xB0 and 0xC0 for multisession discs
+                    result.push(track.session); // Session Number
+                    result.push((1 << 4) | track.control); // ADR/Control
+                    result.push(0); // TNO (0 for the lead-in area)
+                    result.push(track.tno); // POINT (0-99 for tracks)
+                    result.push(0); // ATIME (0:0:0 for the lead-in area)
+                    result.push(0);
+                    result.push(0);
+                    result.push(0); // Zero
+                    result.extend_from_slice(&Msf::from_sector(track.sector)?.to_bytes()); // Start position of track
                 }
 
                 let data_length = result.len() - 2;
@@ -559,8 +608,7 @@ impl ScsiTargetCdrom {
     }
 
     fn get_track_at_sector(&self, sector: u32) -> Option<&TrackInfo> {
-        // TODO: support multi-session discs
-        let tracks = &self.backend.as_ref()?.sessions()?[0].tracks;
+        let tracks = self.backend.as_ref()?.tracks()?;
         tracks
             .iter()
             .rev()
@@ -698,8 +746,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 // If a Logical Unit does not support high speed CD-R/RW recording, the Logical Unit should not
                 // return mode page data after byte 26.
                 let mut data = vec![0; 0x18];
-                data[2] = 1; // Audio Play
-                // TODO: support more features such as Mode2 sectors, multiple sessions, etc.
+                data[2] = (1 << 6) | (1 << 5) | (1 << 4) | 1; // Multi Session; Mode 2 Form 2; Mode 2 Form 1; Audio Play
                 data[4] = (0b001 << 5) | (1 << 3); // Tray type loading mechanism; Eject
                 data[5] = (1 << 1) | 1; // Separate Channel Mute; Separate volume levels
                 data[8..=9].copy_from_slice(&256u16.to_be_bytes()); // Number of Volume Levels Supported
@@ -975,8 +1022,8 @@ impl ScsiTarget for ScsiTargetCdrom {
             }
             // PLAY AUDIO MSF
             0x47 => {
-                let start_msf = Msf::new(cmd[3], cmd[4], cmd[5]);
-                let end_msf = Msf::new(cmd[6], cmd[7], cmd[8]);
+                let start_msf = Msf::from_bytes(cmd[3..=5].try_into().unwrap());
+                let end_msf = Msf::from_bytes(cmd[6..=8].try_into().unwrap());
 
                 log::debug!("PLAY AUDIO MSF start {} end {}", start_msf, end_msf);
 
@@ -1093,14 +1140,11 @@ impl ScsiTarget for ScsiTargetCdrom {
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
 
-                let Some(sessions) = backend.sessions() else {
+                let Some(tracks) = backend.tracks() else {
                     self.common
                         .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
-
-                // TODO: support multi-session discs
-                let mut tracks = sessions[0].tracks.iter();
 
                 let direct = (cmd[1] >> 4) & 0x1; // Scan forwards if set, backwards if unset.
                 let addr_type = (cmd[9] >> 6) & 0x3;
@@ -1113,9 +1157,9 @@ impl ScsiTarget for ScsiTargetCdrom {
                 );
 
                 // Convert start address to sector
-                let _start_addr = match addr_type {
+                let _start_sector = match addr_type {
                     // Logical Block Address
-                    0b00 => u32::from_be_bytes(start_addr.try_into()?),
+                    0b00 => LBA_START_SECTOR + u32::from_be_bytes(start_addr.try_into()?),
                     // CD absolute time
                     0b01 => Msf::new(start_addr[1], start_addr[2], start_addr[3]).to_sector(),
                     // Track Number
@@ -1123,6 +1167,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                         // Start at the given track or the next available track
                         // FIXME: what should happen if specified track is not available?
                         let track = tracks
+                            .iter()
                             .find(|t| t.tno >= start_addr[3])
                             .ok_or_else(|| anyhow!("Failed to find track"))?;
                         track.sector
