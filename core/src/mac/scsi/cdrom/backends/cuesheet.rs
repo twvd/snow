@@ -18,6 +18,7 @@ use crate::mac::scsi::{
 // .cue file reference:
 //
 // [LIBODRAW]: <https://github.com/libyal/libodraw/blob/main/documentation/CUE%20sheet%20format.asciidoc>
+// [LIBODRAW-RAW]: <https://github.com/libyal/libodraw/blob/main/documentation/Optical%20disc%20RAW%20format.asciidoc>
 
 fn skip_whitespace(reader: &mut Peekable<Chars>) {
     while reader.peek().map(|c| c.is_whitespace()).unwrap_or(false) {
@@ -90,6 +91,12 @@ struct CuesheetDataFile {
     file: File,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SectorSourceFormat {
+    Raw2352,
+    // TODO: support 2048-byte formats
+}
+
 #[derive(Debug)]
 enum SectorSource {
     /// Sectors filled with zeroes. Used for pregaps and postgaps.
@@ -99,7 +106,9 @@ enum SectorSource {
         /// Index of file in the `files` array
         file_idx: usize,
         /// Sector number relative to the beginning of the file
+        /// TODO: change to byte offset
         file_sector: u32,
+        format: SectorSourceFormat,
     },
 }
 
@@ -140,7 +149,8 @@ impl SectorMapBuilder {
 
     fn start_new_file(&mut self, idx: usize, max: u32) -> Result<()> {
         // If a data file exists, add the rest of its sectors before starting the new file
-        self.add_rest_of_file()?;
+        // TODO: support formats other than Raw2352
+        self.add_rest_of_file(SectorSourceFormat::Raw2352)?;
         self.file_cursor = 0;
         self.file_idx = idx;
         self.file_max = max;
@@ -149,7 +159,7 @@ impl SectorMapBuilder {
     }
 
     /// Add data sectors up to a given sector number within the data file
-    fn add_file_up_to(&mut self, up_to: u32) -> Result<()> {
+    fn add_file_up_to(&mut self, up_to: u32, format: SectorSourceFormat) -> Result<()> {
         if up_to < self.file_cursor {
             bail!("File sector number cannot decrease");
         }
@@ -161,8 +171,13 @@ impl SectorMapBuilder {
         let additional = up_to - self.file_cursor;
 
         if let Some(entry) = self.map.last_mut()
-            && let SectorSource::DataFile { file_idx, .. } = entry.source
+            && let SectorSource::DataFile {
+                file_idx,
+                format: last_format,
+                ..
+            } = entry.source
             && file_idx == self.file_idx
+            && last_format == format
         {
             // Add more sectors to the existing map entry
             entry.sector_count += additional;
@@ -174,6 +189,7 @@ impl SectorMapBuilder {
                 source: SectorSource::DataFile {
                     file_idx: self.file_idx,
                     file_sector: self.file_cursor,
+                    format,
                 },
             });
         }
@@ -203,12 +219,12 @@ impl SectorMapBuilder {
         self.abs_cursor += sectors;
     }
 
-    fn add_rest_of_file(&mut self) -> Result<()> {
-        self.add_file_up_to(self.file_max)
+    fn add_rest_of_file(&mut self, format: SectorSourceFormat) -> Result<()> {
+        self.add_file_up_to(self.file_max, format)
     }
 
-    fn build(mut self) -> Result<Vec<SectorMapEntry>> {
-        self.add_rest_of_file()?;
+    fn build(self) -> Result<Vec<SectorMapEntry>> {
+        // self.add_rest_of_file()?;
         Ok(self.map)
     }
 }
@@ -223,11 +239,6 @@ pub struct CuesheetCdromBackend {
     sector_map: Vec<SectorMapEntry>,
 }
 
-enum CuesheetTrackForm {
-    Audio,
-    Mode1_2352,
-}
-
 impl CuesheetCdromBackend {
     pub fn new(path: &Path) -> Result<Self> {
         let cue_dir = path.parent().unwrap();
@@ -237,7 +248,8 @@ impl CuesheetCdromBackend {
         let mut sector_map = SectorMapBuilder::new();
 
         let mut track_num = 0u8;
-        let mut track_form = CuesheetTrackForm::Audio;
+        let mut track_control = DATA_TRACK;
+        let mut source_format = SectorSourceFormat::Raw2352;
         let mut gap_sectors = 0;
 
         let mut tracks = vec![];
@@ -274,13 +286,14 @@ impl CuesheetCdromBackend {
                         track_num = read_cue_word(&mut chars)
                             .ok_or_else(|| anyhow!("Invalid TRACK command"))?
                             .parse()?;
-                        track_form = match read_cue_word(&mut chars)
-                            .ok_or_else(|| anyhow!("Invalid TRACK command"))?
-                            .as_str()
-                        {
-                            "AUDIO" => CuesheetTrackForm::Audio,
-                            "MODE1/2352" => CuesheetTrackForm::Mode1_2352,
-                            _ => bail!("Unsupported track form"),
+                        let track_form_str = read_cue_word(&mut chars)
+                            .ok_or_else(|| anyhow!("Invalid TRACK command"))?;
+                        (source_format, track_control) = match track_form_str.as_str() {
+                            "AUDIO" => (SectorSourceFormat::Raw2352, AUDIO_TRACK),
+                            "MODE1/2352" | "MODE2/2352" => {
+                                (SectorSourceFormat::Raw2352, DATA_TRACK)
+                            }
+                            _ => bail!("Unsupported track form {}", track_form_str),
                         };
                     }
                     "INDEX" => {
@@ -292,7 +305,7 @@ impl CuesheetCdromBackend {
                         let file_sector = read_cue_msf(&mut chars)?.to_sector();
 
                         // Add any previous file data up to this point
-                        sector_map.add_file_up_to(file_sector)?;
+                        sector_map.add_file_up_to(file_sector, source_format)?;
 
                         // Add pregaps/postgaps here
                         sector_map.add_gap(gap_sectors);
@@ -302,10 +315,7 @@ impl CuesheetCdromBackend {
                             // The track will officially begin at index 1.
                             tracks.push(TrackInfo {
                                 tno: track_num,
-                                control: match track_form {
-                                    CuesheetTrackForm::Audio => AUDIO_TRACK,
-                                    CuesheetTrackForm::Mode1_2352 => DATA_TRACK,
-                                },
+                                control: track_control,
                                 sector: sector_map.abs_cursor,
                             });
                         }
@@ -324,7 +334,7 @@ impl CuesheetCdromBackend {
         log::debug!("Tracks: {:#?}", tracks);
 
         // In case the final track has a postgap...
-        sector_map.add_rest_of_file()?;
+        sector_map.add_rest_of_file(source_format)?;
         sector_map.add_gap(gap_sectors);
 
         let sector_map = sector_map.build()?;
@@ -347,19 +357,29 @@ impl CuesheetCdromBackend {
     }
 
     fn find_map_entry_for_sector(&self, sector: u32) -> Option<&SectorMapEntry> {
-        // TODO: use partition_point?
-        let idx = self
-            .sector_map
-            .iter()
-            .rposition(|entry| sector >= entry.sector)?;
-        self.sector_map.get(idx)
+        let idx = match self.sector_map.binary_search_by(|e| e.sector.cmp(&sector)) {
+            Ok(idx) => idx,
+            Err(idx) => idx.saturating_sub(1),
+        };
+        self.sector_map
+            .get(idx)
+            .filter(|e| (e.sector..e.sector + e.sector_count).contains(&sector))
     }
 }
 
 impl CdromBackend for CuesheetCdromBackend {
     fn byte_len(&self) -> usize {
-        // FIXME: What's the correct value here? Let's just say 333,000 * 2048-byte sectors.
-        333_000 * 2048
+        // To find the capacity, treat each sector (except the lead-in) as a block
+        // containing 2048 bytes.
+        // However, only sectors in a Data track in Mode 1 or Mode 2 Form 1 are readable
+        // via `read_bytes`.
+        let final_leadout = self
+            .sector_map
+            .last()
+            .map(|e| e.sector + e.sector_count)
+            .unwrap_or(LBA_START_SECTOR);
+        let final_lba = final_leadout.saturating_sub(LBA_START_SECTOR);
+        usize::try_from(final_lba).unwrap() * 2048
     }
 
     fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError> {
@@ -377,7 +397,8 @@ impl CdromBackend for CuesheetCdromBackend {
             let raw_sector = self.read_raw_sector(sector)?;
 
             // Check sync field
-            if raw_sector[0..12] != *b"\x00\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\x00" {
+            let sync = &raw_sector[0..12];
+            if sync != *b"\x00\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\x00" {
                 log::warn!("Failed to read sector {}: invalid sync field", sector);
                 return Err(CdromError::CheckCondition(
                     CC_KEY_MEDIUM_ERROR,
@@ -386,21 +407,50 @@ impl CdromBackend for CuesheetCdromBackend {
             }
 
             // Check mode field
-            // TODO: support Mode 2 Form 1 sectors
-            if raw_sector[15] != 1 {
-                log::warn!(
-                    "Failed to read sector {}: unexpected mode field {}",
-                    sector,
-                    raw_sector[15]
-                );
-                return Err(CdromError::CheckCondition(
-                    CC_KEY_MEDIUM_ERROR,
-                    ASC_UNRECOVERED_READ_ERROR,
-                ));
-            }
+            let mode = raw_sector[15];
+            let user_data = match mode {
+                // TODO: check error detection codes?
+                1 => &raw_sector[16..][..2048],
+                2 => {
+                    let subheader = &raw_sector[16..20];
+                    if *subheader != raw_sector[20..24] {
+                        log::warn!(
+                            "Failed to read sector {}: Mode 2 subheader mismatch",
+                            sector
+                        );
+                        return Err(CdromError::CheckCondition(
+                            CC_KEY_MEDIUM_ERROR,
+                            ASC_UNRECOVERED_READ_ERROR,
+                        ));
+                    }
 
-            // TODO: Check error detection codes?
-            let user_data = &raw_sector[16..][..2048];
+                    if subheader[2] & (1 << 5) != 0 {
+                        log::warn!(
+                            "Failed to read sector {}: Cannot read Mode 2 Form 2",
+                            sector
+                        );
+                        return Err(CdromError::CheckCondition(
+                            CC_KEY_MEDIUM_ERROR,
+                            ASC_UNRECOVERED_READ_ERROR,
+                        ));
+                    }
+
+                    // TODO: check error detection codes?
+                    &raw_sector[24..][..2048]
+                }
+                _ => {
+                    log::warn!(
+                        "Failed to read sector {}: Unexpected mode field {}",
+                        sector,
+                        mode
+                    );
+                    return Err(CdromError::CheckCondition(
+                        CC_KEY_MEDIUM_ERROR,
+                        ASC_UNRECOVERED_READ_ERROR,
+                    ));
+                }
+            };
+
             result.extend_from_slice(&user_data[data_offset..]);
 
             sector += 1;
@@ -434,6 +484,7 @@ impl CdromBackend for CuesheetCdromBackend {
             SectorSource::DataFile {
                 file_idx,
                 file_sector,
+                ..
             } => {
                 let file = &self.files[file_idx];
                 let sector_in_file = file_sector + rel_sector;
