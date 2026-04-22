@@ -84,17 +84,18 @@ fn read_cue_msf(reader: &mut Peekable<Chars>) -> Result<Msf> {
     Ok(Msf::new(m, s, f))
 }
 
-struct CuesheetDataFile {
-    /// Number of sectors in data file (not counting pregaps and postgaps)
-    #[allow(unused)]
-    sector_count: u32,
-    file: File,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SectorSourceFormat {
     Raw2352,
     // TODO: support 2048-byte formats
+}
+
+impl SectorSourceFormat {
+    fn bytes_per_sector(self) -> u64 {
+        match self {
+            Self::Raw2352 => 2352,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -106,8 +107,7 @@ enum SectorSource {
         /// Index of file in the `files` array
         file_idx: usize,
         /// Sector number relative to the beginning of the file
-        /// TODO: change to byte offset
-        file_sector: u32,
+        file_offset: u64,
         format: SectorSourceFormat,
     },
 }
@@ -122,12 +122,16 @@ struct SectorMapEntry {
 struct SectorMapBuilder {
     /// Absolute sector number
     abs_cursor: u32,
+    /// Byte offset within current data file
+    file_offset: u64,
+    /// Max bytes in current data file
+    file_size: u64,
     /// Sector number within current data file
-    file_cursor: u32,
-    /// Max sectors in current data file
-    file_max: u32,
+    file_sector: u32,
     /// Index of current data file in the cuesheet's `files` array
     file_idx: usize,
+    /// Most recent source format
+    last_format: SectorSourceFormat,
     map: Vec<SectorMapEntry>,
 }
 
@@ -140,35 +144,34 @@ impl SectorMapBuilder {
         // data such as CD-TEXT information.
         Self {
             abs_cursor: LBA_START_SECTOR,
-            file_cursor: 0,
-            file_max: 0,
+            file_offset: 0,
+            file_size: 0,
+            file_sector: 0,
             file_idx: 0,
+            last_format: SectorSourceFormat::Raw2352,
             map: vec![],
         }
     }
 
-    fn start_new_file(&mut self, idx: usize, max: u32) -> Result<()> {
+    fn start_new_file(&mut self, idx: usize, size: u64) -> Result<()> {
         // If a data file exists, add the rest of its sectors before starting the new file
         // TODO: support formats other than Raw2352
-        self.add_rest_of_file(SectorSourceFormat::Raw2352)?;
-        self.file_cursor = 0;
+        self.add_rest_of_file()?;
+        self.file_offset = 0;
+        self.file_size = size;
+        self.file_sector = 0;
         self.file_idx = idx;
-        self.file_max = max;
 
         Ok(())
     }
 
     /// Add data sectors up to a given sector number within the data file
     fn add_file_up_to(&mut self, up_to: u32, format: SectorSourceFormat) -> Result<()> {
-        if up_to < self.file_cursor {
+        if up_to < self.file_sector {
             bail!("File sector number cannot decrease");
         }
 
-        if up_to > self.file_max {
-            bail!("File sector number exceeded max");
-        }
-
-        let additional = up_to - self.file_cursor;
+        let additional_sectors = up_to - self.file_sector;
 
         if let Some(entry) = self.map.last_mut()
             && let SectorSource::DataFile {
@@ -180,22 +183,24 @@ impl SectorMapBuilder {
             && last_format == format
         {
             // Add more sectors to the existing map entry
-            entry.sector_count += additional;
-        } else if additional > 0 {
+            entry.sector_count += additional_sectors;
+        } else if additional_sectors > 0 {
             // Start a new map entry
             self.map.push(SectorMapEntry {
                 sector: self.abs_cursor,
-                sector_count: additional,
+                sector_count: additional_sectors,
                 source: SectorSource::DataFile {
                     file_idx: self.file_idx,
-                    file_sector: self.file_cursor,
+                    file_offset: self.file_offset,
                     format,
                 },
             });
         }
 
-        self.file_cursor += additional;
-        self.abs_cursor += additional;
+        self.file_sector += additional_sectors;
+        self.file_offset += additional_sectors as u64 * format.bytes_per_sector();
+        self.abs_cursor += additional_sectors;
+        self.last_format = format;
 
         Ok(())
     }
@@ -219,19 +224,22 @@ impl SectorMapBuilder {
         self.abs_cursor += sectors;
     }
 
-    fn add_rest_of_file(&mut self, format: SectorSourceFormat) -> Result<()> {
-        self.add_file_up_to(self.file_max, format)
+    fn add_rest_of_file(&mut self) -> Result<()> {
+        let remaining_bytes = self.file_size - self.file_offset;
+        let remaining_sectors: u32 =
+            (remaining_bytes / self.last_format.bytes_per_sector()).try_into()?;
+        self.add_file_up_to(self.file_sector + remaining_sectors, self.last_format)
     }
 
-    fn build(self) -> Result<Vec<SectorMapEntry>> {
-        // self.add_rest_of_file()?;
+    fn build(mut self) -> Result<Vec<SectorMapEntry>> {
+        self.add_rest_of_file()?;
         Ok(self.map)
     }
 }
 
 pub struct CuesheetCdromBackend {
     cue_path: PathBuf,
-    files: Vec<CuesheetDataFile>,
+    files: Vec<File>,
     sessions: Vec<SessionInfo>,
     /// Map of sectors. Entries are sorted in order of increasing `sector` field.
     /// This table maps absolute sector numbers to data files. This is NOT the
@@ -244,12 +252,13 @@ impl CuesheetCdromBackend {
         let cue_dir = path.parent().unwrap();
         let cue_file = BufReader::new(File::open(path)?);
 
-        let mut files: Vec<CuesheetDataFile> = vec![];
+        let mut files: Vec<File> = vec![];
         let mut sector_map = SectorMapBuilder::new();
 
         let mut track_num = 0u8;
         let mut track_control = DATA_TRACK;
         let mut source_format = SectorSourceFormat::Raw2352;
+        let mut next_source_format = SectorSourceFormat::Raw2352;
         let mut gap_sectors = 0;
 
         let mut tracks = vec![];
@@ -277,10 +286,9 @@ impl CuesheetCdromBackend {
 
                         let file = File::open(file_path)?;
                         let file_len = file.metadata()?.len();
-                        let sector_count = file_len.div_ceil(RAW_SECTOR_LEN as u64).try_into()?;
-                        files.push(CuesheetDataFile { sector_count, file });
+                        files.push(file);
 
-                        sector_map.start_new_file(files.len() - 1, sector_count)?;
+                        sector_map.start_new_file(files.len() - 1, file_len)?;
                     }
                     "TRACK" => {
                         track_num = read_cue_word(&mut chars)
@@ -288,7 +296,7 @@ impl CuesheetCdromBackend {
                             .parse()?;
                         let track_form_str = read_cue_word(&mut chars)
                             .ok_or_else(|| anyhow!("Invalid TRACK command"))?;
-                        (source_format, track_control) = match track_form_str.as_str() {
+                        (next_source_format, track_control) = match track_form_str.as_str() {
                             "AUDIO" => (SectorSourceFormat::Raw2352, AUDIO_TRACK),
                             "MODE1/2352" | "MODE2/2352" => {
                                 (SectorSourceFormat::Raw2352, DATA_TRACK)
@@ -306,6 +314,7 @@ impl CuesheetCdromBackend {
 
                         // Add any previous file data up to this point
                         sector_map.add_file_up_to(file_sector, source_format)?;
+                        source_format = next_source_format;
 
                         // Add pregaps/postgaps here
                         sector_map.add_gap(gap_sectors);
@@ -325,6 +334,7 @@ impl CuesheetCdromBackend {
                         // Zeros sectors will be added to the map by the INDEX command
                         gap_sectors += duration;
                     }
+                    "REM" => (), // TODO: support REM LEAD-OUT and REM SESSION
                     // TODO: Support multisession bin/cue's. IsoBuster emits REM SESSION commands to indicate a new session.
                     _ => log::warn!("Unknown cuesheet command {} ignored", command),
                 }
@@ -334,7 +344,7 @@ impl CuesheetCdromBackend {
         log::debug!("Tracks: {:#?}", tracks);
 
         // In case the final track has a postgap...
-        sector_map.add_rest_of_file(source_format)?;
+        sector_map.add_rest_of_file()?;
         sector_map.add_gap(gap_sectors);
 
         let sector_map = sector_map.build()?;
@@ -385,9 +395,6 @@ impl CdromBackend for CuesheetCdromBackend {
     fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError> {
         let mut result = Vec::<u8>::with_capacity(length);
 
-        // TODO: uh-oh, do we need to support CD-ROM's where the data is in session 2?
-        // Example: "Weird Al" Yankovic - Running With Scissors
-        // (the Weird Al disc also uses Mode 2 sectors in its data track!)
         let mut sector: u32 =
             LBA_START_SECTOR + u32::try_from(offset / 2048).map_err(|e| anyhow!(e))?;
         let mut data_offset = offset % 2048;
@@ -473,9 +480,6 @@ impl CdromBackend for CuesheetCdromBackend {
         let map_entry = self
             .find_map_entry_for_sector(sector)
             .ok_or_else(|| anyhow!("Sector {} not found in sector map", sector))?;
-        if !(map_entry.sector..map_entry.sector + map_entry.sector_count).contains(&sector) {
-            bail!("Sector {} not found in sector map", sector);
-        }
 
         let rel_sector = sector - map_entry.sector;
 
@@ -483,21 +487,24 @@ impl CdromBackend for CuesheetCdromBackend {
             SectorSource::Zeros => [0; RAW_SECTOR_LEN],
             SectorSource::DataFile {
                 file_idx,
-                file_sector,
-                ..
+                file_offset,
+                format,
             } => {
-                let file = &self.files[file_idx];
-                let sector_in_file = file_sector + rel_sector;
                 // It turns out you don't need a &mut File to seek and read!
                 // Just call seek and read on a `&File`. This will clobber the file cursor,
                 // so use with caution.
-                let mut file: &File = &file.file;
+                let mut file: &File = &self.files[file_idx];
                 file.seek(SeekFrom::Start(
-                    sector_in_file as u64 * RAW_SECTOR_LEN as u64,
+                    file_offset + rel_sector as u64 * format.bytes_per_sector(),
                 ))?;
-                let mut result = [0; RAW_SECTOR_LEN];
-                file.read_exact(&mut result)?;
-                result
+
+                match format {
+                    SectorSourceFormat::Raw2352 => {
+                        let mut result = [0u8; RAW_SECTOR_LEN];
+                        file.read_exact(&mut result)?;
+                        result
+                    }
+                }
             }
         };
 
