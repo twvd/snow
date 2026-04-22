@@ -115,6 +115,7 @@ pub struct TrackInfo {
     sector: u32, // Forget about MSF/LBA; use absolute sector numbers wherever possible.
 }
 
+#[derive(Debug)]
 pub struct SessionInfo {
     /// Session number. Always starts at 1.
     number: u8,
@@ -334,6 +335,8 @@ impl ScsiTargetCdrom {
                 let data_length = result.len() - 2;
                 result[0..2].copy_from_slice(&u16::to_be_bytes(data_length.try_into()?));
 
+                log::debug!("formatted toc bytes: {:?}", result);
+
                 result.truncate(alloc_len);
                 Ok(ScsiCmdResult::DataIn(result))
             }
@@ -353,7 +356,7 @@ impl ScsiTargetCdrom {
                 let first_track_of_last_session = tracks
                     .iter()
                     .find(|t| t.session >= last_session_no)
-                    .unwrap();
+                    .ok_or_else(|| anyhow!("No tracks in last session"))?;
 
                 // [PIONEER] Table 2-28D: Track Descriptors
                 result.push(0); // Reserved
@@ -367,6 +370,8 @@ impl ScsiTargetCdrom {
 
                 let data_length = result.len() - 2;
                 result[0..2].copy_from_slice(&u16::to_be_bytes(data_length.try_into()?));
+
+                log::debug!("session toc bytes: {:?}", result);
 
                 result.truncate(alloc_len);
                 Ok(ScsiCmdResult::DataIn(result))
@@ -490,6 +495,8 @@ impl ScsiTargetCdrom {
 
                 let data_length = result.len() - 2;
                 result[0..2].copy_from_slice(&u16::to_be_bytes(data_length.try_into()?));
+
+                log::debug!("full toc bytes: {:?}", result);
 
                 result.truncate(alloc_len);
                 Ok(ScsiCmdResult::DataIn(result))
