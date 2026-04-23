@@ -96,10 +96,10 @@ impl ScsiTarget for ScsiTargetDisk {
         result[4] = result.len() as u8 - 4;
 
         // 8..16 Vendor identification
-        result[8..(8 + 4)].copy_from_slice(b"SNOW");
+        result[8..16].copy_from_slice(b"SNOW    ");
 
         // 16..32 Product identification
-        result[16..(16 + 11)].copy_from_slice(b"VIRTUAL HDD");
+        result[16..32].copy_from_slice(b"VIRTUAL HDD     ");
 
         // 32..36 Revision
         result[32..35].copy_from_slice(b"1.0");
