@@ -164,10 +164,21 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
             }
             0x03 => {
                 // REQUEST SENSE
+                let alloc_len = cmd[4];
+
                 let (key, asc) = self.common().req_sense();
-                let mut result = vec![0; 14];
+                let mut result = vec![0; 18];
+                if key != 0 {
+                    // [SPC-3] 4.5.4: Current errors
+                    // Response codes 70h and 72h (current error) indicate that the sense data returned is the result of an error or
+                    // exception condition on the task that returned the CHECK CONDITION status or a protocol specific failure
+                    // condition.
+                    result[0] = 0x70; // Current error
+                }
                 result[2] = key & 0x0F;
                 result[12..14].copy_from_slice(&asc.to_be_bytes());
+
+                result.truncate(alloc_len as usize);
                 Ok(ScsiCmdResult::DataIn(result))
             }
             0x04 => {
