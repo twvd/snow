@@ -380,9 +380,9 @@ where
                 // SCC
                 0x0000_4000..=0x0000_5FFF => self.scc.write(addr >> 1, val),
                 // SCSI
-                0x0000_6000..=0x0000_6003 => Some(self.scsi.write_dma(val)),
+                0x0000_6000..=0x0000_6FFF => Some(self.scsi.write_dma(val)),
                 0x0001_0000..=0x0001_1FFF => self.scsi.write(addr, val),
-                0x0001_2000..=0x0001_2FFF => Some(self.scsi.write_dma(val)),
+                0x0001_2000..=0x0001_3FFF => Some(self.scsi.write_dma(val)),
                 // ASC (sound)
                 0x0001_4000..=0x0001_5FFF => self.asc.write(addr & 0xFFF, val),
                 // IWM
@@ -461,9 +461,9 @@ where
                 // SCC
                 0x0000_4000..=0x0000_5FFF => self.scc.read(addr >> 1),
                 // SCSI
-                0x0000_6060..=0x0000_6063 => Some(self.scsi.read_dma()),
+                0x0000_6000..=0x0000_6FFF => Some(self.scsi.read_dma()),
                 0x0001_0000..=0x0001_1FFF => self.scsi.read(addr),
-                0x0001_2000..=0x0001_2FFF => Some(self.scsi.read_dma()),
+                0x0001_2000..=0x0001_3FFF => Some(self.scsi.read_dma()),
                 // ASC (sound)
                 0x0001_4000..=0x0001_5FFF => self.asc.read(addr & 0xFFF),
                 // IWM
