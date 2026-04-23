@@ -610,6 +610,9 @@ impl ScsiController {
     }
 
     pub fn read_dma(&mut self) -> u8 {
+        // Note that System 7.1 during bulk transfers will read blocks of 512
+        // bytes at a time from the DMA region and then use PIO momentarily
+        // for some reason.
         self.read_datareg()
     }
 
@@ -645,17 +648,14 @@ impl ScsiController {
 
     fn read_datareg(&mut self) -> u8 {
         let val = self.reg_cdr;
-        if self.busphase == ScsiBusPhase::DataIn && self.dma_armed {
-            // Pump next byte to CDR for next read
-            if let Some(b) = self.responsebuf.pop_front() {
-                self.reg_cdr = b;
-                self.assert_req();
-            } else {
-                // Transfer completed
-                self.deassert_req();
-
-                self.set_phase(ScsiBusPhase::Status);
-            }
+        // I feel this SHOULD BE 'if self.dma_armed', however, during A/UX
+        // drive enumeration at boot, it will run a READ CAPACITY CDB after
+        // which it will enable DMA mode, but NOT arm DMA before starting
+        // to read from the DMA bus region.
+        // Needs more investigation at some point...
+        if self.reg_mr.dma_mode() && self.phase_match() {
+            self.assert_ack();
+            self.deassert_ack();
         }
         val
     }
@@ -716,7 +716,7 @@ impl ScsiController {
             ScsiBusPhase::DataIn => {
                 if let Some(b) = self.responsebuf.pop_front() {
                     self.reg_cdr = b;
-                    self.reg_csr.set_req(true);
+                    self.assert_req();
                 } else {
                     // Transfer completed
                     self.set_phase(ScsiBusPhase::Status);
