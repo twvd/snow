@@ -274,15 +274,14 @@ where
 
         let vaddr = self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
         let result = self.pmmu_translate_lookup::<true>(fc, vaddr, !extword.read());
-        log::debug!("PTEST {:08X} {:?} {:?}", vaddr, self.regs.pmmu.psr, result);
         match result {
-            Ok(_paddr) => {
+            Ok(_) => {
                 if extword.a_set() {
                     self.regs.write_a(extword.an(), self.regs.pmmu.last_desc);
                 }
             }
-            // TODO fix error handling
-            Err(_e) => (),
+            // PTEST never raises: PSR reflects what happened.
+            Err(_) => (),
         }
         Ok(())
     }
