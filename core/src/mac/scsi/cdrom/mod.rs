@@ -420,11 +420,13 @@ impl ScsiTargetCdrom {
                             result.push(0); // TNO (0 for the lead-in area)
                             result.push(0xB0); // POINT (Start time of next possible program)
                             result.extend_from_slice(
+                                // FIXME: It's unclear whether this should be BCD or binary.
+                                // It probably makes no difference.
                                 &Msf::from_sector(next_session.leadin)?.to_bytes(),
                             ); // Start time of next possible program
                             result.push(2); // # of pointers in Mode 5
                             result.extend_from_slice(
-                                &Msf::from_sector(sessions.last().unwrap().leadout)?.to_bytes(),
+                                &Msf::from_sector(sessions.last().unwrap().leadout)?.to_bcd_bytes(),
                             ); // Maximum start time of outer-most Lead-out area
 
                             // Start time of the first Lead-in Area of the disc
@@ -438,7 +440,7 @@ impl ScsiTargetCdrom {
                             result.push(0); // Zero
                             // FIXME: Weird Al actually puts 95:00:00 here? where does that come from?
                             result.extend_from_slice(
-                                &Msf::from_sector(sessions.first().unwrap().leadin)?.to_bytes(),
+                                &Msf::from_sector(sessions.first().unwrap().leadin)?.to_bcd_bytes(),
                             ); // Start time of the first Lead-in Area of the disc)
                         }
 
@@ -454,8 +456,8 @@ impl ScsiTargetCdrom {
                         result.push(0);
                         result.push(0);
                         result.push(0); // Zero
-                        result.push(track.tno); // First Track Number
-                        result.push(session.disc_type); // Disc Type
+                        result.push(bin_to_bcd(track.tno)); // First Track Number
+                        result.push(bin_to_bcd(session.disc_type)); // Disc Type
                         result.push(0);
 
                         // Last track number in the program area
@@ -472,7 +474,7 @@ impl ScsiTargetCdrom {
                             .rev()
                             .find(|t| t.session == session_no)
                             .unwrap();
-                        result.push(last_track_in_session.tno); // Last Track Number
+                        result.push(bin_to_bcd(last_track_in_session.tno)); // Last Track Number
                         result.push(0);
                         result.push(0);
 
@@ -486,7 +488,7 @@ impl ScsiTargetCdrom {
                         result.push(0);
                         result.push(0); // Zero
                         let leadout = Msf::from_sector(get_session(session_no).unwrap().leadout)?;
-                        result.extend_from_slice(&leadout.to_bytes()); // Start position of Lead-out
+                        result.extend_from_slice(&leadout.to_bcd_bytes()); // Start position of Lead-out
                     }
 
                     result.push(track.session); // Session Number
@@ -497,17 +499,13 @@ impl ScsiTargetCdrom {
                     result.push(0);
                     result.push(0);
                     result.push(0); // Zero
-                    // XXX: In order for Enhanced CD bonus content to work, we need to report timecodes
-                    // as BCD. But that breaks Battle Chess. Let's work around it here.
-                    // This is just enough BCD to allow Mac OS to find the bonus content.
-                    if track.control == DATA_TRACK
-                        && track.session != 1
-                        && get_session(track.session).unwrap().disc_type == 0x20
-                    {
-                        result.extend_from_slice(&Msf::from_sector(track.sector)?.to_bcd_bytes()); // Start position of track
-                    } else {
-                        result.extend_from_slice(&Msf::from_sector(track.sector)?.to_bytes()); // Start position of track
-                    }
+                    // [MMC4] 6.40.3.4.1:
+                    // Entries in bytes 2 through 7 of the descriptors (TNO, POINT, MIN, SEC, FRAME, ZERO) shall be
+                    // converted to binary by the Logical Unit when the media contains a value between 0 and 99bcd.
+                    // [...] Otherwise, the value is returned with no modification.
+                    // Note that this does NOT include the PMIN/PSEC/PFRAME fields! Meaning, these fields must
+                    // be represented in binary-coded decimal.
+                    result.extend_from_slice(&Msf::from_sector(track.sector)?.to_bcd_bytes()); // Start position of track
                 }
 
                 let data_length = result.len() - 2;
