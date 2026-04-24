@@ -1,7 +1,7 @@
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::FpuM68kType;
-use crate::cpu_m68k::cpu::{CpuError, CpuM68k, Group0Details, HistoryEntry};
+use crate::cpu_m68k::cpu::{CpuError, CpuM68k, Group0Details, HistoryEntry, PagefaultCause};
 use crate::cpu_m68k::pmmu::regs::{PmmuPageDescriptorType, RegisterPSR, RootPointerReg};
 use crate::types::Long;
 
@@ -14,6 +14,16 @@ use proc_bitfield::bitfield;
 pub(in crate::cpu_m68k) const PMMU_ATC_URP: usize = 0;
 /// Index in CpuM68k::pmmu_atc tables when SRP is in use
 pub(in crate::cpu_m68k) const PMMU_ATC_SRP: usize = 1;
+
+/// A resolved Address Translation Cache entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::cpu_m68k) struct PmmuAtcEntry {
+    /// Physical page base address (low PS bits are zero).
+    pub paddr: Address,
+    /// Write-protect bit inherited from any table descriptor on the walk
+    /// or from the leaf page descriptor.
+    pub wp: bool,
+}
 
 bitfield! {
     /// Short format page descriptor
@@ -153,13 +163,14 @@ where
         dt: PmmuPageDescriptorType,
         tis: &mut ArrayVec<u8, 4>,
         used_bits: &mut Address,
-    ) -> Result<Address> {
+        wp: bool,
+    ) -> Result<(Address, bool)> {
         match dt {
             PmmuPageDescriptorType::Valid4b => {
-                self.pmmu_fetch_table_short(vaddr, table_addr, tis, used_bits)
+                self.pmmu_fetch_table_short(vaddr, table_addr, tis, used_bits, wp)
             }
             PmmuPageDescriptorType::Valid8b => {
-                self.pmmu_fetch_table_long(vaddr, table_addr, tis, used_bits)
+                self.pmmu_fetch_table_long(vaddr, table_addr, tis, used_bits, wp)
             }
             _ => bail!("Unimplemented DT {:?}", dt),
         }
@@ -171,7 +182,8 @@ where
         table_addr: Address,
         tis: &mut ArrayVec<u8, 4>,
         used_bits: &mut Address,
-    ) -> Result<Address> {
+        wp: bool,
+    ) -> Result<(Address, bool)> {
         let Some(ti) = tis.pop() else {
             bail!("PMMU table search beyond maximum depth");
         };
@@ -187,17 +199,11 @@ where
         let child_dt = PmmuPageDescriptorType::from_u32(entry_word & 0b11).unwrap();
         match child_dt {
             PmmuPageDescriptorType::Invalid => {
-                bail!(CpuError::Pagefault);
+                bail!(CpuError::Pagefault(PagefaultCause::Invalid));
             }
             PmmuPageDescriptorType::PageDescriptor => {
-                // Done
-                // TODO page size??
                 let entry = PmmuShortPageDescriptor(entry_word);
-                // TODO protection
-                if tis.len() <= 2 {
-                    //log::debug!("level {} entry {:?}", tis.len(), entry);
-                }
-                Ok(entry.page_addr() << 8)
+                Ok((entry.page_addr() << 8, wp | entry.wp()))
             }
             PmmuPageDescriptorType::Valid4b | PmmuPageDescriptorType::Valid8b => {
                 // Recurse to child
@@ -208,6 +214,8 @@ where
                     child_dt,
                     tis,
                     used_bits,
+                    // WP is inherited from any ancestor table
+                    wp | entry.wp(),
                 )
             }
         }
@@ -219,7 +227,8 @@ where
         table_addr: Address,
         tis: &mut ArrayVec<u8, 4>,
         used_bits: &mut Address,
-    ) -> Result<Address> {
+        wp: bool,
+    ) -> Result<(Address, bool)> {
         let Some(ti) = tis.pop() else {
             bail!("PMMU table search beyond maximum depth");
         };
@@ -237,19 +246,13 @@ where
         let child_dt = PmmuPageDescriptorType::from_u32(entry_word1 & 0b11).unwrap();
         match child_dt {
             PmmuPageDescriptorType::Invalid => {
-                bail!(CpuError::Pagefault);
+                bail!(CpuError::Pagefault(PagefaultCause::Invalid));
             }
             PmmuPageDescriptorType::PageDescriptor => {
-                // Done
-                // TODO page size??
                 let entry = PmmuLongPageDescriptor(0)
                     .with_msl(entry_word1)
                     .with_lsl(entry_word2);
-                // TODO protection
-                if tis.len() <= 2 {
-                    //log::debug!("level {} entry {:?}", tis.len(), entry);
-                }
-                Ok(entry.page_addr() << 8)
+                Ok((entry.page_addr() << 8, wp | entry.wp()))
             }
             PmmuPageDescriptorType::Valid4b | PmmuPageDescriptorType::Valid8b => {
                 // Recurse to child
@@ -262,6 +265,8 @@ where
                     child_dt,
                     tis,
                     used_bits,
+                    // WP is inherited from any ancestor table
+                    wp | entry.wp(),
                 )
             }
         }
@@ -292,24 +297,56 @@ where
         let is_mask = Address::MAX.unbounded_shl(32 - self.regs.pmmu.tc.is());
         let page_mask = (1u32 << self.regs.pmmu.tc.ps()) - 1;
         let cache_key = ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize;
-        if let Some(cached_paddr) = self.pmmu_atc[atc][cache_key] {
-            return Ok(cached_paddr | (vaddr & page_mask));
+        if let Some(entry) = self.pmmu_atc[atc][cache_key] {
+            if writing && entry.wp {
+                self.pmmu_record_pagefault(vaddr, writing);
+                return Err(Self::pmmu_pagefault_to_buserror(fc, vaddr, writing));
+            }
+            return Ok(entry.paddr | (vaddr & page_mask));
         }
 
-        self.pmmu_translate_lookup::<false>(fc, vaddr, writing)
-            .inspect(|paddr| {
-                let cache_key = ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize;
-                self.pmmu_atc[atc][cache_key] = Some(*paddr & !page_mask);
-            })
+        let (paddr, wp) = self.pmmu_translate_lookup::<false>(fc, vaddr, writing)?;
+        let cache_key = ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize;
+        self.pmmu_atc[atc][cache_key] = Some(PmmuAtcEntry {
+            paddr: paddr & !page_mask,
+            wp,
+        });
+        Ok(paddr)
     }
 
-    /// Perform address translation by performing a page table lookup
+    /// Records a page-fault history entry if history recording is enabled.
+    fn pmmu_record_pagefault(&mut self, vaddr: Address, writing: bool) {
+        if self.history_enabled {
+            self.history.push_back(HistoryEntry::Pagefault {
+                address: vaddr,
+                write: writing,
+            });
+        }
+    }
+
+    /// Builds the Group-0 BusError stack frame error value for a page fault.
+    fn pmmu_pagefault_to_buserror(fc: u8, vaddr: Address, writing: bool) -> anyhow::Error {
+        anyhow!(CpuError::BusError(Group0Details {
+            function_code: fc,
+            ir: 0,
+            instruction: false,
+            read: !writing,
+            address: vaddr,
+            start_pc: 0,
+            size: 0,
+        }))
+    }
+
+    /// Perform address translation by performing a page table lookup.
+    /// Returns (physical address, wp), or error:
+    ///  - bus error stack frame for translation,
+    ///  - simple error on PTEST.
     pub(in crate::cpu_m68k) fn pmmu_translate_lookup<const PTEST: bool>(
         &mut self,
         fc: u8,
         vaddr: Address,
         writing: bool,
-    ) -> Result<Address> {
+    ) -> Result<(Address, bool)> {
         let rootptr = self.pmmu_rootptr(fc);
 
         if PTEST {
@@ -324,44 +361,52 @@ where
             self.regs.pmmu.tc.tia(),
         ]);
         let mut used_bits = self.regs.pmmu.tc.is() as Address;
-        let page_addr = self
+        let walk = self
             .pmmu_fetch_table(
                 vaddr << self.regs.pmmu.tc.is(),
                 rootptr.table_addr() << 4,
                 PmmuPageDescriptorType::from_u8(rootptr.dt()).unwrap(),
                 &mut tis,
                 &mut used_bits,
+                false,
             )
             .map_err(|e| match e.downcast_ref() {
                 Some(CpuError::AddressError(ae)) => {
                     anyhow!("Address error while reading page tables: {:X?}", ae)
                 }
-                Some(CpuError::Pagefault) => {
+                Some(CpuError::Pagefault(cause)) => {
+                    let cause = *cause;
                     if PTEST {
-                        self.regs.pmmu.psr.set_invalid(true);
+                        match cause {
+                            PagefaultCause::Invalid => self.regs.pmmu.psr.set_invalid(true),
+                            PagefaultCause::WriteProtected => {
+                                self.regs.pmmu.psr.set_write_protected(true)
+                            }
+                        }
                         self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
-                    } else if self.history_enabled {
-                        self.history.push_back(HistoryEntry::Pagefault {
-                            address: vaddr,
-                            write: writing,
-                        });
+                        // Raise basic error rather than full bus error frame for PTEST
+                        e
+                    } else {
+                        self.pmmu_record_pagefault(vaddr, writing);
+                        Self::pmmu_pagefault_to_buserror(fc, vaddr, writing)
                     }
-
-                    anyhow!(CpuError::BusError(Group0Details {
-                        function_code: fc,
-                        ir: 0,
-
-                        instruction: false,
-                        read: !writing,
-                        address: vaddr,
-
-                        // Filled in later
-                        start_pc: 0,
-                        size: 0,
-                    }))
                 }
                 _ => e,
-            })?;
+            });
+
+        let (page_addr, wp) = walk?;
+
+        // Enforce write-protect on the resolved page
+        if writing && wp {
+            if PTEST {
+                self.regs.pmmu.psr.set_write_protected(true);
+                self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
+                return Err(anyhow!(CpuError::Pagefault(PagefaultCause::WriteProtected)));
+            } else {
+                self.pmmu_record_pagefault(vaddr, writing);
+                return Err(Self::pmmu_pagefault_to_buserror(fc, vaddr, writing));
+            }
+        }
 
         let mask = 0xFFFFFFFFu32.unbounded_shr(used_bits);
         let paddr = (page_addr & !mask) | (vaddr & mask);
@@ -369,16 +414,6 @@ where
         if PTEST {
             self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
         }
-        //if tis.len() <= 2 && paddr != vaddr {
-        //    log::debug!("{:02X?}", self.regs.pmmu);
-        //    log::debug!(
-        //        "page_addr {:08X} mask {:08X} ub {}",
-        //        page_addr,
-        //        mask,
-        //        used_bits
-        //    );
-        //    log::debug!("{:08X} -> {:08X}", paddr, vaddr);
-        //}
-        Ok(paddr)
+        Ok((paddr, wp))
     }
 }
