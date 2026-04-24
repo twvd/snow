@@ -63,6 +63,10 @@ const LBA_START_SECTOR: u32 = LBA_START_MSF.to_sector();
 /// Number of sectors per second of audio
 const AUDIO_SECTORS_PER_SEC: u32 = 75;
 
+fn bin_to_bcd(bin: u8) -> u8 {
+    ((bin / 10) << 4) | (bin % 10)
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 struct Msf {
     m: u8,
@@ -81,6 +85,10 @@ impl Msf {
 
     fn to_bytes(self) -> [u8; 3] {
         [self.m, self.s, self.f]
+    }
+
+    fn to_bcd_bytes(self) -> [u8; 3] {
+        [self.m, self.s, self.f].map(bin_to_bcd)
     }
 
     fn from_sector(mut sector: u32) -> Result<Self> {
@@ -342,8 +350,6 @@ impl ScsiTargetCdrom {
                 let data_length = result.len() - 2;
                 result[0..2].copy_from_slice(&u16::to_be_bytes(data_length.try_into()?));
 
-                log::debug!("formatted toc bytes: {:?}", result);
-
                 result.truncate(alloc_len);
                 Ok(ScsiCmdResult::DataIn(result))
             }
@@ -378,8 +384,6 @@ impl ScsiTargetCdrom {
                 let data_length = result.len() - 2;
                 result[0..2].copy_from_slice(&u16::to_be_bytes(data_length.try_into()?));
 
-                log::debug!("session toc bytes: {:?}", result);
-
                 result.truncate(alloc_len);
                 Ok(ScsiCmdResult::DataIn(result))
             }
@@ -411,10 +415,6 @@ impl ScsiTargetCdrom {
 
                             // Start time of next possible program
                             let next_session = get_session(session_no + 1).unwrap();
-                            log::debug!(
-                                "emitting next session descriptor leadin {}",
-                                next_session.leadin
-                            );
                             result.push(session_no); // Session Number
                             result.push(5 << 4); // ADR; Control
                             result.push(0); // TNO (0 for the lead-in area)
@@ -497,13 +497,21 @@ impl ScsiTargetCdrom {
                     result.push(0);
                     result.push(0);
                     result.push(0); // Zero
-                    result.extend_from_slice(&Msf::from_sector(track.sector)?.to_bytes()); // Start position of track
+                    // XXX: In order for Enhanced CD bonus content to work, we need to report timecodes
+                    // as BCD. But that breaks Battle Chess. Let's work around it here.
+                    // This is just enough BCD to allow Mac OS to find the bonus content.
+                    if track.control == DATA_TRACK
+                        && track.session != 1
+                        && get_session(track.session).unwrap().disc_type == 0x20
+                    {
+                        result.extend_from_slice(&Msf::from_sector(track.sector)?.to_bcd_bytes()); // Start position of track
+                    } else {
+                        result.extend_from_slice(&Msf::from_sector(track.sector)?.to_bytes()); // Start position of track
+                    }
                 }
 
                 let data_length = result.len() - 2;
                 result[0..2].copy_from_slice(&u16::to_be_bytes(data_length.try_into()?));
-
-                log::debug!("full toc bytes: {:?}", result);
 
                 result.truncate(alloc_len);
                 Ok(ScsiCmdResult::DataIn(result))
@@ -1055,12 +1063,6 @@ impl ScsiTarget for ScsiTargetCdrom {
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
 
-                // [PIONEER]: 2.13:
-                // If the starting address is not found, or if the address is not within an audio track, or if a not ready
-                // condition exists, the drive will terminate with a Check Condition status.
-                let session = &sessions[0];
-                // TODO: support multisession discs
-
                 // [MMC4] 6.17.2.3:
                 // If the Starting Minutes, Seconds, and Frame Fields are set to FFh, the Starting address is taken from
                 // the Current Optical Head location. This allows the Audio Ending address to be changed without
@@ -1077,12 +1079,19 @@ impl ScsiTarget for ScsiTargetCdrom {
                     // If the starting MSF address is greater than the ending MSF
                     // address, the command shall be terminated with CHECK CONDITION status and SK/ASC/ASCQ
                     // values shall be set to ILLEGAL REQUEST/INVALID FIELD IN CDB.
+                    log::error!(
+                        "Tried to play audio with start sector {} > end sector {}",
+                        start_sector,
+                        end_sector
+                    );
+                    self.audio_state = AudioState::Stopped;
                     self.common
                         .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
-                if start_sector >= session.leadout {
+                let final_leadout = sessions.last().unwrap().leadout;
+                if start_sector >= final_leadout {
                     // [MMC4] 6.17.2.3:
                     // If the starting address is not found the command shall be terminated with CHECK CONDITION status
                     // and SK/ASC/ASCQ values shall be set to ILLEGAL REQUEST/LOGICAL BLOCK ADDRESS OUT
