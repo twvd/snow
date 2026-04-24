@@ -3,8 +3,7 @@ use std::path::Path;
 
 use crate::mac::scsi::{
     cdrom::{
-        CdromBackend, CdromError, DATA_TRACK, LBA_START_SECTOR, RAW_SECTOR_LEN, SessionInfo,
-        TrackInfo,
+        CdromBackend, CdromError, DATA_TRACK, LBA_START_SECTOR, RawSector, SessionInfo, TrackInfo,
     },
     disk_image::DiskImage,
 };
@@ -57,7 +56,7 @@ impl CdromBackend for IsoCdromBackend {
         Some(std::slice::from_ref(&self.track))
     }
 
-    fn read_raw_sector(&self, _sector: u32) -> Result<[u8; RAW_SECTOR_LEN]> {
+    fn read_raw_sector(&self, _sector: u32) -> Result<RawSector> {
         // TODO: reconstruct raw sectors from ISO data
         // (probably only needed for some disc ripping software to work)
         bail!("Reading raw sectors is not implemented for ISO files");

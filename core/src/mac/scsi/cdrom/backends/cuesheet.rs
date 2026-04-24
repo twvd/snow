@@ -8,10 +8,11 @@ use std::{
 };
 
 use crate::mac::scsi::{
-    ASC_UNRECOVERED_READ_ERROR, CC_KEY_MEDIUM_ERROR,
+    ASC_ILLEGAL_MODE_FOR_THIS_TRACK, ASC_UNRECOVERED_READ_ERROR, CC_KEY_ILLEGAL_REQUEST,
+    CC_KEY_MEDIUM_ERROR,
     cdrom::{
         AUDIO_TRACK, CdromBackend, CdromError, DATA_TRACK, LBA_START_SECTOR, Msf, RAW_SECTOR_LEN,
-        SessionInfo, TrackInfo,
+        RawSector, SessionInfo, TrackInfo, get_track_at_sector,
     },
 };
 
@@ -470,9 +471,17 @@ impl CdromBackend for CuesheetCdromBackend {
             LBA_START_SECTOR + u32::try_from(offset / 2048).map_err(|e| anyhow!(e))?;
         let mut data_offset = offset % 2048;
         while result.len() < length {
-            // FIXME: read_raw_sector should return the track form (audio or data); this method
-            // should fail with ILLEGAL_MODE_FOR_THIS_TRACK if this isn't a data sector.
             let raw_sector = self.read_raw_sector(sector)?;
+
+            if raw_sector.control != DATA_TRACK {
+                log::warn!("Tried to read bytes from non-data sector {}", sector);
+                return Err(CdromError::CheckCondition(
+                    CC_KEY_ILLEGAL_REQUEST,
+                    ASC_ILLEGAL_MODE_FOR_THIS_TRACK,
+                ));
+            }
+
+            let raw_sector = raw_sector.data;
 
             // Check sync field
             let sync = &raw_sector[0..12];
@@ -551,14 +560,17 @@ impl CdromBackend for CuesheetCdromBackend {
         Some(&self.tracks)
     }
 
-    fn read_raw_sector(&self, sector: u32) -> Result<[u8; RAW_SECTOR_LEN]> {
+    fn read_raw_sector(&self, sector: u32) -> Result<RawSector> {
         let map_entry = self
             .find_map_entry_for_sector(sector)
             .ok_or_else(|| anyhow!("Sector {} not found in sector map", sector))?;
 
         let rel_sector = sector - map_entry.sector;
 
-        let result = match map_entry.source {
+        let track = get_track_at_sector(&self.tracks, sector)
+            .ok_or_else(|| anyhow!("No track found at sector {}", sector))?;
+
+        let data = match map_entry.source {
             SectorSource::Zeros => [0; RAW_SECTOR_LEN],
             SectorSource::DataFile {
                 file_idx,
@@ -583,6 +595,9 @@ impl CdromBackend for CuesheetCdromBackend {
             }
         };
 
-        Ok(result)
+        Ok(RawSector {
+            data,
+            control: track.control,
+        })
     }
 }

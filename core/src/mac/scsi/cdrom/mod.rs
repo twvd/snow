@@ -140,6 +140,13 @@ impl From<anyhow::Error> for CdromError {
     }
 }
 
+pub struct RawSector {
+    data: [u8; RAW_SECTOR_LEN],
+    /// CONTROL field of sub-channel data. Indicates audio or data track.
+    control: u8,
+    // TODO: add fields for other sub-channel data (position, track/index number, etc.)
+}
+
 pub trait CdromBackend: Send {
     fn byte_len(&self) -> usize;
 
@@ -156,7 +163,7 @@ pub trait CdromBackend: Send {
     fn tracks(&self) -> Option<&[TrackInfo]>;
 
     /// Read a raw 2352-byte sector. Currently used only for CD audio. Other data is read via read_bytes.
-    fn read_raw_sector(&self, sector: u32) -> Result<[u8; RAW_SECTOR_LEN]>;
+    fn read_raw_sector(&self, sector: u32) -> Result<RawSector>;
 }
 
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
@@ -555,8 +562,9 @@ impl ScsiTargetCdrom {
 
         let samples = backend.read_raw_sector(self.audio_pos);
         match samples {
-            Ok(samples) => {
+            Ok(samples) if samples.control == AUDIO_TRACK => {
                 let mut samples = samples
+                    .data
                     .chunks_exact(2)
                     .map(|s| i16::from_le_bytes(s.try_into().unwrap()));
                 // FIXME: can we avoid converting to float by setting up a signed 16-bit PCM audio sink?
@@ -573,6 +581,7 @@ impl ScsiTargetCdrom {
 
                 audio_sink.send(Box::new(out_samples))?;
             }
+            Ok(_) => log::warn!("Tried to play from non-audio track"),
             Err(e) => log::warn!(
                 "Failed to read raw samples from sector {}: {}",
                 self.audio_pos,
@@ -606,6 +615,16 @@ impl ScsiTargetCdrom {
     }
 }
 
+fn get_track_at_sector(tracks: &[TrackInfo], sector: u32) -> Option<&TrackInfo> {
+    tracks
+        .iter()
+        .rev()
+        .find(|t| t.sector <= sector)
+        // XXX: if sector is before the first track, just return the first track.
+        // This occurs if Track 1 begins with an Index 0 pregap.
+        .or_else(|| tracks.first())
+}
+
 impl ScsiTargetCdrom {
     fn load_cue(&mut self, path: &Path) -> Result<()> {
         self.backend = Some(Box::new(CuesheetCdromBackend::new(path)?));
@@ -616,13 +635,7 @@ impl ScsiTargetCdrom {
 
     fn get_track_at_sector(&self, sector: u32) -> Option<&TrackInfo> {
         let tracks = self.backend.as_ref()?.tracks()?;
-        tracks
-            .iter()
-            .rev()
-            .find(|t| t.sector <= sector)
-            // XXX: if sector is before the first track, just return the first track.
-            // This occurs if Track 1 begins with an Index 0 pregap.
-            .or_else(|| tracks.first())
+        get_track_at_sector(tracks, sector)
     }
 }
 
