@@ -3083,7 +3083,7 @@ where
         // Fetch/decode the extension word
         instr.fetch_extword(|| self.fetch())?;
         let ext_word = instr.get_extword().data;
-        let reg_num = (ext_word >> 12) & 15;
+        let reg_num = (ext_word >> 12) & 0b111;
         let is_addr_reg = (ext_word & 0x8000) != 0;
         let dir_mem_to_reg = (ext_word & 0x0800) == 0;
 
