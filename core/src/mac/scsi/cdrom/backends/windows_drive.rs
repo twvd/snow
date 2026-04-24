@@ -20,6 +20,7 @@ use crate::mac::scsi::cdrom::RAW_SECTOR_LEN;
 use crate::mac::scsi::cdrom::RawSector;
 use crate::mac::scsi::cdrom::SessionInfo;
 use crate::mac::scsi::cdrom::backends::PhysicalCdromDrive;
+use crate::mac::scsi::cdrom::get_track_at_sector;
 use crate::mac::scsi::cdrom::{CdromBackend, TrackInfo};
 
 fn enum_logical_cdrom_drives() -> Result<Vec<String>> {
@@ -470,6 +471,9 @@ impl CdromBackend for WindowsDriveCdromBackend {
     }
 
     fn read_raw_sector(&self, sector: u32) -> Result<RawSector> {
+        // TODO: Read sub-channel data instead
+        let track = get_track_at_sector(&self.tracks, sector);
+
         // log::debug!("Reading raw sector {}", sector);
         let lba = sector
             .checked_sub(LBA_START_SECTOR)
@@ -477,7 +481,7 @@ impl CdromBackend for WindowsDriveCdromBackend {
         let data = read_ioctl_cdrom_raw_read(self.handle, lba)?;
         Ok(RawSector {
             data: data[..RAW_SECTOR_LEN].try_into().unwrap(),
-            control: DATA_TRACK, /* TODO */
+            control: track.map(|t| t.control).unwrap_or(DATA_TRACK),
         })
     }
 }
