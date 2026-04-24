@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow};
 use std::path::Path;
 
 use crate::mac::scsi::{
@@ -56,9 +56,9 @@ impl CdromBackend for IsoCdromBackend {
         Some(std::slice::from_ref(&self.track))
     }
 
-    fn read_raw_sector(&self, _sector: u32) -> Result<RawSector> {
+    fn read_raw_sector(&self, _sector: u32) -> Result<RawSector, CdromError> {
         // TODO: reconstruct raw sectors from ISO data
         // (probably only needed for some disc ripping software to work)
-        bail!("Reading raw sectors is not implemented for ISO files");
+        Err(anyhow!("Reading raw sectors is not implemented for ISO files").into())
     }
 }

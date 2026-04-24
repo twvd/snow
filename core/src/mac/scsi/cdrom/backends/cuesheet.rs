@@ -560,7 +560,7 @@ impl CdromBackend for CuesheetCdromBackend {
         Some(&self.tracks)
     }
 
-    fn read_raw_sector(&self, sector: u32) -> Result<RawSector> {
+    fn read_raw_sector(&self, sector: u32) -> Result<RawSector, CdromError> {
         let map_entry = self
             .find_map_entry_for_sector(sector)
             .ok_or_else(|| anyhow!("Sector {} not found in sector map", sector))?;
@@ -570,7 +570,7 @@ impl CdromBackend for CuesheetCdromBackend {
         let track = get_track_at_sector(&self.tracks, sector)
             .ok_or_else(|| anyhow!("No track found at sector {}", sector))?;
         if sector >= self.sessions[track.session as usize - 1].leadout {
-            bail!("Sector {} was past the lead-out", sector);
+            return Err(anyhow!("Sector {} was past the lead-out", sector).into());
         }
 
         let data = match map_entry.source {
@@ -586,12 +586,13 @@ impl CdromBackend for CuesheetCdromBackend {
                 let mut file: &File = &self.files[file_idx];
                 file.seek(SeekFrom::Start(
                     file_offset + rel_sector as u64 * format.bytes_per_sector(),
-                ))?;
+                ))
+                .map_err(|e| anyhow!(e))?;
 
                 match format {
                     SectorSourceFormat::Raw2352 => {
                         let mut result = [0u8; RAW_SECTOR_LEN];
-                        file.read_exact(&mut result)?;
+                        file.read_exact(&mut result).map_err(|e| anyhow!(e))?;
                         result
                     }
                 }

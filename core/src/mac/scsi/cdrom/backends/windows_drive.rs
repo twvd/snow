@@ -12,6 +12,8 @@ use windows::Win32::System::Ioctl::*;
 use windows::Win32::System::WindowsProgramming::*;
 use windows::core::HSTRING;
 
+use crate::mac::scsi::ASC_MEDIUM_NOT_PRESENT;
+use crate::mac::scsi::CC_KEY_MEDIUM_ERROR;
 use crate::mac::scsi::cdrom::CdromError;
 use crate::mac::scsi::cdrom::DATA_TRACK;
 use crate::mac::scsi::cdrom::LBA_START_SECTOR;
@@ -325,7 +327,7 @@ fn read_full_toc(handle: HANDLE) -> Result<(Vec<SessionInfo>, Vec<TrackInfo>)> {
 fn read_ioctl_cdrom_raw_read(
     drive: HANDLE,
     lba: u32,
-) -> Result<[u8; CD_RAW_SECTOR_WITH_SUBCODE_SIZE as usize]> {
+) -> Result<[u8; CD_RAW_SECTOR_WITH_SUBCODE_SIZE as usize], CdromError> {
     let read_cmd = RAW_READ_INFO {
         DiskOffset: lba as i64 * 2048,
         SectorCount: 1,
@@ -335,7 +337,7 @@ fn read_ioctl_cdrom_raw_read(
     let mut out_data = [0u8; CD_RAW_SECTOR_WITH_SUBCODE_SIZE as usize];
     let mut bytes_returned: u32 = 0;
 
-    unsafe {
+    let status = unsafe {
         DeviceIoControl(
             drive,
             IOCTL_CDROM_RAW_READ,
@@ -346,7 +348,18 @@ fn read_ioctl_cdrom_raw_read(
             Some(&mut bytes_returned),
             None,
         )
-    }?;
+    };
+
+    if let Err(e) = status {
+        if e.code() == ERROR_MEDIA_CHANGED.into() || e.code() == ERROR_NOT_READY.into() {
+            return Err(CdromError::CheckCondition(
+                CC_KEY_MEDIUM_ERROR,
+                ASC_MEDIUM_NOT_PRESENT,
+            ));
+        } else {
+            return Err(CdromError::Other(e.into()));
+        }
+    }
 
     if bytes_returned != CD_RAW_SECTOR_WITH_SUBCODE_SIZE {
         log::warn!("Raw read only returned {} bytes", bytes_returned);
@@ -470,7 +483,7 @@ impl CdromBackend for WindowsDriveCdromBackend {
         Some(&self.tracks)
     }
 
-    fn read_raw_sector(&self, sector: u32) -> Result<RawSector> {
+    fn read_raw_sector(&self, sector: u32) -> Result<RawSector, CdromError> {
         // TODO: Read sub-channel data instead
         let track = get_track_at_sector(&self.tracks, sector);
 
@@ -478,8 +491,8 @@ impl CdromBackend for WindowsDriveCdromBackend {
         let lba = sector
             .checked_sub(LBA_START_SECTOR)
             .ok_or_else(|| anyhow!("Tried to read from inaccessible sector {}", sector))?;
-        let data = read_ioctl_cdrom_raw_read(self.handle, lba)?;
-        Ok(RawSector {
+
+        read_ioctl_cdrom_raw_read(self.handle, lba).map(|data| RawSector {
             data: data[..RAW_SECTOR_LEN].try_into().unwrap(),
             control: track.map(|t| t.control).unwrap_or(DATA_TRACK),
         })

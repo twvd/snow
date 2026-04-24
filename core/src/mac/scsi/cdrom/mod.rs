@@ -174,7 +174,7 @@ pub trait CdromBackend: Send {
     fn tracks(&self) -> Option<&[TrackInfo]>;
 
     /// Read a raw 2352-byte sector. Currently used only for CD audio. Other data is read via read_bytes.
-    fn read_raw_sector(&self, sector: u32) -> Result<RawSector>;
+    fn read_raw_sector(&self, sector: u32) -> Result<RawSector, CdromError>;
 }
 
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
@@ -594,7 +594,11 @@ impl ScsiTargetCdrom {
                 log::warn!("Tried to play from non-audio track");
                 self.audio_state = AudioState::Stopped;
             }
-            Err(e) => {
+            Err(CdromError::CheckCondition(_, _)) => {
+                // CD-ROM error while playing; disable playback
+                self.audio_state = AudioState::Stopped;
+            }
+            Err(CdromError::Other(e)) => {
                 log::warn!(
                     "Failed to read raw samples from sector {}: {}",
                     self.audio_pos,
