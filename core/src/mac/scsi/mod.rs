@@ -83,8 +83,10 @@ const fn scsi_cmd_len(cmdnum: u8) -> Option<usize> {
         // BlueSCSI Toolbox commands
         | 0xD0..=0xD9
         => Some(10),
+        // REPORT KEY
+        0xA4
         // READ DVD STRUCTURE
-        0xAD
+        | 0xAD
         => Some(12),
         _ => {
             None
