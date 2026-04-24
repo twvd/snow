@@ -83,3 +83,4 @@ windows = {
         "Win32_System_WindowsProgramming",
     ]
 }
+windows-result = "0.4.1"

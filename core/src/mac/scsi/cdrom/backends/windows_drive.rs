@@ -69,12 +69,17 @@ pub fn is_physical_cdrom_drive_path(path: &Path) -> bool {
     unsafe { GetDriveTypeW(&HSTRING::from(path.as_path())) == DRIVE_CDROM }
 }
 
-pub struct WindowsDriveCdromBackend {
-    path: PathBuf,
-    handle: HANDLE,
+/// Disc information. Changes each time a new disc is inserted.
+struct DiscInfo {
     capacity: usize,
     sessions: Vec<SessionInfo>,
     tracks: Vec<TrackInfo>,
+}
+
+pub struct WindowsDriveCdromBackend {
+    path: PathBuf,
+    handle: HANDLE,
+    disc_info: Option<DiscInfo>,
 }
 
 // SAFETY: The drive handle should be safe to send between threads.
@@ -327,7 +332,7 @@ fn read_full_toc(handle: HANDLE) -> Result<(Vec<SessionInfo>, Vec<TrackInfo>)> {
 fn read_ioctl_cdrom_raw_read(
     drive: HANDLE,
     lba: u32,
-) -> Result<[u8; CD_RAW_SECTOR_WITH_SUBCODE_SIZE as usize], CdromError> {
+) -> Result<[u8; CD_RAW_SECTOR_WITH_SUBCODE_SIZE as usize]> {
     let read_cmd = RAW_READ_INFO {
         DiskOffset: lba as i64 * 2048,
         SectorCount: 1,
@@ -337,7 +342,7 @@ fn read_ioctl_cdrom_raw_read(
     let mut out_data = [0u8; CD_RAW_SECTOR_WITH_SUBCODE_SIZE as usize];
     let mut bytes_returned: u32 = 0;
 
-    let status = unsafe {
+    unsafe {
         DeviceIoControl(
             drive,
             IOCTL_CDROM_RAW_READ,
@@ -348,18 +353,7 @@ fn read_ioctl_cdrom_raw_read(
             Some(&mut bytes_returned),
             None,
         )
-    };
-
-    if let Err(e) = status {
-        if e.code() == ERROR_MEDIA_CHANGED.into() || e.code() == ERROR_NOT_READY.into() {
-            return Err(CdromError::CheckCondition(
-                CC_KEY_MEDIUM_ERROR,
-                ASC_MEDIUM_NOT_PRESENT,
-            ));
-        } else {
-            return Err(CdromError::Other(e.into()));
-        }
-    }
+    }?;
 
     if bytes_returned != CD_RAW_SECTOR_WITH_SUBCODE_SIZE {
         log::warn!("Raw read only returned {} bytes", bytes_returned);
@@ -397,17 +391,35 @@ impl WindowsDriveCdromBackend {
             )
         };
 
-        let capacity: usize = get_disk_length(handle)?.try_into()?;
+        let mut self_ = Self {
+            path: path.into(),
+            handle,
+            disc_info: None,
+        };
+
+        self_.reload_media()?;
+
+        Ok(self_)
+    }
+}
+
+impl WindowsDriveCdromBackend {
+    fn reload_media(&mut self) -> Result<()> {
+        log::debug!("Loading new CD media...");
+
+        drop(self.disc_info.take());
+
+        let capacity: usize = get_disk_length(self.handle)?.try_into()?;
         log::debug!("detected capacity: 0x{:X}", capacity);
 
-        let (sessions, tracks) = read_full_toc(handle)
+        let (sessions, tracks) = read_full_toc(self.handle)
             .or_else(|e| {
                 // Microsoft Virtual DVD-ROM supports Formatted TOC but not Full TOC.
                 log::warn!(
                     "Failed to read Full TOC; falling back to Formatted TOC. Error: {}",
                     e
                 );
-                read_formatted_toc(handle)
+                read_formatted_toc(self.handle)
             })
             .or_else(|e| {
                 // Dang, we really can't read the TOC. Just treat the disc as one big data
@@ -440,21 +452,47 @@ impl WindowsDriveCdromBackend {
         // If ReadFile is performed on a drive handle before IOCTL_CDROM_RAW_READ,
         // IOCTL_CDROM_RAW_READ will stop working with "The parameter is incorrect."
         // This seems to fix it.
-        let _ = read_ioctl_cdrom_raw_read(handle, 0);
+        let _ = read_ioctl_cdrom_raw_read(self.handle, 0);
 
-        Ok(Self {
-            path: path.into(),
-            handle,
+        self.disc_info = Some(DiscInfo {
             capacity,
             sessions,
             tracks,
-        })
+        });
+
+        Ok(())
     }
 }
 
 impl CdromBackend for WindowsDriveCdromBackend {
+    fn check_media(&mut self) -> Result<bool> {
+        let status = read_formatted_toc(self.handle);
+
+        match status {
+            Ok(_) => {
+                if self.disc_info.is_none() {
+                    self.reload_media()?;
+                }
+                Ok(self.disc_info.is_some())
+            }
+            Err(e) => {
+                drop(self.disc_info.take());
+                if let Some(e) = e.downcast_ref::<windows_result::Error>()
+                    && e.code() == ERROR_NOT_READY.into()
+                {
+                    Ok(false)
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
     fn byte_len(&self) -> usize {
-        self.capacity
+        self.disc_info
+            .as_ref()
+            .map(|info| info.capacity)
+            .unwrap_or(0)
     }
 
     fn read_bytes(&self, offset: usize, length: usize) -> Result<Vec<u8>, CdromError> {
@@ -476,25 +514,48 @@ impl CdromBackend for WindowsDriveCdromBackend {
     }
 
     fn sessions(&self) -> Option<&[SessionInfo]> {
-        Some(&self.sessions)
+        Some(&self.disc_info.as_ref()?.sessions)
     }
 
     fn tracks(&self) -> Option<&[TrackInfo]> {
-        Some(&self.tracks)
+        Some(&self.disc_info.as_ref()?.tracks)
     }
 
     fn read_raw_sector(&self, sector: u32) -> Result<RawSector, CdromError> {
+        let Some(disc_info) = &self.disc_info else {
+            return Err(CdromError::CheckCondition(
+                CC_KEY_MEDIUM_ERROR,
+                ASC_MEDIUM_NOT_PRESENT,
+            ));
+        };
+
         // TODO: Read sub-channel data instead
-        let track = get_track_at_sector(&self.tracks, sector);
+        let track = get_track_at_sector(&disc_info.tracks, sector);
 
         // log::debug!("Reading raw sector {}", sector);
         let lba = sector
             .checked_sub(LBA_START_SECTOR)
             .ok_or_else(|| anyhow!("Tried to read from inaccessible sector {}", sector))?;
 
-        read_ioctl_cdrom_raw_read(self.handle, lba).map(|data| RawSector {
-            data: data[..RAW_SECTOR_LEN].try_into().unwrap(),
-            control: track.map(|t| t.control).unwrap_or(DATA_TRACK),
-        })
+        let status = read_ioctl_cdrom_raw_read(self.handle, lba);
+        match status {
+            Ok(data) => Ok(RawSector {
+                data: data[..RAW_SECTOR_LEN].try_into().unwrap(),
+                control: track.map(|t| t.control).unwrap_or(DATA_TRACK),
+            }),
+            Err(e) => {
+                if let Some(e) = e.downcast_ref::<windows_result::Error>()
+                    && (e.code() == ERROR_NOT_READY.into()
+                        || e.code() == ERROR_MEDIA_CHANGED.into())
+                {
+                    Err(CdromError::CheckCondition(
+                        CC_KEY_MEDIUM_ERROR,
+                        ASC_MEDIUM_NOT_PRESENT,
+                    ))
+                } else {
+                    Err(CdromError::Other(e))
+                }
+            }
+        }
     }
 }

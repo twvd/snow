@@ -159,6 +159,11 @@ pub struct RawSector {
 }
 
 pub trait CdromBackend: Send {
+    /// Tells the backend to check whether a disc is still in the drive and reload TOC's
+    /// if necessary. Returns Ok(true) if a disc is present, Ok(false) if a disc is
+    /// not present, or Err(e) if an error occurred.
+    fn check_media(&mut self) -> Result<bool>;
+
     fn byte_len(&self) -> usize;
 
     /// The SCSI CD-ROM protocol allows reading blocks with standard READ commands.
@@ -287,12 +292,22 @@ impl ScsiTargetCdrom {
         track_or_session: u8, // Interpretation depends on format
         alloc_len: usize,
     ) -> Result<ScsiCmdResult> {
-        let Some(backend) = &self.backend else {
+        let Some(backend) = &mut self.backend else {
             // No CD inserted
             self.common
                 .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
             return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
         };
+
+        if !backend.check_media()? {
+            // No CD inserted
+            self.common
+                .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+        }
+
+        // Get rid of mutable reference, we only needed it for check_media
+        let backend = self.backend.as_ref().unwrap();
 
         let Some(tracks) = backend.tracks() else {
             // Media does not support tracks

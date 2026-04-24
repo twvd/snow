@@ -36,6 +36,10 @@ impl IsoCdromBackend {
 }
 
 impl CdromBackend for IsoCdromBackend {
+    fn check_media(&mut self) -> Result<bool> {
+        Ok(true)
+    }
+
     fn byte_len(&self) -> usize {
         self.image.byte_len()
     }

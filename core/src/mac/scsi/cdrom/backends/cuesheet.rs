@@ -450,6 +450,10 @@ impl CuesheetCdromBackend {
 }
 
 impl CdromBackend for CuesheetCdromBackend {
+    fn check_media(&mut self) -> Result<bool> {
+        Ok(true)
+    }
+
     fn byte_len(&self) -> usize {
         // To find the capacity, treat each sector (except the lead-in) as a block
         // containing 2048 bytes.
