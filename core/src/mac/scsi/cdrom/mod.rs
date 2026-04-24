@@ -63,23 +63,6 @@ const LBA_START_SECTOR: u32 = LBA_START_MSF.to_sector();
 /// Number of sectors per second of audio
 const AUDIO_SECTORS_PER_SEC: u32 = 75;
 
-// "Wait, why do we have BCD conversion functions? Doesn't the MMC standard say
-// each field is converted to binary by the drive?"
-//
-// Yes, but classic Macs have very old, pre-standardized CD-ROM drives. Unlike
-// modern drives, these old drives return BCD-encoded fields from their READ TOC
-// commands, which matches the encoding on the disc itself.
-//
-// This can be confirmed by examining very old Linux drivers.
-
-fn bin_to_bcd(bin: u8) -> u8 {
-    ((bin / 10) << 4) | (bin % 10)
-}
-
-fn bcd_to_bin(bcd: u8) -> u8 {
-    (bcd >> 4) * 10 + (bcd & 0xf)
-}
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 struct Msf {
     m: u8,
@@ -92,13 +75,12 @@ impl Msf {
         Self { m, s, f }
     }
 
-    fn from_bcd_bytes(bytes: [u8; 3]) -> Self {
-        let [m, s, f] = bytes.map(bcd_to_bin);
-        Self::new(m, s, f)
+    fn from_bytes(bytes: [u8; 3]) -> Self {
+        Self::new(bytes[0], bytes[1], bytes[2])
     }
 
-    fn to_bcd_bytes(self) -> [u8; 3] {
-        [self.m, self.s, self.f].map(bin_to_bcd)
+    fn to_bytes(self) -> [u8; 3] {
+        [self.m, self.s, self.f]
     }
 
     fn from_sector(mut sector: u32) -> Result<Self> {
@@ -264,16 +246,10 @@ impl ScsiTargetCdrom {
         self_
     }
 
-    fn msf_to_address_field(&self, msf: Msf, msf_format: bool, use_bcd: bool) -> [u8; 4] {
+    fn msf_to_address_field(&self, msf: Msf, msf_format: bool) -> [u8; 4] {
         if msf_format {
             // [UNI-MAINZ] Table 237: MSF address format
-            if use_bcd {
-                let mut result = [0u8; 4];
-                result[1..].copy_from_slice(&msf.to_bcd_bytes());
-                result
-            } else {
-                [0, msf.m, msf.s, msf.f]
-            }
+            [0, msf.m, msf.s, msf.f]
         } else {
             // FIXME: is this correct? I can't find any software that sets a non-2048 blocksize.
             let lba =
@@ -339,11 +315,9 @@ impl ScsiTargetCdrom {
                     result.push((1 << 4) | t.control); // ADR/Control
                     result.push(t.tno); // Track Number
                     result.push(0); // Reserved
-                    result.extend_from_slice(&self.msf_to_address_field(
-                        Msf::from_sector(t.sector)?,
-                        msf,
-                        true,
-                    ));
+                    result.extend_from_slice(
+                        &self.msf_to_address_field(Msf::from_sector(t.sector)?, msf),
+                    );
                     // Absolute CD-ROM Address
                 }
 
@@ -355,7 +329,6 @@ impl ScsiTargetCdrom {
                 result.extend_from_slice(&self.msf_to_address_field(
                     Msf::from_sector(sessions.last().unwrap().leadout)?,
                     msf,
-                    true,
                 ));
 
                 // Set data length field
@@ -393,7 +366,6 @@ impl ScsiTargetCdrom {
                 result.extend_from_slice(&self.msf_to_address_field(
                     Msf::from_sector(first_track_of_last_session.sector)?,
                     msf,
-                    true,
                 )); // Absolute CD-ROM Address of the First Track in the Last Session
 
                 let data_length = result.len() - 2;
@@ -441,11 +413,11 @@ impl ScsiTargetCdrom {
                             result.push(0); // TNO (0 for the lead-in area)
                             result.push(0xB0); // POINT (Start time of next possible program)
                             result.extend_from_slice(
-                                &Msf::from_sector(next_session.leadin)?.to_bcd_bytes(),
+                                &Msf::from_sector(next_session.leadin)?.to_bytes(),
                             ); // Start time of next possible program
                             result.push(2); // # of pointers in Mode 5
                             result.extend_from_slice(
-                                &Msf::from_sector(sessions.last().unwrap().leadout)?.to_bcd_bytes(),
+                                &Msf::from_sector(sessions.last().unwrap().leadout)?.to_bytes(),
                             ); // Maximum start time of outer-most Lead-out area
 
                             // Start time of the first Lead-in Area of the disc
@@ -459,7 +431,7 @@ impl ScsiTargetCdrom {
                             result.push(0); // Zero
                             // FIXME: Weird Al actually puts 95:00:00 here? where does that come from?
                             result.extend_from_slice(
-                                &Msf::from_sector(sessions.first().unwrap().leadin)?.to_bcd_bytes(),
+                                &Msf::from_sector(sessions.first().unwrap().leadin)?.to_bytes(),
                             ); // Start time of the first Lead-in Area of the disc)
                         }
 
@@ -507,7 +479,7 @@ impl ScsiTargetCdrom {
                         result.push(0);
                         result.push(0); // Zero
                         let leadout = Msf::from_sector(get_session(session_no).unwrap().leadout)?;
-                        result.extend_from_slice(&leadout.to_bcd_bytes()); // Start position of Lead-out
+                        result.extend_from_slice(&leadout.to_bytes()); // Start position of Lead-out
                     }
 
                     result.push(track.session); // Session Number
@@ -518,7 +490,7 @@ impl ScsiTargetCdrom {
                     result.push(0);
                     result.push(0);
                     result.push(0); // Zero
-                    result.extend_from_slice(&Msf::from_sector(track.sector)?.to_bcd_bytes()); // Start position of track
+                    result.extend_from_slice(&Msf::from_sector(track.sector)?.to_bytes()); // Start position of track
                 }
 
                 let data_length = result.len() - 2;
@@ -988,22 +960,19 @@ impl ScsiTarget for ScsiTargetCdrom {
                         result.push((1 << 4) | track.control); // ADR/Control
                         result.push(track.tno); // Track Number
                         result.push(1); // Index Number (TODO: Find correct index number)
-                        // XXX: looks like Apple CD Audio Player expects this field to NOT be in BCD...
-                        result.extend_from_slice(&self.msf_to_address_field(
-                            Msf::from_sector(self.audio_pos)?,
-                            msf != 0,
-                            false,
-                        ));
+                        result.extend_from_slice(
+                            &self.msf_to_address_field(Msf::from_sector(self.audio_pos)?, msf != 0),
+                        );
                         // Track relative position can be negative if the audio position is in a track pregap.
                         let track_relative = self.audio_pos as i32 - track.sector as i32;
                         if let Ok(track_relative) = TryInto::<u32>::try_into(track_relative) {
                             // Track relative position is positive.
-                            // XXX: looks like Apple CD Audio Player expects this field to NOT be in BCD...
-                            result.extend_from_slice(&self.msf_to_address_field(
-                                Msf::from_sector(track_relative)?,
-                                msf != 0,
-                                false,
-                            ));
+                            result.extend_from_slice(
+                                &self.msf_to_address_field(
+                                    Msf::from_sector(track_relative)?,
+                                    msf != 0,
+                                ),
+                            );
                         } else if msf != 0 {
                             // Track relative position is negative (MSF).
                             // [MMC4] 6.29.3.3:
@@ -1060,8 +1029,10 @@ impl ScsiTarget for ScsiTargetCdrom {
             }
             // PLAY AUDIO MSF
             0x47 => {
-                let start_msf_bytes: [u8; 3] = cmd[3..=5].try_into().unwrap();
-                let end_msf = Msf::from_bcd_bytes(cmd[6..=8].try_into().unwrap());
+                let start_msf = Msf::from_bytes(cmd[3..=5].try_into().unwrap());
+                let end_msf = Msf::from_bytes(cmd[6..=8].try_into().unwrap());
+
+                log::debug!("PLAY AUDIO MSF start {} end {}", start_msf, end_msf);
 
                 let Some(backend) = &self.backend else {
                     self.common
@@ -1075,14 +1046,20 @@ impl ScsiTarget for ScsiTargetCdrom {
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
 
+                // [PIONEER]: 2.13:
+                // If the starting address is not found, or if the address is not within an audio track, or if a not ready
+                // condition exists, the drive will terminate with a Check Condition status.
+                let session = &sessions[0];
+                // TODO: support multisession discs
+
                 // [MMC4] 6.17.2.3:
                 // If the Starting Minutes, Seconds, and Frame Fields are set to FFh, the Starting address is taken from
                 // the Current Optical Head location. This allows the Audio Ending address to be changed without
                 // interrupting the current playback operation.
-                let start_sector = if start_msf_bytes == [0xff, 0xff, 0xff] {
+                let start_sector = if start_msf == Msf::new(255, 255, 255) {
                     self.audio_pos
                 } else {
-                    Msf::from_bcd_bytes(start_msf_bytes).to_sector()
+                    start_msf.to_sector()
                 };
 
                 let end_sector = end_msf.to_sector();
@@ -1096,13 +1073,12 @@ impl ScsiTarget for ScsiTargetCdrom {
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
-                let final_leadout = sessions.last().unwrap().leadout;
-                if start_sector >= final_leadout {
+                if start_sector >= session.leadout {
                     // [MMC4] 6.17.2.3:
                     // If the starting address is not found the command shall be terminated with CHECK CONDITION status
                     // and SK/ASC/ASCQ values shall be set to ILLEGAL REQUEST/LOGICAL BLOCK ADDRESS OUT
                     // OF RANGE.
-                    log::error!("Tried to play audio from invalid sector {}", start_sector);
+                    log::error!("Tried to play audio from invalid location {}", start_msf);
                     self.common.set_cc(
                         CC_KEY_ILLEGAL_REQUEST,
                         ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
@@ -1119,10 +1095,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                     // If the address is not within an audio track the command shall be terminated with
                     // CHECK CONDITION status and SK/ASC/ASCQ values shall be set to ILLEGAL REQUEST/ILLEGAL
                     // MODE FOR THIS TRACK or ILLEGAL REQUEST/INCOMPATIBLE MEDIUM INSTALLED.
-                    log::error!(
-                        "Tried to play audio from non-audio track at sector {}",
-                        start_sector
-                    );
+                    log::error!("Tried to play audio from non-audio track at {}", start_msf);
                     self.common
                         .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_ILLEGAL_MODE_FOR_THIS_TRACK);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
