@@ -1340,6 +1340,20 @@ impl SnowGui {
                                     self.cdrom_files_dialog
                                         .pick_multiple(self.settings.native_file_dialogs);
                                 }
+                                if let Some(physical_drives) = snow_core::mac::scsi::cdrom::backends::query_physical_cdrom_drives() {
+                                    ui.menu_button("Mount physical CD-ROM drive", |ui| {
+                                        ui.set_min_width(Self::SUBMENU_WIDTH);
+                                        for drive in &physical_drives {
+                                            if ui.button(&drive.friendly_name).clicked() {
+                                                log::info!("Mounting drive at path {}", drive.path.to_str().unwrap());
+                                                self.emu.scsi_load_cdrom(id, &drive.path);
+                                            }
+                                        }
+                                        if physical_drives.is_empty() {
+                                            ui.weak("No physical CD-ROM drives available");
+                                        }
+                                    });
+                                }
                                 if show_detach {
                                     ui.separator();
                                     if ui.button("Detach CD-ROM drive").clicked() {

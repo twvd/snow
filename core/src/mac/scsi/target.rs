@@ -195,6 +195,10 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
 
                 if blocknum + blockcnt > blocks {
                     log::error!("Reading beyond disk");
+                    self.common().set_cc(
+                        CC_KEY_ILLEGAL_REQUEST,
+                        ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
+                    );
                     Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                 } else {
                     self.read(blocknum, blockcnt)
@@ -211,6 +215,10 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                 if let Some(data) = outdata {
                     if blocknum + blockcnt > blocks {
                         log::error!("Writing beyond disk");
+                        self.common().set_cc(
+                            CC_KEY_ILLEGAL_REQUEST,
+                            ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
+                        );
                         Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                     } else {
                         self.write(blocknum, data);
@@ -419,6 +427,10 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
 
                 if blocknum + blockcnt > blocks {
                     log::error!("Reading beyond disk");
+                    self.common().set_cc(
+                        CC_KEY_ILLEGAL_REQUEST,
+                        ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
+                    );
                     Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                 } else {
                     self.read(blocknum, blockcnt)

@@ -1,6 +1,6 @@
 //! SCSI CD-ROM drive (block device)
 
-mod backends;
+pub mod backends;
 
 use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,9 @@ use crate::emulator::comm::EmulatorSpeed;
 use crate::mac::macii::bus::CLOCK_SPEED;
 use crate::mac::scsi::cdrom::backends::cuesheet::CuesheetCdromBackend;
 use crate::mac::scsi::cdrom::backends::iso::IsoCdromBackend;
+use crate::mac::scsi::cdrom::backends::{
+    is_physical_cdrom_drive_path, new_physical_cdrom_drive_backend,
+};
 use crate::mac::scsi::target::ScsiTargetCommon;
 use crate::mac::scsi::{
     ASC_ILLEGAL_MODE_FOR_THIS_TRACK, ASC_INVALID_COMMAND, ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
@@ -111,7 +114,7 @@ impl std::fmt::Display for Msf {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct TrackInfo {
     /// The track number. Note that tracks don't necessarily start at number 1.
     tno: u8,
@@ -336,7 +339,7 @@ impl ScsiTargetCdrom {
                     // Absolute CD-ROM Address
                 }
 
-                // Emit leadout track descriptor
+                // Emit leadout descriptor
                 result.push(0); // Reserved
                 result.push((1 << 4) | tracks.last().unwrap().control); // ADR/Control
                 result.push(TRACK_LEADOUT); // Track Number
@@ -645,6 +648,13 @@ impl ScsiTargetCdrom {
         Ok(())
     }
 
+    fn load_physical_drive(&mut self, path: &Path) -> Result<()> {
+        self.backend = Some(new_physical_cdrom_drive_backend(path)?);
+        self.common.set_cc(0, 0);
+        self.event_eject.get_clear();
+        Ok(())
+    }
+
     fn get_track_at_sector(&self, sector: u32) -> Option<&TrackInfo> {
         let tracks = self.backend.as_ref()?.tracks()?;
         get_track_at_sector(tracks, sector)
@@ -663,7 +673,9 @@ impl ScsiTarget for ScsiTargetCdrom {
     /// the emulator for fast access and automatic writes back to disk,
     /// at the discretion of the operating system.
     fn load_media(&mut self, path: &Path) -> Result<()> {
-        if path
+        if is_physical_cdrom_drive_path(path) {
+            self.load_physical_drive(path)
+        } else if path
             .extension()
             .map(|ext| ext.eq_ignore_ascii_case("cue"))
             .unwrap_or(false)
@@ -860,6 +872,12 @@ impl ScsiTarget for ScsiTargetCdrom {
                 Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
             }
             Err(CdromError::Other(e)) => {
+                log::error!(
+                    "Error reading CD-ROM block at 0x{:X}, length 0x{:X}: {}",
+                    start_offset,
+                    image_end_offset - start_offset,
+                    e
+                );
                 self.common
                     .set_cc(CC_KEY_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR);
                 Err(e)

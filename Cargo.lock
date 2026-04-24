@@ -4948,6 +4948,7 @@ dependencies = [
  "tun",
  "typetag",
  "unicode-normalization",
+ "windows 0.62.2",
  "zstd",
 ]
 
