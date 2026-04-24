@@ -814,7 +814,7 @@ impl ScsiTarget for ScsiTargetCdrom {
         Some(self.backend.as_ref()?.byte_len().div_ceil(self.blocksize))
     }
 
-    fn read(&mut self, block_offset: usize, block_count: usize) -> Result<Vec<u8>> {
+    fn read(&mut self, block_offset: usize, block_count: usize) -> Result<ScsiCmdResult> {
         // If blocks() returns None this will never be called by
         // ScsiTarget::cmd
         let blocksize = self.blocksize;
@@ -828,15 +828,11 @@ impl ScsiTarget for ScsiTargetCdrom {
                 // CD-ROM images may not be exactly aligned on block size
                 // Pad the end to a full block size
                 result.resize(block_count * blocksize, 0);
-                Ok(result)
+                Ok(ScsiCmdResult::DataIn(result))
             }
             Err(CdromError::CheckCondition(cc, asc)) => {
                 self.common.set_cc(cc, asc);
-                Err(anyhow!(
-                    "CD-ROM read error with cc {:02X}h, ASC {:04X}h",
-                    cc,
-                    asc
-                ))
+                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
             }
             Err(CdromError::Other(e)) => {
                 self.common
@@ -1198,7 +1194,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                 Ok(ScsiCmdResult::Status(STATUS_GOOD))
             }
             _ => {
-                log::error!("Unknown command {:02X}", cmd[0]);
+                log::error!("Unknown command {:02X}h", cmd[0]);
                 self.common
                     .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_COMMAND);
                 Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))

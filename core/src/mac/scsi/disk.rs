@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::debuggable::Debuggable;
+use crate::mac::scsi::ASC_INVALID_COMMAND;
+use crate::mac::scsi::CC_KEY_ILLEGAL_REQUEST;
 use crate::mac::scsi::STATUS_CHECK_CONDITION;
 use crate::mac::scsi::STATUS_GOOD;
 use crate::mac::scsi::ScsiCmdResult;
@@ -207,10 +209,12 @@ impl ScsiTarget for ScsiTargetDisk {
         Some(self.backend().byte_len() / DISK_BLOCKSIZE)
     }
 
-    fn read(&mut self, block_offset: usize, block_count: usize) -> Result<Vec<u8>> {
+    fn read(&mut self, block_offset: usize, block_count: usize) -> Result<ScsiCmdResult> {
         let offset = block_offset * DISK_BLOCKSIZE;
         let length = block_count * DISK_BLOCKSIZE;
-        Ok(self.backend().read_bytes(offset, length))
+        Ok(ScsiCmdResult::DataIn(
+            self.backend().read_bytes(offset, length),
+        ))
     }
 
     fn write(&mut self, block_offset: usize, data: &[u8]) {
@@ -223,7 +227,9 @@ impl ScsiTarget for ScsiTargetDisk {
     }
 
     fn specific_cmd(&mut self, cmd: &[u8], _outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
-        log::error!("Unknown command {:02X}", cmd[0]);
+        log::error!("Unknown command {:02X}h", cmd[0]);
+        self.common
+            .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_COMMAND);
         Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
     }
 
