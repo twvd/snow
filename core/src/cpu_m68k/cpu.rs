@@ -72,6 +72,15 @@ pub(in crate::cpu_m68k) struct Group0Details {
     pub(in crate::cpu_m68k) size: usize,
 }
 
+/// Reason a PMMU translation failed
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::cpu_m68k) enum PagefaultCause {
+    /// Descriptor DT was Invalid along the walk
+    Invalid,
+    /// Write access to a page whose descriptor (or any ancestor table) has WP set
+    WriteProtected,
+}
+
 /// CPU error type to cascade exceptions down
 #[derive(Error, Debug)]
 pub(in crate::cpu_m68k) enum CpuError {
@@ -83,7 +92,7 @@ pub(in crate::cpu_m68k) enum CpuError {
     BusError(Group0Details),
     /// Handle page fault (PMMU)
     #[error("Page fault")]
-    Pagefault,
+    Pagefault(PagefaultCause),
 }
 
 /// M68000 exception groups
@@ -317,7 +326,8 @@ pub struct CpuM68k<
     /// index is the page, allowing for O(1) lookup. The cache is expanded on
     /// the fly (never shrunk).
     #[serde(skip)]
-    pub(in crate::cpu_m68k) pmmu_atc: [Vec<Option<Address>>; 2],
+    pub(in crate::cpu_m68k) pmmu_atc:
+        [Vec<Option<crate::cpu_m68k::pmmu::translate::PmmuAtcEntry>>; 2],
 
     /// 68020+ I-cache lines
     #[serde(with = "BigArray")]
