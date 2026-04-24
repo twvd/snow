@@ -15,6 +15,19 @@ pub(in crate::cpu_m68k) const PMMU_ATC_URP: usize = 0;
 /// Index in CpuM68k::pmmu_atc tables when SRP is in use
 pub(in crate::cpu_m68k) const PMMU_ATC_SRP: usize = 1;
 
+/// Result of a successful page-table walk.
+#[derive(Debug, Clone, Copy)]
+struct PmmuWalkResult {
+    /// Physical page base address shifted to include the in-page offset bits.
+    page_addr: Address,
+    /// Write-protected (inherited down the walk or set on the leaf).
+    wp: bool,
+    /// Physical address of the leaf page descriptor.
+    leaf_desc_addr: Address,
+    /// Value of the M (modified) bit in the leaf descriptor.
+    modified: bool,
+}
+
 /// A resolved Address Translation Cache entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::cpu_m68k) struct PmmuAtcEntry {
@@ -23,6 +36,13 @@ pub(in crate::cpu_m68k) struct PmmuAtcEntry {
     /// Write-protect bit inherited from any table descriptor on the walk
     /// or from the leaf page descriptor.
     pub wp: bool,
+    /// Physical address of the leaf page descriptor (long-word aligned).
+    /// Needed so writes can set the descriptor's M (modified) bit without
+    /// replaying the full table walk.
+    pub leaf_desc_addr: Address,
+    /// Whether the M bit of the leaf descriptor is already set. When false,
+    /// the next write through this entry must RMW the descriptor to set M.
+    pub modified: bool,
 }
 
 bitfield! {
@@ -164,7 +184,7 @@ where
         tis: &mut ArrayVec<u8, 4>,
         used_bits: &mut Address,
         wp: bool,
-    ) -> Result<(Address, bool)> {
+    ) -> Result<PmmuWalkResult> {
         match dt {
             PmmuPageDescriptorType::Valid4b => {
                 self.pmmu_fetch_table_short(vaddr, table_addr, tis, used_bits, wp)
@@ -183,7 +203,7 @@ where
         tis: &mut ArrayVec<u8, 4>,
         used_bits: &mut Address,
         wp: bool,
-    ) -> Result<(Address, bool)> {
+    ) -> Result<PmmuWalkResult> {
         let Some(ti) = tis.pop() else {
             bail!("PMMU table search beyond maximum depth");
         };
@@ -203,7 +223,12 @@ where
             }
             PmmuPageDescriptorType::PageDescriptor => {
                 let entry = PmmuShortPageDescriptor(entry_word);
-                Ok((entry.page_addr() << 8, wp | entry.wp()))
+                Ok(PmmuWalkResult {
+                    page_addr: entry.page_addr() << 8,
+                    wp: wp | entry.wp(),
+                    leaf_desc_addr: entry_addr,
+                    modified: entry.m(),
+                })
             }
             PmmuPageDescriptorType::Valid4b | PmmuPageDescriptorType::Valid8b => {
                 // Recurse to child
@@ -228,7 +253,7 @@ where
         tis: &mut ArrayVec<u8, 4>,
         used_bits: &mut Address,
         wp: bool,
-    ) -> Result<(Address, bool)> {
+    ) -> Result<PmmuWalkResult> {
         let Some(ti) = tis.pop() else {
             bail!("PMMU table search beyond maximum depth");
         };
@@ -252,7 +277,12 @@ where
                 let entry = PmmuLongPageDescriptor(0)
                     .with_msl(entry_word1)
                     .with_lsl(entry_word2);
-                Ok((entry.page_addr() << 8, wp | entry.wp()))
+                Ok(PmmuWalkResult {
+                    page_addr: entry.page_addr() << 8,
+                    wp: wp | entry.wp(),
+                    leaf_desc_addr: entry_addr,
+                    modified: entry.m(),
+                })
             }
             PmmuPageDescriptorType::Valid4b | PmmuPageDescriptorType::Valid8b => {
                 // Recurse to child
@@ -302,14 +332,27 @@ where
                 self.pmmu_record_pagefault(vaddr, writing);
                 return Err(Self::pmmu_pagefault_to_buserror(fc, vaddr, writing));
             }
+            if writing && !entry.modified {
+                // First write through an unmodified page: RMW the leaf
+                // descriptor to set the M bit, then promote the ATC entry.
+                let desc = self.read_ticks_physical::<Long>(entry.leaf_desc_addr)?;
+                self.write_ticks_physical::<Long>(entry.leaf_desc_addr, desc | (1 << 4))?;
+                self.pmmu_atc[atc][cache_key] = Some(PmmuAtcEntry {
+                    modified: true,
+                    ..entry
+                });
+            }
             return Ok(entry.paddr | (vaddr & page_mask));
         }
 
-        let (paddr, wp) = self.pmmu_translate_lookup::<false>(fc, vaddr, writing)?;
+        let (paddr, wp, leaf_desc_addr, modified) =
+            self.pmmu_translate_lookup::<false>(fc, vaddr, writing)?;
         let cache_key = ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize;
         self.pmmu_atc[atc][cache_key] = Some(PmmuAtcEntry {
             paddr: paddr & !page_mask,
             wp,
+            leaf_desc_addr,
+            modified,
         });
         Ok(paddr)
     }
@@ -338,7 +381,7 @@ where
     }
 
     /// Perform address translation by performing a page table lookup.
-    /// Returns (physical address, wp), or error:
+    /// Returns (physical address, wp, leaf descriptor address, M-bit), or error:
     ///  - bus error stack frame for translation,
     ///  - simple error on PTEST.
     pub(in crate::cpu_m68k) fn pmmu_translate_lookup<const PTEST: bool>(
@@ -346,7 +389,7 @@ where
         fc: u8,
         vaddr: Address,
         writing: bool,
-    ) -> Result<(Address, bool)> {
+    ) -> Result<(Address, bool, Address, bool)> {
         let rootptr = self.pmmu_rootptr(fc);
 
         if PTEST {
@@ -394,7 +437,12 @@ where
                 _ => e,
             });
 
-        let (page_addr, wp) = walk?;
+        let PmmuWalkResult {
+            page_addr,
+            wp,
+            leaf_desc_addr,
+            mut modified,
+        } = walk?;
 
         // Enforce write-protect on the resolved page
         if writing && wp {
@@ -408,12 +456,20 @@ where
             }
         }
 
+        // Set M on the leaf descriptor on first write. PTEST never mutates the
+        // tables; only real translations do.
+        if !PTEST && writing && !modified {
+            let desc = self.read_ticks_physical::<Long>(leaf_desc_addr)?;
+            self.write_ticks_physical::<Long>(leaf_desc_addr, desc | (1 << 4))?;
+            modified = true;
+        }
+
         let mask = 0xFFFFFFFFu32.unbounded_shr(used_bits);
         let paddr = (page_addr & !mask) | (vaddr & mask);
 
         if PTEST {
             self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
         }
-        Ok((paddr, wp))
+        Ok((paddr, wp, leaf_desc_addr, modified))
     }
 }
