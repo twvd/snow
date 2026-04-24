@@ -21,7 +21,7 @@ use crate::mac::scsi::{
     CC_KEY_MEDIUM_ERROR,
     cdrom::{
         AUDIO_FRAMES_PER_SEC, AUDIO_FRAMES_PER_SECTOR, AUDIO_TRACK, CdromBackend, CdromError,
-        DATA_TRACK, LBA_START_SECTOR, Msf, RAW_SECTOR_LEN, RawSector, SessionInfo, TrackInfo,
+        DATA_TRACK, LBA_START_SECTOR, Msf, QSub, RAW_SECTOR_LEN, RawSector, SessionInfo, TrackInfo,
         get_track_at_sector,
     },
 };
@@ -795,9 +795,91 @@ impl CuesheetCdromBackend {
             .get(idx)
             .filter(|e| (e.sector..e.sector + e.sector_count).contains(&sector))
     }
+
+    fn read_raw_sector(&self, sector: u32) -> Result<RawSector, CdromError> {
+        let map_entry = self
+            .find_map_entry_for_sector(sector)
+            .ok_or_else(|| anyhow!("Sector {} not found in sector map", sector))?;
+
+        let rel_sector = sector - map_entry.sector;
+
+        let track = get_track_at_sector(&self.tracks, sector)
+            .ok_or_else(|| anyhow!("No track found at sector {}", sector))?;
+        if sector >= self.sessions[track.session as usize - 1].leadout {
+            return Err(anyhow!("Sector {} was past the lead-out", sector).into());
+        }
+
+        let data = match map_entry.source {
+            SectorSource::Zeros => [0; RAW_SECTOR_LEN],
+            SectorSource::BinaryFile {
+                file_idx,
+                file_offset,
+                format,
+            } => {
+                // It turns out you don't need a &mut File to seek and read!
+                // Just call seek and read on a `&File`. This will clobber the file cursor,
+                // so use with caution.
+                let mut file: &File = &self.binary_files[file_idx];
+                file.seek(SeekFrom::Start(
+                    file_offset + rel_sector as u64 * format.bytes_per_sector(),
+                ))
+                .map_err(|e| anyhow!(e))?;
+
+                match format {
+                    BinarySourceFormat::Raw2352 => {
+                        let mut result = [0u8; RAW_SECTOR_LEN];
+                        file.read_exact(&mut result).map_err(|e| anyhow!(e))?;
+                        result
+                    }
+                    BinarySourceFormat::Mode1_2048 => {
+                        // Reconstruct Mode 1 sector from 2048-byte user data.
+                        // Only the most important fields are filled.
+                        let mut result = [0u8; RAW_SECTOR_LEN];
+                        // Sync
+                        result[0..12]
+                            .copy_from_slice(b"\x00\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\x00");
+                        // Mode
+                        result[15] = 1;
+                        // User data
+                        file.read_exact(&mut result[16..][..2048])
+                            .map_err(|e| anyhow!(e))?;
+                        // TODO: fill out more fields?
+                        result
+                    }
+                }
+            }
+            SectorSource::AudioFile {
+                file_idx,
+                timestamp_in_sectors,
+            } => {
+                let mut file = self.audio_files[file_idx].borrow_mut();
+
+                let ts = (timestamp_in_sectors as u64 + rel_sector as u64)
+                    * AUDIO_FRAMES_PER_SECTOR as u64;
+                let samples = file.read_frames(ts, AUDIO_FRAMES_PER_SECTOR)?;
+
+                let mut result = [0u8; RAW_SECTOR_LEN];
+                for (s, out) in samples.into_iter().zip(result.as_chunks_mut::<2>().0) {
+                    out.copy_from_slice(&s.to_le_bytes());
+                }
+
+                result
+            }
+        };
+
+        Ok(RawSector {
+            data,
+            // TODO: use correct INDEX (should be 0 during pre-gap)
+            qsub: QSub::new_mode1(track.control, track.tno, 1, sector, track.sector),
+        })
+    }
 }
 
 impl CdromBackend for CuesheetCdromBackend {
+    fn check_media(&mut self) -> Result<(), CdromError> {
+        Ok(())
+    }
+
     fn byte_len(&self) -> usize {
         // To find the capacity, treat each sector (except the lead-in) as a block
         // containing 2048 bytes.
@@ -821,7 +903,7 @@ impl CdromBackend for CuesheetCdromBackend {
         while result.len() < length {
             let raw_sector = self.read_raw_sector(sector)?;
 
-            if raw_sector.control != DATA_TRACK {
+            if !raw_sector.qsub.is_data() {
                 log::warn!("Tried to read bytes from non-data sector {}", sector);
                 return Err(CdromError::CheckCondition(
                     CC_KEY_ILLEGAL_REQUEST,
@@ -908,78 +990,7 @@ impl CdromBackend for CuesheetCdromBackend {
         Some(&self.tracks)
     }
 
-    fn read_raw_sector(&self, sector: u32) -> Result<RawSector> {
-        let map_entry = self
-            .find_map_entry_for_sector(sector)
-            .ok_or_else(|| anyhow!("Sector {} not found in sector map", sector))?;
-
-        let rel_sector = sector - map_entry.sector;
-
-        let track = get_track_at_sector(&self.tracks, sector)
-            .ok_or_else(|| anyhow!("No track found at sector {}", sector))?;
-        if sector >= self.sessions[track.session as usize - 1].leadout {
-            bail!("Sector {} was past the lead-out", sector);
-        }
-
-        let data = match map_entry.source {
-            SectorSource::Zeros => [0; RAW_SECTOR_LEN],
-            SectorSource::BinaryFile {
-                file_idx,
-                file_offset,
-                format,
-            } => {
-                // It turns out you don't need a &mut File to seek and read!
-                // Just call seek and read on a `&File`. This will clobber the file cursor,
-                // so use with caution.
-                let mut file: &File = &self.binary_files[file_idx];
-                file.seek(SeekFrom::Start(
-                    file_offset + rel_sector as u64 * format.bytes_per_sector(),
-                ))?;
-
-                match format {
-                    BinarySourceFormat::Raw2352 => {
-                        let mut result = [0u8; RAW_SECTOR_LEN];
-                        file.read_exact(&mut result)?;
-                        result
-                    }
-                    BinarySourceFormat::Mode1_2048 => {
-                        // Reconstruct Mode 1 sector from 2048-byte user data.
-                        // Only the most important fields are filled.
-                        let mut result = [0u8; RAW_SECTOR_LEN];
-                        // Sync
-                        result[0..12]
-                            .copy_from_slice(b"\x00\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\x00");
-                        // Mode
-                        result[15] = 1;
-                        // User data
-                        file.read_exact(&mut result[16..][..2048])?;
-                        // TODO: fill out more fields?
-                        result
-                    }
-                }
-            }
-            SectorSource::AudioFile {
-                file_idx,
-                timestamp_in_sectors,
-            } => {
-                let mut file = self.audio_files[file_idx].borrow_mut();
-
-                let ts = (timestamp_in_sectors as u64 + rel_sector as u64)
-                    * AUDIO_FRAMES_PER_SECTOR as u64;
-                let samples = file.read_frames(ts, AUDIO_FRAMES_PER_SECTOR)?;
-
-                let mut result = [0u8; RAW_SECTOR_LEN];
-                for (s, out) in samples.into_iter().zip(result.as_chunks_mut::<2>().0) {
-                    out.copy_from_slice(&s.to_le_bytes());
-                }
-
-                result
-            }
-        };
-
-        Ok(RawSector {
-            data,
-            control: track.control,
-        })
+    fn read_cdda_sector(&self, sector: u32) -> Result<RawSector, CdromError> {
+        self.read_raw_sector(sector)
     }
 }

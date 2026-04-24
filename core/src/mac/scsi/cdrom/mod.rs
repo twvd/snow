@@ -1,37 +1,37 @@
 //! SCSI CD-ROM drive (block device)
 
-mod backends;
+pub mod backends;
 
 use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use crate::debuggable::Debuggable;
-use crate::emulator::EmuContext;
-use crate::emulator::comm::EmulatorSpeed;
-use crate::mac::macii::bus::CLOCK_SPEED;
-use crate::mac::scsi::cdrom::backends::cuesheet::CuesheetCdromBackend;
-use crate::mac::scsi::cdrom::backends::iso::IsoCdromBackend;
-use crate::mac::scsi::target::ScsiTargetCommon;
-use crate::mac::scsi::{
-    ASC_ILLEGAL_MODE_FOR_THIS_TRACK, ASC_INVALID_COMMAND, ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
-    ASC_UNRECOVERED_READ_ERROR, CC_KEY_NOT_READY,
+use crate::{
+    debuggable::Debuggable,
+    emulator::{EmuContext, comm::EmulatorSpeed},
+    mac::{
+        macii::bus::CLOCK_SPEED,
+        scsi::{
+            ASC_ILLEGAL_MODE_FOR_THIS_TRACK, ASC_INVALID_COMMAND,
+            ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE, ASC_UNRECOVERED_READ_ERROR, CC_KEY_NOT_READY,
+            cdrom::backends::{
+                cuesheet::CuesheetCdromBackend, is_physical_cdrom_drive_path, iso::IsoCdromBackend,
+                new_physical_cdrom_drive_backend,
+            },
+            target::ScsiTargetCommon,
+        },
+    },
+    renderer::{AUDIO_BUFFER_SAMPLES, AudioProvider, AudioSink},
+    tickable::Ticks,
+    types::LatchingEvent,
 };
-use crate::renderer::{AUDIO_BUFFER_SAMPLES, AudioProvider, AudioSink};
-use crate::tickable::Ticks;
-use crate::types::LatchingEvent;
 
-use super::ASC_INVALID_FIELD_IN_CDB;
-use super::ASC_MEDIUM_NOT_PRESENT;
-use super::CC_KEY_ILLEGAL_REQUEST;
-use super::CC_KEY_MEDIUM_ERROR;
-use super::STATUS_CHECK_CONDITION;
-use super::STATUS_GOOD;
-use super::ScsiCmdResult;
-use super::disk_image::{DiskImage, FileDiskImage};
-use super::target::ScsiTarget;
-use super::target::ScsiTargetEvent;
-use super::target::ScsiTargetType;
+use super::{
+    ASC_INVALID_FIELD_IN_CDB, ASC_MEDIUM_NOT_PRESENT, CC_KEY_ILLEGAL_REQUEST, CC_KEY_MEDIUM_ERROR,
+    STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult,
+    disk_image::{DiskImage, FileDiskImage},
+    target::{ScsiTarget, ScsiTargetEvent, ScsiTargetType},
+};
 
 // CD-ROM protocol Documentation:
 //
@@ -73,6 +73,10 @@ const AUDIO_FRAMES_PER_SECTOR: usize =
 
 fn bin_to_bcd(bin: u8) -> u8 {
     ((bin / 10) << 4) | (bin % 10)
+}
+
+fn bcd_to_bin(bcd: u8) -> u8 {
+    (bcd >> 4) * 10 + (bcd & 0xf)
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -119,7 +123,7 @@ impl std::fmt::Display for Msf {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct TrackInfo {
     /// The track number. Note that tracks don't necessarily start at number 1.
     tno: u8,
@@ -146,6 +150,9 @@ pub struct SessionInfo {
 pub enum CdromError {
     /// SCSI read error with CC, ASC/ASCQ
     CheckCondition(u8, u16),
+    /// The backend is dead (e.g. an external CD-ROM drive was unplugged) and is
+    /// no longer usable.
+    BackendDead,
     /// Any other type of error
     Other(anyhow::Error),
 }
@@ -156,17 +163,127 @@ impl From<anyhow::Error> for CdromError {
     }
 }
 
+/// 12 bytes of Q subchannel data.
+///
+/// The first byte always contains Control/ADR. If ADR is 1, the remainder of QSub
+/// contains Track and Index, relative time and absolute time. Note that times are
+/// in BCD format.
+///
+/// See [MMC4] Table 354: Formatted Q-Subchannel Data
+/// and [MMC4] 4.2.4.5.1: Types of Q.
+#[derive(Serialize, Deserialize)]
+pub struct QSub([u8; 12]);
+
+impl QSub {
+    /// Create a Mode-1 Q field with the given information
+    fn new_mode1(control: u8, tno: u8, index: u8, abs_sector: u32, track_start: u32) -> Self {
+        let mut result = [0; 12];
+
+        result[0] = (control << 4) | 1; // Control/ADR; this is reversed from other ADR/Control fields in the standard
+        result[1] = bin_to_bcd(tno);
+        result[2] = bin_to_bcd(index);
+
+        // [MMC4] 4.2.4.5.2:
+        // Is the relative time within the track encoded as 6 BCD digits. This is
+        // 00:00:00 at track start and advances through the track. During the
+        // pre-gap the time decreases.
+        // (in other words, if abs_sector is before track_start, the relative time counts down)
+        let rel_time = abs_sector as i64 - track_start as i64;
+        let rel_time_msf = if rel_time < 0 {
+            Msf::from_sector(u32::try_from(-rel_time).unwrap()).unwrap()
+        } else {
+            Msf::from_sector(u32::try_from(rel_time).unwrap()).unwrap()
+        };
+        result[3..=5].copy_from_slice(&rel_time_msf.to_bcd_bytes()); // MIN, SEC, FRAME
+
+        // result[6] is ZERO
+
+        result[7..=9].copy_from_slice(&Msf::from_sector(abs_sector).unwrap().to_bcd_bytes()); // AMIN, ASEC, AFRAME
+
+        // result[10..=11] is an optional CRC; we leave it out
+
+        Self(result)
+    }
+
+    /// Get ADR field
+    fn adr(&self) -> u8 {
+        self.0[0] & 0xf
+    }
+
+    /// Get CONTROL field (indicates audio/data; see [MMC4] Table 12: Q Sub-channel record format)
+    fn control(&self) -> u8 {
+        self.0[0] >> 4
+    }
+
+    fn is_audio(&self) -> bool {
+        self.control() & 0b0100 == 0
+    }
+
+    fn is_data(&self) -> bool {
+        !self.is_audio()
+    }
+
+    fn track(&self) -> u8 {
+        assert_eq!(self.adr(), 1);
+        bcd_to_bin(self.0[1])
+    }
+
+    fn index(&self) -> u8 {
+        assert_eq!(self.adr(), 1);
+        bcd_to_bin(self.0[2])
+    }
+
+    fn rel_time_in_sectors(&self) -> i32 {
+        assert_eq!(self.adr(), 1);
+        let rel_time_bytes: [u8; 3] = self.0[3..=5].try_into().unwrap();
+        let rel_time_sectors = Msf::from_bytes(rel_time_bytes.map(bcd_to_bin)).to_sector();
+        if self.index() == 0 {
+            // Rel time is negative and counts down to 0
+            -i32::try_from(rel_time_sectors).unwrap()
+        } else {
+            // Rel time is positive
+            i32::try_from(rel_time_sectors).unwrap()
+        }
+    }
+
+    fn abs_sector(&self) -> u32 {
+        assert_eq!(self.adr(), 1);
+        let abs_time_bytes: [u8; 3] = self.0[7..=9].try_into().unwrap();
+        Msf::from_bytes(abs_time_bytes.map(bcd_to_bin)).to_sector()
+    }
+}
+
+impl Default for QSub {
+    fn default() -> Self {
+        Self::new_mode1(0, 1, 1, LBA_START_SECTOR, LBA_START_SECTOR)
+    }
+}
+
 pub struct RawSector {
+    /// 2352 bytes of data (equivalent to 1/75th seconds of audio)
     data: [u8; RAW_SECTOR_LEN],
-    /// CONTROL field of sub-channel data. Indicates audio or data track.
-    control: u8,
-    // TODO: add fields for other sub-channel data (position, track/index number, etc.)
+    /// Q subchannel data. Contains various metadata about the sector.
+    qsub: QSub,
 }
 
 pub trait CdromBackend: Send {
+    /// Check whether a disc is still in the drive and reload TOC's if necessary. Returns
+    /// Ok(()) if the drive is plugged in and a disc is mounted, or a CdromError if an error
+    /// occurred.
+    fn check_media(&mut self) -> Result<(), CdromError>;
+
+    /// Get the byte capacity of the CD, where each sector starting at #150 contains 2048
+    /// bytes of user data.
+    ///
+    /// Every sector up to the lead-out is counted toward the capacity; however, only Data
+    /// sectors in Mode 1 or Mode 2 Form 1 can be accessed via READ commands.
     fn byte_len(&self) -> usize;
 
-    /// The SCSI CD-ROM protocol allows reading blocks with standard READ commands.
+    /// Read user data from the CD.
+    ///
+    /// The SCSI CD-ROM protocol presents the CD as block device that can be read via standard
+    /// READ commands. Blocks begin at sector 150. Each sector contains 2048 bytes of user
+    /// data.
     ///
     /// Each sector accessed by this method is expected to be a Mode 1 or Mode 2 Form 1
     /// sector containing 2048 bytes of user data. If the wrong type of sector is accessed,
@@ -178,8 +295,8 @@ pub trait CdromBackend: Send {
     fn sessions(&self) -> Option<&[SessionInfo]>;
     fn tracks(&self) -> Option<&[TrackInfo]>;
 
-    /// Read a raw 2352-byte sector. Currently used only for CD audio. Other data is read via read_bytes.
-    fn read_raw_sector(&self, sector: u32) -> Result<RawSector>;
+    /// Read a raw CD Digital Audio sector. Other types of sectors are read via `read_bytes`.
+    fn read_cdda_sector(&self, sector: u32) -> Result<RawSector, CdromError>;
 }
 
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
@@ -222,6 +339,9 @@ pub(super) struct ScsiTargetCdrom {
     /// Quadraphonic CD's are extremely rare but apparently existed.
     audio_ports: [AudioPort; 4],
 
+    /// Last Q-subchannel data with ADR=1; used to report current playback position
+    curr_mode1_qsub: QSub,
+
     /// Audio clock (counts bus ticks)
     audio_clock: Ticks,
 
@@ -261,6 +381,7 @@ impl ScsiTargetCdrom {
                     channel: 0b1000,
                 },
             ],
+            curr_mode1_qsub: Default::default(),
             audio_sink: None,
         };
         if let Some(audio_provider) = audio_provider {
@@ -292,11 +413,12 @@ impl ScsiTargetCdrom {
         track_or_session: u8, // Interpretation depends on format
         alloc_len: usize,
     ) -> Result<ScsiCmdResult> {
-        let Some(backend) = &self.backend else {
-            // No CD inserted
-            self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
-            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-        };
+        let check_result = self.unit_ready();
+        if !matches!(check_result, Ok(ScsiCmdResult::Status(STATUS_GOOD))) {
+            return check_result;
+        }
+
+        let backend = self.backend.as_ref().unwrap();
 
         let Some(tracks) = backend.tracks() else {
             // Media does not support tracks
@@ -343,7 +465,7 @@ impl ScsiTargetCdrom {
                     // Absolute CD-ROM Address
                 }
 
-                // Emit leadout track descriptor
+                // Emit leadout descriptor
                 result.push(0); // Reserved
                 result.push((1 << 4) | tracks.last().unwrap().control); // ADR/Control
                 result.push(TRACK_LEADOUT); // Track Number
@@ -538,6 +660,45 @@ impl ScsiTargetCdrom {
         self.audio_pos = LBA_START_SECTOR;
     }
 
+    /// Check audio position and make sure it is in a playable sector.
+    ///
+    /// If audio position is past the stop point, stop playback.
+    /// If audio position is within a session gap, skip to the next session.
+    fn resolve_audio_pos(&mut self) {
+        let Some(backend) = &self.backend else {
+            self.audio_state = AudioState::Stopped;
+            return;
+        };
+
+        let Some(sessions) = backend.sessions() else {
+            self.audio_state = AudioState::Stopped;
+            return;
+        };
+
+        let curr_session = sessions
+            .iter()
+            .rev()
+            .find(|s| s.leadin <= self.audio_pos)
+            .unwrap();
+        if self.audio_pos < curr_session.leadin + LBA_START_SECTOR {
+            // Audio position is in the leadin; skip to the program area
+            self.audio_pos = curr_session.leadin + LBA_START_SECTOR;
+        } else if self.audio_pos >= curr_session.leadout {
+            // Audio position is past the leadout; skip to the next session
+            let next_session = sessions.get((curr_session.number as usize + 1).saturating_sub(1));
+            if let Some(next_session) = next_session {
+                self.audio_pos = next_session.leadin + LBA_START_SECTOR;
+            } else {
+                // There is no next session; stop the audio
+                self.audio_pos = self.audio_stop;
+            }
+        }
+
+        if self.audio_pos >= self.audio_stop {
+            self.audio_state = AudioState::Stopped;
+        }
+    }
+
     /// Read a frame of CD audio and send it to the audio sink.
     fn pump_audio(&mut self) -> Result<()> {
         let audio_sink = self.audio_sink.as_ref().unwrap();
@@ -546,21 +707,20 @@ impl ScsiTargetCdrom {
             return Ok(());
         }
 
-        let Some(backend) = &self.backend else {
-            return Ok(());
-        };
-
         // Keep audio clock as 0 if real audio is active
         self.audio_clock = 0;
+
+        self.resolve_audio_pos();
 
         if self.audio_state != AudioState::Playing {
             return Ok(());
         }
 
-        if self.audio_pos >= self.audio_stop {
-            self.audio_state = AudioState::Stopped;
+        let audio_sink = self.audio_sink.as_ref().unwrap();
+
+        let Some(backend) = &self.backend else {
             return Ok(());
-        }
+        };
 
         let make_out_sample = |port: &AudioPort, channel_samples: &[i16; 4]| -> f32 {
             let sample = match port.channel {
@@ -573,9 +733,17 @@ impl ScsiTargetCdrom {
             sample as f32 / 32768.0 * port.volume as f32 / 255.0
         };
 
-        let samples = backend.read_raw_sector(self.audio_pos);
+        let samples = backend.read_cdda_sector(self.audio_pos);
         match samples {
-            Ok(samples) if samples.control == AUDIO_TRACK => {
+            Ok(samples) => {
+                // XXX: Do not require QSub CONTROL field to say audio here.
+                // For some reason, some discs report CONTROL=4 (Data track) within
+                // the sectors of audio tracks.
+                // Example: Sector 51848 (11:31:23) of Weird Al - Bad Hair Day.
+                if samples.qsub.adr() == 1 {
+                    self.curr_mode1_qsub = samples.qsub;
+                }
+
                 let mut samples = samples
                     .data
                     .chunks_exact(2)
@@ -594,11 +762,15 @@ impl ScsiTargetCdrom {
 
                 audio_sink.send(Box::new(out_samples))?;
             }
-            Ok(_) => {
-                log::warn!("Tried to play from non-audio track");
+            Err(CdromError::CheckCondition(_, _)) => {
+                // CD-ROM error while playing; disable playback
                 self.audio_state = AudioState::Stopped;
             }
-            Err(e) => {
+            Err(CdromError::BackendDead) => {
+                log::warn!("The CD-ROM drive became unusable");
+                self.eject_media();
+            }
+            Err(CdromError::Other(e)) => {
                 log::warn!(
                     "Failed to read raw samples from sector {}: {}",
                     self.audio_pos,
@@ -652,9 +824,11 @@ impl ScsiTargetCdrom {
         Ok(())
     }
 
-    fn get_track_at_sector(&self, sector: u32) -> Option<&TrackInfo> {
-        let tracks = self.backend.as_ref()?.tracks()?;
-        get_track_at_sector(tracks, sector)
+    fn load_physical_drive(&mut self, path: &Path) -> Result<()> {
+        self.backend = Some(new_physical_cdrom_drive_backend(path)?);
+        self.common.set_cc(0, 0);
+        self.event_eject.get_clear();
+        Ok(())
     }
 }
 
@@ -670,7 +844,9 @@ impl ScsiTarget for ScsiTargetCdrom {
     /// the emulator for fast access and automatic writes back to disk,
     /// at the discretion of the operating system.
     fn load_media(&mut self, path: &Path) -> Result<()> {
-        if path
+        if is_physical_cdrom_drive_path(path) {
+            self.load_physical_drive(path)
+        } else if path
             .extension()
             .map(|ext| ext.eq_ignore_ascii_case("cue"))
             .unwrap_or(false)
@@ -702,13 +878,25 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn unit_ready(&mut self) -> Result<ScsiCmdResult> {
-        if self.backend.is_some() {
-            // CD inserted, ready
-            Ok(ScsiCmdResult::Status(STATUS_GOOD))
-        } else {
+        let Some(backend) = &mut self.backend else {
             // No CD inserted
             self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
-            Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+        };
+
+        match backend.check_media() {
+            Ok(()) => Ok(ScsiCmdResult::Status(STATUS_GOOD)),
+            Err(CdromError::CheckCondition(key, asc)) => {
+                self.common.set_cc(key, asc);
+                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+            }
+            Err(CdromError::BackendDead) => {
+                log::error!("The CD-ROM drive became unusable");
+                self.eject_media();
+                self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
+                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+            }
+            Err(CdromError::Other(e)) => Err(e),
         }
     }
 
@@ -876,7 +1064,19 @@ impl ScsiTarget for ScsiTargetCdrom {
                 self.common.set_cc(cc, asc);
                 Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
             }
+            Err(CdromError::BackendDead) => {
+                log::error!("The CD-ROM drive became unusable");
+                self.eject_media();
+                self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
+                Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+            }
             Err(CdromError::Other(e)) => {
+                log::error!(
+                    "Error reading CD-ROM block at 0x{:X}, length 0x{:X}: {}",
+                    start_offset,
+                    image_end_offset - start_offset,
+                    e
+                );
                 self.common
                     .set_cc(CC_KEY_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR);
                 Err(e)
@@ -972,36 +1172,25 @@ impl ScsiTarget for ScsiTargetCdrom {
                 match format {
                     0x01 => {
                         // CD-ROM Current Position
-                        // Find current track at playback position
-                        let Some(track) = self.get_track_at_sector(self.audio_pos) else {
-                            // No tracks available
-                            // FIXME: is this correct?
-                            self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
-                            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
-                        };
-
-                        // log::debug!(
-                        //     "audio pos is at sector {} (in track #{} at sector {})",
-                        //     self.audio_pos,
-                        //     track.tno,
-                        //     track.sector
-                        // );
-
-                        // FIXME: This code tries to guess the subchannel info based on the TOC.
-                        // Instead, the backend should return subchannel info along with
-                        // read_raw_sector.
-
-                        // [PIONEER] Table 2-27F: CD-ROM Current Position Data Block
                         result.push(0x01); // Sub Channel Data Format code
-                        result.push((1 << 4) | track.control); // ADR/Control
-                        result.push(track.tno); // Track Number
-                        result.push(1); // Index Number (TODO: Find correct index number)
+                        result.push((1 << 4) | self.curr_mode1_qsub.control()); // ADR/Control
+                        result.push(self.curr_mode1_qsub.track()); // Track Number
+                        result.push(self.curr_mode1_qsub.index()); // Index Number
                         result.extend_from_slice(
                             &self.msf_to_address_field(Msf::from_sector(self.audio_pos)?, msf != 0),
                         );
+
+                        // [MMC4] 6.29.3.3:
+                        // When the type of information encoded in the Q Sub-channel of the current sector is
+                        // the media catalog number or ISRC, the track, index, and address fields should be extrapolated
+                        // from the previous sector.
+                        // (Not all audio sectors contain position info in their Q-subchannel. If the current
+                        // audio sector doesn't contain position info, extrapolate from the last reported position info.)
                         // Track relative position can be negative if the audio position is in a track pregap.
-                        let track_relative = self.audio_pos as i32 - track.sector as i32;
-                        if let Ok(track_relative) = TryInto::<u32>::try_into(track_relative) {
+                        let pos_delta =
+                            self.audio_pos as i32 - self.curr_mode1_qsub.abs_sector() as i32;
+                        let rel_time = self.curr_mode1_qsub.rel_time_in_sectors() + pos_delta;
+                        if let Ok(track_relative) = TryInto::<u32>::try_into(rel_time) {
                             // Track relative position is positive.
                             result.extend_from_slice(
                                 &self.msf_to_address_field(
@@ -1015,14 +1204,17 @@ impl ScsiTarget for ScsiTargetCdrom {
                             // If the
                             // TIME bit is set to one, this field is the relative TIME address from the Q Sub-channel formatted
                             // according to Table 29.
-                            // FIXME: It isn't clear how to express a negative MSF code. Put zeros here for now.
-                            result.extend_from_slice(&[0, 0, 0, 0]);
+                            // (during the pregap, the relative time will count down to 0)
+                            result.extend_from_slice(&self.msf_to_address_field(
+                                Msf::from_sector((-rel_time).try_into().unwrap())?,
+                                msf != 0,
+                            ));
                         } else {
                             // Track relative position is negative (LBA).
                             // [MMC4] 6.29.3.3:
                             // If the CDB TIME bit is zero, this field is a track relative LBA. If the current block is in
                             // the pre-gap area of a track, this is a negative value, expressed as a twoís-complement number.
-                            result.extend_from_slice(&track_relative.to_be_bytes());
+                            result.extend_from_slice(&rel_time.to_be_bytes());
                         }
                     }
                     _ => {
@@ -1121,11 +1313,21 @@ impl ScsiTarget for ScsiTargetCdrom {
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 }
 
-                let start_track = self.get_track_at_sector(start_sector);
-                if start_track
-                    .map(|t| t.control != AUDIO_TRACK)
-                    .unwrap_or(false)
-                {
+                let initial_sector = match backend.read_cdda_sector(start_sector) {
+                    Ok(s) => s,
+                    Err(CdromError::CheckCondition(key, asc)) => {
+                        self.common.set_cc(key, asc);
+                        return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                    }
+                    Err(CdromError::BackendDead) => {
+                        self.eject_media();
+                        self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
+                        return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                    }
+                    Err(CdromError::Other(e)) => return Err(e),
+                };
+
+                if !initial_sector.qsub.is_audio() {
                     // [MMC4] 6.17.2.3:
                     // If the address is not within an audio track the command shall be terminated with
                     // CHECK CONDITION status and SK/ASC/ASCQ values shall be set to ILLEGAL REQUEST/ILLEGAL
@@ -1134,6 +1336,10 @@ impl ScsiTarget for ScsiTargetCdrom {
                     self.common
                         .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_ILLEGAL_MODE_FOR_THIS_TRACK);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                }
+
+                if initial_sector.qsub.adr() == 1 {
+                    self.curr_mode1_qsub = initial_sector.qsub;
                 }
 
                 self.audio_pos = start_sector;
@@ -1305,12 +1511,8 @@ impl ScsiTarget for ScsiTargetCdrom {
                     if self.audio_clock >= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC as u64 {
                         self.audio_clock -= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC as u64;
 
-                        if self.audio_pos >= self.audio_stop {
-                            self.audio_state = AudioState::Stopped;
-                            self.audio_clock = 0;
-                        } else {
-                            self.audio_pos += 1;
-                        }
+                        self.audio_pos += 1;
+                        self.resolve_audio_pos();
                     }
 
                     Ok(())
