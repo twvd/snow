@@ -79,6 +79,8 @@ pub(in crate::cpu_m68k) enum PagefaultCause {
     Invalid,
     /// Write access to a page whose descriptor (or any ancestor table) has WP set
     WriteProtected,
+    /// User-mode access to a page whose descriptor has S set
+    SupervisorOnly,
 }
 
 /// CPU error type to cascade exceptions down

@@ -22,6 +22,9 @@ struct PmmuWalkResult {
     page_addr: Address,
     /// Write-protected (inherited down the walk or set on the leaf).
     wp: bool,
+    /// Supervisor-only (inherited from any long-format descriptor on the walk).
+    /// Short-format descriptors have no S bit and contribute nothing.
+    s: bool,
     /// Physical address of the leaf page descriptor.
     leaf_desc_addr: Address,
     /// Value of the M (modified) bit in the leaf descriptor.
@@ -36,6 +39,8 @@ pub(in crate::cpu_m68k) struct PmmuAtcEntry {
     /// Write-protect bit inherited from any table descriptor on the walk
     /// or from the leaf page descriptor.
     pub wp: bool,
+    /// Supervisor-only bit inherited from any long-format descriptor on the walk.
+    pub s: bool,
     /// Physical address of the leaf page descriptor (long-word aligned).
     /// Needed so writes can set the descriptor's M (modified) bit without
     /// replaying the full table walk.
@@ -184,13 +189,14 @@ where
         tis: &mut ArrayVec<u8, 4>,
         used_bits: &mut Address,
         wp: bool,
+        s: bool,
     ) -> Result<PmmuWalkResult> {
         match dt {
             PmmuPageDescriptorType::Valid4b => {
-                self.pmmu_fetch_table_short(vaddr, table_addr, tis, used_bits, wp)
+                self.pmmu_fetch_table_short(vaddr, table_addr, tis, used_bits, wp, s)
             }
             PmmuPageDescriptorType::Valid8b => {
-                self.pmmu_fetch_table_long(vaddr, table_addr, tis, used_bits, wp)
+                self.pmmu_fetch_table_long(vaddr, table_addr, tis, used_bits, wp, s)
             }
             _ => bail!("Unimplemented DT {:?}", dt),
         }
@@ -203,6 +209,7 @@ where
         tis: &mut ArrayVec<u8, 4>,
         used_bits: &mut Address,
         wp: bool,
+        s: bool,
     ) -> Result<PmmuWalkResult> {
         let Some(ti) = tis.pop() else {
             bail!("PMMU table search beyond maximum depth");
@@ -226,6 +233,8 @@ where
                 Ok(PmmuWalkResult {
                     page_addr: entry.page_addr() << 8,
                     wp: wp | entry.wp(),
+                    // Short format has no S bit; pass the accumulator through unchanged
+                    s,
                     leaf_desc_addr: entry_addr,
                     modified: entry.m(),
                 })
@@ -241,6 +250,7 @@ where
                     used_bits,
                     // WP is inherited from any ancestor table
                     wp | entry.wp(),
+                    s,
                 )
             }
         }
@@ -253,6 +263,7 @@ where
         tis: &mut ArrayVec<u8, 4>,
         used_bits: &mut Address,
         wp: bool,
+        s: bool,
     ) -> Result<PmmuWalkResult> {
         let Some(ti) = tis.pop() else {
             bail!("PMMU table search beyond maximum depth");
@@ -280,6 +291,7 @@ where
                 Ok(PmmuWalkResult {
                     page_addr: entry.page_addr() << 8,
                     wp: wp | entry.wp(),
+                    s: s | entry.s(),
                     leaf_desc_addr: entry_addr,
                     modified: entry.m(),
                 })
@@ -297,6 +309,8 @@ where
                     used_bits,
                     // WP is inherited from any ancestor table
                     wp | entry.wp(),
+                    // S is inherited from any long-format ancestor
+                    s | entry.s(),
                 )
             }
         }
@@ -323,11 +337,16 @@ where
             32
         );
 
+        let supervisor = fc & (1 << 2) != 0;
         let atc = self.pmmu_atc_tableidx(fc);
         let is_mask = Address::MAX.unbounded_shl(32 - self.regs.pmmu.tc.is());
         let page_mask = (1u32 << self.regs.pmmu.tc.ps()) - 1;
         let cache_key = ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize;
         if let Some(entry) = self.pmmu_atc[atc][cache_key] {
+            if !supervisor && entry.s {
+                self.pmmu_record_pagefault(vaddr, writing);
+                return Err(Self::pmmu_pagefault_to_buserror(fc, vaddr, writing));
+            }
             if writing && entry.wp {
                 self.pmmu_record_pagefault(vaddr, writing);
                 return Err(Self::pmmu_pagefault_to_buserror(fc, vaddr, writing));
@@ -345,12 +364,13 @@ where
             return Ok(entry.paddr | (vaddr & page_mask));
         }
 
-        let (paddr, wp, leaf_desc_addr, modified) =
+        let (paddr, wp, s, leaf_desc_addr, modified) =
             self.pmmu_translate_lookup::<false>(fc, vaddr, writing)?;
         let cache_key = ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize;
         self.pmmu_atc[atc][cache_key] = Some(PmmuAtcEntry {
             paddr: paddr & !page_mask,
             wp,
+            s,
             leaf_desc_addr,
             modified,
         });
@@ -381,7 +401,7 @@ where
     }
 
     /// Perform address translation by performing a page table lookup.
-    /// Returns (physical address, wp, leaf descriptor address, M-bit), or error:
+    /// Returns (physical address, wp, s, leaf descriptor address, M-bit), or error:
     ///  - bus error stack frame for translation,
     ///  - simple error on PTEST.
     pub(in crate::cpu_m68k) fn pmmu_translate_lookup<const PTEST: bool>(
@@ -389,7 +409,7 @@ where
         fc: u8,
         vaddr: Address,
         writing: bool,
-    ) -> Result<(Address, bool, Address, bool)> {
+    ) -> Result<(Address, bool, bool, Address, bool)> {
         let rootptr = self.pmmu_rootptr(fc);
 
         if PTEST {
@@ -412,6 +432,7 @@ where
                 &mut tis,
                 &mut used_bits,
                 false,
+                false,
             )
             .map_err(|e| match e.downcast_ref() {
                 Some(CpuError::AddressError(ae)) => {
@@ -424,6 +445,9 @@ where
                             PagefaultCause::Invalid => self.regs.pmmu.psr.set_invalid(true),
                             PagefaultCause::WriteProtected => {
                                 self.regs.pmmu.psr.set_write_protected(true)
+                            }
+                            PagefaultCause::SupervisorOnly => {
+                                self.regs.pmmu.psr.set_supervisor_violation(true)
                             }
                         }
                         self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
@@ -440,9 +464,23 @@ where
         let PmmuWalkResult {
             page_addr,
             wp,
+            s,
             leaf_desc_addr,
             mut modified,
         } = walk?;
+
+        // Enforce supervisor-only access on the resolved page
+        let supervisor = fc & (1 << 2) != 0;
+        if !supervisor && s {
+            if PTEST {
+                self.regs.pmmu.psr.set_supervisor_violation(true);
+                self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
+                return Err(anyhow!(CpuError::Pagefault(PagefaultCause::SupervisorOnly)));
+            } else {
+                self.pmmu_record_pagefault(vaddr, writing);
+                return Err(Self::pmmu_pagefault_to_buserror(fc, vaddr, writing));
+            }
+        }
 
         // Enforce write-protect on the resolved page
         if writing && wp {
@@ -470,6 +508,6 @@ where
         if PTEST {
             self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
         }
-        Ok((paddr, wp, leaf_desc_addr, modified))
+        Ok((paddr, wp, s, leaf_desc_addr, modified))
     }
 }
