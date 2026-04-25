@@ -12,7 +12,9 @@ use windows::Win32::System::Ioctl::*;
 use windows::Win32::System::WindowsProgramming::*;
 use windows::core::HSTRING;
 
+use crate::mac::scsi::ASC_ILLEGAL_MODE_FOR_THIS_TRACK;
 use crate::mac::scsi::ASC_MEDIUM_NOT_PRESENT;
+use crate::mac::scsi::CC_KEY_ILLEGAL_REQUEST;
 use crate::mac::scsi::CC_KEY_MEDIUM_ERROR;
 use crate::mac::scsi::cdrom::CdromError;
 use crate::mac::scsi::cdrom::DATA_TRACK;
@@ -503,8 +505,14 @@ impl CdromBackend for WindowsDriveCdromBackend {
             .map_err(|e| anyhow!(e))?;
 
         let mut result = vec![0; length];
-        unsafe { ReadFile(self.handle, Some(result.as_mut_slice()), None, None) }
-            .map_err(|e| anyhow!(e))?;
+        unsafe { ReadFile(self.handle, Some(result.as_mut_slice()), None, None) }.map_err(|e| {
+            if e.code() == ERROR_INVALID_FUNCTION.into() {
+                // ReadFile returns ERROR_INVALID_FUNCTION if you try to read an audio sector.
+                CdromError::CheckCondition(CC_KEY_ILLEGAL_REQUEST, ASC_ILLEGAL_MODE_FOR_THIS_TRACK)
+            } else {
+                CdromError::Other(e.into())
+            }
+        })?;
 
         Ok(result)
     }
