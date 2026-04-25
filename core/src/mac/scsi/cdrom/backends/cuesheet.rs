@@ -569,6 +569,9 @@ impl CdromBackend for CuesheetCdromBackend {
 
         let track = get_track_at_sector(&self.tracks, sector)
             .ok_or_else(|| anyhow!("No track found at sector {}", sector))?;
+        if sector >= self.sessions[track.session as usize - 1].leadout {
+            bail!("Sector {} was past the lead-out", sector);
+        }
 
         let data = match map_entry.source {
             SectorSource::Zeros => [0; RAW_SECTOR_LEN],
