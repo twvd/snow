@@ -587,12 +587,18 @@ impl ScsiTargetCdrom {
 
                 audio_sink.send(Box::new(out_samples))?;
             }
-            Ok(_) => log::warn!("Tried to play from non-audio track"),
-            Err(e) => log::warn!(
-                "Failed to read raw samples from sector {}: {}",
-                self.audio_pos,
-                e
-            ),
+            Ok(_) => {
+                log::warn!("Tried to play from non-audio track");
+                self.audio_state = AudioState::Stopped;
+            }
+            Err(e) => {
+                log::warn!(
+                    "Failed to read raw samples from sector {}: {}",
+                    self.audio_pos,
+                    e
+                );
+                self.audio_state = AudioState::Stopped;
+            }
         }
 
         self.audio_pos += 1;
@@ -1027,14 +1033,14 @@ impl ScsiTarget for ScsiTargetCdrom {
                 let track = cmd[6];
                 let alloc_len = u16::from_be_bytes(cmd[7..=8].try_into()?) as usize;
 
-                log::debug!(
-                    "READ TOC msf {} format {} control {} track {} alloc_len {}",
-                    msf,
-                    format,
-                    control,
-                    track,
-                    alloc_len
-                );
+                // log::debug!(
+                //     "READ TOC msf {} format {} control {} track {} alloc_len {}",
+                //     msf,
+                //     format,
+                //     control,
+                //     track,
+                //     alloc_len
+                // );
 
                 if control != 0 {
                     log::warn!("Unimplemented READ TOC control 0x{:X}", control);
