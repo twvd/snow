@@ -74,6 +74,8 @@ const fn scsi_cmd_len(cmdnum: u8) -> Option<usize> {
         | 0x47
         // PAUSE/RESUME
         | 0x4B
+        // READ DISC INFORMATION
+        | 0x51
         // MODE SENSE(10)
         | 0x5A
         // AUDIO SCAN (1)
@@ -81,6 +83,11 @@ const fn scsi_cmd_len(cmdnum: u8) -> Option<usize> {
         // BlueSCSI Toolbox commands
         | 0xD0..=0xD9
         => Some(10),
+        // REPORT KEY
+        0xA4
+        // READ DVD STRUCTURE
+        | 0xAD
+        => Some(12),
         _ => {
             None
         }

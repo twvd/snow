@@ -1,10 +1,9 @@
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow};
 use std::path::Path;
 
 use crate::mac::scsi::{
     cdrom::{
-        CdromBackend, CdromError, DATA_TRACK, LBA_START_SECTOR, RAW_SECTOR_LEN, SessionInfo,
-        TrackInfo,
+        CdromBackend, CdromError, DATA_TRACK, LBA_START_SECTOR, RawSector, SessionInfo, TrackInfo,
     },
     disk_image::DiskImage,
 };
@@ -12,6 +11,7 @@ use crate::mac::scsi::{
 pub struct IsoCdromBackend {
     image: Box<dyn DiskImage>,
     session: SessionInfo,
+    track: TrackInfo,
 }
 
 impl IsoCdromBackend {
@@ -20,18 +20,26 @@ impl IsoCdromBackend {
         Ok(Self {
             image,
             session: SessionInfo {
+                number: 1,
+                disc_type: 0x00,
+                leadin: 0,
                 leadout: LBA_START_SECTOR + sector_count,
-                tracks: vec![TrackInfo {
-                    tno: 1,
-                    control: DATA_TRACK,
-                    sector: LBA_START_SECTOR,
-                }],
+            },
+            track: TrackInfo {
+                tno: 1,
+                session: 1,
+                control: DATA_TRACK,
+                sector: LBA_START_SECTOR,
             },
         })
     }
 }
 
 impl CdromBackend for IsoCdromBackend {
+    fn check_media(&mut self) -> Result<bool> {
+        Ok(true)
+    }
+
     fn byte_len(&self) -> usize {
         self.image.byte_len()
     }
@@ -48,9 +56,13 @@ impl CdromBackend for IsoCdromBackend {
         Some(std::slice::from_ref(&self.session))
     }
 
-    fn read_raw_sector(&self, _sector: u32) -> Result<[u8; RAW_SECTOR_LEN]> {
+    fn tracks(&self) -> Option<&[TrackInfo]> {
+        Some(std::slice::from_ref(&self.track))
+    }
+
+    fn read_raw_sector(&self, _sector: u32) -> Result<RawSector, CdromError> {
         // TODO: reconstruct raw sectors from ISO data
         // (probably only needed for some disc ripping software to work)
-        bail!("Reading raw sectors is not implemented for ISO files");
+        Err(anyhow!("Reading raw sectors is not implemented for ISO files").into())
     }
 }

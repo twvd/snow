@@ -70,3 +70,17 @@ tun = { version = "0.7", optional = true, default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["term", "fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = {
+    version = "0.62.2",
+    features = [
+        "Win32_Foundation",
+        "Win32_Devices_Cdrom",
+        "Win32_Storage_FileSystem",
+        "Win32_System_IO",
+        "Win32_System_Ioctl",
+        "Win32_System_WindowsProgramming",
+    ]
+}
+windows-result = "0.4.1"
