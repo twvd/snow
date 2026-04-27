@@ -328,14 +328,6 @@ where
     ) -> Result<()> {
         let extword = PtestExtword(extword);
 
-        // Level limits how many table levels are walked.
-        if extword.level() != 7 {
-            bail!(
-                "Unimplemented PMMU bit: PTEST level field = {}",
-                extword.level()
-            );
-        }
-
         let fc = if extword.fc() & 0b10000 != 0 {
             extword.fc() & 0b1111
         } else if extword.fc() & 0b11000 == 0b01000 {
@@ -349,7 +341,8 @@ where
         } & FC_MASK;
 
         let vaddr = self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-        let result = self.pmmu_translate_lookup::<true>(fc, vaddr, !extword.read());
+        let result =
+            self.pmmu_translate_lookup::<true>(fc, vaddr, !extword.read(), extword.level());
         match result {
             Ok(_) => {
                 if extword.a_set() {

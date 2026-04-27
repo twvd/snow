@@ -15,6 +15,9 @@ pub(in crate::cpu_m68k) const PMMU_ATC_URP: usize = 0;
 /// Index in CpuM68k::pmmu_atc tables when SRP is in use
 pub(in crate::cpu_m68k) const PMMU_ATC_SRP: usize = 1;
 
+/// Translation level value that constitutes a full walk
+pub(in crate::cpu_m68k) const PMMU_FULL_WALK: u8 = 7;
+
 /// A resolved Address Translation Cache entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::cpu_m68k) struct PmmuAtcEntry {
@@ -156,7 +159,7 @@ where
         }
     }
 
-    fn pmmu_fetch_table(
+    fn pmmu_fetch_table<const PTEST: bool>(
         &mut self,
         vaddr: Address,
         table_addr: Address,
@@ -164,25 +167,32 @@ where
         tis: &mut ArrayVec<u8, 4>,
         used_bits: &mut Address,
         wp: bool,
+        max_levels: u8,
     ) -> Result<(Address, bool)> {
+        if PTEST && max_levels == 0 {
+            // Max depth (level) exhausted
+            // Just return 0 as the result of PTEST will not end up in the ATC
+            // and only PSR is updated up to this level.
+            return Ok((0, wp));
+        }
+
         match dt {
-            PmmuPageDescriptorType::Valid4b => {
-                self.pmmu_fetch_table_short(vaddr, table_addr, tis, used_bits, wp)
-            }
-            PmmuPageDescriptorType::Valid8b => {
-                self.pmmu_fetch_table_long(vaddr, table_addr, tis, used_bits, wp)
-            }
+            PmmuPageDescriptorType::Valid4b => self
+                .pmmu_fetch_table_short::<PTEST>(vaddr, table_addr, tis, used_bits, wp, max_levels),
+            PmmuPageDescriptorType::Valid8b => self
+                .pmmu_fetch_table_long::<PTEST>(vaddr, table_addr, tis, used_bits, wp, max_levels),
             _ => bail!("Unimplemented DT {:?}", dt),
         }
     }
 
-    fn pmmu_fetch_table_short(
+    fn pmmu_fetch_table_short<const PTEST: bool>(
         &mut self,
         vaddr: Address,
         table_addr: Address,
         tis: &mut ArrayVec<u8, 4>,
         used_bits: &mut Address,
         wp: bool,
+        max_levels: u8,
     ) -> Result<(Address, bool)> {
         let Some(ti) = tis.pop() else {
             bail!("PMMU table search beyond maximum depth");
@@ -223,7 +233,7 @@ where
                 // Recurse to child
                 let entry = PmmuShortTableDescriptor(entry_word);
                 // TODO U-bit
-                self.pmmu_fetch_table(
+                self.pmmu_fetch_table::<PTEST>(
                     vaddr << ti,
                     entry.table_addr() << 4,
                     child_dt,
@@ -231,18 +241,20 @@ where
                     used_bits,
                     // WP is inherited from any ancestor table
                     wp | entry.wp(),
+                    max_levels - 1,
                 )
             }
         }
     }
 
-    fn pmmu_fetch_table_long(
+    fn pmmu_fetch_table_long<const PTEST: bool>(
         &mut self,
         vaddr: Address,
         table_addr: Address,
         tis: &mut ArrayVec<u8, 4>,
         used_bits: &mut Address,
         wp: bool,
+        max_levels: u8,
     ) -> Result<(Address, bool)> {
         let Some(ti) = tis.pop() else {
             bail!("PMMU table search beyond maximum depth");
@@ -356,7 +368,7 @@ where
                         entry_addr
                     );
                 }
-                self.pmmu_fetch_table(
+                self.pmmu_fetch_table::<PTEST>(
                     vaddr << ti,
                     entry.table_addr() << 4,
                     child_dt,
@@ -364,6 +376,7 @@ where
                     used_bits,
                     // WP is inherited from any ancestor table
                     wp | entry.wp(),
+                    max_levels - 1,
                 )
             }
         }
@@ -402,7 +415,8 @@ where
             return Ok(entry.paddr | (vaddr & page_mask));
         }
 
-        let (paddr, wp) = self.pmmu_translate_lookup::<false>(fc, vaddr, writing)?;
+        let (paddr, wp) =
+            self.pmmu_translate_lookup::<false>(fc, vaddr, writing, PMMU_FULL_WALK)?;
         let cache_key = ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize;
         self.pmmu_atc[atc][cache_key] = Some(PmmuAtcEntry {
             paddr: paddr & !page_mask,
@@ -443,6 +457,7 @@ where
         fc: u8,
         vaddr: Address,
         writing: bool,
+        max_levels: u8,
     ) -> Result<(Address, bool)> {
         let rootptr = self.pmmu_rootptr(fc);
 
@@ -476,13 +491,14 @@ where
         ]);
         let mut used_bits = self.regs.pmmu.tc.is() as Address;
         let walk = self
-            .pmmu_fetch_table(
+            .pmmu_fetch_table::<PTEST>(
                 vaddr << self.regs.pmmu.tc.is(),
                 rootptr.table_addr() << 4,
                 PmmuPageDescriptorType::from_u8(rootptr.dt()).unwrap(),
                 &mut tis,
                 &mut used_bits,
                 false,
+                max_levels,
             )
             .map_err(|e| match e.downcast_ref() {
                 Some(CpuError::AddressError(ae)) => {
