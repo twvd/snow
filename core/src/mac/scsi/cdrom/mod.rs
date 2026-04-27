@@ -60,8 +60,16 @@ const LBA_START_MSF: Msf = Msf::new(0, 2, 0);
 /// Absolute sector number of Logical Block Address 0
 const LBA_START_SECTOR: u32 = LBA_START_MSF.to_sector();
 
+/// Number of audio frames per second. A frame is comprised of two samples (left and right).
+///
+/// This is often referred to as the sample rate, but technically there are two samples per
+/// frame.
+const AUDIO_FRAMES_PER_SEC: u32 = 44100;
 /// Number of sectors per second of audio
 const AUDIO_SECTORS_PER_SEC: u32 = 75;
+/// Number of audio frames per sector
+const AUDIO_FRAMES_PER_SECTOR: usize =
+    AUDIO_FRAMES_PER_SEC as usize / AUDIO_SECTORS_PER_SEC as usize;
 
 fn bin_to_bcd(bin: u8) -> u8 {
     ((bin / 10) << 4) | (bin % 10)
@@ -1278,7 +1286,11 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {
-        self.audio_sink = Some(provider.create_stream(44100, 2, AUDIO_BUFFER_SAMPLES as u16)?);
+        self.audio_sink = Some(provider.create_stream(
+            AUDIO_FRAMES_PER_SEC as i32,
+            2,
+            AUDIO_BUFFER_SAMPLES as u16,
+        )?);
         Ok(())
     }
 

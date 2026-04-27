@@ -1,18 +1,29 @@
 use anyhow::{Result, anyhow, bail};
+use encoding_rs::WINDOWS_1252;
+use encoding_rs_rw::DecodingReader;
 use std::{
+    cell::RefCell,
     fs::File,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
     iter::Peekable,
     path::{Path, PathBuf},
     str::Chars,
 };
+use symphonia::core::{
+    audio::{Channels, SampleBuffer, SignalSpec},
+    codecs::Decoder,
+    formats::{FormatReader, SeekMode, SeekTo},
+    io::MediaSourceStream,
+    units::TimeBase,
+};
 
 use crate::mac::scsi::{
     ASC_ILLEGAL_MODE_FOR_THIS_TRACK, ASC_UNRECOVERED_READ_ERROR, CC_KEY_ILLEGAL_REQUEST,
     CC_KEY_MEDIUM_ERROR,
     cdrom::{
-        AUDIO_TRACK, CdromBackend, CdromError, DATA_TRACK, LBA_START_SECTOR, Msf, RAW_SECTOR_LEN,
-        RawSector, SessionInfo, TrackInfo, get_track_at_sector,
+        AUDIO_FRAMES_PER_SEC, AUDIO_FRAMES_PER_SECTOR, AUDIO_TRACK, CdromBackend, CdromError,
+        DATA_TRACK, LBA_START_SECTOR, Msf, RAW_SECTOR_LEN, RawSector, SessionInfo, TrackInfo,
+        get_track_at_sector,
     },
 };
 
@@ -86,15 +97,17 @@ fn read_cue_msf(reader: &mut Peekable<Chars>) -> Result<Msf> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SectorSourceFormat {
+enum BinarySourceFormat {
     Raw2352,
-    // TODO: support 2048-byte formats
+    Mode1_2048,
+    // TODO: support more formats
 }
 
-impl SectorSourceFormat {
+impl BinarySourceFormat {
     fn bytes_per_sector(self) -> u64 {
         match self {
             Self::Raw2352 => 2352,
+            Self::Mode1_2048 => 2048,
         }
     }
 }
@@ -104,12 +117,19 @@ enum SectorSource {
     /// Sectors filled with zeroes. Used for pregaps and postgaps.
     Zeros,
     /// Sectors sourced from a data file
-    DataFile {
-        /// Index of file in the `files` array
+    BinaryFile {
+        /// Index of file in the `binary_files` array
         file_idx: usize,
         /// Byte offset within the file
         file_offset: u64,
-        format: SectorSourceFormat,
+        format: BinarySourceFormat,
+    },
+    /// Sectors sourced from an audio file
+    AudioFile {
+        /// Index of file in the `audio_files` array
+        file_idx: usize,
+        /// Timestamp in sectors (1/75 second)
+        timestamp_in_sectors: u32,
     },
 }
 
@@ -120,20 +140,45 @@ struct SectorMapEntry {
     source: SectorSource,
 }
 
+struct BinaryFileCursor {
+    /// Index of file in `binary_files` array
+    idx: usize,
+    /// Byte offset within file
+    offset: u64,
+    /// Max bytes in file
+    size: u64,
+}
+
+struct AudioFileCursor {
+    /// Index of file in `audio_files` array
+    idx: usize,
+    /// Audio timestamp in sectors (1/75 second)
+    sector: u32,
+    /// Max sectors in file
+    sector_count: u64,
+}
+
+enum FileCursorInfo {
+    Binary(BinaryFileCursor),
+    Audio(AudioFileCursor),
+}
+
+struct FileCursor {
+    // Sector number within file
+    sector: u32,
+    info: FileCursorInfo,
+}
+
 struct SectorMapBuilder {
     /// Absolute sector number
     abs_cursor: u32,
-    /// Byte offset within current data file
-    file_offset: u64,
-    /// Max bytes in current data file
-    file_size: u64,
-    /// Sector number within current data file
-    file_sector: u32,
-    /// Index of current data file in the cuesheet's `files` array
-    file_idx: usize,
-    /// Most recent source format
-    last_format: SectorSourceFormat,
     map: Vec<SectorMapEntry>,
+
+    file_cursor: Option<FileCursor>,
+    /// Most recent source format for binary file
+    curr_format: Option<BinarySourceFormat>,
+    /// Source format to switch to at the next Index point
+    next_format: Option<BinarySourceFormat>,
 }
 
 impl SectorMapBuilder {
@@ -145,63 +190,135 @@ impl SectorMapBuilder {
         // data such as CD-TEXT information.
         Self {
             abs_cursor: LBA_START_SECTOR,
-            file_offset: 0,
-            file_size: 0,
-            file_sector: 0,
-            file_idx: 0,
-            last_format: SectorSourceFormat::Raw2352,
+            file_cursor: None,
+            curr_format: None,
+            next_format: None,
             map: vec![],
         }
     }
 
-    fn start_new_file(&mut self, idx: usize, size: u64) -> Result<()> {
-        // If a data file exists, add the rest of its sectors before starting the new file
-        // TODO: support formats other than Raw2352
-        self.add_rest_of_file()?;
-        self.file_offset = 0;
-        self.file_size = size;
-        self.file_sector = 0;
-        self.file_idx = idx;
+    fn declare_binary_file(&mut self, idx: usize, size: u64) -> Result<()> {
+        // If a file was previously declared, commit the rest of its data before
+        // starting the new file.
+        self.commit_rest_of_file()?;
+
+        self.file_cursor = Some(FileCursor {
+            sector: 0,
+            info: FileCursorInfo::Binary(BinaryFileCursor {
+                offset: 0,
+                size,
+                idx,
+            }),
+        });
+        self.curr_format = None;
+        self.next_format = None;
 
         Ok(())
     }
 
-    /// Add data sectors up to a given sector number within the data file
-    fn add_file_up_to(&mut self, up_to: u32, format: SectorSourceFormat) -> Result<()> {
-        if up_to < self.file_sector {
+    fn declare_audio_file(&mut self, idx: usize, sector_count: u64) -> Result<()> {
+        // If a file was previously declared, commit the rest of its data before
+        // starting the new file.
+        self.commit_rest_of_file()?;
+
+        self.file_cursor = Some(FileCursor {
+            sector: 0,
+            info: FileCursorInfo::Audio(AudioFileCursor {
+                idx,
+                sector: 0,
+                sector_count,
+            }),
+        });
+        self.curr_format = None;
+        self.next_format = None;
+
+        Ok(())
+    }
+
+    fn declare_track(&mut self, format: BinarySourceFormat) {
+        self.next_format = Some(format);
+    }
+
+    fn declare_index(&mut self, sector: u32) -> Result<()> {
+        // Add any previous file data up to this point
+        self.commit_file_up_to(sector)?;
+        self.curr_format = self.next_format;
+        Ok(())
+    }
+
+    /// Commit the last data file up to a given sector
+    fn commit_file_up_to(&mut self, up_to: u32) -> Result<()> {
+        let Some(file_cursor) = &mut self.file_cursor else {
+            bail!("No file declared");
+        };
+
+        if up_to < file_cursor.sector {
             bail!("File sector number cannot decrease");
         }
 
-        let additional_sectors = up_to - self.file_sector;
-
-        if let Some(entry) = self.map.last_mut()
-            && let SectorSource::DataFile {
-                file_idx,
-                format: last_format,
-                ..
-            } = entry.source
-            && file_idx == self.file_idx
-            && last_format == format
-        {
-            // Add more sectors to the existing map entry
-            entry.sector_count += additional_sectors;
-        } else if additional_sectors > 0 {
-            // Start a new map entry
-            self.map.push(SectorMapEntry {
-                sector: self.abs_cursor,
-                sector_count: additional_sectors,
-                source: SectorSource::DataFile {
-                    file_idx: self.file_idx,
-                    file_offset: self.file_offset,
-                    format,
-                },
-            });
+        if up_to == file_cursor.sector {
+            // Nothing to do
+            return Ok(());
         }
 
-        self.file_sector += additional_sectors;
-        self.file_offset += additional_sectors as u64 * format.bytes_per_sector();
+        let Some(curr_format) = self.curr_format else {
+            bail!("No format declared for file data");
+        };
+
+        let additional_sectors = up_to - file_cursor.sector;
+
+        match &mut file_cursor.info {
+            FileCursorInfo::Binary(file_cursor_info) => {
+                if let Some(entry) = self.map.last_mut()
+                    && let SectorSource::BinaryFile {
+                        file_idx, format, ..
+                    } = entry.source
+                    && file_idx == file_cursor_info.idx
+                    && Some(format) == self.curr_format
+                {
+                    // Add more sectors to the existing map entry
+                    entry.sector_count += additional_sectors;
+                } else if additional_sectors > 0 {
+                    // Start a new map entry
+                    self.map.push(SectorMapEntry {
+                        sector: self.abs_cursor,
+                        sector_count: additional_sectors,
+                        source: SectorSource::BinaryFile {
+                            file_idx: file_cursor_info.idx,
+                            file_offset: file_cursor_info.offset,
+                            format: curr_format,
+                        },
+                    });
+                }
+
+                file_cursor_info.offset +=
+                    additional_sectors as u64 * curr_format.bytes_per_sector();
+            }
+            FileCursorInfo::Audio(file_cursor_info) => {
+                if let Some(entry) = self.map.last_mut()
+                    && let SectorSource::AudioFile { file_idx, .. } = entry.source
+                    && file_idx == file_cursor_info.idx
+                {
+                    // Add more sectors to the existing map entry
+                    entry.sector_count += additional_sectors;
+                } else if additional_sectors > 0 {
+                    // Start a new map entry
+                    self.map.push(SectorMapEntry {
+                        sector: self.abs_cursor,
+                        sector_count: additional_sectors,
+                        source: SectorSource::AudioFile {
+                            file_idx: file_cursor_info.idx,
+                            timestamp_in_sectors: file_cursor_info.sector,
+                        },
+                    });
+                }
+
+                file_cursor_info.sector += additional_sectors;
+            }
+        }
+
+        file_cursor.sector += additional_sectors;
         self.abs_cursor += additional_sectors;
-        self.last_format = format;
 
         Ok(())
     }
@@ -225,22 +342,213 @@ impl SectorMapBuilder {
         self.abs_cursor += sectors;
     }
 
-    fn add_rest_of_file(&mut self) -> Result<()> {
-        let remaining_bytes = self.file_size - self.file_offset;
-        let remaining_sectors: u32 =
-            (remaining_bytes / self.last_format.bytes_per_sector()).try_into()?;
-        self.add_file_up_to(self.file_sector + remaining_sectors, self.last_format)
+    fn commit_rest_of_file(&mut self) -> Result<()> {
+        let Some(file_cursor) = &self.file_cursor else {
+            // Nothing to do
+            return Ok(());
+        };
+
+        let Some(curr_format) = self.curr_format else {
+            bail!("No format declared for file data (committing rest of file)");
+        };
+
+        let remaining_sectors: u32 = match &file_cursor.info {
+            FileCursorInfo::Binary(file_cursor_info) => {
+                let remaining_bytes = file_cursor_info.size - file_cursor_info.offset;
+                (remaining_bytes / curr_format.bytes_per_sector()).try_into()?
+            }
+            FileCursorInfo::Audio(file_cursor_info) => {
+                (file_cursor_info.sector_count - file_cursor_info.sector as u64).try_into()?
+            }
+        };
+
+        self.commit_file_up_to(file_cursor.sector + remaining_sectors)?;
+
+        self.file_cursor = None;
+        Ok(())
     }
 
     fn build(mut self) -> Result<Vec<SectorMapEntry>> {
-        self.add_rest_of_file()?;
+        self.commit_rest_of_file()?;
         Ok(self.map)
+    }
+}
+
+struct DecodedPacket {
+    timestamp: u64,
+    samples: Vec<i16>,
+}
+
+impl DecodedPacket {
+    fn frame_count(&self) -> usize {
+        self.samples.len() / 2 // 2 samples per frame
+    }
+}
+
+struct AudioFile {
+    format_reader: Box<dyn FormatReader>,
+    decoder: Box<dyn Decoder>,
+
+    /// Timestamp cursor of stream-in (measured in frames)
+    stream_ts: u64,
+    /// Timestamp cursor of the next packet that will be fetched by the format_reader (measured in frames)
+    next_packet_ts: u64,
+    /// Current decoded packet
+    decoded_packet: Option<DecodedPacket>,
+}
+
+impl AudioFile {
+    /// Load an audio file. Returns (self, number of frames).
+    fn new(path: &Path) -> Result<(Self, u64)> {
+        let file = File::open(path)?;
+        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+        let probed = symphonia::default::get_probe().format(
+            &Default::default(),
+            mss,
+            &Default::default(),
+            &Default::default(),
+        )?;
+
+        let symph_track = probed
+            .format
+            .default_track()
+            .ok_or_else(|| anyhow!("No audio tracks found in audio file"))?;
+        log::debug!("Probed symphonia track: {:?}", symph_track);
+
+        if symph_track.codec_params.sample_rate != Some(AUDIO_FRAMES_PER_SEC) {
+            // TODO: support arbitrary sample rates
+            // (some files might be compressed to lower sample rates)
+            bail!(
+                "Invalid sample rate {:?} for CD audio",
+                symph_track.codec_params.sample_rate
+            );
+        }
+
+        if symph_track.codec_params.channels != Some(Channels::FRONT_LEFT | Channels::FRONT_RIGHT) {
+            bail!(
+                "Invalid channels {:?} for CD audio",
+                symph_track.codec_params.channels
+            );
+        }
+
+        if symph_track.codec_params.time_base != Some(TimeBase::new(1, AUDIO_FRAMES_PER_SEC)) {
+            bail!(
+                "Invalid time base {:?} for CD audio",
+                symph_track.codec_params.time_base
+            );
+        }
+
+        let n_frames = symph_track
+            .codec_params
+            .n_frames
+            .ok_or_else(|| anyhow!("Audio file has no defined length"))?;
+
+        let decoder = symphonia::default::get_codecs()
+            .make(&symph_track.codec_params, &Default::default())?;
+
+        Ok((
+            Self {
+                format_reader: probed.format,
+                decoder,
+                stream_ts: 0,
+                next_packet_ts: 0,
+                decoded_packet: None,
+            },
+            n_frames,
+        ))
+    }
+
+    fn seek(&mut self, timestamp: u64) -> Result<()> {
+        let needs_seek = match &self.decoded_packet {
+            Some(decoded_packet) => !(decoded_packet.timestamp
+                ..=decoded_packet.timestamp + decoded_packet.frame_count() as u64)
+                .contains(&timestamp),
+            None => true,
+        };
+
+        // If timestamp is not within the last decoded packet or immediately after it,
+        // we need to perform a seek.
+        if needs_seek {
+            self.decoded_packet = None;
+            self.decoder.reset();
+
+            let seeked_to = self.format_reader.seek(
+                SeekMode::Accurate,
+                SeekTo::TimeStamp {
+                    ts: timestamp,
+                    track_id: self.format_reader.default_track().unwrap().id,
+                },
+            )?;
+
+            self.next_packet_ts = seeked_to.actual_ts;
+        }
+
+        self.stream_ts = timestamp;
+        Ok(())
+    }
+
+    fn stream_in_frames(&mut self, frame_count: usize) -> Result<Vec<i16>> {
+        assert!(
+            self.decoded_packet.is_none()
+                || self.stream_ts >= self.decoded_packet.as_ref().unwrap().timestamp,
+            "Stream cannot go backwards; use seek"
+        );
+
+        let sample_count = frame_count * 2;
+        let mut result = Vec::with_capacity(sample_count);
+
+        while result.len() < sample_count {
+            if self.decoded_packet.is_none() || self.stream_ts >= self.next_packet_ts {
+                self.decoded_packet = None;
+
+                let packet = self.format_reader.next_packet()?;
+                let audio_buf = self.decoder.decode(&packet)?;
+                let audio_buf_frame_count = audio_buf.frames();
+
+                let mut converted_buf = SampleBuffer::<i16>::new(
+                    audio_buf.capacity() as u64,
+                    SignalSpec::new(
+                        AUDIO_FRAMES_PER_SEC,
+                        Channels::FRONT_LEFT | Channels::FRONT_RIGHT,
+                    ),
+                );
+                converted_buf.copy_interleaved_ref(audio_buf);
+
+                self.decoded_packet = Some(DecodedPacket {
+                    timestamp: self.next_packet_ts,
+                    samples: converted_buf.samples().to_vec(),
+                });
+                self.next_packet_ts += audio_buf_frame_count as u64;
+            }
+
+            let decoded_packet = self.decoded_packet.as_ref().unwrap();
+            let frame_in_packet = usize::try_from(self.stream_ts - decoded_packet.timestamp)? * 2;
+            let samples = &decoded_packet.samples[frame_in_packet..];
+            let remaining = sample_count - result.len();
+            let samples = &samples[..remaining.min(samples.len())];
+            result.extend(samples);
+
+            self.stream_ts += samples.len() as u64 / 2;
+        }
+
+        Ok(result)
+    }
+
+    /// Read frames from the audio file.
+    ///
+    /// A frame is comprised of a left and right stereo sample (2 samples, or 4 bytes).
+    /// `timestamp` is the number of the frame within the file.
+    fn read_frames(&mut self, timestamp: u64, frame_count: usize) -> Result<Vec<i16>> {
+        self.seek(timestamp)?;
+        self.stream_in_frames(frame_count)
     }
 }
 
 pub struct CuesheetCdromBackend {
     cue_path: PathBuf,
-    files: Vec<File>,
+    binary_files: Vec<File>,
+    audio_files: Vec<RefCell<AudioFile>>,
     sessions: Vec<SessionInfo>,
     tracks: Vec<TrackInfo>,
     /// Map of sectors. Entries are sorted in order of increasing `sector` field.
@@ -252,15 +560,24 @@ pub struct CuesheetCdromBackend {
 impl CuesheetCdromBackend {
     pub fn new(path: &Path) -> Result<Self> {
         let cue_dir = path.parent().unwrap();
-        let cue_file = BufReader::new(File::open(path)?);
 
-        let mut files: Vec<File> = vec![];
+        // Cuesheet files do not have a standardized text encoding. Tools that
+        // generate cue files tend to use the encoding of their native platform.
+        // In practice, most cue files are generated in Windows-1252 format.
+        // This becomes important if a cue file contains special characters such
+        // as “ or ” (which CAN appear in filenames).
+        // We use a decoder that defaults to Windows-1252 but switches to UTF-8,
+        // UTF-16 LE or UTF-16 BE if it detects a byte-order mark.
+        let cue_file = BufReader::new(File::open(path)?);
+        let cue_file = DecodingReader::new(cue_file, WINDOWS_1252.new_decoder());
+        let cue_file = BufReader::new(cue_file); // For the `lines` method
+
+        let mut binary_files: Vec<File> = vec![];
+        let mut audio_files: Vec<RefCell<AudioFile>> = vec![];
         let mut sector_map = SectorMapBuilder::new();
 
         let mut track_num = 0u8;
         let mut track_control = DATA_TRACK;
-        let mut source_format = SectorSourceFormat::Raw2352;
-        let mut next_source_format = SectorSourceFormat::Raw2352;
         let mut gap_sectors = 0;
         let mut session_has_tracks = false;
 
@@ -277,142 +594,153 @@ impl CuesheetCdromBackend {
             let line = line?;
             let mut chars = line.chars().peekable();
 
-            if let Some(command) = read_cue_word(&mut chars) {
-                match command.as_str() {
-                    "FILE" => {
-                        let file_path = read_cue_path(&mut chars)
-                            .ok_or_else(|| anyhow!("Failed to parse FILE command"))?;
-                        let file_path = cue_dir.join(Path::new(&file_path));
+            let Some(command) = read_cue_word(&mut chars) else {
+                continue;
+            };
 
-                        let file_type = read_cue_word(&mut chars)
-                            .ok_or_else(|| anyhow!("Failed to parse FILE command"))?;
-                        // TODO: support WAVE?
-                        if file_type != "BINARY" {
-                            bail!("Unsupported file type `{}` in cuesheet", file_type);
+            match command.as_str() {
+                "FILE" => {
+                    let file_path = read_cue_path(&mut chars)
+                        .ok_or_else(|| anyhow!("Failed to parse FILE command"))?;
+                    let file_path = cue_dir.join(Path::new(&file_path));
+
+                    let file_type = read_cue_word(&mut chars)
+                        .ok_or_else(|| anyhow!("Failed to parse FILE command"))?;
+                    match file_type.as_str() {
+                        "BINARY" => {
+                            log::info!("Loading binary file from {}", file_path.to_string_lossy());
+
+                            let file = File::open(file_path)?;
+                            let file_len = file.metadata()?.len();
+                            binary_files.push(file);
+
+                            sector_map.declare_binary_file(binary_files.len() - 1, file_len)?;
                         }
+                        "WAVE" => {
+                            log::info!("Loading audio file from {}", file_path.to_string_lossy());
 
-                        log::info!("Loading file from {}", file_path.to_string_lossy());
+                            let (audio_file, n_frames) = AudioFile::new(&file_path)?;
+                            audio_files.push(RefCell::new(audio_file));
 
-                        let file = File::open(file_path)?;
-                        let file_len = file.metadata()?.len();
-                        files.push(file);
-
-                        sector_map.start_new_file(files.len() - 1, file_len)?;
-                    }
-                    "TRACK" => {
-                        track_num = read_cue_word(&mut chars)
-                            .ok_or_else(|| anyhow!("Invalid TRACK command"))?
-                            .parse()?;
-                        let track_form_str = read_cue_word(&mut chars)
-                            .ok_or_else(|| anyhow!("Invalid TRACK command"))?;
-                        (next_source_format, track_control) = match track_form_str.as_str() {
-                            "AUDIO" => (SectorSourceFormat::Raw2352, AUDIO_TRACK),
-                            "MODE1/2352" => (SectorSourceFormat::Raw2352, DATA_TRACK),
-                            "MODE2/2352" => {
-                                if !session_has_tracks {
-                                    sessions.last_mut().unwrap().disc_type = 0x20; // CD data XA disc with first track in Mode 2
-                                }
-                                (SectorSourceFormat::Raw2352, DATA_TRACK)
-                            }
-                            _ => bail!("Unsupported track form {}", track_form_str),
-                        };
-                    }
-                    "INDEX" => {
-                        let index_num: u8 = read_cue_word(&mut chars)
-                            .ok_or_else(|| anyhow!("Invalid INDEX command"))?
-                            .parse()?;
-
-                        // Index sector is relative to the current data file
-                        let file_sector = read_cue_msf(&mut chars)?.to_sector();
-
-                        // Add any previous file data up to this point
-                        sector_map.add_file_up_to(file_sector, source_format)?;
-                        source_format = next_source_format;
-
-                        // Add pregaps/postgaps here
-                        sector_map.add_gap(gap_sectors);
-                        gap_sectors = 0;
-
-                        if index_num == 1 {
-                            // The track will officially begin at index 1.
-                            tracks.push(TrackInfo {
-                                tno: track_num,
-                                session: sessions.last().unwrap().number,
-                                control: track_control,
-                                sector: sector_map.abs_cursor,
-                            });
+                            let sector_count = n_frames.div_ceil(AUDIO_FRAMES_PER_SECTOR as u64);
+                            sector_map.declare_audio_file(audio_files.len() - 1, sector_count)?;
                         }
-
-                        if !session_has_tracks {
-                            // Set the lead-in to 150 sectors before the first track
-                            // FIXME: lead-in might be set incorrectly if pregaps/postgaps are present...
-                            sessions.last_mut().unwrap().leadin =
-                                sector_map.abs_cursor.saturating_sub(LBA_START_SECTOR);
-                        }
-
-                        session_has_tracks = true;
+                        _ => bail!("Unsupported file type `{}` in cuesheet", file_type),
                     }
-                    "PREGAP" | "POSTGAP" => {
-                        let duration = read_cue_msf(&mut chars)?.to_sector();
-                        // Zeros sectors will be added to the map by the INDEX command
-                        gap_sectors += duration;
-                    }
-                    "REM" => {
-                        if let Some(rem_cmd) = read_cue_word(&mut chars) {
-                            match rem_cmd.as_str() {
-                                "LEAD-OUT" => {
-                                    if let Ok(leadout_msf) = read_cue_msf(&mut chars) {
-                                        sector_map.add_file_up_to(
-                                            leadout_msf.to_sector(),
-                                            source_format,
-                                        )?;
-
-                                        sector_map.add_gap(gap_sectors);
-                                        gap_sectors = 0;
-
-                                        sessions.last_mut().unwrap().leadout =
-                                            sector_map.abs_cursor;
-                                    } else {
-                                        log::warn!("Failed to parse MSF in REM LEAD-OUT");
-                                    }
-                                }
-                                "SESSION" => {
-                                    if let Some(new_session) =
-                                        read_cue_word(&mut chars).and_then(|w| w.parse::<u8>().ok())
-                                    {
-                                        let last_session = sessions.last().unwrap();
-                                        if new_session == last_session.number + 1 {
-                                            sessions.push(SessionInfo {
-                                                number: new_session,
-                                                disc_type: 0x00,
-                                                leadin: last_session.leadout,
-                                                leadout: last_session.leadout,
-                                            });
-
-                                            session_has_tracks = false;
-                                        } else if !(new_session == 1 && sessions.len() == 1) {
-                                            log::warn!(
-                                                "Unexpected session number {} in REM SESSION command",
-                                                new_session
-                                            );
-                                        }
-                                    } else {
-                                        log::warn!("Unexpected token in REM SESSION command");
-                                    }
-                                }
-                                _ => (), // Just a regular REM comment; ignore
-                            }
-                        }
-                    }
-                    _ => log::warn!("Unknown cuesheet command {} ignored", command),
                 }
+                "TRACK" => {
+                    track_num = read_cue_word(&mut chars)
+                        .ok_or_else(|| anyhow!("Invalid TRACK command"))?
+                        .parse()?;
+                    let track_form_str = read_cue_word(&mut chars)
+                        .ok_or_else(|| anyhow!("Invalid TRACK command"))?;
+                    let source_format;
+                    (source_format, track_control) = match track_form_str.as_str() {
+                        "AUDIO" => (BinarySourceFormat::Raw2352, AUDIO_TRACK),
+                        "MODE1/2352" => (BinarySourceFormat::Raw2352, DATA_TRACK),
+                        "MODE1/2048" => (BinarySourceFormat::Mode1_2048, DATA_TRACK),
+                        "MODE2/2352" => {
+                            if !session_has_tracks {
+                                sessions.last_mut().unwrap().disc_type = 0x20; // CD data XA disc with first track in Mode 2
+                            }
+                            (BinarySourceFormat::Raw2352, DATA_TRACK)
+                        }
+                        _ => bail!("Unsupported track form {}", track_form_str),
+                    };
+                    sector_map.declare_track(source_format);
+                }
+                "INDEX" => {
+                    let index_num: u8 = read_cue_word(&mut chars)
+                        .ok_or_else(|| anyhow!("Invalid INDEX command"))?
+                        .parse()?;
+
+                    // Index sector is relative to the current data file
+                    let file_sector = read_cue_msf(&mut chars)?.to_sector();
+
+                    sector_map.declare_index(file_sector)?;
+
+                    // Add pregaps/postgaps here
+                    sector_map.add_gap(gap_sectors);
+                    gap_sectors = 0;
+
+                    if index_num == 1 {
+                        // The track will officially begin at index 1.
+                        tracks.push(TrackInfo {
+                            tno: track_num,
+                            session: sessions.last().unwrap().number,
+                            control: track_control,
+                            sector: sector_map.abs_cursor,
+                        });
+                    }
+
+                    if !session_has_tracks {
+                        // Set the lead-in to 150 sectors before the first track
+                        // FIXME: lead-in might be set incorrectly if pregaps/postgaps are present...
+                        sessions.last_mut().unwrap().leadin =
+                            sector_map.abs_cursor.saturating_sub(LBA_START_SECTOR);
+                    }
+
+                    session_has_tracks = true;
+                }
+                "PREGAP" | "POSTGAP" => {
+                    let duration = read_cue_msf(&mut chars)?.to_sector();
+                    // Zeros sectors will be added to the map by the INDEX command
+                    gap_sectors += duration;
+                }
+                "REM" => {
+                    let Some(rem_cmd) = read_cue_word(&mut chars) else {
+                        continue;
+                    };
+
+                    match rem_cmd.as_str() {
+                        "LEAD-OUT" => {
+                            if let Ok(leadout_msf) = read_cue_msf(&mut chars) {
+                                sector_map.commit_file_up_to(leadout_msf.to_sector())?;
+
+                                sector_map.add_gap(gap_sectors);
+                                gap_sectors = 0;
+
+                                sessions.last_mut().unwrap().leadout = sector_map.abs_cursor;
+                            } else {
+                                log::warn!("Failed to parse MSF in REM LEAD-OUT");
+                            }
+                        }
+                        "SESSION" => {
+                            if let Some(new_session) =
+                                read_cue_word(&mut chars).and_then(|w| w.parse::<u8>().ok())
+                            {
+                                let last_session = sessions.last().unwrap();
+                                if new_session == last_session.number + 1 {
+                                    sessions.push(SessionInfo {
+                                        number: new_session,
+                                        disc_type: 0x00,
+                                        leadin: last_session.leadout,
+                                        leadout: last_session.leadout,
+                                    });
+
+                                    session_has_tracks = false;
+                                } else if !(new_session == 1 && sessions.len() == 1) {
+                                    log::warn!(
+                                        "Unexpected session number {} in REM SESSION command",
+                                        new_session
+                                    );
+                                }
+                            } else {
+                                log::warn!("Unexpected token in REM SESSION command");
+                            }
+                        }
+                        _ => (), // Just a regular REM comment; ignore
+                    }
+                }
+                "CATALOG" | "PERFORMER" | "TITLE" => (), // Ignore
+                _ => log::warn!("Unknown cuesheet command {} ignored", command),
             }
         }
 
         log::debug!("Tracks: {:#?}", tracks);
 
         // In case the final track has a postgap...
-        sector_map.add_rest_of_file()?;
+        sector_map.commit_rest_of_file()?;
         sector_map.add_gap(gap_sectors);
 
         let sector_map = sector_map.build()?;
@@ -431,7 +759,8 @@ impl CuesheetCdromBackend {
 
         Ok(Self {
             cue_path: path.into(),
-            files,
+            binary_files,
+            audio_files,
             sessions,
             tracks,
             sector_map,
@@ -575,7 +904,7 @@ impl CdromBackend for CuesheetCdromBackend {
 
         let data = match map_entry.source {
             SectorSource::Zeros => [0; RAW_SECTOR_LEN],
-            SectorSource::DataFile {
+            SectorSource::BinaryFile {
                 file_idx,
                 file_offset,
                 format,
@@ -583,18 +912,49 @@ impl CdromBackend for CuesheetCdromBackend {
                 // It turns out you don't need a &mut File to seek and read!
                 // Just call seek and read on a `&File`. This will clobber the file cursor,
                 // so use with caution.
-                let mut file: &File = &self.files[file_idx];
+                let mut file: &File = &self.binary_files[file_idx];
                 file.seek(SeekFrom::Start(
                     file_offset + rel_sector as u64 * format.bytes_per_sector(),
                 ))?;
 
                 match format {
-                    SectorSourceFormat::Raw2352 => {
+                    BinarySourceFormat::Raw2352 => {
                         let mut result = [0u8; RAW_SECTOR_LEN];
                         file.read_exact(&mut result)?;
                         result
                     }
+                    BinarySourceFormat::Mode1_2048 => {
+                        // Reconstruct Mode 1 sector from 2048-byte user data.
+                        // Only the most important fields are filled.
+                        let mut result = [0u8; RAW_SECTOR_LEN];
+                        // Sync
+                        result[0..12]
+                            .copy_from_slice(b"\x00\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\x00");
+                        // Mode
+                        result[15] = 1;
+                        // User data
+                        file.read_exact(&mut result[16..][..2048])?;
+                        // TODO: fill out more fields?
+                        result
+                    }
                 }
+            }
+            SectorSource::AudioFile {
+                file_idx,
+                timestamp_in_sectors,
+            } => {
+                let mut file = self.audio_files[file_idx].borrow_mut();
+
+                let ts = (timestamp_in_sectors as u64 + rel_sector as u64)
+                    * AUDIO_FRAMES_PER_SECTOR as u64;
+                let samples = file.read_frames(ts, AUDIO_FRAMES_PER_SECTOR)?;
+
+                let mut result = [0u8; RAW_SECTOR_LEN];
+                for (s, out) in samples.into_iter().zip(result.as_chunks_mut::<2>().0) {
+                    out.copy_from_slice(&s.to_le_bytes());
+                }
+
+                result
             }
         };
 
