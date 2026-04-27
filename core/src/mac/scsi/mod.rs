@@ -6,6 +6,8 @@ pub mod disk;
 pub mod disk_image;
 #[cfg(feature = "ethernet")]
 pub mod ethernet;
+#[cfg(feature = "printer")]
+pub mod printer;
 pub mod target;
 pub mod toolbox;
 
@@ -31,13 +33,17 @@ const fn scsi_cmd_len(cmdnum: u8) -> Option<usize> {
         | 0x01
         // REQUEST SENSE
         | 0x03
-        // FORMAT UNIT
+        // FORMAT UNIT (Direct Access), FORMAT (Printer)
         | 0x04
+        // Non-standard (LaserWriter data transfer command)
+        | 0x05
+        // Non-standard (LaserWriter setup command)
+        | 0x06
         // READ(6)
         | 0x08
         // Non-standard (stats for Ethernet)
         | 0x09
-        // WRITE(6)
+        // WRITE(6) (Storage), PRINT (Printer)
         | 0x0A
         // Non-standard (multicast mutation for Ethernet)
         | 0x0D
