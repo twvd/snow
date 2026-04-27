@@ -187,6 +187,7 @@ where
         vaddr: Address,
         table_addr: Address,
         dt: PmmuPageDescriptorType,
+        parent_limit: Option<(u16, bool)>,
         tis: &mut ArrayVec<u8, 4>,
         used_bits: &mut Address,
         wp: bool,
@@ -194,14 +195,39 @@ where
         mutate: bool,
     ) -> Result<PmmuWalkResult> {
         match dt {
-            PmmuPageDescriptorType::Valid4b => {
-                self.pmmu_fetch_table_short(vaddr, table_addr, tis, used_bits, wp, s, mutate)
-            }
-            PmmuPageDescriptorType::Valid8b => {
-                self.pmmu_fetch_table_long(vaddr, table_addr, tis, used_bits, wp, s, mutate)
-            }
+            PmmuPageDescriptorType::Valid4b => self.pmmu_fetch_table_short(
+                vaddr,
+                table_addr,
+                parent_limit,
+                tis,
+                used_bits,
+                wp,
+                s,
+                mutate,
+            ),
+            PmmuPageDescriptorType::Valid8b => self.pmmu_fetch_table_long(
+                vaddr,
+                table_addr,
+                parent_limit,
+                tis,
+                used_bits,
+                wp,
+                s,
+                mutate,
+            ),
             _ => bail!("Unimplemented DT {:?}", dt),
         }
+    }
+
+    fn pmmu_check_limit(idx: Address, parent_limit: Option<(u16, bool)>) -> Result<()> {
+        if let Some((limit, lu)) = parent_limit {
+            let limit = limit as Address;
+            let violation = if lu { idx < limit } else { idx > limit };
+            if violation {
+                bail!(CpuError::Pagefault(PagefaultCause::LimitViolation));
+            }
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -209,6 +235,7 @@ where
         &mut self,
         vaddr: Address,
         table_addr: Address,
+        parent_limit: Option<(u16, bool)>,
         tis: &mut ArrayVec<u8, 4>,
         used_bits: &mut Address,
         wp: bool,
@@ -222,6 +249,7 @@ where
 
         // Table index
         let idx = vaddr >> (32 - ti);
+        Self::pmmu_check_limit(idx, parent_limit)?;
         let entry_addr = table_addr.wrapping_add(idx * 4);
 
         self.regs.pmmu.last_desc = entry_addr;
@@ -259,6 +287,8 @@ where
                     vaddr << ti,
                     entry.table_addr() << 4,
                     child_dt,
+                    // Short table descriptors have no limit field
+                    None,
                     tis,
                     used_bits,
                     // WP is inherited from any ancestor table
@@ -275,6 +305,7 @@ where
         &mut self,
         vaddr: Address,
         table_addr: Address,
+        parent_limit: Option<(u16, bool)>,
         tis: &mut ArrayVec<u8, 4>,
         used_bits: &mut Address,
         wp: bool,
@@ -288,6 +319,7 @@ where
 
         // Table index
         let idx = vaddr >> (32 - ti);
+        Self::pmmu_check_limit(idx, parent_limit)?;
         let entry_addr = table_addr.wrapping_add(idx * 8);
 
         self.regs.pmmu.last_desc = entry_addr;
@@ -329,6 +361,9 @@ where
                     vaddr << ti,
                     entry.table_addr() << 4,
                     child_dt,
+                    // Long table descriptors carry a limit constraining the
+                    // child table's index
+                    Some((entry.limit() as u16, entry.lu())),
                     tis,
                     used_bits,
                     // WP is inherited from any ancestor table
@@ -518,6 +553,8 @@ where
                 vaddr << self.regs.pmmu.tc.is(),
                 rootptr.table_addr() << 4,
                 PmmuPageDescriptorType::from_u8(rootptr.dt()).unwrap(),
+                // Root pointer always carries a limit (15 bits, LU bit)
+                Some((rootptr.limit(), rootptr.lu())),
                 &mut tis,
                 &mut used_bits,
                 false,
@@ -540,6 +577,9 @@ where
                         }
                         PagefaultCause::SupervisorOnly => {
                             self.regs.pmmu.psr.set_supervisor_violation(true);
+                        }
+                        PagefaultCause::LimitViolation => {
+                            self.regs.pmmu.psr.set_limit_violation(true);
                         }
                     }
                     self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
