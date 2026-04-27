@@ -1,8 +1,9 @@
 use crate::bus::{Address, Bus, IrqSource};
-use crate::cpu_m68k::CpuM68kType;
-use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::cpu::{CpuError, CpuM68k, Group0Details, HistoryEntry, PagefaultCause};
-use crate::cpu_m68k::pmmu::regs::{PmmuPageDescriptorType, RegisterPSR, RootPointerReg};
+use crate::cpu_m68k::pmmu::regs::{
+    PmmuPageDescriptorType, RegisterPSR, RootPointerReg, TrTranslationReg,
+};
+use crate::cpu_m68k::{CpuM68kType, FpuM68kType, M68030};
 use crate::types::Long;
 
 use anyhow::{Result, anyhow, bail};
@@ -382,13 +383,49 @@ where
         }
     }
 
+    /// Returns true when the given TTx register is enabled and matches the
+    /// supplied access.
+    fn pmmu_tt_matches(tt: TrTranslationReg, fc: u8, vaddr: Address, writing: bool) -> bool {
+        if !tt.e() {
+            return false;
+        }
+        if tt.rwm() && writing != tt.rw() {
+            return false;
+        }
+        if (fc ^ tt.fc_base()) & !tt.fc_mask() & 0b111 != 0 {
+            return false;
+        }
+        let addr_high = (vaddr >> 24) & 0xFF;
+        if (addr_high ^ tt.le_base()) & !tt.le_mask() & 0xFF != 0 {
+            return false;
+        }
+        true
+    }
+
     pub(in crate::cpu_m68k) fn pmmu_translate(
         &mut self,
         fc: u8,
         vaddr: Address,
         writing: bool,
     ) -> Result<Address> {
-        if !PMMU || !self.regs.pmmu.tc.enable() {
+        if !PMMU {
+            return Ok(vaddr);
+        }
+
+        // Transparent translation: a matching TT register bypasses paging
+        // and the ATC entirely, regardless of TC.enable.
+        if CPU_TYPE >= M68030
+            && self
+                .regs
+                .pmmu
+                .tt
+                .iter()
+                .any(|tt| Self::pmmu_tt_matches(*tt, fc, vaddr, writing))
+        {
+            return Ok(vaddr);
+        }
+
+        if !self.regs.pmmu.tc.enable() {
             return Ok(vaddr);
         }
 

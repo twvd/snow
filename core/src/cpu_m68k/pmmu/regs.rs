@@ -152,7 +152,8 @@ pub struct PmmuRegisterFile {
     pub psr: RegisterPSR,
 
     pub last_desc: Address,
-    //pub tt: [TrTranslationReg; 2],
+    /// Transparent translation registers (TT0, TT1) - 68030 only.
+    pub tt: [TrTranslationReg; 2],
 }
 
 impl PmmuRegisterFile {
@@ -196,6 +197,8 @@ impl PmmuRegisterFile {
         out.push_str(&diff8("PSCC", self.scc, other.scc));
         out.push_str(&diff16("PAC", self.ac.0, other.ac.0));
         out.push_str(&diff32("PTC", self.tc.0, other.tc.0));
+        out.push_str(&diff32("PTT0", self.tt[0].0, other.tt[0].0));
+        out.push_str(&diff32("PTT1", self.tt[1].0, other.tt[1].0));
         out
     }
 }

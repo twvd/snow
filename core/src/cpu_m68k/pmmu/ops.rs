@@ -60,22 +60,14 @@ where
             self.op_pmove_68030(instr, extword)
         } else if extword & 0b1111_1000_1111_1111 == 0b0000_1000_0000_0000 && CPU_TYPE >= M68030 {
             // PMOVE TT regs (68030+)
-            let write = extword & (1 << 9) != 0;
-            if !write {
-                // EA to MMU reg
-                let tt = self.read_ea::<Long>(instr, instr.get_op2())?;
-                if tt != 0 {
-                    bail!(
-                        "Unimplemented PMMU op: write to TTx register (value={:08X}, extword={:016b})",
-                        tt,
-                        extword
-                    );
-                }
+            let tt_idx = ((extword >> 10) & 1) as usize;
+            let reg_to_ea = extword & (1 << 9) != 0;
+            if reg_to_ea {
+                let v = self.regs.pmmu.tt[tt_idx].0;
+                self.write_ea::<Long>(instr, instr.get_op2(), v)?;
             } else {
-                bail!(
-                    "Unimplemented PMMU op: read of TTx register (extword={:016b})",
-                    extword
-                );
+                let v: Long = self.read_ea::<Long>(instr, instr.get_op2())?;
+                self.regs.pmmu.tt[tt_idx].0 = v;
             }
             Ok(())
         } else {
