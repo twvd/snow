@@ -54,6 +54,7 @@ pub enum WorkspaceScsiTarget {
     // Do not feature gate Ethernet here to avoid problems with loading
     // workspaces on builds without the ethernet feature
     Ethernet,
+    Printer,
 }
 
 impl TryFrom<ScsiTarget> for WorkspaceScsiTarget {
@@ -67,6 +68,8 @@ impl TryFrom<ScsiTarget> for WorkspaceScsiTarget {
             ScsiTargetType::Cdrom => Self::Cdrom,
             #[cfg(feature = "ethernet")]
             ScsiTargetType::Ethernet => Self::Ethernet,
+            #[cfg(feature = "printer")]
+            ScsiTargetType::Printer => Self::Printer,
         })
     }
 }
@@ -106,6 +109,16 @@ impl Into<ScsiTarget> for WorkspaceScsiTarget {
             },
             #[cfg(not(feature = "ethernet"))]
             Self::Ethernet => ScsiTarget {
+                target_type: None,
+                image_path: None,
+            },
+            #[cfg(feature = "printer")]
+            Self::Printer => ScsiTarget {
+                target_type: Some(ScsiTargetType::Printer),
+                image_path: None,
+            },
+            #[cfg(not(feature = "printer"))]
+            Self::Printer => ScsiTarget {
                 target_type: None,
                 image_path: None,
             },
@@ -374,7 +387,8 @@ impl Workspace {
                 WorkspaceScsiTarget::Disk(p) => p.after_deserialize(parent)?,
                 WorkspaceScsiTarget::None
                 | WorkspaceScsiTarget::Cdrom
-                | WorkspaceScsiTarget::Ethernet => (),
+                | WorkspaceScsiTarget::Ethernet
+                | WorkspaceScsiTarget::Printer => (),
             }
         }
         for (i, d) in result.disks.iter_mut().enumerate() {
@@ -436,7 +450,8 @@ impl Workspace {
                 WorkspaceScsiTarget::Disk(p) => p.before_serialize(parent)?,
                 WorkspaceScsiTarget::None
                 | WorkspaceScsiTarget::Cdrom
-                | WorkspaceScsiTarget::Ethernet => (),
+                | WorkspaceScsiTarget::Ethernet
+                | WorkspaceScsiTarget::Printer => (),
             }
         }
         for p in &mut self.floppy_images {
