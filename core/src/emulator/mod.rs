@@ -786,6 +786,12 @@ impl Emulator {
         info!("SCSI ID #{}: Ethernet controller attached", id);
     }
 
+    #[cfg(feature = "printer")]
+    pub fn attach_printer(&mut self, id: usize, output_dir: std::path::PathBuf) {
+        self.config.scsi_mut().attach_printer_at(id, output_dir);
+        info!("SCSI ID #{}: LaserWriter IISC printer attached", id);
+    }
+
     #[cfg(feature = "savestates")]
     fn save_state(&self, p: &Path, screenshot: Option<Vec<u8>>) -> Result<()> {
         let mut f = File::create(p)?;
@@ -919,6 +925,11 @@ impl Tickable for Emulator {
                     #[cfg(feature = "ethernet")]
                     EmulatorCommand::ScsiAttachEthernet(id) => {
                         self.attach_ethernet(id);
+                        self.status_update()?;
+                    }
+                    #[cfg(feature = "printer")]
+                    EmulatorCommand::ScsiAttachPrinter(id, output_dir) => {
+                        self.attach_printer(id, output_dir);
                         self.status_update()?;
                     }
                     EmulatorCommand::DetachScsiTarget(id) => {
