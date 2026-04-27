@@ -216,7 +216,6 @@ where
 
         match (extword.preg(), extword.write()) {
             (0b000, true) => {
-                log::debug!("{:?}", self.regs.pmmu.psr);
                 self.write_ea(instr, instr.get_op2(), self.regs.pmmu.psr.0)?;
             }
             (0b000, false) => {

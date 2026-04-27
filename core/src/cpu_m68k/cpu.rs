@@ -79,6 +79,9 @@ pub(in crate::cpu_m68k) enum PagefaultCause {
     Invalid,
     /// Write access to a page whose descriptor (or any ancestor table) has WP set
     WriteProtected,
+    /// Index used to access a table fell outside the LIMIT/LU bound of the
+    /// parent descriptor (or root pointer).
+    LimitViolation,
 }
 
 /// CPU error type to cascade exceptions down
