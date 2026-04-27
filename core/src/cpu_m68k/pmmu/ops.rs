@@ -106,9 +106,6 @@ where
             }
             (0b000, false) => {
                 let newval = TcReg(self.read_ea(instr, instr.get_op2())?);
-                if newval.fcl() {
-                    bail!("Unimplemented PMMU bit: TC.FCL (Function Code Lookup) set");
-                }
                 self.regs.pmmu.tc = newval;
                 if newval.enable() {
                     if newval.is()

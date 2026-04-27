@@ -513,6 +513,10 @@ where
 
         // SG (shared globally) ignored (only performance improvement by optimizing ATC use?)
 
+        if self.regs.pmmu.tc.fcl() {
+            bail!("Unimplemented PMMU bit: TC.FCL (Function Code Lookup) set");
+        }
+
         if PTEST {
             self.regs.pmmu.psr = RegisterPSR::default();
             self.regs.pmmu.last_desc = 0;
