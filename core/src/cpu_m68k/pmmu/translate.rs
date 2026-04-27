@@ -299,12 +299,7 @@ where
                         entry_addr
                     );
                 }
-                if entry.sg() {
-                    bail!(
-                        "Unimplemented PMMU bit: long page descriptor SG (shared globally) at {:08X}",
-                        entry_addr
-                    );
-                }
+                // SG (shared globally) ignored (only performance improvement by optimizing ATC use?)
                 if entry.wal() != 0 {
                     bail!(
                         "Unimplemented PMMU bit: long page descriptor WAL={:03b} (write access level) at {:08X}",
@@ -341,12 +336,7 @@ where
                         entry_addr
                     );
                 }
-                if entry.sg() {
-                    bail!(
-                        "Unimplemented PMMU bit: long table descriptor SG (shared globally) at {:08X}",
-                        entry_addr
-                    );
-                }
+                // SG (shared globally) ignored (only performance improvement by optimizing ATC use?)
                 if entry.wal() != 0 {
                     bail!(
                         "Unimplemented PMMU bit: long table descriptor WAL={:03b} (write access level) at {:08X}",
@@ -498,12 +488,8 @@ where
     ) -> Result<(Address, bool)> {
         let rootptr = self.pmmu_rootptr(fc);
 
-        if rootptr.sg() {
-            bail!(
-                "Unimplemented PMMU bit: root pointer SG (shared globally) set: {:016X}",
-                rootptr.0
-            );
-        }
+        // SG (shared globally) ignored (only performance improvement by optimizing ATC use?)
+
         // Root pointer LIMIT field is 15 bits (0..=0x7FFF).
         // LU=0 (upper bound): no-op when LIMIT == 0x7FFF.
         // LU=1 (lower bound): no-op when LIMIT == 0.
