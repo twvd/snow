@@ -32,19 +32,20 @@ where
         let extword = self.fetch_immediate::<Word>()?;
 
         if extword & 0b1110_0011_0000_0000 == 0b0010_0000_0000_0000 {
-            // PFLUSH
-            self.pmmu_cache_invalidate();
+            // PFLUSHx family
+            if extword == 0b0010_0100_0000_0000 {
+                // PFLUSHA - invalidate full cache
+                self.pmmu_cache_invalidate();
+            } else {
+                bail!("Unimplemented PMMU op: PFLUSH extword={:016b}", extword);
+            }
             Ok(())
         } else if extword == 0b1010_0000_0000_0000 {
             // PFLUSHR
-            // TODO specific flush
-            self.read_ea_sz::<8>(instr, instr.get_op2())?;
-            self.pmmu_cache_invalidate();
-            Ok(())
+            bail!("Unimplemented PMMU op: PFLUSHR extword={:016b}", extword);
         } else if extword & 0b1111_1101_1110_0000 == 0b0010_0000_0000_0000 {
             // PLOAD
-            self.read_ea_sz::<8>(instr, instr.get_op2())?;
-            Ok(())
+            bail!("Unimplemented PMMU op: PLOAD extword={:016b}", extword);
         } else if extword & 0b1110_0001_1111_1111 == 0b0100_0000_0000_0000 {
             // PMOVE (format 1)
             self.op_pmove1(instr, extword)
@@ -64,21 +65,26 @@ where
                 // EA to MMU reg
                 let tt = self.read_ea::<Long>(instr, instr.get_op2())?;
                 if tt != 0 {
-                    bail!("TODO write to TTx regs");
+                    bail!(
+                        "Unimplemented PMMU op: write to TTx register (value={:08X}, extword={:016b})",
+                        tt,
+                        extword
+                    );
                 }
             } else {
-                // Always write back 0 for now
-                self.write_ea::<Long>(instr, instr.get_op2(), 0)?;
+                bail!(
+                    "Unimplemented PMMU op: read of TTx register (extword={:016b})",
+                    extword
+                );
             }
             Ok(())
         } else {
             // Unknown instruction
-            log::warn!(
-                "Unimplemented PMMU op 000: {:016b} {:016b}",
+            bail!(
+                "Unimplemented PMMU op 000: instr={:016b} extword={:016b}",
                 instr.data,
                 extword
             );
-            self.op_linef(instr)
         }
     }
 
@@ -94,12 +100,23 @@ where
 
         let extword = Pmove1Extword(extword);
 
+        // FD = "function disabled" (suppress automatic ATC flush).
+        if extword.fd() {
+            bail!(
+                "Unimplemented PMMU bit: PMOVE format 1 FD bit set (preg={:03b})",
+                extword.preg()
+            );
+        }
+
         match (extword.preg(), extword.write()) {
             (0b000, true) => {
                 self.write_ea(instr, instr.get_op2(), self.regs.pmmu.tc.0)?;
             }
             (0b000, false) => {
                 let newval = TcReg(self.read_ea(instr, instr.get_op2())?);
+                if newval.fcl() {
+                    bail!("Unimplemented PMMU bit: TC.FCL (Function Code Lookup) set");
+                }
                 self.regs.pmmu.tc = newval;
                 if newval.enable() {
                     if newval.is()
@@ -116,11 +133,10 @@ where
                 }
             }
             (0b001, true) => {
-                self.write_ea_sz::<8>(instr, instr.get_op2(), self.regs.pmmu.drp.0.to_be_bytes())?;
+                bail!("Unimplemented PMMU op: read of DRP register");
             }
             (0b001, false) => {
-                self.regs.pmmu.drp.0 =
-                    DoubleLong::from_be_bytes(self.read_ea_sz::<8>(instr, instr.get_op2())?);
+                bail!("Unimplemented PMMU op: write to DRP register");
             }
             (0b010, true) => {
                 self.write_ea_sz::<8>(instr, instr.get_op2(), self.regs.pmmu.srp.0.to_be_bytes())?;
@@ -140,25 +156,53 @@ where
                 self.write_ea(instr, instr.get_op2(), self.regs.pmmu.cal.0)?;
             }
             (0b100, false) => {
-                self.regs.pmmu.cal.0 = self.read_ea(instr, instr.get_op2())?;
+                let v: u8 = self.read_ea(instr, instr.get_op2())?;
+                if v != 0 {
+                    bail!(
+                        "Unimplemented PMMU op: write to CAL (Current Access Level) register, value={:02X}",
+                        v
+                    );
+                }
+                self.regs.pmmu.cal.0 = v;
             }
             (0b101, true) => {
                 self.write_ea(instr, instr.get_op2(), self.regs.pmmu.val.0)?;
             }
             (0b101, false) => {
-                self.regs.pmmu.val.0 = self.read_ea(instr, instr.get_op2())?;
+                let v: u8 = self.read_ea(instr, instr.get_op2())?;
+                if v != 0 {
+                    bail!(
+                        "Unimplemented PMMU op: write to VAL (Validate Access Level) register, value={:02X}",
+                        v
+                    );
+                }
+                self.regs.pmmu.val.0 = v;
             }
             (0b110, true) => {
                 self.write_ea(instr, instr.get_op2(), self.regs.pmmu.scc)?;
             }
             (0b110, false) => {
-                self.regs.pmmu.scc = self.read_ea(instr, instr.get_op2())?;
+                let v: u8 = self.read_ea(instr, instr.get_op2())?;
+                if v != 0 {
+                    bail!(
+                        "Unimplemented PMMU op: write to SCC (Stack Change Control) register, value={:02X}",
+                        v
+                    );
+                }
+                self.regs.pmmu.scc = v;
             }
             (0b111, true) => {
                 self.write_ea(instr, instr.get_op2(), self.regs.pmmu.ac.0)?;
             }
             (0b111, false) => {
-                self.regs.pmmu.ac.0 = self.read_ea(instr, instr.get_op2())?;
+                let v: u16 = self.read_ea(instr, instr.get_op2())?;
+                if v != 0 {
+                    bail!(
+                        "Unimplemented PMMU op: write to AC (Access Control) register, value={:04X}",
+                        v
+                    );
+                }
+                self.regs.pmmu.ac.0 = v;
             }
             _ => unreachable!(),
         }
@@ -184,15 +228,32 @@ where
                 self.write_ea(instr, instr.get_op2(), self.regs.pmmu.psr.0)?;
             }
             (0b000, false) => {
-                self.regs.pmmu.psr.0 = self.read_ea(instr, instr.get_op2())?;
+                let v: u16 = self.read_ea(instr, instr.get_op2())?;
+                if v != 0 {
+                    bail!(
+                        "Unimplemented PMMU op: write to PSR (status register), value={:016b}",
+                        v
+                    );
+                }
+                self.regs.pmmu.psr.0 = v;
             }
             (0b001, true) => {
                 self.write_ea(instr, instr.get_op2(), self.regs.pmmu.pcsr.0)?;
             }
             (0b001, false) => {
-                self.regs.pmmu.pcsr.0 = self.read_ea(instr, instr.get_op2())?;
+                let v: u16 = self.read_ea(instr, instr.get_op2())?;
+                if v != 0 {
+                    bail!(
+                        "Unimplemented PMMU op: write to PCSR (cache status register), value={:016b}",
+                        v
+                    );
+                }
+                self.regs.pmmu.pcsr.0 = v;
             }
-            _ => bail!("PMOVE3 invalid Preg: {}", extword.preg()),
+            _ => bail!(
+                "Unimplemented PMMU op: PMOVE3 invalid/reserved Preg: {:03b}",
+                extword.preg()
+            ),
         }
 
         Ok(())
@@ -216,6 +277,9 @@ where
             }
             (0b000, false) => {
                 let newval = TcReg(self.read_ea(instr, instr.get_op2())?);
+                if newval.fcl() {
+                    bail!("Unimplemented PMMU bit: TC.FCL (Function Code Lookup) set");
+                }
                 self.regs.pmmu.tc = newval;
                 if newval.enable()
                     && newval.is()
@@ -243,7 +307,11 @@ where
                 self.regs.pmmu.crp.0 =
                     DoubleLong::from_be_bytes(self.read_ea_sz::<8>(instr, instr.get_op2())?);
             }
-            _ => bail!("PMOVE 68030 invalid Preg: {}", extword.preg()),
+            _ => bail!(
+                "Unimplemented PMMU op: PMOVE 68030 unsupported Preg: {:03b} (write={})",
+                extword.preg(),
+                extword.write()
+            ),
         }
 
         if !extword.fd() {
@@ -259,6 +327,14 @@ where
         extword: Word,
     ) -> Result<()> {
         let extword = PtestExtword(extword);
+
+        // Level limits how many table levels are walked.
+        if extword.level() != 7 {
+            bail!(
+                "Unimplemented PMMU bit: PTEST level field = {}",
+                extword.level()
+            );
+        }
 
         let fc = if extword.fc() & 0b10000 != 0 {
             extword.fc() & 0b1111

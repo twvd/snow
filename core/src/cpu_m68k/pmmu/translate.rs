@@ -203,11 +203,31 @@ where
             }
             PmmuPageDescriptorType::PageDescriptor => {
                 let entry = PmmuShortPageDescriptor(entry_word);
+                if entry.l() {
+                    bail!(
+                        "Unimplemented PMMU bit: short page descriptor L (locked) at {:08X}",
+                        entry_addr
+                    );
+                }
+                if entry.ci() {
+                    bail!(
+                        "Unimplemented PMMU bit: short page descriptor CI (cache inhibit) at {:08X}",
+                        entry_addr
+                    );
+                }
+                if entry.g() {
+                    bail!(
+                        "Unimplemented PMMU bit: short page descriptor G (globally shared) at {:08X}",
+                        entry_addr
+                    );
+                }
+                // TODO U/M bits
                 Ok((entry.page_addr() << 8, wp | entry.wp()))
             }
             PmmuPageDescriptorType::Valid4b | PmmuPageDescriptorType::Valid8b => {
                 // Recurse to child
                 let entry = PmmuShortTableDescriptor(entry_word);
+                // TODO U-bit
                 self.pmmu_fetch_table(
                     vaddr << ti,
                     entry.table_addr() << 4,
@@ -252,6 +272,59 @@ where
                 let entry = PmmuLongPageDescriptor(0)
                     .with_msl(entry_word1)
                     .with_lsl(entry_word2);
+                if entry.l() {
+                    bail!(
+                        "Unimplemented PMMU bit: long page descriptor L (locked) at {:08X}",
+                        entry_addr
+                    );
+                }
+                if entry.ci() {
+                    bail!(
+                        "Unimplemented PMMU bit: long page descriptor CI (cache inhibit) at {:08X}",
+                        entry_addr
+                    );
+                }
+                if entry.g() {
+                    bail!(
+                        "Unimplemented PMMU bit: long page descriptor G (globally shared) at {:08X}",
+                        entry_addr
+                    );
+                }
+                if entry.s() {
+                    bail!(
+                        "Unimplemented PMMU bit: long page descriptor S (supervisor-only) at {:08X}",
+                        entry_addr
+                    );
+                }
+                if entry.sg() {
+                    bail!(
+                        "Unimplemented PMMU bit: long page descriptor SG (shared globally) at {:08X}",
+                        entry_addr
+                    );
+                }
+                if entry.wal() != 0 {
+                    bail!(
+                        "Unimplemented PMMU bit: long page descriptor WAL={:03b} (write access level) at {:08X}",
+                        entry.wal(),
+                        entry_addr
+                    );
+                }
+                if entry.ral() != 0 {
+                    bail!(
+                        "Unimplemented PMMU bit: long page descriptor RAL={:03b} (read access level) at {:08X}",
+                        entry.ral(),
+                        entry_addr
+                    );
+                }
+                if (!entry.lu() && entry.limit() < 0x7F) || (entry.lu() && entry.limit() > 0) {
+                    bail!(
+                        "Unimplemented PMMU bit: long page descriptor LIMIT={} LU={} at {:08X}",
+                        entry.limit(),
+                        entry.lu(),
+                        entry_addr
+                    );
+                }
+                // TODO U (used) and M (modified) bits not updated.
                 Ok((entry.page_addr() << 8, wp | entry.wp()))
             }
             PmmuPageDescriptorType::Valid4b | PmmuPageDescriptorType::Valid8b => {
@@ -259,6 +332,40 @@ where
                 let entry = PmmuLongTableDescriptor(0)
                     .with_msl(entry_word1)
                     .with_lsl(entry_word2);
+                if entry.s() {
+                    bail!(
+                        "Unimplemented PMMU bit: long table descriptor S (supervisor-only) at {:08X}",
+                        entry_addr
+                    );
+                }
+                if entry.sg() {
+                    bail!(
+                        "Unimplemented PMMU bit: long table descriptor SG (shared globally) at {:08X}",
+                        entry_addr
+                    );
+                }
+                if entry.wal() != 0 {
+                    bail!(
+                        "Unimplemented PMMU bit: long table descriptor WAL={:03b} (write access level) at {:08X}",
+                        entry.wal(),
+                        entry_addr
+                    );
+                }
+                if entry.ral() != 0 {
+                    bail!(
+                        "Unimplemented PMMU bit: long table descriptor RAL={:03b} (read access level) at {:08X}",
+                        entry.ral(),
+                        entry_addr
+                    );
+                }
+                if (!entry.lu() && entry.limit() < 0x7F) || (entry.lu() && entry.limit() > 0) {
+                    bail!(
+                        "Unimplemented PMMU bit: long table descriptor LIMIT={} LU={} at {:08X}",
+                        entry.limit(),
+                        entry.lu(),
+                        entry_addr
+                    );
+                }
                 self.pmmu_fetch_table(
                     vaddr << ti,
                     entry.table_addr() << 4,
@@ -348,6 +455,23 @@ where
         writing: bool,
     ) -> Result<(Address, bool)> {
         let rootptr = self.pmmu_rootptr(fc);
+
+        if rootptr.sg() {
+            bail!(
+                "Unimplemented PMMU bit: root pointer SG (shared globally) set: {:016X}",
+                rootptr.0
+            );
+        }
+        // Root pointer LIMIT field is 15 bits (0..=0x7FFF).
+        // LU=0 (upper bound): no-op when LIMIT == 0x7FFF.
+        // LU=1 (lower bound): no-op when LIMIT == 0.
+        if (!rootptr.lu() && rootptr.limit() < 0x7FFF) || (rootptr.lu() && rootptr.limit() > 0) {
+            bail!(
+                "Unimplemented PMMU bit: root pointer LIMIT={} LU={}",
+                rootptr.limit(),
+                rootptr.lu()
+            );
+        }
 
         if PTEST {
             self.regs.pmmu.psr = RegisterPSR::default();
