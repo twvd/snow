@@ -504,6 +504,17 @@ where
                 Some(CpuError::AddressError(ae)) => {
                     anyhow!("Address error while reading page tables: {:X?}", ae)
                 }
+                Some(CpuError::BusError(_)) => {
+                    // Bus error on descriptor fetch: PSR.BERR is set and the
+                    // current level number is recorded, regardless of PTEST.
+                    // The original bus error is then propagated.
+                    self.regs.pmmu.psr.set_bus_error(true);
+                    self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
+
+                    // op_ptest() will swallow the cascaded bus error and
+                    // normal translation will raise the bus error on the CPU.
+                    e
+                }
                 Some(CpuError::Pagefault(cause)) => {
                     let cause = *cause;
                     if PTEST {

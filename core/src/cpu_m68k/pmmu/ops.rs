@@ -350,6 +350,7 @@ where
                 }
             }
             // PTEST never raises: PSR reflects what happened.
+            // This may swallow a bus error
             Err(_) => (),
         }
         Ok(())
