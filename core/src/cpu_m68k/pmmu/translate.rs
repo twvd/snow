@@ -209,12 +209,7 @@ where
                         entry_addr
                     );
                 }
-                if entry.ci() {
-                    bail!(
-                        "Unimplemented PMMU bit: short page descriptor CI (cache inhibit) at {:08X}",
-                        entry_addr
-                    );
-                }
+                // CI (Cache Inhibit) bit deliberately ignored (TODO D-cache)
                 if entry.g() {
                     bail!(
                         "Unimplemented PMMU bit: short page descriptor G (globally shared) at {:08X}",
@@ -278,12 +273,7 @@ where
                         entry_addr
                     );
                 }
-                if entry.ci() {
-                    bail!(
-                        "Unimplemented PMMU bit: long page descriptor CI (cache inhibit) at {:08X}",
-                        entry_addr
-                    );
-                }
+                // CI (Cache Inhibit) bit deliberately ignored (TODO D-cache)
                 if entry.g() {
                     bail!(
                         "Unimplemented PMMU bit: long page descriptor G (globally shared) at {:08X}",
