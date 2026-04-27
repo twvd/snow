@@ -27,6 +27,8 @@ pub enum ScsiTargetType {
     Cdrom,
     #[cfg(feature = "ethernet")]
     Ethernet,
+    #[cfg(feature = "printer")]
+    Printer,
 }
 
 /// Some events that may occur to feed to the UI through EmulatorEvent
