@@ -24,6 +24,8 @@ use crate::mac::scsi::disk::ScsiTargetDisk;
 use crate::mac::scsi::disk_image::DiskImage;
 #[cfg(feature = "ethernet")]
 use crate::mac::scsi::ethernet::ScsiTargetEthernet;
+#[cfg(feature = "printer")]
+use crate::mac::scsi::printer::ScsiTargetPrinter;
 use crate::mac::scsi::scsi_cmd_len;
 use crate::mac::scsi::target::ScsiTarget;
 use crate::mac::scsi::target::ScsiTargetType;
@@ -369,6 +371,12 @@ impl ScsiController {
     #[cfg(feature = "ethernet")]
     pub fn attach_ethernet_at(&mut self, scsi_id: usize) {
         self.targets[scsi_id] = Some(Box::new(ScsiTargetEthernet::default()));
+    }
+
+    /// Attaches a LaserWriter IISC printer at the given SCSI ID
+    #[cfg(feature = "printer")]
+    pub fn attach_printer_at(&mut self, scsi_id: usize, output_dir: std::path::PathBuf) {
+        self.targets[scsi_id] = Some(Box::new(ScsiTargetPrinter::new(output_dir)));
     }
 
     /// Detaches a target from the given SCSI ID
