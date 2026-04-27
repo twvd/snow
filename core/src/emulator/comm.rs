@@ -46,6 +46,8 @@ pub enum EmulatorCommand {
     ScsiLoadMedia(usize, PathBuf),
     #[cfg(feature = "ethernet")]
     ScsiAttachEthernet(usize),
+    #[cfg(feature = "printer")]
+    ScsiAttachPrinter(usize, std::path::PathBuf),
     #[cfg(feature = "ethernet")]
     EthernetSetLink(usize, EthernetLinkType),
     #[cfg(feature = "ethernet")]
