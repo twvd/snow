@@ -1468,6 +1468,25 @@ impl SnowGui {
                         },
                     );
                 }
+                #[cfg(feature = "printer")]
+                ScsiTargetType::Printer => {
+                    ui.menu_button(
+                        format!(
+                            "{} SCSI #{}: LaserWriter IISC",
+                            egui_material_icons::icons::ICON_PRINT,
+                            id,
+                        ),
+                        |ui| {
+                            ui.set_min_width(Self::SUBMENU_WIDTH);
+                            ui.label("Apple LaserWriter IISC");
+                            ui.label("Status: Online"); // placeholder
+                            ui.separator();
+                            if ui.button("Detach").clicked() {
+                                self.emu.scsi_detach_target(id);
+                            }
+                        },
+                    );
+                }
             }
         } else {
             ui.menu_button(
@@ -1513,6 +1532,26 @@ impl SnowGui {
                             .clicked()
                         {
                             self.emu.scsi_attach_ethernet(id);
+                        }
+                    }
+                    #[cfg(feature = "printer")]
+                    {
+                        if ui
+                            .add_enabled(
+                                !self
+                                    .emu
+                                    .get_scsi_targets()
+                                    .map(|t| {
+                                        t.iter().any(|i| {
+                                            matches!(i.target_type, Some(ScsiTargetType::Printer))
+                                        })
+                                    })
+                                    .unwrap_or(false),
+                                egui::Button::new("Attach LaserWriter IISC printer"),
+                            )
+                            .clicked()
+                        {
+                            self.emu.scsi_attach_printer(id);
                         }
                     }
                 },

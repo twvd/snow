@@ -288,6 +288,14 @@ impl EmulatorState {
                     } => {
                         emulator.attach_ethernet(id);
                     }
+                    #[cfg(feature = "printer")]
+                    ScsiTarget {
+                        target_type: Some(ScsiTargetType::Printer),
+                        ..
+                    } => {
+                        let output_dir = dirs::desktop_dir().or_else(|| std::env::current_dir().ok()).unwrap_or_default();
+                        emulator.attach_printer(id, output_dir);
+                    }
                     ScsiTarget {
                         target_type: None, ..
                     } => (),
@@ -1224,6 +1232,18 @@ impl EmulatorState {
 
         sender
             .send(EmulatorCommand::ScsiAttachEthernet(id))
+            .unwrap();
+    }
+
+    #[cfg(feature = "printer")]
+    pub fn scsi_attach_printer(&self, id: usize) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        let output_dir = dirs::desktop_dir().or_else(|| std::env::current_dir().ok()).unwrap_or_default();
+        sender
+            .send(EmulatorCommand::ScsiAttachPrinter(id, output_dir))
             .unwrap();
     }
 
