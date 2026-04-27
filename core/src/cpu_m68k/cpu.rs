@@ -919,6 +919,11 @@ where
         match group {
             ExceptionGroup::Group0 => {
                 self.step_exception = true;
+                // A bus or address error inhibits the pending trace exception
+                // for the aborted instruction (M68000PRM 6.2.4, M68020UM 6.4,
+                // M68030UM 8.4.3). The trace will fire naturally after the
+                // instruction replays on RTE.
+                self.step_inhibit_trace = true;
 
                 self.advance_cycles(8)?; // idle
                 let details = details.expect("Address error details not passed");
