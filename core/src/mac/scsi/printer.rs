@@ -42,7 +42,10 @@ pub(super) struct ScsiTargetPrinter {
     output_dir: PathBuf,
 
     /// Page counter for debug or stats
-    page_count: u16, // TODO
+    page_count: u16,
+
+    /// Number of render_mask() calls on the current page
+    mask_count: usize,
 
     /// SNOW_SCSI_TRACE_PRINTER env flag, similar stuff in controller.rs
     #[serde(skip)]
@@ -63,6 +66,7 @@ impl Default for ScsiTargetPrinter {
             viewport_y: 0,
             output_dir: PathBuf::from("/tmp/"),
             page_count: 0,
+            mask_count: 0,
             trace_flag: false,
             common: Default::default(),
         }
@@ -103,9 +107,22 @@ impl ScsiTargetPrinter {
         }
     }
 
+	/// Provide common paper size names. Sizes from Service Manual
+    fn paper_name(&self) -> &'static str {
+        match (self.page_width, self.page_height) {
+            (2400, 3175) => "US Letter (8.0\"x10.6\")",
+            (2000, 3750) => "US Legal (6.72\"x12.5\")",
+            (2400, 3375) => "A4 (8.0\"x11.27\")",
+            (2000, 2825) => "B5 (6.67\"x9.43\")",
+            (1136, 2725) => "#10 Envelope (3.84\" x 9.1\")",
+            _ => "Custom",
+        }
+    }
+
     /// Draw monochrome bitmap mask data into framebuffer
     #[cfg(feature = "printer")]
     fn render_mask(&mut self, header: &[u8; 10], bitmap: &[u8]) {
+        self.mask_count += 1;
         let x1 = u16::from_be_bytes([header[0], header[1]]);
         let y1 = u16::from_be_bytes([header[2], header[3]]);
         let x2 = u16::from_be_bytes([header[4], header[5]]);
@@ -404,16 +421,7 @@ impl ScsiTarget for ScsiTargetPrinter {
                         self.viewport_x = 0;
                         self.viewport_y = 0;
 
-                        // Identify commons paper size. Sizes from Service Manual
-                        let paper_name = match (width, height) {
-                            (2400, 3175) => "US Letter (8.0\"x10.6\")",
-                            (2000, 3750) => "US Legal (6.72\"x12.5\")",
-                            (2400, 3375) => "A4 (8.0\"x11.27\")",
-                            (2000, 2825) => "B5 (6.67\"x9.43\")",
-                            (1136, 2725) => "#10 Envelope (3.84\" x 9.1\")",
-                            _ => "Custom",
-                        };
-
+                        let paper_name = self.paper_name();
                         log::info!(
                             "LaserWriter: Page setup {}x{} pixels: {}",
                             width,
@@ -500,6 +508,13 @@ impl ScsiTarget for ScsiTargetPrinter {
 
 impl Debuggable for ScsiTargetPrinter {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
-        vec![]
+        use crate::debuggable::*;
+        use crate::{dbgprop_str, dbgprop_udec};
+
+        vec![
+            dbgprop_udec!("Mask operations", self.mask_count),
+            dbgprop_str!("Paper size", self.paper_name()),
+            dbgprop_udec!("Pages printed", self.page_count),
+        ]
     }
 }
