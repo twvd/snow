@@ -1478,7 +1478,6 @@ impl SnowGui {
                         ),
                         |ui| {
                             ui.set_min_width(Self::SUBMENU_WIDTH);
-                            ui.label("Apple LaserWriter IISC");
                             ui.label("Status: Online"); // placeholder
                             ui.separator();
                             if ui.button("Detach").clicked() {
