@@ -561,6 +561,15 @@ impl Emulator {
                         .send(EmulatorEvent::ScsiMediaEjected(id))
                         .unwrap();
                 }
+                #[cfg(feature = "printer")]
+                Some(ScsiTargetEvent::PageSaved(f)) => {
+                    self.event_sender
+                        .send(EmulatorEvent::UserMessage(
+                            UserMessageType::Notice,
+                            format!("LaserWriter: page saved as '{}'", f),
+                        ))
+                        .unwrap();
+                }
                 None => (),
             }
         }
