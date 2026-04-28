@@ -34,6 +34,8 @@ pub enum ScsiTargetType {
 /// Some events that may occur to feed to the UI through EmulatorEvent
 pub enum ScsiTargetEvent {
     MediaEjected,
+    #[cfg(feature = "printer")]
+    PageSaved(String),
 }
 
 /// Data common to all SCSI targets

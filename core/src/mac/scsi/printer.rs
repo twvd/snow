@@ -47,6 +47,10 @@ pub(super) struct ScsiTargetPrinter {
     /// Number of render_mask() calls on the current page
     mask_count: usize,
 
+    /// Event stuff for the "page saved" notification
+    #[serde(skip)]
+    pending_event: Option<ScsiTargetEvent>,
+
     /// SNOW_SCSI_TRACE_PRINTER env flag, similar stuff in controller.rs
     #[serde(skip)]
     trace_flag: bool,
@@ -67,6 +71,7 @@ impl Default for ScsiTargetPrinter {
             output_dir: PathBuf::from("/tmp/"),
             page_count: 0,
             mask_count: 0,
+            pending_event: None,
             trace_flag: false,
             common: Default::default(),
         }
@@ -107,7 +112,6 @@ impl ScsiTargetPrinter {
         }
     }
 
-	/// Provide common paper size names. Sizes from Service Manual
     fn paper_name(&self) -> &'static str {
         match (self.page_width, self.page_height) {
             (2400, 3175) => "US Letter (8.0\"x10.6\")",
@@ -208,6 +212,7 @@ impl ScsiTargetPrinter {
         image.save(&filepath)?;
 
         log::info!("page saved: {}", filename);
+        self.pending_event = Some(ScsiTargetEvent::PageSaved(filename));
         Ok(())
     }
 
@@ -234,7 +239,7 @@ impl ScsiTarget for ScsiTargetPrinter {
     }
 
     fn take_event(&mut self) -> Option<ScsiTargetEvent> {
-        None
+        self.pending_event.take()
     }
 
     fn target_type(&self) -> ScsiTargetType {
@@ -421,7 +426,9 @@ impl ScsiTarget for ScsiTargetPrinter {
                         self.viewport_x = 0;
                         self.viewport_y = 0;
 
+                        // Identify commons paper size. Sizes from Service Manual
                         let paper_name = self.paper_name();
+
                         log::info!(
                             "LaserWriter: Page setup {}x{} pixels: {}",
                             width,
