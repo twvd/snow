@@ -293,7 +293,9 @@ impl EmulatorState {
                         target_type: Some(ScsiTargetType::Printer),
                         ..
                     } => {
-                        let output_dir = dirs::desktop_dir().or_else(|| std::env::current_dir().ok()).unwrap_or_default();
+                        let output_dir = dirs::desktop_dir()
+                            .or_else(|| std::env::current_dir().ok())
+                            .unwrap_or_default();
                         emulator.attach_printer(id, output_dir);
                     }
                     ScsiTarget {
@@ -1241,7 +1243,9 @@ impl EmulatorState {
             return;
         };
 
-        let output_dir = dirs::desktop_dir().or_else(|| std::env::current_dir().ok()).unwrap_or_default();
+        let output_dir = dirs::desktop_dir()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default();
         sender
             .send(EmulatorCommand::ScsiAttachPrinter(id, output_dir))
             .unwrap();

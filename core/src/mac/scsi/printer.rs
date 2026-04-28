@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::debuggable::Debuggable;
 use crate::mac::scsi::target::{ScsiTarget, ScsiTargetCommon, ScsiTargetEvent, ScsiTargetType};
-use crate::mac::scsi::{ScsiCmdResult, STATUS_CHECK_CONDITION, STATUS_GOOD};
+use crate::mac::scsi::{STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult};
 
 #[cfg(feature = "printer")]
 use chrono::Local;
@@ -71,7 +71,11 @@ impl Default for ScsiTargetPrinter {
 
 impl ScsiTargetPrinter {
     pub(super) fn new(output_dir: PathBuf) -> Self {
-        let env_flag = |name: &str| std::env::var(name).map(|v| v != "0" && !v.is_empty()).unwrap_or(false);
+        let env_flag = |name: &str| {
+            std::env::var(name)
+                .map(|v| v != "0" && !v.is_empty())
+                .unwrap_or(false)
+        };
         Self {
             output_dir,
             trace_flag: env_flag("SNOW_SCSI_TRACE_PRINTER"),
@@ -82,11 +86,20 @@ impl ScsiTargetPrinter {
     // private hexdump-like routine. Only used when SNOW_SCSI_TRACE_PRINTER is set
     fn trace_dump(data: &[u8]) -> String {
         if data.len() <= 16 {
-            data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ")
+            data.iter()
+                .map(|b| format!("{:02X}", b))
+                .collect::<Vec<_>>()
+                .join(" ")
         } else {
-            format!("{} .. ({} bytes)",
-                data.iter().take(16).map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" "),
-                data.len())
+            format!(
+                "{} .. ({} bytes)",
+                data.iter()
+                    .take(16)
+                    .map(|b| format!("{:02X}", b))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                data.len()
+            )
         }
     }
 
@@ -105,9 +118,22 @@ impl ScsiTargetPrinter {
 
         if self.trace_flag {
             // B = black mask, W = white mask, U = unknown mask
-            let type_ch = match cmd_type { 0x01 => 'B', 0x03 => 'W', _ => 'U' };
-            log::debug!("render_mask: ({}, {}) ⇾ ({}, {}) {} {}x{} {} bytes",
-                x1, y1, x2, y2, type_ch, width, height, bitmap.len());
+            let type_ch = match cmd_type {
+                0x01 => 'B',
+                0x03 => 'W',
+                _ => 'U',
+            };
+            log::debug!(
+                "render_mask: ({}, {}) ⇾ ({}, {}) {} {}x{} {} bytes",
+                x1,
+                y1,
+                x2,
+                y2,
+                type_ch,
+                width,
+                height,
+                bitmap.len()
+            );
         }
 
         if self.framebuffer.is_none() {
@@ -129,7 +155,9 @@ impl ScsiTargetPrinter {
                 let bit = (bitmap[byte_idx] >> (7 - (col % 8))) & 1;
                 let px = (x1 + col).min(self.page_width.saturating_sub(1)) as u32;
                 let py = (y1 + row).min(self.page_height.saturating_sub(1)) as u32;
-                if bit == 0 { continue; }
+                if bit == 0 {
+                    continue;
+                }
                 let color = if cmd_type & 0x02 != 0 {
                     Luma([255u8]) // white
                 } else {
@@ -147,7 +175,11 @@ impl ScsiTargetPrinter {
         let filename = format!("Snow print {}.png", ts);
         let filepath = self.output_dir.join(&filename);
 
-        log::info!("LaserWriter: saving page {} to {}", self.page_count, filepath.display());
+        log::info!(
+            "LaserWriter: saving page {} to {}",
+            self.page_count,
+            filepath.display()
+        );
 
         let image = self.framebuffer.get_or_insert_with(|| {
             GrayImage::from_pixel(
@@ -203,7 +235,11 @@ impl ScsiTarget for ScsiTargetPrinter {
     // which causes target.rs to return STATUS_GOOD before reaching this.
     fn mode_select(&mut self, page: u8, data: &[u8]) -> Result<()> {
         if self.trace_flag {
-            log::debug!("LaserWriter: MODE page={:02X} [{}]", page, Self::trace_dump(data));
+            log::debug!(
+                "LaserWriter: MODE page={:02X} [{}]",
+                page,
+                Self::trace_dump(data)
+            );
         }
         Ok(())
     }
@@ -243,8 +279,11 @@ impl ScsiTarget for ScsiTargetPrinter {
         }
 
         if self.trace_flag {
-            log::debug!("LaserWriter: INQUIRY [{}] ⇾ DataIn [{}]",
-                Self::trace_dump(cmd), Self::trace_dump(&result));
+            log::debug!(
+                "LaserWriter: INQUIRY [{}] ⇾ DataIn [{}]",
+                Self::trace_dump(cmd),
+                Self::trace_dump(&result)
+            );
         }
         Ok(ScsiCmdResult::DataIn(result))
     }
@@ -289,7 +328,10 @@ impl ScsiTarget for ScsiTargetPrinter {
         unreachable!()
     }
 
-    fn load_image(&mut self, _image: Box<dyn crate::mac::scsi::disk_image::DiskImage>) -> Result<()> {
+    fn load_image(
+        &mut self,
+        _image: Box<dyn crate::mac::scsi::disk_image::DiskImage>,
+    ) -> Result<()> {
         unreachable!()
     }
 
@@ -330,9 +372,11 @@ impl ScsiTarget for ScsiTargetPrinter {
                         }
                         let header: [u8; 10] = data.try_into().unwrap();
                         let width = u16::from_be_bytes([header[4], header[5]])
-                            .saturating_sub(u16::from_be_bytes([header[0], header[1]])) as usize;
+                            .saturating_sub(u16::from_be_bytes([header[0], header[1]]))
+                            as usize;
                         let height = u16::from_be_bytes([header[6], header[7]])
-                            .saturating_sub(u16::from_be_bytes([header[2], header[3]])) as usize;
+                            .saturating_sub(u16::from_be_bytes([header[2], header[3]]))
+                            as usize;
                         let bitmap_len = ((width + 7) / 8) * height;
                         self.mask_header = Some(header);
                         Ok(ScsiCmdResult::DataOut(bitmap_len))
@@ -370,8 +414,12 @@ impl ScsiTarget for ScsiTargetPrinter {
                             _ => "Custom",
                         };
 
-                        log::info!("LaserWriter: Page setup {}x{} pixels: {}",
-                            width, height, paper_name);
+                        log::info!(
+                            "LaserWriter: Page setup {}x{} pixels: {}",
+                            width,
+                            height,
+                            paper_name
+                        );
 
                         // Fresh image buffer for the new page
                         #[cfg(feature = "printer")]
@@ -388,8 +436,13 @@ impl ScsiTarget for ScsiTargetPrinter {
                         self.viewport_y = y_offset;
 
                         if self.trace_flag {
-                            log::debug!("LaserWriter: Viewport {}x{} at offset {}, {}",
-                                width, height, x_offset, y_offset);
+                            log::debug!(
+                                "LaserWriter: Viewport {}x{} at offset {}, {}",
+                                width,
+                                height,
+                                x_offset,
+                                y_offset
+                            );
                         }
                     }
 
