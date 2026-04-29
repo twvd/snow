@@ -387,12 +387,12 @@ impl SectorMapBuilder {
 
 struct DecodedPacket {
     timestamp: u64,
-    samples: Vec<i16>,
+    sample_buf: SampleBuffer<i16>,
 }
 
 impl DecodedPacket {
     fn frame_count(&self) -> usize {
-        self.samples.len() / 2 // 2 samples per frame
+        self.sample_buf.len() / 2 // 2 samples per frame
     }
 }
 
@@ -511,31 +511,39 @@ impl AudioFile {
 
         while result.len() < sample_count {
             if self.decoded_packet.is_none() || self.stream_ts >= self.next_packet_ts {
-                self.decoded_packet = None;
+                let old_buf = self.decoded_packet.take().map(|p| p.sample_buf);
 
                 let packet = self.format_reader.next_packet()?;
                 let audio_buf = self.decoder.decode(&packet)?;
                 let audio_buf_frame_count = audio_buf.frames();
 
-                let mut converted_buf = SampleBuffer::<i16>::new(
-                    audio_buf.capacity() as u64,
-                    SignalSpec::new(
-                        AUDIO_FRAMES_PER_SEC,
-                        Channels::FRONT_LEFT | Channels::FRONT_RIGHT,
-                    ),
-                );
+                // Reuse old SampleBuffer if possible
+                let mut converted_buf = if let Some(old_buf) = old_buf
+                    && old_buf.capacity() >= audio_buf.capacity()
+                {
+                    old_buf
+                } else {
+                    SampleBuffer::<i16>::new(
+                        audio_buf.capacity() as u64,
+                        SignalSpec::new(
+                            AUDIO_FRAMES_PER_SEC,
+                            Channels::FRONT_LEFT | Channels::FRONT_RIGHT,
+                        ),
+                    )
+                };
+
                 converted_buf.copy_interleaved_ref(audio_buf);
 
                 self.decoded_packet = Some(DecodedPacket {
                     timestamp: self.next_packet_ts,
-                    samples: converted_buf.samples().to_vec(),
+                    sample_buf: converted_buf,
                 });
                 self.next_packet_ts += audio_buf_frame_count as u64;
             }
 
             let decoded_packet = self.decoded_packet.as_ref().unwrap();
             let frame_in_packet = usize::try_from(self.stream_ts - decoded_packet.timestamp)? * 2;
-            let samples = &decoded_packet.samples[frame_in_packet..];
+            let samples = &decoded_packet.sample_buf.samples()[frame_in_packet..];
             let remaining = sample_count - result.len();
             let samples = &samples[..remaining.min(samples.len())];
             result.extend(samples);
