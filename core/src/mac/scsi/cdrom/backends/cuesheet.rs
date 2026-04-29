@@ -5,9 +5,8 @@ use std::{
     cell::RefCell,
     fs::File,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
-    iter::Peekable,
     path::{Path, PathBuf},
-    str::Chars,
+    str::CharIndices,
 };
 use symphonia::core::{
     audio::{Channels, SampleBuffer, SignalSpec},
@@ -32,42 +31,54 @@ use crate::mac::scsi::{
 // [LIBODRAW]: <https://github.com/libyal/libodraw/blob/main/documentation/CUE%20sheet%20format.asciidoc>
 // [LIBODRAW-RAW]: <https://github.com/libyal/libodraw/blob/main/documentation/Optical%20disc%20RAW%20format.asciidoc>
 
-fn skip_whitespace(reader: &mut Peekable<Chars>) {
-    while reader.peek().map(|c| c.is_whitespace()).unwrap_or(false) {
+fn peek_char(c: &CharIndices) -> Option<char> {
+    Some(c.clone().next()?.1)
+}
+
+fn skip_whitespace(reader: &mut CharIndices) {
+    while peek_char(reader)
+        .map(|c| c.is_whitespace())
+        .unwrap_or(false)
+    {
         reader.next();
     }
 }
 
-fn read_cue_word(reader: &mut Peekable<Chars>) -> Option<String> {
+fn read_cue_word<'a>(reader: &'a mut CharIndices) -> Option<&'a str> {
     skip_whitespace(reader);
 
-    reader.peek()?;
+    peek_char(reader)?;
 
-    let mut result = String::new();
+    let (start, start_offset) = (reader.as_str(), reader.offset());
 
-    while reader.peek().map(|c| !c.is_whitespace()).unwrap_or(false) {
-        result.push(reader.next().unwrap());
+    while peek_char(reader)
+        .map(|c| !c.is_whitespace())
+        .unwrap_or(false)
+    {
+        reader.next();
     }
 
-    Some(result)
+    Some(&start[..reader.offset() - start_offset])
 }
 
-fn read_cue_path(reader: &mut Peekable<Chars>) -> Option<String> {
+fn read_cue_path<'a>(reader: &'a mut CharIndices) -> Option<&'a str> {
     skip_whitespace(reader);
 
-    reader.peek()?;
+    peek_char(reader)?;
 
-    if *reader.peek().unwrap() == '"' {
+    if peek_char(reader).unwrap() == '"' {
         reader.next();
 
-        let mut result = String::new();
+        let (start, start_offset) = (reader.as_str(), reader.offset());
 
-        while reader.peek().map(|c| *c != '"').unwrap_or(false) {
-            result.push(reader.next().unwrap());
+        while peek_char(reader).map(|c| c != '"').unwrap_or(false) {
+            reader.next();
         }
 
+        let result = &start[..reader.offset() - start_offset];
+
         // Skip final '"' if present
-        if reader.peek().is_some() {
+        if peek_char(reader).is_some() {
             reader.next();
         }
 
@@ -77,7 +88,7 @@ fn read_cue_path(reader: &mut Peekable<Chars>) -> Option<String> {
     }
 }
 
-fn read_cue_msf(reader: &mut Peekable<Chars>) -> Result<Msf> {
+fn read_cue_msf(reader: &mut CharIndices) -> Result<Msf> {
     let msf_str = read_cue_word(reader).ok_or_else(|| anyhow!("Invalid MSF timecode"))?;
 
     let mut split = msf_str.split(':');
@@ -592,13 +603,13 @@ impl CuesheetCdromBackend {
         // FIXME: I believe cue files have one command per line and never split commands across multiple lines. Is this true?
         for line in cue_file.lines() {
             let line = line?;
-            let mut chars = line.chars().peekable();
+            let mut chars = line.char_indices();
 
             let Some(command) = read_cue_word(&mut chars) else {
                 continue;
             };
 
-            match command.as_str() {
+            match command {
                 "FILE" => {
                     let file_path = read_cue_path(&mut chars)
                         .ok_or_else(|| anyhow!("Failed to parse FILE command"))?;
@@ -606,7 +617,7 @@ impl CuesheetCdromBackend {
 
                     let file_type = read_cue_word(&mut chars)
                         .ok_or_else(|| anyhow!("Failed to parse FILE command"))?;
-                    match file_type.as_str() {
+                    match file_type {
                         "BINARY" => {
                             log::info!("Loading binary file from {}", file_path.to_string_lossy());
 
@@ -635,7 +646,7 @@ impl CuesheetCdromBackend {
                     let track_form_str = read_cue_word(&mut chars)
                         .ok_or_else(|| anyhow!("Invalid TRACK command"))?;
                     let source_format;
-                    (source_format, track_control) = match track_form_str.as_str() {
+                    (source_format, track_control) = match track_form_str {
                         "AUDIO" => (BinarySourceFormat::Raw2352, AUDIO_TRACK),
                         "MODE1/2352" => (BinarySourceFormat::Raw2352, DATA_TRACK),
                         "MODE1/2048" => (BinarySourceFormat::Mode1_2048, DATA_TRACK),
@@ -692,7 +703,7 @@ impl CuesheetCdromBackend {
                         continue;
                     };
 
-                    match rem_cmd.as_str() {
+                    match rem_cmd {
                         "LEAD-OUT" => {
                             if let Ok(leadout_msf) = read_cue_msf(&mut chars) {
                                 sector_map.commit_file_up_to(leadout_msf.to_sector())?;
