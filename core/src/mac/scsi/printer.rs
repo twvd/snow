@@ -33,9 +33,11 @@ pub(super) struct ScsiTargetPrinter {
     page_height: u16,
 
     /// Viewport offset X (for regional drawing, currently unused)
+    #[serde(skip)]
     viewport_x: u16,
 
     /// Viewport offset Y (for regional drawing, currently unused)
+    #[serde(skip)]
     viewport_y: u16,
 
     /// Output directory for PNG files
@@ -47,7 +49,7 @@ pub(super) struct ScsiTargetPrinter {
     /// Number of render_mask() calls on the current page
     mask_count: usize,
 
-    /// Event stuff for the "page saved" notification
+    /// Event for the "page saved" GUI notification
     #[serde(skip)]
     pending_event: Option<ScsiTargetEvent>,
 
@@ -229,9 +231,79 @@ impl ScsiTarget for ScsiTargetPrinter {
         &mut self.common
     }
 
+    // Restore the trace_flag first from the environnement. Not stored in Snow states
     #[cfg(feature = "savestates")]
-    fn after_deserialize(&mut self, _imgfn: &Path) -> Result<()> {
-        todo!()
+    fn after_deserialize(&mut self, imgfn: &Path) -> Result<()> {
+        self.trace_flag = std::env::var("SNOW_SCSI_TRACE_PRINTER")
+            .map(|v| v != "0" && !v.is_empty())
+            .unwrap_or(false);
+
+        #[cfg(feature = "printer")]
+        {
+            let data = std::fs::read(imgfn)?;
+            if data.len() > 1 {
+                if self.trace_flag {
+                    log::debug!(
+                        "LaserWriter: restoring framebuffer {}x{}, {} bytes",
+                        self.page_width,
+                        self.page_height,
+                        data.len()
+                    );
+                }
+                self.framebuffer =
+                    GrayImage::from_raw(self.page_width as u32, self.page_height as u32, data)
+                        .map(Some)
+                        .ok_or_else(|| anyhow::anyhow!("framebuffer restore failed"))?;
+            } else {
+                if self.trace_flag {
+                    log::debug!(
+                        "LaserWriter: restoring empty framebuffer {}x{}",
+                        self.page_width,
+                        self.page_height
+                    );
+                }
+                self.framebuffer = Some(GrayImage::from_pixel(
+                    self.page_width as u32,
+                    self.page_height as u32,
+                    Luma([255u8]),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /*
+     * 99% of the time, the framebuffer will be empty, unless the user save state
+     * while a print is in progress.
+     *
+     * To avoid bloating the state file, we will be saving the framebuffer only if
+     * there is something in here. We will do a non blank-check:
+     * a blank framebuffer data is all 0xff (255). Anything else we have data to save
+     *
+     * we need to store a fake framebuffer of size 1 when empty, otherwise there will be
+     * no call to after_deserialize() after a restore
+     */
+    #[cfg(feature = "savestates")]
+    fn savestate_img_len(&self) -> Option<usize> {
+        #[cfg(feature = "printer")]
+        if let Some(ref fb) = self.framebuffer {
+            if fb.as_raw().iter().any(|&b| b != 255) {
+                return Some(fb.as_raw().len());
+            }
+        }
+        Some(1)
+    }
+
+    #[cfg(feature = "savestates")]
+    fn savestate_img_data(&self) -> Option<&[u8]> {
+        #[cfg(feature = "printer")]
+        if let Some(ref fb) = self.framebuffer {
+            if fb.as_raw().iter().any(|&b| b != 255) {
+                return Some(fb.as_raw());
+            }
+        }
+        // "random" value that will never be read again
+        Some(b"\x5c")
     }
 
     fn set_blocksize(&mut self, _blocksize: usize) -> bool {
