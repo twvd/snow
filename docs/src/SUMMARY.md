@@ -22,6 +22,7 @@
 - [Networking](./manual/network/README.md)
     - [LocalTalk over UDP](./manual/network/ltoudp.md)
     - [Ethernet](./manual/network/ethernet.md)
+- [Printing](./manual/printing.md)
 - [Fullscreen and Zen mode](./manual/fullscreen.md)
 - [Save states](./manual/savestates.md)
 - [Debugging](./manual/debugging/README.md)
