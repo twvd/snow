@@ -9,7 +9,7 @@ name = "snowemu"
 path = "src/main.rs"
 
 [features]
-default = ["ethernet", "ethernet_nat", "ethernet_nat_https_stripping", "ethernet_tap"]
+default = ["ethernet", "ethernet_nat", "ethernet_nat_https_stripping", "ethernet_tap", "printer"]
 ethernet = ["snow_core/ethernet"]
 ethernet_nat = ["ethernet", "snow_core/ethernet_nat"]
 ethernet_nat_https_stripping = ["ethernet_nat", "snow_core/ethernet_nat_https_stripping"]
