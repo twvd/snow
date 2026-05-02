@@ -137,7 +137,7 @@ impl ScsiTargetPrinter {
 
         let width = x2.saturating_sub(x1);
         let height = y2.saturating_sub(y1);
-        let bytes_per_row = (width + 7) / 8;
+        let bytes_per_row = width.div_ceil(8);
 
         if self.trace_flag {
             // B = black mask, W = white mask, U = unknown mask
@@ -286,10 +286,10 @@ impl ScsiTarget for ScsiTargetPrinter {
     #[cfg(feature = "savestates")]
     fn savestate_img_len(&self) -> Option<usize> {
         #[cfg(feature = "printer")]
-        if let Some(ref fb) = self.framebuffer {
-            if fb.as_raw().iter().any(|&b| b != 255) {
-                return Some(fb.as_raw().len());
-            }
+        if let Some(ref fb) = self.framebuffer
+            && fb.as_raw().iter().any(|&b| b != 255)
+        {
+            return Some(fb.as_raw().len());
         }
         Some(1)
     }
@@ -297,10 +297,10 @@ impl ScsiTarget for ScsiTargetPrinter {
     #[cfg(feature = "savestates")]
     fn savestate_img_data(&self) -> Option<&[u8]> {
         #[cfg(feature = "printer")]
-        if let Some(ref fb) = self.framebuffer {
-            if fb.as_raw().iter().any(|&b| b != 255) {
-                return Some(fb.as_raw());
-            }
+        if let Some(ref fb) = self.framebuffer
+            && fb.as_raw().iter().any(|&b| b != 255)
+        {
+            return Some(fb.as_raw());
         }
         // "random" value that will never be read again
         Some(b"\x5c")
@@ -471,7 +471,7 @@ impl ScsiTarget for ScsiTargetPrinter {
                         let height = u16::from_be_bytes([header[6], header[7]])
                             .saturating_sub(u16::from_be_bytes([header[2], header[3]]))
                             as usize;
-                        let bitmap_len = ((width + 7) / 8) * height;
+                        let bitmap_len = width.div_ceil(8) * height;
                         self.mask_header = Some(header);
                         Ok(ScsiCmdResult::DataOut(bitmap_len))
                     }
