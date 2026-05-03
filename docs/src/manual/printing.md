@@ -22,7 +22,7 @@ According to KB030514, Apple deprecated the driver starting System 7.5.1. Althou
 
 To select the printer, just choose the printer in the chooser. It will not display anything in the list like you would normally expect.
 
-![LaserWriter in Chooser](../../images/printer_chooser.png)
+![LaserWriter in Chooser](../images/printer_chooser.png)
 
 The driver will scan the SCSI bus every time you print something (scan order: 4, 3, 2, 1, 0, 6, 5).
 
