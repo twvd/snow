@@ -15,7 +15,7 @@ use crate::mac::scsi::cdrom::backends::iso::IsoCdromBackend;
 use crate::mac::scsi::target::ScsiTargetCommon;
 use crate::mac::scsi::{
     ASC_ILLEGAL_MODE_FOR_THIS_TRACK, ASC_INVALID_COMMAND, ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
-    ASC_UNRECOVERED_READ_ERROR,
+    ASC_UNRECOVERED_READ_ERROR, CC_KEY_NOT_READY,
 };
 use crate::renderer::{AUDIO_BUFFER_SAMPLES, AudioProvider, AudioSink};
 use crate::tickable::Ticks;
@@ -286,8 +286,7 @@ impl ScsiTargetCdrom {
     ) -> Result<ScsiCmdResult> {
         let Some(backend) = &self.backend else {
             // No CD inserted
-            self.common
-                .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+            self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
             return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
         };
 
@@ -700,13 +699,27 @@ impl ScsiTarget for ScsiTargetCdrom {
             Ok(ScsiCmdResult::Status(STATUS_GOOD))
         } else {
             // No CD inserted
-            self.common
-                .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+            self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
             Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
         }
     }
 
     fn inquiry(&mut self, cmd: &[u8]) -> Result<ScsiCmdResult> {
+        let evpd = cmd[1] & 0x1;
+        let page = cmd[2];
+        if evpd != 0 || page != 0 {
+            // [SPC-3] 6.4.1:
+            // If the PAGE CODE
+            // field is not set to zero when the EVPD bit is set to zero, the command shall be terminated with CHECK CONDITION
+            // status, with the sense key set to ILLEGAL REQUEST, and the additional sense code set to INVALID FIELD IN
+            // CDB.
+            self.common
+                .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+        }
+
+        let alloc_len = u16::from_be_bytes(cmd[3..=4].try_into().unwrap());
+
         let mut result = vec![0; 36];
 
         // 0 Peripheral qualifier (5-7), peripheral device type (4-0)
@@ -722,15 +735,11 @@ impl ScsiTarget for ScsiTargetCdrom {
         result[8..16].copy_from_slice(b"SNOW    ");
 
         // 16..32 Product identification
-        result[16..32].copy_from_slice(b"CD-ROM CDU-55S  ");
+        result[16..32].copy_from_slice(b"CD-ROM CDU-8004 ");
         // 32..36 Revision
         result[32..36].copy_from_slice(b"1.9a");
 
-        // Honour the initiator's allocation length (cmd[4] for 6-byte INQUIRY).
-        let alloc = cmd.get(4).copied().unwrap_or(0) as usize;
-        if alloc > 0 && alloc < result.len() {
-            result.truncate(alloc);
-        }
+        result.truncate(alloc_len as usize);
         Ok(ScsiCmdResult::DataIn(result))
     }
 
@@ -786,10 +795,19 @@ impl ScsiTarget for ScsiTargetCdrom {
                 Some(data)
             }
             0x30 => {
-                // ? Non-standard mode page
+                // Magic Apple page
 
                 let mut result = vec![0; 0x16];
                 result[0..0x16].copy_from_slice(b"APPLE COMPUTER, INC   ");
+                Some(result)
+            }
+            0x31 => {
+                // Magic BlueSCSI page
+
+                // Mac OS queries this page occasionally...
+                // this is what MAME returns. I don't know what the original drives returned.
+                let mut result = vec![0; 0x2a];
+                result[0..0x2a].copy_from_slice(b"BlueSCSI is the BEST STOLEN FROM BLUESCSI\0");
                 Some(result)
             }
             _ => None,
@@ -896,8 +914,7 @@ impl ScsiTarget for ScsiTargetCdrom {
             }
             // READ(6) (no media)
             0x08 => {
-                self.common
-                    .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
                 Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
             }
             // START/STOP UNIT
@@ -960,8 +977,7 @@ impl ScsiTarget for ScsiTargetCdrom {
                         let Some(track) = self.get_track_at_sector(self.audio_pos) else {
                             // No tracks available
                             // FIXME: is this correct?
-                            self.common
-                                .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                            self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
                             return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                         };
 
@@ -1056,14 +1072,12 @@ impl ScsiTarget for ScsiTargetCdrom {
                 log::debug!("PLAY AUDIO MSF start {} end {}", start_msf, end_msf);
 
                 let Some(backend) = &self.backend else {
-                    self.common
-                        .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                    self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
 
                 let Some(sessions) = backend.sessions() else {
-                    self.common
-                        .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                    self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
 
@@ -1164,14 +1178,12 @@ impl ScsiTarget for ScsiTargetCdrom {
                 // Also known as fast-forward or rewind.
 
                 let Some(backend) = &self.backend else {
-                    self.common
-                        .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                    self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
 
                 let Some(tracks) = backend.tracks() else {
-                    self.common
-                        .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                    self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
 

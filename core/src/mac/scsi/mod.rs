@@ -14,6 +14,7 @@ pub mod toolbox;
 pub const STATUS_GOOD: u8 = 0;
 pub const STATUS_CHECK_CONDITION: u8 = 2;
 
+pub const CC_KEY_NOT_READY: u8 = 0x02;
 pub const CC_KEY_MEDIUM_ERROR: u8 = 0x03;
 pub const CC_KEY_ILLEGAL_REQUEST: u8 = 0x05;
 

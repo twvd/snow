@@ -10,7 +10,7 @@ use crate::emulator::EmuContext;
 use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::scsi::{
     ASC_INVALID_FIELD_IN_CDB, ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE, ASC_MEDIUM_NOT_PRESENT,
-    ASC_PARAMETER_LIST_LENGTH_ERROR, CC_KEY_ILLEGAL_REQUEST, CC_KEY_MEDIUM_ERROR,
+    ASC_PARAMETER_LIST_LENGTH_ERROR, CC_KEY_ILLEGAL_REQUEST, CC_KEY_NOT_READY,
     STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult,
 };
 use crate::renderer::AudioProvider;
@@ -199,6 +199,10 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
 
                 if blocknum + blockcnt > blocks {
                     log::error!("Reading beyond disk");
+                    self.common().set_cc(
+                        CC_KEY_ILLEGAL_REQUEST,
+                        ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
+                    );
                     Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                 } else {
                     self.read(blocknum, blockcnt)
@@ -215,6 +219,10 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                 if let Some(data) = outdata {
                     if blocknum + blockcnt > blocks {
                         log::error!("Writing beyond disk");
+                        self.common().set_cc(
+                            CC_KEY_ILLEGAL_REQUEST,
+                            ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
+                        );
                         Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                     } else {
                         self.write(blocknum, data);
@@ -233,6 +241,10 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                 if self.check_lba_within_capacity(lba) {
                     Ok(ScsiCmdResult::Status(STATUS_GOOD))
                 } else {
+                    self.common().set_cc(
+                        CC_KEY_ILLEGAL_REQUEST,
+                        ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
+                    );
                     Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                 }
             }
@@ -402,7 +414,7 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                 let (Some(blocksize), Some(blocks)) = (self.blocksize(), self.blocks()) else {
                     log::warn!("READ CAPACITY(10) command to non-block device");
                     self.common()
-                        .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                        .set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
 
@@ -415,7 +427,7 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                 let Some(blocks) = self.blocks() else {
                     log::warn!("READ(10) command to non-block device");
                     self.common()
-                        .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                        .set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
                 let blocknum = (u32::from_be_bytes(cmd[2..6].try_into()?)) as usize;
@@ -423,6 +435,10 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
 
                 if blocknum + blockcnt > blocks {
                     log::error!("Reading beyond disk");
+                    self.common().set_cc(
+                        CC_KEY_ILLEGAL_REQUEST,
+                        ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
+                    );
                     Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                 } else {
                     self.read(blocknum, blockcnt)
@@ -433,7 +449,7 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                 let (Some(blocksize), Some(blocks)) = (self.blocksize(), self.blocks()) else {
                     log::warn!("WRITE(10) command to non-block device");
                     self.common()
-                        .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                        .set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
                     return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
                 };
                 let blocknum = (u32::from_be_bytes(cmd[2..6].try_into()?)) as usize;
@@ -442,6 +458,10 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
                 if let Some(data) = outdata {
                     if blocknum + blockcnt > blocks {
                         log::error!("Writing beyond disk");
+                        self.common().set_cc(
+                            CC_KEY_ILLEGAL_REQUEST,
+                            ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE,
+                        );
                         Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                     } else {
                         self.write(blocknum, data);
