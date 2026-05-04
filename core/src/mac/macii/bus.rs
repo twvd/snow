@@ -31,7 +31,7 @@ use num_traits::{FromPrimitive, PrimInt, ToBytes};
 use serde::{Deserialize, Serialize};
 
 /// Macintosh II main clock speed
-pub const CLOCK_SPEED: Ticks = 16_000_000;
+pub const CLOCK_SPEED: Ticks = 32_000_000;
 
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
@@ -198,7 +198,7 @@ where
             via2: Via2::new(model),
             via_clock: 0,
             scc: Scc::new(),
-            swim: Swim::new(model.fdd_drives(), model.fdd_hd(), 16_000_000),
+            swim: Swim::new(model.fdd_drives(), model.fdd_hd(), CLOCK_SPEED),
             scsi: ScsiController::new(),
             asc: Asc::default(),
             asc_clock: 0,

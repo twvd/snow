@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::mac::MacMonitor;
+use crate::mac::macii::bus::CLOCK_SPEED;
 use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Field32, LatchingEvent, Word};
@@ -389,10 +390,10 @@ where
 {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         self.vblank_ticks += ticks;
-        if self.vblank_ticks >= 16_000_000 / 60 {
+        if self.vblank_ticks >= CLOCK_SPEED / 60 {
             self.render()?;
 
-            self.vblank_ticks -= 16_000_000 / 60;
+            self.vblank_ticks -= CLOCK_SPEED / 60;
             if self.vblank_enable {
                 self.vblank_irq = true;
             }
