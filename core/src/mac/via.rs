@@ -1,5 +1,6 @@
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
+use crate::mac::macii::bus::CLOCK_SPEED;
 use crate::mac::pluskbd::PlusKeyboard;
 use crate::mac::rtc::Rtc;
 use crate::tickable::{Tickable, Ticks};
@@ -255,6 +256,9 @@ pub struct Via {
     pub(crate) rtc: Rtc,
 
     pub(crate) adb: AdbTransceiver,
+
+    /// Accumulates bus ticks
+    bus_ticks: Ticks,
 }
 
 impl Via {
@@ -291,6 +295,8 @@ impl Via {
             keyboard: PlusKeyboard::default(),
             rtc: Rtc::default(),
             adb: AdbTransceiver::default(),
+
+            bus_ticks: 0,
         }
     }
 }
@@ -525,6 +531,18 @@ impl BusMember<Address> for Via {
 
 impl Tickable for Via {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
+        self.bus_ticks += ticks;
+        let via_ticks = self.bus_ticks * 16_000_000 / CLOCK_SPEED;
+        if via_ticks > 0 {
+            self.tick_16mhz(via_ticks)?;
+            self.bus_ticks -= via_ticks * CLOCK_SPEED / 16_000_000;
+        }
+        Ok(ticks)
+    }
+}
+
+impl Via {
+    fn tick_16mhz(&mut self, ticks: Ticks) -> Result<Ticks> {
         // This is ticked on the E Clock
         self.onesec += ticks;
 
