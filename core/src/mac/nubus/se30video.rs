@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
+use crate::mac::macii::bus::CLOCK_SPEED;
 use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
@@ -145,10 +146,10 @@ where
         if !self.vblank_enable {
             self.vblank_irq = false;
         }
-        if self.vblank_ticks >= 16_000_000 / 60 {
+        if self.vblank_ticks >= CLOCK_SPEED / 60 {
             self.render()?;
 
-            self.vblank_ticks -= 16_000_000 / 60;
+            self.vblank_ticks -= CLOCK_SPEED / 60;
             if self.vblank_enable {
                 self.vblank_irq = true;
             }
