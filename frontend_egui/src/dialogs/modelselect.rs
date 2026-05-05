@@ -632,6 +632,14 @@ impl ModelSelectionDialog {
                             &mut self.init_args.start_fastforward,
                             "Start in fast-forward mode",
                         );
+                        let mut overclock_enable = self.init_args.overclock.is_some();
+                        ui.checkbox(&mut overclock_enable, "Overclock");
+                        if overclock_enable {
+                            // TODO: allow configuring speed
+                            self.init_args.overclock = Some(40_000_000);
+                        } else {
+                            self.init_args.overclock = None;
+                        }
                         if self.selected_model == MacModel::SE30 {
                             let mut x = false;
                             ui.checkbox(&mut x, "Emulate exploded PRAM battery");

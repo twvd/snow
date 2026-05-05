@@ -13,6 +13,7 @@ use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::asc::Asc;
+use crate::mac::macii::bus::DEFAULT_BUS_SPEED;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
@@ -66,6 +67,8 @@ pub struct MacPortableBus<TRenderer: Renderer> {
 
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
+    
+    bus_frequency: Ticks,
 
     /// Last vblank time (for syncing to video)
     /// Not serializing this because it is only used for determining how long to
@@ -154,6 +157,7 @@ where
 
             overlay: true,
             speed: EmulatorSpeed::Accurate,
+            bus_frequency: DEFAULT_BUS_SPEED,
             vblank_time: Instant::now(),
             vblank_clock: 0,
             progkey_pressed: LatchingEvent::default(),
@@ -468,6 +472,10 @@ where
     pub fn set_speed(&mut self, speed: EmulatorSpeed) {
         info!("Emulation speed: {:?}", speed);
         self.speed = speed;
+    }
+    
+    pub fn set_bus_frequency(&mut self, bus_frequency: u64) {
+        self.bus_frequency = bus_frequency;
     }
 
     pub fn set_mouse_mode(&mut self, mode: MouseMode) {
