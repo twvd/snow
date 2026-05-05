@@ -7,6 +7,7 @@ use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, Field16};
 
 use anyhow::Result;
+use num::rational::Ratio;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
@@ -258,7 +259,11 @@ pub struct Via {
     pub(crate) adb: AdbTransceiver,
 
     /// Accumulates bus ticks
-    bus_ticks: Ticks,
+    #[serde(skip)]
+    bus_ticks: Ratio<Ticks>,
+
+    total_bus_ticks: Ticks,
+    total_via_ticks: Ticks,
 }
 
 impl Via {
@@ -296,7 +301,10 @@ impl Via {
             rtc: Rtc::default(),
             adb: AdbTransceiver::default(),
 
-            bus_ticks: 0,
+            bus_ticks: 0.into(),
+
+            total_bus_ticks: 0,
+            total_via_ticks: 0,
         }
     }
 }
@@ -532,10 +540,13 @@ impl BusMember<Address> for Via {
 impl Tickable for Via {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         self.bus_ticks += ticks;
-        let via_ticks = self.bus_ticks * 16_000_000 / CLOCK_SPEED;
+        self.total_bus_ticks += ticks;
+        let via_ticks = Ratio::<Ticks>::new(16_000_000, CLOCK_SPEED) * self.bus_ticks;
+        let via_ticks = via_ticks.to_integer();
         if via_ticks > 0 {
+            self.total_via_ticks += via_ticks;
             self.tick_16mhz(via_ticks)?;
-            self.bus_ticks -= via_ticks * CLOCK_SPEED / 16_000_000;
+            self.bus_ticks -= Ratio::<Ticks>::new(CLOCK_SPEED, 16_000_000) * via_ticks;
         }
         Ok(ticks)
     }

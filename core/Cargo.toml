@@ -53,6 +53,7 @@ num-traits = "0.2.19"
 # Pinned due to bug with _mut() functions on nested bitfields
 proc-bitfield = "=0.5.2"
 proc-bitfield-macros = "=0.5.2"
+rational = { version = "1.9.0", features = ["serde"] }
 serde = { version = "1.0.203", features = ["serde_derive", "derive"] }
 serde_json = "1.0.117"
 snow_floppy = { version = "1.4.1", path = "../floppy" }

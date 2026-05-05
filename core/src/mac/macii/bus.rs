@@ -31,7 +31,7 @@ use num_traits::{FromPrimitive, PrimInt, ToBytes};
 use serde::{Deserialize, Serialize};
 
 /// Macintosh II main clock speed
-pub const CLOCK_SPEED: Ticks = 32_000_000;
+pub const CLOCK_SPEED: Ticks = 40_000_000;
 
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;

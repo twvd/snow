@@ -4340,6 +4340,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca45419789ae5a7899559e9512e58ca889e41f04f1f2445e9f4b290ceccd1d08"
 
 [[package]]
+name = "rational"
+version = "1.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7aff7b58098aa1a04708b8302e886b6178568787ebe3d5b21fa847e73e866b96"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "raw-window-handle"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4962,6 +4971,7 @@ dependencies = [
  "proc-bitfield",
  "proc-bitfield-macros",
  "rand 0.9.4",
+ "rational",
  "serde",
  "serde-big-array",
  "serde_json",
