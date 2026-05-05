@@ -270,11 +270,11 @@ struct VirtualRxToken {
 }
 
 impl RxToken for VirtualRxToken {
-    fn consume<R, F>(mut self, f: F) -> R
+    fn consume<R, F>(self, f: F) -> R
     where
-        F: FnOnce(&mut [u8]) -> R,
+        F: FnOnce(&[u8]) -> R,
     {
-        f(&mut self.buffer)
+        f(&self.buffer)
     }
 }
 
@@ -447,7 +447,7 @@ impl NatEngine {
         let gateway_ip_addr =
             IpAddress::v4(gateway_ip[0], gateway_ip[1], gateway_ip[2], gateway_ip[3]);
 
-        let gateway_ipv4 = Ipv4Address::from_bytes(&gateway_ip);
+        let gateway_ipv4 = Ipv4Address::from(gateway_ip);
         let mut device = VirtualDevice::new(tx, rx, stats.clone(), gateway_ipv4);
 
         let config = Config::new(gateway_mac_addr.into());
@@ -664,7 +664,7 @@ impl NatEngine {
             os_socket.set_nonblocking(true)?;
 
             let remote_addr = SocketAddr::new(
-                std::net::IpAddr::V4(std::net::Ipv4Addr::from(dst_ip.0)),
+                std::net::IpAddr::V4(dst_ip),
                 dst_port,
             );
             os_socket.connect(remote_addr)?;
@@ -824,7 +824,7 @@ impl NatEngine {
         } else {
             // Normal TCP connection
             let remote_addr = SocketAddr::new(
-                std::net::IpAddr::V4(std::net::Ipv4Addr::from(dst_ip.0)),
+                std::net::IpAddr::V4(dst_ip),
                 dst_port,
             );
 
@@ -979,7 +979,7 @@ impl NatEngine {
                                 // Establish TLS connection using the hostname for SNI
                                 let dst_ip_addr = match entry.remote_endpoint.addr {
                                     IpAddress::Ipv4(ip) => {
-                                        std::net::IpAddr::V4(std::net::Ipv4Addr::from(ip.0))
+                                        std::net::IpAddr::V4(ip)
                                     }
                                     _ => {
                                         log::error!("Non-IPv4 address in HTTPS stripping");
