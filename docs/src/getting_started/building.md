@@ -12,6 +12,12 @@ On Linux you need the ALSA development headers; on Debian or Ubuntu:
 sudo apt install libasound2-dev pkg-config
 ```
 
+On FreeBSD you need the ALSA compatibility library
+
+```shell
+sudo pkg install alsa-lib
+```
+
 ## Building and running from source
 
 To build and run the GUI after checking out the source, simply run:
