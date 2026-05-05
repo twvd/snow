@@ -1,6 +1,6 @@
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
-use crate::mac::macii::bus::CLOCK_SPEED;
+use crate::emulator::EmuContext;
 use crate::mac::pluskbd::PlusKeyboard;
 use crate::mac::rtc::Rtc;
 use crate::tickable::{Tickable, Ticks};
@@ -537,16 +537,16 @@ impl BusMember<Address> for Via {
     }
 }
 
-impl Tickable for Via {
-    fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
+impl Tickable<&dyn EmuContext> for Via {
+    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
         self.bus_ticks += ticks;
         self.total_bus_ticks += ticks;
-        let via_ticks = Ratio::<Ticks>::new(16_000_000, CLOCK_SPEED) * self.bus_ticks;
+        let via_ticks = Ratio::<Ticks>::new(16_000_000, ctx.bus_frequency()) * self.bus_ticks;
         let via_ticks = via_ticks.to_integer();
         if via_ticks > 0 {
             self.total_via_ticks += via_ticks;
             self.tick_16mhz(via_ticks)?;
-            self.bus_ticks -= Ratio::<Ticks>::new(CLOCK_SPEED, 16_000_000) * via_ticks;
+            self.bus_ticks -= Ratio::<Ticks>::new(ctx.bus_frequency(), 16_000_000) * via_ticks;
         }
         Ok(ticks)
     }
