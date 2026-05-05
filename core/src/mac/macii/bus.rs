@@ -623,6 +623,10 @@ where
         self.speed = speed;
     }
 
+    pub fn set_bus_frequency(&mut self, bus_frequency: u64) {
+        self.bus_frequency = bus_frequency;
+    }
+
     /// Tests for wait states on bus access
     fn in_waitstate(&self, _addr: Address) -> bool {
         // TODO

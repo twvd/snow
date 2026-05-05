@@ -101,6 +101,9 @@ pub struct EmulatorInitArgs {
 
     /// Enable PMMU (Macintosh II only)
     pub pmmu_enabled: bool,
+
+    /// Overclock
+    pub overclock: Option<u64>,
 }
 
 /// Manages the state of the emulator and feeds input to the GUI
@@ -246,6 +249,8 @@ impl EmulatorState {
         if args.start_fastforward {
             cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Uncapped))?;
         }
+
+        cmd.send(EmulatorCommand::SetOverclock(args.overclock))?;
 
         if model.has_scsi() {
             for id in 0..7 {
