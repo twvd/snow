@@ -15,7 +15,7 @@ sudo apt install libasound2-dev pkg-config
 On FreeBSD you need the ALSA compatibility library
 
 ```shell
-sudo pkg install alsa-lib
+sudo pkg install alsa-lib pkgconf
 ```
 
 ## Building and running from source
