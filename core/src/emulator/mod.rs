@@ -232,6 +232,7 @@ dispatch! {
 /// An interface that allows sub-components to access emulator state (such as the speed setting)
 pub trait EmuContext {
     fn speed(&self) -> EmulatorSpeed;
+    fn bus_frequency(&self) -> Ticks;
 }
 
 /// Emulator runner

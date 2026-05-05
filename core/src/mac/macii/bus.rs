@@ -31,7 +31,7 @@ use num_traits::{FromPrimitive, PrimInt, ToBytes};
 use serde::{Deserialize, Serialize};
 
 /// Macintosh II main clock speed
-pub const CLOCK_SPEED: Ticks = 40_000_000;
+pub const DEFAULT_BUS_SPEED: Ticks = 16_000_000;
 
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
@@ -82,6 +82,8 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
 
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
+
+    bus_frequency: Ticks,
 
     /// Last vblank time (for syncing to video)
     /// Not serializing this because it is only used for determining how long to
@@ -198,7 +200,7 @@ where
             via2: Via2::new(model),
             via_clock: 0,
             scc: Scc::new(),
-            swim: Swim::new(model.fdd_drives(), model.fdd_hd(), CLOCK_SPEED),
+            swim: Swim::new(model.fdd_drives(), model.fdd_hd(), 16_000_000),
             scsi: ScsiController::new(),
             asc: Asc::default(),
             asc_clock: 0,
@@ -212,6 +214,7 @@ where
             overlay: true,
             amu_active: false,
             speed: EmulatorSpeed::Accurate,
+            bus_frequency: DEFAULT_BUS_SPEED,
             //last_audiosample: 0,
             vblank_time: Instant::now(),
             vblank_clock: 0,
@@ -797,15 +800,23 @@ where
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         struct BusEmuContext {
             speed: EmulatorSpeed,
+            bus_frequency: Ticks,
         }
 
         impl EmuContext for BusEmuContext {
             fn speed(&self) -> EmulatorSpeed {
                 self.speed
             }
+
+            fn bus_frequency(&self) -> Ticks {
+                self.bus_frequency
+            }
         }
 
-        let ctx = &BusEmuContext { speed: self.speed };
+        let ctx = &BusEmuContext {
+            speed: self.speed,
+            bus_frequency: self.bus_frequency,
+        };
 
         self.cycles += ticks;
 
@@ -820,14 +831,14 @@ where
             // TODO VIA wait states
             self.via_clock -= 20;
 
-            self.via1.tick(1, ())?;
+            self.via1.tick(1, ctx)?;
             self.via2.tick(1, ())?;
         }
 
         // Legacy VBlank interrupt
         self.vblank_clock += ticks;
-        while self.vblank_clock >= CLOCK_SPEED / 60 {
-            self.vblank_clock -= CLOCK_SPEED / 60;
+        while self.vblank_clock >= ctx.bus_frequency / 60 {
+            self.vblank_clock -= ctx.bus_frequency / 60;
 
             self.via1.ifr.set_vblank(true);
 
@@ -860,8 +871,8 @@ where
         }
 
         self.asc_clock += ticks;
-        while self.asc_clock >= CLOCK_SPEED / self.asc.sample_rate() {
-            self.asc_clock -= CLOCK_SPEED / self.asc.sample_rate();
+        while self.asc_clock >= ctx.bus_frequency / self.asc.sample_rate() {
+            self.asc_clock -= ctx.bus_frequency / self.asc.sample_rate();
 
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }
@@ -870,7 +881,7 @@ where
         let mut slot_irqs = 0;
         for slot in 0..(self.nubus_devices.len()) {
             if let Some(dev) = self.nubus_devices[slot].as_mut() {
-                dev.tick(ticks, ())?;
+                dev.tick(ticks, ctx)?;
                 if dev.get_irq() {
                     slot_irqs |= 1 << slot;
                 }

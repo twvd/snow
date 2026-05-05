@@ -9,17 +9,14 @@ use std::path::Path;
 use crate::{
     debuggable::Debuggable,
     emulator::{EmuContext, comm::EmulatorSpeed},
-    mac::{
-        macii::bus::CLOCK_SPEED,
-        scsi::{
-            ASC_ILLEGAL_MODE_FOR_THIS_TRACK, ASC_INVALID_COMMAND,
-            ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE, ASC_UNRECOVERED_READ_ERROR, CC_KEY_NOT_READY,
-            cdrom::backends::{
-                cuesheet::CuesheetCdromBackend, is_physical_cdrom_drive_path, iso::IsoCdromBackend,
-                new_physical_cdrom_drive_backend,
-            },
-            target::ScsiTargetCommon,
+    mac::scsi::{
+        ASC_ILLEGAL_MODE_FOR_THIS_TRACK, ASC_INVALID_COMMAND,
+        ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE, ASC_UNRECOVERED_READ_ERROR, CC_KEY_NOT_READY,
+        cdrom::backends::{
+            cuesheet::CuesheetCdromBackend, is_physical_cdrom_drive_path, iso::IsoCdromBackend,
+            new_physical_cdrom_drive_backend,
         },
+        target::ScsiTargetCommon,
     },
     renderer::{AUDIO_BUFFER_SAMPLES, AudioProvider, AudioSink},
     tickable::Ticks,
@@ -1508,8 +1505,8 @@ impl ScsiTarget for ScsiTargetCdrom {
                 None => {
                     // Real audio is disabled. Advance the audio position by counting bus ticks.
                     self.audio_clock += ticks;
-                    if self.audio_clock >= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC as u64 {
-                        self.audio_clock -= CLOCK_SPEED / AUDIO_SECTORS_PER_SEC as u64;
+                    if self.audio_clock >= ctx.bus_frequency() / AUDIO_SECTORS_PER_SEC as u64 {
+                        self.audio_clock -= ctx.bus_frequency() / AUDIO_SECTORS_PER_SEC as u64;
 
                         self.audio_pos += 1;
                         self.resolve_audio_pos();
