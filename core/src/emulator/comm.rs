@@ -81,6 +81,7 @@ pub enum EmulatorCommand {
     CpuSetPC(u32),
     #[serde(skip)]
     SetSpeed(EmulatorSpeed),
+    SetOverclock(Option<u64>),
     ProgKey,
     #[serde(skip)]
     WriteRegister(Register, u32),
