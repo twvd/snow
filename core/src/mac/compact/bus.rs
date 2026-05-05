@@ -11,6 +11,7 @@ use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
+use crate::mac::macii::bus::DEFAULT_BUS_SPEED;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
@@ -81,6 +82,8 @@ pub struct CompactMacBus<TRenderer: Renderer> {
 
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
+
+    bus_frequency: Ticks,
 
     /// Last pushed audio sample
     last_audiosample: u8,
@@ -190,6 +193,7 @@ where
 
             overlay: true,
             speed: EmulatorSpeed::Accurate,
+            bus_frequency: DEFAULT_BUS_SPEED,
             last_audiosample: 0,
             vblank_time: Instant::now(),
             vpa_sync: false,
@@ -693,15 +697,23 @@ where
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         struct BusEmuContext {
             speed: EmulatorSpeed,
+            bus_frequency: Ticks,
         }
 
         impl EmuContext for BusEmuContext {
             fn speed(&self) -> EmulatorSpeed {
                 self.speed
             }
+
+            fn bus_frequency(&self) -> Ticks {
+                self.bus_frequency
+            }
         }
 
-        let ctx = &BusEmuContext { speed: self.speed };
+        let ctx = &BusEmuContext {
+            speed: self.speed,
+            bus_frequency: self.bus_frequency,
+        };
 
         // XXX: run one tick at a time to avoid missing hblanks and vblanks
         for _ in 0..ticks {
@@ -715,7 +727,7 @@ where
                 // TODO ticks when VPA is asserted
                 self.eclock -= 10;
 
-                self.via.tick(1, ())?;
+                self.via.tick(1, ctx)?;
             }
 
             // Pixel clock (15.6672 MHz) is roughly 2x CPU speed
