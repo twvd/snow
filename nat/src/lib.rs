@@ -240,6 +240,22 @@ impl Device for VirtualDevice {
             );
         }
 
+        // Drop ARP requests not targeting the NAT gateway
+        // This prevents smoltcp from replying to gratuitous ARPs or claiming ownership
+        // of other IP addresses. This happens because any_ip is enabled below
+        if let Ok(ArpRepr::EthernetIpv4 {
+            operation,
+            target_protocol_addr,
+            ..
+        }) = EthernetFrame::new_checked(&packet)
+            .and_then(|p| ArpPacket::new_checked(p.payload()))
+            .and_then(|p| ArpRepr::parse(&p))
+            && operation == ArpOperation::Request
+            && target_protocol_addr != self.gateway_ip
+        {
+            return None;
+        }
+
         // Pass non-routed packets (like ARP) normally
         Some((
             VirtualRxToken { buffer: packet },
