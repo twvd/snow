@@ -663,10 +663,7 @@ impl NatEngine {
             let os_socket = UdpSocket::bind("0.0.0.0:0")?;
             os_socket.set_nonblocking(true)?;
 
-            let remote_addr = SocketAddr::new(
-                std::net::IpAddr::V4(dst_ip),
-                dst_port,
-            );
+            let remote_addr = SocketAddr::new(std::net::IpAddr::V4(dst_ip), dst_port);
             os_socket.connect(remote_addr)?;
             os_socket.send(payload)?;
 
@@ -823,10 +820,7 @@ impl NatEngine {
             unreachable!()
         } else {
             // Normal TCP connection
-            let remote_addr = SocketAddr::new(
-                std::net::IpAddr::V4(dst_ip),
-                dst_port,
-            );
+            let remote_addr = SocketAddr::new(std::net::IpAddr::V4(dst_ip), dst_port);
 
             let os_socket = TcpStream::connect_timeout(&remote_addr, Duration::from_secs(5))?;
             os_socket.set_nonblocking(true)?;
@@ -978,9 +972,7 @@ impl NatEngine {
 
                                 // Establish TLS connection using the hostname for SNI
                                 let dst_ip_addr = match entry.remote_endpoint.addr {
-                                    IpAddress::Ipv4(ip) => {
-                                        std::net::IpAddr::V4(ip)
-                                    }
+                                    IpAddress::Ipv4(ip) => std::net::IpAddr::V4(ip),
                                     _ => {
                                         log::error!("Non-IPv4 address in HTTPS stripping");
                                         tls_failed = true;
