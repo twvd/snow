@@ -37,6 +37,10 @@ type BasicPacket = Vec<u8>;
 /// Maximum amount of packets to buffer in the RX/TX queues
 const PACKET_QUEUE_SIZE: usize = 512;
 
+/// Locally administered MAC address of the NAT gateway visible from the emulated Mac.
+#[cfg(feature = "ethernet_nat")]
+const NAT_MAC_ADDRESS: [u8; 6] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
+
 /// Pcap file header structure
 /// https://wiki.wireshark.org/Development/LibpcapFileFormat
 /// https://www.winpcap.org/docs/docs_412/html/structpcap__file__header.html
@@ -1001,7 +1005,7 @@ impl ScsiTarget for ScsiTargetEthernet {
                 let mut nat = snow_nat::NatEngine::new(
                     nat_tx,
                     nat_rx,
-                    [0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA],
+                    NAT_MAC_ADDRESS,
                     [10, 0, 0, 1],
                     8,
                     #[cfg(feature = "ethernet_nat_https_stripping")]
@@ -1022,7 +1026,7 @@ impl ScsiTarget for ScsiTargetEthernet {
                 let mut nat = snow_nat::NatEngine::new(
                     nat_tx,
                     nat_rx,
-                    [0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA],
+                    NAT_MAC_ADDRESS,
                     [10, 0, 0, 1],
                     8,
                     true, // Enable HTTPS stripping
