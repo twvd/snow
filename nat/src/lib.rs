@@ -94,6 +94,39 @@ impl VirtualDevice {
         std::mem::take(&mut self.intercepted_packets)
     }
 
+    /// Check for IPv4 packets that the NAT gateway should not handle.
+    /// Filters UDP packets that would cause OS bind/connect errors:
+    ///   - src IP 0.0.0.0 (mostly BOOTP requests for MacTCP)
+    ///   - src port < 1024 (privileged ports as the emulator is likely running as non-root)
+    fn needs_filtering(&self, packet: &[u8]) -> bool {
+        use smoltcp::wire::{IpProtocol, Ipv4Packet, UdpPacket};
+
+        let eth_frame = match EthernetFrame::new_checked(packet) {
+            Ok(frame) => frame,
+            Err(_) => return false,
+        };
+
+        if eth_frame.ethertype() != EthernetProtocol::Ipv4 {
+            return false;
+        }
+
+        let ipv4_packet = match Ipv4Packet::new_checked(eth_frame.payload()) {
+            Ok(packet) => packet,
+            Err(_) => return false,
+        };
+
+        if ipv4_packet.next_header() != IpProtocol::Udp {
+            return false;
+        }
+
+        let udp_packet = match UdpPacket::new_checked(ipv4_packet.payload()) {
+            Ok(packet) => packet,
+            Err(_) => return false,
+        };
+
+        ipv4_packet.src_addr() == Ipv4Address::new(0, 0, 0, 0) || udp_packet.src_port() < 1024
+    }
+
     /// Check if a packet needs NAT (routed UDP or TCP SYN packet where destination IP != gateway IP)
     fn needs_nat(&self, packet: &[u8]) -> bool {
         use smoltcp::wire::{EthernetFrame, IpProtocol, Ipv4Packet, TcpPacket};
@@ -206,6 +239,17 @@ impl Device for VirtualDevice {
         self.stats
             .rx_bytes
             .fetch_add(packet.len(), Ordering::Relaxed);
+
+        // Drop packets that would cause OS errors (BOOTP, privileged src ports)
+        if self.needs_filtering(&packet) {
+            self.stats
+                .filtered_packets
+                .fetch_add(1, Ordering::Relaxed);
+            self.stats
+                .filtered_bytes
+                .fetch_add(packet.len(), Ordering::Relaxed);
+            return None;
+        }
 
         // Check if this packet needs NAT (routed TCP/UDP)
         if self.needs_nat(&packet) {
@@ -400,6 +444,8 @@ pub struct NatEngineStats {
     pub tx_packets: NatEngineStatCounter,
     pub tx_bytes: NatEngineStatCounter,
     pub tx_dropped: NatEngineStatCounter,
+    pub filtered_packets: NatEngineStatCounter,
+    pub filtered_bytes: NatEngineStatCounter,
     pub nat_active_tcp: NatEngineStatCounter,
     pub nat_total_tcp: NatEngineStatCounter,
     pub nat_active_udp: NatEngineStatCounter,

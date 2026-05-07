@@ -1123,6 +1123,14 @@ impl Debuggable for ScsiTargetEthernet {
                         stats.tx_bytes.load(Ordering::Relaxed)
                     ),
                     dbgprop_udec!(
+                        "Filtered packets",
+                        stats.filtered_packets.load(Ordering::Relaxed)
+                    ),
+                    dbgprop_udec!(
+                        "Filtered bytes",
+                        stats.filtered_bytes.load(Ordering::Relaxed)
+                    ),
+                    dbgprop_udec!(
                         "Active TCP connections",
                         stats.nat_active_tcp.load(Ordering::Relaxed)
                     ),
