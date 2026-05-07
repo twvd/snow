@@ -809,15 +809,6 @@ impl ScsiTarget for ScsiTargetCdrom {
                 result[0..0x16].copy_from_slice(b"APPLE COMPUTER, INC   ");
                 Some(result)
             }
-            0x31 => {
-                // Magic BlueSCSI page
-
-                // Mac OS queries this page occasionally...
-                // this is what MAME returns. I don't know what the original drives returned.
-                let mut result = vec![0; 0x2a];
-                result[0..0x2a].copy_from_slice(b"BlueSCSI is the BEST STOLEN FROM BLUESCSI\0");
-                Some(result)
-            }
             _ => None,
         }
     }
