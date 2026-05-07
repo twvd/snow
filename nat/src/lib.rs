@@ -242,9 +242,7 @@ impl Device for VirtualDevice {
 
         // Drop packets that would cause OS errors (BOOTP, privileged src ports)
         if self.needs_filtering(&packet) {
-            self.stats
-                .filtered_packets
-                .fetch_add(1, Ordering::Relaxed);
+            self.stats.filtered_packets.fetch_add(1, Ordering::Relaxed);
             self.stats
                 .filtered_bytes
                 .fetch_add(packet.len(), Ordering::Relaxed);
