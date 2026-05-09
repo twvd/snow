@@ -803,6 +803,17 @@ impl EmulatorState {
             .unwrap();
     }
 
+    /// Toggles automatic writeback of a floppy drive's image to its source file.
+    pub fn set_floppy_writeback(&self, driveidx: usize, enabled: bool) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        sender
+            .send(EmulatorCommand::SetFloppyWriteback(driveidx, enabled))
+            .unwrap();
+    }
+
     /// Loads a SCSI HDD image from the specified path.
     pub fn scsi_attach_hdd(&self, id: usize, path: &Path) {
         let Some(ref sender) = self.cmdsender else {

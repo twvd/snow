@@ -183,6 +183,10 @@ pub struct FloppyImage {
 
     /// Force floppy read-only
     force_wp: bool,
+
+    /// True if the source format has a corresponding writer, so this image
+    /// can be written back to a file in its original format.
+    writeback_supported: bool,
 }
 
 impl FloppyImage {
@@ -223,6 +227,7 @@ impl FloppyImage {
             origtracktype: [Default::default(); FLOPPY_MAX_SIDES],
             dirty: false,
             force_wp: false,
+            writeback_supported: false,
         }
     }
 
@@ -283,6 +288,23 @@ impl FloppyImage {
     /// Check if image was written to
     pub fn is_dirty(&self) -> bool {
         self.dirty
+    }
+
+    /// Marks the image as clean. Call after a successful save.
+    pub fn clear_dirty(&mut self) {
+        self.dirty = false;
+    }
+
+    /// True if this image's original format has a writer available, so it
+    /// can be written back to a file in the same format.
+    pub fn supports_writeback(&self) -> bool {
+        self.writeback_supported
+    }
+
+    /// Marks the image as writeback-capable. Loaders for formats with a
+    /// corresponding [`FloppyImageSaver`] should call this.
+    pub fn set_writeback_supported(&mut self, v: bool) {
+        self.writeback_supported = v;
     }
 
     /// Forces floppy to be write-protected

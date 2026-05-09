@@ -589,6 +589,9 @@ impl Emulator {
                     image_title: self.config.swim().drives[i].floppy.get_title().to_owned(),
                     dirty: self.config.swim().drives[i].floppy.is_dirty(),
                     drive_type: self.config.swim().drives[i].drive_type,
+                    writeback_supported: self.config.swim().drives[i].image_path.is_some()
+                        && self.config.swim().drives[i].floppy.supports_writeback(),
+                    writeback_enabled: self.config.swim().drives[i].writeback_enabled,
                 }),
                 model: self.model,
                 scsi: core::array::from_fn(|i| {
@@ -764,6 +767,62 @@ impl Emulator {
         info!("{}", msg);
     }
 
+    /// Saves the floppy in `drive` back to its source file using the MOOF
+    /// writer. No-op if writeback is not currently armed for the drive.
+    /// Clears the dirty + pending flags on success.
+    fn try_writeback(&mut self, drive: usize) {
+        let drv = &self.config.swim().drives[drive];
+        if !drv.writeback_enabled || !drv.floppy.is_dirty() {
+            return;
+        }
+        let Some(path) = drv.image_path.clone() else {
+            return;
+        };
+
+        let result = crate::util::atomic_write(&path, |f| {
+            Moof::write(&self.config.swim().drives[drive].floppy, f)
+        });
+
+        let display_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+
+        match result {
+            Ok(()) => {
+                let drv = &mut self.config.swim_mut().drives[drive];
+                drv.floppy.clear_dirty();
+                drv.pending_writeback = false;
+                log::info!(
+                    "Floppy #{}: writeback auto-saved '{}'",
+                    drive + 1,
+                    display_name
+                );
+            }
+            Err(e) => {
+                self.config.swim_mut().drives[drive].pending_writeback = false;
+                self.user_error(&format!(
+                    "Floppy #{}: writeback to '{}' failed: {:#}",
+                    drive + 1,
+                    display_name,
+                    e
+                ));
+            }
+        }
+    }
+
+    /// Drains queued writeback requests across all drives. With `force`,
+    /// ignores [`FloppyDrive::pending_writeback`] and saves any dirty drive
+    /// that has writeback armed.
+    fn flush_pending_writebacks(&mut self, force: bool) {
+        for i in 0..self.config.swim().drives.len() {
+            let drv = &self.config.swim().drives[i];
+            if drv.writeback_enabled && (force || drv.pending_writeback) && drv.floppy.is_dirty() {
+                self.try_writeback(i);
+            }
+        }
+    }
+
     #[inline(always)]
     fn try_step(&mut self) {
         if let Err(e) = self.step() {
@@ -847,6 +906,7 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::Quit => {
                         info!("Emulator terminating");
+                        self.flush_pending_writebacks(true);
                         self.config.video_blank()?;
                         return Ok(0);
                     }
@@ -857,8 +917,15 @@ impl Tickable for Emulator {
                                 if wp {
                                     img.set_force_wp();
                                 }
+                                let writeback_path =
+                                    img.supports_writeback().then(|| PathBuf::from(&filename));
                                 if let Err(e) = self.config.swim_mut().disk_insert(drive, img) {
                                     self.user_error(&format!("Cannot insert disk: {}", e));
+                                } else {
+                                    let drv = &mut self.config.swim_mut().drives[drive];
+                                    drv.image_path = writeback_path;
+                                    drv.writeback_enabled = false;
+                                    drv.pending_writeback = false;
                                 }
                             }
                             Err(e) => {
@@ -880,7 +947,28 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     EmulatorCommand::EjectFloppy(drive) => {
+                        self.try_writeback(drive);
                         self.config.swim_mut().drives[drive].eject();
+                    }
+                    EmulatorCommand::SetFloppyWriteback(drive, enabled) => {
+                        let ok = {
+                            let drv = &mut self.config.swim_mut().drives[drive];
+                            if enabled
+                                && (drv.image_path.is_none() || !drv.floppy.supports_writeback())
+                            {
+                                false
+                            } else {
+                                drv.writeback_enabled = enabled;
+                                drv.pending_writeback = false;
+                                true
+                            }
+                        };
+                        if !ok {
+                            self.user_error(
+                                "Writeback unavailable: image was not loaded from a writeback-capable file",
+                            );
+                        }
+                        self.status_update()?;
                     }
                     EmulatorCommand::ScsiAttachHdd(id, filename) => {
                         match self.load_hdd_image(&filename, id) {
@@ -1357,6 +1445,10 @@ impl Tickable for Emulator {
                     }
                 }
             }
+
+            // Honour any writeback requests raised during this tick batch
+            // (e.g. by the SWIM controller turning a drive motor off).
+            self.flush_pending_writebacks(false);
         } else {
             thread::sleep(Duration::from_millis(100));
         }

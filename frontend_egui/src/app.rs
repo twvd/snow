@@ -1619,6 +1619,8 @@ impl SnowGui {
                     "{} Floppy #{}: {}",
                     if d.ejected {
                         egui_material_icons::icons::ICON_EJECT
+                    } else if d.writeback_enabled {
+                        egui_material_icons::icons::ICON_AUTORENEW
                     } else if !d.ejected && d.dirty {
                         egui_material_icons::icons::ICON_SAVE_AS
                     } else {
@@ -1675,6 +1677,23 @@ impl SnowGui {
                         self.emu.reload_floppy(i);
                     }
                     ui.checkbox(&mut self.floppy_dialog_wp, "Mount write-protected");
+                    {
+                        let mut wb = d.writeback_enabled;
+                        let resp = ui.add_enabled(
+                            d.writeback_supported,
+                            egui::Checkbox::new(&mut wb, "Auto-save changes (writeback)"),
+                        );
+                        if d.writeback_supported {
+                            resp.on_hover_text(
+                                "When enabled, the image is written back to its source file.",
+                            );
+                        } else {
+                            resp.on_hover_text("Writeback only supported for MOOF files");
+                        }
+                        if wb != d.writeback_enabled {
+                            self.emu.set_floppy_writeback(i, wb);
+                        }
+                    }
                     ui.separator();
                     if ui
                         .add_enabled(!d.ejected && d.dirty, egui::Button::new("Save image..."))
