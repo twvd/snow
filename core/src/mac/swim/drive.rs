@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use anyhow::Result;
 use log::*;
 use num_derive::FromPrimitive;
@@ -253,6 +255,21 @@ pub(crate) struct FloppyDrive {
 
     /// Cached ticks-per-bit
     ticks_per_bit: Ticks,
+
+    /// Source file path of the currently inserted image, if it was loaded
+    /// from a writeback-capable file. Cleared on eject.
+    #[serde(skip)]
+    pub(crate) image_path: Option<PathBuf>,
+
+    /// Per-drive writeback opt-in. Only meaningful when [`Self::image_path`]
+    /// is set and `floppy.supports_writeback()`.
+    #[serde(skip)]
+    pub(crate) writeback_enabled: bool,
+
+    /// Set by [`DriveWriteReg::MOTOROFF`] when a writeback save is due. The
+    /// emulator polls this and clears it after attempting the save.
+    #[serde(skip)]
+    pub(crate) pending_writeback: bool,
 }
 
 impl FloppyDrive {
@@ -291,6 +308,10 @@ impl FloppyDrive {
             pwm_dutycycle: 0,
             rpm_adjustment: 0,
             ticks_per_bit: Ticks::MAX,
+
+            image_path: None,
+            writeback_enabled: false,
+            pending_writeback: false,
         }
     }
 
@@ -398,6 +419,9 @@ impl FloppyDrive {
             }
             DriveWriteReg::MOTOROFF => {
                 self.motor = false;
+                if self.writeback_enabled && self.image_path.is_some() && self.floppy.is_dirty() {
+                    self.pending_writeback = true;
+                }
             }
             DriveWriteReg::EJECT => {
                 if self.floppy_inserted {
@@ -569,6 +593,10 @@ impl FloppyDrive {
         self.mfm = self.drive_type.io_mfm();
 
         self.floppy_ejected = Some(Box::new(self.floppy.clone()));
+
+        self.image_path = None;
+        self.writeback_enabled = false;
+        self.pending_writeback = false;
     }
 
     pub(crate) fn take_ejected_image(&mut self) -> Option<Box<FloppyImage>> {

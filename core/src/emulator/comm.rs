@@ -40,6 +40,9 @@ pub enum EmulatorCommand {
     InsertFloppyImage(usize, Box<FloppyImage>, bool),
     SaveFloppy(usize, PathBuf),
     EjectFloppy(usize),
+    /// Toggle automatic writeback for a floppy drive.
+    /// Parameters: drive id, enabled
+    SetFloppyWriteback(usize, bool),
     ScsiAttachHdd(usize, PathBuf),
     ScsiBranchHdd(usize, PathBuf),
     ScsiAttachCdrom(usize),
@@ -161,6 +164,11 @@ pub struct FddStatus {
     pub image_title: String,
     pub dirty: bool,
     pub drive_type: crate::mac::swim::drive::DriveType,
+    /// True if the loaded image's source format supports writeback and was
+    /// loaded from a file on disk (i.e. writeback is possible).
+    pub writeback_supported: bool,
+    /// True if writeback is currently armed for this drive.
+    pub writeback_enabled: bool,
 }
 
 /// A friendly message ready for display to a user
