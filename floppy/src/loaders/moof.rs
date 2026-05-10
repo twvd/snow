@@ -284,7 +284,12 @@ impl FloppyImageLoader for Moof {
             }
         }
 
-        img.set_source_format(super::ImageType::MOOF);
+        // TODO save and write support for flux images
+        let has_flux = (0..FLOPPY_MAX_SIDES)
+            .any(|s| (0..FLOPPY_MAX_TRACKS).any(|t| img.get_track_type(s, t) == TrackType::Flux));
+        if !has_flux {
+            img.set_source_format(super::ImageType::MOOF);
+        }
 
         Ok(img)
     }
