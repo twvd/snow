@@ -767,9 +767,9 @@ impl Emulator {
         info!("{}", msg);
     }
 
-    /// Saves the floppy in `drive` back to its source file using the MOOF
-    /// writer. No-op if writeback is not currently armed for the drive.
-    /// Clears the dirty + pending flags on success.
+    /// Saves the floppy in `drive` back to its source file using the writer
+    /// matching its source format. No-op if writeback is not currently armed
+    /// for the drive. Clears the dirty + pending flags on success.
     fn try_writeback(&mut self, drive: usize) {
         let drv = &self.config.swim().drives[drive];
         if !drv.writeback_enabled || !drv.floppy.is_dirty() {
@@ -780,7 +780,7 @@ impl Emulator {
         };
 
         let result = crate::util::atomic_write(&path, |f| {
-            Moof::write(&self.config.swim().drives[drive].floppy, f)
+            snow_floppy::loaders::save_image(&self.config.swim().drives[drive].floppy, f)
         });
 
         let display_name = path

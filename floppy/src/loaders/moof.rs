@@ -284,7 +284,7 @@ impl FloppyImageLoader for Moof {
             }
         }
 
-        img.set_writeback_supported(true);
+        img.set_source_format(super::ImageType::MOOF);
 
         Ok(img)
     }

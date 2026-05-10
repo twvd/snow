@@ -8,10 +8,11 @@ use crate::loaders::{
 use crate::{FloppyImage, FloppyType};
 
 use anyhow::{Result, bail};
+use serde::{Deserialize, Serialize};
 use strum::{Display, IntoEnumIterator};
 
 /// Types of supported floppy images
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Display, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Display, Copy, Clone, Serialize, Deserialize)]
 pub enum ImageType {
     A2R2,
     A2R3,

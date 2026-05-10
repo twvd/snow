@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_big_array::{Array, BigArray};
 use strum::EnumIter;
 
+use crate::loaders::ImageType;
 use flux::FluxTicks;
 
 pub mod built_info {
@@ -184,9 +185,9 @@ pub struct FloppyImage {
     /// Force floppy read-only
     force_wp: bool,
 
-    /// True if the source format has a corresponding writer, so this image
-    /// can be written back to a file in its original format.
-    writeback_supported: bool,
+    /// Format the image was loaded from. `None` for freshly-created images.
+    /// Used by [`loaders::save_image`] to dispatch to the matching writer.
+    source_format: Option<ImageType>,
 }
 
 impl FloppyImage {
@@ -227,7 +228,7 @@ impl FloppyImage {
             origtracktype: [Default::default(); FLOPPY_MAX_SIDES],
             dirty: false,
             force_wp: false,
-            writeback_supported: false,
+            source_format: None,
         }
     }
 
@@ -295,16 +296,22 @@ impl FloppyImage {
         self.dirty = false;
     }
 
-    /// True if this image's original format has a writer available, so it
-    /// can be written back to a file in the same format.
-    pub fn supports_writeback(&self) -> bool {
-        self.writeback_supported
+    /// Format this image was loaded from, if any.
+    pub fn source_format(&self) -> Option<ImageType> {
+        self.source_format
     }
 
-    /// Marks the image as writeback-capable. Loaders for formats with a
-    /// corresponding [`FloppyImageSaver`] should call this.
-    pub fn set_writeback_supported(&mut self, v: bool) {
-        self.writeback_supported = v;
+    /// Records the source format. Loaders should call this so writeback can
+    /// dispatch to the matching [`FloppyImageSaver`] via [`loaders::save_image`].
+    pub fn set_source_format(&mut self, fmt: ImageType) {
+        self.source_format = Some(fmt);
+    }
+
+    /// True iff the source format has a corresponding writer registered with
+    /// [`loaders::save_image`], so the image can be written back in its
+    /// original format.
+    pub fn supports_writeback(&self) -> bool {
+        self.source_format.is_some_and(loaders::format_has_saver)
     }
 
     /// Forces floppy to be write-protected
