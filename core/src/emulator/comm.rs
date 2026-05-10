@@ -154,7 +154,7 @@ pub struct ScsiTargetStatus {
     pub capture_status: Option<EthernetCaptureStatus>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FddStatus {
     pub present: bool,
     pub ejected: bool,

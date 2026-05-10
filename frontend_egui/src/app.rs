@@ -1,4 +1,5 @@
 use crate::dialogs::about::AboutDialog;
+use crate::dialogs::confirm::ConfirmDialog;
 use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
 use crate::dialogs::filedialog::SnowFileDialog;
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
@@ -81,6 +82,23 @@ enum FloppyDialogTarget {
     Drive(usize),
     /// Save this image to a file (invalid on load)
     Image(Box<FloppyImage>),
+}
+
+/// In-flight question awaiting an answer from [`ConfirmDialog`]. Each
+/// variant records the data needed to dispatch the chosen action when
+/// the user picks a button.
+#[derive(Default)]
+enum PendingConfirm {
+    #[default]
+    None,
+    /// User picked a non-MOOF floppy and a sibling `.moof` was found.
+    /// Button indices: 0 = load MOOF, 1 = load original, 2 = cancel.
+    MoofVariant {
+        driveidx: usize,
+        original: PathBuf,
+        moof: PathBuf,
+        wp: bool,
+    },
 }
 
 #[derive(Clone)]
@@ -183,6 +201,8 @@ pub struct SnowGui {
 
     error_dialog_open: bool,
     error_string: String,
+    confirm_dialog: ConfirmDialog,
+    pending_confirm: PendingConfirm,
     ui_active: bool,
     last_running: bool,
 
@@ -425,6 +445,8 @@ impl SnowGui {
 
             error_dialog_open: false,
             error_string: String::new(),
+            confirm_dialog: ConfirmDialog::new(),
+            pending_confirm: PendingConfirm::None,
             ui_active: true,
             last_running: false,
 
@@ -494,7 +516,7 @@ impl SnowGui {
             if app.emu.is_initialized() {
                 for floppy_path in floppies {
                     let path = Path::new(floppy_path);
-                    if !app.emu.load_floppy_firstfree(path) {
+                    if !app.request_load_floppy_firstfree(path) {
                         log::warn!(
                             "Failed to load floppy '{}': no available drives",
                             path.display()
@@ -1613,7 +1635,10 @@ impl SnowGui {
     }
 
     fn draw_menu_floppies(&mut self, ui: &mut egui::Ui) {
-        for (i, d) in (0..3).filter_map(|i| self.emu.get_fdd_status(i).map(|d| (i, d))) {
+        let fdds: Vec<(usize, _)> = (0..3)
+            .filter_map(|i| self.emu.get_fdd_status(i).cloned().map(|d| (i, d)))
+            .collect();
+        for (i, d) in fdds {
             ui.menu_button(
                 format!(
                     "{} Floppy #{}: {}",
@@ -1659,8 +1684,7 @@ impl SnowGui {
                             self.settings.get_recent_floppy_images_for_display()
                         {
                             if ui.button(format!("{}: {}", idx, display_name)).clicked() {
-                                self.emu.load_floppy(i, &path, false);
-                                self.settings.add_recent_floppy_image(&path);
+                                self.request_load_floppy(i, &path, false);
                             }
                         }
                         if self.settings.recent_floppy_images.is_empty() {
@@ -1953,6 +1977,72 @@ impl SnowGui {
         self.error_string = text.to_string();
     }
 
+    /// If `path` is not already a MOOF and a sibling file with the same
+    /// stem and a case-insensitive `.moof` extension exists, returns its
+    /// path.
+    fn moof_sibling(path: &Path) -> Option<PathBuf> {
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("moof"))
+        {
+            return None;
+        }
+        let stem = path.file_stem()?;
+        let parent = path.parent()?;
+        std::fs::read_dir(parent)
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_stem() == Some(stem)
+                    && p.extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("moof"))
+            })
+    }
+
+    /// Loads `path` into `driveidx`. If a sibling `.moof` is found alongside
+    /// a non-MOOF image, prompts the user to choose. Updates the recent
+    /// images list with whichever path actually loads.
+    pub fn request_load_floppy(&mut self, driveidx: usize, path: &Path, wp: bool) {
+        if let Some(moof) = Self::moof_sibling(path) {
+            self.pending_confirm = PendingConfirm::MoofVariant {
+                driveidx,
+                original: path.to_path_buf(),
+                moof: moof.clone(),
+                wp,
+            };
+            self.confirm_dialog.ask(
+                "Load MOOF image instead?",
+                format!(
+                    "A MOOF version of this image was found alongside it:\n\n{}\n\n\
+                     MOOF supports writing back to the source file and is preferred.\n\
+                     Load it instead?",
+                    moof.display()
+                ),
+                vec!["Load MOOF".into(), "Load original".into(), "Cancel".into()],
+            );
+        } else {
+            self.emu.load_floppy(driveidx, path, wp);
+            self.settings.add_recent_floppy_image(path);
+        }
+    }
+
+    /// Like [`Self::request_load_floppy`] but picks the first free drive.
+    /// Returns `false` if no drive is available; otherwise the load may be
+    /// gated on a confirmation dialog.
+    pub fn request_load_floppy_firstfree(&mut self, path: &Path) -> bool {
+        for i in 0..3 {
+            if let Some(d) = self.emu.get_fdd_status(i)
+                && d.present
+                && d.ejected
+            {
+                self.request_load_floppy(i, path, false);
+                return true;
+            }
+        }
+        false
+    }
+
     fn poll_winit_events(&mut self, ctx: &egui::Context) {
         if self.wev_recv.is_empty() {
             return;
@@ -2141,9 +2231,9 @@ impl SnowGui {
                 model,
             );
 
-            if let Some(floppy_path) = self.workspace.get_floppy_images().first()
+            if let Some(floppy_path) = self.workspace.get_floppy_images().first().cloned()
                 && floppy_path.exists()
-                && !self.emu.load_floppy_firstfree(floppy_path)
+                && !self.request_load_floppy_firstfree(&floppy_path)
             {
                 self.show_error(&format!(
                     "Cannot load floppy image: no free drive for {:?}",
@@ -2589,7 +2679,7 @@ impl SnowGui {
                     return;
                 };
                 if snow_floppy::loaders::Autodetect::detect(&image).is_ok() {
-                    if !self.emu.load_floppy_firstfree(path) {
+                    if !self.request_load_floppy_firstfree(path) {
                         self.toasts.add(
                             Toast::new()
                                 .text("Cannot load floppy image: no free drive")
@@ -2805,6 +2895,31 @@ impl eframe::App for SnowGui {
         self.about_dialog.update(ctx);
         self.ui_active &= !self.about_dialog.is_open();
 
+        // Confirmation dialog
+        self.confirm_dialog.update(ctx);
+        self.ui_active &= !self.confirm_dialog.is_open();
+        if let Some(idx) = self.confirm_dialog.take_answer() {
+            match std::mem::take(&mut self.pending_confirm) {
+                PendingConfirm::MoofVariant {
+                    driveidx,
+                    original,
+                    moof,
+                    wp,
+                } => {
+                    let target = match idx {
+                        0 => Some(moof),     // Load MOOF
+                        1 => Some(original), // Load original
+                        _ => None,           // Cancel
+                    };
+                    if let Some(p) = target {
+                        self.emu.load_floppy(driveidx, &p, wp);
+                        self.settings.add_recent_floppy_image(&p);
+                    }
+                }
+                PendingConfirm::None => {}
+            }
+        }
+
         // Update snowflakes
         self.update_snowflakes(ctx.content_rect().size());
 
@@ -2909,8 +3024,8 @@ impl eframe::App for SnowGui {
                     let FloppyDialogTarget::Drive(driveidx) = self.floppy_dialog_target else {
                         unreachable!()
                     };
-                    self.emu.load_floppy(driveidx, &path, self.floppy_dialog_wp);
-                    self.settings.add_recent_floppy_image(&path);
+                    let wp = self.floppy_dialog_wp;
+                    self.request_load_floppy(driveidx, &path, wp);
                 }
                 DialogMode::SaveFile => {
                     if !path

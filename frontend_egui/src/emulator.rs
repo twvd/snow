@@ -722,18 +722,6 @@ impl EmulatorState {
             .unwrap();
     }
 
-    /// Loads a floppy image from the specified path in the first free drive.
-    pub fn load_floppy_firstfree(&self, path: &Path) -> bool {
-        // Find a free floppy drive
-        for (i, d) in (0..3).filter_map(|i| self.get_fdd_status(i).map(|d| (i, d))) {
-            if d.present && d.ejected {
-                self.load_floppy(i, path, false);
-                return true;
-            }
-        }
-        false
-    }
-
     /// Loads the included toolbox floppy.
     pub fn load_toolbox_floppy(&self) -> bool {
         let Some(ref sender) = self.cmdsender else {
