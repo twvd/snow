@@ -6,7 +6,7 @@ use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
 use crate::emulator::EmulatorState;
 use crate::emulator::{EmulatorInitArgs, ScsiTargets};
 use crate::keymap::{char_to_keystroke, map_winit_keycode};
-use crate::settings::AppSettings;
+use crate::settings::{AppSettings, PromptChoice};
 use crate::uniform::{UNIFORM_ACTION, UniformAction};
 use crate::widgets::breakpoints::BreakpointsWidget;
 use crate::widgets::disassembly::DisassemblyWidget;
@@ -99,6 +99,10 @@ enum PendingConfirm {
         moof: PathBuf,
         wp: bool,
     },
+    /// A writeback-capable image was just loaded into a drive.
+    /// Button indices: 0 = enable writeback, 1 = leave disabled.
+    /// 'Remember' enabled.
+    Writeback { driveidx: usize },
 }
 
 #[derive(Clone)]
@@ -386,7 +390,7 @@ impl SnowGui {
             floppy_dialog: SnowFileDialog::new()
                 .add_filter(
                     "Floppy images",
-                    &snow_floppy::loaders::ImageType::EXTENSIONS,
+                    &snow_floppy::loaders::ImageType::all_extensions(),
                 )
                 .add_save_extension("Applesauce MOOF", "moof")
                 .default_save_extension("Applesauce MOOF")
@@ -1154,6 +1158,28 @@ impl SnowGui {
                 {
                     self.settings.save();
                 }
+                ui.menu_button("Floppy writeback", |ui| {
+                    ui.set_min_width(Self::SUBMENU_WIDTH);
+                    let prev = self.settings.writeback_mode;
+                    ui.radio_value(
+                        &mut self.settings.writeback_mode,
+                        PromptChoice::Ask,
+                        "Ask each time",
+                    );
+                    ui.radio_value(
+                        &mut self.settings.writeback_mode,
+                        PromptChoice::Always,
+                        "Always enable",
+                    );
+                    ui.radio_value(
+                        &mut self.settings.writeback_mode,
+                        PromptChoice::Never,
+                        "Never enable",
+                    );
+                    if self.settings.writeback_mode != prev {
+                        self.settings.save();
+                    }
+                });
                 if ui
                     .checkbox(
                         &mut self.settings.fastforward_limit_enabled,
@@ -2022,8 +2048,41 @@ impl SnowGui {
                 vec!["Load MOOF".into(), "Load original".into(), "Cancel".into()],
             );
         } else {
-            self.emu.load_floppy(driveidx, path, wp);
-            self.settings.add_recent_floppy_image(path);
+            self.do_load_floppy(driveidx, path, wp);
+        }
+    }
+
+    fn do_load_floppy(&mut self, driveidx: usize, path: &Path, wp: bool) {
+        self.emu.load_floppy(driveidx, path, wp);
+        self.settings.add_recent_floppy_image(path);
+        self.apply_writeback_policy(driveidx, path);
+    }
+
+    /// Decides what to do about writeback for an image that was just
+    /// loaded into `driveidx`. Honours [`AppSettings::writeback_mode`].
+    fn apply_writeback_policy(&mut self, driveidx: usize, path: &Path) {
+        let writeback_capable = path
+            .extension()
+            .is_some_and(snow_floppy::loaders::extension_has_saver);
+        if !writeback_capable {
+            return;
+        }
+        match self.settings.writeback_mode {
+            PromptChoice::Always => {
+                self.emu.set_floppy_writeback(driveidx, true);
+            }
+            PromptChoice::Never => {}
+            PromptChoice::Ask => {
+                self.pending_confirm = PendingConfirm::Writeback { driveidx };
+                self.confirm_dialog.ask_with_remember(
+                    "Enable floppy writeback?",
+                    "This image supports writeback (saving changes back to \
+                     its source file as you make them).\n\n\
+                     Enable writeback for this image?",
+                    vec!["Enable".into(), "Don't enable".into()],
+                    "Remember my choice",
+                );
+            }
         }
     }
 
@@ -2667,7 +2726,7 @@ impl SnowGui {
         };
 
         // Try to detect and load floppy images
-        if snow_floppy::loaders::ImageType::EXTENSIONS
+        if snow_floppy::loaders::ImageType::all_extensions()
             .into_iter()
             .any(|s| ext.eq_ignore_ascii_case(s))
         {
@@ -2898,7 +2957,7 @@ impl eframe::App for SnowGui {
         // Confirmation dialog
         self.confirm_dialog.update(ctx);
         self.ui_active &= !self.confirm_dialog.is_open();
-        if let Some(idx) = self.confirm_dialog.take_answer() {
+        if let Some(answer) = self.confirm_dialog.take_answer() {
             match std::mem::take(&mut self.pending_confirm) {
                 PendingConfirm::MoofVariant {
                     driveidx,
@@ -2906,14 +2965,27 @@ impl eframe::App for SnowGui {
                     moof,
                     wp,
                 } => {
-                    let target = match idx {
+                    let target = match answer.button {
                         0 => Some(moof),     // Load MOOF
                         1 => Some(original), // Load original
                         _ => None,           // Cancel
                     };
                     if let Some(p) = target {
-                        self.emu.load_floppy(driveidx, &p, wp);
-                        self.settings.add_recent_floppy_image(&p);
+                        self.do_load_floppy(driveidx, &p, wp);
+                    }
+                }
+                PendingConfirm::Writeback { driveidx } => {
+                    let enable = answer.button == 0;
+                    if enable {
+                        self.emu.set_floppy_writeback(driveidx, true);
+                    }
+                    if answer.remember {
+                        self.settings.writeback_mode = if enable {
+                            PromptChoice::Always
+                        } else {
+                            PromptChoice::Never
+                        };
+                        self.settings.save();
                     }
                 }
                 PendingConfirm::None => {}

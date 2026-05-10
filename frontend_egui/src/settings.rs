@@ -3,6 +3,19 @@ use egui_file_dialog::FileDialogStorage;
 use serde::{Deserialize, Serialize};
 use snow_core::mac::MacModel;
 use std::path::{Path, PathBuf};
+use strum::{Display, EnumIter};
+
+/// Generic tri-state preference for an automatic action.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, Display, EnumIter)]
+pub enum PromptChoice {
+    /// Ask the user every time.
+    #[default]
+    Ask,
+    /// Always perform the action without asking.
+    Always,
+    /// Never perform the action and don't ask.
+    Never,
+}
 
 const MAX_RECENT_WORKSPACES: usize = 10;
 const MAX_RECENT_IMAGES: usize = 10;
@@ -31,6 +44,7 @@ pub struct AppSettings {
     pub fastforward_limit: f64,
     pub dynamic_fastforward: bool,
     pub auto_relative_mouse_fullscreen: bool,
+    pub writeback_mode: PromptChoice,
 }
 
 impl Default for AppSettings {
@@ -55,6 +69,7 @@ impl Default for AppSettings {
             fastforward_limit: 2.0,
             dynamic_fastforward: false,
             auto_relative_mouse_fullscreen: true,
+            writeback_mode: PromptChoice::default(),
         }
     }
 }

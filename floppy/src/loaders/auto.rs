@@ -9,10 +9,12 @@ use crate::{FloppyImage, FloppyType};
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
-use strum::{Display, IntoEnumIterator};
+use strum::{Display, EnumIter, IntoEnumIterator};
 
 /// Types of supported floppy images
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Display, Copy, Clone, Serialize, Deserialize)]
+#[derive(
+    Debug, PartialEq, Eq, PartialOrd, Ord, Display, Copy, Clone, Serialize, Deserialize, EnumIter,
+)]
 pub enum ImageType {
     A2R2,
     A2R3,
@@ -27,9 +29,31 @@ pub enum ImageType {
 }
 
 impl ImageType {
-    pub const EXTENSIONS: [&'static str; 10] = [
-        "a2r", "moof", "dart", "dc42", "dsk", "pfi", "pri", "raw", "img", "image",
-    ];
+    /// Extension hints. Actual image type detection should occur through
+    /// the autoloader.
+    pub fn extensions(self) -> &'static [&'static str] {
+        match self {
+            Self::A2R2 | Self::A2R3 => &["a2r"],
+            Self::Bitfile => &[],
+            Self::DART => &["dart"],
+            Self::DC42 => &["dc42", "dsk"],
+            Self::Fluxfox => &[],
+            Self::MOOF => &["moof"],
+            Self::PFI => &["pfi"],
+            Self::PRI => &["pri"],
+            Self::Raw => &["dsk", "raw", "img", "image"],
+        }
+    }
+
+    /// All extensions across every supported format, de-duplicated.
+    pub fn all_extensions() -> Vec<&'static str> {
+        let mut out: Vec<&'static str> = Self::iter()
+            .flat_map(|t| t.extensions().iter().copied())
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
 
     pub fn as_friendly_str(&self) -> &'static str {
         match self {
