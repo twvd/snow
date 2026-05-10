@@ -103,6 +103,16 @@ enum PendingConfirm {
     /// Button indices: 0 = enable writeback, 1 = leave disabled.
     /// 'Remember' enabled.
     Writeback { driveidx: usize },
+    /// User picked an image whose format has no writer and no MOOF sibling
+    /// exists. Offer to save them as a sibling file.
+    /// Button indices: 0 = save MOOF and load it, 1 = load original, 2 = cancel.
+    OfferMoofConversion {
+        driveidx: usize,
+        original: PathBuf,
+        moof_path: PathBuf,
+        moof_bytes: Vec<u8>,
+        wp: bool,
+    },
 }
 
 #[derive(Clone)]
@@ -1180,6 +1190,28 @@ impl SnowGui {
                         self.settings.save();
                     }
                 });
+                ui.menu_button("Convert floppy images to MOOF", |ui| {
+                    ui.set_min_width(Self::SUBMENU_WIDTH);
+                    let prev = self.settings.convert_to_moof_mode;
+                    ui.radio_value(
+                        &mut self.settings.convert_to_moof_mode,
+                        PromptChoice::Ask,
+                        "Ask each time",
+                    );
+                    ui.radio_value(
+                        &mut self.settings.convert_to_moof_mode,
+                        PromptChoice::Always,
+                        "Always convert",
+                    );
+                    ui.radio_value(
+                        &mut self.settings.convert_to_moof_mode,
+                        PromptChoice::Never,
+                        "Never convert",
+                    );
+                    if self.settings.convert_to_moof_mode != prev {
+                        self.settings.save();
+                    }
+                });
                 if ui
                     .checkbox(
                         &mut self.settings.fastforward_limit_enabled,
@@ -2027,8 +2059,9 @@ impl SnowGui {
     }
 
     /// Loads `path` into `driveidx`. If a sibling `.moof` is found alongside
-    /// a non-MOOF image, prompts the user to choose. Updates the recent
-    /// images list with whichever path actually loads.
+    /// a non-MOOF image, prompts the user to choose. If the format has no
+    /// writer but converting to MOOF would succeed, offers to save a
+    /// sibling MOOF.
     pub fn request_load_floppy(&mut self, driveidx: usize, path: &Path, wp: bool) {
         if let Some(moof) = Self::moof_sibling(path) {
             self.pending_confirm = PendingConfirm::MoofVariant {
@@ -2047,8 +2080,90 @@ impl SnowGui {
                 ),
                 vec!["Load MOOF".into(), "Load original".into(), "Cancel".into()],
             );
+        } else if self.maybe_offer_moof_conversion(driveidx, path, wp) {
+            // Dialog opened; wait for answer.
         } else {
             self.do_load_floppy(driveidx, path, wp);
+        }
+    }
+
+    fn maybe_offer_moof_conversion(&mut self, driveidx: usize, path: &Path, wp: bool) -> bool {
+        if wp || self.settings.convert_to_moof_mode == PromptChoice::Never {
+            return false;
+        }
+        if path
+            .extension()
+            .is_some_and(snow_floppy::loaders::extension_has_saver)
+        {
+            // Format has a saver, no conversion needed.
+            return false;
+        }
+        let moof_path = path.with_extension("moof");
+        if moof_path.exists() {
+            // Already has a MOOF sibling.
+            return false;
+        }
+
+        // Try to parse and re-render as MOOF. If either step fails, the
+        // format isn't convertible (e.g. flux tracks) and we silently
+        // fall through to a plain load.
+        let Ok(data) = std::fs::read(path) else {
+            return false;
+        };
+        let Ok(image) = snow_floppy::loaders::Autodetect::load(
+            &data,
+            path.file_name().and_then(|s| s.to_str()),
+        ) else {
+            return false;
+        };
+        let mut moof_bytes = Vec::new();
+        if snow_floppy::loaders::Moof::write(&image, &mut moof_bytes).is_err() {
+            return false;
+        }
+
+        match self.settings.convert_to_moof_mode {
+            PromptChoice::Always => {
+                match std::fs::write(&moof_path, &moof_bytes) {
+                    Ok(()) => self.do_load_floppy(driveidx, &moof_path, wp),
+                    Err(e) => {
+                        self.show_error(&format!(
+                            "Could not save '{}': {}",
+                            moof_path.display(),
+                            e
+                        ));
+                        // Fall back to loading the original.
+                        self.do_load_floppy(driveidx, path, wp);
+                    }
+                }
+                true
+            }
+            PromptChoice::Ask => {
+                self.pending_confirm = PendingConfirm::OfferMoofConversion {
+                    driveidx,
+                    original: path.to_path_buf(),
+                    moof_path: moof_path.clone(),
+                    moof_bytes,
+                    wp,
+                };
+                self.confirm_dialog.ask_with_remember(
+                    "Save MOOF copy?",
+                    format!(
+                        "This image format does not support writeback.\n\n\
+                         Convert to MOOF copy as:\n{}\n\n\
+                         so changes can be saved back to disk?\n\
+                         (original image will be preserved)",
+                        moof_path.display()
+                    ),
+                    vec![
+                        "Convert to MOOF".into(),
+                        "Load original".into(),
+                        "Cancel".into(),
+                    ],
+                    "Remember my choice",
+                );
+                true
+            }
+            PromptChoice::Never => unreachable!(),
         }
     }
 
@@ -2981,6 +3096,35 @@ impl eframe::App for SnowGui {
                     }
                     if answer.remember {
                         self.settings.writeback_mode = if enable {
+                            PromptChoice::Always
+                        } else {
+                            PromptChoice::Never
+                        };
+                        self.settings.save();
+                    }
+                }
+                PendingConfirm::OfferMoofConversion {
+                    driveidx,
+                    original,
+                    moof_path,
+                    moof_bytes,
+                    wp,
+                } => {
+                    match answer.button {
+                        0 => match std::fs::write(&moof_path, &moof_bytes) {
+                            Ok(()) => self.do_load_floppy(driveidx, &moof_path, wp),
+                            Err(e) => self.show_error(&format!(
+                                "Could not save '{}': {}",
+                                moof_path.display(),
+                                e
+                            )),
+                        },
+                        1 => self.do_load_floppy(driveidx, &original, wp),
+                        _ => {} // Cancel
+                    }
+                    // Cancel never persists a remembered choice.
+                    if answer.remember && answer.button != 2 {
+                        self.settings.convert_to_moof_mode = if answer.button == 0 {
                             PromptChoice::Always
                         } else {
                             PromptChoice::Never
