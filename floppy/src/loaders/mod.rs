@@ -30,10 +30,20 @@ pub use raw::RawImage;
 use crate::FloppyImage;
 
 use anyhow::Result;
+use strum::IntoEnumIterator;
 
 /// True if a FloppyImageSaver is implemented for an `ImageType`
 pub fn format_has_saver(fmt: ImageType) -> bool {
     matches!(fmt, ImageType::MOOF)
+}
+
+/// True if `ext` matches an extension associated with at least one format
+/// that has a FloppyImageSaver.
+pub fn extension_has_saver(ext: &std::ffi::OsStr) -> bool {
+    ImageType::iter()
+        .filter(|t| format_has_saver(*t))
+        .flat_map(|t| t.extensions().iter().copied())
+        .any(|e| ext.eq_ignore_ascii_case(e))
 }
 
 /// A loader to read a specific format and transform it into a usable FloppyImage
