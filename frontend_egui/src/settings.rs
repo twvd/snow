@@ -45,6 +45,7 @@ pub struct AppSettings {
     pub dynamic_fastforward: bool,
     pub auto_relative_mouse_fullscreen: bool,
     pub writeback_mode: PromptChoice,
+    pub convert_to_moof_mode: PromptChoice,
 }
 
 impl Default for AppSettings {
@@ -70,6 +71,7 @@ impl Default for AppSettings {
             dynamic_fastforward: false,
             auto_relative_mouse_fullscreen: true,
             writeback_mode: PromptChoice::default(),
+            convert_to_moof_mode: PromptChoice::default(),
         }
     }
 }
