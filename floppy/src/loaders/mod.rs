@@ -31,6 +31,11 @@ use crate::FloppyImage;
 
 use anyhow::Result;
 
+/// True if a FloppyImageSaver is implemented for an `ImageType`
+pub fn format_has_saver(fmt: ImageType) -> bool {
+    matches!(fmt, ImageType::MOOF)
+}
+
 /// A loader to read a specific format and transform it into a usable FloppyImage
 pub trait FloppyImageLoader {
     fn load(data: &[u8], filename: Option<&str>) -> Result<FloppyImage>;
@@ -58,5 +63,18 @@ pub trait FloppyImageSaver {
         let mut f = std::fs::File::create(filename)?;
         Self::write(img, &mut f)?;
         Ok(())
+    }
+}
+
+/// Writes `img` to `w` in its original format. Returns an error if the
+/// image has no recorded source format, or if no FloppyImageSaver is
+/// implemented for that format (see format_has_saver).
+pub fn save_image(img: &FloppyImage, w: &mut impl std::io::Write) -> Result<()> {
+    let fmt = img
+        .source_format()
+        .ok_or_else(|| anyhow::anyhow!("Image has no recorded source format"))?;
+    match fmt {
+        ImageType::MOOF => Moof::write(img, w),
+        other => anyhow::bail!("No saver available for format {}", other),
     }
 }
