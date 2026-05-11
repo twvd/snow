@@ -16,6 +16,8 @@ ethernet_raw = ["ethernet", "dep:pnet"]
 ethernet_nat = ["ethernet", "dep:snow_nat"]
 # Enables HTTPS stripping proxy in NAT
 ethernet_nat_https_stripping = ["ethernet_nat", "snow_nat/https_stripping"]
+# Enables MacTCP helpers in NAT (ICMP, RARP server)
+ethernet_nat_mactcp_helpers = ["ethernet_nat", "snow_nat/mactcp_helpers"]
 # Enables Ethernet bridging via TAP interface (Linux only)
 ethernet_tap = ["ethernet", "dep:tun", "nix/poll", "dep:pnet"]
 # Enables Apple LaserWriter IISC SCSI printer emulation
