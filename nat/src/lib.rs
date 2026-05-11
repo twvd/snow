@@ -17,6 +17,9 @@
 #[cfg(feature = "https_stripping")]
 mod https_stripping;
 
+#[cfg(feature = "mactcp_helpers")]
+mod mactcp_helpers;
+
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
@@ -136,6 +139,12 @@ impl VirtualDevice {
             Ok(frame) => frame,
             Err(_) => return false,
         };
+
+        // Intercept RARP broadcasts so handle_rarp() can reply locally
+        #[cfg(feature = "mactcp_helpers")]
+        if eth_frame.ethertype() == EthernetProtocol::Unknown(0x8035) {
+            return true;
+        }
 
         // Check if it's IPv4
         if eth_frame.ethertype() != EthernetProtocol::Ipv4 {
@@ -629,6 +638,14 @@ impl NatEngine {
                 }
             };
 
+            #[cfg(feature = "mactcp_helpers")]
+            if eth_frame.ethertype() == EthernetProtocol::Unknown(0x8035) {
+                if let Err(e) = self.handle_rarp(&eth_frame) {
+                    log::error!("Failed to handle RARP: {}", e);
+                }
+                continue;
+            }
+
             let ipv4_packet = match Ipv4Packet::new_checked(eth_frame.payload()) {
                 Ok(packet) => packet,
                 Err(e) => {
@@ -671,6 +688,33 @@ impl NatEngine {
                     log::warn!("Unsupported protocol: {:?}", ipv4_packet.next_header());
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    /// Handle a RARP request by replying with the assigned IP for the client MAC
+    #[cfg(feature = "mactcp_helpers")]
+    fn handle_rarp(&mut self, eth_frame: &smoltcp::wire::EthernetFrame<&[u8]>) -> Result<()> {
+        let gw_ipv4 = match self.gateway_ip {
+            IpAddress::Ipv4(a) => a,
+            _ => return Ok(()),
+        };
+
+        let Some(buf) = mactcp_helpers::handle_rarp_request(eth_frame, gw_ipv4, self.gateway_mac)?
+        else {
+            return Ok(());
+        };
+
+        match self.device.tx.try_send(buf) {
+            Ok(()) => {
+                self.stats.tx_packets.fetch_add(1, Ordering::Relaxed);
+                self.stats.tx_bytes.fetch_add(42, Ordering::Relaxed);
+            }
+            Err(TrySendError::Full(_)) => {
+                self.stats.tx_dropped.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(TrySendError::Disconnected(_)) => {}
         }
 
         Ok(())

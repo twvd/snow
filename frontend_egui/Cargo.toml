@@ -9,10 +9,11 @@ name = "snowemu"
 path = "src/main.rs"
 
 [features]
-default = ["ethernet", "ethernet_nat", "ethernet_nat_https_stripping", "ethernet_tap", "printer"]
+default = ["ethernet", "ethernet_nat", "ethernet_nat_https_stripping", "ethernet_nat_mactcp_helpers", "ethernet_tap", "printer"]
 ethernet = ["snow_core/ethernet"]
 ethernet_nat = ["ethernet", "snow_core/ethernet_nat"]
 ethernet_nat_https_stripping = ["ethernet_nat", "snow_core/ethernet_nat_https_stripping"]
+ethernet_nat_mactcp_helpers = ["ethernet_nat", "snow_core/ethernet_nat_mactcp_helpers"]
 ethernet_raw = ["ethernet", "snow_core/ethernet_raw", "dep:pnet"]
 ethernet_tap = ["ethernet", "snow_core/ethernet_tap", "dep:pnet"]
 printer = ["snow_core/printer"]
