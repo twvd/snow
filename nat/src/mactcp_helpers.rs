@@ -27,6 +27,8 @@ pub fn handle_rarp_request(
     }
 
     let client_mac = EthernetAddress::from_bytes(arp_packet.target_hardware_addr());
+
+    // IP will be Gateway IP + 1 (e.g: GW 10.0.0.1 -> Mac 10.0.0.2)
     let client_ip = Ipv4Address::from(
         u32::from_be_bytes(gateway_ip.octets())
             .wrapping_add(1)
@@ -37,7 +39,7 @@ pub fn handle_rarp_request(
     Ok(Some(buf))
 }
 
-/// Build a RARP reply frame. IP will be Gateway IP + 1 (e.g: GW 10.0.0.1 -> Mac 10.0.0.2)
+/// Build a RARP reply frame with the specified IP.
 pub fn build_rarp_reply(
     client_mac: EthernetAddress,
     gateway_mac: EthernetAddress,
