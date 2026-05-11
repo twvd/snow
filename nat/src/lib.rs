@@ -358,6 +358,10 @@ impl TxToken for VirtualTxToken {
         let mut buffer = vec![0u8; len];
         let result = f(&mut buffer);
 
+        // Throttle ICMP replies to avoid a race condition within MacTCP
+        #[cfg(feature = "mactcp_helpers")]
+        mactcp_helpers::delay_icmp_reply(&buffer);
+
         // Send the packet back to the emulator
         let send_len = buffer.len();
         match self.tx.try_send(buffer) {
