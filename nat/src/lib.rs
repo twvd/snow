@@ -695,7 +695,7 @@ impl NatEngine {
 
     /// Handle a RARP request by replying with the assigned IP for the client MAC
     #[cfg(feature = "mactcp_helpers")]
-    fn handle_rarp(&mut self, eth_frame: &smoltcp::wire::EthernetFrame<&[u8]>) -> Result<()> {
+    fn handle_rarp(&self, eth_frame: &smoltcp::wire::EthernetFrame<&[u8]>) -> Result<()> {
         let gw_ipv4 = match self.gateway_ip {
             IpAddress::Ipv4(a) => a,
             _ => return Ok(()),
