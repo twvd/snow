@@ -9,7 +9,8 @@ use anyhow::Result;
 use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::{
     ArpHardware, ArpOperation, ArpPacket, EthernetAddress, EthernetFrame, EthernetProtocol,
-    Icmpv4Message, Icmpv4Packet, IpProtocol, Ipv4Address, Ipv4Packet, Ipv4Repr,
+    Icmpv4Message, Icmpv4Packet, IpAddress, IpProtocol, Ipv4Address, Ipv4Packet, Ipv4Repr,
+    TcpPacket, TcpSeqNumber,
 };
 use std::time::Duration;
 
@@ -175,6 +176,52 @@ fn build_icmp_address_mask_reply(
     icmp_buf[6..8].copy_from_slice(&seq_no.to_be_bytes());
     icmp_buf[8..12].copy_from_slice(&address_mask.to_be_bytes());
     Icmpv4Packet::new_unchecked(icmp_buf).fill_checksum();
+
+    buf
+}
+
+/// Build a spoofed TCP RST+ACK frame from the remote endpoint, so MacTCP doesn't
+/// hang while doing SYN retransmits
+pub fn build_tcp_rst(
+    eth_dst: EthernetAddress,
+    gateway_mac: EthernetAddress,
+    src_ip: Ipv4Address,
+    dst_ip: Ipv4Address,
+    src_port: u16,
+    dst_port: u16,
+    ack_num: u32,
+) -> Vec<u8> {
+    const TCP_HEADER_LEN: usize = 20;
+    let eth_hlen = EthernetFrame::<&[u8]>::header_len();
+    let ip_repr = Ipv4Repr {
+        src_addr: src_ip,
+        dst_addr: dst_ip,
+        next_header: IpProtocol::Tcp,
+        payload_len: TCP_HEADER_LEN,
+        hop_limit: 64,
+    };
+    let total = eth_hlen + ip_repr.buffer_len() + TCP_HEADER_LEN;
+    let mut buf = vec![0u8; total];
+
+    let mut eth = EthernetFrame::new_unchecked(&mut buf);
+    eth.set_dst_addr(eth_dst);
+    eth.set_src_addr(gateway_mac);
+    eth.set_ethertype(EthernetProtocol::Ipv4);
+
+    let mut ipv4 = Ipv4Packet::new_unchecked(&mut buf[eth_hlen..]);
+    ip_repr.emit(&mut ipv4, &ChecksumCapabilities::default());
+
+    let tcp_start = eth_hlen + ip_repr.buffer_len();
+    let mut tcp = TcpPacket::new_unchecked(&mut buf[tcp_start..]);
+    tcp.set_src_port(src_port);
+    tcp.set_dst_port(dst_port);
+    tcp.set_seq_number(TcpSeqNumber(0));
+    tcp.set_ack_number(TcpSeqNumber(ack_num as i32));
+    tcp.set_header_len(20);
+    tcp.set_rst(true);
+    tcp.set_ack(true);
+    tcp.set_window_len(0);
+    tcp.fill_checksum(&IpAddress::Ipv4(src_ip), &IpAddress::Ipv4(dst_ip));
 
     buf
 }
