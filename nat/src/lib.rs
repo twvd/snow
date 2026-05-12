@@ -980,7 +980,32 @@ impl NatEngine {
             // Normal TCP connection
             let remote_addr = SocketAddr::new(std::net::IpAddr::V4(dst_ip), dst_port);
 
-            let os_socket = TcpStream::connect_timeout(&remote_addr, Duration::from_secs(5))?;
+            let os_socket = match TcpStream::connect_timeout(&remote_addr, Duration::from_secs(5)) {
+                Ok(s) => s,
+                #[cfg(feature = "mactcp_helpers")]
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                    let ack_num = (tcp_packet.seq_number().0 as u32).wrapping_add(1);
+                    let buf = mactcp_helpers::build_tcp_rst(
+                        _eth_frame.src_addr(),
+                        self.gateway_mac,
+                        dst_ip,
+                        src_ip,
+                        dst_port,
+                        src_port,
+                        ack_num,
+                    );
+                    self.device.tx.try_send(buf).ok();
+                    log::debug!(
+                        "NAT: Sent TCP RST to {}:{} for {}:{}",
+                        src_ip,
+                        src_port,
+                        dst_ip,
+                        dst_port
+                    );
+                    return Ok(());
+                }
+                Err(e) => return Err(e.into()),
+            };
             os_socket.set_nonblocking(true)?;
 
             // Create smoltcp TCP socket for the emulator side
