@@ -46,6 +46,9 @@ pub struct AppSettings {
     pub auto_relative_mouse_fullscreen: bool,
     pub writeback_mode: PromptChoice,
     pub convert_to_moof_mode: PromptChoice,
+    /// When true, copy the loaded image to a timestamped sibling file
+    /// just before writeback is enabled for it.
+    pub backup_on_writeback: bool,
 }
 
 impl Default for AppSettings {
@@ -72,6 +75,7 @@ impl Default for AppSettings {
             auto_relative_mouse_fullscreen: true,
             writeback_mode: PromptChoice::default(),
             convert_to_moof_mode: PromptChoice::default(),
+            backup_on_writeback: false,
         }
     }
 }
