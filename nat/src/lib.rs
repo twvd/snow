@@ -100,7 +100,9 @@ impl VirtualDevice {
     /// Check for IPv4 packets that the NAT gateway should not handle.
     /// Filters UDP packets that would cause OS bind/connect errors:
     ///   - src IP 0.0.0.0 (mostly BOOTP requests for MacTCP)
-    ///   - src port < 1024 (privileged ports as the emulator is likely running as non-root)
+    ///   - broadcasts (255.255.255.255)
+    ///   - UDP src port < 1024 (privileged ports as the emulator is likely running as non-root)
+    ///   - UDP dst port == 520 (RIP)
     fn needs_filtering(&self, packet: &[u8]) -> bool {
         use smoltcp::wire::{IpProtocol, Ipv4Packet, UdpPacket};
 
