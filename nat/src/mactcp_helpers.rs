@@ -111,7 +111,7 @@ pub fn handle_icmp_address_mask_request(
     let identifier = icmp.echo_ident();
     let seq_no = icmp.echo_seq_no();
 
-    // It would be a better idea to be classful here, but the code in ethernet.rs is
+    // It would make more sense to be classful here, but the code in ethernet.rs is
     // classless so let's follow that
     let address_mask: u32 = if subnet_prefix == 0 {
         0
@@ -180,7 +180,7 @@ fn build_icmp_address_mask_reply(
     buf
 }
 
-/// Build a spoofed TCP RST+ACK frame from the remote endpoint, so MacTCP doesn't
+/// Build a spoofed TCP RST + ACK frame from the remote endpoint, so MacTCP doesn't
 /// hang while doing SYN retransmits
 pub fn build_tcp_rst(
     eth_dst: EthernetAddress,
