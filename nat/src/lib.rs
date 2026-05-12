@@ -131,9 +131,21 @@ impl VirtualDevice {
             return true;
         }
 
-        ipv4_packet.src_addr() == Ipv4Address::new(0, 0, 0, 0)
+        let filtered = ipv4_packet.src_addr() == Ipv4Address::new(0, 0, 0, 0)
             || udp_packet.src_port() < 1024
-            || udp_packet.dst_port() == 520
+            || udp_packet.dst_port() == 520;
+
+        if filtered {
+            log::debug!(
+                "NAT: Filtered connection from {}:{} to {}:{}",
+                ipv4_packet.src_addr(),
+                udp_packet.src_port(),
+                ipv4_packet.dst_addr(),
+                udp_packet.dst_port()
+            );
+        }
+
+        filtered
     }
 
     /// Check if a packet needs NAT (routed UDP or TCP SYN packet where destination IP != gateway IP)
