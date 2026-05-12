@@ -102,7 +102,7 @@ enum PendingConfirm {
     /// A writeback-capable image was just loaded into a drive.
     /// Button indices: 0 = enable writeback, 1 = leave disabled.
     /// 'Remember' enabled.
-    Writeback { driveidx: usize },
+    Writeback { driveidx: usize, path: PathBuf },
     /// User picked an image whose format has no writer and no MOOF sibling
     /// exists. Offer to save them as a sibling file.
     /// Button indices: 0 = save MOOF and load it, 1 = load original, 2 = cancel.
@@ -1214,6 +1214,19 @@ impl SnowGui {
                 });
                 if ui
                     .checkbox(
+                        &mut self.settings.backup_on_writeback,
+                        "Back up floppy image before enabling writeback",
+                    )
+                    .on_hover_text(
+                        "Before writeback is enabled for a floppy image, copy it to a \
+                         timestamped sibling file in the same directory.",
+                    )
+                    .clicked()
+                {
+                    self.settings.save();
+                }
+                if ui
+                    .checkbox(
                         &mut self.settings.fastforward_limit_enabled,
                         "Limit fast-forward speed",
                     )
@@ -2184,11 +2197,14 @@ impl SnowGui {
         }
         match self.settings.writeback_mode {
             PromptChoice::Always => {
-                self.emu.set_floppy_writeback(driveidx, true);
+                self.floppy_enable_writeback(driveidx, path);
             }
             PromptChoice::Never => {}
             PromptChoice::Ask => {
-                self.pending_confirm = PendingConfirm::Writeback { driveidx };
+                self.pending_confirm = PendingConfirm::Writeback {
+                    driveidx,
+                    path: path.to_path_buf(),
+                };
                 self.confirm_dialog.ask_with_remember(
                     "Enable floppy writeback?",
                     "This image supports writeback (saving changes back to \
@@ -2199,6 +2215,39 @@ impl SnowGui {
                 );
             }
         }
+    }
+
+    fn floppy_enable_writeback(&mut self, driveidx: usize, path: &Path) {
+        if self.settings.backup_on_writeback
+            && let Err(e) = Self::floppy_backup_image(path)
+        {
+            self.show_error(&format!("Could not back up '{}': {}", path.display(), e));
+            return;
+        }
+        self.emu.set_floppy_writeback(driveidx, true);
+    }
+
+    fn floppy_backup_image(path: &Path) -> std::io::Result<()> {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let ts = chrono::Local::now().format("%Y-%m-%d %H%M%S");
+        let mut backup_name = format!("{}-bak {}", stem, ts);
+        if !ext.is_empty() {
+            backup_name.push('.');
+            backup_name.push_str(&ext);
+        }
+        let backup_path = parent.join(backup_name);
+        std::fs::copy(path, &backup_path)?;
+        log::info!(
+            "Backed up '{}' to '{}'",
+            path.display(),
+            backup_path.display()
+        );
+        Ok(())
     }
 
     /// Like [`Self::request_load_floppy`] but picks the first free drive.
@@ -3089,10 +3138,10 @@ impl eframe::App for SnowGui {
                         self.do_load_floppy(driveidx, &p, wp);
                     }
                 }
-                PendingConfirm::Writeback { driveidx } => {
+                PendingConfirm::Writeback { driveidx, path } => {
                     let enable = answer.button == 0;
                     if enable {
-                        self.emu.set_floppy_writeback(driveidx, true);
+                        self.floppy_enable_writeback(driveidx, &path);
                     }
                     if answer.remember {
                         self.settings.writeback_mode = if enable {
