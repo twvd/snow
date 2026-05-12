@@ -258,6 +258,13 @@ impl Device for VirtualDevice {
             return None;
         }
 
+        // Intercept ICMP packets MacTCP Helpers can handle instead of smoltcp
+        #[cfg(feature = "mactcp_helpers")]
+        if mactcp_helpers::needs_icmp_proxy(&packet) {
+            self.intercepted_packets.push(packet);
+            return None;
+        }
+
         // Check if this packet needs NAT (routed TCP/UDP)
         if self.needs_nat(&packet) {
             self.intercepted_packets.push(packet);
@@ -496,6 +503,10 @@ pub struct NatEngine {
     /// Whether to enable HTTPS stripping
     #[cfg(feature = "https_stripping")]
     https_stripping: bool,
+
+    /// Gateway subnet prefix length (for ICMP Address Mask replies)
+    #[cfg(feature = "mactcp_helpers")]
+    gateway_subnet: u8,
 }
 
 impl NatEngine {
@@ -559,6 +570,8 @@ impl NatEngine {
             stats,
             #[cfg(feature = "https_stripping")]
             https_stripping,
+            #[cfg(feature = "mactcp_helpers")]
+            gateway_subnet,
         }
     }
 
@@ -686,6 +699,25 @@ impl NatEngine {
                         self.handle_outbound_tcp(&packet[..], &eth_frame, &ipv4_packet, &tcp_packet)
                     {
                         log::error!("Failed to handle outbound TCP: {}", e);
+                    }
+                }
+                #[cfg(feature = "mactcp_helpers")]
+                IpProtocol::Icmp => {
+                    let gw_ipv4 = match self.gateway_ip {
+                        IpAddress::Ipv4(a) => a,
+                        _ => continue,
+                    };
+                    match mactcp_helpers::handle_icmp_address_mask_request(
+                        &eth_frame,
+                        gw_ipv4,
+                        self.gateway_mac,
+                        self.gateway_subnet,
+                    ) {
+                        Ok(Some(buf)) => {
+                            self.device.tx.try_send(buf).ok();
+                        }
+                        Ok(None) => {}
+                        Err(e) => log::error!("Failed to handle ICMP address mask: {}", e),
                     }
                 }
                 _ => {
