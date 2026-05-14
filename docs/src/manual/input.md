@@ -58,7 +58,7 @@ press the Command key, but since this is rather inconvenient, Snow provides
 the right ALT or CTRL as an alternative.
 
 To enable or disable mapping an alternate key for Command, use the menu item
-'Options > Map alternate Cmd key'. This option persists globally.
+'Options > Input > Map alternate Cmd key'. This option persists globally.
 
 ## Mouse
 
@@ -89,5 +89,5 @@ some games (e.g. first person shooters) and non-original software.
 Relative positioning mode works best when using Snow [fullscreen](fullscreen.md).
 When switching to fullscreen mode, Snow will automatically switch to relative
 positioning mode and back to the original mode when leaving fullscreen. This
-behavior can be enabled/disabled using the 'Options > Use relative mouse in
-fullscreen' menu option. This option persists globally.
+behavior can be enabled/disabled using the 'Options > Input > Use relative mouse
+in fullscreen' menu option. This option persists globally.
