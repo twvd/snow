@@ -1,4 +1,4 @@
-use crate::workspace::CmdKeyMapping;
+use crate::settings::CmdKeyMapping;
 use eframe::egui;
 use snow_core::keymap::Scancode;
 

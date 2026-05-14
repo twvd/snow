@@ -17,6 +17,18 @@ pub enum PromptChoice {
     Never,
 }
 
+/// Mapping of a right modifier key to the Mac's Cmd key
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CmdKeyMapping {
+    /// No remapping; right Alt = Option, right Ctrl = Control
+    Disabled,
+    /// Right Alt maps to Cmd
+    #[default]
+    RightAlt,
+    /// Right Ctrl maps to Cmd
+    RightCtrl,
+}
+
 const MAX_RECENT_WORKSPACES: usize = 10;
 const MAX_RECENT_IMAGES: usize = 10;
 
@@ -49,6 +61,8 @@ pub struct AppSettings {
     /// When true, copy the loaded image to a timestamped sibling file
     /// just before writeback is enabled for it.
     pub backup_on_writeback: bool,
+    /// How the right modifier key maps to the Mac's Cmd key
+    pub cmd_key_mapping: CmdKeyMapping,
 }
 
 impl Default for AppSettings {
@@ -76,6 +90,7 @@ impl Default for AppSettings {
             writeback_mode: PromptChoice::default(),
             convert_to_moof_mode: PromptChoice::default(),
             backup_on_writeback: false,
+            cmd_key_mapping: CmdKeyMapping::default(),
         }
     }
 }
