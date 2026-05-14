@@ -712,6 +712,24 @@ impl SnowGui {
                         }
                     });
                 }
+                ui.separator();
+                ui.menu_button("Map alternate Cmd key", |ui| {
+                    ui.radio_value(
+                        &mut self.workspace.cmd_key_mapping,
+                        CmdKeyMapping::Disabled,
+                        "Disabled",
+                    );
+                    ui.radio_value(
+                        &mut self.workspace.cmd_key_mapping,
+                        CmdKeyMapping::RightAlt,
+                        "Right Alt",
+                    );
+                    ui.radio_value(
+                        &mut self.workspace.cmd_key_mapping,
+                        CmdKeyMapping::RightCtrl,
+                        "Right Ctrl",
+                    );
+                });
             });
 
             ui.menu_button("State", |ui| {
@@ -918,6 +936,157 @@ impl SnowGui {
             });
             ui.menu_button("Options", |ui| {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
+                if ui
+                    .checkbox(
+                        &mut self.settings.native_file_dialogs,
+                        "Native file dialogs",
+                    )
+                    .clicked()
+                {
+                    self.settings.save();
+                }
+                if ui
+                    .checkbox(
+                        &mut self.settings.hide_mode_toasts,
+                        "Hide fullscreen/zen mode toasts",
+                    )
+                    .clicked()
+                {
+                    self.settings.save();
+                }
+                ui.separator();
+                ui.menu_button("Input", |ui| {
+                    ui.set_min_width(Self::SUBMENU_WIDTH);
+                    if ui
+                        .checkbox(
+                            &mut self.settings.auto_relative_mouse_fullscreen,
+                            "Use relative mouse in fullscreen",
+                        )
+                        .on_hover_text(
+                            "Automatically switch to relative mouse mode when entering fullscreen",
+                        )
+                        .clicked()
+                    {
+                        self.settings.save();
+                    }
+                });
+                ui.menu_button("Speed", |ui| {
+                    ui.set_min_width(Self::SUBMENU_WIDTH);
+                    if ui
+                        .checkbox(
+                            &mut self.settings.fastforward_limit_enabled,
+                            "Limit fast-forward speed",
+                        )
+                        .on_hover_text("Limits the speed increase when using fast-forward mode")
+                        .clicked()
+                    {
+                        self.settings.save();
+                        if self.ff_on && self.dynamic_ff_input_time.is_none() {
+                            self.emu.set_speed(self.ff_target_speed());
+                        }
+                    }
+                    ui.add_enabled_ui(self.settings.fastforward_limit_enabled, |ui| {
+                        if ui
+                            .add(
+                                egui::Slider::new(
+                                    &mut self.settings.fastforward_limit,
+                                    1.0_f64..=10.0_f64,
+                                )
+                                .step_by(0.5)
+                                .suffix("x"),
+                            )
+                            .changed()
+                        {
+                            self.settings.save();
+                            if self.ff_on && self.dynamic_ff_input_time.is_none() {
+                                self.emu.set_speed(self.ff_target_speed());
+                            }
+                        }
+                    });
+                    if ui
+                        .checkbox(
+                            &mut self.settings.dynamic_fastforward,
+                            "Dynamic fast-forward",
+                        )
+                        .on_hover_text(
+                            "Pauses fast-forward mode momentarily on keyboard/mouse input \
+                            to make controlling the system easier",
+                        )
+                        .clicked()
+                    {
+                        self.settings.save();
+                        if !self.settings.dynamic_fastforward
+                            && self.dynamic_ff_input_time.is_some()
+                        {
+                            // Was disabled mid-slowdown, resume FF immediately
+                            self.emu.set_speed(self.ff_target_speed());
+                            self.dynamic_ff_input_time = None;
+                        }
+                    }
+                });
+                ui.menu_button("Floppy", |ui| {
+                    ui.set_min_width(Self::SUBMENU_WIDTH);
+                    ui.menu_button("Writeback", |ui| {
+                        ui.set_min_width(Self::SUBMENU_WIDTH);
+                        let prev = self.settings.writeback_mode;
+                        ui.radio_value(
+                            &mut self.settings.writeback_mode,
+                            PromptChoice::Ask,
+                            "Ask each time",
+                        );
+                        ui.radio_value(
+                            &mut self.settings.writeback_mode,
+                            PromptChoice::Always,
+                            "Always enable",
+                        );
+                        ui.radio_value(
+                            &mut self.settings.writeback_mode,
+                            PromptChoice::Never,
+                            "Never enable",
+                        );
+                        if self.settings.writeback_mode != prev {
+                            self.settings.save();
+                        }
+                    });
+                    ui.menu_button("Convert to MOOF", |ui| {
+                        ui.set_min_width(Self::SUBMENU_WIDTH);
+                        let prev = self.settings.convert_to_moof_mode;
+                        ui.radio_value(
+                            &mut self.settings.convert_to_moof_mode,
+                            PromptChoice::Ask,
+                            "Ask each time",
+                        );
+                        ui.radio_value(
+                            &mut self.settings.convert_to_moof_mode,
+                            PromptChoice::Always,
+                            "Always convert",
+                        );
+                        ui.radio_value(
+                            &mut self.settings.convert_to_moof_mode,
+                            PromptChoice::Never,
+                            "Never convert",
+                        );
+                        if self.settings.convert_to_moof_mode != prev {
+                            self.settings.save();
+                        }
+                    });
+                    if ui
+                        .checkbox(
+                            &mut self.settings.backup_on_writeback,
+                            "Back up floppy image before enabling writeback",
+                        )
+                        .on_hover_text(
+                            "Before writeback is enabled for a floppy image, copy it to a \
+                             timestamped sibling file in the same directory.",
+                        )
+                        .clicked()
+                    {
+                        self.settings.save();
+                    }
+                });
+            });
+            ui.menu_button("View", |ui| {
+                ui.set_min_width(Self::SUBMENU_WIDTH);
                 ui.menu_button("UI scale", |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH);
                     for z in Self::ZOOM_FACTORS {
@@ -928,7 +1097,6 @@ impl SnowGui {
                 });
                 ui.separator();
                 if self.emu.is_initialized() {
-                    ui.strong("Viewport options");
                     ui.add(
                         egui::Slider::new(&mut self.framebuffer.scale, 0.5..=4.0)
                             .text("Display scale"),
@@ -1116,167 +1284,6 @@ impl SnowGui {
                     }
                     ui.separator();
                 }
-                ui.strong("Global settings");
-                ui.menu_button("Map alternate Cmd key", |ui| {
-                    ui.radio_value(
-                        &mut self.workspace.cmd_key_mapping,
-                        CmdKeyMapping::Disabled,
-                        "Disabled",
-                    );
-                    ui.radio_value(
-                        &mut self.workspace.cmd_key_mapping,
-                        CmdKeyMapping::RightAlt,
-                        "Right Alt",
-                    );
-                    ui.radio_value(
-                        &mut self.workspace.cmd_key_mapping,
-                        CmdKeyMapping::RightCtrl,
-                        "Right Ctrl",
-                    );
-                });
-                ui.checkbox(
-                    &mut self.workspace.disassembly_labels,
-                    "Show labels in disassembly",
-                );
-                if ui
-                    .checkbox(
-                        &mut self.settings.native_file_dialogs,
-                        "Native file dialogs",
-                    )
-                    .clicked()
-                {
-                    self.settings.save();
-                }
-                if ui
-                    .checkbox(
-                        &mut self.settings.hide_mode_toasts,
-                        "Hide fullscreen/zen mode toasts",
-                    )
-                    .clicked()
-                {
-                    self.settings.save();
-                }
-                if ui
-                    .checkbox(
-                        &mut self.settings.auto_relative_mouse_fullscreen,
-                        "Use relative mouse in fullscreen",
-                    )
-                    .on_hover_text(
-                        "Automatically switch to relative mouse mode when entering fullscreen",
-                    )
-                    .clicked()
-                {
-                    self.settings.save();
-                }
-                ui.menu_button("Floppy writeback", |ui| {
-                    ui.set_min_width(Self::SUBMENU_WIDTH);
-                    let prev = self.settings.writeback_mode;
-                    ui.radio_value(
-                        &mut self.settings.writeback_mode,
-                        PromptChoice::Ask,
-                        "Ask each time",
-                    );
-                    ui.radio_value(
-                        &mut self.settings.writeback_mode,
-                        PromptChoice::Always,
-                        "Always enable",
-                    );
-                    ui.radio_value(
-                        &mut self.settings.writeback_mode,
-                        PromptChoice::Never,
-                        "Never enable",
-                    );
-                    if self.settings.writeback_mode != prev {
-                        self.settings.save();
-                    }
-                });
-                ui.menu_button("Convert floppy images to MOOF", |ui| {
-                    ui.set_min_width(Self::SUBMENU_WIDTH);
-                    let prev = self.settings.convert_to_moof_mode;
-                    ui.radio_value(
-                        &mut self.settings.convert_to_moof_mode,
-                        PromptChoice::Ask,
-                        "Ask each time",
-                    );
-                    ui.radio_value(
-                        &mut self.settings.convert_to_moof_mode,
-                        PromptChoice::Always,
-                        "Always convert",
-                    );
-                    ui.radio_value(
-                        &mut self.settings.convert_to_moof_mode,
-                        PromptChoice::Never,
-                        "Never convert",
-                    );
-                    if self.settings.convert_to_moof_mode != prev {
-                        self.settings.save();
-                    }
-                });
-                if ui
-                    .checkbox(
-                        &mut self.settings.backup_on_writeback,
-                        "Back up floppy image before enabling writeback",
-                    )
-                    .on_hover_text(
-                        "Before writeback is enabled for a floppy image, copy it to a \
-                         timestamped sibling file in the same directory.",
-                    )
-                    .clicked()
-                {
-                    self.settings.save();
-                }
-                if ui
-                    .checkbox(
-                        &mut self.settings.fastforward_limit_enabled,
-                        "Limit fast-forward speed",
-                    )
-                    .on_hover_text("Limits the speed increase when using fast-forward mode")
-                    .clicked()
-                {
-                    self.settings.save();
-                    if self.ff_on && self.dynamic_ff_input_time.is_none() {
-                        self.emu.set_speed(self.ff_target_speed());
-                    }
-                }
-                ui.add_enabled_ui(self.settings.fastforward_limit_enabled, |ui| {
-                    if ui
-                        .add(
-                            egui::Slider::new(
-                                &mut self.settings.fastforward_limit,
-                                1.0_f64..=10.0_f64,
-                            )
-                            .step_by(0.5)
-                            .suffix("x"),
-                        )
-                        .changed()
-                    {
-                        self.settings.save();
-                        if self.ff_on && self.dynamic_ff_input_time.is_none() {
-                            self.emu.set_speed(self.ff_target_speed());
-                        }
-                    }
-                });
-                if ui
-                    .checkbox(
-                        &mut self.settings.dynamic_fastforward,
-                        "Dynamic fast-forward",
-                    )
-                    .on_hover_text(
-                        "Pauses fast-forward mode momentarily on keyboard/mouse input \
-                        to make controlling the system easier",
-                    )
-                    .clicked()
-                {
-                    self.settings.save();
-                    if !self.settings.dynamic_fastforward && self.dynamic_ff_input_time.is_some() {
-                        // Was disabled mid-slowdown, resume FF immediately
-                        self.emu.set_speed(self.ff_target_speed());
-                        self.dynamic_ff_input_time = None;
-                    }
-                }
-            });
-            ui.menu_button("View", |ui| {
-                ui.set_min_width(Self::SUBMENU_WIDTH);
                 if ui
                     .add_enabled(
                         self.emu.is_initialized(),
@@ -1298,6 +1305,10 @@ impl SnowGui {
                 ui.separator();
                 ui.checkbox(&mut self.workspace.log_open, "Log");
                 ui.checkbox(&mut self.workspace.disassembly_open, "Disassembly");
+                ui.checkbox(
+                    &mut self.workspace.disassembly_labels,
+                    "Show labels in disassembly",
+                );
                 ui.checkbox(
                     &mut self.workspace.instruction_history_open,
                     "Instruction history",
