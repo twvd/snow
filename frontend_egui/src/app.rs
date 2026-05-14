@@ -6,7 +6,7 @@ use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
 use crate::emulator::EmulatorState;
 use crate::emulator::{EmulatorInitArgs, ScsiTargets};
 use crate::keymap::{char_to_keystroke, map_winit_keycode};
-use crate::settings::{AppSettings, PromptChoice};
+use crate::settings::{AppSettings, CmdKeyMapping, PromptChoice};
 use crate::uniform::{UNIFORM_ACTION, UniformAction};
 use crate::widgets::breakpoints::BreakpointsWidget;
 use crate::widgets::disassembly::DisassemblyWidget;
@@ -18,7 +18,7 @@ use crate::widgets::registers::RegistersWidget;
 use crate::widgets::systrap_history::SystrapHistoryWidget;
 use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
-use crate::workspace::{CmdKeyMapping, FramebufferMode, Workspace};
+use crate::workspace::{FramebufferMode, Workspace};
 use snow_core::bus::Address;
 use snow_core::emulator::MouseMode;
 use snow_core::emulator::comm::{EmulatorSpeed, UserMessageType};
@@ -712,24 +712,6 @@ impl SnowGui {
                         }
                     });
                 }
-                ui.separator();
-                ui.menu_button("Map alternate Cmd key", |ui| {
-                    ui.radio_value(
-                        &mut self.workspace.cmd_key_mapping,
-                        CmdKeyMapping::Disabled,
-                        "Disabled",
-                    );
-                    ui.radio_value(
-                        &mut self.workspace.cmd_key_mapping,
-                        CmdKeyMapping::RightAlt,
-                        "Right Alt",
-                    );
-                    ui.radio_value(
-                        &mut self.workspace.cmd_key_mapping,
-                        CmdKeyMapping::RightCtrl,
-                        "Right Ctrl",
-                    );
-                });
             });
 
             ui.menu_button("State", |ui| {
@@ -969,6 +951,27 @@ impl SnowGui {
                     {
                         self.settings.save();
                     }
+                    ui.menu_button("Map alternate Cmd key", |ui| {
+                        let prev = self.settings.cmd_key_mapping;
+                        ui.radio_value(
+                            &mut self.settings.cmd_key_mapping,
+                            CmdKeyMapping::Disabled,
+                            "Disabled",
+                        );
+                        ui.radio_value(
+                            &mut self.settings.cmd_key_mapping,
+                            CmdKeyMapping::RightAlt,
+                            "Right Alt",
+                        );
+                        ui.radio_value(
+                            &mut self.settings.cmd_key_mapping,
+                            CmdKeyMapping::RightCtrl,
+                            "Right Ctrl",
+                        );
+                        if self.settings.cmd_key_mapping != prev {
+                            self.settings.save();
+                        }
+                    });
                 });
                 ui.menu_button("Speed", |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH);
@@ -2305,7 +2308,7 @@ impl SnowGui {
                         continue;
                     }
 
-                    if let Some(k) = map_winit_keycode(kc, self.workspace.cmd_key_mapping) {
+                    if let Some(k) = map_winit_keycode(kc, self.settings.cmd_key_mapping) {
                         self.emu.update_key(k, state.is_pressed());
                         if state.is_pressed() {
                             self.on_user_input();

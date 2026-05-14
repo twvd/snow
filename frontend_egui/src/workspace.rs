@@ -195,18 +195,6 @@ impl From<WorkspaceEthernetLinkType> for EthernetLinkType {
     }
 }
 
-/// Mapping of a right modifier key to the Mac's Cmd key
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CmdKeyMapping {
-    /// No remapping; right Alt = Option, right Ctrl = Control
-    Disabled,
-    /// Right Alt maps to Cmd
-    #[default]
-    RightAlt,
-    /// Right Ctrl maps to Cmd
-    RightCtrl,
-}
-
 /// A workspace representation which contains:
 /// * (Paths to) loaded assets
 /// * View configuration of the egui frontend
@@ -263,14 +251,6 @@ pub struct Workspace {
 
     /// Emulated model (None for autodetect)
     pub model: Option<MacModel>,
-
-    /// How the right modifier key maps to Cmd
-    #[serde(default)]
-    pub cmd_key_mapping: CmdKeyMapping,
-
-    /// Deprecated: use cmd_key_mapping
-    #[serde(skip_serializing, default)]
-    map_cmd_ralt: Option<bool>,
 
     /// Scaling algorithm in use
     pub scaling_algorithm: ScalingAlgorithm,
@@ -330,8 +310,6 @@ impl Default for Workspace {
             windows: HashMap::new(),
             init_args: EmulatorInitArgs::default(),
             model: None,
-            cmd_key_mapping: CmdKeyMapping::default(),
-            map_cmd_ralt: None,
             scaling_algorithm: ScalingAlgorithm::Linear,
             pause_on_state_load: false,
             shared_dir: None,
@@ -403,15 +381,6 @@ impl Workspace {
 
         for p in &mut result.floppy_images {
             p.after_deserialize(parent)?;
-        }
-
-        // Migrate old map_cmd_ralt bool to cmd_key_mapping enum
-        if let Some(v) = result.map_cmd_ralt {
-            result.cmd_key_mapping = if v {
-                CmdKeyMapping::RightAlt
-            } else {
-                CmdKeyMapping::Disabled
-            };
         }
 
         // Migrate old framebuffer positioning fields to new enum
