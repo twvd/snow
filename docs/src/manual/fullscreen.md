@@ -14,8 +14,8 @@ toast shows.
 When switching to fullscreen mode, Snow will automatically switch to
 [relative mouse positioning mode](input.md#mouse) to provide the best experience
 and back to the original mode when leaving fullscreen. This behavior can be
-enabled/disabled using the 'Options > Use relative mouse in fullscreen' menu option.
-This option persists globally.
+enabled/disabled using the 'Options > Input > Use relative mouse in fullscreen' menu
+option. This option persists globally.
 
 ## Zen mode
 

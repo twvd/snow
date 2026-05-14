@@ -14,7 +14,7 @@ While fast-forward mode is on, a number in the button indicates how much faster 
 speed) the emulation is running. While fast-forward mode is on, sound is disabled.
 
 You can enable and set a limit to how much faster the emulated system can run using the
-'Options -> Limit fast-forward speed' menu option.
+'Options -> Speed -> Limit fast-forward speed' menu option.
 
 Snow also has a 'Dynamic fast-forward' setting. When enabled, Snow will automatically switch
 back and forth between fast-forward and normal speed if fast-forward is enabled. If 
