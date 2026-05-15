@@ -37,6 +37,8 @@ use clap::Parser;
 use eframe::egui;
 use egui_winit::winit::{self, application::ApplicationHandler};
 use log::LevelFilter;
+use std::cell::OnceCell;
+use std::rc::Rc;
 
 const SNOW_ICON: &[u8] = include_bytes!("../../assets/snow_icon.png");
 
@@ -109,6 +111,9 @@ fn main() -> eframe::Result {
     // See also https://github.com/emilk/egui/issues/3653
     let (s, r) = crossbeam_channel::unbounded();
 
+    // Shared handle to the egui context so the winit wrapper can access egui state.
+    let egui_ctx_cell: Rc<OnceCell<egui::Context>> = Rc::new(OnceCell::new());
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_icon(eframe::icon_data::from_png_bytes(SNOW_ICON).expect("Icon is not valid PNG"))
@@ -122,21 +127,26 @@ fn main() -> eframe::Result {
     let mut winit_app = eframe::create_native(
         "Snow",
         options,
-        Box::new(|cc| {
-            // Force dark theme as UI elements and colors are not light-friendly (yet)
-            cc.egui_ctx.set_theme(egui::Theme::Dark);
+        Box::new({
+            let egui_ctx_cell = egui_ctx_cell.clone();
+            move |cc| {
+                // Force dark theme as UI elements and colors are not light-friendly (yet)
+                cc.egui_ctx.set_theme(egui::Theme::Dark);
 
-            Ok(Box::new(SnowGui::new(
-                cc,
-                r,
-                args.filename,
-                args.ui_scale,
-                args.fullscreen,
-                args.zen,
-                args.serial_bridge_a.as_deref(),
-                args.serial_bridge_b.as_deref(),
-                &args.floppy,
-            )))
+                let _ = egui_ctx_cell.set(cc.egui_ctx.clone());
+
+                Ok(Box::new(SnowGui::new(
+                    cc,
+                    r,
+                    args.filename,
+                    args.ui_scale,
+                    args.fullscreen,
+                    args.zen,
+                    args.serial_bridge_a.as_deref(),
+                    args.serial_bridge_b.as_deref(),
+                    &args.floppy,
+                )))
+            }
         }),
         &event_loop,
     );
@@ -146,6 +156,7 @@ fn main() -> eframe::Result {
     struct AppWrapper<'a>(
         &'a mut dyn ApplicationHandler<eframe::UserEvent>,
         crossbeam_channel::Sender<winit::event::WindowEvent>,
+        Rc<OnceCell<egui::Context>>,
     );
 
     impl ApplicationHandler<eframe::UserEvent> for AppWrapper<'_> {
@@ -177,6 +188,26 @@ fn main() -> eframe::Result {
         ) {
             // Send the WindowEvent through the channel
             let _ = self.1.send(event.clone());
+
+            // Suppress TAB (and Shift+TAB) from reaching egui when no widget is
+            // focused. Otherwise, egui grabs focus on the first focusable widget
+            // and starts stepping through controls, which gets in the way of the
+            // emulator receiving the key.
+            if let winit::event::WindowEvent::KeyboardInput {
+                event:
+                    winit::event::KeyEvent {
+                        physical_key:
+                            winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Tab),
+                        ..
+                    },
+                ..
+            } = &event
+                && let Some(ctx) = self.2.get()
+                && ctx.memory(|m| m.focused().is_none())
+            {
+                return;
+            }
+
             self.0.window_event(event_loop, window_id, event);
         }
 
@@ -206,7 +237,7 @@ fn main() -> eframe::Result {
         }
     }
 
-    event_loop.run_app(&mut AppWrapper(&mut winit_app, s))?;
+    event_loop.run_app(&mut AppWrapper(&mut winit_app, s, egui_ctx_cell))?;
 
     Ok(())
 }
