@@ -17,6 +17,9 @@
 #[cfg(feature = "https_stripping")]
 mod https_stripping;
 
+#[cfg(feature = "mactcp_helpers")]
+mod mactcp_helpers;
+
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
@@ -94,6 +97,59 @@ impl VirtualDevice {
         std::mem::take(&mut self.intercepted_packets)
     }
 
+    /// Check for IPv4 packets that the NAT gateway should not handle.
+    /// Filters UDP packets that would cause OS bind/connect errors:
+    ///   - src IP 0.0.0.0 (mostly BOOTP requests for MacTCP)
+    ///   - broadcasts (255.255.255.255)
+    ///   - UDP src port < 1024 (privileged ports as the emulator is likely running as non-root)
+    ///   - UDP dst port == 520 (RIP)
+    fn needs_filtering(&self, packet: &[u8]) -> bool {
+        use smoltcp::wire::{IpProtocol, Ipv4Packet, UdpPacket};
+
+        let eth_frame = match EthernetFrame::new_checked(packet) {
+            Ok(frame) => frame,
+            Err(_) => return false,
+        };
+
+        if eth_frame.ethertype() != EthernetProtocol::Ipv4 {
+            return false;
+        }
+
+        let ipv4_packet = match Ipv4Packet::new_checked(eth_frame.payload()) {
+            Ok(packet) => packet,
+            Err(_) => return false,
+        };
+
+        if ipv4_packet.next_header() != IpProtocol::Udp {
+            return false;
+        }
+
+        let udp_packet = match UdpPacket::new_checked(ipv4_packet.payload()) {
+            Ok(packet) => packet,
+            Err(_) => return false,
+        };
+
+        if ipv4_packet.dst_addr() == Ipv4Address::BROADCAST {
+            return true;
+        }
+
+        let filtered = ipv4_packet.src_addr() == Ipv4Address::new(0, 0, 0, 0)
+            || udp_packet.src_port() < 1024
+            || udp_packet.dst_port() == 520;
+
+        if filtered {
+            log::debug!(
+                "NAT: Filtered connection from {}:{} to {}:{}",
+                ipv4_packet.src_addr(),
+                udp_packet.src_port(),
+                ipv4_packet.dst_addr(),
+                udp_packet.dst_port()
+            );
+        }
+
+        filtered
+    }
+
     /// Check if a packet needs NAT (routed UDP or TCP SYN packet where destination IP != gateway IP)
     fn needs_nat(&self, packet: &[u8]) -> bool {
         use smoltcp::wire::{EthernetFrame, IpProtocol, Ipv4Packet, TcpPacket};
@@ -103,6 +159,12 @@ impl VirtualDevice {
             Ok(frame) => frame,
             Err(_) => return false,
         };
+
+        // Intercept RARP broadcasts so handle_rarp() can reply locally
+        #[cfg(feature = "mactcp_helpers")]
+        if eth_frame.ethertype() == EthernetProtocol::Unknown(0x8035) {
+            return true;
+        }
 
         // Check if it's IPv4
         if eth_frame.ethertype() != EthernetProtocol::Ipv4 {
@@ -207,6 +269,22 @@ impl Device for VirtualDevice {
             .rx_bytes
             .fetch_add(packet.len(), Ordering::Relaxed);
 
+        // Drop packets that would cause OS errors (BOOTP, privileged src ports)
+        if self.needs_filtering(&packet) {
+            self.stats.filtered_packets.fetch_add(1, Ordering::Relaxed);
+            self.stats
+                .filtered_bytes
+                .fetch_add(packet.len(), Ordering::Relaxed);
+            return None;
+        }
+
+        // Intercept ICMP packets MacTCP Helpers can handle instead of smoltcp
+        #[cfg(feature = "mactcp_helpers")]
+        if mactcp_helpers::needs_icmp_proxy(&packet) {
+            self.intercepted_packets.push(packet);
+            return None;
+        }
+
         // Check if this packet needs NAT (routed TCP/UDP)
         if self.needs_nat(&packet) {
             self.intercepted_packets.push(packet);
@@ -240,6 +318,22 @@ impl Device for VirtualDevice {
             );
         }
 
+        // Drop ARP requests not targeting the NAT gateway
+        // This prevents smoltcp from replying to gratuitous ARPs or claiming ownership
+        // of other IP addresses. This happens because any_ip is enabled below
+        if let Ok(ArpRepr::EthernetIpv4 {
+            operation,
+            target_protocol_addr,
+            ..
+        }) = EthernetFrame::new_checked(&packet)
+            .and_then(|p| ArpPacket::new_checked(p.payload()))
+            .and_then(|p| ArpRepr::parse(&p))
+            && operation == ArpOperation::Request
+            && target_protocol_addr != self.gateway_ip
+        {
+            return None;
+        }
+
         // Pass non-routed packets (like ARP) normally
         Some((
             VirtualRxToken { buffer: packet },
@@ -270,11 +364,11 @@ struct VirtualRxToken {
 }
 
 impl RxToken for VirtualRxToken {
-    fn consume<R, F>(mut self, f: F) -> R
+    fn consume<R, F>(self, f: F) -> R
     where
-        F: FnOnce(&mut [u8]) -> R,
+        F: FnOnce(&[u8]) -> R,
     {
-        f(&mut self.buffer)
+        f(&self.buffer)
     }
 }
 
@@ -290,6 +384,10 @@ impl TxToken for VirtualTxToken {
     {
         let mut buffer = vec![0u8; len];
         let result = f(&mut buffer);
+
+        // Throttle ICMP replies to avoid a race condition within MacTCP
+        #[cfg(feature = "mactcp_helpers")]
+        mactcp_helpers::delay_icmp_reply(&buffer);
 
         // Send the packet back to the emulator
         let send_len = buffer.len();
@@ -384,6 +482,8 @@ pub struct NatEngineStats {
     pub tx_packets: NatEngineStatCounter,
     pub tx_bytes: NatEngineStatCounter,
     pub tx_dropped: NatEngineStatCounter,
+    pub filtered_packets: NatEngineStatCounter,
+    pub filtered_bytes: NatEngineStatCounter,
     pub nat_active_tcp: NatEngineStatCounter,
     pub nat_total_tcp: NatEngineStatCounter,
     pub nat_active_udp: NatEngineStatCounter,
@@ -423,6 +523,10 @@ pub struct NatEngine {
     /// Whether to enable HTTPS stripping
     #[cfg(feature = "https_stripping")]
     https_stripping: bool,
+
+    /// Gateway subnet prefix length (for ICMP Address Mask replies)
+    #[cfg(feature = "mactcp_helpers")]
+    gateway_subnet: u8,
 }
 
 impl NatEngine {
@@ -447,7 +551,7 @@ impl NatEngine {
         let gateway_ip_addr =
             IpAddress::v4(gateway_ip[0], gateway_ip[1], gateway_ip[2], gateway_ip[3]);
 
-        let gateway_ipv4 = Ipv4Address::from_bytes(&gateway_ip);
+        let gateway_ipv4 = Ipv4Address::from(gateway_ip);
         let mut device = VirtualDevice::new(tx, rx, stats.clone(), gateway_ipv4);
 
         let config = Config::new(gateway_mac_addr.into());
@@ -486,6 +590,8 @@ impl NatEngine {
             stats,
             #[cfg(feature = "https_stripping")]
             https_stripping,
+            #[cfg(feature = "mactcp_helpers")]
+            gateway_subnet,
         }
     }
 
@@ -569,6 +675,14 @@ impl NatEngine {
                 }
             };
 
+            #[cfg(feature = "mactcp_helpers")]
+            if eth_frame.ethertype() == EthernetProtocol::Unknown(0x8035) {
+                if let Err(e) = self.handle_rarp(&eth_frame) {
+                    log::error!("Failed to handle RARP: {}", e);
+                }
+                continue;
+            }
+
             let ipv4_packet = match Ipv4Packet::new_checked(eth_frame.payload()) {
                 Ok(packet) => packet,
                 Err(e) => {
@@ -607,10 +721,56 @@ impl NatEngine {
                         log::error!("Failed to handle outbound TCP: {}", e);
                     }
                 }
+                #[cfg(feature = "mactcp_helpers")]
+                IpProtocol::Icmp => {
+                    let gw_ipv4 = match self.gateway_ip {
+                        IpAddress::Ipv4(a) => a,
+                        _ => continue,
+                    };
+                    match mactcp_helpers::handle_icmp_address_mask_request(
+                        &eth_frame,
+                        gw_ipv4,
+                        self.gateway_mac,
+                        self.gateway_subnet,
+                    ) {
+                        Ok(Some(buf)) => {
+                            self.device.tx.try_send(buf).ok();
+                        }
+                        Ok(None) => {}
+                        Err(e) => log::error!("Failed to handle ICMP address mask: {}", e),
+                    }
+                }
                 _ => {
                     log::warn!("Unsupported protocol: {:?}", ipv4_packet.next_header());
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    /// Handle a RARP request by replying with the assigned IP for the client MAC
+    #[cfg(feature = "mactcp_helpers")]
+    fn handle_rarp(&self, eth_frame: &smoltcp::wire::EthernetFrame<&[u8]>) -> Result<()> {
+        let gw_ipv4 = match self.gateway_ip {
+            IpAddress::Ipv4(a) => a,
+            _ => return Ok(()),
+        };
+
+        let Some(buf) = mactcp_helpers::handle_rarp_request(eth_frame, gw_ipv4, self.gateway_mac)?
+        else {
+            return Ok(());
+        };
+
+        match self.device.tx.try_send(buf) {
+            Ok(()) => {
+                self.stats.tx_packets.fetch_add(1, Ordering::Relaxed);
+                self.stats.tx_bytes.fetch_add(42, Ordering::Relaxed);
+            }
+            Err(TrySendError::Full(_)) => {
+                self.stats.tx_dropped.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(TrySendError::Disconnected(_)) => {}
         }
 
         Ok(())
@@ -663,10 +823,7 @@ impl NatEngine {
             let os_socket = UdpSocket::bind("0.0.0.0:0")?;
             os_socket.set_nonblocking(true)?;
 
-            let remote_addr = SocketAddr::new(
-                std::net::IpAddr::V4(std::net::Ipv4Addr::from(dst_ip.0)),
-                dst_port,
-            );
+            let remote_addr = SocketAddr::new(std::net::IpAddr::V4(dst_ip), dst_port);
             os_socket.connect(remote_addr)?;
             os_socket.send(payload)?;
 
@@ -823,12 +980,34 @@ impl NatEngine {
             unreachable!()
         } else {
             // Normal TCP connection
-            let remote_addr = SocketAddr::new(
-                std::net::IpAddr::V4(std::net::Ipv4Addr::from(dst_ip.0)),
-                dst_port,
-            );
+            let remote_addr = SocketAddr::new(std::net::IpAddr::V4(dst_ip), dst_port);
 
-            let os_socket = TcpStream::connect_timeout(&remote_addr, Duration::from_secs(5))?;
+            let os_socket = match TcpStream::connect_timeout(&remote_addr, Duration::from_secs(5)) {
+                Ok(s) => s,
+                #[cfg(feature = "mactcp_helpers")]
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                    let ack_num = (tcp_packet.seq_number().0 as u32).wrapping_add(1);
+                    let buf = mactcp_helpers::build_tcp_rst(
+                        _eth_frame.src_addr(),
+                        self.gateway_mac,
+                        dst_ip,
+                        src_ip,
+                        dst_port,
+                        src_port,
+                        ack_num,
+                    );
+                    self.device.tx.try_send(buf).ok();
+                    log::debug!(
+                        "NAT: Sent TCP RST to {}:{} for {}:{}",
+                        src_ip,
+                        src_port,
+                        dst_ip,
+                        dst_port
+                    );
+                    return Ok(());
+                }
+                Err(e) => return Err(e.into()),
+            };
             os_socket.set_nonblocking(true)?;
 
             // Create smoltcp TCP socket for the emulator side
@@ -978,9 +1157,7 @@ impl NatEngine {
 
                                 // Establish TLS connection using the hostname for SNI
                                 let dst_ip_addr = match entry.remote_endpoint.addr {
-                                    IpAddress::Ipv4(ip) => {
-                                        std::net::IpAddr::V4(std::net::Ipv4Addr::from(ip.0))
-                                    }
+                                    IpAddress::Ipv4(ip) => std::net::IpAddr::V4(ip),
                                     _ => {
                                         log::error!("Non-IPv4 address in HTTPS stripping");
                                         tls_failed = true;

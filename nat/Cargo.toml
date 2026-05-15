@@ -5,9 +5,10 @@ edition = "2024"
 
 [features]
 https_stripping = ["dep:rustls", "dep:rustls-native-certs", "dep:rustls-pki-types"]
+mactcp_helpers = []
 
 [dependencies]
-smoltcp = "0.11"
+smoltcp = "0.13.1"
 crossbeam-channel = "0.5"
 log = "0.4"
 anyhow = "1.0"
