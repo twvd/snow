@@ -4,6 +4,7 @@ use anyhow::Result;
 use log::*;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use snow_floppy::flux::FluxTicks;
 use snow_floppy::{Floppy, FloppyImage, FloppyType, TrackLength, TrackType};
@@ -234,8 +235,11 @@ pub(crate) struct FloppyDrive {
     /// In MFM mode (in GCR mode when false)
     mfm: bool,
 
-    // While > 0, the drive head is moving
+    // While > cycles, the drive head is moving
     pub(super) stepping: Ticks,
+    // While > cycles, the drive is not ready
+    // (e.g. stepping, spindle motor changing speed)
+    pub(super) not_ready: Ticks,
     pub(super) ejecting: Option<Ticks>,
 
     /// Amount of flux ticks for current transition (for flux tracks)
@@ -296,6 +300,7 @@ impl FloppyDrive {
             switched: false,
 
             stepping: 0,
+            not_ready: 0,
             ejecting: None,
 
             flux_ticks: 0,
@@ -337,6 +342,9 @@ impl FloppyDrive {
     }
 
     /// Reads from the currently selected drive register
+    // Silence clippy so we can write easier to understand expressions for the
+    // inverse signals.
+    #[allow(clippy::nonminimal_bool)]
     pub(super) fn read_sense(&self, regraw: u8) -> bool {
         let reg = DriveReg::from_u8(regraw).unwrap_or(DriveReg::UNKNOWN);
 
@@ -353,10 +361,10 @@ impl FloppyDrive {
                 }
             }
             DriveReg::INSTALLED => !self.is_present(),
-            DriveReg::READY => self.drive_type.io_ready(),
-            DriveReg::TKO if self.track == 0 => false,
-            DriveReg::TKO => true,
-            DriveReg::STEP => self.stepping == 0,
+            DriveReg::READY if !self.motor => self.drive_type.io_ready(),
+            DriveReg::READY => !(self.not_ready < self.cycles),
+            DriveReg::TKO => self.track != 0,
+            DriveReg::STEP => !self.motor || self.stepping < self.cycles,
             DriveReg::TACH => self.get_tacho(),
             DriveReg::RDDATA0 | DriveReg::RDDATA1 if self.mfm && self.motor => !self.at_index(),
             DriveReg::RDDATA0 => self.get_head_bit(0),
@@ -384,6 +392,12 @@ impl FloppyDrive {
 
     /// Moves the drive head one step in the selected position
     fn step_head(&mut self) {
+        let previous_rpm = self.get_track_rpm();
+
+        if self.stepping > self.cycles {
+            log::warn!("Head stepping before /STEP released");
+        }
+
         match self.stepdir {
             HeadStepDirection::Up => {
                 if (self.track + 1) >= Self::DISK_TRACKS {
@@ -404,8 +418,37 @@ impl FloppyDrive {
         self.flux_ticks = 0;
         self.flux_ticks_left = 0;
 
-        // Track-to-track stepping time: 30ms
-        self.stepping = self.base_frequency / 60_000 * 30;
+        // * The Mac ROM runs a 434 cycle wait loop with a limit of 80,
+        //   meaning we have 34720 cycles, around 4.34ms (on Mac Plus).
+        // * The timing diagram in the 400K drive datasheet 3.4.4 shows /STEP
+        //   stays low for 12 us to 12 ms max.
+        // * The author of Applesauce shared stepping takes roughly 3ms in
+        //   practice, but /READY remains low until drive speed has settled.
+        //
+        // 400K drive datasheet 2.3.3 also mentions 'Track-to-track step settling
+        // time' of max 30ms. Assuming that's the max time for the drive to release
+        // /READY.
+        //
+        // Mac II has issues if this is too long. 0.5ms should do..
+        self.stepping = self.cycles + (self.base_frequency / 10000 * 5);
+
+        if self.get_track_rpm() != previous_rpm {
+            // Changed speed group
+            // 400K drive datasheet 2.3.3 'Speed group to speed group motor settling
+            // time' is 150ms.
+            // In practice, it can be a bit more.
+            self.not_ready = std::cmp::max(
+                self.not_ready,
+                self.cycles + (self.base_frequency / 1000 * 200),
+            );
+        } else {
+            // Same speed group
+            // Wait for 'Track-to-track step settling time'.
+            self.not_ready = std::cmp::max(
+                self.not_ready,
+                self.cycles + (self.base_frequency / 1000 * 30),
+            );
+        }
     }
 
     /// Writes to the currently selected drive register
@@ -416,6 +459,9 @@ impl FloppyDrive {
             DriveWriteReg::MOTORON => {
                 self.track_position = 0;
                 self.motor = true;
+
+                // 400K drive datasheet 2.3.3 'Motor start time' is 400ms.
+                self.not_ready = self.cycles + (self.base_frequency / 1000 * 400);
             }
             DriveWriteReg::MOTOROFF => {
                 self.motor = false;
@@ -554,6 +600,12 @@ impl FloppyDrive {
     /// Gets the physical disk bit currently under a head
     fn get_head_bit(&self, head: usize) -> bool {
         let track = self.get_active_track();
+
+        // Garbage if drive is not yet ready
+        if self.not_ready > self.cycles {
+            return rand::rng().random();
+        }
+
         match self.floppy.get_track_type(head, track) {
             TrackType::Bitstream => {
                 let TrackLength::Bits(tracklen) = self.get_track_len(head, track) else {
@@ -615,7 +667,14 @@ impl Debuggable for FloppyDrive {
             dbgprop_bool!("MFM mode", self.mfm),
             dbgprop_bool!("Motor on", self.motor),
             dbgprop_enum!("Head step direction", self.stepdir),
-            dbgprop_udec!("Head stepping timer", self.stepping),
+            dbgprop_udec!(
+                "Head stepping timer",
+                self.stepping.saturating_sub(self.cycles)
+            ),
+            dbgprop_udec!(
+                "Not-ready timer",
+                self.not_ready.saturating_sub(self.cycles)
+            ),
             dbgprop_udec!("Track", self.track),
             dbgprop_udec!("Track position", self.track_position),
             dbgprop_bool!("Index signal", self.mfm && self.at_index()),

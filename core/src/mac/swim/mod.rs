@@ -327,10 +327,6 @@ impl Tickable for Swim {
         }
 
         if self.get_selected_drive().is_running() {
-            // Decrement 'head stepping' timer
-            let new_stepping = self.get_selected_drive().stepping.saturating_sub(ticks);
-            self.get_selected_drive_mut().stepping = new_stepping;
-
             // Advance read/write operation
             match self.mode {
                 SwimMode::Iwm => self.iwm_tick(ticks)?,
