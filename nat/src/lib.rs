@@ -838,8 +838,9 @@ impl NatEngine {
             );
             let mut socket = udp::Socket::new(rx_buffer, tx_buffer);
 
-            // Bind to gateway IP with the same source port the emulator used
-            let bind_endpoint = IpEndpoint::new(self.gateway_ip, src_port);
+            // Bind to remote endpoint so responses appear to come from the actual remote.
+            // TCP does a similar stuff. This works because any_ip is enabled.
+            let bind_endpoint = IpEndpoint::new(IpAddress::Ipv4(dst_ip), dst_port);
             socket.bind(bind_endpoint)?;
 
             let handle = self.sockets.add(socket);
