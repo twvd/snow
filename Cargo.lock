@@ -4924,7 +4924,6 @@ dependencies = [
  "cfg-if",
  "defmt 0.3.100",
  "heapless 0.9.3",
- "libc",
  "log",
  "managed",
 ]
