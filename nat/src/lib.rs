@@ -280,7 +280,7 @@ impl Device for VirtualDevice {
 
         // Intercept ICMP packets MacTCP Helpers can handle instead of smoltcp
         #[cfg(feature = "mactcp_helpers")]
-        if mactcp_helpers::needs_icmp_proxy(&packet) {
+        if mactcp_helpers::needs_icmp_answer(&packet) {
             self.intercepted_packets.push(packet);
             return None;
         }
