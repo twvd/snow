@@ -723,10 +723,7 @@ impl NatEngine {
                 }
                 #[cfg(feature = "mactcp_helpers")]
                 IpProtocol::Icmp => {
-                    let gw_ipv4 = match self.gateway_ip {
-                        IpAddress::Ipv4(a) => a,
-                        _ => continue,
-                    };
+                    let IpAddress::Ipv4(gw_ipv4) = self.gateway_ip;
                     match mactcp_helpers::handle_icmp_address_mask_request(
                         &eth_frame,
                         gw_ipv4,
@@ -752,10 +749,7 @@ impl NatEngine {
     /// Handle a RARP request by replying with the assigned IP for the client MAC
     #[cfg(feature = "mactcp_helpers")]
     fn handle_rarp(&self, eth_frame: &smoltcp::wire::EthernetFrame<&[u8]>) -> Result<()> {
-        let gw_ipv4 = match self.gateway_ip {
-            IpAddress::Ipv4(a) => a,
-            _ => return Ok(()),
-        };
+        let IpAddress::Ipv4(gw_ipv4) = self.gateway_ip;
 
         let Some(buf) = mactcp_helpers::handle_rarp_request(eth_frame, gw_ipv4, self.gateway_mac)?
         else {
@@ -791,18 +785,11 @@ impl NatEngine {
         // Check if we already have a NAT entry for this flow
         let existing_entry = self.nat_table.iter().find(|(_, entry)| {
             if let NatEntry::Udp(entry) = entry {
-                let mac_match = if let IpAddress::Ipv4(mac_ipv4) = entry.local_endpoint.addr {
-                    mac_ipv4 == src_ip && entry.local_endpoint.port == src_port
-                } else {
-                    false
-                };
+                let IpAddress::Ipv4(mac_ipv4) = entry.local_endpoint.addr;
+                let mac_match = mac_ipv4 == src_ip && entry.local_endpoint.port == src_port;
 
-                let remote_match = if let IpAddress::Ipv4(remote_ipv4) = entry.remote_endpoint.addr
-                {
-                    remote_ipv4 == dst_ip && entry.remote_endpoint.port == dst_port
-                } else {
-                    false
-                };
+                let IpAddress::Ipv4(remote_ipv4) = entry.remote_endpoint.addr;
+                let remote_match = remote_ipv4 == dst_ip && entry.remote_endpoint.port == dst_port;
 
                 mac_match && remote_match
             } else {
@@ -898,31 +885,23 @@ impl NatEngine {
         let existing = self.nat_table.iter().find(|(_, entry)| {
             match entry {
                 NatEntry::Tcp(entry) => {
-                    if let (IpAddress::Ipv4(mac_ip), IpAddress::Ipv4(remote_ip)) =
-                        (entry.local_endpoint.addr, entry.remote_endpoint.addr)
-                    {
-                        mac_ip == src_ip
-                            && entry.local_endpoint.port == src_port
-                            && remote_ip == dst_ip
-                            && entry.remote_endpoint.port == dst_port
-                    } else {
-                        false
-                    }
+                    let (IpAddress::Ipv4(mac_ip), IpAddress::Ipv4(remote_ip)) =
+                        (entry.local_endpoint.addr, entry.remote_endpoint.addr);
+                    mac_ip == src_ip
+                        && entry.local_endpoint.port == src_port
+                        && remote_ip == dst_ip
+                        && entry.remote_endpoint.port == dst_port
                 }
                 #[cfg(feature = "https_stripping")]
                 NatEntry::TcpHttpsStripping(entry) => {
                     // For HTTPS stripping, we check against the original port 80 connection
                     // Note: remote_endpoint stores port 80 (original), not 443
-                    if let (IpAddress::Ipv4(mac_ip), IpAddress::Ipv4(remote_ip)) =
-                        (entry.local_endpoint.addr, entry.remote_endpoint.addr)
-                    {
-                        mac_ip == src_ip
-                            && entry.local_endpoint.port == src_port
-                            && remote_ip == dst_ip
-                            && entry.remote_endpoint.port == dst_port
-                    } else {
-                        false
-                    }
+                    let (IpAddress::Ipv4(mac_ip), IpAddress::Ipv4(remote_ip)) =
+                        (entry.local_endpoint.addr, entry.remote_endpoint.addr);
+                    mac_ip == src_ip
+                        && entry.local_endpoint.port == src_port
+                        && remote_ip == dst_ip
+                        && entry.remote_endpoint.port == dst_port
                 }
                 _ => false,
             }
@@ -1157,14 +1136,8 @@ impl NatEngine {
                                 log::debug!("HTTPS stripping: Extracted Host: {}", hostname);
 
                                 // Establish TLS connection using the hostname for SNI
-                                let dst_ip_addr = match entry.remote_endpoint.addr {
-                                    IpAddress::Ipv4(ip) => std::net::IpAddr::V4(ip),
-                                    _ => {
-                                        log::error!("Non-IPv4 address in HTTPS stripping");
-                                        tls_failed = true;
-                                        return (buffer.len(), buffer.len());
-                                    }
-                                };
+                                let IpAddress::Ipv4(ip) = entry.remote_endpoint.addr;
+                                let dst_ip_addr = std::net::IpAddr::V4(ip);
 
                                 match https_stripping::HttpsStrippingStream::connect(
                                     &hostname,
