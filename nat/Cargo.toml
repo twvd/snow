@@ -8,7 +8,7 @@ https_stripping = ["dep:rustls", "dep:rustls-native-certs", "dep:rustls-pki-type
 mactcp_helpers = []
 
 [dependencies]
-smoltcp = { version = "0.13.1", default-features = false, features = [ "std", "log", "medium-ethernet", "proto-ipv4", "socket-udp", "socket-tcp", "socket-tcp-reno", ] }
+smoltcp = { version = "0.13.1", default-features = false, features = [ "std", "log", "medium-ethernet", "proto-ipv4", "auto-icmp-echo-reply", "socket-udp", "socket-tcp", "socket-tcp-reno", ] }
 crossbeam-channel = "0.5"
 log = "0.4"
 anyhow = "1.0"
