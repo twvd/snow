@@ -66,7 +66,7 @@ pub fn handle_rarp_request(
 }
 
 /// Returns true if the packet is an ICMP Address Mask Request (type 17)
-pub fn needs_icmp_proxy(packet: &[u8]) -> bool {
+pub fn needs_icmp_answer(packet: &[u8]) -> bool {
     let eth_hlen = EthernetFrame::<&[u8]>::header_len();
     if packet.len() <= eth_hlen {
         return false;
