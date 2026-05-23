@@ -2493,13 +2493,11 @@ impl SnowGui {
             }
 
             #[cfg(feature = "ethernet")]
-            if let Some((id, _)) = self
-                .emu
-                .get_scsi_targets()
-                .unwrap()
-                .iter()
-                .enumerate()
-                .find(|(_, t)| t.target_type == Some(ScsiTargetType::Ethernet))
+            if let Some(scsi) = self.emu.get_scsi_targets()
+                && let Some((id, _)) = scsi
+                    .iter()
+                    .enumerate()
+                    .find(|(_, t)| t.target_type == Some(ScsiTargetType::Ethernet))
             {
                 self.emu
                     .set_eth_link(id, self.workspace.get_ethernet_link_type());
