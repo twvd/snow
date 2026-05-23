@@ -259,11 +259,9 @@ pub struct Via {
     pub(crate) adb: AdbTransceiver,
 
     /// Accumulates bus ticks
+    // FIXME: enabling serde doesn't compile and I don't know why
     #[serde(skip)]
     bus_ticks: Ratio<Ticks>,
-
-    total_bus_ticks: Ticks,
-    total_via_ticks: Ticks,
 }
 
 impl Via {
@@ -302,9 +300,6 @@ impl Via {
             adb: AdbTransceiver::default(),
 
             bus_ticks: 0.into(),
-
-            total_bus_ticks: 0,
-            total_via_ticks: 0,
         }
     }
 }
@@ -540,11 +535,9 @@ impl BusMember<Address> for Via {
 impl Tickable<&dyn EmuContext> for Via {
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
         self.bus_ticks += ticks;
-        self.total_bus_ticks += ticks;
         let via_ticks = Ratio::<Ticks>::new(16_000_000, ctx.bus_frequency()) * self.bus_ticks;
         let via_ticks = via_ticks.to_integer();
         if via_ticks > 0 {
-            self.total_via_ticks += via_ticks;
             self.tick_16mhz(via_ticks)?;
             self.bus_ticks -= Ratio::<Ticks>::new(ctx.bus_frequency(), 16_000_000) * via_ticks;
         }
