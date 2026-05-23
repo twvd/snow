@@ -42,6 +42,9 @@ pub struct ModelSelectionDialog {
     extension_rom_path: String,
     extension_rom_dialog: SnowFileDialog,
 
+    // Overclock (only takes effect if overclock is checked and value is valid)
+    overclock_text: String,
+
     // Result
     result: Option<ModelSelectionResult>,
 
@@ -108,6 +111,8 @@ impl Default for ModelSelectionDialog {
             extension_rom_dialog: SnowFileDialog::new()
                 .add_filter("ROM files", &["rom", "bin"])
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
+
+            overclock_text: "40".into(),
 
             result: None,
             disable_rom_validation: false,
@@ -510,10 +515,16 @@ impl ModelSelectionDialog {
                             "Start in fast-forward mode",
                         );
                         let mut overclock_enable = self.init_args.overclock.is_some();
-                        ui.checkbox(&mut overclock_enable, "Overclock");
-                        if overclock_enable {
-                            // TODO: allow configuring speed
-                            self.init_args.overclock = Some(40_000_000);
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut overclock_enable, "Overclock:");
+                            ui.text_edit_singleline(&mut self.overclock_text);
+                            ui.label("MHz");
+                        });
+                        if overclock_enable
+                            && let Ok(overclock_value) = self.overclock_text.parse::<f64>()
+                            && overclock_value > 0.0
+                        {
+                            self.init_args.overclock = Some((overclock_value * 1_000_000.0) as u64);
                         } else {
                             self.init_args.overclock = None;
                         }
