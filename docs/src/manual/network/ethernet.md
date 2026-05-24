@@ -56,8 +56,11 @@ You can select the Ethernet link type through the Drives menu: 'Drives' -> 'SCSI
 
 The NAT link emulates a gateway at IP-address 10.0.0.1. Your emulated system needs to have any IP-address in the
 10.0.0.0/8 network.
-There is no DNS or DHCP emulation, so you need to configure this manually and use an external DNS server (e.g. Google or
-Cloudflare DNS).
+
+Snow includes a RARP server that provides the emulated system with a valid IP address, mask, and gateway. To use auto configuration, choose ` Server` to the `Obtain Address` section.
+
+However, there is no DNS emulation, so you still need to configure an external DNS server (e.g. Google or
+Cloudflare DNS). You can also configure the IP manually by following the mini guide below.
 
 To set this up in MacTCP, open the MacTCP control panel, select 'Ethernet Built-In' and click the 'More' button to get
 to the following screen:
