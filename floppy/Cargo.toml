@@ -8,7 +8,7 @@ anyhow = "1.0.86"
 binrw = "0.14.0"
 built = { version = "0.8.0" }
 crc = "3.2.1"
-fluxfox = { git = "https://github.com/dbalsom/fluxfox.git", optional = true, rev = "a95563b2f7b7da6b7a30d4da3eaa255256b3e889", default-features = false, features = ["core", "archives", "mfi", "flux", "ibm_pc", "macintosh"] }
+fluxfox = { git = "https://github.com/dbalsom/fluxfox.git", optional = true, rev = "e77e73969f35396f9679f0eaf834166261a13825", default-features = false, features = ["core", "archives", "mfi", "flux", "ibm_pc", "macintosh"] }
 itertools = "0.14.0"
 log = "0.4.22"
 rand = "0.9.3"

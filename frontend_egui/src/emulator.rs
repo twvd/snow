@@ -139,6 +139,11 @@ pub struct EmulatorState {
     /// Serial bridge status for SCC channels (index 0 = Channel A, index 1 = Channel B)
     serial_bridge_status: [Option<SerialBridgeStatus>; 2],
 
+    /// Latest floppy image snapshot delivered by the emulator core
+    /// Only a single snapshot is kept because this is for the floppy visualizer
+    /// dialog, which can only show a single drive at a time.
+    floppy_snapshot: Option<(usize, Option<Box<FloppyImage>>)>,
+
     /// Currently selected audio device on the host
     host_audio_device: Option<cpal::DeviceId>,
 }
@@ -539,6 +544,9 @@ impl EmulatorState {
                     ));
                     *self.last_images[idx].borrow_mut() = Some(img);
                 }
+                EmulatorEvent::FloppyImageSnapshot(idx, img) => {
+                    self.floppy_snapshot = Some((idx, img));
+                }
                 EmulatorEvent::ScsiMediaEjected(id) => {
                     self.messages
                         .push_back((UserMessageType::Notice, format!("CD-ROM #{} ejected", id)));
@@ -664,6 +672,20 @@ impl EmulatorState {
             .unwrap()
             .send(EmulatorCommand::StepOver)
             .unwrap();
+    }
+
+    /// Request a snapshot of the currently inserted floppy on `drive`.
+    #[cfg(feature = "floppy_visualizer")]
+    pub fn request_floppy_snapshot(&self, drive: usize) {
+        if let Some(ref cmd) = self.cmdsender {
+            let _ = cmd.send(EmulatorCommand::GetFloppyImage(drive));
+        }
+    }
+
+    /// Take the latest floppy snapshot delivered by the core, if any.
+    #[cfg(feature = "floppy_visualizer")]
+    pub fn take_floppy_snapshot(&mut self) -> Option<(usize, Option<Box<FloppyImage>>)> {
+        self.floppy_snapshot.take()
     }
 
     /// Returns a reference to floppy drive status for the requested drive.

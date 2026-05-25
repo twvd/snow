@@ -9,7 +9,7 @@ name = "snowemu"
 path = "src/main.rs"
 
 [features]
-default = ["ethernet", "ethernet_nat", "ethernet_nat_https_stripping", "ethernet_nat_mactcp_helpers", "ethernet_tap", "printer"]
+default = ["ethernet", "ethernet_nat", "ethernet_nat_https_stripping", "ethernet_nat_mactcp_helpers", "ethernet_tap", "printer", "floppy_visualizer"]
 ethernet = ["snow_core/ethernet"]
 ethernet_nat = ["ethernet", "snow_core/ethernet_nat"]
 ethernet_nat_https_stripping = ["ethernet_nat", "snow_core/ethernet_nat_https_stripping"]
@@ -21,6 +21,7 @@ audio_sdl2 = ["dep:sdl2"]
 sdl2-bundled = ["sdl2/bundled"]
 sdl2-pkgconfig = ["sdl2/use-pkgconfig"]
 sdl2-static = ["sdl2/static-link"]
+floppy_visualizer = ["dep:fluxfox", "dep:fluxfox_tiny_skia", "dep:tiny-skia"]
 
 [build-dependencies]
 built = "0.8.0"
@@ -65,6 +66,9 @@ sha2 = "0.10.8"
 snow_core = { version = "1.4.1", path = "../core", features = ["mmap", "savestates"] }
 snow_floppy = { version = "1.4.1", path = "../floppy" }
 strum = "0.26.3"
+fluxfox = { git = "https://github.com/dbalsom/fluxfox.git", rev = "e77e73969f35396f9679f0eaf834166261a13825", default-features = false, features = ["core", "viz", "macintosh", "ibm_pc", "flux", "tiny_skia"], optional = true }
+fluxfox_tiny_skia = { git = "https://github.com/dbalsom/fluxfox.git", rev = "e77e73969f35396f9679f0eaf834166261a13825", default-features = false, optional = true }
+tiny-skia = { version = "0.11", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # https://github.com/twvd/snow/issues/106

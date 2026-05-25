@@ -950,6 +950,15 @@ impl Tickable for Emulator {
                         self.try_writeback(drive);
                         self.config.swim_mut().drives[drive].eject();
                     }
+                    EmulatorCommand::GetFloppyImage(drive) => {
+                        let snapshot = if self.config.swim().drives[drive].floppy_inserted {
+                            Some(Box::new(self.config.swim().get_active_image(drive).clone()))
+                        } else {
+                            None
+                        };
+                        self.event_sender
+                            .send(EmulatorEvent::FloppyImageSnapshot(drive, snapshot))?;
+                    }
                     EmulatorCommand::SetFloppyWriteback(drive, enabled) => {
                         let ok = {
                             let drv = &mut self.config.swim_mut().drives[drive];

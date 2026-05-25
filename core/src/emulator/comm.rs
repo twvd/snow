@@ -40,6 +40,10 @@ pub enum EmulatorCommand {
     InsertFloppyImage(usize, Box<FloppyImage>, bool),
     SaveFloppy(usize, PathBuf),
     EjectFloppy(usize),
+    /// Requests a snapshot of the floppy image currently inserted in the
+    /// given drive. The emulator responds with EmulatorEvent::FloppyImageSnapshot
+    /// Parameters: drive id
+    GetFloppyImage(usize),
     /// Toggle automatic writeback for a floppy drive.
     /// Parameters: drive id, enabled
     SetFloppyWriteback(usize, bool),
@@ -187,6 +191,10 @@ pub enum EmulatorEvent {
     NextCode((Address, Vec<u8>)),
     UserMessage(UserMessageType, String),
     FloppyEjected(usize, Box<FloppyImage>),
+    /// Snapshot of the floppy image currently inserted in the drive, in
+    /// response to EmulatorCommand::GetFloppyImage.
+    /// Results: drive id, image (None if no disk)
+    FloppyImageSnapshot(usize, Option<Box<FloppyImage>>),
     ScsiMediaEjected(usize),
     Memory((Address, Vec<u8>, usize)),
     RecordedInput(InputRecording),
