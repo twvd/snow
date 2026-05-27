@@ -7,12 +7,17 @@ use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, Field16};
 
 use anyhow::Result;
-use num::rational::Ratio;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
 use super::MacModel;
 use super::adb::AdbTransceiver;
+
+/// The frequency at which to run the VIA.
+///
+/// Since the VIA is used as a timer, it is important to run at a consistent
+/// speed regardless of CPU/bus frequency.
+const VIA_FREQUENCY: Ticks = 16_000_000;
 
 /// Counter at which to trigger the one second interrupt
 /// (counted on the E Clock)
@@ -188,6 +193,31 @@ bitfield! {
     }
 }
 
+/// Converts ticks from one clock frequency (A) to another (B).
+///
+/// Frequency A can be decided at runtime, while frequency B must be
+/// specified as a const generic.
+///
+/// Rational arithmetic is used to prevent errors from accumulating.
+/// The struct contains the numerator `N` in `N / B_FREQ`, where `B_FREQ`
+/// is the frequency of clock B.
+#[derive(Default, Serialize, Deserialize)]
+struct TickConverter<const B_FREQ: Ticks>(Ticks);
+
+impl<const B_FREQ: Ticks> TickConverter<B_FREQ> {
+    fn add_a_ticks(&mut self, a_ticks: Ticks) {
+        self.0 += B_FREQ * a_ticks;
+    }
+
+    fn get_b_ticks(&self, a_freq: Ticks) -> Ticks {
+        self.0 / a_freq
+    }
+
+    fn subtract_b_ticks(&mut self, b_ticks: Ticks, a_freq: Ticks) {
+        self.0 -= a_freq * b_ticks;
+    }
+}
+
 /// Synertek SY6522 Versatile Interface Adapter
 #[derive(Serialize, Deserialize)]
 pub struct Via {
@@ -258,10 +288,7 @@ pub struct Via {
 
     pub(crate) adb: AdbTransceiver,
 
-    /// Accumulates bus ticks
-    // FIXME: enabling serde doesn't compile and I don't know why
-    #[serde(skip)]
-    bus_ticks: Ratio<Ticks>,
+    bus_tick_converter: TickConverter<VIA_FREQUENCY>,
 }
 
 impl Via {
@@ -299,7 +326,7 @@ impl Via {
             rtc: Rtc::default(),
             adb: AdbTransceiver::default(),
 
-            bus_ticks: 0.into(),
+            bus_tick_converter: Default::default(),
         }
     }
 }
@@ -534,12 +561,12 @@ impl BusMember<Address> for Via {
 
 impl Tickable<&dyn EmuContext> for Via {
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
-        self.bus_ticks += ticks;
-        let via_ticks = Ratio::<Ticks>::new(16_000_000, ctx.bus_frequency()) * self.bus_ticks;
-        let via_ticks = via_ticks.to_integer();
+        self.bus_tick_converter.add_a_ticks(ticks);
+        let via_ticks = self.bus_tick_converter.get_b_ticks(ctx.bus_frequency());
         if via_ticks > 0 {
             self.tick_16mhz(via_ticks)?;
-            self.bus_ticks -= Ratio::<Ticks>::new(ctx.bus_frequency(), 16_000_000) * via_ticks;
+            self.bus_tick_converter
+                .subtract_b_ticks(via_ticks, ctx.bus_frequency());
         }
         Ok(ticks)
     }
