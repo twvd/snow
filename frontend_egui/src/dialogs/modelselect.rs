@@ -645,9 +645,10 @@ impl ModelSelectionDialog {
                         });
                         if overclock_enable
                             && let Ok(overclock_value) = self.overclock_text.parse::<f64>()
-                            && overclock_value > 0.0
+                            && let overclock_mhz = (overclock_value * 1_000_000.0) as u64
+                            && overclock_mhz > 0
                         {
-                            self.init_args.overclock = Some((overclock_value * 1_000_000.0) as u64);
+                            self.init_args.overclock = Some(overclock_mhz);
                         } else {
                             self.init_args.overclock = None;
                         }
