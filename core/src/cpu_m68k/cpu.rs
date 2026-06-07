@@ -84,6 +84,9 @@ pub(in crate::cpu_m68k) enum CpuError {
     /// Handle page fault (PMMU)
     #[error("Page fault")]
     Pagefault,
+    /// Raise illegal instruction exception
+    #[error("Illegal instruction exception")]
+    IllegalInstruction,
 }
 
 /// M68000 exception groups
@@ -669,6 +672,9 @@ where
                     details.ir = instr.data;
                     details.start_pc = start_pc;
                     self.raise_exception(ExceptionGroup::Group0, VECTOR_BUS_ERROR, Some(details))?;
+                }
+                Some(CpuError::IllegalInstruction) => {
+                    self.raise_illegal_instruction()?;
                 }
                 _ => {
                     bail!(
