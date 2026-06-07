@@ -7,6 +7,7 @@ use num_traits::FromPrimitive;
 use proc_bitfield::bitfield;
 use strum::Display;
 
+use super::cpu::CpuError;
 use super::regs::Register;
 use super::{CpuM68kType, CpuSized, M68000, M68010, M68020};
 
@@ -502,10 +503,7 @@ impl ExtWord {
             (true, 0b010) => Ok(MemoryIndirectAction::Word),
             (true, 0b011) => Ok(MemoryIndirectAction::Long),
 
-            _ => bail!(format!(
-                "Invalid memory indirect mode - IS = {}, I = {:03b}",
-                is, i
-            )),
+            _ => bail!(CpuError::IllegalInstruction),
         }
     }
 }
