@@ -1250,6 +1250,9 @@ where
             InstructionMnemonic::RTR => self.op_rtr(instr),
             InstructionMnemonic::STOP => self.op_stop(instr),
             InstructionMnemonic::TRAPV => self.op_trapv(instr),
+            InstructionMnemonic::TRAPcc => self.op_trapcc::<0>(instr),
+            InstructionMnemonic::TRAPcc_w => self.op_trapcc::<1>(instr),
+            InstructionMnemonic::TRAPcc_l => self.op_trapcc::<2>(instr),
             InstructionMnemonic::JSR => self.op_jmp_jsr(instr),
             InstructionMnemonic::JMP => self.op_jmp_jsr(instr),
             InstructionMnemonic::MOVEM_mem_l => self.op_movem_mem::<Long>(instr),
@@ -1525,6 +1528,25 @@ where
         self.prefetch_pump()?;
 
         if !self.regs.sr.v() {
+            return Ok(());
+        }
+
+        self.raise_exception(ExceptionGroup::Group2, VECTOR_TRAPV, None)
+    }
+
+    /// TRAPcc (68020+) - OPERAND_WORDS is 0, 1 (word) or 2 (long)
+    fn op_trapcc<const OPERAND_WORDS: usize>(&mut self, instr: &Instruction) -> Result<()> {
+        let taken = self.cc(instr.get_cc());
+
+        // Consume the immediate operand from the prefetch queue and refill.
+        // After this, regs.pc points to the instruction following TRAPcc, which
+        // is also the address the exception stack frame must capture.
+        for _ in 0..OPERAND_WORDS {
+            let _: Word = self.fetch_pump()?;
+        }
+        self.prefetch_pump()?;
+
+        if !taken {
             return Ok(());
         }
 
