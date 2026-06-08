@@ -313,6 +313,27 @@ where
         T::from_u32(u32::from_be_bytes(tmp)).unwrap()
     }
 
+    /// Wraps a device read result in a mapped region: logs a warning and falls
+    /// back to open bus when the device did not handle the address. The
+    /// enclosing region is considered mapped, so this never triggers a bus
+    /// error.
+    fn dev_read(addr: Address, val: Option<Byte>) -> Byte {
+        val.unwrap_or_else(|| {
+            warn!("Read from unimplemented address: {:08X}", addr);
+            Self::OPENBUS
+        })
+    }
+
+    /// Wraps a device write result in a mapped region: logs a warning if the
+    /// device did not handle the address. The enclosing region is considered
+    /// mapped, so this never triggers a bus error.
+    fn dev_write(addr: Address, val: Byte, written: Option<()>) -> Option<()> {
+        if written.is_none() {
+            warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
+        }
+        Some(())
+    }
+
     fn write_overlay(&mut self, addr: Address, val: Byte) -> Option<()> {
         match addr {
             // 0x0000_0000 - 0x4FFF_FFFF is ROM
@@ -326,32 +347,32 @@ where
             // RAM
             0x0000_0000..=0x3FFF_FFFF => {
                 let idx = addr as usize & self.ram_mask;
-                if idx >= self.ram.len() {
-                    // Ignore silently to avoid a lot of spam during memory tests
-                    Some(())
-                } else {
+                if idx < self.ram.len() {
                     self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
-                    Some(self.ram[idx] = val)
+                    self.ram[idx] = val;
                 }
+                // Ignore silently to avoid a lot of spam during memory tests
+                Some(())
             }
             // ROM
             0x4000_0000..=0x4FFF_FFFF => Some(()),
             // I/O region (repeats)
             0x5000_0000..=0x51FF_FFFF => match addr & 0x1_FFFF {
                 // VIA 1
-                0x0000_0000..=0x0000_1FFF if self.model == MacModel::SE30 => {
-                    let result = self.via1.write(addr, val);
-                    let Some(NubusCard::SE30Video(d)) = self.nubus_devices[5].as_mut() else {
-                        unreachable!()
-                    };
-                    d.vblank_enable = !self.via1.b_out.se30_vblank_enable();
-                    d.fb_select = self.via1.a_out.page2();
-                    result
+                0x0000_0000..=0x0000_1FFF => {
+                    Self::dev_write(addr, val, self.via1.write(addr, val));
+                    if self.model == MacModel::SE30 {
+                        let Some(NubusCard::SE30Video(d)) = self.nubus_devices[5].as_mut() else {
+                            unreachable!()
+                        };
+                        d.vblank_enable = !self.via1.b_out.se30_vblank_enable();
+                        d.fb_select = self.via1.a_out.page2();
+                    }
+                    Some(())
                 }
-                0x0000_0000..=0x0000_1FFF => self.via1.write(addr, val),
                 // VIA 2
                 0x0000_2000..=0x0000_3FFF => {
-                    let result = self.via2.write(addr, val);
+                    Self::dev_write(addr, val, self.via2.write(addr, val));
 
                     // Lazy update ramsize
                     if self.via2.a_out.v2ram0() == self.ram_expected_ramsiz {
@@ -374,25 +395,43 @@ where
                             }
                         };
                     }
-
-                    result
+                    Some(())
                 }
                 // SCC
-                0x0000_4000..=0x0000_5FFF => self.scc.write(addr >> 1, val),
+                0x0000_4000..=0x0000_5FFF => {
+                    Self::dev_write(addr, val, self.scc.write(addr >> 1, val));
+                    Some(())
+                }
                 // SCSI
                 0x0000_6000..=0x0000_6FFF => Some(self.scsi.write_dma(val)),
-                0x0001_0000..=0x0001_1FFF => self.scsi.write(addr, val),
+                0x0001_0000..=0x0001_1FFF => {
+                    Self::dev_write(addr, val, self.scsi.write(addr, val));
+                    Some(())
+                }
                 0x0001_2000..=0x0001_3FFF => Some(self.scsi.write_dma(val)),
                 // ASC (sound)
-                0x0001_4000..=0x0001_5FFF => self.asc.write(addr & 0xFFF, val),
-                // IWM
-                0x0001_6000..=0x0001_7FFF => self.swim.write(addr, val),
-                // Expansion area
-                //0x0001_8000..=0x0001_FFFF => Some(()),
+                0x0001_4000..=0x0001_5FFF => {
+                    Self::dev_write(addr, val, self.asc.write(addr & 0xFFF, val));
+                    Some(())
+                }
+                // IWM/SWIM
+                0x0001_6000..=0x0001_7FFF => {
+                    Self::dev_write(addr, val, self.swim.write(addr, val));
+                    Some(())
+                }
+                // Expansion area - unmapped
                 _ => None,
             },
             // NuBus super slot
-            0x6000_0000..=0xEFFF_FFFF => None,
+            0x6000_0000..=0xEFFF_FFFF => {
+                // Unimplemented but some stray reads/writes end up here
+                log::warn!(
+                    "Unimplemented write to NuBus super slot: {:08X} {:02X}",
+                    addr,
+                    val
+                );
+                Some(())
+            }
             // NuBus standard slot
             0xF100_0000..=0xFFFF_FFFF => {
                 let nubus_addr = (addr >> 24) & 0x0F;
@@ -400,10 +439,12 @@ where
                     None
                 } else if let Some(dev) = self.nubus_devices[(nubus_addr - 0x09) as usize].as_mut()
                 {
-                    match dev {
+                    let written = match dev {
                         NubusCard::MDC12(dev) => dev.write(addr & 0xFF_FFFF, val),
                         NubusCard::SE30Video(dev) => dev.write(addr & 0xFF_FFFF, val),
-                    }
+                    };
+                    Self::dev_write(addr, val, written);
+                    Some(())
                 } else {
                     None
                 }
@@ -438,11 +479,11 @@ where
             // RAM
             0x0000_0000..=0x3FFF_FFFF => {
                 let idx = addr as usize & self.ram_mask;
-                if idx >= self.ram.len() {
+                if idx < self.ram.len() {
+                    Some(self.ram[idx])
+                } else {
                     // Ignore silently to avoid a lot of spam during memory tests
                     Some(Self::OPENBUS)
-                } else {
-                    Some(self.ram[idx])
                 }
             }
             // ROM
@@ -455,21 +496,22 @@ where
             // I/O region (repeats)
             0x5000_0000..=0x51FF_FFFF => match addr & 0x1_FFFF {
                 // VIA 1
-                0x0000_0000..=0x0000_1FFF => self.via1.read(addr),
+                0x0000_0000..=0x0000_1FFF => Some(Self::dev_read(addr, self.via1.read(addr))),
                 // VIA 2
-                0x0000_2000..=0x0000_3FFF => self.via2.read(addr),
+                0x0000_2000..=0x0000_3FFF => Some(Self::dev_read(addr, self.via2.read(addr))),
                 // SCC
-                0x0000_4000..=0x0000_5FFF => self.scc.read(addr >> 1),
+                0x0000_4000..=0x0000_5FFF => Some(Self::dev_read(addr, self.scc.read(addr >> 1))),
                 // SCSI
                 0x0000_6000..=0x0000_6FFF => Some(self.scsi.read_dma()),
-                0x0001_0000..=0x0001_1FFF => self.scsi.read(addr),
+                0x0001_0000..=0x0001_1FFF => Some(Self::dev_read(addr, self.scsi.read(addr))),
                 0x0001_2000..=0x0001_3FFF => Some(self.scsi.read_dma()),
                 // ASC (sound)
-                0x0001_4000..=0x0001_5FFF => self.asc.read(addr & 0xFFF),
-                // IWM
-                0x0001_6000..=0x0001_7FFF => self.swim.read(addr),
-                // Expansion area
-                //0x0001_8000..=0x0001_FFFF => Some(Self::OPENBUS),
+                0x0001_4000..=0x0001_5FFF => {
+                    Some(Self::dev_read(addr, self.asc.read(addr & 0xFFF)))
+                }
+                // IWM/SWIM
+                0x0001_6000..=0x0001_7FFF => Some(Self::dev_read(addr, self.swim.read(addr))),
+                // Expansion area - unmapped
                 _ => None,
             },
             // Extension ROM / test area
@@ -480,7 +522,11 @@ where
                     .unwrap_or(&Self::OPENBUS),
             ),
             // NuBus super slot
-            0x6000_0000..=0xEFFF_FFFF => None,
+            0x6000_0000..=0xEFFF_FFFF => {
+                // Unimplemented but some stray reads/writes end up here
+                log::warn!("Unimplemented read from NuBus super slot: {:08X}", addr);
+                Some(Self::OPENBUS)
+            }
             // NuBus standard slot
             0xF100_0000..=0xFFFF_FFFF => {
                 let nubus_addr = (addr >> 24) & 0x0F;
@@ -488,10 +534,11 @@ where
                     None
                 } else if let Some(dev) = self.nubus_devices[(nubus_addr - 0x09) as usize].as_mut()
                 {
-                    match dev {
+                    let val = match dev {
                         NubusCard::MDC12(dev) => dev.read(addr & 0xFF_FFFF),
                         NubusCard::SE30Video(dev) => dev.read(addr & 0xFF_FFFF),
-                    }
+                    };
+                    Some(Self::dev_read(addr, val))
                 } else {
                     None
                 }
@@ -651,19 +698,20 @@ where
             self.read_32bit(addr)
         };
 
-        if let Some(v) = val {
-            BusResult::Ok(v)
-        } else {
-            if AMU && self.amu_active {
-                warn!(
-                    "Read from unimplemented address: {:06X} -> {:08X}",
-                    addr & 0xFFFFFF,
-                    self.amu_translate(addr),
-                );
-            } else {
-                warn!("Read from unimplemented address: {:08X}", addr);
+        match val {
+            Some(v) => BusResult::Ok(v),
+            None => {
+                if AMU && self.amu_active {
+                    warn!(
+                        "Bus error (read) at unmapped address: {:06X} -> {:08X}",
+                        addr & 0xFFFFFF,
+                        self.amu_translate(addr),
+                    );
+                } else {
+                    warn!("Bus error (read) at unmapped address: {:08X}", addr);
+                }
+                BusResult::BusError
             }
-            BusResult::Ok(Self::OPENBUS)
         }
     }
 
@@ -692,15 +740,20 @@ where
         if written.is_none() {
             if AMU && self.amu_active {
                 warn!(
-                    "Write to unimplemented address: {:06X} -> {:08X} {:02X}",
+                    "Bus error (write) at unmapped address: {:06X} -> {:08X} {:02X}",
                     addr & 0xFFFFFF,
                     self.amu_translate(addr),
                     val
                 );
             } else {
-                warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
+                warn!(
+                    "Bus error (write) at unmapped address: {:08X} {:02X}",
+                    addr, val
+                );
             }
+            return BusResult::BusError;
         }
+
         BusResult::Ok(val)
     }
 
