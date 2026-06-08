@@ -481,10 +481,21 @@ where
         let fetch_addr = self.regs.pc.wrapping_add(4) & ADDRESS_MASK;
 
         let new_item = if CPU_TYPE >= M68020 && self.regs.cacr.e() {
-            // We keep the tag full size so we can invalidate easily
             if fetch_addr & 1 != 0 {
-                bail!("I-cache enabled but PC unaligned");
+                // Unaligned access through I-cache raises exception
+                bail!(CpuError::AddressError(Group0Details {
+                    function_code: self.fc_program(),
+                    ir: 0,
+                    size: std::mem::size_of::<Word>(),
+                    instruction: true,
+                    read: true,
+                    address: fetch_addr,
+                    // Filled in later
+                    start_pc: 0,
+                }));
             }
+
+            // We keep the tag full size so we can invalidate easily
             let cache_tag = fetch_addr & ICACHE_TAG_MASK;
             let cache_idx = ((fetch_addr & ICACHE_INDEX_MASK) >> 2) as usize;
             let cache_offset = (fetch_addr & ICACHE_OFFSET_MASK) as usize;

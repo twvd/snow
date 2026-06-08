@@ -41,7 +41,7 @@ where
     }
 
     #[inline(always)]
-    fn fc_program(&self) -> u8 {
+    pub(in crate::cpu_m68k) fn fc_program(&self) -> u8 {
         if PMMU {
             if self.regs.sr.supervisor() {
                 FC_SUPERVISOR_PROGRAM
