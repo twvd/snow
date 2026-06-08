@@ -581,7 +581,7 @@ where
         self.step_over_addr = None;
         self.step_ea_load = None;
 
-        if PMMU {
+        if CPU_TYPE >= M68020 {
             self.restart_regs = Some(RestartRegisterFile::from(&self.regs));
         }
 

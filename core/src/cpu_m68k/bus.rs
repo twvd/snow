@@ -161,6 +161,18 @@ where
                         self.advance_cycles(2)?;
                         self.sync_bus()?;
                     }
+                    BusResult::BusError => {
+                        bail!(CpuError::BusError(Group0Details {
+                            function_code: fc,
+                            ir: 0,
+                            size: std::mem::size_of::<T>(),
+                            instruction: false,
+                            read: true,
+                            address: o_addr,
+                            // Filled in later
+                            start_pc: 0,
+                        }));
+                    }
                 }
             };
             result = result.wrapping_shl(8) | b;
@@ -313,11 +325,28 @@ where
                     let b = val as u8;
                     val >>= 8;
 
-                    while self.bus.write(byte_addr, b) == BusResult::WaitState {
-                        // Insert wait states until bus access succeeds
-                        self.history_current.waitstates = true;
-                        self.advance_cycles(2)?;
-                        self.sync_bus()?;
+                    loop {
+                        match self.bus.write(byte_addr, b) {
+                            BusResult::Ok(_) => break,
+                            BusResult::WaitState => {
+                                // Insert wait states until bus access succeeds
+                                self.history_current.waitstates = true;
+                                self.advance_cycles(2)?;
+                                self.sync_bus()?;
+                            }
+                            BusResult::BusError => {
+                                bail!(CpuError::BusError(Group0Details {
+                                    function_code: fc,
+                                    ir: 0,
+                                    size: std::mem::size_of::<T>(),
+                                    instruction: false,
+                                    read: false,
+                                    address: o_addr,
+                                    // Filled in later
+                                    start_pc: 0,
+                                }));
+                            }
+                        }
                     }
                     if CPU_TYPE < M68020 {
                         self.advance_cycles(2)?;
@@ -369,11 +398,28 @@ where
                     let b = val as u8;
                     val >>= 8;
 
-                    while self.bus.write(byte_addr, b) == BusResult::WaitState {
-                        // Insert wait states until bus access succeeds
-                        self.history_current.waitstates = true;
-                        self.advance_cycles(2)?;
-                        self.sync_bus()?;
+                    loop {
+                        match self.bus.write(byte_addr, b) {
+                            BusResult::Ok(_) => break,
+                            BusResult::WaitState => {
+                                // Insert wait states until bus access succeeds
+                                self.history_current.waitstates = true;
+                                self.advance_cycles(2)?;
+                                self.sync_bus()?;
+                            }
+                            BusResult::BusError => {
+                                bail!(CpuError::BusError(Group0Details {
+                                    function_code: fc,
+                                    ir: 0,
+                                    size: std::mem::size_of::<T>(),
+                                    instruction: false,
+                                    read: false,
+                                    address: o_addr,
+                                    // Filled in later
+                                    start_pc: 0,
+                                }));
+                            }
+                        }
                     }
                     if CPU_TYPE < M68020 {
                         self.advance_cycles(2)?;

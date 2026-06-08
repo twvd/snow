@@ -18,6 +18,9 @@ pub enum BusResult<TD: PrimInt> {
 
     /// DTACK not asserted, CPU needs to insert wait states and retry
     WaitState,
+
+    /// BERR asserted, CPU should raise a bus error exception
+    BusError,
 }
 
 pub trait BusMember<T: PrimInt> {
