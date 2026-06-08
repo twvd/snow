@@ -442,6 +442,18 @@ impl<'a> Disassembler<'a> {
                 format!("S{} {}", Self::CC[instr.get_cc()], self.ea(instr)?)
             }
 
+            InstructionMnemonic::TRAPcc => {
+                format!("TRAP{}", Self::CC[instr.get_cc()])
+            }
+            InstructionMnemonic::TRAPcc_w => {
+                let imm = self.get16()?;
+                format!("TRAP{}.w #${:04X}", Self::CC[instr.get_cc()], imm)
+            }
+            InstructionMnemonic::TRAPcc_l => {
+                let imm = self.get32()?;
+                format!("TRAP{}.l #${:08X}", Self::CC[instr.get_cc()], imm)
+            }
+
             InstructionMnemonic::MOVEM_reg_w | InstructionMnemonic::MOVEM_reg_l => {
                 let mask = self.get16()?;
 

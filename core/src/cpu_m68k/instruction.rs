@@ -247,6 +247,9 @@ pub enum InstructionMnemonic {
     TAS,
     TRAP,
     TRAPV,
+    TRAPcc,
+    TRAPcc_w,
+    TRAPcc_l,
     TST_l,
     TST_w,
     TST_b,
@@ -667,6 +670,10 @@ impl Instruction {
         (M68000, 0b0101_0001_0100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_w),
         (M68000, 0b0101_0001_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::SUBQ_l),
         (M68000, 0b0101_0000_1100_1000, 0b1111_0000_1111_1000, InstructionMnemonic::DBcc),
+        // TRAPcc must be matched before Scc (the patterns overlap)
+        (M68020, 0b0101_0000_1111_1100, 0b1111_0000_1111_1111, InstructionMnemonic::TRAPcc),
+        (M68020, 0b0101_0000_1111_1010, 0b1111_0000_1111_1111, InstructionMnemonic::TRAPcc_w),
+        (M68020, 0b0101_0000_1111_1011, 0b1111_0000_1111_1111, InstructionMnemonic::TRAPcc_l),
         (M68000, 0b0101_0000_1100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::Scc),
         // BRA is actually just Bcc with cond = True
         (M68000, 0b0110_0001_0000_0000, 0b1111_1111_0000_0000, InstructionMnemonic::BSR),
@@ -1209,6 +1216,9 @@ impl Instruction {
             | InstructionMnemonic::TAS
             | InstructionMnemonic::TRAP
             | InstructionMnemonic::TRAPV
+            | InstructionMnemonic::TRAPcc
+            | InstructionMnemonic::TRAPcc_w
+            | InstructionMnemonic::TRAPcc_l
             | InstructionMnemonic::POP_000 => InstructionSize::None,
 
             InstructionMnemonic::MOVES_b => InstructionSize::Byte,
