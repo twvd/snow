@@ -535,6 +535,28 @@ where
                         self.advance_cycles(100 - 2)?;
                         self.regs.write_d(dn, out as Word);
                     }
+                    0b110 => {
+                        // Byte
+                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
+                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
+
+                        let out64 = self.regs.fpu.fp[fpx].to_i64();
+                        let (out, inex) = if out64 > i8::MAX.into() {
+                            // Overflow
+                            (i8::MAX, true)
+                        } else if out64 < i8::MIN.into() {
+                            // Underflow
+                            (i8::MIN, true)
+                        } else {
+                            // We're good
+                            (out64 as i8, false)
+                        };
+                        self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
+                        self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
+
+                        self.advance_cycles(100 - 2)?;
+                        self.regs.write_d(dn, out as Byte);
+                    }
                     0b001 => {
                         // Single precision real
                         // TODO flags?
