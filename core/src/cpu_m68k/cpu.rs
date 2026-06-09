@@ -1363,6 +1363,7 @@ where
             InstructionMnemonic::FBcc_l => self.op_fbcc::<true>(instr),
             InstructionMnemonic::FBcc_w => self.op_fbcc::<false>(instr),
             InstructionMnemonic::FScc_b => self.op_fscc(instr),
+            InstructionMnemonic::FDBcc => self.op_fdbcc(instr),
 
             // PMMU --------------------------------------------------------------------------------
             InstructionMnemonic::POP_000 => self.op_pop_000(instr),

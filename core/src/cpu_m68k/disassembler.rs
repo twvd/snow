@@ -1091,6 +1091,16 @@ impl<'a> Disassembler<'a> {
                 let cc = usize::from(self.get16()? & 0b111111);
                 format!("FS{}.b {}", Self::fcc_mnemonic(cc), self.ea(instr)?)
             }
+            InstructionMnemonic::FDBcc => {
+                let cc = usize::from(self.get16()? & 0b111111);
+                let displacement = self.get16()? as i16 as i32;
+                format!(
+                    "FDB{} D{},${:08X}",
+                    Self::fcc_mnemonic(cc),
+                    instr.get_op2(),
+                    self.addr.wrapping_add_signed(displacement + 2)
+                )
+            }
 
             InstructionMnemonic::CAS_b
             | InstructionMnemonic::CAS_l

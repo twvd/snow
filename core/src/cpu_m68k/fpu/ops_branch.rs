@@ -6,7 +6,7 @@ use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::cpu_m68k::instruction::Instruction;
-use crate::types::Byte;
+use crate::types::{Byte, Word};
 
 impl<
     TBus,
@@ -112,6 +112,45 @@ where
         self.regs.fpu.fpsr.exs_mut().set_bsun(bsun);
 
         self.write_ea::<Byte>(instr, instr.get_op2(), if test { 0xFF } else { 0 })?;
+        Ok(())
+    }
+
+    /// FDBcc
+    pub(in crate::cpu_m68k) fn op_fdbcc(&mut self, instr: &Instruction) -> Result<()> {
+        let cc = usize::from(self.fetch()? & 0b111111);
+        let displacement = self.fetch_pump()? as i16 as i32 - 2;
+
+        self.advance_cycles(2)?; // idle
+
+        let (test, bsun) = self.fcc(cc)?;
+        self.regs.fpu.fpsr.exs_mut().set_bsun(bsun);
+
+        if !test {
+            let dn = self.regs.read_d::<Word>(instr.get_op2()).wrapping_sub(1);
+            self.regs.write_d::<Word>(instr.get_op2(), dn);
+
+            if dn != 0xFFFF {
+                self.history_current.branch_taken = Some(true);
+
+                let pc = self
+                    .regs
+                    .pc
+                    .wrapping_add_signed(displacement)
+                    .wrapping_add(2);
+                self.set_pc(pc)?;
+
+                // Trigger address error now if unaligned..
+                self.prefetch_refill()?;
+            } else {
+                // Loop terminated
+                self.history_current.branch_taken = Some(false);
+                self.advance_cycles(4)?; // idle
+            }
+        } else {
+            self.history_current.branch_taken = Some(false);
+            self.advance_cycles(2)?; // idle
+        }
+
         Ok(())
     }
 }
