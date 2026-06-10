@@ -4,6 +4,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -109,31 +110,38 @@ impl RpcServer {
         self.running.store(true, Ordering::SeqCst);
 
         if self.config.unix_socket {
-            let socket_path = self.config.socket_path();
+            #[cfg(unix)]
+            {
+                let socket_path = self.config.socket_path();
 
-            // Remove existing socket file if it exists
-            if socket_path.exists() {
-                fs::remove_file(&socket_path)?;
+                // Remove existing socket file if it exists
+                if socket_path.exists() {
+                    fs::remove_file(&socket_path)?;
+                }
+
+                let listener = UnixListener::bind(&socket_path)?;
+                listener.set_nonblocking(true)?;
+
+                info!(
+                    "RPC server listening on Unix socket: {}",
+                    socket_path.display()
+                );
+                eprintln!(
+                    "RPC server listening on Unix socket: {}",
+                    socket_path.display()
+                );
+
+                let running = self.running.clone();
+                let request_tx = self.request_tx.clone();
+
+                self.unix_thread = Some(thread::spawn(move || {
+                    Self::unix_server_loop(listener, running, request_tx, socket_path);
+                }));
             }
-
-            let listener = UnixListener::bind(&socket_path)?;
-            listener.set_nonblocking(true)?;
-
-            info!(
-                "RPC server listening on Unix socket: {}",
-                socket_path.display()
-            );
-            eprintln!(
-                "RPC server listening on Unix socket: {}",
-                socket_path.display()
-            );
-
-            let running = self.running.clone();
-            let request_tx = self.request_tx.clone();
-
-            self.unix_thread = Some(thread::spawn(move || {
-                Self::unix_server_loop(listener, running, request_tx, socket_path);
-            }));
+            #[cfg(not(unix))]
+            {
+                warn!("Unix socket RPC is not supported on this platform; ignoring");
+            }
         }
 
         if self.config.tcp && self.config.tcp_port > 0 {
@@ -188,6 +196,7 @@ impl RpcServer {
         }
     }
 
+    #[cfg(unix)]
     #[allow(clippy::needless_pass_by_value)]
     fn unix_server_loop(
         listener: UnixListener,
@@ -247,6 +256,7 @@ impl RpcServer {
         }
     }
 
+    #[cfg(unix)]
     #[allow(clippy::needless_pass_by_value)]
     fn handle_unix_connection(
         stream: UnixStream,
