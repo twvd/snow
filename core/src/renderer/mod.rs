@@ -105,6 +105,23 @@ pub struct DisplayBuffer {
     frame: Vec<u8>,
 }
 
+/// Writes a [DisplayBuffer] as PNG to the given writer
+pub fn write_png<W: std::io::Write>(
+    buffer: &DisplayBuffer,
+    writer: W,
+) -> Result<(), png::EncodingError> {
+    let mut encoder = png::Encoder::new(
+        writer,
+        u32::from(buffer.width()),
+        u32::from(buffer.height()),
+    );
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header()?;
+    writer.write_image_data(buffer.as_ref())?;
+    Ok(())
+}
+
 impl DisplayBuffer {
     pub fn new(width: impl Into<usize>, height: impl Into<usize>) -> Self {
         let width = Into::<usize>::into(width);

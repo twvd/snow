@@ -276,6 +276,15 @@ where
         self.model
     }
 
+    /// Returns the monitor connected to the installed video card, if any
+    pub fn monitor(&self) -> Option<MacMonitor> {
+        if let Some(NubusCard::MDC12(c)) = self.nubus_devices[0].as_ref() {
+            Some(c.monitor())
+        } else {
+            None
+        }
+    }
+
     pub fn get_effective_speed(&self) -> f64 {
         self.via1.rtc.effective_speed()
     }

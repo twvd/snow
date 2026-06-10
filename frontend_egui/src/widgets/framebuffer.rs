@@ -55,6 +55,10 @@ pub struct FramebufferWidget {
     shader_pipeline: Arc<Mutex<Option<ShaderPipeline>>>,
     shader_configs: Vec<ShaderConfig>,
     crt_output_texture: Option<egui::TextureHandle>,
+
+    /// Flag indicating a new frame was received (for RPC screenshot optimization)
+    #[cfg(feature = "rpc")]
+    new_frame_available: bool,
 }
 
 impl FramebufferWidget {
@@ -75,6 +79,8 @@ impl FramebufferWidget {
             shader_pipeline: Arc::new(Mutex::new(None)),
             shader_configs: Self::default_shader_configs(MacModel::Plus),
             crt_output_texture: None,
+            #[cfg(feature = "rpc")]
+            new_frame_available: false,
         }
     }
 
@@ -103,6 +109,18 @@ impl FramebufferWidget {
         self.frame_recv = Some(recv);
     }
 
+    /// Takes the new frame if available, returning the frame and resetting the flag.
+    /// This avoids copying on every render pass when no new frame has arrived.
+    #[cfg(feature = "rpc")]
+    pub fn take_new_frame(&mut self) -> Option<&DisplayBuffer> {
+        if self.new_frame_available {
+            self.new_frame_available = false;
+            self.frame.as_ref()
+        } else {
+            None
+        }
+    }
+
     pub fn draw(&mut self, ui: &mut egui::Ui, fullscreen: bool) -> egui::Response {
         if let Some(ref frame_recv) = self.frame_recv
             && let Some(frame) = {
@@ -123,6 +141,10 @@ impl FramebufferWidget {
                 self.scaling_algorithm.texture_options(),
             );
             self.frame = Some(frame);
+            #[cfg(feature = "rpc")]
+            {
+                self.new_frame_available = true;
+            }
         }
 
         // Run the framebuffer through the CRT shader if enabled
@@ -250,17 +272,7 @@ impl FramebufferWidget {
         let Some(frame) = self.frame.as_ref() else {
             bail!("No framebuffer available");
         };
-        let mut encoder = png::Encoder::new(
-            writer,
-            self.display_size[0].into(),
-            self.display_size[1].into(),
-        );
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header()?;
-        writer.write_image_data(frame)?;
-
-        // png crate can't release the inner writer..
+        snow_core::renderer::write_png(frame, writer)?;
         Ok(())
     }
 

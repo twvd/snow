@@ -185,6 +185,7 @@ dispatch! {
 
     immutable_calls {
         fn model(&self) -> MacModel { bus.model() }
+        fn monitor(&self) -> Option<MacMonitor> { bus.monitor() }
         fn cpu_cycles(&self) -> Ticks { cycles }
         fn cpu_breakpoints(&self) -> &[Breakpoint] { breakpoints() }
         fn cpu_get_step_over(&self) -> Option<Address> { get_step_over() }
@@ -594,6 +595,8 @@ impl Emulator {
                     writeback_enabled: self.config.swim().drives[i].writeback_enabled,
                 }),
                 model: self.model,
+                monitor: self.config.monitor(),
+                ram_size: self.config.ram().len(),
                 scsi: core::array::from_fn(|i| {
                     self.config
                         .scsi()

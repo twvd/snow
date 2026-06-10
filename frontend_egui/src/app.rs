@@ -254,6 +254,10 @@ pub struct SnowGui {
 
     /// Shared flag set when the user clicks "Do not show again" on a mode toast
     mode_toast_hide_requested: Arc<AtomicBool>,
+
+    /// RPC server state (only when rpc feature is enabled)
+    #[cfg(feature = "rpc")]
+    rpc_state: crate::rpc::RpcState,
 }
 
 impl SnowGui {
@@ -326,6 +330,9 @@ impl SnowGui {
         serial_bridge_a: Option<&str>,
         serial_bridge_b: Option<&str>,
         floppies: &[String],
+        #[cfg(feature = "rpc")] rpc_enabled: bool,
+        #[cfg(feature = "rpc")] rpc_socket: Option<&str>,
+        #[cfg(feature = "rpc")] rpc_tcp: Option<u16>,
     ) -> Self {
         egui_material_icons::initialize(&cc.egui_ctx);
         cc.egui_ctx.set_zoom_factor(zoom_factor);
@@ -495,6 +502,17 @@ impl SnowGui {
 
             type_clipboard_queue: VecDeque::new(),
             type_clipboard_delay: 0,
+
+            #[cfg(feature = "rpc")]
+            rpc_state: {
+                let config = snow_core::rpc::RpcConfig {
+                    unix_socket: rpc_enabled,
+                    unix_socket_path: rpc_socket.map(PathBuf::from),
+                    tcp: rpc_tcp.is_some(),
+                    tcp_port: rpc_tcp.unwrap_or(0),
+                };
+                crate::rpc::RpcState::new(config)
+            },
         };
 
         if let Some(filename) = initial_file {
@@ -546,6 +564,13 @@ impl SnowGui {
                 .text("You are running a DEBUG BUILD of Snow which will be very, very SLOW!\n\nSee docs/BUILDING.md for instructions on building Snow in release mode")
                 .options(ToastOptions::default())
                 .kind(ToastKind::Warning));
+        }
+
+        // Start RPC server if enabled
+        #[cfg(feature = "rpc")]
+        if rpc_enabled && let Err(e) = app.rpc_state.start() {
+            log::error!("Failed to start RPC server: {}", e);
+            eprintln!("Failed to start RPC server: {}", e);
         }
 
         app
@@ -3089,6 +3114,51 @@ impl eframe::App for SnowGui {
             }
             while let Some((addr, data, size)) = self.emu.take_mem_update() {
                 self.memory.update_memory(addr, &data, size);
+            }
+        }
+
+        // Process RPC requests and update frame buffer for screenshots
+        #[cfg(feature = "rpc")]
+        if self.rpc_state.is_running() {
+            // Update frame buffer for screenshots (only when a new frame arrives)
+            if let Some(frame) = self.framebuffer.take_new_frame() {
+                self.rpc_state.update_frame_buffer(frame);
+            }
+
+            // Keep RPC state in sync with fullscreen state
+            self.rpc_state.set_fullscreen_state(self.in_fullscreen);
+
+            // Deliver queued input events (typed text, clicks) frame by frame
+            self.rpc_state.process_input_queue(&self.emu);
+
+            // Process pending RPC requests
+            self.rpc_state
+                .process_requests(&mut self.emu, self.workspace.get_shared_dir());
+
+            // Handle fullscreen requests from RPC
+            if let Some(request) = self.rpc_state.take_fullscreen_request() {
+                match request {
+                    crate::rpc::FullscreenRequest::Enter => {
+                        if !self.in_fullscreen {
+                            self.enter_fullscreen(ctx);
+                        }
+                    }
+                    crate::rpc::FullscreenRequest::Exit => {
+                        if self.in_fullscreen {
+                            self.exit_fullscreen(ctx);
+                        }
+                    }
+                    crate::rpc::FullscreenRequest::Toggle => {
+                        if self.in_fullscreen {
+                            self.exit_fullscreen(ctx);
+                        } else {
+                            self.enter_fullscreen(ctx);
+                        }
+                    }
+                }
+                // Fullscreen changes apply synchronously; re-sync so RPC
+                // clients immediately observe the applied state
+                self.rpc_state.set_fullscreen_state(self.in_fullscreen);
             }
         }
 

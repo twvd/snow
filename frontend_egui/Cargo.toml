@@ -21,6 +21,7 @@ audio_sdl2 = ["dep:sdl2"]
 sdl2-bundled = ["sdl2/bundled"]
 sdl2-pkgconfig = ["sdl2/use-pkgconfig"]
 sdl2-static = ["sdl2/static-link"]
+rpc = ["snow_core/rpc"]
 
 [build-dependencies]
 built = "0.8.0"
