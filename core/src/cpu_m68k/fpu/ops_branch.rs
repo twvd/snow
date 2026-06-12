@@ -142,7 +142,7 @@ where
     /// FDBcc
     pub(in crate::cpu_m68k) fn op_fdbcc(&mut self, instr: &Instruction) -> Result<()> {
         let cc = usize::from(self.fetch()? & 0b111111);
-        let displacement = self.fetch_pump()? as i16 as i32 - 2;
+        let displacement = self.fetch_pump()? as i16 as i32;
 
         self.advance_cycles(2)?; // idle
 
