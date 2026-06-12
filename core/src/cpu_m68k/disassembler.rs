@@ -1101,6 +1101,20 @@ impl<'a> Disassembler<'a> {
                     self.addr.wrapping_add_signed(displacement + 2)
                 )
             }
+            InstructionMnemonic::FTRAPcc => {
+                let cc = usize::from(self.get16()? & 0b111111);
+                format!("FTRAP{}", Self::fcc_mnemonic(cc))
+            }
+            InstructionMnemonic::FTRAPcc_w => {
+                let cc = usize::from(self.get16()? & 0b111111);
+                let imm = self.get16()?;
+                format!("FTRAP{}.w #${:04X}", Self::fcc_mnemonic(cc), imm)
+            }
+            InstructionMnemonic::FTRAPcc_l => {
+                let cc = usize::from(self.get16()? & 0b111111);
+                let imm = self.get32()?;
+                format!("FTRAP{}.l #${:08X}", Self::fcc_mnemonic(cc), imm)
+            }
 
             InstructionMnemonic::CAS_b
             | InstructionMnemonic::CAS_l
