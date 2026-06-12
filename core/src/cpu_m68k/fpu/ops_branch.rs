@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 use crate::bus::{Address, Bus, IrqSource};
 
 use crate::cpu_m68k::CpuM68kType;
-use crate::cpu_m68k::cpu::CpuM68k;
+use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_TRAPV};
 use crate::cpu_m68k::instruction::Instruction;
 use crate::types::{Byte, Word};
 
@@ -113,6 +113,30 @@ where
 
         self.write_ea::<Byte>(instr, instr.get_op2(), if test { 0xFF } else { 0 })?;
         Ok(())
+    }
+
+    /// FTRAPcc (68020+) - OPERAND_WORDS is 0, 1 (word) or 2 (long)
+    pub(in crate::cpu_m68k) fn op_ftrapcc<const OPERAND_WORDS: usize>(
+        &mut self,
+        _instr: &Instruction,
+    ) -> Result<()> {
+        let cc = usize::from(self.fetch()? & 0b111111);
+        let (test, bsun) = self.fcc(cc)?;
+        self.regs.fpu.fpsr.exs_mut().set_bsun(bsun);
+
+        // Consume the immediate operand from the prefetch queue and refill.
+        // After this, regs.pc points to the instruction following FTRAPcc, which
+        // is also the address the exception stack frame must capture.
+        for _ in 0..OPERAND_WORDS {
+            let _: Word = self.fetch_pump()?;
+        }
+        self.prefetch_pump()?;
+
+        if !test {
+            return Ok(());
+        }
+
+        self.raise_exception(ExceptionGroup::Group2, VECTOR_TRAPV, None)
     }
 
     /// FDBcc

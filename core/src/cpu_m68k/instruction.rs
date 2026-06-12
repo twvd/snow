@@ -263,6 +263,9 @@ pub enum InstructionMnemonic {
     FBcc_l,
     FScc_b,
     FDBcc,
+    FTRAPcc,
+    FTRAPcc_w,
+    FTRAPcc_l,
 
     // PMMU opcodes
     POP_000,
@@ -781,6 +784,10 @@ impl Instruction {
         (M68020, 0b1111_0010_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FBcc_w),
         // FDBcc must be matched before FScc (the patterns overlap)
         (M68020, 0b1111_0010_0100_1000, 0b1111_1111_1111_1000, InstructionMnemonic::FDBcc),
+        // FTRAPcc must be matched before FScc (the patterns overlap)
+        (M68020, 0b1111_0010_0111_1100, 0b1111_1111_1111_1111, InstructionMnemonic::FTRAPcc),
+        (M68020, 0b1111_0010_0111_1010, 0b1111_1111_1111_1111, InstructionMnemonic::FTRAPcc_w),
+        (M68020, 0b1111_0010_0111_1011, 0b1111_1111_1111_1111, InstructionMnemonic::FTRAPcc_l),
         (M68020, 0b1111_0010_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FScc_b),
 
         // M68851 PMMU instructions
@@ -1195,6 +1202,9 @@ impl Instruction {
             | InstructionMnemonic::DBcc
             | InstructionMnemonic::EXG
             | InstructionMnemonic::FDBcc
+            | InstructionMnemonic::FTRAPcc
+            | InstructionMnemonic::FTRAPcc_w
+            | InstructionMnemonic::FTRAPcc_l
             | InstructionMnemonic::FOP_000
             | InstructionMnemonic::FNOP
             | InstructionMnemonic::FRESTORE
