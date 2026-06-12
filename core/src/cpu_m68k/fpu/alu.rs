@@ -123,7 +123,7 @@ where
             0b0000011 => (
                 source
                     .cast_with_rm(SEMANTICS_EXTENDED, arpfloat::RoundingMode::Zero)
-                    .round()
+                    .trunc()
                     .cast(SEMANTICS_EXTENDED),
                 [55, 82, 74, 80, 78, 892],
             ),
