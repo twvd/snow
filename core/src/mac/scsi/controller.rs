@@ -642,7 +642,7 @@ impl ScsiController {
         }
 
         // Legacy PIO DataOut path (byte buffered here, ACK handled via ICR).
-        if self.busphase == ScsiBusPhase::DataOut {
+        if self.busphase == ScsiBusPhase::DataOut && self.phase_match() {
             self.responsebuf.push_back(val);
             self.dataout_len -= 1;
             if self.dataout_len == 0 {
