@@ -181,6 +181,7 @@ where
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn pmmu_fetch_table(
         &mut self,
         vaddr: Address,
@@ -190,18 +191,20 @@ where
         used_bits: &mut Address,
         wp: bool,
         s: bool,
+        mutate: bool,
     ) -> Result<PmmuWalkResult> {
         match dt {
             PmmuPageDescriptorType::Valid4b => {
-                self.pmmu_fetch_table_short(vaddr, table_addr, tis, used_bits, wp, s)
+                self.pmmu_fetch_table_short(vaddr, table_addr, tis, used_bits, wp, s, mutate)
             }
             PmmuPageDescriptorType::Valid8b => {
-                self.pmmu_fetch_table_long(vaddr, table_addr, tis, used_bits, wp, s)
+                self.pmmu_fetch_table_long(vaddr, table_addr, tis, used_bits, wp, s, mutate)
             }
             _ => bail!("Unimplemented DT {:?}", dt),
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn pmmu_fetch_table_short(
         &mut self,
         vaddr: Address,
@@ -210,6 +213,7 @@ where
         used_bits: &mut Address,
         wp: bool,
         s: bool,
+        mutate: bool,
     ) -> Result<PmmuWalkResult> {
         let Some(ti) = tis.pop() else {
             bail!("PMMU table search beyond maximum depth");
@@ -230,6 +234,11 @@ where
             }
             PmmuPageDescriptorType::PageDescriptor => {
                 let entry = PmmuShortPageDescriptor(entry_word);
+                // Mark U on first successful use, so the OS can tell this leaf
+                // has been referenced. PTEST must not mutate descriptors.
+                if mutate && !entry.u() {
+                    self.write_ticks_physical::<Long>(entry_addr, entry_word | (1 << 3))?;
+                }
                 Ok(PmmuWalkResult {
                     page_addr: entry.page_addr() << 8,
                     wp: wp | entry.wp(),
@@ -242,6 +251,10 @@ where
             PmmuPageDescriptorType::Valid4b | PmmuPageDescriptorType::Valid8b => {
                 // Recurse to child
                 let entry = PmmuShortTableDescriptor(entry_word);
+                // Set U on the table descriptor we just walked through
+                if mutate && !entry.u() {
+                    self.write_ticks_physical::<Long>(entry_addr, entry_word | (1 << 3))?;
+                }
                 self.pmmu_fetch_table(
                     vaddr << ti,
                     entry.table_addr() << 4,
@@ -251,11 +264,13 @@ where
                     // WP is inherited from any ancestor table
                     wp | entry.wp(),
                     s,
+                    mutate,
                 )
             }
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn pmmu_fetch_table_long(
         &mut self,
         vaddr: Address,
@@ -264,6 +279,7 @@ where
         used_bits: &mut Address,
         wp: bool,
         s: bool,
+        mutate: bool,
     ) -> Result<PmmuWalkResult> {
         let Some(ti) = tis.pop() else {
             bail!("PMMU table search beyond maximum depth");
@@ -288,6 +304,11 @@ where
                 let entry = PmmuLongPageDescriptor(0)
                     .with_msl(entry_word1)
                     .with_lsl(entry_word2);
+                // U lives in the MSL (bit 35 of the u64 = bit 3 of MSL), so
+                // only the first longword of the descriptor needs rewriting.
+                if mutate && !entry.u() {
+                    self.write_ticks_physical::<Long>(entry_addr, entry_word1 | (1 << 3))?;
+                }
                 Ok(PmmuWalkResult {
                     page_addr: entry.page_addr() << 8,
                     wp: wp | entry.wp(),
@@ -301,6 +322,9 @@ where
                 let entry = PmmuLongTableDescriptor(0)
                     .with_msl(entry_word1)
                     .with_lsl(entry_word2);
+                if mutate && !entry.u() {
+                    self.write_ticks_physical::<Long>(entry_addr, entry_word1 | (1 << 3))?;
+                }
                 self.pmmu_fetch_table(
                     vaddr << ti,
                     entry.table_addr() << 4,
@@ -471,6 +495,7 @@ where
                 &mut used_bits,
                 false,
                 false,
+                !PTEST,
             )
             .map_err(|e| match e.downcast_ref() {
                 Some(CpuError::AddressError(ae)) => {
