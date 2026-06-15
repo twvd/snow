@@ -12,7 +12,7 @@ use crate::cpu_m68k::pmmu::instruction::{Pmove3Extword, PtestExtword};
 use crate::types::{DoubleLong, Long, Word};
 
 use super::instruction::Pmove1Extword;
-use super::regs::TcReg;
+use super::regs::{TcReg, TrTranslationReg};
 
 impl<
     TBus,
@@ -59,16 +59,26 @@ where
             self.op_pmove_68030(instr, extword)
         } else if extword & 0b1111_1000_1111_1111 == 0b0000_1000_0000_0000 && CPU_TYPE >= M68030 {
             // PMOVE TT regs (68030+)
-            let write = extword & (1 << 9) != 0;
-            if !write {
-                // EA to MMU reg
-                let tt = self.read_ea::<Long>(instr, instr.get_op2())?;
-                if tt != 0 {
-                    bail!("TODO write to TTx regs");
-                }
+            // preg field: 010 = TT0, 011 = TT1; bit 0 of preg picks the register
+            let extword = Pmove1Extword(extword);
+            if !self.regs.sr.supervisor() {
+                self.advance_cycles(4)?;
+                return self.raise_exception(
+                    ExceptionGroup::Group2,
+                    VECTOR_PRIVILEGE_VIOLATION,
+                    None,
+                );
+            }
+            let tt_idx = extword.preg() & 0b1;
+            if extword.write() {
+                // Register to EA
+                self.write_ea::<Long>(instr, instr.get_op2(), self.regs.pmmu.tt[tt_idx].0)?;
             } else {
-                // Always write back 0 for now
-                self.write_ea::<Long>(instr, instr.get_op2(), 0)?;
+                // EA to register
+                let val = self.read_ea::<Long>(instr, instr.get_op2())?;
+                self.regs.pmmu.tt[tt_idx] = TrTranslationReg(val);
+                // TT changes can shadow or expose previously-cached translations.
+                self.pmmu_cache_invalidate();
             }
             Ok(())
         } else {

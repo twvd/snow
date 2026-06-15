@@ -311,9 +311,37 @@ where
                     wp | entry.wp(),
                     // S is inherited from any long-format ancestor
                     s | entry.s(),
+                    mutate,
                 )
             }
         }
+    }
+
+    /// Returns true if any enabled TT register transparently maps this access.
+    /// TT regions bypass the page tables and the ATC entirely.
+    #[inline]
+    fn pmmu_tt_match(&self, fc: u8, vaddr: Address, writing: bool) -> bool {
+        for tt in &self.regs.pmmu.tt {
+            if !tt.e() {
+                continue;
+            }
+            // FC: bits set in fc_mask are don't-cares.
+            let fc_care = !tt.fc_mask() & 0b111;
+            if (fc & fc_care) != (tt.fc_base() & fc_care) {
+                continue;
+            }
+            // R/W: rwm=1 means R/W is don't-care, otherwise rw must be ok
+            if !tt.rwm() && writing != tt.rw() {
+                continue;
+            }
+            // Address (top 3 bytes are don't care)
+            let addr_care = !tt.le_mask() & 0xFF;
+            if ((vaddr >> 24) & addr_care) != (tt.le_base() & addr_care) {
+                continue;
+            }
+            return true;
+        }
+        false
     }
 
     pub(in crate::cpu_m68k) fn pmmu_translate(
@@ -322,7 +350,17 @@ where
         vaddr: Address,
         writing: bool,
     ) -> Result<Address> {
-        if !PMMU || !self.regs.pmmu.tc.enable() {
+        if !PMMU {
+            return Ok(vaddr);
+        }
+
+        // Transparent translation runs even when TC.E=0; TT regions are
+        // identity-mapped and bypass the page tables and the ATC.
+        if self.pmmu_tt_match(fc, vaddr, writing) {
+            return Ok(vaddr);
+        }
+
+        if !self.regs.pmmu.tc.enable() {
             return Ok(vaddr);
         }
 
