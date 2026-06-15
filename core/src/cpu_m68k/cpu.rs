@@ -541,12 +541,16 @@ where
             self.read_ticks_program::<Word>(fetch_addr)?
         };
         self.prefetch.push_back(new_item);
-        // FIXME: In rare instances, the Mac will hang on bootup after
-        // displaying "Welcome to Macintosh" but before displaying the Mac OS logo.
-        // The hang seems to occur when (self.regs.pc + 2) overflows here.
-        // This may indicate a logic bug in the emulator.
+
         if self.regs.pc.checked_add(2).is_none() {
-            log::warn!("PC reg overflow in prefetch_pump_force. The Mac may hang.");
+            // This may indicate an issue, but is also used in normal behaviour
+            // (e.g. m68k Linux or A/UX boot)
+            log::warn!(
+                "PC reg overflow in prefetch_pump_force. pc={:08X} fetch_addr={:08X} ssp={:08X}",
+                self.regs.pc,
+                fetch_addr,
+                self.regs.ssp(),
+            );
         }
         self.regs.pc = self.regs.pc.wrapping_add(2) & ADDRESS_MASK;
         Ok(())
@@ -2578,12 +2582,12 @@ where
             return self.raise_privilege_violation();
         }
 
-        // Now load the new SR value
         self.prefetch_pump()?;
         self.set_sr(new_sr);
 
-        // TODO STOP loads SR and then enters a stopped state waiting for an interrupt.
-        bail!("STOP #${:04X} instruction encountered", new_sr);
+        // TODO STOP ignored for now
+        // Enables keyboard input in A/UX
+        Ok(())
     }
 
     /// RTE
