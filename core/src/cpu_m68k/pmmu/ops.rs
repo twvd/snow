@@ -43,8 +43,7 @@ where
             Ok(())
         } else if extword & 0b1111_1101_1110_0000 == 0b0010_0000_0000_0000 {
             // PLOAD
-            self.read_ea_sz::<8>(instr, instr.get_op2())?;
-            Ok(())
+            self.op_pload(instr, extword)
         } else if extword & 0b1110_0001_1111_1111 == 0b0100_0000_0000_0000 {
             // PMOVE (format 1)
             self.op_pmove1(instr, extword)
@@ -269,17 +268,7 @@ where
     ) -> Result<()> {
         let extword = PtestExtword(extword);
 
-        let fc = if extword.fc() & 0b10000 != 0 {
-            extword.fc() & 0b1111
-        } else if extword.fc() & 0b11000 == 0b01000 {
-            self.regs.read_d(usize::from(extword.fc() & 0b111))
-        } else if extword.fc() & 0b11111 == 0 {
-            self.regs.sfc as u8
-        } else if extword.fc() & 0b11111 == 1 {
-            self.regs.dfc as u8
-        } else {
-            bail!("Invalid FC in PTEST: {:05b}", extword.fc());
-        } & FC_MASK;
+        let fc = self.decode_pmmu_fc(extword.fc(), "PTEST")?;
 
         let vaddr = self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
         let result = self.pmmu_translate_lookup::<true>(fc, vaddr, !extword.read());
@@ -293,5 +282,48 @@ where
             Err(_) => (),
         }
         Ok(())
+    }
+
+    /// PLOAD - load an ATC entry without raising on failure
+    pub(in crate::cpu_m68k) fn op_pload(
+        &mut self,
+        instr: &Instruction,
+        extword: Word,
+    ) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+
+        // PLOAD extension word is same as PTEST
+        let extword = PtestExtword(extword);
+
+        let fc = self.decode_pmmu_fc(extword.fc(), "PLOAD")?;
+        let vaddr = self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+        let writing = !extword.read();
+
+        // PLOAD does not affect PSR. The walk inside pmmu_translate may modify PSR
+        let saved_psr = self.regs.pmmu.psr;
+        // Ignore failures during the walk
+        let _ = self.pmmu_translate(fc, vaddr, writing);
+        self.regs.pmmu.psr = saved_psr;
+
+        Ok(())
+    }
+
+    /// Decodes the 5-bit FC field used by PTEST and PLOAD
+    fn decode_pmmu_fc(&self, fc_field: u8, op: &str) -> Result<u8> {
+        let fc = if fc_field & 0b10000 != 0 {
+            fc_field & 0b1111
+        } else if fc_field & 0b11000 == 0b01000 {
+            self.regs.read_d(usize::from(fc_field & 0b111))
+        } else if fc_field & 0b11111 == 0 {
+            self.regs.sfc as u8
+        } else if fc_field & 0b11111 == 1 {
+            self.regs.dfc as u8
+        } else {
+            bail!("Invalid FC in {}: {:05b}", op, fc_field);
+        };
+        Ok(fc & FC_MASK)
     }
 }
