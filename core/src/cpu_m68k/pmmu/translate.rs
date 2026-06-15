@@ -406,11 +406,15 @@ where
         let cache_key = ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize;
         if let Some(entry) = self.pmmu_atc[atc][cache_key] {
             if !supervisor && entry.s {
-                self.pmmu_record_pagefault(vaddr, writing);
+                self.pmmu_record_atc_fault(vaddr, writing, |psr| {
+                    psr.set_supervisor_violation(true);
+                });
                 return Err(Self::pmmu_pagefault_to_buserror(fc, vaddr, writing));
             }
             if writing && entry.wp {
-                self.pmmu_record_pagefault(vaddr, writing);
+                self.pmmu_record_atc_fault(vaddr, writing, |psr| {
+                    psr.set_write_protected(true);
+                });
                 return Err(Self::pmmu_pagefault_to_buserror(fc, vaddr, writing));
             }
             if writing && !entry.modified {
@@ -447,6 +451,29 @@ where
                 write: writing,
             });
         }
+    }
+
+    /// Set PSR for a failure during ATC lookup
+    fn pmmu_record_atc_fault(
+        &mut self,
+        vaddr: Address,
+        writing: bool,
+        set_cause: impl FnOnce(&mut RegisterPSR),
+    ) {
+        let leaf_level = [
+            self.regs.pmmu.tc.tia(),
+            self.regs.pmmu.tc.tib(),
+            self.regs.pmmu.tc.tic(),
+            self.regs.pmmu.tc.tid(),
+        ]
+        .iter()
+        .filter(|&&x| x > 0)
+        .count() as u8;
+        self.regs.pmmu.psr = RegisterPSR::default();
+        set_cause(&mut self.regs.pmmu.psr);
+        self.regs.pmmu.psr.set_level_number(leaf_level);
+        self.regs.pmmu.psr.set_bus_error(true);
+        self.pmmu_record_pagefault(vaddr, writing);
     }
 
     /// Builds the Group-0 BusError stack frame error value for a page fault.
@@ -503,20 +530,24 @@ where
                 }
                 Some(CpuError::Pagefault(cause)) => {
                     let cause = *cause;
-                    if PTEST {
-                        match cause {
-                            PagefaultCause::Invalid => self.regs.pmmu.psr.set_invalid(true),
-                            PagefaultCause::WriteProtected => {
-                                self.regs.pmmu.psr.set_write_protected(true)
-                            }
-                            PagefaultCause::SupervisorOnly => {
-                                self.regs.pmmu.psr.set_supervisor_violation(true)
-                            }
+                    if !PTEST {
+                        self.regs.pmmu.psr = RegisterPSR::default();
+                    }
+                    match cause {
+                        PagefaultCause::Invalid => self.regs.pmmu.psr.set_invalid(true),
+                        PagefaultCause::WriteProtected => {
+                            self.regs.pmmu.psr.set_write_protected(true);
                         }
-                        self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
+                        PagefaultCause::SupervisorOnly => {
+                            self.regs.pmmu.psr.set_supervisor_violation(true);
+                        }
+                    }
+                    self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
+                    if PTEST {
                         // Raise basic error rather than full bus error frame for PTEST
                         e
                     } else {
+                        self.regs.pmmu.psr.set_bus_error(true);
                         self.pmmu_record_pagefault(vaddr, writing);
                         Self::pmmu_pagefault_to_buserror(fc, vaddr, writing)
                     }
@@ -535,11 +566,15 @@ where
         // Enforce supervisor-only access on the resolved page
         let supervisor = fc & (1 << 2) != 0;
         if !supervisor && s {
+            if !PTEST {
+                self.regs.pmmu.psr = RegisterPSR::default();
+            }
+            self.regs.pmmu.psr.set_supervisor_violation(true);
+            self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
             if PTEST {
-                self.regs.pmmu.psr.set_supervisor_violation(true);
-                self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
                 return Err(anyhow!(CpuError::Pagefault(PagefaultCause::SupervisorOnly)));
             } else {
+                self.regs.pmmu.psr.set_bus_error(true);
                 self.pmmu_record_pagefault(vaddr, writing);
                 return Err(Self::pmmu_pagefault_to_buserror(fc, vaddr, writing));
             }
@@ -547,11 +582,15 @@ where
 
         // Enforce write-protect on the resolved page
         if writing && wp {
+            if !PTEST {
+                self.regs.pmmu.psr = RegisterPSR::default();
+            }
+            self.regs.pmmu.psr.set_write_protected(true);
+            self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
             if PTEST {
-                self.regs.pmmu.psr.set_write_protected(true);
-                self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
                 return Err(anyhow!(CpuError::Pagefault(PagefaultCause::WriteProtected)));
             } else {
+                self.regs.pmmu.psr.set_bus_error(true);
                 self.pmmu_record_pagefault(vaddr, writing);
                 return Err(Self::pmmu_pagefault_to_buserror(fc, vaddr, writing));
             }
