@@ -4,6 +4,7 @@
 
 use crate::bus::Address;
 use crate::bus::testbus::Testbus;
+use crate::cpu_m68k::cpu::PrefetchWord;
 use crate::cpu_m68k::instruction::Instruction;
 use crate::cpu_m68k::{CpuM68000, M68000, M68000_ADDRESS_MASK};
 use crate::types::{Long, Word};
@@ -111,13 +112,21 @@ fn test_illegal_exception(code: &[u16], exception_vector: Address, test_name: &s
 
     // First two handler words should have been prefetched
     assert_eq!(
-        cpu.prefetch.front().copied().unwrap_or(0),
+        cpu.prefetch
+            .front()
+            .copied()
+            .map(PrefetchWord::word)
+            .unwrap_or(0),
         handler_code[0],
         "{}: First handler word not prefetched",
         test_name
     );
     assert_eq!(
-        cpu.prefetch.get(1).copied().unwrap_or(0),
+        cpu.prefetch
+            .get(1)
+            .copied()
+            .map(PrefetchWord::word)
+            .unwrap_or(0),
         handler_code[1],
         "{}: Second handler word not prefetched",
         test_name
@@ -202,13 +211,21 @@ fn test_illegal_exception(code: &[u16], exception_vector: Address, test_name: &s
 
     // Prefetch cache should have been refilled following RTE
     assert_eq!(
-        cpu.prefetch.front().copied().unwrap_or(0),
+        cpu.prefetch
+            .front()
+            .copied()
+            .map(PrefetchWord::word)
+            .unwrap_or(0),
         code[0],
         "{}: Expect to be back on original illegal instruction after RTE.",
         test_name
     );
     assert_eq!(
-        cpu.prefetch.get(1).copied().unwrap_or(0),
+        cpu.prefetch
+            .get(1)
+            .copied()
+            .map(PrefetchWord::word)
+            .unwrap_or(0),
         code[1],
         "{}: Prefetch cache[1] has not been refilled following RTE.",
         test_name

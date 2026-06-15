@@ -72,6 +72,33 @@ pub(in crate::cpu_m68k) struct Group0Details {
     pub(in crate::cpu_m68k) size: usize,
 }
 
+/// An entry in the instruction prefetch queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PrefetchWord {
+    /// A successfully fetched instruction word.
+    Word(u16),
+    /// A prefetch read that bus-faulted; carries the faulting address. The bus
+    /// error is raised only when this entry is consumed; failed speculative
+    /// fetches are discarded upon branches.
+    Fault(Address),
+}
+
+impl PrefetchWord {
+    pub fn word(self) -> u16 {
+        match self {
+            Self::Word(w) => w,
+            Self::Fault(_) => 0,
+        }
+    }
+}
+
+fn prefetch_defer_fault(e: anyhow::Error, fetch_addr: Address) -> Result<PrefetchWord> {
+    match e.downcast_ref::<CpuError>() {
+        Some(CpuError::BusError(_)) => Ok(PrefetchWord::Fault(fetch_addr)),
+        _ => Err(e),
+    }
+}
+
 /// Reason a PMMU translation failed
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::cpu_m68k) enum PagefaultCause {
@@ -281,7 +308,7 @@ pub struct CpuM68k<
     pub last_bus_sync: Ticks,
 
     /// Current prefetch queue
-    pub prefetch: VecDeque<u16>,
+    pub prefetch: VecDeque<PrefetchWord>,
 
     /// Effective Address cache for this step
     pub(in crate::cpu_m68k) step_ea_addr: Option<Address>,
@@ -518,30 +545,40 @@ where
                 // Cache hit
                 self.history_current.icache_hit = true;
                 self.advance_cycles(1)?;
-                u16::from_be_bytes([
+                PrefetchWord::Word(u16::from_be_bytes([
                     self.icache_lines[cache_idx][cache_offset],
                     self.icache_lines[cache_idx][cache_offset + 1],
-                ])
+                ]))
             } else if !self.regs.cacr.f() {
                 // Cache miss, fill cache line
                 self.history_current.icache_miss = true;
 
                 let addr = fetch_addr & !ICACHE_OFFSET_MASK;
-                self.icache_lines[cache_idx] = self.read_ticks::<Long>(addr)?.to_be_bytes();
-                self.icache_tags[cache_idx] = cache_tag;
-
-                u16::from_be_bytes([
-                    self.icache_lines[cache_idx][cache_offset],
-                    self.icache_lines[cache_idx][cache_offset + 1],
-                ])
+                match self.read_ticks::<Long>(addr) {
+                    Ok(v) => {
+                        self.icache_lines[cache_idx] = v.to_be_bytes();
+                        self.icache_tags[cache_idx] = cache_tag;
+                        PrefetchWord::Word(u16::from_be_bytes([
+                            self.icache_lines[cache_idx][cache_offset],
+                            self.icache_lines[cache_idx][cache_offset + 1],
+                        ]))
+                    }
+                    Err(e) => prefetch_defer_fault(e, fetch_addr)?,
+                }
             } else {
                 // Cache miss and cache frozen, normal fetch
                 self.history_current.icache_miss = true;
-                self.read_ticks_program::<Word>(fetch_addr)?
+                match self.read_ticks_program::<Word>(fetch_addr) {
+                    Ok(w) => PrefetchWord::Word(w),
+                    Err(e) => prefetch_defer_fault(e, fetch_addr)?,
+                }
             }
         } else {
             // Cache disabled/not available
-            self.read_ticks_program::<Word>(fetch_addr)?
+            match self.read_ticks_program::<Word>(fetch_addr) {
+                Ok(w) => PrefetchWord::Word(w),
+                Err(e) => prefetch_defer_fault(e, fetch_addr)?,
+            }
         };
         self.prefetch.push_back(new_item);
 
@@ -567,14 +604,33 @@ where
         Ok(())
     }
 
+    /// Pops the next word from the prefetch queue, raising a deferred bus
+    /// error if the consumed entry is a fault marker.
+    fn prefetch_pop(&mut self) -> Result<Word> {
+        match self.prefetch.pop_front().unwrap() {
+            PrefetchWord::Word(v) => {
+                if self.history_enabled {
+                    self.history_current.push_raw(&v);
+                }
+                Ok(v)
+            }
+            PrefetchWord::Fault(address) => bail!(CpuError::BusError(Group0Details {
+                function_code: self.fc_program(),
+                ir: 0,
+                size: std::mem::size_of::<Word>(),
+                instruction: true,
+                read: true,
+                address,
+                // ??? is this filled correctly later?
+                start_pc: 0,
+            })),
+        }
+    }
+
     /// Fetches a 16-bit value, through the prefetch queue
     pub(in crate::cpu_m68k) fn fetch_pump(&mut self) -> Result<Word> {
         self.prefetch_pump_force()?;
-        let v = self.prefetch.pop_front().unwrap();
-        if self.history_enabled {
-            self.history_current.push_raw(&v);
-        }
-        Ok(v)
+        self.prefetch_pop()
     }
 
     /// Fetches a 16-bit value from prefetch queue
@@ -582,11 +638,7 @@ where
         if self.prefetch.is_empty() {
             self.prefetch_pump()?;
         }
-        let v = self.prefetch.pop_front().unwrap();
-        if self.history_enabled {
-            self.history_current.push_raw(&v);
-        }
-        Ok(v)
+        self.prefetch_pop()
     }
 
     pub fn sync_bus(&mut self) -> Result<()> {
@@ -627,7 +679,28 @@ where
 
         let start_cycles = self.cycles;
         let start_pc = self.regs.pc;
-        let opcode = self.fetch()?;
+        let opcode = match self.fetch() {
+            Ok(o) => o,
+            Err(e) => {
+                return match e.downcast_ref::<CpuError>() {
+                    // Produce deferred bus error now the fetch is no longer
+                    // speculative.
+                    Some(CpuError::BusError(ae)) => {
+                        let mut details = *ae;
+                        details.start_pc = start_pc;
+                        if self.history_enabled {
+                            self.history_current = Default::default();
+                        }
+                        self.raise_exception(
+                            ExceptionGroup::Group0,
+                            VECTOR_BUS_ERROR,
+                            Some(details),
+                        )
+                    }
+                    _ => Err(e),
+                };
+            }
+        };
 
         if self.decode_cache[opcode as usize].is_none() {
             match Instruction::try_decode(CPU_TYPE, opcode) {
@@ -701,7 +774,37 @@ where
                     let mut details = *ae;
                     details.ir = instr.data;
                     details.start_pc = start_pc;
-                    self.raise_exception(ExceptionGroup::Group0, VECTOR_BUS_ERROR, Some(details))?;
+                    if let Err(e) = self.raise_exception(
+                        ExceptionGroup::Group0,
+                        VECTOR_BUS_ERROR,
+                        Some(details),
+                    ) {
+                        let second = e.downcast_ref::<CpuError>().and_then(|c| match c {
+                            CpuError::BusError(d) | CpuError::AddressError(d) => Some(*d),
+                            _ => None,
+                        });
+                        log::error!(
+                            "DOUBLE FAULT stacking bus error: orig fault@{:08X} fc={} {}; \
+                             2nd fault@{:08X} fc={}; SSP={:08X} M={} S={} SR={:04X}; \
+                             TC.en={} TC.sre={} CRP={:016X} SRP={:016X} TT0={:08X} TT1={:08X}",
+                            details.address,
+                            details.function_code,
+                            if details.read { "r" } else { "w" },
+                            second.map_or(0, |d| d.address),
+                            second.map_or(0xFF, |d| d.function_code),
+                            *self.regs.ssp(),
+                            u8::from(self.regs.sr.m()),
+                            u8::from(self.regs.sr.supervisor()),
+                            self.regs.sr.sr(),
+                            self.regs.pmmu.tc.enable(),
+                            self.regs.pmmu.tc.sre(),
+                            self.regs.pmmu.crp.0,
+                            self.regs.pmmu.srp.0,
+                            self.regs.pmmu.tt[0].0,
+                            self.regs.pmmu.tt[1].0,
+                        );
+                        return Err(e);
+                    }
                 }
                 Some(CpuError::IllegalInstruction) => {
                     self.raise_illegal_instruction()?;
