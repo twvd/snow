@@ -4,6 +4,7 @@
 
 use crate::bus::Address;
 use crate::bus::testbus::Testbus;
+use crate::cpu_m68k::cpu::PrefetchWord;
 use crate::cpu_m68k::{CpuM68000, M68000_ADDRESS_MASK};
 use crate::types::{Long, Word};
 
@@ -92,7 +93,11 @@ fn test_privilege_violation_exception(code: &[u16], test_name: &str) {
 
     // Verify first program word was fetched (prefetch is already filled by testcpu)
     assert_eq!(
-        cpu.prefetch.front().copied().unwrap_or(0),
+        cpu.prefetch
+            .front()
+            .copied()
+            .map(PrefetchWord::word)
+            .unwrap_or(0),
         code[0],
         "{}: First program word was not fetched",
         test_name
@@ -141,13 +146,21 @@ fn test_privilege_violation_exception(code: &[u16], test_name: &str) {
 
     // First two handler words should have been prefetched
     assert_eq!(
-        cpu.prefetch.front().copied().unwrap_or(0),
+        cpu.prefetch
+            .front()
+            .copied()
+            .map(PrefetchWord::word)
+            .unwrap_or(0),
         handler_code[0],
         "{}: First handler word not prefetched",
         test_name
     );
     assert_eq!(
-        cpu.prefetch.get(1).copied().unwrap_or(0),
+        cpu.prefetch
+            .get(1)
+            .copied()
+            .map(PrefetchWord::word)
+            .unwrap_or(0),
         handler_code[1],
         "{}: Second handler word not prefetched",
         test_name
@@ -226,13 +239,21 @@ fn test_privilege_violation_exception(code: &[u16], test_name: &str) {
 
     // Prefetch cache should have been refilled following RTE
     assert_eq!(
-        cpu.prefetch.front().copied().unwrap_or(0),
+        cpu.prefetch
+            .front()
+            .copied()
+            .map(PrefetchWord::word)
+            .unwrap_or(0),
         code[2],
         "{}: Prefetch cache[0] has not been refilled following RTE.",
         test_name
     );
     assert_eq!(
-        cpu.prefetch.get(1).copied().unwrap_or(0),
+        cpu.prefetch
+            .get(1)
+            .copied()
+            .map(PrefetchWord::word)
+            .unwrap_or(0),
         code[3],
         "{}: Prefetch cache[1] has not been refilled following RTE.",
         test_name

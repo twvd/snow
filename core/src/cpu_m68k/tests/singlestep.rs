@@ -1,3 +1,4 @@
+use crate::cpu_m68k::cpu::PrefetchWord;
 use flate2::read::GzDecoder;
 use itertools::Itertools;
 use serde::Deserialize;
@@ -293,20 +294,25 @@ fn run_testcase(testcase: &Testcase, level: TestLevel) {
     let mut cpu = CpuM68000::new(bus);
     cpu.trace_mask = true;
     cpu.regs = regs_initial;
-    cpu.prefetch = testcase.initial.prefetch.into();
+    cpu.prefetch = testcase
+        .initial
+        .prefetch
+        .iter()
+        .copied()
+        .map(PrefetchWord::Word)
+        .collect();
     cpu.bus.reset_trace();
     if let Err(e) = cpu.step() {
         print_result(&cpu, testcase);
         panic!("Test {}: error: {:?}", testcase.name, e);
     }
 
-    if cpu.prefetch.make_contiguous() != testcase.r#final.prefetch {
+    let final_prefetch: Vec<u16> = cpu.prefetch.iter().map(|pw| pw.word()).collect();
+    if final_prefetch != testcase.r#final.prefetch {
         print_result(&cpu, testcase);
         panic!(
             "Test {}: prefetch: expected {:?}, saw {:?}",
-            testcase.name,
-            testcase.r#final.prefetch,
-            cpu.prefetch.make_contiguous()
+            testcase.name, testcase.r#final.prefetch, final_prefetch
         );
     }
 
