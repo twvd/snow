@@ -185,6 +185,7 @@ dispatch! {
 
     immutable_calls {
         fn model(&self) -> MacModel { bus.model() }
+        fn cpu_has_pmmu(&self) -> bool { has_pmmu() }
         fn cpu_cycles(&self) -> Ticks { cycles }
         fn cpu_breakpoints(&self) -> &[Breakpoint] { breakpoints() }
         fn cpu_get_step_over(&self) -> Option<Address> { get_step_over() }
@@ -594,6 +595,7 @@ impl Emulator {
                     writeback_enabled: self.config.swim().drives[i].writeback_enabled,
                 }),
                 model: self.model,
+                has_pmmu: self.config.cpu_has_pmmu(),
                 scsi: core::array::from_fn(|i| {
                     self.config
                         .scsi()

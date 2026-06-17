@@ -3693,8 +3693,11 @@ impl eframe::App for SnowGui {
                     .open(&mut self.workspace.registers_open)
                     .show(ctx, |ui| {
                         ui.horizontal_top(|ui| {
-                            self.registers
-                                .draw(ui, self.emu.get_model().unwrap().cpu_type());
+                            self.registers.draw(
+                                ui,
+                                self.emu.get_model().unwrap().cpu_type(),
+                                self.emu.has_pmmu(),
+                            );
                         });
                     });
                 if let Some((reg, value)) = self.registers.take_edited_register() {

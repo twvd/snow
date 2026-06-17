@@ -129,6 +129,7 @@ pub struct EmulatorStatus {
 
     pub fdd: [FddStatus; 3],
     pub model: MacModel,
+    pub has_pmmu: bool,
     pub speed: EmulatorSpeed,
     pub effective_speed: f64,
     pub scsi: [Option<ScsiTargetStatus>; 7],
