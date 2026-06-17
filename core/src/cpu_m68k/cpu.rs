@@ -559,7 +559,7 @@ where
                 self.history_current.icache_miss = true;
 
                 let addr = fetch_addr & !ICACHE_OFFSET_MASK;
-                match self.read_ticks::<Long>(addr) {
+                match self.read_ticks_program::<Long>(addr) {
                     Ok(v) => {
                         self.icache_lines[cache_idx] = v.to_be_bytes();
                         self.icache_tags[cache_idx] = cache_tag;
