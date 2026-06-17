@@ -971,6 +971,11 @@ impl EmulatorState {
         Some(status.model)
     }
 
+    /// Returns true if the emulated CPU has a (paged) memory management unit
+    pub fn has_pmmu(&self) -> bool {
+        self.status.as_ref().is_some_and(|s| s.has_pmmu)
+    }
+
     /// Returns current disassembly listing
     pub fn get_disassembly(&self) -> &DisassemblyListing {
         &self.disasm_code

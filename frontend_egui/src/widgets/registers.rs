@@ -1,6 +1,6 @@
 use eframe::egui;
 use snow_core::cpu_m68k::regs::{Register, RegisterFile};
-use snow_core::cpu_m68k::{CpuM68kType, M68010, M68020};
+use snow_core::cpu_m68k::{CpuM68kType, M68010, M68020, M68030};
 use snow_core::types::Long;
 
 use crate::uniform::UniformMethods;
@@ -9,6 +9,7 @@ use crate::uniform::UniformMethods;
 enum RegisterTab {
     Cpu,
     Fpu,
+    Pmmu,
 }
 
 /// egui widget to display Motorola 68000 register state
@@ -46,12 +47,13 @@ impl RegistersWidget {
         self.edited.take()
     }
 
-    pub fn draw(&mut self, ui: &mut egui::Ui, cpu_type: CpuM68kType) {
+    pub fn draw(&mut self, ui: &mut egui::Ui, cpu_type: CpuM68kType, has_pmmu: bool) {
         ui.vertical(|ui| {
             // Tab selection
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.selected_tab, RegisterTab::Cpu, "CPU");
                 ui.selectable_value(&mut self.selected_tab, RegisterTab::Fpu, "FPU");
+                ui.selectable_value(&mut self.selected_tab, RegisterTab::Pmmu, "PMMU");
             });
 
             ui.separator();
@@ -61,6 +63,9 @@ impl RegistersWidget {
             match self.selected_tab {
                 RegisterTab::Cpu => self.draw_cpu_registers(ui, cpu_type, available_height),
                 RegisterTab::Fpu => self.draw_fpu_registers(ui, cpu_type, available_height),
+                RegisterTab::Pmmu => {
+                    self.draw_pmmu_registers(ui, cpu_type, has_pmmu, available_height);
+                }
             }
         });
     }
@@ -430,6 +435,158 @@ impl RegistersWidget {
                 register_row("FPCR", Register::FPCR, &|r: &RegisterFile| r.fpu.fpcr.0);
                 register_row("FPSR", Register::FPSR, &|r: &RegisterFile| r.fpu.fpsr.0);
                 register_row("FPIAR", Register::FPIAR, &|r: &RegisterFile| r.fpu.fpiar);
+            });
+    }
+
+    fn draw_pmmu_registers(
+        &self,
+        ui: &mut egui::Ui,
+        cpu_type: CpuM68kType,
+        has_pmmu: bool,
+        available_height: f32,
+    ) {
+        use egui_extras::{Column, TableBuilder};
+
+        if !has_pmmu {
+            ui.centered_and_justified(|ui| {
+                ui.label("PMMU not installed");
+            });
+            return;
+        }
+
+        let pmmu = &self.regs.pmmu;
+        let last = &self.lastregs.pmmu;
+
+        TableBuilder::new(ui)
+            .max_scroll_height(available_height)
+            .column(Column::exact(50.0))
+            .column(Column::remainder().at_least(150.0))
+            .striped(true)
+            .body(|mut body| {
+                // No edit support here (TODO?)
+                macro_rules! value_row {
+                    ($name:expr, $hex:expr, $changed:expr) => {{
+                        let color = if $changed {
+                            Self::COLOR_CHANGED
+                        } else {
+                            Self::COLOR_VALUE
+                        };
+                        body.row(20.0, |mut row| {
+                            row.col(|ui| {
+                                ui.label(egui::RichText::new($name));
+                            });
+                            row.col(|ui| {
+                                ui.label(
+                                    egui::RichText::new($hex)
+                                        .family(egui::FontFamily::Monospace)
+                                        .color(color),
+                                );
+                            });
+                        });
+                    }};
+                }
+
+                // Root pointers (64-bit)
+                value_row!("CRP", format!("{:016X}", pmmu.crp.0), pmmu.crp != last.crp);
+                value_row!("SRP", format!("{:016X}", pmmu.srp.0), pmmu.srp != last.srp);
+                value_row!("DRP", format!("{:016X}", pmmu.drp.0), pmmu.drp != last.drp);
+
+                // Translation control (32-bit)
+                value_row!("TC", format!("{:08X}", pmmu.tc.0), pmmu.tc != last.tc);
+
+                // Transparent translation registers (32-bit)
+                if cpu_type >= M68030 {
+                    value_row!(
+                        "TT0",
+                        format!("{:08X}", pmmu.tt[0].0),
+                        pmmu.tt[0] != last.tt[0]
+                    );
+                    value_row!(
+                        "TT1",
+                        format!("{:08X}", pmmu.tt[1].0),
+                        pmmu.tt[1] != last.tt[1]
+                    );
+                }
+
+                value_row!("AC", format!("{:04X}", pmmu.ac.0), pmmu.ac != last.ac);
+                value_row!("CAL", format!("{:02X}", pmmu.cal.0), pmmu.cal != last.cal);
+                value_row!("VAL", format!("{:02X}", pmmu.val.0), pmmu.val != last.val);
+                value_row!("SCC", format!("{:02X}", pmmu.scc), pmmu.scc != last.scc);
+                value_row!(
+                    "PCSR",
+                    format!("{:04X}", pmmu.pcsr.0),
+                    pmmu.pcsr != last.pcsr
+                );
+
+                // Separator
+                body.row(10.0, |mut row| {
+                    row.col(|_| {});
+                    row.col(|_| {});
+                });
+
+                value_row!("PSR", format!("{:04X}", pmmu.psr.0), pmmu.psr != last.psr);
+                body.row(20.0, |mut row| {
+                    row.col(|_| {});
+                    row.col(|ui| {
+                        ui.vertical(|ui| {
+                            let mut flag = |n: &str, v: bool| {
+                                ui.label(format!(
+                                    "{} {}",
+                                    if v {
+                                        egui_material_icons::icons::ICON_CHECK_BOX
+                                    } else {
+                                        egui_material_icons::icons::ICON_CHECK_BOX_OUTLINE_BLANK
+                                    },
+                                    n
+                                ));
+                            };
+                            flag("Bus error", pmmu.psr.bus_error());
+                            flag("Limit violation", pmmu.psr.limit_violation());
+                            flag("Supervisor violation", pmmu.psr.supervisor_violation());
+                            flag("Access level violation", pmmu.psr.access_level_violatiom());
+                            flag("Write protected", pmmu.psr.write_protected());
+                            flag("Invalid", pmmu.psr.invalid());
+                            flag("Modified", pmmu.psr.modified());
+                            flag("Gate", pmmu.psr.gate());
+                            flag("Globally shared", pmmu.psr.globally_shared());
+                            ui.label(format!("Level number: {}", pmmu.psr.level_number()));
+                        });
+                    });
+                });
+
+                body.row(10.0, |mut row| {
+                    row.col(|_| {});
+                    row.col(|_| {});
+                });
+                body.row(20.0, |mut row| {
+                    row.col(|ui| {
+                        ui.label(egui::RichText::new("TC"));
+                    });
+                    row.col(|ui| {
+                        ui.vertical(|ui| {
+                            let mut flag = |n: &str, v: bool| {
+                                ui.label(format!(
+                                    "{} {}",
+                                    if v {
+                                        egui_material_icons::icons::ICON_CHECK_BOX
+                                    } else {
+                                        egui_material_icons::icons::ICON_CHECK_BOX_OUTLINE_BLANK
+                                    },
+                                    n
+                                ));
+                            };
+                            flag("Enabled", pmmu.tc.enable());
+                            flag("Supervisor root pointer", pmmu.tc.sre());
+                            flag("Function code lookup", pmmu.tc.fcl());
+                            ui.label(format!(
+                                "Page size: {} ({})",
+                                pmmu.tc.ps(),
+                                1 << pmmu.tc.ps()
+                            ));
+                            ui.label(format!("Initial shift: {}", pmmu.tc.is()));
+                        });
+                    });
+                });
             });
     }
 }

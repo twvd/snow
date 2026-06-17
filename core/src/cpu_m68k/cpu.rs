@@ -429,6 +429,11 @@ where
         CPU_TYPE
     }
 
+    /// Returns true if this CPU has a (paged) memory management unit.
+    pub const fn has_pmmu(&self) -> bool {
+        PMMU
+    }
+
     /// Resets the CPU, loads reset vector and initial SP
     pub fn reset(&mut self) -> Result<()> {
         self.regs = RegisterFile::new();
