@@ -186,7 +186,7 @@ fn read_formatted_toc(handle: HANDLE) -> Result<(Vec<SessionInfo>, Vec<TrackInfo
         vec![SessionInfo {
             number: 1,
             disc_type: 0x00,
-            leadin: 0,
+            start: 0,
             leadout,
         }],
         tracks,
@@ -255,7 +255,7 @@ fn read_full_toc(handle: HANDLE) -> Result<(Vec<SessionInfo>, Vec<TrackInfo>)> {
 
     let mut sessions = vec![];
     let mut tracks = vec![];
-    let mut next_leadin = 0;
+    let mut next_start = 0;
 
     for (i, desc) in descriptors.iter().enumerate() {
         let adr = desc._bitfield >> 4;
@@ -281,10 +281,10 @@ fn read_full_toc(handle: HANDLE) -> Result<(Vec<SessionInfo>, Vec<TrackInfo>)> {
                 sessions.push(SessionInfo {
                     number: (sessions.len() + 1).try_into().unwrap(),
                     disc_type: 0x00,
-                    leadin: next_leadin,
+                    start: next_start,
                     leadout,
                 });
-                next_leadin = leadout;
+                next_start = leadout;
             }
         }
 
@@ -304,13 +304,13 @@ fn read_full_toc(handle: HANDLE) -> Result<(Vec<SessionInfo>, Vec<TrackInfo>)> {
             0xA2 => {
                 // Start position of Lead-out
                 session.leadout = Msf::from_bytes(desc.Msf).to_sector();
-                if next_leadin < session.leadout {
-                    next_leadin = session.leadout;
+                if next_start < session.leadout {
+                    next_start = session.leadout;
                 }
             }
             0xB0 => {
                 // Start time of next possible program
-                next_leadin = Msf::from_bytes(desc.MsfExtra).to_sector();
+                next_start = Msf::from_bytes(desc.MsfExtra).to_sector();
             }
             0xC0 => (), // Start time of the first Lead-in Area of the disc (ignored)
             1..=99 => {

@@ -195,10 +195,12 @@ struct SectorMapBuilder {
 impl SectorMapBuilder {
     fn new() -> Self {
         // Data files always start at time 00:02:00 (sector 150).
-        // This means there are 150 sectors located in the lead-in area which
-        // cannot be specified by the .bin/.cue format.
-        // These sectors are usually empty, but sometimes they contain various
-        // data such as CD-TEXT information.
+        // The preceding 150 sectors form the session pre-gap: sectors that are
+        // filled with blank data and only exist so the drive can reliably find
+        // the start of the data. These sectors cannot be represented in the
+        // .bin/.cue format.
+        // The session pre-gap is separate from the lead-in, which contains the
+        // table of contents and CD-TEXT.
         Self {
             abs_cursor: LBA_START_SECTOR,
             file_cursor: None,
@@ -603,7 +605,7 @@ impl CuesheetCdromBackend {
         let mut sessions = vec![SessionInfo {
             number: 1,
             disc_type: 0x00,
-            leadin: 0,
+            start: 0,
             leadout: LBA_START_SECTOR,
         }];
         let mut tracks = vec![];
@@ -693,9 +695,9 @@ impl CuesheetCdromBackend {
                     }
 
                     if !session_has_tracks {
-                        // Set the lead-in to 150 sectors before the first track
-                        // FIXME: lead-in might be set incorrectly if pregaps/postgaps are present...
-                        sessions.last_mut().unwrap().leadin =
+                        // Set the start to 150 sectors before the first track
+                        // FIXME: start might be set incorrectly if pregaps/postgaps are present...
+                        sessions.last_mut().unwrap().start =
                             sector_map.abs_cursor.saturating_sub(LBA_START_SECTOR);
                     }
 
@@ -733,7 +735,7 @@ impl CuesheetCdromBackend {
                                     sessions.push(SessionInfo {
                                         number: new_session,
                                         disc_type: 0x00,
-                                        leadin: last_session.leadout,
+                                        start: last_session.leadout,
                                         leadout: last_session.leadout,
                                     });
 
@@ -881,8 +883,8 @@ impl CdromBackend for CuesheetCdromBackend {
     }
 
     fn byte_len(&self) -> usize {
-        // To find the capacity, treat each sector (except the lead-in) as a block
-        // containing 2048 bytes.
+        // To find the capacity, treat each sector (except the session pre-gap) as a
+        // block containing 2048 bytes.
         // However, only sectors in a Data track in Mode 1 or Mode 2 Form 1 are readable
         // via `read_bytes`.
         let final_leadout = self

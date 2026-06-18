@@ -35,11 +35,8 @@ use super::{
 
 // CD-ROM protocol Documentation:
 //
-// [MMC3]: <https://13thmonkey.org/documentation/SCSI/mmc3r10g.pdf>
 // [MMC4]: <https://13thmonkey.org/documentation/SCSI/mmc4r05a.pdf>
-// [MMC6]: <https://13thmonkey.org/documentation/SCSI/mmc6r02g.pdf>
-// [PIONEER]: <https://bitsavers.trailing-edge.com/pdf/pioneer/cdrom/OB-U0077C_CD-ROM_SCSI-2_Command_Set_V3.1_19970626.pdf>
-// [MBWIKI]: <https://wiki.musicbrainz.org/Disc_ID_Calculation>
+// [CDU541]: <https://bitsavers.trailing-edge.com/pdf/sony/cdrom/CDU541-25_AppleCD_150/Sony_CDU-541_SCSI_Interface_Manual_Mar1990.pdf>
 
 const RAW_SECTOR_LEN: usize = 2352;
 const TRACK_LEADOUT: u8 = 0xAA;
@@ -141,8 +138,8 @@ pub struct SessionInfo {
     number: u8,
     /// Value to put in Disc Type field ([MMC4] Table 448)
     disc_type: u8,
-    /// Absolute sector number of lead-in
-    leadin: u32,
+    /// Absolute sector number of the start of the program area
+    start: u32,
     /// Absolute sector number of lead-out
     leadout: u32,
 }
@@ -551,7 +548,7 @@ impl ScsiTargetCdrom {
                             result.extend_from_slice(
                                 // FIXME: It's unclear whether this should be BCD or binary.
                                 // It probably makes no difference.
-                                &Msf::from_sector(next_session.leadin)?.to_bytes(),
+                                &Msf::from_sector(next_session.start)?.to_bytes(),
                             ); // Start time of next possible program
                             result.push(2); // # of pointers in Mode 5
                             result.extend_from_slice(
@@ -567,10 +564,9 @@ impl ScsiTargetCdrom {
                             result.push(0);
                             result.push(0);
                             result.push(0); // Zero
-                            // FIXME: Weird Al actually puts 95:00:00 here? where does that come from?
-                            result.extend_from_slice(
-                                &Msf::from_sector(sessions.first().unwrap().leadin)?.to_bcd_bytes(),
-                            ); // Start time of the first Lead-in Area of the disc)
+                            // Weird Al (and other discs) put timecode 95:00:00 here, indicating the Start of the pre-groove.
+                            // (see [MMC4] 4.2.4.9.2 ATIP Time Codes)
+                            result.extend_from_slice(&Msf::new(95, 0, 0).to_bcd_bytes()); // Start time of the first Lead-in Area of the disc)
                         }
 
                         session_no = track.session;
@@ -678,16 +674,16 @@ impl ScsiTargetCdrom {
         let curr_session = sessions
             .iter()
             .rev()
-            .find(|s| s.leadin <= self.audio_pos)
+            .find(|s| s.start <= self.audio_pos)
             .unwrap();
-        if self.audio_pos < curr_session.leadin + LBA_START_SECTOR {
-            // Audio position is in the leadin; skip to the program area
-            self.audio_pos = curr_session.leadin + LBA_START_SECTOR;
+        if self.audio_pos < curr_session.start + LBA_START_SECTOR {
+            // Audio position is in the session pregap; skip to the program
+            self.audio_pos = curr_session.start + LBA_START_SECTOR;
         } else if self.audio_pos >= curr_session.leadout {
             // Audio position is past the leadout; skip to the next session
             let next_session = sessions.get((curr_session.number as usize + 1).saturating_sub(1));
             if let Some(next_session) = next_session {
-                self.audio_pos = next_session.leadin + LBA_START_SECTOR;
+                self.audio_pos = next_session.start + LBA_START_SECTOR;
             } else {
                 // There is no next session; stop the audio
                 self.audio_pos = self.audio_stop;
