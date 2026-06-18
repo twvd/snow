@@ -22,7 +22,7 @@ impl IsoCdromBackend {
             session: SessionInfo {
                 number: 1,
                 disc_type: 0x00,
-                leadin: 0,
+                start: 0,
                 leadout: LBA_START_SECTOR + sector_count,
             },
             track: TrackInfo {
