@@ -120,22 +120,22 @@ where
 
         // Below converts from BE -> LE on the fly
         for a in 0..len {
+            let logical_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
             let byte_addr = if PHYSICAL || !PMMU {
-                addr.wrapping_add(a as Address) & ADDRESS_MASK
+                logical_addr
             } else {
-                self.pmmu_translate(fc, addr.wrapping_add(a as Address), false)
-                    .map_err(|e| match e.downcast_ref() {
+                self.pmmu_translate(fc, logical_addr, false).map_err(|e| {
+                    match e.downcast_ref() {
                         Some(CpuError::BusError(details)) => {
                             anyhow!(CpuError::BusError(Group0Details {
-                                // Fill in the size of the faulting access
                                 size: std::mem::size_of::<T>(),
-                                // Replace the BYTE address with the original
-                                address: addr,
+                                address: logical_addr,
                                 ..*details
                             }))
                         }
                         _ => e,
-                    })?
+                    }
+                })?
             };
             let b: T = loop {
                 match self.bus.read(byte_addr) {
@@ -305,22 +305,22 @@ where
             TORDER_LOWHIGH => {
                 let mut val: Long = value.to_be().into();
                 for a in 0..len {
+                    let logical_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
                     let byte_addr = if PHYSICAL || !PMMU {
-                        addr.wrapping_add(a as Address) & ADDRESS_MASK
+                        logical_addr
                     } else {
-                        self.pmmu_translate(fc, addr.wrapping_add(a as Address), true)
-                            .map_err(|e| match e.downcast_ref() {
+                        self.pmmu_translate(fc, logical_addr, true).map_err(|e| {
+                            match e.downcast_ref() {
                                 Some(CpuError::BusError(details)) => {
                                     anyhow!(CpuError::BusError(Group0Details {
-                                        // Fill in the size of the faulting access
                                         size: std::mem::size_of::<T>(),
-                                        // Replace the BYTE address with the original
-                                        address: addr,
+                                        address: logical_addr,
                                         ..*details
                                     }))
                                 }
                                 _ => e,
-                            })?
+                            }
+                        })?
                     };
                     let b = val as u8;
                     val >>= 8;
@@ -378,22 +378,22 @@ where
             TORDER_HIGHLOW => {
                 let mut val: Long = value.into();
                 for a in (0..len).rev() {
+                    let logical_addr = addr.wrapping_add(a as Address) & ADDRESS_MASK;
                     let byte_addr = if PHYSICAL || !PMMU {
-                        addr.wrapping_add(a as Address) & ADDRESS_MASK
+                        logical_addr
                     } else {
-                        self.pmmu_translate(fc, addr.wrapping_add(a as Address), true)
-                            .map_err(|e| match e.downcast_ref() {
+                        self.pmmu_translate(fc, logical_addr, true).map_err(|e| {
+                            match e.downcast_ref() {
                                 Some(CpuError::BusError(details)) => {
                                     anyhow!(CpuError::BusError(Group0Details {
-                                        // Fill in the size of the faulting access
                                         size: std::mem::size_of::<T>(),
-                                        // Replace the BYTE address with the original
-                                        address: addr,
+                                        address: logical_addr,
                                         ..*details
                                     }))
                                 }
                                 _ => e,
-                            })?
+                            }
+                        })?
                     };
                     let b = val as u8;
                     val >>= 8;
