@@ -2383,9 +2383,11 @@ where
 
         let value = self.regs.sr.sr();
 
-        // Discarded read, prefetch
-        self.read_ea::<Word>(instr, instr.get_op2())?;
-        self.prefetch_pump()?;
+        if CPU_TYPE == M68000 {
+            // Discarded read, prefetch
+            self.read_ea::<Word>(instr, instr.get_op2())?;
+            self.prefetch_pump()?;
+        }
 
         self.write_ea(instr, instr.get_op2(), value)?;
 
@@ -2407,9 +2409,11 @@ where
         }
         let value: Word = self.read_ea(instr, instr.get_op2())?;
 
-        // Idle cycles and discarded read
-        self.advance_cycles(4)?;
-        self.read_ticks::<Word>(self.regs.pc.wrapping_add(2) & ADDRESS_MASK)?;
+        if CPU_TYPE == M68000 {
+            // Idle cycles and discarded read
+            self.advance_cycles(4)?;
+            self.read_ticks::<Word>(self.regs.pc.wrapping_add(2) & ADDRESS_MASK)?;
+        }
 
         self.set_sr(value);
         Ok(())
@@ -2421,8 +2425,10 @@ where
 
         // Idle cycles + discarded read
         self.advance_cycles(4)?;
-        self.read_ticks::<Word>(self.regs.pc.wrapping_add(2) & ADDRESS_MASK)?;
-        self.prefetch_pump()?;
+        if CPU_TYPE == M68000 {
+            self.read_ticks::<Word>(self.regs.pc.wrapping_add(2) & ADDRESS_MASK)?;
+            self.prefetch_pump()?;
+        }
 
         self.regs.sr.set_ccr(value as Byte);
         Ok(())
@@ -2455,7 +2461,6 @@ where
         }
         let value: Address = self.regs.usp;
 
-        // Idle cycles and discarded read
         self.regs.write_a(instr.get_op2(), value);
         Ok(())
     }
@@ -2866,11 +2871,13 @@ where
             }
         }
 
-        // Discarded read
         if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
             addr = addr.wrapping_sub(std::mem::size_of::<T>() as Address);
         }
-        self.read_ticks::<Word>(addr)?;
+        // Discarded read
+        if CPU_TYPE == M68000 {
+            self.read_ticks::<Word>(addr)?;
+        }
 
         // Update the EA An register with the final address on predec/postinc
         match instr.get_addr_mode()? {
@@ -3005,10 +3012,11 @@ where
 
     /// Scc
     fn op_scc(&mut self, instr: &Instruction) -> Result<()> {
-        // Discarded read
-        self.read_ea::<Byte>(instr, instr.get_op2())?;
-
-        self.prefetch_pump()?;
+        if CPU_TYPE == M68000 {
+            // Discarded read
+            self.read_ea::<Byte>(instr, instr.get_op2())?;
+            self.prefetch_pump()?;
+        }
 
         let result = if self.cc(instr.get_cc()) {
             if instr.get_addr_mode()? == AddressingMode::DataRegister {
