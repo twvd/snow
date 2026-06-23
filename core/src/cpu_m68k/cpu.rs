@@ -2467,9 +2467,10 @@ where
 
     /// CLR
     fn op_clr<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
-        self.read_ea::<T>(instr, instr.get_op2())?;
-
-        self.prefetch_pump()?;
+        if CPU_TYPE == M68000 {
+            self.read_ea::<T>(instr, instr.get_op2())?;
+            self.prefetch_pump()?;
+        }
 
         self.regs.sr.set_n(false);
         self.regs.sr.set_v(false);
