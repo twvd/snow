@@ -1624,7 +1624,9 @@ where
 
         // Idle cycles and dummy read
         self.advance_cycles(8)?;
-        self.read_ticks::<Word>(self.regs.pc.wrapping_add(2) & ADDRESS_MASK)?;
+        if CPU_TYPE == M68000 {
+            self.read_ticks::<Word>(self.regs.pc.wrapping_add(2) & ADDRESS_MASK)?;
+        }
         self.prefetch_pump()?;
 
         Ok(())
@@ -1651,7 +1653,9 @@ where
 
         // Idle cycles and dummy read
         self.advance_cycles(8)?;
-        self.read_ticks::<Word>(self.regs.pc.wrapping_add(2) & ADDRESS_MASK)?;
+        if CPU_TYPE == M68000 {
+            self.read_ticks::<Word>(self.regs.pc.wrapping_add(2) & ADDRESS_MASK)?;
+        }
         self.prefetch_pump()?;
 
         Ok(())
