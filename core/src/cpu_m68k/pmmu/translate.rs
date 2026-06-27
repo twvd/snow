@@ -138,11 +138,8 @@ impl<
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
-    pub(in crate::cpu_m68k) fn pmmu_cache_invalidate(&mut self) {
-        if !self.regs.pmmu.tc.enable() {
-            return;
-        }
-
+    /// Enlarges ATC size if needed by configuration
+    pub(in crate::cpu_m68k) fn pmmu_cache_ensure(&mut self) {
         let cache_size =
             (Address::MAX >> (self.regs.pmmu.tc.is() + self.regs.pmmu.tc.ps() as Address)) as usize
                 + 1;
@@ -152,6 +149,10 @@ where
                 .iter_mut()
                 .for_each(|atc| atc.resize(cache_size, None));
         }
+    }
+
+    /// Flushes complete ATC
+    pub(in crate::cpu_m68k) fn pmmu_cache_invalidate(&mut self) {
         self.pmmu_atc.iter_mut().for_each(|atc| atc.fill(None));
     }
 
