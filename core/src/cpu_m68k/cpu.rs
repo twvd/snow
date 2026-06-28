@@ -360,9 +360,9 @@ pub struct CpuM68k<
     /// The caching method used is a one-dimensional lookup table where the
     /// index is the page, allowing for O(1) lookup. The cache is expanded on
     /// the fly (never shrunk).
-    #[serde(skip)]
-    pub(in crate::cpu_m68k) pmmu_atc:
-        [Vec<Option<crate::cpu_m68k::pmmu::translate::PmmuAtcEntry>>; 2],
+    #[serde(with = "crate::cpu_m68k::pmmu::translate::atc_serde")]
+    pub(in crate::cpu_m68k) pmmu_atc: [Vec<Option<crate::cpu_m68k::pmmu::translate::PmmuAtcEntry>>;
+        crate::cpu_m68k::pmmu::translate::PMMU_ATCS],
 
     /// 68020+ I-cache lines
     #[serde(with = "BigArray")]
