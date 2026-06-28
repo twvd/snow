@@ -153,7 +153,7 @@ bitfield! {
         pub sg: bool @ 41,
         pub wal: u8 @ 42..=44,
         pub ral: u8 @ 45..=47,
-        pub limit: u8 @ 56..=62,
+        pub limit: u16 @ 48..=62,
         pub lu: bool @ 63,
     }
 }
@@ -188,7 +188,7 @@ bitfield! {
         pub sg: bool @ 41,
         pub wal: u8 @ 42..=44,
         pub ral: u8 @ 45..=47,
-        pub limit: u8 @ 56..=62,
+        pub limit: u16 @ 48..=62,
         pub lu: bool @ 63,
     }
 }
@@ -205,6 +205,10 @@ where
 {
     /// Enlarges ATC size if needed by configuration
     pub(in crate::cpu_m68k) fn pmmu_cache_ensure(&mut self) {
+        if !self.regs.pmmu.tc.enable() {
+            return;
+        }
+
         let cache_size =
             (Address::MAX >> (self.regs.pmmu.tc.is() + self.regs.pmmu.tc.ps() as Address)) as usize
                 + 1;
@@ -429,7 +433,7 @@ where
                     child_dt,
                     // Long table descriptors carry a limit constraining the
                     // child table's index
-                    Some((entry.limit() as u16, entry.lu())),
+                    Some((entry.limit(), entry.lu())),
                     tis,
                     used_bits,
                     // WP is inherited from any ancestor table
