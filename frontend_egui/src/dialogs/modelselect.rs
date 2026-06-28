@@ -440,7 +440,46 @@ impl ModelSelectionDialog {
                     }
                     ui.end_row();
                 }
+                if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
+                    ui.checkbox(&mut self.init_args.pmmu_enabled, "Enable 68851 PMMU");
+                }
             });
+
+            ui.separator();
+            egui::Grid::new("model_grid_mouse").show(ui, |ui| {
+                ui.label("Mouse emulation:");
+                egui::ComboBox::new(egui::Id::new("mouse_mode"), "")
+                    .selected_text(format!("{}", self.init_args.mouse_mode))
+                    .show_ui(ui, |ui| {
+                        for v in MouseMode::iter() {
+                            ui.selectable_value(&mut self.init_args.mouse_mode, v, v.to_string());
+                        }
+                    });
+                ui.end_row();
+            });
+            if self.init_args.mouse_mode == MouseMode::Absolute {
+                ui.add_space(4.0);
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(25, 38, 55))
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        egui::Color32::from_rgb(70, 100, 140),
+                    ))
+                    .inner_margin(egui::Margin::same(8))
+                    .corner_radius(4.0)
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} Absolute mode relies on memory patching and only works with \
+                                 standard Macintosh System software. It will not work with A/UX \
+                                 or other non-standard operating systems; use relative mode for \
+                                 those.",
+                                egui_material_icons::icons::ICON_INFO
+                            ))
+                            .color(egui::Color32::from_rgb(150, 190, 230)),
+                        );
+                    });
+            }
 
             ui.collapsing("Advanced", |ui| {
                 ui.group(|ui| {
@@ -468,20 +507,6 @@ impl ModelSelectionDialog {
                 });
                 ui.group(|ui| {
                     ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.label("Mouse emulation:");
-                            egui::ComboBox::new(egui::Id::new("mouse_mode"), "")
-                                .selected_text(format!("{}", self.init_args.mouse_mode))
-                                .show_ui(ui, |ui| {
-                                    for v in MouseMode::iter() {
-                                        ui.selectable_value(
-                                            &mut self.init_args.mouse_mode,
-                                            v,
-                                            v.to_string(),
-                                        );
-                                    }
-                                });
-                        });
                         if matches!(
                             self.selected_model,
                             MacModel::Early128K | MacModel::Early512K
@@ -489,12 +514,6 @@ impl ModelSelectionDialog {
                             ui.checkbox(
                                 &mut self.early_800k,
                                 "Use 800K floppy drive on Macintosh 128K/512K",
-                            );
-                        }
-                        if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
-                            ui.checkbox(
-                                &mut self.init_args.pmmu_enabled,
-                                "Enable PMMU (experimental!)",
                             );
                         }
                         ui.checkbox(
