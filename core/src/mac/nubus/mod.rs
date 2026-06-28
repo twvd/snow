@@ -2,6 +2,7 @@ pub mod mdc12;
 pub mod se30video;
 
 use crate::debuggable::Debuggable;
+use crate::emulator::EmuContext;
 use crate::renderer::Renderer;
 use crate::tickable::{Tickable, Ticks};
 use mdc12::Mdc12;
@@ -63,14 +64,14 @@ where
     }
 }
 
-impl<TRenderer> Tickable for NubusCard<TRenderer>
+impl<TRenderer> Tickable<&dyn EmuContext> for NubusCard<TRenderer>
 where
     TRenderer: Renderer,
 {
-    fn tick(&mut self, ticks: Ticks, _: ()) -> anyhow::Result<Ticks> {
+    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> anyhow::Result<Ticks> {
         match self {
-            Self::MDC12(inner) => inner.tick(ticks, ()),
-            Self::SE30Video(inner) => inner.tick(ticks, ()),
+            Self::MDC12(inner) => inner.tick(ticks, ctx),
+            Self::SE30Video(inner) => inner.tick(ticks, ctx),
         }
     }
 }
