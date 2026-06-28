@@ -1,0 +1,1774 @@
+BaseOfROM 900000 l
+DispOff 900022 l
+Critical 900026 f
+StartBoot 900058 f
+StartInit1 900096 f
+warmStart 9000CC l
+noDiagRom 900118 l
+BootRetry 90011C f
+JmpTblInit 900224 f
+JmpTbl2 900226 f
+FillWithOnes 900234 f
+CompBootStack 900244 f
+SetUpSysAppZone 900252 f
+DrawBeepScreen 900290 f
+InitShutdownMgr 90031C f
+InitPmgrVars 900322 f
+InitADBVars 900416 f
+InitHiMemGlobals 900440 f
+InitGlobalVars 900460 f
+SwitchGoodies 900524 l
+WDCBSwOS 90055C l
+PMSPSwOS 90055E l
+InitSwitcherTable 900560 f
+GetPRAM 900574 f
+WhichCPU 9005B2 f
+WhichBoard 9005F0 f
+SetUpTimeK 90060C f
+InitSCSIGlobals 900718 f
+InitSCSI 900732 f
+InitIWMGlobals 90074A f
+InitIWM 900754 f
+InitVIAGlobals 900794 f
+InitVIA 90079E f
+VIATimerEnables 9007C0 f
+InitSCCGlobals 9007D4 f
+Gary 9007EA l
+InitSCC 900808 f
+WriteSCC 900826 f
+InitVidGlobals 900836 f
+InitCrsrVars 90087A f
+InitCrsrMgr 90088A f
+InitIOMgr 900902 f
+InitMemMgr 900970 f
+InitRsrcMgr 90098E f
+InitDTQueue 90099E f
+GOOFYDoEject 9009B0 f
+StartTest 9009BA l
+TMVectors 9009BA l
+BusError 900ABA l
+L10 900AC4 l
+AdrError 900ACC l
+illError 900AD4 l
+ZerError 900ADC l
+StartTest1 900BBC f
+noDiagRom 900BF6 l
+PMgrTest 900C24 l
+ROMChk 900C5C l
+TJump 900E5E l
+MaxTest 900E6E l
+NJump 900E70 l
+MaxNTst 900E86 l
+PostProc 900E88 l
+GoTM 900E88 f
+RAMTest 900E96 f
+Error2Handler 900EBE f
+Error1Handler 900EBE f
+Error3Handler 900F22 f
+Error4Handler 900F3C f
+NCErrorHandler 900F56 f
+TMProc 900FB0 l
+TestManager 900FB0 f
+TMRestart 9012D0 f
+TMEntry0 9012D0 f
+TMEntry1 9012D4 f
+DoCritTest 901648 f
+DoNonCritTest 9016FC f
+EchoCmd 9017CC f
+a1MsgLength 901872 l
+a1Msg 901873 l
+b1MsgLength 90187A l
+b1Msg 90187B l
+GetChar 9018A2 f
+CvtAscii 901906 f
+SetupBases 9019F8 f
+StartTimer 901A62
+WrXByte 901AB8 f
+RdXByte 901AD8 f
+QuasiPwrMgr 901B28 f
+StPwrMgr 901CC4 f
+CritProc 901CD6 f
+DataBusTest 901CD6 f
+StartUpROMTest 901D04 f
+Mod3Test 901D2A f
+Fill120Loop 901D38 l
+Fill120Start 901D58 l
+Fill12Loop 901D64 l
+Fill12Start 901D6A l
+FillDone 901D82 l
+exit 901E14 l
+Mod3Pat 901E16 l
+RevMod3Test 901E2E f
+Fill120Loop 901E3C l
+Fill120Start 901E50 l
+Fill12Loop 901E5A l
+Fill12Start 901E5E l
+FillDone 901E78 l
+exit 901F08 l
+RevMod3Pat 901F0A l
+RomTest 901F22 f
+L10 901F3C l
+L15 901F56 l
+L20 901F70 l
+L30 901F7A l
+L40 901F84 l
+exit 901F8E l
+ExtRAMTest 901F90 f
+L10 901F9E l
+L20 901FA8 l
+L30 901FB4 l
+L40 901FBE l
+L50 901FCA l
+L60 901FD4 l
+finish 901FDE l
+AddrLineTest 901FEE f
+L1 902004 l
+L2 90200E l
+L3 902014 l
+L4 902026 l
+L5 902038 l
+L6 902048 l
+L7 902050 l
+finish 902060 l
+NoTest 902064 f
+NonCritProc 902068 f
+VramAddrTest 902068 f
+wloop 90207A l
+rdloop 9020A0 l
+failloop 9020C6 l
+failzeros 9020D4 l
+done 9020E0 l
+VramDataTest 9020E2 f
+L464 9020F8 l
+vidramfail 902104 l
+MapRamDataTest 90210E f
+mwlp2 90211C l
+mwlp1 902122 l
+mrdlp 902130 l
+failmapram 90214A l
+passmap 902158 l
+MapRamUniqTest 90215A f
+wlpf 902168 l
+rd1 90217A l
+wlpr 902184 l
+mapuniqfail 902192 l
+rdfwd 902194 l
+rdfwd1 902198 l
+failrd 9021AE l
+passrd 9021BC l
+MapTestTable 9021BE l
+maptesttablesize 9021C6 l
+MapTestTab2 9021C8 l
+EndMapTestTab2 9021D7
+Restore 9021D8 f
+loop 902218 l
+L10 902226 l
+scclp1 902232 l
+waitE 90223C l
+sccout 90224A l
+waitT 902250 l
+chkrda 902264 l
+waitR 902268 l
+csccin 902276 l
+check 902282 l
+next 902294 l
+scclxit 902298 l
+SCCLoopTest 90229A f
+ExitTest 9022DC l
+Loop 9022F8 l
+Fail 902316 l
+Pass 902318 l
+SCCRegTest 902322 f
+loopA 90232A l
+chB 90233A l
+loopB 902342 l
+Exit 902354 l
+SCCTimerTest 90235A f
+intdone 90239C l
+intexit 9023B8 l
+LocalSCCInt 9023CA f
+L1 9023E2 l
+MainTbl 9023F8 l
+ResetTbl 90240C l
+DefaultTbl 902410 l
+LoopTbl 90241A l
+TimerTbl 902420 l
+regtests 902430 l
+bregtests 90243A l
+VIATest 902444 f
+L10 902498 l
+L20 9024A2 l
+L25 9024EA l
+L27 9024FA l
+Int1Exit 90257E l
+LocalVIA1Int 90259A f
+TestSCSI 9025C2 f
+TestExit 9026A4 l
+TestASC 9026A6 f
+exit 902702 l
+snd_reg_init 90270C f
+PramTest 9027DE f
+PRLOG 9027E2 l
+FindStartupDevice 9027E2 f
+NextPass 9027F4 l
+TryAgain 902850 l
+GetDefaultStartup 902876 f
+SetDefaultStartup 902880 f
+InternalWait 90288A f
+Exit 9028A0 l
+MyTable 9028A2 l
+EmbarkOnSearch 9028B2 f
+WaitForInternal 9028D2 f
+UseGivenTime 9028EC l
+WaitForIt 9028F8 l
+FindIntHD 90292A l
+EndOfQueue 902938 l
+DelayLoop 902944 l
+NoDrivePresent 90294C l
+MyExit 902952 l
+RawExit 902958 l
+LoadDrivers 90295E f
+GoLoadD 902976 l
+PlanStrategy 902986 f
+FindNextCandidate 902992 f
+DoneLooking 9029A2 l
+NextDQEntry 9029A6 f
+NextEntry 9029B0 l
+SelectDevice 9029B6 f
+CheckMouseEject 9029D4 f
+DontEject 9029DE l
+GetStartupInfo 9029E0 f
+Exit 9029FE l
+ReactToFailure 902A00 f
+This1NoMo 902A12 l
+ShowMe 902A16 l
+Exit 902A1A l
+VisualUpdate 902A1C f
+NoSwitch 902A3A l
+XorQ 902A46 l
+ShowQ 902A52 l
+DoneDisk 902A56 l
+EnableXFlash 902A58 f
+ShowSuccess 902A5E f
+EjectMe 902A72 f
+IsReject 902A80 f
+IsItFlopOrDef 902A92 f
+IsItFloppy 902AA6 f
+IsItAnything 902AAE f
+NeverAgain 902AB2 f
+InBootMask 902AC8 f
+ShowDeviceFail 902ADA f
+HappyMac 902AE6 f
+ShowPlainDisk 902AF4 f
+ShowDiskQ 902AFC f
+ShowDiskX 902B04 f
+EraseMyIcon 902B0C f
+PlotMyIcon 902B26 f
+PlotIcnn 902B3C f
+PshIcnRect 902B8C f
+HappyIcon 902BB0 l
+DiskIcon 902CB0 l
+QDiskIcon 902DB0 l
+XDiskIcon 902EB0 l
+iGetTimeOut 902FB0 f
+iSetTimeOut 902FBA f
+iGetWaitFlags 902FD6 f
+iSetWaitFlags 902FE0 f
+iDisableDynWait 902FF6 f
+iEnableDynWait 903008 f
+iDisablePermWait 90301A f
+iEnablePermWait 90302C f
+GetRawTimeout 90303E f
+SetRawTimeout 903050 f
+MyBoot 903060 l
+BootMe 903060 f
+CenterRect 903494 f
+MouseInit 9034C6 f
+InitEvents 903510 f
+CritErr 90353A f
+FailData 9035AA f
+chLoop 9035BE l
+numFont 9035E6 l
+DeadMac 903616 f
+PutSymbol 903644 f
+PutIcon 903654 f
+SysErrInit 90371E f
+Debugger 90375E f
+DebugProlog 90379E f
+ToDeepShit 9037B0 f
+GenExcps 9037F2 f
+IRQException 90380A
+SystemError 90380C f
+SysErr1 903812 f
+SysErr2 903822 f
+Call2DS 90383E l
+CallDS 903848 l
+CallDB 90384C l
+AllocFakeRgns 90386C f
+DSErrorHandler 9038BA f
+SizeMemory 903EA6 f
+PowerMngr 904014 f
+PmgrInt 90402A f
+EnvInt 904074 f
+BatInt 904080 f
+BatWatch 9040A0 f
+SndWatch 90422E f
+PmgrOp 904274 f
+GoToSleep 9045D6 f
+WakeUp 9046C0 f
+WakeUp 9046C0 f
+PowerOff 9049D0 f
+SystemBeep 904A18 f
+BootBeep 904A98 f
+ErrorBeep1 904AA8 f
+ErrorBeep2 904AAE f
+ErrorBeep3 904AB4 f
+ErrorBeep4 904ABA f
+CacheProc 904C48 f
+CacheTrap 904C58 f
+QStuff 904D3E l
+Enqueue 904D3E f
+Dequeue 904D64 f
+InitQueue 904DAC f
+Dispatcher 904DB6 l
+EMT1010 904DB6 f
+GetTrapAddress 904F0E f
+SetTrapAddress 904F16 f
+CacheFlush 904F1E f
+vCacheFlush 904F30 f
+InitDispatcher 904F40 f
+BadTrap 904FBA f
+IntHnd 904FC6 f
+InitIntHandler 9051CE f
+DebugUtil 905236 f
+DTCore 90528A l
+DTInstall 90528A f
+DisptchTsk 9052A2 f
+vDisptch 9052A8 f
+VBLCore 9052E4 l
+VInstall 9052E4 f
+VRemove 905334 f
+VBLInt 90534A f
+KBDMngr 9053B8 l
+InitADB 9053B8 f
+FDBShiftInt 905678 f
+ADBOp 9057E0 f
+ADBReInit 905BB8 f
+InitADBDrvr 905BEE f
+ADBProc 905C42 f
+CountADBs 905C7C f
+GetIndADB 905C96 f
+GetADBInfo 905CC2 f
+SetADBInfo 905CC8 f
+KeyTrans 905DA2 f
+RSetKMap 905EB0 f
+TimeMgr 905EC2 l
+RmvTime 905EC2 f
+InsTime 905F1E f
+PrimeTime 905F76 f
+InitTimeMgr 90613A f
+clock 9061AE l
+OneSecInt 9061AE f
+ClkRW 9061D8 f
+ReadXPRam 90631A f
+WriteXPRam 906350 f
+ClkNoMem 9063A0 f
+Events 9063A2 l
+PostEvent 9063A2 f
+OSEventAvail 906420 f
+GetOSEvent 9064AC f
+FlushEvents 9064D6 f
+IOCORE 90651E
+FSIODneTbl 90651E l
+Fetch 906524 f
+Stash 906568 f
+IODone 906570 f
+vGoDriver 90664E f
+Open 9066F2 f
+Close 90689A f
+vWaitUntil 9068BC f
+Read 9068D8 f
+vSyncWait 90694A f
+Write 906958 f
+Control 90696E f
+Status 90697E f
+KillIO 9069A4 f
+DrvrInstall 9069F8 f
+DrvrRemove 906A56 f
+AddDrive 906A86 f
+SCSIStuff 906A96 l
+InitSCSIMgr 906A96 f
+SCSIMgr 906B54 f
+wfbsy 907232 f
+wfnREQ 907252 f
+wfREQ 907276 f
+CyclePhase 90729A f
+CyclePhase1 90729C l
+MatchPhase 9072AE l
+WriteFiller 9072D2 l
+CycleHndshk 9072E4 l
+CycleRts 907302 l
+CheckPhase 907306 f
+SCSIBoots 907316 f
+SCSILoad 907316 f
+ScsiLoad 907316 f
+Start 907322 l
+CheckNext 907378 l
+OpenIt 907398 f
+NextDD 9073C8 l
+FoundDD 9073D8 l
+DoNewPartition 90743A f
+SRead 9074E4 f
+SReadAgain 9074EC l
+Compl 907552 l
+ChkComplErr 907570 l
+ChkStat 907578 l
+RdDone 907592 l
+DoCkSum 90759E f
+CkLoop 90759E l
+CkDecr 9075AA l
+exit 9075B4 l
+Loader 9075B6 l
+LoadSeg 9075B6 f
+NoMoveHHi 9075DC l
+UnloadSeg 907648 f
+AppZoneAddr 907690 f
+FlushApplVBLs 9076B2 f
+Chain 9076DA f
+Launch 9076E0 f
+vSegStack 9077DC f
+ExitToShell 90782A f
+vLaunchInit 907860 f
+GetAppParms 907886 f
+InstallRDrivers 9078A2 f
+SGLDREND 907904
+SYSUTIL 907904
+ASYNCPATCH 907904
+ReadParam 907906 f
+WriteParam 907920 f
+ReadDateTime 907944 f
+SetDateTime 90794E f
+Delay 907956 f
+LWRSTRING 907968
+uprstring 9079D0
+CmpString 9079E6 f
+relstring 9079FC
+ReadPRam 907E70 f
+InitUtil 907EA6 f
+SYSENVIRONS 907FC8
+BLOCKMOVES 9080C2
+BlockMove 9080D0 f
+BlockMove68020 90824C f
+Heap 9083C8 l
+SetApplBase 9083C8 f
+InitApplZone 9083EE f
+vIAZInit 908468 f
+vIAZPostInit 9084DE f
+InitZone 9084E8 f
+GetZone 908582 f
+SetZone 908588 f
+MaxBlock 90858E f
+CompactMem 90859C f
+PurgeMem 9085CC f
+PurgeSpace 9085E8 f
+FreeMem 9085F2 f
+ResrvMem 9085FC f
+MaxMem 90861A f
+SetGrowZone 90864E f
+SetApplLimit 908658 f
+StackSpace 90868C f
+MaxApplZone 90869E f
+NewPtr 9086D4 f
+DisposePtr 9086F0 f
+GetPtrSize 908706 f
+SetPtrSize 908710 f
+PtrZone 90871A f
+NewEmptyHandle 908738 f
+NwHandle 90874C f
+DsposeHandle 90876E f
+GetHandleSize 90878E f
+SetHandleSize 90879A f
+HandleZone 9087AC f
+RecoverHandle 9087B4 f
+EmptyHandle 9087DA f
+ReAllocHandle 9087EA f
+HLock 90882E f
+HUnlock 908838 f
+HPurge 908842 f
+HNoPurge 90884C f
+HGood 908854 l
+HFail 908858 l
+HExit 90885A l
+HRSRC 908860 f
+HNoRSRC 90886A f
+HGetFlags 908886 f
+HSetFlags 908894 f
+MoreMasters 90889E f
+StripAddress 9088B6 f
+MoveHHi 9088BC f
+HeapGuts 908A9E l
+MMPPrologue 908AEE f
+MMHPrologue 908B02 f
+MMPrologue 908B48 f
+MMRHPrologue 908B6A f
+MMEpilogue 908BA8 f
+MMNoErrEpilogue 908BB4 f
+MakeBkf 908BBA f
+EH 908BC0 f
+PurgeHeap 908C0E f
+TotePurgeables 908CA0 f
+BkCompactS 908D00 f
+AllocBk 908D9C f
+CompactHp 908E50 f
+ToMaxLimit 908EE6 f
+MaxLimit 908EEE f
+ZoneAdjustEnd 908F08 f
+ActualS 908F72 f
+GetSize 908F86 f
+ClearGZStuff 908F9E f
+SetSize 908FA8 f
+AdjustFree 909122 f
+NextMaster 90912E f
+HMakeMoreMasters 90914A f
+ReleaseMP 90917A f
+MakePtrSpc 909184 f
+FreeBk 9092F4 f
+StdGZ 909320 f
+MEMMGREND 909374
+ShutDown 909374 f
+ShutDownDisp 909382 f
+TurboFS 909540 l
+TFSDispatch 909540 f
+FSQueueSync 909594 f
+FSQueue 909598 f
+FSAsync 909600 f
+CmdDone 90964C f
+cd_CkExtFS 9096D0 l
+FInitQueue 909766 f
+DSHook 909780 f
+DoEject 909920 f
+vDoEject 909920 f
+InitFS 909954 f
+DivUp 909A42 f
+RoundAlloc 909A56 f
+GetVCBRfn 909A98 f
+MarkVCB 909B10 f
+MarkVCBTime 909B12 f
+FlushMDB 909B20 f
+vFlushMDB 909B26 f
+MakeStkPB 909BE8 f
+MountVol 909BFA f
+vCheckRemount 909E10 f
+VMTCHECK 909F9A
+VBMCHK 90A176
+FindDrive 90A258 f
+vFindDrive 90A25E f
+Offline 90A284 f
+Eject 90A32A f
+UnmountVol 90A400 f
+FlushVol 90A4A6 f
+vCkExtFS 90A4E8 f
+vDtrmV3 90A4F8 f
+vDtrmV1 90A50C f
+AddSPEntry 90A60C f
+DtrmVol 90A63A f
+vDtrmV2 90A644 f
+DtrmDone 90A67C l
+NoNameErr 90A684 l
+VolSpcfd 90A688 f
+CkVol 90A68C f
+SetPMSP 90A6AE f
+SetPMSPOK 90A6D6 l
+GetVolInfo 90A6DC f
+SetVolInfo 90A884 f
+GetVol 90A940 f
+SetVol 90A988 f
+SetDir 90A9C8 f
+GetDir 90A9FC f
+OpenWD 90AA20 f
+CloseWD 90AACC f
+GetWDInfo 90AB06 f
+OpenRF 90AED6 f
+FileOpen 90AEE0 f
+vFileOpen 90AEE6 f
+vPermssnChk 90B062 f
+CreateDir 90B0C6 f
+FileCreate 90B0D2 f
+FileDelete 90B2FC f
+ReName 90B37C f
+TFMove 90B538 f
+SetFilType 90B758 f
+SetFilLock 90B790 f
+RstFilLock 90B79A f
+SetFileInfo 90B7DC f
+SetCatInfo 90B80E f
+vFndFilName 90B89C f
+GetCatInfo 90B9D6 f
+GetFileInfo 90B9E8 f
+TFSVCBTst 90BDD2 f
+GetFPos 90BE1C f
+SetFPos 90BE20 f
+FileRead 90BE24 f
+vFileRead 90BE2A f
+FileWrite 90BF40 f
+vFileWrite 90BF46 f
+FlushFile 90C060 f
+FileClose 90C06A f
+vFileClose 90C070 f
+vFClose 90C090 f
+GetEOF 90C25C f
+vRfNCall 90C274 f
+vTstMod 90C2BE f
+GetFCBInfo 90C2D4 f
+FileAlloc 90C3B2 f
+SetEOF 90C3E2 f
+vAdjEOF 90C452 f
+Lg2Phys 90C4F6 f
+VLG2PHYS 90C4FC
+VSM 90C6EC
+BlkAlloc 90C6EC f
+vBlkAlloc 90C6F2 f
+BLKDEALLOC 90C846
+VBLKDEALLOC 90C84C
+BLKCHK 90C88C
+UpdateFree 90C8E6 f
+VREADBM 90C91A
+FXM 90C9BA
+DeAllocFile 90C9BA f
+vDeAllocFile 90C9C0 f
+ExtendFile 90CA8E f
+vExtendFile 90CA94 f
+FXMKeyCmp 90CC0A f
+MapFBlock 90CC48 f
+vMapFBlock 90CC4E f
+TruncateFile 90CCCA f
+vTruncateFile 90CCD0 f
+vXFSearch 90CE3E f
+CMSvcs 90CF7C l
+CMCreateCN 90CF7C f
+CMDeleteCN 90D0C2 f
+CMGetCN 90D16E f
+CMGetOff 90D18E f
+CMMoveCN 90D1F2 f
+CMRenameCN 90D398 f
+CMUpdateCN 90D4A0 f
+vCMSetUp 90D4D8 f
+CMMAINT 90D50A
+BUILDKEY 90D50A
+CMFLUSH 90D538
+CMKEYCMP 90D56C
+LOCCNODE 90D5A8
+LOCCREC 90D5C8
+VLOCCREC 90D5CE
+UPDCNAME 90D5F6
+BTSVCS 90D610
+BTCLOSE 90D610
+VBTCLOSE 90D616
+BTDELETE 90D650
+VBTDELETE 90D656
+BTFLUSH 90D802
+VBTFLUSH 90D808
+BTGETRECORD 90D866
+VBTGETRECORD 90D86C
+BTINSERT 90D91E
+VBTINSERT 90D924
+BTOPEN 90DBBE
+VBTOPEN 90DBC4
+BTSEARCH 90DC76
+VBTSEARCH 90DC7C
+BTUPDATE 90DD00
+VBTUPDATE 90DD06
+BTAlloc 90DD62 l
+AllocNode 90DD62 f
+vAllocNode 90DD68 f
+ExtBTFile 90DDF8 f
+vExtBTFile 90DDFE f
+FreeNode 90DEE6 f
+vFreeNode 90DEEC f
+VUPDALTMDB 90DF9E
+BTMAINT1 90E092
+ROTATELT 90E092
+SPLITLT 90E182
+TreeSearch 90E20C f
+vTreeSearch 90E212 f
+BTMaint2 90E2CA l
+BuildIRec 90E2CA f
+ChkNode 90E2EC f
+ClrNode 90E370 f
+DeleteRec 90E38C f
+GetLtSib 90E3DC f
+GetRtSib 90E3E6 f
+GetMaxKey 90E416 f
+GetNode 90E422 f
+vGetNode 90E428 f
+GetNodeSiz 90E45C f
+GetOffset 90E474 f
+GetRecA 90E48C f
+InitNode 90E4A8 f
+InsertRec 90E4DA f
+LocBTCB 90E54C f
+LocRec 90E556 f
+LocTPR 90E588 f
+MovOffLt 90E598 f
+MovOffRt 90E5A8 f
+MovRecLt 90E5BE f
+MovRecRt 90E5D4 f
+RelNode 90E5EE f
+vRelNode 90E5F4 f
+SearchNode 90E608 f
+UpdDRec 90E664 f
+UpdIKey 90E686 f
+Cache 90E6B8 f
+FlushCache 90E6E2 f
+vFlushCache 90E6E8 f
+GetBlock 90E7CC f
+vGetBlock 90E7D2 f
+InitCache 90E9B4 f
+MarkBlock 90EA0E f
+vMarkBlock 90EA14 f
+MarkA5Block 90EA1C f
+RelBlock 90EA24 f
+vRelBlock 90EA2A f
+TrashVBlks 90EA76 f
+vTrashVBlks 90EA7C f
+TrashFBlocks 90EAA4 f
+TrashBlocks 90EAAE f
+vTrashBlocks 90EB02 f
+CacheRdIP 90EB44 f
+vCacheRdIP 90EB4A f
+CacheWrIP 90EB70 f
+vCacheWrIP 90EB76 f
+CacheIO 90EBC8 f
+ReadOwnBuf 90EBC8 f
+ReadBlock 90EBC8 f
+WriteOwnBuf 90EBD2 f
+WRITEBLOCK 90EBDA
+VBASICIO 90EC34
+RDBLOCKS 90ECA8
+VRDBLOCKS 90ECAE
+WRBLOCKS 90ECF6
+VWRBLOCKS 90ECFC
+VSETUPTAGS 90ED0E
+CallPascal 90ED5C f
+CALLCALLBACKROUTINE 90ED5C
+CALLMODIFIERROUTINE 90ED5C
+SMGlobalLoc 90ED64
+SMGlobHndl 90ED6C
+TimerCode 90ED70 f
+InitTimer 90EE56 f
+WriteMinTimer 90EE6E f
+WriteTimer 90EE8C f
+ReadTimer 90EEBA f
+NewPtr 90EED6 f
+NewSysPtr 90EEE0 f
+DisposPtr 90EEEA f
+HLock 90EEF2 f
+MoveHHi 90EEFA f
+HGetState 90EF02 f
+HSetState 90EF0A f
+MemError 90EF16
+StripAddress 90EF1E f
+RecoverHandle 90EF26 f
+IsNuMac 90EF30
+WaitBit 90EF32 f
+inAppHeap 90EF42
+SndAllOff 90EF6C f
+BlockInts 90EF76
+UnBlockInts 90EF82
+GestaltCall 90EF88
+MYGETRESOURCE 90EF9C
+IsAscMac 90F026
+initGlobals 90F064
+InsertInQueue 90F0BE f
+NextFromQueue 90F14E f
+ChannelModifier 90F1C4
+processCommandFrom 90F35C
+processCommand 90F3D8
+processNextCommand 90F41C
+sendEmptyCommand 90F466
+tickleModifier 90F4AC
+findModifier 90F4EA
+disposChannel 90F54E
+checkChannel 90F620
+pumpResource 90F652
+OnTimeInterrupt 90F6FA
+SndAppDead 90F806 f
+ASYNCHCALLBACK 90F85E
+SndDoCommand 90F8AA f
+SndDoImmediate 90F94A f
+SndAddModifier 90F9A8 f
+SndNewChannel 90FB36 f
+SndDisposeChannel 90FC32 f
+SndPlay 90FCD2 f
+SndControl 90FF0C f
+MISCMGR 90FFEA
+GetKeys 90FFEA f
+Button 910006 f
+TickCount 910018 f
+GetMouse 91005A f
+StillDown 910070 f
+WaitMouseUp 910098 f
+EventAvail 9100B6 f
+GetNextEvent 9100BA f
+WaitNextEvent 9102F0 f
+WMGR 910368
+NewString 910376 f
+SetString 91038E f
+DeleteWindow 9103EA f
+CalcVis 910402 f
+CALCVISBEHIND 910460
+ClipAbove 9104A4 f
+PaintOne 9104C8 f
+PaintBehind 910578 f
+GetNewRgn 9105D8 f
+SaveOld 9105E4 f
+DrawNew 910612 f
+ShowHide 910672 f
+SetWPort 9106A4 f
+RestorePort 9106AE f
+GetWMgrPort 9106B4 f
+CheckUpdate 9106C8 f
+InitWindows 91075C f
+NewWindow 910846 f
+CloseWindow 91097A f
+DisposeWindow 910A08 f
+ShowWindow 910A16 f
+HideWindow 910A3E f
+GetWRefCon 910A68 f
+SetWRefCon 910A76 f
+SetWindowPic 910A86 f
+GetWindowPic 910A8C f
+GetWTitle 910A92 f
+SetWTitle 910AAA f
+DeltaPoint 910B28 f
+MoveWindow 910B84 f
+GetWVariant 910C30 f
+HiliteWindow 910CD8 f
+SizeWindow 910D18 f
+ZoomWindow 910D6C f
+TrackGoAway 910DD2 f
+TrackBox 910DDA f
+SelectWindow 910E48 f
+BringToFront 910E78 f
+SendBehind 910F1A f
+BeginUpdate 910F70 f
+EndUpdate 910FB0 f
+FrontWindow 910FD8 f
+DragWindow 911002 f
+WMgrGray 9110BC l
+DragGrayRgn 9110C4 f
+DragTheRgn 9110D0 f
+InvalRgn 9111FC f
+InvalRect 911242 f
+ValidRgn 911260 f
+ValidRect 911264 f
+GrowWindow 911268 f
+FindWindow 911372 f
+DrawGrowIcon 9113F6 f
+WMGREND 911414
+MMGR 911414
+InitProcMenu 911414 f
+InitMenus 911444 f
+CalcMBHeight 9114B8 f
+ClearMenuBar 911546 f
+InsertMenu 91155E f
+DeleteMenu 91165A f
+DrawMBar 9116C0 f
+DrawMenuBar 9116CA f
+HiliteMenu 9116E8 f
+EnableItem 91173A f
+DisableItem 91175C f
+MenuSelect 9117A2 f
+PopUpMenuSelect 9118EE f
+FullClip 911DD4 f
+GetMenuBar 911DFC f
+SetMenuBar 911E16 f
+DisposeMenu 911E2E f
+FlashMenuBar 911E46 f
+CallMBarProc 911E84 f
+GetItemIcon 911F52 f
+SetItemIcon 911F56 f
+GETITEMCMD 911F5A
+SETITEMCMD 911F5E
+GetItemStyle 911F62 f
+SetItemStyle 911F66 f
+GetItemMark 911F6A f
+SetItemMark 911F6E f
+CheckItem 911F72 f
+MenuKey 911F92 f
+GetItem 9120DE f
+CalcMenuSize 912134 f
+NewMenu 91216E f
+AppendMenu 9121C0 f
+InsMenuItem 9121C8 f
+GetMHandle 91235A f
+DelMenuItem 912382 f
+SetItem 9123BA f
+SetMenuFlash 912400 f
+AddResMenu 91240A f
+InsrtResMenu 912412 f
+CountMItems 912570 f
+PlotIcon 91258C f
+MMGREND 9125C8
+CMGR 9125C8
+NewControl 9125C8 f
+GetCVariant 9126C4 f
+DisposeControl 912708 f
+KillControls 91272C f
+DrawOneControl 91273E f
+ShowControl 91274E f
+HideControl 91276C f
+MoveControl 912780 f
+GetCRefCon 9127BE f
+SetCRefCon 9127CC f
+GetCtlAction 9127DC f
+SetCtlAction 9127E0 f
+SizeControl 9127E4 f
+HiliteControl 91280C f
+GetCTitle 912838 f
+SetCTitle 912850 f
+GetCtlValue 912892 f
+GetCtlMin 9128A0 f
+GetCtlMax 9128A4 f
+SetCtlValue 9128A8 f
+SetCtlMin 9128EA f
+SetCtlMax 9128EE f
+TestControl 9128F2 f
+DragControl 912920 f
+TrackControl 9129D2 f
+UpdtControls 912AC0 f
+DrawControls 912AD0 f
+FindControl 912B58 f
+CMGREND 912BC6
+DMGR 912BC6
+InitDialogs 912BD0 f
+StopAlert 912C86 f
+NoteAlert 912C8A f
+CautionAlert 912C8E f
+Alert 912C92 f
+GetNewDialog 912DB0 f
+NewDialog 912DEA f
+IsDialogEvent 912E84 f
+DialogSelect 912EC0 f
+ModalDialog 912F02 f
+DrawDialog 912F90 f
+UpdtDialog 912FA8 f
+CloseDialog 912FD0 f
+DisposDialog 913054 f
+CouldDialog 91308A f
+CouldAlert 913098 f
+FreeDialog 9130F2 f
+FreeAlert 913100 f
+ParamText 913152 f
+ErrorSound 913176 f
+GetDItem 91317E f
+SetDItem 9131C4 f
+GetIText 9131FC f
+SetIText 91321C f
+SelIText 913280 f
+HideDItem 9132DC f
+ShowDItem 91333A f
+FindDItem 9133AE f
+DMGREND 9138F2
+RMGR 9138F2
+InitResources 913914 f
+vSuperLoad 913A84 f
+vNewMap 913BBC f
+RsrcZoneInit 913CA8 f
+CreateResFile 913D3C f
+OpenResFile 913D86 f
+OpenRFPerm 913DB6 f
+UseResFile 913DCA f
+GetResFileAttrs 913DD4 f
+SetResFileAttrs 913DE0 f
+UpdateResFile 913E96 f
+vCmpFrm 913F7E f
+CloseResFile 914170 f
+Count1Resources 914210 f
+CountResources 914214 f
+Get1IndResource 91423A f
+GetIndResource 91423E f
+Count1Types 9142D6 f
+CountTypes 9142DA f
+Get1IndType 914320 f
+GetIndType 914324 f
+Unique1ID 914346 f
+UniqueID 91434A f
+Get1Resource 914384 f
+GetResource 914388 f
+Get1NamedResource 9143C8 f
+GetNamedResource 9143CC f
+vCheckLoad 9146D6 f
+LoadResource 91497A f
+ReleaseResource 9149B8 f
+DetachResource 9149E2 f
+ChangedResource 9149FA f
+WriteResource 914A36 f
+HomeResFile 914A70 f
+SetResPurge 914A9A f
+SetResLoad 914ABA f
+CurResFile 914AC4 f
+ResError 914ACC f
+AddReference 914AD4 f
+RmveReference 914AE4 f
+GetResAttrs 914AEE f
+SetResAttrs 914B02 f
+GetResInfo 914B34 f
+SetResInfo 914B7A f
+AddResource 914BC4 f
+RmveResource 914C9C f
+SizeResource 914E18 f
+MaxSizeRsrc 914E3A f
+RSRCMAPENTRY 914E4E
+RGETRESOURCE 914E5A
+IAPPEND 914E86
+BYTES 914E86
+Munger 914E86 f
+XMunger 914EB4 f
+HandToHand 914FEA f
+PtrToXHand 915012 f
+PtrToHand 91501A f
+HandAndHand 915034 f
+PtrAndHand 915058 f
+MethodDispatch 915068 f
+jmpMeth 915078 l
+A0Rel 915086 l
+search 91508A l
+loopa 91508E l
+loopb 9150A0 l
+loop2 9150A2 l
+doSuper 9150AA l
+found 9150BA l
+LongMul 9150C4 f
+FracMul 9150F0 f
+FixMul 9150F8 f
+OneParmExit 91517C f
+StdEntry 915192 f
+fixArgs 91519E f
+FixOver 9151B6 f
+FracDiv 9151C2 f
+FixDiv 9151C8 f
+comDiv 9151CC f
+FracSqrt 915218 f
+frSqrtLoop 91522A l
+FixRatio 915252 f
+chkSign 91527A l
+LoWord 91528C f
+HiWord 915294 f
+StripRet 91529A l
+FixRound 91529E f
+positive 9152AA l
+notTooBig 9152B2 l
+FracCos 9152B8 f
+FracSin 9152C0 f
+FSin2 9152C6 l
+PolyCos 915310 l
+PolyLoop 915316 l
+sn0 91534A l
+sn1 91534E l
+sn2 915352 l
+cs0 915356 l
+cs1 91535A l
+cs2 91535E l
+cs3 915362 l
+FixATan2 915366 f
+NoPoly 91539C l
+NoPoly2 91539E l
+bigger 9153A4 l
+GetATanArg 9153AA l
+bypass 9153E2 l
+at0 91540C l
+at1 915410 l
+at2 915414 l
+at3 915418 l
+at4 91541C l
+at5 915420 l
+Fix2X 915424 f
+Frac2X 91542A f
+ComE 91542E l
+NotZero 915438 l
+shftgn 915442 l
+fin 915448 l
+X2Fix 915456 f
+X2Frac 91545C f
+X2F 915460 l
+MaxIt 9154A8 l
+MaxE2 9154AA l
+Fix2Long 9154B8 f
+Frac2Fix 9154BC f
+ComFF 9154BE l
+Long2Fix 9154D8 f
+Fix2Frac 9154DC f
+DeskMgr 9154EC f
+SystemEvent 9154EC f
+EvtDTable 915510 l
+DoneSysEvt 915528 l
+DoneSEvt 91552C l
+IfTopWants 915534 l
+SearchWindow 915550 f
+noGoodSearch 915568 l
+SendDrvrMsg 91556C f
+SendDCommon 91556E f
+SysUpdate 91558C l
+DiskHandler 915598 f
+SystemClick 9155C8 f
+DoneSClick 915630 l
+CheckDeskHook 91563C l
+NotFrontMost 91565E l
+DragClick 915664 l
+GoAwayClick 915676 l
+DoCloseHook 915696 l
+SystemTask 91569C f
+SystemMenu 915720 f
+SystemEdit 915768 f
+OpenDeskAcc 915796 f
+CloseDeskAcc 9157E4 f
+getpid 915902
+GetFreeAux 915944 f
+AddAuxRec 91597C f
+LinkAuxRec 9159C0
+UnLinkAuxRecs 9159FC
+InsertMarkRec 915A3A
+InsertIconRec 915AB6
+ValidIconRec 915B02
+NMInit 915B58 f
+_NMInstall 915B90
+_NMRemove 915BDE
+AddrInRange 915C3E
+CopyString 915C98 f
+FlushApplNM 915CD4 f
+NMFILTER 915D3C
+DEFBUTPROC 915DE8
+FindItem 915E40
+GetAppleMenu 915E9C
+CallMBarProc 915EEC f
+SwapItemMarks 915F7A f
+ClearMarks 915FC8
+SWAPDAMARK 91600C
+MarkItem 916100
+RotateIcon 91615C
+DoSound 91619C
+DoDialog 9161F4
+DoRespProc 9163DC
+NMGNEFILTER 91642E
+NMTask 9164F4 f
+__NMINSTALL 9166F6
+__NMREMOVE 916702
+NMInstall 91670E
+NMRemove 916716
+_FC2X 91671E f
+_fprocENTRYsp 91676A f
+_fprocEXITsp 916794 f
+GestaltTrap 9167DC f
+getGestalt 916824
+getSysVersion 91686E
+getRomVersion 916882
+getAuxVersion 91689A
+getMachineType 9168C0
+getProcessor 9168DC
+getKeyboard 9168F4
+getFPUType 91692E
+getMMUType 91697C
+getPageSize 9169B0
+getRAMSize 9169FE
+getROMSize 916A40
+qdVersion 916A8C
+noCQD 916AAE l
+getATalkVersion 916AC0
+PowerMgr 916AEE
+getAddrMode 916B2A
+getSoundAttr 916B46
+getTimeMgrType 916BC0
+getSCCRd 916BF8
+getSCCWr 916C0A
+getRBV 916C1C
+getVIA1 916C4A
+getVIA2 916C5C
+VMInfo 916C8A
+getFirstSlot 916C9A
+getMachSpecific 916CEA
+Internal 916DFA
+InitGestalt 916E4C f
+newGestalt 916FEC
+removeLong 917118
+findLong 9171F2
+NewSPtr 9172A2
+NewCPtr 9172B0
+NewSCPtr 9172BE
+NewSHandle 9172CC
+NewCHandle 9172DA
+NewSCHandle 9172E8
+equalstring 9172F6
+NGETTRAPADDRESS 91733C
+DisposPtr 917354 f
+DisposHandle 917360
+HLock 91736C f
+HUnlock 917378 f
+SetHandleSize 917384 f
+GetHandleSize 917394 f
+BlockMove 91739C f
+HGetState 9173B0 f
+HSetState 9173B8 f
+StripAddress 9173C8 f
+Enqueue 9173D0 f
+Dequeue 9173DC f
+Delay 9173E8 f
+CODEENTRY 9173F4
+VERSIONADDRESS 9173F4
+PATCHSTART 9173F6
+RomanPrint 9173F6 f
+RomanName 9173F8 l
+RomanScript 9173FE f
+RomanDispTable 917422 l
+SetScript 917440 f
+GetScript 917440 f
+CharByte 917444 f
+CharType 917450 f
+Pixel2Char 9174B4 f
+Char2Pixel 917564 f
+Translit 9175A6 f
+FINDWORD 91767A
+HiliteText 9177C2 f
+DrawJust 9177F4 f
+MeasureJust 91781E f
+ParseTable 91784A f
+FIXSPEXTRA 91786A
+XVISIBLELENGTH 91790E
+PrintAction 917952 f
+SwapIcon 91798C f
+XSwapIcon 917996 f
+SwapKybd 917A46 f
+XSwapKybd 917A50 f
+FIXSMGRWORLD 917B52
+XFIXSMGRWORLD 917B5C
+SMGRCALCRECT 917C84
+SMGRINITFONTS 917CDE
+SMGRPOSTMUNGING 917D5A
+STDUNLINK 917DCA
+STDEXIT 917DCC
+XSCRIPTUTIL 917DD2
+UTILTABLEBASE 917E0A
+UTILTABLE 917E26
+BITBUCKET 917E76
+BITBUCKETREG 917E7A
+MONTHSTARTS 918200
+LEAPSTARTS 91821A
+SECSINDAYX 918236
+MAXOLDDATE 918242
+MAXVAL 91824C
+VALIDDATE 918260
+ToggleDate 9182F8 f
+LONGDATE2SECS 918604
+LONGDIV 918764
+LONGSECS2DATE 9187BA
+VALIDLONG 91895A
+BLOCK2STRING 918996
+COMPARE 9189EE
+MATCHSTRING 918A02
+INITDATECACHE 918A60
+String2Date 918C6E f
+String2Time 919056 f
+STYLEDLINEBREAK 91920C
+FINDCARRIAGE 9193AC
+FORMATORDER 9193C6
+INTLTOKENIZE 919474
+CHARCOMP 919B60
+NEXTFORMATCLASS 919B88
+GETSANECLASS 919B96
+SendByte 919BA8 f
+SENDCHARREV0 919BBE
+SENDCHAR0 919BC0
+SENDCHARREV 919BCC
+SendChar 919BDA f
+INUNQUOTEDS 919BEC
+RETRIEVECHAR 919BEC
+CHECKEXP 919C5E
+CHECKPARTSINTEGRITY 919C9E
+ISSUBSTRING 919D4A
+MAKEEXP 919DC0
+PROCESSLEAD 919E3A
+getc 919E72
+XSTR2FORM 919E8A
+TACKONEXP 91A25E
+TRANSLATETOTEXT 91A2A6
+CHECKFORM 91A3FC
+XFORM2STR 91A4D8
+MATCHINGSUBSTRING 91A57E
+MATCHINGBLOCKS 91A5EC
+CHECKFORDIGITS 91A644
+COND 91A6EE
+EXPMATCHING 91A74E
+XFORMSTR2X 91A79E
+num2dec 91ACE0
+INT2STRING 91ACF4
+CONVERTTOSTRING 91AD18
+EXPHANDLING 91AE56
+APPENDSYMBOL 91AEB0
+XFORMX2STR 91B016
+SMGRINITIALIZE 91B404
+SMGRTABLE 91B5AE
+PatchTable 91B5F6 f
+RomanTable 91B5FE f
+disable 91B60E
+spl 91B61E
+GMGR 91B630
+GetPattern 91B630 f
+GetCursor 91B64A f
+GetString 91B658 f
+GetIcon 91B660 f
+GetPicture 91B668 f
+GetNewWindow 91B670 f
+GetNewControl 91B6CE f
+GetMenu 91B720 f
+GetNewMBar 91B7A6 f
+GETMGREND 91B804
+TextEdit 91B804 l
+TEGetText 91B820 f
+TEInit 91B82C f
+TEDispose 91B872 f
+TextBox 91B8D0 f
+TESetText 91B9B0 f
+TECalText 91BAB8 f
+TESetSelect 91BB1C f
+TENew 91BB4C f
+TESTYLNEW 91BC14
+TEUpdate 91BD2E f
+TEClick 91BD5C f
+vPixel2Char 91BE78 f
+XTRIMMEASURE 91C3E4
+VCHAR2PIXEL 91C48E
+TEDispatch 91C6DC f
+TECopy 91C6F4 f
+TECut 91C7CC f
+TEDelete 91C7DC f
+XFINDWORD 91C93C
+XFINDLINE 91CA2E
+TEActivate 91CDF6 f
+TEDeactivate 91CE18 f
+TEIdle 91CE2E f
+TEPaste 91CE56 f
+TEInsert 91D1BE f
+TEKey 91D1EC f
+TESetJust 91D2D6 f
+TEScroll 91D2FC f
+TEPinScroll 91D352 f
+TESelView 91D3DA f
+TEAutoView 91D450 f
+TEGetOffset 91DA3C f
+SCRAPMGR 91DE9E
+InfoScrap 91DE9E f
+UnloadScrap 91DF18 f
+LoadScrap 91DF4E f
+ZeroScrap 91DF82 f
+GetScrap 91DFCE f
+PutScrap 91E03E f
+PrGlue 91E084 f
+PackDispatcher 91E302 l
+InitPack 91E302 f
+InitAllPacks 91E324 f
+Pack4 91E348 f
+Pack5 91E36A f
+Pack0 91E3E8 f
+Pack1 91E3EA f
+Pack2 91E3EC f
+Pack3 91E3EE f
+Pack6 91E3F4 f
+Pack7 91E3F6 f
+Pack8 91E3F8 f
+Pack9 91E3FA f
+Pack10 91E3FC f
+Pack11 91E3FE f
+Pack12 91E400 f
+Pack13 91E402 f
+Pack14 91E404 f
+Pack15 91E406 f
+PackMgrEnd 91E408 l
+SexyDate 91E408 l
+Secs2Date 91E408 f
+Date2Secs 91E480 f
+FontManager 91E4E2 l
+InitFonts 91E4E2 f
+FMSwapFont 91E5EE f
+FPointOne 91F0B6 l
+GetFontName 91F124 f
+RealFont 91F192 f
+GetFNum 91F1FC f
+SetFontLock 91F240 f
+SetFScaleDisable 91F268 f
+SetFractEnable 91F276 f
+FontMetrics 91F27E f
+FMGREND 91F43A
+InitCursor 91F43A f
+SetCursor 91F44A f
+HideCursor 91F466 f
+ShowCursor 91F46C f
+ShieldCursor 91F472 f
+ObscureCursor 91F4A2 f
+BitNot 91F4A8 f
+BitAnd 91F4B0 f
+BitXOr 91F4B8 f
+BitOr 91F4C2 f
+BitShift 91F4CA f
+BitTst 91F4E0 f
+BitSet 91F4EE f
+BitClr 91F4F8 f
+Random 91F510 f
+ForeColor 91F562 f
+BackColor 91F566 f
+PortLong 91F568 f
+ColorBit 91F574 f
+PortWord 91F576 f
+GetMaskTab 91F582 f
+LeftMask 91F588 f
+RightMask 91F594 f
+BitMask 91F5A0 f
+MaskTab 91F5AC l
+PATEXPAND 91F60C
+ColorMap 91F6D4 f
+GetPixel 91F748 f
+StuffHex 91F77C f
+XorSlab 91F7B6 f
+DrawSlab 91F7FA f
+SLABMODE 91F88A
+FASTSLABMODE 91F8E4
+NewHandle 91F8F8 f
+SetHSize 91F90C f
+InitGraf 91F91A f
+OpenPort 91F9E0 f
+InitPort 91F9F8 f
+ClosePort 91FA78 f
+SetStdProcs 91FA90 f
+LocalToGlobal 91FACA f
+GlobalToLocal 91FAD2 f
+AddPt 91FAFE f
+SubPt 91FB06 f
+SetPort 91FB24 f
+GetPort 91FB2C f
+GrafDevice 91FB36 f
+SetPortBits 91FB3C f
+BackPat 91FB54 f
+PortSize 91FB62 f
+MovePortTo 91FB82 f
+SetOrigin 91FBAE f
+ClipRect 91FBE2 f
+SetClip 91FBF4 f
+GetClip 91FC00 f
+SetPt 91FC14 f
+EqualPt 91FC1E f
+StdText 91FC2A f
+CallText 91FDB6 f
+TextFace 91FDD6 f
+DrawChar 91FDE2 f
+CharWidth 91FDF0 f
+TextFont 91FE08 f
+TextMode 91FE0C f
+TextSize 91FE10 f
+SpaceExtra 91FE16 f
+DrawString 91FE22 f
+DrawText 91FE34 f
+StringWidth 91FE4C f
+TextWidth 91FE5C f
+StdTxMeas 91FEC4 f
+MeasureText 91FF6A f
+GetFontInfo 920032 f
+DrText 9200D4 f
+StdLine 92081E f
+LineTo 9208B0 f
+Line 9208C6 f
+MoveTo 9208DE f
+Move 9208EA f
+MOOV 9208EA
+DoLine 9208FE f
+HidePen 920976 f
+ShowPen 92097A f
+SHARE 92097C l
+GetPenState 920986 f
+SetPenState 92098A f
+GetPen 9209AC f
+PenSize 9209BC f
+PenMode 9209CA f
+PenPat 9209D0 f
+PenNormal 9209E4 f
+DrawLine 920A02 f
+PutLine 920F4A f
+StdRect 921034 f
+PUSHVERB 921096
+FillRect 9210C8 f
+FrameRect 9210DE f
+PaintRect 9210E2 f
+EraseRect 9210E6 f
+InvertRect 9210EA f
+CallRect 9210EE f
+DrawRect 92110E f
+FRRECT 92114A
+SetRect 921238 f
+EqualRect 921246 f
+EmptyRect 921260 f
+OffsetRect 92127A f
+InsetRect 92128C f
+SectRect 92129E f
+RSECT 9212C6 f
+UnionRect 92133A f
+Pt2Rect 921378 f
+PtInRect 9213AE f
+PUTRECT 9213DE
+BITBLT 92143A f
+RgnBlt 9218E8 f
+StdRRect 921E26 f
+FrameRoundRect 921EB8 f
+PaintRoundRect 921EBC f
+EraseRoundRect 921EC0 f
+InvertRoundRect 921EC4 f
+FillRoundRect 921EC8 f
+CallRRect 921EDE f
+StdOval 921F02 f
+FrameOval 921F8A f
+PaintOval 921F8E f
+EraseOval 921F92 f
+InvertOval 921F96 f
+FillOval 921F9A f
+CallOval 921FB0 f
+PutOval 921FD0 f
+StdArc 92210E f
+FrameArc 92218C f
+PaintArc 922190 f
+EraseArc 922194 f
+InvertArc 922198 f
+FillArc 92219C f
+CallArc 9221B2 f
+DrawArc 9221D6 f
+InitOval 922862 f
+BumpOval 922904 f
+AngleFromSlope 922946 f
+SlopeFromAngle 922984 f
+PtToAngle 922AA8 f
+StdPoly 922B38 f
+FramePoly 922BAE f
+PaintPoly 922BB2 f
+ErasePoly 922BB6 f
+InvertPoly 922BBA f
+FillPoly 922BBE f
+CallPoly 922BD4 f
+OpenPoly 922BF4 f
+ClosePoly 922C28 f
+KillPoly 922C96 f
+OffsetPoly 922C9E f
+MapPoly 922CBA f
+FrPoly 922D16 f
+SortVectors 922D56 f
+PaintVector 922DF8 f
+DrawPoly 9232F2 f
+StdRgn 92344C f
+FrameRgn 9234B2 f
+PaintRgn 9234B6 f
+EraseRgn 9234BA f
+InvertRgn 9234BE f
+FillRgn 9234C2 f
+CallRgn 9234D8 f
+DrawRgn 9234F8 f
+FrRgn 923534 f
+NewRgn 9235A4 f
+DisposeRgn 9235C8 f
+OpenRgn 9235D0 f
+CloseRgn 9235FE f
+CopyRgn 923654 f
+SetEmptyRgn 9236A2 f
+SetRectRgn 9236AE f
+RectRgn 92370A f
+OffsetRgn 923718 f
+InsetRgn 92374A f
+EmptyRgn 9237E6 f
+EqualRgn 9237F6 f
+SectRgn 923834 f
+UnionRgn 923838 f
+DiffRgn 92383C f
+XorRgn 923840 f
+DoRgnOp 923844 f
+PtInRgn 92392A f
+RectInRgn 92398A f
+TrimRect 923A10 f
+MapRgn 923A6E f
+BITMAPRGN 923B1C
+InitRgn 923DC2 f
+SeekRgn 923DFA f
+RgnOp 923ED2 f
+SectScan 9240FC f
+DiffScan 924102 f
+UnionScan 924106 f
+InsetScan 924148 f
+XorScan 924192 f
+SortPoints 9241A8 f
+CullPoints 92423C f
+PutRgn 92428E f
+PackRgn 924310 f
+StdBits 9243D8 f
+CopyBits 924554 f
+CopyMask 9245FA f
+SeedFill 92483A f
+CalcMask 924842 f
+ScrollRect 924998 f
+PackBits 924A96 f
+UnpackBits 924B56 f
+StretchBits 924B9C f
+SETUPSTRETCH 925068
+GetUByte 92540A f
+GETSBYTE 92541C
+GetWord 92542E f
+GetLong 92543E f
+StdComment 92544E f
+StdGetPic 9254AE f
+StdPutPic 9254CE f
+PicComment 92554E f
+OpenPicture 925564 f
+ClosePicture 925620 f
+KillPicture 92565C f
+DrawPicture 925664 f
+StdOpcodeProc 9257B2 f
+PICITEM 925800
+MAPMODE 92606C
+SKIPPICDATA 926096
+GetPicData 9260C2 f
+GetPicTable 9260F2 f
+GetPicPixPat 92614C f
+GETPM1DEEP 9261FA
+RGB2Old 926376 f
+RGB2PAT 9263A0
+RGB2PIXEL 9263E2
+PutPicData 9263FA f
+DPutPicByte 926410 f
+PutPicByte 926416 f
+PutPicWord 926428 f
+PutPicLong 92643A f
+PutPicPat 92644A f
+PutPicRect 926456 f
+PutPicRgn 926498 f
+PutPicVerb 9264B6 f
+CheckPic 9265B4 f
+ScalePt 92667E f
+MapPt 9266D6 f
+MapRect 926738 f
+MapRatio 926750 f
+CrsrCore 92679C l
+InitCrTable 92679C l
+ScrnAddress 9269A0 f
+ScrnSize 9269A8 f
+ScrnBitMap 9269B8 f
+CrsrVBLTask 9269CC f
+PinRect 926B5C f
+DispTable 926B6E l
+IconCommon 92A190 f
+FindDQE 92A1C6 f
+EDiskDone 92A212 f
+HWDependent 92A22E f
+SLIMDiskHandler 92A234 f
+ROMDiskHandler 92A2A4 f
+EDiskPollTask 92A2BC f
+ComputeSLIMSize 92A424 f
+FillLoop 92A436 l
+NotRAM2 92A450 l
+NotRAM1 92A452 l
+CheckLoop 92A45A l
+IsRAM 92A468 l
+RestoreLoop 92A46E l
+SizesTable 92A484 l
+CreateEDiskHeader 92A494 f
+clrLoop 92A49E l
+cpyLoop 92A4AE l
+offsetLoop 92A4CE l
+nextOffset 92A4DC l
+done 92A4E0 l
+SlimDrive0Name 92A4F2 l
+SlimDrive1Name 92A504 l
+ROMDiskName 92A516 l
+RAMDiskName 92A528 l
+ROMDiskMediaIcon 92A53A l
+ROMDiskDriveIcon 92A5BA l
+SLIMDiskMediaIcon 92A63A l
+SLIMDiskDriveIcon 92A6BA l
+UpperDriveIcon 92A73A l
+DiskDone 92CE8A f
+L1 92CE92 l
+CtlTbl 92CEA2 l
+DiskControl 92CEDA f
+jtControl 92CEE0 f
+L1 92CEEE l
+L2 92CEF4 l
+L3 92CF08 l
+L4 92CF0E l
+L5 92CF12 l
+ctlKillIO 92CF18 f
+ctlSonyFmt 92CF1E f
+ctlSonyVer 92CF26 f
+ctlTagBuf 92CF2E f
+CtlTrkCache 92CF3A f
+ctlTCInst 92CF4A f
+ctlTCEnb 92CF76 f
+L1 92CF86 l
+TCdispose 92CF8C f
+L1 92CFA4 l
+ctlSonyEjc 92CFA8 f
+StatusTbl 92D086 l
+DiskStatus 92D094 f
+DriveStatus 92D0C2 f
+PassportSts 92D0CE f
+diskFmtTbl 92D158 l
+CkDrvNum 92D186 f
+TurnIWMoff 92D1B0 f
+TurnIWMon 92D1C4 f
+TurnIWM 92D1D8 f
+TurnExit 92D1EC l
+UpdateChipState 92D1F2 f
+HandleSleep 92D210 f
+Sleep 92D220 l
+JustSleep 92D22E l
+WakeUp 92D230 l
+DiskPrime 92D258 f
+DskRWOff 92D30E f
+GetDrive 92D7C8 f
+GetDrv1 92D7D0 l
+AdrDisk 92D7FA f
+AdrAndSense 92D838 f
+AdrAndStrb 92D85A f
+Pulse 92D85C l
+Seek 92D894 f
+Wait100 92D902 f
+WakeUp 92D950 f
+Recal 92D9C8 f
+recalSlow 92D9F6 l
+SetIWMMode 92DA22 f
+PowerDown 92DA6E f
+InvalTrkCache 92DA92 f
+RWPowerUp 92DAA6 f
+DiskSelect 92DAFC f
+SetUpPoll 92E186 f
+RdAddrSetup 92E1BC f
+RdAddr 92E1D0 f
+RdData 92E2C0 f
+CtlFormat 92E6E0 f
+TrackLoop 92E78E f
+FmtVerExit 92E7C0 l
+SpdSeek 92E7C8 f
+SpdSeekXit 92E7E2 l
+FormatTrack 92E7E4 f
+FmtTrk1 92E800 l
+FtExitOK 92E852 l
+FTExit 92E868 l
+DoFormat 92E87C f
+FillInMarks 92E958 f
+CtlVerify 92E9C4 f
+NxtVClass 92E9EA f
+NxtVTrk 92E9F0 f
+VerTrack 92EA24 f
+VTLoop 92EA44 f
+VTExitOK 92EA9C f
+RestoreBitsBar 933796 f
+GetRectBar 9337D6 f
+SetAltBar 933816 f
+ResetScrollBar 933840 f
+ReturnMenuRgn 93386A f
+MoveIcon 93388E f
+NoMoveS 9339B0 l
+PlotSIcon 9339B2 f
+DoneIPlot 9339EA l
+Clock16M FE0000 l
+RAMconfigBase FE0200 l
