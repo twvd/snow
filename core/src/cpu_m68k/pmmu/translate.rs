@@ -9,11 +9,14 @@ use anyhow::{Result, anyhow, bail};
 use arrayvec::ArrayVec;
 use num_traits::FromPrimitive;
 use proc_bitfield::bitfield;
+use serde::{Deserialize, Serialize};
 
 /// Index in CpuM68k::pmmu_atc tables when URP is in use
 pub(in crate::cpu_m68k) const PMMU_ATC_URP: usize = 0;
 /// Index in CpuM68k::pmmu_atc tables when SRP is in use
 pub(in crate::cpu_m68k) const PMMU_ATC_SRP: usize = 1;
+/// Number of ATC tables in CpuM68k::pmmu_atc (one per root pointer)
+pub(in crate::cpu_m68k) const PMMU_ATCS: usize = 2;
 
 /// Result of a successful page-table walk.
 #[derive(Debug, Clone, Copy)]
@@ -32,7 +35,7 @@ struct PmmuWalkResult {
 }
 
 /// A resolved Address Translation Cache entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(in crate::cpu_m68k) struct PmmuAtcEntry {
     /// Physical page base address (low PS bits are zero).
     pub paddr: Address,
@@ -48,6 +51,68 @@ pub(in crate::cpu_m68k) struct PmmuAtcEntry {
     /// Whether the M bit of the leaf descriptor is already set. When false,
     /// the next write through this entry must RMW the descriptor to set M.
     pub modified: bool,
+}
+
+/// Custom (de)serialization for the PMMU ATC tables.
+///
+/// ATC is a linear table for O(1) lookup, which can get pretty large in serialized
+/// form so this is stored as key/value + size instead.
+pub(in crate::cpu_m68k) mod atc_serde {
+    use super::{PMMU_ATCS, PmmuAtcEntry};
+    use serde::de::Error as _;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    struct AtcTable {
+        size: usize,
+        entries: Vec<(usize, PmmuAtcEntry)>,
+    }
+
+    impl AtcTable {
+        fn from_slots(slots: &[Option<PmmuAtcEntry>]) -> Self {
+            Self {
+                size: slots.len(),
+                entries: slots
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, e)| e.map(|e| (i, e)))
+                    .collect(),
+            }
+        }
+
+        fn into_slots(self) -> Option<Vec<Option<PmmuAtcEntry>>> {
+            let mut slots = vec![None; self.size];
+            for (i, e) in self.entries {
+                *slots.get_mut(i)? = Some(e);
+            }
+            Some(slots)
+        }
+    }
+
+    pub(in crate::cpu_m68k) fn serialize<S>(
+        atc: &[Vec<Option<PmmuAtcEntry>>; PMMU_ATCS],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let tables = [AtcTable::from_slots(&atc[0]), AtcTable::from_slots(&atc[1])];
+        tables.serialize(serializer)
+    }
+
+    pub(in crate::cpu_m68k) fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<[Vec<Option<PmmuAtcEntry>>; PMMU_ATCS], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let [t0, t1] = <[AtcTable; PMMU_ATCS]>::deserialize(deserializer)?;
+        let err = || D::Error::custom("ATC entry index out of range for table size");
+        Ok([
+            t0.into_slots().ok_or_else(err)?,
+            t1.into_slots().ok_or_else(err)?,
+        ])
+    }
 }
 
 bitfield! {
@@ -652,5 +717,44 @@ where
             self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
         }
         Ok((paddr, wp, s, leaf_desc_addr, modified))
+    }
+}
+
+#[cfg(all(test, feature = "savestates"))]
+mod tests {
+    use super::*;
+
+    fn sample_entry(paddr: Address) -> PmmuAtcEntry {
+        PmmuAtcEntry {
+            paddr,
+            wp: true,
+            s: false,
+            leaf_desc_addr: paddr + 0x10,
+            modified: true,
+        }
+    }
+
+    #[test]
+    fn atc_serde_roundtrip() {
+        let mut table0 = vec![None; 1024];
+        table0[3] = Some(sample_entry(0x1000));
+        table0[1000] = Some(sample_entry(0x2000));
+        let mut table1 = vec![None; 64];
+        table1[0] = Some(sample_entry(0x3000));
+
+        let atc = [table0, table1];
+
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct Wrap {
+            #[serde(with = "super::atc_serde")]
+            atc: [Vec<Option<PmmuAtcEntry>>; PMMU_ATCS],
+        }
+
+        let bytes = postcard::to_allocvec(&Wrap { atc: atc.clone() }).unwrap();
+        let restored: Wrap = postcard::from_bytes(&bytes).unwrap();
+
+        assert_eq!(restored.atc[0].len(), 1024);
+        assert_eq!(restored.atc[1].len(), 64);
+        assert_eq!(restored.atc, atc);
     }
 }
