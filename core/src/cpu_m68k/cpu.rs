@@ -542,8 +542,10 @@ where
                 }));
             }
 
-            // We keep the tag full size so we can invalidate easily
-            let cache_tag = fetch_addr & ICACHE_TAG_MASK;
+            // We keep the tag full size so we can invalidate easily.
+            // Supervisor is used to have FC2 in the tag so invalidation across
+            // supervisor<-> user context switches occurs properly.
+            let cache_tag = (fetch_addr & ICACHE_TAG_MASK) | u32::from(self.regs.sr.supervisor());
             let cache_idx = ((fetch_addr & ICACHE_INDEX_MASK) >> 2) as usize;
             let cache_offset = (fetch_addr & ICACHE_OFFSET_MASK) as usize;
             if self.icache_tags[cache_idx] == cache_tag {
