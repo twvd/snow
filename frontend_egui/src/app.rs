@@ -2,6 +2,8 @@ use crate::dialogs::about::AboutDialog;
 use crate::dialogs::confirm::ConfirmDialog;
 use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
 use crate::dialogs::filedialog::SnowFileDialog;
+#[cfg(feature = "floppy_visualizer")]
+use crate::dialogs::floppy_visualizer::FloppyVisualizerDialog;
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
 use crate::emulator::EmulatorState;
 use crate::emulator::{EmulatorInitArgs, ScsiTargets};
@@ -199,6 +201,8 @@ pub struct SnowGui {
     floppy_dialog_last_type: Option<ImageType>,
     floppy_dialog_target: FloppyDialogTarget,
     floppy_dialog_wp: bool,
+    #[cfg(feature = "floppy_visualizer")]
+    floppy_visualizer_dialog: FloppyVisualizerDialog,
     create_disk_dialog: DiskImageDialog,
     record_dialog: SnowFileDialog,
     model_dialog: ModelSelectionDialog,
@@ -420,6 +424,8 @@ impl SnowGui {
             floppy_dialog_last_image: None,
             floppy_dialog_last_type: None,
             floppy_dialog_wp: false,
+            #[cfg(feature = "floppy_visualizer")]
+            floppy_visualizer_dialog: FloppyVisualizerDialog::default(),
             workspace_dialog: SnowFileDialog::new()
                 .add_filter("Snow workspace", &["snoww"])
                 .add_save_extension("Snow workspace", "snoww")
@@ -1847,6 +1853,14 @@ impl SnowGui {
                         self.emu.force_eject(i);
                     }
 
+                    #[cfg(feature = "floppy_visualizer")]
+                    if ui
+                        .add_enabled(!d.ejected, egui::Button::new("Visualize disk..."))
+                        .clicked()
+                    {
+                        self.floppy_visualizer_dialog.open_drive(i);
+                    }
+
                     if d.drive_type.has_pwm_control() {
                         ui.separator();
                         ui.label("Simulate drive RPM variance");
@@ -3144,6 +3158,27 @@ impl eframe::App for SnowGui {
         self.about_dialog.update(ctx);
         self.ui_active &= !self.about_dialog.is_open();
 
+        // Floppy visualizer dialog
+        #[cfg(feature = "floppy_visualizer")]
+        {
+            // Push the latest snapshot from the emulator, if any.
+            if let Some((drive, img)) = self.emu.take_floppy_snapshot() {
+                self.floppy_visualizer_dialog.set_drive_image(drive, img);
+            }
+            // Forward the latest head position for the bound drive.
+            if let Some(drive) = self.floppy_visualizer_dialog.drive()
+                && let Some(fdd) = self.emu.get_fdd_status(drive)
+            {
+                self.floppy_visualizer_dialog
+                    .set_head_track(drive, 0, fdd.track);
+            }
+            // Tick the dialog and dispatch any refresh request it raised.
+            self.floppy_visualizer_dialog.update(ctx);
+            if let Some(drive) = self.floppy_visualizer_dialog.take_refresh_request() {
+                self.emu.request_floppy_snapshot(drive);
+            }
+        }
+
         // Confirmation dialog
         self.confirm_dialog.update(ctx);
         self.ui_active &= !self.confirm_dialog.is_open();
@@ -3224,6 +3259,8 @@ impl eframe::App for SnowGui {
 
         // Floppy image picker dialog
         let mut last = None;
+        #[cfg(feature = "floppy_visualizer")]
+        let mut close_after_visualize = false;
         self.floppy_dialog
             .update_with_right_panel_ui(ctx, frame, &mut |ui, dia| {
                 if dia.selected_entry().is_some() {
@@ -3301,9 +3338,24 @@ impl eframe::App for SnowGui {
                                 "Mount write-protected",
                             ),
                         );
+                        #[cfg(feature = "floppy_visualizer")]
+                        {
+                            ui.separator();
+                            if ui.button("Visualize disk...").clicked()
+                                && let Some(entry) = last.as_ref()
+                            {
+                                self.floppy_visualizer_dialog
+                                    .open_file(entry.to_path_buf(), Box::new(img.clone()));
+                                close_after_visualize = true;
+                            }
+                        }
                     }
                 }
             });
+        #[cfg(feature = "floppy_visualizer")]
+        if close_after_visualize {
+            self.floppy_dialog.close();
+        }
         if last.clone().map(|d| d.to_path_buf())
             != self.floppy_dialog_last.clone().map(|d| d.to_path_buf())
         {
