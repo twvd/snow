@@ -25,11 +25,13 @@ pub struct Toby<TRenderer: Renderer> {
     rom: Vec<u8>,
     pub vram: Vec<u8>,
 
-    depth: u8,
-    line_offset: usize,
+    /// Color depth: 0 = 1bpp, 1 = 2bpp, 2 = 4bpp, 3 = 8bpp
+    mode: u8,
 
+    /// CLUT: 256 entries of R, G, B
     clut: Vec<u8>,
-    clut_idx: usize,
+    clut_addr: usize,
+    clut_comp: usize,
 
     vblank_irq: bool,
     vblank_enable: bool,
@@ -46,26 +48,23 @@ where
     const H_VISIBLE: usize = 640;
     /// Visible lines in one frame
     const V_VISIBLE: usize = 480;
-    /// Physical dots per scanline in VRAM (only the first H_VISIBLE are shown)
-    const H_TOTAL: usize = 1024;
     /// Amount of VRAM present
     const VRAM_SIZE: usize = 0x8_0000;
+    /// Byte offset of the visible framebuffer within VRAM
+    const FB_BASE: usize = 0x20;
 
     /// Ticks per frame at ~60 Hz
     const FRAME_TICKS: Ticks = 16_000_000 / 60;
 
     pub fn new(rom: &[u8], renderer: TRenderer) -> Self {
-        let mut clut = vec![0u8; 256 * 3];
-        clut[(128 * 3)..].fill(0xFF);
-
         Self {
             renderer: Some(renderer),
             rom: rom.to_owned(),
             vram: vec![0; Self::VRAM_SIZE],
-            depth: 1,
-            line_offset: 0,
-            clut,
-            clut_idx: 0,
+            mode: 0,
+            clut: vec![0; 256 * 3],
+            clut_addr: 0,
+            clut_comp: 0,
             vblank_irq: false,
             vblank_enable: false,
             vblank_ticks: 0,
@@ -83,7 +82,7 @@ where
     }
 
     pub fn bpp(&self) -> u8 {
-        self.depth
+        1 << self.mode
     }
 
     fn read_rom(&self, a: u32) -> u8 {
@@ -101,33 +100,46 @@ where
     pub fn render_to(&self, buf: &mut DisplayBuffer) {
         buf.set_size(Self::H_VISIBLE, Self::V_VISIBLE);
 
+        let fb = &self.vram[Self::FB_BASE..];
+        // Bytes per scanline: 128 (1bpp), 256 (2bpp), 512 (4bpp), 1024 (8bpp)
+        let stride = 128usize << self.mode;
+
+        // The framebuffer is packed with the leftmost pixel in the most significant
+        // bits and the pixel value left-aligned to form the CLUT index (so for
+        // 2bpp the indices are 0x00/0x40/0x80/0xC0, for 4bpp 0x00..0xF0).
         for y in 0..Self::V_VISIBLE {
             for x in 0..Self::H_VISIBLE {
-                // Position within the (padded) physical scanline
-                let i = y * Self::H_TOTAL + x;
-                let code = match self.depth {
+                let index = match self.mode {
+                    0 => {
+                        // 1 bpp
+                        let byte = fb[y * stride + x / 8];
+                        usize::from((byte << (x % 8)) & 0x80)
+                    }
                     1 => {
-                        let byte = self.vram[self.line_offset + i / 8];
-                        let bit = byte & (0x80 >> (i % 8)) != 0;
-                        if bit { 0xFF } else { 0x7F }
+                        // 2 bpp
+                        let byte = fb[y * stride + x / 4];
+                        usize::from((byte << ((x % 4) * 2)) & 0xC0)
                     }
                     2 => {
-                        let byte = u16::from(self.vram[self.line_offset + i / 4]);
-                        let shift = (i % 4) * 2;
-                        ((byte << shift) & 0xC0) as u8 | 0x3F
+                        // 4 bpp
+                        let byte = fb[y * stride + x / 2];
+                        if x % 2 == 0 {
+                            usize::from(byte & 0xF0)
+                        } else {
+                            usize::from((byte & 0x0F) << 4)
+                        }
                     }
-                    4 => {
-                        let byte = u16::from(self.vram[self.line_offset + i / 2]);
-                        let shift = (i % 2) * 4;
-                        ((byte << shift) & 0xF0) as u8 | 0x0F
+                    3 => {
+                        // 8 bpp
+                        usize::from(fb[y * stride + x])
                     }
-                    _ => self.vram[self.line_offset + i],
-                } as usize;
+                    _ => unreachable!(),
+                };
 
                 let out = (y * Self::H_VISIBLE + x) * 4;
-                buf[out] = self.clut[code * 3];
-                buf[out + 1] = self.clut[code * 3 + 1];
-                buf[out + 2] = self.clut[code * 3 + 2];
+                buf[out] = self.clut[index * 3];
+                buf[out + 1] = self.clut[index * 3 + 1];
+                buf[out + 2] = self.clut[index * 3 + 2];
                 buf[out + 3] = 0xFF;
             }
         }
@@ -157,11 +169,10 @@ where
         // The card decodes 20 address bits and mirrors the rest.
         let a = addr & 0x0F_FFFF;
         match a {
-            // Framebuffer
-            0x0_0000..=0x7_FFFF => Some(self.vram[a as usize]),
+            // Framebuffer (stored inverted)
+            0x0_0000..=0x7_FFFF => Some(!self.vram[a as usize]),
 
             // VBlank status: 0 during vertical blanking, 0xFF otherwise.
-            // Only in the low byte of the Long
             0xD_0000..=0xD_FFFF if a & 3 == 3 => {
                 let in_vblank = self.vblank_ticks >= Self::FRAME_TICKS * 480 / 525;
                 Some(if in_vblank { 0x00 } else { 0xFF })
@@ -178,55 +189,47 @@ where
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
         let a = addr & 0x0F_FFFF;
         match a {
-            // Framebuffer
+            // Framebuffer (stored inverted)
             0x0_0000..=0x7_FFFF => {
-                self.vram[a as usize] = val;
+                self.vram[a as usize] = !val;
                 Some(())
             }
 
-            // Color depth select
-            0x8_0000 => {
-                self.depth = match val {
-                    0xDF => 1,
-                    0xBF => 2,
-                    0x7F => 4,
-                    0xFF => 8,
-                    _ => self.depth,
-                };
-                Some(())
-            }
-
-            // Framebuffer base/scroll offset
-            0x8_000C => {
-                self.line_offset = 4 * (usize::from(!val) & 0xFF);
-                Some(())
-            }
-
-            // Other CRTC/timing registers.
-            0x8_0001..=0x8_FFFF => Some(()),
-
-            // CLUT data write. The hardware inverts the value; the write pointer
-            // auto-decrements (B, G, R order within an entry).
-            0x9_0018 => {
-                if let Some(e) = self.clut.get_mut(self.clut_idx) {
-                    *e = 255 - val;
+            // CRTC/timing registers. Written 32-bits, inverted
+            0x8_0000..=0x8_FFFF => {
+                if a & 3 == 3 {
+                    let reg = ((a >> 2) & 0xF) as usize;
+                    if reg == 0xF {
+                        self.mode = (!val >> 4) & 3;
+                    }
                 }
-                self.clut_idx = if self.clut_idx == 0 {
-                    self.clut.len() - 1
-                } else {
-                    self.clut_idx - 1
-                };
                 Some(())
             }
 
-            // CLUT index: point at the B component of the selected entry
-            0x9_001C => {
-                self.clut_idx = usize::from(val) * 3 + 2;
+            // CLUT/RAMDAC
+            0x9_0000..=0x9_FFFF => {
+                if a & 3 == 0 {
+                    match (a >> 2) & 3 {
+                        1 | 3 => {
+                            self.clut_addr = usize::from(!val);
+                            self.clut_comp = 0;
+                        }
+                        2 => {
+                            let idx = self.clut_addr * 3 + self.clut_comp;
+                            if let Some(e) = self.clut.get_mut(idx) {
+                                *e = !val;
+                            }
+                            self.clut_comp += 1;
+                            if self.clut_comp == 3 {
+                                self.clut_comp = 0;
+                                self.clut_addr = (self.clut_addr + 1) & 0xFF;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 Some(())
             }
-
-            // Other RAMDAC registers
-            0x9_0000..=0x9_FFFF => Some(()),
 
             // VBlank interrupt control
             0xA_0000..=0xA_FFFF => {
@@ -273,9 +276,8 @@ where
             dbgprop_group!(
                 "Registers",
                 vec![
-                    dbgprop_byte!("Depth (bpp)", self.depth),
-                    dbgprop_long!("Line offset", self.line_offset as u32),
-                    dbgprop_long!("CLUT write index", self.clut_idx as u32),
+                    dbgprop_byte!("Depth (bpp)", self.bpp()),
+                    dbgprop_long!("CLUT write address", self.clut_addr as u32),
                 ]
             ),
             dbgprop_bool!("VBlank enable", self.vblank_enable),
