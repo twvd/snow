@@ -12,12 +12,13 @@ use crate::mac::asc::Asc;
 use crate::mac::nubus::NubusCard;
 use crate::mac::nubus::mdc12::Mdc12;
 use crate::mac::nubus::se30video::SE30Video;
+use crate::mac::nubus::toby::Toby;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
-use crate::mac::{MacModel, MacMonitor};
+use crate::mac::{MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind};
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
@@ -169,13 +170,36 @@ where
     pub fn new(
         model: MacModel,
         rom: &[u8],
-        videorom: &[u8],
+        nubus: &[NubusCardConfig],
         extension_rom: Option<&[u8]>,
         mut renderers: Vec<TRenderer>,
         monitor: MacMonitor,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
     ) -> Self {
+        // Build the NuBus cards from the provided configuration.
+        let mut nubus_devices: [Option<NubusCard<TRenderer>>; 6] = core::array::from_fn(|_| None);
+        for cfg in nubus {
+            assert!(
+                model.nubus_slots().contains(&cfg.slot),
+                "NuBus slot {:#X} not available on {}",
+                cfg.slot,
+                model
+            );
+            let idx = (cfg.slot - 0x9) as usize;
+            // TODO non-video cards
+            let renderer = renderers
+                .pop()
+                .expect("not enough renderers for NuBus cards");
+            log::info!("NuBus slot {:#X}: {}", cfg.slot, cfg.kind);
+            nubus_devices[idx] = Some(match cfg.kind {
+                NubusDeviceKind::Mdc12 => NubusCard::MDC12(Mdc12::new(cfg.rom, renderer, monitor)),
+                NubusDeviceKind::Toby => NubusCard::Toby(Toby::new(cfg.rom, renderer)),
+                NubusDeviceKind::SE30Video => {
+                    NubusCard::SE30Video(SE30Video::new(cfg.rom, renderer))
+                }
+            });
+        }
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
         let ram_config = Self::RAM_CONFIG
             .iter()
@@ -218,25 +242,7 @@ where
             //vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
 
-            nubus_devices: if model == MacModel::SE30 {
-                [
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some(NubusCard::SE30Video(SE30Video::new(
-                        videorom,
-                        renderers.pop().unwrap(),
-                    ))),
-                ]
-            } else {
-                core::array::from_fn(|_| {
-                    renderers
-                        .pop()
-                        .map(|r| NubusCard::MDC12(Mdc12::new(videorom, r, monitor)))
-                })
-            },
+            nubus_devices,
             mouse_mode,
         };
 
@@ -255,14 +261,10 @@ where
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
     pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        if let Some(NubusCard::MDC12(c)) = self.nubus_devices[0].as_mut() {
-            c.renderer = Some(renderer);
-            // Make sure we have at least the last frame available
-            c.render().unwrap();
-        } else if let Some(NubusCard::SE30Video(c)) = self.nubus_devices[5].as_mut() {
-            c.renderer = Some(renderer);
-            // Make sure we have at least the last frame available
-            c.render().unwrap();
+        // TODO multiple cards
+        assert_eq!(self.nubus_devices.iter().count(), 1);
+        if let Some(card) = self.nubus_devices.iter_mut().flatten().next() {
+            card.reinstall_renderer(renderer).unwrap();
         }
 
         self.asc.after_deserialize();
@@ -442,6 +444,7 @@ where
                     let written = match dev {
                         NubusCard::MDC12(dev) => dev.write(addr & 0xFF_FFFF, val),
                         NubusCard::SE30Video(dev) => dev.write(addr & 0xFF_FFFF, val),
+                        NubusCard::Toby(dev) => dev.write(addr & 0xFF_FFFF, val),
                     };
                     Self::dev_write(addr, val, written);
                     Some(())
@@ -537,6 +540,7 @@ where
                     let val = match dev {
                         NubusCard::MDC12(dev) => dev.read(addr & 0xFF_FFFF),
                         NubusCard::SE30Video(dev) => dev.read(addr & 0xFF_FFFF),
+                        NubusCard::Toby(dev) => dev.read(addr & 0xFF_FFFF),
                     };
                     Some(Self::dev_read(addr, val))
                 } else {
@@ -657,6 +661,7 @@ where
             match d {
                 NubusCard::MDC12(d) => d.blank()?,
                 NubusCard::SE30Video(d) => d.blank()?,
+                NubusCard::Toby(d) => d.blank()?,
             }
         }
         Ok(())

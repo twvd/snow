@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -9,14 +10,20 @@ use eframe::egui;
 use sha2::{Digest, Sha256};
 use snow_core::emulator::MouseMode;
 use snow_core::mac::swim::drive::DriveType;
-use snow_core::mac::{MacModel, MacMonitor};
+use snow_core::mac::{MacModel, MacMonitor, NubusDeviceKind};
 use strum::IntoEnumIterator;
+
+/// Video cards selectable for NuBus-equipped models.
+const SELECTABLE_VIDEO_CARDS: &[NubusDeviceKind] = &[NubusDeviceKind::Mdc12, NubusDeviceKind::Toby];
+
+/// Video cards that support a user-selectable monitor.
+const VIDEO_CARDS_WITH_MONITOR: &[NubusDeviceKind] = &[NubusDeviceKind::Mdc12];
 
 /// Dialog for selecting Macintosh model and associated ROMs
 pub struct ModelSelectionDialog {
     open: bool,
     last_roms: Vec<(MacModel, PathBuf)>,
-    last_display_roms: Vec<(MacModel, PathBuf)>,
+    roms_by_card: Vec<(NubusDeviceKind, PathBuf)>,
     selected_model: MacModel,
     init_args: EmulatorInitArgs,
     selected_monitor: MacMonitor,
@@ -27,11 +34,15 @@ pub struct ModelSelectionDialog {
     main_rom_valid: bool,
     main_rom_dialog: SnowFileDialog,
 
-    // Display Card ROM (for Mac II only)
+    // Display Card ROM (for applicable models)
     display_rom_path: String,
     display_rom_valid: bool,
     display_rom_dialog: SnowFileDialog,
     display_rom_required: bool,
+
+    // Selected NuBus video card and per-card remembered ROM paths
+    selected_video_card: NubusDeviceKind,
+    card_rom_paths: HashMap<NubusDeviceKind, String>,
 
     // PRAM path
     pram_enabled: bool,
@@ -75,7 +86,7 @@ impl Default for ModelSelectionDialog {
         Self {
             open: false,
             last_roms: vec![],
-            last_display_roms: vec![],
+            roms_by_card: vec![],
             selected_model: MacModel::Plus,
             init_args: Default::default(),
             selected_monitor: MacMonitor::default(),
@@ -95,6 +106,8 @@ impl Default for ModelSelectionDialog {
                 .show_pinned_folders(false)
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
             display_rom_required: false,
+            selected_video_card: NubusDeviceKind::default(),
+            card_rom_paths: HashMap::new(),
 
             pram_enabled: false,
             pram_dialog: SnowFileDialog::new()
@@ -121,11 +134,11 @@ impl ModelSelectionDialog {
     pub fn open(
         &mut self,
         last_roms: Vec<(MacModel, PathBuf)>,
-        last_display_roms: Vec<(MacModel, PathBuf)>,
+        roms_by_card: Vec<(NubusDeviceKind, PathBuf)>,
     ) {
         self.open = true;
         self.last_roms = last_roms;
-        self.last_display_roms = last_display_roms;
+        self.roms_by_card = roms_by_card;
         self.main_rom_error.clear();
         self.display_rom_error.clear();
         self.result = None;
@@ -149,16 +162,30 @@ impl ModelSelectionDialog {
         {
             self.main_rom_path = path.to_string_lossy().to_string();
         }
-        if self.display_rom_required
-            && let Some((_, path)) = self
-                .last_display_roms
-                .iter()
-                .find(|(m, _)| *m == self.selected_model)
-        {
-            self.display_rom_path = path.to_string_lossy().to_string();
+        self.card_rom_paths.clear();
+        for (card, path) in &self.roms_by_card {
+            self.card_rom_paths
+                .insert(*card, path.to_string_lossy().to_string());
         }
+        self.display_rom_path = self
+            .card_rom_paths
+            .get(&self.selected_video_card)
+            .cloned()
+            .unwrap_or_default();
 
         self.do_validate_roms();
+    }
+
+    /// Called when the selected video card changes
+    fn do_card_changed(&mut self, previous_card: NubusDeviceKind) {
+        self.card_rom_paths
+            .insert(previous_card, self.display_rom_path.clone());
+        self.display_rom_path = self
+            .card_rom_paths
+            .get(&self.selected_video_card)
+            .cloned()
+            .unwrap_or_default();
+        self.do_validate_display_rom();
     }
 
     pub fn is_open(&self) -> bool {
@@ -188,7 +215,11 @@ impl ModelSelectionDialog {
         if self.selected_model == MacModel::SE30 {
             "SE/30 video ROM"
         } else {
-            "Macintosh Display Card 8-24 ROM (341-0868)"
+            match self.selected_video_card {
+                NubusDeviceKind::Toby => "Toby video card ROM (342-0008)",
+                NubusDeviceKind::Mdc12 => "Display Card 8-24 ROM (341-0868)",
+                _ => todo!(),
+            }
         }
     }
 
@@ -251,17 +282,22 @@ impl ModelSelectionDialog {
         );
         let digest = hash.finalize();
 
-        if (self.selected_model != MacModel::SE30
-            && digest[..]
-                == hex_literal::hex!(
+        // Expected hash for the selected video card.
+        let expected: [u8; 32] = if self.selected_model == MacModel::SE30 {
+            hex_literal::hex!("8af892fd7fff89c2151bb3027f3dc61e531f24e4adb0e3face95c90daece4409")
+        } else {
+            match self.selected_video_card {
+                NubusDeviceKind::Toby => hex_literal::hex!(
+                    "02261d5b8739352ead945de0fdccd3a364890fb67d75eb5449e4bd19e18c06fc"
+                ),
+                NubusDeviceKind::Mdc12 => hex_literal::hex!(
                     "e2e763a6b432c9196f619a9f90107726ab1a84a1d54242fe5f5182bf3c97b238"
-                ))
-            || (self.selected_model == MacModel::SE30
-                && digest[..]
-                    == hex_literal::hex!(
-                        "8af892fd7fff89c2151bb3027f3dc61e531f24e4adb0e3face95c90daece4409"
-                    ))
-        {
+                ),
+                _ => todo!(),
+            }
+        };
+
+        if digest[..] == expected {
             self.display_rom_valid = true;
             Ok(())
         } else {
@@ -386,8 +422,30 @@ impl ModelSelectionDialog {
                 }
                 ui.end_row();
 
-                // Display Card ROM selection (Mac II only)
+                // Display Card ROM selection
                 if self.display_rom_required {
+                    // Video card selection
+                    if self.selected_model != MacModel::SE30 {
+                        ui.label("Video card");
+                        let prev_card = self.selected_video_card;
+                        egui::ComboBox::new(egui::Id::new("Select video card"), "")
+                            .selected_text(format!("{}", self.selected_video_card))
+                            .show_ui(ui, |ui| {
+                                for &card in SELECTABLE_VIDEO_CARDS {
+                                    ui.selectable_value(
+                                        &mut self.selected_video_card,
+                                        card,
+                                        card.to_string(),
+                                    );
+                                }
+                            });
+                        ui.label("");
+                        ui.end_row();
+                        if prev_card != self.selected_video_card {
+                            self.do_card_changed(prev_card);
+                        }
+                    }
+
                     ui.label(self.video_rom_description());
                     ui.horizontal(|ui| {
                         if ui
@@ -424,7 +482,10 @@ impl ModelSelectionDialog {
                     ui.label(egui::RichText::from("Select peripherals").strong());
                     ui.end_row();
 
-                    if self.selected_model != MacModel::SE30 {
+                    // Monitors dropdown
+                    if self.selected_model != MacModel::SE30
+                        && VIDEO_CARDS_WITH_MONITOR.contains(&self.selected_video_card)
+                    {
                         ui.label("Monitor");
                         egui::ComboBox::new(egui::Id::new("Select monitor"), "")
                             .selected_text(format!("{}", self.selected_monitor))
@@ -437,8 +498,8 @@ impl ModelSelectionDialog {
                                     );
                                 }
                             });
+                        ui.end_row();
                     }
-                    ui.end_row();
                 }
                 if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
                     ui.checkbox(&mut self.init_args.pmmu_enabled, "Enable 68851 PMMU");
@@ -607,6 +668,7 @@ impl ModelSelectionDialog {
                                 } else {
                                     None
                                 },
+                                video_card: self.selected_video_card,
                                 // Deprecated
                                 mouse_disabled: None,
                                 override_fdd_type: if matches!(

@@ -30,7 +30,7 @@ use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
 use crate::mac::serial_bridge::{SccBridge, SerialBridgeStatus};
 use crate::mac::swim::drive::DriveType;
-use crate::mac::{ExtraROMs, MacModel, MacMonitor};
+use crate::mac::{ExtraROMs, MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind};
 use crate::renderer::AudioProvider;
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::{DisplayBuffer, Renderer};
@@ -323,12 +323,19 @@ impl Emulator {
             MacModel::MacII | MacModel::MacIIFDHD => {
                 assert!(override_fdd_type.is_none());
 
-                // Find display card ROM
-                let Some(ExtraROMs::MDC12(mdcrom)) =
-                    extra_roms.iter().find(|p| matches!(p, ExtraROMs::MDC12(_)))
-                else {
+                // Find display card ROM and the selected card type
+                let Some((kind, mdcrom)) = extra_roms.iter().find_map(|p| match p {
+                    ExtraROMs::MDC12(data) => Some((NubusDeviceKind::Mdc12, *data)),
+                    ExtraROMs::Toby(data) => Some((NubusDeviceKind::Toby, *data)),
+                    _ => None,
+                }) else {
                     bail!("Macintosh II requires display card ROM")
                 };
+                let nubus = [NubusCardConfig {
+                    slot: 0x9,
+                    kind,
+                    rom: mdcrom,
+                }];
 
                 // Find extension ROM if present
                 let extension_rom = extra_roms.iter().find_map(|p| match p {
@@ -341,7 +348,7 @@ impl Emulator {
                     let bus = MacIIBus::new(
                         model,
                         rom,
-                        mdcrom,
+                        &nubus,
                         extension_rom,
                         vec![renderer],
                         monitor.unwrap_or_default(),
@@ -357,7 +364,7 @@ impl Emulator {
                     let bus = MacIIBus::new(
                         model,
                         rom,
-                        mdcrom,
+                        &nubus,
                         extension_rom,
                         vec![renderer],
                         monitor.unwrap_or_default(),
@@ -373,12 +380,19 @@ impl Emulator {
             MacModel::MacIIx | MacModel::MacIIcx => {
                 assert!(override_fdd_type.is_none());
 
-                // Find display card ROM
-                let Some(ExtraROMs::MDC12(mdcrom)) =
-                    extra_roms.iter().find(|p| matches!(p, ExtraROMs::MDC12(_)))
-                else {
+                // Find display card ROM and the selected card type
+                let Some((kind, mdcrom)) = extra_roms.iter().find_map(|p| match p {
+                    ExtraROMs::MDC12(data) => Some((NubusDeviceKind::Mdc12, *data)),
+                    ExtraROMs::Toby(data) => Some((NubusDeviceKind::Toby, *data)),
+                    _ => None,
+                }) else {
                     bail!("Macintosh II requires display card ROM")
                 };
+                let nubus = [NubusCardConfig {
+                    slot: 0x9,
+                    kind,
+                    rom: mdcrom,
+                }];
 
                 // Find extension ROM if present
                 let extension_rom = extra_roms.iter().find_map(|p| match p {
@@ -390,7 +404,7 @@ impl Emulator {
                 let bus = MacIIBus::new(
                     model,
                     rom,
-                    mdcrom,
+                    &nubus,
                     extension_rom,
                     vec![renderer],
                     monitor.unwrap_or_default(),
@@ -412,6 +426,11 @@ impl Emulator {
                 else {
                     bail!("Macintosh SE/30 requires video ROM")
                 };
+                let nubus = [NubusCardConfig {
+                    slot: 0xE,
+                    kind: NubusDeviceKind::SE30Video,
+                    rom: vrom,
+                }];
 
                 // Find extension ROM if present
                 let extension_rom = extra_roms.iter().find_map(|p| match p {
@@ -423,7 +442,7 @@ impl Emulator {
                 let bus = MacIIBus::new(
                     model,
                     rom,
-                    vrom,
+                    &nubus,
                     extension_rom,
                     vec![renderer],
                     monitor.unwrap_or_default(),
