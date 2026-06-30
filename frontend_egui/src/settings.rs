@@ -1,7 +1,7 @@
 use anyhow::Result;
 use egui_file_dialog::FileDialogStorage;
 use serde::{Deserialize, Serialize};
-use snow_core::mac::MacModel;
+use snow_core::mac::{MacModel, NubusDeviceKind};
 use std::path::{Path, PathBuf};
 use strum::{Display, EnumIter};
 
@@ -39,7 +39,10 @@ pub struct AppSettings {
     pub recent_floppy_images: Vec<PathBuf>,
     pub recent_cd_images: Vec<PathBuf>,
     pub last_roms: Vec<(MacModel, PathBuf)>,
+    // Deprecated; now roms_by_card
+    #[serde(skip_serializing)]
     pub last_display_roms: Vec<(MacModel, PathBuf)>,
+    pub roms_by_card: Vec<(NubusDeviceKind, PathBuf)>,
 
     pub fd_hdd: FileDialogStorage,
     pub fd_cdrom: FileDialogStorage,
@@ -73,6 +76,7 @@ impl Default for AppSettings {
             recent_cd_images: Vec::new(),
             last_roms: Vec::new(),
             last_display_roms: Vec::new(),
+            roms_by_card: Vec::new(),
             fd_hdd: Default::default(),
             fd_cdrom: Default::default(),
             fd_cdrom_files: Default::default(),
@@ -212,13 +216,24 @@ impl AppSettings {
         self.last_roms.clone()
     }
 
-    pub fn get_last_display_roms(&self) -> Vec<(MacModel, PathBuf)> {
-        self.last_display_roms.clone()
+    pub fn get_last_card_roms(&self) -> Vec<(NubusDeviceKind, PathBuf)> {
+        let mut out: Vec<(NubusDeviceKind, PathBuf)> = Vec::new();
+
+        // Migrate deprecated last_display_roms
+        if let Some((_, p)) = self.last_display_roms.last() {
+            out.push((NubusDeviceKind::Mdc12, p.clone()));
+        }
+
+        for (c, p) in &self.roms_by_card {
+            out.retain(|(oc, _)| oc != c);
+            out.push((*c, p.clone()));
+        }
+        out
     }
 
-    pub fn set_last_display_rom(&mut self, model: MacModel, path: &Path) {
-        self.last_display_roms.retain(|(m, _)| *m != model);
-        self.last_display_roms.push((model, path.to_path_buf()));
+    pub fn set_last_card_rom(&mut self, card: NubusDeviceKind, path: &Path) {
+        self.roms_by_card.retain(|(c, _)| *c != card);
+        self.roms_by_card.push((card, path.to_path_buf()));
         self.save();
     }
 

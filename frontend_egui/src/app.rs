@@ -674,7 +674,7 @@ impl SnowGui {
                 if ui.button("Load ROM...").clicked() {
                     self.model_dialog.open(
                         self.settings.get_last_roms(),
-                        self.settings.get_last_display_roms(),
+                        self.settings.get_last_card_roms(),
                     );
                 }
                 if self.emu.is_initialized() {
@@ -1914,7 +1914,7 @@ impl SnowGui {
             {
                 self.model_dialog.open(
                     self.settings.get_last_roms(),
-                    self.settings.get_last_display_roms(),
+                    self.settings.get_last_card_roms(),
                 );
             }
             if self.emu.is_initialized() {
@@ -2429,7 +2429,7 @@ impl SnowGui {
         if let Some(model) = model {
             self.settings.set_last_rom(model, path);
             if let Some(dr_path) = display_rom_path {
-                self.settings.set_last_display_rom(model, dr_path);
+                self.settings.set_last_card_rom(args.video_card, dr_path);
             }
         }
 

@@ -27,7 +27,7 @@ use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use snow_core::mac::swim::drive::DriveType;
-use snow_core::mac::{ExtraROMs, MacModel, MacMonitor};
+use snow_core::mac::{ExtraROMs, MacModel, MacMonitor, NubusDeviceKind};
 use snow_core::renderer::DisplayBuffer;
 use snow_core::tickable::{Tickable, Ticks};
 use snow_core::types::LatchingEvent;
@@ -101,6 +101,9 @@ pub struct EmulatorInitArgs {
 
     /// Enable PMMU (Macintosh II only)
     pub pmmu_enabled: bool,
+
+    /// Selected NuBus video card (if applicable)
+    pub video_card: NubusDeviceKind,
 }
 
 /// Manages the state of the emulator and feeds input to the GUI
@@ -214,7 +217,12 @@ impl EmulatorState {
             if model == MacModel::SE30 {
                 extra_roms.push(ExtraROMs::SE30Video(display_rom));
             } else {
-                extra_roms.push(ExtraROMs::MDC12(display_rom));
+                // Macintosh II family: the card is chosen explicitly
+                match args.video_card {
+                    NubusDeviceKind::Toby => extra_roms.push(ExtraROMs::Toby(display_rom)),
+                    NubusDeviceKind::Mdc12 => extra_roms.push(ExtraROMs::MDC12(display_rom)),
+                    _ => todo!(),
+                }
             }
         }
         if let Some(extension_rom) = extension_rom {

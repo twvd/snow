@@ -251,6 +251,16 @@ impl MacModel {
         }
     }
 
+    /// The NuBus slot numbers ($9-$E) available on this model.
+    pub fn nubus_slots(self) -> &'static [u8] {
+        match self {
+            Self::MacII | Self::MacIIFDHD | Self::MacIIx => &[0x9, 0xA, 0xB, 0xC, 0xD, 0xE],
+            Self::MacIIcx => &[0x9, 0xA, 0xB],
+            Self::SE30 => &[0xE],
+            _ => &[],
+        }
+    }
+
     pub fn via2_b_in(self) -> macii::via2::RegisterB {
         match self {
             Self::Early128K
@@ -323,10 +333,64 @@ impl Display for MacModel {
 pub enum ExtraROMs<'a> {
     /// Macintosh Display Card 8-24
     MDC12(&'a [u8]),
+    /// Macintosh II "Toby" video card
+    Toby(&'a [u8]),
     /// SE/30 video ROM
     SE30Video(&'a [u8]),
     /// Extension ROM
     ExtensionROM(&'a [u8]),
+}
+
+/// A type of card that can occupy a NuBus slot.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    PartialEq,
+    Hash,
+    Serialize,
+    Deserialize,
+    strum::EnumIter,
+    strum::IntoStaticStr,
+)]
+pub enum NubusDeviceKind {
+    /// Macintosh Display Card 8-24 (MDC12, ROM 341-0868)
+    // The default here is the fallback for workspace files that existed before
+    // NuBus device list was passed to the emulator core and should always remain
+    // on Mdc12.
+    #[default]
+    Mdc12,
+    /// Macintosh II Video Card ("Toby", ROM 342-0008)
+    Toby,
+    /// Macintosh SE/30 onboard video
+    SE30Video,
+}
+
+impl Display for NubusDeviceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Mdc12 => "Macintosh Display Card 8-24",
+                Self::Toby => "Macintosh II Video Card (Toby)",
+                Self::SE30Video => "Macintosh SE/30 onboard video",
+            }
+        )
+    }
+}
+
+/// Configuration for a single NuBus slot: which card, in which slot, with which
+/// declaration ROM.
+pub struct NubusCardConfig<'a> {
+    /// Slot number ($9-$E)
+    pub slot: u8,
+    /// Type of card
+    pub kind: NubusDeviceKind,
+    /// Declaration ROM for the card
+    pub rom: &'a [u8],
 }
 
 /// Definitions of Macintosh monitors
