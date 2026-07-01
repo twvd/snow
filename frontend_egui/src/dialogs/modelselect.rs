@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::dialogs::filedialog::SnowFileDialog;
 use crate::emulator::EmulatorInitArgs;
@@ -144,6 +144,49 @@ impl ModelSelectionDialog {
         self.result = None;
 
         self.do_model_changed();
+    }
+
+    /// Overrides the dialog's current values before opening
+    #[allow(clippy::too_many_arguments)]
+    pub fn prefill(
+        &mut self,
+        model: Option<MacModel>,
+        main_rom_path: Option<&Path>,
+        display_rom_path: Option<&Path>,
+        pram_path: Option<&Path>,
+        extension_rom_path: Option<&Path>,
+        init_args: &EmulatorInitArgs,
+    ) {
+        if let Some(model) = model {
+            self.selected_model = model;
+        }
+        self.selected_video_card = init_args.video_card;
+        if let Some(monitor) = init_args.monitor {
+            self.selected_monitor = monitor;
+        }
+        self.early_800k = init_args.override_fdd_type == Some(DriveType::GCR800KPWM);
+        self.init_args = init_args.clone();
+
+        // Recompute model-dependent state (e.g. whether a display ROM is required).
+        self.update_display_rom_requirement();
+
+        if let Some(p) = main_rom_path {
+            self.main_rom_path = p.to_string_lossy().to_string();
+        }
+        if let Some(p) = display_rom_path {
+            self.display_rom_path = p.to_string_lossy().to_string();
+            self.card_rom_paths
+                .insert(self.selected_video_card, self.display_rom_path.clone());
+        }
+        self.pram_enabled = pram_path.is_some();
+        self.pram_path = pram_path
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.extension_rom_path = extension_rom_path
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        self.do_validate_roms();
     }
 
     fn do_model_changed(&mut self) {
