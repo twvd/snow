@@ -202,6 +202,7 @@ pub struct SnowGui {
     create_disk_dialog: DiskImageDialog,
     record_dialog: SnowFileDialog,
     model_dialog: ModelSelectionDialog,
+    model_dialog_prefill_pending: bool,
     about_dialog: AboutDialog,
     state_dialog: SnowFileDialog,
     state_dialog_last: Option<DirectoryEntry>,
@@ -429,6 +430,7 @@ impl SnowGui {
                 .storage(settings.fd_workspace),
             create_disk_dialog: Default::default(),
             model_dialog: Default::default(),
+            model_dialog_prefill_pending: false,
             about_dialog: AboutDialog::new(&cc.egui_ctx),
             state_dialog: SnowFileDialog::new()
                 .add_filter("Snow state file", &["snows"])
@@ -672,10 +674,7 @@ impl SnowGui {
             ui.menu_button("Machine", |ui| {
                 ui.set_min_width(Self::SUBMENU_WIDTH);
                 if ui.button("Load ROM...").clicked() {
-                    self.model_dialog.open(
-                        self.settings.get_last_roms(),
-                        self.settings.get_last_card_roms(),
-                    );
+                    self.open_model_dialog();
                 }
                 if self.emu.is_initialized() {
                     if ui.button("Reset").clicked() {
@@ -1912,10 +1911,7 @@ impl SnowGui {
                 .on_hover_text("Load ROM...")
                 .clicked()
             {
-                self.model_dialog.open(
-                    self.settings.get_last_roms(),
-                    self.settings.get_last_card_roms(),
-                );
+                self.open_model_dialog();
             }
             if self.emu.is_initialized() {
                 ui.separator();
@@ -2381,6 +2377,25 @@ impl SnowGui {
         ));
     }
 
+    fn open_model_dialog(&mut self) {
+        self.model_dialog.open(
+            self.settings.get_last_roms(),
+            self.settings.get_last_card_roms(),
+        );
+
+        if std::mem::take(&mut self.model_dialog_prefill_pending) {
+            // Prefill the dialog from the last loaded workspace
+            self.model_dialog.prefill(
+                self.workspace.model,
+                self.workspace.get_rom_path().as_deref(),
+                self.workspace.get_display_card_rom_path().as_deref(),
+                self.workspace.get_pram_path().as_deref(),
+                self.workspace.get_extension_rom_path().as_deref(),
+                &self.workspace.init_args,
+            );
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn load_rom_from_path(
         &mut self,
@@ -2448,6 +2463,7 @@ impl SnowGui {
                     self.workspace = ws;
                     self.workspace_file = Some(path.to_path_buf());
                     self.settings.add_recent_workspace(path);
+                    self.model_dialog_prefill_pending = true;
                 }
                 Err(e) => self.show_error(&format!("Failed to load workspace: {}", e)),
             }
