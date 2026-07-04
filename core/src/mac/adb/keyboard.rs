@@ -36,6 +36,8 @@ bitfield! {
 const SC_CAPSLOCK: u8 = 0x39;
 const SC_NUMLOCK: u8 = 0x47;
 const SC_SCROLLOCK: u8 = 0x6B;
+const SC_LSHIFT: u8 = 0x38;
+const SC_RSHIFT: u8 = 0x7B;
 const SC_LCTRL: u8 = 0x36;
 const SC_RCTRL: u8 = 0x7D;
 const SC_COMMAND: u8 = 0x37;
@@ -47,6 +49,7 @@ const SC_DELETE: u8 = 0x75;
 #[derive(Serialize, Deserialize)]
 pub struct AdbKeyboard {
     address: u8,
+    handler_id: u8,
 
     event_queue: VecDeque<KeyEvent>,
 
@@ -58,12 +61,14 @@ pub struct AdbKeyboard {
 
 impl AdbKeyboard {
     pub const INITIAL_ADDRESS: u8 = 2;
+    pub const INITIAL_HANDLER_ID: u8 = 2;
     pub const KEYMAP: Keymap = Keymap::AekM0115;
 
     pub fn new() -> Self {
         Self {
             event_queue: VecDeque::new(),
             address: Self::INITIAL_ADDRESS,
+            handler_id: Self::INITIAL_HANDLER_ID,
             keystate: [false; 256],
             capslock: false,
         }
@@ -91,6 +96,7 @@ impl AdbDevice for AdbKeyboard {
 
     fn reset(&mut self) {
         self.address = Self::INITIAL_ADDRESS;
+        self.handler_id = Self::INITIAL_HANDLER_ID;
         self.flush();
     }
 
@@ -140,29 +146,34 @@ impl AdbDevice for AdbKeyboard {
                 response
             }
             2 => AdbDeviceResponse::from_iter(
-                AdbKeyboardReg2::default()
+                // The key/modifier bits of register 2 are ACTIVE LOW
+                AdbKeyboardReg2(0xFFFF)
+                    // LED state bits (0..2) are host-controlled and active-high
                     .with_led_numlock(self.keystate[SC_NUMLOCK as usize])
                     .with_led_capslock(self.capslock)
                     .with_led_scrolllock(self.keystate[SC_SCROLLOCK as usize])
-                    .with_numlock(self.keystate[SC_NUMLOCK as usize])
-                    .with_capslock(self.capslock)
-                    .with_scrolllock(self.keystate[SC_SCROLLOCK as usize])
-                    .with_cmd(self.keystate[SC_COMMAND as usize])
+                    .with_numlock(!self.keystate[SC_NUMLOCK as usize])
+                    .with_capslock(!self.capslock)
+                    .with_scrolllock(!self.keystate[SC_SCROLLOCK as usize])
+                    .with_cmd(!self.keystate[SC_COMMAND as usize])
                     .with_control(
-                        self.keystate[SC_LCTRL as usize] || self.keystate[SC_RCTRL as usize],
+                        !(self.keystate[SC_LCTRL as usize] || self.keystate[SC_RCTRL as usize]),
                     )
                     .with_option(
-                        self.keystate[SC_LOPTION as usize] || self.keystate[SC_ROPTION as usize],
+                        !(self.keystate[SC_LOPTION as usize] || self.keystate[SC_ROPTION as usize]),
                     )
-                    .with_delete(self.keystate[SC_DELETE as usize])
+                    .with_shift(
+                        !(self.keystate[SC_LSHIFT as usize] || self.keystate[SC_RSHIFT as usize]),
+                    )
+                    .with_delete(!self.keystate[SC_DELETE as usize])
                     .to_be_bytes(),
             ),
             3 => AdbDeviceResponse::from_iter(
                 AdbReg3::default()
                     .with_exceptional(true)
                     .with_srq(true)
-                    .with_address(Self::INITIAL_ADDRESS)
-                    .with_handler_id(2) // Apple Extended Keyboard M0115
+                    .with_address(self.address)
+                    .with_handler_id(self.handler_id)
                     .to_be_bytes(),
             ),
             _ => {
@@ -182,16 +193,7 @@ impl AdbDevice for AdbKeyboard {
                 }
 
                 let value = AdbReg3(u16::from_be_bytes(data[0..2].try_into().unwrap()));
-                if value.handler_id() == 0xFE {
-                    // Address re-assignment
-                    self.address = value.address();
-                } else {
-                    warn!(
-                        "Unimplemented listen register 3, handler id {:02X} = {:02X?}",
-                        value.handler_id(),
-                        value
-                    );
-                }
+                value.apply_listen(&mut self.address, &mut self.handler_id);
             }
             _ => warn!("Unimplemented listen register {} = {:02X?}", reg, data),
         }

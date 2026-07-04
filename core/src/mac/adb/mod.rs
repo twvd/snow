@@ -50,3 +50,17 @@ bitfield! {
         pub exceptional: bool @ 14,
     }
 }
+
+impl AdbReg3 {
+    /// Applies a Listen Register 3 command to a device's address and handler ID
+    pub fn apply_listen(self, address: &mut u8, handler_id: &mut u8) {
+        match self.handler_id() {
+            0xFF => (),
+            0xFE | 0x00 => *address = self.address(),
+            _ => {
+                *address = self.address();
+                *handler_id = self.handler_id();
+            }
+        }
+    }
+}
