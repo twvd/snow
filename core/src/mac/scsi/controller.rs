@@ -771,10 +771,13 @@ impl BusMember<Address> for ScsiController {
             NcrReadReg::BSR => Some(
                 self.reg_bsr
                     .with_dma_req(self.get_drq())
-                    .with_dma_end(!matches!(
-                        self.busphase,
-                        ScsiBusPhase::DataIn | ScsiBusPhase::DataOut,
-                    ))
+                    .with_dma_end(
+                        self.reg_mr.dma_mode()
+                            && !matches!(
+                                self.busphase,
+                                ScsiBusPhase::DataIn | ScsiBusPhase::DataOut,
+                            ),
+                    )
                     .with_phase_match(self.phase_match())
                     .0,
             ),
