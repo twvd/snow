@@ -28,6 +28,7 @@ const MOUSE_FACTOR: i32 = 1;
 #[derive(Serialize, Deserialize)]
 pub struct AdbMouse {
     address: u8,
+    handler_id: u8,
 
     event_queue: VecDeque<MouseEvent>,
 
@@ -38,11 +39,13 @@ pub struct AdbMouse {
 
 impl AdbMouse {
     pub const INITIAL_ADDRESS: u8 = 3;
+    pub const INITIAL_HANDLER_ID: u8 = 1;
 
     pub fn new() -> Self {
         Self {
             event_queue: VecDeque::new(),
             address: Self::INITIAL_ADDRESS,
+            handler_id: Self::INITIAL_HANDLER_ID,
             button: false,
             rel_move_x: 0,
             rel_move_y: 0,
@@ -71,6 +74,7 @@ impl AdbDevice for AdbMouse {
 
     fn reset(&mut self) {
         self.address = Self::INITIAL_ADDRESS;
+        self.handler_id = Self::INITIAL_HANDLER_ID;
         self.flush();
     }
 
@@ -114,8 +118,8 @@ impl AdbDevice for AdbMouse {
                 AdbReg3::default()
                     .with_exceptional(true)
                     .with_srq(true)
-                    .with_address(Self::INITIAL_ADDRESS)
-                    .with_handler_id(1)
+                    .with_address(self.address)
+                    .with_handler_id(self.handler_id)
                     .to_be_bytes(),
             ),
             _ => {
@@ -134,16 +138,7 @@ impl AdbDevice for AdbMouse {
                 }
 
                 let value = AdbReg3(u16::from_be_bytes(data[0..2].try_into().unwrap()));
-                if value.handler_id() == 0xFE {
-                    // Address re-assignment
-                    self.address = value.address();
-                } else {
-                    warn!(
-                        "Unimplemented listen register 3, handler id {:02X} = {:02X?}",
-                        value.handler_id(),
-                        value
-                    );
-                }
+                value.apply_listen(&mut self.address, &mut self.handler_id);
             }
             _ => warn!("Unimplemented listen register {} = {:02X?}", reg, data),
         }
