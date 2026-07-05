@@ -2440,6 +2440,10 @@ impl SnowGui {
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
         }
 
+        // Re-synchronize the cached fast-forward states
+        self.ff_on = args.start_fastforward;
+        self.dynamic_ff_input_time = None;
+
         // Save to last used ROMs
         if let Some(model) = model {
             self.settings.set_last_rom(model, path);
