@@ -28,6 +28,9 @@ pub struct Toby<TRenderer: Renderer> {
     /// Color depth: 0 = 1bpp, 1 = 2bpp, 2 = 4bpp, 3 = 8bpp
     mode: u8,
 
+    /// Byte offset of the visible framebuffer within VRAM
+    fb_base: usize,
+
     /// CLUT: 256 entries of R, G, B
     clut: Vec<u8>,
     clut_addr: usize,
@@ -50,7 +53,7 @@ where
     const V_VISIBLE: usize = 480;
     /// Amount of VRAM present
     const VRAM_SIZE: usize = 0x8_0000;
-    /// Byte offset of the visible framebuffer within VRAM
+    /// Default framebuffer base offset
     const FB_BASE: usize = 0x20;
 
     /// Ticks per frame at ~60 Hz
@@ -62,6 +65,7 @@ where
             rom: rom.to_owned(),
             vram: vec![0; Self::VRAM_SIZE],
             mode: 0,
+            fb_base: Self::FB_BASE,
             clut: vec![0; 256 * 3],
             clut_addr: 0,
             clut_comp: 0,
@@ -100,7 +104,7 @@ where
     pub fn render_to(&self, buf: &mut DisplayBuffer) {
         buf.set_size(Self::H_VISIBLE, Self::V_VISIBLE);
 
-        let fb = &self.vram[Self::FB_BASE..];
+        let fb = &self.vram[self.fb_base..];
         // Bytes per scanline: 128 (1bpp), 256 (2bpp), 512 (4bpp), 1024 (8bpp)
         let stride = 128usize << self.mode;
 
@@ -192,6 +196,12 @@ where
             // Framebuffer (stored inverted)
             0x0_0000..=0x7_FFFF => {
                 self.vram[a as usize] = !val;
+                Some(())
+            }
+
+            // Framebuffer base/scroll offset register
+            0x8_000C => {
+                self.fb_base = 4 * (usize::from(!val) & 0xFF);
                 Some(())
             }
 
