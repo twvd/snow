@@ -778,216 +778,219 @@ impl Pmgr {
 
 impl Tickable for Pmgr {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
-        // Handle the one-second signal to the VIA
-        if self.onesec & !self.onesec_latch {
-            self.time += 1;
-            self.onesec_latch = true;
-        } else if !self.onesec & self.onesec_latch {
-            self.onesec_latch = false;
-        }
-
-        // Check for interrupts
-        self.interrupt = (self.interrupt_flags.0 != 0) & self.adb_ready;
-
-        // Check if we're waiting to process an ADB command
-        if self.adb_status.new() {
-            self.adb_cmd_do();
-        }
-
-        // Check if any devices have asserted SRQ
-        if self.adb_devices.iter().any(|d| d.get_srq()) & !self.interrupt_flags.adbint() {
-            self.adb_srq();
-        }
-
-        // Power Manager communication state machine
-        match self.state {
-            // Idle: Wait for the host to start a handshake
-            State::Idle => {
-                if !self.pmreq {
-                    self.state = State::GetCommand;
-                }
+        // TODO support batching ticks
+        for _ in 0..ticks {
+            // Handle the one-second signal to the VIA
+            if self.onesec & !self.onesec_latch {
+                self.time += 1;
+                self.onesec_latch = true;
+            } else if !self.onesec & self.onesec_latch {
+                self.onesec_latch = false;
             }
 
-            // GetCommand: Receive a command byte from the host
-            State::GetCommand => {
-                if self.pmack {
-                    let cmd = self.a_out;
-                    self.read = cmd & 0x08 == 0x08;
-                    self.cmd = cmd;
-                    self.pmack = false;
-                    if cmd == 0x00 {
+            // Check for interrupts
+            self.interrupt = (self.interrupt_flags.0 != 0) & self.adb_ready;
+
+            // Check if we're waiting to process an ADB command
+            if self.adb_status.new() {
+                self.adb_cmd_do();
+            }
+
+            // Check if any devices have asserted SRQ
+            if self.adb_devices.iter().any(|d| d.get_srq()) & !self.interrupt_flags.adbint() {
+                self.adb_srq();
+            }
+
+            // Power Manager communication state machine
+            match self.state {
+                // Idle: Wait for the host to start a handshake
+                State::Idle => {
+                    if !self.pmreq {
+                        self.state = State::GetCommand;
+                    }
+                }
+
+                // GetCommand: Receive a command byte from the host
+                State::GetCommand => {
+                    if self.pmack {
+                        let cmd = self.a_out;
+                        self.read = cmd & 0x08 == 0x08;
+                        self.cmd = cmd;
+                        self.pmack = false;
+                        if cmd == 0x00 {
+                            self.pmack = true;
+                            self.state = State::Idle;
+                        }
+                    }
+                    if self.pmreq {
                         self.pmack = true;
-                        self.state = State::Idle;
+                        self.state = State::WaitLength;
                     }
                 }
-                if self.pmreq {
-                    self.pmack = true;
-                    self.state = State::WaitLength;
-                }
-            }
 
-            // WaitLength: Wait for pmreq to be asserted to receive the length of the command
-            State::WaitLength => {
-                if !self.pmreq {
-                    self.state = State::GetLength;
+                // WaitLength: Wait for pmreq to be asserted to receive the length of the command
+                State::WaitLength => {
+                    if !self.pmreq {
+                        self.state = State::GetLength;
+                    }
                 }
-            }
 
-            // GetLength: Receive the length of the data
-            State::GetLength => {
-                if self.pmack {
-                    self.length = self.a_out;
-                    self.pmack = false;
+                // GetLength: Receive the length of the data
+                State::GetLength => {
+                    if self.pmack {
+                        self.length = self.a_out;
+                        self.pmack = false;
+                    }
+                    if self.pmreq {
+                        self.pmack = true;
+                        if self.length == 0 {
+                            self.wait_count = 10;
+                            self.state = State::WaitCommand;
+                        } else {
+                            self.state = State::WaitData;
+                        }
+                    }
                 }
-                if self.pmreq {
-                    self.pmack = true;
-                    if self.length == 0 {
-                        self.wait_count = 10;
-                        self.state = State::WaitCommand;
+
+                // WaitData: Wait for pmreq to be asserted to receive the data
+                State::WaitData => {
+                    if !self.pmreq {
+                        self.state = State::GetData;
+                    }
+                }
+
+                // GetData: Receive the data
+                State::GetData => {
+                    if self.pmack {
+                        self.data[self.data_pointer] = self.a_out;
+                        self.pmack = false;
+                    }
+                    if self.pmreq {
+                        self.pmack = true;
+                        self.data_pointer += 1;
+                        if self.data_pointer >= self.length as usize {
+                            self.wait_count = 10;
+                            self.data_pointer = 0;
+                            self.state = State::WaitCommand;
+                        } else {
+                            self.state = State::WaitData;
+                        }
+                    }
+                }
+
+                // WaitCommand: Wait for the host to be ready to handshake in the other direction
+                State::WaitCommand => {
+                    if self.wait_count == 0 {
+                        self.state = State::DoCommand;
                     } else {
-                        self.state = State::WaitData;
+                        self.wait_count -= 1;
                     }
                 }
-            }
 
-            // WaitData: Wait for pmreq to be asserted to receive the data
-            State::WaitData => {
-                if !self.pmreq {
-                    self.state = State::GetData;
-                }
-            }
-
-            // GetData: Receive the data
-            State::GetData => {
-                if self.pmack {
-                    self.data[self.data_pointer] = self.a_out;
-                    self.pmack = false;
-                }
-                if self.pmreq {
-                    self.pmack = true;
-                    self.data_pointer += 1;
-                    if self.data_pointer >= self.length as usize {
-                        self.wait_count = 10;
-                        self.data_pointer = 0;
-                        self.state = State::WaitCommand;
+                // DoCommand: Execute the command
+                State::DoCommand => {
+                    let data_copy = self.data.clone();
+                    self.data = self
+                        .cmd(self.cmd, &data_copy)
+                        .1
+                        .unwrap_or_else(|| vec![0; 4]);
+                    if self.read {
+                        self.state = State::ReturnCmd;
                     } else {
-                        self.state = State::WaitData;
+                        self.state = State::Cleanup;
                     }
                 }
-            }
 
-            // WaitCommand: Wait for the host to be ready to handshake in the other direction
-            State::WaitCommand => {
-                if self.wait_count == 0 {
-                    self.state = State::DoCommand;
-                } else {
-                    self.wait_count -= 1;
+                // ReturnCmd: Send the command byte back to the host
+                State::ReturnCmd => {
+                    if self.pmreq & self.pmack {
+                        self.pmack = false;
+                        self.a_in = self.cmd;
+                    }
+                    if !self.pmreq {
+                        self.pmack = true;
+                        self.wait_count = 100;
+                        self.state = State::ReturnCmdWait;
+                    }
                 }
-            }
 
-            // DoCommand: Execute the command
-            State::DoCommand => {
-                let data_copy = self.data.clone();
-                self.data = self
-                    .cmd(self.cmd, &data_copy)
-                    .1
-                    .unwrap_or_else(|| vec![0; 4]);
-                if self.read {
-                    self.state = State::ReturnCmd;
-                } else {
-                    self.state = State::Cleanup;
+                // ReturnCmdWait: Wait for the host to be ready to handshake in the other direction
+                State::ReturnCmdWait => {
+                    if self.wait_count == 0 {
+                        self.state = State::ReturnLength;
+                    } else {
+                        self.wait_count -= 1;
+                    }
                 }
-            }
 
-            // ReturnCmd: Send the command byte back to the host
-            State::ReturnCmd => {
-                if self.pmreq & self.pmack {
-                    self.pmack = false;
-                    self.a_in = self.cmd;
+                // ReturnLength: Send the length of the data back to the host
+                State::ReturnLength => {
+                    if self.pmreq & self.pmack {
+                        self.pmack = false;
+                        self.a_in = self.length;
+                    }
+                    if !self.pmreq {
+                        self.pmack = true;
+                        if self.length == 0 {
+                            self.state = State::Cleanup;
+                        } else {
+                            self.wait_count = 100;
+                            self.state = State::ReturnDataWait;
+                        }
+                    }
                 }
-                if !self.pmreq {
-                    self.pmack = true;
+
+                // ReturnDataWait: Wait for the host to be ready to handshake in the other direction
+                State::ReturnDataWait => {
+                    if self.wait_count == 0 {
+                        self.state = State::ReturnData;
+                    } else {
+                        self.wait_count -= 1;
+                    }
+                }
+
+                // ReturnData: Send the data back to the host
+                State::ReturnData => {
+                    if self.pmreq & self.pmack {
+                        self.pmack = false;
+                        self.a_in = self.data[self.data_pointer];
+                    }
+                    if !self.pmreq {
+                        self.pmack = true;
+                        self.data_pointer += 1;
+                        if self.data_pointer >= self.length as usize {
+                            self.state = State::Cleanup;
+                        } else {
+                            self.wait_count = 100;
+                            self.state = State::ReturnDataWait;
+                        }
+                    }
+                }
+
+                // Cleanup: Clear variables for the next run
+                State::Cleanup => {
+                    self.cmd = 0x00;
+                    self.length = 0x00;
+                    self.data_pointer = 0x00;
+                    self.data = vec![0; 20];
                     self.wait_count = 100;
-                    self.state = State::ReturnCmdWait;
+                    self.state = State::CleanupWait;
                 }
-            }
 
-            // ReturnCmdWait: Wait for the host to be ready to handshake in the other direction
-            State::ReturnCmdWait => {
-                if self.wait_count == 0 {
-                    self.state = State::ReturnLength;
-                } else {
-                    self.wait_count -= 1;
-                }
-            }
-
-            // ReturnLength: Send the length of the data back to the host
-            State::ReturnLength => {
-                if self.pmreq & self.pmack {
-                    self.pmack = false;
-                    self.a_in = self.length;
-                }
-                if !self.pmreq {
-                    self.pmack = true;
-                    if self.length == 0 {
-                        self.state = State::Cleanup;
+                // CleanupWait: Wait for the host to finish receiving the last byte
+                State::CleanupWait => {
+                    if self.wait_count == 0 {
+                        self.state = State::Cleanup2;
                     } else {
-                        self.wait_count = 100;
-                        self.state = State::ReturnDataWait;
+                        self.wait_count -= 1;
                     }
                 }
-            }
 
-            // ReturnDataWait: Wait for the host to be ready to handshake in the other direction
-            State::ReturnDataWait => {
-                if self.wait_count == 0 {
-                    self.state = State::ReturnData;
-                } else {
-                    self.wait_count -= 1;
+                // Cleanup2: Pull the communication bus high and return to idle
+                State::Cleanup2 => {
+                    self.a_in = 0xFF;
+                    self.state = State::Idle;
                 }
-            }
-
-            // ReturnData: Send the data back to the host
-            State::ReturnData => {
-                if self.pmreq & self.pmack {
-                    self.pmack = false;
-                    self.a_in = self.data[self.data_pointer];
-                }
-                if !self.pmreq {
-                    self.pmack = true;
-                    self.data_pointer += 1;
-                    if self.data_pointer >= self.length as usize {
-                        self.state = State::Cleanup;
-                    } else {
-                        self.wait_count = 100;
-                        self.state = State::ReturnDataWait;
-                    }
-                }
-            }
-
-            // Cleanup: Clear variables for the next run
-            State::Cleanup => {
-                self.cmd = 0x00;
-                self.length = 0x00;
-                self.data_pointer = 0x00;
-                self.data = vec![0; 20];
-                self.wait_count = 100;
-                self.state = State::CleanupWait;
-            }
-
-            // CleanupWait: Wait for the host to finish receiving the last byte
-            State::CleanupWait => {
-                if self.wait_count == 0 {
-                    self.state = State::Cleanup2;
-                } else {
-                    self.wait_count -= 1;
-                }
-            }
-
-            // Cleanup2: Pull the communication bus high and return to idle
-            State::Cleanup2 => {
-                self.a_in = 0xFF;
-                self.state = State::Idle;
             }
         }
 

@@ -72,11 +72,13 @@ where
     T: Renderer,
 {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
+        const FRAMETIME: Ticks = 16_000_000 / 60;
+
         self.vblank_ticks += ticks;
-        if self.vblank_ticks > 16_000_000 / 60 {
+        while self.vblank_ticks > FRAMETIME {
             self.render()?;
 
-            self.vblank_ticks = 0;
+            self.vblank_ticks -= FRAMETIME;
         }
         Ok(ticks)
     }

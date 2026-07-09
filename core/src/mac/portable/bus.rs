@@ -51,10 +51,11 @@ pub struct MacPortableBus<TRenderer: Renderer> {
     pub(crate) ram_dirty: BitSet,
 
     pub(crate) via: Via,
+    via_clock: Ticks,
     pub(crate) scc: Scc,
     pub(crate) video: Video<TRenderer>,
     pub(crate) asc: Asc,
-    via_clock: Ticks,
+    asc_clock: Ticks,
     mouse_ready: bool,
     pub(crate) swim: Swim,
     pub(crate) scsi: ScsiController,
@@ -71,6 +72,7 @@ pub struct MacPortableBus<TRenderer: Renderer> {
     /// sleep for in Video speed mode.
     #[serde(skip, default = "Instant::now")]
     vblank_time: Instant,
+    vblank_clock: Ticks,
 
     /// Programmer's key pressed
     progkey_pressed: LatchingEvent,
@@ -141,17 +143,19 @@ where
             ram: vec![0; ram_size],
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             via: Via::new(),
-            video: Video::new(renderer),
             via_clock: 0,
+            video: Video::new(renderer),
             scc: Scc::new(),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), 16_000_000),
             scsi: ScsiController::new(),
             asc: Asc::default(),
+            asc_clock: 0,
             mouse_ready: false,
 
             overlay: true,
             speed: EmulatorSpeed::Accurate,
             vblank_time: Instant::now(),
+            vblank_clock: 0,
             progkey_pressed: LatchingEvent::default(),
             mouse_mode,
             pmgr: Pmgr::new(),
@@ -569,6 +573,21 @@ where
         self.overlay = true;
         Ok(false)
     }
+
+    fn cpu_tick(&mut self, ticks: Ticks) -> Result<()> {
+        // This is called from the CPU per bus access (fine-grained).
+        // The power manager needs accuracy beyond instruction granularity.
+        self.pmgr.a_out = self.via.a_out.0;
+        self.pmgr.a_in = self.via.a_in.0;
+        self.pmgr.pmreq = self.via.b_out.pmreq();
+        self.pmgr.onesec = self.via.ifr.onesec();
+        self.pmgr.tick(ticks, ())?;
+        self.via.b_in.set_pmack(self.pmgr.pmack);
+        self.via.a_in.0 = self.pmgr.a_in;
+        self.via.ifr.set_pmgr(self.pmgr.interrupt);
+
+        Ok(())
+    }
 }
 
 impl<TRenderer> Tickable for MacPortableBus<TRenderer>
@@ -576,8 +595,6 @@ where
     TRenderer: Renderer,
 {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
-        // This is called from the CPU, at the CPU clock speed
-        assert_eq!(ticks, 1);
         self.cycles += ticks;
 
         self.via_clock += ticks;
@@ -588,10 +605,12 @@ where
             self.via.tick(1, ())?;
         }
 
-        self.video.tick(1, ())?;
+        self.video.tick(ticks, ())?;
 
         // Legacy VBlank interrupt
-        if self.cycles.is_multiple_of(CLOCK_SPEED / 60) {
+        self.vblank_clock += ticks;
+        while self.vblank_clock >= CLOCK_SPEED / 60 {
+            self.vblank_clock -= CLOCK_SPEED / 60;
             self.via.ifr.set_vblank(true);
 
             if self.speed == EmulatorSpeed::Video {
@@ -607,26 +626,17 @@ where
             }
         }
 
-        if self
-            .cycles
-            .is_multiple_of(CLOCK_SPEED / self.asc.sample_rate())
-        {
+        self.asc_clock += ticks;
+        while self.asc_clock >= CLOCK_SPEED / self.asc.sample_rate() {
+            self.asc_clock -= CLOCK_SPEED / self.asc.sample_rate();
+
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }
 
         self.swim.intdrive = self.via.b_out.drivesel();
-        self.swim.tick(1, ())?;
+        self.swim.tick(ticks, ())?;
 
-        self.pmgr.a_out = self.via.a_out.0;
-        self.pmgr.a_in = self.via.a_in.0;
-        self.pmgr.pmreq = self.via.b_out.pmreq();
-        self.pmgr.onesec = self.via.ifr.onesec();
-        self.pmgr.tick(1, ())?;
-        self.via.b_in.set_pmack(self.pmgr.pmack);
-        self.via.a_in.0 = self.pmgr.a_in;
-        self.via.ifr.set_pmgr(self.pmgr.interrupt);
-
-        Ok(1)
+        Ok(ticks)
     }
 }
 
