@@ -171,6 +171,10 @@ pub struct SnowGui {
     load_windows: bool,
     first_draw: bool,
     in_fullscreen: bool,
+    /// Window is fully occluded: covered by another window, minimized, on another
+    /// Space, or the display is asleep. Used to throttle rendering, since an
+    /// occluded window has no compositor vsync to pace the render loop against.
+    occluded: bool,
     in_zen_mode: bool,
     pre_fullscreen_mouse_mode: Option<MouseMode>,
 
@@ -341,6 +345,7 @@ impl SnowGui {
             load_windows: false,
             first_draw: true,
             in_fullscreen: false,
+            occluded: false,
             in_zen_mode: false,
             pre_fullscreen_mouse_mode: None,
 
@@ -2299,6 +2304,12 @@ impl SnowGui {
             use egui_winit::winit::event::{KeyEvent, WindowEvent};
             use egui_winit::winit::keyboard::PhysicalKey;
 
+            // Track occlusion regardless of UI state so we can throttle rendering.
+            if let WindowEvent::Occluded(occluded) = &wevent {
+                self.occluded = *occluded;
+                continue;
+            }
+
             if !self.ui_active {
                 continue;
             }
@@ -3845,8 +3856,15 @@ impl eframe::App for SnowGui {
             ctx.set_cursor_icon(egui::CursorIcon::None);
         }
 
-        // Re-render as soon as possible to keep the display updating
-        ctx.request_repaint();
+        // Re-render as soon as possible to keep the display updating. While the window
+        // is occluded (covered, minimized, on another Space, or the display is asleep)
+        // there is no compositor vsync to pace against, so an unconditional repaint
+        // spins the render thread at 100% CPU; throttle to ~5 fps in that case.
+        if self.occluded {
+            ctx.request_repaint_after(Duration::from_millis(200));
+        } else {
+            ctx.request_repaint();
+        }
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
