@@ -433,12 +433,8 @@ impl Pmgr {
             warn!("PRAM write too short, length {} bytes", data.len());
             return (Ok(()), None);
         }
-        for i in 0..16 {
-            self.xpram[i + 0x10] = data[i];
-        }
-        for i in 16..20 {
-            self.xpram[(i - 16) + 0x8] = data[i];
-        }
+        self.xpram[0x10..0x20].copy_from_slice(&data[0..16]);
+        self.xpram[0x08..0x0C].copy_from_slice(&data[16..20]);
         (Ok(()), None)
     }
 
@@ -451,9 +447,9 @@ impl Pmgr {
     ) -> (Result<()>, Option<Vec<Byte>>) {
         match loc + len - 1 {
             0x00..=0x7F => {
-                for i in 0..len as usize {
-                    self.xpram[loc as usize + i] = data[i];
-                }
+                let loc = loc as usize;
+                let len = len as usize;
+                self.xpram[loc..loc + len].copy_from_slice(&data[..len]);
                 (Ok(()), None)
             }
             _ => {
