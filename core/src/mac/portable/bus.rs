@@ -295,7 +295,7 @@ where
     }
 
     fn read_overlay(&mut self, addr: Address) -> Option<Byte> {
-        let result = match addr {
+        match addr {
             0x0000_0000..=0x000F_FFFF => {
                 Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
             }
@@ -304,12 +304,11 @@ where
                 self.read_normal(addr)
             }
             _ => self.read_normal(addr),
-        };
-        result
+        }
     }
 
     fn read_normal(&mut self, addr: Address) -> Option<Byte> {
-        let result = match addr {
+        match addr {
             0x0000_0000..=0x008F_FFFF => self.normal_ram_read(addr),
             // ROM, or Remapped RAM for 15MB RAM Mod
             0x0090_0000..=0x009F_FFFF => {
@@ -378,8 +377,7 @@ where
             // Normandy registers
             0x00FE_0000..=0x00FE_FFFF => self.normandy.read(addr),
             _ => None,
-        };
-        result
+        }
     }
 
     fn normal_ram_write(&mut self, addr: Address, val: Byte) -> Option<()> {
