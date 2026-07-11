@@ -3856,22 +3856,17 @@ impl eframe::App for SnowGui {
             ctx.set_cursor_icon(egui::CursorIcon::None);
         }
 
-        // Re-render to keep the display updating. When the window is not the active,
-        // visible surface (unfocused, minimized, hidden, occluded, on another Space, or
-        // the display is asleep) there is no compositor vsync to pace against, so an
-        // unconditional repaint spins the render thread at ~100% CPU. Throttle to ~5 fps
-        // whenever the window is unfocused or occluded.
-        //
-        // `focused` is the reliable signal on macOS: the `Occluded` event is not
-        // delivered consistently for minimization, and the viewport `minimized` flag is
-        // only sampled at init there (querying it at runtime can deadlock, egui #3494).
-        // A visible-but-unfocused window is throttled too, which is fine: it stays
-        // readable and cannot spin, since it is still vsync-paced.
-        let active = ctx.input(|i| i.focused) && !self.occluded;
-        if active {
-            ctx.request_repaint();
-        } else {
+        // Re-render to keep the display updating, but cap the repaint interval so the
+        // render thread cannot run away. request_repaint_after bounds the rate; the cap
+        // depends on visibility because a window without a live drawable (occluded/⌘H/
+        // display asleep) makes every buffer flush expensive, so even ~120 fps there
+        // saturates a core. When occluded we throttle to ~5 fps; otherwise we cap at
+        // ~120 fps, which is enough for the OS to keep a visible window at the display's
+        // refresh rate while still bounding an unpaced (e.g. minimized) window.
+        if self.occluded {
             ctx.request_repaint_after(Duration::from_millis(200));
+        } else {
+            ctx.request_repaint_after(Duration::from_micros(8_333));
         }
     }
 
