@@ -499,7 +499,9 @@ impl MacMonitor {
         match self {
             Self::RGB12 => [2, 2, 0, 2],
             Self::HiRes14 => [6, 2, 4, 6],
+            /* RGB15 => [5, 1, 0, 1] according to TN HW30, detected as RGB16 */
             Self::RGB16 => [7, 2, 5, 2],
+            /* RGB19 => [7, 3, 4, 4] according to TN HW30, not detected */
             Self::RGB21 => [0, 0, 0, 0],
             Self::PortraitBW => [1, 1, 1, 0],
             Self::TwoPageBW => [3, 1, 0, 0],
