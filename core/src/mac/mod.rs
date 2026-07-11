@@ -471,6 +471,8 @@ pub enum MacMonitor {
     RGB21,
     /// Macintosh 15" Portrait monitor (640x870, B&W)
     PortraitBW,
+    /// Macintosh 21" Two-Page monitor (1152x870, B&W)
+    TwoPageBW,
 }
 
 impl Display for MacMonitor {
@@ -484,6 +486,7 @@ impl Display for MacMonitor {
                 Self::RGB16 => "Macintosh 16\" RGB monitor",
                 Self::RGB21 => "Macintosh 21\" RGB monitor",
                 Self::PortraitBW => "Macintosh 15\" Portrait monitor",
+                Self::TwoPageBW => "Macintosh 21\" Two-Page monitor",
             },
             self.width(),
             self.height()
@@ -499,6 +502,7 @@ impl MacMonitor {
             Self::RGB16 => [7, 2, 5, 2],
             Self::RGB21 => [0, 0, 0, 0],
             Self::PortraitBW => [1, 1, 1, 0],
+            Self::TwoPageBW => [3, 1, 0, 0],
         }
     }
 
@@ -509,6 +513,7 @@ impl MacMonitor {
             Self::RGB16 => 832,
             Self::RGB21 => 1152,
             Self::PortraitBW => 640,
+            Self::TwoPageBW => 1152,
         }
     }
 
@@ -519,13 +524,14 @@ impl MacMonitor {
             Self::RGB16 => 624,
             Self::RGB21 => 870,
             Self::PortraitBW => 870,
+            Self::TwoPageBW => 870,
         }
     }
 
     pub fn has_color(self) -> bool {
         match self {
             Self::RGB12 | Self::HiRes14 | Self::RGB16 | Self::RGB21 => true,
-            Self::PortraitBW => false,
+            Self::PortraitBW | Self::TwoPageBW => false,
         }
     }
 }
