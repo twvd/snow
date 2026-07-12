@@ -104,7 +104,7 @@ pub struct EmulatorInitArgs {
 
     /// Selected NuBus video card (if applicable)
     pub video_card: NubusDeviceKind,
-    
+
     /// Overclock
     pub overclock: Option<u64>,
 }

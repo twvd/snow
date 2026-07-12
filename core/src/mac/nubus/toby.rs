@@ -177,9 +177,7 @@ where
             0x0_0000..=0x7_FFFF => Some(!self.vram[a as usize]),
 
             // VBlank status: 0 during vertical blanking, 0xFF otherwise.
-            0xD_0000..=0xD_FFFF if a & 3 == 3 => {
-                Some(if self.in_vblank { 0x00 } else { 0xFF })
-            }
+            0xD_0000..=0xD_FFFF if a & 3 == 3 => Some(if self.in_vblank { 0x00 } else { 0xFF }),
             0xD_0000..=0xD_FFFF => Some(0),
 
             // Declaration ROM (single byte lane, at the top of the slot space)

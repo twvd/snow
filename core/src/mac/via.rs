@@ -3,7 +3,7 @@ use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
 use crate::mac::pluskbd::PlusKeyboard;
 use crate::mac::rtc::Rtc;
-use crate::tickable::{Tickable, Ticks};
+use crate::tickable::{TickConverter, Tickable, Ticks};
 use crate::types::{Byte, Field16};
 
 use anyhow::Result;
@@ -190,31 +190,6 @@ bitfield! {
         /// Timer T1
         /// Cleared on read of T1 counter LSB or write of T1 counter MSB
         pub t1: bool @ 6,
-    }
-}
-
-/// Converts ticks from one clock frequency (A) to another (B).
-///
-/// Frequency A can be decided at runtime, while frequency B must be
-/// specified as a const generic.
-///
-/// Rational arithmetic is used to prevent errors from accumulating.
-/// The struct contains the numerator `N` in `N / B_FREQ`, where `B_FREQ`
-/// is the frequency of clock B.
-#[derive(Default, Serialize, Deserialize)]
-struct TickConverter<const B_FREQ: Ticks>(Ticks);
-
-impl<const B_FREQ: Ticks> TickConverter<B_FREQ> {
-    fn add_a_ticks(&mut self, a_ticks: Ticks) {
-        self.0 += B_FREQ * a_ticks;
-    }
-
-    fn get_b_ticks(&self, a_freq: Ticks) -> Ticks {
-        self.0 / a_freq
-    }
-
-    fn subtract_b_ticks(&mut self, b_ticks: Ticks, a_freq: Ticks) {
-        self.0 -= a_freq * b_ticks;
     }
 }
 
