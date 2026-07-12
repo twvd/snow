@@ -7,8 +7,8 @@ use super::via::Via;
 use super::video::Video;
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
-use crate::emulator::MouseMode;
 use crate::emulator::comm::EmulatorSpeed;
+use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
@@ -32,8 +32,6 @@ use serde::{Deserialize, Serialize};
 
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
-
-pub const CLOCK_SPEED: Ticks = 16_000_000;
 
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
@@ -67,7 +65,7 @@ pub struct MacPortableBus<TRenderer: Renderer> {
 
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
-    
+
     bus_frequency: Ticks,
 
     /// Last vblank time (for syncing to video)
@@ -473,7 +471,7 @@ where
         info!("Emulation speed: {:?}", speed);
         self.speed = speed;
     }
-    
+
     pub fn set_bus_frequency(&mut self, bus_frequency: u64) {
         self.bus_frequency = bus_frequency;
     }
@@ -601,6 +599,26 @@ where
     TRenderer: Renderer,
 {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
+        struct BusEmuContext {
+            speed: EmulatorSpeed,
+            bus_frequency: Ticks,
+        }
+
+        impl EmuContext for BusEmuContext {
+            fn speed(&self) -> EmulatorSpeed {
+                self.speed
+            }
+
+            fn bus_frequency(&self) -> Ticks {
+                self.bus_frequency
+            }
+        }
+
+        let ctx = &BusEmuContext {
+            speed: self.speed,
+            bus_frequency: self.bus_frequency,
+        };
+
         self.cycles += ticks;
 
         self.via_clock += ticks;
@@ -608,15 +626,15 @@ where
             // TODO VIA wait states
             self.via_clock -= 20;
 
-            self.via.tick(1, ())?;
+            self.via.tick(1, ctx)?;
         }
 
         self.video.tick(ticks, ())?;
 
         // Legacy VBlank interrupt
         self.vblank_clock += ticks;
-        while self.vblank_clock >= CLOCK_SPEED / 60 {
-            self.vblank_clock -= CLOCK_SPEED / 60;
+        while self.vblank_clock >= self.bus_frequency / 60 {
+            self.vblank_clock -= self.bus_frequency / 60;
             self.via.ifr.set_vblank(true);
 
             if self.speed == EmulatorSpeed::Video {
@@ -633,8 +651,8 @@ where
         }
 
         self.asc_clock += ticks;
-        while self.asc_clock >= CLOCK_SPEED / self.asc.sample_rate() {
-            self.asc_clock -= CLOCK_SPEED / self.asc.sample_rate();
+        while self.asc_clock >= self.bus_frequency / self.asc.sample_rate() {
+            self.asc_clock -= self.bus_frequency / self.asc.sample_rate();
 
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }

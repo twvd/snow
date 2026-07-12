@@ -5,6 +5,8 @@ use crate::bus::BusMember;
 use crate::debuggable::DebuggableProperty;
 use crate::debuggable::DebuggablePropertyValue;
 use crate::debuggable::{Debuggable, DebuggableProperties};
+use crate::emulator::EmuContext;
+use crate::tickable::TickConverter;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, Field16};
 use crate::{dbgprop_bool, dbgprop_byte_bin, dbgprop_group, dbgprop_udec, dbgprop_word};
@@ -15,6 +17,12 @@ use serde::{Deserialize, Serialize};
 /// Counter at which to trigger the one-second interrupt
 /// TODO
 const ONESEC_TICKS: Ticks = 783360;
+
+/// The frequency at which to run the VIA.
+///
+/// Since the VIA is used as a timer, it is important to run at a consistent
+/// speed regardless of CPU/bus frequency.
+const VIA_FREQUENCY: Ticks = 16_000_000;
 
 bitfield! {
     /// VIA Register A
@@ -116,6 +124,8 @@ pub struct Via {
 
     pub t1cnt: Field16,
     pub t1latch: Field16,
+
+    bus_tick_converter: TickConverter<VIA_FREQUENCY>,
 }
 
 impl Via {
@@ -141,6 +151,8 @@ impl Via {
             t1_enable: false,
 
             onesec: 0,
+
+            bus_tick_converter: Default::default(),
         }
     }
 
@@ -329,8 +341,21 @@ impl BusMember<Address> for Via {
     }
 }
 
-impl Tickable for Via {
-    fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
+impl Tickable<&dyn EmuContext> for Via {
+    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
+        self.bus_tick_converter.add_a_ticks(ticks);
+        let via_ticks = self.bus_tick_converter.get_b_ticks(ctx.bus_frequency());
+        if via_ticks > 0 {
+            self.tick_16mhz(via_ticks)?;
+            self.bus_tick_converter
+                .subtract_b_ticks(via_ticks, ctx.bus_frequency());
+        }
+        Ok(ticks)
+    }
+}
+
+impl Via {
+    fn tick_16mhz(&mut self, ticks: Ticks) -> Result<Ticks> {
         self.onesec += ticks;
 
         if self.onesec >= ONESEC_TICKS {
