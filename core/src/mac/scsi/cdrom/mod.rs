@@ -1520,15 +1520,17 @@ impl ScsiTarget for ScsiTargetCdrom {
             }
             // BlueSCSI Toolbox: LIST CDS (list the images in the managed folder)
             0xD7 => {
+                let images = self.folder_images();
+                log::debug!(
+                    "Toolbox LIST_CDS: {} image(s) in {:?}",
+                    images.len(),
+                    self.image_dir
+                );
                 let mut data = Vec::new();
-                for (i, path) in self
-                    .folder_images()
-                    .iter()
-                    .enumerate()
-                    .take(u8::MAX as usize)
-                {
+                for (i, path) in images.iter().enumerate().take(u8::MAX as usize) {
                     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                    log::debug!("  CD[{}] = '{}' ({} bytes)", i, name, size);
                     data.extend_from_slice(&toolbox_file_entry(i as u8, false, name, size));
                 }
                 Ok(ScsiCmdResult::DataIn(data))
@@ -1563,6 +1565,7 @@ impl ScsiTarget for ScsiTargetCdrom {
             // BlueSCSI Toolbox: COUNT CDS (number of images in the managed folder)
             0xDA => {
                 let count = self.folder_images().len().min(u8::MAX as usize) as u8;
+                log::debug!("Toolbox COUNT_CDS: {}", count);
                 Ok(ScsiCmdResult::DataIn(vec![count]))
             }
             _ => {
@@ -1767,5 +1770,58 @@ mod tests {
             ScsiCmdResult::DataIn(d) => format!("DataIn({} bytes)", d.len()),
             ScsiCmdResult::DataOut(n) => format!("DataOut({})", n),
         }
+    }
+
+    /// Parses our LIST_CDS output exactly the way the reference BlueSCSI Toolbox
+    /// client (nielsmh/escsitoolbox `ToolboxGetImageList`) does: COUNT_CDS gives a
+    /// single-byte count, LIST_CDS is read as `count * 40` bytes, entries have a
+    /// 40-byte stride with a NUL-terminated name at offset 2, stopping at the first
+    /// empty name. This proves a correctly-written client recovers the real names.
+    #[test]
+    fn list_cds_is_parseable_by_reference_client() {
+        let dir = temp_dir("client");
+        write_file(&dir, "Alpha.iso", 100);
+        write_file(&dir, "Beta.toast", 200);
+        write_file(&dir, "Gamma.cue", 300);
+
+        let mut cd = ScsiTargetCdrom::new(None);
+        cd.set_image_dir(Some(dir.clone()));
+
+        // Step 1: COUNT_CDS -> single byte.
+        let count = match cd
+            .specific_cmd(&[0xDAu8, 0, 0, 0, 0, 0, 0, 0, 0, 0], None)
+            .unwrap()
+        {
+            ScsiCmdResult::DataIn(d) => {
+                assert_eq!(d.len(), 1);
+                d[0] as usize
+            }
+            _ => panic!("COUNT_CDS did not return data"),
+        };
+        assert_eq!(count, 3);
+
+        // Step 2: LIST_CDS -> the client allocates and reads count * 40 bytes.
+        let data = match cd
+            .specific_cmd(&[0xD7u8, 0, 0, 0, 0, 0, 0, 0, 0, 0], None)
+            .unwrap()
+        {
+            ScsiCmdResult::DataIn(d) => d,
+            _ => panic!("LIST_CDS did not return data"),
+        };
+        assert_eq!(data.len(), count * 40);
+
+        // Step 3: parse fixed 40-byte stride, name at offset 2, stop at empty name.
+        let mut names = Vec::new();
+        for i in 0..count {
+            let entry = &data[i * 40..(i + 1) * 40];
+            if entry[2] == 0 {
+                break;
+            }
+            let end = entry[2..35].iter().position(|&b| b == 0).unwrap_or(33);
+            names.push(std::str::from_utf8(&entry[2..2 + end]).unwrap().to_owned());
+        }
+        assert_eq!(names, ["Alpha.iso", "Beta.toast", "Gamma.cue"]);
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
