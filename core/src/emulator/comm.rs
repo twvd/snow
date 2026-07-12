@@ -46,6 +46,9 @@ pub enum EmulatorCommand {
     ScsiAttachHdd(usize, PathBuf),
     ScsiBranchHdd(usize, PathBuf),
     ScsiAttachCdrom(usize),
+    /// Attach a folder-backed ("Toolbox managed") CD-ROM drive whose images are
+    /// swappable by the guest via the BlueSCSI Toolbox CD commands.
+    ScsiAttachCdromFolder(usize, PathBuf),
     ScsiLoadMedia(usize, PathBuf),
     #[cfg(feature = "ethernet")]
     ScsiAttachEthernet(usize),
@@ -149,6 +152,8 @@ pub struct EthernetCaptureStatus {
 pub struct ScsiTargetStatus {
     pub target_type: ScsiTargetType,
     pub image: Option<PathBuf>,
+    /// Toolbox-managed image folder for a folder-backed CD-ROM, if any.
+    pub cdrom_folder: Option<PathBuf>,
     pub capacity: Option<usize>,
     #[cfg(feature = "ethernet")]
     pub link_type: Option<EthernetLinkType>,

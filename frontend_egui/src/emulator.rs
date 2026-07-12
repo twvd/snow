@@ -45,6 +45,8 @@ pub type ScsiTargets = [ScsiTarget; 7];
 pub struct ScsiTarget {
     pub target_type: Option<ScsiTargetType>,
     pub image_path: Option<PathBuf>,
+    /// Toolbox-managed image folder for a folder-backed CD-ROM, if any.
+    pub cdrom_folder: Option<PathBuf>,
 }
 
 impl From<ScsiTargetStatus> for ScsiTarget {
@@ -52,6 +54,7 @@ impl From<ScsiTargetStatus> for ScsiTarget {
         Self {
             target_type: Some(value.target_type),
             image_path: value.image,
+            cdrom_folder: value.cdrom_folder,
         }
     }
 }
@@ -62,6 +65,7 @@ impl From<Option<ScsiTargetStatus>> for ScsiTarget {
             None => Self {
                 target_type: None,
                 image_path: None,
+                cdrom_folder: None,
             },
             Some(v) => v.into(),
         }
@@ -269,6 +273,7 @@ impl EmulatorState {
                     ScsiTarget {
                         target_type: Some(ScsiTargetType::Disk),
                         image_path: Some(filename),
+                        ..
                     } => match emulator.load_hdd_image(filename, id) {
                         Ok(_) => {
                             info!(
@@ -284,9 +289,28 @@ impl EmulatorState {
                     ScsiTarget {
                         target_type: Some(ScsiTargetType::Disk),
                         image_path: None,
+                        ..
                     } => {
                         // Invalid, ignore
                         log::error!("SCSI ID #{} is a hard drive but no image was specified", id);
+                    }
+                    ScsiTarget {
+                        target_type: Some(ScsiTargetType::Cdrom),
+                        cdrom_folder: Some(dir),
+                        ..
+                    } => {
+                        if let Err(e) = emulator.attach_cdrom_folder(id, dir.clone()) {
+                            error!(
+                                "SCSI ID #{}: Toolbox managed CD-ROM folder attach failed: {}",
+                                id, e
+                            );
+                        } else {
+                            info!(
+                                "SCSI ID #{}: attached Toolbox managed CD-ROM folder {}",
+                                id,
+                                dir.to_string_lossy()
+                            );
+                        }
                     }
                     ScsiTarget {
                         target_type: Some(ScsiTargetType::Cdrom),
@@ -859,6 +883,19 @@ impl EmulatorState {
         };
 
         sender.send(EmulatorCommand::ScsiAttachCdrom(id)).unwrap();
+    }
+
+    /// Attaches a folder-backed ("Toolbox managed") CD-ROM drive at the given ID.
+    /// The folder's images are swappable by the guest via the BlueSCSI Toolbox
+    /// CD commands.
+    pub fn scsi_attach_cdrom_folder(&self, id: usize, path: PathBuf) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+
+        sender
+            .send(EmulatorCommand::ScsiAttachCdromFolder(id, path))
+            .unwrap();
     }
 
     /// Loads CD-ROM media into the specified SCSI target

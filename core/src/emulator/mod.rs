@@ -653,6 +653,11 @@ impl Emulator {
                                 .scsi()
                                 .get_disk_imagefn(i)
                                 .map(|p| p.to_path_buf()),
+                            cdrom_folder: self
+                                .config
+                                .scsi()
+                                .get_cdrom_folder(i)
+                                .map(|p| p.to_path_buf()),
                             #[cfg(feature = "ethernet")]
                             link_type: self.config.scsi().targets[i]
                                 .as_ref()
@@ -895,6 +900,17 @@ impl Emulator {
         info!("SCSI ID #{}: CD-ROM drive attached", id);
     }
 
+    #[allow(clippy::significant_drop_tightening)]
+    pub fn attach_cdrom_folder(&mut self, id: usize, dir: PathBuf) -> Result<()> {
+        let mut audio_provider = self.audio_provider.as_deref().map(|ap| ap.lock().unwrap());
+        let audio_provider = audio_provider.as_deref_mut().map(|ap| &mut *ap);
+        self.config
+            .scsi_mut()
+            .attach_cdrom_folder_at(id, dir, audio_provider)?;
+        info!("SCSI ID #{}: Toolbox managed CD-ROM folder attached", id);
+        Ok(())
+    }
+
     #[cfg(feature = "ethernet")]
     pub fn attach_ethernet(&mut self, id: usize) {
         self.config.scsi_mut().attach_ethernet_at(id);
@@ -1064,6 +1080,12 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::ScsiAttachCdrom(id) => {
                         self.attach_cdrom(id);
+                        self.status_update()?;
+                    }
+                    EmulatorCommand::ScsiAttachCdromFolder(id, dir) => {
+                        if let Err(e) = self.attach_cdrom_folder(id, dir) {
+                            self.user_error(&format!("SCSI ID #{}: {:#}", id, e));
+                        }
                         self.status_update()?;
                     }
                     #[cfg(feature = "ethernet")]

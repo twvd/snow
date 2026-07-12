@@ -197,6 +197,7 @@ pub struct SnowGui {
     cdrom_dialog: SnowFileDialog,
     cdrom_dialog_idx: usize,
     cdrom_files_dialog: SnowFileDialog,
+    cdrom_folder_dialog: SnowFileDialog,
     floppy_dialog: SnowFileDialog,
     floppy_dialog_last: Option<DirectoryEntry>,
     floppy_dialog_last_image: Option<FloppyImage>,
@@ -403,6 +404,10 @@ impl SnowGui {
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_cdrom_files),
+            cdrom_folder_dialog: SnowFileDialog::new()
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
+                .initial_directory(Self::default_dir())
+                .storage(settings.fd_cdrom_folder),
             floppy_dialog: SnowFileDialog::new()
                 .add_filter(
                     "Floppy images",
@@ -1407,6 +1412,14 @@ impl SnowGui {
                             ),
                             |ui| {
                                 ui.set_min_width(Self::SUBMENU_WIDTH);
+                                if let Some(folder) = target.cdrom_folder.as_ref() {
+                                    ui.weak(format!(
+                                        "Toolbox managed folder:\n{}",
+                                        folder.display()
+                                    ));
+                                    ui.weak("Guest swaps discs via the BlueSCSI Toolbox");
+                                    ui.separator();
+                                }
                                 if show_detach {
                                     if ui.button("Detach CD-ROM drive").clicked() {
                                         self.emu.scsi_detach_target(id);
@@ -1426,6 +1439,13 @@ impl SnowGui {
                             ),
                             |ui| {
                                 ui.set_min_width(Self::SUBMENU_WIDTH);
+                                if let Some(folder) = target.cdrom_folder.as_ref() {
+                                    ui.weak(format!(
+                                        "Toolbox managed folder:\n{}",
+                                        folder.display()
+                                    ));
+                                    ui.separator();
+                                }
                                 if ui.button("Load image...").clicked() {
                                     self.cdrom_dialog_idx = id;
                                     self.cdrom_dialog
@@ -1450,6 +1470,18 @@ impl SnowGui {
                                     self.cdrom_dialog_idx = id;
                                     self.cdrom_files_dialog
                                         .pick_multiple(self.settings.native_file_dialogs);
+                                }
+                                if ui
+                                    .button("Attach Toolbox managed folder...")
+                                    .on_hover_text(
+                                        "Replace this drive with a folder of CD images the \
+                                         guest can swap between using the BlueSCSI Toolbox",
+                                    )
+                                    .clicked()
+                                {
+                                    self.cdrom_dialog_idx = id;
+                                    self.cdrom_folder_dialog
+                                        .pick_directory(self.settings.native_file_dialogs);
                                 }
                                 if let Some(physical_drives) = snow_core::mac::scsi::cdrom::backends::query_physical_cdrom_drives() {
                                     ui.menu_button("Mount physical CD-ROM drive", |ui| {
@@ -1636,6 +1668,18 @@ impl SnowGui {
                     }
                     if ui.button("Attach CD-ROM drive (empty)").clicked() {
                         self.emu.scsi_attach_cdrom(id);
+                    }
+                    if ui
+                        .button("Attach CD-ROM drive (Toolbox managed Folder)...")
+                        .on_hover_text(
+                            "Attach a folder of CD images the guest can swap between \
+                             using the BlueSCSI Toolbox",
+                        )
+                        .clicked()
+                    {
+                        self.cdrom_dialog_idx = id;
+                        self.cdrom_folder_dialog
+                            .pick_directory(self.settings.native_file_dialogs);
                     }
                     #[cfg(feature = "ethernet")]
                     {
@@ -3436,6 +3480,17 @@ impl eframe::App for SnowGui {
             self.settings.save();
         }
         self.ui_active &= *self.cdrom_files_dialog.state() != egui_file_dialog::DialogState::Open;
+
+        // CD-ROM "Toolbox managed" folder picker dialog
+        self.cdrom_folder_dialog.update(ctx, frame);
+        if let Some(path) = self.cdrom_folder_dialog.take_picked() {
+            self.emu
+                .scsi_attach_cdrom_folder(self.cdrom_dialog_idx, path);
+
+            self.settings.fd_cdrom_folder = self.cdrom_folder_dialog.storage_mut().clone();
+            self.settings.save();
+        }
+        self.ui_active &= *self.cdrom_folder_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // Shared directory picker dialog
         self.shared_dir_dialog.update(ctx, frame);

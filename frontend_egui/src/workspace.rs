@@ -51,6 +51,9 @@ pub enum WorkspaceScsiTarget {
     None,
     Disk(RelativePath),
     Cdrom,
+    /// Folder-backed ("Toolbox managed") CD-ROM: the guest swaps between the
+    /// images in this folder via the BlueSCSI Toolbox CD commands.
+    CdromFolder(RelativePath),
     // Do not feature gate Ethernet here to avoid problems with loading
     // workspaces on builds without the ethernet feature
     Ethernet,
@@ -65,7 +68,10 @@ impl TryFrom<ScsiTarget> for WorkspaceScsiTarget {
             ScsiTargetType::Disk => {
                 Self::Disk(RelativePath::from_absolute(&value.image_path.ok_or(())?))
             }
-            ScsiTargetType::Cdrom => Self::Cdrom,
+            ScsiTargetType::Cdrom => match value.cdrom_folder {
+                Some(dir) => Self::CdromFolder(RelativePath::from_absolute(&dir)),
+                None => Self::Cdrom,
+            },
             #[cfg(feature = "ethernet")]
             ScsiTargetType::Ethernet => Self::Ethernet,
             #[cfg(feature = "printer")]
@@ -93,34 +99,46 @@ impl Into<ScsiTarget> for WorkspaceScsiTarget {
             Self::None => ScsiTarget {
                 target_type: None,
                 image_path: None,
+                cdrom_folder: None,
             },
             Self::Cdrom => ScsiTarget {
                 target_type: Some(ScsiTargetType::Cdrom),
                 image_path: None,
+                cdrom_folder: None,
+            },
+            Self::CdromFolder(p) => ScsiTarget {
+                target_type: Some(ScsiTargetType::Cdrom),
+                image_path: None,
+                cdrom_folder: Some(p.get_absolute()),
             },
             Self::Disk(p) => ScsiTarget {
                 target_type: Some(ScsiTargetType::Disk),
                 image_path: Some(p.get_absolute()),
+                cdrom_folder: None,
             },
             #[cfg(feature = "ethernet")]
             Self::Ethernet => ScsiTarget {
                 target_type: Some(ScsiTargetType::Ethernet),
                 image_path: None,
+                cdrom_folder: None,
             },
             #[cfg(not(feature = "ethernet"))]
             Self::Ethernet => ScsiTarget {
                 target_type: None,
                 image_path: None,
+                cdrom_folder: None,
             },
             #[cfg(feature = "printer")]
             Self::Printer => ScsiTarget {
                 target_type: Some(ScsiTargetType::Printer),
                 image_path: None,
+                cdrom_folder: None,
             },
             #[cfg(not(feature = "printer"))]
             Self::Printer => ScsiTarget {
                 target_type: None,
                 image_path: None,
+                cdrom_folder: None,
             },
         }
     }
@@ -362,7 +380,9 @@ impl Workspace {
         }
         for d in &mut result.scsi_targets {
             match d {
-                WorkspaceScsiTarget::Disk(p) => p.after_deserialize(parent)?,
+                WorkspaceScsiTarget::Disk(p) | WorkspaceScsiTarget::CdromFolder(p) => {
+                    p.after_deserialize(parent)?;
+                }
                 WorkspaceScsiTarget::None
                 | WorkspaceScsiTarget::Cdrom
                 | WorkspaceScsiTarget::Ethernet
@@ -416,7 +436,9 @@ impl Workspace {
         // disks is deprecated
         for d in &mut self.scsi_targets {
             match d {
-                WorkspaceScsiTarget::Disk(p) => p.before_serialize(parent)?,
+                WorkspaceScsiTarget::Disk(p) | WorkspaceScsiTarget::CdromFolder(p) => {
+                    p.before_serialize(parent)?;
+                }
                 WorkspaceScsiTarget::None
                 | WorkspaceScsiTarget::Cdrom
                 | WorkspaceScsiTarget::Ethernet

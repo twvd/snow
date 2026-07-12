@@ -133,6 +133,12 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
     fn load_image(&mut self, image: Box<dyn DiskImage>) -> Result<()>;
     fn branch_media(&mut self, path: &Path) -> Result<()>;
 
+    /// For folder-backed ("Toolbox managed") CD-ROM drives: the folder of images
+    /// exposed to the guest via the BlueSCSI Toolbox CD commands. None otherwise.
+    fn cdrom_image_dir(&self) -> Option<&Path> {
+        None
+    }
+
     /// Device-specific commands
     fn specific_cmd(&mut self, cmd: &[u8], outdata: Option<&[u8]>) -> Result<ScsiCmdResult>;
 
