@@ -277,6 +277,31 @@ impl ScsiController {
         self.targets[id].as_ref().map(|t| t.target_type())
     }
 
+    /// Returns the Toolbox-managed image folder of a folder-backed CD-ROM at the
+    /// given ID, or None if the ID has no folder-backed CD-ROM attached.
+    pub fn get_cdrom_folder(&self, id: usize) -> Option<&Path> {
+        self.targets[id].as_ref().and_then(|t| t.cdrom_image_dir())
+    }
+
+    /// Builds the BlueSCSI Toolbox device-type map (one byte per SCSI ID) returned
+    /// by the LIST_DEVICES metadata subcommand. 0xFF means no device on that ID.
+    fn toolbox_device_map(&self) -> [u8; 8] {
+        let mut map = [0xFFu8; 8];
+        for (id, slot) in map.iter_mut().enumerate().take(Self::MAX_TARGETS) {
+            if let Some(target) = self.targets[id].as_ref() {
+                *slot = match target.target_type() {
+                    ScsiTargetType::Disk => 0x00, // fixed disk
+                    ScsiTargetType::Cdrom => 0x02, // optical / CD-ROM
+                    #[cfg(feature = "ethernet")]
+                    ScsiTargetType::Ethernet => 0x06, // DaynaPORT
+                    #[cfg(feature = "printer")]
+                    ScsiTargetType::Printer => 0xFF, // not a Toolbox device type
+                };
+            }
+        }
+        map
+    }
+
     pub fn set_shared_dir(&mut self, path: Option<PathBuf>) {
         self.toolbox = BlueSCSI::new(path);
     }
@@ -350,6 +375,28 @@ impl ScsiController {
         audio_provider: Option<&mut (dyn AudioProvider + '_)>,
     ) {
         self.targets[scsi_id] = Some(Box::new(ScsiTargetCdrom::new(audio_provider)));
+    }
+
+    /// Attaches a folder-backed ("Toolbox managed") CD-ROM drive at the given
+    /// SCSI ID. The folder's images are exposed to the guest through the BlueSCSI
+    /// Toolbox CD commands (LIST_CDS / SET_NEXT_CD / COUNT_CDS) and the first
+    /// image found is mounted automatically.
+    pub fn attach_cdrom_folder_at(
+        &mut self,
+        scsi_id: usize,
+        dir: PathBuf,
+        audio_provider: Option<&mut (dyn AudioProvider + '_)>,
+    ) -> Result<()> {
+        if scsi_id >= Self::MAX_TARGETS {
+            bail!("SCSI ID out of range: {}", scsi_id);
+        }
+        let mut cdrom = ScsiTargetCdrom::new(audio_provider);
+        cdrom.set_image_dir(Some(dir));
+        if let Err(e) = cdrom.mount_first_image() {
+            log::warn!("Folder CD-ROM at SCSI ID {}: {:#}", scsi_id, e);
+        }
+        self.targets[scsi_id] = Some(Box::new(cdrom));
+        Ok(())
     }
 
     /// Inserts a CD-ROM with the custom disk image at the given SCSI ID.
@@ -555,10 +602,20 @@ impl ScsiController {
             );
         }
 
+        // File-sharing/metadata toolbox commands (0xD0-0xD6, 0xD9) are bus-global
+        // and handled by the shared BlueSCSI helper. The per-device CD switching
+        // commands (LIST_CDS 0xD7 / SET_NEXT_CD 0xD8 / COUNT_CDS 0xDA) fall through
+        // to the addressed target, which owns the folder of images and its media.
         let result = match cmd_op {
-            0xD0..=0xD9 => Ok(self
-                .toolbox
-                .handle_command(cmd, outdata, &mut self.scsi_debug)),
+            0xD0..=0xD6 | 0xD9 => {
+                let toolbox_devices = self.toolbox_device_map();
+                Ok(self.toolbox.handle_command(
+                    cmd,
+                    outdata,
+                    &mut self.scsi_debug,
+                    &toolbox_devices,
+                ))
+            }
             _ => {
                 let Some(target) = self.targets[self.sel_id].as_mut() else {
                     bail!("SCSI command to disconnected target ID {}", self.sel_id);

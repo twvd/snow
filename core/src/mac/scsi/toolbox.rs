@@ -29,6 +29,31 @@ pub const CAP_LARGE_SEND: u8 = 0x02; // Supports large (32KB) send file chunks
 /// Current Toolbox API version
 const TOOLBOX_API_VERSION: u8 = 0;
 
+/// Size of a single BlueSCSI Toolbox directory listing entry, in bytes.
+pub(crate) const TOOLBOX_ENTRY_SIZE: usize = 40;
+
+/// Builds a single 40-byte BlueSCSI Toolbox listing entry. Used by both the
+/// shared-folder file listing (0xD0) and the folder-backed CD-ROM image
+/// listing (0xD7) so the wire format stays identical.
+///
+/// Layout: `[0]` index, `[1]` type (0x01 = file, 0x00 = directory),
+/// `[2..35]` NUL-padded MacRoman name (max 32 chars), `[36..40]` big-endian size.
+pub(crate) fn toolbox_file_entry(
+    index: u8,
+    is_dir: bool,
+    name: &str,
+    size: u64,
+) -> [u8; TOOLBOX_ENTRY_SIZE] {
+    let mut entry = [0u8; TOOLBOX_ENTRY_SIZE];
+    entry[0] = index;
+    entry[1] = if is_dir { 0x00 } else { 0x01 };
+    let name_bytes = utf8_to_macroman(name);
+    let len = name_bytes.len().min(MAX_FILE_PATH);
+    entry[2..2 + len].copy_from_slice(&name_bytes[..len]);
+    entry[36..40].copy_from_slice(&(size as u32).to_be_bytes());
+    entry
+}
+
 #[derive(Default)]
 pub struct BlueSCSI {
     shared_dir: Option<PathBuf>,
@@ -48,6 +73,7 @@ impl BlueSCSI {
         cmd: &[u8],
         outdata: Option<&[u8]>,
         debug_enabled: &mut bool,
+        devices: &[u8; 8],
     ) -> ScsiCmdResult {
         if *debug_enabled {
             debug!("BlueSCSI command: {:02X?}", cmd);
@@ -60,7 +86,7 @@ impl BlueSCSI {
             0xD4 => self.send_file_10(cmd, outdata),
             0xD5 => self.send_file_end(),
             0xD6 => self.toggle_debug(cmd, debug_enabled),
-            0xD9 => self.toolbox_metadata(cmd),
+            0xD9 => self.toolbox_metadata(cmd, devices),
             _ => {
                 error!("Unknown BlueSCSI command: {:02X}", cmd[0]);
                 ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
@@ -115,7 +141,6 @@ impl BlueSCSI {
         if self.shared_dir.is_none() {
             return ScsiCmdResult::Status(STATUS_CHECK_CONDITION);
         };
-        const ENTRY_SIZE: usize = 40;
         let entries = self.get_sorted_entries();
 
         let mut data = Vec::new();
@@ -123,21 +148,11 @@ impl BlueSCSI {
 
         for entry in entries {
             if let Some(name_str) = entry.file_name().to_str() {
-                let mut file_entry = vec![0; ENTRY_SIZE];
                 let metadata = entry.metadata().ok();
                 let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
                 let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
 
-                file_entry[0] = index;
-                file_entry[1] = if is_dir { 0x00 } else { 0x01 };
-
-                let name_bytes = utf8_to_macroman(name_str);
-                let len = name_bytes.len().min(MAX_FILE_PATH);
-                file_entry[2..2 + len].copy_from_slice(&name_bytes[..len]);
-
-                file_entry[36..40].copy_from_slice(&(size as u32).to_be_bytes());
-
-                data.extend_from_slice(&file_entry);
+                data.extend_from_slice(&toolbox_file_entry(index, is_dir, name_str, size));
                 index += 1;
             }
         }
@@ -252,7 +267,7 @@ impl BlueSCSI {
     ///   0 = 8 bytes (backward compatibility)
     ///   1-8 = requested number of bytes
     ///   >8 = error (INVALID_FIELD_IN_CDB)
-    fn toolbox_metadata(&self, cmd: &[u8]) -> ScsiCmdResult {
+    fn toolbox_metadata(&self, cmd: &[u8], devices: &[u8; 8]) -> ScsiCmdResult {
         let subcommand = cmd[1];
         let alloc_len = if cmd[8] == 0 { 8 } else { cmd[8] as usize };
 
@@ -264,12 +279,9 @@ impl BlueSCSI {
 
         match subcommand {
             TOOLBOX_LIST_DEVICES => {
-                // Return 8 bytes, one for each SCSI ID
-                // 0xFF = not emulated by this device
-                // Snow only emulates one disk at a time, typically ID 0
-                let mut response = [0xFFu8; 8];
-                response[0] = 0x00; // ID 0 = Fixed disk (S2S_CFG_FIXED)
-                ScsiCmdResult::DataIn(response[..alloc_len].to_vec())
+                // Return 8 bytes, one for each SCSI ID, with the BlueSCSI device
+                // type code of the attached target (0xFF = no device on that ID).
+                ScsiCmdResult::DataIn(devices[..alloc_len].to_vec())
             }
             TOOLBOX_GET_CAPABILITIES => {
                 // Return capabilities structure:

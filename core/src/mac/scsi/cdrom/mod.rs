@@ -4,7 +4,8 @@ pub mod backends;
 
 use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use crate::{
     debuggable::Debuggable,
@@ -24,10 +25,12 @@ use crate::{
 };
 
 use super::{
-    ASC_INVALID_FIELD_IN_CDB, ASC_MEDIUM_NOT_PRESENT, CC_KEY_ILLEGAL_REQUEST, CC_KEY_MEDIUM_ERROR,
-    STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult,
+    ASC_INVALID_FIELD_IN_CDB, ASC_MEDIUM_NOT_PRESENT, ASC_NOT_READY_TO_READY_CHANGE,
+    CC_KEY_ILLEGAL_REQUEST, CC_KEY_MEDIUM_ERROR, CC_KEY_UNIT_ATTENTION, STATUS_CHECK_CONDITION,
+    STATUS_GOOD, ScsiCmdResult,
     disk_image::{DiskImage, FileDiskImage},
     target::{ScsiTarget, ScsiTargetEvent, ScsiTargetType},
+    toolbox::toolbox_file_entry,
 };
 
 // CD-ROM protocol Documentation:
@@ -314,6 +317,17 @@ pub(super) struct ScsiTargetCdrom {
     #[serde(skip)]
     pub(super) backend: Option<Box<dyn CdromBackend>>,
 
+    /// Folder of CD images for a "Toolbox managed" folder-backed drive.
+    /// Enumerated on demand for the BlueSCSI Toolbox CD commands. None for a
+    /// regular single-image / empty CD-ROM drive.
+    #[serde(default)]
+    image_dir: Option<PathBuf>,
+
+    /// Set after a Toolbox CD swap so the next TEST UNIT READY reports a
+    /// UNIT ATTENTION (medium may have changed), prompting the guest to remount.
+    #[serde(default)]
+    pending_unit_attention: bool,
+
     /// Media eject event
     event_eject: LatchingEvent,
 
@@ -351,6 +365,8 @@ impl ScsiTargetCdrom {
         let mut self_ = Self {
             common: Default::default(),
             backend: None,
+            image_dir: None,
+            pending_unit_attention: false,
             event_eject: Default::default(),
             blocksize: 2048,
             audio_state: AudioState::Stopped,
@@ -823,6 +839,59 @@ impl ScsiTargetCdrom {
         self.event_eject.get_clear();
         Ok(())
     }
+
+    /// Sets the Toolbox-managed image folder for a folder-backed CD-ROM drive.
+    pub(super) fn set_image_dir(&mut self, dir: Option<PathBuf>) {
+        self.image_dir = dir;
+    }
+
+    /// Returns the mountable CD images in the Toolbox-managed folder, sorted by
+    /// name so LIST_CDS ordering matches SET_NEXT_CD indexing. Empty if this is
+    /// not a folder-backed drive or the folder cannot be read.
+    fn folder_images(&self) -> Vec<PathBuf> {
+        const CD_IMAGE_EXTS: [&str; 3] = ["iso", "toast", "cue"];
+        let Some(dir) = &self.image_dir else {
+            return Vec::new();
+        };
+        let Ok(entries) = fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut images: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                let visible = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| !n.starts_with('.'))
+                    .unwrap_or(false);
+                let is_image = p
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| CD_IMAGE_EXTS.iter().any(|&ext| e.eq_ignore_ascii_case(ext)))
+                    .unwrap_or(false);
+                visible && is_image
+            })
+            .collect();
+        images.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+        images
+    }
+
+    /// Mounts the first available image from the Toolbox-managed folder, if any.
+    pub(super) fn mount_first_image(&mut self) -> Result<()> {
+        if let Some(path) = self.folder_images().into_iter().next() {
+            self.load_media(&path)?;
+        }
+        Ok(())
+    }
+
+    /// Switches the mounted disc to `path` and latches a UNIT ATTENTION so the
+    /// next TEST UNIT READY tells the guest the medium may have changed.
+    fn switch_media(&mut self, path: &Path) -> Result<()> {
+        self.load_media(path)?;
+        self.pending_unit_attention = true;
+        Ok(())
+    }
 }
 
 #[typetag::serde]
@@ -871,6 +940,15 @@ impl ScsiTarget for ScsiTargetCdrom {
     }
 
     fn unit_ready(&mut self) -> Result<ScsiCmdResult> {
+        // Report a pending medium-change (from a Toolbox CD swap) exactly once so
+        // the guest re-reads the TOC and remounts the newly-selected disc.
+        if self.pending_unit_attention {
+            self.pending_unit_attention = false;
+            self.common
+                .set_cc(CC_KEY_UNIT_ATTENTION, ASC_NOT_READY_TO_READY_CHANGE);
+            return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+        }
+
         let Some(backend) = &mut self.backend else {
             // No CD inserted
             self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
@@ -990,6 +1068,13 @@ impl ScsiTarget for ScsiTargetCdrom {
                 result[0..0x16].copy_from_slice(b"APPLE COMPUTER, INC   ");
                 Some(result)
             }
+            0x31 => {
+                // BlueSCSI vendor page. Advertises Toolbox capability so host
+                // software recognises this CD-ROM as BlueSCSI-managed.
+                let mut result = vec![0; 42];
+                result[0..42].copy_from_slice(b"BlueSCSI is the BEST STOLEN FROM BLUESCSI\x00");
+                Some(result)
+            }
             _ => None,
         }
     }
@@ -1085,6 +1170,10 @@ impl ScsiTarget for ScsiTargetCdrom {
         self.backend
             .as_ref()
             .and_then(|backend| backend.image_path())
+    }
+
+    fn cdrom_image_dir(&self) -> Option<&Path> {
+        self.image_dir.as_deref()
     }
 
     fn specific_cmd(&mut self, cmd: &[u8], _outdata: Option<&[u8]>) -> Result<ScsiCmdResult> {
@@ -1429,6 +1518,53 @@ impl ScsiTarget for ScsiTargetCdrom {
 
                 Ok(ScsiCmdResult::Status(STATUS_GOOD))
             }
+            // BlueSCSI Toolbox: LIST CDS (list the images in the managed folder)
+            0xD7 => {
+                let mut data = Vec::new();
+                for (i, path) in self
+                    .folder_images()
+                    .iter()
+                    .enumerate()
+                    .take(u8::MAX as usize)
+                {
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                    data.extend_from_slice(&toolbox_file_entry(i as u8, false, name, size));
+                }
+                Ok(ScsiCmdResult::DataIn(data))
+            }
+            // BlueSCSI Toolbox: SET NEXT CD (switch to the image at CDB[1])
+            0xD8 => {
+                let index = cmd[1] as usize;
+                let images = self.folder_images();
+                let Some(path) = images.get(index).cloned() else {
+                    log::warn!(
+                        "SET NEXT CD: index {} out of range ({} images)",
+                        index,
+                        images.len()
+                    );
+                    self.common
+                        .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB);
+                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                };
+                match self.switch_media(&path) {
+                    Ok(()) => {
+                        log::info!("Toolbox CD switch to '{}'", path.display());
+                        Ok(ScsiCmdResult::Status(STATUS_GOOD))
+                    }
+                    Err(e) => {
+                        log::error!("Toolbox CD switch failed: {:#}", e);
+                        self.common
+                            .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                        Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
+                    }
+                }
+            }
+            // BlueSCSI Toolbox: COUNT CDS (number of images in the managed folder)
+            0xDA => {
+                let count = self.folder_images().len().min(u8::MAX as usize) as u8;
+                Ok(ScsiCmdResult::DataIn(vec![count]))
+            }
             _ => {
                 log::error!("Unknown command {:02X}h", cmd[0]);
                 self.common
@@ -1520,5 +1656,116 @@ impl ScsiTarget for ScsiTargetCdrom {
 impl Debuggable for ScsiTargetCdrom {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
         vec![]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Creates a fresh, uniquely-named temporary directory for a test.
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("snow_toolbox_cd_{}_{}", std::process::id(), tag));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_file(dir: &Path, name: &str, size: usize) {
+        let mut f = fs::File::create(dir.join(name)).unwrap();
+        f.write_all(&vec![0u8; size]).unwrap();
+    }
+
+    #[test]
+    fn folder_images_filters_and_sorts() {
+        let dir = temp_dir("filter");
+        // Deliberately out of order, with mixed extensions, a non-image file
+        // and a dotfile that must both be skipped.
+        write_file(&dir, "b.iso", 10);
+        write_file(&dir, "a.iso", 20);
+        write_file(&dir, "c.toast", 30);
+        write_file(&dir, "disc.cue", 40);
+        write_file(&dir, "notes.txt", 5);
+        write_file(&dir, ".hidden.iso", 5);
+
+        let mut cd = ScsiTargetCdrom::new(None);
+        cd.set_image_dir(Some(dir.clone()));
+
+        let names: Vec<String> = cd
+            .folder_images()
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["a.iso", "b.iso", "c.toast", "disc.cue"]);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn toolbox_count_and_list_cds() {
+        let dir = temp_dir("list");
+        write_file(&dir, "a.iso", 0x11);
+        write_file(&dir, "b.iso", 0x2233);
+
+        let mut cd = ScsiTargetCdrom::new(None);
+        cd.set_image_dir(Some(dir.clone()));
+
+        // COUNT_CDS (0xDA) -> a single byte with the image count.
+        let count_cmd = [0xDAu8, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        match cd.specific_cmd(&count_cmd, None).unwrap() {
+            ScsiCmdResult::DataIn(d) => assert_eq!(d, vec![2]),
+            _ => panic!("COUNT_CDS did not return data"),
+        }
+
+        // LIST_CDS (0xD7) -> two 40-byte entries in the same sorted order that
+        // SET_NEXT_CD indexes into.
+        let list_cmd = [0xD7u8, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        match cd.specific_cmd(&list_cmd, None).unwrap() {
+            ScsiCmdResult::DataIn(d) => {
+                assert_eq!(d.len(), 80);
+                let e0 = toolbox_file_entry(0, false, "a.iso", 0x11);
+                let e1 = toolbox_file_entry(1, false, "b.iso", 0x2233);
+                assert_eq!(&d[0..40], &e0[..]);
+                assert_eq!(&d[40..80], &e1[..]);
+                // Spot-check the raw wire format of the first entry.
+                assert_eq!(d[0], 0); // index
+                assert_eq!(d[1], 0x01); // type = file
+                assert_eq!(&d[2..7], b"a.iso");
+                assert_eq!(d[39], 0x11); // size, low byte (big-endian)
+            }
+            _ => panic!("LIST_CDS did not return data"),
+        }
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn set_next_cd_out_of_range_is_rejected() {
+        let dir = temp_dir("range");
+        write_file(&dir, "only.iso", 8);
+
+        let mut cd = ScsiTargetCdrom::new(None);
+        cd.set_image_dir(Some(dir.clone()));
+
+        // Index 5 does not exist (only one image): expect CHECK CONDITION and no
+        // latched unit attention.
+        let set_cmd = [0xD8u8, 5, 0, 0, 0, 0, 0, 0, 0, 0];
+        match cd.specific_cmd(&set_cmd, None).unwrap() {
+            ScsiCmdResult::Status(STATUS_CHECK_CONDITION) => {}
+            other => panic!("expected CHECK CONDITION, got {:?}", other_status(&other)),
+        }
+        assert!(!cd.pending_unit_attention);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn other_status(r: &ScsiCmdResult) -> String {
+        match r {
+            ScsiCmdResult::Status(s) => format!("Status({})", s),
+            ScsiCmdResult::DataIn(d) => format!("DataIn({} bytes)", d.len()),
+            ScsiCmdResult::DataOut(n) => format!("DataOut({})", n),
+        }
     }
 }
