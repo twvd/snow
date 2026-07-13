@@ -290,7 +290,7 @@ impl ScsiController {
         for (id, slot) in map.iter_mut().enumerate().take(Self::MAX_TARGETS) {
             if let Some(target) = self.targets[id].as_ref() {
                 *slot = match target.target_type() {
-                    ScsiTargetType::Disk => 0x00, // fixed disk
+                    ScsiTargetType::Disk => 0x00,  // fixed disk
                     ScsiTargetType::Cdrom => 0x02, // optical / CD-ROM
                     #[cfg(feature = "ethernet")]
                     ScsiTargetType::Ethernet => 0x06, // DaynaPORT
