@@ -1556,8 +1556,9 @@ impl ScsiTarget for ScsiTargetCdrom {
                     }
                     Err(e) => {
                         log::error!("Toolbox CD switch failed: {:#}", e);
-                        self.common
-                            .set_cc(CC_KEY_MEDIUM_ERROR, ASC_MEDIUM_NOT_PRESENT);
+                        // ASC MEDIUM NOT PRESENT must be paired with the NOT READY
+                        // sense key; otherwise early Apple CD extensions crash.
+                        self.common.set_cc(CC_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
                         Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION))
                     }
                 }
