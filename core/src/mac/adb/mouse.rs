@@ -90,7 +90,10 @@ impl AdbDevice for AdbMouse {
             0 => {
                 if self.get_srq() {
                     let mut has_button_event = false;
-                    while let Some(event) = self.event_queue.pop_front_if(|event| !has_button_event || event.button.is_none()) {
+                    while let Some(event) = self
+                        .event_queue
+                        .pop_front_if(|event| !has_button_event || event.button.is_none())
+                    {
                         if let Some(btn) = event.button {
                             has_button_event = true;
                             self.button = btn;
