@@ -265,7 +265,7 @@ where
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
     pub fn after_deserialize(&mut self, renderer: TRenderer) {
         // TODO multiple cards
-        assert_eq!(self.nubus_devices.iter().count(), 1);
+        assert_eq!(self.nubus_devices.iter().flatten().count(), 1);
         if let Some(card) = self.nubus_devices.iter_mut().flatten().next() {
             card.reinstall_renderer(renderer).unwrap();
         }
