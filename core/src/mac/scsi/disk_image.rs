@@ -59,6 +59,8 @@ impl FileDiskImage {
 
         #[cfg(not(feature = "mmap"))]
         let disk = {
+            let _ = writable;
+
             use std::fs;
 
             let disk = fs::read(filename)
