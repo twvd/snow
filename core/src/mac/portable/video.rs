@@ -1,3 +1,4 @@
+use crate::emulator::EmuContext;
 use crate::renderer::Renderer;
 use crate::tickable::{Tickable, Ticks};
 use anyhow::Result;
@@ -67,18 +68,18 @@ where
     }
 }
 
-impl<T> Tickable for Video<T>
+impl<T> Tickable<&dyn EmuContext> for Video<T>
 where
     T: Renderer,
 {
-    fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
-        const FRAMETIME: Ticks = 16_000_000 / 60;
+    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
+        let frametime: Ticks = ctx.bus_frequency() / 60;
 
         self.vblank_ticks += ticks;
-        while self.vblank_ticks > FRAMETIME {
+        while self.vblank_ticks > frametime {
             self.render()?;
 
-            self.vblank_ticks -= FRAMETIME;
+            self.vblank_ticks -= frametime;
         }
         Ok(ticks)
     }
