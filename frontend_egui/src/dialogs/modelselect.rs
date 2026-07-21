@@ -252,6 +252,7 @@ impl ModelSelectionDialog {
                 | MacModel::MacIIx
                 | MacModel::MacIIcx
                 | MacModel::SE30
+                | MacModel::Quadra700
         );
         if !self.display_rom_required {
             self.display_rom_path.clear();

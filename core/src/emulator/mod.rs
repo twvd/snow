@@ -19,7 +19,7 @@ use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
-use crate::cpu_m68k::{CpuM68000, CpuM68020Fpu, CpuM68020Pmmu, CpuM68030Fpu};
+use crate::cpu_m68k::{CpuM68000, CpuM68020Fpu, CpuM68020Pmmu, CpuM68030Fpu, CpuM68040Fpu};
 use crate::debuggable::{Debuggable, DebuggableProperties};
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
@@ -27,6 +27,7 @@ use crate::keymap::KeyEvent;
 use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
 use crate::mac::macii::bus::{DEFAULT_BUS_SPEED, MacIIBus};
 use crate::mac::portable::bus::MacPortableBus;
+use crate::mac::quadra::bus::Quadra700Bus;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
 use crate::mac::serial_bridge::{SccBridge, SerialBridgeStatus};
@@ -109,6 +110,7 @@ macro_rules! dispatch {
                         Self::MacII(inner) => &inner.$($ref_target)*,
                         Self::MacIIPmmu(inner) => &inner.$($ref_target)*,
                         Self::MacII30(inner) => &inner.$($ref_target)*,
+                        Self::Quadra700(inner) => &inner.$($ref_target)*,
                     }
                 }
             )*
@@ -122,6 +124,7 @@ macro_rules! dispatch {
                         Self::MacII(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacIIPmmu(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacII30(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::Quadra700(inner) => &mut inner.$($mut_ref_target)*,
                     }
                 }
             )*
@@ -135,6 +138,7 @@ macro_rules! dispatch {
                         Self::MacII(inner) => inner.$($immut_call_target)*,
                         Self::MacIIPmmu(inner) => inner.$($immut_call_target)*,
                         Self::MacII30(inner) => inner.$($immut_call_target)*,
+                        Self::Quadra700(inner) => inner.$($immut_call_target)*,
                     }
                 }
             )*
@@ -148,6 +152,7 @@ macro_rules! dispatch {
                         Self::MacII(inner) => inner.$($mut_call_target)*,
                         Self::MacIIPmmu(inner) => inner.$($mut_call_target)*,
                         Self::MacII30(inner) => inner.$($mut_call_target)*,
+                        Self::Quadra700(inner) => inner.$($mut_call_target)*,
                     }
                 }
             )*
@@ -169,6 +174,8 @@ enum EmulatorConfig {
     MacIIPmmu(Box<CpuM68020Pmmu<MacIIBus<ChannelRenderer, false>>>),
     /// Macintosh SE/30 and 68030-based Macintosh IIs
     MacII30(Box<CpuM68030Fpu<MacIIBus<ChannelRenderer, false>>>),
+    /// Macintosh Quadra 700 (68040)
+    Quadra700(Box<CpuM68040Fpu<Quadra700Bus<ChannelRenderer>>>),
 }
 
 dispatch! {
@@ -479,6 +486,45 @@ impl Emulator {
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
                 EmulatorConfig::MacII30(cpu)
+            }
+            MacModel::Quadra700 => {
+                assert!(override_fdd_type.is_none());
+
+                // TODO Quadra has integrated graphics
+                let Some((kind, mdcrom)) = extra_roms.iter().find_map(|p| match p {
+                    ExtraROMs::MDC12(data) => Some((NubusDeviceKind::Mdc12, *data)),
+                    ExtraROMs::Toby(data) => Some((NubusDeviceKind::Toby, *data)),
+                    _ => None,
+                }) else {
+                    bail!("Macintosh Quadra 700 requires display card ROM")
+                };
+                let nubus = [NubusCardConfig {
+                    slot: 0xD,
+                    kind,
+                    rom: mdcrom,
+                }];
+
+                // Find extension ROM if present
+                let extension_rom = extra_roms.iter().find_map(|p| match p {
+                    ExtraROMs::ExtensionROM(data) => Some(*data),
+                    _ => None,
+                });
+
+                // Initialize bus and CPU
+                let bus = Quadra700Bus::new(
+                    model,
+                    rom,
+                    &nubus,
+                    extension_rom,
+                    vec![renderer],
+                    monitor.unwrap_or_default(),
+                    mouse_mode,
+                    ram_size,
+                );
+                let cpu = Box::new(CpuM68040Fpu::new(bus));
+                assert_eq!(cpu.get_type(), model.cpu_type());
+
+                EmulatorConfig::Quadra700(cpu)
             }
         };
 

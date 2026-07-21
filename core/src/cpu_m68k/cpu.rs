@@ -16,7 +16,10 @@ use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
 use crate::cpu_m68k::pmmu::translate::atc_generation_default;
 use crate::cpu_m68k::regs::RegisterCACR;
-use crate::cpu_m68k::{M68000_SR_MASK, M68020_CACR_MASK, M68030, M68030_CACR_MASK};
+use crate::cpu_m68k::{
+    M68000_SR_MASK, M68020_CACR_MASK, M68030, M68030_CACR_MASK, M68040, M68040_CACR_MASK,
+    M68040_SR_MASK,
+};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
 
@@ -401,7 +404,7 @@ where
     pub const HISTORY_SIZE: usize = 10000;
 
     pub fn new(bus: TBus) -> Self {
-        assert!([M68000, M68020, M68030].contains(&CPU_TYPE));
+        assert!([M68000, M68020, M68030, M68040].contains(&CPU_TYPE));
 
         Self {
             bus,
@@ -937,6 +940,7 @@ where
             M68000 => sr & M68000_SR_MASK,
             M68020 => sr & M68020_SR_MASK,
             M68030 => sr & M68030_SR_MASK,
+            M68040 => sr & M68040_SR_MASK,
             _ => unreachable!(),
         });
     }
@@ -3237,6 +3241,7 @@ where
                 let mask = match CPU_TYPE {
                     M68020 => M68020_CACR_MASK,
                     M68030 => M68030_CACR_MASK,
+                    M68040 => M68040_CACR_MASK,
                     _ => unreachable!(),
                 };
                 let val = RegisterCACR(val);
