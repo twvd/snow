@@ -629,7 +629,7 @@ where
             self.via.tick(1, ctx)?;
         }
 
-        self.video.tick(ticks, ())?;
+        self.video.tick(ticks, ctx)?;
 
         // Legacy VBlank interrupt
         self.vblank_clock += ticks;
