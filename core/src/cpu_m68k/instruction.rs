@@ -361,6 +361,15 @@ pub enum MovecCtrlReg {
     CAAR = 0x802,
     MSP = 0x803,
     ISP = 0x804,
+    // M68040 MMU
+    TC040 = 0x003,
+    ITT0 = 0x004,
+    ITT1 = 0x005,
+    DTT0 = 0x006,
+    DTT1 = 0x007,
+    MMUSR040 = 0x805,
+    SRP040 = 0x807,
+    URP040 = 0x80E,
 }
 
 #[allow(clippy::from_over_into)]
@@ -385,6 +394,14 @@ impl From<MovecCtrlReg> for Register {
             MovecCtrlReg::CAAR => Self::CAAR,
             MovecCtrlReg::MSP => Self::MSP,
             MovecCtrlReg::ISP => Self::ISP,
+            MovecCtrlReg::TC040 => Self::TC040,
+            MovecCtrlReg::ITT0 => Self::ITT0,
+            MovecCtrlReg::ITT1 => Self::ITT1,
+            MovecCtrlReg::DTT0 => Self::DTT0,
+            MovecCtrlReg::DTT1 => Self::DTT1,
+            MovecCtrlReg::MMUSR040 => Self::MMUSR040,
+            MovecCtrlReg::SRP040 => Self::SRP040,
+            MovecCtrlReg::URP040 => Self::URP040,
         }
     }
 }
