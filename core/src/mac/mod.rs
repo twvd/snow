@@ -131,7 +131,7 @@ impl MacModel {
             | Self::MacIIx
             | Self::MacIIcx
             | Self::SE30 => 8 * 1024 * 1024,
-            Self::Quadra700 => 20 * 1024 * 1024,
+            Self::Quadra700 => 8 * 1024 * 1024,
         }
     }
 
@@ -190,11 +190,11 @@ impl MacModel {
                 ]
             }
             Self::Quadra700 => &[
-                // 4 MB soldered on the logic board, plus four SIMM slots.
                 4 * 1024 * 1024,
                 8 * 1024 * 1024,
-                20 * 1024 * 1024,
-                68 * 1024 * 1024,
+                16 * 1024 * 1024,
+                32 * 1024 * 1024,
+                64 * 1024 * 1024,
             ],
         }
     }
@@ -313,8 +313,8 @@ impl MacModel {
             Self::MacII | Self::MacIIFDHD => via::RegisterA(0).with_model(1),
             Self::MacIIx => via::RegisterA(0).with_model(0),
             Self::MacIIcx | Self::SE30 => via::RegisterA(0).with_model(0x03).with_model6(true),
-            // TODO
-            Self::Quadra700 => via::RegisterA(0).with_model(0x03).with_model6(true),
+            // Bit 0 = diagnostic mode (active low)
+            Self::Quadra700 => via::RegisterA(0xC1),
         }
     }
 
@@ -342,8 +342,7 @@ impl MacModel {
             | Self::Classic => panic!("Invalid operation for this model"),
             Self::MacII | Self::MacIIFDHD | Self::MacIIcx => macii::via2::RegisterB(0xFF),
             Self::MacIIx | Self::SE30 => macii::via2::RegisterB(0x87),
-            // TODO
-            Self::Quadra700 => macii::via2::RegisterB(0x87),
+            Self::Quadra700 => macii::via2::RegisterB(0xCF),
         }
     }
 }
