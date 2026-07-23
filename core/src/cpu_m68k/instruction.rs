@@ -9,7 +9,7 @@ use strum::Display;
 
 use super::cpu::CpuError;
 use super::regs::Register;
-use super::{CpuM68kType, CpuSized, M68000, M68010, M68020};
+use super::{CpuM68kType, CpuSized, M68000, M68010, M68020, M68040};
 
 use crate::bus::Address;
 use crate::types::{Long, Word};
@@ -163,6 +163,11 @@ pub enum InstructionMnemonic {
     ORI_ccr,
     ORI_sr,
     NOP,
+    MOVE16_inc,
+    MOVE16_abs,
+    CINV,
+    CPUSH,
+    PFLUSH040,
     LEA,
     LINEA,
     LINEF,
@@ -810,6 +815,14 @@ impl Instruction {
         // M68851 PMMU instructions
         (M68020, 0b1111_0000_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::POP_000),
 
+        // M68040 instructions
+        // MOVE16 (Ax)+,(Ay)+ must be matched before the absolute address forms
+        (M68040, 0b1111_0110_0010_0000, 0b1111_1111_1111_1000, InstructionMnemonic::MOVE16_inc),
+        (M68040, 0b1111_0110_0000_0000, 0b1111_1111_1110_0000, InstructionMnemonic::MOVE16_abs),
+        (M68040, 0b1111_0100_0000_0000, 0b1111_1111_0010_0000, InstructionMnemonic::CINV),
+        (M68040, 0b1111_0100_0010_0000, 0b1111_1111_0010_0000, InstructionMnemonic::CPUSH),
+        (M68040, 0b1111_0101_0000_0000, 0b1111_1111_1110_0000, InstructionMnemonic::PFLUSH040),
+
         (M68000, 0b1111_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::LINEF),
     ];
 
@@ -1250,6 +1263,11 @@ impl Instruction {
             | InstructionMnemonic::TRAPcc
             | InstructionMnemonic::TRAPcc_w
             | InstructionMnemonic::TRAPcc_l
+            | InstructionMnemonic::MOVE16_inc
+            | InstructionMnemonic::MOVE16_abs
+            | InstructionMnemonic::CINV
+            | InstructionMnemonic::CPUSH
+            | InstructionMnemonic::PFLUSH040
             | InstructionMnemonic::POP_000 => InstructionSize::None,
 
             InstructionMnemonic::MOVES_b => InstructionSize::Byte,

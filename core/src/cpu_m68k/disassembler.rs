@@ -854,6 +854,46 @@ impl<'a> Disassembler<'a> {
                 let displacement = self.get16()? as i16;
                 format!("{} #{}", mnemonic, displacement)
             }
+
+            // M68040 ------------------------------------------------------------------------------
+            InstructionMnemonic::MOVE16_inc => {
+                let ext = self.get16()?;
+                format!(
+                    "MOVE16 (A{})+,(A{})+",
+                    instr.data & 0b111,
+                    (ext >> 12) & 0b111
+                )
+            }
+            InstructionMnemonic::MOVE16_abs => {
+                let an = instr.data & 0b111;
+                let postinc = if instr.data & (1 << 4) == 0 { "+" } else { "" };
+                let abs = self.get32()?;
+                if instr.data & (1 << 3) == 0 {
+                    format!("MOVE16 (A{}){},${:08X}", an, postinc, abs)
+                } else {
+                    format!("MOVE16 ${:08X},(A{}){}", abs, an, postinc)
+                }
+            }
+            InstructionMnemonic::PFLUSH040 => match (instr.data >> 3) & 0b11 {
+                0b00 => format!("PFLUSHN (A{})", instr.data & 0b111),
+                0b01 => format!("PFLUSH (A{})", instr.data & 0b111),
+                0b10 => "PFLUSHAN".to_string(),
+                _ => "PFLUSHA".to_string(),
+            },
+            InstructionMnemonic::CINV | InstructionMnemonic::CPUSH => {
+                let caches = match (instr.data >> 6) & 0b11 {
+                    0b01 => "dc",
+                    0b10 => "ic",
+                    0b11 => "bc",
+                    _ => "nc",
+                };
+                match (instr.data >> 3) & 0b11 {
+                    0b01 => format!("{}L {},(A{})", mnemonic, caches, instr.data & 0b111),
+                    0b10 => format!("{}P {},(A{})", mnemonic, caches, instr.data & 0b111),
+                    0b11 => format!("{}A {}", mnemonic, caches),
+                    _ => format!("{} {}", mnemonic, caches),
+                }
+            }
             InstructionMnemonic::BFCHG => {
                 let sec = BfxExtWord(self.get16()?);
 

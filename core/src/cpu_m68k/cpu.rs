@@ -1347,6 +1347,10 @@ where
             InstructionMnemonic::DIVU_w => self.op_divu(instr),
             InstructionMnemonic::DIVS_w => self.op_divs(instr),
             InstructionMnemonic::NOP => Ok(()),
+            InstructionMnemonic::MOVE16_inc => self.op_move16_inc(instr),
+            InstructionMnemonic::MOVE16_abs => self.op_move16_abs(instr),
+            InstructionMnemonic::CINV | InstructionMnemonic::CPUSH => self.op_cxxx(instr),
+            InstructionMnemonic::PFLUSH040 => self.op_pflush040(),
             InstructionMnemonic::SWAP => self.op_swap(instr),
             InstructionMnemonic::TRAP => self.op_trap(instr),
             InstructionMnemonic::BTST_imm => self.op_bit::<true>(instr, None),
@@ -3214,6 +3218,92 @@ where
         self.write_ea::<Word>(instr, instr.get_op2(), result)?;
         self.regs.sr.set_ccr(ccr);
 
+        Ok(())
+    }
+
+    /// Transfers one 16-byte line from one physical address to another (MOVE16)
+    fn move16_transfer(&mut self, src: Address, dest: Address) -> Result<()> {
+        // The low four address bits are ignored: the transfer is always of an
+        // aligned 16-byte line.
+        let (src, dest) = (src & !0xF, dest & !0xF);
+
+        for offset in (0..16).step_by(std::mem::size_of::<Long>()) {
+            let value = self.read_ticks::<Long>(src.wrapping_add(offset))?;
+            self.write_ticks::<Long>(dest.wrapping_add(offset), value)?;
+        }
+
+        Ok(())
+    }
+
+    /// MOVE16 (Ax)+,(Ay)+
+    fn op_move16_inc(&mut self, instr: &Instruction) -> Result<()> {
+        instr.fetch_extword(|| self.fetch())?;
+
+        let ax = instr.get_op2();
+        let ay = usize::from((u16::from(instr.get_extword()) >> 12) & 0b111);
+        let src = self.regs.read_a::<Address>(ax);
+        let dest = self.regs.read_a::<Address>(ay);
+
+        self.prefetch_pump()?;
+        self.move16_transfer(src, dest)?;
+
+        // Both registers are incremented by 16, but if they are the same
+        // register it is only incremented once.
+        self.regs.write_a(ax, src.wrapping_add(16));
+        if ax != ay {
+            self.regs.write_a(ay, dest.wrapping_add(16));
+        }
+
+        Ok(())
+    }
+
+    /// MOVE16 (absolute modes)
+    fn op_move16_abs(&mut self, instr: &Instruction) -> Result<()> {
+        let to_absolute = instr.data & (1 << 3) == 0;
+        let postinc = instr.data & (1 << 4) == 0;
+
+        let an = instr.get_op2();
+        let anaddr = self.regs.read_a::<Address>(an);
+        let absaddr = ((self.fetch_pump()? as Address) << 16) | self.fetch_pump()? as Address;
+
+        self.prefetch_pump()?;
+        if to_absolute {
+            self.move16_transfer(anaddr, absaddr)?;
+        } else {
+            self.move16_transfer(absaddr, anaddr)?;
+        }
+
+        if postinc {
+            self.regs.write_a(an, anaddr.wrapping_add(16));
+        }
+
+        Ok(())
+    }
+
+    /// CINV/CPUSH
+    fn op_cxxx(&mut self, instr: &Instruction) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            return self.raise_privilege_violation();
+        }
+
+        // Cache field: 01 = data, 10 = instruction, 11 = both
+        if instr.data & (1 << 7) != 0 {
+            self.icache_tags.fill(ICACHE_TAG_INVALID);
+        }
+        // TODO data cache
+
+        Ok(())
+    }
+
+    /// PFLUSH/PFLUSHN/PFLUSHA/PFLUSHAN (M68040)
+    fn op_pflush040(&mut self) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            return self.raise_privilege_violation();
+        }
+
+        // Just conservatively flush the entire ATC
+        // TODO targetted flushing (I dont think it matters on the Mac)
+        self.pmmu_cache_invalidate();
         Ok(())
     }
 
