@@ -97,6 +97,8 @@ where
     /// Certain applications (e.g. Animation Toolkit) rely on this.
     const OPENBUS: u8 = 0;
 
+    const IO_MASK: Address = 0x3_FFFF;
+
     /// MTemp address, Y coordinate (16 bit, signed)
     const ADDR_MTEMP_Y: Address = 0x0828;
     /// MTemp address, X coordinate (16 bit, signed)
@@ -273,10 +275,11 @@ where
     }
 
     fn write_overlay(&mut self, addr: Address, val: Byte) -> Option<()> {
+        self.update_overlay(addr);
+
         match addr {
-            // 0x0000_0000 - 0x4FFF_FFFF is ROM
-            0x5000_0000..=0xFFFF_FFFF => self.write_32bit(addr, val),
-            _ => None,
+            0x0000_0000..=0x3FFF_FFFF => Some(()),
+            _ => self.write_32bit(addr, val),
         }
     }
 
@@ -295,7 +298,7 @@ where
             // ROM
             0x4000_0000..=0x4FFF_FFFF => Some(()),
             // I/O region (repeats)
-            0x5000_0000..=0x51FF_FFFF => match addr & 0x1_FFFF {
+            0x5000_0000..=0x51FF_FFFF => match addr & Self::IO_MASK {
                 // VIA 1
                 0x0000_0000..=0x0000_1FFF => {
                     Self::dev_write(addr, val, self.via1.write(addr, val));
@@ -313,30 +316,32 @@ where
                     Self::dev_write(addr, val, self.via2.write(addr, val));
                     Some(())
                 }
+                // Ethernet controller
+                0x0000_8000..=0x0000_8007 | 0x0000_A000..=0x0000_B0FF => None,
                 // SCC
-                0x0000_4000..=0x0000_5FFF => {
+                0x0000_C000..=0x0000_DFFF => {
                     Self::dev_write(addr, val, self.scc.write(addr >> 1, val));
                     Some(())
                 }
+                // Orwell memory controller
+                0x0000_E000..=0x0000_EFFF => Some(()),
                 // SCSI
-                0x0000_6000..=0x0000_6FFF => Some(self.scsi.write_dma(val)),
-                0x0001_0000..=0x0001_1FFF => {
+                // TODO the Quadra 700 has a NCR 53C96, not a 5380
+                0x0000_F000..=0x0000_F0FF => {
                     Self::dev_write(addr, val, self.scsi.write(addr, val));
                     Some(())
                 }
-                0x0001_2000..=0x0001_3FFF => Some(self.scsi.write_dma(val)),
+                0x0000_F100..=0x0000_F1FF => Some(self.scsi.write_dma(val)),
                 // ASC (sound)
                 0x0001_4000..=0x0001_5FFF => {
                     Self::dev_write(addr, val, self.asc.write(addr & 0xFFF, val));
                     Some(())
                 }
                 // SWIM
-                0x0001_6000..=0x0001_7FFF => {
+                0x0001_E000..=0x0001_FFFF => {
                     Self::dev_write(addr, val, self.swim.write(addr, val));
                     Some(())
                 }
-                // Orwell controller
-                0x0000_E000..=0x0000_EFFF => Some(()),
                 // Expansion area - unmapped
                 _ => None,
             },
@@ -371,7 +376,16 @@ where
         }
     }
 
+    fn update_overlay(&mut self, addr: Address) {
+        if self.overlay && (0x4000_0000..=0x4FFF_FFFF).contains(&addr) {
+            debug!("Overlay off");
+            self.overlay = false;
+        }
+    }
+
     fn read_overlay(&mut self, addr: Address) -> Option<Byte> {
+        self.update_overlay(addr);
+
         match addr {
             // ROM
             0x0000_0000..=0x4FFF_FFFF => Some(
@@ -405,25 +419,27 @@ where
                     .unwrap_or(&Self::OPENBUS),
             ),
             // I/O region (repeats)
-            0x5000_0000..=0x51FF_FFFF => match addr & 0x1_FFFF {
+            0x5000_0000..=0x51FF_FFFF => match addr & Self::IO_MASK {
                 // VIA 1
                 0x0000_0000..=0x0000_1FFF => Some(Self::dev_read(addr, self.via1.read(addr))),
                 // VIA 2
                 0x0000_2000..=0x0000_3FFF => Some(Self::dev_read(addr, self.via2.read(addr))),
+                // Ethernet controller
+                0x0000_8000..=0x0000_8007 | 0x0000_A000..=0x0000_B0FF => None,
                 // SCC
-                0x0000_4000..=0x0000_5FFF => Some(Self::dev_read(addr, self.scc.read(addr >> 1))),
+                0x0000_C000..=0x0000_DFFF => Some(Self::dev_read(addr, self.scc.read(addr >> 1))),
+                // Orwell memory controller
+                0x0000_E000..=0x0000_EFFF => Some(0),
                 // SCSI
-                0x0000_6000..=0x0000_6FFF => Some(self.scsi.read_dma()),
-                0x0001_0000..=0x0001_1FFF => Some(Self::dev_read(addr, self.scsi.read(addr))),
-                0x0001_2000..=0x0001_3FFF => Some(self.scsi.read_dma()),
+                // TODO the Quadra 700 has a NCR 53C96, not a 5380
+                0x0000_F000..=0x0000_F0FF => Some(Self::dev_read(addr, self.scsi.read(addr))),
+                0x0000_F100..=0x0000_F1FF => Some(self.scsi.read_dma()),
                 // ASC (sound)
                 0x0001_4000..=0x0001_5FFF => {
                     Some(Self::dev_read(addr, self.asc.read(addr & 0xFFF)))
                 }
-                // IWM/SWIM
-                0x0001_6000..=0x0001_7FFF => Some(Self::dev_read(addr, self.swim.read(addr))),
-                // Orwell controller
-                0x0000_E000..=0x0000_EFFF => Some(0),
+                // SWIM
+                0x0001_E000..=0x0001_FFFF => Some(Self::dev_read(addr, self.swim.read(addr))),
                 // Expansion area - unmapped
                 _ => None,
             },
@@ -612,11 +628,6 @@ where
         } else {
             self.write_32bit(addr, val)
         };
-
-        if self.overlay && !self.via1.a_out.overlay() {
-            debug!("Overlay off");
-            self.overlay = false;
-        }
 
         // Sync values that live in multiple places
         self.swim.sel = self.via1.a_out.sel();
