@@ -10,6 +10,7 @@ mod m68k_rs_atc;
 mod m68k_rs_busfault;
 mod m68k_rs_pmove;
 mod m68k_rs_translate;
+mod mmu040;
 mod movem;
 mod mull;
 mod no_fpu;
