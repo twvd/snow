@@ -3353,6 +3353,16 @@ where
                     .write(destreg, val.with_c(false).with_ce(false).0 & mask);
             } else {
                 self.regs.write(destreg, val);
+
+                if CPU_TYPE >= M68040
+                    && matches!(
+                        destreg,
+                        Register::TC040 | Register::SRP040 | Register::URP040
+                    )
+                {
+                    self.pmmu_cache_invalidate();
+                    self.pmmu_cache_ensure();
+                }
             }
             self.advance_cycles(2)?;
         }
