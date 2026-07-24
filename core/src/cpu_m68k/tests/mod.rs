@@ -5,6 +5,7 @@ mod format2;
 mod group2_exceptions;
 mod illegal_exception;
 mod interrupt;
+mod mmu040;
 mod no_fpu;
 mod pack;
 mod pmmu_atc;
