@@ -394,8 +394,10 @@ impl ScsiTargetCdrom {
             curr_mode1_qsub: Default::default(),
             audio_sink: None,
         };
-        if let Some(audio_provider) = audio_provider {
-            self_.set_audio_provider(audio_provider).unwrap(); // FIXME: avoid unwrap
+        if let Some(audio_provider) = audio_provider
+            && let Err(e) = self_.set_audio_provider(audio_provider)
+        {
+            log::error!("Failed setting CD audio provider: {}", e);
         }
         self_
     }
