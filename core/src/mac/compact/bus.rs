@@ -652,8 +652,8 @@ where
             self.write_normal(addr, val)
         };
 
-        if self.overlay && self.model <= MacModel::Plus && !self.via.a_out.overlay() {
-            self.overlay = false;
+        if self.model <= MacModel::Plus {
+            self.overlay = self.via.a_out.overlay();
         }
 
         // Sync values that live in multiple places
