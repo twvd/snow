@@ -731,6 +731,7 @@ where
             address: vaddr,
             start_pc: 0,
             size: 0,
+            atc_fault: true,
         }))
     }
 
