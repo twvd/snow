@@ -65,6 +65,7 @@ where
                     function_code: 0,
                     ir: 0,
                     size: std::mem::size_of::<T>(),
+                    atc_fault: false,
 
                     // TODO instruction bit
                     instruction: false,
@@ -166,6 +167,7 @@ where
                             function_code: fc,
                             ir: 0,
                             size: std::mem::size_of::<T>(),
+                            atc_fault: false,
                             instruction: false,
                             read: true,
                             address: o_addr,
@@ -339,6 +341,7 @@ where
                                     function_code: fc,
                                     ir: 0,
                                     size: std::mem::size_of::<T>(),
+                                    atc_fault: false,
                                     instruction: false,
                                     read: false,
                                     address: o_addr,
@@ -412,6 +415,7 @@ where
                                     function_code: fc,
                                     ir: 0,
                                     size: std::mem::size_of::<T>(),
+                                    atc_fault: false,
                                     instruction: false,
                                     read: false,
                                     address: o_addr,
