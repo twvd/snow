@@ -322,7 +322,7 @@ where
                     Some(())
                 }
                 // Ethernet controller
-                0x0000_8000..=0x0000_8007 | 0x0000_A000..=0x0000_B0FF => None,
+                0x0000_8000..=0x0000_8007 | 0x0000_A000..=0x0000_B0FF => Some(()),
                 // SCC
                 0x0000_C000..=0x0000_DFFF => {
                     Self::dev_write(addr, val, self.scc.write(addr >> 1, val));
@@ -430,7 +430,7 @@ where
                 // VIA 2
                 0x0000_2000..=0x0000_3FFF => Some(Self::dev_read(addr, self.via2.read(addr))),
                 // Ethernet controller
-                0x0000_8000..=0x0000_8007 | 0x0000_A000..=0x0000_B0FF => None,
+                0x0000_8000..=0x0000_8007 | 0x0000_A000..=0x0000_B0FF => Some(0),
                 // SCC
                 0x0000_C000..=0x0000_DFFF => Some(Self::dev_read(addr, self.scc.read(addr >> 1))),
                 // Orwell memory controller
