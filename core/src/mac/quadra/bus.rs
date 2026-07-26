@@ -34,6 +34,9 @@ use serde::{Deserialize, Serialize};
 /// Macintosh Quadra 700 main clock speed (25 MHz 68040)
 pub const DEFAULT_BUS_SPEED: Ticks = 25_000_000;
 
+/// SCC serial controller clock (PCLK)
+pub const SCC_CLOCK: Ticks = 3_672_000;
+
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
@@ -58,6 +61,7 @@ pub struct Quadra700Bus<TRenderer: Renderer> {
     pub(crate) asc: Asc,
     via_clock: Ticks,
     asc_clock: Ticks,
+    scc_clock: Ticks,
     mouse_ready: bool,
     pub(crate) swim: Swim,
     pub(crate) scsi: ScsiController,
@@ -161,6 +165,7 @@ where
             via1: Via::new(model),
             via2: Via2::new(model),
             via_clock: 0,
+            scc_clock: 0,
             scc: Scc::new(),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), 16_000_000),
             scsi: ScsiController::new(),
@@ -742,6 +747,14 @@ where
                 }
                 _ => {}
             }
+        }
+
+        // SCC baud rate generator
+        self.scc_clock += ticks * SCC_CLOCK;
+        let scc_ticks = self.scc_clock / ctx.bus_frequency;
+        if scc_ticks > 0 {
+            self.scc_clock -= scc_ticks * ctx.bus_frequency;
+            self.scc.tick_brg(scc_ticks);
         }
 
         // Audio
