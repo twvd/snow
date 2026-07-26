@@ -16,7 +16,7 @@ use crate::mac::nubus::mdc12::Mdc12;
 use crate::mac::nubus::se30video::SE30Video;
 use crate::mac::nubus::toby::Toby;
 use crate::mac::rtc::Rtc;
-use crate::mac::scc::Scc;
+use crate::mac::scc::{RTXC_FREQUENCY, Scc};
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::sound::asc::Asc;
 use crate::mac::swim::Swim;
@@ -281,7 +281,7 @@ where
             via1: Via::new(model),
             via2: Via2::new(model),
             scc_ready: 0,
-            scc: Scc::new(),
+            scc: Scc::new(RTXC_FREQUENCY),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), BUS_FREQUENCY),
             scsi: ScsiController::new(),
             asc: Asc::default(),
@@ -887,7 +887,7 @@ where
         self.via1.adb = adb;
         self.via1.rtc = rtc;
 
-        self.scc = Scc::new();
+        self.scc = Scc::new(RTXC_FREQUENCY);
         self.via2 = Via2::new(self.model);
         for d in self.nubus_devices.iter_mut().filter_map(|f| f.as_mut()) {
             d.slot().reset();
@@ -1029,6 +1029,7 @@ where
         self.via2.set_line(ViaLine::CA2, self.scsi.get_drq().into());
 
         self.swim.tick(native_ticks, ())?;
+        self.scc.tick(native_ticks, ctx.bus_frequency);
 
         Ok(1)
     }
