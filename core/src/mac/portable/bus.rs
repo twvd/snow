@@ -15,7 +15,7 @@ use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::rtc::Rtc;
-use crate::mac::scc::Scc;
+use crate::mac::scc::{RTXC_FREQUENCY, Scc};
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::sound::asc::Asc;
 use crate::mac::swim::Swim;
@@ -199,7 +199,7 @@ where
             via: Via::new(),
             pmgr_clock: NativeClock::new(BUS_FREQUENCY),
             video: Video::new(renderer),
-            scc: Scc::new(),
+            scc: Scc::new(RTXC_FREQUENCY),
             scc_ready: 0,
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), BUS_FREQUENCY),
             scsi: ScsiController::new(),
@@ -709,7 +709,7 @@ where
 
         self.pmgr.reset();
 
-        self.scc = Scc::new();
+        self.scc = Scc::new(RTXC_FREQUENCY);
         self.via.reset();
         self.swim.sel = self.via.pb().headsel();
         self.asc.reset();
@@ -821,6 +821,7 @@ where
 
         self.swim.intdrive = self.via.pb().drivesel();
         self.swim.tick(native_ticks, ())?;
+        self.scc.tick(native_ticks, ctx.bus_frequency);
 
         Ok(ticks)
     }

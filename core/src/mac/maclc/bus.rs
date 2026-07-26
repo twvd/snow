@@ -18,7 +18,7 @@ use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::egret::Egret;
 use crate::mac::macii::bus::RAM_DIRTY_PAGESIZE;
 use crate::mac::rtc::Rtc;
-use crate::mac::scc::Scc;
+use crate::mac::scc::{RTXC_FREQUENCY, Scc};
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::sound::v8_sonora::{V8Sound, V8Variant};
 use crate::mac::swim::Swim;
@@ -270,7 +270,7 @@ where
             sonora_vram_next_half: None,
             sonora_vram_ready: 0,
             tick60_clock: 0,
-            scc: Scc::new(),
+            scc: Scc::new(RTXC_FREQUENCY),
             swim,
             scsi: ScsiController::new(),
             pseudovia: PseudoVia::new(video.sense(), pseudovia_mask),
@@ -964,7 +964,7 @@ where
                 .extend(0..(self.ram.len() / RAM_DIRTY_PAGESIZE));
         }
 
-        self.scc = Scc::new();
+        self.scc = Scc::new(RTXC_FREQUENCY);
         self.via.reset();
         self.swim.sel = self.via.pa().headsel();
         self.pseudovia.reset();
@@ -1098,6 +1098,7 @@ where
         self.pseudovia
             .set_scsi(self.scsi.get_irq(), self.scsi.get_drq());
         self.swim.tick(native_ticks, ())?;
+        self.scc.tick(native_ticks, ctx.bus_frequency);
 
         Ok(ticks)
     }
