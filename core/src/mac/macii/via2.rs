@@ -27,6 +27,9 @@ bitfield! {
 
         pub v2irqs: u8 @ 0..=5,
 
+        /// Built-in video IRQ (slot $F, Quadra)
+        pub v2irqvideo: bool @ 6,
+
         /// RAM-size (output)
         pub v2ram0: u8 @ 6..=7,
     }

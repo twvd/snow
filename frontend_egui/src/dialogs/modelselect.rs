@@ -252,11 +252,21 @@ impl ModelSelectionDialog {
                 | MacModel::MacIIx
                 | MacModel::MacIIcx
                 | MacModel::SE30
-                | MacModel::Quadra700
         );
         if !self.display_rom_required {
             self.display_rom_path.clear();
             self.display_rom_valid = false;
+        }
+    }
+
+    fn monitor_selectable(&self) -> bool {
+        match self.selected_model {
+            MacModel::Quadra700 => true,
+            MacModel::SE30 => false,
+            _ => {
+                self.display_rom_required
+                    && VIDEO_CARDS_WITH_MONITOR.contains(&self.selected_video_card)
+            }
         }
     }
 
@@ -530,25 +540,23 @@ impl ModelSelectionDialog {
 
                     ui.label(egui::RichText::from("Select peripherals").strong());
                     ui.end_row();
+                }
 
-                    // Monitors dropdown
-                    if self.selected_model != MacModel::SE30
-                        && VIDEO_CARDS_WITH_MONITOR.contains(&self.selected_video_card)
-                    {
-                        ui.label("Monitor");
-                        egui::ComboBox::new(egui::Id::new("Select monitor"), "")
-                            .selected_text(format!("{}", self.selected_monitor))
-                            .show_ui(ui, |ui| {
-                                for monitor in MacMonitor::iter() {
-                                    ui.selectable_value(
-                                        &mut self.selected_monitor,
-                                        monitor,
-                                        monitor.to_string(),
-                                    );
-                                }
-                            });
-                        ui.end_row();
-                    }
+                // Monitors dropdown
+                if self.monitor_selectable() {
+                    ui.label("Monitor");
+                    egui::ComboBox::new(egui::Id::new("Select monitor"), "")
+                        .selected_text(format!("{}", self.selected_monitor))
+                        .show_ui(ui, |ui| {
+                            for monitor in MacMonitor::iter() {
+                                ui.selectable_value(
+                                    &mut self.selected_monitor,
+                                    monitor,
+                                    monitor.to_string(),
+                                );
+                            }
+                        });
+                    ui.end_row();
                 }
                 if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
                     ui.checkbox(&mut self.init_args.pmmu_enabled, "Enable 68851 PMMU");
@@ -727,7 +735,7 @@ impl ModelSelectionDialog {
                                 Some(PathBuf::from(&self.extension_rom_path))
                             },
                             init_args: EmulatorInitArgs {
-                                monitor: if self.display_rom_required {
+                                monitor: if self.monitor_selectable() {
                                     Some(self.selected_monitor)
                                 } else {
                                     None

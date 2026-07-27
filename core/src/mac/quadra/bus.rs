@@ -9,16 +9,13 @@ use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::asc::Asc;
 use crate::mac::macii::via2::Via2;
-use crate::mac::nubus::NubusCard;
-use crate::mac::nubus::mdc12::Mdc12;
-use crate::mac::nubus::se30video::SE30Video;
-use crate::mac::nubus::toby::Toby;
+use crate::mac::quadra::dafb::Dafb;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
-use crate::mac::{MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind};
+use crate::mac::{MacModel, MacMonitor};
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
@@ -86,8 +83,8 @@ pub struct Quadra700Bus<TRenderer: Renderer> {
     /// Programmer's key pressed
     progkey_pressed: LatchingEvent,
 
-    /// NuBus cards (base address: $9)
-    nubus_devices: [Option<NubusCard<TRenderer>>; 6],
+    /// Built-in video controller
+    pub(crate) dafb: Dafb<TRenderer>,
 
     /// Mouse mode
     mouse_mode: MouseMode,
@@ -118,36 +115,12 @@ where
     pub fn new(
         model: MacModel,
         rom: &[u8],
-        nubus: &[NubusCardConfig],
         extension_rom: Option<&[u8]>,
-        mut renderers: Vec<TRenderer>,
+        renderer: TRenderer,
         monitor: MacMonitor,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
     ) -> Self {
-        // Build the NuBus cards from the provided configuration.
-        let mut nubus_devices: [Option<NubusCard<TRenderer>>; 6] = core::array::from_fn(|_| None);
-        for cfg in nubus {
-            assert!(
-                model.nubus_slots().contains(&cfg.slot),
-                "NuBus slot {:#X} not available on {}",
-                cfg.slot,
-                model
-            );
-            let idx = (cfg.slot - 0x9) as usize;
-            // TODO non-video cards
-            let renderer = renderers
-                .pop()
-                .expect("not enough renderers for NuBus cards");
-            log::info!("NuBus slot {:#X}: {}", cfg.slot, cfg.kind);
-            nubus_devices[idx] = Some(match cfg.kind {
-                NubusDeviceKind::Mdc12 => NubusCard::MDC12(Mdc12::new(cfg.rom, renderer, monitor)),
-                NubusDeviceKind::Toby => NubusCard::Toby(Toby::new(cfg.rom, renderer)),
-                NubusDeviceKind::SE30Video => {
-                    NubusCard::SE30Video(SE30Video::new(cfg.rom, renderer))
-                }
-            });
-        }
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
 
         if extension_rom.is_some() {
@@ -185,7 +158,7 @@ where
             //vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
 
-            nubus_devices,
+            dafb: Dafb::new(renderer, monitor),
             mouse_mode,
         };
 
@@ -204,11 +177,8 @@ where
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
     pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        // TODO multiple cards
-        assert_eq!(self.nubus_devices.iter().flatten().count(), 1);
-        if let Some(card) = self.nubus_devices.iter_mut().flatten().next() {
-            card.reinstall_renderer(renderer).unwrap();
-        }
+        self.dafb.renderer = Some(renderer);
+        self.dafb.render().unwrap();
 
         self.asc.after_deserialize();
 
@@ -307,13 +277,6 @@ where
                 // VIA 1
                 0x0000_0000..=0x0000_1FFF => {
                     Self::dev_write(addr, val, self.via1.write(addr, val));
-                    if self.model == MacModel::SE30 {
-                        let Some(NubusCard::SE30Video(d)) = self.nubus_devices[5].as_mut() else {
-                            unreachable!()
-                        };
-                        d.vblank_enable = !self.via1.b_out.se30_vblank_enable();
-                        d.fb_select = self.via1.a_out.page2();
-                    }
                     Some(())
                 }
                 // VIA 2
@@ -359,24 +322,10 @@ where
                 );
                 Some(())
             }
-            // NuBus standard slot
-            0xF100_0000..=0xFFFF_FFFF => {
-                let nubus_addr = (addr >> 24) & 0x0F;
-                if nubus_addr < 0x09 || nubus_addr == 0x0F {
-                    None
-                } else if let Some(dev) = self.nubus_devices[(nubus_addr - 0x09) as usize].as_mut()
-                {
-                    let written = match dev {
-                        NubusCard::MDC12(dev) => dev.write(addr & 0xFF_FFFF, val),
-                        NubusCard::SE30Video(dev) => dev.write(addr & 0xFF_FFFF, val),
-                        NubusCard::Toby(dev) => dev.write(addr & 0xFF_FFFF, val),
-                    };
-                    Self::dev_write(addr, val, written);
-                    Some(())
-                } else {
-                    None
-                }
-            }
+            // Built-in video (DAFB), slot $9
+            0xF900_0000..=0xF9FF_FFFF => self.dafb.write(addr & 0xFF_FFFF, val),
+            // NuBus standard slots ($D, $E) - no cards emulated
+            0xF100_0000..=0xFFFF_FFFF => None,
             _ => None,
         }
     }
@@ -460,23 +409,10 @@ where
                 log::warn!("Unimplemented read from NuBus super slot: {:08X}", addr);
                 Some(Self::OPENBUS)
             }
-            // NuBus standard slot
-            0xF100_0000..=0xFFFF_FFFF => {
-                let nubus_addr = (addr >> 24) & 0x0F;
-                if nubus_addr < 0x09 || nubus_addr == 0x0F {
-                    None
-                } else if let Some(dev) = self.nubus_devices[(nubus_addr - 0x09) as usize].as_mut()
-                {
-                    let val = match dev {
-                        NubusCard::MDC12(dev) => dev.read(addr & 0xFF_FFFF),
-                        NubusCard::SE30Video(dev) => dev.read(addr & 0xFF_FFFF),
-                        NubusCard::Toby(dev) => dev.read(addr & 0xFF_FFFF),
-                    };
-                    Some(Self::dev_read(addr, val))
-                } else {
-                    None
-                }
-            }
+            // Built-in video (DAFB), slot $9
+            0xF900_0000..=0xF9FF_FFFF => self.dafb.read(addr & 0xFF_FFFF),
+            // NuBus standard slots ($D, $E) - no cards emulated
+            0xF100_0000..=0xFFFF_FFFF => None,
             _ => None,
         }
     }
@@ -570,14 +506,7 @@ where
     }
 
     pub fn video_blank(&mut self) -> Result<()> {
-        for d in self.nubus_devices.iter_mut().flatten() {
-            match d {
-                NubusCard::MDC12(d) => d.blank()?,
-                NubusCard::SE30Video(d) => d.blank()?,
-                NubusCard::Toby(d) => d.blank()?,
-            }
-        }
-        Ok(())
+        self.dafb.blank()
     }
 
     /// Dispatches a key event to the keyboard
@@ -670,9 +599,7 @@ where
 
         self.scc = Scc::new();
         self.via2 = Via2::new(self.model);
-        for d in self.nubus_devices.iter_mut().filter_map(|f| f.as_mut()) {
-            d.reset();
-        }
+        self.dafb.reset();
         self.asc.reset();
 
         self.amu_active = false;
@@ -769,18 +696,11 @@ where
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }
 
-        // NuBus slot IRQs and ticks
-        let mut slot_irqs = 0;
-        for slot in 0..(self.nubus_devices.len()) {
-            if let Some(dev) = self.nubus_devices[slot].as_mut() {
-                dev.tick(ticks, ctx)?;
-                if dev.get_irq() {
-                    slot_irqs |= 1 << slot;
-                }
-            }
-        }
-        self.via2.a_in.set_v2irqs(!slot_irqs);
-        if slot_irqs > 0 {
+        // Built-in video. Interrupt is wired to the slot $F line of VIA 2
+        self.dafb.tick(ticks, ctx)?;
+        let video_irq = self.dafb.get_irq();
+        self.via2.a_in.set_v2irqvideo(!video_irq);
+        if video_irq {
             self.via2.ifr.set_slot(true);
         }
 
@@ -856,24 +776,18 @@ where
         let mut result = vec![
             dbgprop_nest!("Apple Desktop Bus", self.via1.adb),
             dbgprop_nest!("Apple Sound Chip", self.asc),
+            dbgprop_nest!("Built-in video (DAFB)", self.dafb),
             dbgprop_nest!("SCSI controller (NCR 5380)", self.scsi),
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("VIA 1 (SY6522)", self.via1),
             dbgprop_nest!("VIA 2 (SY6522)", self.via2),
         ];
 
-        for (i, slot) in self.nubus_devices.iter().enumerate() {
-            if let Some(dev) = slot.as_ref() {
-                result.push(dbgprop_nest!(
-                    format!("NuBus slot ${:1X} ({})", i + 0x09, dev.to_string()),
-                    dev
-                ));
-            } else {
-                result.push(dbgprop_group!(
-                    format!("NuBus slot ${:1X} (empty)", i + 0x09),
-                    vec![]
-                ));
-            }
+        for slot in self.model.nubus_slots() {
+            result.push(dbgprop_group!(
+                format!("NuBus slot ${:1X} (empty)", slot),
+                vec![]
+            ));
         }
         result
     }

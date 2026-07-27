@@ -490,20 +490,6 @@ impl Emulator {
             MacModel::Quadra700 => {
                 assert!(override_fdd_type.is_none());
 
-                // TODO Quadra has integrated graphics
-                let Some((kind, mdcrom)) = extra_roms.iter().find_map(|p| match p {
-                    ExtraROMs::MDC12(data) => Some((NubusDeviceKind::Mdc12, *data)),
-                    ExtraROMs::Toby(data) => Some((NubusDeviceKind::Toby, *data)),
-                    _ => None,
-                }) else {
-                    bail!("Macintosh Quadra 700 requires display card ROM")
-                };
-                let nubus = [NubusCardConfig {
-                    slot: 0xD,
-                    kind,
-                    rom: mdcrom,
-                }];
-
                 // Find extension ROM if present
                 let extension_rom = extra_roms.iter().find_map(|p| match p {
                     ExtraROMs::ExtensionROM(data) => Some(*data),
@@ -514,9 +500,8 @@ impl Emulator {
                 let bus = Quadra700Bus::new(
                     model,
                     rom,
-                    &nubus,
                     extension_rom,
-                    vec![renderer],
+                    renderer,
                     monitor.unwrap_or_default(),
                     mouse_mode,
                     ram_size,
