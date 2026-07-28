@@ -47,7 +47,7 @@ use std::fmt;
 use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::emulator::comm::{EmulatorSpeed, UserMessageType};
 use crate::mac::rtc::Rtc;
-use crate::mac::scsi::controller::ScsiController;
+use crate::mac::scsi::bus::ScsiBus;
 use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::swim::Swim;
 use comm::{
@@ -181,7 +181,6 @@ enum EmulatorConfig {
 dispatch! {
     immutable_refs {
         fn swim(&self) -> &Swim { bus.swim }
-        fn scsi(&self) -> &ScsiController { bus.scsi }
         fn scc(&self) -> &Scc { bus.scc }
         fn cpu_regs(&self) -> &RegisterFile { regs }
         fn ram(&self) -> &[u8] { bus.ram }
@@ -190,7 +189,6 @@ dispatch! {
 
     mutable_refs {
         fn swim_mut(&mut self) -> &mut Swim { bus.swim }
-        fn scsi_mut(&mut self) -> &mut ScsiController { bus.scsi }
         fn scc_mut(&mut self) -> &mut Scc { bus.scc }
         fn cpu_regs_mut(&mut self) -> &mut RegisterFile { regs }
         fn ram_mut(&mut self) -> &mut [u8] { bus.ram }
@@ -198,6 +196,7 @@ dispatch! {
     }
 
     immutable_calls {
+        fn scsi(&self) -> &ScsiBus { bus.scsi.bus() }
         fn model(&self) -> MacModel { bus.model() }
         fn cpu_has_pmmu(&self) -> bool { has_pmmu() }
         fn cpu_cycles(&self) -> Ticks { cycles }
@@ -209,6 +208,7 @@ dispatch! {
     }
 
     mutable_calls {
+        fn scsi_mut(&mut self) -> &mut ScsiBus { bus.scsi.bus_mut() }
         fn set_speed(&mut self, speed: EmulatorSpeed) -> () { bus.set_speed(speed) }
         fn set_bus_frequency(&mut self, bus_frequency: u64) -> () { bus.set_bus_frequency(bus_frequency) }
         fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> { bus.set_audio_provider(provider) }

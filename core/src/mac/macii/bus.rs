@@ -294,7 +294,7 @@ where
             .unwrap_or_else(|_| null_audio_sink());
         self.asc.set_sink(sink);
 
-        self.scsi.set_audio_provider(provider)
+        self.scsi.bus_mut().set_audio_provider(provider)
     }
 
     #[allow(clippy::needless_pass_by_value)]

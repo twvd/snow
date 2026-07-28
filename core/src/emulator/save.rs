@@ -6,7 +6,7 @@ use binrw::io::NoSeek;
 use binrw::{BinRead, BinWrite, NullString, binrw};
 
 use crate::emulator::EmulatorConfig;
-use crate::mac::scsi::controller::ScsiController;
+use crate::mac::scsi::bus::ScsiBus;
 
 #[cfg(not(feature = "mmap"))]
 compile_error!("feature \"savestates\" requires the \"mmap\" feature");
@@ -38,7 +38,7 @@ pub struct SaveHeader {
     /// Snow version (short hash)
     pub snow_version: NullString,
     /// Image sizes, per SCSI target. 0 is no image.
-    pub scsi_imgs: [u64; ScsiController::MAX_TARGETS],
+    pub scsi_imgs: [u64; ScsiBus::MAX_TARGETS],
     /// Optional screenshot (PNG), length.
     /// No screenshot if 0.
     #[bw(try_calc = screenshot.len().try_into())]
@@ -81,7 +81,7 @@ pub(super) fn save_state_to<W: std::io::Write + std::io::Seek>(
     let mut compressor = postcard::to_io(config, compressor)?;
     END_OF_CHUNK.write(&mut compressor)?;
 
-    for id in 0..ScsiController::MAX_TARGETS {
+    for id in 0..ScsiBus::MAX_TARGETS {
         if config.scsi().get_savestate_img_len(id).is_none() {
             continue;
         }
