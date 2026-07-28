@@ -1435,6 +1435,7 @@ where
             InstructionMnemonic::MOVE16_abs => self.op_move16_abs(instr),
             InstructionMnemonic::CINV | InstructionMnemonic::CPUSH => self.op_cxxx(instr),
             InstructionMnemonic::PFLUSH040 => self.op_pflush040(),
+            InstructionMnemonic::PTEST040 => self.op_ptest040(instr),
             InstructionMnemonic::SWAP => self.op_swap(instr),
             InstructionMnemonic::TRAP => self.op_trap(instr),
             InstructionMnemonic::BTST_imm => self.op_bit::<true>(instr, None),
@@ -3397,6 +3398,18 @@ where
         // TODO targetted flushing (I dont think it matters on the Mac)
         self.pmmu_cache_invalidate();
         Ok(())
+    }
+
+    /// PTESTR/PTESTW (M68040)
+    fn op_ptest040(&mut self, instr: &Instruction) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            return self.raise_privilege_violation();
+        }
+
+        // The address space to search comes from DFC, the address from An.
+        let fc = (self.regs.dfc & 0b111) as u8;
+        let vaddr = self.regs.read_a::<Address>(instr.get_op2());
+        self.mmu040_ptest(fc, vaddr)
     }
 
     /// MOVEC

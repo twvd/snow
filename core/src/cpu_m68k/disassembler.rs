@@ -880,6 +880,11 @@ impl<'a> Disassembler<'a> {
                 0b10 => "PFLUSHAN".to_string(),
                 _ => "PFLUSHA".to_string(),
             },
+            InstructionMnemonic::PTEST040 => format!(
+                "PTEST{} (A{})",
+                if instr.data & (1 << 5) != 0 { "R" } else { "W" },
+                instr.data & 0b111
+            ),
             InstructionMnemonic::CINV | InstructionMnemonic::CPUSH => {
                 let caches = match (instr.data >> 6) & 0b11 {
                     0b01 => "dc",

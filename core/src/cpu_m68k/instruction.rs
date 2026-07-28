@@ -168,6 +168,7 @@ pub enum InstructionMnemonic {
     CINV,
     CPUSH,
     PFLUSH040,
+    PTEST040,
     LEA,
     LINEA,
     LINEF,
@@ -822,6 +823,7 @@ impl Instruction {
         (M68040, 0b1111_0100_0000_0000, 0b1111_1111_0010_0000, InstructionMnemonic::CINV),
         (M68040, 0b1111_0100_0010_0000, 0b1111_1111_0010_0000, InstructionMnemonic::CPUSH),
         (M68040, 0b1111_0101_0000_0000, 0b1111_1111_1110_0000, InstructionMnemonic::PFLUSH040),
+        (M68040, 0b1111_0101_0100_1000, 0b1111_1111_1101_1000, InstructionMnemonic::PTEST040),
 
         (M68000, 0b1111_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::LINEF),
     ];
@@ -1268,6 +1270,7 @@ impl Instruction {
             | InstructionMnemonic::CINV
             | InstructionMnemonic::CPUSH
             | InstructionMnemonic::PFLUSH040
+            | InstructionMnemonic::PTEST040
             | InstructionMnemonic::POP_000 => InstructionSize::None,
 
             InstructionMnemonic::MOVES_b => InstructionSize::Byte,
