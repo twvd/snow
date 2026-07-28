@@ -318,7 +318,7 @@ where
             .unwrap_or_else(|_| null_audio_sink());
         self.sound.set_sink(sink);
 
-        self.scsi.set_audio_provider(provider)
+        self.scsi.bus_mut().set_audio_provider(provider)
     }
 
     /// Finds what an address selects

@@ -1,5 +1,6 @@
 //! SCSI controller, devices and associated code
 
+pub mod bus;
 pub mod cdrom;
 pub mod controller;
 pub mod disk;
