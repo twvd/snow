@@ -24,6 +24,11 @@ const DESC_S: Long = 1 << 7;
 const TC_ENABLE: Long = 1 << 15;
 const TC_PAGESIZE_8K: Long = 1 << 14;
 
+const MMUSR_S: Long = 1 << 7;
+const MMUSR_W: Long = 1 << 2;
+const MMUSR_T: Long = 1 << 1;
+const MMUSR_R: Long = 1 << 0;
+
 const TT_ENABLE: Long = 1 << 15;
 const TT_WP: Long = 1 << 2;
 
@@ -163,6 +168,47 @@ where
             leaf_addr,
             leaf_desc & DESC_M != 0,
         ))
+    }
+
+    pub(in crate::cpu_m68k) fn mmu040_ptest(&mut self, fc: u8, vaddr: Address) -> Result<()> {
+        // A transparent translation hit reports the logical address as the
+        // physical one and no attributes beyond T/R and write protection.
+        if let Some(wp) = self.mmu040_tt_match(fc, vaddr) {
+            self.regs.mmu040.mmusr =
+                (vaddr & !0xFFF) | MMUSR_T | MMUSR_R | if wp { MMUSR_W } else { 0 };
+            return Ok(());
+        }
+
+        if !self.mmu040_enabled() {
+            self.regs.mmu040.mmusr = (vaddr & !0xFFF) | MMUSR_R;
+            return Ok(());
+        }
+
+        // PTEST skips the ATC and always walks the tables
+        match self.mmu040_translate_lookup(fc, vaddr) {
+            Ok((paddr, wp, s, leaf_addr, _)) => {
+                let desc = self.read_ticks_physical::<Long>(leaf_addr)?;
+
+                // Bits 10-4 of the leaf descriptor (G, U1/U0, S, CM, M) sit in
+                // the same places in MMUSR. Write protection accumulates over
+                // the whole walk, so it comes from the lookup instead.
+                let mut mmusr = (paddr & !0xFFF) | (desc & 0x0000_07F0) | MMUSR_R;
+                if wp {
+                    mmusr |= MMUSR_W;
+                }
+                if s {
+                    mmusr |= MMUSR_S;
+                }
+                self.regs.mmu040.mmusr = mmusr;
+            }
+            Err(e) => match e.downcast_ref() {
+                // Lookup failed
+                Some(CpuError::Pagefault(_)) => self.regs.mmu040.mmusr = 0,
+                _ => return Err(e),
+            },
+        }
+
+        Ok(())
     }
 
     /// Translates a logical to a physical address
