@@ -5,6 +5,7 @@ pub mod cdrom;
 pub mod controller;
 pub mod disk;
 pub mod disk_image;
+pub mod esp;
 #[cfg(feature = "ethernet")]
 pub mod ethernet;
 #[cfg(feature = "printer")]
