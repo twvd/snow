@@ -76,6 +76,9 @@ pub struct Dafb<TRenderer: Renderer> {
     /// Test register
     test: Field32,
 
+    /// 'Turbo SCSI' config, part of the DAFB block
+    turbo_scsi: Field32,
+
     /// Swatch mode register
     swatch_mode: Field32,
     /// Swatch test register (unused by the hardware, scratch space for the driver)
@@ -149,6 +152,7 @@ where
             block_control: Field32(0),
             sense: Field32(0),
             test: Field32(0),
+            turbo_scsi: Field32(0),
 
             swatch_mode: Field32(0),
             swatch_test: Field32(0),
@@ -469,6 +473,14 @@ where
             // Monitor sense
             0x80_001C..=0x80_001E => Some(0),
             0x80_001F => Some(self.read_sense()),
+            // 'Turbo SCSI' config/handshake
+            0x80_0024 => Some(self.turbo_scsi.be0()),
+            0x80_0025 => Some(self.turbo_scsi.be1()),
+            // Bit 9 (in the full 32-bit value) is a DMA handshake bit;
+            // just always set it as ready because the SCSI controller will
+            // blast out bytes as fast as possible.
+            0x80_0026 => Some(Field32((self.turbo_scsi.0 & 0x1FF) | (1 << 9)).be2()),
+            0x80_0027 => Some(self.turbo_scsi.be3()),
             // Test register
             0x80_002C => Some(self.test.be0()),
             0x80_002D => Some(self.test.be1()),
@@ -579,6 +591,11 @@ where
             0x80_001D => Some(self.sense.set_be1(val)),
             0x80_001E => Some(self.sense.set_be2(val)),
             0x80_001F => Some(self.sense.set_be3(val)),
+            // Turbo SCSI
+            0x80_0024 => Some(self.turbo_scsi.set_be0(val)),
+            0x80_0025 => Some(self.turbo_scsi.set_be1(val)),
+            0x80_0026 => Some(self.turbo_scsi.set_be2(val)),
+            0x80_0027 => Some(self.turbo_scsi.set_be3(val)),
             // Test register
             0x80_002C => Some(self.test.set_be0(val)),
             0x80_002D => Some(self.test.set_be1(val)),

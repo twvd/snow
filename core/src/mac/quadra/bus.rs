@@ -12,7 +12,7 @@ use crate::mac::macii::via2::Via2;
 use crate::mac::quadra::dafb::Dafb;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
-use crate::mac::scsi::controller::ScsiController;
+use crate::mac::scsi::esp::Esp;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::{MacModel, MacMonitor};
@@ -61,7 +61,7 @@ pub struct Quadra700Bus<TRenderer: Renderer> {
     scc_clock: Ticks,
     mouse_ready: bool,
     pub(crate) swim: Swim,
-    pub(crate) scsi: ScsiController,
+    pub(crate) scsi: Esp,
 
     rom_mask: usize,
 
@@ -141,7 +141,7 @@ where
             scc_clock: 0,
             scc: Scc::new(),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), 16_000_000),
-            scsi: ScsiController::new(),
+            scsi: Esp::new(),
             asc: Asc::default(),
             asc_clock: 0,
             mouse_ready: false,
@@ -293,8 +293,7 @@ where
                 }
                 // Orwell memory controller
                 0x0000_E000..=0x0000_EFFF => Some(()),
-                // SCSI
-                // TODO the Quadra 700 has a NCR 53C96, not a 5380
+                // SCSI (NCR 53C96)
                 0x0000_F000..=0x0000_F0FF => {
                     Self::dev_write(addr, val, self.scsi.write(addr, val));
                     Some(())
@@ -384,8 +383,7 @@ where
                 0x0000_C000..=0x0000_DFFF => Some(Self::dev_read(addr, self.scc.read(addr >> 1))),
                 // Orwell memory controller
                 0x0000_E000..=0x0000_EFFF => Some(0),
-                // SCSI
-                // TODO the Quadra 700 has a NCR 53C96, not a 5380
+                // SCSI (NCR 53C96)
                 0x0000_F000..=0x0000_F0FF => Some(Self::dev_read(addr, self.scsi.read(addr))),
                 0x0000_F100..=0x0000_F1FF => Some(self.scsi.read_dma()),
                 // ASC (sound)
@@ -777,7 +775,7 @@ where
             dbgprop_nest!("Apple Desktop Bus", self.via1.adb),
             dbgprop_nest!("Apple Sound Chip", self.asc),
             dbgprop_nest!("Built-in video (DAFB)", self.dafb),
-            dbgprop_nest!("SCSI controller (NCR 5380)", self.scsi),
+            dbgprop_nest!("SCSI controller (NCR 53C96)", self.scsi),
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("VIA 1 (SY6522)", self.via1),
             dbgprop_nest!("VIA 2 (SY6522)", self.via2),
