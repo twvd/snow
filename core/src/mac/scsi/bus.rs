@@ -252,7 +252,9 @@ impl ScsiBus {
     /// and reports what should happen on the bus next.
     pub(crate) fn cmd_run(&mut self, outdata: Option<&[u8]>) -> Result<CmdOutcome> {
         let cmd = &self.cmdbuf;
-        let cmd_op = cmd[0];
+        let Some(cmd_op) = cmd.first().copied() else {
+            bail!("SCSI command run with an empty command buffer");
+        };
 
         if self.scsi_trace_cdb {
             debug!(
