@@ -191,27 +191,23 @@ impl Esp {
                 self.command_byte(val);
             }
             PHASE_DATA_OUT => {
+                let mut pending = self.bus.dataout_len;
                 while let Some(b) = self.fifo.pop_front() {
                     self.dataout_buf.push(b);
-                    self.bus.dataout_len = self.bus.dataout_len.saturating_sub(1);
+                    pending = pending.saturating_sub(1);
                 }
                 self.dataout_buf.push(val);
-                self.bus.dataout_len = self.bus.dataout_len.saturating_sub(1);
+
+                // Only the transition to zero completes the transfer; bytes
+                // arriving when nothing is outstanding are discarded.
+                let outstanding = pending > 0;
+                self.bus.dataout_len = pending.saturating_sub(1);
                 if self.dma {
                     self.advance_tc(1);
                 }
 
-                if self.bus.dataout_len == 0 {
-                    let data = std::mem::take(&mut self.dataout_buf);
-                    match self.bus.cmd_run(Some(&data)) {
-                        Ok(_) => self.set_phase(PHASE_STATUS),
-                        Err(e) => {
-                            error!("SCSI command error: {:#}", e);
-                            self.intr |= INTR_DC;
-                        }
-                    }
-                    self.intr |= INTR_BS;
-                    self.raise_irq();
+                if outstanding && self.bus.dataout_len == 0 {
+                    self.finish_dataout();
                 }
             }
             _ => self.fifo_push(val),
@@ -410,6 +406,29 @@ impl Esp {
         self.raise_irq();
     }
 
+    /// The initiator has delivered every byte the target asked for: run the
+    /// command with the collected data.
+    fn finish_dataout(&mut self) {
+        if self.bus.cmdbuf.is_empty() {
+            // Nothing to run the data against
+            self.dataout_buf.clear();
+            return;
+        }
+
+        let data = std::mem::take(&mut self.dataout_buf);
+        match self.bus.cmd_run(Some(&data)) {
+            Ok(_) => self.set_phase(PHASE_STATUS),
+            Err(e) => {
+                error!("SCSI command error: {:#}", e);
+                self.intr |= INTR_DC;
+            }
+        }
+        self.intr |= INTR_BS;
+        self.raise_irq();
+    }
+
+    /// Transfer Information: moves data between the FIFO and the target for the
+    /// current phase.
     fn transfer_info(&mut self) {
         match self.phase() {
             PHASE_MSG_OUT => {
@@ -458,25 +477,18 @@ impl Esp {
             }
             PHASE_DATA_OUT => {
                 let n = self.fifo.len().min(self.bus.dataout_len);
-                for _ in 0..n {
-                    let b = self.fifo_pop();
-                    self.dataout_buf.push(b);
-                }
-                self.bus.dataout_len -= n;
-                if self.dma {
-                    self.advance_tc(n as u32);
-                }
+                if n > 0 {
+                    for _ in 0..n {
+                        let b = self.fifo_pop();
+                        self.dataout_buf.push(b);
+                    }
+                    self.bus.dataout_len -= n;
+                    if self.dma {
+                        self.advance_tc(n as u32);
+                    }
 
-                if self.bus.dataout_len == 0 {
-                    let data = std::mem::take(&mut self.dataout_buf);
-                    match self.bus.cmd_run(Some(&data)) {
-                        Ok(_) => self.set_phase(PHASE_STATUS),
-                        Err(e) => {
-                            error!("SCSI command error: {:#}", e);
-                            self.intr |= INTR_DC;
-                            self.raise_irq();
-                            return;
-                        }
+                    if self.bus.dataout_len == 0 {
+                        self.finish_dataout();
                     }
                 }
                 self.intr |= INTR_BS;
