@@ -427,9 +427,22 @@ impl Esp {
         self.raise_irq();
     }
 
+    /// A transfer command issued with no target connected
+    fn disconnected_transfer(&mut self) {
+        self.fifo.clear();
+        self.intr |= INTR_DC;
+        self.seq = SEQ_0;
+        self.raise_irq();
+    }
+
     /// Transfer Information: moves data between the FIFO and the target for the
     /// current phase.
     fn transfer_info(&mut self) {
+        if !self.selected {
+            self.disconnected_transfer();
+            return;
+        }
+
         match self.phase() {
             PHASE_MSG_OUT => {
                 // Identify message arriving through the FIFO instead of with
@@ -503,6 +516,11 @@ impl Esp {
 
     /// Transfer Pad: like Transfer Information, but without moving real data
     fn transfer_pad(&mut self) {
+        if !self.selected {
+            self.disconnected_transfer();
+            return;
+        }
+
         let n = self.tc;
         match self.phase() {
             PHASE_DATA_IN => {
