@@ -182,6 +182,14 @@ impl Esp {
     }
 
     pub fn write_dma(&mut self, val: u8) {
+        if !self.selected {
+            // Nothing is connected, so the byte goes out onto an idle bus and
+            // disappears into an empty void of nothingness.
+            //
+            // For some reason this happens on System 7.1
+            return;
+        }
+
         match self.phase() {
             PHASE_COMMAND => {
                 // Drain any CDB bytes pushed through PIO, this seems to happen
