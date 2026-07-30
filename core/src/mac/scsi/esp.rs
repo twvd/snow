@@ -67,9 +67,11 @@ pub struct Esp {
     fifo: VecDeque<u8>,
 
     /// Transfer counter (24-bit), counts down during a transfer
+    /// Used for DMA mode only
     tc: u32,
 
-    /// Transfer counter as programmed by the driver, reloaded into tc
+    /// Transfer counter, reloaded into tc
+    /// Used for DMA mode only
     stc: u32,
 
     /// Last command written to the command register
@@ -98,8 +100,10 @@ pub struct Esp {
     /// Bytes still expected from the initiator in the data out phase
     dataout_buf: Vec<u8>,
 
-    /// The command being executed asked for a DMA transfer. Only DMA transfers
-    /// use the transfer counter; in FIFO mode the driver polls the FIFO flags.
+    /// A target is successfully selected
+    selected: bool,
+
+    /// The command being executed asked for a DMA transfer.
     dma: bool,
 }
 
@@ -124,6 +128,7 @@ impl Esp {
             sync_period: 0,
             sync_offset: 0,
             dataout_buf: vec![],
+            selected: false,
             dma: false,
         }
     }
@@ -183,11 +188,7 @@ impl Esp {
                 while let Some(b) = self.fifo.pop_front() {
                     self.bus.cmdbuf.push(b);
                 }
-                self.bus.cmdbuf.push(val);
-                if self.dma {
-                    self.advance_tc(1);
-                }
-                self.run_cdb();
+                self.command_byte(val);
             }
             PHASE_DATA_OUT => {
                 while let Some(b) = self.fifo.pop_front() {
@@ -240,6 +241,7 @@ impl Esp {
         self.bus_id = 0;
         self.cfg1 = 7;
         self.dataout_buf.clear();
+        self.selected = false;
         self.dma = false;
     }
 
@@ -289,6 +291,7 @@ impl Esp {
                 // Message accepted: the target disconnects
                 self.intr |= INTR_DC;
                 self.seq = SEQ_0;
+                self.selected = false;
                 self.fifo.clear();
                 self.raise_irq();
             }
@@ -341,23 +344,53 @@ impl Esp {
             return;
         }
 
-        // The rest of the FIFO is the CDB
+        self.selected = true;
+
+        // Whatever is in the FIFO is the start of the CDB
         self.set_phase(PHASE_COMMAND);
         while let Some(b) = self.fifo.pop_front() {
             self.bus.cmdbuf.push(b);
         }
-        self.run_cdb();
-    }
 
-    /// Executes the CDB in the command buffer and moves to the phase the target
-    /// asked for.
-    fn run_cdb(&mut self) {
-        if self.bus.cmdbuf.is_empty() {
-            // No CDB in FIFO, wait in command phase
+        if self.cdb_complete() {
+            // Command already here
+            self.run_cdb();
+        } else {
+            // Wait for command
             self.intr |= INTR_BS | INTR_FC;
             self.seq = SEQ_CMD_DONE;
             self.raise_irq();
+        }
+    }
+
+    /// Whether the command buffer holds a complete CDB
+    fn cdb_complete(&self) -> bool {
+        match self.bus.cmdbuf.first() {
+            Some(op) => self.bus.cmdbuf.len() >= scsi_cmd_len(*op).unwrap_or(6),
+            None => false,
+        }
+    }
+
+    fn command_byte(&mut self, val: u8) {
+        self.bus.cmdbuf.push(val);
+        if self.dma {
+            self.advance_tc(1);
+        }
+        if self.cdb_complete() {
+            self.run_cdb();
+        }
+    }
+
+    /// Executes the CDB in the command buffer
+    fn run_cdb(&mut self) {
+        if self.bus.cmdbuf.is_empty() {
             return;
+        }
+        if scsi_cmd_len(self.bus.cmdbuf[0]).is_none() {
+            warn!(
+                "unknown length for command ${:02X}, assumed 6",
+                self.bus.cmdbuf[0]
+            );
         }
 
         self.seq = SEQ_CMD_DONE;
@@ -393,13 +426,7 @@ impl Esp {
                 while let Some(b) = self.fifo.pop_front() {
                     self.bus.cmdbuf.push(b);
                 }
-                let len = self.bus.cmdbuf.first().map_or(6, |op| {
-                    scsi_cmd_len(*op).unwrap_or_else(|| {
-                        warn!("unknown length for command ${:02X}, assuming 6", op);
-                        6
-                    })
-                });
-                if !self.bus.cmdbuf.is_empty() && self.bus.cmdbuf.len() >= len {
+                if self.cdb_complete() {
                     self.run_cdb();
                 } else {
                     self.intr |= INTR_BS;
@@ -550,7 +577,11 @@ impl BusMember<Address> for Esp {
                 self.stat &= !STAT_TC;
             }
             0x2 => {
-                self.fifo_push(val);
+                if self.selected && self.phase() == PHASE_COMMAND {
+                    self.command_byte(val);
+                } else {
+                    self.fifo_push(val);
+                }
             }
             0x3 => {
                 self.cmd = val;
