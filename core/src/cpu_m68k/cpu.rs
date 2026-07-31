@@ -14,6 +14,7 @@ use thiserror::Error;
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
+use crate::cpu_m68k::pmmu::translate::atc_generation_default;
 use crate::cpu_m68k::regs::RegisterCACR;
 use crate::cpu_m68k::{M68000_SR_MASK, M68020_CACR_MASK, M68030, M68030_CACR_MASK};
 use crate::tickable::{Tickable, Ticks};
@@ -364,6 +365,11 @@ pub struct CpuM68k<
     pub(in crate::cpu_m68k) pmmu_atc: [Vec<Option<crate::cpu_m68k::pmmu::translate::PmmuAtcEntry>>;
         crate::cpu_m68k::pmmu::translate::PMMU_ATCS],
 
+    /// Current ATC generation. Entries tagged with an older generation have been flushed
+    /// On flush, this is incremented to efficiently invalidate the entire ATC.
+    #[serde(default = "crate::cpu_m68k::pmmu::translate::atc_generation_default")]
+    pub(in crate::cpu_m68k) pmmu_atc_generation: u32,
+
     /// 68020+ I-cache lines
     #[serde(with = "BigArray")]
     icache_lines: [[u8; ICACHE_LINE_SIZE]; ICACHE_LINES],
@@ -418,6 +424,7 @@ where
             systrap_history: VecDeque::with_capacity(Self::HISTORY_SIZE),
             systrap_history_enabled: false,
             pmmu_atc: Default::default(),
+            pmmu_atc_generation: atc_generation_default(),
             icache_lines: core::array::from_fn(|_| Default::default()),
             icache_tags: [ICACHE_TAG_INVALID; ICACHE_LINES],
             restart_regs: None,
