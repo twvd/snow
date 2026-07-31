@@ -34,6 +34,11 @@ struct PmmuWalkResult {
     modified: bool,
 }
 
+pub(in crate::cpu_m68k) fn atc_generation_default() -> u32 {
+    // 0 is reserved for unused entries
+    1
+}
+
 /// A resolved Address Translation Cache entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(in crate::cpu_m68k) struct PmmuAtcEntry {
@@ -51,6 +56,10 @@ pub(in crate::cpu_m68k) struct PmmuAtcEntry {
     /// Whether the M bit of the leaf descriptor is already set. When false,
     /// the next write through this entry must RMW the descriptor to set M.
     pub modified: bool,
+    // If < current generation, then this entry has been flushed.
+    // 0 means never used.
+    #[serde(default)]
+    pub generation: u32,
 }
 
 /// Custom (de)serialization for the PMMU ATC tables.
@@ -222,7 +231,28 @@ where
 
     /// Flushes complete ATC
     pub(in crate::cpu_m68k) fn pmmu_cache_invalidate(&mut self) {
-        self.pmmu_atc.iter_mut().for_each(|atc| atc.fill(None));
+        // Incrementing generation invalidates all entries with a lower generation,
+        // making ATC flushes very cheap rather than zeroizing the entire cache.
+        self.pmmu_atc_generation = self.pmmu_atc_generation.wrapping_add(1);
+
+        if self.pmmu_atc_generation == 0 {
+            // Handle wraparound with a full cache purge.
+            self.pmmu_atc.iter_mut().for_each(|atc| atc.fill(None));
+            self.pmmu_atc_generation = 1;
+        }
+    }
+
+    /// Looks an address up in the ATC
+    #[inline(always)]
+    pub(in crate::cpu_m68k) fn pmmu_atc_lookup(
+        &self,
+        atc: usize,
+        key: usize,
+    ) -> Option<PmmuAtcEntry> {
+        match self.pmmu_atc[atc][key] {
+            Some(e) if e.generation == self.pmmu_atc_generation => Some(e),
+            _ => None,
+        }
     }
 
     #[inline(always)]
@@ -509,7 +539,7 @@ where
         let is_mask = Address::MAX.unbounded_shl(32 - self.regs.pmmu.tc.is());
         let page_mask = (1u32 << self.regs.pmmu.tc.ps()) - 1;
         let cache_key = ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize;
-        if let Some(entry) = self.pmmu_atc[atc][cache_key] {
+        if let Some(entry) = self.pmmu_atc_lookup(atc, cache_key) {
             if !supervisor && entry.s {
                 self.pmmu_record_atc_fault(vaddr, writing, |psr| {
                     psr.set_supervisor_violation(true);
@@ -544,6 +574,7 @@ where
             s,
             leaf_desc_addr,
             modified,
+            generation: self.pmmu_atc_generation,
         });
         Ok(paddr)
     }
