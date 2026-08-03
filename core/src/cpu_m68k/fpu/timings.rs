@@ -223,9 +223,17 @@ const MC68040: FpuTimings = FpuTimings {
         (opmode::FCMP,    [  9,  13,   8,   8,  10,    0]),
         // Not listed, assumed to be the same as FABS/FNEG
         (opmode::FTST,    [  5,  10,   5,   5,   7,    0]),
+        // Not listed, assumed to be the same as FMUL and FDIV
+        (opmode::FSGLMUL, [ 12,  16,  11,  11,  13,    0]),
+        (opmode::FSGLDIV, [ 45,  49,  44,  44,  46,    0]),
 
         // Other opmodes are not executed in hardware by the 68040 but rather
-        // implemented in the 68040FPSP.
+        // implemented in the 68040FPSP (Table 9-10).
+        //
+        // For now, Snow still services them rather than hand off to the
+        // FPSP but spends 0 cycles on those opmodes.
+        // TODO throw unimplemented F-line with $2 frame and implement
+        // 'unimplemented instruction' state frame.
     ]),
 
     // long, single, extended, packed, word, double, byte, packed (dynamic K)
