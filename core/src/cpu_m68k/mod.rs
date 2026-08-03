@@ -37,7 +37,7 @@ pub const M68030_SR_MASK: u16 = 0b1011011100011111;
 pub const M68030_CACR_MASK: u32 = 0b11111100011111;
 
 /// Motorola 68040 (integrated MMU + FPU)
-pub type CpuM68040Fpu<TBus> = cpu::CpuM68k<TBus, M68040_ADDRESS_MASK, M68040, FPU_M68882, true>;
+pub type CpuM68040Fpu<TBus> = cpu::CpuM68k<TBus, M68040_ADDRESS_MASK, M68040, FPU_M68040, true>;
 pub const M68040_ADDRESS_MASK: Address = 0xFFFFFFFF;
 pub const M68040_SR_MASK: u16 = 0b1011011100011111;
 pub const M68040_CACR_MASK: u32 = 0x80008000;
@@ -56,6 +56,7 @@ pub type FpuM68kType = usize;
 pub const FPU_NONE: FpuM68kType = 0;
 pub const FPU_M68881: FpuM68kType = 68881;
 pub const FPU_M68882: FpuM68kType = 68882;
+pub const FPU_M68040: FpuM68kType = 68040;
 
 /// Trait to deal with the differently sized instructions for:
 /// Byte (u8)

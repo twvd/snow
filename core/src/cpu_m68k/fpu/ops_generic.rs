@@ -14,7 +14,7 @@ use crate::cpu_m68k::fpu::math::FloatMath;
 use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::cpu_m68k::fpu::timings::FpuOperand;
 use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
-use crate::cpu_m68k::{CpuM68kType, FPU_M68881, FPU_M68882};
+use crate::cpu_m68k::{CpuM68kType, FPU_M68040, FPU_M68881, FPU_M68882};
 use crate::types::{Byte, Long, Word};
 
 use super::storage::{DOUBLE_SIZE, EXTENDED_SIZE, PACKED_SIZE, SINGLE_SIZE};
@@ -53,6 +53,9 @@ where
                 stateframe[0..4].copy_from_slice(&0x1F380000u32.to_be_bytes());
                 self.write_ea_sz(instr, instr.get_op2(), stateframe)?;
             }
+            FPU_M68040 => {
+                self.write_ea_sz(instr, instr.get_op2(), 0x41000000u32.to_be_bytes())?;
+            }
             _ => todo!(),
         };
 
@@ -67,21 +70,21 @@ where
         if state & 0xFF000000 == 0 {
             // NULL state frame, reset FPU
             self.regs.fpu = FpuRegisterFile::default();
-        } else if state & 0xFF000000 == 0x1F000000 {
+        } else {
             // Idle state frame
             // We've already read 4 bytes
             self.step_ea_addr = None;
             match FPU_TYPE {
-                FPU_M68881 => {
+                FPU_M68881 if state & 0xFF000000 == 0x1F000000 => {
                     self.read_ea_sz::<{ 28 - 4 }>(instr, instr.get_op2())?;
                 }
-                FPU_M68882 => {
+                FPU_M68882 if state & 0xFF000000 == 0x1F000000 => {
                     self.read_ea_sz::<{ 60 - 4 }>(instr, instr.get_op2())?;
                 }
-                _ => todo!(),
+                // The MC68040 idle frame is only the format long word (9-41)
+                FPU_M68040 if state & 0xFFFF0000 == 0x41000000 => (),
+                _ => bail!("Unknown FPU state frame restored: {:08X}", state),
             };
-        } else {
-            bail!("Unknown FPU state frame restored: {:08X}", state);
         }
 
         self.advance_cycles(Self::fpu_timings().restore())?;
@@ -660,8 +663,7 @@ where
                 addr = addr.wrapping_add(12);
             }
 
-            // 3 * 4 cycles spent writing (for long-aligned access)
-            self.advance_cycles(per_reg - 12)?;
+            self.advance_cycles(per_reg)?;
         }
 
         // Update address register for predec/postinc modes
@@ -707,8 +709,7 @@ where
                 addr = addr.wrapping_add(12);
             }
 
-            // 3 * 4 cycles spent reading (for long-aligned access)
-            self.advance_cycles(per_reg - 12)?;
+            self.advance_cycles(per_reg)?;
         }
 
         // Update address register for predec/postinc modes

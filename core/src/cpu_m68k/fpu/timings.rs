@@ -3,7 +3,7 @@
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::cpu_m68k::fpu::instruction::opmode;
-use crate::cpu_m68k::{CpuM68kType, FPU_M68881, FPU_M68882, FpuM68kType};
+use crate::cpu_m68k::{CpuM68kType, FPU_M68040, FPU_M68881, FPU_M68882, FpuM68kType};
 use crate::tickable::Ticks;
 use crate::types::Word;
 
@@ -50,10 +50,12 @@ pub(in crate::cpu_m68k) struct FpuTimings {
     /// FMOVE to/from a control register
     move_creg: Word,
 
-    /// FMOVEM to <ea>: fixed cost and cost per register
+    /// FMOVEM to <ea>: fixed cost and cost per register, excluding the bus
+    /// accesses of the transfer itself
     fmovem_to_ea: (Word, Word),
 
-    /// FMOVEM to registers: fixed cost and cost per register
+    /// FMOVEM to registers: fixed cost and cost per register, excluding the bus
+    /// accesses of the transfer itself
     fmovem_to_regs: (Word, Word),
 
     /// Discount when the source operand is an MPU data register
@@ -94,12 +96,14 @@ impl FpuTimings {
         self.move_creg.into()
     }
 
-    /// FMOVEM to <ea>: fixed cost and cost per register
+    /// FMOVEM to <ea>: fixed cost and cost per register, excluding the bus
+    /// accesses of the transfer itself
     pub(in crate::cpu_m68k) fn fmovem_to_ea(&self) -> (Ticks, Ticks) {
         (self.fmovem_to_ea.0.into(), self.fmovem_to_ea.1.into())
     }
 
-    /// FMOVEM to registers: fixed cost and cost per register
+    /// FMOVEM to registers: fixed cost and cost per register, excluding the bus
+    /// accesses of the transfer itself
     pub(in crate::cpu_m68k) fn fmovem_to_regs(&self) -> (Ticks, Ticks) {
         (self.fmovem_to_regs.0.into(), self.fmovem_to_regs.1.into())
     }
@@ -177,13 +181,70 @@ const MC68881: FpuTimings = FpuTimings {
     save: 50,
     restore: 55,
     move_creg: 29,
-    fmovem_to_ea: (35, 25),
-    fmovem_to_regs: (33, 31),
+
+    // Table 8-2 lists 25 and 31 per register, including the three long word
+    // transfers of the extended precision operand
+    fmovem_to_ea: (35, 25 - 12),
+    fmovem_to_regs: (33, 31 - 12),
 
     // Table 8-2: "If the source or destination is an MPU data register,
     // subtract five or two clock cycles, respectively."
     dn_src: 5,
     dn_dst: 2,
+};
+
+/// MC68040 timings, section 10.7 of the M68040 user's manual
+///
+/// The MC68040 splits the cost of a floating point instruction over two
+/// pipelines: the integer unit calculates the effective address and moves the
+/// operands (10.7.1 and 10.7.2) and the floating point unit converts, executes
+/// and normalizes (10.7.3). The timings below are the sum of both for an isolated
+/// instruction on an idle FPU: the integer unit execute time for the (An) addressing
+/// mode plus the three floating point stages for normalized operands.
+///
+/// The integer unit support for an operand is 2 cycles, except for extended
+/// precision and another FPU register, which are 3.
+const MC68040: FpuTimings = FpuTimings {
+    #[rustfmt::skip]
+    alu: alu_table(&[
+        // Operations the MC68040 implements in hardware.
+        //
+        // 10.7.3, conversion + execution + normalization for normalized operands.
+        // Packed decimal operands are not supported by the hardware.
+        //                 FPn  int  sgl  dbl  ext  packed
+        (opmode::FMOVE,   [  5,  10,   5,   5,   7,    0]),
+        (opmode::FABS,    [  5,  10,   5,   5,   7,    0]),
+        (opmode::FNEG,    [  5,  10,   5,   5,   7,    0]),
+        (opmode::FADD,    [ 10,  14,   9,   9,  11,    0]),
+        (opmode::FSUB,    [ 10,  14,   9,   9,  11,    0]),
+        (opmode::FMUL,    [ 12,  16,  11,  11,  13,    0]),
+        (opmode::FDIV,    [ 45,  49,  44,  44,  46,    0]),
+        (opmode::FSQRT,   [110, 114, 109, 109, 111,    0]),
+        (opmode::FCMP,    [  9,  13,   8,   8,  10,    0]),
+        // Not listed, assumed to be the same as FABS/FNEG
+        (opmode::FTST,    [  5,  10,   5,   5,   7,    0]),
+
+        // Other opmodes are not executed in hardware by the 68040 but rather
+        // implemented in the 68040FPSP.
+    ]),
+
+    // long, single, extended, packed, word, double, byte, packed (dynamic K)
+    // Packed decimal throws an unsupported data type exception on the MC68040
+    store: [19, 6, 8, 0, 19, 6, 19, 0],
+
+    nop: 6,
+    save: 11,
+    restore: 12,
+    move_creg: 7,
+
+    // 15 cycles in the integer unit and 2 + 3 per register in the FPU, of which
+    // 3 + 3 per register is for the second and further registers
+    fmovem_to_ea: (14, 6),
+    fmovem_to_regs: (14, 6),
+
+    // The MC68040 has no discount for MPU data registers
+    dn_src: 0,
+    dn_dst: 0,
 };
 
 /// MC68881 instruction timings
@@ -192,6 +253,9 @@ static TIMINGS_68881: FpuTimings = MC68881;
 /// MC68882 instruction timings
 /// TODO use actual 68882 timings
 static TIMINGS_68882: FpuTimings = MC68881;
+
+/// MC68040 instruction timings
+static TIMINGS_68040: FpuTimings = MC68040;
 
 impl<
     TBus,
@@ -209,6 +273,7 @@ where
         match FPU_TYPE {
             FPU_M68881 => &TIMINGS_68881,
             FPU_M68882 => &TIMINGS_68882,
+            FPU_M68040 => &TIMINGS_68040,
             _ => unreachable!(),
         }
     }
