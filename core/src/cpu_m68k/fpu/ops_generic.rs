@@ -12,21 +12,12 @@ use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord};
 use crate::cpu_m68k::fpu::math::FloatMath;
 use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
+use crate::cpu_m68k::fpu::timings::FpuOperand;
 use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
 use crate::cpu_m68k::{CpuM68kType, FPU_M68881, FPU_M68882};
 use crate::types::{Byte, Long, Word};
 
 use super::storage::{DOUBLE_SIZE, EXTENDED_SIZE, PACKED_SIZE, SINGLE_SIZE};
-
-// Cycle counts returned from fpu_alu_op
-// [FPn to FPn, integer, single, double, extended, packed]
-pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_FPN: usize = 0;
-pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_INT: usize = 1;
-pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_SINGLE: usize = 2;
-pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_DOUBLE: usize = 3;
-pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_EXTENDED: usize = 4;
-pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_MEM_PACKED: usize = 5;
-pub(in crate::cpu_m68k::fpu) const FPU_CYCLES_LEN: usize = 6;
 
 impl<
     TBus,
@@ -43,7 +34,7 @@ where
         // Fetch second word (0000)
         self.fetch()?;
 
-        self.advance_cycles(16)?;
+        self.advance_cycles(Self::fpu_timings().nop())?;
 
         Ok(())
     }
@@ -65,7 +56,7 @@ where
             _ => todo!(),
         };
 
-        self.advance_cycles(50)?;
+        self.advance_cycles(Self::fpu_timings().save())?;
 
         Ok(())
     }
@@ -93,7 +84,7 @@ where
             bail!("Unknown FPU state frame restored: {:08X}", state);
         }
 
-        self.advance_cycles(55)?;
+        self.advance_cycles(Self::fpu_timings().restore())?;
 
         Ok(())
     }
@@ -110,9 +101,8 @@ where
                 let dest = self.regs.fpu.fp[extword.dst_reg()].clone();
                 let opmode = extword.opmode();
 
-                let (result, cycles) = self.fpu_alu_op(opmode, &src, &dest)?;
-                self.regs.fpu.fp[extword.dst_reg()] = result;
-                self.advance_cycles(cycles[FPU_CYCLES_FPN])?;
+                self.regs.fpu.fp[extword.dst_reg()] = self.fpu_alu_op(opmode, &src, &dest)?;
+                self.advance_cycles(Self::fpu_timings().alu(opmode, FpuOperand::Fpn))?;
             }
             0b100 => {
                 // From EA to control reg
@@ -129,7 +119,7 @@ where
                     self.step_ea_addr = None;
                 }
 
-                self.advance_cycles(29)?;
+                self.advance_cycles(Self::fpu_timings().move_creg())?;
             }
             0b101 => {
                 // From control reg to EA
@@ -146,12 +136,12 @@ where
                     self.step_ea_addr = None;
                 }
 
-                self.advance_cycles(29)?;
+                self.advance_cycles(Self::fpu_timings().move_creg())?;
             }
             0b010 => {
                 // EA to FPU register, with ALU op
                 let fpx = extword.dst_reg();
-                let (value_in, cycle_idx) = match extword.src_spec() {
+                let (value_in, operand) = match extword.src_spec() {
                     0b000 => {
                         // Long
                         (
@@ -159,7 +149,7 @@ where
                                 SEMANTICS_EXTENDED,
                                 self.read_ea::<Long>(instr, instr.get_op2())? as i32 as i64,
                             ),
-                            FPU_CYCLES_MEM_INT,
+                            FpuOperand::Int,
                         )
                     }
                     0b110 => {
@@ -169,7 +159,7 @@ where
                                 SEMANTICS_EXTENDED,
                                 self.read_ea::<Byte>(instr, instr.get_op2())? as i8 as i64,
                             ),
-                            FPU_CYCLES_MEM_INT,
+                            FpuOperand::Int,
                         )
                     }
                     0b100 => {
@@ -179,12 +169,12 @@ where
                                 SEMANTICS_EXTENDED,
                                 self.read_ea::<Word>(instr, instr.get_op2())? as i16 as i64,
                             ),
-                            FPU_CYCLES_MEM_INT,
+                            FpuOperand::Int,
                         )
                     }
                     0b101 if instr.get_addr_mode()? == AddressingMode::Immediate => {
                         // Double-precision real (immediate)
-                        (self.read_fpu_double_imm()?, FPU_CYCLES_MEM_DOUBLE)
+                        (self.read_fpu_double_imm()?, FpuOperand::Double)
                     }
                     0b101 => {
                         // Double-precision real
@@ -193,18 +183,18 @@ where
                             instr.get_addr_mode()?,
                             instr.get_op2(),
                         )?;
-                        (self.read_fpu_double(ea)?, FPU_CYCLES_MEM_DOUBLE)
+                        (self.read_fpu_double(ea)?, FpuOperand::Double)
                     }
                     0b001 if instr.get_addr_mode()? == AddressingMode::DataRegister => {
                         // Single-precision real (Dn)
                         (
                             self.read_fpu_single_dn(instr.get_op2())?,
-                            FPU_CYCLES_MEM_SINGLE,
+                            FpuOperand::Single,
                         )
                     }
                     0b001 if instr.get_addr_mode()? == AddressingMode::Immediate => {
                         // Single-precision real (immediate)
-                        (self.read_fpu_single_imm()?, FPU_CYCLES_MEM_SINGLE)
+                        (self.read_fpu_single_imm()?, FpuOperand::Single)
                     }
                     0b001 => {
                         // Single-precision real
@@ -213,11 +203,11 @@ where
                             instr.get_addr_mode()?,
                             instr.get_op2(),
                         )?;
-                        (self.read_fpu_single(ea)?, FPU_CYCLES_MEM_SINGLE)
+                        (self.read_fpu_single(ea)?, FpuOperand::Single)
                     }
                     0b010 if instr.get_addr_mode()? == AddressingMode::Immediate => {
                         // Extended-precision real (immediate)
-                        (self.read_fpu_extended_imm()?, FPU_CYCLES_MEM_EXTENDED)
+                        (self.read_fpu_extended_imm()?, FpuOperand::Extended)
                     }
                     0b010 => {
                         // Extended-precision real
@@ -226,7 +216,7 @@ where
                             instr.get_addr_mode()?,
                             instr.get_op2(),
                         )?;
-                        (self.read_fpu_extended(ea)?, FPU_CYCLES_MEM_EXTENDED)
+                        (self.read_fpu_extended(ea)?, FpuOperand::Extended)
                     }
                     0b111 => {
                         // ROM constant (FMOVECR)
@@ -265,7 +255,7 @@ where
                     }
                     0b011 if instr.get_addr_mode()? == AddressingMode::Immediate => {
                         // BCD packed decimal real (immediate)
-                        (self.read_fpu_packed_imm()?, FPU_CYCLES_MEM_PACKED)
+                        (self.read_fpu_packed_imm()?, FpuOperand::Packed)
                     }
                     0b011 => {
                         // BCD packed decimal real
@@ -274,7 +264,7 @@ where
                             instr.get_addr_mode()?,
                             instr.get_op2(),
                         )?;
-                        (self.read_fpu_packed(ea)?, FPU_CYCLES_MEM_PACKED)
+                        (self.read_fpu_packed(ea)?, FpuOperand::Packed)
                     }
                     _ => {
                         bail!(
@@ -285,20 +275,20 @@ where
                 };
 
                 let dest = self.regs.fpu.fp[fpx].clone();
-                let (result, cycles) = self.fpu_alu_op(extword.opmode(), &value_in, &dest)?;
-                self.regs.fpu.fp[fpx] = result;
+                self.regs.fpu.fp[fpx] = self.fpu_alu_op(extword.opmode(), &value_in, &dest)?;
 
-                // Table 8-2: "If the source or destination is an MPU data register,
-                // subtract five or two clock cycles, respectively."
+                let timings = Self::fpu_timings();
+                let cycles = timings.alu(extword.opmode(), operand);
                 if instr.get_addr_mode()? == AddressingMode::DataRegister {
-                    self.advance_cycles(cycles[cycle_idx] - 5)?;
+                    self.advance_cycles(cycles.saturating_sub(timings.dn_src()))?;
                 } else {
-                    self.advance_cycles(cycles[cycle_idx])?;
+                    self.advance_cycles(cycles)?;
                 }
             }
             0b011 if instr.get_addr_mode()? != AddressingMode::DataRegister => {
                 // Register to EA
                 let fpx = extword.src_reg();
+                let cycles = Self::fpu_timings().store(extword.dest_fmt());
                 match extword.dest_fmt() {
                     0b000 => {
                         // Long
@@ -324,7 +314,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
 
-                        self.advance_cycles(100)?;
+                        self.advance_cycles(cycles)?;
                         self.write_ticks(ea, out as Long)?;
                     }
                     0b100 => {
@@ -351,7 +341,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
 
-                        self.advance_cycles(100)?;
+                        self.advance_cycles(cycles)?;
                         self.write_ticks(ea, out as Word)?;
                     }
                     0b110 => {
@@ -378,7 +368,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
 
-                        self.advance_cycles(100)?;
+                        self.advance_cycles(cycles)?;
                         self.write_ticks(ea, out as Byte)?;
                     }
                     0b010 => {
@@ -393,7 +383,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(false);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
 
-                        self.advance_cycles(72)?;
+                        self.advance_cycles(cycles)?;
                         self.write_fpu_extended(ea, &self.regs.fpu.fp[fpx].clone())?;
                     }
                     0b101 => {
@@ -408,7 +398,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(false);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
 
-                        self.advance_cycles(86)?;
+                        self.advance_cycles(cycles)?;
                         self.write_fpu_double(ea, &self.regs.fpu.fp[fpx].clone())?;
                     }
                     0b001 => {
@@ -423,7 +413,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(false);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
 
-                        self.advance_cycles(80)?;
+                        self.advance_cycles(cycles)?;
                         self.write_fpu_single(ea, &self.regs.fpu.fp[fpx].clone())?;
                     }
                     0b011 => {
@@ -438,7 +428,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(false);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
 
-                        self.advance_cycles(80)?; // todo
+                        self.advance_cycles(cycles)?;
                         self.write_fpu_packed(
                             ea,
                             &self.regs.fpu.fp[fpx].clone(),
@@ -461,7 +451,7 @@ where
                             .regs
                             .read_d::<Byte>(extword.k_factor() as usize >> 4 & 0b111)
                             as i8;
-                        self.advance_cycles(80)?; // todo
+                        self.advance_cycles(cycles)?;
                         self.write_fpu_packed(ea, &self.regs.fpu.fp[fpx].clone(), k)?;
                     }
                     _ => {
@@ -485,11 +475,12 @@ where
             }
             0b011 if instr.get_addr_mode()? == AddressingMode::DataRegister => {
                 // Register to Dn
-                //
-                // Table 8-2: "If the source or destination is an MPU data register,
-                // subtract five or two clock cycles, respectively."
                 let fpx = extword.src_reg();
                 let dn = instr.get_op2();
+                let timings = Self::fpu_timings();
+                let cycles = timings
+                    .store(extword.dest_fmt())
+                    .saturating_sub(timings.dn_dst());
                 match extword.dest_fmt() {
                     0b000 => {
                         // Long
@@ -510,7 +501,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
 
-                        self.advance_cycles(100 - 2)?;
+                        self.advance_cycles(cycles)?;
                         self.regs.write_d(dn, out as Long);
                     }
                     0b100 => {
@@ -532,7 +523,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
 
-                        self.advance_cycles(100 - 2)?;
+                        self.advance_cycles(cycles)?;
                         self.regs.write_d(dn, out as Word);
                     }
                     0b110 => {
@@ -554,7 +545,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
 
-                        self.advance_cycles(100 - 2)?;
+                        self.advance_cycles(cycles)?;
                         self.regs.write_d(dn, out as Byte);
                     }
                     0b001 => {
@@ -565,7 +556,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(false);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
 
-                        self.advance_cycles(80 - 2)?;
+                        self.advance_cycles(cycles)?;
                         self.regs
                             .write_d(dn, self.regs.fpu.fp[fpx].as_f32().to_bits());
                     }
@@ -644,7 +635,8 @@ where
     ) -> Result<()> {
         let mut addr = self.calc_ea_addr_no_mod::<Address>(instr, instr.get_op2())?;
 
-        self.advance_cycles(35)?;
+        let (setup, per_reg) = Self::fpu_timings().fmovem_to_ea();
+        self.advance_cycles(setup)?;
 
         let range = if !reverse_order {
             Either::Left((0..8).rev())
@@ -669,7 +661,7 @@ where
             }
 
             // 3 * 4 cycles spent writing (for long-aligned access)
-            self.advance_cycles(25 - 12)?;
+            self.advance_cycles(per_reg - 12)?;
         }
 
         // Update address register for predec/postinc modes
@@ -698,7 +690,8 @@ where
             Either::Right(0..8)
         };
 
-        self.advance_cycles(33)?;
+        let (setup, per_reg) = Self::fpu_timings().fmovem_to_regs();
+        self.advance_cycles(setup)?;
 
         for (bit, fp_reg) in range.enumerate() {
             if reglist & (1 << bit as u8) == 0 {
@@ -715,7 +708,7 @@ where
             }
 
             // 3 * 4 cycles spent reading (for long-aligned access)
-            self.advance_cycles(31 - 12)?;
+            self.advance_cycles(per_reg - 12)?;
         }
 
         // Update address register for predec/postinc modes

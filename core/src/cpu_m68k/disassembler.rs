@@ -16,7 +16,7 @@ use crate::cpu_m68k::regs::Register;
 use crate::types::{Byte, Word};
 
 use super::CpuM68kType;
-use super::fpu::instruction::{FmoveControlReg, FmoveExtWord};
+use super::fpu::instruction::{FmoveControlReg, FmoveExtWord, opmode};
 use super::instruction::{
     AddressingMode, Direction, Instruction, InstructionMnemonic, InstructionSize,
 };
@@ -121,50 +121,6 @@ impl<'a> Disassembler<'a> {
             0b011000 => "NGLE", // Not (Greater, Less or Equal)
 
             _ => "???", // Unknown condition
-        }
-    }
-
-    fn fpu_alu_op(op: u8) -> &'static str {
-        match op {
-            0b0000000 => "FMOVE",
-            0b0000100 => "FSQRT",
-            0b0011000 => "FABS",
-            0b0100010 => "FADD",
-            0b0101000 => "FSUB",
-            0b0100011 => "FMUL",
-            0b0100000 => "FDIV",
-            0b0000001 => "FINT",
-            0b0000011 => "FINTRZ",
-            0b0111000 => "FCMP",
-            0b0100101 => "FREM",
-            0b0111010 => "FTST",
-            0b0011010 => "FNEG",
-            0b0011100 => "FACOS",
-            0b0011101 => "FCOS",
-            0b0001010 => "FATAN",
-            0b0011110 => "FGETEXP",
-            0b0001100 => "FASIN",
-            0b0001110 => "FSIN",
-            0b0001111 => "FTAN",
-            0b0010100 => "FLOGN",
-            0b0010000 => "FETOX",
-            0b0010101 => "FLOG10",
-            0b0001000 => "FETOXM1",
-            0b0010110 => "FLOG2",
-            0b0000110 => "FLOGNP1",
-            0b0010001 => "FTWOTOX",
-            0b0010010 => "FTENTOX",
-            0b0000010 => "FSINH",
-            0b0011001 => "FCOSH",
-            0b0001001 => "FTANH",
-            0b0001101 => "FATANH",
-            0b0100001 => "FMOD",
-            0b0100110 => "FSCALE",
-            0b0011111 => "FGETMAN",
-            0b0100111 => "FSGLMUL",
-            0b0100100 => "FSGLDIV",
-
-            _ => "F???",
         }
     }
 
@@ -1018,7 +974,7 @@ impl<'a> Disassembler<'a> {
                     // FMOVE/ALU op from FPx to FPx
                     0b000 => format!(
                         "{}.x FP{},FP{}",
-                        Self::fpu_alu_op(extword.opmode()),
+                        opmode::mnemonic(extword.opmode()),
                         extword.src_spec(),
                         extword.dst_reg()
                     ),
@@ -1040,7 +996,7 @@ impl<'a> Disassembler<'a> {
                     // FMOVE/ALU op from EA to FPx
                     0b010 => format!(
                         "{}.{} {},FP{}",
-                        Self::fpu_alu_op(extword.opmode()),
+                        opmode::mnemonic(extword.opmode()),
                         match extword.src_spec() {
                             0b000 => "l",
                             0b001 => "s",

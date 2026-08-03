@@ -24,6 +24,66 @@ impl From<FmoveControlReg> for Register {
     }
 }
 
+/// Opmodes of the FPU ALU operations
+pub(in crate::cpu_m68k) mod opmode {
+    /// Amount of distinct opmodes (7 bits)
+    pub(in crate::cpu_m68k) const COUNT: usize = 128;
+
+    macro_rules! opmodes {
+        ($($name:ident = $value:expr, $mnemonic:literal;)*) => {
+            $(pub(in crate::cpu_m68k) const $name: u8 = $value;)*
+
+            /// Mnemonic of an ALU opmode, for the disassembler
+            pub(in crate::cpu_m68k) fn mnemonic(opmode: u8) -> &'static str {
+                match opmode {
+                    $($name => $mnemonic,)*
+                    _ => "F???",
+                }
+            }
+        };
+    }
+
+    opmodes! {
+        FMOVE   = 0b0000000, "FMOVE";
+        FINT    = 0b0000001, "FINT";
+        FSINH   = 0b0000010, "FSINH";
+        FINTRZ  = 0b0000011, "FINTRZ";
+        FSQRT   = 0b0000100, "FSQRT";
+        FLOGNP1 = 0b0000110, "FLOGNP1";
+        FETOXM1 = 0b0001000, "FETOXM1";
+        FTANH   = 0b0001001, "FTANH";
+        FATAN   = 0b0001010, "FATAN";
+        FASIN   = 0b0001100, "FASIN";
+        FATANH  = 0b0001101, "FATANH";
+        FSIN    = 0b0001110, "FSIN";
+        FTAN    = 0b0001111, "FTAN";
+        FETOX   = 0b0010000, "FETOX";
+        FTWOTOX = 0b0010001, "FTWOTOX";
+        FTENTOX = 0b0010010, "FTENTOX";
+        FLOGN   = 0b0010100, "FLOGN";
+        FLOG10  = 0b0010101, "FLOG10";
+        FLOG2   = 0b0010110, "FLOG2";
+        FABS    = 0b0011000, "FABS";
+        FCOSH   = 0b0011001, "FCOSH";
+        FNEG    = 0b0011010, "FNEG";
+        FACOS   = 0b0011100, "FACOS";
+        FCOS    = 0b0011101, "FCOS";
+        FGETEXP = 0b0011110, "FGETEXP";
+        FGETMAN = 0b0011111, "FGETMAN";
+        FDIV    = 0b0100000, "FDIV";
+        FMOD    = 0b0100001, "FMOD";
+        FADD    = 0b0100010, "FADD";
+        FMUL    = 0b0100011, "FMUL";
+        FSGLDIV = 0b0100100, "FSGLDIV";
+        FREM    = 0b0100101, "FREM";
+        FSCALE  = 0b0100110, "FSCALE";
+        FSGLMUL = 0b0100111, "FSGLMUL";
+        FSUB    = 0b0101000, "FSUB";
+        FCMP    = 0b0111000, "FCMP";
+        FTST    = 0b0111010, "FTST";
+    }
+}
+
 bitfield! {
     /// FMOVE extension word
     #[derive(Clone, Copy, PartialEq, Eq, Default)]
