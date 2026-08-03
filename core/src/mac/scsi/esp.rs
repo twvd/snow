@@ -306,8 +306,9 @@ impl Esp {
             0x41 => self.select(false, false),
             0x42 => self.select(true, false),
             0x43 => self.select(true, true),
-            // Target mode commands
-            0x44 | 0x45 => unreachable!(),
+            // Target mode commands; ignore them, System 7.5.5 sends them
+            // for some reason.
+            0x44 | 0x45 => (),
 
             _ => {
                 warn!("illegal command ${:02X}", cmd);
