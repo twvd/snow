@@ -62,6 +62,8 @@ pub struct AppSettings {
     pub auto_relative_mouse_fullscreen: bool,
     /// Multiplier applied to mouse motion in relative mouse mode
     pub relative_mouse_speed: f32,
+    /// Capture the mouse in relative mouse mode
+    pub mouse_capture: bool,
     pub writeback_mode: PromptChoice,
     pub convert_to_moof_mode: PromptChoice,
     /// When true, copy the loaded image to a timestamped sibling file
@@ -96,6 +98,7 @@ impl Default for AppSettings {
             dynamic_fastforward: false,
             auto_relative_mouse_fullscreen: true,
             relative_mouse_speed: 1.0,
+            mouse_capture: true,
             writeback_mode: PromptChoice::default(),
             convert_to_moof_mode: PromptChoice::default(),
             backup_on_writeback: false,
