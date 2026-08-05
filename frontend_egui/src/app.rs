@@ -177,6 +177,8 @@ pub struct SnowGui {
     occluded: bool,
     in_zen_mode: bool,
     pre_fullscreen_mouse_mode: Option<MouseMode>,
+    /// Sub-pixel remainder of scaled relative mouse motion, carried to the next event
+    mouse_rel_remainder: egui::Vec2,
 
     wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
 
@@ -349,6 +351,7 @@ impl SnowGui {
             occluded: false,
             in_zen_mode: false,
             pre_fullscreen_mouse_mode: None,
+            mouse_rel_remainder: egui::Vec2::ZERO,
 
             wev_recv,
             mode_toast_hide_requested: mode_toast_hide_requested.clone(),
@@ -617,6 +620,21 @@ impl SnowGui {
 
     fn is_ui_hidden(&self) -> bool {
         self.in_fullscreen || self.in_zen_mode
+    }
+
+    /// Scales relative mouse motion by the configured mouse speed
+    fn apply_mouse_speed(&mut self, relpos: egui::Pos2) -> egui::Pos2 {
+        if !self.emu.is_mouse_relative() {
+            return relpos;
+        }
+
+        let scaled = egui::Vec2::new(
+            relpos.x * self.settings.relative_mouse_speed,
+            relpos.y * self.settings.relative_mouse_speed,
+        ) + self.mouse_rel_remainder;
+        let whole = egui::Vec2::new(scaled.x.trunc(), scaled.y.trunc());
+        self.mouse_rel_remainder = scaled - whole;
+        whole.to_pos2()
     }
 
     fn try_create_image(&self, result: &DiskImageDialogResult) -> Result<()> {
@@ -957,6 +975,21 @@ impl SnowGui {
                             "Automatically switch to relative mouse mode when entering fullscreen",
                         )
                         .clicked()
+                    {
+                        self.settings.save();
+                    }
+                    ui.label("Relative mouse speed");
+                    if ui
+                        .add(
+                            egui::Slider::new(
+                                &mut self.settings.relative_mouse_speed,
+                                0.25_f32..=4.0_f32,
+                            )
+                            .step_by(0.05)
+                            .suffix("x"),
+                        )
+                        .on_hover_text("Multiplier applied to mouse motion in relative mouse mode")
+                        .changed()
                     {
                         self.settings.save();
                     }
@@ -3960,6 +3993,7 @@ impl eframe::App for SnowGui {
                             y: (rel_p.y / self.framebuffer.scale) * 2.0,
                         }
                     };
+                    let relpos = self.apply_mouse_speed(relpos);
 
                     if let Some(abs_p) = self.get_machine_mouse_pos(ctx) {
                         // Cursor is within framebuffer view area

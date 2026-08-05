@@ -60,6 +60,8 @@ pub struct AppSettings {
     pub fastforward_limit: f64,
     pub dynamic_fastforward: bool,
     pub auto_relative_mouse_fullscreen: bool,
+    /// Multiplier applied to mouse motion in relative mouse mode
+    pub relative_mouse_speed: f32,
     pub writeback_mode: PromptChoice,
     pub convert_to_moof_mode: PromptChoice,
     /// When true, copy the loaded image to a timestamped sibling file
@@ -93,6 +95,7 @@ impl Default for AppSettings {
             fastforward_limit: 2.0,
             dynamic_fastforward: false,
             auto_relative_mouse_fullscreen: true,
+            relative_mouse_speed: 1.0,
             writeback_mode: PromptChoice::default(),
             convert_to_moof_mode: PromptChoice::default(),
             backup_on_writeback: false,
