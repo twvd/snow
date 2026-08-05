@@ -179,6 +179,10 @@ pub struct SnowGui {
     pre_fullscreen_mouse_mode: Option<MouseMode>,
     /// Sub-pixel remainder of scaled relative mouse motion, carried to the next event
     mouse_rel_remainder: egui::Vec2,
+    mouse_grabbed: bool,
+    mouse_grab_applied: bool,
+    mouse_grab_hint_shown: bool,
+    mouse_button_down: bool,
 
     wev_recv: crossbeam_channel::Receiver<egui_winit::winit::event::WindowEvent>,
 
@@ -352,6 +356,10 @@ impl SnowGui {
             in_zen_mode: false,
             pre_fullscreen_mouse_mode: None,
             mouse_rel_remainder: egui::Vec2::ZERO,
+            mouse_grabbed: false,
+            mouse_grab_applied: false,
+            mouse_grab_hint_shown: false,
+            mouse_button_down: false,
 
             wev_recv,
             mode_toast_hide_requested: mode_toast_hide_requested.clone(),
@@ -574,6 +582,7 @@ impl SnowGui {
             if current != MouseMode::Disabled {
                 self.pre_fullscreen_mouse_mode = Some(current);
                 self.emu.set_mouse_mode(MouseMode::RelativeHw);
+                self.grab_mouse(ctx);
             }
         }
         if !self.settings.hide_mode_toasts {
@@ -593,6 +602,7 @@ impl SnowGui {
     fn exit_fullscreen(&mut self, ctx: &egui::Context) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
         self.in_fullscreen = false;
+        self.release_mouse_grab();
         if let Some(mode) = self.pre_fullscreen_mouse_mode.take() {
             self.emu.set_mouse_mode(mode);
         }
@@ -620,6 +630,76 @@ impl SnowGui {
 
     fn is_ui_hidden(&self) -> bool {
         self.in_fullscreen || self.in_zen_mode
+    }
+
+    /// Whether the mouse can be grabbed right now.
+    ///
+    /// Grabbing only makes sense in relative mouse mode.
+    fn can_grab_mouse(&self) -> bool {
+        self.settings.mouse_capture && self.emu.is_running() && self.emu.is_mouse_relative()
+    }
+
+    /// Whether mouse input currently reaches the machine.
+    fn mouse_input_active(&self, ctx: &egui::Context) -> bool {
+        if self.can_grab_mouse() {
+            return self.mouse_grabbed;
+        }
+
+        self.get_machine_mouse_pos(ctx).is_some()
+            || (self.in_fullscreen && self.emu.is_mouse_relative())
+    }
+
+    /// Grabs the mouse, confining the host cursor to the window.
+    fn grab_mouse(&mut self, ctx: &egui::Context) {
+        if self.mouse_grabbed || !self.can_grab_mouse() {
+            return;
+        }
+        self.mouse_grabbed = true;
+
+        // Close menus
+        egui::Popup::close_all(ctx);
+
+        // In fullscreen the mode toast already tells the user about right-clicking
+        if !self.mouse_grab_hint_shown && !self.settings.hide_mode_toasts && !self.in_fullscreen {
+            // Show once per session
+            self.mouse_grab_hint_shown = true;
+            self.toasts.add(
+                egui_toast::Toast::default()
+                    // Don't show the 'dont show again' button because the user can't click it anyway.
+                    .kind(ToastKind::Info)
+                    .text("RIGHT-CLICK to release the mouse")
+                    .options(
+                        egui_toast::ToastOptions::default()
+                            .duration(Self::TOAST_DURATION)
+                            .show_progress(true),
+                    ),
+            );
+        }
+    }
+
+    /// Releases the mouse grab, if any.
+    fn release_mouse_grab(&mut self) {
+        self.mouse_grabbed = false;
+    }
+
+    /// Syncs the requested grab state to the windowing system.
+    fn update_mouse_grab(&mut self, ctx: &egui::Context) {
+        #[cfg(target_os = "macos")]
+        const GRAB_MODE: egui::CursorGrab = egui::CursorGrab::Locked;
+        #[cfg(not(target_os = "macos"))]
+        const GRAB_MODE: egui::CursorGrab = egui::CursorGrab::Confined;
+
+        self.mouse_grabbed &= self.can_grab_mouse();
+
+        let grab = self.mouse_grabbed && self.ui_active;
+        if grab != self.mouse_grab_applied {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(if grab {
+                GRAB_MODE
+            } else {
+                egui::CursorGrab::None
+            }));
+            self.mouse_grab_applied = grab;
+        }
     }
 
     /// Scales relative mouse motion by the configured mouse speed
@@ -973,6 +1053,19 @@ impl SnowGui {
                         )
                         .on_hover_text(
                             "Automatically switch to relative mouse mode when entering fullscreen",
+                        )
+                        .clicked()
+                    {
+                        self.settings.save();
+                    }
+                    if ui
+                        .checkbox(
+                            &mut self.settings.mouse_capture,
+                            "Capture mouse (relative mode)",
+                        )
+                        .on_hover_text(
+                            "In relative mouse mode, confine the mouse cursor to the window. \
+                            Click the screen to capture the mouse, right-click to release it.",
                         )
                         .clicked()
                     {
@@ -3933,14 +4026,15 @@ impl eframe::App for SnowGui {
             }
         });
 
+        // Confine the host cursor to the window while the mouse is grabbed
+        self.update_mouse_grab(ctx);
+
         // Hide mouse over framebuffer
         // When using 'on_hover_and_drag_cursor' on the widget, the cursor still shows when the
         // mouse button is down, which is why this is done here.
-        if self.ui_active
-            && self.emu.is_running()
-            && (self.get_machine_mouse_pos(ctx).is_some()
-                || (self.in_fullscreen && self.emu.is_mouse_relative()))
-        {
+        // Note that with capture enabled the cursor stays visible until the mouse is
+        // grabbed, so it is clear that clicking is what hands the mouse to the machine.
+        if self.ui_active && self.emu.is_running() && self.mouse_input_active(ctx) {
             ctx.set_cursor_icon(egui::CursorIcon::None);
         }
 
@@ -3963,6 +4057,8 @@ impl eframe::App for SnowGui {
             return;
         }
 
+        let was_grabbed = self.mouse_grabbed;
+
         for event in &raw_input.events {
             match event {
                 egui::Event::PointerButton {
@@ -3970,15 +4066,42 @@ impl eframe::App for SnowGui {
                     pressed,
                     ..
                 } => {
-                    if self.get_machine_mouse_pos(ctx).is_some()
-                        || (self.in_fullscreen && self.emu.is_mouse_relative())
-                    {
-                        // Cursor is within framebuffer view area
-                        self.emu.update_mouse_button(*pressed);
+                    if *pressed {
+                        if !self.mouse_grabbed
+                            && self.can_grab_mouse()
+                            && (self.get_machine_mouse_pos(ctx).is_some() || self.in_fullscreen)
+                        {
+                            // Clicking the framebuffer grabs the mouse.
+                            // The click that enters capture mode is not passed
+                            // to the emulator.
+                            self.grab_mouse(ctx);
+                        } else if self.mouse_input_active(ctx) {
+                            self.mouse_button_down = true;
+                            self.emu.update_mouse_button(true);
+                            self.on_user_input();
+                        }
+                    } else if self.mouse_button_down {
+                        // Only release the machine's button if it was pressed down by us,
+                        // and always do so, even if the mouse has since left the
+                        // framebuffer or the grab was dropped. Otherwise the button would
+                        // be stuck down.
+                        self.mouse_button_down = false;
+                        self.emu.update_mouse_button(false);
                         self.on_user_input();
                     }
                 }
+                egui::Event::PointerButton {
+                    button: egui::PointerButton::Secondary,
+                    pressed: true,
+                    ..
+                } if self.mouse_grabbed => {
+                    self.release_mouse_grab();
+                }
                 egui::Event::MouseMoved(rel_p) => {
+                    if !self.mouse_input_active(ctx) {
+                        continue;
+                    }
+
                     // Event with relative motion, but 'optional' according to egui docs
                     let relpos = if self.in_fullscreen {
                         // In fullscreen mode, do not scale the mouse as the pointer cannot leave
@@ -3995,31 +4118,49 @@ impl eframe::App for SnowGui {
                     };
                     let relpos = self.apply_mouse_speed(relpos);
 
-                    if let Some(abs_p) = self.get_machine_mouse_pos(ctx) {
-                        // Cursor is within framebuffer view area
-                        self.emu.update_mouse(Some(&abs_p), &relpos);
-                        self.on_user_input();
-                    } else if self.in_fullscreen {
-                        // Always send relative motion for the entire screen in
-                        // fullscreen mode
-                        self.emu.update_mouse(None, &relpos);
-                        self.on_user_input();
-                    }
+                    let abs_p = if self.mouse_grabbed {
+                        None
+                    } else {
+                        self.get_machine_mouse_pos(ctx)
+                    };
+                    self.emu.update_mouse(abs_p.as_ref(), &relpos);
+                    self.on_user_input();
                 }
                 egui::Event::PointerMoved(_) => {
+                    if !self.mouse_input_active(ctx) {
+                        continue;
+                    }
+
                     // No relative motion in this event
                     if let Some(abs_p) = self.get_machine_mouse_pos(ctx) {
                         // Cursor is within framebuffer view area
-                        // No relative motion in this event
                         self.emu.update_mouse(Some(&abs_p), &egui::Pos2::default());
                         self.on_user_input();
                     }
                 }
                 egui::Event::WindowFocused(false) => {
                     self.emu.release_all_inputs();
+                    self.mouse_button_down = false;
+                    self.release_mouse_grab();
                 }
                 _ => (),
             }
+        }
+
+        if was_grabbed {
+            // While the mouse is grabbed the pointer belongs to the machine, so keep egui
+            // from reacting to it.
+            raw_input.events.retain(|event| {
+                !matches!(
+                    event,
+                    egui::Event::PointerMoved(_)
+                        | egui::Event::MouseMoved(_)
+                        | egui::Event::PointerButton {
+                            button: egui::PointerButton::Primary,
+                            ..
+                        }
+                )
+            });
         }
     }
 }
