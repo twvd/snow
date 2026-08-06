@@ -1,7 +1,6 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::via2::Via2;
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -9,16 +8,14 @@ use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::asc::Asc;
-use crate::mac::nubus::NubusCard;
-use crate::mac::nubus::mdc12::Mdc12;
-use crate::mac::nubus::se30video::SE30Video;
-use crate::mac::nubus::toby::Toby;
+use crate::mac::macii::via2::Via2;
+use crate::mac::quadra::dafb::Dafb;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
-use crate::mac::scsi::controller::ScsiController;
+use crate::mac::scsi::esp::Esp;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
-use crate::mac::{MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind};
+use crate::mac::{MacModel, MacMonitor};
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
@@ -31,26 +28,18 @@ use log::*;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
 use serde::{Deserialize, Serialize};
 
-/// Macintosh II main clock speed
-pub const DEFAULT_BUS_SPEED: Ticks = 16_000_000;
+/// Macintosh Quadra 700 main clock speed (25 MHz 68040)
+pub const DEFAULT_BUS_SPEED: Ticks = 25_000_000;
+
+/// SCC serial controller clock (PCLK)
+pub const SCC_CLOCK: Ticks = 3_672_000;
 
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
-struct RamConfig {
-    size: usize,
-    expected_sz: u8,
-    mirror: bool,
-}
-
-const RAMSZ_256K: u8 = 0;
-const RAMSZ_1M: u8 = 1;
-const RAMSZ_4M: u8 = 2;
-const RAMSZ_16M: u8 = 3;
-
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
-pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
+pub struct Quadra700Bus<TRenderer: Renderer> {
     cycles: Ticks,
 
     /// The currently emulated Macintosh model
@@ -69,13 +58,11 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     pub(crate) asc: Asc,
     via_clock: Ticks,
     asc_clock: Ticks,
+    scc_clock: Ticks,
     mouse_ready: bool,
     pub(crate) swim: Swim,
-    pub(crate) scsi: ScsiController,
+    pub(crate) scsi: Esp,
 
-    ram_mask: usize,
-    ram_mirror: bool,
-    ram_expected_ramsiz: u8,
     rom_mask: usize,
 
     overlay: bool,
@@ -96,66 +83,22 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     /// Programmer's key pressed
     progkey_pressed: LatchingEvent,
 
-    /// NuBus cards (base address: $9)
-    nubus_devices: [Option<NubusCard<TRenderer>>; 6],
+    /// Built-in video controller
+    pub(crate) dafb: Dafb<TRenderer>,
 
     /// Mouse mode
     mouse_mode: MouseMode,
 }
 
-impl<TRenderer, const AMU: bool> MacIIBus<TRenderer, AMU>
+impl<TRenderer> Quadra700Bus<TRenderer>
 where
     TRenderer: Renderer,
 {
-    /// RAM configuration properties
-    const RAM_CONFIG: [RamConfig; 8] = [
-        RamConfig {
-            #[allow(clippy::identity_op)]
-            size: 1 * 1024 * 1024,
-            expected_sz: RAMSZ_256K,
-            mirror: false,
-        },
-        RamConfig {
-            size: 2 * 1024 * 1024,
-            expected_sz: RAMSZ_256K,
-            mirror: true,
-        },
-        RamConfig {
-            size: 4 * 1024 * 1024,
-            expected_sz: RAMSZ_1M,
-            mirror: false,
-        },
-        RamConfig {
-            size: 8 * 1024 * 1024,
-            expected_sz: RAMSZ_1M,
-            mirror: true,
-        },
-        RamConfig {
-            size: 16 * 1024 * 1024,
-            expected_sz: RAMSZ_4M,
-            mirror: false,
-        },
-        RamConfig {
-            size: 32 * 1024 * 1024,
-            expected_sz: RAMSZ_4M,
-            mirror: true,
-        },
-        RamConfig {
-            // Doesn't work on MacII? Works on IIsi
-            size: 64 * 1024 * 1024,
-            expected_sz: RAMSZ_16M,
-            mirror: false,
-        },
-        RamConfig {
-            size: 128 * 1024 * 1024,
-            expected_sz: RAMSZ_16M,
-            mirror: true,
-        },
-    ];
-
     /// Value to return on open bus
     /// Certain applications (e.g. Animation Toolkit) rely on this.
     const OPENBUS: u8 = 0;
+
+    const IO_MASK: Address = 0x3_FFFF;
 
     /// MTemp address, Y coordinate (16 bit, signed)
     const ADDR_MTEMP_Y: Address = 0x0828;
@@ -172,41 +115,13 @@ where
     pub fn new(
         model: MacModel,
         rom: &[u8],
-        nubus: &[NubusCardConfig],
         extension_rom: Option<&[u8]>,
-        mut renderers: Vec<TRenderer>,
+        renderer: TRenderer,
         monitor: MacMonitor,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
     ) -> Self {
-        // Build the NuBus cards from the provided configuration.
-        let mut nubus_devices: [Option<NubusCard<TRenderer>>; 6] = core::array::from_fn(|_| None);
-        for cfg in nubus {
-            assert!(
-                model.nubus_slots().contains(&cfg.slot),
-                "NuBus slot {:#X} not available on {}",
-                cfg.slot,
-                model
-            );
-            let idx = (cfg.slot - 0x9) as usize;
-            // TODO non-video cards
-            let renderer = renderers
-                .pop()
-                .expect("not enough renderers for NuBus cards");
-            log::info!("NuBus slot {:#X}: {}", cfg.slot, cfg.kind);
-            nubus_devices[idx] = Some(match cfg.kind {
-                NubusDeviceKind::Mdc12 => NubusCard::MDC12(Mdc12::new(cfg.rom, renderer, monitor)),
-                NubusDeviceKind::Toby => NubusCard::Toby(Toby::new(cfg.rom, renderer)),
-                NubusDeviceKind::SE30Video => {
-                    NubusCard::SE30Video(SE30Video::new(cfg.rom, renderer))
-                }
-            });
-        }
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
-        let ram_config = Self::RAM_CONFIG
-            .iter()
-            .find(|c| c.size == ram_size)
-            .unwrap_or_else(|| panic!("Unsupported RAM size: {}", ram_size));
 
         if extension_rom.is_some() {
             log::info!("Extension ROM present");
@@ -223,16 +138,14 @@ where
             via1: Via::new(model),
             via2: Via2::new(model),
             via_clock: 0,
+            scc_clock: 0,
             scc: Scc::new(),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), 16_000_000),
-            scsi: ScsiController::new(),
+            scsi: Esp::new(),
             asc: Asc::default(),
             asc_clock: 0,
             mouse_ready: false,
 
-            ram_mask: usize::MAX,
-            ram_mirror: ram_config.mirror,
-            ram_expected_ramsiz: ram_config.expected_sz,
             rom_mask: rom.len() - 1,
 
             overlay: true,
@@ -245,7 +158,7 @@ where
             //vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
 
-            nubus_devices,
+            dafb: Dafb::new(renderer, monitor),
             mouse_mode,
         };
 
@@ -264,11 +177,8 @@ where
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
     pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        // TODO multiple cards
-        assert_eq!(self.nubus_devices.iter().flatten().count(), 1);
-        if let Some(card) = self.nubus_devices.iter_mut().flatten().next() {
-            card.reinstall_renderer(renderer).unwrap();
-        }
+        self.dafb.renderer = Some(renderer);
+        self.dafb.render().unwrap();
 
         self.asc.after_deserialize();
 
@@ -340,10 +250,11 @@ where
     }
 
     fn write_overlay(&mut self, addr: Address, val: Byte) -> Option<()> {
+        self.update_overlay(addr);
+
         match addr {
-            // 0x0000_0000 - 0x4FFF_FFFF is ROM
-            0x5000_0000..=0xFFFF_FFFF => self.write_32bit(addr, val),
-            _ => None,
+            0x0000_0000..=0x3FFF_FFFF => Some(()),
+            _ => self.write_32bit(addr, val),
         }
     }
 
@@ -351,7 +262,7 @@ where
         match addr {
             // RAM
             0x0000_0000..=0x3FFF_FFFF => {
-                let idx = addr as usize & self.ram_mask;
+                let idx = addr as usize;
                 if idx < self.ram.len() {
                     self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
                     self.ram[idx] = val;
@@ -362,65 +273,39 @@ where
             // ROM
             0x4000_0000..=0x4FFF_FFFF => Some(()),
             // I/O region (repeats)
-            0x5000_0000..=0x51FF_FFFF => match addr & 0x1_FFFF {
+            0x5000_0000..=0x51FF_FFFF => match addr & Self::IO_MASK {
                 // VIA 1
                 0x0000_0000..=0x0000_1FFF => {
                     Self::dev_write(addr, val, self.via1.write(addr, val));
-                    if self.model == MacModel::SE30 {
-                        let Some(NubusCard::SE30Video(d)) = self.nubus_devices[5].as_mut() else {
-                            unreachable!()
-                        };
-                        d.vblank_enable = !self.via1.b_out.se30_vblank_enable();
-                        d.fb_select = self.via1.a_out.page2();
-                    }
                     Some(())
                 }
                 // VIA 2
                 0x0000_2000..=0x0000_3FFF => {
                     Self::dev_write(addr, val, self.via2.write(addr, val));
-
-                    // Lazy update ramsize
-                    if self.via2.a_out.v2ram0() == self.ram_expected_ramsiz {
-                        self.ram_mask = if self.ram_mirror {
-                            self.ram.len() - 1
-                        } else {
-                            usize::MAX
-                        };
-                    } else {
-                        self.ram_mask = match self.model {
-                            MacModel::MacII => {
-                                // Just cut everything short to 1MB so the detection proceeds
-                                (/* 1 * */1024 * 1024) - 1
-                            }
-                            _ => {
-                                // Newer models need all RAM visible and do detection differently
-                                // Mirroring breaks RAM detection on IIsi, SE/30, etc.
-                                // Probably a difference in the newer FDHD ROM and up
-                                usize::MAX
-                            }
-                        };
-                    }
                     Some(())
                 }
+                // Ethernet controller
+                0x0000_8000..=0x0000_8007 | 0x0000_A000..=0x0000_B0FF => Some(()),
                 // SCC
-                0x0000_4000..=0x0000_5FFF => {
+                0x0000_C000..=0x0000_DFFF => {
                     Self::dev_write(addr, val, self.scc.write(addr >> 1, val));
                     Some(())
                 }
-                // SCSI
-                0x0000_6000..=0x0000_6FFF => Some(self.scsi.write_dma(val)),
-                0x0001_0000..=0x0001_1FFF => {
+                // Orwell memory controller
+                0x0000_E000..=0x0000_EFFF => Some(()),
+                // SCSI (NCR 53C96)
+                0x0000_F000..=0x0000_F0FF => {
                     Self::dev_write(addr, val, self.scsi.write(addr, val));
                     Some(())
                 }
-                0x0001_2000..=0x0001_3FFF => Some(self.scsi.write_dma(val)),
+                0x0000_F100..=0x0000_F1FF => Some(self.scsi.write_dma(val)),
                 // ASC (sound)
                 0x0001_4000..=0x0001_5FFF => {
                     Self::dev_write(addr, val, self.asc.write(addr & 0xFFF, val));
                     Some(())
                 }
-                // IWM/SWIM
-                0x0001_6000..=0x0001_7FFF => {
+                // SWIM
+                0x0001_E000..=0x0001_FFFF => {
                     Self::dev_write(addr, val, self.swim.write(addr, val));
                     Some(())
                 }
@@ -429,7 +314,6 @@ where
             },
             // NuBus super slot
             0x6000_0000..=0xEFFF_FFFF => {
-                // Unimplemented but some stray reads/writes end up here
                 log::warn!(
                     "Unimplemented write to NuBus super slot: {:08X} {:02X}",
                     addr,
@@ -437,33 +321,24 @@ where
                 );
                 Some(())
             }
-            // NuBus standard slot
-            0xF100_0000..=0xFFFF_FFFF => {
-                let nubus_addr = (addr >> 24) & 0x0F;
-                if nubus_addr < 0x09 || nubus_addr == 0x0F {
-                    None
-                } else if let Some(dev) = self.nubus_devices[(nubus_addr - 0x09) as usize].as_mut()
-                {
-                    let written = match dev {
-                        NubusCard::MDC12(dev) => dev.write(addr & 0xFF_FFFF, val),
-                        NubusCard::SE30Video(dev) => dev.write(addr & 0xFF_FFFF, val),
-                        NubusCard::Toby(dev) => dev.write(addr & 0xFF_FFFF, val),
-                    };
-                    Self::dev_write(addr, val, written);
-                    Some(())
-                } else {
-                    None
-                }
-            }
+            // Built-in video (DAFB), slot $9
+            0xF900_0000..=0xF9FF_FFFF => self.dafb.write(addr & 0xFF_FFFF, val),
+            // NuBus standard slots ($D, $E) - no cards emulated
+            0xF100_0000..=0xFFFF_FFFF => None,
             _ => None,
         }
     }
 
-    fn write_24bit(&mut self, addr: Address, val: Byte) -> Option<()> {
-        self.write_32bit(self.amu_translate(addr), val)
+    fn update_overlay(&mut self, addr: Address) {
+        if self.overlay && (0x4000_0000..=0x4FFF_FFFF).contains(&addr) {
+            debug!("Overlay off");
+            self.overlay = false;
+        }
     }
 
     fn read_overlay(&mut self, addr: Address) -> Option<Byte> {
+        self.update_overlay(addr);
+
         match addr {
             // ROM
             0x0000_0000..=0x4FFF_FFFF => Some(
@@ -476,15 +351,12 @@ where
         }
     }
 
-    fn read_24bit(&mut self, addr: Address) -> Option<Byte> {
-        self.read_32bit(self.amu_translate(addr))
-    }
-
     fn read_32bit(&mut self, addr: Address) -> Option<Byte> {
         match addr {
             // RAM
+            // TODO correct?
             0x0000_0000..=0x3FFF_FFFF => {
-                let idx = addr as usize & self.ram_mask;
+                let idx = addr as usize;
                 if idx < self.ram.len() {
                     Some(self.ram[idx])
                 } else {
@@ -500,23 +372,26 @@ where
                     .unwrap_or(&Self::OPENBUS),
             ),
             // I/O region (repeats)
-            0x5000_0000..=0x51FF_FFFF => match addr & 0x1_FFFF {
+            0x5000_0000..=0x51FF_FFFF => match addr & Self::IO_MASK {
                 // VIA 1
                 0x0000_0000..=0x0000_1FFF => Some(Self::dev_read(addr, self.via1.read(addr))),
                 // VIA 2
                 0x0000_2000..=0x0000_3FFF => Some(Self::dev_read(addr, self.via2.read(addr))),
+                // Ethernet controller
+                0x0000_8000..=0x0000_8007 | 0x0000_A000..=0x0000_B0FF => Some(0),
                 // SCC
-                0x0000_4000..=0x0000_5FFF => Some(Self::dev_read(addr, self.scc.read(addr >> 1))),
-                // SCSI
-                0x0000_6000..=0x0000_6FFF => Some(self.scsi.read_dma()),
-                0x0001_0000..=0x0001_1FFF => Some(Self::dev_read(addr, self.scsi.read(addr))),
-                0x0001_2000..=0x0001_3FFF => Some(self.scsi.read_dma()),
+                0x0000_C000..=0x0000_DFFF => Some(Self::dev_read(addr, self.scc.read(addr >> 1))),
+                // Orwell memory controller
+                0x0000_E000..=0x0000_EFFF => Some(0),
+                // SCSI (NCR 53C96)
+                0x0000_F000..=0x0000_F0FF => Some(Self::dev_read(addr, self.scsi.read(addr))),
+                0x0000_F100..=0x0000_F1FF => Some(self.scsi.read_dma()),
                 // ASC (sound)
                 0x0001_4000..=0x0001_5FFF => {
                     Some(Self::dev_read(addr, self.asc.read(addr & 0xFFF)))
                 }
-                // IWM/SWIM
-                0x0001_6000..=0x0001_7FFF => Some(Self::dev_read(addr, self.swim.read(addr))),
+                // SWIM
+                0x0001_E000..=0x0001_FFFF => Some(Self::dev_read(addr, self.swim.read(addr))),
                 // Expansion area - unmapped
                 _ => None,
             },
@@ -529,27 +404,13 @@ where
             ),
             // NuBus super slot
             0x6000_0000..=0xEFFF_FFFF => {
-                // Unimplemented but some stray reads/writes end up here
                 log::warn!("Unimplemented read from NuBus super slot: {:08X}", addr);
                 Some(Self::OPENBUS)
             }
-            // NuBus standard slot
-            0xF100_0000..=0xFFFF_FFFF => {
-                let nubus_addr = (addr >> 24) & 0x0F;
-                if nubus_addr < 0x09 || nubus_addr == 0x0F {
-                    None
-                } else if let Some(dev) = self.nubus_devices[(nubus_addr - 0x09) as usize].as_mut()
-                {
-                    let val = match dev {
-                        NubusCard::MDC12(dev) => dev.read(addr & 0xFF_FFFF),
-                        NubusCard::SE30Video(dev) => dev.read(addr & 0xFF_FFFF),
-                        NubusCard::Toby(dev) => dev.read(addr & 0xFF_FFFF),
-                    };
-                    Some(Self::dev_read(addr, val))
-                } else {
-                    None
-                }
-            }
+            // Built-in video (DAFB), slot $9
+            0xF900_0000..=0xF9FF_FFFF => self.dafb.read(addr & 0xFF_FFFF),
+            // NuBus standard slots ($D, $E) - no cards emulated
+            0xF100_0000..=0xFFFF_FFFF => None,
             _ => None,
         }
     }
@@ -642,36 +503,8 @@ where
         self.progkey_pressed.set();
     }
 
-    fn amu_translate(&self, addr: Address) -> Address {
-        if !AMU {
-            return addr;
-        }
-
-        match addr & 0xFFFFFF {
-            0x00_0000..=0x7F_FFFF => addr & 0x7F_FFFF,
-            0x80_0000..=0x8F_FFFF => 0x4000_0000 | (addr & 0xF_FFFF),
-            0x90_0000..=0x9F_FFFF => 0xF900_0000 | (addr & 0xF_FFFF),
-            0xA0_0000..=0xAF_FFFF => 0xFA00_0000 | (addr & 0xF_FFFF),
-            0xB0_0000..=0xBF_FFFF => 0xFB00_0000 | (addr & 0xF_FFFF),
-            0xC0_0000..=0xCF_FFFF => 0xFC00_0000 | (addr & 0xF_FFFF),
-            0xD0_0000..=0xDF_FFFF => 0xFD00_0000 | (addr & 0xF_FFFF),
-            0xE0_0000..=0xEF_FFFF => 0xFE00_0000 | (addr & 0xF_FFFF),
-            0xF0_0000..=0xF7_FFFF => 0x5000_0000 | (addr & 0xF_FFFF),
-            0xF8_0000..=0xF9_FFFF => 0x5800_0000 | (addr & 0x1_FFFF),
-            0xFA_0000..=0xFF_FFFF => 0x5000_0000 | (addr & 0xF_FFFF),
-            _ => unreachable!(),
-        }
-    }
-
     pub fn video_blank(&mut self) -> Result<()> {
-        for d in self.nubus_devices.iter_mut().flatten() {
-            match d {
-                NubusCard::MDC12(d) => d.blank()?,
-                NubusCard::SE30Video(d) => d.blank()?,
-                NubusCard::Toby(d) => d.blank()?,
-            }
-        }
-        Ok(())
+        self.dafb.blank()
     }
 
     /// Dispatches a key event to the keyboard
@@ -689,7 +522,7 @@ where
     }
 }
 
-impl<TRenderer, const AMU: bool> Bus<Address, Byte> for MacIIBus<TRenderer, AMU>
+impl<TRenderer> Bus<Address, Byte> for Quadra700Bus<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -702,9 +535,7 @@ where
             return BusResult::WaitState;
         }
 
-        let val = if AMU && self.amu_active {
-            self.read_24bit(addr)
-        } else if self.overlay {
+        let val = if self.overlay {
             self.read_overlay(addr)
         } else {
             self.read_32bit(addr)
@@ -713,15 +544,7 @@ where
         match val {
             Some(v) => BusResult::Ok(v),
             None => {
-                if AMU && self.amu_active {
-                    warn!(
-                        "Bus error (read) at unmapped address: {:06X} -> {:08X}",
-                        addr & 0xFFFFFF,
-                        self.amu_translate(addr),
-                    );
-                } else {
-                    warn!("Bus error (read) at unmapped address: {:08X}", addr);
-                }
+                warn!("Bus error (read) at unmapped address: {:08X}", addr);
                 BusResult::BusError
             }
         }
@@ -732,37 +555,21 @@ where
             return BusResult::WaitState;
         }
 
-        let written = if AMU && self.amu_active {
-            self.write_24bit(addr, val)
-        } else if self.overlay {
+        let written = if self.overlay {
             self.write_overlay(addr, val)
         } else {
             self.write_32bit(addr, val)
         };
-
-        if self.overlay && !self.via1.a_out.overlay() {
-            debug!("Overlay off");
-            self.overlay = false;
-        }
 
         // Sync values that live in multiple places
         self.swim.sel = self.via1.a_out.sel();
         self.swim.intdrive = self.via1.a_out.drivesel();
 
         if written.is_none() {
-            if AMU && self.amu_active {
-                warn!(
-                    "Bus error (write) at unmapped address: {:06X} -> {:08X} {:02X}",
-                    addr & 0xFFFFFF,
-                    self.amu_translate(addr),
-                    val
-                );
-            } else {
-                warn!(
-                    "Bus error (write) at unmapped address: {:08X} {:02X}",
-                    addr, val
-                );
-            }
+            warn!(
+                "Bus error (write) at unmapped address: {:08X} {:02X}",
+                addr, val
+            );
             return BusResult::BusError;
         }
 
@@ -790,9 +597,7 @@ where
 
         self.scc = Scc::new();
         self.via2 = Via2::new(self.model);
-        for d in self.nubus_devices.iter_mut().filter_map(|f| f.as_mut()) {
-            d.reset();
-        }
+        self.dafb.reset();
         self.asc.reset();
 
         self.amu_active = false;
@@ -802,7 +607,7 @@ where
     }
 }
 
-impl<TRenderer, const AMU: bool> Tickable for MacIIBus<TRenderer, AMU>
+impl<TRenderer> Tickable for Quadra700Bus<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -829,12 +634,7 @@ where
 
         self.cycles += ticks;
 
-        if AMU {
-            self.amu_active = self.via2.ddrb.vfc3() && !self.via2.b_out.vfc3();
-        }
-
-        // The Mac II generates the VIA clock through some dividers on the logic board.
-        // This same logic generates wait states when the VIAs are accessed.
+        // TODO validate for Quadra
         self.via_clock += ticks;
         while self.via_clock >= 20 {
             // TODO VIA wait states
@@ -874,6 +674,14 @@ where
             }
         }
 
+        // SCC baud rate generator
+        self.scc_clock += ticks * SCC_CLOCK;
+        let scc_ticks = self.scc_clock / ctx.bus_frequency;
+        if scc_ticks > 0 {
+            self.scc_clock -= scc_ticks * ctx.bus_frequency;
+            self.scc.tick_brg(scc_ticks);
+        }
+
         // Audio
         if self.asc.get_irq() {
             self.via2.ifr.set_asc(true);
@@ -886,18 +694,11 @@ where
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }
 
-        // NuBus slot IRQs and ticks
-        let mut slot_irqs = 0;
-        for slot in 0..(self.nubus_devices.len()) {
-            if let Some(dev) = self.nubus_devices[slot].as_mut() {
-                dev.tick(ticks, ctx)?;
-                if dev.get_irq() {
-                    slot_irqs |= 1 << slot;
-                }
-            }
-        }
-        self.via2.a_in.set_v2irqs(!slot_irqs);
-        if slot_irqs > 0 {
+        // Built-in video. Interrupt is wired to the slot $F line of VIA 2
+        self.dafb.tick(ticks, ctx)?;
+        let video_irq = self.dafb.get_irq();
+        self.via2.a_in.set_v2irqvideo(!video_irq);
+        if video_irq {
             self.via2.ifr.set_slot(true);
         }
 
@@ -913,7 +714,7 @@ where
     }
 }
 
-impl<TRenderer, const AMU: bool> IrqSource for MacIIBus<TRenderer, AMU>
+impl<TRenderer> IrqSource for Quadra700Bus<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -935,7 +736,7 @@ where
     }
 }
 
-impl<TRenderer, const AMU: bool> InspectableBus<Address, Byte> for MacIIBus<TRenderer, AMU>
+impl<TRenderer> InspectableBus<Address, Byte> for Quadra700Bus<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -962,7 +763,7 @@ where
     }
 }
 
-impl<TRenderer, const AMU: bool> Debuggable for MacIIBus<TRenderer, AMU>
+impl<TRenderer> Debuggable for Quadra700Bus<TRenderer>
 where
     TRenderer: Renderer,
 {
@@ -973,24 +774,18 @@ where
         let mut result = vec![
             dbgprop_nest!("Apple Desktop Bus", self.via1.adb),
             dbgprop_nest!("Apple Sound Chip", self.asc),
-            dbgprop_nest!("SCSI controller (NCR 5380)", self.scsi),
+            dbgprop_nest!("Built-in video (DAFB)", self.dafb),
+            dbgprop_nest!("SCSI controller (NCR 53C96)", self.scsi),
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("VIA 1 (SY6522)", self.via1),
             dbgprop_nest!("VIA 2 (SY6522)", self.via2),
         ];
 
-        for (i, slot) in self.nubus_devices.iter().enumerate() {
-            if let Some(dev) = slot.as_ref() {
-                result.push(dbgprop_nest!(
-                    format!("NuBus slot ${:1X} ({})", i + 0x09, dev.to_string()),
-                    dev
-                ));
-            } else {
-                result.push(dbgprop_group!(
-                    format!("NuBus slot ${:1X} (empty)", i + 0x09),
-                    vec![]
-                ));
-            }
+        for slot in self.model.nubus_slots() {
+            result.push(dbgprop_group!(
+                format!("NuBus slot ${:1X} (empty)", slot),
+                vec![]
+            ));
         }
         result
     }

@@ -150,6 +150,11 @@ impl Swim {
     /// ISM CRC initialization value
     pub(super) const ISM_CRC_INIT: u16 = 0xcdb4;
 
+    /// Parameter RAM index of the LATE/NORM register
+    const ISM_PARAM_LATE: usize = 0xC;
+    /// Parameter RAM index of the EARLY/NORM register
+    const ISM_PARAM_EARLY: usize = 0xE;
+
     /// Update CRC with a single bit
     fn ism_crc_update(&mut self, bit: bool) {
         if (self.ism_crc ^ (if bit { 0x8000 } else { 0x0000 })) & 0x8000 != 0 {
@@ -284,7 +289,16 @@ impl Swim {
                     )
                 }
                 IsmRegister::Parameter => {
-                    let value = self.ism_params[self.ism_param_idx];
+                    // Parameter $C is LATE/NORM and $E is EARLY/NORM, four bits
+                    // each (SWIM Chip User's Reference, parameter RAM). NORM is
+                    // a single field that lives in $C, so the low nibble of $E
+                    // reads back from $C rather than from what was written to it.
+                    let value = if self.ism_param_idx == Self::ISM_PARAM_EARLY {
+                        (self.ism_params[Self::ISM_PARAM_EARLY] & 0xF0)
+                            | (self.ism_params[Self::ISM_PARAM_LATE] & 0x0F)
+                    } else {
+                        self.ism_params[self.ism_param_idx]
+                    };
                     self.ism_param_idx = (self.ism_param_idx + 1) % self.ism_params.len();
                     Some(value)
                 }
@@ -366,7 +380,15 @@ impl Swim {
                     self.ism_mode.0 |= value;
                 }
                 IsmRegister::Parameter => {
-                    self.ism_params[self.ism_param_idx] = value;
+                    // NORM has one write port, in LATE. The low nibble of a
+                    // write to EARLY has no storage of its own and is dropped.
+                    // Source: Quadra 700 POST
+                    self.ism_params[self.ism_param_idx] =
+                        if self.ism_param_idx == Self::ISM_PARAM_EARLY {
+                            value & 0xF0
+                        } else {
+                            value
+                        };
                     self.ism_param_idx = (self.ism_param_idx + 1) % self.ism_params.len();
                 }
                 IsmRegister::Setup => {

@@ -33,6 +33,10 @@ pub struct Asc {
     irq: bool,
     fifo_l: VecDeque<u8>,
     fifo_r: VecDeque<u8>,
+    fifo_ctrl: u8,
+    volume: u8,
+    clock_rate: u8,
+    scratch: [u8; 16],
 
     /// Last sample played on left channel
     l_last: u8,
@@ -92,6 +96,10 @@ enum AscMode {
 impl Default for Asc {
     fn default() -> Self {
         Self {
+            fifo_ctrl: 0,
+            volume: 0,
+            clock_rate: 0,
+            scratch: [0; 16],
             sink: null_audio_sink(),
             buffer: Vec::with_capacity(AUDIO_BUFFER_SIZE),
             silent: true,
@@ -251,13 +259,20 @@ impl BusMember<Address> for Asc {
             0x801 => Some(self.mode.to_u8().unwrap()),
             // Control
             0x802 => Some(self.ctrl.0),
+            // FIFO control
+            0x803 => Some(self.fifo_ctrl),
+            // Volume
+            0x806 => Some(self.volume),
             // FIFO status
             0x804 => {
                 self.irq = false;
                 Some(*std::mem::take(&mut self.fifo_status))
             }
             // Clock rate
-            0x807 => Some(0),
+            0x807 => Some(self.clock_rate),
+            0x805 => Some(self.scratch[0]),
+            0x80F => Some(self.scratch[1]),
+            0x830..=0x837 => Some(self.scratch[2 + (addr - 0x830) as usize]),
             // Wavetable channel configuration
             0x810..=0x82F => {
                 let channel = (((addr - 0x810) >> 3) & 3) as usize;
@@ -303,6 +318,7 @@ impl BusMember<Address> for Asc {
             0x802 => Some(self.ctrl.0 = val),
             // FIFO control
             0x803 => {
+                self.fifo_ctrl = val;
                 if val & 0x80 != 0 {
                     // Clear FIFOs
                     self.fifo_l.clear();
@@ -314,11 +330,17 @@ impl BusMember<Address> for Asc {
             }
             // FIFO status
             0x804 => Some(self.fifo_status.0 = val),
+            // Volume
+            0x806 => Some(self.volume = val),
+            0x805 => Some(self.scratch[0] = val),
+            0x80F => Some(self.scratch[1] = val),
+            0x830..=0x837 => Some(self.scratch[2 + (addr - 0x830) as usize] = val),
             // Clock rate
             0x807 => {
-                if val != 0 {
+                if val != self.clock_rate && val != 0 {
                     log::warn!("TODO Clock rate = {}", val);
                 }
+                self.clock_rate = val;
                 Some(())
             }
             // Channel configuration

@@ -16,7 +16,10 @@ use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
 use crate::cpu_m68k::pmmu::translate::atc_generation_default;
 use crate::cpu_m68k::regs::RegisterCACR;
-use crate::cpu_m68k::{M68000_SR_MASK, M68020_CACR_MASK, M68030, M68030_CACR_MASK};
+use crate::cpu_m68k::{
+    M68000_SR_MASK, M68020_CACR_MASK, M68030, M68030_CACR_MASK, M68040, M68040_CACR_MASK,
+    M68040_SR_MASK,
+};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
 
@@ -71,6 +74,8 @@ pub(in crate::cpu_m68k) struct Group0Details {
     pub(in crate::cpu_m68k) ir: Word,
     pub(in crate::cpu_m68k) start_pc: Address,
     pub(in crate::cpu_m68k) size: usize,
+    /// M68040 only (MMU page fault)
+    pub(in crate::cpu_m68k) atc_fault: bool,
 }
 
 /// An entry in the instruction prefetch queue.
@@ -162,6 +167,35 @@ bitfield! {
         pub fb: bool @ 14,
         /// Fault on stage C
         pub fc: bool @ 15,
+    }
+}
+
+bitfield! {
+    /// M68040 access error stack frame Special Status Word
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+    pub struct Ssw040(pub Word): Debug, FromStorage, IntoStorage, DerefStorage {
+        /// Transfer modifier (function code)
+        pub tm: u8 @ 0..=2,
+        /// Transfer type (0 = normal)
+        pub tt: u8 @ 3..=4,
+        /// Transfer size (0 = long, 1 = byte, 2 = word, 3 = line)
+        pub size: u8 @ 5..=6,
+        /// Read (1) / write (0)
+        pub rw: bool @ 8,
+        /// Locked transfer
+        pub lk: bool @ 9,
+        /// Fault from the ATC rather than from the bus
+        pub atc: bool @ 10,
+        /// Misaligned access
+        pub ma: bool @ 11,
+        /// Continuation: MOVEM
+        pub cm: bool @ 12,
+        /// Continuation: trace
+        pub ct: bool @ 13,
+        /// Continuation: unimplemented floating point
+        pub cu: bool @ 14,
+        /// Continuation: floating point post-instruction
+        pub cp: bool @ 15,
     }
 }
 
@@ -401,7 +435,7 @@ where
     pub const HISTORY_SIZE: usize = 10000;
 
     pub fn new(bus: TBus) -> Self {
-        assert!([M68000, M68020, M68030].contains(&CPU_TYPE));
+        assert!([M68000, M68020, M68030, M68040].contains(&CPU_TYPE));
 
         Self {
             bus,
@@ -541,6 +575,7 @@ where
                     function_code: self.fc_program(),
                     ir: 0,
                     size: std::mem::size_of::<Word>(),
+                    atc_fault: false,
                     instruction: true,
                     read: true,
                     address: fetch_addr,
@@ -632,6 +667,7 @@ where
                 function_code: self.fc_program(),
                 ir: 0,
                 size: std::mem::size_of::<Word>(),
+                atc_fault: false,
                 instruction: true,
                 read: true,
                 address,
@@ -937,6 +973,7 @@ where
             M68000 => sr & M68000_SR_MASK,
             M68020 => sr & M68020_SR_MASK,
             M68030 => sr & M68030_SR_MASK,
+            M68040 => sr & M68040_SR_MASK,
             _ => unreachable!(),
         });
     }
@@ -1072,6 +1109,57 @@ where
                 let details = details.expect("Address error details not passed");
 
                 match CPU_TYPE {
+                    M68040 => {
+                        if let Some(regs) = self.restart_regs.take() {
+                            saved_sr = regs.sr.sr();
+                            regs.restore(&mut self.regs);
+                            self.regs.sr.set_supervisor(true);
+                            self.regs.sr.set_trace(false);
+                        } else {
+                            log::error!(
+                                "Cannot reset registers for stacking an access error frame"
+                            );
+                        }
+
+                        // Access error stack frame (format $7), M68040UM 8.4.6.
+                        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(0x3C);
+                        let ssp = *self.regs.ssp();
+
+                        self.write_ticks(ssp.wrapping_add(0x00), saved_sr)?;
+                        self.write_ticks(ssp.wrapping_add(0x02), details.start_pc)?;
+                        self.write_ticks(
+                            ssp.wrapping_add(0x06),
+                            0b0111_0000_0000_0000 | (vector as u16),
+                        )?;
+                        // Effective address of the faulted access
+                        self.write_ticks(ssp.wrapping_add(0x08), details.address)?;
+                        // Special status word
+                        self.write_ticks(
+                            ssp.wrapping_add(0x0C),
+                            *Ssw040::default()
+                                .with_tm(details.function_code)
+                                .with_rw(details.read)
+                                .with_atc(details.atc_fault)
+                                .with_size(match details.size {
+                                    1 => 0b01,
+                                    2 => 0b10,
+                                    16 => 0b11,
+                                    // Long, and the default when the size is
+                                    // not known (MMU faults)
+                                    _ => 0b00,
+                                }),
+                        )?;
+                        // Write-back status
+                        self.write_ticks(ssp.wrapping_add(0x0E), 0u16)?;
+                        self.write_ticks(ssp.wrapping_add(0x10), 0u16)?;
+                        self.write_ticks(ssp.wrapping_add(0x12), 0u16)?;
+                        // Fault address
+                        self.write_ticks(ssp.wrapping_add(0x14), details.address)?;
+                        // Write-back address/data
+                        for offset in (0x18..0x3C).step_by(4) {
+                            self.write_ticks(ssp.wrapping_add(offset), 0u32)?;
+                        }
+                    }
                     M68000 => {
                         *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(14);
                         self.write_ticks(self.regs.ssp().wrapping_add(12), self.regs.pc as u16)?;
@@ -1343,6 +1431,11 @@ where
             InstructionMnemonic::DIVU_w => self.op_divu(instr),
             InstructionMnemonic::DIVS_w => self.op_divs(instr),
             InstructionMnemonic::NOP => Ok(()),
+            InstructionMnemonic::MOVE16_inc => self.op_move16_inc(instr),
+            InstructionMnemonic::MOVE16_abs => self.op_move16_abs(instr),
+            InstructionMnemonic::CINV | InstructionMnemonic::CPUSH => self.op_cxxx(instr),
+            InstructionMnemonic::PFLUSH040 => self.op_pflush040(),
+            InstructionMnemonic::PTEST040 => self.op_ptest040(instr),
             InstructionMnemonic::SWAP => self.op_swap(instr),
             InstructionMnemonic::TRAP => self.op_trap(instr),
             InstructionMnemonic::BTST_imm => self.op_bit::<true>(instr, None),
@@ -2772,6 +2865,14 @@ where
                 self.set_sr(sr);
                 self.set_pc(pc)?;
             }
+            0b0111 => {
+                // M68040 access error
+                let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
+                let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(0x3C);
+                self.set_sr(sr);
+                self.set_pc(pc)?;
+            }
             _ => bail!("Unknown exception frame format: {:04b}", format),
         }
 
@@ -3213,6 +3314,104 @@ where
         Ok(())
     }
 
+    /// Transfers one 16-byte line from one physical address to another (MOVE16)
+    fn move16_transfer(&mut self, src: Address, dest: Address) -> Result<()> {
+        // The low four address bits are ignored: the transfer is always of an
+        // aligned 16-byte line.
+        let (src, dest) = (src & !0xF, dest & !0xF);
+
+        for offset in (0..16).step_by(std::mem::size_of::<Long>()) {
+            let value = self.read_ticks::<Long>(src.wrapping_add(offset))?;
+            self.write_ticks::<Long>(dest.wrapping_add(offset), value)?;
+        }
+
+        Ok(())
+    }
+
+    /// MOVE16 (Ax)+,(Ay)+
+    fn op_move16_inc(&mut self, instr: &Instruction) -> Result<()> {
+        instr.fetch_extword(|| self.fetch())?;
+
+        let ax = instr.get_op2();
+        let ay = usize::from((u16::from(instr.get_extword()) >> 12) & 0b111);
+        let src = self.regs.read_a::<Address>(ax);
+        let dest = self.regs.read_a::<Address>(ay);
+
+        self.prefetch_pump()?;
+        self.move16_transfer(src, dest)?;
+
+        // Both registers are incremented by 16, but if they are the same
+        // register it is only incremented once.
+        self.regs.write_a(ax, src.wrapping_add(16));
+        if ax != ay {
+            self.regs.write_a(ay, dest.wrapping_add(16));
+        }
+
+        Ok(())
+    }
+
+    /// MOVE16 (absolute modes)
+    fn op_move16_abs(&mut self, instr: &Instruction) -> Result<()> {
+        let to_absolute = instr.data & (1 << 3) == 0;
+        let postinc = instr.data & (1 << 4) == 0;
+
+        let an = instr.get_op2();
+        let anaddr = self.regs.read_a::<Address>(an);
+        let absaddr = ((self.fetch_pump()? as Address) << 16) | self.fetch_pump()? as Address;
+
+        self.prefetch_pump()?;
+        if to_absolute {
+            self.move16_transfer(anaddr, absaddr)?;
+        } else {
+            self.move16_transfer(absaddr, anaddr)?;
+        }
+
+        if postinc {
+            self.regs.write_a(an, anaddr.wrapping_add(16));
+        }
+
+        Ok(())
+    }
+
+    /// CINV/CPUSH
+    fn op_cxxx(&mut self, instr: &Instruction) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            return self.raise_privilege_violation();
+        }
+
+        // Cache field: 01 = data, 10 = instruction, 11 = both
+        if instr.data & (1 << 7) != 0 {
+            self.icache_tags.fill(ICACHE_TAG_INVALID);
+        }
+        // TODO data cache
+
+        Ok(())
+    }
+
+    /// PFLUSH/PFLUSHN/PFLUSHA/PFLUSHAN (M68040)
+    fn op_pflush040(&mut self) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            return self.raise_privilege_violation();
+        }
+
+        // Just conservatively flush the entire ATC
+        // TODO targetted flushing (I dont think it matters on the Mac)
+        self.pmmu_cache_invalidate();
+        Ok(())
+    }
+
+    /// PTESTR/PTESTW (M68040)
+    fn op_ptest040(&mut self, instr: &Instruction) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            return self.raise_privilege_violation();
+        }
+
+        // The address space to search comes from DFC, the address from An.
+        let fc = (self.regs.dfc & 0b111) as u8;
+        let vaddr = self.regs.read_a::<Address>(instr.get_op2());
+        self.mmu040_ptest(fc, vaddr)
+    }
+
     /// MOVEC
     fn op_movec(&mut self, instr: &Instruction) -> Result<()> {
         // Bus access and cycles are an approximation based on UM/PRM
@@ -3237,6 +3436,7 @@ where
                 let mask = match CPU_TYPE {
                     M68020 => M68020_CACR_MASK,
                     M68030 => M68030_CACR_MASK,
+                    M68040 => M68040_CACR_MASK,
                     _ => unreachable!(),
                 };
                 let val = RegisterCACR(val);
@@ -3258,6 +3458,16 @@ where
                     .write(destreg, val.with_c(false).with_ce(false).0 & mask);
             } else {
                 self.regs.write(destreg, val);
+
+                if CPU_TYPE >= M68040
+                    && matches!(
+                        destreg,
+                        Register::TC040 | Register::SRP040 | Register::URP040
+                    )
+                {
+                    self.pmmu_cache_invalidate();
+                    self.pmmu_cache_ensure();
+                }
             }
             self.advance_cycles(2)?;
         }

@@ -499,13 +499,13 @@ impl SnowGui {
             floppy_rpm_adjustment: [0, 0, 0],
 
             // Always clean up images created by restoring save states
-            temp_files: Vec::from_iter(
-                (0..snow_core::mac::scsi::controller::ScsiController::MAX_TARGETS).map(|i| {
+            temp_files: Vec::from_iter((0..snow_core::mac::scsi::bus::ScsiBus::MAX_TARGETS).map(
+                |i| {
                     let mut pb = env::temp_dir();
                     pb.push(format!("snow_state_{}_{}.img", std::process::id(), i));
                     pb
-                }),
-            ),
+                },
+            )),
 
             quick_states: Default::default(),
 

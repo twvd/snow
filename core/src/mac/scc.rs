@@ -2,7 +2,8 @@ use std::collections::VecDeque;
 
 use crate::{
     bus::{Address, BusMember},
-    types::Byte,
+    tickable::Ticks,
+    types::{Byte, Field16},
 };
 use log::*;
 use num_derive::{FromPrimitive, ToPrimitive};
@@ -237,6 +238,18 @@ struct SccChannel {
 
     reg15: u8,
 
+    /// Local loopback (WR14 bit 4)
+    loopback: bool,
+
+    /// Baud rate generator enabled (WR14 bit 0)
+    brg_enable: bool,
+    /// Baud rate generator time constant
+    brg_constant: Field16,
+    /// Elapsed SCC clocks in the current baud rate generator period
+    brg_clocks: Ticks,
+    zero_count: bool,
+    zero_count_ie: bool,
+
     tx_queue: VecDeque<u8>,
     rx_queue: VecDeque<u8>,
 
@@ -352,6 +365,15 @@ impl Scc {
             self.ch[chi].tx_ip = true;
         }
 
+        if self.ch[chi].loopback {
+            // Do local loopback
+            self.ch[chi].rx_queue.push_back(val);
+            if self.mic.mie() && self.ch[chi].rx_int_mode != 0 {
+                self.ch[chi].rx_ip = true;
+            }
+            return;
+        }
+
         // Always push to tx_queue for the byte-stream path (try_extract_packets)
         self.ch[chi].tx_queue.push_back(val);
 
@@ -453,6 +475,7 @@ impl Scc {
 
         let result = match (self.reg, ch) {
             (0 | 4, _) => *RdReg0::default()
+                .with_zero(self.ch[chi].zero_count)
                 .with_rx_char(rx_char_avail)
                 .with_tx_empty(true)
                 .with_tx_underrun(true)
@@ -487,6 +510,8 @@ impl Scc {
                 // Misc. status bits
                 0
             }
+            (12, _) => self.ch[chi].brg_constant.lsb(),
+            (13, _) => self.ch[chi].brg_constant.msb(),
             (15, _) => self.ch[chi].reg15,
             _ => {
                 warn!("Ch {:?} unimplemented ctrl read {}", ch, self.reg);
@@ -520,6 +545,7 @@ impl Scc {
                     SccCommand::ResetExtStatusInt => {
                         self.ch[chi].hunt = false;
                         self.ch[chi].ext_ip = false;
+                        self.ch[chi].zero_count = false;
                         self.ch[chi].lt_end_of_frame = false;
                     }
                     SccCommand::ResetTxInt => {
@@ -626,8 +652,20 @@ impl Scc {
             9 => {
                 self.mic.0 = val;
             }
+            12 => {
+                self.ch[chi].brg_constant.set_lsb(val);
+            }
+            13 => {
+                self.ch[chi].brg_constant.set_msb(val);
+            }
             14 => {
-                // DPLL/baudrate generator
+                self.ch[chi].loopback = val & (1 << 4) != 0;
+
+                let enable = val & (1 << 0) != 0;
+                if enable && !self.ch[chi].brg_enable {
+                    self.ch[chi].brg_clocks = 0;
+                }
+                self.ch[chi].brg_enable = enable;
             }
             15 => {
                 // WR15 controls external/status interrupt enables
@@ -635,6 +673,7 @@ impl Scc {
                 // SDLC mode is controlled only by WR3 address search mode
                 let wrval = WrReg15(val);
                 self.ch[chi].dcd_ie = wrval.dcd();
+                self.ch[chi].zero_count_ie = val & (1 << 1) != 0;
                 self.ch[chi].reg15 = val & !0b101;
             }
             _ => {
@@ -660,6 +699,28 @@ impl Scc {
     pub fn is_rx_ready_for_data(&self, ch: SccCh) -> bool {
         let chi = ch.to_usize().unwrap();
         self.ch[chi].rx_enable && !self.ch[chi].lt_rx_chr_avail
+    }
+
+    /// Advances the baud rate generators by the given amount of SCC clocks.
+    pub fn tick_brg(&mut self, clocks: Ticks) {
+        // clocks = SCC clocks!!
+        for chi in 0..2 {
+            if !self.ch[chi].brg_enable {
+                continue;
+            }
+
+            let period = Ticks::from(self.ch[chi].brg_constant.0) + 2;
+            self.ch[chi].brg_clocks += clocks;
+            if self.ch[chi].brg_clocks < period {
+                continue;
+            }
+            self.ch[chi].brg_clocks %= period;
+
+            self.ch[chi].zero_count = true;
+            if self.mic.mie() && self.ch[chi].zero_count_ie {
+                self.ch[chi].ext_ip = true;
+            }
+        }
     }
 
     pub fn push_rx(&mut self, ch: SccCh, data: &[u8]) {

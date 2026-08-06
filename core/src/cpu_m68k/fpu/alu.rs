@@ -6,10 +6,9 @@ use crate::bus::{Address, Bus, IrqSource};
 
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::cpu::CpuM68k;
+use crate::cpu_m68k::fpu::instruction::opmode;
 use crate::cpu_m68k::fpu::math::FloatMath;
-use crate::cpu_m68k::fpu::ops_generic::FPU_CYCLES_LEN;
 use crate::cpu_m68k::fpu::trig::FloatTrig;
-use crate::tickable::Ticks;
 
 use super::{SEMANTICS_DOUBLE, SEMANTICS_EXTENDED, SEMANTICS_SINGLE};
 
@@ -58,7 +57,7 @@ where
         opmode: u8,
         source: &Float,
         dest: &Float,
-    ) -> Result<(Float, [Ticks; FPU_CYCLES_LEN])> {
+    ) -> Result<Float> {
         debug_assert_eq!(source.get_semantics(), SEMANTICS_EXTENDED);
         debug_assert_eq!(dest.get_semantics(), SEMANTICS_EXTENDED);
 
@@ -68,43 +67,29 @@ where
         let source = &source.cast(sem);
         let dest = &dest.cast(sem);
 
-        // Cycles row (source/destination data type):
-        // [FPn to FPn, integer, single, double, extended, packed]
-        //
-        // There doesn't seem to be an equal difference for ALL operations
-        // between the different source/destination types, therefore we just
-        // list all the timings for each operation.
-        let (result, cycles) = match opmode {
-            // FMOVE
-            0b0000000 => (source.clone(), [33, 60, 52, 58, 56, 870]),
-            // FSQRT
-            0b0000100 => (source.sqrt(), [107, 134, 126, 132, 130, 844]),
-            // FABS
-            0b0011000 => (source.abs(), [35, 62, 54, 60, 58, 872]),
-            // FADD
-            0b0100010 => (dest + source, [51, 80, 72, 78, 76, 888]),
-            // FSUB
-            0b0101000 => (dest - source, [51, 80, 72, 78, 76, 888]),
-            // FMUL
-            0b0100011 => (dest * source, [71, 100, 92, 98, 96, 895]),
-            // FDIV
-            0b0100000 => (dest / source, [105, 132, 124, 130, 128, 940]),
-            // FSGLMUL - single precision with FPCR rounding mode
-            0b0100111 => {
+        let result = match opmode {
+            opmode::FMOVE => source.clone(),
+            opmode::FSQRT => source.sqrt(),
+            opmode::FABS => source.abs(),
+            opmode::FADD => dest + source,
+            opmode::FSUB => dest - source,
+            opmode::FMUL => dest * source,
+            opmode::FDIV => dest / source,
+            // Single precision with FPCR rounding mode
+            opmode::FSGLMUL => {
                 let sem = SEMANTICS_SINGLE.with_rm(self.fpu_rounding_mode());
                 let source = &source.cast(sem);
                 let dest = &dest.cast(sem);
-                (dest * source, [59, 88, 80, 86, 84, 895])
+                dest * source
             }
-            // FSGLDIV - single precision with FPCR rounding mode
-            0b0100100 => {
+            // Single precision with FPCR rounding mode
+            opmode::FSGLDIV => {
                 let sem = SEMANTICS_SINGLE.with_rm(self.fpu_rounding_mode());
                 let source = &source.cast(sem);
                 let dest = &dest.cast(sem);
-                (dest / source, [69, 98, 90, 96, 94, 936])
+                dest / source
             }
-            // FINT
-            0b0000001 => {
+            opmode::FINT => {
                 let sem = self.fpu_rounding_mode_precision()?;
                 let casted = source.cast(sem);
 
@@ -117,25 +102,20 @@ where
                     RoundingMode::None | RoundingMode::NearestTiesToAway => unreachable!(),
                 };
 
-                (rounded.cast(SEMANTICS_EXTENDED), [65, 92, 74, 80, 78, 892])
+                rounded.cast(SEMANTICS_EXTENDED)
             }
-            // FINTRZ
-            0b0000011 => (
-                source
-                    .cast_with_rm(SEMANTICS_EXTENDED, arpfloat::RoundingMode::Zero)
-                    .trunc()
-                    .cast(SEMANTICS_EXTENDED),
-                [55, 82, 74, 80, 78, 892],
-            ),
-            // FCMP
-            0b0111000 => {
+            opmode::FINTRZ => source
+                .cast_with_rm(SEMANTICS_EXTENDED, arpfloat::RoundingMode::Zero)
+                .trunc()
+                .cast(SEMANTICS_EXTENDED),
+            opmode::FCMP => {
                 let result = dest - source;
                 self.fpu_condition_codes(&result);
                 // TODO flags
-                return Ok((dest.cast(SEMANTICS_EXTENDED), [35, 62, 54, 60, 58, 870]));
+                return Ok(dest.cast(SEMANTICS_EXTENDED));
             }
-            // FREM - always uses round-to-nearest regardless of FPCR
-            0b0100101 => {
+            // Always uses round-to-nearest regardless of FPCR
+            opmode::FREM => {
                 let sem = SEMANTICS_EXTENDED.with_rm(RoundingMode::NearestTiesToEven);
                 let dest = &dest.cast(sem);
                 let source = &source.cast(sem);
@@ -143,10 +123,10 @@ where
                 let n = quotient.round();
                 self.regs.fpu.fpsr.set_quotient(n.to_i64() as u8);
                 self.regs.fpu.fpsr.set_quotient_s(n.is_negative());
-                (dest - (source * n), [100, 129, 121, 127, 125, 937])
+                dest - (source * n)
             }
-            // FMOD - always uses round-toward-zero regardless of FPCR
-            0b0100001 => {
+            // Always uses round-toward-zero regardless of FPCR
+            opmode::FMOD => {
                 let sem = SEMANTICS_EXTENDED.with_rm(RoundingMode::Zero);
                 let dest = &dest.cast(sem);
                 let source = &source.cast(sem);
@@ -154,95 +134,48 @@ where
                 let n = quotient.trunc();
                 self.regs.fpu.fpsr.set_quotient(n.to_i64() as u8);
                 self.regs.fpu.fpsr.set_quotient_s(n.is_negative());
-                (dest - (source * n), [80, 99, 91, 97, 95, 907])
+                dest - (source * n)
             }
-            // FGETEXP
-            0b0011110 => {
+            opmode::FGETEXP => {
                 // No need to remove the bias here as we store FPx registers unbiased
-                (
-                    Float::from_i64(SEMANTICS_EXTENDED, source.get_exp()),
-                    [35, 72, 64, 70, 68, 882],
-                )
+                Float::from_i64(SEMANTICS_EXTENDED, source.get_exp())
             }
-            // FTST
-            0b0111010 => {
+            opmode::FTST => {
                 self.fpu_condition_codes(source);
-                return Ok((dest.cast(SEMANTICS_EXTENDED), [33, 60, 52, 58, 56, 870]));
+                return Ok(dest.cast(SEMANTICS_EXTENDED));
             }
-            // FNEG
-            0b0011010 => (source.neg(), [35, 62, 54, 60, 58, 872]),
-            // FACOS
-            0b0011100 => (source.acos(), [625, 652, 644, 650, 648, 1462]),
-            // FCOS
-            0b0011101 => (source.cos(), [391, 418, 410, 416, 414, 1228]),
-            // FATAN
-            0b0001010 => (source.atan(), [403, 430, 422, 428, 426, 1240]),
-            // FSIN
-            0b0001110 => (source.sin(), [391, 418, 410, 416, 414, 1228]),
-            // FASIN
-            0b0001100 => (source.asin(), [581, 608, 600, 606, 604, 1418]),
-            // FTAN
-            0b0001111 => (source.tan(), [473, 500, 492, 498, 495, 1310]),
-            // FLOGN
-            0b0010100 => (source.log(), [525, 552, 544, 550, 548, 1352]),
-            // FLOGNP1
-            0b0000110 => (
-                (source + Float::one(source.get_semantics(), false)).log(),
-                [571, 598, 590, 596, 594, 1428],
-            ),
-            // FLOG2
-            0b0010110 => (source.log2(), [581, 608, 600, 606, 604, 1418]),
-            // FLOG10
-            0b0010101 => (source.log10(), [581, 608, 600, 606, 604, 1418]),
-            // FETOX
-            0b0010000 => (
-                Float::e(SEMANTICS_EXTENDED).pow(source),
-                [497, 524, 516, 522, 520, 1334],
-            ),
-            // FETOXM1
-            0b0001000 => (
-                Float::e(SEMANTICS_EXTENDED).pow(source) - 1,
-                [545, 572, 564, 570, 568, 1382],
-            ),
-            // FTWOTOX
-            0b0010001 => (
-                Float::from_u64(SEMANTICS_EXTENDED, 2).pow(source),
-                [567, 594, 586, 592, 590, 1404],
-            ),
-            // FTENTOX
-            0b0010010 => (
-                Float::from_u64(SEMANTICS_EXTENDED, 10).pow(source),
-                [567, 594, 586, 592, 590, 1404],
-            ),
-            // FSINH
-            0b0000010 => (source.sinh(), [687, 714, 706, 712, 710, 1524]),
-            // FCOSH
-            0b0011001 => (source.cosh(), [607, 634, 626, 632, 630, 1444]),
-            // FTANH
-            0b0001001 => (source.tanh(), [661, 688, 680, 686, 684, 1439]),
-            // FATANH
-            0b0001101 => (source.atanh(), [693, 720, 712, 718, 716, 1530]),
-            // FSCALE
-            0b0100110 => (
-                dest.scale(source.trunc().to_i64(), dest.get_rounding_mode()),
-                [41, 70, 62, 68, 66, 878],
-            ),
-            // FGETMAN
-            0b0011111 => {
-                (
-                    if source.is_inf() || source.is_nan() {
-                        // Not sure if sign gets cleared here, assuming it does
-                        Float::nan(SEMANTICS_EXTENDED, false)
-                    } else if source.is_zero() {
-                        // Not sure if sign gets cleared here, assuming it does
-                        Float::zero(SEMANTICS_EXTENDED, false)
-                    } else {
-                        // Decompose and recreate float to get a normalized mantissa
-                        let mantissa = source.get_mantissa();
-                        Float::from_parts(SEMANTICS_EXTENDED, false, 0, mantissa)
-                    },
-                    [31, 58, 50, 56, 54, 858],
-                )
+            opmode::FNEG => source.neg(),
+            opmode::FACOS => source.acos(),
+            opmode::FCOS => source.cos(),
+            opmode::FATAN => source.atan(),
+            opmode::FSIN => source.sin(),
+            opmode::FASIN => source.asin(),
+            opmode::FTAN => source.tan(),
+            opmode::FLOGN => source.log(),
+            opmode::FLOGNP1 => (source + Float::one(source.get_semantics(), false)).log(),
+            opmode::FLOG2 => source.log2(),
+            opmode::FLOG10 => source.log10(),
+            opmode::FETOX => Float::e(SEMANTICS_EXTENDED).pow(source),
+            opmode::FETOXM1 => Float::e(SEMANTICS_EXTENDED).pow(source) - 1,
+            opmode::FTWOTOX => Float::from_u64(SEMANTICS_EXTENDED, 2).pow(source),
+            opmode::FTENTOX => Float::from_u64(SEMANTICS_EXTENDED, 10).pow(source),
+            opmode::FSINH => source.sinh(),
+            opmode::FCOSH => source.cosh(),
+            opmode::FTANH => source.tanh(),
+            opmode::FATANH => source.atanh(),
+            opmode::FSCALE => dest.scale(source.trunc().to_i64(), dest.get_rounding_mode()),
+            opmode::FGETMAN => {
+                if source.is_inf() || source.is_nan() {
+                    // Not sure if sign gets cleared here, assuming it does
+                    Float::nan(SEMANTICS_EXTENDED, false)
+                } else if source.is_zero() {
+                    // Not sure if sign gets cleared here, assuming it does
+                    Float::zero(SEMANTICS_EXTENDED, false)
+                } else {
+                    // Decompose and recreate float to get a normalized mantissa
+                    let mantissa = source.get_mantissa();
+                    Float::from_parts(SEMANTICS_EXTENDED, false, 0, mantissa)
+                }
             }
 
             _ => bail!("Unimplemented FPU ALU op {:07b}", opmode),
@@ -263,7 +196,7 @@ where
         self.fpu_condition_codes(&result);
 
         // Cast result back to EXTENDED for storage in FPU registers
-        Ok((result.cast(SEMANTICS_EXTENDED), cycles))
+        Ok(result.cast(SEMANTICS_EXTENDED))
     }
 
     fn fpu_condition_codes(&mut self, result: &Float) {
