@@ -86,8 +86,33 @@ movements to the emulated system. This may make it harder to control the mouse,
 but it provides the most accurate emulation experience and works best with
 some games (e.g. first person shooters) and non-original software.
 
-Relative positioning mode works best when using Snow [fullscreen](fullscreen.md).
+Relative positioning mode works best when using Snow [fullscreen](fullscreen.md)
+or by using mouse capture (see below).
 When switching to fullscreen mode, Snow will automatically switch to relative
 positioning mode and back to the original mode when leaving fullscreen. This
 behavior can be enabled/disabled using the 'Options > Input > Use relative mouse
 in fullscreen' menu option. This option persists globally.
+
+#### Capturing the mouse
+
+Because a hardware mouse only reports movement, the host cursor and the cursor
+of the emulated system drift apart and the host cursor can wander off the
+emulated display or even out of the window entirely. To prevent this, Snow
+captures the mouse: the host cursor is confined to the Snow window and hidden
+for as long as the emulated system has the mouse.
+
+Click the emulated display to capture the mouse and **right-click to release it
+again**. When mouse capture is enabled, mouse movements will only register
+when the mouse is captured (after the display is clicked).
+
+Mouse capturing can be enabled/disabled using the 'Options > Input > Capture
+mouse (relative mode)' menu option and is enabled by default. This option
+persists globally.
+
+Note that absolute positioning mode never captures the mouse.
+
+#### Mouse speed
+
+The 'Options > Input > Relative mouse speed' slider scales the movement passed to
+the emulated system, from 0.25x to 4x. This setting only affects
+relative positioning mode and persists globally.
