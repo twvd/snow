@@ -22,7 +22,7 @@ use crate::mac::{MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind};
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
-use crate::tickable::{Tickable, Ticks};
+use crate::tickable::{TickConverter, Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 
 use anyhow::Result;
@@ -52,6 +52,9 @@ const RAMSZ_16M: u8 = 3;
 #[serde(bound = "")]
 pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     cycles: Ticks,
+
+    /// 16 MHz clock for components that cannot be overclocked (such as VIA and SWIM).
+    clock_16mhz: TickConverter<DEFAULT_BUS_SPEED>,
 
     /// The currently emulated Macintosh model
     model: MacModel,
@@ -214,6 +217,7 @@ where
 
         let mut bus = Self {
             cycles: 0,
+            clock_16mhz: Default::default(),
             model,
 
             rom: Vec::from(rom),
@@ -829,18 +833,23 @@ where
 
         self.cycles += ticks;
 
+        self.clock_16mhz.add_a_ticks(ticks);
+        let ticks_16mhz = self.clock_16mhz.get_b_ticks(self.bus_frequency);
+        self.clock_16mhz
+            .subtract_b_ticks(ticks_16mhz, self.bus_frequency);
+
         if AMU {
             self.amu_active = self.via2.ddrb.vfc3() && !self.via2.b_out.vfc3();
         }
 
         // The Mac II generates the VIA clock through some dividers on the logic board.
         // This same logic generates wait states when the VIAs are accessed.
-        self.via_clock += ticks;
+        self.via_clock += ticks_16mhz;
         while self.via_clock >= 20 {
             // TODO VIA wait states
             self.via_clock -= 20;
 
-            self.via1.tick(1, ctx)?;
+            self.via1.tick(1, ())?;
             self.via2.tick(1, ())?;
         }
 
@@ -907,7 +916,8 @@ where
         self.via2.ifr.set_scsi_drq(self.scsi.get_drq());
 
         self.swim.intdrive = self.via1.a_out.drivesel();
-        self.swim.tick(ticks, ())?;
+        // FIXME: Running swim at 16mhz doesn't fix floppies failing to boot...
+        self.swim.tick(ticks_16mhz, ())?;
 
         Ok(1)
     }

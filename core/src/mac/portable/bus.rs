@@ -21,7 +21,7 @@ use crate::mac::swim::Swim;
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
-use crate::tickable::{Tickable, Ticks};
+use crate::tickable::{TickConverter, Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 
 use anyhow::Result;
@@ -37,6 +37,9 @@ pub const RAM_DIRTY_PAGESIZE: usize = 256;
 #[serde(bound = "")]
 pub struct MacPortableBus<TRenderer: Renderer> {
     cycles: Ticks,
+
+    /// 16 MHz clock for components that cannot be overclocked (such as VIA and SWIM).
+    clock_16mhz: TickConverter<DEFAULT_BUS_SPEED>,
 
     /// The currently emulated Macintosh model
     model: MacModel,
@@ -136,6 +139,7 @@ where
 
         let mut bus = Self {
             cycles: 0,
+            clock_16mhz: Default::default(),
             model,
 
             rom_mask: rom.len() - 1,
@@ -621,12 +625,17 @@ where
 
         self.cycles += ticks;
 
-        self.via_clock += ticks;
+        self.clock_16mhz.add_a_ticks(ticks);
+        let ticks_16mhz = self.clock_16mhz.get_b_ticks(self.bus_frequency);
+        self.clock_16mhz
+            .subtract_b_ticks(ticks_16mhz, self.bus_frequency);
+
+        self.via_clock += ticks_16mhz;
         while self.via_clock >= 20 {
             // TODO VIA wait states
             self.via_clock -= 20;
 
-            self.via.tick(1, ctx)?;
+            self.via.tick(1, ())?;
         }
 
         self.video.tick(ticks, ctx)?;
@@ -658,7 +667,8 @@ where
         }
 
         self.swim.intdrive = self.via.b_out.drivesel();
-        self.swim.tick(ticks, ())?;
+        // FIXME: Running swim at 16mhz doesn't fix floppies failing to boot...
+        self.swim.tick(ticks_16mhz, ())?;
 
         Ok(ticks)
     }

@@ -21,7 +21,7 @@ use crate::mac::via::Via;
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
-use crate::tickable::{Tickable, Ticks};
+use crate::tickable::{TickConverter, Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 use crate::util::take_from_accumulator;
 
@@ -38,6 +38,9 @@ pub const RAM_DIRTY_PAGESIZE: usize = 256;
 #[serde(bound = "")]
 pub struct CompactMacBus<TRenderer: Renderer> {
     cycles: Ticks,
+
+    /// 16 MHz clock for components that cannot be overclocked (such as VIA and SWIM).
+    clock_16mhz: TickConverter<DEFAULT_BUS_SPEED>,
 
     /// The currently emulated Macintosh model
     model: MacModel,
@@ -165,6 +168,7 @@ where
 
         let mut bus = Self {
             cycles: 0,
+            clock_16mhz: Default::default(),
             model,
 
             rom: Vec::from(rom),
@@ -725,13 +729,18 @@ where
 
             self.cycles += ticks;
 
-            self.eclock += ticks;
+            self.clock_16mhz.add_a_ticks(ticks);
+            let ticks_16mhz = self.clock_16mhz.get_b_ticks(self.bus_frequency);
+            self.clock_16mhz
+                .subtract_b_ticks(ticks_16mhz, self.bus_frequency);
+
+            self.eclock += ticks_16mhz;
             while self.eclock >= 10 {
                 // The E Clock is roughly 1/10th of the CPU clock
                 // TODO ticks when VPA is asserted
                 self.eclock -= 10;
 
-                self.via.tick(1, ctx)?;
+                self.via.tick(1, ())?;
             }
 
             // Pixel clock (15.6672 MHz) is roughly 2x CPU speed
@@ -813,7 +822,8 @@ where
             }
 
             self.scsi.tick(ticks, ctx)?;
-            self.swim.tick(ticks, ())?;
+            // FIXME: Running swim at 16mhz doesn't fix floppies failing to boot...
+            self.swim.tick(ticks_16mhz, ())?;
         }
 
         Ok(ticks)
