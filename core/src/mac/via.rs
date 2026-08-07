@@ -1,9 +1,8 @@
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
-use crate::emulator::EmuContext;
 use crate::mac::pluskbd::PlusKeyboard;
 use crate::mac::rtc::Rtc;
-use crate::tickable::{TickConverter, Tickable, Ticks};
+use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, Field16};
 
 use anyhow::Result;
@@ -12,12 +11,6 @@ use serde::{Deserialize, Serialize};
 
 use super::MacModel;
 use super::adb::AdbTransceiver;
-
-/// The frequency at which to run the VIA.
-///
-/// Since the VIA is used as a timer, it is important to run at a consistent
-/// speed regardless of CPU/bus frequency.
-const VIA_FREQUENCY: Ticks = 16_000_000;
 
 /// Counter at which to trigger the one second interrupt
 /// (counted on the E Clock)
@@ -262,8 +255,6 @@ pub struct Via {
     pub(crate) rtc: Rtc,
 
     pub(crate) adb: AdbTransceiver,
-
-    bus_tick_converter: TickConverter<VIA_FREQUENCY>,
 }
 
 impl Via {
@@ -300,8 +291,6 @@ impl Via {
             keyboard: PlusKeyboard::default(),
             rtc: Rtc::default(),
             adb: AdbTransceiver::default(),
-
-            bus_tick_converter: Default::default(),
         }
     }
 }
@@ -534,21 +523,8 @@ impl BusMember<Address> for Via {
     }
 }
 
-impl Tickable<&dyn EmuContext> for Via {
-    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
-        self.bus_tick_converter.add_a_ticks(ticks);
-        let via_ticks = self.bus_tick_converter.get_b_ticks(ctx.bus_frequency());
-        if via_ticks > 0 {
-            self.tick_16mhz(via_ticks)?;
-            self.bus_tick_converter
-                .subtract_b_ticks(via_ticks, ctx.bus_frequency());
-        }
-        Ok(ticks)
-    }
-}
-
-impl Via {
-    fn tick_16mhz(&mut self, ticks: Ticks) -> Result<Ticks> {
+impl Tickable for Via {
+    fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         // This is ticked on the E Clock
         self.onesec += ticks;
 
