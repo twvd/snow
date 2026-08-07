@@ -1655,8 +1655,8 @@ impl ScsiTarget for ScsiTargetCdrom {
                 None => {
                     // Real audio is disabled. Advance the audio position by counting bus ticks.
                     self.audio_clock += ticks;
-                    if self.audio_clock >= ctx.bus_frequency() / AUDIO_SECTORS_PER_SEC as u64 {
-                        self.audio_clock -= ctx.bus_frequency() / AUDIO_SECTORS_PER_SEC as u64;
+                    if self.audio_clock >= ctx.base_frequency() / AUDIO_SECTORS_PER_SEC as u64 {
+                        self.audio_clock -= ctx.base_frequency() / AUDIO_SECTORS_PER_SEC as u64;
 
                         self.audio_pos += 1;
                         self.resolve_audio_pos();

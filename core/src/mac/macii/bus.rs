@@ -87,7 +87,7 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
 
-    bus_frequency: Ticks,
+    base_frequency: Ticks,
 
     /// Last vblank time (for syncing to video)
     /// Not serializing this because it is only used for determining how long to
@@ -242,7 +242,7 @@ where
             overlay: true,
             amu_active: false,
             speed: EmulatorSpeed::Accurate,
-            bus_frequency: DEFAULT_BUS_SPEED,
+            base_frequency: DEFAULT_BUS_SPEED,
             //last_audiosample: 0,
             vblank_time: Instant::now(),
             vblank_clock: 0,
@@ -631,8 +631,8 @@ where
         self.speed = speed;
     }
 
-    pub fn set_bus_frequency(&mut self, bus_frequency: u64) {
-        self.bus_frequency = bus_frequency;
+    pub fn set_base_frequency(&mut self, base_frequency: u64) {
+        self.base_frequency = base_frequency;
     }
 
     /// Tests for wait states on bus access
@@ -813,7 +813,7 @@ where
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         struct BusEmuContext {
             speed: EmulatorSpeed,
-            bus_frequency: Ticks,
+            base_frequency: Ticks,
         }
 
         impl EmuContext for BusEmuContext {
@@ -821,22 +821,22 @@ where
                 self.speed
             }
 
-            fn bus_frequency(&self) -> Ticks {
-                self.bus_frequency
+            fn base_frequency(&self) -> Ticks {
+                self.base_frequency
             }
         }
 
         let ctx = &BusEmuContext {
             speed: self.speed,
-            bus_frequency: self.bus_frequency,
+            base_frequency: self.base_frequency,
         };
 
         self.cycles += ticks;
 
         self.clock_16mhz.add_a_ticks(ticks);
-        let ticks_16mhz = self.clock_16mhz.get_b_ticks(self.bus_frequency);
+        let ticks_16mhz = self.clock_16mhz.get_b_ticks(self.base_frequency);
         self.clock_16mhz
-            .subtract_b_ticks(ticks_16mhz, self.bus_frequency);
+            .subtract_b_ticks(ticks_16mhz, self.base_frequency);
 
         if AMU {
             self.amu_active = self.via2.ddrb.vfc3() && !self.via2.b_out.vfc3();
@@ -855,8 +855,8 @@ where
 
         // Legacy VBlank interrupt
         self.vblank_clock += ticks;
-        while self.vblank_clock >= ctx.bus_frequency / 60 {
-            self.vblank_clock -= ctx.bus_frequency / 60;
+        while self.vblank_clock >= ctx.base_frequency / 60 {
+            self.vblank_clock -= ctx.base_frequency / 60;
 
             self.via1.ifr.set_vblank(true);
 
@@ -889,8 +889,8 @@ where
         }
 
         self.asc_clock += ticks;
-        while self.asc_clock >= ctx.bus_frequency / self.asc.sample_rate() {
-            self.asc_clock -= ctx.bus_frequency / self.asc.sample_rate();
+        while self.asc_clock >= ctx.base_frequency / self.asc.sample_rate() {
+            self.asc_clock -= ctx.base_frequency / self.asc.sample_rate();
 
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }
