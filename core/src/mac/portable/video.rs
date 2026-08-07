@@ -73,7 +73,7 @@ where
     T: Renderer,
 {
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
-        let frametime: Ticks = ctx.bus_frequency() / 60;
+        let frametime: Ticks = ctx.base_frequency() / 60;
 
         self.vblank_ticks += ticks;
         while self.vblank_ticks > frametime {
