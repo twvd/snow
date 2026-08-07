@@ -822,13 +822,13 @@ where
             }
 
             fn base_frequency(&self) -> Ticks {
-                self.base_frequency
+                DEFAULT_BUS_SPEED
             }
         }
 
         let ctx = &BusEmuContext {
             speed: self.speed,
-            base_frequency: self.base_frequency,
+            base_frequency: DEFAULT_BUS_SPEED,
         };
 
         self.cycles += ticks;
@@ -837,6 +837,12 @@ where
         let ticks_16mhz = self.clock_16mhz.get_b_ticks(self.base_frequency);
         self.clock_16mhz
             .subtract_b_ticks(ticks_16mhz, self.base_frequency);
+
+        // XXX: just run the bus at 16mhz (this DOES NOT fix floppies)
+        let ticks = ticks_16mhz;
+
+        // XXX: forget about 16mhz (this FIXES floppies, but causes other timing issues)
+        // let ticks_16mhz = ticks;
 
         if AMU {
             self.amu_active = self.via2.ddrb.vfc3() && !self.via2.b_out.vfc3();
