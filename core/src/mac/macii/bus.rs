@@ -869,14 +869,12 @@ where
             }
 
             fn base_frequency(&self) -> Ticks {
-                // DEFAULT_BUS_SPEED
                 self.base_frequency
             }
         }
 
         let ctx = &BusEmuContext {
             speed: self.speed,
-            // base_frequency: DEFAULT_BUS_SPEED,
             base_frequency: self.base_frequency,
         };
 
@@ -888,12 +886,6 @@ where
             .subtract_b_ticks(ticks_16mhz, self.base_frequency);
 
         self.delay_16mhz = self.delay_16mhz.saturating_sub(ticks_16mhz);
-
-        // XXX: just run the bus at 16mhz (this DOES NOT fix floppies)
-        // let ticks = ticks_16mhz;
-
-        // XXX: forget about 16mhz (this FIXES floppies, but causes other timing issues)
-        // let ticks_16mhz = ticks;
 
         if AMU {
             self.amu_active = self.via2.ddrb.vfc3() && !self.via2.b_out.vfc3();
