@@ -56,6 +56,13 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     /// 16 MHz clock for components that cannot be overclocked (such as VIA and SWIM).
     clock_16mhz: TickConverter<DEFAULT_BUS_SPEED>,
 
+    /// If greater than 0, hold a waitstate until this number of 16 MHz ticks elapse.
+    /// This throttles CPU for components that fail when overclocked (such as SWIM).
+    delay_16mhz: Ticks,
+
+    /// If true, the IWM access delay has been triggered.
+    iwm_delay_trigger: bool,
+
     /// The currently emulated Macintosh model
     model: MacModel,
 
@@ -218,6 +225,8 @@ where
         let mut bus = Self {
             cycles: 0,
             clock_16mhz: Default::default(),
+            delay_16mhz: 0,
+            iwm_delay_trigger: false,
             model,
 
             rom: Vec::from(rom),
@@ -637,8 +646,7 @@ where
 
     /// Tests for wait states on bus access
     fn in_waitstate(&self, _addr: Address) -> bool {
-        // TODO
-        false
+        self.delay_16mhz > 0
     }
 
     /// Programmer's key pressed
@@ -693,6 +701,19 @@ where
     }
 }
 
+/// Return true if an address accesses the IWM.
+fn is_iwm_addr(addr: Address) -> bool {
+    match addr {
+        // I/O region (repeats)
+        0x5000_0000..=0x51FF_FFFF => match addr & 0x1_FFFF {
+            // IWM/SWIM
+            0x0001_6000..=0x0001_7FFF => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 impl<TRenderer, const AMU: bool> Bus<Address, Byte> for MacIIBus<TRenderer, AMU>
 where
     TRenderer: Renderer,
@@ -704,6 +725,19 @@ where
     fn read(&mut self, addr: Address) -> BusResult<Byte> {
         if self.in_waitstate(addr) {
             return BusResult::WaitState;
+        }
+
+        if is_iwm_addr(addr) {
+            if self.iwm_delay_trigger {
+                // Reset trigger and allow the access to proceed
+                self.iwm_delay_trigger = false;
+            } else {
+                // Trigger the access delay
+                // FIXME: This should be += 1, but that doesn't work...
+                self.delay_16mhz += 8;
+                self.iwm_delay_trigger = true;
+                return BusResult::WaitState;
+            }
         }
 
         let val = if AMU && self.amu_active {
@@ -734,6 +768,19 @@ where
     fn write(&mut self, addr: Address, val: Byte) -> BusResult<Byte> {
         if self.in_waitstate(addr) {
             return BusResult::WaitState;
+        }
+
+        if is_iwm_addr(addr) {
+            if self.iwm_delay_trigger {
+                // Reset trigger and allow the access to proceed
+                self.iwm_delay_trigger = false;
+            } else {
+                // Trigger the access delay
+                // FIXME: This should be += 1, but that doesn't work...
+                self.delay_16mhz += 8;
+                self.iwm_delay_trigger = true;
+                return BusResult::WaitState;
+            }
         }
 
         let written = if AMU && self.amu_active {
@@ -822,13 +869,15 @@ where
             }
 
             fn base_frequency(&self) -> Ticks {
-                DEFAULT_BUS_SPEED
+                // DEFAULT_BUS_SPEED
+                self.base_frequency
             }
         }
 
         let ctx = &BusEmuContext {
             speed: self.speed,
-            base_frequency: DEFAULT_BUS_SPEED,
+            // base_frequency: DEFAULT_BUS_SPEED,
+            base_frequency: self.base_frequency,
         };
 
         self.cycles += ticks;
@@ -838,8 +887,10 @@ where
         self.clock_16mhz
             .subtract_b_ticks(ticks_16mhz, self.base_frequency);
 
+        self.delay_16mhz = self.delay_16mhz.saturating_sub(ticks_16mhz);
+
         // XXX: just run the bus at 16mhz (this DOES NOT fix floppies)
-        let ticks = ticks_16mhz;
+        // let ticks = ticks_16mhz;
 
         // XXX: forget about 16mhz (this FIXES floppies, but causes other timing issues)
         // let ticks_16mhz = ticks;
