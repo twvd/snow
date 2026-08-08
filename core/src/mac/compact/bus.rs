@@ -42,6 +42,13 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     /// 16 MHz clock for components that cannot be overclocked (such as VIA and SWIM).
     clock_16mhz: TickConverter<DEFAULT_BUS_SPEED>,
 
+    /// If greater than 0, hold a waitstate until this number of 16 MHz ticks elapse.
+    /// This throttles CPU for components that fail when overclocked (such as SWIM).
+    delay_16mhz: Ticks,
+
+    /// If true, the IWM access delay has been triggered.
+    iwm_delay_trigger: bool,
+
     /// The currently emulated Macintosh model
     model: MacModel,
 
@@ -169,6 +176,8 @@ where
         let mut bus = Self {
             cycles: 0,
             clock_16mhz: Default::default(),
+            delay_16mhz: 0,
+            iwm_delay_trigger: false,
             model,
 
             rom: Vec::from(rom),
@@ -617,6 +626,14 @@ where
     }
 }
 
+fn is_iwm_addr(addr: Address) -> bool {
+    match addr {
+        // IWM
+        0x00DF_E1FF..=0x00DF_FFFF => true,
+        _ => false,
+    }
+}
+
 impl<TRenderer> Bus<Address, Byte> for CompactMacBus<TRenderer>
 where
     TRenderer: Renderer,
@@ -628,6 +645,19 @@ where
     fn read(&mut self, addr: Address) -> BusResult<Byte> {
         if self.in_waitstate(addr) {
             return BusResult::WaitState;
+        }
+
+        if is_iwm_addr(addr) {
+            if self.iwm_delay_trigger {
+                // Reset trigger and allow the access to proceed
+                self.iwm_delay_trigger = false;
+            } else {
+                // Trigger the access delay
+                // FIXME: This should be += 1, but that doesn't work...
+                self.delay_16mhz += 8;
+                self.iwm_delay_trigger = true;
+                return BusResult::WaitState;
+            }
         }
 
         let val = if self.overlay {
@@ -648,6 +678,19 @@ where
     fn write(&mut self, addr: Address, val: Byte) -> BusResult<Byte> {
         if self.in_waitstate(addr) {
             return BusResult::WaitState;
+        }
+
+        if is_iwm_addr(addr) {
+            if self.iwm_delay_trigger {
+                // Reset trigger and allow the access to proceed
+                self.iwm_delay_trigger = false;
+            } else {
+                // Trigger the access delay
+                // FIXME: This should be += 1, but that doesn't work...
+                self.delay_16mhz += 8;
+                self.iwm_delay_trigger = true;
+                return BusResult::WaitState;
+            }
         }
 
         let written = if self.overlay {
@@ -733,6 +776,8 @@ where
             let ticks_16mhz = self.clock_16mhz.get_b_ticks(self.base_frequency);
             self.clock_16mhz
                 .subtract_b_ticks(ticks_16mhz, self.base_frequency);
+
+            self.delay_16mhz = self.delay_16mhz.saturating_sub(ticks_16mhz);
 
             self.eclock += ticks_16mhz;
             while self.eclock >= 10 {
