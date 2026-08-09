@@ -736,6 +736,9 @@ where
                 // FIXME: This should be += 1, but that doesn't work...
                 self.delay_16mhz += 8;
                 self.iwm_delay_trigger = true;
+                if self.speed == EmulatorSpeed::Accurate {
+                    log::info!("triggering iwm delay for read...");
+                }
                 return BusResult::WaitState;
             }
         }
@@ -779,6 +782,9 @@ where
                 // FIXME: This should be += 1, but that doesn't work...
                 self.delay_16mhz += 8;
                 self.iwm_delay_trigger = true;
+                if self.speed == EmulatorSpeed::Accurate {
+                    log::info!("triggering iwm delay for write...");
+                }
                 return BusResult::WaitState;
             }
         }
@@ -884,6 +890,10 @@ where
         let ticks_16mhz = self.clock_16mhz.get_b_ticks(self.base_frequency);
         self.clock_16mhz
             .subtract_b_ticks(ticks_16mhz, self.base_frequency);
+
+        if self.speed == EmulatorSpeed::Accurate && self.iwm_delay_trigger {
+            log::info!("ticks {}, ticks_16mhz {}", ticks, ticks_16mhz);
+        }
 
         self.delay_16mhz = self.delay_16mhz.saturating_sub(ticks_16mhz);
 

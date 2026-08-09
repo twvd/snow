@@ -532,6 +532,10 @@ where
 
     /// Tests for wait states on bus access
     fn in_waitstate(&mut self, addr: Address) -> bool {
+        if self.delay_16mhz > 0 {
+            return true;
+        }
+
         // DTACK (only for RAM region)
         if (0x0000_0000..=0x003F_FFFF).contains(&addr)
             && !self.video.in_blanking_period()
