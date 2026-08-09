@@ -495,6 +495,10 @@ where
 
     /// Tests for wait states on bus access
     fn in_waitstate(&mut self, addr: Address) -> bool {
+        if self.delay_16mhz > 0 {
+            return true;
+        }
+
         match addr {
             0x0000_0000..=0x009F_FFFF => self.normandy.waitstate(addr),
             _ => false,
@@ -547,7 +551,7 @@ where
             } else {
                 // Trigger the access delay
                 // FIXME: This should be += 1, but that doesn't work...
-                self.delay_16mhz += 16;
+                self.delay_16mhz += 8;
                 self.swim_delay_trigger = true;
                 return BusResult::WaitState;
             }
@@ -579,7 +583,7 @@ where
             } else {
                 // Trigger the access delay
                 // FIXME: This should be += 1, but that doesn't work...
-                self.delay_16mhz += 16;
+                self.delay_16mhz += 8;
                 self.swim_delay_trigger = true;
                 return BusResult::WaitState;
             }
