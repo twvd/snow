@@ -11,7 +11,6 @@ use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
-use crate::mac::macii::bus::DEFAULT_BUS_SPEED;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
@@ -31,8 +30,20 @@ use log::*;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
 use serde::{Deserialize, Serialize};
 
+/// Mac compact main clock speed
+/// (FIXME: should be 8,000,000? but other parts of the code don't seem to take this into account...)
+pub const DEFAULT_BUS_SPEED: Ticks = 16_000_000;
+
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
+
+/// The minimum number of 16 MHz cycles between IWM register accesses.
+///
+/// This is used to throttle the CPU when overclocking is enabled, preventing
+/// tight polling loops from detecting a timeout prematurely.
+///
+/// 9 appears to be the minimum. If set any lower, it fails. (FIXME: test for compact)
+const IWM_DELAY_CYCLES: Ticks = 9;
 
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
@@ -40,14 +51,11 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     cycles: Ticks,
 
     /// 16 MHz clock for components that cannot be overclocked (such as VIA and SWIM).
+    /// FIXME: should this be 8 MHz on compact?
     clock_16mhz: TickConverter<DEFAULT_BUS_SPEED>,
 
-    /// If greater than 0, hold a waitstate until this number of 16 MHz ticks elapse.
-    /// This throttles CPU for components that fail when overclocked (such as SWIM).
-    delay_16mhz: Ticks,
-
-    /// If true, the IWM access delay has been triggered.
-    iwm_delay_trigger: bool,
+    /// The number of 16 MHz cycles remaining until the IWM can be accessed again.
+    iwm_delay_cycles: Ticks,
 
     /// The currently emulated Macintosh model
     model: MacModel,
@@ -176,8 +184,7 @@ where
         let mut bus = Self {
             cycles: 0,
             clock_16mhz: Default::default(),
-            delay_16mhz: 0,
-            iwm_delay_trigger: false,
+            iwm_delay_cycles: 0,
             model,
 
             rom: Vec::from(rom),
@@ -532,8 +539,8 @@ where
 
     /// Tests for wait states on bus access
     fn in_waitstate(&mut self, addr: Address) -> bool {
-        if self.delay_16mhz > 0 {
-            return true;
+        if is_iwm_addr(addr) {
+            return self.iwm_delay_cycles > 0;
         }
 
         // DTACK (only for RAM region)
@@ -652,16 +659,7 @@ where
         }
 
         if is_iwm_addr(addr) {
-            if self.iwm_delay_trigger {
-                // Reset trigger and allow the access to proceed
-                self.iwm_delay_trigger = false;
-            } else {
-                // Trigger the access delay
-                // FIXME: This should be += 1, but that doesn't work...
-                self.delay_16mhz += 8;
-                self.iwm_delay_trigger = true;
-                return BusResult::WaitState;
-            }
+            self.iwm_delay_cycles += IWM_DELAY_CYCLES;
         }
 
         let val = if self.overlay {
@@ -685,16 +683,7 @@ where
         }
 
         if is_iwm_addr(addr) {
-            if self.iwm_delay_trigger {
-                // Reset trigger and allow the access to proceed
-                self.iwm_delay_trigger = false;
-            } else {
-                // Trigger the access delay
-                // FIXME: This should be += 1, but that doesn't work...
-                self.delay_16mhz += 8;
-                self.iwm_delay_trigger = true;
-                return BusResult::WaitState;
-            }
+            self.iwm_delay_cycles += IWM_DELAY_CYCLES;
         }
 
         let written = if self.overlay {
@@ -781,7 +770,7 @@ where
             self.clock_16mhz
                 .subtract_b_ticks(ticks_16mhz, self.base_frequency);
 
-            self.delay_16mhz = self.delay_16mhz.saturating_sub(ticks_16mhz);
+            self.iwm_delay_cycles = self.iwm_delay_cycles.saturating_sub(ticks_16mhz);
 
             self.eclock += ticks_16mhz;
             while self.eclock >= 10 {
@@ -871,7 +860,6 @@ where
             }
 
             self.scsi.tick(ticks, ctx)?;
-            // FIXME: Running swim at 16mhz doesn't fix floppies failing to boot...
             self.swim.tick(ticks_16mhz, ())?;
         }
 

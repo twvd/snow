@@ -34,6 +34,14 @@ use serde::{Deserialize, Serialize};
 /// Macintosh II main clock speed
 pub const DEFAULT_BUS_SPEED: Ticks = 16_000_000;
 
+/// The minimum number of 16 MHz cycles between IWM register accesses.
+///
+/// This is used to throttle the CPU when overclocking is enabled, preventing
+/// tight polling loops from detecting a timeout prematurely.
+///
+/// 9 appears to be the minimum. If set any lower, it fails.
+const IWM_DELAY_CYCLES: Ticks = 9;
+
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
@@ -56,12 +64,8 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     /// 16 MHz clock for components that cannot be overclocked (such as VIA and SWIM).
     clock_16mhz: TickConverter<DEFAULT_BUS_SPEED>,
 
-    /// If greater than 0, hold a waitstate until this number of 16 MHz ticks elapse.
-    /// This throttles CPU for components that fail when overclocked (such as SWIM).
-    delay_16mhz: Ticks,
-
-    /// If true, the IWM access delay has been triggered.
-    iwm_delay_trigger: bool,
+    /// The number of 16 MHz cycles remaining until the IWM can be accessed again.
+    iwm_delay_cycles: Ticks,
 
     /// The currently emulated Macintosh model
     model: MacModel,
@@ -225,8 +229,7 @@ where
         let mut bus = Self {
             cycles: 0,
             clock_16mhz: Default::default(),
-            delay_16mhz: 0,
-            iwm_delay_trigger: false,
+            iwm_delay_cycles: 0,
             model,
 
             rom: Vec::from(rom),
@@ -645,8 +648,12 @@ where
     }
 
     /// Tests for wait states on bus access
-    fn in_waitstate(&self, _addr: Address) -> bool {
-        self.delay_16mhz > 0
+    fn in_waitstate(&self, addr: Address) -> bool {
+        if is_iwm_addr(addr) {
+            return self.iwm_delay_cycles > 0;
+        }
+
+        false
     }
 
     /// Programmer's key pressed
@@ -728,19 +735,7 @@ where
         }
 
         if is_iwm_addr(addr) {
-            if self.iwm_delay_trigger {
-                // Reset trigger and allow the access to proceed
-                self.iwm_delay_trigger = false;
-            } else {
-                // Trigger the access delay
-                // FIXME: This should be += 1, but that doesn't work...
-                self.delay_16mhz += 8;
-                self.iwm_delay_trigger = true;
-                if self.speed == EmulatorSpeed::Accurate {
-                    log::info!("triggering iwm delay for read...");
-                }
-                return BusResult::WaitState;
-            }
+            self.iwm_delay_cycles += IWM_DELAY_CYCLES;
         }
 
         let val = if AMU && self.amu_active {
@@ -774,19 +769,7 @@ where
         }
 
         if is_iwm_addr(addr) {
-            if self.iwm_delay_trigger {
-                // Reset trigger and allow the access to proceed
-                self.iwm_delay_trigger = false;
-            } else {
-                // Trigger the access delay
-                // FIXME: This should be += 1, but that doesn't work...
-                self.delay_16mhz += 8;
-                self.iwm_delay_trigger = true;
-                if self.speed == EmulatorSpeed::Accurate {
-                    log::info!("triggering iwm delay for write...");
-                }
-                return BusResult::WaitState;
-            }
+            self.iwm_delay_cycles += IWM_DELAY_CYCLES;
         }
 
         let written = if AMU && self.amu_active {
@@ -891,11 +874,7 @@ where
         self.clock_16mhz
             .subtract_b_ticks(ticks_16mhz, self.base_frequency);
 
-        if self.speed == EmulatorSpeed::Accurate && self.iwm_delay_trigger {
-            log::info!("ticks {}, ticks_16mhz {}", ticks, ticks_16mhz);
-        }
-
-        self.delay_16mhz = self.delay_16mhz.saturating_sub(ticks_16mhz);
+        self.iwm_delay_cycles = self.iwm_delay_cycles.saturating_sub(ticks_16mhz);
 
         if AMU {
             self.amu_active = self.via2.ddrb.vfc3() && !self.via2.b_out.vfc3();
@@ -975,7 +954,6 @@ where
         self.via2.ifr.set_scsi_drq(self.scsi.get_drq());
 
         self.swim.intdrive = self.via1.a_out.drivesel();
-        // FIXME: Running swim at 16mhz doesn't fix floppies failing to boot...
         self.swim.tick(ticks_16mhz, ())?;
 
         Ok(1)

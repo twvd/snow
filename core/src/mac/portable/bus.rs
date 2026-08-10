@@ -13,7 +13,6 @@ use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::asc::Asc;
-use crate::mac::macii::bus::DEFAULT_BUS_SPEED;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
@@ -30,8 +29,19 @@ use log::*;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
 use serde::{Deserialize, Serialize};
 
+/// Mac portable main clock speed
+pub const DEFAULT_BUS_SPEED: Ticks = 16_000_000;
+
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
+
+/// The minimum number of 16 MHz cycles between SWIM register accesses.
+///
+/// This is used to throttle the CPU when overclocking is enabled, preventing
+/// tight polling loops from detecting a timeout prematurely.
+///
+/// 9 appears to be the minimum. If set any lower, it fails. (FIXME: test for portable)
+const SWIM_DELAY_CYCLES: Ticks = 9;
 
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
@@ -41,12 +51,8 @@ pub struct MacPortableBus<TRenderer: Renderer> {
     /// 16 MHz clock for components that cannot be overclocked (such as VIA and SWIM).
     clock_16mhz: TickConverter<DEFAULT_BUS_SPEED>,
 
-    /// If greater than 0, hold a waitstate until this number of 16 MHz ticks elapse.
-    /// This throttles CPU for components that fail when overclocked (such as SWIM).
-    delay_16mhz: Ticks,
-
-    /// If true, the SWIM access delay has been triggered.
-    swim_delay_trigger: bool,
+    /// The number of 16 MHz cycles remaining until the SWIM can be accessed again.
+    swim_delay_cycles: Ticks,
 
     /// The currently emulated Macintosh model
     model: MacModel,
@@ -147,8 +153,7 @@ where
         let mut bus = Self {
             cycles: 0,
             clock_16mhz: Default::default(),
-            delay_16mhz: 0,
-            swim_delay_trigger: false,
+            swim_delay_cycles: 0,
             model,
 
             rom_mask: rom.len() - 1,
@@ -495,8 +500,8 @@ where
 
     /// Tests for wait states on bus access
     fn in_waitstate(&mut self, addr: Address) -> bool {
-        if self.delay_16mhz > 0 {
-            return true;
+        if is_swim_addr(addr) {
+            return self.swim_delay_cycles > 0;
         }
 
         match addr {
@@ -545,16 +550,7 @@ where
         }
 
         if is_swim_addr(addr) {
-            if self.swim_delay_trigger {
-                // Reset trigger and allow the access to proceed
-                self.swim_delay_trigger = false;
-            } else {
-                // Trigger the access delay
-                // FIXME: This should be += 1, but that doesn't work...
-                self.delay_16mhz += 8;
-                self.swim_delay_trigger = true;
-                return BusResult::WaitState;
-            }
+            self.swim_delay_cycles += SWIM_DELAY_CYCLES;
         }
 
         let val = if self.overlay {
@@ -577,16 +573,7 @@ where
         }
 
         if is_swim_addr(addr) {
-            if self.swim_delay_trigger {
-                // Reset trigger and allow the access to proceed
-                self.swim_delay_trigger = false;
-            } else {
-                // Trigger the access delay
-                // FIXME: This should be += 1, but that doesn't work...
-                self.delay_16mhz += 8;
-                self.swim_delay_trigger = true;
-                return BusResult::WaitState;
-            }
+            self.swim_delay_cycles += SWIM_DELAY_CYCLES;
         }
 
         let written = if self.overlay {
@@ -677,7 +664,7 @@ where
         self.clock_16mhz
             .subtract_b_ticks(ticks_16mhz, self.base_frequency);
 
-        self.delay_16mhz = self.delay_16mhz.saturating_sub(ticks_16mhz);
+        self.swim_delay_cycles = self.swim_delay_cycles.saturating_sub(ticks_16mhz);
 
         self.via_clock += ticks_16mhz;
         while self.via_clock >= 20 {
@@ -716,7 +703,6 @@ where
         }
 
         self.swim.intdrive = self.via.b_out.drivesel();
-        // FIXME: Running swim at 16mhz doesn't fix floppies failing to boot...
         self.swim.tick(ticks_16mhz, ())?;
 
         Ok(ticks)
