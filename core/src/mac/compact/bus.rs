@@ -31,8 +31,7 @@ use num_traits::{FromPrimitive, PrimInt, ToBytes};
 use serde::{Deserialize, Serialize};
 
 /// Mac compact main clock speed
-/// (FIXME: should be 8,000,000? but other parts of the code don't seem to take this into account...)
-pub const DEFAULT_BUS_SPEED: Ticks = 16_000_000;
+pub const DEFAULT_BUS_SPEED: Ticks = 8_000_000;
 
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
@@ -50,11 +49,10 @@ const IWM_DELAY_CYCLES: Ticks = 9;
 pub struct CompactMacBus<TRenderer: Renderer> {
     cycles: Ticks,
 
-    /// 16 MHz clock for components that cannot be overclocked (such as VIA and SWIM).
-    /// FIXME: should this be 8 MHz on compact?
-    clock_16mhz: TickConverter<DEFAULT_BUS_SPEED>,
+    /// 8 MHz clock for components that cannot be overclocked (such as VIA and SWIM).
+    clock_8mhz: TickConverter<DEFAULT_BUS_SPEED>,
 
-    /// The number of 16 MHz cycles remaining until the IWM can be accessed again.
+    /// The number of 8 MHz cycles remaining until the IWM can be accessed again.
     iwm_delay_cycles: Ticks,
 
     /// The currently emulated Macintosh model
@@ -183,7 +181,7 @@ where
 
         let mut bus = Self {
             cycles: 0,
-            clock_16mhz: Default::default(),
+            clock_8mhz: Default::default(),
             iwm_delay_cycles: 0,
             model,
 
@@ -765,14 +763,14 @@ where
 
             self.cycles += ticks;
 
-            self.clock_16mhz.add_a_ticks(ticks);
-            let ticks_16mhz = self.clock_16mhz.get_b_ticks(self.base_frequency);
-            self.clock_16mhz
-                .subtract_b_ticks(ticks_16mhz, self.base_frequency);
+            self.clock_8mhz.add_a_ticks(ticks);
+            let ticks_8mhz = self.clock_8mhz.get_b_ticks(self.base_frequency);
+            self.clock_8mhz
+                .subtract_b_ticks(ticks_8mhz, self.base_frequency);
 
-            self.iwm_delay_cycles = self.iwm_delay_cycles.saturating_sub(ticks_16mhz);
+            self.iwm_delay_cycles = self.iwm_delay_cycles.saturating_sub(ticks_8mhz);
 
-            self.eclock += ticks_16mhz;
+            self.eclock += ticks_8mhz;
             while self.eclock >= 10 {
                 // The E Clock is roughly 1/10th of the CPU clock
                 // TODO ticks when VPA is asserted
@@ -860,7 +858,7 @@ where
             }
 
             self.scsi.tick(ticks, ctx)?;
-            self.swim.tick(ticks_16mhz, ())?;
+            self.swim.tick(ticks_8mhz, ())?;
         }
 
         Ok(ticks)
