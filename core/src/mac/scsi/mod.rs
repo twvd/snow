@@ -28,6 +28,9 @@ pub const ASC_INVALID_FIELD_IN_CDB: u16 = 0x2400;
 pub const ASC_NOT_READY_TO_READY_CHANGE: u16 = 0x2800;
 pub const ASC_MEDIUM_NOT_PRESENT: u16 = 0x3A00;
 pub const ASC_ILLEGAL_MODE_FOR_THIS_TRACK: u16 = 0x6400;
+/// Toolbox vendor-specific: too many files to list. `OPEN_RETRO_SCSI_TOO_MANY_FILES`
+/// in BlueSCSI_Toolbox.h, set as a bare ASCQ, so ASC stays 0x00.
+pub const ASC_TOO_MANY_FILES: u16 = 0x0001;
 
 const fn scsi_cmd_len(cmdnum: u8) -> Option<usize> {
     match cmdnum {

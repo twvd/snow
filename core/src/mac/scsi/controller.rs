@@ -609,12 +609,21 @@ impl ScsiController {
         let result = match cmd_op {
             0xD0..=0xD6 | 0xD9 => {
                 let toolbox_devices = self.toolbox_device_map();
-                Ok(self.toolbox.handle_command(
+                let r = self.toolbox.handle_command(
                     cmd,
                     outdata,
                     &mut self.scsi_debug,
                     &toolbox_devices,
-                ))
+                );
+                // Toolbox commands are bus-global here, but the firmware
+                // reports through scsiDev.target->sense, which is where a
+                // client's REQUEST SENSE looks.
+                if let Some((key, asc)) = self.toolbox.take_pending_sense()
+                    && let Some(target) = self.targets[self.sel_id].as_mut()
+                {
+                    target.common().set_cc(key, asc);
+                }
+                Ok(r)
             }
             _ => {
                 let Some(target) = self.targets[self.sel_id].as_mut() else {

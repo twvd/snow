@@ -13,10 +13,16 @@ use std::path::PathBuf;
 
 use log::*;
 
-use super::{STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult};
+use super::{
+    ASC_TOO_MANY_FILES, CC_KEY_ILLEGAL_REQUEST, STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult,
+};
 use crate::util::mac::{macroman_to_utf8, utf8_to_macroman};
 
 const MAX_FILE_PATH: usize = 32; // Max Macintosh File name length
+
+/// Maximum entries in a Toolbox directory listing.
+/// `MAX_FILE_LISTING_FILES` in BlueSCSI_Toolbox.h.
+pub(crate) const MAX_FILE_LISTING_FILES: usize = 100;
 
 /// 0xD9 subcommands
 const TOOLBOX_LIST_DEVICES: u8 = 0x00;
@@ -58,6 +64,9 @@ pub(crate) fn toolbox_file_entry(
 pub struct BlueSCSI {
     shared_dir: Option<PathBuf>,
     file: Option<File>,
+
+    /// Sense for the controller to hand to the addressed target.
+    pending_sense: Option<(u8, u16)>,
 }
 
 impl BlueSCSI {
@@ -65,7 +74,12 @@ impl BlueSCSI {
         Self {
             shared_dir,
             file: None,
+            pending_sense: None,
         }
+    }
+
+    pub(crate) fn take_pending_sense(&mut self) -> Option<(u8, u16)> {
+        self.pending_sense.take()
     }
 
     pub(crate) fn handle_command(
@@ -78,6 +92,7 @@ impl BlueSCSI {
         if *debug_enabled {
             debug!("BlueSCSI command: {:02X?}", cmd);
         }
+        self.pending_sense = None;
         match cmd[0] {
             0xD0 => self.list_files(),
             0xD1 => self.get_file(cmd),
@@ -105,11 +120,20 @@ impl BlueSCSI {
         }
     }
 
-    fn count_files(&self) -> ScsiCmdResult {
+    fn count_files(&mut self) -> ScsiCmdResult {
         if self.shared_dir.is_none() {
             return ScsiCmdResult::Status(STATUS_CHECK_CONDITION);
         }
         let entries = self.get_sorted_entries();
+        if entries.len() > MAX_FILE_LISTING_FILES {
+            error!(
+                "Toolbox COUNT_FILES: {} files in shared folder, maximum is {}",
+                entries.len(),
+                MAX_FILE_LISTING_FILES
+            );
+            self.pending_sense = Some((CC_KEY_ILLEGAL_REQUEST, ASC_TOO_MANY_FILES));
+            return ScsiCmdResult::Status(STATUS_CHECK_CONDITION);
+        }
         ScsiCmdResult::DataIn(vec![entries.len() as u8])
     }
 
@@ -146,7 +170,7 @@ impl BlueSCSI {
         let mut data = Vec::new();
         let mut index = 0;
 
-        for entry in entries {
+        for entry in &entries {
             if let Some(name_str) = entry.file_name().to_str() {
                 let metadata = entry.metadata().ok();
                 let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
@@ -154,6 +178,11 @@ impl BlueSCSI {
 
                 data.extend_from_slice(&toolbox_file_entry(index, is_dir, name_str, size));
                 index += 1;
+                // Firmware truncates here rather than erroring; COUNT_FILES
+                // is where the overflow is reported.
+                if usize::from(index) >= MAX_FILE_LISTING_FILES {
+                    break;
+                }
             }
         }
         ScsiCmdResult::DataIn(data)
@@ -309,6 +338,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::mac::scsi::{ASC_TOO_MANY_FILES, CC_KEY_ILLEGAL_REQUEST};
 
     const NO_DEVICES: [u8; 8] = [0xFF; 8];
 
@@ -330,6 +360,102 @@ mod tests {
     impl Drop for TempDir {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn cmd(tb: &mut BlueSCSI, op: u8) -> ScsiCmdResult {
+        let mut debug = false;
+        tb.handle_command(
+            &[op, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            None,
+            &mut debug,
+            &NO_DEVICES,
+        )
+    }
+
+    fn count_files(tb: &mut BlueSCSI) -> Result<u8, u8> {
+        match cmd(tb, 0xD2) {
+            ScsiCmdResult::DataIn(d) => {
+                assert_eq!(d.len(), 1, "COUNT_FILES returns a single byte");
+                Ok(d[0])
+            }
+            ScsiCmdResult::Status(s) => Err(s),
+            ScsiCmdResult::DataOut(_) => panic!("COUNT_FILES asked for data out"),
+        }
+    }
+
+    fn list_files(tb: &mut BlueSCSI) -> Vec<u8> {
+        match cmd(tb, 0xD0) {
+            ScsiCmdResult::DataIn(d) => d,
+            _ => panic!("LIST_FILES returned no data"),
+        }
+    }
+
+    #[test]
+    fn count_files_at_limit_succeeds() {
+        let dir = TempDir::with_files("count_at_limit", MAX_FILE_LISTING_FILES);
+        let mut tb = BlueSCSI::new(Some(dir.0.clone()));
+
+        assert_eq!(count_files(&mut tb), Ok(MAX_FILE_LISTING_FILES as u8));
+        assert_eq!(tb.take_pending_sense(), None);
+    }
+
+    #[test]
+    fn count_files_over_limit_reports_too_many_files() {
+        for n in [MAX_FILE_LISTING_FILES + 1, 256, 300] {
+            let dir = TempDir::with_files(&format!("count_over_{}", n), n);
+            let mut tb = BlueSCSI::new(Some(dir.0.clone()));
+
+            assert_eq!(
+                count_files(&mut tb),
+                Err(STATUS_CHECK_CONDITION),
+                "{} files should be rejected, not counted",
+                n
+            );
+            assert_eq!(
+                tb.take_pending_sense(),
+                Some((CC_KEY_ILLEGAL_REQUEST, ASC_TOO_MANY_FILES))
+            );
+        }
+    }
+
+    #[test]
+    fn count_files_clears_sense_from_a_previous_command() {
+        let dir = TempDir::with_files("sense_cleared", MAX_FILE_LISTING_FILES + 1);
+        let mut tb = BlueSCSI::new(Some(dir.0.clone()));
+
+        assert_eq!(count_files(&mut tb), Err(STATUS_CHECK_CONDITION));
+        assert!(tb.take_pending_sense().is_some());
+
+        list_files(&mut tb);
+        assert_eq!(tb.take_pending_sense(), None);
+    }
+
+    /// 256 files used to overflow the u8 entry index.
+    #[test]
+    fn list_files_truncates_at_the_limit() {
+        for n in [MAX_FILE_LISTING_FILES + 1, 256, 300] {
+            let dir = TempDir::with_files(&format!("list_over_{}", n), n);
+            let mut tb = BlueSCSI::new(Some(dir.0.clone()));
+
+            let data = list_files(&mut tb);
+            assert_eq!(
+                data.len(),
+                MAX_FILE_LISTING_FILES * TOOLBOX_ENTRY_SIZE,
+                "{} files should list as {} entries",
+                n,
+                MAX_FILE_LISTING_FILES
+            );
+
+            for i in 0..MAX_FILE_LISTING_FILES {
+                let entry = &data[i * TOOLBOX_ENTRY_SIZE..(i + 1) * TOOLBOX_ENTRY_SIZE];
+                assert_eq!(entry[0], i as u8);
+                let end = entry[2..35].iter().position(|&b| b == 0).unwrap();
+                assert_eq!(
+                    std::str::from_utf8(&entry[2..2 + end]).unwrap(),
+                    format!("f{:04}.txt", i)
+                );
+            }
         }
     }
 
@@ -381,5 +507,13 @@ mod tests {
     fn send_file_multiple_chunks_appends() {
         let dir = TempDir::with_files("send_multi", 0);
         assert_eq!(send_file(&dir.0, "many.bin", 5, 2).len(), 5 * 2 * 512);
+    }
+
+    #[test]
+    fn list_files_under_the_limit_is_complete() {
+        let dir = TempDir::with_files("list_under", 3);
+        let mut tb = BlueSCSI::new(Some(dir.0.clone()));
+
+        assert_eq!(list_files(&mut tb).len(), 3 * TOOLBOX_ENTRY_SIZE);
     }
 }
