@@ -237,7 +237,10 @@ impl BlueSCSI {
 
         if let Some(file) = &mut self.file {
             if let Some(data) = outdata {
-                if file.seek(SeekFrom::Start(offset as u64 * 512)).is_ok()
+                // Offset is relative to the end of the last write, matching
+                // gFile.seekCur(offset * 512) in BlueSCSI_Toolbox.cpp. Seeking
+                // absolutely truncates every upload past the first block.
+                if file.seek(SeekFrom::Current(offset as i64 * 512)).is_ok()
                     && file.write_all(&data[..bytes_sent as usize]).is_ok()
                 {
                     return ScsiCmdResult::Status(STATUS_GOOD);
@@ -298,5 +301,85 @@ impl BlueSCSI {
                 ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    const NO_DEVICES: [u8; 8] = [0xFF; 8];
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        /// Names sort lexically in creation order, matching listing order.
+        fn with_files(tag: &str, n: usize) -> Self {
+            let dir = std::env::temp_dir().join(format!("snow_toolbox_{}", tag));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            for i in 0..n {
+                fs::write(dir.join(format!("f{:04}.txt", i)), b"x").unwrap();
+            }
+            Self(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// SEND_FILE_PREP, then `chunks` blocks of `blocks_per_chunk` * 512 bytes,
+    /// then SEND_FILE_END. Returns what landed on disk.
+    fn send_file(dir: &Path, name: &str, chunks: usize, blocks_per_chunk: u8) -> Vec<u8> {
+        let mut tb = BlueSCSI::new(Some(dir.to_path_buf()));
+        let mut debug = false;
+
+        let mut prep = vec![0u8; 33];
+        prep[..name.len()].copy_from_slice(name.as_bytes());
+        tb.handle_command(
+            &[0xD3, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            Some(&prep),
+            &mut debug,
+            &NO_DEVICES,
+        );
+
+        let mut expected = Vec::new();
+        for c in 0..chunks {
+            let payload = vec![c as u8 + 1; blocks_per_chunk as usize * 512];
+            expected.extend_from_slice(&payload);
+            // Clients send offset 0 and rely on the append that produces.
+            let cdb = [0xD4, 0, 0, 0, 0, 0, blocks_per_chunk, 0, 0, 0];
+            tb.handle_command(&cdb, Some(&payload), &mut debug, &NO_DEVICES);
+        }
+        tb.handle_command(
+            &[0xD5, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            None,
+            &mut debug,
+            &NO_DEVICES,
+        );
+
+        let written = fs::read(dir.join(name)).unwrap();
+        assert_eq!(written.len(), expected.len(), "file length");
+        assert_eq!(written, expected, "file contents");
+        written
+    }
+
+    #[test]
+    fn send_file_single_chunk() {
+        let dir = TempDir::with_files("send_single", 0);
+        assert_eq!(send_file(&dir.0, "one.bin", 1, 4).len(), 4 * 512);
+    }
+
+    /// The absolute seek this replaced rewound to byte 0 on every chunk, so an
+    /// upload larger than one chunk ended up as just its last chunk.
+    #[test]
+    fn send_file_multiple_chunks_appends() {
+        let dir = TempDir::with_files("send_multi", 0);
+        assert_eq!(send_file(&dir.0, "many.bin", 5, 2).len(), 5 * 2 * 512);
     }
 }
