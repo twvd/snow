@@ -1,11 +1,14 @@
 //! BlueSCSI Toolbox vendor-specific commands
 //!
-//! This is an implementation of th BlueSCSI Toolbox v0 commands suitable for the Snow emulator.
-//! CD switching is not implemented as the emulator can do this easily via the UI.
+//! This is an implementation of the BlueSCSI Toolbox v0 commands suitable for the Snow emulator.
+//! The CD switching commands (LIST_CDS/SET_NEXT_CD/COUNT_CDS) live in `scsi::cdrom`, as the folder
+//! of images belongs to the drive rather than to the bus.
 //! API Docs: https://github.com/BlueSCSI/BlueSCSI-v2/wiki/Toolbox-Developer-Docs
-//! Note: THere are some limitations due to RAM/Flash space on the BlueSCSI that are not a concern
-//!  on a more powerful machines. We would like to use Snow as a test/dev for the BlueSCSI toolbox.
-//!  We hope to prototype v1 of the Toolbox API in Snow first, then port it back to BlueSCSI's Pico.
+//! Note: There are some limitations due to RAM/Flash space on the BlueSCSI that are not a concern
+//!  on more powerful machines. Snow still enforces the ones that are part of the wire protocol,
+//!  such as the 100-entry listing limit, so a client developed here behaves the same on hardware.
+//!  We would like to use Snow as a test/dev for the BlueSCSI toolbox. We hope to prototype v1 of
+//!  the Toolbox API in Snow first, then port it back to BlueSCSI's Pico.
 
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
