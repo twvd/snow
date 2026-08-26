@@ -26,11 +26,11 @@ use crate::{
 
 use super::{
     ASC_INVALID_FIELD_IN_CDB, ASC_MEDIUM_NOT_PRESENT, ASC_NOT_READY_TO_READY_CHANGE,
-    CC_KEY_ILLEGAL_REQUEST, CC_KEY_MEDIUM_ERROR, CC_KEY_UNIT_ATTENTION, STATUS_CHECK_CONDITION,
-    STATUS_GOOD, ScsiCmdResult,
+    ASC_TOO_MANY_FILES, CC_KEY_ILLEGAL_REQUEST, CC_KEY_MEDIUM_ERROR, CC_KEY_UNIT_ATTENTION,
+    STATUS_CHECK_CONDITION, STATUS_GOOD, ScsiCmdResult,
     disk_image::{DiskImage, FileDiskImage},
     target::{ScsiTarget, ScsiTargetEvent, ScsiTargetType},
-    toolbox::toolbox_file_entry,
+    toolbox::{MAX_FILE_LISTING_FILES, toolbox_file_entry},
 };
 
 // CD-ROM protocol Documentation:
@@ -1529,7 +1529,8 @@ impl ScsiTarget for ScsiTargetCdrom {
                     self.image_dir
                 );
                 let mut data = Vec::new();
-                for (i, path) in images.iter().enumerate().take(u8::MAX as usize) {
+                // Firmware truncates here; COUNT_CDS reports the overflow.
+                for (i, path) in images.iter().enumerate().take(MAX_FILE_LISTING_FILES) {
                     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
                     log::debug!("  CD[{}] = '{}' ({} bytes)", i, name, size);
@@ -1567,9 +1568,20 @@ impl ScsiTarget for ScsiTargetCdrom {
             }
             // BlueSCSI Toolbox: COUNT CDS (number of images in the managed folder)
             0xDA => {
-                let count = self.folder_images().len().min(u8::MAX as usize) as u8;
+                let count = self.folder_images().len();
+                if count > MAX_FILE_LISTING_FILES {
+                    log::error!(
+                        "Toolbox COUNT_CDS: {} images in {:?}, maximum is {}",
+                        count,
+                        self.image_dir,
+                        MAX_FILE_LISTING_FILES
+                    );
+                    self.common
+                        .set_cc(CC_KEY_ILLEGAL_REQUEST, ASC_TOO_MANY_FILES);
+                    return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                }
                 log::debug!("Toolbox COUNT_CDS: {}", count);
-                Ok(ScsiCmdResult::DataIn(vec![count]))
+                Ok(ScsiCmdResult::DataIn(vec![count as u8]))
             }
             _ => {
                 log::error!("Unknown command {:02X}h", cmd[0]);
@@ -1826,5 +1838,50 @@ mod tests {
         assert_eq!(names, ["Alpha.iso", "Beta.toast", "Gamma.cue"]);
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn count_and_list_cds_honor_the_file_listing_limit() {
+        for n in [MAX_FILE_LISTING_FILES, MAX_FILE_LISTING_FILES + 1, 300] {
+            let dir = temp_dir(&format!("limit_{}", n));
+            for i in 0..n {
+                write_file(&dir, &format!("cd{:04}.iso", i), 1);
+            }
+
+            let mut cd = ScsiTargetCdrom::new(None);
+            cd.set_image_dir(Some(dir.clone()));
+
+            let count = cd
+                .specific_cmd(&[0xDAu8, 0, 0, 0, 0, 0, 0, 0, 0, 0], None)
+                .unwrap();
+            if n > MAX_FILE_LISTING_FILES {
+                assert!(
+                    matches!(count, ScsiCmdResult::Status(STATUS_CHECK_CONDITION)),
+                    "{} images should be rejected, got {}",
+                    n,
+                    other_status(&count)
+                );
+                assert_eq!(
+                    cd.common.req_sense(),
+                    (CC_KEY_ILLEGAL_REQUEST, ASC_TOO_MANY_FILES)
+                );
+            } else {
+                match count {
+                    ScsiCmdResult::DataIn(d) => assert_eq!(d, vec![n as u8]),
+                    other => panic!("expected a count, got {}", other_status(&other)),
+                }
+            }
+
+            let listed = match cd
+                .specific_cmd(&[0xD7u8, 0, 0, 0, 0, 0, 0, 0, 0, 0], None)
+                .unwrap()
+            {
+                ScsiCmdResult::DataIn(d) => d,
+                other => panic!("LIST_CDS returned {}", other_status(&other)),
+            };
+            assert_eq!(listed.len(), MAX_FILE_LISTING_FILES.min(n) * 40);
+
+            fs::remove_dir_all(&dir).unwrap();
+        }
     }
 }
