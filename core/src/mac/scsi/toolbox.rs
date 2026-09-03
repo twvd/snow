@@ -63,6 +63,20 @@ pub(crate) fn toolbox_file_entry(
     entry
 }
 
+/// Reads until `buf` is full or the file ends, returning the byte count.
+/// A single `read()` is allowed to come up short, which would end the guest's
+/// transfer early on a file the guest still has more of.
+fn read_fully(file: &mut File, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut total = 0;
+    while total < buf.len() {
+        match file.read(&mut buf[total..])? {
+            0 => break,
+            n => total += n,
+        }
+    }
+    Ok(total)
+}
+
 #[derive(Default)]
 pub struct BlueSCSI {
     shared_dir: Option<PathBuf>,
@@ -214,12 +228,26 @@ impl BlueSCSI {
         }
 
         if let Some(file) = &mut self.file {
+            let byte_offset = offset * block_size;
+            let file_total = file.metadata().map(|m| m.len()).unwrap_or(0);
+            // Cap to what is left of the file, as onGetFile10() does. Reading
+            // past the end would otherwise leave the guest waiting on bytes
+            // that never arrive.
+            let bytes_requested = bytes_requested.min(file_total.saturating_sub(byte_offset));
+
             let mut buffer = vec![0; bytes_requested as usize];
-            if file.seek(SeekFrom::Start(offset * block_size)).is_ok()
-                && let Ok(bytes_read) = file.read(&mut buffer)
+            if file.seek(SeekFrom::Start(byte_offset)).is_ok()
+                && let Ok(bytes_read) = read_fully(file, &mut buffer)
             {
                 buffer.truncate(bytes_read);
-                if bytes_read == 0 {
+                // Close as soon as the transfer reaches the end of the file,
+                // matching gFile.close() in onGetFile10(). Holding the file
+                // open until the next transfer starts keeps a handle on the
+                // shared folder that the host cannot always overwrite: on
+                // Windows a delete-and-recreate leaves the old file
+                // delete-pending until we let go, so the guest keeps seeing
+                // the copy it already had.
+                if byte_offset + bytes_read as u64 >= file_total {
                     self.file = None;
                 }
                 return ScsiCmdResult::DataIn(buffer);
@@ -518,5 +546,286 @@ mod tests {
         let mut tb = BlueSCSI::new(Some(dir.0.clone()));
 
         assert_eq!(list_files(&mut tb).len(), 3 * TOOLBOX_ENTRY_SIZE);
+    }
+}
+
+#[cfg(test)]
+mod fd_lifetime_tests {
+    use super::*;
+
+    const CHUNK: usize = 16; // blocks_per_xfer in SCSITransfer
+
+    fn cdb_get(index: u8, offset: u32, blocks: u8) -> [u8; 10] {
+        let o = offset.to_be_bytes();
+        [0xD1, index, o[0], o[1], o[2], o[3], blocks, 0, 0, 0]
+    }
+
+    fn req(tb: &mut BlueSCSI, cdb: &[u8]) -> Option<Vec<u8>> {
+        let mut dbg = false;
+        match tb.handle_command(cdb, None, &mut dbg, &[0xFF; 8]) {
+            ScsiCmdResult::DataIn(d) => Some(d),
+            _ => None,
+        }
+    }
+
+    /// Mimics SCSITransfer's transferFile(): 16x4K chunks from offset 0,
+    /// taking min(remaining, 64K) of each response, `size` = the size the
+    /// client believes the file has (i.e. from its cached listing).
+    fn client_download(tb: &mut BlueSCSI, index: u8, size: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut x: u32 = 0;
+        let blocks = size.div_ceil(4096);
+        while blocks > x as usize {
+            let Some(d) = req(tb, &cdb_get(index, x, CHUNK as u8)) else {
+                break;
+            };
+            let want = (size - out.len()).min(CHUNK * 4096);
+            let got = d.len().min(want);
+            if got == 0 {
+                break;
+            }
+            out.extend_from_slice(&d[..got]);
+            x += got.div_ceil(4096) as u32;
+        }
+        out
+    }
+
+    struct Dir(PathBuf);
+    impl Dir {
+        fn new(tag: &str) -> Self {
+            let d = std::env::temp_dir().join(format!("snow_fd_{}", tag));
+            let _ = fs::remove_dir_all(&d);
+            fs::create_dir_all(&d).unwrap();
+            Self(d)
+        }
+        fn write(&self, name: &str, byte: u8, len: usize) {
+            fs::write(self.0.join(name), vec![byte; len]).unwrap();
+        }
+        /// Replace via a temp file + rename: a NEW inode, like a host-side
+        /// copy or "save as" over the old file.
+        fn replace(&self, name: &str, byte: u8, len: usize) {
+            let tmp = self.0.join(format!(".{}.tmp", name));
+            fs::write(&tmp, vec![byte; len]).unwrap();
+            fs::rename(&tmp, self.0.join(name)).unwrap();
+        }
+    }
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn assert_all(data: &[u8], byte: u8, len: usize, what: &str) {
+        assert_eq!(data.len(), len, "{}: length", what);
+        assert!(
+            data.iter().all(|&b| b == byte),
+            "{}: expected all {:02X}, got {:02X?}...",
+            what,
+            byte,
+            &data[..data.len().min(8)]
+        );
+    }
+
+    /// Two complete transfers of the same file, overwritten in place between.
+    #[test]
+    fn overwrite_in_place_between_transfers() {
+        let d = Dir::new("inplace");
+        d.write("a.bin", b'A', 200_000);
+        let mut tb = BlueSCSI::new(Some(d.0.clone()));
+
+        assert_all(
+            &client_download(&mut tb, 0, 200_000),
+            b'A',
+            200_000,
+            "first",
+        );
+        d.write("a.bin", b'B', 200_000);
+        assert_all(
+            &client_download(&mut tb, 0, 200_000),
+            b'B',
+            200_000,
+            "second",
+        );
+    }
+
+    /// Same, but the host replaces the file with a new inode (mv/rename).
+    #[test]
+    fn replace_inode_between_transfers() {
+        let d = Dir::new("inode");
+        d.write("a.bin", b'A', 200_000);
+        let mut tb = BlueSCSI::new(Some(d.0.clone()));
+
+        assert_all(
+            &client_download(&mut tb, 0, 200_000),
+            b'A',
+            200_000,
+            "first",
+        );
+        d.replace("a.bin", b'B', 200_000);
+        assert_all(
+            &client_download(&mut tb, 0, 200_000),
+            b'B',
+            200_000,
+            "second",
+        );
+    }
+
+    /// The client abandons a transfer partway (error, user cancel), leaving
+    /// Snow's fd open, then the host overwrites and the client retries.
+    #[test]
+    fn abandoned_transfer_then_overwrite() {
+        let d = Dir::new("abandon");
+        d.write("a.bin", b'A', 200_000);
+        let mut tb = BlueSCSI::new(Some(d.0.clone()));
+
+        // one chunk only, then give up
+        let first = req(&mut tb, &cdb_get(0, 0, CHUNK as u8)).unwrap();
+        assert_eq!(first[0], b'A');
+
+        d.write("a.bin", b'B', 200_000);
+        assert_all(
+            &client_download(&mut tb, 0, 200_000),
+            b'B',
+            200_000,
+            "retry",
+        );
+    }
+
+    /// Client's cached size is stale-small (host file grew). Snow should still
+    /// serve the NEW bytes for what is asked.
+    #[test]
+    fn stale_small_size_still_serves_new_bytes() {
+        let d = Dir::new("stale_small");
+        d.write("a.bin", b'A', 10);
+        let mut tb = BlueSCSI::new(Some(d.0.clone()));
+
+        assert_all(&client_download(&mut tb, 0, 10), b'A', 10, "first");
+        d.write("a.bin", b'B', 100);
+        assert_all(
+            &client_download(&mut tb, 0, 10),
+            b'B',
+            10,
+            "stale-size retry",
+        );
+    }
+
+    /// Client's cached size is stale-large (host file shrank).
+    #[test]
+    fn stale_large_size_still_serves_new_bytes() {
+        let d = Dir::new("stale_large");
+        d.write("a.bin", b'A', 200_000);
+        let mut tb = BlueSCSI::new(Some(d.0.clone()));
+
+        assert_all(
+            &client_download(&mut tb, 0, 200_000),
+            b'A',
+            200_000,
+            "first",
+        );
+        d.write("a.bin", b'B', 70_000);
+        let got = client_download(&mut tb, 0, 200_000);
+        assert!(
+            got.iter().all(|&b| b == b'B'),
+            "stale-size retry served bytes from the old file"
+        );
+    }
+
+    /// A second file downloaded right after the first, with the fd from the
+    /// first still open.
+    #[test]
+    fn second_file_after_open_fd() {
+        let d = Dir::new("twofiles");
+        d.write("a.bin", b'A', 200_000);
+        d.write("b.bin", b'B', 200_000);
+        let mut tb = BlueSCSI::new(Some(d.0.clone()));
+
+        assert_all(
+            &client_download(&mut tb, 0, 200_000),
+            b'A',
+            200_000,
+            "a.bin",
+        );
+        assert_all(
+            &client_download(&mut tb, 1, 200_000),
+            b'B',
+            200_000,
+            "b.bin",
+        );
+    }
+}
+
+#[cfg(test)]
+mod fd_close_tests {
+    use super::*;
+
+    fn get(tb: &mut BlueSCSI, index: u8, offset: u32, blocks: u8) -> ScsiCmdResult {
+        let o = offset.to_be_bytes();
+        let mut dbg = false;
+        tb.handle_command(
+            &[0xD1, index, o[0], o[1], o[2], o[3], blocks, 0, 0, 0],
+            None,
+            &mut dbg,
+            &[0xFF; 8],
+        )
+    }
+
+    fn dir(tag: &str, len: usize) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("snow_fdclose_{}", tag));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("a.bin"), vec![b'A'; len]).unwrap();
+        d
+    }
+
+    /// The firmware closes gFile once a transfer reaches the end of the file.
+    /// Snow used to hold it open until the next transfer started, keeping a
+    /// handle on a shared-folder file the host may be trying to replace.
+    #[test]
+    fn file_is_closed_at_end_of_transfer() {
+        let d = dir("closed", 4096);
+        let mut tb = BlueSCSI::new(Some(d.clone()));
+
+        assert!(matches!(get(&mut tb, 0, 0, 1), ScsiCmdResult::DataIn(v) if v.len() == 4096));
+        assert!(
+            tb.file.is_none(),
+            "file left open after a complete transfer"
+        );
+
+        // A continuation with no transfer in progress has nothing to read from.
+        assert!(matches!(
+            get(&mut tb, 0, 1, 1),
+            ScsiCmdResult::Status(STATUS_CHECK_CONDITION)
+        ));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// A multi-chunk transfer keeps the file open until its last chunk.
+    #[test]
+    fn file_stays_open_mid_transfer() {
+        let d = dir("midxfer", 200_000);
+        let mut tb = BlueSCSI::new(Some(d.clone()));
+
+        assert!(matches!(get(&mut tb, 0, 0, 16), ScsiCmdResult::DataIn(v) if v.len() == 65536));
+        assert!(tb.file.is_some(), "file closed mid-transfer");
+        assert!(matches!(get(&mut tb, 0, 16, 16), ScsiCmdResult::DataIn(v) if v.len() == 65536));
+        assert!(matches!(get(&mut tb, 0, 32, 16), ScsiCmdResult::DataIn(v) if v.len() == 65536));
+
+        // Last chunk: 200000 - 196608 = 3392 bytes, capped to the file size.
+        assert!(matches!(get(&mut tb, 0, 48, 16), ScsiCmdResult::DataIn(v) if v.len() == 3392));
+        assert!(tb.file.is_none(), "file left open after the last chunk");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Reads never run past the end of the file, as onGetFile10() caps them.
+    #[test]
+    fn read_is_capped_to_the_file_size() {
+        let d = dir("capped", 100);
+        let mut tb = BlueSCSI::new(Some(d.clone()));
+
+        match get(&mut tb, 0, 0, 16) {
+            ScsiCmdResult::DataIn(v) => assert_eq!(v.len(), 100),
+            _ => panic!("GET_FILE failed"),
+        }
+        let _ = fs::remove_dir_all(&d);
     }
 }
