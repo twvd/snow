@@ -291,18 +291,19 @@ impl BlueSCSI {
             // Legacy encoding: Number of bytes sent this request
             u16::from_be_bytes(cmd[1..3].try_into().unwrap())
         };
-        let mut offset_bytes = [0u8; 4];
-        offset_bytes[1..4].copy_from_slice(&cmd[3..6]);
-        let offset = u32::from_be_bytes(offset_bytes);
-
+        // CDB[3-5] is a 512-byte block offset that is deliberately unused;
+        // see below.
         if let Some(file) = &mut self.file {
             if let Some(data) = outdata {
-                // Offset is relative to the end of the last write, matching
-                // gFile.seekCur(offset * 512) in BlueSCSI_Toolbox.cpp. Seeking
-                // absolutely truncates every upload past the first block.
-                if file.seek(SeekFrom::Current(offset as i64 * 512)).is_ok()
-                    && file.write_all(&data[..bytes_sent as usize]).is_ok()
-                {
+                // Every write appends. The firmware does
+                // gFile.seekCur(offset * 512), but SdFat refuses a seek past
+                // the end of the file and leaves the position alone, and
+                // clients send the absolute block index of the chunk. So on
+                // hardware every seek but the first one fails and the data
+                // lands end to end. Honouring the seek instead leaves a
+                // growing gap before each chunk: an 80K upload became a 6.4MB
+                // file (twvd/snow#367).
+                if file.write_all(&data[..bytes_sent as usize]).is_ok() {
                     return ScsiCmdResult::Status(STATUS_GOOD);
                 }
             } else {
@@ -509,8 +510,10 @@ mod tests {
         for c in 0..chunks {
             let payload = vec![c as u8 + 1; blocks_per_chunk as usize * 512];
             expected.extend_from_slice(&payload);
-            // Clients send offset 0 and rely on the append that produces.
-            let cdb = [0xD4, 0, 0, 0, 0, 0, blocks_per_chunk, 0, 0, 0];
+            // The block index of this chunk, as the Mac client sends it.
+            let x = (c * blocks_per_chunk as usize) as u32;
+            let o = x.to_be_bytes();
+            let cdb = [0xD4, 0, 0, o[1], o[2], o[3], blocks_per_chunk, 0, 0, 0];
             tb.handle_command(&cdb, Some(&payload), &mut debug, &NO_DEVICES);
         }
         tb.handle_command(
@@ -532,12 +535,48 @@ mod tests {
         assert_eq!(send_file(&dir.0, "one.bin", 1, 4).len(), 4 * 512);
     }
 
-    /// The absolute seek this replaced rewound to byte 0 on every chunk, so an
-    /// upload larger than one chunk ended up as just its last chunk.
+    /// Chunks have to land end to end. An absolute seek rewinds to byte 0 on
+    /// every chunk and keeps only the last one; an unclamped relative seek
+    /// leaves a growing gap before each chunk and blows the file up.
     #[test]
     fn send_file_multiple_chunks_appends() {
         let dir = TempDir::with_files("send_multi", 0);
         assert_eq!(send_file(&dir.0, "many.bin", 5, 2).len(), 5 * 2 * 512);
+    }
+
+    /// SCSITransfer's SendFile(): legacy byte count, one 512-byte block per
+    /// request, offset = the block index. 80KB came back as 6.4MB.
+    #[test]
+    fn send_file_legacy_client_pattern() {
+        let dir = TempDir::with_files("send_legacy", 0);
+        let mut tb = BlueSCSI::new(Some(dir.0.clone()));
+        let mut debug = false;
+
+        let mut prep = vec![0u8; 33];
+        prep[.."up.bin".len()].copy_from_slice(b"up.bin");
+        tb.handle_command(
+            &[0xD3, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            Some(&prep),
+            &mut debug,
+            &NO_DEVICES,
+        );
+
+        let mut expected = Vec::new();
+        for x in 0..160u32 {
+            let payload = vec![x as u8; 512];
+            expected.extend_from_slice(&payload);
+            let o = x.to_be_bytes();
+            let cdb = [0xD4, 2, 0, o[1], o[2], o[3], 0, 0, 0, 0];
+            tb.handle_command(&cdb, Some(&payload), &mut debug, &NO_DEVICES);
+        }
+        tb.handle_command(
+            &[0xD5, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            None,
+            &mut debug,
+            &NO_DEVICES,
+        );
+
+        assert_eq!(fs::read(dir.0.join("up.bin")).unwrap(), expected);
     }
 
     #[test]
