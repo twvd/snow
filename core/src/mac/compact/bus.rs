@@ -11,7 +11,6 @@ use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
-use crate::mac::macii::bus::DEFAULT_BUS_SPEED;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
@@ -21,7 +20,7 @@ use crate::mac::via::Via;
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
-use crate::tickable::{Tickable, Ticks};
+use crate::tickable::{TickConverter, Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 use crate::util::take_from_accumulator;
 
@@ -31,13 +30,30 @@ use log::*;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
 use serde::{Deserialize, Serialize};
 
+/// Mac compact main clock speed
+pub const DEFAULT_BUS_SPEED: Ticks = 8_000_000;
+
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
+
+/// The minimum number of 16 MHz cycles between IWM register accesses.
+///
+/// This is used to throttle the CPU when overclocking is enabled, preventing
+/// tight polling loops from detecting a timeout prematurely.
+///
+/// 9 appears to be the minimum. If set any lower, it fails. (FIXME: test for compact)
+const IWM_DELAY_CYCLES: Ticks = 9;
 
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct CompactMacBus<TRenderer: Renderer> {
     cycles: Ticks,
+
+    /// 8 MHz clock for components that cannot be overclocked (such as VIA and SWIM).
+    clock_8mhz: TickConverter<DEFAULT_BUS_SPEED>,
+
+    /// The number of 8 MHz cycles remaining until the IWM can be accessed again.
+    iwm_delay_cycles: Ticks,
 
     /// The currently emulated Macintosh model
     model: MacModel,
@@ -83,7 +99,7 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
 
-    bus_frequency: Ticks,
+    base_frequency: Ticks,
 
     /// Last pushed audio sample
     last_audiosample: u8,
@@ -165,6 +181,8 @@ where
 
         let mut bus = Self {
             cycles: 0,
+            clock_8mhz: Default::default(),
+            iwm_delay_cycles: 0,
             model,
 
             rom: Vec::from(rom),
@@ -193,7 +211,7 @@ where
 
             overlay: true,
             speed: EmulatorSpeed::Accurate,
-            bus_frequency: DEFAULT_BUS_SPEED,
+            base_frequency: DEFAULT_BUS_SPEED,
             last_audiosample: 0,
             vblank_time: Instant::now(),
             vpa_sync: false,
@@ -513,12 +531,16 @@ where
         self.speed = speed;
     }
 
-    pub fn set_bus_frequency(&mut self, bus_frequency: u64) {
-        self.bus_frequency = bus_frequency;
+    pub fn set_base_frequency(&mut self, base_frequency: u64) {
+        self.base_frequency = base_frequency;
     }
 
     /// Tests for wait states on bus access
     fn in_waitstate(&mut self, addr: Address) -> bool {
+        if is_iwm_addr(addr) {
+            return self.iwm_delay_cycles > 0;
+        }
+
         // DTACK (only for RAM region)
         if (0x0000_0000..=0x003F_FFFF).contains(&addr)
             && !self.video.in_blanking_period()
@@ -613,6 +635,14 @@ where
     }
 }
 
+fn is_iwm_addr(addr: Address) -> bool {
+    match addr {
+        // IWM
+        0x00DF_E1FF..=0x00DF_FFFF => true,
+        _ => false,
+    }
+}
+
 impl<TRenderer> Bus<Address, Byte> for CompactMacBus<TRenderer>
 where
     TRenderer: Renderer,
@@ -624,6 +654,10 @@ where
     fn read(&mut self, addr: Address) -> BusResult<Byte> {
         if self.in_waitstate(addr) {
             return BusResult::WaitState;
+        }
+
+        if is_iwm_addr(addr) {
+            self.iwm_delay_cycles += IWM_DELAY_CYCLES;
         }
 
         let val = if self.overlay {
@@ -644,6 +678,10 @@ where
     fn write(&mut self, addr: Address, val: Byte) -> BusResult<Byte> {
         if self.in_waitstate(addr) {
             return BusResult::WaitState;
+        }
+
+        if is_iwm_addr(addr) {
+            self.iwm_delay_cycles += IWM_DELAY_CYCLES;
         }
 
         let written = if self.overlay {
@@ -701,7 +739,7 @@ where
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         struct BusEmuContext {
             speed: EmulatorSpeed,
-            bus_frequency: Ticks,
+            base_frequency: Ticks,
         }
 
         impl EmuContext for BusEmuContext {
@@ -709,14 +747,14 @@ where
                 self.speed
             }
 
-            fn bus_frequency(&self) -> Ticks {
-                self.bus_frequency
+            fn base_frequency(&self) -> Ticks {
+                self.base_frequency
             }
         }
 
         let ctx = &BusEmuContext {
             speed: self.speed,
-            bus_frequency: self.bus_frequency,
+            base_frequency: self.base_frequency,
         };
 
         // XXX: run one tick at a time to avoid missing hblanks and vblanks
@@ -725,13 +763,20 @@ where
 
             self.cycles += ticks;
 
-            self.eclock += ticks;
+            self.clock_8mhz.add_a_ticks(ticks);
+            let ticks_8mhz = self.clock_8mhz.get_b_ticks(self.base_frequency);
+            self.clock_8mhz
+                .subtract_b_ticks(ticks_8mhz, self.base_frequency);
+
+            self.iwm_delay_cycles = self.iwm_delay_cycles.saturating_sub(ticks_8mhz);
+
+            self.eclock += ticks_8mhz;
             while self.eclock >= 10 {
                 // The E Clock is roughly 1/10th of the CPU clock
                 // TODO ticks when VPA is asserted
                 self.eclock -= 10;
 
-                self.via.tick(1, ctx)?;
+                self.via.tick(1, ())?;
             }
 
             // Pixel clock (15.6672 MHz) is roughly 2x CPU speed
@@ -813,7 +858,7 @@ where
             }
 
             self.scsi.tick(ticks, ctx)?;
-            self.swim.tick(ticks, ())?;
+            self.swim.tick(ticks_8mhz, ())?;
         }
 
         Ok(ticks)

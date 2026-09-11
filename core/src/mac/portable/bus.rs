@@ -13,7 +13,6 @@ use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::asc::Asc;
-use crate::mac::macii::bus::DEFAULT_BUS_SPEED;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
@@ -21,7 +20,7 @@ use crate::mac::swim::Swim;
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
-use crate::tickable::{Tickable, Ticks};
+use crate::tickable::{TickConverter, Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 
 use anyhow::Result;
@@ -30,13 +29,30 @@ use log::*;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
 use serde::{Deserialize, Serialize};
 
+/// Mac portable main clock speed
+pub const DEFAULT_BUS_SPEED: Ticks = 16_000_000;
+
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
+
+/// The minimum number of 16 MHz cycles between SWIM register accesses.
+///
+/// This is used to throttle the CPU when overclocking is enabled, preventing
+/// tight polling loops from detecting a timeout prematurely.
+///
+/// 9 appears to be the minimum. If set any lower, it fails. (FIXME: test for portable)
+const SWIM_DELAY_CYCLES: Ticks = 9;
 
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct MacPortableBus<TRenderer: Renderer> {
     cycles: Ticks,
+
+    /// 16 MHz clock for components that cannot be overclocked (such as VIA and SWIM).
+    clock_16mhz: TickConverter<DEFAULT_BUS_SPEED>,
+
+    /// The number of 16 MHz cycles remaining until the SWIM can be accessed again.
+    swim_delay_cycles: Ticks,
 
     /// The currently emulated Macintosh model
     model: MacModel,
@@ -66,7 +82,7 @@ pub struct MacPortableBus<TRenderer: Renderer> {
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
 
-    bus_frequency: Ticks,
+    base_frequency: Ticks,
 
     /// Last vblank time (for syncing to video)
     /// Not serializing this because it is only used for determining how long to
@@ -136,6 +152,8 @@ where
 
         let mut bus = Self {
             cycles: 0,
+            clock_16mhz: Default::default(),
+            swim_delay_cycles: 0,
             model,
 
             rom_mask: rom.len() - 1,
@@ -155,7 +173,7 @@ where
 
             overlay: true,
             speed: EmulatorSpeed::Accurate,
-            bus_frequency: DEFAULT_BUS_SPEED,
+            base_frequency: DEFAULT_BUS_SPEED,
             vblank_time: Instant::now(),
             vblank_clock: 0,
             progkey_pressed: LatchingEvent::default(),
@@ -472,8 +490,8 @@ where
         self.speed = speed;
     }
 
-    pub fn set_bus_frequency(&mut self, bus_frequency: u64) {
-        self.bus_frequency = bus_frequency;
+    pub fn set_base_frequency(&mut self, base_frequency: u64) {
+        self.base_frequency = base_frequency;
     }
 
     pub fn set_mouse_mode(&mut self, mode: MouseMode) {
@@ -482,6 +500,10 @@ where
 
     /// Tests for wait states on bus access
     fn in_waitstate(&mut self, addr: Address) -> bool {
+        if is_swim_addr(addr) {
+            return self.swim_delay_cycles > 0;
+        }
+
         match addr {
             0x0000_0000..=0x009F_FFFF => self.normandy.waitstate(addr),
             _ => false,
@@ -510,6 +532,14 @@ where
     }
 }
 
+fn is_swim_addr(addr: Address) -> bool {
+    match addr {
+        // SWIM
+        0x00F6_0000..=0x00F6_FFFF => true,
+        _ => false,
+    }
+}
+
 impl<TRenderer> Bus<Address, Byte> for MacPortableBus<TRenderer>
 where
     TRenderer: Renderer,
@@ -517,6 +547,10 @@ where
     fn read(&mut self, addr: Address) -> BusResult<Byte> {
         if self.in_waitstate(addr) {
             return BusResult::WaitState;
+        }
+
+        if is_swim_addr(addr) {
+            self.swim_delay_cycles += SWIM_DELAY_CYCLES;
         }
 
         let val = if self.overlay {
@@ -536,6 +570,10 @@ where
     fn write(&mut self, addr: Address, val: Byte) -> BusResult<Byte> {
         if self.in_waitstate(addr) {
             return BusResult::WaitState;
+        }
+
+        if is_swim_addr(addr) {
+            self.swim_delay_cycles += SWIM_DELAY_CYCLES;
         }
 
         let written = if self.overlay {
@@ -601,7 +639,7 @@ where
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         struct BusEmuContext {
             speed: EmulatorSpeed,
-            bus_frequency: Ticks,
+            base_frequency: Ticks,
         }
 
         impl EmuContext for BusEmuContext {
@@ -609,32 +647,39 @@ where
                 self.speed
             }
 
-            fn bus_frequency(&self) -> Ticks {
-                self.bus_frequency
+            fn base_frequency(&self) -> Ticks {
+                self.base_frequency
             }
         }
 
         let ctx = &BusEmuContext {
             speed: self.speed,
-            bus_frequency: self.bus_frequency,
+            base_frequency: self.base_frequency,
         };
 
         self.cycles += ticks;
 
-        self.via_clock += ticks;
+        self.clock_16mhz.add_a_ticks(ticks);
+        let ticks_16mhz = self.clock_16mhz.get_b_ticks(self.base_frequency);
+        self.clock_16mhz
+            .subtract_b_ticks(ticks_16mhz, self.base_frequency);
+
+        self.swim_delay_cycles = self.swim_delay_cycles.saturating_sub(ticks_16mhz);
+
+        self.via_clock += ticks_16mhz;
         while self.via_clock >= 20 {
             // TODO VIA wait states
             self.via_clock -= 20;
 
-            self.via.tick(1, ctx)?;
+            self.via.tick(1, ())?;
         }
 
         self.video.tick(ticks, ctx)?;
 
         // Legacy VBlank interrupt
         self.vblank_clock += ticks;
-        while self.vblank_clock >= self.bus_frequency / 60 {
-            self.vblank_clock -= self.bus_frequency / 60;
+        while self.vblank_clock >= self.base_frequency / 60 {
+            self.vblank_clock -= self.base_frequency / 60;
             self.via.ifr.set_vblank(true);
 
             if self.speed == EmulatorSpeed::Video {
@@ -651,14 +696,14 @@ where
         }
 
         self.asc_clock += ticks;
-        while self.asc_clock >= self.bus_frequency / self.asc.sample_rate() {
-            self.asc_clock -= self.bus_frequency / self.asc.sample_rate();
+        while self.asc_clock >= self.base_frequency / self.asc.sample_rate() {
+            self.asc_clock -= self.base_frequency / self.asc.sample_rate();
 
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }
 
         self.swim.intdrive = self.via.b_out.drivesel();
-        self.swim.tick(ticks, ())?;
+        self.swim.tick(ticks_16mhz, ())?;
 
         Ok(ticks)
     }

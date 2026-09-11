@@ -22,7 +22,7 @@ use crate::mac::{MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind};
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
-use crate::tickable::{Tickable, Ticks};
+use crate::tickable::{TickConverter, Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 
 use anyhow::Result;
@@ -33,6 +33,14 @@ use serde::{Deserialize, Serialize};
 
 /// Macintosh II main clock speed
 pub const DEFAULT_BUS_SPEED: Ticks = 16_000_000;
+
+/// The minimum number of 16 MHz cycles between IWM register accesses.
+///
+/// This is used to throttle the CPU when overclocking is enabled, preventing
+/// tight polling loops from detecting a timeout prematurely.
+///
+/// 9 appears to be the minimum. If set any lower, it fails.
+const IWM_DELAY_CYCLES: Ticks = 9;
 
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
@@ -52,6 +60,12 @@ const RAMSZ_16M: u8 = 3;
 #[serde(bound = "")]
 pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     cycles: Ticks,
+
+    /// 16 MHz clock for components that cannot be overclocked (such as VIA and SWIM).
+    clock_16mhz: TickConverter<DEFAULT_BUS_SPEED>,
+
+    /// The number of 16 MHz cycles remaining until the IWM can be accessed again.
+    iwm_delay_cycles: Ticks,
 
     /// The currently emulated Macintosh model
     model: MacModel,
@@ -84,7 +98,7 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
 
-    bus_frequency: Ticks,
+    base_frequency: Ticks,
 
     /// Last vblank time (for syncing to video)
     /// Not serializing this because it is only used for determining how long to
@@ -214,6 +228,8 @@ where
 
         let mut bus = Self {
             cycles: 0,
+            clock_16mhz: Default::default(),
+            iwm_delay_cycles: 0,
             model,
 
             rom: Vec::from(rom),
@@ -238,7 +254,7 @@ where
             overlay: true,
             amu_active: false,
             speed: EmulatorSpeed::Accurate,
-            bus_frequency: DEFAULT_BUS_SPEED,
+            base_frequency: DEFAULT_BUS_SPEED,
             //last_audiosample: 0,
             vblank_time: Instant::now(),
             vblank_clock: 0,
@@ -627,13 +643,16 @@ where
         self.speed = speed;
     }
 
-    pub fn set_bus_frequency(&mut self, bus_frequency: u64) {
-        self.bus_frequency = bus_frequency;
+    pub fn set_base_frequency(&mut self, base_frequency: u64) {
+        self.base_frequency = base_frequency;
     }
 
     /// Tests for wait states on bus access
-    fn in_waitstate(&self, _addr: Address) -> bool {
-        // TODO
+    fn in_waitstate(&self, addr: Address) -> bool {
+        if is_iwm_addr(addr) {
+            return self.iwm_delay_cycles > 0;
+        }
+
         false
     }
 
@@ -689,6 +708,19 @@ where
     }
 }
 
+/// Return true if an address accesses the IWM.
+fn is_iwm_addr(addr: Address) -> bool {
+    match addr {
+        // I/O region (repeats)
+        0x5000_0000..=0x51FF_FFFF => match addr & 0x1_FFFF {
+            // IWM/SWIM
+            0x0001_6000..=0x0001_7FFF => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 impl<TRenderer, const AMU: bool> Bus<Address, Byte> for MacIIBus<TRenderer, AMU>
 where
     TRenderer: Renderer,
@@ -700,6 +732,10 @@ where
     fn read(&mut self, addr: Address) -> BusResult<Byte> {
         if self.in_waitstate(addr) {
             return BusResult::WaitState;
+        }
+
+        if is_iwm_addr(addr) {
+            self.iwm_delay_cycles += IWM_DELAY_CYCLES;
         }
 
         let val = if AMU && self.amu_active {
@@ -730,6 +766,10 @@ where
     fn write(&mut self, addr: Address, val: Byte) -> BusResult<Byte> {
         if self.in_waitstate(addr) {
             return BusResult::WaitState;
+        }
+
+        if is_iwm_addr(addr) {
+            self.iwm_delay_cycles += IWM_DELAY_CYCLES;
         }
 
         let written = if AMU && self.amu_active {
@@ -809,7 +849,7 @@ where
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         struct BusEmuContext {
             speed: EmulatorSpeed,
-            bus_frequency: Ticks,
+            base_frequency: Ticks,
         }
 
         impl EmuContext for BusEmuContext {
@@ -817,17 +857,24 @@ where
                 self.speed
             }
 
-            fn bus_frequency(&self) -> Ticks {
-                self.bus_frequency
+            fn base_frequency(&self) -> Ticks {
+                self.base_frequency
             }
         }
 
         let ctx = &BusEmuContext {
             speed: self.speed,
-            bus_frequency: self.bus_frequency,
+            base_frequency: self.base_frequency,
         };
 
         self.cycles += ticks;
+
+        self.clock_16mhz.add_a_ticks(ticks);
+        let ticks_16mhz = self.clock_16mhz.get_b_ticks(self.base_frequency);
+        self.clock_16mhz
+            .subtract_b_ticks(ticks_16mhz, self.base_frequency);
+
+        self.iwm_delay_cycles = self.iwm_delay_cycles.saturating_sub(ticks_16mhz);
 
         if AMU {
             self.amu_active = self.via2.ddrb.vfc3() && !self.via2.b_out.vfc3();
@@ -835,19 +882,19 @@ where
 
         // The Mac II generates the VIA clock through some dividers on the logic board.
         // This same logic generates wait states when the VIAs are accessed.
-        self.via_clock += ticks;
+        self.via_clock += ticks_16mhz;
         while self.via_clock >= 20 {
             // TODO VIA wait states
             self.via_clock -= 20;
 
-            self.via1.tick(1, ctx)?;
+            self.via1.tick(1, ())?;
             self.via2.tick(1, ())?;
         }
 
         // Legacy VBlank interrupt
         self.vblank_clock += ticks;
-        while self.vblank_clock >= ctx.bus_frequency / 60 {
-            self.vblank_clock -= ctx.bus_frequency / 60;
+        while self.vblank_clock >= ctx.base_frequency / 60 {
+            self.vblank_clock -= ctx.base_frequency / 60;
 
             self.via1.ifr.set_vblank(true);
 
@@ -880,8 +927,8 @@ where
         }
 
         self.asc_clock += ticks;
-        while self.asc_clock >= ctx.bus_frequency / self.asc.sample_rate() {
-            self.asc_clock -= ctx.bus_frequency / self.asc.sample_rate();
+        while self.asc_clock >= ctx.base_frequency / self.asc.sample_rate() {
+            self.asc_clock -= ctx.base_frequency / self.asc.sample_rate();
 
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }
@@ -907,7 +954,7 @@ where
         self.via2.ifr.set_scsi_drq(self.scsi.get_drq());
 
         self.swim.intdrive = self.via1.a_out.drivesel();
-        self.swim.tick(ticks, ())?;
+        self.swim.tick(ticks_16mhz, ())?;
 
         Ok(1)
     }
