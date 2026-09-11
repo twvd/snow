@@ -86,6 +86,12 @@ fn main() -> eframe::Result {
             .filter_level(LevelFilter::Debug)
             .filter_module("tracing::span", LevelFilter::Off)
             .filter_module("winit", LevelFilter::Off)
+            // The Fluxfox renderer and loaders are unfortunately
+            // extremely noisy.
+            .filter_module("fluxfox", LevelFilter::Info)
+            .filter_module("fluxfox::bitstream_codec", LevelFilter::Error)
+            .filter_module("fluxfox::track::bitstream", LevelFilter::Error)
+            .filter_module("fluxfox::track_schema", LevelFilter::Error)
             .build(),
     );
     let logger_egui = Box::new(
@@ -94,6 +100,10 @@ fn main() -> eframe::Result {
             .add_blacklist("tracing::span")
             .add_blacklist("winit::event_loop")
             .add_blacklist("winit::window")
+            .add_blacklist("fluxfox::track::bitstream")
+            .add_blacklist("fluxfox::diskimage")
+            .add_blacklist("fluxfox::bitstream_codec::mfm")
+            .add_blacklist("fluxfox::track::bitstream")
             .build(),
     );
     multi_log::MultiLogger::init(vec![logger_env, logger_egui], log::Level::Debug).unwrap();
