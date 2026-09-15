@@ -763,10 +763,10 @@ where
 
             self.cycles += ticks;
 
-            self.clock_8mhz.add_a_ticks(ticks);
-            let ticks_8mhz = self.clock_8mhz.get_b_ticks(self.base_frequency);
+            self.clock_8mhz.add_in_ticks(ticks);
+            let ticks_8mhz = self.clock_8mhz.get_out_ticks(self.base_frequency);
             self.clock_8mhz
-                .subtract_b_ticks(ticks_8mhz, self.base_frequency);
+                .subtract_out_ticks(ticks_8mhz, self.base_frequency);
 
             self.iwm_delay_cycles = self.iwm_delay_cycles.saturating_sub(ticks_8mhz);
 
