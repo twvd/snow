@@ -1004,7 +1004,9 @@ impl ScsiTarget for ScsiTargetCdrom {
         result[8..16].copy_from_slice(b"SNOW    ");
 
         // 16..32 Product identification
-        result[16..32].copy_from_slice(b"CD-ROM CDU-8004 ");
+        // Apple CD-ROM 4.0 only accepts CDU-8001/8002/8003; later drivers also
+        // know 8004/8005/CR-8004. 8003 is in every version's table.
+        result[16..32].copy_from_slice(b"CD-ROM CDU-8003 ");
         // 32..36 Revision
         result[32..36].copy_from_slice(b"1.9a");
 
