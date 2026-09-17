@@ -32,6 +32,10 @@ pub enum CmdKeyMapping {
 const MAX_RECENT_WORKSPACES: usize = 10;
 const MAX_RECENT_IMAGES: usize = 10;
 
+fn bool_true() -> bool {
+    true
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct AppSettings {
@@ -59,10 +63,12 @@ pub struct AppSettings {
     pub fastforward_limit_enabled: bool,
     pub fastforward_limit: f64,
     pub dynamic_fastforward: bool,
+    #[serde(default = "bool_true")]
     pub auto_relative_mouse_fullscreen: bool,
     /// Multiplier applied to mouse motion in relative mouse mode
     pub relative_mouse_speed: f32,
     /// Capture the mouse in relative mouse mode
+    #[serde(default = "bool_true")]
     pub mouse_capture: bool,
     pub writeback_mode: PromptChoice,
     pub convert_to_moof_mode: PromptChoice,
@@ -71,6 +77,9 @@ pub struct AppSettings {
     pub backup_on_writeback: bool,
     /// How the right modifier key maps to the Mac's Cmd key
     pub cmd_key_mapping: CmdKeyMapping,
+    /// If true, resumes execution when the emulator is reset, even when paused
+    #[serde(default = "bool_true")]
+    pub run_on_reset: bool,
 }
 
 impl Default for AppSettings {
@@ -103,6 +112,7 @@ impl Default for AppSettings {
             convert_to_moof_mode: PromptChoice::default(),
             backup_on_writeback: false,
             cmd_key_mapping: CmdKeyMapping::default(),
+            run_on_reset: true,
         }
     }
 }
@@ -124,8 +134,14 @@ impl AppSettings {
             && let Ok(file) = std::fs::File::open(path)
             && let Ok(settings) = serde_json::from_reader(std::io::BufReader::new(file))
         {
+            log::info!(
+                "Loaded settings from {}",
+                Self::config_path().unwrap().display()
+            );
             return settings;
         }
+
+        log::warn!("Could not parse settings file, using defaults");
         Default::default()
     }
 
