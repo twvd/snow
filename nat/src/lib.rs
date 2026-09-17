@@ -431,6 +431,8 @@ struct TcpEntry {
     local_endpoint: IpEndpoint,
     /// Time at which this entry expires
     expires_at: Instant,
+    /// Whether the emulator's FIN has been passed on to the OS socket
+    local_fin_forwarded: bool,
 }
 
 /// HTTPS stripping NAT entry
@@ -446,6 +448,8 @@ struct TcpHttpsStrippingEntry {
     expires_at: Instant,
     /// Buffer for collecting initial HTTP request to extract Host header
     initial_buffer: Vec<u8>,
+    /// Whether the emulator's FIN has been seen
+    local_fin_forwarded: bool,
 }
 
 /// NAT connection tracking entry
@@ -948,6 +952,7 @@ impl NatEngine {
                     local_endpoint: IpEndpoint::new(IpAddress::Ipv4(src_ip), src_port),
                     expires_at: Instant::now() + NAT_TIMEOUT_TCP_OPEN,
                     initial_buffer: Vec::new(),
+                    local_fin_forwarded: false,
                 });
 
                 self.nat_table.insert(handle, entry);
@@ -1016,6 +1021,7 @@ impl NatEngine {
                 remote_endpoint: IpEndpoint::new(IpAddress::Ipv4(dst_ip), dst_port),
                 local_endpoint: IpEndpoint::new(IpAddress::Ipv4(src_ip), src_port),
                 expires_at: Instant::now() + NAT_TIMEOUT_TCP_OPEN,
+                local_fin_forwarded: false,
             });
 
             self.nat_table.insert(handle, entry);
@@ -1054,15 +1060,18 @@ impl NatEngine {
 
             // Forward data from emulator (smoltcp) to Internet (OS socket)
             if socket.can_recv() {
+                let mut write_failed = false;
+
                 match socket.recv(|buffer| {
                     if !buffer.is_empty() {
                         // Write to OS socket and only consume as much as we could push
                         // out from the smoltcp receive buffer
                         match entry.os_socket.write(buffer) {
                             Ok(written) => (written, written),
-                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => (0, 0),
+                            Err(e) if Self::is_retryable(&e) => (0, 0),
                             Err(e) => {
-                                log::warn!("Error writing to OS socket: {}", e);
+                                log::warn!("Error writing to OS socket, closing connection: {}", e);
+                                write_failed = true;
                                 (0, 0)
                             }
                         }
@@ -1073,14 +1082,29 @@ impl NatEngine {
                     Ok(_) => {
                         entry.expires_at = Instant::now() + NAT_TIMEOUT_TCP_OPEN;
                     }
-                    Err(smoltcp::socket::tcp::RecvError::Finished) => {
-                        entry.expires_at = Instant::now() + NAT_TIMEOUT_TCP_CLOSED;
-                        self.stats.nat_tcp_fin_local.fetch_add(1, Ordering::Relaxed);
-                    }
                     Err(e) => {
                         log::error!("TCP error receiving from emulator: {:?}", e);
                     }
                 };
+
+                // The remote is gone, so the unsent data can never drain and the FIN below
+                // would never be reached. Drop it, and close the emulator's side once what
+                // is already queued for it has gone out.
+                if write_failed {
+                    Self::discard_received(socket);
+                    socket.close();
+                    entry.expires_at = Instant::now() + NAT_TIMEOUT_TCP_CLOSED;
+                }
+            } else if !entry.local_fin_forwarded && Self::local_fin_received(socket) {
+                // Emulator closed its side and everything it sent has been passed on:
+                // half-close the OS socket so the remote sees the FIN too. The entry keeps
+                // the open timeout: the remote may take its time with a response still to
+                // come, and its own FIN moves the entry to the closed timeout.
+                entry.local_fin_forwarded = true;
+                self.stats.nat_tcp_fin_local.fetch_add(1, Ordering::Relaxed);
+                if let Err(e) = entry.os_socket.shutdown(std::net::Shutdown::Write) {
+                    log::debug!("Error shutting down OS socket for writing: {}", e);
+                }
             }
         }
 
@@ -1119,6 +1143,7 @@ impl NatEngine {
                 };
 
                 let mut tls_failed = false;
+                let mut write_failed = false;
 
                 match socket.recv(|buffer| {
                     if buffer.is_empty() {
@@ -1201,9 +1226,13 @@ impl NatEngine {
                                 entry.expires_at = Instant::now() + NAT_TIMEOUT_TCP_OPEN;
                                 (written, written)
                             }
-                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => (0, 0),
+                            Err(e) if Self::is_retryable(&e) => (0, 0),
                             Err(e) => {
-                                log::warn!("Error writing to TLS socket: {}", e);
+                                log::warn!(
+                                    "Error writing to TLS socket, closing connection: {}",
+                                    e
+                                );
+                                write_failed = true;
                                 (0, 0)
                             }
                         }
@@ -1212,14 +1241,6 @@ impl NatEngine {
                     }
                 }) {
                     Ok(_) => {}
-                    Err(smoltcp::socket::tcp::RecvError::Finished) => {
-                        if let Some(NatEntry::TcpHttpsStripping(entry)) =
-                            self.nat_table.get_mut(&handle)
-                        {
-                            entry.expires_at = Instant::now() + NAT_TIMEOUT_TCP_CLOSED;
-                            self.stats.nat_tcp_fin_local.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
                     Err(e) => {
                         log::error!(
                             "TCP error receiving from emulator (HTTPS stripping): {:?}",
@@ -1228,10 +1249,29 @@ impl NatEngine {
                     }
                 }
 
+                // As for plain TCP: drop what can't be passed on, and close the emulator's
+                // side once what is already queued for it has gone out
+                if write_failed {
+                    Self::discard_received(socket);
+                    socket.close();
+                    entry.expires_at = Instant::now() + NAT_TIMEOUT_TCP_CLOSED;
+                }
+
                 // If TLS failed, mark for abort
                 if tls_failed {
                     failed_handles.push(handle);
                 }
+            } else if let Some(NatEntry::TcpHttpsStripping(entry)) = self.nat_table.get_mut(&handle)
+                && !entry.local_fin_forwarded
+                && Self::local_fin_received(socket)
+            {
+                // Emulator closed its side. Unlike plain TCP this is not passed on: a TLS
+                // half-close (close_notify) makes many servers tear down the whole
+                // connection, which would cut off a response still in flight. The remote
+                // closing after its response ends the connection as usual, so the entry
+                // keeps the open timeout until then.
+                entry.local_fin_forwarded = true;
+                self.stats.nat_tcp_fin_local.fetch_add(1, Ordering::Relaxed);
             }
         }
 
@@ -1297,6 +1337,32 @@ impl NatEngine {
         Ok(())
     }
 
+    /// Whether an error from a non-blocking Internet-side socket only means to try again later
+    fn is_retryable(e: &std::io::Error) -> bool {
+        matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+        )
+    }
+
+    /// Throw away whatever the emulator sent that has not been passed on yet
+    fn discard_received(socket: &mut smoltcp::socket::tcp::Socket) {
+        while socket.can_recv() && socket.recv(|buf| (buf.len(), ())).is_ok() {}
+    }
+
+    /// Whether the emulator has closed its transmit half of the connection (sent FIN).
+    ///
+    /// Once the receive buffer has been drained, `can_recv()` is false in these states so
+    /// `recv()` would never report `RecvError::Finished`; the state has to be checked directly.
+    fn local_fin_received(socket: &smoltcp::socket::tcp::Socket) -> bool {
+        use smoltcp::socket::tcp::State;
+
+        matches!(
+            socket.state(),
+            State::CloseWait | State::LastAck | State::Closing | State::TimeWait
+        )
+    }
+
     /// Pump data from an Internet-side reader into a smoltcp TCP socket's transmit buffer.
     ///
     /// Data is read directly into the free space of the smoltcp transmit buffer, so the
@@ -1338,14 +1404,7 @@ impl NatEngine {
                         break;
                     }
                 }
-                Ok(Err(e))
-                    if matches!(
-                        e.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
-                    ) =>
-                {
-                    break;
-                }
+                Ok(Err(e)) if Self::is_retryable(&e) => break,
                 Ok(Err(e)) => return Err(e),
                 Err(e) => {
                     log::warn!("Error sending to smoltcp socket: {}", e);
