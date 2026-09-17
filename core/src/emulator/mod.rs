@@ -880,10 +880,14 @@ impl Emulator {
         if let Err(e) = self.step() {
             self.run = false;
             self.user_error(&format!(
-                "Emulator halted: Uncaught CPU stepping error at PC {:08X}: {:?}",
+                "Emulator halted: Uncaught CPU stepping error at PC {:08X}\nSee log for details",
+                self.config.cpu_regs().pc,
+            ));
+            log::error!(
+                "Emulator halted: Uncaught CPU stepping error at PC {:08X}: {}",
                 self.config.cpu_regs().pc,
                 e
-            ));
+            );
             let _ = self.status_update();
         }
     }
