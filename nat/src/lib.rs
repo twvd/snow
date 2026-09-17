@@ -28,7 +28,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossbeam_channel::{Receiver, Sender, TrySendError};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::socket::udp;
@@ -71,6 +71,8 @@ struct VirtualDevice {
     local_node: Option<(EthernetAddress, Ipv4Address)>,
     /// Next time gratuitous ARP should be sent
     next_gratuitous_arp: Instant,
+    /// Set once the emulator has dropped its end of the channels
+    disconnected: bool,
 }
 
 impl VirtualDevice {
@@ -89,6 +91,7 @@ impl VirtualDevice {
             gateway_ip,
             local_node: None,
             next_gratuitous_arp: Instant::now(),
+            disconnected: false,
         }
     }
 
@@ -263,7 +266,14 @@ impl Device for VirtualDevice {
         }
 
         // Receive new packet from Ethernet adapter channel
-        let packet = self.rx.recv_timeout(Duration::from_millis(100)).ok()?;
+        let packet = match self.rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(packet) => packet,
+            Err(RecvTimeoutError::Timeout) => return None,
+            Err(RecvTimeoutError::Disconnected) => {
+                self.disconnected = true;
+                return None;
+            }
+        };
         self.stats.rx_packets.fetch_add(1, Ordering::Relaxed);
         self.stats
             .rx_bytes
@@ -1689,6 +1699,11 @@ impl NatEngine {
         );
 
         loop {
+            if self.device.disconnected {
+                log::info!("NAT emulator link closed");
+                break;
+            }
+
             match self.process() {
                 Ok(()) => {}
                 Err(e) => {
