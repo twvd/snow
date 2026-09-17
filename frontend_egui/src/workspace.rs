@@ -362,7 +362,17 @@ impl Workspace {
         let reader = BufReader::new(file);
 
         let mut result: Self = serde_json::from_reader(reader)?;
+
         let parent = path.parent().context("Cannot resolve parent path")?;
+        // Default to the current working directory if the input path has no parent. It could be
+        // relative to the current directory and provided as only the filename, in which case
+        // parent() returns an empty string.
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+
         if let Some(p) = result.rom_path.as_mut() {
             p.after_deserialize(parent)?;
         }
@@ -418,6 +428,15 @@ impl Workspace {
     pub fn write_file(&mut self, path: &Path) -> Result<()> {
         // Resolve relative paths
         let parent = path.parent().context("Cannot resolve parent path")?;
+        // Default to the current working directory if the input path has no parent. It could be
+        // relative to the current directory and provided as only the filename, in which case
+        // parent() returns an empty string.
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+
         if let Some(p) = self.rom_path.as_mut() {
             p.before_serialize(parent)?;
         }
