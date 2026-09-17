@@ -899,6 +899,12 @@ impl SnowGui {
                         for (i, target) in targets.iter().enumerate() {
                             self.draw_scsi_target_menu(ui, i, target.as_ref(), true);
                         }
+                        ui.separator();
+                        if ui.button("Detach all SCSI targets").clicked() {
+                            for (id, _) in targets.iter().enumerate().filter(|(_, t)| t.is_some()) {
+                                self.emu.scsi_detach_target(id);
+                            }
+                        }
                     }
                 });
             }
