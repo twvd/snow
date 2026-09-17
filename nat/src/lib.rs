@@ -1297,6 +1297,66 @@ impl NatEngine {
         Ok(())
     }
 
+    /// Pump data from an Internet-side reader into a smoltcp TCP socket's transmit buffer.
+    ///
+    /// Data is read directly into the free space of the smoltcp transmit buffer, so the
+    /// OS socket only hands over as much as smoltcp can actually queue. Whatever does not
+    /// fit stays in the OS socket's receive buffer, which applies TCP backpressure to the
+    /// remote instead of silently discarding the data (which would corrupt the stream
+    /// towards the emulator once the emulator falls behind).
+    ///
+    /// Returns `Ok(None)` if the remote closed the connection (EOF), otherwise
+    /// `Ok(Some(bytes_queued))`. A `WouldBlock` or `Interrupted` from the reader is
+    /// reported as `Ok(Some(0))`.
+    fn pump_reader_to_socket<R: Read>(
+        reader: &mut R,
+        socket: &mut smoltcp::socket::tcp::Socket,
+    ) -> std::io::Result<Option<usize>> {
+        let mut total = 0;
+
+        // The ring buffer hands out its largest contiguous free slice, which may be
+        // smaller than the total free space near the wrap-around point, so keep going
+        // while the reader is still filling what we offer.
+        while socket.can_send() {
+            let mut offered = 0;
+            let outcome = socket.send(|buf| {
+                offered = buf.len();
+                if buf.is_empty() {
+                    return (0, Err(std::io::Error::from(std::io::ErrorKind::WouldBlock)));
+                }
+                match reader.read(buf) {
+                    Ok(n) => (n, Ok(n)),
+                    Err(e) => (0, Err(e)),
+                }
+            });
+
+            match outcome {
+                Ok(Ok(0)) => return Ok(None),
+                Ok(Ok(n)) => {
+                    total += n;
+                    if n < offered {
+                        break;
+                    }
+                }
+                Ok(Err(e))
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    break;
+                }
+                Ok(Err(e)) => return Err(e),
+                Err(e) => {
+                    log::warn!("Error sending to smoltcp socket: {}", e);
+                    break;
+                }
+            }
+        }
+
+        Ok(Some(total))
+    }
+
     /// Forward TCP data from OS sockets (Internet side) to smoltcp sockets (emulator side)
     fn forward_tcp_os_to_smoltcp(&mut self) -> Result<()> {
         use smoltcp::socket::tcp;
@@ -1323,34 +1383,31 @@ impl NatEngine {
             let socket = self.sockets.get_mut::<tcp::Socket>(handle);
 
             // Forward data from Internet (OS socket) to emulator (smoltcp)
-            if socket.can_send() {
-                match entry.os_socket.read(&mut self.recv_buffer) {
-                    Ok(0) => {
-                        // Connection closed by remote
-                        self.stats
-                            .nat_tcp_fin_remote
-                            .fetch_add(1, Ordering::Relaxed);
-                        socket.close();
-                        entry.expires_at = Instant::now() + NAT_TIMEOUT_TCP_CLOSED;
-                    }
-                    Ok(len) => {
-                        // Write data to smoltcp socket
-                        // smoltcp will handle fragmentation and MTU
-                        match socket.send_slice(&self.recv_buffer[..len]) {
-                            Ok(_written) => {
-                                entry.expires_at = Instant::now() + NAT_TIMEOUT_TCP_OPEN;
-                            }
-                            Err(e) => {
-                                log::warn!("Error sending to smoltcp socket: {}", e);
-                            }
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        // No data available
-                    }
-                    Err(e) => {
-                        log::warn!("Error receiving from OS socket: {}", e);
-                    }
+            // smoltcp will handle segmentation and MTU
+            match Self::pump_reader_to_socket(&mut entry.os_socket, socket) {
+                Ok(None) => {
+                    // Connection closed by remote
+                    self.stats
+                        .nat_tcp_fin_remote
+                        .fetch_add(1, Ordering::Relaxed);
+                    socket.close();
+                    entry.expires_at = Instant::now() + NAT_TIMEOUT_TCP_CLOSED;
+                }
+                Ok(Some(0)) => {
+                    // No data available or transmit buffer full
+                }
+                Ok(Some(_)) => {
+                    entry.expires_at = Instant::now() + NAT_TIMEOUT_TCP_OPEN;
+                }
+                Err(e) => {
+                    // The error won't clear on its own, so close the emulator's side instead
+                    // of retrying the read on every pass until the entry times out. What is
+                    // already queued for the emulator still goes out ahead of the FIN: a
+                    // server that closes with part of the request unread resets the
+                    // connection right after sending its whole response.
+                    log::warn!("Error receiving from OS socket, closing connection: {}", e);
+                    socket.close();
+                    entry.expires_at = Instant::now() + NAT_TIMEOUT_TCP_CLOSED;
                 }
             }
         }
@@ -1388,12 +1445,18 @@ impl NatEngine {
 
             let socket = self.sockets.get_mut::<tcp::Socket>(handle);
 
-            if !socket.can_send() {
-                continue;
-            }
-
-            match tls_socket.read(&mut self.recv_buffer) {
-                Ok(0) => {
+            // The https:// -> http:// rewriting happens in the Read impl
+            let result = match Self::pump_reader_to_socket(tls_socket, socket) {
+                // Many servers close TCP without sending close_notify, after which rustls
+                // fails every read with UnexpectedEof. Treat it as the remote closing.
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    log::debug!("HTTPS stripping: TLS socket closed without close_notify");
+                    Ok(None)
+                }
+                result => result,
+            };
+            match result {
+                Ok(None) => {
                     // Connection closed by remote
                     log::debug!("HTTPS stripping: TLS socket closed by remote");
                     self.stats
@@ -1402,23 +1465,18 @@ impl NatEngine {
                     socket.close();
                     entry.expires_at = Instant::now() + NAT_TIMEOUT_TCP_CLOSED;
                 }
-                Ok(len) => {
-                    // Write data to smoltcp socket
-                    // The rewriting already happened in the Read impl
-                    match socket.send_slice(&self.recv_buffer[..len]) {
-                        Ok(_written) => {
-                            entry.expires_at = Instant::now() + NAT_TIMEOUT_TCP_OPEN;
-                        }
-                        Err(e) => {
-                            log::error!("HTTPS stripping: Error sending to smoltcp socket: {}", e);
-                        }
-                    }
+                Ok(Some(0)) => {
+                    // No data available or transmit buffer full
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    // No data available
+                Ok(Some(_)) => {
+                    entry.expires_at = Instant::now() + NAT_TIMEOUT_TCP_OPEN;
                 }
                 Err(e) => {
-                    log::error!("Error receiving from TLS socket: {}", e);
+                    // As for plain TCP: close the emulator's side after what is already
+                    // queued for it rather than retrying the read on every pass
+                    log::error!("Error receiving from TLS socket, closing connection: {}", e);
+                    socket.close();
+                    entry.expires_at = Instant::now() + NAT_TIMEOUT_TCP_CLOSED;
                 }
             }
         }
