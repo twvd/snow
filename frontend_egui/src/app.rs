@@ -787,6 +787,9 @@ impl SnowGui {
                 if self.emu.is_initialized() {
                     if ui.button("Reset").clicked() {
                         self.emu.reset();
+                        if self.settings.run_on_reset {
+                            self.emu.run();
+                        }
                     }
 
                     if self.emu.is_running() && ui.button("Stop").clicked() {
@@ -1216,6 +1219,21 @@ impl SnowGui {
                         .on_hover_text(
                             "Before writeback is enabled for a floppy image, copy it to a \
                              timestamped sibling file in the same directory.",
+                        )
+                        .clicked()
+                    {
+                        self.settings.save();
+                    }
+                });
+                ui.menu_button("Debugger", |ui| {
+                    ui.set_min_width(Self::SUBMENU_WIDTH);
+                    if ui
+                        .checkbox(
+                            &mut self.settings.run_on_reset,
+                            "Always run emulator on reset",
+                        )
+                        .on_hover_text(
+                            "Always automatically run the emulator when reset is used in the debugger UI",
                         )
                         .clicked()
                     {
@@ -2098,6 +2116,9 @@ impl SnowGui {
                     .clicked()
                 {
                     self.emu.reset();
+                    if self.settings.run_on_reset {
+                        self.emu.run();
+                    }
                 }
 
                 if self.emu.is_running() {
@@ -3880,6 +3901,9 @@ impl eframe::App for SnowGui {
                         }
                         if ui.button("Reset machine").clicked() {
                             self.emu.reset();
+                            if self.settings.run_on_reset {
+                                self.emu.run();
+                            }
                         }
                     });
                 }
