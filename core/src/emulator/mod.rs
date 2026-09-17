@@ -203,7 +203,7 @@ dispatch! {
 
     mutable_calls {
         fn set_speed(&mut self, speed: EmulatorSpeed) -> () { bus.set_speed(speed) }
-        fn set_bus_frequency(&mut self, bus_frequency: u64) -> () { bus.set_bus_frequency(bus_frequency) }
+        fn set_base_frequency(&mut self, base_frequency: u64) -> () { bus.set_base_frequency(base_frequency) }
         fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> { bus.set_audio_provider(provider) }
 
         fn cpu_tick(&mut self, ticks: Ticks) -> Result<Ticks> { tick(ticks, ()) }
@@ -240,7 +240,7 @@ dispatch! {
 /// An interface that allows sub-components to access emulator state (such as the speed setting)
 pub trait EmuContext {
     fn speed(&self) -> EmulatorSpeed;
-    fn bus_frequency(&self) -> Ticks;
+    fn base_frequency(&self) -> Ticks;
 }
 
 /// Emulator runner
@@ -1219,7 +1219,7 @@ impl Tickable for Emulator {
                     EmulatorCommand::SetSpeed(s) => self.config.set_speed(s),
                     EmulatorCommand::SetOverclock(overclock) => self
                         .config
-                        .set_bus_frequency(overclock.unwrap_or(DEFAULT_BUS_SPEED)),
+                        .set_base_frequency(overclock.unwrap_or(DEFAULT_BUS_SPEED)),
                     EmulatorCommand::ProgKey => self.config.progkey(),
                     EmulatorCommand::WriteRegister(reg, val) => {
                         match reg {
