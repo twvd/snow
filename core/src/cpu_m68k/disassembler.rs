@@ -145,6 +145,7 @@ impl<'a> Disassembler<'a> {
             0b0011110 => "FGETEXP",
             0b0001100 => "FASIN",
             0b0001110 => "FSIN",
+            0b0110000..=0b0110111 => "FSINCOS",
             0b0001111 => "FTAN",
             0b0010100 => "FLOGN",
             0b0010000 => "FETOX",
@@ -972,10 +973,10 @@ impl<'a> Disassembler<'a> {
                 match extword.subop() {
                     // FMOVE/ALU op from FPx to FPx
                     0b000 => format!(
-                        "{}.x FP{},FP{}",
+                        "{}.x FP{},{}",
                         Self::fpu_alu_op(extword.opmode()),
                         extword.src_spec(),
-                        extword.dst_reg()
+                        Self::display_dst_reg(extword),
                     ),
                     0b100 => format!(
                         "FMOVE {},{}",
@@ -994,7 +995,7 @@ impl<'a> Disassembler<'a> {
                     ),
                     // FMOVE/ALU op from EA to FPx
                     0b010 => format!(
-                        "{}.{} {},FP{}",
+                        "{}.{} {},{}",
                         Self::fpu_alu_op(extword.opmode()),
                         match extword.src_spec() {
                             0b000 => "l",
@@ -1010,7 +1011,7 @@ impl<'a> Disassembler<'a> {
                             instr,
                             extword.src_spec_instrsz().context("Invalid src spec")?
                         )?,
-                        extword.dst_reg()
+                        Self::display_dst_reg(extword),
                     ),
                     0b011 => format!(
                         "FMOVE.{} FP{},{}",
@@ -1275,6 +1276,15 @@ impl<'a> Disassembler<'a> {
         };
 
         Ok(())
+    }
+
+    fn display_dst_reg(extword: FmoveExtWord) -> String {
+        if extword.opmode() & 0b1111000 == 0b0110000 {
+            // FSINCOS
+            format!("FP{}:FP{}", extword.opmode() & 0b111, extword.dst_reg())
+        } else {
+            format!("FP{}", extword.dst_reg())
+        }
     }
 }
 
