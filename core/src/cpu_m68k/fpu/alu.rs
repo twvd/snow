@@ -179,6 +179,19 @@ where
             0b0001010 => (source.atan(), [403, 430, 422, 428, 426, 1240]),
             // FSIN
             0b0001110 => (source.sin(), [391, 418, 410, 416, 414, 1228]),
+            // FSINCOS
+            0b0110000..=0b0110111 => {
+                let fpc = usize::from(opmode & 0b111);
+
+                // M6888x UM: "If FPc and FPs specify the same floating-point data register,
+                // the sine result is stored in the register, and the cosine result is discarded."
+                //
+                // So we store the cosine result first, which will be overwritten by the sine
+                // result later if destination registers are the same.
+                self.regs.fpu.fp[fpc] = source.cos().cast(SEMANTICS_EXTENDED);
+
+                (source.sin(), [451, 478, 470, 476, 474, 1288])
+            }
             // FASIN
             0b0001100 => (source.asin(), [581, 608, 600, 606, 604, 1418]),
             // FTAN
