@@ -204,11 +204,9 @@ where
 
             // CRTC/timing registers. Written 32-bits, inverted
             0x8_0000..=0x8_FFFF => {
-                if a & 3 == 3 {
-                    let reg = ((a >> 2) & 0xF) as usize;
-                    if reg == 0xF {
-                        self.mode = (!val >> 4) & 3;
-                    }
+                let reg = ((a >> 2) & 0xF) as usize;
+                if reg == 0xF {
+                    self.mode = (!val >> 4) & 3;
                 }
                 Some(())
             }
