@@ -16,6 +16,7 @@ It currently emulates the following Macintosh models:
  * Macintosh Plus
  * Macintosh SE (non-FDHD and FDHD)
  * Macintosh Classic
+ * Macintosh Portable / PowerBook 100
  * Macintosh II (non-FDHD and FDHD)
  * Macintosh IIx, IIcx, SE/30
 
