@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 /// Serializable and convertable relative path
@@ -34,7 +34,10 @@ impl RelativePath {
     }
 
     pub fn after_deserialize(&mut self, basedir: &Path) -> Result<()> {
-        self.abs = Some(Self::canonicalize_at(&self.rel, basedir)?);
+        self.abs = Some(Self::canonicalize_at(&self.rel, basedir).context(format!(
+            "Cannot resolve relative path: {}",
+            self.rel.display()
+        ))?);
         Ok(())
     }
 

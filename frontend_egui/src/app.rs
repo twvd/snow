@@ -2677,7 +2677,7 @@ impl SnowGui {
                     self.settings.add_recent_workspace(path);
                     self.model_dialog_prefill_pending = true;
                 }
-                Err(e) => self.show_error(&format!("Failed to load workspace: {}", e)),
+                Err(e) => self.show_error(&format!("Failed to load workspace\n\n{:?}", e)),
             }
         } else {
             // Clean workspace
