@@ -94,6 +94,7 @@ impl DisassemblyWidget {
             MacModel::Portable => Some("MacPortableROM"),
             MacModel::Classic => Some("MacClassicROM"),
             MacModel::MacII => Some("MacIIROM"),
+            MacModel::Quadra700 => Some("MacQuadra700ROM"),
             MacModel::MacIIFDHD | MacModel::MacIIx | MacModel::MacIIcx | MacModel::SE30 => {
                 Some("MacIIxROM")
             }
