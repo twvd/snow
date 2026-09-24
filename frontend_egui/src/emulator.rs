@@ -18,7 +18,7 @@ use snow_core::cpu_m68k::regs::{Register, RegisterFile};
 use snow_core::debuggable::DebuggableProperties;
 use snow_core::emulator::comm::{
     Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus, ScsiTargetStatus,
-    UserMessageType,
+    SlimSlotStatus, UserMessageType,
 };
 use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus};
 use snow_core::emulator::{Emulator, MouseMode};
@@ -105,6 +105,9 @@ pub struct EmulatorInitArgs {
 
     /// Enable PMMU (Macintosh II only)
     pub pmmu_enabled: bool,
+
+    /// Enable SLIM card adapter (Macintosh Portable only)
+    pub slim_adapter: bool,
 
     /// Selected NuBus video card (if applicable)
     pub video_card: NubusDeviceKind,
@@ -253,6 +256,7 @@ impl EmulatorState {
             args.ram_size,
             args.override_fdd_type,
             args.pmmu_enabled,
+            args.slim_adapter,
             shared_dir,
         )?;
 
@@ -839,6 +843,31 @@ impl EmulatorState {
             .unwrap();
     }
 
+    pub fn get_slim_status(&self) -> Option<&[Option<SlimSlotStatus>]> {
+        let status = self.status.as_ref()?;
+        status.has_slim.then_some(&status.slim[..])
+    }
+
+    pub fn slim_insert(&self, slot: usize, path: &Path, write_protect: bool) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender
+            .send(EmulatorCommand::SlimInsert(
+                slot,
+                path.to_path_buf(),
+                write_protect,
+            ))
+            .unwrap();
+    }
+
+    pub fn slim_eject(&self, slot: usize) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender.send(EmulatorCommand::SlimEject(slot)).unwrap();
+    }
+
     /// Loads a SCSI HDD image from the specified path.
     pub fn scsi_attach_hdd(&self, id: usize, path: &Path) {
         let Some(ref sender) = self.cmdsender else {
@@ -1024,6 +1053,11 @@ impl EmulatorState {
     /// Returns true if the emulated CPU has a (paged) memory management unit
     pub fn has_pmmu(&self) -> bool {
         self.status.as_ref().is_some_and(|s| s.has_pmmu)
+    }
+
+    /// Returns true if the SLIM adapter is installed
+    pub fn has_slim(&self) -> bool {
+        self.status.as_ref().is_some_and(|s| s.has_slim)
     }
 
     /// Returns current disassembly listing

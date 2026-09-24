@@ -2,7 +2,7 @@ use crate::dialogs::about::AboutDialog;
 use crate::dialogs::confirm::ConfirmDialog;
 use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
 use crate::dialogs::filedialog::SnowFileDialog;
-use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
+use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult, format_ram};
 use crate::emulator::EmulatorState;
 use crate::emulator::{EmulatorInitArgs, ScsiTargets};
 use crate::keymap::{char_to_keystroke, map_winit_keycode};
@@ -210,6 +210,10 @@ pub struct SnowGui {
     floppy_dialog_last_type: Option<ImageType>,
     floppy_dialog_target: FloppyDialogTarget,
     floppy_dialog_wp: bool,
+    slim_dialog: SnowFileDialog,
+    slim_dialog_idx: usize,
+    slim_dialog_wp: bool,
+    slim_blank_size: Option<usize>,
     create_disk_dialog: DiskImageDialog,
     record_dialog: SnowFileDialog,
     model_dialog: ModelSelectionDialog,
@@ -274,6 +278,7 @@ impl SnowGui {
     const ZOOM_FACTORS: [f32; 8] = [0.5, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0];
     const SUBMENU_WIDTH: f32 = 175.0;
     const DYNAMIC_FF_RESUME_MS: u64 = 500;
+    const SLIM_CARD_SIZES: &[usize; 3] = &[512 * 1024, 1024 * 1024, 2048 * 1024];
 
     /// Returns the target fast-forward speed based on current limit settings.
     fn ff_target_speed(&self) -> EmulatorSpeed {
@@ -442,6 +447,16 @@ impl SnowGui {
             floppy_dialog_last_image: None,
             floppy_dialog_last_type: None,
             floppy_dialog_wp: false,
+            slim_dialog: SnowFileDialog::new()
+                .add_filter("SLIM card images", &["slim", "bin"])
+                .add_save_extension("SLIM card image", "slim")
+                .default_save_extension("SLIM card image")
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
+                .initial_directory(Self::default_dir())
+                .storage(settings.fd_slim),
+            slim_dialog_idx: 0,
+            slim_dialog_wp: false,
+            slim_blank_size: None,
             workspace_dialog: SnowFileDialog::new()
                 .add_filter("Snow workspace", &["snoww"])
                 .add_save_extension("Snow workspace", "snoww")
@@ -717,19 +732,22 @@ impl SnowGui {
         whole.to_pos2()
     }
 
-    fn try_create_image(&self, result: &DiskImageDialogResult) -> Result<()> {
-        if result.filename.try_exists()? {
+    fn create_blank_file(path: &Path, size: usize) -> Result<()> {
+        if path.try_exists()? {
             bail!(
                 "Cowardly refusing to overwrite existing file. Delete the file first, or choose a different filename."
             );
         }
 
-        {
-            let mut file = File::create(result.filename.clone())?;
-            file.seek(SeekFrom::Start(result.size as u64 - 1))?;
-            file.write_all(&[0])?;
-            file.flush()?;
-        }
+        let mut file = File::create(path)?;
+        file.seek(SeekFrom::Start(size as u64 - 1))?;
+        file.write_all(&[0])?;
+        file.flush()?;
+        Ok(())
+    }
+
+    fn try_create_image(&self, result: &DiskImageDialogResult) -> Result<()> {
+        Self::create_blank_file(&result.filename, result.size)?;
         self.emu.scsi_attach_hdd(result.scsi_id, &result.filename);
         Ok(())
     }
@@ -891,6 +909,11 @@ impl SnowGui {
                 ui.menu_button("Drives", |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH);
                     self.draw_menu_floppies(ui);
+
+                    if self.emu.has_slim() {
+                        ui.separator();
+                        self.draw_menu_slim(ui);
+                    }
 
                     // Needs cloning for the later borrow to call create_disk_dialog.open()
                     let targets = self.emu.get_scsi_target_status().map(|d| d.to_owned());
@@ -2064,6 +2087,58 @@ impl SnowGui {
         }
     }
 
+    fn draw_menu_slim(&mut self, ui: &mut egui::Ui) {
+        let Some(slots) = self.emu.get_slim_status().map(|s| s.to_owned()) else {
+            return;
+        };
+        for (i, slot) in slots.iter().enumerate() {
+            let title = match slot {
+                None => format!(
+                    "{} SLIM slot #{}: (empty)",
+                    egui_material_icons::icons::ICON_EJECT,
+                    i + 1
+                ),
+                Some(s) => format!(
+                    "{} SLIM slot #{}: {}",
+                    if s.write_protect {
+                        egui_material_icons::icons::ICON_LOCK
+                    } else {
+                        egui_material_icons::icons::ICON_SD_CARD
+                    },
+                    i + 1,
+                    s.image.file_name().unwrap_or_default().to_string_lossy(),
+                ),
+            };
+            ui.menu_button(title, |ui| {
+                ui.set_min_width(Self::SUBMENU_WIDTH);
+                if ui.button("Load image...").clicked() {
+                    self.slim_dialog_idx = i;
+                    self.slim_blank_size = None;
+                    self.slim_dialog
+                        .pick_file(self.settings.native_file_dialogs);
+                }
+                ui.menu_button("Create blank image", |ui| {
+                    for &sz in Self::SLIM_CARD_SIZES {
+                        if ui.button(format_ram(sz)).clicked() {
+                            self.slim_dialog_idx = i;
+                            self.slim_blank_size = Some(sz);
+                            self.slim_dialog
+                                .save_file(self.settings.native_file_dialogs);
+                        }
+                    }
+                });
+                ui.checkbox(&mut self.slim_dialog_wp, "Mount write-protected");
+                ui.separator();
+                if ui
+                    .add_enabled(slot.is_some(), egui::Button::new("Force eject"))
+                    .clicked()
+                {
+                    self.emu.slim_eject(i);
+                }
+            });
+        }
+    }
+
     fn draw_fast_forward_button(&self, ui: &mut egui::Ui) -> egui::Response {
         let is_active = self.ff_on;
         let selection_color = ui.visuals().selection.stroke.color;
@@ -2720,6 +2795,14 @@ impl SnowGui {
                 ));
             }
 
+            if init_args.slim_adapter {
+                for (slot, card) in self.workspace.slim_cards().into_iter().enumerate() {
+                    if let Some((image, write_protect)) = card {
+                        self.emu.slim_insert(slot, &image, write_protect);
+                    }
+                }
+            }
+
             #[cfg(feature = "ethernet")]
             if let Some(scsi) = self.emu.get_scsi_targets()
                 && let Some((id, _)) = scsi
@@ -2752,6 +2835,12 @@ impl SnowGui {
         if let Some(targets) = self.emu.get_scsi_target_status().as_ref() {
             for (i, d) in targets.iter().enumerate() {
                 self.workspace.set_scsi_target(i, d.clone());
+            }
+        }
+        if let Some(slim_cards) = self.emu.get_slim_status() {
+            for slot in 0..2 {
+                self.workspace
+                    .set_slim_card(slot, slim_cards.get(slot).cloned().flatten());
             }
         }
         if let Err(e) = self.workspace.write_file(path) {
@@ -3577,6 +3666,29 @@ impl eframe::App for SnowGui {
             self.settings.save();
         }
         self.ui_active &= *self.floppy_dialog.state() != egui_file_dialog::DialogState::Open;
+
+        // SLIM card image picker dialog
+        self.slim_dialog.update(ctx, frame);
+        if let Some(path) = self.slim_dialog.take_picked() {
+            let slot = self.slim_dialog_idx;
+            match self.slim_dialog.mode() {
+                DialogMode::PickFile => {
+                    self.emu.slim_insert(slot, &path, self.slim_dialog_wp);
+                }
+                DialogMode::SaveFile => {
+                    if let Some(size) = self.slim_blank_size.take() {
+                        match Self::create_blank_file(&path, size) {
+                            Ok(()) => self.emu.slim_insert(slot, &path, false),
+                            Err(e) => self.show_error(&format!("Failed to create image: {}", e)),
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
+            self.settings.fd_slim = self.slim_dialog.storage_mut().clone();
+            self.settings.save();
+        }
+        self.ui_active &= *self.slim_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // HDD image picker dialog
         self.hdd_dialog.update(ctx, frame);

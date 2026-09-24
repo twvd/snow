@@ -113,6 +113,10 @@ impl MacModel {
         }
     }
 
+    pub const fn has_slim(self) -> bool {
+        matches!(self, Self::Portable)
+    }
+
     /// Default RAM size
     pub const fn ram_size_default(self) -> usize {
         match self {
