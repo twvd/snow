@@ -1,5 +1,5 @@
 BaseOfRom 400000 l
-RomRsrc 40001A f
+RomRsrc 40001A l
 ResetEntry 40002A f
 StartBoot 400042 f
 noDiagRom 400062 l
@@ -7,13 +7,13 @@ InitSCC 40082C f
 InitFS 400C7A f
 InitEvents 400D4C f
 PutIcon 400EC4 f
-SysError 401142
-SysBeep 4011DC
+SysError 401142 f
+SysBeep 4011DC f
 Enqueue 4019CA f
 Dequeue 4019F0 f
-ScrnBitMap 401E72
+ScrnBitMap 401E72 f
 PinRect 401F38 f
-Dispatch 401F4A
+Dispatch 401F4A f
 SetTrapAddress 401FBA f
 GetTrapAddress 40200A f
 Read 4023BE f
@@ -36,8 +36,8 @@ UnmountVol 4035B4 f
 FlushVol 4035FC f
 GetVolInfo 403824 f
 SetVol 403ADA f
-create 4041E2
-Delete 40440C
+Create 4041E2 f
+Delete 40440C f
 SetFilType 404852 f
 SetFilLock 40488A f
 RstFilLock 404894 f
@@ -63,54 +63,54 @@ BitShift 408356 f
 BitTst 40836C f
 BitSet 40837A f
 BitClr 408384 f
-random 40839C
+Random 40839C f
 ForeColor 4083EE f
 BackColor 4083F2 f
 ColorBit 408400 f
 GetMaskTable 40840E f
 GetPixel 4085D4 f
-stuffhex 408608
+StuffHex 408608 f
 InitGraf 4087A6 f
 OpenPort 40886C f
 InitPort 408884 f
 ClosePort 408904 f
-SetStdProcs 40891C
+SetStdProcs 40891C f
 LocalToGlobal 408956 f
 GlobalToLocal 40895E f
-addpt 40898A
-subpt 408992
+AddPt 40898A f
+SubPt 408992 f
 SetPort 4089B0 f
 GetPort 4089B8 f
-GrafDevice 4089C2
-SetPBits 4089C8
-BackPat 4089E0
-PortSize 4089EE
+GrafDevice 4089C2 f
+SetPBits 4089C8 f
+BackPat 4089E0 f
+PortSize 4089EE f
 MovePortTo 408A0E f
-SetOrigin 408A3A
+SetOrigin 408A3A f
 ClipRect 408A6E f
 SetClip 408A80 f
-SetPt 408AA0
-equalpt 408AAA
+SetPt 408AA0 f
+EqualPt 408AAA f
 StdText 408AB6 f
-TextFace 408C62
+TextFace 408C62 f
 DrawChar 408C6E f
-CharWidth 408C7C
-TextFont 408C94
-TextMode 408C98
-TextSize 408C9C
-SpaceExtra 408CA2
-drawstring 408CAE
+CharWidth 408C7C f
+TextFont 408C94 f
+TextMode 408C98 f
+TextSize 408C9C f
+SpaceExtra 408CA2 f
+DrawString 408CAE f
 DrawText 408CC0 f
-stringwidth 408CD8
+StringWidth 408CD8 f
 TextWidth 408CE8 f
-StdTxMeas 408D50
-MeasureText 408DF6
+StdTxMeas 408D50 f
+MeasureText 408DF6 f
 GetFontInfo 408E84 f
-stdline 409668
-LineTo 4096FA
-Line 409710
-MoveTo 409728
-Move 409734
+StdLine 409668 f
+LineTo 4096FA f
+Line 409710 f
+MoveTo 409728 f
+Move 409734 f
 HidePen 4097C0 f
 ShowPen 4097C4 f
 GetPenState 4097D0 f
@@ -120,21 +120,21 @@ PenSize 409806 f
 PenMode 409814 f
 PenPat 40981A f
 PenNormal 40982E f
-StdRect 409E7E
-FillRect 409F12
-FrameRect 409F28
-PaintRect 409F2C
-EraseRect 409F30
-InverRect 409F34
-SetRect 40A082
-EqualRect 40A090
-EmptyRect 40A0AA
+StdRect 409E7E f
+FillRect 409F12 f
+FrameRect 409F28 f
+PaintRect 409F2C f
+EraseRect 409F30 f
+InverRect 409F34 f
+SetRect 40A082 f
+EqualRect 40A090 f
+EmptyRect 40A0AA f
 OffsetRect 40A0C4 f
 InsetRect 40A0D6 f
 UnionRect 40A184 f
-pt2rect 40A1C2
-ptinrect 40A1F8
-StdRRect 40AC70
+Pt2Rect 40A1C2 f
+PtInRect 40A1F8 f
+StdRRect 40AC70 f
 FrameRoundRect 40AD02 f
 PaintRoundRect 40AD06 f
 EraseRoundRect 40AD0A f
@@ -150,12 +150,12 @@ StdArc 40AF58 f
 FrameArc 40AFD6 f
 PaintArc 40AFDA f
 EraseArc 40AFDE f
-InvertArc 40AFE2
+InvertArc 40AFE2 f
 FillArc 40AFE6 f
 AngleFromSlope 40B790 f
 SlopeFromAngle 40B7CE f
-pttoangle 40B8F2
-StdPoly 40B982
+PtToAngle 40B8F2 f
+StdPoly 40B982 f
 FramePoly 40B9F8 f
 PaintPoly 40B9FC f
 ErasePoly 40BA00 f
@@ -178,7 +178,7 @@ OpenRgn 40BD7A f
 CloseRgn 40BDA8 f
 CopyRgn 40BDFE f
 SetEmptyRgn 40BE4C f
-SetRecRgn 40BE58
+SetRecRgn 40BE58 f
 RectRgn 40BEB4 f
 OfsetRgn 40BEC2
 InsetRgn 40BEF4 f
@@ -191,29 +191,29 @@ XorRgn 40BFEA f
 PtInRgn 40C0D4 f
 RectInRgn 40C134 f
 MapRgn 40C218 f
-StdBits 40C8CC
+StdBits 40C8CC f
 CopyBits 40CA4A f
 CopyMask 40CAF0 f
 SeedFill 40CD30 f
-CalcMask 40CD38
-ScrollRect 40CE8E
+CalcMask 40CD38 f
+ScrollRect 40CE8E f
 PackBits 40CF8C f
-UnpackBits 40D01C
-StdComment 40D8D0
+UnpackBits 40D01C f
+StdComment 40D8D0 f
 StdGetPic 40D930 f
 StdPutPic 40D956 f
-PicComment 40D9D6
+PicComment 40D9D6 f
 OpenPicture 40D9EC f
 ClosePicture 40DAA8 f
 KillPicture 40DAE4 f
 DrawPicture 40DAEC f
-ScalePt 40E512
-MapPt 40E56A
-MapRect 40E5CC
+ScalePt 40E512 f
+MapPt 40E56A f
+MapRect 40E5CC f
 InitFonts 40E5E4 f
 GetFNum 40F166 f
 SetFontLock 40F1D8 f
-RealFont 40F20E
+RealFont 40F20E f
 SetFScaleDisabl 40F260
 FontMetrics 40F274 f
 UnloadSeg 40F4E0 f
@@ -243,7 +243,7 @@ Trap1_54 40F878
 InitUtil 40FCC2 f
 ReadXPRam 40FE18 f
 WriteXPRam 40FE22 f
-SetAppBase 40FE76
+SetAppBase 40FE76 f
 GetZone 40FFA4 f
 Trap1_1A 40FFA4
 Trap1_1B 40FFAA
@@ -257,10 +257,10 @@ Trap1_1D 41003C
 MaxMem 41003C f
 SetGrowZone 410070 f
 SetApplLimit 41007A f
-StackSpace 41009E
+StackSpace 41009E f
 MaxApplZone 4100AE f
 Trap1_1E 4100D6
-DisposPtr 4100F2
+DisposPtr 4100F2 f
 GetPtrSize 410108 f
 PtrZone 41011C f
 NewEmptyHandle 41013A f
@@ -276,65 +276,65 @@ HUnlock 41023A f
 HPurge 410244 f
 HNoPurge 41024E f
 MoreMasters 410274 f
-DerefHandle 41045E
-MMHPrologue 4104C6
+DerefHandle 41045E f
+MMHPrologue 4104C6 f
 PurgeHeap 410570 f
 BFindS 4106A2 f
 CompactHp 4107B2 f
 BlockMove 410CC0 f
 GetKeys 410F30 f
-Button 410F4C
-TickCount 410F5E
-GetMouse 410FA0
-StillDown 410FB6
+Button 410F4C f
+TickCount 410F5E f
+GetMouse 410FA0 f
+StillDown 410FB6 f
 WaitMouseUp 410FDE f
-EventAvail 410FFC
+EventAvail 410FFC f
 GetNextEvent 411000 f
-newstring 4111AC
-setstring 4111C4
+NewString 4111AC f
+SetString 4111C4 f
 CalcVis 411238 f
 CalcVBehind 411290 f
-ClipAbove 4112D4
+ClipAbove 4112D4 f
 PaintOne 4112F8 f
 PaintBehind 4113A2 f
 SaveOld 41140E f
 DrawNew 41143C f
 ShowHide 41149C f
-GetWMgrPort 4114DE
-CheckUpdate 4114E8
-InitWindows 41157C
-newwindow 411642
+GetWMgrPort 4114DE f
+CheckUpdate 4114E8 f
+InitWindows 41157C f
+NewWindow 411642 f
 CloseWindow 411776 f
-DisposWindow 411804
-ShowWindow 411812
+DisposWindow 411804 f
+ShowWindow 411812 f
 HideWindow 41183A f
-GetWRefCon 411864
-SetWRefCon 411872
+GetWRefCon 411864 f
+SetWRefCon 411872 f
 SetWindowPic 411882 f
 GetWindowPic 411888 f
-getwtitle 41188E
-setwtitle 4118A6
-deltapoint 411924
-MoveWindow 411974
-HiliteWindow 411A84
+GetWTitle 41188E f
+SetWTitle 4118A6 f
+DeltaPoint 411924 f
+MoveWindow 411974 f
+HiliteWindow 411A84 f
 SizeWindow 411AC4 f
 ZoomWindow 411B18 f
-trackgoaway 411B7E
-trackbox 411B86
+TrackGoAway 411B7E f
+TrackBox 411B86 f
 SelectWindow 411BF4 f
 BringToFront 411C24 f
-SendBehind 411CC0
-BeginUpdate 411D16
-EndUpdate 411D50
-FrontWindow 411D72
-dragwindow 411D9C
-InvalRgn 411F8E
-InvalRect 411FCE
-ValidRgn 411FEC
-ValidRect 411FF0
-growwindow 411FF4
-findwindow 4120F6
-DrawGrowIcon 41217A
+SendBehind 411CC0 f
+BeginUpdate 411D16 f
+EndUpdate 411D50 f
+FrontWindow 411D72 f
+DragWindow 411D9C f
+InvalRgn 411F8E f
+InvalRect 411FCE f
+ValidRgn 411FEC f
+ValidRect 411FF0 f
+GrowWindow 411FF4 f
+FindWindow 4120F6 f
+DrawGrowIcon 41217A f
 InitMenus 412198 f
 ClearMenuBar 4121FE f
 InsertMenu 41220E f
@@ -346,98 +346,98 @@ DisableItem 412420 f
 MenuSelect 41246E f
 GetMenuBar 41279E f
 SetMenuBar 4127B2 f
-DisposMenu 4127C2
+DisposMenu 4127C2 f
 FlashMenuBar 4127D8 f
-GetItmIcon 4128AC
-SetItmIcon 4128B0
-GetItmStyle 4128B4
-SetItmStyle 4128B8
-GetItmMark 4128BC
-SetItmMark 4128C0
+GetItmIcon 4128AC f
+SetItmIcon 4128B0 f
+GetItmStyle 4128B4 f
+SetItmStyle 4128B8 f
+GetItmMark 4128BC f
+SetItmMark 4128C0 f
 CheckItem 4128C4 f
 MenuKey 4128E4 f
 GetItem 412960 f
-CalcMenuSize 412994
-newmenu 4129CA
-appendmenu 412A1A
-insmenuitem 412A22
-GetMHandle 412B7E
-DelMenuItem 412B9E
+CalcMenuSize 412994 f
+NewMenu 4129CA f
+AppendMenu 412A1A f
+InsMenuItem 412A22 f
+GetMHandle 412B7E f
+DelMenuItem 412B9E f
 SetItem 412BD0 f
-SetMFlash 412C16
+SetMFlash 412C16 f
 AddResMenu 412C20 f
-InsertResMenu 412C28
-CountMItems 412CFC
+InsertResMenu 412C28 f
+CountMItems 412CFC f
 PlotIcon 412D18 f
-newcontrol 412D54
+NewControl 412D54 f
 DisposControl 412E96
 KillControls 412EBA f
 Trap1_16D 412ECC
 ShowControl 412ED6 f
 HideControl 412EF4 f
 MoveControl 412F0E f
-GetCRefCon 412F4C
-SetCRefCon 412F5A
+GetCRefCon 412F4C f
+SetCRefCon 412F5A f
 GetCtlAction 412F6A f
 SetCtlAction 412F6E f
-SizeControl 412F72
+SizeControl 412F72 f
 HiliteControl 412F9A f
-getctitle 412FC6
-setctitle 412FDE
-GetCtlValue 413020
-GetMinCtl 41302E
-GetMaxCtl 413032
-SetCtlValue 413036
-SetMinCtl 413078
-SetMaxCtl 41307C
-testcontrol 413080
-dragcontrol 4130AE
-trackcontrol 413160
-UpdtControls 41324E
-DrawControls 41325E
-findcontrol 4132E6
-InitResources 413376
-RsrcZoneInit 413708
-createresfile 4137A6
-openrfperm 41381A
-UseResFile 41382E
+GetCTitle 412FC6 f
+SetCTitle 412FDE f
+GetCtlValue 413020 f
+GetMinCtl 41302E f
+GetMaxCtl 413032 f
+SetCtlValue 413036 f
+SetMinCtl 413078 f
+SetMaxCtl 41307C f
+TestControl 413080 f
+DragControl 4130AE f
+TrackControl 413160 f
+UpdtControls 41324E f
+DrawControls 41325E f
+FindControl 4132E6 f
+InitResources 413376 f
+RsrcZoneInit 413708 f
+CreateResFile 4137A6 f
+OpenRFPerm 41381A f
+UseResFile 41382E f
 GetResFileAttrs 413838 f
 SetResFileAttrs 413844 f
 UpdateResFile 413910 f
 CloseResFile 413BD2 f
-Count1Resources 413C76
-CountResources 413C7A
+Count1Resources 413C76 f
+CountResources 413C7A f
 Get1IxResource 413CA0
 GetIndResource 413CA4 f
 Count1Types 413D3C f
 CountTypes 413D40 f
-Get1IxType 413D86
+Get1IxType 413D86 f
 GetIndType 413D8A f
 Unique1ID 413DAC f
 UniqueID 413DB0 f
 Get1Resource 413DEA f
-Get1NamedResour 413E2E
+Get1NamedResour 413E2E f
 GetNamedResource 413E32 f
 LoadResource 4143CC f
 ReleaseResource 41440A f
 DetachResource 414434 f
-ChangedResource 41444C
+ChangedResource 41444C f
 WriteResource 414482 f
-HomeResFile 4144BC
+HomeResFile 4144BC f
 SetResPurge 4144E4 f
 SetResLoad 414504 f
-CurResFile 41450E
-ResError 414516
+CurResFile 41450E f
+ResError 414516 f
 Trap1_1AC 41451E
 Trap1_1AE 41452E
-GetResAttrs 414538
-SetResAttrs 41454C
-getresinfo 41457E
-setresinfo 4145C4
-addresource 41460E
-RmveResource 4146E8
+GetResAttrs 414538 f
+SetResAttrs 41454C f
+GetResInfo 41457E f
+SetResInfo 4145C4 f
+AddResource 41460E f
+RmveResource 4146E8 f
 SizeRsrc 414864 f
-MaxSizeRsrc 414886
+MaxSizeRsrc 414886 f
 Trap1_1C5 41489A
 InitDialogs 4148B2 f
 StopAlert 414968 f
@@ -446,7 +446,7 @@ CautionAlert 414970 f
 Alert 414974 f
 GetNewDialog 414A90 f
 NewDialog 414AC8 f
-IsDialogEvent 414B60
+IsDialogEvent 414B60 f
 DialogSelect 414B9A f
 ModalDialog 414BDA f
 DrawDialog 414C68 f
@@ -516,15 +516,15 @@ TEDispose 4160C0 f
 TextBox 4160DE f
 TESetText 4161BC f
 TECalText 416200 f
-TESetSelect 41623A
+TESetSelect 41623A f
 TENew 416266 f
-TEUpdate 4162E0
-teclick 41630E
+TEUpdate 4162E0 f
+TEClick 41630E f
 TECopy 4167AE f
 TECut 4167D4 f
 TEDelete 4167E2 f
-TEActivate 416A62
-TEDeactivate 416A84
+TEActivate 416A62 f
+TEDeactivate 416A84 f
 TEIdle 416A9A f
 TEPaste 416AC2 f
 TEInsert 416B80 f
