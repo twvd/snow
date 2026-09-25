@@ -314,12 +314,16 @@ impl BusMember<Address> for Normandy {
         match addr {
             // SLIM card 1 space
             0x50_0000..=0x6F_FFFF => {
-                self.slim_write(0, (addr - 0x50_0000) as usize, val);
+                if !self.slim1_protect.protect() {
+                    self.slim_write(0, (addr - 0x50_0000) as usize, val);
+                }
                 Some(())
             }
             // SLIM card 2 space
             0x70_0000..=0x8F_FFFF => {
-                self.slim_write(1, (addr - 0x70_0000) as usize, val);
+                if !self.slim2_protect.protect() {
+                    self.slim_write(1, (addr - 0x70_0000) as usize, val);
+                }
                 Some(())
             }
             // SLIM adapter registers
