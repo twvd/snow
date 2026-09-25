@@ -861,6 +861,18 @@ impl EmulatorState {
             .unwrap();
     }
 
+    /// Inserts a SLIM card into the first available slot
+    pub fn slim_insert_firstfree(&self, path: &Path, write_protect: bool) -> Result<usize, &'static str> {
+        let Some(slots) = self.get_slim_status() else {
+            return Err("No SLIM adapter is installed");
+        };
+        let Some(slot) = slots.iter().position(Option::is_none) else {
+            return Err("No free SLIM card slots");
+        };
+        self.slim_insert(slot, path, write_protect);
+        Ok(slot)
+    }
+
     pub fn slim_eject(&self, slot: usize) {
         let Some(ref sender) = self.cmdsender else {
             return;

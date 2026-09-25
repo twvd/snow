@@ -39,7 +39,7 @@ use strum::IntoEnumIterator;
 
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
@@ -3297,6 +3297,23 @@ impl SnowGui {
                             .text("Cannot load hard drive image: no free SCSI slot")
                             .kind(ToastKind::Error),
                     );
+                }
+            }
+            "slim" | "bin" => {
+                // Check for an EDisk header to avoid accidental file corruption
+                let mut hdr = [0u8; 144];
+                if File::open(path)
+                    .and_then(|mut f| f.read_exact(&mut hdr))
+                    .is_ok()
+                    && &hdr[132..144] == b"EDisk Gary D"
+                {
+                    if let Err(e) = self.emu.slim_insert_firstfree(path, false) {
+                        self.toasts.add(
+                            Toast::new()
+                                .text(format!("Cannot load SLIM image: {}", e))
+                                .kind(ToastKind::Error),
+                        );
+                    }
                 }
             }
             _ => {
