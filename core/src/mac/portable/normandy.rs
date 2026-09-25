@@ -7,11 +7,12 @@
 use crate::bus::{Address, BusMember};
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::emulator::comm::SlimSlotStatus;
-use crate::mac::scsi::disk_image::DiskImage;
+use crate::mac::scsi::disk_image::{DiskImage, FileDiskImage};
 use crate::tickable::{Tickable, Ticks};
 use anyhow::{Result, bail};
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 const IDLE_DTACK_DELAY: u8 = 64;
 const SLIM_DTACK_DELAY: u8 = 16;
@@ -61,9 +62,12 @@ bitfield! {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct SlimCard {
+    #[serde(skip)]
     image: Option<Box<dyn DiskImage>>,
+    /// Path of the card image, used to reattach the image after loading a save state
+    path: Option<PathBuf>,
     write_protect: bool,
 }
 
@@ -85,7 +89,6 @@ pub struct Normandy {
     slim2_protect: SlimProtect,
 
     slim_rom: Vec<u8>,
-    #[serde(skip)]
     cards: [SlimCard; 2],
 
     pub dtack_counter: u8,
@@ -113,12 +116,24 @@ impl Normandy {
         }
     }
 
-    /// Card images aren't serialized, so report both slots as empty after loading a state
     pub(crate) fn after_deserialize(&mut self) {
-        self.slim1_status.set_inserted(false);
-        self.slim1_status.set_readonly(false);
-        self.slim2_status.set_inserted(false);
-        self.slim2_status.set_readonly(false);
+        for slot in 0..self.cards.len() {
+            let card = &mut self.cards[slot];
+            let Some(path) = &card.path else { continue };
+            match FileDiskImage::open(path, !card.write_protect) {
+                Ok(image) => card.image = Some(Box::new(image)),
+                Err(e) => {
+                    log::error!("Cannot reinsert SLIM card {}: {:?}", slot, e);
+                    card.path = None;
+                    let status = match slot {
+                        0 => &mut self.slim1_status,
+                        _ => &mut self.slim2_status,
+                    };
+                    status.set_inserted(false);
+                    status.set_readonly(false);
+                }
+            }
+        }
     }
 
     pub(crate) fn slim_installed(&self) -> bool {
@@ -162,6 +177,7 @@ impl Normandy {
             }
         }
         self.cards[slot] = SlimCard {
+            path: image.image_path().map(|p| p.to_path_buf()),
             image: Some(image),
             write_protect,
         };
@@ -173,6 +189,7 @@ impl Normandy {
             bail!("Invalid SLIM slot {}", slot);
         }
         self.cards[slot].image = None;
+        self.cards[slot].path = None;
         match slot {
             0 => {
                 self.slim1_eject.set_eject(false);

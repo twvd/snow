@@ -179,7 +179,8 @@ where
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, _renderer: TRenderer) {
+    pub fn after_deserialize(&mut self, renderer: TRenderer) {
+        self.video.after_deserialize(renderer).unwrap();
         self.asc.after_deserialize();
         self.normandy.after_deserialize();
 

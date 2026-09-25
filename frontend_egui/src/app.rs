@@ -3306,14 +3306,13 @@ impl SnowGui {
                     .and_then(|mut f| f.read_exact(&mut hdr))
                     .is_ok()
                     && &hdr[132..144] == b"EDisk Gary D"
+                    && let Err(e) = self.emu.slim_insert_firstfree(path, false)
                 {
-                    if let Err(e) = self.emu.slim_insert_firstfree(path, false) {
-                        self.toasts.add(
-                            Toast::new()
-                                .text(format!("Cannot load SLIM image: {}", e))
-                                .kind(ToastKind::Error),
-                        );
-                    }
+                    self.toasts.add(
+                        Toast::new()
+                            .text(format!("Cannot load SLIM image: {}", e))
+                            .kind(ToastKind::Error),
+                    );
                 }
             }
             _ => {
