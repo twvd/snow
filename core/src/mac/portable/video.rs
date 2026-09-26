@@ -62,6 +62,11 @@ where
         Ok(())
     }
 
+    pub(crate) fn after_deserialize(&mut self, renderer: T) -> Result<()> {
+        self.renderer = Some(renderer);
+        self.render()
+    }
+
     pub(crate) fn blank(&mut self) -> Result<()> {
         self.framebuffer.fill(0xFF);
         self.render()

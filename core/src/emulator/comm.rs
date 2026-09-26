@@ -43,6 +43,8 @@ pub enum EmulatorCommand {
     /// Toggle automatic writeback for a floppy drive.
     /// Parameters: drive id, enabled
     SetFloppyWriteback(usize, bool),
+    SlimInsert(usize, PathBuf, bool),
+    SlimEject(usize),
     ScsiAttachHdd(usize, PathBuf),
     ScsiBranchHdd(usize, PathBuf),
     ScsiAttachCdrom(usize),
@@ -134,6 +136,8 @@ pub struct EmulatorStatus {
     pub fdd: [FddStatus; 3],
     pub model: MacModel,
     pub has_pmmu: bool,
+    pub has_slim: bool,
+    pub slim: [Option<SlimSlotStatus>; 2],
     pub speed: EmulatorSpeed,
     pub effective_speed: f64,
     pub scsi: [Option<ScsiTargetStatus>; 7],
@@ -176,6 +180,13 @@ pub struct FddStatus {
     pub writeback_supported: bool,
     /// True if writeback is currently armed for this drive.
     pub writeback_enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct SlimSlotStatus {
+    pub image: PathBuf,
+    pub size: usize,
+    pub write_protect: bool,
 }
 
 /// A friendly message ready for display to a user

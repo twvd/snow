@@ -10,6 +10,7 @@ use crate::widgets::framebuffer::ScalingAlgorithm;
 use anyhow::{Context, Result};
 use eframe::egui;
 use serde::{Deserialize, Deserializer, Serialize};
+use snow_core::emulator::comm::SlimSlotStatus;
 use snow_core::mac::MacModel;
 #[cfg(feature = "ethernet")]
 use snow_core::mac::scsi::ethernet::EthernetLinkType;
@@ -144,6 +145,22 @@ impl Into<ScsiTarget> for WorkspaceScsiTarget {
     }
 }
 
+/// SLIM card inserted into a slot of the Macintosh Portable SLIM adapter
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WorkspaceSlimCard {
+    pub image: RelativePath,
+    pub write_protect: bool,
+}
+
+impl From<SlimSlotStatus> for WorkspaceSlimCard {
+    fn from(value: SlimSlotStatus) -> Self {
+        Self {
+            image: RelativePath::from_absolute(&value.image),
+            write_protect: value.write_protect,
+        }
+    }
+}
+
 /// Workspace variant of link mode for ethernet device
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
@@ -261,6 +278,9 @@ pub struct Workspace {
     /// Configured SCSI targets
     scsi_targets: [WorkspaceScsiTarget; 7],
 
+    /// Inserted SLIM cards
+    slim_cards: [Option<WorkspaceSlimCard>; 2],
+
     /// Window positions
     windows: HashMap<String, [f32; 4]>,
 
@@ -325,6 +345,7 @@ impl Default for Workspace {
             extension_rom_path: None,
             disks: Default::default(),
             scsi_targets: Default::default(),
+            slim_cards: Default::default(),
             windows: HashMap::new(),
             init_args: EmulatorInitArgs::default(),
             model: None,
@@ -399,6 +420,9 @@ impl Workspace {
                 | WorkspaceScsiTarget::Printer => (),
             }
         }
+        for c in result.slim_cards.iter_mut().flatten() {
+            c.image.after_deserialize(parent)?;
+        }
         for (i, d) in result.disks.iter_mut().enumerate() {
             if let Some(p) = d.as_mut() {
                 p.after_deserialize(parent)?;
@@ -464,6 +488,9 @@ impl Workspace {
                 | WorkspaceScsiTarget::Printer => (),
             }
         }
+        for c in self.slim_cards.iter_mut().flatten() {
+            c.image.before_serialize(parent)?;
+        }
         for p in &mut self.floppy_images {
             p.before_serialize(parent)?;
         }
@@ -478,6 +505,18 @@ impl Workspace {
 
     pub fn set_scsi_target(&mut self, id: usize, target: impl Into<ScsiTarget>) {
         self.scsi_targets[id] = target.into().try_into().unwrap_or_default();
+    }
+
+    pub fn slim_cards(&self) -> [Option<(PathBuf, bool)>; 2] {
+        core::array::from_fn(|i| {
+            self.slim_cards[i]
+                .as_ref()
+                .map(|c| (c.image.get_absolute(), c.write_protect))
+        })
+    }
+
+    pub fn set_slim_card(&mut self, slot: usize, card: Option<SlimSlotStatus>) {
+        self.slim_cards[slot] = card.map(Into::into);
     }
 
     pub fn set_rom_path(&mut self, p: &Path) {

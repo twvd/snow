@@ -19,6 +19,9 @@ const SELECTABLE_VIDEO_CARDS: &[NubusDeviceKind] = &[NubusDeviceKind::Mdc12, Nub
 /// Video cards that support a user-selectable monitor.
 const VIDEO_CARDS_WITH_MONITOR: &[NubusDeviceKind] = &[NubusDeviceKind::Mdc12];
 
+/// Maximum RAM size supported with the SLIM card adapter installed
+const SLIM_ADAPTER_MAX_RAM: usize = 5 * 1024 * 1024;
+
 /// Dialog for selecting Macintosh model and associated ROMs
 pub struct ModelSelectionDialog {
     open: bool,
@@ -67,7 +70,7 @@ pub struct ModelSelectionDialog {
     display_rom_error: String,
 }
 
-fn format_ram(sz: usize) -> String {
+pub fn format_ram(sz: usize) -> String {
     if sz < 1024 * 1024 {
         format!("{} KB", sz / 1024)
     } else {
@@ -171,6 +174,10 @@ impl ModelSelectionDialog {
         }
         self.early_800k = init_args.override_fdd_type == Some(DriveType::GCR800KPWM);
         self.init_args = init_args.clone();
+        if !self.selected_model.has_slim() {
+            self.init_args.slim_adapter = false;
+        }
+        self.clamp_ram_for_slim_adapter();
 
         // Recompute model-dependent state (e.g. whether a display ROM is required).
         self.update_display_rom_requirement();
@@ -201,6 +208,10 @@ impl ModelSelectionDialog {
         self.update_display_rom_requirement();
 
         self.init_args.ram_size = None;
+        if !self.selected_model.has_slim() {
+            self.init_args.slim_adapter = false;
+        }
+        self.clamp_ram_for_slim_adapter();
 
         // Load from last used ROMs if possible
         if let Some((_, path)) = self
@@ -423,7 +434,14 @@ impl ModelSelectionDialog {
                             .unwrap_or_else(|| self.selected_model.ram_size_default()),
                     ))
                     .show_ui(ui, |ui| {
-                        for &sz in self.selected_model.ram_size_options() {
+                        for &sz in self
+                            .selected_model
+                            .ram_size_options()
+                            .iter()
+                            .filter(|&&sz| {
+                                !self.init_args.slim_adapter || sz <= SLIM_ADAPTER_MAX_RAM
+                            })
+                        {
                             ui.selectable_value(
                                 &mut self.init_args.ram_size,
                                 Some(sz),
@@ -551,6 +569,13 @@ impl ModelSelectionDialog {
                 }
                 if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
                     ui.checkbox(&mut self.init_args.pmmu_enabled, "Enable 68851 PMMU");
+                }
+                if self.selected_model.has_slim()
+                    && ui
+                        .checkbox(&mut self.init_args.slim_adapter, "SLIM card adapter")
+                        .changed()
+                {
+                    self.clamp_ram_for_slim_adapter();
                 }
             });
 
@@ -704,6 +729,9 @@ impl ModelSelectionDialog {
                         if !matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
                             self.init_args.pmmu_enabled = false;
                         }
+                        if !self.selected_model.has_slim() {
+                            self.init_args.slim_adapter = false;
+                        }
 
                         self.result = Some(ModelSelectionResult {
                             model: self.selected_model,
@@ -762,6 +790,20 @@ impl ModelSelectionDialog {
 
         if last_validation_disabled != self.disable_rom_validation {
             self.do_validate_roms();
+        }
+    }
+
+    /// Limits the RAM size to 5MB if the SLIM adapter is installed
+    fn clamp_ram_for_slim_adapter(&mut self) {
+        if !self.init_args.slim_adapter {
+            return;
+        }
+        let ram_size = self
+            .init_args
+            .ram_size
+            .unwrap_or_else(|| self.selected_model.ram_size_default());
+        if ram_size > SLIM_ADAPTER_MAX_RAM {
+            self.init_args.ram_size = Some(SLIM_ADAPTER_MAX_RAM);
         }
     }
 
