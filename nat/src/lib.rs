@@ -617,6 +617,11 @@ impl NatEngine {
         self.iface
             .poll(timestamp, &mut self.device, &mut self.sockets);
 
+        // Clean up expired NAT entries. This has to run between poll() and forwarding: a
+        // socket aborted while forwarding only sends its RST on the next poll(), and reaping
+        // it before then would leave the emulator believing the connection is still open.
+        self.cleanup_expired_entries()?;
+
         // Detect new UDP flows and create NAT entries
         self.detect_new_flows()?;
 
@@ -629,9 +634,6 @@ impl NatEngine {
             self.forward_tls_to_smoltcp()?;
             self.forward_smoltcp_to_tls()?;
         }
-
-        // Clean up expired NAT entries
-        self.cleanup_expired_entries()?;
 
         // Update active connections statistics
         self.stats.nat_active_tcp.store(
@@ -1279,9 +1281,9 @@ impl NatEngine {
         for handle in failed_handles {
             log::error!("Aborting connection due to TLS failure");
             let socket = self.sockets.get_mut::<tcp::Socket>(handle);
+            // Removed once the RST is out, when the socket has reached CLOSED
+            Self::discard_received(socket);
             socket.abort();
-            self.nat_table.remove(&handle);
-            self.sockets.remove(handle);
         }
 
         Ok(())
@@ -1595,9 +1597,25 @@ impl NatEngine {
         Ok(())
     }
 
-    /// Clean up expired NAT entries that have been idle too long
+    /// Clean up expired NAT entries that have been idle too long, and TCP entries whose
+    /// connection with the emulator has fully closed (or was reset)
     fn cleanup_expired_entries(&mut self) -> Result<()> {
+        use smoltcp::socket::tcp;
+
         let now = Instant::now();
+
+        let is_tcp = |entry: &NatEntry| {
+            matches!(entry, NatEntry::Tcp(_)) || {
+                #[cfg(feature = "https_stripping")]
+                {
+                    matches!(entry, NatEntry::TcpHttpsStripping(_))
+                }
+                #[cfg(not(feature = "https_stripping"))]
+                {
+                    false
+                }
+            }
+        };
 
         // Find expired entries
         let expired: Vec<_> = self
@@ -1612,11 +1630,45 @@ impl NatEngine {
             })
             .collect();
 
+        // Find TCP entries whose smoltcp socket has reached CLOSED. A socket can get there
+        // (LAST-ACK -> CLOSED) with data from the emulator still waiting for the OS socket
+        // to take it; those stay until it has been passed on.
+        let closed: Vec<_> = self
+            .nat_table
+            .iter()
+            .filter(|(handle, entry)| {
+                // Only look the socket up for TCP entries: get() panics on a type mismatch
+                is_tcp(entry) && !expired.contains(handle) && {
+                    let socket = self.sockets.get::<tcp::Socket>(**handle);
+                    socket.state() == tcp::State::Closed && !socket.can_recv()
+                }
+            })
+            .map(|(handle, _)| *handle)
+            .collect();
+
+        // An expired TCP entry whose socket is still open is reset first, so the emulator
+        // is not left waiting on a connection that is gone. It is removed on the next pass,
+        // once poll() has sent the RST.
+        let expired: Vec<_> = expired
+            .into_iter()
+            .filter(|handle| {
+                if is_tcp(&self.nat_table[handle]) {
+                    let socket = self.sockets.get_mut::<tcp::Socket>(*handle);
+                    if socket.state() != tcp::State::Closed {
+                        Self::discard_received(socket);
+                        socket.abort();
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect();
+
         // Remove expired entries
         self.stats
             .nat_expired
             .fetch_add(expired.len(), Ordering::Relaxed);
-        for handle in expired {
+        for handle in expired.into_iter().chain(closed) {
             self.nat_table.remove(&handle);
 
             // Close and remove the smoltcp socket
