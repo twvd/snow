@@ -4,7 +4,7 @@ Snow supports bridging LocalTalk over UDP multicast ('LToUDP'), compatible with 
 real Mac hardware through an adapter such as the [TashTalk](https://github.com/lampmerchant/tashtalk).
 
 By default, MacOS will use serial port B for LocalTalk. To enable LToUDP, enable the bridge through the
-'Ports' -> 'Channel B (printer)' -> 'Enable LocalTalk bridge'.
+'Ports' -> 'Channel B (printer)' -> 'Enable LocalTalk (UDP)', or start Snow with `--serial-bridge-b localtalk`.
 
 ![LToUDP menu](../../images/ltoudp_menu.png)
 
