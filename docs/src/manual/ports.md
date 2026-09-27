@@ -23,6 +23,12 @@ filename of the virtual serial port for use in your host operating system. On Li
 and
 on MacOS `/dev/ttys<nnn>`.
 
+## Saving bridges in the workspace
+
+Enabled bridges are saved in the workspace and re-enabled when the workspace is loaded. A PTY bridge gets a new device
+filename every time it is enabled. Bridges specified on the command line (`--serial-bridge-a`, `--serial-bridge-b`)
+take precedence over those saved in the workspace.
+
 ## Using the built-in terminal
 
 ![Terminal](../images/ports_terminal.png)

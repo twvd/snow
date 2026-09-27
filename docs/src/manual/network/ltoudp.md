@@ -5,6 +5,7 @@ real Mac hardware through an adapter such as the [TashTalk](https://github.com/l
 
 By default, MacOS will use serial port B for LocalTalk. To enable LToUDP, enable the bridge through the
 'Ports' -> 'Channel B (printer)' -> 'Enable LocalTalk (UDP)', or start Snow with `--serial-bridge-b localtalk`.
+The bridge setting is saved in the workspace, so it is re-enabled the next time the workspace is loaded.
 
 ![LToUDP menu](../../images/ltoudp_menu.png)
 
