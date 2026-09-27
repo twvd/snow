@@ -318,9 +318,11 @@ impl SnowGui {
             Some(SerialBridgeConfig::Pty)
         } else if let Some(port_str) = mode.strip_prefix("tcp:") {
             port_str.parse::<u16>().ok().map(SerialBridgeConfig::Tcp)
+        } else if mode == "localtalk" {
+            Some(SerialBridgeConfig::LocalTalk)
         } else {
             log::warn!(
-                "Invalid serial bridge mode: '{}'. Use 'pty' or 'tcp:PORT'",
+                "Invalid serial bridge mode: '{}'. Use 'pty', 'tcp:PORT' or 'localtalk'",
                 mode
             );
             None
