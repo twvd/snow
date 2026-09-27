@@ -64,12 +64,14 @@ struct Args {
     zen: bool,
 
     /// Enable serial bridge on SCC channel A (modem port).
-    /// Values: "pty" for PTY mode (Unix only), "tcp:PORT" for TCP mode
+    /// Values: "pty" for PTY mode (Unix only), "tcp:PORT" for TCP mode,
+    /// "localtalk" for LocalTalk over UDP
     #[arg(long, value_name = "MODE")]
     serial_bridge_a: Option<String>,
 
     /// Enable serial bridge on SCC channel B (printer port).
-    /// Values: "pty" for PTY mode (Unix only), "tcp:PORT" for TCP mode
+    /// Values: "pty" for PTY mode (Unix only), "tcp:PORT" for TCP mode,
+    /// "localtalk" for LocalTalk over UDP
     #[arg(long, value_name = "MODE")]
     serial_bridge_b: Option<String>,
 
