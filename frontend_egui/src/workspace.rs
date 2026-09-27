@@ -14,6 +14,7 @@ use snow_core::mac::MacModel;
 #[cfg(feature = "ethernet")]
 use snow_core::mac::scsi::ethernet::EthernetLinkType;
 use snow_core::mac::scsi::target::ScsiTargetType;
+use snow_core::mac::serial_bridge::SerialBridgeConfig;
 
 /// Custom deserializer that skips invalid shader configs instead of failing entirely
 fn deserialize_shader_configs_lenient<'de, D>(
@@ -302,6 +303,9 @@ pub struct Workspace {
 
     /// Ethernet link type
     pub ethernet_link_type: WorkspaceEthernetLinkType,
+
+    /// Serial bridges per SCC channel (index 0 = Channel A, index 1 = Channel B)
+    pub serial_bridges: [Option<SerialBridgeConfig>; 2],
 }
 
 impl Default for Workspace {
@@ -338,6 +342,7 @@ impl Default for Workspace {
             shader_enabled: false,
             shader_configs: Vec::new(),
             ethernet_link_type: WorkspaceEthernetLinkType::default(),
+            serial_bridges: [None, None],
         }
     }
 }

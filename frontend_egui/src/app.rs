@@ -1877,7 +1877,7 @@ impl SnowGui {
         }
     }
 
-    fn draw_serial_bridge_menu(&self, ui: &mut egui::Ui, ch: SccCh) {
+    fn draw_serial_bridge_menu(&mut self, ui: &mut egui::Ui, ch: SccCh) {
         let is_enabled = self.emu.is_serial_bridge_enabled(ch);
         let emu_ready = self.emu.is_initialized();
 
@@ -1891,6 +1891,7 @@ impl SnowGui {
                 .clicked()
             {
                 let _ = self.emu.disable_serial_bridge(ch);
+                self.workspace.serial_bridges[ch as usize] = None;
             }
         } else {
             // Bridge is inactive - show enable options
@@ -1902,6 +1903,7 @@ impl SnowGui {
                 .clicked()
             {
                 let _ = self.emu.enable_serial_bridge(ch, SerialBridgeConfig::Pty);
+                self.workspace.serial_bridges[ch as usize] = Some(SerialBridgeConfig::Pty);
             }
 
             let port = match ch {
@@ -1918,6 +1920,7 @@ impl SnowGui {
                 let _ = self
                     .emu
                     .enable_serial_bridge(ch, SerialBridgeConfig::Tcp(port));
+                self.workspace.serial_bridges[ch as usize] = Some(SerialBridgeConfig::Tcp(port));
             }
 
             if ui
@@ -1927,6 +1930,7 @@ impl SnowGui {
                 let _ = self
                     .emu
                     .enable_serial_bridge(ch, SerialBridgeConfig::LocalTalk);
+                self.workspace.serial_bridges[ch as usize] = Some(SerialBridgeConfig::LocalTalk);
             }
         }
     }
@@ -2729,6 +2733,15 @@ impl SnowGui {
             {
                 self.emu
                     .set_eth_link(id, self.workspace.get_ethernet_link_type());
+            }
+
+            // Bridges given on the command line take precedence over the workspace
+            for (idx, ch) in [SccCh::A, SccCh::B].into_iter().enumerate() {
+                if self.pending_serial_bridges[idx].is_none()
+                    && let Some(config) = self.workspace.serial_bridges[idx].clone()
+                {
+                    let _ = self.emu.enable_serial_bridge(ch, config);
+                }
             }
         } else {
             self.emu.deinit();
