@@ -7,7 +7,7 @@ use super::via::Via;
 use super::video::Video;
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
-use crate::emulator::comm::EmulatorSpeed;
+use crate::emulator::comm::{EmulatorSpeed, SlimSlotStatus};
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
@@ -17,6 +17,7 @@ use crate::mac::macii::bus::DEFAULT_BUS_SPEED;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
+use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::swim::Swim;
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
@@ -108,6 +109,7 @@ where
         renderer: TRenderer,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
+        slim_adapter: bool,
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
 
@@ -161,7 +163,7 @@ where
             progkey_pressed: LatchingEvent::default(),
             mouse_mode,
             pmgr: Pmgr::new(),
-            normandy: Normandy::new(),
+            normandy: Normandy::new(slim_adapter),
         };
 
         // Disable memory test
@@ -177,8 +179,10 @@ where
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
-    pub fn after_deserialize(&mut self, _renderer: TRenderer) {
+    pub fn after_deserialize(&mut self, renderer: TRenderer) {
+        self.video.after_deserialize(renderer).unwrap();
         self.asc.after_deserialize();
+        self.normandy.after_deserialize();
 
         // Mark all RAM pages as dirty after deserialization to update memory display
         self.ram_dirty
@@ -187,6 +191,31 @@ where
 
     pub fn model(&self) -> MacModel {
         self.model
+    }
+
+    /// Returns true if the SLIM card adapter is installed
+    pub fn slim_installed(&self) -> bool {
+        self.normandy.slim_installed()
+    }
+
+    /// Returns the status of the SLIM card slots
+    pub fn slim_status(&self) -> [Option<SlimSlotStatus>; 2] {
+        self.normandy.slim_status()
+    }
+
+    /// Inserts a SLIM card image into a slot
+    pub fn slim_insert(
+        &mut self,
+        slot: usize,
+        image: Box<dyn DiskImage>,
+        write_protect: bool,
+    ) -> Result<()> {
+        self.normandy.slim_insert(slot, image, write_protect)
+    }
+
+    /// Ejects the SLIM card from a slot
+    pub fn slim_eject(&mut self, slot: usize) -> Result<()> {
+        self.normandy.slim_eject(slot)
     }
 
     pub fn get_effective_speed(&self) -> f64 {
@@ -238,7 +267,15 @@ where
     fn write_normal(&mut self, addr: Address, val: Byte) -> Option<()> {
         match addr {
             // RAM
-            0x0000_0000..=0x008F_FFFF => self.normal_ram_write(addr, val),
+            0x0000_0000..=0x004F_FFFF => self.normal_ram_write(addr, val),
+            // SLIM cards, or RAM
+            0x0050_0000..=0x008F_FFFF => {
+                if self.normandy.slim_installed() {
+                    self.normandy.write(addr, val)
+                } else {
+                    self.normal_ram_write(addr, val)
+                }
+            }
             // ROM, or Remapped RAM for 15MB RAM Mod
             0x0090_0000..=0x009F_FFFF => {
                 if self.model == MacModel::Portable15MB {
@@ -311,7 +348,16 @@ where
 
     fn read_normal(&mut self, addr: Address) -> Option<Byte> {
         match addr {
-            0x0000_0000..=0x008F_FFFF => self.normal_ram_read(addr),
+            // RAM
+            0x0000_0000..=0x004F_FFFF => self.normal_ram_read(addr),
+            // SLIM cards, or RAM
+            0x0050_0000..=0x008F_FFFF => {
+                if self.normandy.slim_installed() {
+                    self.normandy.read(addr).or(Some(Self::OPENBUS))
+                } else {
+                    self.normal_ram_read(addr)
+                }
+            }
             // ROM, or Remapped RAM for 15MB RAM Mod
             0x0090_0000..=0x009F_FFFF => {
                 if self.model == MacModel::Portable15MB {
@@ -589,6 +635,7 @@ where
         self.via.b_in.set_pmack(self.pmgr.pmack);
         self.via.a_in.0 = self.pmgr.a_in;
         self.via.ifr.set_pmgr(self.pmgr.interrupt);
+        self.normandy.tick(ticks, ())?;
 
         Ok(())
     }

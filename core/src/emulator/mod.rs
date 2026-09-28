@@ -28,6 +28,7 @@ use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
 use crate::mac::macii::bus::{DEFAULT_BUS_SPEED, MacIIBus};
 use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::scc::Scc;
+use crate::mac::scsi::disk_image::FileDiskImage;
 use crate::mac::scsi::target::ScsiTargetEvent;
 use crate::mac::serial_bridge::{SccBridge, SerialBridgeStatus};
 use crate::mac::swim::drive::DriveType;
@@ -51,7 +52,7 @@ use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::swim::Swim;
 use comm::{
     Breakpoint, EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver,
-    EmulatorStatus, FddStatus, InputRecording, ScsiTargetStatus,
+    EmulatorStatus, FddStatus, InputRecording, ScsiTargetStatus, SlimSlotStatus,
 };
 
 /// Mouse emulation mode
@@ -237,6 +238,44 @@ dispatch! {
     }
 }
 
+impl EmulatorConfig {
+    /// Returns true if a SLIM card adapter is installed
+    fn has_slim(&self) -> bool {
+        match self {
+            Self::Portable(cpu) => cpu.bus.slim_installed(),
+            _ => false,
+        }
+    }
+
+    /// Returns the status of the SLIM card slots
+    fn slim_status(&self) -> [Option<SlimSlotStatus>; 2] {
+        match self {
+            Self::Portable(cpu) => cpu.bus.slim_status(),
+            _ => Default::default(),
+        }
+    }
+
+    /// Inserts a SLIM card image into a slot
+    fn slim_insert(&mut self, slot: usize, filename: &Path, write_protect: bool) -> Result<()> {
+        match self {
+            Self::Portable(cpu) => {
+                cpu.bus.slim_eject(slot)?;
+                let image = FileDiskImage::open(filename, !write_protect)?;
+                cpu.bus.slim_insert(slot, Box::new(image), write_protect)
+            }
+            _ => bail!("SLIM cards not supported on this model"),
+        }
+    }
+
+    /// Ejects the SLIM card from a slot
+    fn slim_eject(&mut self, slot: usize) -> Result<()> {
+        match self {
+            Self::Portable(cpu) => cpu.bus.slim_eject(slot),
+            _ => bail!("SLIM cards not supported on this model"),
+        }
+    }
+}
+
 /// An interface that allows sub-components to access emulator state (such as the speed setting)
 pub trait EmuContext {
     fn speed(&self) -> EmulatorSpeed;
@@ -276,6 +315,7 @@ impl Emulator {
             None,
             None,
             false,
+            false,
             None,
         )
     }
@@ -290,6 +330,7 @@ impl Emulator {
         ram_size: Option<usize>,
         override_fdd_type: Option<DriveType>,
         pmmu_enabled: bool,
+        slim_adapter: bool,
         shared_dir: Option<PathBuf>,
     ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
         // Set up channels
@@ -331,6 +372,11 @@ impl Emulator {
             }
             MacModel::Portable | MacModel::Portable15MB => {
                 assert!(!pmmu_enabled, "PMMU not available on compact models");
+                assert!(
+                    !slim_adapter
+                        || ram_size.unwrap_or_else(|| model.ram_size_default()) <= 5 * 1024 * 1024,
+                    "RAM size cannot be greater than 5MB when SLIM adapter is enabled!"
+                );
 
                 // Find extension ROM if present
                 let extension_rom = extra_roms.iter().find_map(|p| match p {
@@ -339,8 +385,15 @@ impl Emulator {
                 });
 
                 // Initialize bus and CPU
-                let bus =
-                    MacPortableBus::new(model, rom, extension_rom, renderer, mouse_mode, ram_size);
+                let bus = MacPortableBus::new(
+                    model,
+                    rom,
+                    extension_rom,
+                    renderer,
+                    mouse_mode,
+                    ram_size,
+                    slim_adapter,
+                );
                 let cpu = Box::new(CpuM68000::new(bus));
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
@@ -641,6 +694,8 @@ impl Emulator {
                 }),
                 model: self.model,
                 has_pmmu: self.config.cpu_has_pmmu(),
+                has_slim: self.config.has_slim(),
+                slim: self.config.slim_status(),
                 scsi: core::array::from_fn(|i| {
                     self.config
                         .scsi()
@@ -1034,6 +1089,27 @@ impl Tickable for Emulator {
                             self.user_error(
                                 "Writeback unavailable: image was not loaded from a writeback-capable file",
                             );
+                        }
+                        self.status_update()?;
+                    }
+                    EmulatorCommand::SlimInsert(slot, filename, write_protect) => {
+                        match self.config.slim_insert(slot, &filename, write_protect) {
+                            Ok(()) => {
+                                info!(
+                                    "SLIM slot {}: card inserted, image '{}' loaded",
+                                    slot + 1,
+                                    filename.display()
+                                );
+                            }
+                            Err(e) => {
+                                self.user_error(&format!("SLIM slot {}: {:#}", slot + 1, e));
+                            }
+                        }
+                        self.status_update()?;
+                    }
+                    EmulatorCommand::SlimEject(slot) => {
+                        if let Err(e) = self.config.slim_eject(slot) {
+                            self.user_error(&format!("SLIM slot {}: {:#}", slot + 1, e));
                         }
                         self.status_update()?;
                     }

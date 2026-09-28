@@ -2,13 +2,17 @@
 //! Also known as the "CPU GLU" or "Coarse Address Decode and GLU".
 //! Aside from the address decoding duties, this chip also handled mapping and timing for the
 //! SLIM card system.
+//! SLIM card adapter support has also been included, though the SLIM hardware never released.
 
 use crate::bus::{Address, BusMember};
 use crate::debuggable::{Debuggable, DebuggableProperties};
+use crate::emulator::comm::SlimSlotStatus;
+use crate::mac::scsi::disk_image::{DiskImage, FileDiskImage};
 use crate::tickable::{Tickable, Ticks};
-use anyhow::Result;
+use anyhow::{Result, bail};
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 const IDLE_DTACK_DELAY: u8 = 64;
 const SLIM_DTACK_DELAY: u8 = 16;
@@ -35,7 +39,7 @@ bitfield! {
 bitfield! {
     #[derive(Serialize, Deserialize)]
     struct SlimStatus(u8): {
-        /// SLIM card is read-only
+        /// SLIM card is read-only/write protected
         readonly: bool @ 2,
         /// SLIM card is inserted
         inserted: bool @ 3,
@@ -53,9 +57,18 @@ bitfield! {
 bitfield! {
     #[derive(Serialize, Deserialize)]
     struct SlimProtect(u8): {
-        /// SLIM card is write protected
+        /// SLIM card is software write protected
         protect: bool @ 3,
     }
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct SlimCard {
+    #[serde(skip)]
+    image: Option<Box<dyn DiskImage>>,
+    /// Path of the card image, used to reattach the image after loading a save state
+    path: Option<PathBuf>,
+    write_protect: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -63,7 +76,7 @@ bitfield! {
 pub struct Normandy {
     // Idle speed register
     pub idle_speed: bool,
-    // SLIM DTACK loag register
+    // SLIM DTACK load register
     pub slim_dtack: bool,
     slim_mapper: Vec<SlimMapper>,
 
@@ -76,28 +89,138 @@ pub struct Normandy {
     slim2_protect: SlimProtect,
 
     slim_rom: Vec<u8>,
+    cards: [SlimCard; 2],
 
     pub dtack_counter: u8,
 }
 
 impl Normandy {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(slim: bool) -> Self {
         Self {
             idle_speed: false,
             slim_dtack: false,
             slim_mapper: vec![SlimMapper(0); 16],
 
-            slim_adapter: SlimAdapter(0x00),
-            slim1_status: SlimStatus(0x08),
-            slim1_eject: SlimEject(0x08),
+            slim_adapter: SlimAdapter(0x00).with_installed(slim),
+            slim1_status: SlimStatus(0x00),
+            slim1_eject: SlimEject(0x00).with_eject(true),
             slim1_protect: SlimProtect(0),
-            slim2_status: SlimStatus(0x08),
-            slim2_eject: SlimEject(0x08),
+            slim2_status: SlimStatus(0x00),
+            slim2_eject: SlimEject(0x00).with_eject(true),
             slim2_protect: SlimProtect(0),
 
             slim_rom: vec![0; 0x10000],
 
+            cards: Default::default(),
             dtack_counter: 0,
+        }
+    }
+
+    pub(crate) fn after_deserialize(&mut self) {
+        for slot in 0..self.cards.len() {
+            let card = &mut self.cards[slot];
+            let Some(path) = &card.path else { continue };
+            match FileDiskImage::open(path, !card.write_protect) {
+                Ok(image) => card.image = Some(Box::new(image)),
+                Err(e) => {
+                    log::error!("Cannot reinsert SLIM card {}: {:?}", slot, e);
+                    card.path = None;
+                    let status = match slot {
+                        0 => &mut self.slim1_status,
+                        _ => &mut self.slim2_status,
+                    };
+                    status.set_inserted(false);
+                    status.set_readonly(false);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn slim_installed(&self) -> bool {
+        self.slim_adapter.installed()
+    }
+
+    pub(crate) fn slim_status(&self) -> [Option<SlimSlotStatus>; 2] {
+        core::array::from_fn(|i| {
+            let card = &self.cards[i];
+            let image = card.image.as_ref()?;
+            Some(SlimSlotStatus {
+                image: image.image_path()?.to_path_buf(),
+                size: image.byte_len(),
+                write_protect: card.write_protect,
+            })
+        })
+    }
+
+    pub(crate) fn slim_insert(
+        &mut self,
+        slot: usize,
+        image: Box<dyn DiskImage>,
+        write_protect: bool,
+    ) -> Result<()> {
+        if !self.slim_installed() {
+            bail!("SLIM card adapter not installed");
+        }
+        if slot >= self.cards.len() {
+            bail!("Invalid SLIM slot {}", slot);
+        }
+        match slot {
+            0 => {
+                self.slim1_status.set_inserted(true);
+                self.slim1_eject.set_eject(true);
+                self.slim1_status.set_readonly(write_protect);
+            }
+            _ => {
+                self.slim2_status.set_inserted(true);
+                self.slim2_eject.set_eject(true);
+                self.slim2_status.set_readonly(write_protect);
+            }
+        }
+        self.cards[slot] = SlimCard {
+            path: image.image_path().map(|p| p.to_path_buf()),
+            image: Some(image),
+            write_protect,
+        };
+        Ok(())
+    }
+
+    pub(crate) fn slim_eject(&mut self, slot: usize) -> Result<()> {
+        if slot >= self.cards.len() {
+            bail!("Invalid SLIM slot {}", slot);
+        }
+        self.cards[slot].image = None;
+        self.cards[slot].path = None;
+        match slot {
+            0 => {
+                self.slim1_eject.set_eject(false);
+            }
+            _ => {
+                self.slim2_eject.set_eject(false);
+            }
+        }
+        Ok(())
+    }
+
+    fn slim_read(&self, slot: usize, offset: usize) -> Option<u8> {
+        let image = self.cards[slot].image.as_ref()?;
+        if offset >= image.byte_len() {
+            return None;
+        }
+        match image.media_bytes() {
+            Some(bytes) => Some(bytes[offset]),
+            None => Some(image.read_bytes(offset, 1)[0]),
+        }
+    }
+
+    fn slim_write(&mut self, slot: usize, offset: usize, val: u8) {
+        let card = &mut self.cards[slot];
+        if card.write_protect {
+            return;
+        }
+        if let Some(image) = card.image.as_mut()
+            && offset < image.byte_len()
+        {
+            image.write_bytes(offset, &[val]);
         }
     }
 
@@ -119,7 +242,7 @@ impl Normandy {
                             true
                         }
                     }
-                } else if !self.slim_dtack & (0x0050_0000..=0x0050_FFFF).contains(&addr) {
+                } else if !self.slim_dtack && (0x0050_0000..=0x008F_FFFF).contains(&addr) {
                     match self.dtack_counter {
                         0 => {
                             self.dtack_counter = SLIM_DTACK_DELAY;
@@ -146,8 +269,13 @@ impl Normandy {
 impl BusMember<Address> for Normandy {
     fn read(&mut self, addr: Address) -> Option<u8> {
         match addr {
+            // SLIM card 1 space
+            0x50_0000..=0x6F_FFFF => self.slim_read(0, (addr - 0x50_0000) as usize),
+            // SLIM card 2 space
+            0x70_0000..=0x8F_FFFF => self.slim_read(1, (addr - 0x70_0000) as usize),
             // SLIM adapter ROM
             0xE0_0000..=0xE0_FFFF => Some(0x00),
+            // SLIM adapter registers
             0xF0_0000..=0xF0_FFFF => {
                 if self.slim_adapter.installed() {
                     match addr {
@@ -167,6 +295,7 @@ impl BusMember<Address> for Normandy {
                     None
                 }
             }
+            // Normandy SLIM registers
             0xFC_0000..=0xFC_FFFF => match addr & 0x21F {
                 0x000..=0x01F => {
                     if addr & 0x1 != 0 {
@@ -177,11 +306,7 @@ impl BusMember<Address> for Normandy {
                 }
                 0x200..=0x201 => {
                     self.slim_dtack = true;
-                    if self.slim_adapter.installed() {
-                        Some(0x08)
-                    } else {
-                        Some(0x00)
-                    }
+                    Some(self.slim_adapter.0)
                 }
                 0x202..=0x203 => Some(0x00),
                 _ => None,
@@ -204,7 +329,45 @@ impl BusMember<Address> for Normandy {
 
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
         match addr {
-            0xF0_0000..=0xF0_FFFF => Some(()),
+            // SLIM card 1 space
+            0x50_0000..=0x6F_FFFF => {
+                if !self.slim1_protect.protect() {
+                    self.slim_write(0, (addr - 0x50_0000) as usize, val);
+                }
+                Some(())
+            }
+            // SLIM card 2 space
+            0x70_0000..=0x8F_FFFF => {
+                if !self.slim2_protect.protect() {
+                    self.slim_write(1, (addr - 0x70_0000) as usize, val);
+                }
+                Some(())
+            }
+            // SLIM adapter registers
+            0xF0_0000..=0xF0_FFFF => match addr {
+                0xF0_0010 => Some(()),
+                0xF0_0011 => {
+                    self.slim1_eject.set_eject(SlimEject(val).eject());
+                    Some(())
+                }
+                0xF0_0020 => Some(()),
+                0xF0_0021 => {
+                    self.slim1_protect.set_protect(SlimProtect(val).protect());
+                    Some(())
+                }
+                0xF0_0040 => Some(()),
+                0xF0_0041 => {
+                    self.slim2_eject.set_eject(SlimEject(val).eject());
+                    Some(())
+                }
+                0xF0_0050 => Some(()),
+                0xF0_0051 => {
+                    self.slim2_protect.set_protect(SlimProtect(val).protect());
+                    Some(())
+                }
+                _ => None,
+            },
+            // Normandy SLIM registers
             0xFC_0000..=0xFC_FFFF => match addr & 0x21F {
                 0x000..=0x01F => {
                     if addr & 0x1 != 0 {
@@ -238,6 +401,16 @@ impl BusMember<Address> for Normandy {
 
 impl Tickable for Normandy {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
+        if !self.slim1_eject.eject() && self.slim1_status.inserted() {
+            self.slim_eject(0)?;
+            self.slim1_status.set_inserted(false);
+            self.slim1_status.set_readonly(false);
+        }
+        if !self.slim2_eject.eject() && self.slim2_status.inserted() {
+            self.slim_eject(1)?;
+            self.slim2_status.set_inserted(false);
+            self.slim2_status.set_readonly(false);
+        }
         Ok(ticks)
     }
 }
@@ -250,6 +423,15 @@ impl Debuggable for Normandy {
         vec![
             dbgprop_bool!("Idle", self.idle_speed),
             dbgprop_bool!("Slim DTACK", self.slim_dtack),
+            dbgprop_bool!("Slim Adapter Installed", self.slim_adapter.installed()),
+            dbgprop_bool!("Slim 1 Inserted", self.slim1_status.inserted()),
+            dbgprop_bool!("Slim 2 Inserted", self.slim2_status.inserted()),
+            dbgprop_bool!("Slim 1 Read Only", self.slim1_status.readonly()),
+            dbgprop_bool!("Slim 2 Read Only", self.slim2_status.readonly()),
+            dbgprop_bool!("Slim 1 Protected", self.slim1_protect.protect()),
+            dbgprop_bool!("Slim 2 Protected", self.slim2_protect.protect()),
+            dbgprop_bool!("Slim 1 Ejecting", !self.slim1_eject.eject()),
+            dbgprop_bool!("Slim 2 Ejecting", !self.slim2_eject.eject()),
         ]
     }
 }
