@@ -4142,33 +4142,25 @@ where
 
         self.prefetch_pump()?;
 
-        let (quotient, remainder) = match (extword.signed(), extword.size()) {
-            (false, false) => {
-                // 32-bit unsigned
-                (dividend / divisor, dividend % divisor)
+        let (quotient, remainder, overflow) = if extword.signed() {
+            let a = if extword.size() {
+                dividend as i64
+            } else {
+                i64::from(dividend as u32 as i32)
+            };
+            let b = i64::from(divisor as u32 as i32);
+            // None for i64::MIN / -1, which overflows too
+            match a.checked_div(b) {
+                Some(q) => (q as u64, (a % b) as u64, i32::try_from(q).is_err()),
+                None => (0, 0, true),
             }
-            (true, false) => {
-                // 32-bit signed
-                (
-                    ((dividend as u32 as i32) / (divisor as u32 as i32)) as i64 as u64,
-                    ((dividend as u32 as i32) % (divisor as u32 as i32)) as i64 as u64,
-                )
-            }
-            (false, true) => {
-                // 64-bit unsigned
-                (dividend / divisor, dividend % divisor)
-            }
-            (true, true) => {
-                // 64-bit signed
-                (
-                    ((dividend as i64) / (divisor as i64)) as u64,
-                    ((dividend as i64) % (divisor as i64)) as u64,
-                )
-            }
+        } else {
+            let q = dividend / divisor;
+            (q, dividend % divisor, q > u64::from(u32::MAX))
         };
 
-        // Check overflow conditions on 64-bit divisions if the result exceeds 32-bit
-        if extword.size() && ![u32::MIN, u32::MAX].contains(&((quotient >> 32) as u32)) {
+        // The quotient must fit in 32 bits; the operands are left unchanged
+        if overflow {
             debug!("DIV.l overflow");
             self.regs.sr.set_v(true);
             return Ok(());
