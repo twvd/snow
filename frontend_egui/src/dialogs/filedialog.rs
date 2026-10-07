@@ -210,6 +210,15 @@ impl SnowFileDialog {
         }
     }
 
+    pub fn close(&mut self) {
+        // egui-file-dialog has no close method, so just rebuild the dialog
+        let config = self.efd_dialog.config_mut().clone();
+        let storage = self.efd_dialog.storage_mut().clone();
+        self.efd_dialog = efd::FileDialog::with_config(config).storage(storage);
+        self.picked = Picked::None;
+        self.rfd_state = RfdState::Inactive;
+    }
+
     pub fn config_mut(&mut self) -> &mut efd::FileDialogConfig {
         self.efd_dialog.config_mut()
     }

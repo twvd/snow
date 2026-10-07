@@ -1,4 +1,6 @@
 pub mod flux;
+#[cfg(feature = "fluxfox")]
+pub mod fluxfox;
 pub mod loaders;
 mod macformat;
 
@@ -317,6 +319,12 @@ impl FloppyImage {
     /// Forces floppy to be write-protected
     pub fn set_force_wp(&mut self) {
         self.force_wp = true;
+    }
+
+    /// Returns the raw byte storage backing a bitstream track
+    pub fn track_bytes(&self, side: usize, track: usize) -> &[u8] {
+        assert_eq!(self.get_track_type(side, track), TrackType::Bitstream);
+        &self.trackdata[side][track]
     }
 
     pub(crate) fn push_track_bit(
