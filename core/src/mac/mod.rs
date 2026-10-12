@@ -24,6 +24,7 @@ pub mod scsi;
 pub mod serial_bridge;
 pub mod swim;
 pub mod via;
+pub mod via_common;
 
 /// Differentiation of Macintosh models and their features
 #[derive(
