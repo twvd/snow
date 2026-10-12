@@ -901,9 +901,15 @@ where
             }
         }
         self.via2.a_in.set_v2irqs(!slot_irqs);
-        if slot_irqs > 0 {
-            self.via2.ifr.set_slot(true);
-        }
+        // The GLUE combines the slot interrupts into /SLOTIRQ
+        self.via2.set_line(
+            ViaLine::CA1,
+            if slot_irqs > 0 {
+                LineState::Low
+            } else {
+                LineState::High
+            },
+        );
 
         self.scsi.tick(ticks, ctx)?;
 
