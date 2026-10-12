@@ -835,7 +835,7 @@ where
             return Some(2);
         }
         // VIA IRQs
-        if self.via.ifr.0 & self.via.ier.0 != 0 {
+        if self.via.irq() {
             return Some(1);
         }
         // SCSI IRQs
