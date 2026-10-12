@@ -217,22 +217,22 @@ pub trait ViaWiring {
 #[serde(bound = "")]
 pub struct ViaCommon<W: ViaWiring> {
     /// Register A, outputs
-    pub a_out: W::RegisterA,
+    a_out: W::RegisterA,
 
     /// Register A, inputs
     pub a_in: W::RegisterA,
 
     /// Data Direction Register A
-    pub ddra: W::RegisterA,
+    ddra: W::RegisterA,
 
     /// Register B, outputs
-    pub b_out: W::RegisterB,
+    b_out: W::RegisterB,
 
     /// Register B, inputs
     pub b_in: W::RegisterB,
 
     /// Data Direction Register B
-    pub ddrb: W::RegisterB,
+    ddrb: W::RegisterB,
 
     /// Interrupt Enable Register
     pub ier: W::RegisterIRQ,

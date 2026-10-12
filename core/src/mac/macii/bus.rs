@@ -374,8 +374,8 @@ where
                         let Some(NubusCard::SE30Video(d)) = self.nubus_devices[5].as_mut() else {
                             unreachable!()
                         };
-                        d.vblank_enable = !self.via1.b_out.se30_vblank_enable();
-                        d.fb_select = self.via1.a_out.page2();
+                        d.vblank_enable = !self.via1.pb().se30_vblank_enable();
+                        d.fb_select = self.via1.pa().page2();
                     }
                     Some(())
                 }
@@ -384,7 +384,7 @@ where
                     Self::dev_write(addr, val, self.via2.write(addr, val));
 
                     // Lazy update ramsize
-                    if self.via2.a_out.v2ram0() == self.ram_expected_ramsiz {
+                    if self.via2.pa().v2ram0() == self.ram_expected_ramsiz {
                         self.ram_mask = if self.ram_mirror {
                             self.ram.len() - 1
                         } else {
@@ -744,14 +744,14 @@ where
             self.write_32bit(addr, val)
         };
 
-        if self.overlay && !self.via1.a_out.overlay() {
+        if self.overlay && !self.via1.pa().overlay() {
             debug!("Overlay off");
             self.overlay = false;
         }
 
         // Sync values that live in multiple places
-        self.swim.sel = self.via1.a_out.sel();
-        self.swim.intdrive = self.via1.a_out.drivesel();
+        self.swim.sel = self.via1.pa().sel();
+        self.swim.intdrive = self.via1.pa().drivesel();
 
         if written.is_none() {
             if AMU && self.amu_active {
@@ -834,7 +834,7 @@ where
         self.cycles += ticks;
 
         if AMU {
-            self.amu_active = self.via2.ddrb.vfc3() && !self.via2.b_out.vfc3();
+            self.amu_active = !self.via2.pb().vfc3();
         }
 
         // The Mac II generates the VIA clock through some dividers on the logic board.
@@ -926,7 +926,7 @@ where
         self.via2.set_line(ViaLine::CB2, self.scsi.get_irq().into());
         self.via2.set_line(ViaLine::CA2, self.scsi.get_drq().into());
 
-        self.swim.intdrive = self.via1.a_out.drivesel();
+        self.swim.intdrive = self.via1.pa().drivesel();
         self.swim.tick(ticks, ())?;
 
         Ok(1)

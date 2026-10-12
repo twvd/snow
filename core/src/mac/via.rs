@@ -190,11 +190,11 @@ pub struct Via {
 impl Via {
     pub fn new(model: MacModel) -> Self {
         let mut core = ViaCommon::new();
-        core.a_out = RegisterA(0xFF);
-        core.b_out = RegisterB(0xFF);
         core.a_in = model.via1_a_in();
-        core.ddra = RegisterA(0xFF);
-        core.ddrb = RegisterB(0xFF);
+        core.write(ViaReg::A, 0xFF);
+        core.write(ViaReg::B, 0xFF);
+        core.write(ViaReg::DDRA, 0xFF);
+        core.write(ViaReg::DDRB, 0xFF);
 
         Self {
             core,
@@ -284,16 +284,16 @@ impl BusMember<Address> for Via {
             }
             ViaReg::B => {
                 let rtcin = self.rtc.io(
-                    self.core.b_out.rtcenb(),
-                    self.core.b_out.rtcclk(),
-                    self.core.b_out.rtcdata(),
+                    self.core.pb().rtcenb(),
+                    self.core.pb().rtcclk(),
+                    self.core.pb().rtcdata(),
                 );
                 self.core.b_in.set_rtcdata(rtcin);
 
                 if self.model.has_adb()
                     && let Some(b) = self
                         .adb
-                        .io(self.core.b_out.adb_st0(), self.core.b_out.adb_st1())
+                        .io(self.core.pb().adb_st0(), self.core.pb().adb_st1())
                 {
                     self.kbdshift_in = b;
                 }

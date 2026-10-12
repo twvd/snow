@@ -546,7 +546,7 @@ where
         };
 
         // Sync values that live in multiple places
-        self.swim.sel = self.via.b_out.headsel();
+        self.swim.sel = self.via.pb().headsel();
 
         if written.is_none() {
             warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
@@ -582,9 +582,9 @@ where
     fn cpu_tick(&mut self, ticks: Ticks) -> Result<()> {
         // This is called from the CPU per bus access (fine-grained).
         // The power manager needs accuracy beyond instruction granularity.
-        self.pmgr.a_out = self.via.a_out.0;
+        self.pmgr.a_out = self.via.pa().0;
         self.pmgr.a_in = self.via.a_in.0;
-        self.pmgr.pmreq = self.via.b_out.pmreq();
+        self.pmgr.pmreq = self.via.pb().pmreq();
         self.pmgr.tick(ticks, ())?;
         self.via.b_in.set_pmack(self.pmgr.pmack);
         self.via.a_in.0 = self.pmgr.a_in;
@@ -663,7 +663,7 @@ where
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }
 
-        self.swim.intdrive = self.via.b_out.drivesel();
+        self.swim.intdrive = self.via.pb().drivesel();
         self.swim.tick(ticks, ())?;
 
         Ok(ticks)
