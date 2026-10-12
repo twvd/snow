@@ -159,6 +159,23 @@ bitfield! {
     }
 }
 
+/// When the PCR configures CA2 (bits 3-1) or CB2 (bits 7-5) in mode %001 or
+/// %011, the line is in "independent interrupt" mode: its interrupt flag is
+/// no longer cleared by an access to register A (CA2) or B (CB2), only by
+/// writing the IFR.
+///
+/// See Synertek SY6522 Applications Information AN5, "Corrections to earlier
+/// data sheets", note 1.
+impl RegisterPCR {
+    pub fn ca2_independent(&self) -> bool {
+        self.0 & 0x0A == 0x02
+    }
+
+    pub fn cb2_independent(&self) -> bool {
+        self.0 & 0xA0 == 0x20
+    }
+}
+
 bitfield! {
     /// VIA Interrupt flag/enable registers
     #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -332,7 +349,9 @@ impl BusMember<Address> for Via {
 
             // Register B
             0x00 => {
-                self.ifr.set_kbddata(false);
+                if !self.pcr.cb2_independent() {
+                    self.ifr.set_kbddata(false);
+                }
                 self.ifr.set_kbdclock(false);
 
                 // Lazy update ADB Int to current state
@@ -386,7 +405,9 @@ impl BusMember<Address> for Via {
                 // handshake. The Mac uses the one without (vBufA).
                 if reg == 0x01 {
                     self.ifr.set_vblank(false);
-                    self.ifr.set_onesec(false);
+                    if !self.pcr.ca2_independent() {
+                        self.ifr.set_onesec(false);
+                    }
                 }
 
                 Some((self.a_in.0 & !self.ddra.0) | (self.a_out.0 & self.ddra.0))
@@ -458,7 +479,9 @@ impl BusMember<Address> for Via {
 
             // Register B
             0x00 => {
-                self.ifr.set_kbddata(false);
+                if !self.pcr.cb2_independent() {
+                    self.ifr.set_kbddata(false);
+                }
                 self.ifr.set_kbdclock(false);
 
                 self.b_out.0 = val;
@@ -530,7 +553,9 @@ impl BusMember<Address> for Via {
                 // handshake. The Mac uses the one without (vBufA).
                 if reg == 0x01 {
                     self.ifr.set_vblank(false);
-                    self.ifr.set_onesec(false);
+                    if !self.pcr.ca2_independent() {
+                        self.ifr.set_onesec(false);
+                    }
                 }
 
                 self.a_out.0 = val;
@@ -687,6 +712,8 @@ mod tests {
     const ADDR_A_HS: Address = 0x01 << 9;
     /// Register A without handshake (vBufA)
     const ADDR_A: Address = 0x0F << 9;
+    const ADDR_PCR: Address = 0x0C << 9;
+    const ADDR_B: Address = 0x00 << 9;
 
     #[test]
     fn reg_a_no_handshake_keeps_irq_flags() {
@@ -713,5 +740,54 @@ mod tests {
         via.ifr.set_onesec(true);
         via.write(ADDR_A_HS, 0);
         assert!(!via.ifr.vblank() && !via.ifr.onesec());
+    }
+
+    #[test]
+    fn independent_ca2_keeps_irq_flag() {
+        let mut via = Via::new(MacModel::Plus);
+
+        // CA2 independent interrupt input, negative edge
+        via.write(ADDR_PCR, 0x02);
+        via.ifr.set_vblank(true);
+        via.ifr.set_onesec(true);
+        via.read(ADDR_A_HS);
+        assert!(!via.ifr.vblank() && via.ifr.onesec());
+
+        // Positive edge
+        via.write(ADDR_PCR, 0x06);
+        via.write(ADDR_A_HS, 0);
+        assert!(via.ifr.onesec());
+
+        // Handshake output is not independent
+        via.write(ADDR_PCR, 0x0A);
+        via.read(ADDR_A_HS);
+        assert!(!via.ifr.onesec());
+    }
+
+    #[test]
+    fn independent_cb2_keeps_irq_flag() {
+        let mut via = Via::new(MacModel::Plus);
+
+        via.ifr.set_kbddata(true);
+        via.ifr.set_kbdclock(true);
+        via.read(ADDR_B);
+        assert!(!via.ifr.kbddata() && !via.ifr.kbdclock());
+
+        // CB2 independent interrupt input, negative edge
+        via.write(ADDR_PCR, 0x20);
+        via.ifr.set_kbddata(true);
+        via.ifr.set_kbdclock(true);
+        via.read(ADDR_B);
+        assert!(via.ifr.kbddata() && !via.ifr.kbdclock());
+
+        // Positive edge
+        via.write(ADDR_PCR, 0x60);
+        via.write(ADDR_B, 0);
+        assert!(via.ifr.kbddata());
+
+        // Handshake output is not independent
+        via.write(ADDR_PCR, 0xA0);
+        via.read(ADDR_B);
+        assert!(!via.ifr.kbddata());
     }
 }
