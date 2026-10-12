@@ -182,6 +182,7 @@ impl Debuggable for Via {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mac::via_common::{IRQ_CA1, IRQ_CA2};
 
     /// Register A with handshake
     const ADDR_A_HS: Address = 0x01 << 9;
@@ -193,27 +194,27 @@ mod tests {
     fn reg_a_no_handshake_keeps_irq_flags() {
         let mut via = Via::new();
 
-        via.ifr.set_vblank(true);
-        via.ifr.set_onesec(true);
+        via.set_irq(IRQ_CA1);
+        via.set_irq(IRQ_CA2);
         via.read(ADDR_A);
-        assert!(via.ifr.vblank() && via.ifr.onesec());
+        assert!(via.ifr().vblank() && via.ifr().onesec());
         via.write(ADDR_A, 0);
-        assert!(via.ifr.vblank() && via.ifr.onesec());
+        assert!(via.ifr().vblank() && via.ifr().onesec());
     }
 
     #[test]
     fn reg_a_handshake_clears_irq_flags() {
         let mut via = Via::new();
 
-        via.ifr.set_vblank(true);
-        via.ifr.set_onesec(true);
+        via.set_irq(IRQ_CA1);
+        via.set_irq(IRQ_CA2);
         via.read(ADDR_A_HS);
-        assert!(!via.ifr.vblank() && !via.ifr.onesec());
+        assert!(!via.ifr().vblank() && !via.ifr().onesec());
 
-        via.ifr.set_vblank(true);
-        via.ifr.set_onesec(true);
+        via.set_irq(IRQ_CA1);
+        via.set_irq(IRQ_CA2);
         via.write(ADDR_A_HS, 0);
-        assert!(!via.ifr.vblank() && !via.ifr.onesec());
+        assert!(!via.ifr().vblank() && !via.ifr().onesec());
     }
 
     #[test]
@@ -222,19 +223,19 @@ mod tests {
 
         // CA2 independent interrupt input, negative edge
         via.write(ADDR_PCR, 0x02);
-        via.ifr.set_vblank(true);
-        via.ifr.set_onesec(true);
+        via.set_irq(IRQ_CA1);
+        via.set_irq(IRQ_CA2);
         via.read(ADDR_A_HS);
-        assert!(!via.ifr.vblank() && via.ifr.onesec());
+        assert!(!via.ifr().vblank() && via.ifr().onesec());
 
         // Positive edge
         via.write(ADDR_PCR, 0x06);
         via.write(ADDR_A_HS, 0);
-        assert!(via.ifr.onesec());
+        assert!(via.ifr().onesec());
 
         // Handshake output is not independent
         via.write(ADDR_PCR, 0x0A);
         via.read(ADDR_A_HS);
-        assert!(!via.ifr.onesec());
+        assert!(!via.ifr().onesec());
     }
 }

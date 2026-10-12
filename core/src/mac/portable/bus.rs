@@ -585,7 +585,7 @@ where
         self.pmgr.a_out = self.via.a_out.0;
         self.pmgr.a_in = self.via.a_in.0;
         self.pmgr.pmreq = self.via.b_out.pmreq();
-        self.pmgr.onesec = self.via.ifr.onesec();
+        self.pmgr.onesec = self.via.ifr().onesec();
         self.pmgr.tick(ticks, ())?;
         self.via.b_in.set_pmack(self.pmgr.pmack);
         self.via.a_in.0 = self.pmgr.a_in;
@@ -599,7 +599,7 @@ where
         // command on register B clears the interrupt flag and no further edge
         // follows. Generate another edge for as long as it requests an
         // interrupt.
-        if self.pmgr.interrupt && !self.via.ifr.pmgr() {
+        if self.pmgr.interrupt && !self.via.ifr().pmgr() {
             self.via.set_line(ViaLine::CB1, LineState::Pulse);
         }
 
