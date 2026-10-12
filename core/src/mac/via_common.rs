@@ -263,7 +263,7 @@ pub struct ViaCommon<W: ViaWiring> {
     /// Timer 1 ran out in free-running mode and reloads in the next cycle
     t1_reload: bool,
 
-    /// T1 output state is separate from the actual PB7 output
+    /// Timer 1 output state, overlaid on PB7 if enabled
     t1_output: bool,
 
     /// Timer 2 Counter
@@ -436,9 +436,7 @@ impl<W: ViaWiring> ViaCommon<W> {
 
             ViaReg::B => {
                 self.clear_irq_b();
-
-                let (b_in, b_out, ddrb) = (self.b_in.into(), self.b_out.into(), self.ddrb.into());
-                (b_in & !ddrb) | (b_out & ddrb)
+                self.pb().into()
             }
             ViaReg::DDRB => self.ddrb.into(),
             ViaReg::DDRA => self.ddra.into(),
@@ -464,9 +462,7 @@ impl<W: ViaWiring> ViaCommon<W> {
                 if reg == ViaReg::A {
                     self.clear_irq_a();
                 }
-
-                let (a_in, a_out, ddra) = (self.a_in.into(), self.a_out.into(), self.ddra.into());
-                (a_in & !ddra) | (a_out & ddra)
+                self.pa().into()
             }
         }
     }
@@ -498,7 +494,6 @@ impl<W: ViaWiring> ViaCommon<W> {
                 self.t1_enable = true;
                 self.t1_reload = false;
                 self.t1_output = false;
-                self.update_pb7();
             }
 
             ViaReg::SR => {
@@ -565,7 +560,6 @@ impl<W: ViaWiring> ViaCommon<W> {
                 self.t1_reload = true;
                 self.t1_output = !self.t1_output;
             }
-            self.update_pb7();
         }
 
         // Timer 2
@@ -580,11 +574,23 @@ impl<W: ViaWiring> ViaCommon<W> {
         Ok(())
     }
 
-    fn update_pb7(&mut self) {
+    /// Levels of the port A pins
+    pub fn pa(&self) -> W::RegisterA {
+        let (a_in, a_out, ddra) = (self.a_in.into(), self.a_out.into(), self.ddra.into());
+        ((a_in & !ddra) | (a_out & ddra)).into()
+    }
+
+    /// Levels of the port B pins
+    ///
+    /// The Timer 1 output, if enabled, drives PB7 regardless of the data
+    /// direction register and leaves the output register untouched.
+    pub fn pb(&self) -> W::RegisterB {
+        let (b_in, b_out, ddrb) = (self.b_in.into(), self.b_out.into(), self.ddrb.into());
+        let mut pb = (b_in & !ddrb) | (b_out & ddrb);
         if W::T1_PB7_OUTPUT && self.acr.t1_output_en() {
-            let b_out = self.b_out.into() & !PB7;
-            self.b_out = (b_out | if self.t1_output { PB7 } else { 0 }).into();
+            pb = (pb & !PB7) | if self.t1_output { PB7 } else { 0 };
         }
+        pb.into()
     }
 
     /// Debug properties for the ports and timers
@@ -833,31 +839,48 @@ mod tests {
         via.write(ViaReg::ACR, 0xC0);
         via.write(ViaReg::T1CL, 0x01);
         via.write(ViaReg::T1CH, 0x00);
-        assert_eq!(via.b_out, 0x7F);
+        assert_eq!(via.pb(), 0x7F);
         via.tick_timers(2).unwrap();
-        assert_eq!(via.b_out, 0xFF);
+        assert_eq!(via.pb(), 0xFF);
         via.tick_timers(2).unwrap();
-        assert_eq!(via.b_out, 0xFF);
+        assert_eq!(via.pb(), 0xFF);
         via.tick_timers(1).unwrap();
-        assert_eq!(via.b_out, 0x7F);
+        assert_eq!(via.pb(), 0x7F);
+        assert_eq!(via.read(ViaReg::B), 0x7F);
+
+        // The output register is not affected
+        assert_eq!(via.b_out, 0xFF);
+        via.write(ViaReg::ACR, 0x40);
+        assert_eq!(via.pb(), 0xFF);
+
+        // PB7 is driven even if configured as input
+        let mut via = TestVia::new();
+        via.b_in = 0xFF;
+        via.write(ViaReg::DDRB, 0x00);
+        via.write(ViaReg::ACR, 0xC0);
+        via.write(ViaReg::T1CL, 0x01);
+        via.write(ViaReg::T1CH, 0x00);
+        assert_eq!(via.pb(), 0x7F);
 
         // Output not enabled in ACR
         let mut via = TestVia::new();
         via.write(ViaReg::B, 0xFF);
+        via.write(ViaReg::DDRB, 0xFF);
         via.write(ViaReg::ACR, 0x40);
         via.write(ViaReg::T1CL, 0x01);
         via.write(ViaReg::T1CH, 0x00);
-        assert_eq!(via.b_out, 0xFF);
+        assert_eq!(via.pb(), 0xFF);
 
         // Output not wired
         let mut via = ViaCommon::<NoPb7Wiring>::new();
         via.write(ViaReg::B, 0xFF);
+        via.write(ViaReg::DDRB, 0xFF);
         via.write(ViaReg::ACR, 0xC0);
         via.write(ViaReg::T1CL, 0x01);
         via.write(ViaReg::T1CH, 0x00);
-        assert_eq!(via.b_out, 0xFF);
+        assert_eq!(via.pb(), 0xFF);
         via.tick_timers(2).unwrap();
-        assert_eq!(via.b_out, 0xFF);
+        assert_eq!(via.pb(), 0xFF);
     }
 
     #[test]
