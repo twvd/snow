@@ -589,7 +589,19 @@ where
         self.pmgr.tick(ticks, ())?;
         self.via.b_in.set_pmack(self.pmgr.pmack);
         self.via.a_in.0 = self.pmgr.a_in;
-        self.via.ifr.set_pmgr(self.pmgr.interrupt);
+        // /PMINT is active low
+        self.via
+            .set_line(ViaLine::CB1, (!self.pmgr.interrupt).into());
+
+        // Workaround: The Power Manager is not modelled accurately enough for
+        // an edge sensitive input: it can request another interrupt while a
+        // command is still in progress, in which case the handshake of that
+        // command on register B clears the interrupt flag and no further edge
+        // follows. Generate another edge for as long as it requests an
+        // interrupt.
+        if self.pmgr.interrupt && !self.via.ifr.pmgr() {
+            self.via.set_line(ViaLine::CB1, LineState::Pulse);
+        }
 
         Ok(())
     }
