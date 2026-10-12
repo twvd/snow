@@ -210,9 +210,6 @@ pub trait ViaWiring {
 
     /// Whether an access to register B clears the CB1/CB2 interrupt flags
     const B_CLEARS_IRQ: bool = true;
-
-    /// Whether the Timer 1 output drives PB7 if enabled through the ACR
-    const T1_PB7_OUTPUT: bool = true;
 }
 
 /// Machine-independent part of a 6522 Versatile Interface Adapter
@@ -587,7 +584,7 @@ impl<W: ViaWiring> ViaCommon<W> {
     pub fn pb(&self) -> W::RegisterB {
         let (b_in, b_out, ddrb) = (self.b_in.into(), self.b_out.into(), self.ddrb.into());
         let mut pb = (b_in & !ddrb) | (b_out & ddrb);
-        if W::T1_PB7_OUTPUT && self.acr.t1_output_en() {
+        if self.acr.t1_output_en() {
             pb = (pb & !PB7) | if self.t1_output { PB7 } else { 0 };
         }
         pb.into()
@@ -653,14 +650,13 @@ mod tests {
         type RegisterIRQ = u8;
     }
 
-    struct NoPb7Wiring;
-    impl ViaWiring for NoPb7Wiring {
+    struct NoBClearWiring;
+    impl ViaWiring for NoBClearWiring {
         type RegisterA = u8;
         type RegisterB = u8;
         type RegisterIRQ = u8;
 
         const B_CLEARS_IRQ: bool = false;
-        const T1_PB7_OUTPUT: bool = false;
     }
 
     type TestVia = ViaCommon<TestWiring>;
@@ -703,7 +699,7 @@ mod tests {
         via.read(ViaReg::B);
         assert_eq!(via.ifr, IRQ_SR | IRQ_T2 | IRQ_T1);
 
-        let mut via = ViaCommon::<NoPb7Wiring>::new();
+        let mut via = ViaCommon::<NoBClearWiring>::new();
         via.set_irq(0x7F);
         via.read(ViaReg::B);
         via.write(ViaReg::B, 0);
@@ -869,17 +865,6 @@ mod tests {
         via.write(ViaReg::ACR, 0x40);
         via.write(ViaReg::T1CL, 0x01);
         via.write(ViaReg::T1CH, 0x00);
-        assert_eq!(via.pb(), 0xFF);
-
-        // Output not wired
-        let mut via = ViaCommon::<NoPb7Wiring>::new();
-        via.write(ViaReg::B, 0xFF);
-        via.write(ViaReg::DDRB, 0xFF);
-        via.write(ViaReg::ACR, 0xC0);
-        via.write(ViaReg::T1CL, 0x01);
-        via.write(ViaReg::T1CH, 0x00);
-        assert_eq!(via.pb(), 0xFF);
-        via.tick_timers(2).unwrap();
         assert_eq!(via.pb(), 0xFF);
     }
 
