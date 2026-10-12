@@ -260,6 +260,9 @@ pub struct ViaCommon<W: ViaWiring> {
 
     t1_enable: bool,
 
+    /// Timer 1 ran out in free-running mode and reloads in the next cycle
+    t1_reload: bool,
+
     /// T1 output state is separate from the actual PB7 output
     t1_output: bool,
 
@@ -300,6 +303,7 @@ impl<W: ViaWiring> ViaCommon<W> {
             t1cnt: Field16(0),
             t1latch: Field16(0),
             t1_enable: false,
+            t1_reload: false,
             t1_output: false,
 
             t2cnt: Field16(0),
@@ -320,6 +324,7 @@ impl<W: ViaWiring> ViaCommon<W> {
         self.ifr = 0.into();
         self.pcr = RegisterPCR(0);
         self.acr = RegisterACR(0);
+        self.t1_reload = false;
     }
 
     /// Interrupt Flag Register
@@ -491,6 +496,7 @@ impl<W: ViaWiring> ViaCommon<W> {
 
                 // Start timer
                 self.t1_enable = true;
+                self.t1_reload = false;
                 self.t1_output = false;
                 self.update_pb7();
             }
@@ -534,12 +540,19 @@ impl<W: ViaWiring> ViaCommon<W> {
 
     /// Advances the timers by the given amount of VIA clock cycles
     ///
-    /// TODO a real 6522 times out N+1.5 cycles after loading N and has a
-    /// period of N+2 cycles in free-running mode.
+    /// A timer loaded with N runs out after N + 1 cycles (N + 1.5 on a real
+    /// 6522). In free-running mode, Timer 1 takes another cycle to reload from
+    /// the latch, which makes its period N + 2 cycles.
     pub fn tick_timers(&mut self, ticks: Ticks) -> Result<()> {
         // Timer 1
+        let mut t1ticks: u16 = ticks.try_into()?;
+        if self.t1_reload && t1ticks > 0 {
+            self.t1_reload = false;
+            self.t1cnt.0 = self.t1latch.0;
+            t1ticks -= 1;
+        }
         let t1ovf;
-        (self.t1cnt.0, t1ovf) = self.t1cnt.0.overflowing_sub(ticks.try_into()?);
+        (self.t1cnt.0, t1ovf) = self.t1cnt.0.overflowing_sub(t1ticks);
 
         if t1ovf && self.t1_enable {
             self.set_irq(IRQ_T1);
@@ -549,7 +562,7 @@ impl<W: ViaWiring> ViaCommon<W> {
                 self.t1_output = true;
             } else {
                 // Free running mode
-                self.t1cnt.0 = self.t1latch.0;
+                self.t1_reload = true;
                 self.t1_output = !self.t1_output;
             }
             self.update_pb7();
@@ -782,19 +795,35 @@ mod tests {
         via.write(ViaReg::T1CL, 0x04);
         via.write(ViaReg::T1CH, 0x00);
 
-        via.tick_timers(5).unwrap();
+        // Runs out after N + 1 cycles, reloads in the cycle after that
+        via.tick_timers(4).unwrap();
+        assert_eq!(via.ifr, 0);
+        via.tick_timers(1).unwrap();
         assert_eq!(via.ifr, IRQ_T1);
+        assert_eq!(via.t1cnt.0, 0xFFFF);
+        via.tick_timers(1).unwrap();
         assert_eq!(via.t1cnt.0, 0x0004);
 
-        // Writing the latch MSB clears the flag without reloading the counter
+        // The period is N + 2 cycles
+        via.write(ViaReg::IFR, IRQ_T1);
+        via.tick_timers(4).unwrap();
+        assert_eq!(via.ifr, 0);
         via.tick_timers(1).unwrap();
+        assert_eq!(via.ifr, IRQ_T1);
+
+        // Writing the latch MSB clears the flag without reloading the counter
         via.write(ViaReg::T1LH, 0x01);
         assert_eq!(via.ifr, 0);
-        assert_eq!(via.t1cnt.0, 0x0003);
+        assert_eq!(via.t1cnt.0, 0xFFFF);
 
-        via.tick_timers(4).unwrap();
-        assert_eq!(via.ifr, IRQ_T1);
+        // The new latch value is used for the next reload
+        via.tick_timers(1).unwrap();
         assert_eq!(via.t1cnt.0, 0x0104);
+
+        // Also when advancing multiple cycles at once
+        via.tick_timers(0x0105).unwrap();
+        assert_eq!(via.ifr, IRQ_T1);
+        assert_eq!(via.t1cnt.0, 0xFFFF);
     }
 
     #[test]
@@ -808,6 +837,8 @@ mod tests {
         via.tick_timers(2).unwrap();
         assert_eq!(via.b_out, 0xFF);
         via.tick_timers(2).unwrap();
+        assert_eq!(via.b_out, 0xFF);
+        via.tick_timers(1).unwrap();
         assert_eq!(via.b_out, 0x7F);
 
         // Output not enabled in ACR
