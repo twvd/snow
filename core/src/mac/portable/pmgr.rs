@@ -375,8 +375,14 @@ impl Pmgr {
     }
 
     /// Turn ADB off
+    ///
+    /// Stops the polling of ADB devices until the host initializes ADB again.
     fn adb_off(&mut self) -> (Result<()>, Option<Vec<Byte>>) {
         self.interrupt_flags.set_adbint(false);
+        self.adb_status.0 = 0;
+        self.adb_ready = false;
+        self.srq_waiting = false;
+        self.adb_done = false;
         (Ok(()), None)
     }
 
