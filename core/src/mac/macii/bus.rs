@@ -936,10 +936,10 @@ where
         if self.scc.get_irq() {
             return Some(4);
         }
-        if self.via2.ifr.0 & self.via2.ier.0 != 0 {
+        if self.via2.irq() {
             return Some(2);
         }
-        if self.via1.ifr.0 & self.via1.ier.0 != 0 {
+        if self.via1.irq() {
             return Some(1);
         }
 

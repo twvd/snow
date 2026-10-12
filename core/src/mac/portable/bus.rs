@@ -688,7 +688,7 @@ where
         if self.scc.get_irq() | self.asc.get_irq() {
             return Some(2);
         }
-        if self.via.ifr.0 & self.via.ier.0 != 0 {
+        if self.via.irq() {
             return Some(1);
         }
         None

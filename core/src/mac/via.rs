@@ -26,6 +26,8 @@ const VIA_FREQUENCY: Ticks = 16_000_000;
 /// (counted on the E Clock)
 const ONESEC_TICKS: Ticks = 783360;
 
+/// Time it takes the keyboard or the ADB transceiver to clock a byte through
+/// the shift register. Ideally, these would time the transfer themselves.
 const SHIFT_DELAY: Ticks = ONESEC_TICKS * 3 / 1000;
 
 const ACR_SHIFT_OUT: u8 = 0b111;
@@ -175,7 +177,6 @@ pub struct Via {
 
     kbdshift_in: u8,
     kbdshift_in_time: Ticks,
-    kbdshift_out: u8,
     kbdshift_out_time: Ticks,
 
     pub keyboard: PlusKeyboard,
@@ -202,7 +203,6 @@ impl Via {
             onesec: 0,
             kbdshift_in: 0,
             kbdshift_in_time: 0,
-            kbdshift_out: 0,
             kbdshift_out_time: 0,
 
             keyboard: PlusKeyboard::default(),
@@ -267,7 +267,6 @@ impl BusMember<Address> for Via {
             if newmode == ACR_SHIFT_IN {
                 self.kbdshift_in_time = SHIFT_DELAY;
             } else if newmode == ACR_SHIFT_OUT {
-                self.kbdshift_out = self.core.sr;
                 self.kbdshift_out_time = SHIFT_DELAY;
             }
             return Some(());
@@ -280,7 +279,6 @@ impl BusMember<Address> for Via {
             ViaReg::SR => {
                 if self.core.acr.sr_mode() == ACR_SHIFT_OUT {
                     // Start shift-out
-                    self.kbdshift_out = val;
                     self.kbdshift_out_time = SHIFT_DELAY;
                 }
             }
@@ -338,19 +336,18 @@ impl Via {
         if self.kbdshift_out_time > 0 {
             self.kbdshift_out_time = self.kbdshift_out_time.saturating_sub(ticks);
             if self.kbdshift_out_time == 0 {
+                let data = self.core.shift_sr(0);
                 if !self.model.has_adb() {
-                    self.kbdshift_in = self.keyboard.cmd(self.kbdshift_out)?;
+                    self.kbdshift_in = self.keyboard.cmd(data)?;
                 } else {
-                    self.adb.data_in(self.kbdshift_out);
+                    self.adb.data_in(data);
                 }
-                self.core.ifr.set_kbdready(true);
             }
         }
         if self.kbdshift_in_time > 0 {
             self.kbdshift_in_time = self.kbdshift_in_time.saturating_sub(ticks);
             if self.kbdshift_in_time == 0 {
-                self.core.sr = self.kbdshift_in;
-                self.core.ifr.set_kbdready(true);
+                self.core.shift_sr(self.kbdshift_in);
                 self.kbdshift_in_time = SHIFT_DELAY;
             }
         }
@@ -371,7 +368,6 @@ impl Debuggable for Via {
                 dbgprop_byte_bin!("Shift register", self.core.sr),
                 dbgprop_byte_bin!("Input", self.kbdshift_in),
                 dbgprop_udec!("Input timer", self.kbdshift_in_time),
-                dbgprop_byte_bin!("Output", self.kbdshift_out),
                 dbgprop_udec!("Output timer", self.kbdshift_out_time),
             ]
         ));

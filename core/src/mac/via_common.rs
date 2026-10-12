@@ -108,6 +108,9 @@ bitfield! {
         /// Shift register mode
         pub sr_mode: u8 @ 2..=4,
 
+        /// Shift register direction (true = shift out)
+        pub sr_out: bool @ 4,
+
         /// Timer T2 mode (true = count pulses on PB6)
         pub t2: bool @ 5,
 
@@ -329,6 +332,23 @@ impl<W: ViaWiring> ViaCommon<W> {
         self.ifr = (self.ifr.into() & !mask).into();
     }
 
+    /// State of the interrupt request output
+    pub fn irq(&self) -> bool {
+        self.ifr.into() & self.ier.into() & 0x7F != 0
+    }
+
+    /// Completes a shift of 8 bits through CB2 and returns the byte that was
+    /// shifted out. When shifting out, the bits are fed back into the shift
+    /// register, which keeps its value.
+    pub fn shift_sr(&mut self, input: u8) -> u8 {
+        let output = self.sr;
+        if !self.acr.sr_out() {
+            self.sr = input;
+        }
+        self.set_irq(IRQ_SR);
+        output
+    }
+
     /// Tests if a transition to the given level is the active edge of a line,
     /// as selected through the PCR
     fn is_active_edge(&self, line: ViaLine, high: bool) -> bool {
@@ -422,9 +442,8 @@ impl<W: ViaWiring> ViaCommon<W> {
             ViaReg::PCR => self.pcr.0,
 
             ViaReg::IFR => {
-                let (ifr, ier) = (self.ifr.into(), self.ier.into());
-                let mut val = ifr & 0x7F;
-                if ifr & ier != 0 {
+                let mut val = self.ifr.into() & 0x7F;
+                if self.irq() {
                     val |= 0x80;
                 }
                 val
@@ -841,6 +860,37 @@ mod tests {
         via.set_irq(IRQ_SR);
         assert_eq!(via.read(ViaReg::SR), 0x5A);
         assert_eq!(via.ifr, 0);
+    }
+
+    #[test]
+    fn shift_sr() {
+        let mut via = TestVia::new();
+
+        // Shift in under control of external clock
+        via.write(ViaReg::ACR, 0b011 << 2);
+        via.write(ViaReg::SR, 0xA5);
+        assert_eq!(via.shift_sr(0x5A), 0xA5);
+        assert_eq!(via.ifr, IRQ_SR);
+        assert_eq!(via.read(ViaReg::SR), 0x5A);
+        assert_eq!(via.ifr, 0);
+
+        // Shift out under control of external clock
+        via.write(ViaReg::ACR, 0b111 << 2);
+        via.write(ViaReg::SR, 0xA5);
+        assert_eq!(via.shift_sr(0x5A), 0xA5);
+        assert_eq!(via.ifr, IRQ_SR);
+        assert_eq!(via.read(ViaReg::SR), 0xA5);
+    }
+
+    #[test]
+    fn irq_output() {
+        let mut via = TestVia::new();
+        via.set_irq(IRQ_CA1);
+        assert!(!via.irq());
+        via.write(ViaReg::IER, 0x80 | IRQ_CA1);
+        assert!(via.irq());
+        via.write(ViaReg::IFR, IRQ_CA1);
+        assert!(!via.irq());
     }
 
     #[test]
