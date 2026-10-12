@@ -800,7 +800,7 @@ impl Pmgr {
     /// Tests whether an interrupt is pending. The reset flag is reported
     /// to the host but does not cause an interrupt.
     fn interrupt_pending(&self) -> bool {
-        (self.interrupt_flags.0 & 0b111 != 0) & self.adb_ready
+        self.interrupt_flags.0 & 0b111 != 0
     }
 
     /// Pulses the interrupt line if an interrupt is pending.
@@ -822,8 +822,12 @@ impl Pmgr {
             self.onesec = true;
         }
 
-        // Check if any devices have asserted SRQ
-        if self.adb_devices.iter().any(|d| d.get_srq()) & !self.interrupt_flags.adbint() {
+        // Check if any devices have asserted SRQ, once the host has
+        // initialized ADB
+        if self.adb_ready
+            && self.adb_devices.iter().any(|d| d.get_srq())
+            && !self.interrupt_flags.adbint()
+        {
             self.adb_srq();
         }
 
