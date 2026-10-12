@@ -241,7 +241,7 @@ pub struct ViaCommon<W: ViaWiring> {
     pub ier: W::RegisterIRQ,
 
     /// Interrupt Flag Register
-    pub ifr: W::RegisterIRQ,
+    ifr: W::RegisterIRQ,
 
     /// Peripheral Control Register
     pub pcr: RegisterPCR,
@@ -320,6 +320,11 @@ impl<W: ViaWiring> ViaCommon<W> {
         self.ifr = 0.into();
         self.pcr = RegisterPCR(0);
         self.acr = RegisterACR(0);
+    }
+
+    /// Interrupt Flag Register
+    pub fn ifr(&self) -> W::RegisterIRQ {
+        self.ifr
     }
 
     /// Sets the given interrupt flag(s)

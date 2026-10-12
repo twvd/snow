@@ -166,6 +166,7 @@ impl Debuggable for Via2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mac::via_common::{IRQ_CA1, IRQ_CB1};
 
     /// Register A with handshake
     const ADDR_A_HS: Address = 0x01 << 9;
@@ -178,27 +179,27 @@ mod tests {
     fn reg_a_no_handshake_keeps_irq_flags() {
         let mut via = Via2::new(MacModel::MacII);
 
-        via.ifr.set_slot(true);
-        via.ifr.set_scsi_drq(true);
+        via.set_irq(IRQ_CA1);
+        via.set_irq(IRQ_CA2);
         via.read(ADDR_A);
-        assert!(via.ifr.slot() && via.ifr.scsi_drq());
+        assert!(via.ifr().slot() && via.ifr().scsi_drq());
         via.write(ADDR_A, 0);
-        assert!(via.ifr.slot() && via.ifr.scsi_drq());
+        assert!(via.ifr().slot() && via.ifr().scsi_drq());
     }
 
     #[test]
     fn reg_a_handshake_clears_irq_flags() {
         let mut via = Via2::new(MacModel::MacII);
 
-        via.ifr.set_slot(true);
-        via.ifr.set_scsi_drq(true);
+        via.set_irq(IRQ_CA1);
+        via.set_irq(IRQ_CA2);
         via.read(ADDR_A_HS);
-        assert!(!via.ifr.slot() && !via.ifr.scsi_drq());
+        assert!(!via.ifr().slot() && !via.ifr().scsi_drq());
 
-        via.ifr.set_slot(true);
-        via.ifr.set_scsi_drq(true);
+        via.set_irq(IRQ_CA1);
+        via.set_irq(IRQ_CA2);
         via.write(ADDR_A_HS, 0);
-        assert!(!via.ifr.slot() && !via.ifr.scsi_drq());
+        assert!(!via.ifr().slot() && !via.ifr().scsi_drq());
     }
 
     #[test]
@@ -207,46 +208,46 @@ mod tests {
 
         // CA2 independent interrupt input, negative edge
         via.write(ADDR_PCR, 0x02);
-        via.ifr.set_slot(true);
-        via.ifr.set_scsi_drq(true);
+        via.set_irq(IRQ_CA1);
+        via.set_irq(IRQ_CA2);
         via.read(ADDR_A_HS);
-        assert!(!via.ifr.slot() && via.ifr.scsi_drq());
+        assert!(!via.ifr().slot() && via.ifr().scsi_drq());
 
         // Positive edge
         via.write(ADDR_PCR, 0x06);
         via.write(ADDR_A_HS, 0);
-        assert!(via.ifr.scsi_drq());
+        assert!(via.ifr().scsi_drq());
 
         // Handshake output is not independent
         via.write(ADDR_PCR, 0x0A);
         via.read(ADDR_A_HS);
-        assert!(!via.ifr.scsi_drq());
+        assert!(!via.ifr().scsi_drq());
     }
 
     #[test]
     fn independent_cb2_keeps_irq_flag() {
         let mut via = Via2::new(MacModel::MacII);
 
-        via.ifr.set_scsi_irq(true);
-        via.ifr.set_asc(true);
+        via.set_irq(IRQ_CB2);
+        via.set_irq(IRQ_CB1);
         via.read(ADDR_B);
-        assert!(!via.ifr.scsi_irq() && !via.ifr.asc());
+        assert!(!via.ifr().scsi_irq() && !via.ifr().asc());
 
         // CB2 independent interrupt input, negative edge
         via.write(ADDR_PCR, 0x20);
-        via.ifr.set_scsi_irq(true);
-        via.ifr.set_asc(true);
+        via.set_irq(IRQ_CB2);
+        via.set_irq(IRQ_CB1);
         via.read(ADDR_B);
-        assert!(via.ifr.scsi_irq() && !via.ifr.asc());
+        assert!(via.ifr().scsi_irq() && !via.ifr().asc());
 
         // Positive edge
         via.write(ADDR_PCR, 0x60);
         via.write(ADDR_B, 0);
-        assert!(via.ifr.scsi_irq());
+        assert!(via.ifr().scsi_irq());
 
         // Handshake output is not independent
         via.write(ADDR_PCR, 0xA0);
         via.read(ADDR_B);
-        assert!(!via.ifr.scsi_irq());
+        assert!(!via.ifr().scsi_irq());
     }
 }
