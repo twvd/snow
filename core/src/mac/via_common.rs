@@ -184,6 +184,12 @@ pub enum LineState {
     Pulse,
 }
 
+impl From<bool> for LineState {
+    fn from(high: bool) -> Self {
+        if high { Self::High } else { Self::Low }
+    }
+}
+
 /// A register of which the bit assignments are machine specific
 pub trait ViaBits: Copy + From<u8> + Into<u8> + Serialize + DeserializeOwned {}
 impl<T> ViaBits for T where T: Copy + From<u8> + Into<u8> + Serialize + DeserializeOwned {}

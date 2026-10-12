@@ -3,7 +3,7 @@ use std::ops::{Deref, DerefMut};
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::mac::MacModel;
-use crate::mac::via_common::{ViaCommon, ViaReg, ViaWiring};
+use crate::mac::via_common::{IRQ_CA2, IRQ_CB2, LineState, ViaCommon, ViaLine, ViaReg, ViaWiring};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
@@ -109,6 +109,12 @@ impl Via2 {
     pub fn new(model: MacModel) -> Self {
         let mut core = ViaCommon::new();
         core.b_in = model.via2_b_in();
+
+        // SCSI IRQ (CB2) and DRQ (CA2) are active high
+        core.set_line(ViaLine::CB2, LineState::Low);
+        core.set_line(ViaLine::CA2, LineState::Low);
+        core.clear_irq(IRQ_CA2 | IRQ_CB2);
+
         Self { core }
     }
 }
