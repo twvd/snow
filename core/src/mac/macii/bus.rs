@@ -18,6 +18,7 @@ use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
+use crate::mac::via_common::{LineState, ViaLine};
 use crate::mac::{MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind};
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
@@ -845,11 +846,14 @@ where
         }
 
         // Legacy VBlank interrupt
+        //
+        // On hardware, this is the square wave output of VIA2 timer 1 on PB7,
+        // which is wired to CA1 of VIA1.
         self.vblank_clock += ticks;
         while self.vblank_clock >= ctx.bus_frequency / 60 {
             self.vblank_clock -= ctx.bus_frequency / 60;
 
-            self.via1.ifr.set_vblank(true);
+            self.via1.set_line(ViaLine::CA1, LineState::Pulse);
 
             match self.speed {
                 EmulatorSpeed::Video => {

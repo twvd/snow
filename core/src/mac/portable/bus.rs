@@ -18,6 +18,7 @@ use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::swim::Swim;
+use crate::mac::via_common::{LineState, ViaLine};
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
@@ -635,7 +636,7 @@ where
         self.vblank_clock += ticks;
         while self.vblank_clock >= self.bus_frequency / 60 {
             self.vblank_clock -= self.bus_frequency / 60;
-            self.via.ifr.set_vblank(true);
+            self.via.set_line(ViaLine::CA1, LineState::Pulse);
 
             if self.speed == EmulatorSpeed::Video {
                 // Sync to 60 fps video

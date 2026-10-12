@@ -5,7 +5,7 @@ use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
 use crate::mac::pluskbd::PlusKeyboard;
 use crate::mac::rtc::Rtc;
-use crate::mac::via_common::{ViaCommon, ViaReg, ViaWiring};
+use crate::mac::via_common::{LineState, ViaCommon, ViaLine, ViaReg, ViaWiring};
 use crate::tickable::{TickConverter, Tickable, Ticks};
 use crate::types::Byte;
 
@@ -328,7 +328,7 @@ impl Via {
         // One second interrupt
         if self.onesec >= ONESEC_TICKS {
             self.onesec -= ONESEC_TICKS;
-            self.core.ifr.set_onesec(true);
+            self.core.set_line(ViaLine::CA2, LineState::Pulse);
             self.rtc.second();
         }
 
