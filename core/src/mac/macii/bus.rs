@@ -849,17 +849,23 @@ where
 
             self.via1.tick(1, ctx)?;
             self.via2.tick(1, ctx)?;
+
+            // Legacy VBlank interrupt (60.15 Hz)
+            //
+            // This is the square wave output of VIA2 timer 1 on PB7, which is
+            // wired to CA1 of VIA1.
+            let pb7 = if self.via2.acr.t1_output_en() || self.via2.ddrb.v2vbl() {
+                self.via2.b_out.v2vbl()
+            } else {
+                true
+            };
+            self.via1.set_line(ViaLine::CA1, pb7.into());
         }
 
-        // Legacy VBlank interrupt
-        //
-        // On hardware, this is the square wave output of VIA2 timer 1 on PB7,
-        // which is wired to CA1 of VIA1.
+        // Host frame pacing
         self.vblank_clock += ticks;
         while self.vblank_clock >= ctx.bus_frequency / 60 {
             self.vblank_clock -= ctx.bus_frequency / 60;
-
-            self.via1.set_line(ViaLine::CA1, LineState::Pulse);
 
             match self.speed {
                 EmulatorSpeed::Video => {
