@@ -854,12 +854,8 @@ where
             //
             // This is the square wave output of VIA2 timer 1 on PB7, which is
             // wired to CA1 of VIA1.
-            let pb7 = if self.via2.acr.t1_output_en() || self.via2.ddrb.v2vbl() {
-                self.via2.b_out.v2vbl()
-            } else {
-                true
-            };
-            self.via1.set_line(ViaLine::CA1, pb7.into());
+            self.via1
+                .set_line(ViaLine::CA1, self.via2.pb().v2vbl().into());
         }
 
         // Host frame pacing
