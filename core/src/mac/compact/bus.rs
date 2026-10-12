@@ -252,7 +252,7 @@ where
     }
 
     fn soundbuf(&mut self) -> &mut [u8] {
-        if self.model >= MacModel::SE || self.via.a_out.sndpg2() {
+        if self.model >= MacModel::SE || self.via.pa().sndpg2() {
             &mut self.ram[self.soundbuf_main.clone()]
         } else {
             &mut self.ram[self.soundbuf_alt.clone()]
@@ -654,12 +654,12 @@ where
         };
 
         if self.model <= MacModel::Plus {
-            self.overlay = self.via.a_out.overlay();
+            self.overlay = self.via.pa().overlay();
         }
 
         // Sync values that live in multiple places
-        self.swim.sel = self.via.a_out.sel();
-        self.video.framebuffer_select = self.via.a_out.page2();
+        self.swim.sel = self.via.pa().sel();
+        self.video.framebuffer_select = self.via.pa().page2();
 
         if written.is_none() {
             warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
@@ -742,7 +742,7 @@ where
             if self.model <= MacModel::Plus {
                 self.via.b_in.set_h4(self.video.in_hblank());
             } else {
-                self.swim.intdrive = self.via.a_out.drivesel();
+                self.swim.intdrive = self.via.pa().drivesel();
             }
 
             // VBlank interrupt
@@ -776,9 +776,7 @@ where
             if self.video.get_clr_hblank() {
                 // Update floppy drive PWM and send next audio sample
                 let scanline = self.video.get_scanline();
-                let soundon = self.via.a_out.sound() > 0
-                    && self.via.ddrb.sndenb()
-                    && !self.via.b_out.sndenb();
+                let soundon = self.via.pa().sound() > 0 && !self.via.pb().sndenb();
                 let soundbuf = self.soundbuf();
                 let pwm = soundbuf[scanline * 2 + 1];
                 let audiosample = if soundon { soundbuf[scanline * 2] } else { 0 };
@@ -839,7 +837,7 @@ where
             return Some(1);
         }
         // SCSI IRQs
-        if self.model >= MacModel::SE && self.scsi.get_irq() && !self.via.b_out.scsi_int() {
+        if self.model >= MacModel::SE && self.scsi.get_irq() && !self.via.pb().scsi_int() {
             return Some(1);
         }
 
