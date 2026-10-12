@@ -35,6 +35,9 @@ use serde::{Deserialize, Serialize};
 /// Macintosh II main clock speed
 pub const DEFAULT_BUS_SPEED: Ticks = 16_000_000;
 
+/// Frequency of the master clock (C16M) the VIA clock is derived from
+const C16M_FREQUENCY: Ticks = 15_667_200;
+
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
@@ -836,10 +839,13 @@ where
 
         // The Mac II generates the VIA clock through some dividers on the logic board.
         // This same logic generates wait states when the VIAs are accessed.
-        self.via_clock += ticks;
-        while self.via_clock >= 20 {
+        //
+        // The VIA clock is C16M / 20 (783.36 kHz). As the bus runs at a nominal
+        // 16 MHz, that is slightly less than once every 20 bus cycles.
+        self.via_clock += ticks * C16M_FREQUENCY;
+        while self.via_clock >= 20 * DEFAULT_BUS_SPEED {
             // TODO VIA wait states
-            self.via_clock -= 20;
+            self.via_clock -= 20 * DEFAULT_BUS_SPEED;
 
             self.via1.tick(1, ctx)?;
             self.via2.tick(1, ctx)?;
