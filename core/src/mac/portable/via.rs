@@ -232,9 +232,13 @@ impl BusMember<Address> for Via {
             0x0E => Some(self.ier.0 | 0x80),
 
             // Register A
-            0x01 | 0x0F => {
-                self.ifr.set_vblank(false);
-                self.ifr.set_onesec(false);
+            reg @ (0x01 | 0x0F) => {
+                // The CA1/CA2 flags are only cleared through the register with
+                // handshake. The Mac uses the one without (vBufA).
+                if reg == 0x01 {
+                    self.ifr.set_vblank(false);
+                    self.ifr.set_onesec(false);
+                }
 
                 Some((self.a_in.0 & !self.ddra.0) | (self.a_out.0 & self.ddra.0))
             }
@@ -328,9 +332,13 @@ impl BusMember<Address> for Via {
             }
 
             // Register A
-            0x01 | 0x0F => {
-                self.ifr.set_vblank(false);
-                self.ifr.set_onesec(false);
+            reg @ (0x01 | 0x0F) => {
+                // The CA1/CA2 flags are only cleared through the register with
+                // handshake. The Mac uses the one without (vBufA).
+                if reg == 0x01 {
+                    self.ifr.set_vblank(false);
+                    self.ifr.set_onesec(false);
+                }
 
                 self.a_out.0 = val;
                 Some(())
@@ -435,5 +443,42 @@ impl Debuggable for Via {
             dbgprop_byte_bin!("Peripheral Control (PCR)", self.pcr.0),
             dbgprop_byte_bin!("Auxiliary Control (ACR)", self.acr.0),
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Register A with handshake
+    const ADDR_A_HS: Address = 0x01 << 9;
+    /// Register A without handshake (vBufA)
+    const ADDR_A: Address = 0x0F << 9;
+
+    #[test]
+    fn reg_a_no_handshake_keeps_irq_flags() {
+        let mut via = Via::new();
+
+        via.ifr.set_vblank(true);
+        via.ifr.set_onesec(true);
+        via.read(ADDR_A);
+        assert!(via.ifr.vblank() && via.ifr.onesec());
+        via.write(ADDR_A, 0);
+        assert!(via.ifr.vblank() && via.ifr.onesec());
+    }
+
+    #[test]
+    fn reg_a_handshake_clears_irq_flags() {
+        let mut via = Via::new();
+
+        via.ifr.set_vblank(true);
+        via.ifr.set_onesec(true);
+        via.read(ADDR_A_HS);
+        assert!(!via.ifr.vblank() && !via.ifr.onesec());
+
+        via.ifr.set_vblank(true);
+        via.ifr.set_onesec(true);
+        via.write(ADDR_A_HS, 0);
+        assert!(!via.ifr.vblank() && !via.ifr.onesec());
     }
 }
