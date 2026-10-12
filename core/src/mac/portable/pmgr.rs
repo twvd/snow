@@ -160,9 +160,17 @@ pub struct Pmgr {
     pub(crate) pmack: bool,
     pub(crate) a_in: Byte,
     pub(crate) a_out: Byte,
-    pub(crate) interrupt: bool,
-    pub(crate) onesec: bool,
-    onesec_latch: bool,
+
+    /// Pending pulse on the interrupt line (/PMINT)
+    pmint: bool,
+    /// Pending pulse on the one second line
+    onesec: bool,
+    /// Pending 60 Hz tick, handled when idle
+    tick_pending: bool,
+    /// Amount of 60 Hz ticks in the current second
+    tick_count: u8,
+    /// An ADB command from the host has completed
+    adb_done: bool,
 
     adb_data_length: Byte,
     adb_data: Vec<Byte>,
@@ -219,10 +227,12 @@ impl Pmgr {
             pmack: true,
             a_in: 0x00,
             a_out: 0x00,
-            onesec: false,
-            onesec_latch: false,
 
-            interrupt: false,
+            pmint: false,
+            onesec: false,
+            tick_pending: false,
+            tick_count: 0,
+            adb_done: false,
 
             adb_data_length: 0x00,
             adb_data: vec![0; 2],
@@ -768,7 +778,56 @@ impl Pmgr {
         self.adb_ready = false;
         self.adb_status.set_srq(false);
         self.interrupt_flags.set_adbint(false);
-        self.interrupt = false;
+        self.pmint = false;
+        self.adb_done = false;
+    }
+
+    /// Signals the 60 Hz tick
+    pub(crate) fn tick_60hz(&mut self) {
+        self.tick_pending = true;
+    }
+
+    /// Returns whether to pulse the interrupt line (/PMINT)
+    pub(crate) fn take_pmint(&mut self) -> bool {
+        std::mem::take(&mut self.pmint)
+    }
+
+    /// Returns whether to pulse the one second line
+    pub(crate) fn take_onesec(&mut self) -> bool {
+        std::mem::take(&mut self.onesec)
+    }
+
+    /// Tests whether an interrupt is pending. The reset flag is reported
+    /// to the host but does not cause an interrupt.
+    fn interrupt_pending(&self) -> bool {
+        (self.interrupt_flags.0 & 0b111 != 0) & self.adb_ready
+    }
+
+    /// Pulses the interrupt line if an interrupt is pending.
+    ///
+    /// The Power Manager only does this when idle and repeats it on every
+    /// 60 Hz tick for as long as the interrupt remains pending.
+    fn check_irq(&mut self) {
+        if self.interrupt_pending() {
+            self.pmint = true;
+        }
+    }
+
+    /// Handles a 60 Hz tick
+    fn do_tick_60hz(&mut self) {
+        self.tick_count += 1;
+        if self.tick_count >= 60 {
+            self.tick_count = 0;
+            self.time = self.time.wrapping_add(1);
+            self.onesec = true;
+        }
+
+        // Check if any devices have asserted SRQ
+        if self.adb_devices.iter().any(|d| d.get_srq()) & !self.interrupt_flags.adbint() {
+            self.adb_srq();
+        }
+
+        self.check_irq();
     }
 }
 
@@ -776,25 +835,20 @@ impl Tickable for Pmgr {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
         // TODO support batching ticks
         for _ in 0..ticks {
-            // Handle the one-second signal to the VIA
-            if self.onesec & !self.onesec_latch {
-                self.time += 1;
-                self.onesec_latch = true;
-            } else if !self.onesec & self.onesec_latch {
-                self.onesec_latch = false;
-            }
-
-            // Check for interrupts
-            self.interrupt = (self.interrupt_flags.0 != 0) & self.adb_ready;
-
             // Check if we're waiting to process an ADB command
             if self.adb_status.new() {
                 self.adb_cmd_do();
+                self.adb_done = true;
             }
 
-            // Check if any devices have asserted SRQ
-            if self.adb_devices.iter().any(|d| d.get_srq()) & !self.interrupt_flags.adbint() {
-                self.adb_srq();
+            // The tick and the interrupt are only handled when idle
+            if matches!(self.state, State::Idle) && self.pmreq {
+                if std::mem::take(&mut self.tick_pending) {
+                    self.do_tick_60hz();
+                }
+                if std::mem::take(&mut self.adb_done) {
+                    self.check_irq();
+                }
             }
 
             // Power Manager communication state machine
@@ -1038,7 +1092,7 @@ impl Debuggable for Pmgr {
                     })
                     .collect()
             ),
-            dbgprop_bool!("Power Manager Interrupt", self.interrupt),
+            dbgprop_bool!("Power Manager Interrupt", self.interrupt_pending()),
             dbgprop_bool!("ADB SRQ", self.adb_devices.iter().any(|d| d.get_srq())),
         ]
     }
