@@ -154,6 +154,36 @@ impl RegisterPCR {
     }
 }
 
+/// VIA control line inputs
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViaLine {
+    CA1,
+    CA2,
+    CB1,
+    CB2,
+}
+
+impl ViaLine {
+    /// The interrupt flag of this line
+    pub const fn irq(self) -> u8 {
+        match self {
+            Self::CA1 => IRQ_CA1,
+            Self::CA2 => IRQ_CA2,
+            Self::CB1 => IRQ_CB1,
+            Self::CB2 => IRQ_CB2,
+        }
+    }
+}
+
+/// Level to drive on a control line
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineState {
+    High,
+    Low,
+    /// Momentarily drives the opposite of the current level
+    Pulse,
+}
+
 /// A register of which the bit assignments are machine specific
 pub trait ViaBits: Copy + From<u8> + Into<u8> + Serialize + DeserializeOwned {}
 impl<T> ViaBits for T where T: Copy + From<u8> + Into<u8> + Serialize + DeserializeOwned {}
@@ -231,6 +261,9 @@ pub struct ViaCommon<W: ViaWiring> {
     pub t2latch: Field16,
 
     t2_enable: bool,
+
+    /// Levels of the control lines, by interrupt flag (set = high)
+    lines: u8,
 }
 
 impl<W: ViaWiring> Default for ViaCommon<W> {
@@ -263,6 +296,8 @@ impl<W: ViaWiring> ViaCommon<W> {
             t2cnt: Field16(0),
             t2latch: Field16(0),
             t2_enable: false,
+
+            lines: IRQ_CA1 | IRQ_CA2 | IRQ_CB1 | IRQ_CB2,
         }
     }
 
@@ -286,6 +321,44 @@ impl<W: ViaWiring> ViaCommon<W> {
     /// Clears the given interrupt flag(s)
     pub fn clear_irq(&mut self, mask: u8) {
         self.ifr = (self.ifr.into() & !mask).into();
+    }
+
+    /// Tests if a transition to the given level is the active edge of a line,
+    /// as selected through the PCR
+    fn is_active_edge(&self, line: ViaLine, high: bool) -> bool {
+        let pcr = self.pcr.0;
+        let (positive, input) = match line {
+            ViaLine::CA1 => (pcr & 0x01 != 0, true),
+            ViaLine::CA2 => (pcr & 0x04 != 0, pcr & 0x08 == 0),
+            ViaLine::CB1 => (pcr & 0x10 != 0, true),
+            ViaLine::CB2 => (pcr & 0x40 != 0, pcr & 0x80 == 0),
+        };
+        input && positive == high
+    }
+
+    fn set_line_level(&mut self, line: ViaLine, high: bool) {
+        let irq = line.irq();
+        if (self.lines & irq != 0) == high {
+            return;
+        }
+        self.lines ^= irq;
+
+        if self.is_active_edge(line, high) {
+            self.set_irq(irq);
+        }
+    }
+
+    /// Drives a control line input
+    pub fn set_line(&mut self, line: ViaLine, state: LineState) {
+        match state {
+            LineState::High => self.set_line_level(line, true),
+            LineState::Low => self.set_line_level(line, false),
+            LineState::Pulse => {
+                let high = self.lines & line.irq() != 0;
+                self.set_line_level(line, !high);
+                self.set_line_level(line, high);
+            }
+        }
     }
 
     /// Register A access with handshake. The Mac uses the register without
@@ -762,5 +835,73 @@ mod tests {
         via.set_irq(IRQ_SR);
         assert_eq!(via.read(ViaReg::SR), 0x5A);
         assert_eq!(via.ifr, 0);
+    }
+
+    #[test]
+    fn line_edge() {
+        let mut via = TestVia::new();
+
+        // Negative edge
+        via.set_line(ViaLine::CA1, LineState::High);
+        assert_eq!(via.ifr, 0);
+        via.set_line(ViaLine::CA1, LineState::Low);
+        assert_eq!(via.ifr, IRQ_CA1);
+
+        // No edge
+        via.write(ViaReg::IFR, IRQ_CA1);
+        via.set_line(ViaLine::CA1, LineState::Low);
+        assert_eq!(via.ifr, 0);
+        via.set_line(ViaLine::CA1, LineState::High);
+        assert_eq!(via.ifr, 0);
+
+        // Positive edge
+        via.write(ViaReg::PCR, 0x01);
+        via.set_line(ViaLine::CA1, LineState::Low);
+        assert_eq!(via.ifr, 0);
+        via.set_line(ViaLine::CA1, LineState::High);
+        assert_eq!(via.ifr, IRQ_CA1);
+    }
+
+    #[test]
+    fn line_edge_pcr() {
+        for (line, shift) in [(ViaLine::CA2, 1), (ViaLine::CB2, 5)] {
+            let mut via = TestVia::new();
+
+            // Positive edge, also in independent mode
+            for mode in [0b010, 0b011] {
+                via.write(ViaReg::PCR, mode << shift);
+                via.set_line(line, LineState::Low);
+                assert_eq!(via.ifr, 0);
+                via.set_line(line, LineState::High);
+                assert_eq!(via.ifr, line.irq());
+                via.write(ViaReg::IFR, line.irq());
+            }
+
+            // Output
+            via.write(ViaReg::PCR, 0b100 << shift);
+            via.set_line(line, LineState::Pulse);
+            assert_eq!(via.ifr, 0);
+        }
+
+        let mut via = TestVia::new();
+        via.write(ViaReg::PCR, 0x10);
+        via.set_line(ViaLine::CB1, LineState::Low);
+        assert_eq!(via.ifr, 0);
+        via.set_line(ViaLine::CB1, LineState::High);
+        assert_eq!(via.ifr, IRQ_CB1);
+    }
+
+    #[test]
+    fn line_pulse() {
+        for pcr in [0x00, 0x01] {
+            let mut via = TestVia::new();
+            via.write(ViaReg::PCR, pcr);
+            via.set_line(ViaLine::CA1, LineState::Pulse);
+            assert_eq!(via.ifr, IRQ_CA1);
+
+            via.write(ViaReg::IFR, IRQ_CA1);
+            via.set_line(ViaLine::CA1, LineState::Pulse);
+            assert_eq!(via.ifr, IRQ_CA1);
+        }
     }
 }
