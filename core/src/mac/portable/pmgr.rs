@@ -820,6 +820,7 @@ impl Pmgr {
             self.tick_count = 0;
             self.time = self.time.wrapping_add(1);
             self.onesec = true;
+            self.rtc.second();
         }
 
         // Check if any devices have asserted SRQ, once the host has
