@@ -842,7 +842,7 @@ where
             self.via_clock -= 20;
 
             self.via1.tick(1, ctx)?;
-            self.via2.tick(1, ())?;
+            self.via2.tick(1, ctx)?;
         }
 
         // Legacy VBlank interrupt
