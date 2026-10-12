@@ -913,8 +913,10 @@ where
 
         self.scsi.tick(ticks, ctx)?;
 
-        self.via2.ifr.set_scsi_irq(self.scsi.get_irq());
-        self.via2.ifr.set_scsi_drq(self.scsi.get_drq());
+        // IRQ and DRQ of the SCSI controller are active high and directly
+        // connected to CB2 and CA2
+        self.via2.set_line(ViaLine::CB2, self.scsi.get_irq().into());
+        self.via2.set_line(ViaLine::CA2, self.scsi.get_drq().into());
 
         self.swim.intdrive = self.via1.a_out.drivesel();
         self.swim.tick(ticks, ())?;
