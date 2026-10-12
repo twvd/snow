@@ -879,9 +879,9 @@ where
         }
 
         // Audio
-        if self.asc.get_irq() {
-            self.via2.ifr.set_asc(true);
-        }
+        // The interrupt output of the ASC is active low
+        self.via2
+            .set_line(ViaLine::CB1, (!self.asc.get_irq()).into());
 
         self.asc_clock += ticks;
         while self.asc_clock >= ctx.bus_frequency / self.asc.sample_rate() {
