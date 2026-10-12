@@ -266,6 +266,18 @@ impl<W: ViaWiring> ViaCommon<W> {
         }
     }
 
+    /// Resets the registers. The timers and shift register are not affected.
+    pub fn reset(&mut self) {
+        self.a_out = 0.into();
+        self.ddra = 0.into();
+        self.b_out = 0.into();
+        self.ddrb = 0.into();
+        self.ier = 0.into();
+        self.ifr = 0.into();
+        self.pcr = RegisterPCR(0);
+        self.acr = RegisterACR(0);
+    }
+
     /// Sets the given interrupt flag(s)
     pub fn set_irq(&mut self, mask: u8) {
         self.ifr = (self.ifr.into() | (mask & 0x7F)).into();
