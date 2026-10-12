@@ -18,6 +18,7 @@ use crate::mac::scsi::controller::ScsiController;
 use crate::mac::swim::Swim;
 use crate::mac::swim::drive::DriveType;
 use crate::mac::via::Via;
+use crate::mac::via_common::{LineState, ViaLine};
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
@@ -746,7 +747,7 @@ where
 
             // VBlank interrupt
             if self.video.get_clr_vblank() {
-                self.via.ifr.set_vblank(true);
+                self.via.set_line(ViaLine::CA1, LineState::Pulse);
 
                 match self.speed {
                     EmulatorSpeed::Video => {
