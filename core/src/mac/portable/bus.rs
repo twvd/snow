@@ -585,22 +585,14 @@ where
         self.pmgr.a_out = self.via.a_out.0;
         self.pmgr.a_in = self.via.a_in.0;
         self.pmgr.pmreq = self.via.b_out.pmreq();
-        self.pmgr.onesec = self.via.ifr().onesec();
         self.pmgr.tick(ticks, ())?;
         self.via.b_in.set_pmack(self.pmgr.pmack);
         self.via.a_in.0 = self.pmgr.a_in;
-        // /PMINT is active low
-        self.via
-            .set_line(ViaLine::CB1, (!self.pmgr.interrupt).into());
-
-        // Workaround: The Power Manager is not modelled accurately enough for
-        // an edge sensitive input: it can request another interrupt while a
-        // command is still in progress, in which case the handshake of that
-        // command on register B clears the interrupt flag and no further edge
-        // follows. Generate another edge for as long as it requests an
-        // interrupt.
-        if self.pmgr.interrupt && !self.via.ifr().pmgr() {
+        if self.pmgr.take_pmint() {
             self.via.set_line(ViaLine::CB1, LineState::Pulse);
+        }
+        if self.pmgr.take_onesec() {
+            self.via.set_line(ViaLine::CA2, LineState::Pulse);
         }
 
         Ok(())
@@ -649,6 +641,7 @@ where
         while self.vblank_clock >= self.bus_frequency / 60 {
             self.vblank_clock -= self.bus_frequency / 60;
             self.via.set_line(ViaLine::CA1, LineState::Pulse);
+            self.pmgr.tick_60hz();
 
             if self.speed == EmulatorSpeed::Video {
                 // Sync to 60 fps video
