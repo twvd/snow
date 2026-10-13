@@ -292,6 +292,7 @@ impl Emulator {
             false,
             false,
             None,
+            None,
         )
     }
 
@@ -306,6 +307,7 @@ impl Emulator {
         override_fdd_type: Option<DriveType>,
         pmmu_enabled: bool,
         fpu_enabled: bool,
+        vram_size: Option<usize>,
         shared_dir: Option<PathBuf>,
     ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
         // Set up channels
@@ -502,7 +504,9 @@ impl Emulator {
 
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
-                let bus = MacLCBus::new(model, rom, renderer, mouse_mode, ram_size);
+                let bus = MacLCBus::new(
+                    model, rom, renderer, mouse_mode, ram_size, monitor, vram_size,
+                );
                 if fpu_enabled {
                     EmulatorConfig::MacLCFpu(Box::new(CpuM68020Fpu68882::new(bus)))
                 } else {
