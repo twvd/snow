@@ -40,9 +40,6 @@ bitfield! {
         /// Sound volume (non-ASC models)
         pub sound: u8 @ 0..=2,
 
-        /// Model sense (Mac II)
-        pub model: u8 @ 0..=2,
-
         /// Sound buffer
         /// (true = main, false = alternate)
         pub sndpg2: bool @ 3,
