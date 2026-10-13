@@ -26,8 +26,8 @@ use super::instruction::{
 };
 use super::regs::{Register, RegisterFile, RegisterSR, RestartRegisterFile};
 use super::{
-    CpuM68kType, CpuSized, M68000, M68010, M68020, M68020_SR_MASK, M68030_SR_MASK, TORDER_HIGHLOW,
-    TORDER_LOWHIGH,
+    CpuM68kType, CpuSized, FPU_NONE, M68000, M68010, M68020, M68020_SR_MASK, M68030_SR_MASK,
+    TORDER_HIGHLOW, TORDER_LOWHIGH,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1497,6 +1497,21 @@ where
             InstructionMnemonic::CAS_l => self.op_cas::<Long>(instr),
 
             // FPU ---------------------------------------------------------------------------------
+            InstructionMnemonic::FNOP
+            | InstructionMnemonic::FSAVE
+            | InstructionMnemonic::FRESTORE
+            | InstructionMnemonic::FOP_000
+            | InstructionMnemonic::FBcc_l
+            | InstructionMnemonic::FBcc_w
+            | InstructionMnemonic::FScc_b
+            | InstructionMnemonic::FDBcc
+            | InstructionMnemonic::FTRAPcc
+            | InstructionMnemonic::FTRAPcc_w
+            | InstructionMnemonic::FTRAPcc_l
+                if FPU_TYPE == FPU_NONE =>
+            {
+                self.op_linef(instr)
+            }
             InstructionMnemonic::FNOP => self.op_fnop(instr),
             InstructionMnemonic::FSAVE => self.op_fsave(instr),
             InstructionMnemonic::FRESTORE => self.op_frestore(instr),

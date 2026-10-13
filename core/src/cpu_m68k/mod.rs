@@ -21,6 +21,9 @@ pub type CpuM68000<TBus> = cpu::CpuM68k<TBus, M68000_ADDRESS_MASK, M68000, FPU_N
 pub const M68000_ADDRESS_MASK: Address = 0x00FFFFFF;
 pub const M68000_SR_MASK: u16 = 0b1010011100011111;
 
+/// Motorola 68020
+pub type CpuM68020<TBus> = cpu::CpuM68k<TBus, M68020_ADDRESS_MASK, M68020, FPU_NONE, false>;
+
 /// Motorola 68020 + 68881 FPU
 pub type CpuM68020Fpu<TBus> = cpu::CpuM68k<TBus, M68020_ADDRESS_MASK, M68020, FPU_M68881, false>;
 pub const M68020_ADDRESS_MASK: Address = 0xFFFFFFFF;
