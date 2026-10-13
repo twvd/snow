@@ -2,7 +2,7 @@ use crate::dialogs::about::AboutDialog;
 use crate::dialogs::confirm::ConfirmDialog;
 use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
 use crate::dialogs::filedialog::SnowFileDialog;
-use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
+use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult, video_rom_card};
 use crate::emulator::EmulatorState;
 use crate::emulator::{EmulatorInitArgs, ScsiTargets};
 use crate::keymap::{char_to_keystroke, map_winit_keycode};
@@ -2662,7 +2662,8 @@ impl SnowGui {
         if let Some(model) = model {
             self.settings.set_last_rom(model, path);
             if let Some(dr_path) = display_rom_path {
-                self.settings.set_last_card_rom(args.video_card, dr_path);
+                self.settings
+                    .set_last_card_rom(video_rom_card(model, args.video_card), dr_path);
             }
         }
 

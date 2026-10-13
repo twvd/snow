@@ -19,6 +19,16 @@ const SELECTABLE_VIDEO_CARDS: &[NubusDeviceKind] = &[NubusDeviceKind::Mdc12, Nub
 /// Video cards that support a user-selectable monitor.
 const VIDEO_CARDS_WITH_MONITOR: &[NubusDeviceKind] = &[NubusDeviceKind::Mdc12];
 
+/// Returns the card a display ROM belongs to, which is the onboard video for
+/// the SE/30 and the selected video card for the other models.
+pub fn video_rom_card(model: MacModel, video_card: NubusDeviceKind) -> NubusDeviceKind {
+    if model == MacModel::SE30 {
+        NubusDeviceKind::SE30Video
+    } else {
+        video_card
+    }
+}
+
 /// Dialog for selecting Macintosh model and associated ROMs
 pub struct ModelSelectionDialog {
     open: bool,
@@ -181,7 +191,7 @@ impl ModelSelectionDialog {
         if let Some(p) = display_rom_path {
             self.display_rom_path = p.to_string_lossy().to_string();
             self.card_rom_paths
-                .insert(self.selected_video_card, self.display_rom_path.clone());
+                .insert(self.rom_card(), self.display_rom_path.clone());
         }
         self.pram_enabled = pram_path.is_some();
         self.pram_path = pram_path
@@ -217,11 +227,16 @@ impl ModelSelectionDialog {
         }
         self.display_rom_path = self
             .card_rom_paths
-            .get(&self.selected_video_card)
+            .get(&self.rom_card())
             .cloned()
             .unwrap_or_default();
 
         self.do_validate_roms();
+    }
+
+    /// The card the display ROM of the selected model belongs to
+    fn rom_card(&self) -> NubusDeviceKind {
+        video_rom_card(self.selected_model, self.selected_video_card)
     }
 
     /// Called when the selected video card changes
