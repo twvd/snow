@@ -16,6 +16,8 @@ pub const PACKET_ADB: u8 = 0x00;
 pub const PACKET_PSEUDO: u8 = 0x01;
 /// Error response packet
 pub const PACKET_ERROR: u8 = 0x02;
+/// One second tick packet
+pub const PACKET_TICK: u8 = 0x03;
 
 /// Error codes of the error response packet
 const ERROR_PACKET_TYPE: u8 = 1;
@@ -34,6 +36,10 @@ const CMD_WRITE_PRAM: u8 = 0x0C;
 const CMD_WRITE_DFAC: u8 = 0x0E;
 const CMD_ONE_SEC_MODE: u8 = 0x1B;
 const CMD_KEYBOARD_NMI: u8 = 0x1C;
+
+/// Frequency of the VIA clock, which the model is run from. The Egret has
+/// its own 32.768 kHz crystal.
+pub const TICKS_PER_SECOND: Ticks = 783_360;
 
 /// PRAM has 8 bytes more than the 256 of the clock chip of older models
 const PRAM_EXTRA: usize = 8;
@@ -58,6 +64,15 @@ pub struct EgretCommon {
     /// Mode of the one second tick packets (0 = none)
     one_sec_mode: u8,
 
+    /// Time since the clock advanced
+    second_ticks: Ticks,
+
+    /// A second has passed, for which no tick packet was sent
+    tick_pending: bool,
+
+    /// The next tick packet has the time, whatever the mode
+    tick_time: bool,
+
     /// The programmer's key combination on the keyboard raises an NMI
     keyboard_nmi: bool,
 
@@ -73,12 +88,47 @@ pub struct EgretCommon {
 
 impl EgretCommon {
     /// Advances by a number of VIA clock cycles
-    pub fn tick(&mut self, _ticks: Ticks) {}
+    pub fn tick(&mut self, ticks: Ticks) {
+        self.second_ticks += ticks;
+        if self.second_ticks >= TICKS_PER_SECOND {
+            self.second_ticks -= TICKS_PER_SECOND;
+            self.rtc.second();
 
-    /// Returns a packet to send to the host without a command from it.
-    /// There is no such packet yet.
+            // The host gets the time again after it has missed a tick
+            self.tick_time |= self.tick_pending;
+            self.tick_pending = true;
+        }
+    }
+
+    /// Returns a packet to send to the host without a command from it
     pub fn packet(&mut self) -> Option<Vec<u8>> {
-        None
+        // The host has ended the response to its last command, which may be
+        // one that goes on until then
+        self.reading = None;
+
+        if self.one_sec_mode == 0 || !self.tick_pending {
+            return None;
+        }
+        self.tick_pending = false;
+
+        let packet = match self.one_sec_mode {
+            _ if self.tick_time => self.read_clock(),
+            1 => self.read_clock(),
+            2 => vec![PACKET_PSEUDO, 0, CMD_READ_CLOCK],
+            _ => vec![PACKET_TICK],
+        };
+        trace!("Tick: {:02X?}", packet);
+        Some(packet)
+    }
+
+    /// Response to the read clock command, also used for tick packets
+    fn read_clock(&mut self) -> Vec<u8> {
+        self.tick_time = false;
+        [
+            &[PACKET_PSEUDO, 0, CMD_READ_CLOCK],
+            self.rtc.seconds().to_be_bytes().as_slice(),
+        ]
+        .concat()
     }
 
     /// Handles a command packet from the host and returns the response packet,
@@ -192,7 +242,10 @@ impl EgretCommon {
                 vec![]
             }),
             CMD_READ_CLOCK => {
-                Self::params(params).map(|[]| self.rtc.seconds().to_be_bytes().to_vec())
+                return Self::params(params).map_or_else(
+                    |code| Self::error(code, PACKET_PSEUDO, cmd),
+                    |[]| self.read_clock(),
+                );
             }
             CMD_READ_PRAM => Self::params(params).and_then(|addr| {
                 self.reading = Some(Reading::Pram(Self::pram_addr(addr)?));
@@ -227,7 +280,8 @@ impl EgretCommon {
             CMD_WRITE_DFAC if (1..=4).contains(&params.len()) => Ok(vec![]),
             CMD_WRITE_DFAC => Err(ERROR_PARAMS),
             CMD_ONE_SEC_MODE => Self::params(params).map(|[mode]| {
-                self.one_sec_mode = mode;
+                self.one_sec_mode = if mode < 4 { mode } else { 0 };
+                self.tick_time = self.one_sec_mode != 0;
                 vec![]
             }),
             CMD_KEYBOARD_NMI => Self::params(params).map(|[enable]| {
@@ -375,6 +429,64 @@ mod tests {
         );
         assert_eq!(egret.command(&[0x01, 0x03, 0x00]), [0x02, 0x03, 0x01, 0x03]);
         assert_eq!(egret.command(&[0x01, 0x09, 0x00]), [0x02, 0x03, 0x01, 0x09]);
+    }
+
+    #[test]
+    fn one_sec_ticks() {
+        let mut egret = EgretCommon::default();
+        egret.command(&[0x01, 0x09, 0x00, 0x00, 0x00, 0xFE]);
+
+        // The clock advances without tick packets
+        egret.tick(TICKS_PER_SECOND - 1);
+        assert_eq!(egret.rtc.seconds(), 0xFE);
+        egret.tick(1);
+        assert_eq!(egret.rtc.seconds(), 0xFF);
+        assert_eq!(egret.packet(), None);
+
+        // The first packet has the time, in all modes
+        assert_eq!(egret.command(&[0x01, 0x1B, 0x03]), [0x01, 0x00, 0x1B]);
+        assert_eq!(
+            egret.packet(),
+            Some(vec![0x01, 0x00, 0x03, 0x00, 0x00, 0x00, 0xFF])
+        );
+        assert_eq!(egret.packet(), None);
+        egret.tick(TICKS_PER_SECOND);
+        assert_eq!(egret.packet(), Some(vec![0x03]));
+
+        // As does the packet which follows a missed tick
+        egret.tick(2 * TICKS_PER_SECOND - 1);
+        assert_eq!(egret.packet(), Some(vec![0x03]));
+        egret.tick(1);
+        egret.tick(TICKS_PER_SECOND);
+        assert_eq!(
+            egret.packet(),
+            Some(vec![0x01, 0x00, 0x03, 0x00, 0x00, 0x01, 0x03])
+        );
+
+        egret.command(&[0x01, 0x1B, 0x02]);
+        egret.command(&[0x01, 0x03]);
+        egret.tick(TICKS_PER_SECOND);
+        assert_eq!(egret.packet(), Some(vec![0x01, 0x00, 0x03]));
+
+        egret.command(&[0x01, 0x1B, 0x01]);
+        egret.command(&[0x01, 0x03]);
+        egret.tick(TICKS_PER_SECOND);
+        assert_eq!(
+            egret.packet(),
+            Some(vec![0x01, 0x00, 0x03, 0x00, 0x00, 0x01, 0x05])
+        );
+
+        egret.command(&[0x01, 0x1B, 0x04]);
+        egret.tick(TICKS_PER_SECOND);
+        assert_eq!(egret.packet(), None);
+
+        // A read which the host has ended does not go on after a tick packet
+        egret.command(&[0x01, 0x1B, 0x03]);
+        egret.command(&[0x01, 0x07, 0x00, 0x00]);
+        assert!(egret.response_continues());
+        egret.tick(TICKS_PER_SECOND);
+        assert!(egret.packet().is_some());
+        assert!(!egret.response_continues());
     }
 
     #[test]

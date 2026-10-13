@@ -200,6 +200,7 @@ impl Debuggable for Egret {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mac::egret_common::TICKS_PER_SECOND;
 
     /// Host side of the VIA
     #[derive(Default)]
@@ -297,6 +298,59 @@ mod tests {
 
         host.send(&[0x01, 0x01, 0x00]);
         assert_eq!(host.receive(), [0x01, 0x00, 0x01]);
+    }
+
+    #[test]
+    fn packet_without_command() {
+        let mut host = Host::default();
+
+        host.send(&[0x01, 0x09, 0x00, 0x00, 0x00, 0x00]);
+        host.receive();
+        host.send(&[0x01, 0x1B, 0x03]);
+        assert_eq!(host.receive(), [0x01, 0x00, 0x1B]);
+
+        host.run(TICKS_PER_SECOND);
+        assert_eq!(host.receive(), [0x01, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01]);
+        host.run(TICKS_PER_SECOND);
+        assert_eq!(host.receive(), [0x03]);
+    }
+
+    #[test]
+    fn collision() {
+        let mut host = Host::default();
+
+        host.send(&[0x01, 0x1B, 0x03]);
+        host.receive();
+        host.run(TICKS_PER_SECOND);
+        host.receive();
+
+        // The host starts a command packet while the Egret clocks the
+        // attention byte of a tick packet
+        while !host.egret.xcvr_ses() {
+            host.run(1);
+        }
+        host.shifted = false;
+        host.sys_ses = true;
+        host.sr = 0x01;
+        host.via_full = true;
+        host.wait_shift();
+
+        // It sees the transceiver session, gives up its packet and reads
+        // the one of the Egret
+        assert!(host.egret.xcvr_ses());
+        host.sys_ses = false;
+        host.run(100);
+        assert!(host.egret.xcvr_ses());
+        host.sys_ses = true;
+        host.via_full = false;
+        assert_eq!(host.wait_shift(), 0x03);
+        assert!(!host.egret.xcvr_ses());
+        host.sys_ses = false;
+        host.run(10);
+        assert_eq!(host.egret.state, State::Idle);
+
+        host.send(&[0x01, 0x03]);
+        assert_eq!(host.receive().len(), 7);
     }
 
     #[test]
