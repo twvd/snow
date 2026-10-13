@@ -2,6 +2,10 @@
 //!
 //! This is not a 6522: there are no timers, no shift register and no data
 //! direction registers. Only A4, A1 and A0 are decoded.
+//!
+//! The Sonora gate array has the same registers, in which the expansion
+//! register is its RAM configuration register. It decodes A3 and A2 too,
+//! for two more registers.
 
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
@@ -94,6 +98,8 @@ const REG_B: Address = 0x00;
 const REG_EXP: Address = 0x01;
 const REG_SLOT_IFR: Address = 0x02;
 const REG_IFR: Address = 0x03;
+const REG_VRAM: Address = 0x04;
+const REG_SPEED: Address = 0x05;
 const REG_MONP: Address = 0x10;
 const REG_SLOT_IER: Address = 0x12;
 const REG_IER: Address = 0x13;
@@ -116,10 +122,19 @@ pub struct PseudoVia {
 
     /// Monitor sense lines
     sense: u8,
+
+    /// Bits of the address which the gate array decodes
+    addr_mask: Address,
+
+    /// Video RAM configuration register of the Sonora
+    vram: u8,
+
+    /// CPU speed register of the Sonora
+    speed: u8,
 }
 
 impl PseudoVia {
-    pub fn new(sense: u8) -> Self {
+    pub fn new(sense: u8, addr_mask: Address) -> Self {
         Self {
             b: RegisterB(0),
             exp: RegisterExp(0),
@@ -131,6 +146,9 @@ impl PseudoVia {
             scsi_drq: false,
             asc_irq: false,
             sense,
+            addr_mask,
+            vram: 0,
+            speed: 0,
         }
     }
 
@@ -200,9 +218,11 @@ impl PseudoVia {
 
 impl BusMember<Address> for PseudoVia {
     fn read(&mut self, addr: Address) -> Option<Byte> {
-        match addr & 0x13 {
+        match addr & self.addr_mask {
             REG_B => Some(self.b.0 | B_ONES),
             REG_EXP => Some(self.exp.0),
+            REG_VRAM => Some(self.vram),
+            REG_SPEED => Some(self.speed),
             REG_SLOT_IFR => Some(self.slot_ifr().0),
             REG_IFR => Some(self.ifr().with_any(self.irq()).0),
             REG_MONP => Some(self.monp.with_sense(self.sense).0),
@@ -213,13 +233,21 @@ impl BusMember<Address> for PseudoVia {
     }
 
     fn write(&mut self, addr: Address, val: Byte) -> Option<()> {
-        match addr & 0x13 {
+        match addr & self.addr_mask {
             REG_B => self.b = RegisterB(val & !B_ONES),
             REG_EXP => {
                 if RegisterExp(val) != self.exp {
-                    debug!("V8 expansion register: {:02X}", val);
+                    debug!("Expansion register: {:02X}", val);
                 }
                 self.exp = RegisterExp(val);
+            }
+            REG_VRAM => {
+                debug!("Video RAM configuration register: {:02X}", val);
+                self.vram = val;
+            }
+            REG_SPEED => {
+                debug!("CPU speed register: {:02X}", val);
+                self.speed = val;
             }
             REG_SLOT_IFR => {
                 if RegisterSlot(val).vblank() {
@@ -260,10 +288,11 @@ impl Debuggable for PseudoVia {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mac::maclc::{sonora, v8};
 
     #[test]
     fn mirrors() {
-        let mut v8 = PseudoVia::new(0b110);
+        let mut v8 = PseudoVia::new(0b110, v8::PSEUDOVIA_MASK);
 
         v8.write(REG_EXP, 0xE6);
         for addr in [0x01, 0x05, 0x0D, 0x201, 0x1A01] {
@@ -273,8 +302,21 @@ mod tests {
     }
 
     #[test]
+    fn sonora_registers() {
+        let mut sonora = PseudoVia::new(0b110, sonora::PSEUDOVIA_MASK);
+
+        sonora.write(REG_EXP, 0x46);
+        sonora.write(REG_VRAM, 0x01);
+        sonora.write(REG_SPEED, 0x02);
+        assert_eq!(sonora.read(REG_EXP), Some(0x46));
+        assert_eq!(sonora.read(REG_VRAM), Some(0x01));
+        assert_eq!(sonora.read(REG_SPEED), Some(0x02));
+        assert_eq!(sonora.read(0x1A04), Some(0x01));
+    }
+
+    #[test]
     fn data_b() {
-        let mut v8 = PseudoVia::new(0b110);
+        let mut v8 = PseudoVia::new(0b110, v8::PSEUDOVIA_MASK);
 
         assert_eq!(v8.read(REG_B), Some(0x47));
         v8.write(REG_B, 0xFF);
@@ -285,7 +327,7 @@ mod tests {
 
     #[test]
     fn monitor_sense() {
-        let mut v8 = PseudoVia::new(0b010);
+        let mut v8 = PseudoVia::new(0b010, v8::PSEUDOVIA_MASK);
 
         v8.write(REG_MONP, 0x3B);
         assert_eq!(v8.read(REG_MONP), Some(0x13));
@@ -294,7 +336,7 @@ mod tests {
 
     #[test]
     fn enable_set_clear() {
-        let mut v8 = PseudoVia::new(0b110);
+        let mut v8 = PseudoVia::new(0b110, v8::PSEUDOVIA_MASK);
 
         v8.write(REG_IER, 0x89);
         assert_eq!(v8.read(REG_IER), Some(0x09));
@@ -309,7 +351,7 @@ mod tests {
 
     #[test]
     fn vblank() {
-        let mut v8 = PseudoVia::new(0b110);
+        let mut v8 = PseudoVia::new(0b110, v8::PSEUDOVIA_MASK);
 
         assert_eq!(v8.read(REG_SLOT_IFR), Some(0x7F));
         v8.set_vblank();
@@ -335,7 +377,7 @@ mod tests {
 
     #[test]
     fn level_sources() {
-        let mut v8 = PseudoVia::new(0b110);
+        let mut v8 = PseudoVia::new(0b110, v8::PSEUDOVIA_MASK);
 
         v8.write(REG_IER, 0x99);
         v8.set_scsi(true, false);
@@ -351,7 +393,7 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut v8 = PseudoVia::new(0b110);
+        let mut v8 = PseudoVia::new(0b110, v8::PSEUDOVIA_MASK);
 
         v8.write(REG_EXP, 0xE4);
         v8.write(REG_IER, 0x9B);

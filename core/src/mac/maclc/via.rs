@@ -127,7 +127,8 @@ impl BusMember<Address> for Via {
 }
 
 impl Via {
-    /// Advances by a number of cycles of the VIA clock
+    /// Advances by a number of cycles of the VIA clock, which the bus derives
+    /// from its own frequency
     pub fn tick(&mut self, cycles: Ticks) -> Result<()> {
         self.core.tick_timers(cycles)
     }
