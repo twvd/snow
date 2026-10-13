@@ -87,7 +87,6 @@ pub struct MacLCBus<TRenderer: Renderer> {
     pub(crate) swim: Swim,
     pub(crate) scsi: ScsiController,
     pseudovia: PseudoVia,
-    rtc: Rtc,
 
     overlay: bool,
 
@@ -139,7 +138,6 @@ where
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), DEFAULT_BUS_SPEED),
             scsi: ScsiController::new(),
             pseudovia: PseudoVia::new(Self::MONITOR_SENSE),
-            rtc: Rtc::default(),
 
             overlay: true,
             speed: EmulatorSpeed::Accurate,
@@ -163,7 +161,7 @@ where
     }
 
     pub fn get_effective_speed(&self) -> f64 {
-        self.rtc.effective_speed()
+        self.egret.rtc().effective_speed()
     }
 
     pub fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {
@@ -325,7 +323,7 @@ where
     pub fn input_release_all(&mut self) {}
 
     pub fn rtc_mut(&mut self) -> &mut Rtc {
-        &mut self.rtc
+        self.egret.rtc_mut()
     }
 }
 
