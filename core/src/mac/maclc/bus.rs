@@ -45,6 +45,9 @@ pub(super) const C16M_FREQUENCY: Ticks = 15_667_200;
 /// Period of the 60.15 Hz interrupt, in VIA clock cycles
 const TICK60_PERIOD: Ticks = 13024;
 
+/// Start of the I/O area
+const IO_BASE: Address = 0xF0_0000;
+
 /// Start of the window of the video RAM
 const VRAM_BASE: usize = 0xF4_0000;
 
@@ -80,6 +83,17 @@ fn ram_index(
     (hole..soldered_bank)
         .contains(&offset)
         .then(|| simm_size + offset - hole)
+}
+
+/// What an address selects
+enum Region {
+    /// RAM, with the index in the RAM if there is some at the address
+    Ram(Option<usize>),
+    Rom,
+    /// I/O device, with the offset in the I/O area
+    Io(Address),
+    /// Video RAM, with the offset in its window
+    Vram(usize),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -239,13 +253,22 @@ where
         self.scsi.set_audio_provider(provider)
     }
 
+    /// Finds what an address selects.
+    ///
     /// The V8 only decodes A31 and A23-A0. A31 selects the expansion slot,
     /// which is not implemented, and is ignored in the 24-bit address map.
-    fn translate(&self, addr: Address) -> Option<Address> {
+    fn decode(&self, addr: Address) -> Option<Region> {
         if self.pseudovia.b().fc3() && addr & (1 << 31) != 0 {
-            None
-        } else {
-            Some(addr & 0x00FF_FFFF)
+            return None;
+        }
+
+        let addr = addr & 0x00FF_FFFF;
+        match addr {
+            0x00_0000..=0x9F_FFFF => Some(Region::Ram(self.ram_index(addr))),
+            0xA0_0000..=0xAF_FFFF => Some(Region::Rom),
+            0xF0_0000..=0xF3_FFFF => Some(Region::Io(addr & 0x0F_FFFF)),
+            0xF4_0000..=0xFB_FFFF => Some(Region::Vram(addr as usize - VRAM_BASE)),
+            _ => None,
         }
     }
 
@@ -287,94 +310,72 @@ where
         Some(())
     }
 
-    fn write_overlay(&mut self, addr: Address, val: Byte) -> Option<()> {
-        self.write_normal(addr, val)
+    fn write_ram_byte(&mut self, idx: Option<usize>, val: Byte) {
+        if let Some(idx) = idx {
+            self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
+            self.ram[idx] = val;
+        }
     }
 
-    fn write_normal(&mut self, addr: Address, val: Byte) -> Option<()> {
-        match addr {
-            // RAM
-            0x00_0000..=0x9F_FFFF => {
-                if let Some(idx) = self.ram_index(addr) {
-                    self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
-                    self.ram[idx] = val;
-                }
-                Some(())
-            }
-            // ROM
-            0xA0_0000..=0xAF_FFFF => Some(()),
+    /// Writes to an I/O device. `offset` is the offset in the I/O area.
+    fn write_io(&mut self, offset: Address, val: Byte) -> Option<()> {
+        let addr = IO_BASE | offset;
+        match offset {
             // VIA 1
-            0xF0_0000..=0xF0_1FFF => self.via.write(addr, val),
+            0x0_0000..=0x0_1FFF => self.via.write(addr, val),
             // SCC
-            0xF0_4000..=0xF0_5FFF => Self::dev_write(addr, val, self.scc.write(addr >> 1, val)),
+            0x0_4000..=0x0_5FFF => Self::dev_write(addr, val, self.scc.write(addr >> 1, val)),
             // SCSI
-            0xF0_6000..=0xF0_7FFF => Some(self.scsi.write_dma(val)),
-            0xF1_0000..=0xF1_1FFF => Self::dev_write(addr, val, self.scsi.write(addr, val)),
-            0xF1_2000..=0xF1_3FFF => Some(self.scsi.write_dma(val)),
+            0x0_6000..=0x0_7FFF => Some(self.scsi.write_dma(val)),
+            0x1_0000..=0x1_1FFF => Self::dev_write(addr, val, self.scsi.write(addr, val)),
+            0x1_2000..=0x1_3FFF => Some(self.scsi.write_dma(val)),
             // Sound
-            0xF1_4000..=0xF1_5FFF => {
-                Self::dev_write(addr, val, self.sound.write(addr & 0xFFF, val))
-            }
+            0x1_4000..=0x1_5FFF => Self::dev_write(addr, val, self.sound.write(addr & 0xFFF, val)),
             // SWIM
-            0xF1_6000..=0xF1_7FFF => Self::dev_write(addr, val, self.swim.write(addr, val)),
+            0x1_6000..=0x1_7FFF => Self::dev_write(addr, val, self.swim.write(addr, val)),
             // RAMDAC
-            0xF2_4000..=0xF2_5FFF => Some(self.video.write_ramdac(addr, val)),
+            0x2_4000..=0x2_5FFF => Some(self.video.write_ramdac(addr, val)),
             // V8 registers
-            0xF2_6000..=0xF2_7FFF => self.pseudovia.write(addr, val),
-            // Video RAM
-            0xF4_0000..=0xFB_FFFF => Some(self.video.write_vram(addr as usize - VRAM_BASE, val)),
+            0x2_6000..=0x2_7FFF => self.pseudovia.write(addr, val),
             _ => None,
         }
     }
 
-    fn read_overlay(&mut self, addr: Address) -> Option<Byte> {
-        match addr {
-            // ROM (overlay)
-            0x00_0000..=0x9F_FFFF => self.read_rom(addr),
-            // ROM (disables overlay)
-            0xA0_0000..=0xAF_FFFF => {
-                self.overlay = false;
-                self.read_rom(addr)
-            }
-            _ => self.read_normal(addr),
-        }
-    }
-
-    fn read_normal(&mut self, addr: Address) -> Option<Byte> {
-        match addr {
-            // RAM
-            0x00_0000..=0x9F_FFFF => Some(
-                self.ram_index(addr)
-                    .map_or(Self::OPENBUS, |idx| self.ram[idx]),
-            ),
-            // ROM
-            0xA0_0000..=0xAF_FFFF => self.read_rom(addr),
+    /// Reads from an I/O device. `offset` is the offset in the I/O area.
+    fn read_io(&mut self, offset: Address) -> Option<Byte> {
+        let addr = IO_BASE | offset;
+        match offset {
             // VIA 1
-            0xF0_0000..=0xF0_1FFF => self.via.read(addr),
+            0x0_0000..=0x0_1FFF => self.via.read(addr),
             // SCC
-            0xF0_4000..=0xF0_5FFF => Some(Self::dev_read(addr, self.scc.read(addr >> 1))),
+            0x0_4000..=0x0_5FFF => Some(Self::dev_read(addr, self.scc.read(addr >> 1))),
             // SCSI
-            0xF0_6000..=0xF0_7FFF => Some(self.scsi.read_dma()),
-            0xF1_0000..=0xF1_1FFF => Some(Self::dev_read(addr, self.scsi.read(addr))),
-            0xF1_2000..=0xF1_3FFF => Some(self.scsi.read_dma()),
+            0x0_6000..=0x0_7FFF => Some(self.scsi.read_dma()),
+            0x1_0000..=0x1_1FFF => Some(Self::dev_read(addr, self.scsi.read(addr))),
+            0x1_2000..=0x1_3FFF => Some(self.scsi.read_dma()),
             // Sound
-            0xF1_4000..=0xF1_5FFF => Some(Self::dev_read(addr, self.sound.read(addr & 0xFFF))),
+            0x1_4000..=0x1_5FFF => Some(Self::dev_read(addr, self.sound.read(addr & 0xFFF))),
             // SWIM
-            0xF1_6000..=0xF1_7FFF => Some(Self::dev_read(addr, self.swim.read(addr))),
+            0x1_6000..=0x1_7FFF => Some(Self::dev_read(addr, self.swim.read(addr))),
             // RAMDAC
-            0xF2_4000..=0xF2_5FFF => Some(self.video.read_ramdac(addr)),
+            0x2_4000..=0x2_5FFF => Some(self.video.read_ramdac(addr)),
             // V8 registers
-            0xF2_6000..=0xF2_7FFF => self.pseudovia.read(addr),
-            // Video RAM
-            0xF4_0000..=0xFB_FFFF => Some(self.video.read_vram(addr as usize - VRAM_BASE)),
+            0x2_6000..=0x2_7FFF => self.pseudovia.read(addr),
             _ => None,
         }
     }
 
     fn read_byte(&mut self, addr: Address) -> Option<Byte> {
-        let val = match self.translate(addr) {
-            Some(addr) if self.overlay => self.read_overlay(addr),
-            Some(addr) => self.read_normal(addr),
+        let val = match self.decode(addr) {
+            // ROM (overlay)
+            Some(Region::Ram(_)) if self.overlay => self.read_rom(addr),
+            Some(Region::Ram(idx)) => Some(idx.map_or(Self::OPENBUS, |idx| self.ram[idx])),
+            Some(Region::Rom) => {
+                self.overlay = false;
+                self.read_rom(addr)
+            }
+            Some(Region::Io(offset)) => self.read_io(offset),
+            Some(Region::Vram(offset)) => Some(self.video.read_vram(offset)),
             None => None,
         };
 
@@ -385,9 +386,11 @@ where
     }
 
     fn write_byte(&mut self, addr: Address, val: Byte) -> Option<()> {
-        let written = match self.translate(addr) {
-            Some(addr) if self.overlay => self.write_overlay(addr, val),
-            Some(addr) => self.write_normal(addr, val),
+        let written = match self.decode(addr) {
+            Some(Region::Ram(idx)) => Some(self.write_ram_byte(idx, val)),
+            Some(Region::Rom) => Some(()),
+            Some(Region::Io(offset)) => self.write_io(offset, val),
+            Some(Region::Vram(offset)) => Some(self.video.write_vram(offset, val)),
             None => None,
         };
 
@@ -456,7 +459,7 @@ where
     /// Writes bytes to RAM at an address of the CPU
     fn write_ram(&mut self, addr: Address, val: &[u8]) {
         for (addr, &b) in (addr..).zip(val) {
-            self.write_normal(addr, b);
+            self.write_ram_byte(self.ram_index(addr), b);
         }
     }
 
@@ -540,7 +543,7 @@ where
     type Cpu = Bus68020;
 
     fn access(&mut self, acc: BusAccess<Bus68020>) -> Result<BusResponse> {
-        if let Some(0xF0_0000..=0xF0_1FFF) = self.translate(acc.addr) {
+        if let Some(Region::Io(0x0_0000..=0x0_1FFF)) = self.decode(acc.addr) {
             return Ok(self.via_cycle(acc));
         }
         Ok(bus_access_long(
@@ -709,18 +712,18 @@ where
     TRenderer: Renderer,
 {
     fn inspect_read(&mut self, addr: Address) -> Option<Byte> {
-        let addr = self.translate(addr)?;
-        match addr {
-            0x00_0000..=0x9F_FFFF if self.overlay => self.read_rom(addr),
-            0x00_0000..=0xAF_FFFF => self.read_normal(addr),
+        match self.decode(addr)? {
+            Region::Ram(_) if self.overlay => self.read_rom(addr),
+            Region::Ram(idx) => Some(idx.map_or(Self::OPENBUS, |idx| self.ram[idx])),
+            Region::Rom => self.read_rom(addr),
             _ => None,
         }
     }
 
     fn inspect_write(&mut self, addr: Address, val: Byte) -> Option<()> {
-        let addr = self.translate(addr)?;
-        match addr {
-            0x00_0000..=0xAF_FFFF => self.write_normal(addr, val),
+        match self.decode(addr)? {
+            Region::Ram(idx) => Some(self.write_ram_byte(idx, val)),
+            Region::Rom => Some(()),
             _ => None,
         }
     }
