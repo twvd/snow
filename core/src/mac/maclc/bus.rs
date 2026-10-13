@@ -2,7 +2,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::pseudovia::PseudoVia;
-use super::sound::Sound;
+use super::sound::{Sound, SoundKind};
 use super::via::Via;
 use super::video::Video;
 use super::{sonora, v8};
@@ -198,7 +198,10 @@ where
                 },
             ),
             video,
-            sound: Sound::default(),
+            sound: Sound::new(match gate_array {
+                GateArray::V8 => SoundKind::V8,
+                GateArray::Sonora => SoundKind::Sonora,
+            }),
             sound_clock: 0,
 
             overlay: true,
