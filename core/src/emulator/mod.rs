@@ -19,13 +19,16 @@ use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
-use crate::cpu_m68k::{CpuM68000, CpuM68020Fpu, CpuM68020Pmmu, CpuM68030Fpu};
+use crate::cpu_m68k::{
+    CpuM68000, CpuM68020, CpuM68020Fpu, CpuM68020Fpu68882, CpuM68020Pmmu, CpuM68030Fpu,
+};
 use crate::debuggable::{Debuggable, DebuggableProperties};
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
 use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
 use crate::mac::macii::bus::MacIIBus;
+use crate::mac::maclc::bus::MacLCBus;
 use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
@@ -109,6 +112,8 @@ macro_rules! dispatch {
                         Self::MacII(inner) => &inner.$($ref_target)*,
                         Self::MacIIPmmu(inner) => &inner.$($ref_target)*,
                         Self::MacII30(inner) => &inner.$($ref_target)*,
+                        Self::MacLC(inner) => &inner.$($ref_target)*,
+                        Self::MacLCFpu(inner) => &inner.$($ref_target)*,
                     }
                 }
             )*
@@ -122,6 +127,8 @@ macro_rules! dispatch {
                         Self::MacII(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacIIPmmu(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacII30(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::MacLC(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::MacLCFpu(inner) => &mut inner.$($mut_ref_target)*,
                     }
                 }
             )*
@@ -135,6 +142,8 @@ macro_rules! dispatch {
                         Self::MacII(inner) => inner.$($immut_call_target)*,
                         Self::MacIIPmmu(inner) => inner.$($immut_call_target)*,
                         Self::MacII30(inner) => inner.$($immut_call_target)*,
+                        Self::MacLC(inner) => inner.$($immut_call_target)*,
+                        Self::MacLCFpu(inner) => inner.$($immut_call_target)*,
                     }
                 }
             )*
@@ -148,6 +157,8 @@ macro_rules! dispatch {
                         Self::MacII(inner) => inner.$($mut_call_target)*,
                         Self::MacIIPmmu(inner) => inner.$($mut_call_target)*,
                         Self::MacII30(inner) => inner.$($mut_call_target)*,
+                        Self::MacLC(inner) => inner.$($mut_call_target)*,
+                        Self::MacLCFpu(inner) => inner.$($mut_call_target)*,
                     }
                 }
             )*
@@ -169,6 +180,10 @@ enum EmulatorConfig {
     MacIIPmmu(Box<CpuM68020Pmmu<MacIIBus<ChannelRenderer, false>>>),
     /// Macintosh SE/30 and 68030-based Macintosh IIs
     MacII30(Box<CpuM68030Fpu<MacIIBus<ChannelRenderer, false>>>),
+    /// Macintosh LC
+    MacLC(Box<CpuM68020<MacLCBus<ChannelRenderer>>>),
+    /// Macintosh LC with FPU card
+    MacLCFpu(Box<CpuM68020Fpu68882<MacLCBus<ChannelRenderer>>>),
 }
 
 dispatch! {
@@ -275,6 +290,7 @@ impl Emulator {
             None,
             None,
             false,
+            false,
             None,
         )
     }
@@ -289,6 +305,7 @@ impl Emulator {
         ram_size: Option<usize>,
         override_fdd_type: Option<DriveType>,
         pmmu_enabled: bool,
+        fpu_enabled: bool,
         shared_dir: Option<PathBuf>,
     ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
         // Set up channels
@@ -478,6 +495,19 @@ impl Emulator {
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
                 EmulatorConfig::MacII30(cpu)
+            }
+            MacModel::LC => {
+                assert!(!pmmu_enabled, "PMMU not available on Macintosh LC");
+                assert!(override_fdd_type.is_none());
+
+                // Initialize bus and CPU
+                // The FPU is an option on an expansion card
+                let bus = MacLCBus::new(model, rom, renderer, mouse_mode, ram_size);
+                if fpu_enabled {
+                    EmulatorConfig::MacLCFpu(Box::new(CpuM68020Fpu68882::new(bus)))
+                } else {
+                    EmulatorConfig::MacLC(Box::new(CpuM68020::new(bus)))
+                }
             }
         };
 
