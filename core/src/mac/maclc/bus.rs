@@ -220,7 +220,10 @@ where
                 },
             ),
             video,
-            sound: V8Sound::new(V8Variant::V8),
+            sound: V8Sound::new(match gate_array {
+                GateArray::V8 => V8Variant::V8,
+                GateArray::Sonora => V8Variant::Sonora,
+            }),
             sound_clock: 0,
 
             overlay: true,
