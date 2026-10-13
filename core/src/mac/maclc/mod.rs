@@ -3,3 +3,4 @@
 pub mod bus;
 mod pseudovia;
 mod via;
+pub mod video;

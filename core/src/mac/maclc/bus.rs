@@ -1,11 +1,11 @@
 use super::pseudovia::{PseudoVia, RegisterExp};
 use super::via::Via;
+use super::video::Video;
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
-use crate::mac::MacModel;
 use crate::mac::egret::Egret;
 use crate::mac::macii::bus::{DEFAULT_BUS_SPEED, RAM_DIRTY_PAGESIZE};
 use crate::mac::rtc::Rtc;
@@ -13,6 +13,7 @@ use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::swim::Swim;
 use crate::mac::via_common::{LineState, ViaLine};
+use crate::mac::{MacModel, MacMonitor};
 use crate::renderer::{AudioProvider, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent};
@@ -23,10 +24,13 @@ use log::*;
 use serde::{Deserialize, Serialize};
 
 /// Frequency of the main clock (C16M)
-const C16M_FREQUENCY: Ticks = 15_667_200;
+pub(super) const C16M_FREQUENCY: Ticks = 15_667_200;
 
 /// Period of the 60.15 Hz interrupt, in VIA clock cycles
 const TICK60_PERIOD: Ticks = 13024;
+
+/// Start of the window of the video RAM
+const VRAM_BASE: usize = 0xF4_0000;
 
 /// Size of the RAM soldered on the logic board, the rest is in SIMMs
 const RAM_SOLDERED: usize = 2 * 1024 * 1024;
@@ -76,9 +80,6 @@ pub struct MacLCBus<TRenderer: Renderer> {
     /// RAM pages (RAM_DIRTY_PAGESIZE bytes) written
     pub(crate) ram_dirty: BitSet,
 
-    #[serde(skip)]
-    renderer: Option<TRenderer>,
-
     pub(crate) via: Via,
     egret: Egret,
     via_clock: Ticks,
@@ -87,6 +88,7 @@ pub struct MacLCBus<TRenderer: Renderer> {
     pub(crate) swim: Swim,
     pub(crate) scsi: ScsiController,
     pseudovia: PseudoVia,
+    video: Video<TRenderer>,
 
     overlay: bool,
 
@@ -106,9 +108,6 @@ impl<TRenderer> MacLCBus<TRenderer>
 where
     TRenderer: Renderer,
 {
-    /// Sense code of the 13" high resolution RGB monitor
-    const MONITOR_SENSE: u8 = 0b110;
-
     /// Value to return on open bus
     const OPENBUS: u8 = 0xFF;
 
@@ -118,8 +117,11 @@ where
         renderer: TRenderer,
         mouse_mode: MouseMode,
         ram_size: Option<usize>,
+        monitor: Option<MacMonitor>,
+        vram_size: Option<usize>,
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
+        let video = Video::new(renderer, monitor, vram_size);
 
         Self {
             cycles: 0,
@@ -129,7 +131,6 @@ where
             rom: Vec::from(rom),
             ram: vec![0; ram_size],
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
-            renderer: Some(renderer),
             via: Via::new(model),
             egret: Egret::default(),
             via_clock: 0,
@@ -137,7 +138,8 @@ where
             scc: Scc::new(),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), DEFAULT_BUS_SPEED),
             scsi: ScsiController::new(),
-            pseudovia: PseudoVia::new(Self::MONITOR_SENSE),
+            pseudovia: PseudoVia::new(video.sense()),
+            video,
 
             overlay: true,
             speed: EmulatorSpeed::Accurate,
@@ -149,7 +151,7 @@ where
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
     pub fn after_deserialize(&mut self, renderer: TRenderer) {
-        self.renderer = Some(renderer);
+        self.video.renderer = Some(renderer);
 
         // Mark all RAM pages as dirty after deserialization to update memory display
         self.ram_dirty
@@ -236,11 +238,11 @@ where
             // SWIM
             0xF1_6000..=0xF1_7FFF => Self::dev_write(addr, val, self.swim.write(addr, val)),
             // RAMDAC
-            0xF2_4000..=0xF2_5FFF => Self::dev_write(addr, val, None),
+            0xF2_4000..=0xF2_5FFF => Some(self.video.write_ramdac(addr, val)),
             // V8 registers
             0xF2_6000..=0xF2_7FFF => self.pseudovia.write(addr, val),
             // Video RAM
-            0xF4_0000..=0xFB_FFFF => Self::dev_write(addr, val, None),
+            0xF4_0000..=0xFB_FFFF => Some(self.video.write_vram(addr as usize - VRAM_BASE, val)),
             _ => None,
         }
     }
@@ -280,11 +282,11 @@ where
             // SWIM
             0xF1_6000..=0xF1_7FFF => Some(Self::dev_read(addr, self.swim.read(addr))),
             // RAMDAC
-            0xF2_4000..=0xF2_5FFF => Some(Self::dev_read(addr, None)),
+            0xF2_4000..=0xF2_5FFF => Some(self.video.read_ramdac(addr)),
             // V8 registers
             0xF2_6000..=0xF2_7FFF => self.pseudovia.read(addr),
             // Video RAM
-            0xF4_0000..=0xFB_FFFF => Some(Self::dev_read(addr, None)),
+            0xF4_0000..=0xFB_FFFF => Some(self.video.read_vram(addr as usize - VRAM_BASE)),
             _ => None,
         }
     }
@@ -315,7 +317,7 @@ where
     }
 
     pub fn video_blank(&mut self) -> Result<()> {
-        Ok(())
+        self.video.blank()
     }
 
     pub fn keyboard_event(&mut self, _ke: KeyEvent) {}
@@ -437,6 +439,14 @@ where
             }
         }
 
+        if self.video.tick(ticks, self.bus_frequency) {
+            let exp = self.pseudovia.exp();
+            let row_bytes = if exp.vram_256k() { 512 } else { 1024 };
+            self.video
+                .render(self.pseudovia.monp().depth(), row_bytes)?;
+            self.pseudovia.set_vblank();
+        }
+
         self.scsi.tick(ticks, ctx)?;
         self.pseudovia
             .set_scsi(self.scsi.get_irq(), self.scsi.get_drq());
@@ -502,6 +512,7 @@ where
             dbgprop_nest!("SCSI controller (NCR 5380)", self.scsi),
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("V8 registers", self.pseudovia),
+            dbgprop_nest!("Video", self.video),
             dbgprop_nest!("VIA 1", self.via),
         ]
     }

@@ -109,6 +109,9 @@ pub struct EmulatorInitArgs {
     /// Enable FPU (Macintosh LC only)
     pub fpu_enabled: bool,
 
+    /// Configured video RAM size or default if None (Macintosh LC only)
+    pub vram_size: Option<usize>,
+
     /// Selected NuBus video card (if applicable)
     pub video_card: NubusDeviceKind,
 
@@ -257,6 +260,7 @@ impl EmulatorState {
             args.override_fdd_type,
             args.pmmu_enabled,
             args.fpu_enabled,
+            args.vram_size,
             shared_dir,
         )?;
 

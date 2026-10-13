@@ -150,13 +150,11 @@ impl PseudoVia {
         self.exp
     }
 
-    #[allow(dead_code)]
     pub fn monp(&self) -> RegisterMonP {
         self.monp
     }
 
     /// Start of the vertical blanking
-    #[allow(dead_code)]
     pub fn set_vblank(&mut self) {
         self.vblank = true;
     }
