@@ -3,9 +3,9 @@ use std::time::{Duration, Instant};
 
 use super::pseudovia::PseudoVia;
 use super::sound::Sound;
-use super::v8;
 use super::via::Via;
 use super::video::Video;
+use super::{sonora, v8};
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -37,6 +37,15 @@ pub(super) const C16M_FREQUENCY: Ticks = 15_667_200;
 /// Period of the 60.15 Hz interrupt, in VIA clock cycles
 const TICK60_PERIOD: Ticks = 13024;
 
+/// Gate array of the logic board
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum GateArray {
+    /// Macintosh LC and LC II
+    V8,
+    /// Macintosh LC III
+    Sonora,
+}
+
 /// What an address selects
 pub(super) enum Region {
     /// RAM area, with the address in it
@@ -46,6 +55,8 @@ pub(super) enum Region {
     Io(Address),
     /// Video RAM, with the offset in its window
     Vram(usize),
+    /// CPU ID register of the Sonora, with the number of the byte
+    CpuId(usize),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -55,6 +66,8 @@ pub struct MacLCBus<TRenderer: Renderer> {
 
     /// The currently emulated Macintosh model
     model: MacModel,
+
+    gate_array: GateArray,
 
     rom_mask: usize,
     rom: Vec<u8>,
@@ -132,15 +145,20 @@ where
         const MB: usize = 1024 * 1024;
 
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
-        let ram_soldered = if model == MacModel::LCII {
-            4 * MB
+        let gate_array = if model == MacModel::LCIII {
+            GateArray::Sonora
         } else {
+            GateArray::V8
+        };
+        let ram_soldered = if model == MacModel::LC {
             2 * MB
+        } else {
+            4 * MB
         };
         // 10 MB on the LC II are 8 MB of SIMMs, with which only 2 MB of the
         // 4 MB of soldered RAM can be used
         let ram_simm = match ram_size - ram_soldered {
-            n if n == 6 * MB => 8 * MB,
+            n if model == MacModel::LCII && n == 6 * MB => 8 * MB,
             n => n,
         };
         let ram_size = ram_simm + ram_soldered;
@@ -158,6 +176,7 @@ where
         Self {
             cycles: 0,
             model,
+            gate_array,
 
             rom_mask: rom.len() - 1,
             rom: Vec::from(rom),
@@ -171,7 +190,13 @@ where
             scc: Scc::new(),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), DEFAULT_BUS_SPEED),
             scsi: ScsiController::new(),
-            pseudovia: PseudoVia::new(video.sense()),
+            pseudovia: PseudoVia::new(
+                video.sense(),
+                match gate_array {
+                    GateArray::V8 => v8::PSEUDOVIA_MASK,
+                    GateArray::Sonora => sonora::PSEUDOVIA_MASK,
+                },
+            ),
             video,
             sound: Sound::default(),
             sound_clock: 0,
@@ -217,18 +242,21 @@ where
 
     /// Finds what an address selects
     fn decode(&self, addr: Address) -> Option<Region> {
-        v8::decode(addr, self.pseudovia.b().fc3())
+        match self.gate_array {
+            GateArray::V8 => v8::decode(addr, self.pseudovia.b().fc3()),
+            GateArray::Sonora => sonora::decode(addr),
+        }
     }
 
     /// Translates an address in the RAM area to an index in the RAM, if
     /// there is RAM at the address
     fn ram_index(&self, addr: Address) -> Option<usize> {
-        v8::ram_index(
-            self.pseudovia.exp(),
-            self.ram.len() - self.ram_soldered,
-            self.ram_soldered,
-            addr,
-        )
+        let exp = self.pseudovia.exp();
+        let simm_size = self.ram.len() - self.ram_soldered;
+        match self.gate_array {
+            GateArray::V8 => v8::ram_index(exp, simm_size, self.ram_soldered, addr),
+            GateArray::Sonora => sonora::ram_index(exp.0, simm_size, self.ram_soldered, addr),
+        }
     }
 
     fn read_rom(&self, addr: Address) -> Option<Byte> {
@@ -273,14 +301,37 @@ where
     }
 
     /// Translates an offset in the window of the video RAM to an index in
-    /// the video RAM
-    fn vram_index(&self, offset: usize) -> usize {
-        v8::vram_index(self.video.vram_size(), offset)
+    /// the video RAM, if there is video RAM at the offset
+    fn vram_index(&self, offset: usize) -> Option<usize> {
+        match self.gate_array {
+            GateArray::V8 => Some(v8::vram_index(self.video.vram_size(), offset)),
+            // The video of the Sonora is not implemented
+            GateArray::Sonora => None,
+        }
+    }
+
+    fn read_vram(&self, offset: usize) -> Byte {
+        self.vram_index(offset)
+            .map_or(Self::OPENBUS, |idx| self.video.read_vram(idx))
+    }
+
+    fn write_vram(&mut self, offset: usize, val: Byte) {
+        if let Some(idx) = self.vram_index(offset) {
+            self.video.write_vram(idx, val);
+        }
+    }
+
+    /// Address of the I/O area, for the devices and the log
+    fn io_base(&self) -> Address {
+        match self.gate_array {
+            GateArray::V8 => v8::IO_BASE,
+            GateArray::Sonora => sonora::IO_BASE,
+        }
     }
 
     /// Writes to an I/O device. `offset` is the offset in the I/O area.
     fn write_io(&mut self, offset: Address, val: Byte) -> Option<()> {
-        let addr = v8::IO_BASE | offset;
+        let addr = self.io_base() | offset;
         match offset {
             // VIA 1
             0x0_0000..=0x0_1FFF => self.via.write(addr, val),
@@ -304,7 +355,7 @@ where
 
     /// Reads from an I/O device. `offset` is the offset in the I/O area.
     fn read_io(&mut self, offset: Address) -> Option<Byte> {
-        let addr = v8::IO_BASE | offset;
+        let addr = self.io_base() | offset;
         match offset {
             // VIA 1
             0x0_0000..=0x0_1FFF => self.via.read(addr),
@@ -439,7 +490,8 @@ where
                 self.read_rom(addr)
             }
             Some(Region::Io(offset)) => self.read_io(offset),
-            Some(Region::Vram(offset)) => Some(self.video.read_vram(self.vram_index(offset))),
+            Some(Region::Vram(offset)) => Some(self.read_vram(offset)),
+            Some(Region::CpuId(n)) => Some(sonora::CPU_ID_LCIII.to_be_bytes()[n]),
             None => None,
         };
 
@@ -457,7 +509,8 @@ where
             Some(Region::Ram(addr)) => Some(self.write_ram_byte(addr, val)),
             Some(Region::Rom) => Some(()),
             Some(Region::Io(offset)) => self.write_io(offset, val),
-            Some(Region::Vram(offset)) => Some(self.video.write_vram(self.vram_index(offset), val)),
+            Some(Region::Vram(offset)) => Some(self.write_vram(offset, val)),
+            Some(Region::CpuId(_)) => Some(()),
             None => None,
         };
 
@@ -523,14 +576,15 @@ where
 
         self.cycles += ticks;
 
-        // The VIA clock is C16M / 20 (783.36 kHz). As the bus runs at a nominal
-        // 16 MHz, that is slightly less than once every 20 bus cycles.
+        // The VIA clock is C16M / 20 (783.36 kHz), whatever the frequency of
+        // the bus is. At a nominal 16 MHz, that is slightly less than once
+        // every 20 bus cycles.
         self.via_clock += ticks * C16M_FREQUENCY;
-        while self.via_clock >= 20 * DEFAULT_BUS_SPEED {
+        while self.via_clock >= 20 * self.bus_frequency {
             // TODO VIA wait states
-            self.via_clock -= 20 * DEFAULT_BUS_SPEED;
+            self.via_clock -= 20 * self.bus_frequency;
 
-            self.via.tick(1, ctx)?;
+            self.via.tick(1)?;
 
             let pb = self.via.pb();
             let via = &mut self.via;
@@ -573,14 +627,17 @@ where
             }
         }
 
-        let frame_period = v8::frame_period(self.video.monitor());
+        let monitor = self.video.monitor();
+        let frame_period = v8::frame_period(monitor);
         if self.video.tick(ticks, self.bus_frequency, frame_period) {
-            let mode = v8::video_mode(
-                self.video.monitor(),
-                self.pseudovia.exp(),
-                self.pseudovia.monp(),
-            );
-            self.video.render(&mode)?;
+            match self.gate_array {
+                GateArray::V8 => {
+                    let mode = v8::video_mode(monitor, self.pseudovia.exp(), self.pseudovia.monp());
+                    self.video.render(&mode)?;
+                }
+                // The video of the Sonora is not implemented
+                GateArray::Sonora => self.video.blank()?,
+            }
             self.pseudovia.set_vblank();
         }
 
@@ -658,9 +715,50 @@ where
             dbgprop_nest!("SCSI controller (NCR 5380)", self.scsi),
             dbgprop_nest!("Sound", self.sound),
             dbgprop_nest!("SWIM", self.swim),
-            dbgprop_nest!("V8 registers", self.pseudovia),
+            dbgprop_nest!("Gate array registers", self.pseudovia),
             dbgprop_nest!("Video", self.video),
             dbgprop_nest!("VIA 1", self.via),
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::renderer::NullRenderer;
+
+    /// Seconds counted by the Egret, which is clocked like the VIA, while the
+    /// bus runs for a second less `less` cycles
+    fn clock_seconds(model: MacModel, overclock: Option<u64>, less: Ticks) -> u32 {
+        let mut bus = MacLCBus::new(
+            model,
+            &vec![0; 512 * 1024],
+            NullRenderer::new(0, 0).unwrap(),
+            MouseMode::Disabled,
+            None,
+            None,
+            None,
+        );
+        bus.set_speed(EmulatorSpeed::Uncapped);
+        bus.set_overclock(overclock);
+
+        let start = bus.rtc_mut().seconds();
+        let cycles = overclock.unwrap_or_else(|| model.bus_frequency()) - less;
+        for _ in 0..cycles / 20 {
+            bus.tick(20, ()).unwrap();
+        }
+        bus.rtc_mut().seconds() - start
+    }
+
+    #[test]
+    fn via_clock_follows_bus_frequency() {
+        assert_eq!(clock_seconds(MacModel::LC, None, 0), 1);
+        assert_eq!(clock_seconds(MacModel::LC, None, 20), 0);
+        // 25 MHz
+        assert_eq!(clock_seconds(MacModel::LCIII, None, 0), 1);
+        assert_eq!(clock_seconds(MacModel::LCIII, None, 20), 0);
+        // Overclocked
+        assert_eq!(clock_seconds(MacModel::LC, Some(32_000_000), 0), 1);
+        assert_eq!(clock_seconds(MacModel::LC, Some(32_000_000), 20), 0);
     }
 }

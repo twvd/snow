@@ -192,9 +192,9 @@ enum EmulatorConfig {
     MacLC(Box<CpuM68020<MacLCBus<ChannelRenderer>>>),
     /// Macintosh LC with FPU card
     MacLCFpu(Box<CpuM68020Fpu68882<MacLCBus<ChannelRenderer>>>),
-    /// Macintosh LC II
+    /// Macintosh LC II and LC III
     MacLCII(Box<CpuM68030<MacLCBus<ChannelRenderer>>>),
-    /// Macintosh LC II with an FPU card
+    /// Macintosh LC II and LC III with an FPU
     MacLCIIFpu(Box<CpuM68030Fpu<MacLCBus<ChannelRenderer>>>),
 }
 
@@ -526,7 +526,7 @@ impl Emulator {
                     EmulatorConfig::MacLC(Box::new(CpuM68020::new(bus)))
                 }
             }
-            MacModel::LCII => {
+            MacModel::LCII | MacModel::LCIII => {
                 assert!(override_fdd_type.is_none());
 
                 // Initialize bus and CPU

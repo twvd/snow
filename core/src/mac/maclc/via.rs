@@ -2,21 +2,14 @@ use std::ops::{Deref, DerefMut};
 
 use crate::bus::{Address, BusMember};
 use crate::debuggable::{Debuggable, DebuggableProperties};
-use crate::emulator::EmuContext;
 use crate::mac::MacModel;
 use crate::mac::via_common::{ViaCommon, ViaReg, ViaWiring};
-use crate::tickable::{TickConverter, Tickable, Ticks};
+use crate::tickable::Ticks;
 use crate::types::Byte;
 
 use anyhow::Result;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
-
-/// The frequency at which to run the VIA.
-///
-/// Since the VIA is used as a timer, it is important to run at a consistent
-/// speed regardless of CPU/bus frequency.
-const VIA_FREQUENCY: Ticks = 16_000_000;
 
 bitfield! {
     /// VIA Register A
@@ -94,8 +87,6 @@ impl ViaWiring for LcViaWiring {
 #[derive(Serialize, Deserialize)]
 pub struct Via {
     core: ViaCommon<LcViaWiring>,
-
-    bus_tick_converter: TickConverter<VIA_FREQUENCY>,
 }
 
 impl Via {
@@ -106,10 +97,7 @@ impl Via {
         // driven, they are assumed to be pulled down.
         core.b_in = RegisterB(0xFF).with_via_full(false).with_sys_ses(false);
 
-        Self {
-            core,
-            bus_tick_converter: Default::default(),
-        }
+        Self { core }
     }
 }
 
@@ -138,16 +126,11 @@ impl BusMember<Address> for Via {
     }
 }
 
-impl Tickable<&dyn EmuContext> for Via {
-    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
-        self.bus_tick_converter.add_a_ticks(ticks);
-        let via_ticks = self.bus_tick_converter.get_b_ticks(ctx.bus_frequency());
-        if via_ticks > 0 {
-            self.core.tick_timers(via_ticks)?;
-            self.bus_tick_converter
-                .subtract_b_ticks(via_ticks, ctx.bus_frequency());
-        }
-        Ok(ticks)
+impl Via {
+    /// Advances by a number of cycles of the VIA clock, which the bus derives
+    /// from its own frequency
+    pub fn tick(&mut self, cycles: Ticks) -> Result<()> {
+        self.core.tick_timers(cycles)
     }
 }
 
