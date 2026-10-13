@@ -565,7 +565,10 @@ impl ModelSelectionDialog {
                         ui.end_row();
                     }
                 }
-                if matches!(self.selected_model, MacModel::LC | MacModel::LCII) {
+                if matches!(
+                    self.selected_model,
+                    MacModel::LC | MacModel::LCII | MacModel::LCIII
+                ) {
                     if !lc_video::MONITORS.contains(&self.selected_monitor) {
                         self.selected_monitor = MacMonitor::default();
                     }
@@ -759,7 +762,10 @@ impl ModelSelectionDialog {
                         if !matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
                             self.init_args.pmmu_enabled = false;
                         }
-                        if !matches!(self.selected_model, MacModel::LC | MacModel::LCII) {
+                        if !matches!(
+                            self.selected_model,
+                            MacModel::LC | MacModel::LCII | MacModel::LCIII
+                        ) {
                             self.init_args.fpu_enabled = false;
                             self.init_args.vram_size = None;
                         }
@@ -786,8 +792,10 @@ impl ModelSelectionDialog {
                             },
                             init_args: EmulatorInitArgs {
                                 monitor: if self.display_rom_required
-                                    || matches!(self.selected_model, MacModel::LC | MacModel::LCII)
-                                {
+                                    || matches!(
+                                        self.selected_model,
+                                        MacModel::LC | MacModel::LCII | MacModel::LCIII
+                                    ) {
                                     Some(self.selected_monitor)
                                 } else {
                                     None

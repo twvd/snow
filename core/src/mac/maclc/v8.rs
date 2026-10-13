@@ -13,6 +13,9 @@ use crate::tickable::Ticks;
 /// Start of the I/O area
 pub(super) const IO_BASE: Address = 0xF0_0000;
 
+/// Bits of the address which select a register of the V8
+pub(super) const PSEUDOVIA_MASK: Address = 0x13;
+
 /// Start of the window of the video RAM
 const VRAM_BASE: Address = 0xF4_0000;
 
