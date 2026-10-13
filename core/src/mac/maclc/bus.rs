@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use super::pseudovia::PseudoVia;
 use super::sound::{Sound, SoundKind};
 use super::via::Via;
-use super::video::Video;
+use super::video::{self, Video};
 use super::{sonora, v8};
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
@@ -37,13 +37,13 @@ pub(super) const C16M_FREQUENCY: Ticks = 15_667_200;
 /// Period of the 60.15 Hz interrupt, in VIA clock cycles
 const TICK60_PERIOD: Ticks = 13024;
 
-/// Gate array of the logic board
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Gate array of the logic board, with what only one of them has
+#[derive(Serialize, Deserialize)]
 enum GateArray {
     /// Macintosh LC and LC II
     V8,
     /// Macintosh LC III
-    Sonora,
+    Sonora { video: sonora::VideoRegs },
 }
 
 /// What an address selects
@@ -146,7 +146,9 @@ where
 
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
         let gate_array = if model == MacModel::LCIII {
-            GateArray::Sonora
+            GateArray::Sonora {
+                video: sonora::VideoRegs::new(),
+            }
         } else {
             GateArray::V8
         };
@@ -163,12 +165,24 @@ where
         };
         let ram_size = ram_simm + ram_soldered;
         let monitor = monitor
-            .filter(|m| v8::MONITORS.contains(m))
+            .filter(|m| video::monitors(model).contains(m))
             .unwrap_or_default();
         let vram_size = vram_size
-            .filter(|s| v8::VRAM_SIZES.contains(s))
-            .unwrap_or(v8::VRAM_SIZE_DEFAULT);
+            .filter(|s| video::vram_sizes(model).contains(s))
+            .unwrap_or_else(|| video::vram_size_default(model));
         let video = Video::new(renderer, monitor, vram_size);
+        let pseudovia_mask = match gate_array {
+            GateArray::V8 => v8::PSEUDOVIA_MASK,
+            GateArray::Sonora { .. } => sonora::PSEUDOVIA_MASK,
+        };
+        let sound_kind = match gate_array {
+            GateArray::V8 => SoundKind::V8,
+            GateArray::Sonora { .. } => SoundKind::Sonora,
+        };
+        let swim = match gate_array {
+            GateArray::V8 => Swim::new(model.fdd_drives(), model.fdd_hd(), DEFAULT_BUS_SPEED),
+            GateArray::Sonora { .. } => Swim::new_swim2(model.fdd_drives(), model.bus_frequency()),
+        };
         let mut egret = Egret::default();
         egret.adb_add_device(AdbMouse::new());
         egret.adb_add_device(AdbKeyboard::new());
@@ -188,23 +202,11 @@ where
             via_clock: 0,
             tick60_clock: 0,
             scc: Scc::new(),
-            swim: match gate_array {
-                GateArray::V8 => Swim::new(model.fdd_drives(), model.fdd_hd(), DEFAULT_BUS_SPEED),
-                GateArray::Sonora => Swim::new_swim2(model.fdd_drives(), model.bus_frequency()),
-            },
+            swim,
             scsi: ScsiController::new(),
-            pseudovia: PseudoVia::new(
-                video.sense(),
-                match gate_array {
-                    GateArray::V8 => v8::PSEUDOVIA_MASK,
-                    GateArray::Sonora => sonora::PSEUDOVIA_MASK,
-                },
-            ),
+            pseudovia: PseudoVia::new(video.sense(), pseudovia_mask),
             video,
-            sound: Sound::new(match gate_array {
-                GateArray::V8 => SoundKind::V8,
-                GateArray::Sonora => SoundKind::Sonora,
-            }),
+            sound: Sound::new(sound_kind),
             sound_clock: 0,
 
             overlay: true,
@@ -250,7 +252,7 @@ where
     fn decode(&self, addr: Address) -> Option<Region> {
         match self.gate_array {
             GateArray::V8 => v8::decode(addr, self.pseudovia.b().fc3()),
-            GateArray::Sonora => sonora::decode(addr),
+            GateArray::Sonora { .. } => sonora::decode(addr),
         }
     }
 
@@ -261,7 +263,9 @@ where
         let simm_size = self.ram.len() - self.ram_soldered;
         match self.gate_array {
             GateArray::V8 => v8::ram_index(exp, simm_size, self.ram_soldered, addr),
-            GateArray::Sonora => sonora::ram_index(exp.0, simm_size, self.ram_soldered, addr),
+            GateArray::Sonora { .. } => {
+                sonora::ram_index(exp.0, simm_size, self.ram_soldered, addr)
+            }
         }
     }
 
@@ -311,8 +315,9 @@ where
     fn vram_index(&self, offset: usize) -> Option<usize> {
         match self.gate_array {
             GateArray::V8 => Some(v8::vram_index(self.video.vram_size(), offset)),
-            // The video of the Sonora is not implemented
-            GateArray::Sonora => None,
+            GateArray::Sonora { .. } => {
+                sonora::vram_index(self.pseudovia.vram(), self.video.vram_size(), offset)
+            }
         }
     }
 
@@ -331,13 +336,16 @@ where
     fn io_base(&self) -> Address {
         match self.gate_array {
             GateArray::V8 => v8::IO_BASE,
-            GateArray::Sonora => sonora::IO_BASE,
+            GateArray::Sonora { .. } => sonora::IO_BASE,
         }
     }
 
     /// Writes to an I/O device. `offset` is the offset in the I/O area.
     fn write_io(&mut self, offset: Address, val: Byte) -> Option<()> {
         let addr = self.io_base() | offset;
+        if let (GateArray::Sonora { video }, 0x2_8000..=0x2_9FFF) = (&mut self.gate_array, offset) {
+            return Some(video.write(addr, val));
+        }
         match offset {
             // VIA 1
             0x0_0000..=0x0_1FFF => self.via.write(addr, val),
@@ -362,6 +370,9 @@ where
     /// Reads from an I/O device. `offset` is the offset in the I/O area.
     fn read_io(&mut self, offset: Address) -> Option<Byte> {
         let addr = self.io_base() | offset;
+        if let (GateArray::Sonora { video }, 0x2_8000..=0x2_9FFF) = (&mut self.gate_array, offset) {
+            return Some(video.read(addr, self.video.monitor()));
+        }
         match offset {
             // VIA 1
             0x0_0000..=0x0_1FFF => self.via.read(addr),
@@ -634,15 +645,22 @@ where
         }
 
         let monitor = self.video.monitor();
-        let frame_period = v8::frame_period(monitor);
+        let frame_period = match &self.gate_array {
+            GateArray::V8 => v8::frame_period(monitor),
+            GateArray::Sonora { video, .. } => video.frame_period(),
+        };
         if self.video.tick(ticks, self.bus_frequency, frame_period) {
-            match self.gate_array {
-                GateArray::V8 => {
-                    let mode = v8::video_mode(monitor, self.pseudovia.exp(), self.pseudovia.monp());
-                    self.video.render(&mode)?;
-                }
-                // The video of the Sonora is not implemented
-                GateArray::Sonora => self.video.blank()?,
+            let mode = match &self.gate_array {
+                GateArray::V8 => Some(v8::video_mode(
+                    monitor,
+                    self.pseudovia.exp(),
+                    self.pseudovia.monp(),
+                )),
+                GateArray::Sonora { video, .. } => video.video_mode(),
+            };
+            match mode {
+                Some(mode) => self.video.render(&mode)?,
+                None => self.video.blank()?,
             }
             self.pseudovia.set_vblank();
         }

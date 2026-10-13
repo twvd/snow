@@ -168,6 +168,11 @@ impl PseudoVia {
         self.exp
     }
 
+    /// Video RAM configuration register of the Sonora
+    pub fn vram(&self) -> u8 {
+        self.vram
+    }
+
     pub fn monp(&self) -> RegisterMonP {
         self.monp
     }

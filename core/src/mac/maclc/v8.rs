@@ -25,8 +25,6 @@ pub const MONITORS: &[MacMonitor] = &[MacMonitor::RGB12, MacMonitor::HiRes14];
 /// Sizes of the video RAM SIMM
 pub const VRAM_SIZES: &[usize] = &[256 * 1024, 512 * 1024];
 
-pub const VRAM_SIZE_DEFAULT: usize = 512 * 1024;
-
 /// Finds what an address selects.
 ///
 /// The V8 only decodes A31 and A23-A0. A31 selects the expansion slot,
@@ -104,6 +102,7 @@ pub(super) fn video_mode(monitor: MacMonitor, exp: RegisterExp, monp: RegisterMo
         height: monitor.height(),
         depth: monp.depth(),
         row_bytes: if exp.vram_256k() { 512 } else { 1024 },
+        direct_palette: true,
     }
 }
 

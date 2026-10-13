@@ -1,4 +1,4 @@
-//! Built-in video of the Macintosh LC
+//! Built-in video of the Macintosh LC family
 //!
 //! The gate array shifts the pixels out of the video RAM, to the Ariel
 //! RAMDAC which holds the colour table. The mode, which is the size of the
@@ -10,8 +10,9 @@
 //! Apple IIe card are not implemented.
 
 use super::bus::C16M_FREQUENCY;
+use super::{sonora, v8};
 use crate::debuggable::Debuggable;
-use crate::mac::MacMonitor;
+use crate::mac::{MacModel, MacMonitor};
 use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::Ticks;
 use crate::types::Byte;
@@ -19,7 +20,28 @@ use crate::types::Byte;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-pub use super::v8::{MONITORS, VRAM_SIZE_DEFAULT, VRAM_SIZES};
+/// Monitors which can be connected to a model
+pub fn monitors(model: MacModel) -> &'static [MacMonitor] {
+    if model == MacModel::LCIII {
+        sonora::MONITORS
+    } else {
+        v8::MONITORS
+    }
+}
+
+/// Sizes of video RAM which can be fitted to a model
+pub fn vram_sizes(model: MacModel) -> &'static [usize] {
+    if model == MacModel::LCIII {
+        sonora::VRAM_SIZES
+    } else {
+        v8::VRAM_SIZES
+    }
+}
+
+/// The largest size
+pub fn vram_size_default(model: MacModel) -> usize {
+    *vram_sizes(model).last().unwrap()
+}
 
 /// Depth of 16 bits per pixel
 const DEPTH_16BPP: u8 = 4;
@@ -35,6 +57,10 @@ pub struct Mode {
 
     /// Length of a line in video RAM
     pub row_bytes: usize,
+
+    /// At 16 bpp, each component goes through the first 32 entries of the
+    /// colour table
+    pub direct_palette: bool,
 }
 
 const RAMDAC_ADDRESS: u32 = 0;
@@ -192,9 +218,10 @@ where
             height,
             depth,
             row_bytes,
+            direct_palette,
         } = mode;
         let palette = &self.ramdac.palette;
-        let mask = self.vram.len() - 1;
+        let vram = |idx: usize| self.vram[idx % self.vram.len()];
 
         buf.set_size(width, height);
         for (y, line) in buf.chunks_exact_mut(width * 4).enumerate() {
@@ -204,21 +231,24 @@ where
                     // The pixel is the upper bits of the address in the colour
                     // table, the lower bits are set.
                     let bpp = 1 << depth;
-                    let byte = self.vram[(row + x * bpp / 8) & mask];
+                    let byte = vram(row + x * bpp / 8);
                     let index = usize::from(byte << ((x * bpp) % 8)) | (0xFF >> bpp);
-                    palette[index]
+                    let rgb = palette[index];
+                    // The monochrome monitors show the blue signal
+                    if self.monitor.has_color() {
+                        rgb
+                    } else {
+                        [rgb[2]; 3]
+                    }
                 } else {
-                    // Each component goes through the first 32 entries of the
-                    // colour table. Depths above 16 bpp are not known to exist.
-                    let word = u16::from_be_bytes([
-                        self.vram[(row + x * 2) & mask],
-                        self.vram[(row + x * 2 + 1) & mask],
-                    ]);
-                    [
-                        palette[usize::from(word >> 10) & 0x1F][0],
-                        palette[usize::from(word >> 5) & 0x1F][1],
-                        palette[usize::from(word) & 0x1F][2],
-                    ]
+                    // Depths above 16 bpp are not known to exist
+                    let word = u16::from_be_bytes([vram(row + x * 2), vram(row + x * 2 + 1)]);
+                    let [r, g, b] = [word >> 10, word >> 5, word].map(|c| usize::from(c) & 0x1F);
+                    if direct_palette {
+                        [palette[r][0], palette[g][1], palette[b][2]]
+                    } else {
+                        [r, g, b].map(|c| (c << 3 | c >> 2) as u8)
+                    }
                 };
                 pixel[..3].copy_from_slice(&rgb);
                 pixel[3] = 0xFF;
@@ -282,6 +312,7 @@ mod tests {
             height: video.monitor().height(),
             depth,
             row_bytes,
+            direct_palette: true,
         }
     }
 
@@ -354,6 +385,27 @@ mod tests {
         video.render_to(&mut buf, &mode(&video, 4, 1024));
         assert_eq!((buf.width(), buf.height()), (512, 384));
         assert_eq!(pixel(&buf, 1, 1), [0xF1, 0x12, 0x00]);
+    }
+
+    #[test]
+    fn render_direct_without_palette() {
+        let mut video = video(MacMonitor::HiRes14, 768 * 1024);
+        let mut buf = DisplayBuffer::new(0usize, 0usize);
+        set_colour(&mut video, 0x1F, [0xF1, 0xF2, 0xF3]);
+
+        // Red 31, green 0, blue 31
+        video.write_vram(0, 0x7C);
+        video.write_vram(1, 0x1F);
+        let mode = Mode {
+            width: 640,
+            height: 400,
+            depth: 4,
+            row_bytes: 1280,
+            direct_palette: false,
+        };
+        video.render_to(&mut buf, &mode);
+        assert_eq!((buf.width(), buf.height()), (640, 400));
+        assert_eq!(pixel(&buf, 0, 0), [0xFF, 0x00, 0xFF]);
     }
 
     #[test]
