@@ -12,6 +12,7 @@ use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
 
 use crate::debuggable::Debuggable;
+use crate::mac::adb::{AdbDevice, AdbEvent};
 use crate::mac::egret_common::EgretCommon;
 use crate::mac::rtc::Rtc;
 use crate::tickable::Ticks;
@@ -84,6 +85,17 @@ impl Egret {
     /// Transceiver session line (true = asserted, which is low on the pin)
     pub fn xcvr_ses(&self) -> bool {
         self.xcvr_ses
+    }
+
+    pub fn adb_add_device<T>(&mut self, device: T)
+    where
+        T: AdbDevice + Send + 'static,
+    {
+        self.common.adb_add_device(device);
+    }
+
+    pub fn adb_event(&mut self, event: &AdbEvent) {
+        self.common.adb_event(event);
     }
 
     pub fn rtc(&self) -> &Rtc {
