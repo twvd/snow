@@ -8,6 +8,7 @@ use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
+use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::egret::Egret;
 use crate::mac::macii::bus::RAM_DIRTY_PAGESIZE;
 use crate::mac::rtc::Rtc;
@@ -17,7 +18,7 @@ use crate::mac::swim::Swim;
 use crate::mac::via_common::{LineState, ViaLine};
 use crate::renderer::{AudioProvider, Renderer};
 use crate::tickable::{Tickable, Ticks};
-use crate::types::{Byte, LatchingEvent};
+use crate::types::{Byte, LatchingEvent, MouseEvent};
 
 use anyhow::Result;
 use bit_set::BitSet;
@@ -124,6 +125,9 @@ where
         ram_size: Option<usize>,
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
+        let mut egret = Egret::default();
+        egret.adb_add_device(AdbMouse::new());
+        egret.adb_add_device(AdbKeyboard::new());
 
         Self {
             model,
@@ -134,7 +138,7 @@ where
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             renderer: Some(renderer),
             via: Via::new(model),
-            egret: Egret::default(),
+            egret,
             tick60_clock: 0,
             scc: Scc::new(),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), BUS_FREQUENCY),
@@ -347,7 +351,25 @@ where
     }
 
     /// Updates the mouse position (relative coordinates) and button state
-    pub fn mouse_update_rel(&mut self, _relx: i16, _rely: i16, _button: Option<bool>) {}
+    pub fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) {
+        if self.mouse_mode == MouseMode::Disabled {
+            return;
+        }
+
+        if button.is_some() {
+            self.egret.adb_event(&AdbEvent::Mouse(MouseEvent {
+                button,
+                rel_movement: None,
+            }));
+        }
+
+        if self.mouse_mode == MouseMode::RelativeHw && (relx != 0 || rely != 0) {
+            self.egret.adb_event(&AdbEvent::Mouse(MouseEvent {
+                button: None,
+                rel_movement: Some((relx.into(), rely.into())),
+            }));
+        }
+    }
 
     /// Updates the mouse position (absolute coordinates)
     pub fn mouse_update_abs(&mut self, _x: u16, _y: u16) {}
@@ -384,9 +406,15 @@ where
         Ok(())
     }
 
-    pub fn keyboard_event(&mut self, _ke: KeyEvent) {}
+    /// Dispatches a key event to the keyboard
+    pub fn keyboard_event(&mut self, ke: KeyEvent) {
+        self.egret.adb_event(&AdbEvent::Key(ke));
+    }
 
-    pub fn input_release_all(&mut self) {}
+    /// Releases all pressed inputs
+    pub fn input_release_all(&mut self) {
+        self.egret.adb_event(&AdbEvent::ReleaseAll);
+    }
 
     pub fn rtc_mut(&mut self) -> &mut Rtc {
         self.egret.rtc_mut()
