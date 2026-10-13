@@ -295,10 +295,19 @@ impl MacModel {
                 // Mac Classic has a pulldown (R79) as model identifier
                 via::RegisterA(0xFF).with_sndpg2(false)
             }
-            // The outputs read high until the ROM configures them
-            Self::MacII | Self::MacIIFDHD => via::RegisterA(0x38).with_model(1),
-            Self::MacIIx => via::RegisterA(0x38).with_model(0),
-            Self::MacIIcx | Self::SE30 => via::RegisterA(0x38).with_model(0x03).with_model6(true),
+            // The ROM identifies the model from PA6 and PB3 of VIA2:
+            //
+            //   PA6  PB3
+            //    0    0   Macintosh IIx
+            //    0    1   Macintosh II
+            //    1    0   Macintosh SE/30
+            //    1    1   Macintosh IIcx
+            //
+            // PA0-PA2 go to the burn-in connector and are pulled up. The ROM
+            // detects the burn-in fixture by toggling PA0 and checking whether
+            // PA1 follows.
+            Self::MacII | Self::MacIIFDHD | Self::MacIIx => via::RegisterA(0xFF).with_model6(false),
+            Self::MacIIcx | Self::SE30 => via::RegisterA(0xFF),
         }
     }
 
