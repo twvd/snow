@@ -164,7 +164,6 @@ impl PseudoVia {
         self.scsi_drq = drq;
     }
 
-    #[allow(dead_code)]
     pub fn set_asc_irq(&mut self, level: bool) {
         self.asc_irq = level;
     }
