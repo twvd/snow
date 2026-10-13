@@ -13,6 +13,8 @@ use crate::tickable::Ticks;
 pub mod adb;
 pub mod asc;
 pub mod compact;
+pub mod egret;
+pub mod egret_common;
 pub mod localtalk_bridge;
 pub mod macii;
 pub mod maclc;
