@@ -1,4 +1,4 @@
-//! Line F exception tests for coprocessor instructions on a 68020 without FPU
+//! Tests for coprocessor instructions and the FPU detection on a 68020 without FPU
 
 use crate::bus::Address;
 use crate::bus::testbus::Testbus;
@@ -8,6 +8,8 @@ const INITIAL_SSP: Address = 0x1000;
 const INITIAL_PC: Address = 0x100;
 const HANDLER_ADDR: Address = 0x200;
 const VECTOR_LINEF: Address = 0x2C;
+const BUSERR_HANDLER_ADDR: Address = 0x300;
+const VECTOR_BUSERR: Address = 0x08;
 
 fn testbus(code: &[u16]) -> Testbus<Address, u8> {
     let mut bus = Testbus::new(M68020_ADDRESS_MASK);
@@ -16,21 +18,31 @@ fn testbus(code: &[u16]) -> Testbus<Address, u8> {
         bus.mem.insert(addr, (word >> 8) as u8);
         bus.mem.insert(addr + 1, *word as u8);
     }
-    for (i, b) in HANDLER_ADDR.to_be_bytes().into_iter().enumerate() {
-        bus.mem.insert(VECTOR_LINEF + i as u32, b);
+    for (vector, handler) in [
+        (VECTOR_LINEF, HANDLER_ADDR),
+        (VECTOR_BUSERR, BUSERR_HANDLER_ADDR),
+    ] {
+        for (i, b) in handler.to_be_bytes().into_iter().enumerate() {
+            bus.mem.insert(vector + i as u32, b);
+        }
     }
     bus
 }
 
 macro_rules! run {
-    ($cpu:ty, $code:expr) => {{
+    ($cpu:ty, $code:expr) => {
+        run!($cpu, $code, 1)
+    };
+    ($cpu:ty, $code:expr, $steps:expr) => {{
         let mut cpu = <$cpu>::new(testbus($code));
         cpu.regs.isp = INITIAL_SSP;
         cpu.regs.sr.set_supervisor(true);
         cpu.regs.sr.set_int_prio_mask(7);
         cpu.set_pc(INITIAL_PC).unwrap();
         cpu.prefetch_refill().unwrap();
-        cpu.step().unwrap();
+        for _ in 0..$steps {
+            cpu.step().unwrap();
+        }
         cpu
     }};
 }
@@ -71,4 +83,26 @@ fn fnop_with_fpu() {
         &[0xF280, 0x0000, 0x4E71]
     );
     assert_eq!(cpu.regs.pc, INITIAL_PC + 4);
+}
+
+/// MOVES from the response register of the FPU in the CPU space
+#[rustfmt::skip]
+const FPU_PROBE: &[u16] = &[
+    0x7207,                         // MOVEQ #7,D1
+    0x4E7B, 0x1000,                 // MOVEC D1,SFC
+    0x0E79, 0x1000, 0x0002, 0x2000, // MOVES.W $22000,D1
+    0x4E71,
+];
+
+#[test]
+fn fpu_probe_without_fpu() {
+    let cpu = run!(CpuM68020<Testbus<Address, u8>>, FPU_PROBE, 3);
+    assert_eq!(cpu.regs.pc, BUSERR_HANDLER_ADDR);
+}
+
+#[test]
+fn fpu_probe_with_fpu() {
+    let cpu = run!(CpuM68020Fpu<Testbus<Address, u8>>, FPU_PROBE, 3);
+    assert_eq!(cpu.regs.pc, INITIAL_PC + 14);
+    assert_eq!(cpu.regs.d[1] & 0xFFFF, 0x0802);
 }
