@@ -74,6 +74,8 @@ pub enum MacModel {
     SE30,
     /// Macintosh LC
     LC,
+    /// Macintosh LC II
+    LCII,
 }
 
 #[allow(clippy::match_like_matches_macro)]
@@ -112,6 +114,8 @@ impl MacModel {
         ("adb794a53976b5ddfe7e580c4071a2f38a89d0b8583bf5d342306228c1d58a4f", &[Self::MacIIx, Self::MacIIcx, Self::SE30]),
         // Macintosh LC
         ("129391cc72f84c2b321709cad8281e30a45e50b3cf6e7afe7434c4d32c7b9d5b", &[Self::LC]),
+        // Macintosh LC II
+        ("18c3de07ca15cf66dfbaa5984aca34b48a2d7b4d0d8c7656f79533899ccec0a0", &[Self::LCII]),
     ];
 
     pub const fn has_adb(self) -> bool {
@@ -134,7 +138,7 @@ impl MacModel {
             | Self::MacIIx
             | Self::MacIIcx
             | Self::SE30 => 8 * 1024 * 1024,
-            Self::LC => 10 * 1024 * 1024,
+            Self::LC | Self::LCII => 10 * 1024 * 1024,
         }
     }
 
@@ -198,6 +202,12 @@ impl MacModel {
                 6 * 1024 * 1024,
                 10 * 1024 * 1024,
             ],
+            Self::LCII => &[
+                4 * 1024 * 1024,
+                6 * 1024 * 1024,
+                8 * 1024 * 1024,
+                10 * 1024 * 1024,
+            ],
         }
     }
 
@@ -207,7 +217,9 @@ impl MacModel {
             Self::Early128K | Self::Early512K | Self::Early512Ke | Self::Plus | Self::SE => false,
             Self::SeFdhd | Self::Classic | Self::Portable | Self::Portable15MB => true,
             Self::MacII => false,
-            Self::MacIIFDHD | Self::MacIIx | Self::MacIIcx | Self::SE30 | Self::LC => true,
+            Self::MacIIFDHD | Self::MacIIx | Self::MacIIcx | Self::SE30 | Self::LC | Self::LCII => {
+                true
+            }
         }
     }
 
@@ -229,7 +241,7 @@ impl MacModel {
                 DriveType::SuperDrive,
             ],
             Self::MacII => &[DriveType::GCR800K, DriveType::GCR800K],
-            Self::MacIIFDHD | Self::MacIIx | Self::MacIIcx | Self::SE30 | Self::LC => {
+            Self::MacIIFDHD | Self::MacIIx | Self::MacIIcx | Self::SE30 | Self::LC | Self::LCII => {
                 &[DriveType::SuperDrive, DriveType::SuperDrive]
             }
         }
@@ -264,7 +276,7 @@ impl MacModel {
 
     pub const fn disable_memtest(self) -> Option<(Address, u32)> {
         match self {
-            Self::Early128K | Self::Early512K | Self::LC => None,
+            Self::Early128K | Self::Early512K | Self::LC | Self::LCII => None,
             Self::Early512Ke | Self::Plus => Some((0x0002AE, 0x0040_0000)),
             Self::SE
             | Self::SeFdhd
@@ -291,7 +303,7 @@ impl MacModel {
             | Self::Portable
             | Self::Portable15MB => M68000,
             Self::MacII | Self::MacIIFDHD | Self::LC => M68020,
-            Self::MacIIx | Self::MacIIcx | Self::SE30 => M68030,
+            Self::MacIIx | Self::MacIIcx | Self::SE30 | Self::LCII => M68030,
         }
     }
 
@@ -323,7 +335,7 @@ impl MacModel {
             Self::MacII | Self::MacIIFDHD | Self::MacIIx => via::RegisterA(0xFF).with_model6(false),
             Self::MacIIcx | Self::SE30 => via::RegisterA(0xFF),
             // CPU ID: PA6, PA4 and PA2 high, PA1 low
-            Self::LC => via::RegisterA(0xD5),
+            Self::LC | Self::LCII => via::RegisterA(0xD5),
         }
     }
 
@@ -348,7 +360,8 @@ impl MacModel {
             | Self::Portable
             | Self::Portable15MB
             | Self::Classic
-            | Self::LC => panic!("Invalid operation for this model"),
+            | Self::LC
+            | Self::LCII => panic!("Invalid operation for this model"),
             Self::MacII | Self::MacIIFDHD | Self::MacIIcx => macii::via2::RegisterB(0xFF),
             Self::MacIIx | Self::SE30 => macii::via2::RegisterB(0x87),
         }
@@ -406,6 +419,7 @@ impl Display for MacModel {
                 Self::MacIIcx => "Macintosh IIcx",
                 Self::SE30 => "Macintosh SE/30",
                 Self::LC => "Macintosh LC",
+                Self::LCII => "Macintosh LC II",
             }
         )
     }

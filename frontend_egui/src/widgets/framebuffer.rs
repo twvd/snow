@@ -324,7 +324,8 @@ impl FramebufferWidget {
             | MacModel::MacIIFDHD
             | MacModel::MacIIx
             | MacModel::MacIIcx
-            | MacModel::LC => {
+            | MacModel::LC
+            | MacModel::LCII => {
                 vec![
                     ShaderConfig::builder(ShaderId::ImageAdjustment)
                         .enabled(false)

@@ -20,7 +20,7 @@ use strum::IntoEnumIterator;
 use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use crate::cpu_m68k::{
-    CpuM68000, CpuM68020, CpuM68020Fpu, CpuM68020Fpu68882, CpuM68020Pmmu, CpuM68030Fpu,
+    CpuM68000, CpuM68020, CpuM68020Fpu, CpuM68020Fpu68882, CpuM68020Pmmu, CpuM68030, CpuM68030Fpu,
 };
 use crate::debuggable::{Debuggable, DebuggableProperties};
 #[cfg(feature = "savestates")]
@@ -114,6 +114,8 @@ macro_rules! dispatch {
                         Self::MacII30(inner) => &inner.$($ref_target)*,
                         Self::MacLC(inner) => &inner.$($ref_target)*,
                         Self::MacLCFpu(inner) => &inner.$($ref_target)*,
+                        Self::MacLCII(inner) => &inner.$($ref_target)*,
+                        Self::MacLCIIFpu(inner) => &inner.$($ref_target)*,
                     }
                 }
             )*
@@ -129,6 +131,8 @@ macro_rules! dispatch {
                         Self::MacII30(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacLC(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacLCFpu(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::MacLCII(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::MacLCIIFpu(inner) => &mut inner.$($mut_ref_target)*,
                     }
                 }
             )*
@@ -144,6 +148,8 @@ macro_rules! dispatch {
                         Self::MacII30(inner) => inner.$($immut_call_target)*,
                         Self::MacLC(inner) => inner.$($immut_call_target)*,
                         Self::MacLCFpu(inner) => inner.$($immut_call_target)*,
+                        Self::MacLCII(inner) => inner.$($immut_call_target)*,
+                        Self::MacLCIIFpu(inner) => inner.$($immut_call_target)*,
                     }
                 }
             )*
@@ -159,6 +165,8 @@ macro_rules! dispatch {
                         Self::MacII30(inner) => inner.$($mut_call_target)*,
                         Self::MacLC(inner) => inner.$($mut_call_target)*,
                         Self::MacLCFpu(inner) => inner.$($mut_call_target)*,
+                        Self::MacLCII(inner) => inner.$($mut_call_target)*,
+                        Self::MacLCIIFpu(inner) => inner.$($mut_call_target)*,
                     }
                 }
             )*
@@ -184,6 +192,10 @@ enum EmulatorConfig {
     MacLC(Box<CpuM68020<MacLCBus<ChannelRenderer>>>),
     /// Macintosh LC with FPU card
     MacLCFpu(Box<CpuM68020Fpu68882<MacLCBus<ChannelRenderer>>>),
+    /// Macintosh LC II
+    MacLCII(Box<CpuM68030<MacLCBus<ChannelRenderer>>>),
+    /// Macintosh LC II with an FPU card
+    MacLCIIFpu(Box<CpuM68030Fpu<MacLCBus<ChannelRenderer>>>),
 }
 
 dispatch! {
@@ -512,6 +524,20 @@ impl Emulator {
                     EmulatorConfig::MacLCFpu(Box::new(CpuM68020Fpu68882::new(bus)))
                 } else {
                     EmulatorConfig::MacLC(Box::new(CpuM68020::new(bus)))
+                }
+            }
+            MacModel::LCII => {
+                assert!(override_fdd_type.is_none());
+
+                // Initialize bus and CPU
+                // The FPU is an option on an expansion card
+                let bus = MacLCBus::new(
+                    model, rom, renderer, mouse_mode, ram_size, monitor, vram_size,
+                );
+                if fpu_enabled {
+                    EmulatorConfig::MacLCIIFpu(Box::new(CpuM68030Fpu::new(bus)))
+                } else {
+                    EmulatorConfig::MacLCII(Box::new(CpuM68030::new(bus)))
                 }
             }
         };

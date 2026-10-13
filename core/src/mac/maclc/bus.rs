@@ -154,8 +154,21 @@ where
         monitor: Option<MacMonitor>,
         vram_size: Option<usize>,
     ) -> Self {
+        const MB: usize = 1024 * 1024;
+
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
-        let ram_soldered = 2 * 1024 * 1024;
+        let ram_soldered = if model == MacModel::LCII {
+            4 * MB
+        } else {
+            2 * MB
+        };
+        // 10 MB on the LC II are 8 MB of SIMMs, with which only 2 MB of the
+        // 4 MB of soldered RAM can be used
+        let ram_simm = match ram_size - ram_soldered {
+            n if n == 6 * MB => 8 * MB,
+            n => n,
+        };
+        let ram_size = ram_simm + ram_soldered;
         let video = Video::new(renderer, monitor, vram_size);
         let mut egret = Egret::default();
         egret.adb_add_device(AdbMouse::new());
@@ -721,5 +734,37 @@ mod tests {
         assert_eq!(index(0x60, 4, 0x20_0000), Some(2 * MB));
         assert_eq!(index(0x60, 4, 0x3F_FFFF), Some(4 * MB - 1));
         assert_eq!(index(0x60, 4, 0x40_0000), None);
+    }
+
+    /// Index with the 4 MB of soldered RAM of the Macintosh LC II
+    fn index_lcii(exp: u8, simm_mb: usize, addr: Address) -> Option<usize> {
+        ram_index(RegisterExp(exp), simm_mb * MB, 4 * MB, addr)
+    }
+
+    #[test]
+    fn ram_lcii_soldered_only() {
+        // Soldered bank of 4 MB: all of it responds
+        assert_eq!(index_lcii(0x00, 0, 0x00_0000), Some(0));
+        assert_eq!(index_lcii(0x00, 0, 0x1F_FFFE), Some(2 * MB - 2));
+        assert_eq!(index_lcii(0x00, 0, 0x3F_FFFF), Some(4 * MB - 1));
+        assert_eq!(index_lcii(0x00, 0, 0x40_0000), None);
+    }
+
+    #[test]
+    fn ram_lcii_simm() {
+        // SIMM bank of 8 MB: the soldered bank follows it at 8 MB, where
+        // only its first 2 MB are in the RAM area
+        assert_eq!(index_lcii(0xC0, 8, 0x7F_FFFF), Some(8 * MB - 1));
+        assert_eq!(index_lcii(0xC0, 8, 0x80_0000), Some(8 * MB));
+        assert_eq!(index_lcii(0xC0, 8, 0x9F_FFFF), Some(10 * MB - 1));
+        // SIMM bank of 8 MB with 2 MB fitted
+        assert_eq!(index_lcii(0xC0, 2, 0x20_0000), None);
+        assert_eq!(index_lcii(0xC0, 2, 0x80_0000), Some(2 * MB));
+        // SIMM banks of 4 MB and 2 MB
+        assert_eq!(index_lcii(0x80, 4, 0x40_0000), Some(4 * MB));
+        assert_eq!(index_lcii(0x80, 4, 0x7F_FFFF), Some(8 * MB - 1));
+        assert_eq!(index_lcii(0x40, 2, 0x20_0000), Some(2 * MB));
+        assert_eq!(index_lcii(0x40, 2, 0x5F_FFFF), Some(6 * MB - 1));
+        assert_eq!(index_lcii(0x40, 2, 0x60_0000), None);
     }
 }
