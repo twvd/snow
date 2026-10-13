@@ -564,6 +564,10 @@ impl ModelSelectionDialog {
                         ui.end_row();
                     }
                 }
+                if self.selected_model == MacModel::LC {
+                    ui.checkbox(&mut self.init_args.fpu_enabled, "Enable 68882 FPU");
+                    ui.end_row();
+                }
                 if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
                     ui.checkbox(&mut self.init_args.pmmu_enabled, "Enable 68851 PMMU");
                 }
@@ -718,6 +722,9 @@ impl ModelSelectionDialog {
                     {
                         if !matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
                             self.init_args.pmmu_enabled = false;
+                        }
+                        if self.selected_model != MacModel::LC {
+                            self.init_args.fpu_enabled = false;
                         }
 
                         self.result = Some(ModelSelectionResult {
