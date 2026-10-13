@@ -26,8 +26,10 @@ const ERROR_ADDRESS: u8 = 4;
 /// Pseudo commands
 const CMD_AUTOPOLL: u8 = 0x01;
 const CMD_READ_RAM: u8 = 0x02;
+const CMD_READ_CLOCK: u8 = 0x03;
 const CMD_READ_PRAM: u8 = 0x07;
 const CMD_WRITE_RAM: u8 = 0x08;
+const CMD_SET_CLOCK: u8 = 0x09;
 const CMD_WRITE_PRAM: u8 = 0x0C;
 const CMD_WRITE_DFAC: u8 = 0x0E;
 const CMD_ONE_SEC_MODE: u8 = 0x1B;
@@ -189,6 +191,9 @@ impl EgretCommon {
                 self.reading = Some(Reading::Ram(u16::from_be_bytes(addr)));
                 vec![]
             }),
+            CMD_READ_CLOCK => {
+                Self::params(params).map(|[]| self.rtc.seconds().to_be_bytes().to_vec())
+            }
             CMD_READ_PRAM => Self::params(params).and_then(|addr| {
                 self.reading = Some(Reading::Pram(Self::pram_addr(addr)?));
                 Ok(vec![])
@@ -214,6 +219,10 @@ impl EgretCommon {
                 }),
                 _ => Err(ERROR_PARAMS),
             },
+            CMD_SET_CLOCK => Self::params(params).map(|seconds| {
+                self.rtc.set_seconds(u32::from_be_bytes(seconds));
+                vec![]
+            }),
             // Settings of the sound input circuit, which is not modelled
             CMD_WRITE_DFAC if (1..=4).contains(&params.len()) => Ok(vec![]),
             CMD_WRITE_DFAC => Err(ERROR_PARAMS),
@@ -349,6 +358,23 @@ mod tests {
         assert_eq!(egret.response_next(), Some(0x12));
         assert_eq!(egret.response_next(), Some(0x00));
         assert_eq!(egret.command(&[0x01, 0x02, 0x00]), [0x02, 0x03, 0x01, 0x02]);
+    }
+
+    #[test]
+    fn clock() {
+        let mut egret = EgretCommon::default();
+
+        assert_eq!(
+            egret.command(&[0x01, 0x09, 0x12, 0x34, 0x56, 0x78]),
+            [0x01, 0x00, 0x09]
+        );
+        assert_eq!(egret.rtc.seconds(), 0x12345678);
+        assert_eq!(
+            egret.command(&[0x01, 0x03]),
+            [0x01, 0x00, 0x03, 0x12, 0x34, 0x56, 0x78]
+        );
+        assert_eq!(egret.command(&[0x01, 0x03, 0x00]), [0x02, 0x03, 0x01, 0x03]);
+        assert_eq!(egret.command(&[0x01, 0x09, 0x00]), [0x02, 0x03, 0x01, 0x09]);
     }
 
     #[test]
