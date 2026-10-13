@@ -1,3 +1,6 @@
+use std::thread;
+use std::time::{Duration, Instant};
+
 use super::pseudovia::{PseudoVia, RegisterExp};
 use super::via::Via;
 use super::video::Video;
@@ -105,6 +108,13 @@ pub struct MacLCBus<TRenderer: Renderer> {
     /// Counts clock ticks at native frequency, regardless of overclocking
     native_clock: NativeClock,
 
+    /// Time at which the last frame was due (for pacing to the host)
+    /// Not serializing this because it is only used for determining how long to
+    /// sleep for.
+    #[serde(skip, default = "Instant::now")]
+    vblank_time: Instant,
+    vblank_clock: Ticks,
+
     /// Programmer's key pressed
     progkey_pressed: LatchingEvent,
 
@@ -167,6 +177,8 @@ where
             overlay: true,
             speed: EmulatorSpeed::Accurate,
             native_clock: NativeClock::new(BUS_FREQUENCY, 20),
+            vblank_time: Instant::now(),
+            vblank_clock: 0,
             progkey_pressed: LatchingEvent::default(),
             mouse_mode,
             mouse_ready: false,
@@ -571,6 +583,34 @@ where
                 if self.tick60_clock >= TICK60_PERIOD {
                     self.tick60_clock = 0;
                     self.via.set_line(ViaLine::CA1, LineState::Pulse);
+                }
+            }
+        }
+
+        // Host frame pacing
+        self.vblank_clock += native_ticks;
+        while self.vblank_clock >= self.bus_frequency() / 60 {
+            self.vblank_clock -= self.bus_frequency() / 60;
+
+            let max_speed = match self.speed {
+                // Sync to 60 fps video. The Accurate mode is to be paced by
+                // the sound chip, which is not implemented yet.
+                EmulatorSpeed::Video | EmulatorSpeed::Accurate => Some(1.0),
+                // Cap to the requested speedup multiplier
+                EmulatorSpeed::FastForward(max_speed) => Some(max_speed),
+                _ => None,
+            };
+            if let Some(max_speed) = max_speed {
+                // Sleep until the time at which this frame is due, counted from
+                // the time the last one was due so that the error of the sleep
+                // does not add up.
+                let due = self.vblank_time + Duration::from_secs_f64(1.0 / (60.0 * max_speed));
+                let now = Instant::now();
+                if now < due {
+                    thread::sleep(due - now);
+                    self.vblank_time = due;
+                } else {
+                    self.vblank_time = now;
                 }
             }
         }
