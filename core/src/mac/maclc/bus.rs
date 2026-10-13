@@ -17,10 +17,13 @@ use crate::mac::macii::bus::RAM_DIRTY_PAGESIZE;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
+use crate::mac::sound::v8_sonora::{V8Sound, V8Variant};
 use crate::mac::swim::Swim;
 use crate::mac::via_common::{LineState, ViaLine};
 use crate::mac::{MacModel, MacMonitor};
-use crate::renderer::{AudioProvider, Renderer};
+use crate::renderer::{
+    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
+};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, MouseEvent};
 
@@ -99,6 +102,8 @@ pub struct MacLCBus<TRenderer: Renderer> {
     pub(crate) scsi: ScsiController,
     pseudovia: PseudoVia,
     video: Video<TRenderer>,
+    sound: V8Sound,
+    sound_clock: Ticks,
 
     overlay: bool,
 
@@ -173,6 +178,8 @@ where
             scsi: ScsiController::new(),
             pseudovia: PseudoVia::new(video.sense()),
             video,
+            sound: V8Sound::new(V8Variant::V8),
+            sound_clock: 0,
 
             overlay: true,
             speed: EmulatorSpeed::Accurate,
@@ -188,6 +195,7 @@ where
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
     pub fn after_deserialize(&mut self, renderer: TRenderer) {
         self.video.renderer = Some(renderer);
+        self.sound.after_deserialize();
 
         // Mark all RAM pages as dirty after deserialization to update memory display
         self.ram_dirty
@@ -203,6 +211,12 @@ where
     }
 
     pub fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {
+        // The sample rate is 22.257 kHz, rounded down to a commonly used value
+        let sink = provider
+            .create_stream(22050, AUDIO_CHANNELS as u8, AUDIO_BUFFER_SAMPLES as u16)
+            .unwrap_or_else(|_| null_audio_sink());
+        self.sound.set_sink(sink);
+
         self.scsi.set_audio_provider(provider)
     }
 
@@ -269,8 +283,10 @@ where
             0xF0_6000..=0xF0_7FFF => Some(self.scsi.write_dma(val)),
             0xF1_0000..=0xF1_1FFF => Self::dev_write(addr, val, self.scsi.write(addr, val)),
             0xF1_2000..=0xF1_3FFF => Some(self.scsi.write_dma(val)),
-            // ASC (sound)
-            0xF1_4000..=0xF1_5FFF => Self::dev_write(addr, val, None),
+            // Sound
+            0xF1_4000..=0xF1_5FFF => {
+                Self::dev_write(addr, val, self.sound.write(addr & 0xFFF, val))
+            }
             // SWIM
             0xF1_6000..=0xF1_7FFF => Self::dev_write(addr, val, self.swim.write(addr, val)),
             // RAMDAC
@@ -313,8 +329,8 @@ where
             0xF0_6000..=0xF0_7FFF => Some(self.scsi.read_dma()),
             0xF1_0000..=0xF1_1FFF => Some(Self::dev_read(addr, self.scsi.read(addr))),
             0xF1_2000..=0xF1_3FFF => Some(self.scsi.read_dma()),
-            // ASC (sound)
-            0xF1_4000..=0xF1_5FFF => Some(Self::dev_read(addr, None)),
+            // Sound
+            0xF1_4000..=0xF1_5FFF => Some(Self::dev_read(addr, self.sound.read(addr & 0xFFF))),
             // SWIM
             0xF1_6000..=0xF1_7FFF => Some(Self::dev_read(addr, self.swim.read(addr))),
             // RAMDAC
@@ -525,6 +541,7 @@ where
         self.scc = Scc::new();
         self.via.reset();
         self.pseudovia.reset();
+        self.sound.reset();
         self.overlay = true;
         self.mouse_ready = false;
         Ok(false)
@@ -593,9 +610,8 @@ where
             self.vblank_clock -= self.bus_frequency() / 60;
 
             let max_speed = match self.speed {
-                // Sync to 60 fps video. The Accurate mode is to be paced by
-                // the sound chip, which is not implemented yet.
-                EmulatorSpeed::Video | EmulatorSpeed::Accurate => Some(1.0),
+                // Sync to 60 fps video
+                EmulatorSpeed::Video => Some(1.0),
                 // Cap to the requested speedup multiplier
                 EmulatorSpeed::FastForward(max_speed) => Some(max_speed),
                 _ => None,
@@ -622,6 +638,15 @@ where
                 .render(self.pseudovia.monp().depth(), row_bytes)?;
             self.pseudovia.set_vblank();
         }
+
+        // Sound. Queuing the samples paces the emulation in the Accurate mode.
+        self.sound_clock += native_ticks * C16M_FREQUENCY;
+        while self.sound_clock >= self.sound.sample_period() * self.bus_frequency() {
+            self.sound_clock -= self.sound.sample_period() * self.bus_frequency();
+
+            self.sound.tick(self.speed == EmulatorSpeed::Accurate)?;
+        }
+        self.pseudovia.set_asc_irq(self.sound.irq());
 
         self.scsi.tick(native_ticks, ctx)?;
         self.pseudovia
@@ -686,6 +711,7 @@ where
         vec![
             dbgprop_nest!("Egret", self.egret),
             dbgprop_nest!("SCSI controller (NCR 5380)", self.scsi),
+            dbgprop_nest!("Sound", self.sound),
             dbgprop_nest!("SWIM", self.swim),
             dbgprop_nest!("V8 registers", self.pseudovia),
             dbgprop_nest!("Video", self.video),
