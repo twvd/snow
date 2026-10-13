@@ -9,6 +9,7 @@ use anyhow::{Result, anyhow, bail};
 use eframe::egui;
 use sha2::{Digest, Sha256};
 use snow_core::emulator::MouseMode;
+use snow_core::mac::maclc::video as lc_video;
 use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{MacModel, MacMonitor, NubusDeviceKind};
 use strum::IntoEnumIterator;
@@ -565,6 +566,41 @@ impl ModelSelectionDialog {
                     }
                 }
                 if self.selected_model == MacModel::LC {
+                    if !lc_video::MONITORS.contains(&self.selected_monitor) {
+                        self.selected_monitor = MacMonitor::default();
+                    }
+                    ui.label("Monitor");
+                    egui::ComboBox::new(egui::Id::new("Select LC monitor"), "")
+                        .selected_text(format!("{}", self.selected_monitor))
+                        .show_ui(ui, |ui| {
+                            for &monitor in lc_video::MONITORS {
+                                ui.selectable_value(
+                                    &mut self.selected_monitor,
+                                    monitor,
+                                    monitor.to_string(),
+                                );
+                            }
+                        });
+                    ui.end_row();
+
+                    ui.label("Video RAM");
+                    egui::ComboBox::new(egui::Id::new("Select LC video RAM"), "")
+                        .selected_text(format_ram(
+                            self.init_args
+                                .vram_size
+                                .unwrap_or(lc_video::VRAM_SIZE_DEFAULT),
+                        ))
+                        .show_ui(ui, |ui| {
+                            for &sz in lc_video::VRAM_SIZES {
+                                ui.selectable_value(
+                                    &mut self.init_args.vram_size,
+                                    Some(sz),
+                                    format_ram(sz),
+                                );
+                            }
+                        });
+                    ui.end_row();
+
                     ui.checkbox(&mut self.init_args.fpu_enabled, "Enable 68882 FPU");
                     ui.end_row();
                 }
@@ -725,6 +761,7 @@ impl ModelSelectionDialog {
                         }
                         if self.selected_model != MacModel::LC {
                             self.init_args.fpu_enabled = false;
+                            self.init_args.vram_size = None;
                         }
 
                         self.result = Some(ModelSelectionResult {
@@ -748,7 +785,9 @@ impl ModelSelectionDialog {
                                 Some(PathBuf::from(&self.extension_rom_path))
                             },
                             init_args: EmulatorInitArgs {
-                                monitor: if self.display_rom_required {
+                                monitor: if self.display_rom_required
+                                    || self.selected_model == MacModel::LC
+                                {
                                     Some(self.selected_monitor)
                                 } else {
                                     None
