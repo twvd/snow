@@ -39,19 +39,20 @@ const TICK60_PERIOD: Ticks = 13024;
 /// Start of the window of the video RAM
 const VRAM_BASE: usize = 0xF4_0000;
 
-/// Size of the RAM soldered on the logic board, the rest is in SIMMs
-const RAM_SOLDERED: usize = 2 * 1024 * 1024;
-
 /// Translates an address to an index in the RAM, which holds the SIMMs
-/// followed by the soldered RAM.
+/// followed by the RAM soldered on the logic board.
 ///
 /// The SIMM bank starts at 0 and the soldered bank follows it, both with
 /// the size configured in the expansion register of the V8.
-fn ram_index(exp: RegisterExp, ram_size: usize, addr: Address) -> Option<usize> {
+fn ram_index(
+    exp: RegisterExp,
+    simm_size: usize,
+    soldered_size: usize,
+    addr: Address,
+) -> Option<usize> {
     const MB: usize = 1024 * 1024;
 
     let addr = addr as usize;
-    let simm_size = ram_size - RAM_SOLDERED;
     let simm_bank = [0, 2 * MB, 4 * MB, 8 * MB][exp.ram_simm() as usize];
     if addr < simm_bank {
         return (addr < simm_size).then_some(addr);
@@ -65,7 +66,7 @@ fn ram_index(exp: RegisterExp, ram_size: usize, addr: Address) -> Option<usize> 
     // The ROM tells 2 MB of soldered RAM from 4 MB by writing in the lower half
     // of the bank configured as 4 MB, so 2 MB are taken to be in the upper half.
     // This has not been verified on hardware.
-    let hole = soldered_bank - RAM_SOLDERED;
+    let hole = soldered_bank.saturating_sub(soldered_size);
     let offset = addr - simm_bank;
     (hole..soldered_bank)
         .contains(&offset)
@@ -83,6 +84,9 @@ pub struct MacLCBus<TRenderer: Renderer> {
     rom_mask: usize,
     rom: Vec<u8>,
     pub(crate) ram: Vec<u8>,
+
+    /// Size of the RAM soldered on the logic board, the rest is in SIMMs
+    ram_soldered: usize,
 
     /// RAM pages (RAM_DIRTY_PAGESIZE bytes) written
     pub(crate) ram_dirty: BitSet,
@@ -151,6 +155,7 @@ where
         vram_size: Option<usize>,
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
+        let ram_soldered = 2 * 1024 * 1024;
         let video = Video::new(renderer, monitor, vram_size);
         let mut egret = Egret::default();
         egret.adb_add_device(AdbMouse::new());
@@ -163,6 +168,7 @@ where
             rom_mask: rom.len() - 1,
             rom: Vec::from(rom),
             ram: vec![0; ram_size],
+            ram_soldered,
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             via: Via::new(model),
             egret,
@@ -225,6 +231,15 @@ where
         }
     }
 
+    fn ram_index(&self, addr: Address) -> Option<usize> {
+        ram_index(
+            self.pseudovia.exp(),
+            self.ram.len() - self.ram_soldered,
+            self.ram_soldered,
+            addr,
+        )
+    }
+
     fn read_rom(&self, addr: Address) -> Option<Byte> {
         Some(
             *self
@@ -262,7 +277,7 @@ where
         match addr {
             // RAM
             0x00_0000..=0x9F_FFFF => {
-                if let Some(idx) = ram_index(self.pseudovia.exp(), self.ram.len(), addr) {
+                if let Some(idx) = self.ram_index(addr) {
                     self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
                     self.ram[idx] = val;
                 }
@@ -311,7 +326,7 @@ where
         match addr {
             // RAM
             0x00_0000..=0x9F_FFFF => Some(
-                ram_index(self.pseudovia.exp(), self.ram.len(), addr)
+                self.ram_index(addr)
                     .map_or(Self::OPENBUS, |idx| self.ram[idx]),
             ),
             // ROM
@@ -361,9 +376,7 @@ where
 
     /// Reads a 16-bit value from RAM at an address of the CPU
     fn read_ram16(&self, addr: Address) -> u16 {
-        let byte = |addr| {
-            ram_index(self.pseudovia.exp(), self.ram.len(), addr).map_or(0, |idx| self.ram[idx])
-        };
+        let byte = |addr| self.ram_index(addr).map_or(0, |idx| self.ram[idx]);
         u16::from_be_bytes([byte(addr), byte(addr + 1)])
     }
 
@@ -673,7 +686,7 @@ mod tests {
     const MB: usize = 1024 * 1024;
 
     fn index(exp: u8, ram_mb: usize, addr: Address) -> Option<usize> {
-        ram_index(RegisterExp(exp), ram_mb * MB, addr)
+        ram_index(RegisterExp(exp), (ram_mb - 2) * MB, 2 * MB, addr)
     }
 
     #[test]
