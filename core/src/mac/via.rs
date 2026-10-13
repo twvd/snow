@@ -191,10 +191,6 @@ impl Via {
     pub fn new(model: MacModel) -> Self {
         let mut core = ViaCommon::new();
         core.a_in = model.via1_a_in();
-        core.write(ViaReg::A, 0xFF);
-        core.write(ViaReg::B, 0xFF);
-        core.write(ViaReg::DDRA, 0xFF);
-        core.write(ViaReg::DDRB, 0xFF);
 
         Self {
             core,

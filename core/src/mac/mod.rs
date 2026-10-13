@@ -295,9 +295,10 @@ impl MacModel {
                 // Mac Classic has a pulldown (R79) as model identifier
                 via::RegisterA(0xFF).with_sndpg2(false)
             }
-            Self::MacII | Self::MacIIFDHD => via::RegisterA(0).with_model(1),
-            Self::MacIIx => via::RegisterA(0).with_model(0),
-            Self::MacIIcx | Self::SE30 => via::RegisterA(0).with_model(0x03).with_model6(true),
+            // The outputs read high until the ROM configures them
+            Self::MacII | Self::MacIIFDHD => via::RegisterA(0x38).with_model(1),
+            Self::MacIIx => via::RegisterA(0x38).with_model(0),
+            Self::MacIIcx | Self::SE30 => via::RegisterA(0x38).with_model(0x03).with_model6(true),
         }
     }
 
