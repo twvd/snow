@@ -1,3 +1,4 @@
+use super::pseudovia::{PseudoVia, RegisterExp};
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -17,6 +18,39 @@ use anyhow::Result;
 use bit_set::BitSet;
 use log::*;
 use serde::{Deserialize, Serialize};
+
+/// Size of the RAM soldered on the logic board, the rest is in SIMMs
+const RAM_SOLDERED: usize = 2 * 1024 * 1024;
+
+/// Translates an address to an index in the RAM, which holds the SIMMs
+/// followed by the soldered RAM.
+///
+/// The SIMM bank starts at 0 and the soldered bank follows it, both with
+/// the size configured in the expansion register of the V8.
+fn ram_index(exp: RegisterExp, ram_size: usize, addr: Address) -> Option<usize> {
+    const MB: usize = 1024 * 1024;
+
+    let addr = addr as usize;
+    let simm_size = ram_size - RAM_SOLDERED;
+    let simm_bank = [0, 2 * MB, 4 * MB, 8 * MB][exp.ram_simm() as usize];
+    if addr < simm_bank {
+        return (addr < simm_size).then_some(addr);
+    }
+
+    let soldered_bank = if exp.ram_soldered_2mb() {
+        2 * MB
+    } else {
+        4 * MB
+    };
+    // The ROM tells 2 MB of soldered RAM from 4 MB by writing in the lower half
+    // of the bank configured as 4 MB, so 2 MB are taken to be in the upper half.
+    // This has not been verified on hardware.
+    let hole = soldered_bank - RAM_SOLDERED;
+    let offset = addr - simm_bank;
+    (hole..soldered_bank)
+        .contains(&offset)
+        .then(|| simm_size + offset - hole)
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
@@ -39,6 +73,7 @@ pub struct MacLCBus<TRenderer: Renderer> {
     pub(crate) scc: Scc,
     pub(crate) swim: Swim,
     pub(crate) scsi: ScsiController,
+    pseudovia: PseudoVia,
     rtc: Rtc,
 
     overlay: bool,
@@ -59,9 +94,8 @@ impl<TRenderer> MacLCBus<TRenderer>
 where
     TRenderer: Renderer,
 {
-    /// The V8 only decodes A31 and A23-A0. A31 selects the expansion slot,
-    /// which is not implemented.
-    const ADDR_MASK: Address = 0x00FF_FFFF;
+    /// Sense code of the 13" high resolution RGB monitor
+    const MONITOR_SENSE: u8 = 0b110;
 
     /// Value to return on open bus
     const OPENBUS: u8 = 0xFF;
@@ -87,6 +121,7 @@ where
             scc: Scc::new(),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), DEFAULT_BUS_SPEED),
             scsi: ScsiController::new(),
+            pseudovia: PseudoVia::new(Self::MONITOR_SENSE),
             rtc: Rtc::default(),
 
             overlay: true,
@@ -116,6 +151,16 @@ where
 
     pub fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {
         self.scsi.set_audio_provider(provider)
+    }
+
+    /// The V8 only decodes A31 and A23-A0. A31 selects the expansion slot,
+    /// which is not implemented, and is ignored in the 24-bit address map.
+    fn translate(&self, addr: Address) -> Option<Address> {
+        if self.pseudovia.b().fc3() && addr & (1 << 31) != 0 {
+            None
+        } else {
+            Some(addr & 0x00FF_FFFF)
+        }
     }
 
     fn read_rom(&self, addr: Address) -> Option<Byte> {
@@ -155,8 +200,7 @@ where
         match addr {
             // RAM
             0x00_0000..=0x9F_FFFF => {
-                let idx = addr as usize;
-                if idx < self.ram.len() {
+                if let Some(idx) = ram_index(self.pseudovia.exp(), self.ram.len(), addr) {
                     self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
                     self.ram[idx] = val;
                 }
@@ -179,7 +223,7 @@ where
             // RAMDAC
             0xF2_4000..=0xF2_5FFF => Self::dev_write(addr, val, None),
             // V8 registers
-            0xF2_6000..=0xF2_7FFF => Self::dev_write(addr, val, None),
+            0xF2_6000..=0xF2_7FFF => self.pseudovia.write(addr, val),
             // Video RAM
             0xF4_0000..=0xFB_FFFF => Self::dev_write(addr, val, None),
             _ => None,
@@ -202,7 +246,10 @@ where
     fn read_normal(&mut self, addr: Address) -> Option<Byte> {
         match addr {
             // RAM
-            0x00_0000..=0x9F_FFFF => Some(*self.ram.get(addr as usize).unwrap_or(&Self::OPENBUS)),
+            0x00_0000..=0x9F_FFFF => Some(
+                ram_index(self.pseudovia.exp(), self.ram.len(), addr)
+                    .map_or(Self::OPENBUS, |idx| self.ram[idx]),
+            ),
             // ROM
             0xA0_0000..=0xAF_FFFF => self.read_rom(addr),
             // VIA 1
@@ -220,7 +267,7 @@ where
             // RAMDAC
             0xF2_4000..=0xF2_5FFF => Some(Self::dev_read(addr, None)),
             // V8 registers
-            0xF2_6000..=0xF2_7FFF => Some(Self::dev_read(addr, None)),
+            0xF2_6000..=0xF2_7FFF => self.pseudovia.read(addr),
             // Video RAM
             0xF4_0000..=0xFB_FFFF => Some(Self::dev_read(addr, None)),
             _ => None,
@@ -270,11 +317,10 @@ where
     TRenderer: Renderer,
 {
     fn read(&mut self, addr: Address) -> BusResult<Byte> {
-        let addr = addr & Self::ADDR_MASK;
-        let val = if self.overlay {
-            self.read_overlay(addr)
-        } else {
-            self.read_normal(addr)
+        let val = match self.translate(addr) {
+            Some(addr) if self.overlay => self.read_overlay(addr),
+            Some(addr) => self.read_normal(addr),
+            None => None,
         };
 
         match val {
@@ -287,11 +333,10 @@ where
     }
 
     fn write(&mut self, addr: Address, val: Byte) -> BusResult<Byte> {
-        let addr = addr & Self::ADDR_MASK;
-        let written = if self.overlay {
-            self.write_overlay(addr, val)
-        } else {
-            self.write_normal(addr, val)
+        let written = match self.translate(addr) {
+            Some(addr) if self.overlay => self.write_overlay(addr, val),
+            Some(addr) => self.write_normal(addr, val),
+            None => None,
         };
 
         if written.is_none() {
@@ -317,6 +362,7 @@ where
         }
 
         self.scc = Scc::new();
+        self.pseudovia.reset();
         self.overlay = true;
         Ok(false)
     }
@@ -350,6 +396,8 @@ where
         self.cycles += ticks;
 
         self.scsi.tick(ticks, ctx)?;
+        self.pseudovia
+            .set_scsi(self.scsi.get_irq(), self.scsi.get_drq());
         self.swim.tick(ticks, ())?;
 
         Ok(ticks)
@@ -367,6 +415,9 @@ where
         if self.scc.get_irq() {
             return Some(4);
         }
+        if self.pseudovia.irq() {
+            return Some(2);
+        }
         None
     }
 }
@@ -376,7 +427,7 @@ where
     TRenderer: Renderer,
 {
     fn inspect_read(&mut self, addr: Address) -> Option<Byte> {
-        let addr = addr & Self::ADDR_MASK;
+        let addr = self.translate(addr)?;
         match addr {
             0x00_0000..=0x9F_FFFF if self.overlay => self.read_rom(addr),
             0x00_0000..=0xAF_FFFF => self.read_normal(addr),
@@ -385,7 +436,7 @@ where
     }
 
     fn inspect_write(&mut self, addr: Address, val: Byte) -> Option<()> {
-        let addr = addr & Self::ADDR_MASK;
+        let addr = self.translate(addr)?;
         match addr {
             0x00_0000..=0xAF_FFFF => self.write_normal(addr, val),
             _ => None,
@@ -404,6 +455,52 @@ where
         vec![
             dbgprop_nest!("SCSI controller (NCR 5380)", self.scsi),
             dbgprop_nest!("SWIM", self.swim),
+            dbgprop_nest!("V8 registers", self.pseudovia),
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MB: usize = 1024 * 1024;
+
+    fn index(exp: u8, ram_mb: usize, addr: Address) -> Option<usize> {
+        ram_index(RegisterExp(exp), ram_mb * MB, addr)
+    }
+
+    #[test]
+    fn ram_soldered_only() {
+        // No SIMM bank, soldered bank of 2 MB
+        assert_eq!(index(0x20, 2, 0x00_0000), Some(0));
+        assert_eq!(index(0x20, 2, 0x1F_FFFF), Some(2 * MB - 1));
+        assert_eq!(index(0x20, 2, 0x20_0000), None);
+        assert_eq!(index(0x20, 2, 0x80_0000), None);
+    }
+
+    #[test]
+    fn ram_soldered_size_probe() {
+        // Soldered bank of 4 MB: the lower half does not respond
+        assert_eq!(index(0x00, 2, 0x1F_FFFE), None);
+        assert_eq!(index(0x00, 2, 0x20_0000), Some(0));
+        assert_eq!(index(0xC0, 10, 0x80_0000), None);
+        // Soldered bank of 2 MB after a SIMM bank of 8 MB
+        assert_eq!(index(0xE0, 10, 0x80_0000), Some(8 * MB));
+        assert_eq!(index(0xE0, 10, 0x9F_FFFF), Some(10 * MB - 1));
+    }
+
+    #[test]
+    fn ram_simm() {
+        // SIMM bank of 8 MB with 2 MB fitted
+        assert_eq!(index(0xE0, 4, 0x00_0000), Some(0));
+        assert_eq!(index(0xE0, 4, 0x1F_FFFF), Some(2 * MB - 1));
+        assert_eq!(index(0xE0, 4, 0x20_0000), None);
+        assert_eq!(index(0xE0, 4, 0x80_0000), Some(2 * MB));
+        // SIMM bank of 2 MB, the soldered bank follows it
+        assert_eq!(index(0x60, 4, 0x1F_FFFF), Some(2 * MB - 1));
+        assert_eq!(index(0x60, 4, 0x20_0000), Some(2 * MB));
+        assert_eq!(index(0x60, 4, 0x3F_FFFF), Some(4 * MB - 1));
+        assert_eq!(index(0x60, 4, 0x40_0000), None);
     }
 }
