@@ -11,7 +11,6 @@ use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
-use crate::mac::macii::bus::DEFAULT_BUS_SPEED;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
@@ -194,7 +193,7 @@ where
 
             overlay: true,
             speed: EmulatorSpeed::Accurate,
-            bus_frequency: DEFAULT_BUS_SPEED,
+            bus_frequency: model.bus_frequency(),
             last_audiosample: 0,
             vblank_time: Instant::now(),
             vpa_sync: false,
@@ -514,8 +513,9 @@ where
         self.speed = speed;
     }
 
-    pub fn set_bus_frequency(&mut self, bus_frequency: u64) {
-        self.bus_frequency = bus_frequency;
+    /// Sets the frequency of the bus, or goes back to the one of the model
+    pub fn set_overclock(&mut self, bus_frequency: Option<u64>) {
+        self.bus_frequency = bus_frequency.unwrap_or_else(|| self.model.bus_frequency());
     }
 
     /// Tests for wait states on bus access

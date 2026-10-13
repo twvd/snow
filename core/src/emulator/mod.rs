@@ -27,7 +27,7 @@ use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
 use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
-use crate::mac::macii::bus::{DEFAULT_BUS_SPEED, MacIIBus};
+use crate::mac::macii::bus::MacIIBus;
 use crate::mac::maclc::bus::MacLCBus;
 use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::scc::Scc;
@@ -230,7 +230,7 @@ dispatch! {
 
     mutable_calls {
         fn set_speed(&mut self, speed: EmulatorSpeed) -> () { bus.set_speed(speed) }
-        fn set_bus_frequency(&mut self, bus_frequency: u64) -> () { bus.set_bus_frequency(bus_frequency) }
+        fn set_overclock(&mut self, bus_frequency: Option<u64>) -> () { bus.set_overclock(bus_frequency) }
         fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> { bus.set_audio_provider(provider) }
 
         fn cpu_tick(&mut self, ticks: Ticks) -> Result<Ticks> { tick(ticks, ()) }
@@ -1281,9 +1281,9 @@ impl Tickable for Emulator {
                     }
                     EmulatorCommand::CpuSetPC(val) => self.config.cpu_set_pc(val)?,
                     EmulatorCommand::SetSpeed(s) => self.config.set_speed(s),
-                    EmulatorCommand::SetOverclock(overclock) => self
-                        .config
-                        .set_bus_frequency(overclock.unwrap_or(DEFAULT_BUS_SPEED)),
+                    EmulatorCommand::SetOverclock(overclock) => {
+                        self.config.set_overclock(overclock);
+                    }
                     EmulatorCommand::ProgKey => self.config.progkey(),
                     EmulatorCommand::WriteRegister(reg, val) => {
                         match reg {

@@ -13,7 +13,6 @@ use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::asc::Asc;
-use crate::mac::macii::bus::DEFAULT_BUS_SPEED;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
@@ -156,7 +155,7 @@ where
 
             overlay: true,
             speed: EmulatorSpeed::Accurate,
-            bus_frequency: DEFAULT_BUS_SPEED,
+            bus_frequency: model.bus_frequency(),
             vblank_time: Instant::now(),
             vblank_clock: 0,
             progkey_pressed: LatchingEvent::default(),
@@ -473,8 +472,9 @@ where
         self.speed = speed;
     }
 
-    pub fn set_bus_frequency(&mut self, bus_frequency: u64) {
-        self.bus_frequency = bus_frequency;
+    /// Sets the frequency of the bus, or goes back to the one of the model
+    pub fn set_overclock(&mut self, bus_frequency: Option<u64>) {
+        self.bus_frequency = bus_frequency.unwrap_or_else(|| self.model.bus_frequency());
     }
 
     pub fn set_mouse_mode(&mut self, mode: MouseMode) {

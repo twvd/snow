@@ -291,6 +291,12 @@ impl MacModel {
         }
     }
 
+    /// Frequency of the bus, in bus cycles per second, when the model is not
+    /// overclocked
+    pub const fn bus_frequency(self) -> Ticks {
+        16_000_000
+    }
+
     pub const fn cpu_type(self) -> CpuM68kType {
         match self {
             Self::Early128K
