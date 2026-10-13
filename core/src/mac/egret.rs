@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::debuggable::Debuggable;
 use crate::mac::egret_common::EgretCommon;
+use crate::mac::rtc::Rtc;
 use crate::tickable::Ticks;
 
 /// Time to clock a byte through the shift register, in VIA clock cycles.
@@ -83,6 +84,14 @@ impl Egret {
     /// Transceiver session line (true = asserted, which is low on the pin)
     pub fn xcvr_ses(&self) -> bool {
         self.xcvr_ses
+    }
+
+    pub fn rtc(&self) -> &Rtc {
+        &self.common.rtc
+    }
+
+    pub fn rtc_mut(&mut self) -> &mut Rtc {
+        &mut self.common.rtc
     }
 
     /// Advances by a number of VIA clock cycles.
@@ -315,6 +324,29 @@ mod tests {
         // An error response has one more byte
         host.send(&[0x01, 0xFE]);
         assert_eq!(host.receive(), [0x02, 0x02, 0x01, 0xFE]);
+    }
+
+    #[test]
+    fn response_until_host_ends() {
+        let mut host = Host::default();
+
+        host.send(&[0x01, 0x07, 0x00, 0xF9]);
+        host.wait_shift();
+        host.sys_ses = true;
+        for expected in [0x01, 0x00, 0x07, 0x00, 0x00] {
+            assert_eq!(host.wait_shift(), expected);
+            assert!(host.egret.xcvr_ses());
+            host.via_full = true;
+            host.run(10);
+            host.via_full = false;
+        }
+        host.sys_ses = false;
+        host.run(10);
+        assert!(!host.egret.xcvr_ses());
+        assert!(matches!(host.egret.state, State::Rest(_)));
+
+        host.send(&[0x01, 0x01, 0x00]);
+        assert_eq!(host.receive(), [0x01, 0x00, 0x01]);
     }
 
     #[test]
