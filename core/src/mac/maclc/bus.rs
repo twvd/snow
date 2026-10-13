@@ -103,6 +103,9 @@ pub struct MacLCBus<TRenderer: Renderer> {
 
     /// Mouse mode
     mouse_mode: MouseMode,
+
+    /// The system has initialized the mouse position (absolute mouse mode)
+    mouse_ready: bool,
 }
 
 impl<TRenderer> MacLCBus<TRenderer>
@@ -111,6 +114,17 @@ where
 {
     /// Value to return on open bus
     const OPENBUS: u8 = 0xFF;
+
+    /// MTemp address, Y coordinate (16 bit, signed)
+    const ADDR_MTEMP_Y: Address = 0x0828;
+    /// MTemp address, X coordinate (16 bit, signed)
+    const ADDR_MTEMP_X: Address = 0x082A;
+    /// RawMouse address, Y coordinate (16 bit, signed)
+    const ADDR_RAWMOUSE_Y: Address = 0x082C;
+    /// RawMouse address, X coordinate (16 bit, signed)
+    const ADDR_RAWMOUSE_X: Address = 0x082E;
+    /// CrsrNew address
+    const ADDR_CRSRNEW: Address = 0x08CE;
 
     pub fn new(
         model: MacModel,
@@ -150,6 +164,7 @@ where
             bus_frequency: DEFAULT_BUS_SPEED,
             progkey_pressed: LatchingEvent::default(),
             mouse_mode,
+            mouse_ready: false,
         }
     }
 
@@ -316,8 +331,46 @@ where
         }
     }
 
+    /// Reads a 16-bit value from RAM at an address of the CPU
+    fn read_ram16(&self, addr: Address) -> u16 {
+        let byte = |addr| {
+            ram_index(self.pseudovia.exp(), self.ram.len(), addr).map_or(0, |idx| self.ram[idx])
+        };
+        u16::from_be_bytes([byte(addr), byte(addr + 1)])
+    }
+
+    /// Writes bytes to RAM at an address of the CPU
+    fn write_ram(&mut self, addr: Address, val: &[u8]) {
+        for (addr, &b) in (addr..).zip(val) {
+            self.write_normal(addr, b);
+        }
+    }
+
     /// Updates the mouse position (absolute coordinates)
-    pub fn mouse_update_abs(&mut self, _x: u16, _y: u16) {}
+    pub fn mouse_update_abs(&mut self, x: u16, y: u16) {
+        if self.mouse_mode != MouseMode::Absolute {
+            return;
+        }
+
+        let old_x = self.read_ram16(Self::ADDR_RAWMOUSE_X);
+        let old_y = self.read_ram16(Self::ADDR_RAWMOUSE_Y);
+
+        if !self.mouse_ready && (old_x != 15 || old_y != 15) {
+            // Wait until the boot process has initialized the mouse position so we don't
+            // interfere with the memory test.
+            return;
+        }
+        self.mouse_ready = true;
+
+        // Report updated mouse coordinates to OS. It needs to see a small
+        // difference between the current (RawMouse) and new (MTemp) position,
+        // otherwise the change is ignored.
+        self.write_ram(Self::ADDR_MTEMP_X, &x.to_be_bytes());
+        self.write_ram(Self::ADDR_MTEMP_Y, &y.to_be_bytes());
+        self.write_ram(Self::ADDR_RAWMOUSE_X, &x.wrapping_sub(1).to_be_bytes());
+        self.write_ram(Self::ADDR_RAWMOUSE_Y, &y.wrapping_add(1).to_be_bytes());
+        self.write_ram(Self::ADDR_CRSRNEW, &[1]);
+    }
 
     /// Configures emulator speed
     pub fn set_speed(&mut self, speed: EmulatorSpeed) {
@@ -413,6 +466,7 @@ where
         self.via.reset();
         self.pseudovia.reset();
         self.overlay = true;
+        self.mouse_ready = false;
         Ok(false)
     }
 }
