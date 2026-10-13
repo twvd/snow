@@ -1,7 +1,8 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::pseudovia::{PseudoVia, RegisterExp};
+use super::pseudovia::PseudoVia;
+use super::v8;
 use super::via::Via;
 use super::video::Video;
 use crate::bus::access::{Bus68020, BusAccess, BusResponse, bus_access_byte, bus_access_long};
@@ -45,50 +46,10 @@ pub(super) const C16M_FREQUENCY: Ticks = 15_667_200;
 /// Period of the 60.15 Hz interrupt, in VIA clock cycles
 const TICK60_PERIOD: Ticks = 13024;
 
-/// Start of the I/O area
-const IO_BASE: Address = 0xF0_0000;
-
-/// Start of the window of the video RAM
-const VRAM_BASE: usize = 0xF4_0000;
-
-/// Translates an address to an index in the RAM, which holds the SIMMs
-/// followed by the RAM soldered on the logic board.
-///
-/// The SIMM bank starts at 0 and the soldered bank follows it, both with
-/// the size configured in the expansion register of the V8.
-fn ram_index(
-    exp: RegisterExp,
-    simm_size: usize,
-    soldered_size: usize,
-    addr: Address,
-) -> Option<usize> {
-    const MB: usize = 1024 * 1024;
-
-    let addr = addr as usize;
-    let simm_bank = [0, 2 * MB, 4 * MB, 8 * MB][exp.ram_simm() as usize];
-    if addr < simm_bank {
-        return (addr < simm_size).then_some(addr);
-    }
-
-    let soldered_bank = if exp.ram_soldered_2mb() {
-        2 * MB
-    } else {
-        4 * MB
-    };
-    // The ROM tells 2 MB of soldered RAM from 4 MB by writing in the lower half
-    // of the bank configured as 4 MB, so 2 MB are taken to be in the upper half.
-    // This has not been verified on hardware.
-    let hole = soldered_bank.saturating_sub(soldered_size);
-    let offset = addr - simm_bank;
-    (hole..soldered_bank)
-        .contains(&offset)
-        .then(|| simm_size + offset - hole)
-}
-
 /// What an address selects
-enum Region {
-    /// RAM, with the index in the RAM if there is some at the address
-    Ram(Option<usize>),
+pub(super) enum Region {
+    /// RAM area, with the address in it
+    Ram(Address),
     Rom,
     /// I/O device, with the offset in the I/O area
     Io(Address),
@@ -190,6 +151,12 @@ where
             n => n,
         };
         let ram_size = ram_simm + ram_soldered;
+        let monitor = monitor
+            .filter(|m| v8::MONITORS.contains(m))
+            .unwrap_or_default();
+        let vram_size = vram_size
+            .filter(|s| v8::VRAM_SIZES.contains(s))
+            .unwrap_or(v8::VRAM_SIZE_DEFAULT);
         let video = Video::new(renderer, monitor, vram_size);
         let mut egret = Egret::default();
         egret.adb_add_device(AdbMouse::new());
@@ -253,27 +220,15 @@ where
         self.scsi.set_audio_provider(provider)
     }
 
-    /// Finds what an address selects.
-    ///
-    /// The V8 only decodes A31 and A23-A0. A31 selects the expansion slot,
-    /// which is not implemented, and is ignored in the 24-bit address map.
+    /// Finds what an address selects
     fn decode(&self, addr: Address) -> Option<Region> {
-        if self.pseudovia.b().fc3() && addr & (1 << 31) != 0 {
-            return None;
-        }
-
-        let addr = addr & 0x00FF_FFFF;
-        match addr {
-            0x00_0000..=0x9F_FFFF => Some(Region::Ram(self.ram_index(addr))),
-            0xA0_0000..=0xAF_FFFF => Some(Region::Rom),
-            0xF0_0000..=0xF3_FFFF => Some(Region::Io(addr & 0x0F_FFFF)),
-            0xF4_0000..=0xFB_FFFF => Some(Region::Vram(addr as usize - VRAM_BASE)),
-            _ => None,
-        }
+        v8::decode(addr, self.pseudovia.b().fc3())
     }
 
+    /// Translates an address in the RAM area to an index in the RAM, if
+    /// there is RAM at the address
     fn ram_index(&self, addr: Address) -> Option<usize> {
-        ram_index(
+        v8::ram_index(
             self.pseudovia.exp(),
             self.ram.len() - self.ram_soldered,
             self.ram_soldered,
@@ -310,16 +265,27 @@ where
         Some(())
     }
 
-    fn write_ram_byte(&mut self, idx: Option<usize>, val: Byte) {
-        if let Some(idx) = idx {
+    fn read_ram_byte(&self, addr: Address) -> Byte {
+        self.ram_index(addr)
+            .map_or(Self::OPENBUS, |idx| self.ram[idx])
+    }
+
+    fn write_ram_byte(&mut self, addr: Address, val: Byte) {
+        if let Some(idx) = self.ram_index(addr) {
             self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
             self.ram[idx] = val;
         }
     }
 
+    /// Translates an offset in the window of the video RAM to an index in
+    /// the video RAM
+    fn vram_index(&self, offset: usize) -> usize {
+        v8::vram_index(self.video.vram_size(), offset)
+    }
+
     /// Writes to an I/O device. `offset` is the offset in the I/O area.
     fn write_io(&mut self, offset: Address, val: Byte) -> Option<()> {
-        let addr = IO_BASE | offset;
+        let addr = v8::IO_BASE | offset;
         match offset {
             // VIA 1
             0x0_0000..=0x0_1FFF => self.via.write(addr, val),
@@ -343,7 +309,7 @@ where
 
     /// Reads from an I/O device. `offset` is the offset in the I/O area.
     fn read_io(&mut self, offset: Address) -> Option<Byte> {
-        let addr = IO_BASE | offset;
+        let addr = v8::IO_BASE | offset;
         match offset {
             // VIA 1
             0x0_0000..=0x0_1FFF => self.via.read(addr),
@@ -369,13 +335,13 @@ where
         let val = match self.decode(addr) {
             // ROM (overlay)
             Some(Region::Ram(_)) if self.overlay => self.read_rom(addr),
-            Some(Region::Ram(idx)) => Some(idx.map_or(Self::OPENBUS, |idx| self.ram[idx])),
+            Some(Region::Ram(addr)) => Some(self.read_ram_byte(addr)),
             Some(Region::Rom) => {
                 self.overlay = false;
                 self.read_rom(addr)
             }
             Some(Region::Io(offset)) => self.read_io(offset),
-            Some(Region::Vram(offset)) => Some(self.video.read_vram(offset)),
+            Some(Region::Vram(offset)) => Some(self.video.read_vram(self.vram_index(offset))),
             None => None,
         };
 
@@ -387,10 +353,10 @@ where
 
     fn write_byte(&mut self, addr: Address, val: Byte) -> Option<()> {
         let written = match self.decode(addr) {
-            Some(Region::Ram(idx)) => Some(self.write_ram_byte(idx, val)),
+            Some(Region::Ram(addr)) => Some(self.write_ram_byte(addr, val)),
             Some(Region::Rom) => Some(()),
             Some(Region::Io(offset)) => self.write_io(offset, val),
-            Some(Region::Vram(offset)) => Some(self.video.write_vram(offset, val)),
+            Some(Region::Vram(offset)) => Some(self.video.write_vram(self.vram_index(offset), val)),
             None => None,
         };
 
@@ -459,7 +425,7 @@ where
     /// Writes bytes to RAM at an address of the CPU
     fn write_ram(&mut self, addr: Address, val: &[u8]) {
         for (addr, &b) in (addr..).zip(val) {
-            self.write_ram_byte(self.ram_index(addr), b);
+            self.write_ram_byte(addr, b);
         }
     }
 
@@ -660,11 +626,17 @@ where
             }
         }
 
-        if self.video.tick(native_ticks, self.bus_frequency()) {
-            let exp = self.pseudovia.exp();
-            let row_bytes = if exp.vram_256k() { 512 } else { 1024 };
-            self.video
-                .render(self.pseudovia.monp().depth(), row_bytes)?;
+        let frame_period = v8::frame_period(self.video.monitor());
+        if self
+            .video
+            .tick(native_ticks, self.bus_frequency(), frame_period)
+        {
+            let mode = v8::video_mode(
+                self.video.monitor(),
+                self.pseudovia.exp(),
+                self.pseudovia.monp(),
+            );
+            self.video.render(&mode)?;
             self.pseudovia.set_vblank();
         }
 
@@ -714,7 +686,7 @@ where
     fn inspect_read(&mut self, addr: Address) -> Option<Byte> {
         match self.decode(addr)? {
             Region::Ram(_) if self.overlay => self.read_rom(addr),
-            Region::Ram(idx) => Some(idx.map_or(Self::OPENBUS, |idx| self.ram[idx])),
+            Region::Ram(addr) => Some(self.read_ram_byte(addr)),
             Region::Rom => self.read_rom(addr),
             _ => None,
         }
@@ -722,7 +694,7 @@ where
 
     fn inspect_write(&mut self, addr: Address, val: Byte) -> Option<()> {
         match self.decode(addr)? {
-            Region::Ram(idx) => Some(self.write_ram_byte(idx, val)),
+            Region::Ram(addr) => Some(self.write_ram_byte(addr, val)),
             Region::Rom => Some(()),
             _ => None,
         }
@@ -746,82 +718,5 @@ where
             dbgprop_nest!("Video", self.video),
             dbgprop_nest!("VIA 1", self.via),
         ]
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const MB: usize = 1024 * 1024;
-
-    fn index(exp: u8, ram_mb: usize, addr: Address) -> Option<usize> {
-        ram_index(RegisterExp(exp), (ram_mb - 2) * MB, 2 * MB, addr)
-    }
-
-    #[test]
-    fn ram_soldered_only() {
-        // No SIMM bank, soldered bank of 2 MB
-        assert_eq!(index(0x20, 2, 0x00_0000), Some(0));
-        assert_eq!(index(0x20, 2, 0x1F_FFFF), Some(2 * MB - 1));
-        assert_eq!(index(0x20, 2, 0x20_0000), None);
-        assert_eq!(index(0x20, 2, 0x80_0000), None);
-    }
-
-    #[test]
-    fn ram_soldered_size_probe() {
-        // Soldered bank of 4 MB: the lower half does not respond
-        assert_eq!(index(0x00, 2, 0x1F_FFFE), None);
-        assert_eq!(index(0x00, 2, 0x20_0000), Some(0));
-        assert_eq!(index(0xC0, 10, 0x80_0000), None);
-        // Soldered bank of 2 MB after a SIMM bank of 8 MB
-        assert_eq!(index(0xE0, 10, 0x80_0000), Some(8 * MB));
-        assert_eq!(index(0xE0, 10, 0x9F_FFFF), Some(10 * MB - 1));
-    }
-
-    #[test]
-    fn ram_simm() {
-        // SIMM bank of 8 MB with 2 MB fitted
-        assert_eq!(index(0xE0, 4, 0x00_0000), Some(0));
-        assert_eq!(index(0xE0, 4, 0x1F_FFFF), Some(2 * MB - 1));
-        assert_eq!(index(0xE0, 4, 0x20_0000), None);
-        assert_eq!(index(0xE0, 4, 0x80_0000), Some(2 * MB));
-        // SIMM bank of 2 MB, the soldered bank follows it
-        assert_eq!(index(0x60, 4, 0x1F_FFFF), Some(2 * MB - 1));
-        assert_eq!(index(0x60, 4, 0x20_0000), Some(2 * MB));
-        assert_eq!(index(0x60, 4, 0x3F_FFFF), Some(4 * MB - 1));
-        assert_eq!(index(0x60, 4, 0x40_0000), None);
-    }
-
-    /// Index with the 4 MB of soldered RAM of the Macintosh LC II
-    fn index_lcii(exp: u8, simm_mb: usize, addr: Address) -> Option<usize> {
-        ram_index(RegisterExp(exp), simm_mb * MB, 4 * MB, addr)
-    }
-
-    #[test]
-    fn ram_lcii_soldered_only() {
-        // Soldered bank of 4 MB: all of it responds
-        assert_eq!(index_lcii(0x00, 0, 0x00_0000), Some(0));
-        assert_eq!(index_lcii(0x00, 0, 0x1F_FFFE), Some(2 * MB - 2));
-        assert_eq!(index_lcii(0x00, 0, 0x3F_FFFF), Some(4 * MB - 1));
-        assert_eq!(index_lcii(0x00, 0, 0x40_0000), None);
-    }
-
-    #[test]
-    fn ram_lcii_simm() {
-        // SIMM bank of 8 MB: the soldered bank follows it at 8 MB, where
-        // only its first 2 MB are in the RAM area
-        assert_eq!(index_lcii(0xC0, 8, 0x7F_FFFF), Some(8 * MB - 1));
-        assert_eq!(index_lcii(0xC0, 8, 0x80_0000), Some(8 * MB));
-        assert_eq!(index_lcii(0xC0, 8, 0x9F_FFFF), Some(10 * MB - 1));
-        // SIMM bank of 8 MB with 2 MB fitted
-        assert_eq!(index_lcii(0xC0, 2, 0x20_0000), None);
-        assert_eq!(index_lcii(0xC0, 2, 0x80_0000), Some(2 * MB));
-        // SIMM banks of 4 MB and 2 MB
-        assert_eq!(index_lcii(0x80, 4, 0x40_0000), Some(4 * MB));
-        assert_eq!(index_lcii(0x80, 4, 0x7F_FFFF), Some(8 * MB - 1));
-        assert_eq!(index_lcii(0x40, 2, 0x20_0000), Some(2 * MB));
-        assert_eq!(index_lcii(0x40, 2, 0x5F_FFFF), Some(6 * MB - 1));
-        assert_eq!(index_lcii(0x40, 2, 0x60_0000), None);
     }
 }

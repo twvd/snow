@@ -1,8 +1,9 @@
 //! Built-in video of the Macintosh LC
 //!
-//! The V8 gate array shifts the pixels out of the video RAM, to the Ariel
-//! RAMDAC which holds the colour table. The depth and the layout of the
-//! video RAM are set in the registers of the V8.
+//! The gate array shifts the pixels out of the video RAM, to the Ariel
+//! RAMDAC which holds the colour table. The mode, which is the size of the
+//! picture, the depth and the layout of the video RAM, comes from the
+//! registers of the gate array.
 //!
 //! The frame is rendered at once at the start of the vertical blanking.
 //! Video without video RAM (from main RAM) and the 560x384 mode of the
@@ -18,16 +19,23 @@ use crate::types::Byte;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-/// Monitors which the V8 supports
-pub const MONITORS: &[MacMonitor] = &[MacMonitor::RGB12, MacMonitor::HiRes14];
+pub use super::v8::{MONITORS, VRAM_SIZE_DEFAULT, VRAM_SIZES};
 
-/// Sizes of the video RAM SIMM
-pub const VRAM_SIZES: &[usize] = &[256 * 1024, 512 * 1024];
-
-pub const VRAM_SIZE_DEFAULT: usize = 512 * 1024;
-
-/// Depth of 16 bits per pixel in the monitor parameters register
+/// Depth of 16 bits per pixel
 const DEPTH_16BPP: u8 = 4;
+
+/// Video mode set in the gate array
+pub struct Mode {
+    pub width: usize,
+    pub height: usize,
+
+    /// Depth as in the registers of the gate array: the bits per pixel are
+    /// 2 to the power of this
+    pub depth: u8,
+
+    /// Length of a line in video RAM
+    pub row_bytes: usize,
+}
 
 const RAMDAC_ADDRESS: u32 = 0;
 const RAMDAC_DATA: u32 = 1;
@@ -47,7 +55,7 @@ struct Ramdac {
     component: usize,
 
     /// Control register, of which the driver sets the depth in bits 0-2.
-    /// The depth of the V8 is used for rendering.
+    /// The depth of the gate array is used for rendering.
     control: u8,
 
     /// Key colour, for the video overlay of the Apple IIe card
@@ -122,12 +130,7 @@ impl<TRenderer> Video<TRenderer>
 where
     TRenderer: Renderer,
 {
-    pub fn new(renderer: TRenderer, monitor: Option<MacMonitor>, vram_size: Option<usize>) -> Self {
-        let monitor = monitor.filter(|m| MONITORS.contains(m)).unwrap_or_default();
-        let vram_size = vram_size
-            .filter(|s| VRAM_SIZES.contains(s))
-            .unwrap_or(VRAM_SIZE_DEFAULT);
-
+    pub fn new(renderer: TRenderer, monitor: MacMonitor, vram_size: usize) -> Self {
         Self {
             renderer: Some(renderer),
             monitor,
@@ -137,25 +140,24 @@ where
         }
     }
 
+    pub fn monitor(&self) -> MacMonitor {
+        self.monitor
+    }
+
     /// Sense lines of the monitor
     pub fn sense(&self) -> u8 {
         self.monitor.sense()[0]
     }
 
-    /// Length of a frame in cycles of C16M
-    fn frame_period(&self) -> Ticks {
-        match self.monitor {
-            // 640 x 407 dots at 15.6672 MHz (60.15 Hz)
-            MacMonitor::RGB12 => 640 * 407,
-            // 864 x 525 dots at 30.24 MHz (66.67 Hz)
-            _ => 864 * 525 * 15_667_200 / 30_240_000,
-        }
+    pub fn vram_size(&self) -> usize {
+        self.vram.len()
     }
 
     /// Advances by a number of bus cycles. Returns true at the start of the
-    /// vertical blanking.
-    pub fn tick(&mut self, ticks: Ticks, bus_frequency: Ticks) -> bool {
-        let period = self.frame_period() * bus_frequency;
+    /// vertical blanking. `frame_period` is the length of a frame in cycles
+    /// of C16M.
+    pub fn tick(&mut self, ticks: Ticks, bus_frequency: Ticks, frame_period: Ticks) -> bool {
+        let period = frame_period * bus_frequency;
 
         self.frame_clock += ticks * C16M_FREQUENCY;
         if self.frame_clock >= period {
@@ -166,14 +168,13 @@ where
         }
     }
 
-    /// The video RAM is mirrored in its 512 KB window when it is smaller
-    pub fn read_vram(&self, offset: usize) -> Byte {
-        self.vram[offset & (self.vram.len() - 1)]
+    /// Reads the video RAM at an index, which the gate array works out
+    pub fn read_vram(&self, idx: usize) -> Byte {
+        self.vram[idx]
     }
 
-    pub fn write_vram(&mut self, offset: usize, val: Byte) {
-        let mask = self.vram.len() - 1;
-        self.vram[offset & mask] = val;
+    pub fn write_vram(&mut self, idx: usize, val: Byte) {
+        self.vram[idx] = val;
     }
 
     pub fn read_ramdac(&mut self, addr: u32) -> Byte {
@@ -184,12 +185,14 @@ where
         self.ramdac.write(addr, val);
     }
 
-    /// Renders the frame to the target DisplayBuffer.
-    ///
-    /// `depth` is the depth in the monitor parameters register of the V8,
-    /// `row_bytes` the length of a line in video RAM.
-    fn render_to(&self, buf: &mut DisplayBuffer, depth: u8, row_bytes: usize) {
-        let (width, height) = (self.monitor.width(), self.monitor.height());
+    /// Renders the frame to the target DisplayBuffer
+    fn render_to(&self, buf: &mut DisplayBuffer, mode: &Mode) {
+        let &Mode {
+            width,
+            height,
+            depth,
+            row_bytes,
+        } = mode;
         let palette = &self.ramdac.palette;
         let mask = self.vram.len() - 1;
 
@@ -223,10 +226,10 @@ where
         }
     }
 
-    pub fn render(&mut self, depth: u8, row_bytes: usize) -> Result<()> {
+    pub fn render(&mut self, mode: &Mode) -> Result<()> {
         // We have to move the renderer so we don't upset the borrow checker.
         let mut renderer = self.renderer.take().unwrap();
-        self.render_to(renderer.buffer_mut(), depth, row_bytes);
+        self.render_to(renderer.buffer_mut(), mode);
         self.renderer = Some(renderer);
         self.renderer.as_mut().unwrap().update()?;
         Ok(())
@@ -270,11 +273,16 @@ mod tests {
     use crate::renderer::NullRenderer;
 
     fn video(monitor: MacMonitor, vram_size: usize) -> Video<NullRenderer> {
-        Video::new(
-            NullRenderer::new(0, 0).unwrap(),
-            Some(monitor),
-            Some(vram_size),
-        )
+        Video::new(NullRenderer::new(0, 0).unwrap(), monitor, vram_size)
+    }
+
+    fn mode(video: &Video<NullRenderer>, depth: u8, row_bytes: usize) -> Mode {
+        Mode {
+            width: video.monitor().width(),
+            height: video.monitor().height(),
+            depth,
+            row_bytes,
+        }
     }
 
     fn set_colour(video: &mut Video<NullRenderer>, address: u8, rgb: [u8; 3]) {
@@ -305,17 +313,6 @@ mod tests {
     }
 
     #[test]
-    fn vram_mirror() {
-        let mut video = video(MacMonitor::HiRes14, 256 * 1024);
-        video.write_vram(0, 0x12);
-        assert_eq!(video.read_vram(256 * 1024), 0x12);
-
-        let mut video = self::video(MacMonitor::HiRes14, 512 * 1024);
-        video.write_vram(0, 0x12);
-        assert_eq!(video.read_vram(256 * 1024), 0x00);
-    }
-
-    #[test]
     fn render_indexed() {
         let mut video = video(MacMonitor::HiRes14, 256 * 1024);
         let mut buf = DisplayBuffer::new(0usize, 0usize);
@@ -326,7 +323,7 @@ mod tests {
         // 1 bpp: the second line starts 512 bytes after the first
         video.write_vram(0, 0b0100_0000);
         video.write_vram(512, 0b1000_0000);
-        video.render_to(&mut buf, 0, 512);
+        video.render_to(&mut buf, &mode(&video, 0, 512));
         assert_eq!((buf.width(), buf.height()), (640, 480));
         assert_eq!(pixel(&buf, 0, 0), [1, 2, 3]);
         assert_eq!(pixel(&buf, 1, 0), [4, 5, 6]);
@@ -335,12 +332,12 @@ mod tests {
 
         // 4 bpp
         video.write_vram(0, 0x2F);
-        video.render_to(&mut buf, 2, 512);
+        video.render_to(&mut buf, &mode(&video, 2, 512));
         assert_eq!(pixel(&buf, 0, 0), [7, 8, 9]);
         assert_eq!(pixel(&buf, 1, 0), [4, 5, 6]);
 
         // 8 bpp
-        video.render_to(&mut buf, 3, 512);
+        video.render_to(&mut buf, &mode(&video, 3, 512));
         assert_eq!(pixel(&buf, 0, 0), [7, 8, 9]);
     }
 
@@ -354,20 +351,22 @@ mod tests {
         // Red 31, green 1, blue 0 in the second pixel of the second line
         video.write_vram(1024 + 2, 0x7C);
         video.write_vram(1024 + 3, 0x20);
-        video.render_to(&mut buf, 4, 1024);
+        video.render_to(&mut buf, &mode(&video, 4, 1024));
         assert_eq!((buf.width(), buf.height()), (512, 384));
         assert_eq!(pixel(&buf, 1, 1), [0xF1, 0x12, 0x00]);
     }
 
     #[test]
     fn frame_rate() {
-        let frames = |monitor| {
-            let mut video = video(monitor, 256 * 1024);
-            (0..16_000_000 / 100)
-                .filter(|_| video.tick(100, 16_000_000))
+        // Frames in a second, at two frequencies of the bus
+        let frames = |bus_frequency, frame_period| {
+            let mut video = video(MacMonitor::RGB12, 256 * 1024);
+            (0..bus_frequency / 100)
+                .filter(|_| video.tick(100, bus_frequency, frame_period))
                 .count()
         };
-        assert_eq!(frames(MacMonitor::RGB12), 60);
-        assert_eq!(frames(MacMonitor::HiRes14), 66);
+        assert_eq!(frames(16_000_000, 640 * 407), 60);
+        assert_eq!(frames(25_000_000, 640 * 407), 60);
+        assert_eq!(frames(16_000_000, 864 * 525 * 15_667_200 / 30_240_000), 66);
     }
 }
