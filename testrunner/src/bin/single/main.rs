@@ -55,11 +55,12 @@ fn main() -> Result<()> {
 
     // Initialize emulator
     let mut extra_roms = vec![];
-    if let Some(display_rom) = args.display_rom.as_deref() {
+    let display_rom = args.display_rom.as_deref().map(|f| fs::read(f).unwrap());
+    if let Some(display_rom) = display_rom.as_deref() {
         if model == MacModel::SE30 {
-            extra_roms.push(ExtraROMs::SE30Video(display_rom.as_bytes()));
+            extra_roms.push(ExtraROMs::SE30Video(display_rom));
         } else {
-            extra_roms.push(ExtraROMs::MDC12(display_rom.as_bytes()));
+            extra_roms.push(ExtraROMs::MDC12(display_rom));
         }
     }
     let (mut emulator, frame_recv) = Emulator::new(&rom, &extra_roms, model)?;
