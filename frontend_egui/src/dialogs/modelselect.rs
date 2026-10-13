@@ -212,6 +212,7 @@ impl ModelSelectionDialog {
         self.update_display_rom_requirement();
 
         self.init_args.ram_size = None;
+        self.init_args.vram_size = None;
 
         // Load from last used ROMs if possible
         if let Some((_, path)) = self
@@ -569,14 +570,14 @@ impl ModelSelectionDialog {
                     self.selected_model,
                     MacModel::LC | MacModel::LCII | MacModel::LCIII
                 ) {
-                    if !lc_video::MONITORS.contains(&self.selected_monitor) {
+                    if !lc_video::monitors(self.selected_model).contains(&self.selected_monitor) {
                         self.selected_monitor = MacMonitor::default();
                     }
                     ui.label("Monitor");
                     egui::ComboBox::new(egui::Id::new("Select LC monitor"), "")
                         .selected_text(format!("{}", self.selected_monitor))
                         .show_ui(ui, |ui| {
-                            for &monitor in lc_video::MONITORS {
+                            for &monitor in lc_video::monitors(self.selected_model) {
                                 ui.selectable_value(
                                     &mut self.selected_monitor,
                                     monitor,
@@ -589,12 +590,12 @@ impl ModelSelectionDialog {
                     ui.label("Video RAM");
                     egui::ComboBox::new(egui::Id::new("Select LC video RAM"), "")
                         .selected_text(format_ram(
-                            self.init_args
-                                .vram_size
-                                .unwrap_or(lc_video::VRAM_SIZE_DEFAULT),
+                            self.init_args.vram_size.unwrap_or_else(|| {
+                                lc_video::vram_size_default(self.selected_model)
+                            }),
                         ))
                         .show_ui(ui, |ui| {
-                            for &sz in lc_video::VRAM_SIZES {
+                            for &sz in lc_video::vram_sizes(self.selected_model) {
                                 ui.selectable_value(
                                     &mut self.init_args.vram_size,
                                     Some(sz),
