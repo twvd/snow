@@ -1,7 +1,7 @@
-use crate::bus::{Address, Bus, BusResult, InspectableBus, IrqSource};
+use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
-use crate::emulator::MouseMode;
 use crate::emulator::comm::EmulatorSpeed;
+use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::macii::bus::{DEFAULT_BUS_SPEED, RAM_DIRTY_PAGESIZE};
@@ -63,6 +63,9 @@ where
     /// which is not implemented.
     const ADDR_MASK: Address = 0x00FF_FFFF;
 
+    /// Value to return on open bus
+    const OPENBUS: u8 = 0xFF;
+
     pub fn new(
         model: MacModel,
         rom: &[u8],
@@ -116,7 +119,32 @@ where
     }
 
     fn read_rom(&self, addr: Address) -> Option<Byte> {
-        Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
+        Some(
+            *self
+                .rom
+                .get(addr as usize & self.rom_mask)
+                .unwrap_or(&Self::OPENBUS),
+        )
+    }
+
+    /// Wraps a device read result in a mapped region: logs a warning if the
+    /// device did not handle the address. The enclosing region is considered
+    /// mapped, so this never triggers a bus error.
+    fn dev_read(addr: Address, val: Option<Byte>) -> Byte {
+        val.unwrap_or_else(|| {
+            warn!("Read from unimplemented address: {:08X}", addr);
+            Self::OPENBUS
+        })
+    }
+
+    /// Wraps a device write result in a mapped region: logs a warning if the
+    /// device did not handle the address. The enclosing region is considered
+    /// mapped, so this never triggers a bus error.
+    fn dev_write(addr: Address, val: Byte, written: Option<()>) -> Option<()> {
+        if written.is_none() {
+            warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
+        }
+        Some(())
     }
 
     fn write_overlay(&mut self, addr: Address, val: Byte) -> Option<()> {
@@ -136,6 +164,24 @@ where
             }
             // ROM
             0xA0_0000..=0xAF_FFFF => Some(()),
+            // VIA 1
+            0xF0_0000..=0xF0_1FFF => Self::dev_write(addr, val, None),
+            // SCC
+            0xF0_4000..=0xF0_5FFF => Self::dev_write(addr, val, self.scc.write(addr >> 1, val)),
+            // SCSI
+            0xF0_6000..=0xF0_7FFF => Some(self.scsi.write_dma(val)),
+            0xF1_0000..=0xF1_1FFF => Self::dev_write(addr, val, self.scsi.write(addr, val)),
+            0xF1_2000..=0xF1_3FFF => Some(self.scsi.write_dma(val)),
+            // ASC (sound)
+            0xF1_4000..=0xF1_5FFF => Self::dev_write(addr, val, None),
+            // SWIM
+            0xF1_6000..=0xF1_7FFF => Self::dev_write(addr, val, self.swim.write(addr, val)),
+            // RAMDAC
+            0xF2_4000..=0xF2_5FFF => Self::dev_write(addr, val, None),
+            // V8 registers
+            0xF2_6000..=0xF2_7FFF => Self::dev_write(addr, val, None),
+            // Video RAM
+            0xF4_0000..=0xFB_FFFF => Self::dev_write(addr, val, None),
             _ => None,
         }
     }
@@ -153,12 +199,30 @@ where
         }
     }
 
-    fn read_normal(&self, addr: Address) -> Option<Byte> {
+    fn read_normal(&mut self, addr: Address) -> Option<Byte> {
         match addr {
             // RAM
-            0x00_0000..=0x9F_FFFF => Some(*self.ram.get(addr as usize).unwrap_or(&0xFF)),
+            0x00_0000..=0x9F_FFFF => Some(*self.ram.get(addr as usize).unwrap_or(&Self::OPENBUS)),
             // ROM
             0xA0_0000..=0xAF_FFFF => self.read_rom(addr),
+            // VIA 1
+            0xF0_0000..=0xF0_1FFF => Some(Self::dev_read(addr, None)),
+            // SCC
+            0xF0_4000..=0xF0_5FFF => Some(Self::dev_read(addr, self.scc.read(addr >> 1))),
+            // SCSI
+            0xF0_6000..=0xF0_7FFF => Some(self.scsi.read_dma()),
+            0xF1_0000..=0xF1_1FFF => Some(Self::dev_read(addr, self.scsi.read(addr))),
+            0xF1_2000..=0xF1_3FFF => Some(self.scsi.read_dma()),
+            // ASC (sound)
+            0xF1_4000..=0xF1_5FFF => Some(Self::dev_read(addr, None)),
+            // SWIM
+            0xF1_6000..=0xF1_7FFF => Some(Self::dev_read(addr, self.swim.read(addr))),
+            // RAMDAC
+            0xF2_4000..=0xF2_5FFF => Some(Self::dev_read(addr, None)),
+            // V8 registers
+            0xF2_6000..=0xF2_7FFF => Some(Self::dev_read(addr, None)),
+            // Video RAM
+            0xF4_0000..=0xFB_FFFF => Some(Self::dev_read(addr, None)),
             _ => None,
         }
     }
@@ -213,11 +277,12 @@ where
             self.read_normal(addr)
         };
 
-        if let Some(v) = val {
-            BusResult::Ok(v)
-        } else {
-            warn!("Read from unimplemented address: {:08X}", addr);
-            BusResult::Ok(0xFF)
+        match val {
+            Some(v) => BusResult::Ok(v),
+            None => {
+                warn!("Bus error (read) at unmapped address: {:08X}", addr);
+                BusResult::BusError
+            }
         }
     }
 
@@ -230,7 +295,11 @@ where
         };
 
         if written.is_none() {
-            warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
+            warn!(
+                "Bus error (write) at unmapped address: {:08X} {:02X}",
+                addr, val
+            );
+            return BusResult::BusError;
         }
         BusResult::Ok(val)
     }
@@ -258,8 +327,29 @@ where
     TRenderer: Renderer,
 {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
+        struct BusEmuContext {
+            speed: EmulatorSpeed,
+            bus_frequency: Ticks,
+        }
+
+        impl EmuContext for BusEmuContext {
+            fn speed(&self) -> EmulatorSpeed {
+                self.speed
+            }
+
+            fn bus_frequency(&self) -> Ticks {
+                self.bus_frequency
+            }
+        }
+
+        let ctx = &BusEmuContext {
+            speed: self.speed,
+            bus_frequency: self.bus_frequency,
+        };
+
         self.cycles += ticks;
 
+        self.scsi.tick(ticks, ctx)?;
         self.swim.tick(ticks, ())?;
 
         Ok(ticks)
