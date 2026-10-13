@@ -237,6 +237,16 @@ impl Rtc {
         self.effective_speed
     }
 
+    /// Reads the clock directly, for controllers which hold the clock themselves
+    pub fn seconds(&self) -> u32 {
+        self.data.seconds
+    }
+
+    /// Sets the clock directly
+    pub fn set_seconds(&mut self, seconds: u32) {
+        self.data.seconds = seconds;
+    }
+
     /// Reads a byte of PRAM directly, for controllers which hold the PRAM
     /// themselves
     pub fn pram_read(&self, addr: u8) -> u8 {
