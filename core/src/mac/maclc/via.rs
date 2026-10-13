@@ -93,6 +93,9 @@ impl Via {
     pub fn new(model: MacModel) -> Self {
         let mut core = ViaCommon::new();
         core.a_in = RegisterA(model.via1_a_in().0);
+        // The session lines to the Egret read as negated while they are not
+        // driven, they are assumed to be pulled down.
+        core.b_in = RegisterB(0xFF).with_via_full(false).with_sys_ses(false);
 
         Self { core }
     }
