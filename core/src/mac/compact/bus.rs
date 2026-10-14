@@ -67,9 +67,7 @@ type AddressMap = [[Region; MAP_BLOCKS]; 2];
 struct Stalled {
     /// Wait states so far
     waits: Ticks,
-    /// VPA bytes synchronized to the E clock
-    vpa_bytes: u32,
-    /// The E clock has been waited for once for the current VPA byte
+    /// The VPA cycle has waited once, as it always does
     vpa_polled: bool,
 }
 
@@ -571,9 +569,9 @@ where
     }
 
     /// Stalls the cycle for 2 wait cycles
-    fn wait2(&mut self, stall: Ticks) -> Option<Ticks> {
+    fn wait2(&mut self) -> Option<Ticks> {
         self.stalled.waits += 2;
-        Some(stall)
+        Some(2)
     }
 
     /// Stall of a bus cycle which has to wait, polled every 2 cycles with
@@ -585,23 +583,14 @@ where
             // https://www.bigmessowires.com/2011/08/25/68000-interleaved-memory-controller-design/
             0x0000_0000..=0x003F_FFFF => {
                 if !self.video.in_blanking_period() && !self.model.ram_interleave_cpu(self.cycles) {
-                    return self.wait2(2);
+                    return self.wait2();
                 }
             }
-            // VPA: synchronized to the next low edge of the E clock.
-            // TODO done for each byte of a word, as the byte interface did,
-            // the second one 2 cycles into the bus cycle
+            // VPA: synchronized to the next low edge of the E clock
             0x00E0_0000..=0x00FF_FFFF => {
-                while self.stalled.vpa_bytes < acc.size {
-                    if !self.stalled.vpa_polled {
-                        self.stalled.vpa_polled = true;
-                        return self.wait2(if self.stalled.vpa_bytes > 0 { 4 } else { 2 });
-                    }
-                    if self.eclock != 0 {
-                        return self.wait2(2);
-                    }
-                    self.stalled.vpa_bytes += 1;
-                    self.stalled.vpa_polled = false;
+                if !self.stalled.vpa_polled || self.eclock != 0 {
+                    self.stalled.vpa_polled = true;
+                    return self.wait2();
                 }
             }
             _ => (),
