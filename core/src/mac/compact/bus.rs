@@ -656,6 +656,7 @@ where
 
         self.end_overlay(acc.addr, acc.write);
         let region = self.map[usize::from(self.overlay)][(acc.addr >> MAP_BLOCK_SHIFT) as usize];
+        let se = self.model >= MacModel::SE;
         let resp = match region {
             Region::Ram => bus_access_word(acc, waits, self, Self::ram_read, Self::ram_write),
             Region::RamOverlay => {
@@ -666,9 +667,10 @@ where
                 bus_access_word(acc, waits, self, Self::openbus_read, Self::no_write)
             }
             Region::Scsi => bus_access_word(acc, waits, self, Self::scsi_read, Self::scsi_write),
-            // TODO the SCC, IWM and VIA only take part of their block
-            Region::Scc | Region::Via if acc.addr & 0x0001_0000 == 0 => BusResponse::BusError,
-            Region::Iwm if acc.addr < 0x00DF_E1FF => BusResponse::BusError,
+            // TODO the SE and Classic SCC, IWM and VIA only take part of
+            // their block
+            Region::Scc | Region::Via if se && acc.addr & 0x0001_0000 == 0 => BusResponse::BusError,
+            Region::Iwm if se && acc.addr < 0x00DF_E1FF => BusResponse::BusError,
             // Phase adjust (ignore)
             Region::Scc
                 if self.overlay
@@ -940,6 +942,16 @@ where
 
 /// Region at `addr`
 fn region(model: MacModel, overlay: bool, addr: Address) -> Region {
+    if model >= MacModel::SE {
+        region_se(model, overlay, addr)
+    } else {
+        region_plus(model, overlay, addr)
+    }
+}
+
+/// 128K, 512K, 512Ke and Plus: the devices are selected from A23-A19 only
+/// (BMU1 PAL) and appear all over their block
+fn region_plus(model: MacModel, overlay: bool, addr: Address) -> Region {
     match addr {
         0x0000_0000..=0x003F_FFFF if !overlay => Region::Ram,
         // ROM in place of the RAM during the boot overlay
@@ -951,6 +963,29 @@ fn region(model: MacModel, overlay: bool, addr: Address) -> Region {
         // 512Ke (using Plus ROM) does have repeated ROM images
         0x0044_0000..=0x004F_FFFF if model == MacModel::Plus && !overlay => Region::OpenBus,
         0x0044_0000..=0x004F_FFFF => Region::Rom,
+        0x0058_0000..=0x005F_FFFF if model.has_scsi() => Region::Scsi,
+        0x0060_0000..=0x006F_FFFF if !overlay => Region::Ram,
+        0x0060_0000..=0x007F_FFFF if overlay => Region::RamOverlay,
+        // Read at $800000-$9FFFFF, write at $A00000-$BFFFFF
+        0x0080_0000..=0x00BF_FFFF => Region::Scc,
+        0x00C0_0000..=0x00DF_FFFF => Region::Iwm,
+        0x00E8_0000..=0x00EF_FFFF => Region::Via,
+        // The VIA (A20=0) and the phase read (A19=0) are both selected at
+        // $E00000-$E7FFFF, which Apple says not to use: give it to the
+        // phase read
+        0x00E0_0000..=0x00E7_FFFF | 0x00F0_0000..=0x00F7_FFFF => Region::PhaseRead,
+        0x00F8_0000..=0x00F9_FFFF => Region::ExtRom,
+        _ => Region::None,
+    }
+}
+
+/// SE and Classic
+fn region_se(model: MacModel, overlay: bool, addr: Address) -> Region {
+    match addr {
+        0x0000_0000..=0x003F_FFFF if !overlay => Region::Ram,
+        // ROM in place of the RAM during the boot overlay
+        0x0000_0000..=0x000F_FFFF | 0x0020_0000..=0x002F_FFFF => Region::Rom,
+        0x0040_0000..=0x004F_FFFF => Region::Rom,
         0x0058_0000..=0x005F_FFFF if model.has_scsi() => Region::Scsi,
         0x0060_0000..=0x006F_FFFF if !overlay => Region::Ram,
         0x0060_0000..=0x007F_FFFF if overlay => Region::RamOverlay,
