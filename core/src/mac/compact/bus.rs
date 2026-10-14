@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use super::audio::AudioState;
 use super::video::Video;
-use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_word};
+use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_byte_lane, bus_access_word};
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -398,8 +398,8 @@ where
         None
     }
 
-    // The byte-wide chips answer on every byte of their range. A word read
-    // gets the byte twice, a word write writes its low byte.
+    // The SCSI controller and the SCC answer on every byte of their range.
+    // A word read gets the byte twice, a word write writes its low byte.
 
     fn scsi_read(&mut self, addr: Address, len: u32) -> Option<u32> {
         self.scsi.read(addr).map(|v| both_bytes(v, len))
@@ -426,16 +426,16 @@ where
         }
     }
 
-    fn iwm_read(&mut self, addr: Address, len: u32) -> Option<u32> {
-        self.swim.read(addr).map(|v| both_bytes(v, len))
+    fn iwm_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
+        self.swim.read(addr).map(u32::from)
     }
 
     fn iwm_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
         self.swim.write(addr, val as Byte)
     }
 
-    fn via_read(&mut self, addr: Address, len: u32) -> Option<u32> {
-        self.via.read(addr).map(|v| both_bytes(v, len))
+    fn via_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
+        self.via.read(addr).map(u32::from)
     }
 
     fn via_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
@@ -675,8 +675,22 @@ where
                 bus_access_word(acc, waits, self, Self::scc_phase_read, Self::no_write)
             }
             Region::Scc => bus_access_word(acc, waits, self, Self::scc_read, Self::scc_write),
-            Region::Iwm => bus_access_word(acc, waits, self, Self::iwm_read, Self::iwm_write),
-            Region::Via => bus_access_word(acc, waits, self, Self::via_read, Self::via_write),
+            // On the lower byte lane, at odd addresses
+            Region::Iwm => bus_access_byte_lane::<2, 1, _, _>(
+                acc,
+                waits,
+                self,
+                Self::iwm_read,
+                Self::iwm_write,
+            ),
+            // On the upper byte lane, at even addresses
+            Region::Via => bus_access_byte_lane::<2, 0, _, _>(
+                acc,
+                waits,
+                self,
+                Self::via_read,
+                Self::via_write,
+            ),
             Region::PhaseRead => bus_access_word(acc, waits, self, Self::zero_read, Self::no_write),
             Region::ExtRom => bus_access_word(acc, waits, self, Self::ext_rom_read, Self::no_write),
             Region::None => BusResponse::BusError,
