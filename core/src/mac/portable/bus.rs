@@ -5,7 +5,7 @@ use super::normandy::Normandy;
 use super::pmgr::Pmgr;
 use super::via::Via;
 use super::video::Video;
-use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_word};
+use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_byte_lane, bus_access_word};
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -296,8 +296,6 @@ where
                 Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
             }
             Region::SlimRom | Region::Normandy => self.normandy.read(addr),
-            Region::Swim => self.swim.read(addr),
-            Region::Via => self.via.read(addr),
             Region::ExtRom => Some(
                 *self
                     .extension_rom
@@ -308,7 +306,7 @@ where
             Region::Video => Some(self.video.framebuffer[(addr & 0x7FFF) as usize]),
             Region::Asc => self.asc.read(addr & 0xFFF),
             Region::Scc => self.scc.read(addr >> 1),
-            Region::Ignored | Region::None => None,
+            _ => None,
         }
     }
 
@@ -317,14 +315,28 @@ where
             Region::Ram | Region::RomOverRam => self.normal_ram_write(addr, val),
             Region::Rom | Region::Ignored | Region::SlimRom => Some(()),
             Region::Normandy => self.normandy.write(addr, val),
-            Region::Swim => self.swim.write(addr, val),
-            Region::Via => self.via.write(addr, val),
             Region::Scsi => self.scsi.write(addr, val),
             Region::Video => Some(self.video.framebuffer[(addr & 0x7FFF) as usize] = val),
             Region::Asc => self.asc.write(addr & 0xFFF, val),
             Region::Scc => self.scc.write(addr >> 1, val),
-            Region::ExtRom | Region::None => None,
+            _ => None,
         }
+    }
+
+    fn swim_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
+        self.swim.read(addr).map(u32::from)
+    }
+
+    fn swim_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
+        self.swim.write(addr, val as Byte)
+    }
+
+    fn via_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
+        self.via.read(addr).map(u32::from)
+    }
+
+    fn via_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
+        self.via.write(addr, val as Byte)
     }
 
     /// Reads the bytes of a cycle one at a time, as the byte interface did
@@ -508,18 +520,48 @@ where
 
         self.end_overlay(acc.addr);
         let region = self.region(acc.addr);
-        let resp = bus_access_word(
-            acc,
-            waits,
-            self,
-            |bus, addr, len| Some(bus.read_bytes(region, addr, len)),
-            |bus, addr, len, val| {
-                bus.write_bytes(region, addr, len, val);
-                Some(())
-            },
-        );
-        let BusResponse::Ack { data, .. } = resp else {
-            unreachable!()
+        let resp = match region {
+            // On the lower byte lane, at odd addresses
+            Region::Swim => bus_access_byte_lane::<2, 1, _, _>(
+                acc,
+                waits,
+                self,
+                Self::swim_read,
+                Self::swim_write,
+            ),
+            // On the upper byte lane, at even addresses
+            Region::Via => bus_access_byte_lane::<2, 0, _, _>(
+                acc,
+                waits,
+                self,
+                Self::via_read,
+                Self::via_write,
+            ),
+            _ => bus_access_word(
+                acc,
+                waits,
+                self,
+                |bus, addr, len| Some(bus.read_bytes(region, addr, len)),
+                |bus, addr, len, val| {
+                    bus.write_bytes(region, addr, len, val);
+                    Some(())
+                },
+            ),
+        };
+        let data = match resp {
+            BusResponse::Ack { data, .. } => data,
+            BusResponse::Stall(_) => unreachable!(),
+            BusResponse::BusError if acc.write => {
+                warn!(
+                    "Write to unimplemented address: {:08X} {:02X}",
+                    acc.addr, acc.data
+                );
+                0
+            }
+            BusResponse::BusError => {
+                warn!("Read from unimplemented address: {:08X}", acc.addr);
+                Self::OPENBUS.into()
+            }
         };
 
         if acc.write {
