@@ -206,11 +206,16 @@ where
             egret,
             tick60_clock: 0,
             scc: Scc::new(),
-            swim: Swim::new(
-                model.fdd_drives(),
-                model.fdd_hd(),
-                gate_array.bus_frequency(),
-            ),
+            swim: match gate_array {
+                GateArray::V8 => Swim::new(
+                    model.fdd_drives(),
+                    model.fdd_hd(),
+                    gate_array.bus_frequency(),
+                ),
+                GateArray::Sonora => {
+                    Swim::new_swim2(model.fdd_drives(), gate_array.bus_frequency())
+                }
+            },
             scsi: ScsiController::new(),
             pseudovia: PseudoVia::new(
                 video.sense(),
