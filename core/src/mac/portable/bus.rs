@@ -37,6 +37,8 @@ pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
 /// Wait states of the static RAM
 const RAM_WAITS: Ticks = 1;
+/// Wait states of the ROM
+const ROM_WAITS: Ticks = 2;
 
 /// Time the SCC needs between accesses (1.8us)
 const SCC_RECOVERY: Ticks = DEFAULT_BUS_SPEED * 18 / 10_000_000;
@@ -503,9 +505,7 @@ where
         let memory = match region {
             Region::Ram => RAM_WAITS,
             Region::RomOverRam if acc.write => RAM_WAITS,
-            // TODO the ROM has 2, which the power manager model can't cope
-            // with yet
-            Region::Rom | Region::RomOverRam => 0,
+            Region::Rom | Region::RomOverRam => ROM_WAITS,
             _ => return 0,
         };
         self.normandy
