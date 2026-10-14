@@ -344,6 +344,8 @@ impl Tickable for Swim {
                 SwimMode::Iwm => self.iwm_tick(ticks)?,
                 SwimMode::Ism => self.ism_tick(ticks)?,
             }
+        } else if self.mode == SwimMode::Ism {
+            self.ism_tick_no_disk(ticks);
         }
 
         Ok(ticks)

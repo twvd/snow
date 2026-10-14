@@ -215,7 +215,7 @@ enum DriveWriteReg {
 #[derive(Serialize, Deserialize)]
 pub(crate) struct FloppyDrive {
     idx: usize,
-    base_frequency: Ticks,
+    pub(super) base_frequency: Ticks,
     pub(crate) drive_type: DriveType,
     pub(super) cycles: Ticks,
 
