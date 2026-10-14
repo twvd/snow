@@ -40,6 +40,9 @@ pub const DEFAULT_BUS_SPEED: Ticks = 16_000_000;
 /// Frequency of the master clock (C16M) the VIA clock is derived from
 const C16M_FREQUENCY: Ticks = 15_667_200;
 
+/// Time the SCC needs between accesses (2.2us)
+const SCC_RECOVERY: Ticks = DEFAULT_BUS_SPEED * 22 / 10_000_000;
+
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
@@ -123,6 +126,8 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     /// between instructions.
     #[serde(skip)]
     via_stall: Ticks,
+    /// Bus time the SCC can be accessed again
+    scc_ready: Ticks,
     asc_clock: Ticks,
     mouse_ready: bool,
     pub(crate) swim: Swim,
@@ -279,6 +284,7 @@ where
             via2: Via2::new(model),
             via_clock: 0,
             via_stall: 0,
+            scc_ready: 0,
             scc: Scc::new(),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), 16_000_000),
             scsi: ScsiController::new(),
@@ -580,7 +586,7 @@ where
         Ok(match (acc.addr & 0x1_FFFF) >> 13 {
             0 => self.via_cycle(acc, Self::via1_read, Self::via1_write)?,
             1 => self.via_cycle(acc, Self::via2_read, Self::via2_write)?,
-            2 => bus_access_byte(acc, 0, self, Self::scc_read, Self::scc_write),
+            2 => self.scc_cycle(acc),
             // SCSI pseudo-DMA only takes the lower 4KB of its slot
             3 if acc.addr & 0x1000 == 0 => {
                 bus_access_byte(acc, 0, self, Self::scsi_dma_read, Self::scsi_dma_write)
@@ -595,6 +601,16 @@ where
             // Expansion area
             _ => BusResponse::BusError,
         })
+    }
+
+    /// The GLUE holds off an access to the SCC until it has had the time it
+    /// needs since the previous one
+    fn scc_cycle(&mut self, acc: BusAccess<Bus68020>) -> BusResponse {
+        let now = self.cycles + acc.pending;
+        let waits = self.scc_ready.saturating_sub(now);
+        // The access itself takes 3 clocks
+        self.scc_ready = now + waits + 3 + SCC_RECOVERY;
+        bus_access_byte(acc, waits, self, Self::scc_read, Self::scc_write)
     }
 
     /// VIA accesses are synchronous with the VIA clock: one starts on its
