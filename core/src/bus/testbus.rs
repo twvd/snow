@@ -2,8 +2,9 @@ use anyhow::Result;
 use num_traits::{PrimInt, WrappingAdd};
 
 use super::access::CpuBus;
-use super::{Bus, IrqSource};
+use super::{Address, Bus, IrqSource};
 use crate::bus::BusResult;
+use crate::bus::access::{BusAccess, BusResponse};
 use crate::tickable::{Tickable, Ticks};
 
 use std::cell::RefCell;
@@ -12,6 +13,7 @@ use std::fmt;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::marker::PhantomData;
+use std::ops::RangeInclusive;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Access {
@@ -37,6 +39,8 @@ pub struct Testbus<TA: PrimInt + WrappingAdd + Hash + Debug, TD: PrimInt, C> {
     mask: TA,
     pub irq_level: Option<u8>,
     _cpu: PhantomData<C>,
+    /// Port widths for sized accesses, the CPU's data bus width elsewhere
+    pub port_widths: Vec<(RangeInclusive<Address>, u32)>,
 }
 
 impl<TA, TD, C> Testbus<TA, TD, C>
@@ -54,6 +58,7 @@ where
             mask,
             irq_level: None,
             _cpu: PhantomData,
+            port_widths: vec![],
         }
     }
 
@@ -77,6 +82,7 @@ where
     TD: PrimInt,
 {
     type Cpu = C;
+    const SIZED: bool = true;
 
     fn get_mask(&self) -> TA {
         self.mask
@@ -112,6 +118,33 @@ where
         }
         self.mem.insert(addr, val);
         BusResult::Ok(val)
+    }
+
+    fn access(&mut self, acc: BusAccess<C>) -> Result<BusResponse> {
+        let width = self
+            .port_widths
+            .iter()
+            .find(|(r, _)| r.contains(&acc.addr))
+            .map_or(C::WIDTH, |&(_, w)| w);
+        let len = (width - acc.addr % width).min(acc.size);
+        let mut data = 0;
+        for i in 0..len {
+            let addr = TA::from(acc.addr.wrapping_add(i)).unwrap();
+            if acc.write {
+                let val = TD::from((acc.data >> (8 * (acc.size - 1 - i))) & 0xFF).unwrap();
+                let _ = self.write(addr, val);
+            } else {
+                let BusResult::Ok(val) = self.read(addr) else {
+                    unreachable!()
+                };
+                data = (data << 8) | val.to_u32().unwrap();
+            }
+        }
+        Ok(BusResponse::Ack {
+            width,
+            data,
+            waits: 0,
+        })
     }
 
     fn reset(&mut self, _hard: bool) -> Result<bool> {
