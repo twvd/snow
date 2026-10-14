@@ -150,6 +150,35 @@ impl Swim {
     /// ISM CRC initialization value
     pub(super) const ISM_CRC_INIT: u16 = 0xcdb4;
 
+    /// The last four bytes of the parameter RAM, all of it on the SWIM2, are
+    /// LATE/NORMAL, TIME0, EARLY/NORMAL and TIME1. NORMAL is a single nibble,
+    /// written through LATE and read through both (SWIM Chip User's
+    /// Reference, Quadra 700 POST). The SWIM2 has no NORMAL and ignores the
+    /// low nibble of LATE and EARLY (SWIM2 ERS), read as 0 here.
+    fn ism_param_read(&mut self) -> u8 {
+        let idx = self.ism_param_idx;
+        let late = self.ism_params.len() - 4;
+        let early = self.ism_params.len() - 2;
+        self.ism_param_idx = (idx + 1) % self.ism_params.len();
+        if idx == early {
+            (self.ism_params[early] & 0xF0) | (self.ism_params[late] & 0x0F)
+        } else {
+            self.ism_params[idx]
+        }
+    }
+
+    fn ism_param_write(&mut self, value: u8) {
+        let idx = self.ism_param_idx;
+        let late = self.ism_params.len() - 4;
+        let early = self.ism_params.len() - 2;
+        self.ism_param_idx = (idx + 1) % self.ism_params.len();
+        self.ism_params[idx] = if idx == early || (idx == late && !self.iwm_available) {
+            value & 0xF0
+        } else {
+            value
+        };
+    }
+
     /// Update CRC with a single bit
     fn ism_crc_update(&mut self, bit: bool) {
         if (self.ism_crc ^ (if bit { 0x8000 } else { 0x0000 })) & 0x8000 != 0 {
@@ -284,11 +313,7 @@ impl Swim {
                             .0,
                     )
                 }
-                IsmRegister::Parameter => {
-                    let value = self.ism_params[self.ism_param_idx];
-                    self.ism_param_idx = (self.ism_param_idx + 1) % self.ism_params.len();
-                    Some(value)
-                }
+                IsmRegister::Parameter => Some(self.ism_param_read()),
                 IsmRegister::Setup => Some(self.ism_setup.0),
                 _ => {
                     warn!("Unimplemented read {:?}", reg);
@@ -373,10 +398,7 @@ impl Swim {
                     }
                     self.ism_mode.0 |= value;
                 }
-                IsmRegister::Parameter => {
-                    self.ism_params[self.ism_param_idx] = value;
-                    self.ism_param_idx = (self.ism_param_idx + 1) % self.ism_params.len();
-                }
+                IsmRegister::Parameter => self.ism_param_write(value),
                 IsmRegister::Setup => {
                     self.ism_setup.0 = value;
                 }
@@ -755,9 +777,9 @@ mod tests {
         assert_eq!(swim.read(reg(REG_ERROR)), Some(0x01));
     }
 
-    fn params(swim: &mut Swim, count: u8) -> Vec<u8> {
+    fn params(swim: &mut Swim, vals: &[u8], count: usize) -> Vec<u8> {
         swim.write(reg(REG_MODE_ZERO), 0);
-        for val in 1..=count {
+        for &val in vals {
             swim.write(reg(REG_PARAM), val);
         }
         (0..count)
@@ -768,15 +790,23 @@ mod tests {
     #[test]
     fn swim_params() {
         let mut swim = swim(0x20);
-        assert_eq!(params(&mut swim, 16), (1..=16).collect::<Vec<_>>());
+        let vals: Vec<u8> = (1..=12).chain([0x97, 0x22, 0x5A, 0x44]).collect();
+        let mut expected = vals.clone();
+        // NORMAL reads back from LATE/NORMAL
+        expected[0xE] = 0x57;
+        assert_eq!(params(&mut swim, &vals, 16), expected);
     }
 
     #[test]
     fn swim2_params() {
         let mut swim = Swim::new_swim2(&[DriveType::SuperDrive], 16_000_000);
-        assert_eq!(params(&mut swim, 4), [1, 2, 3, 4]);
+        let vals = [0x97, 0x22, 0x5A, 0x44];
+        assert_eq!(params(&mut swim, &vals, 4), [0x90, 0x22, 0x50, 0x44]);
         // Wraps after four
-        assert_eq!(params(&mut swim, 6), [3, 4, 5, 6, 3, 4]);
+        assert_eq!(
+            params(&mut swim, &[1, 2, 3, 4, 0x65, 6], 6),
+            [0x00, 4, 0x60, 6, 0x00, 4]
+        );
     }
 
     #[test]
