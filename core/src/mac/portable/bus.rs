@@ -303,7 +303,6 @@ where
                     .unwrap_or(&0xFF),
             ),
             Region::Video => Some(self.video.framebuffer[(addr & 0x7FFF) as usize]),
-            Region::Asc => self.asc.read(addr & 0xFFF),
             _ => None,
         }
     }
@@ -314,7 +313,6 @@ where
             Region::Rom | Region::Ignored | Region::SlimRom => Some(()),
             Region::Normandy => self.normandy.write(addr, val),
             Region::Video => Some(self.video.framebuffer[(addr & 0x7FFF) as usize] = val),
-            Region::Asc => self.asc.write(addr & 0xFFF, val),
             _ => None,
         }
     }
@@ -349,6 +347,21 @@ where
 
     fn scc_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
         self.scc.write(addr >> 1, val as Byte)
+    }
+
+    /// The ASC is on the upper byte lane with /UDS as its A0, and a buffer
+    /// copies its lane to the lower one on reads with /LDS. A byte access
+    /// reaches the register at its address, a word access the register at
+    /// the even address, the byte on both halves on reads.
+    fn asc_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        let val = u32::from(self.asc.read(addr & 0xFFF)?);
+        Some(if len == 2 { val * 0x0101 } else { val })
+    }
+
+    fn asc_write(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
+        // The upper byte on a word write
+        let val = (val >> (8 * (len - 1))) as Byte;
+        self.asc.write(addr & 0xFFF, val)
     }
 
     /// Reads the bytes of a cycle one at a time, as the byte interface did
@@ -565,6 +578,7 @@ where
                 Self::scc_read,
                 Self::scc_write,
             ),
+            Region::Asc => bus_access_word(acc, waits, self, Self::asc_read, Self::asc_write),
             _ => bus_access_word(
                 acc,
                 waits,
