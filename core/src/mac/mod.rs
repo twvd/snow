@@ -264,8 +264,7 @@ impl MacModel {
             Self::MacIIFDHD | Self::MacIIx | Self::MacIIcx | Self::SE30 | Self::LC | Self::LCII => {
                 &[DriveType::SuperDrive, DriveType::SuperDrive]
             }
-            // The SWIM2 floppy controller is not implemented
-            Self::LCIII => &[],
+            Self::LCIII => &[DriveType::SuperDrive],
         }
     }
 
