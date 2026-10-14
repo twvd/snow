@@ -524,6 +524,26 @@ impl Swim {
         Ok(())
     }
 
+    /// The bytes of the FIFO get shifted out without a spinning disk too.
+    /// They take 16 microseconds each here, whatever the setup and the
+    /// parameters are.
+    pub(super) fn ism_tick_no_disk(&mut self, ticks: Ticks) {
+        if !self.ism_mode.action() || !self.ism_mode.write() {
+            return;
+        }
+
+        let byte_ticks = self.get_selected_drive().base_frequency * 16 / 1_000_000;
+        self.bit_cycles += ticks;
+        while self.bit_cycles >= byte_ticks && self.ism_mode.action() {
+            self.bit_cycles -= byte_ticks;
+
+            if self.ism_fifo.pop_front().is_none() {
+                self.ism_error.set_underrun(true);
+                self.ism_mode.set_action(false);
+            }
+        }
+    }
+
     /// Handle ISM write mode tick
     fn ism_tick_write(&mut self) -> Result<()> {
         let head = self.get_active_head();
@@ -769,5 +789,35 @@ mod tests {
             swim.write(reg(REG_PHASES), val);
             assert_eq!(swim.read(reg(REG_PHASES)), Some(val));
         }
+    }
+
+    #[test]
+    fn write_no_disk() {
+        const BYTE_TICKS: Ticks = 16 * 16;
+
+        let mut swim = Swim::new_swim2(&[DriveType::SuperDrive], 16_000_000);
+        swim.write(reg(REG_SETUP), 0x20);
+        start(&mut swim, MODE_WRITE);
+        swim.write(reg(REG_DATA), 0);
+        swim.write(reg(REG_DATA), 0);
+        swim.write(reg(REG_MODE_ONE), MODE_ACTION);
+        assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0xC0, 0x00);
+
+        // Each byte makes room in the FIFO after its time
+        for _ in 0..20 {
+            swim.tick(BYTE_TICKS - 1, ()).unwrap();
+            assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0xC0, 0x00);
+            swim.tick(1, ()).unwrap();
+            assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0xC0, 0x80);
+            swim.write(reg(REG_DATA), 0);
+        }
+
+        // Then the FIFO runs empty, which ends the write
+        swim.tick(2 * BYTE_TICKS, ()).unwrap();
+        assert!(swim.ism_mode.action());
+        assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0xE0, 0xC0);
+        swim.tick(BYTE_TICKS, ()).unwrap();
+        assert!(!swim.ism_mode.action());
+        assert_eq!(swim.read(reg(REG_ERROR)), Some(0x01));
     }
 }
