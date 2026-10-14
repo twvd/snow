@@ -567,7 +567,9 @@ where
         Self::dev_write(addr, val as Byte, self.swim.write(addr, val as Byte))
     }
 
-    /// I/O devices are byte-wide, 8-bit ports
+    /// I/O devices are byte-wide, 8-bit ports. The GLUE inserts one wait
+    /// state for the IWM and the SCSI controller (without handshake), two
+    /// for ASC reads and one for ASC writes.
     fn io_cycle(&mut self, acc: BusAccess<Bus68020>) -> BusResponse {
         match (acc.addr & 0x1_FFFF) >> 13 {
             0 => bus_access_byte(acc, 0, self, Self::via1_read, Self::via1_write),
@@ -577,10 +579,13 @@ where
             3 if acc.addr & 0x1000 == 0 => {
                 bus_access_byte(acc, 0, self, Self::scsi_dma_read, Self::scsi_dma_write)
             }
-            8 => bus_access_byte(acc, 0, self, Self::scsi_read, Self::scsi_write),
+            8 => bus_access_byte(acc, 1, self, Self::scsi_read, Self::scsi_write),
             9 => bus_access_byte(acc, 0, self, Self::scsi_dma_read, Self::scsi_dma_write),
-            10 => bus_access_byte(acc, 0, self, Self::asc_read, Self::asc_write),
-            11 => bus_access_byte(acc, 0, self, Self::swim_read, Self::swim_write),
+            10 => {
+                let waits = if acc.write { 1 } else { 2 };
+                bus_access_byte(acc, waits, self, Self::asc_read, Self::asc_write)
+            }
+            11 => bus_access_byte(acc, 1, self, Self::swim_read, Self::swim_write),
             // Expansion area
             _ => BusResponse::BusError,
         }
