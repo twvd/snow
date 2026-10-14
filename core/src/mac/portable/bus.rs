@@ -304,7 +304,6 @@ where
             ),
             Region::Video => Some(self.video.framebuffer[(addr & 0x7FFF) as usize]),
             Region::Asc => self.asc.read(addr & 0xFFF),
-            Region::Scc => self.scc.read(addr >> 1),
             _ => None,
         }
     }
@@ -316,7 +315,6 @@ where
             Region::Normandy => self.normandy.write(addr, val),
             Region::Video => Some(self.video.framebuffer[(addr & 0x7FFF) as usize] = val),
             Region::Asc => self.asc.write(addr & 0xFFF, val),
-            Region::Scc => self.scc.write(addr >> 1, val),
             _ => None,
         }
     }
@@ -343,6 +341,14 @@ where
 
     fn scsi_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
         self.scsi.write(addr, val as Byte)
+    }
+
+    fn scc_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
+        self.scc.read(addr >> 1).map(u32::from)
+    }
+
+    fn scc_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
+        self.scc.write(addr >> 1, val as Byte)
     }
 
     /// Reads the bytes of a cycle one at a time, as the byte interface did
@@ -550,6 +556,14 @@ where
                 self,
                 Self::scsi_read,
                 Self::scsi_write,
+            ),
+            // On the upper byte lane, A/B on A1 and D/C on A2
+            Region::Scc => bus_access_byte_lane::<2, 0, _, _>(
+                acc,
+                waits,
+                self,
+                Self::scc_read,
+                Self::scc_write,
             ),
             _ => bus_access_word(
                 acc,
