@@ -1,9 +1,11 @@
 //! M68k CPU - Bus access functionality
 
+use crate::bus::access::{BusAccess, BusResponse, CpuBus};
 use crate::bus::{Address, Bus, BusResult, IrqSource};
 use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::cpu::{Breakpoint, BusBreakpoint, CpuError, CpuM68k, Group0Details};
 use crate::cpu_m68k::{CpuM68kType, CpuSized, M68000, M68020, TORDER_HIGHLOW, TORDER_LOWHIGH};
+use crate::tickable::Ticks;
 use crate::types::Long;
 use crate::types::Word;
 
@@ -16,6 +18,18 @@ pub const FC_USER_PROGRAM: u8 = 2;
 pub const FC_SUPERVISOR_DATA: u8 = 5;
 pub const FC_SUPERVISOR_PROGRAM: u8 = 6;
 pub const FC_MASK: u8 = 0b1111;
+
+/// CPU cycles of a bus cycle without wait states
+const BUS_CYCLE: Ticks = 4;
+
+/// Low `bytes` bytes of `val`
+const fn low_bytes(val: Long, bytes: u32) -> Long {
+    if bytes >= 4 {
+        val
+    } else {
+        val & ((1 << (bytes * 8)) - 1)
+    }
+}
 
 impl<
     TBus,
@@ -104,12 +118,235 @@ where
         self.read_ticks_generic::<T, true>(FC_UNUSED, o_paddr)
     }
 
+    /// Triggers bus access breakpoints
+    fn bus_breakpoint(&mut self, write: bool, addr: Address, val: u8) {
+        let kind = if write {
+            BusBreakpoint::Write
+        } else {
+            BusBreakpoint::Read
+        };
+        if self.breakpoints.iter().any(|bp| {
+            *bp == Breakpoint::Bus(kind, addr)
+                || *bp == Breakpoint::Bus(BusBreakpoint::ReadWrite, addr)
+        }) {
+            log::info!(
+                "Breakpoint hit (bus {}): ${:08X}, value: ${:02X}, PC: ${:08X}",
+                if write { "write" } else { "read" },
+                addr,
+                val,
+                self.regs.pc,
+            );
+            self.breakpoint_hit.set();
+        }
+    }
+
+    /// Runs one cycle on a sized bus for the `size` bytes left of an operand
+    /// at `o_addr`, from logical address `laddr`. Adds the duration of the
+    /// cycle to `ticks` and returns the read data and the number of bytes
+    /// transferred.
+    #[inline(always)]
+    fn bus_cycle<T: CpuSized, const PHYSICAL: bool>(
+        &mut self,
+        fc: u8,
+        o_addr: Address,
+        laddr: Address,
+        size: u32,
+        wdata: Option<Long>,
+        ticks: &mut Ticks,
+    ) -> Result<(Long, u32)> {
+        let write = wdata.is_some();
+        let paddr = if PHYSICAL || !PMMU {
+            laddr
+        } else {
+            self.pmmu_translate(fc, laddr, write)
+                .map_err(|e| match e.downcast_ref() {
+                    Some(CpuError::BusError(details)) => {
+                        anyhow!(CpuError::BusError(Group0Details {
+                            size: std::mem::size_of::<T>(),
+                            address: laddr,
+                            ..*details
+                        }))
+                    }
+                    _ => e,
+                })?
+        };
+
+        // The bus has to be built for the data bus of this CPU
+        const {
+            assert!(<TBus::Cpu as CpuBus>::WIDTH == if CPU_TYPE >= M68020 { 4 } else { 2 });
+        }
+
+        // CPU cycles of this bus cycle already spent stalled
+        let mut stalled = 0;
+        let (width, data, waits) = loop {
+            let pending = self.cycles + *ticks - self.last_bus_sync;
+            let acc = match wdata {
+                Some(data) => BusAccess::write(paddr, size, data, pending),
+                None => BusAccess::read(paddr, size, pending),
+            };
+            match self.bus.access(acc)? {
+                BusResponse::Ack { width, data, waits } => break (width, data, waits),
+                // Wait with the bus ticked through the stall, then retry
+                BusResponse::Stall(stall) => {
+                    self.history_current.waitstates = true;
+                    self.advance_cycles(std::mem::take(ticks) + stall)?;
+                    self.sync_bus()?;
+                    stalled += stall;
+                }
+                BusResponse::BusError => bail!(CpuError::BusError(Group0Details {
+                    function_code: fc,
+                    ir: 0,
+                    size: std::mem::size_of::<T>(),
+                    instruction: false,
+                    read: !write,
+                    address: o_addr,
+                    // Filled in later
+                    start_pc: 0,
+                })),
+            }
+        };
+        if waits > 0 {
+            self.history_current.waitstates = true;
+        }
+        *ticks += (BUS_CYCLE + waits).saturating_sub(stalled);
+
+        let len = if CPU_TYPE >= M68020 {
+            (width - paddr % width).min(size)
+        } else {
+            size
+        };
+        if !self.breakpoints.is_empty() {
+            for i in 0..len {
+                let val = match wdata {
+                    Some(d) => d >> (8 * (size - 1 - i)),
+                    None => data >> (8 * (len - 1 - i)),
+                };
+                self.bus_breakpoint(write, paddr.wrapping_add(i), val as u8);
+            }
+        }
+        Ok((data, len))
+    }
+
+    /// Reads a value from a sized bus and spends ticks.
+    #[inline(always)]
+    fn read_sized<T: CpuSized, const PHYSICAL: bool>(
+        &mut self,
+        fc: u8,
+        o_addr: Address,
+    ) -> Result<T> {
+        let len = std::mem::size_of::<T>() as u32;
+        let mut result: u64 = 0;
+
+        if CPU_TYPE < M68020 {
+            let addr = if CPU_TYPE == M68000 && len > 1 {
+                o_addr & !1
+            } else {
+                o_addr
+            };
+            for w in 0..len.div_ceil(2) {
+                let mut ticks = 0;
+                let laddr = addr.wrapping_add(2 * w) & ADDRESS_MASK;
+                let (data, n) =
+                    self.bus_cycle::<T, PHYSICAL>(fc, o_addr, laddr, len.min(2), None, &mut ticks)?;
+                result = (result << (8 * n)) | u64::from(data);
+                self.advance_cycles(ticks)?;
+
+                if CPU_TYPE == M68000 && w == 0 && len > 1 {
+                    // Address errors occur AFTER the first Word was accessed
+                    self.verify_access_physical::<T>(o_addr, true)?;
+                }
+            }
+        } else {
+            let mut ticks = 0;
+            let mut done = 0;
+            while done < len {
+                let laddr = o_addr.wrapping_add(done) & ADDRESS_MASK;
+                let (data, n) =
+                    self.bus_cycle::<T, PHYSICAL>(fc, o_addr, laddr, len - done, None, &mut ticks)?;
+                result = (result << (8 * n)) | u64::from(data);
+                done += n;
+            }
+            self.advance_cycles(ticks)?;
+        }
+
+        Ok(T::chop(result as Long))
+    }
+
+    /// Writes a value to a sized bus and spends ticks.
+    #[inline(always)]
+    fn write_sized<T: CpuSized, const TORDER: usize, const PHYSICAL: bool>(
+        &mut self,
+        fc: u8,
+        o_addr: Address,
+        value: T,
+    ) -> Result<()> {
+        let len = std::mem::size_of::<T>() as u32;
+        let value = value.expand();
+
+        if CPU_TYPE < M68020 {
+            let addr = if CPU_TYPE == M68000 && len > 1 {
+                o_addr & !1
+            } else {
+                o_addr
+            };
+            let size = len.min(2);
+            let words = len.div_ceil(2);
+            for i in 0..words {
+                let w = if TORDER == TORDER_HIGHLOW {
+                    words - 1 - i
+                } else {
+                    i
+                };
+                let mut ticks = 0;
+                let laddr = addr.wrapping_add(2 * w) & ADDRESS_MASK;
+                let data = low_bytes(value >> (8 * (len - size - 2 * w)), size);
+                self.bus_cycle::<T, PHYSICAL>(fc, o_addr, laddr, size, Some(data), &mut ticks)?;
+                self.advance_cycles(ticks)?;
+
+                if CPU_TYPE == M68000
+                    && i == 0
+                    && (if TORDER == TORDER_HIGHLOW {
+                        len == 4
+                    } else {
+                        len > 1
+                    })
+                {
+                    // Address errors occur AFTER the first Word was accessed
+                    self.verify_access_physical::<T>(o_addr, true)?;
+                }
+            }
+        } else {
+            let mut ticks = 0;
+            let mut done = 0;
+            while done < len {
+                let laddr = o_addr.wrapping_add(done) & ADDRESS_MASK;
+                let data = low_bytes(value, len - done);
+                let (_, n) = self.bus_cycle::<T, PHYSICAL>(
+                    fc,
+                    o_addr,
+                    laddr,
+                    len - done,
+                    Some(data),
+                    &mut ticks,
+                )?;
+                done += n;
+            }
+            self.advance_cycles(ticks)?;
+        }
+
+        Ok(())
+    }
+
     #[inline(always)]
     pub(in crate::cpu_m68k) fn read_ticks_generic<T: CpuSized, const PHYSICAL: bool>(
         &mut self,
         fc: u8,
         o_addr: Address,
     ) -> Result<T> {
+        if TBus::SIZED {
+            return self.read_sized::<T, PHYSICAL>(fc, o_addr);
+        }
+
         let len = std::mem::size_of::<T>();
         let mut result: T = T::zero();
         let addr = if CPU_TYPE == M68000 && len > 1 {
@@ -294,6 +531,10 @@ where
         o_addr: Address,
         value: T,
     ) -> Result<()> {
+        if TBus::SIZED {
+            return self.write_sized::<T, TORDER, PHYSICAL>(fc, o_addr, value);
+        }
+
         let addr = if CPU_TYPE == 68000 && std::mem::size_of::<T>() > 1 {
             o_addr & !1
         } else {
