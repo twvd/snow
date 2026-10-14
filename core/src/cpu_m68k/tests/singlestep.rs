@@ -6,6 +6,7 @@ use serde::Deserialize;
 use std::fs;
 use std::path::Path;
 
+use crate::bus::access::Bus68000;
 use crate::bus::testbus::{Access, Testbus};
 use crate::bus::{Address, Bus, BusResult};
 use crate::cpu_m68k::regs::{RegisterFile, RegisterSR};
@@ -178,7 +179,7 @@ fn print_reg_diff(initial: &RegisterFile, fin: &RegisterFile, actual: &RegisterF
     eprintln!();
 }
 
-fn print_result(cpu: &CpuM68000<Testbus<Address, u8>>, testcase: &Testcase) {
+fn print_result(cpu: &CpuM68000<Testbus<Address, u8, Bus68000>>, testcase: &Testcase) {
     eprintln!(
         "Cycles expected: {} actual: {}",
         testcase.length, cpu.cycles

@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use super::audio::AudioState;
 use super::video::Video;
+use crate::bus::access::Bus68000;
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -618,6 +619,8 @@ impl<TRenderer> Bus<Address, Byte> for CompactMacBus<TRenderer>
 where
     TRenderer: Renderer,
 {
+    type Cpu = Bus68000;
+
     fn get_mask(&self) -> Address {
         0x00FFFFFF
     }

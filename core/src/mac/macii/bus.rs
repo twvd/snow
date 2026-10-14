@@ -2,6 +2,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::via2::Via2;
+use crate::bus::access::Bus68020;
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -697,6 +698,8 @@ impl<TRenderer, const AMU: bool> Bus<Address, Byte> for MacIIBus<TRenderer, AMU>
 where
     TRenderer: Renderer,
 {
+    type Cpu = Bus68020;
+
     fn get_mask(&self) -> Address {
         0xFFFFFFFF
     }

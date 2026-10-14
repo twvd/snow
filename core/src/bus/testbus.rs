@@ -1,6 +1,7 @@
 use anyhow::Result;
 use num_traits::{PrimInt, WrappingAdd};
 
+use super::access::CpuBus;
 use super::{Bus, IrqSource};
 use crate::bus::BusResult;
 use crate::tickable::{Tickable, Ticks};
@@ -10,6 +11,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::marker::PhantomData;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Access {
@@ -25,7 +27,8 @@ pub struct TraceEntry<TA: PrimInt + WrappingAdd, TD: PrimInt> {
     pub cpu_cycle: Ticks,
 }
 
-pub struct Testbus<TA: PrimInt + WrappingAdd + Hash + Debug, TD: PrimInt> {
+/// Test bus for a CPU with the data bus `C`
+pub struct Testbus<TA: PrimInt + WrappingAdd + Hash + Debug, TD: PrimInt, C> {
     pub mem: HashMap<TA, TD>,
     trace: RefCell<Vec<TraceEntry<TA, TD>>>,
     bus_cycles: Ticks,
@@ -33,9 +36,10 @@ pub struct Testbus<TA: PrimInt + WrappingAdd + Hash + Debug, TD: PrimInt> {
     trace_enabled: bool,
     mask: TA,
     pub irq_level: Option<u8>,
+    _cpu: PhantomData<C>,
 }
 
-impl<TA, TD> Testbus<TA, TD>
+impl<TA, TD, C> Testbus<TA, TD, C>
 where
     TA: PrimInt + WrappingAdd + Hash + Debug,
     TD: PrimInt,
@@ -49,6 +53,7 @@ where
             trace_enabled: false,
             mask,
             irq_level: None,
+            _cpu: PhantomData,
         }
     }
 
@@ -66,11 +71,13 @@ where
     }
 }
 
-impl<TA, TD> Bus<TA, TD> for Testbus<TA, TD>
+impl<TA, TD, C: CpuBus> Bus<TA, TD> for Testbus<TA, TD, C>
 where
     TA: PrimInt + WrappingAdd + Hash + Debug,
     TD: PrimInt,
 {
+    type Cpu = C;
+
     fn get_mask(&self) -> TA {
         self.mask
     }
@@ -117,7 +124,7 @@ where
     }
 }
 
-impl<TA, TD> Tickable for Testbus<TA, TD>
+impl<TA, TD, C: CpuBus> Tickable for Testbus<TA, TD, C>
 where
     TA: PrimInt + WrappingAdd + Hash + Debug,
     TD: PrimInt,
@@ -128,7 +135,7 @@ where
     }
 }
 
-impl<TA, TD> IrqSource for Testbus<TA, TD>
+impl<TA, TD, C: CpuBus> IrqSource for Testbus<TA, TD, C>
 where
     TA: PrimInt + WrappingAdd + Hash + Debug,
     TD: PrimInt,
@@ -138,7 +145,7 @@ where
     }
 }
 
-impl<TA, TD> fmt::Display for Testbus<TA, TD>
+impl<TA, TD, C> fmt::Display for Testbus<TA, TD, C>
 where
     TA: PrimInt + WrappingAdd + Hash + Debug,
     TD: PrimInt,
@@ -151,10 +158,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::access::Bus68000;
 
     #[test]
     fn testbus() {
-        let mut b = Testbus::<u16, u8>::new(u16::MAX);
+        let mut b = Testbus::<u16, u8, Bus68000>::new(u16::MAX);
 
         for a in 0..=u16::MAX {
             assert_eq!(b.read(a), BusResult::Ok(0));
@@ -169,7 +177,7 @@ mod tests {
 
     #[test]
     fn in_mask() {
-        let mut b = Testbus::<u16, u8>::new(u8::MAX.into());
+        let mut b = Testbus::<u16, u8, Bus68000>::new(u8::MAX.into());
 
         assert_eq!(b.write(0x10, 1), BusResult::Ok(1));
     }
@@ -177,7 +185,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn out_mask() {
-        let mut b = Testbus::<u16, u8>::new(u8::MAX.into());
+        let mut b = Testbus::<u16, u8, Bus68000>::new(u8::MAX.into());
 
         let _ = b.write(0x100, 1);
     }

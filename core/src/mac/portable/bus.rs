@@ -5,6 +5,7 @@ use super::normandy::Normandy;
 use super::pmgr::Pmgr;
 use super::via::Via;
 use super::video::Video;
+use crate::bus::access::Bus68000;
 use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -515,6 +516,8 @@ impl<TRenderer> Bus<Address, Byte> for MacPortableBus<TRenderer>
 where
     TRenderer: Renderer,
 {
+    type Cpu = Bus68000;
+
     fn read(&mut self, addr: Address) -> BusResult<Byte> {
         if self.in_waitstate(addr) {
             return BusResult::WaitState;

@@ -1,11 +1,12 @@
 //! 68020 long division (DIVS.L/DIVU.L) tests
 
 use crate::bus::Address;
+use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::{CpuM68020Fpu, M68020_ADDRESS_MASK};
 use crate::types::Long;
 
-type TestCpu = CpuM68020Fpu<Testbus<Address, u8>>;
+type TestCpu = CpuM68020Fpu<Testbus<Address, u8, Bus68020>>;
 
 const SIGNED: u16 = 0x0800;
 const SIZE_64: u16 = 0x0400;
