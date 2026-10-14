@@ -396,11 +396,8 @@ where
         None
     }
 
-    // The SCSI controller answers on every byte of its range. A word read
-    // gets the byte twice, a word write writes its low byte.
-
-    fn scsi_read(&mut self, addr: Address, len: u32) -> Option<u32> {
-        self.scsi.read(addr).map(|v| both_bytes(v, len))
+    fn scsi_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
+        self.scsi.read(addr).map(u32::from)
     }
 
     fn scsi_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
@@ -413,6 +410,39 @@ where
 
     fn scc_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
         self.scc.write(addr >> 1, val as Byte)
+    }
+
+    /// The SCSI controller is on the upper byte lane. Its /IOR is /UDS and
+    /// its /IOW is /LDS, whatever the direction of the access.
+    fn scsi_cycle(&mut self, acc: BusAccess<Bus68000>, waits: Ticks) -> BusResponse {
+        let ior = acc.addr & 1 == 0;
+        let iow = acc.addr & 1 != 0 || acc.size == 2;
+        bus_access_byte_lane::<2, 0, _, _>(
+            acc,
+            waits,
+            self,
+            |bus, addr, _| {
+                let val = if ior {
+                    u32::from(bus.scsi.read(addr)?)
+                } else {
+                    0xFF
+                };
+                // Latches its lane, which it drives itself on a word read
+                if iow {
+                    bus.scsi.write(addr, val as Byte)?;
+                }
+                Some(val)
+            },
+            |bus, addr, _, val| {
+                if ior {
+                    bus.scsi.read(addr)?;
+                }
+                if iow {
+                    bus.scsi.write(addr, val as Byte)?;
+                }
+                Some(())
+            },
+        )
     }
 
     /// The SCC is on the upper byte lane. Its /RD comes from the address
@@ -695,7 +725,7 @@ where
             Region::OpenBus => {
                 bus_access_word(acc, waits, self, Self::openbus_read, Self::no_write)
             }
-            Region::Scsi => bus_access_word(acc, waits, self, Self::scsi_read, Self::scsi_write),
+            Region::Scsi => self.scsi_cycle(acc, waits),
             Region::Scc => self.scc_cycle(acc, waits),
             // On the lower byte lane, at odd addresses
             Region::Iwm => bus_access_byte_lane::<2, 1, _, _>(
@@ -1069,14 +1099,5 @@ where
         }
 
         result
-    }
-}
-
-/// A byte for every byte of a `len` bytes transfer
-fn both_bytes(val: Byte, len: u32) -> u32 {
-    if len == 2 {
-        u32::from(val) * 0x0101
-    } else {
-        u32::from(val)
     }
 }
