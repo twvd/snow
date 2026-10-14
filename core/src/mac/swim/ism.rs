@@ -336,6 +336,13 @@ impl Swim {
                 IsmRegister::ModeZero => {
                     self.ism_param_idx = 0;
 
+                    // Without an IWM register set, the ISM one stays selected
+                    let value = if self.iwm_available {
+                        value
+                    } else {
+                        IsmStatus(value).with_ism(false).0
+                    };
+
                     let clr = IsmStatus(value & self.ism_mode.0);
                     if clr.clear_fifo() {
                         self.ism_fifo.clear();
@@ -613,9 +620,12 @@ mod tests {
 
     const REG_DATA: Address = 0;
     const REG_ERROR: Address = 2;
+    const REG_PARAM: Address = 3;
+    const REG_PHASES: Address = 4;
     const REG_SETUP: Address = 5;
     const REG_MODE_ZERO: Address = 6;
     const REG_MODE_ONE: Address = 7;
+    const REG_STATUS: Address = 6;
     const REG_HANDSHAKE: Address = 7;
 
     const MODE_CLEAR_FIFO: u8 = 0x01;
@@ -710,5 +720,54 @@ mod tests {
         }
         assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0xE0, 0xE0);
         assert_eq!(swim.read(reg(REG_ERROR)), Some(0x01));
+    }
+
+    fn params(swim: &mut Swim, count: u8) -> Vec<u8> {
+        swim.write(reg(REG_MODE_ZERO), 0);
+        for val in 1..=count {
+            swim.write(reg(REG_PARAM), val);
+        }
+        (0..count)
+            .map(|_| swim.read(reg(REG_PARAM)).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn swim_params() {
+        let mut swim = swim(0x20);
+        assert_eq!(params(&mut swim, 16), (1..=16).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn swim2_params() {
+        let mut swim = Swim::new_swim2(&[DriveType::SuperDrive], 16_000_000);
+        assert_eq!(params(&mut swim, 4), [1, 2, 3, 4]);
+        // Wraps after four
+        assert_eq!(params(&mut swim, 6), [3, 4, 5, 6, 3, 4]);
+    }
+
+    #[test]
+    fn swim_to_iwm() {
+        let mut swim = swim(0x20);
+        swim.write(reg(REG_MODE_ZERO), 0xF8);
+        assert_eq!(swim.mode, SwimMode::Iwm);
+    }
+
+    #[test]
+    fn swim2_stays_ism() {
+        let mut swim = Swim::new_swim2(&[DriveType::SuperDrive], 16_000_000);
+        assert_eq!(swim.read(reg(REG_STATUS)), Some(0x40));
+        swim.write(reg(REG_MODE_ONE), 0x17);
+        assert_eq!(swim.read(reg(REG_STATUS)), Some(0x57));
+        swim.write(reg(REG_MODE_ZERO), 0xF8);
+        assert_eq!(swim.mode, SwimMode::Ism);
+        assert_eq!(swim.read(reg(REG_STATUS)), Some(0x47));
+
+        // The phase register still answers, which is how the ROM tells
+        // the SWIM2 from the SWIM
+        for val in [0xF5, 0xF6, 0xF7] {
+            swim.write(reg(REG_PHASES), val);
+            assert_eq!(swim.read(reg(REG_PHASES)), Some(val));
+        }
     }
 }
