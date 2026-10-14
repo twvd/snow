@@ -118,6 +118,11 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     pub(crate) scc: Scc,
     pub(crate) asc: Asc,
     via_clock: Ticks,
+    /// Stall of a VIA cycle up to the edge of the VIA clock, until the CPU
+    /// presents the cycle again. Not saved, as a cycle is never in progress
+    /// between instructions.
+    #[serde(skip)]
+    via_stall: Ticks,
     asc_clock: Ticks,
     mouse_ready: bool,
     pub(crate) swim: Swim,
@@ -273,6 +278,7 @@ where
             via1: Via::new(model),
             via2: Via2::new(model),
             via_clock: 0,
+            via_stall: 0,
             scc: Scc::new(),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), 16_000_000),
             scsi: ScsiController::new(),
@@ -570,10 +576,10 @@ where
     /// I/O devices are byte-wide, 8-bit ports. The GLUE inserts one wait
     /// state for the IWM and the SCSI controller (without handshake), two
     /// for ASC reads and one for ASC writes.
-    fn io_cycle(&mut self, acc: BusAccess<Bus68020>) -> BusResponse {
-        match (acc.addr & 0x1_FFFF) >> 13 {
-            0 => bus_access_byte(acc, 0, self, Self::via1_read, Self::via1_write),
-            1 => bus_access_byte(acc, 0, self, Self::via2_read, Self::via2_write),
+    fn io_cycle(&mut self, acc: BusAccess<Bus68020>) -> Result<BusResponse> {
+        Ok(match (acc.addr & 0x1_FFFF) >> 13 {
+            0 => self.via_cycle(acc, Self::via1_read, Self::via1_write)?,
+            1 => self.via_cycle(acc, Self::via2_read, Self::via2_write)?,
             2 => bus_access_byte(acc, 0, self, Self::scc_read, Self::scc_write),
             // SCSI pseudo-DMA only takes the lower 4KB of its slot
             3 if acc.addr & 0x1000 == 0 => {
@@ -588,7 +594,31 @@ where
             11 => bus_access_byte(acc, 1, self, Self::swim_read, Self::swim_write),
             // Expansion area
             _ => BusResponse::BusError,
+        })
+    }
+
+    /// VIA accesses are synchronous with the VIA clock: one starts on its
+    /// next edge and lasts half a VIA clock cycle. The cycle is stalled up to
+    /// that edge, with the bus ticked through it, for the VIA to be accessed
+    /// in its state at that time.
+    fn via_cycle(
+        &mut self,
+        acc: BusAccess<Bus68020>,
+        read: fn(&mut Self, Address, u32) -> Option<u32>,
+        write: fn(&mut Self, Address, u32, u32) -> Option<()>,
+    ) -> Result<BusResponse> {
+        const PERIOD: Ticks = 20 * DEFAULT_BUS_SPEED;
+        if self.via_stall == 0 {
+            let phase = (self.via_clock + acc.pending * C16M_FREQUENCY) % PERIOD;
+            self.via_stall = (PERIOD - phase).div_ceil(C16M_FREQUENCY);
+            return Ok(BusResponse::Stall(self.via_stall));
         }
+        let to_edge = std::mem::take(&mut self.via_stall);
+        let half = PERIOD / C16M_FREQUENCY / 2;
+
+        // Less the 3 clocks of the bus cycle
+        let waits = (to_edge + half).saturating_sub(3);
+        Ok(bus_access_byte(acc, waits, self, read, write))
     }
 
     /// Updates the mouse position (relative coordinates) and button state
@@ -745,7 +775,7 @@ where
             Region::RomOverlay => {
                 bus_access_long(acc, mem_waits, self, Self::rom_read, Self::no_write)
             }
-            Region::Io => self.io_cycle(acc),
+            Region::Io => self.io_cycle(acc)?,
             Region::ExtRom => {
                 bus_access_long(acc, mem_waits, self, Self::ext_rom_read, Self::no_write)
             }
@@ -854,7 +884,6 @@ where
         // 16 MHz, that is slightly less than once every 20 bus cycles.
         self.via_clock += ticks * C16M_FREQUENCY;
         while self.via_clock >= 20 * DEFAULT_BUS_SPEED {
-            // TODO VIA wait states
             self.via_clock -= 20 * DEFAULT_BUS_SPEED;
 
             self.via1.tick(1, ctx)?;
