@@ -1,3 +1,4 @@
+pub mod access;
 pub mod testbus;
 
 use crate::tickable::{Tickable, Ticks};
