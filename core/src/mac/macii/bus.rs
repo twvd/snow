@@ -76,7 +76,8 @@ const fn region(overlay: bool, block: usize) -> Region {
         0x00..=0x4F if overlay => Region::RomOverlay,
         0x00..=0x3F => Region::Ram,
         0x40..=0x4F => Region::Rom,
-        0x50..=0x51 => Region::Io,
+        0x50 => Region::Io,
+        // In the undecoded $51000000-$5FFFFFFF on the real thing
         0x58..=0x5F => Region::ExtRom,
         0x60..=0xEF => Region::SuperSlot,
         0xF9..=0xFE => Region::Slot,
