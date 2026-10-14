@@ -38,6 +38,9 @@ pub const RAM_DIRTY_PAGESIZE: usize = 256;
 /// Wait states of the static RAM
 const RAM_WAITS: Ticks = 1;
 
+/// Time the SCC needs between accesses (1.8us)
+const SCC_RECOVERY: Ticks = DEFAULT_BUS_SPEED * 18 / 10_000_000;
+
 /// Size of the blocks of the address map
 const MAP_BLOCK_SHIFT: u32 = 16;
 const MAP_BLOCKS: usize = 1 << (24 - MAP_BLOCK_SHIFT);
@@ -88,6 +91,8 @@ pub struct MacPortableBus<TRenderer: Renderer> {
     pub(crate) via: Via,
     via_clock: Ticks,
     pub(crate) scc: Scc,
+    /// Bus time the SCC can be accessed again
+    scc_ready: Ticks,
     pub(crate) video: Video<TRenderer>,
     pub(crate) asc: Asc,
     asc_clock: Ticks,
@@ -186,6 +191,7 @@ where
             via_clock: 0,
             video: Video::new(renderer),
             scc: Scc::new(),
+            scc_ready: 0,
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), 16_000_000),
             scsi: ScsiController::new(),
             asc: Asc::default(),
@@ -341,6 +347,21 @@ where
 
     fn normandy_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
         self.normandy.write(addr, val as Byte)
+    }
+
+    /// The SCC is on the upper byte lane, A/B on A1 and D/C on A2. The GLU
+    /// holds off an access until it has had the time it needs since the
+    /// previous one.
+    ///
+    /// The GLU makes its /RD and /WR from A15 too: reads are documented at
+    /// $FD0000 and writes at $FD8000. What an access to the other half does
+    /// isn't, so the SCC is read on reads and written on writes anywhere.
+    fn scc_cycle(&mut self, acc: BusAccess<Bus68000>) -> BusResponse {
+        let now = self.cycles + acc.pending;
+        let waits = self.scc_ready.saturating_sub(now);
+        // The access itself takes 4 clocks
+        self.scc_ready = now + waits + 4 + SCC_RECOVERY;
+        bus_access_byte_lane::<2, 0, _, _>(acc, waits, self, Self::scc_read, Self::scc_write)
     }
 
     /// The ASC is on the upper byte lane with /UDS as its A0, and a buffer
@@ -555,14 +576,7 @@ where
                 Self::scsi_read,
                 Self::scsi_write,
             ),
-            // On the upper byte lane, A/B on A1 and D/C on A2
-            Region::Scc => bus_access_byte_lane::<2, 0, _, _>(
-                acc,
-                waits,
-                self,
-                Self::scc_read,
-                Self::scc_write,
-            ),
+            Region::Scc => self.scc_cycle(acc),
             // The CPU GLU only has D0-D3: on the lower byte lane
             Region::Normandy => bus_access_byte_lane::<2, 1, _, _>(
                 acc,
@@ -583,19 +597,19 @@ where
                 },
             ),
         };
-        let data = match resp {
-            BusResponse::Ack { data, .. } => data,
+        let (data, waits) = match resp {
+            BusResponse::Ack { data, waits, .. } => (data, waits),
             BusResponse::Stall(_) => unreachable!(),
             BusResponse::BusError if acc.write => {
                 warn!(
                     "Write to unimplemented address: {:08X} {:02X}",
                     acc.addr, acc.data
                 );
-                0
+                (0, waits)
             }
             BusResponse::BusError => {
                 warn!("Read from unimplemented address: {:08X}", acc.addr);
-                Self::OPENBUS.into()
+                (Self::OPENBUS.into(), waits)
             }
         };
 
