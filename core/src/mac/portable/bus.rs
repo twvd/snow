@@ -35,6 +35,9 @@ use serde::{Deserialize, Serialize};
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
+/// Wait states of the static RAM
+const RAM_WAITS: Ticks = 1;
+
 /// Size of the blocks of the address map
 const MAP_BLOCK_SHIFT: u32 = 16;
 const MAP_BLOCKS: usize = 1 << (24 - MAP_BLOCK_SHIFT);
@@ -476,12 +479,17 @@ where
 
     /// Wait states of a bus cycle
     fn wait_states(&self, region: Region, acc: &BusAccess<Bus68000>) -> Ticks {
-        match region {
-            Region::Ram | Region::Rom | Region::RomOverRam => {
-                self.normandy.wait_states(acc.addr, acc.size).unwrap_or(0)
-            }
-            _ => 0,
-        }
+        let memory = match region {
+            Region::Ram => RAM_WAITS,
+            Region::RomOverRam if acc.write => RAM_WAITS,
+            // TODO the ROM has 2, which the power manager model can't cope
+            // with yet
+            Region::Rom | Region::RomOverRam => 0,
+            _ => return 0,
+        };
+        self.normandy
+            .wait_states(acc.addr, acc.size)
+            .unwrap_or(memory)
     }
 
     /// Programmer's key pressed
