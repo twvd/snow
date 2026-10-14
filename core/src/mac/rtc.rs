@@ -237,6 +237,28 @@ impl Rtc {
         self.effective_speed
     }
 
+    /// Reads the clock directly, for controllers which hold the clock themselves
+    pub fn seconds(&self) -> u32 {
+        self.data.seconds
+    }
+
+    /// Sets the clock directly
+    pub fn set_seconds(&mut self, seconds: u32) {
+        self.data.seconds = seconds;
+    }
+
+    /// Reads a byte of PRAM directly, for controllers which hold the PRAM
+    /// themselves
+    pub fn pram_read(&self, addr: u8) -> u8 {
+        self.data.pram[usize::from(addr)]
+    }
+
+    /// Writes a byte of PRAM directly, without the write protection of the
+    /// clock chip
+    pub fn pram_write(&mut self, addr: u8, val: u8) {
+        self.data.pram[usize::from(addr)] = val;
+    }
+
     /// Updates RTC I/O lines from the VIA.
     pub fn io(&mut self, enable: bool, clk: bool, data: bool) -> bool {
         let mut res = true;

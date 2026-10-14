@@ -95,6 +95,8 @@ enum SwimMode {
 #[derive(Serialize, Deserialize)]
 pub struct Swim {
     ism_available: bool,
+    /// False on the SWIM2, which only has the ISM register set
+    iwm_available: bool,
 
     cycles: Ticks,
     bit_cycles: Ticks,
@@ -125,7 +127,7 @@ pub struct Swim {
     ism_phase_mask: u8,
     ism_error: IsmError,
     ism_mode: IsmStatus,
-    ism_params: [u8; 16],
+    ism_params: Vec<u8>,
     ism_param_idx: usize,
     ism_setup: IsmSetup,
     ism_switch_ctr: usize,
@@ -158,6 +160,7 @@ impl Swim {
                 )
             }),
             ism_available,
+            iwm_available: true,
 
             cycles: 0,
             bit_cycles: 0,
@@ -187,7 +190,7 @@ impl Swim {
             ism_phase_mask: 0xF0,
             ism_error: IsmError(0),
             ism_mode: IsmStatus(0),
-            ism_params: [0; 16],
+            ism_params: vec![0; 16],
             ism_param_idx: 0,
             ism_setup: IsmSetup(0),
             ism_switch_ctr: 0,
@@ -204,6 +207,15 @@ impl Swim {
             dbg_pc: 0,
             dbg_break: LatchingEvent::default(),
         }
+    }
+
+    pub fn new_swim2(drives: &[DriveType], base_frequency: Ticks) -> Self {
+        let mut swim = Self::new(drives, true, base_frequency);
+        swim.iwm_available = false;
+        swim.mode = SwimMode::Ism;
+        swim.ism_mode.set_ism(true);
+        swim.ism_params = vec![0; 4];
+        swim
     }
 
     fn get_selected_drive_idx(&self) -> usize {
@@ -332,6 +344,8 @@ impl Tickable for Swim {
                 SwimMode::Iwm => self.iwm_tick(ticks)?,
                 SwimMode::Ism => self.ism_tick(ticks)?,
             }
+        } else if self.mode == SwimMode::Ism {
+            self.ism_tick_no_disk(ticks);
         }
 
         Ok(ticks)

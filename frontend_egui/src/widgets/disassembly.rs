@@ -82,7 +82,8 @@ impl DisassemblyWidget {
             | MacModel::MacIIx
             | MacModel::MacIIcx
             | MacModel::SE30 => 0x40000,
-            MacModel::Classic => 0x80000,
+            MacModel::Classic | MacModel::LC | MacModel::LCII => 0x80000,
+            MacModel::LCIII => 0x100000,
             _ => 0x200000,
         };
 

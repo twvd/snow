@@ -215,7 +215,7 @@ enum DriveWriteReg {
 #[derive(Serialize, Deserialize)]
 pub(crate) struct FloppyDrive {
     idx: usize,
-    base_frequency: Ticks,
+    pub(super) base_frequency: Ticks,
     pub(crate) drive_type: DriveType,
     pub(super) cycles: Ticks,
 
@@ -408,7 +408,9 @@ impl FloppyDrive {
             }
             HeadStepDirection::Down => {
                 if self.track == 0 {
-                    error!("Drive {}: head moving lower than track 0", self.idx);
+                    // The Sony driver recalibrates some drives with 80 steps,
+                    // without looking at the track 0 signal
+                    trace!("Drive {}: head moving lower than track 0", self.idx);
                 } else {
                     self.track -= 1;
                 }
