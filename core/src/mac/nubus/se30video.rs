@@ -146,10 +146,10 @@ where
         if !self.vblank_enable {
             self.vblank_irq = false;
         }
-        if self.vblank_ticks >= ctx.bus_frequency() / 60 {
+        if self.vblank_ticks >= ctx.base_frequency() / 60 {
             self.render()?;
 
-            self.vblank_ticks -= ctx.bus_frequency() / 60;
+            self.vblank_ticks -= ctx.base_frequency() / 60;
             if self.vblank_enable {
                 self.vblank_irq = true;
             }

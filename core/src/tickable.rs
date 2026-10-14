@@ -9,27 +9,27 @@ pub trait Tickable<TContext = ()> {
     fn tick(&mut self, ticks: Ticks, ctx: TContext) -> Result<Ticks>;
 }
 
-/// Converts ticks from one clock frequency (A) to another (B).
+/// Converts ticks from one clock frequency (IN) to another (OUT).
 ///
-/// Frequency A can be decided at runtime, while frequency B must be
+/// Frequency IN can be decided at runtime, while frequency OUT must be
 /// specified as a const generic.
 ///
-/// Rational arithmetic is used to prevent errors from accumulating.
-/// The struct holds the numerator `N` in `N / B_FREQ`, where `B_FREQ`
-/// is the frequency of clock B.
+/// Rational arithmetic is used to prevent errors.
+/// The struct holds the numerator `N` in `N / OUT_FREQ`, where `OUT_FREQ`
+/// is the frequency of clock OUT.
 #[derive(Default, Serialize, Deserialize)]
-pub struct TickConverter<const B_FREQ: Ticks>(Ticks);
+pub struct TickConverter<const OUT_FREQ: Ticks>(Ticks);
 
-impl<const B_FREQ: Ticks> TickConverter<B_FREQ> {
-    pub fn add_a_ticks(&mut self, a_ticks: Ticks) {
-        self.0 += B_FREQ * a_ticks;
+impl<const OUT_FREQ: Ticks> TickConverter<OUT_FREQ> {
+    pub fn add_in_ticks(&mut self, in_ticks: Ticks) {
+        self.0 += OUT_FREQ * in_ticks;
     }
 
-    pub fn get_b_ticks(&self, a_freq: Ticks) -> Ticks {
-        self.0 / a_freq
+    pub fn get_out_ticks(&self, in_freq: Ticks) -> Ticks {
+        self.0 / in_freq
     }
 
-    pub fn subtract_b_ticks(&mut self, b_ticks: Ticks, a_freq: Ticks) {
-        self.0 -= a_freq * b_ticks;
+    pub fn subtract_out_ticks(&mut self, out_ticks: Ticks, in_freq: Ticks) {
+        self.0 -= in_freq * out_ticks;
     }
 }
