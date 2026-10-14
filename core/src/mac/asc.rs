@@ -157,7 +157,9 @@ impl Asc {
             let table_offset = (c.phase.0 >> 15) & 0x1FF;
             sample += self.wavetables[i * 0x200 + table_offset as usize] as u16;
         }
-        ((sample >> 2) as u8, (sample >> 2) as u8)
+        self.l_last = (sample >> 2) as u8;
+        self.r_last = self.l_last;
+        (self.l_last, self.r_last)
     }
 
     /// Sample the ASC for FIFO mode
@@ -189,7 +191,8 @@ impl Asc {
     /// Ticks the ASC at the sample rate
     pub fn tick(&mut self, queue_sample: bool) -> Result<()> {
         let (l, r) = match self.mode {
-            AscMode::Off => (0, 0),
+            // The output holds the last sample of the previous mode
+            AscMode::Off => (self.l_last, self.r_last),
             AscMode::Fifo => self.sample_fifo(),
             AscMode::Wavetable => self.sample_wavetable(),
         };
