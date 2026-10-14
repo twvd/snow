@@ -95,8 +95,10 @@ const TX_GAP: usize = 28 * PM_CLOCK;
 /// Time the host has to take a byte of a reply: 256 rounds of the polling
 /// loop at $EA47
 const TX_TIMEOUT: usize = 256 * 15 * PM_CLOCK;
-/// Time to run a command (not measured)
-const COMMAND_TIME: usize = 10;
+/// Time from the last byte of a command to the first byte of its reply:
+/// the firmware's dispatch from its main loop ($E920) and the start of the
+/// reply ($EA10), not counting the command itself
+const COMMAND_TIME: usize = 110 * PM_CLOCK;
 
 /// Handshake with the host, a byte at a time on /PMREQ and /PMACK, as the
 /// firmware does it
