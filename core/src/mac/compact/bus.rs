@@ -656,7 +656,6 @@ where
 
         self.end_overlay(acc.addr, acc.write);
         let region = self.map[usize::from(self.overlay)][(acc.addr >> MAP_BLOCK_SHIFT) as usize];
-        let se = self.model >= MacModel::SE;
         let resp = match region {
             Region::Ram => bus_access_word(acc, waits, self, Self::ram_read, Self::ram_write),
             Region::RamOverlay => {
@@ -667,10 +666,6 @@ where
                 bus_access_word(acc, waits, self, Self::openbus_read, Self::no_write)
             }
             Region::Scsi => bus_access_word(acc, waits, self, Self::scsi_read, Self::scsi_write),
-            // TODO the SE and Classic SCC, IWM and VIA only take part of
-            // their block
-            Region::Scc | Region::Via if se && acc.addr & 0x0001_0000 == 0 => BusResponse::BusError,
-            Region::Iwm if se && acc.addr < 0x00DF_E1FF => BusResponse::BusError,
             // Phase adjust (ignore)
             Region::Scc
                 if self.overlay
@@ -979,20 +974,25 @@ fn region_plus(model: MacModel, overlay: bool, addr: Address) -> Region {
     }
 }
 
-/// SE and Classic
+/// SE and Classic, as Apple documented them (Tech Info Library 8295). The
+/// BBU decodes more address lines and leaves everything else floating.
 fn region_se(model: MacModel, overlay: bool, addr: Address) -> Region {
     match addr {
         0x0000_0000..=0x003F_FFFF if !overlay => Region::Ram,
         // ROM in place of the RAM during the boot overlay
         0x0000_0000..=0x000F_FFFF | 0x0020_0000..=0x002F_FFFF => Region::Rom,
-        0x0040_0000..=0x004F_FFFF => Region::Rom,
-        0x0058_0000..=0x005F_FFFF if model.has_scsi() => Region::Scsi,
-        0x0060_0000..=0x006F_FFFF if !overlay => Region::Ram,
+        0x0040_0000..=0x0043_FFFF => Region::Rom,
+        // The Classic ROM is 512KB, with a ROM disk in its upper half
+        0x0044_0000..=0x0047_FFFF if model == MacModel::Classic => Region::Rom,
+        0x0058_0000..=0x005F_FFFF => Region::Scsi,
         0x0060_0000..=0x007F_FFFF if overlay => Region::RamOverlay,
-        0x009E_0000..=0x009F_FFFF | 0x00BE_0000..=0x00BF_FFFF => Region::Scc,
-        0x00DE_0000..=0x00DF_FFFF => Region::Iwm,
-        0x00EE_0000..=0x00EF_FFFF => Region::Via,
-        0x00F0_0000..=0x00F7_FFFF if overlay => Region::PhaseRead,
+        // Read at $900000-$9FFFFF, write at $B00000-$BFFFFF
+        0x0090_0000..=0x009F_FFFF | 0x00B0_0000..=0x00BF_FFFF => Region::Scc,
+        // $AA0000-$AFFFFF selects the expansion slot (PDS), which has
+        // nothing in it
+        0x00D0_0000..=0x00DF_FFFF => Region::Iwm,
+        0x00E8_0000..=0x00EF_FFFF => Region::Via,
+        // Not in the real map
         0x00F8_0000..=0x00F9_FFFF => Region::ExtRom,
         _ => Region::None,
     }
