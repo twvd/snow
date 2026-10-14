@@ -640,6 +640,7 @@ where
 #[allow(clippy::bool_assert_comparison)]
 mod tests {
     use crate::bus::Address;
+    use crate::bus::access::Bus68020;
     use crate::bus::testbus::Testbus;
     use crate::cpu_m68k::{CpuM68020Fpu, M68020_ADDRESS_MASK};
     use crate::types::Byte;
@@ -684,8 +685,9 @@ mod tests {
         for v in values {
             eprintln!("Testing {} / {:?}", &v, &v);
 
-            let mut cpu =
-                CpuM68020Fpu::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
+            let mut cpu = CpuM68020Fpu::<Testbus<Address, Byte, Bus68020>>::new(Testbus::new(
+                M68020_ADDRESS_MASK,
+            ));
 
             // Ensure _something_ was written
             for a in 0..12 {
@@ -726,8 +728,9 @@ mod tests {
         for v in values {
             eprintln!("Testing {} / {:?}", &v, &v);
 
-            let mut cpu =
-                CpuM68020Fpu::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
+            let mut cpu = CpuM68020Fpu::<Testbus<Address, Byte, Bus68020>>::new(Testbus::new(
+                M68020_ADDRESS_MASK,
+            ));
 
             // Ensure _something_ was written
             for a in 0..8 {
@@ -768,8 +771,9 @@ mod tests {
         for v in values {
             eprintln!("Testing {} / {:?}", &v, &v);
 
-            let mut cpu =
-                CpuM68020Fpu::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
+            let mut cpu = CpuM68020Fpu::<Testbus<Address, Byte, Bus68020>>::new(Testbus::new(
+                M68020_ADDRESS_MASK,
+            ));
 
             // Ensure _something_ was written
             for a in 0..4 {
@@ -1308,8 +1312,9 @@ mod tests {
     #[test]
     fn test_memory_bias_persistence() {
         // Test that bias is correctly preserved when storing/loading from memory
-        let mut cpu =
-            CpuM68020Fpu::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
+        let mut cpu = CpuM68020Fpu::<Testbus<Address, Byte, Bus68020>>::new(Testbus::new(
+            M68020_ADDRESS_MASK,
+        ));
 
         let test_exponents = vec![-1000, -1, 0, 1, 1000];
 

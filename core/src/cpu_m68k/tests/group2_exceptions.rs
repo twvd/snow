@@ -3,11 +3,12 @@
 //! Ported with permission from tests written by Howard Price
 
 use crate::bus::Address;
+use crate::bus::access::Bus68000;
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::{CpuM68000, M68000_ADDRESS_MASK};
 use crate::types::{Long, Word};
 
-type TestCpu = CpuM68000<Testbus<Address, u8>>;
+type TestCpu = CpuM68000<Testbus<Address, u8, Bus68000>>;
 
 /// Initialize a test system with code at a given PC
 fn testcpu(initial_ssp: Address, initial_pc: Address, code: &[u16]) -> TestCpu {

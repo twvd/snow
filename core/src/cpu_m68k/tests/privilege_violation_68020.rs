@@ -8,12 +8,13 @@
 //! Ported with permission from tests written by Howard Price
 
 use crate::bus::Address;
+use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::cpu::PrefetchWord;
 use crate::cpu_m68k::{CpuM68020Fpu, M68020_ADDRESS_MASK};
 use crate::types::{Long, Word};
 
-type TestCpu = CpuM68020Fpu<Testbus<Address, u8>>;
+type TestCpu = CpuM68020Fpu<Testbus<Address, u8, Bus68020>>;
 
 /// Initialize a test system with code at a given PC
 fn testcpu(initial_ssp: Address, initial_pc: Address, code: &[u16]) -> TestCpu {

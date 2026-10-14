@@ -4293,6 +4293,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::bus::access::{Bus68000, Bus68020};
     use crate::bus::testbus::Testbus;
     use crate::cpu_m68k::{CpuM68000, CpuM68020Fpu, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK};
 
@@ -4300,15 +4301,17 @@ mod tests {
 
     #[test]
     fn sr_68000() {
-        let mut cpu = CpuM68000::<Testbus<Address, Byte>>::new(Testbus::new(M68000_ADDRESS_MASK));
+        let mut cpu =
+            CpuM68000::<Testbus<Address, Byte, Bus68000>>::new(Testbus::new(M68000_ADDRESS_MASK));
         cpu.set_sr(0xFFFF);
         assert!(!cpu.regs.sr.m());
     }
 
     #[test]
     fn sr_68020() {
-        let mut cpu =
-            CpuM68020Fpu::<Testbus<Address, Byte>>::new(Testbus::new(M68020_ADDRESS_MASK));
+        let mut cpu = CpuM68020Fpu::<Testbus<Address, Byte, Bus68020>>::new(Testbus::new(
+            M68020_ADDRESS_MASK,
+        ));
         cpu.set_sr(0xFFFF);
         assert!(cpu.regs.sr.m());
     }

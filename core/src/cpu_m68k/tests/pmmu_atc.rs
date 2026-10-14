@@ -1,11 +1,12 @@
 //! Tests for the PMMU address translation cache
 
 use crate::bus::Address;
+use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::pmmu::translate::{PMMU_ATC_SRP, PmmuAtcEntry};
 use crate::cpu_m68k::{CpuM68030Fpu, M68030_ADDRESS_MASK};
 
-type TestCpu = CpuM68030Fpu<Testbus<Address, u8>>;
+type TestCpu = CpuM68030Fpu<Testbus<Address, u8, Bus68020>>;
 
 const KEY: usize = 4;
 
