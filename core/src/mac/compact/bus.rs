@@ -398,8 +398,8 @@ where
         None
     }
 
-    // The SCSI controller and the SCC answer on every byte of their range.
-    // A word read gets the byte twice, a word write writes its low byte.
+    // The SCSI controller answers on every byte of its range. A word read
+    // gets the byte twice, a word write writes its low byte.
 
     fn scsi_read(&mut self, addr: Address, len: u32) -> Option<u32> {
         self.scsi.read(addr).map(|v| both_bytes(v, len))
@@ -409,20 +409,61 @@ where
         self.scsi.write(addr, val as Byte)
     }
 
-    fn scc_read(&mut self, addr: Address, len: u32) -> Option<u32> {
-        self.scc.read(addr >> 1).map(|v| both_bytes(v, len))
+    fn scc_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
+        self.scc.read(addr >> 1).map(u32::from)
     }
 
     fn scc_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
         self.scc.write(addr >> 1, val as Byte)
     }
 
-    /// Reads of $9FFFF7 and $9FFFF9 adjust the phase
-    fn scc_phase_read(&mut self, addr: Address, len: u32) -> Option<u32> {
-        if addr & 1 != 0 {
-            Some(0)
-        } else {
-            self.scc_read(addr, len)
+    /// The SCC is on the upper byte lane. Its /RD comes from the address
+    /// decode (the read range, A21=0, whatever the direction) and its /WR is
+    /// /LDS, asserted by accesses to the odd byte.
+    fn scc_cycle(&mut self, acc: BusAccess<Bus68000>, waits: Ticks) -> BusResponse {
+        let rd = acc.addr & 0x0020_0000 == 0;
+        let wr = acc.addr & 1 != 0 || acc.size == 2;
+        match (rd, wr) {
+            (true, false) => bus_access_byte_lane::<2, 0, _, _>(
+                acc,
+                waits,
+                self,
+                Self::scc_read,
+                |bus, addr, len, _| bus.scc_read(addr, len).map(|_| ()),
+            ),
+            // Latches its floating lane on a read
+            (false, true) => bus_access_byte_lane::<2, 0, _, _>(
+                acc,
+                waits,
+                self,
+                |bus, addr, len| {
+                    bus.scc_write(addr, len, 0xFF)?;
+                    Some(0xFF)
+                },
+                Self::scc_write,
+            ),
+            // Both strobes at once reset the SCC. A word access also adjusts
+            // the phase of the video timing, which is not emulated.
+            (true, true) => bus_access_byte_lane::<2, 0, _, _>(
+                acc,
+                waits,
+                self,
+                |bus, _, _| {
+                    bus.scc = Scc::new();
+                    Some(0xFF)
+                },
+                |bus, _, _, _| {
+                    bus.scc = Scc::new();
+                    Some(())
+                },
+            ),
+            (false, false) => bus_access_byte_lane::<2, 0, _, _>(
+                acc,
+                waits,
+                self,
+                |_, _, _| Some(0xFF),
+                |_, _, _, _| Some(()),
+            ),
         }
     }
 
@@ -666,15 +707,7 @@ where
                 bus_access_word(acc, waits, self, Self::openbus_read, Self::no_write)
             }
             Region::Scsi => bus_access_word(acc, waits, self, Self::scsi_read, Self::scsi_write),
-            // Phase adjust (ignore)
-            Region::Scc
-                if self.overlay
-                    && !acc.write
-                    && (0x009F_FFF6..=0x009F_FFF9).contains(&acc.addr) =>
-            {
-                bus_access_word(acc, waits, self, Self::scc_phase_read, Self::no_write)
-            }
-            Region::Scc => bus_access_word(acc, waits, self, Self::scc_read, Self::scc_write),
+            Region::Scc => self.scc_cycle(acc, waits),
             // On the lower byte lane, at odd addresses
             Region::Iwm => bus_access_byte_lane::<2, 1, _, _>(
                 acc,
