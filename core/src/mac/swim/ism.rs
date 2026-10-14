@@ -259,7 +259,8 @@ impl Swim {
                             ))
                             .with_crc_error(!last_entry.crc_valid())
                             .with_sense(
-                                !self.get_selected_drive().is_present()
+                                !self.ism_drive_enabled()
+                                    || !self.get_selected_drive().is_present()
                                     || self
                                         .get_selected_drive()
                                         .read_sense(self.get_selected_drive_reg_u8()),
@@ -661,6 +662,9 @@ mod tests {
 
     const DRIVE_MOTOR_ON: u8 = 0b0100;
 
+    /// CA1 high: motor on with SEL low, low when it is
+    const PHASES_MOTOR_ON: u8 = 0xF2;
+
     /// CA0, CA1 and CA2 high, LSTRB low then high: eject with SEL low
     const PHASES_EJECT: [u8; 2] = [0xF7, 0xFF];
 
@@ -847,5 +851,15 @@ mod tests {
         }
         swim.tick(1, ()).unwrap();
         assert!(!swim.drives[0].floppy_inserted);
+    }
+
+    #[test]
+    fn sense_no_drive_enabled() {
+        let mut swim = swim(0x20);
+        swim.write(reg(REG_PHASES), PHASES_MOTOR_ON);
+        assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0x08, 0x00);
+
+        swim.write(reg(REG_MODE_ZERO), MODE_DRIVE1);
+        assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0x08, 0x08);
     }
 }
