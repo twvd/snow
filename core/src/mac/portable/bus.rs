@@ -295,7 +295,7 @@ where
             Region::Rom | Region::RomOverRam => {
                 Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
             }
-            Region::SlimRom | Region::Normandy => self.normandy.read(addr),
+            Region::SlimRom => self.normandy.read(addr),
             Region::ExtRom => Some(
                 *self
                     .extension_rom
@@ -311,7 +311,6 @@ where
         match region {
             Region::Ram | Region::RomOverRam => self.normal_ram_write(addr, val),
             Region::Rom | Region::Ignored | Region::SlimRom => Some(()),
-            Region::Normandy => self.normandy.write(addr, val),
             Region::Video => Some(self.video.framebuffer[(addr & 0x7FFF) as usize] = val),
             _ => None,
         }
@@ -347,6 +346,14 @@ where
 
     fn scc_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
         self.scc.write(addr >> 1, val as Byte)
+    }
+
+    fn normandy_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
+        self.normandy.read(addr).map(u32::from)
+    }
+
+    fn normandy_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
+        self.normandy.write(addr, val as Byte)
     }
 
     /// The ASC is on the upper byte lane with /UDS as its A0, and a buffer
@@ -577,6 +584,14 @@ where
                 self,
                 Self::scc_read,
                 Self::scc_write,
+            ),
+            // The CPU GLU only has D0-D3: on the lower byte lane
+            Region::Normandy => bus_access_byte_lane::<2, 1, _, _>(
+                acc,
+                waits,
+                self,
+                Self::normandy_read,
+                Self::normandy_write,
             ),
             Region::Asc => bus_access_word(acc, waits, self, Self::asc_read, Self::asc_write),
             _ => bus_access_word(
