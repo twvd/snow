@@ -459,6 +459,22 @@ impl Swim {
         }
 
         // Read mode
+        if self.ism_setup.gcr() {
+            // A byte is complete when its most significant bit is set
+            if self.ism_shreg & 0x80 != 0 {
+                self.ism_fifo.push_back(IsmFifoEntry::Data {
+                    value: self.ism_shreg as u8,
+                    crc_valid: false,
+                });
+                if self.ism_fifo.len() > 2 {
+                    self.ism_error.set_underrun(true);
+                    self.ism_fifo.pop_front();
+                }
+                self.ism_shreg = 0;
+            }
+            return Ok(());
+        }
+
         if !self.ism_synced && self.ism_shreg == Self::MFM_SYNC_MARKER {
             // Synchronized to the markers now, get ready to clock out bytes
             self.ism_shreg_cnt = 0;
@@ -521,6 +537,11 @@ impl Swim {
             //);
 
             match entry {
+                entry if self.ism_setup.tsm_disable() => {
+                    // GCR, the bytes are written as they are
+                    self.ism_write_shreg = u16::from(entry.inner()) << 8;
+                    self.ism_write_shreg_cnt = 8;
+                }
                 IsmFifoEntry::Marker(data) => {
                     // Markers use pre-encoded sync pattern (0xA1 with missing clock)
                     // Reset CRC when marker is encountered
@@ -578,5 +599,116 @@ impl Swim {
         self.ism_write_shreg_cnt -= 1;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use snow_floppy::{FloppyImage, FloppyType};
+
+    use super::*;
+    use crate::bus::BusMember;
+    use crate::mac::swim::drive::DriveType;
+    use crate::tickable::Tickable;
+
+    const REG_DATA: Address = 0;
+    const REG_ERROR: Address = 2;
+    const REG_SETUP: Address = 5;
+    const REG_MODE_ZERO: Address = 6;
+    const REG_MODE_ONE: Address = 7;
+    const REG_HANDSHAKE: Address = 7;
+
+    const MODE_CLEAR_FIFO: u8 = 0x01;
+    const MODE_DRIVE1: u8 = 0x02;
+    const MODE_ACTION: u8 = 0x08;
+    const MODE_WRITE: u8 = 0x10;
+
+    const DRIVE_MOTOR_ON: u8 = 0b0100;
+
+    fn reg(reg: Address) -> Address {
+        reg << 9
+    }
+
+    /// SWIM in ISM mode, a disk spinning in the first drive
+    fn swim(setup: u8) -> Swim {
+        let mut swim = Swim::new(&[DriveType::SuperDrive], true, 16_000_000);
+        swim.disk_insert(0, FloppyImage::new(FloppyType::Mac800K, ""))
+            .unwrap();
+        swim.drives[0].write_drive_reg(DRIVE_MOTOR_ON, 0);
+        swim.drives[0].not_ready = 0;
+
+        // Q6 on, then the sequence on the mode register
+        swim.write(reg(13), 0);
+        for val in [0x57, 0x17, 0x57, 0x57] {
+            swim.write(reg(15), val);
+        }
+        assert_eq!(swim.mode, SwimMode::Ism);
+
+        swim.write(reg(REG_SETUP), setup);
+        swim.write(reg(REG_MODE_ONE), MODE_DRIVE1);
+        swim
+    }
+
+    fn start(swim: &mut Swim, mode: u8) {
+        swim.write(reg(REG_MODE_ZERO), MODE_WRITE | MODE_ACTION);
+        swim.write(reg(REG_MODE_ONE), mode);
+        swim.write(reg(REG_MODE_ONE), MODE_CLEAR_FIFO);
+        swim.write(reg(REG_MODE_ZERO), MODE_CLEAR_FIFO);
+        swim.read(reg(REG_ERROR));
+    }
+
+    fn tick_bit(swim: &mut Swim) {
+        let ticks = swim.drives[0].get_ticks_per_bit();
+        swim.tick(ticks, ()).unwrap();
+    }
+
+    #[test]
+    fn gcr_write_read() {
+        const DATA: [u8; 8] = [0xFF, 0xD5, 0xAA, 0x96, 0x9A, 0xB3, 0xDE, 0xAA];
+
+        let mut swim = swim(0x44);
+        let position = swim.drives[0].track_position;
+
+        start(&mut swim, MODE_WRITE);
+        let mut data = DATA.iter();
+        swim.write(reg(REG_DATA), *data.next().unwrap());
+        swim.write(reg(REG_MODE_ONE), MODE_ACTION);
+        while swim.ism_mode.action() {
+            if swim.read(reg(REG_HANDSHAKE)).unwrap() & 0x80 != 0
+                && let Some(val) = data.next()
+            {
+                swim.write(reg(REG_DATA), *val);
+            }
+            tick_bit(&mut swim);
+        }
+        // The write ends when the FIFO runs empty
+        assert_eq!(swim.read(reg(REG_ERROR)), Some(0x01));
+        assert_eq!(swim.drives[0].track_position, position + DATA.len() * 8 + 1);
+
+        swim.drives[0].track_position = position;
+        start(&mut swim, 0);
+        swim.write(reg(REG_MODE_ONE), MODE_ACTION);
+        let mut read = vec![];
+        while read.len() < DATA.len() {
+            tick_bit(&mut swim);
+            if swim.read(reg(REG_HANDSHAKE)).unwrap() & 0x80 != 0 {
+                read.push(swim.read(reg(REG_DATA)).unwrap());
+            }
+        }
+        assert_eq!(read, DATA);
+        assert_eq!(swim.read(reg(REG_ERROR)), Some(0x00));
+    }
+
+    #[test]
+    fn gcr_read_overrun() {
+        let mut swim = swim(0x44);
+        start(&mut swim, 0);
+        swim.write(reg(REG_MODE_ONE), MODE_ACTION);
+        // Nothing reads the FIFO
+        for _ in 0..100 {
+            tick_bit(&mut swim);
+        }
+        assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0xE0, 0xE0);
+        assert_eq!(swim.read(reg(REG_ERROR)), Some(0x01));
     }
 }
