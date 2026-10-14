@@ -232,10 +232,12 @@ fn test_privilege_violation_exception_68020(code: &[u16], test_name: &str, expec
         test_name
     );
 
+    // MC68020 UM (1984) 9.2.17: privilege violation, worst case (no cache)
+    // 27 (1/2/4)
     let length_cycles = cpu.cycles - cycles_start;
     assert_eq!(
-        length_cycles, 34,
-        "{}: Expect privilege violation to take 34 clocks",
+        length_cycles, 27,
+        "{}: Expect privilege violation to take 27 clocks",
         test_name
     );
 

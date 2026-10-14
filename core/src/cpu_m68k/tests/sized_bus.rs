@@ -49,7 +49,7 @@ fn long_read_port_widths() {
     for (width, cycles) in [(2, 1), (1, 3)] {
         let cpu = run(MOVE_L_A0_D0, width, DATA, 0);
         assert_eq!(cpu.regs.read_d::<Long>(0), 0x1122_3344);
-        assert_eq!(cpu.cycles, base.cycles + cycles * 4);
+        assert_eq!(cpu.cycles, base.cycles + cycles * 3);
     }
 }
 
@@ -60,12 +60,12 @@ fn misaligned_long_read() {
     // 3 + 1 bytes on a 32-bit port
     let cpu = run(MOVE_L_A0_D0, 4, DATA + 1, 0);
     assert_eq!(cpu.regs.read_d::<Long>(0), 0x2233_4455);
-    assert_eq!(cpu.cycles, base.cycles + 4);
+    assert_eq!(cpu.cycles, base.cycles + 3);
 
     // 1 + 2 + 1 bytes on a 16-bit port
     let cpu = run(MOVE_L_A0_D0, 2, DATA + 1, 0);
     assert_eq!(cpu.regs.read_d::<Long>(0), 0x2233_4455);
-    assert_eq!(cpu.cycles, base.cycles + 8);
+    assert_eq!(cpu.cycles, base.cycles + 6);
 }
 
 #[test]

@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use super::via2::Via2;
 use crate::bus::access::{Bus68020, BusAccess, BusResponse, bus_access_byte, bus_access_long};
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
+use crate::cpu_m68k::M68020;
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
@@ -390,6 +391,16 @@ where
         Some(())
     }
 
+    /// Wait states of a RAM or ROM access: one for the memory, and one for
+    /// the address translation by the AMU or PMMU of the 68020 machines
+    fn mem_waits(&self) -> Ticks {
+        if self.model.cpu_type() == M68020 {
+            2
+        } else {
+            1
+        }
+    }
+
     fn ram_read(&mut self, addr: Address, len: u32) -> Option<u32> {
         Some((addr..addr + len).fold(0, |v, a| {
             let idx = a as usize & self.ram_mask;
@@ -720,12 +731,19 @@ where
         }
 
         let overlay = self.overlay && !amu;
+        let mem_waits = self.mem_waits();
         let resp = match MAP[usize::from(overlay)][(acc.addr >> 24) as usize] {
-            Region::Ram => bus_access_long(acc, 0, self, Self::ram_read, Self::ram_write),
-            Region::Rom => bus_access_long(acc, 0, self, Self::rom_read, Self::ignore_write),
-            Region::RomOverlay => bus_access_long(acc, 0, self, Self::rom_read, Self::no_write),
+            Region::Ram => bus_access_long(acc, mem_waits, self, Self::ram_read, Self::ram_write),
+            Region::Rom => {
+                bus_access_long(acc, mem_waits, self, Self::rom_read, Self::ignore_write)
+            }
+            Region::RomOverlay => {
+                bus_access_long(acc, mem_waits, self, Self::rom_read, Self::no_write)
+            }
             Region::Io => self.io_cycle(acc),
-            Region::ExtRom => bus_access_long(acc, 0, self, Self::ext_rom_read, Self::no_write),
+            Region::ExtRom => {
+                bus_access_long(acc, mem_waits, self, Self::ext_rom_read, Self::no_write)
+            }
             Region::SuperSlot => {
                 bus_access_long(acc, 0, self, Self::superslot_read, Self::superslot_write)
             }

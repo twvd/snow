@@ -19,8 +19,11 @@ pub const FC_SUPERVISOR_DATA: u8 = 5;
 pub const FC_SUPERVISOR_PROGRAM: u8 = 6;
 pub const FC_MASK: u8 = 0b1111;
 
-/// CPU cycles of a bus cycle without wait states
-const BUS_CYCLE: Ticks = 4;
+/// CPU cycles of a bus cycle without wait states: 4 on the 68000, 3 for
+/// the asynchronous bus cycle of the 68020 and 68030
+const fn bus_cycle_ticks(cpu: CpuM68kType) -> Ticks {
+    if cpu >= M68020 { 3 } else { 4 }
+}
 
 /// Low `bytes` bytes of `val`
 const fn low_bytes(val: Long, bytes: u32) -> Long {
@@ -208,7 +211,7 @@ where
         if waits > 0 {
             self.history_current.waitstates = true;
         }
-        *ticks += (BUS_CYCLE + waits).saturating_sub(stalled);
+        *ticks += (bus_cycle_ticks(CPU_TYPE) + waits).saturating_sub(stalled);
 
         let len = if CPU_TYPE >= M68020 {
             (width - paddr % width).min(size)
