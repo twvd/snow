@@ -408,7 +408,9 @@ impl FloppyDrive {
             }
             HeadStepDirection::Down => {
                 if self.track == 0 {
-                    error!("Drive {}: head moving lower than track 0", self.idx);
+                    // The Sony driver recalibrates some drives with 80 steps,
+                    // without looking at the track 0 signal
+                    trace!("Drive {}: head moving lower than track 0", self.idx);
                 } else {
                     self.track -= 1;
                 }
