@@ -36,10 +36,31 @@ use serde::{Deserialize, Serialize};
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
-/// Device read, for `len` bytes at `addr`
-type ReadFn<T> = fn(&mut T, Address, u32) -> Option<u32>;
-/// Device write, of `len` bytes at `addr`
-type WriteFn<T> = fn(&mut T, Address, u32, u32) -> Option<()>;
+/// Size of the blocks of the address map
+const MAP_BLOCK_SHIFT: u32 = 17;
+const MAP_BLOCKS: usize = 1 << (24 - MAP_BLOCK_SHIFT);
+
+/// What answers in a block of the address map
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Region {
+    None,
+    Ram,
+    /// RAM while the boot overlay is on
+    RamOverlay,
+    Rom,
+    /// Reads the open bus
+    OpenBus,
+    Scsi,
+    Scc,
+    Iwm,
+    Via,
+    PhaseRead,
+    /// Test software region / extension ROM
+    ExtRom,
+}
+
+/// Address map: the region of each block, with the boot overlay off and on
+type AddressMap = [[Region; MAP_BLOCKS]; 2];
 
 /// A bus cycle being stalled, between the times the CPU presents it
 #[derive(Default)]
@@ -100,6 +121,9 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     soundbuf_alt: Range<usize>,
 
     overlay: bool,
+
+    #[serde(skip, default = "empty_map")]
+    map: AddressMap,
 
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
@@ -211,6 +235,7 @@ where
             soundbuf_alt: sound_alt_start..(sound_alt_start + Self::SOUNDBUF_SIZE),
 
             overlay: true,
+            map: build_map(model),
             speed: EmulatorSpeed::Accurate,
             bus_frequency: DEFAULT_BUS_SPEED,
             last_audiosample: 0,
@@ -239,6 +264,7 @@ where
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
     pub fn after_deserialize(&mut self, renderer: TRenderer) {
+        self.map = build_map(self.model);
         self.video.renderer = Some(renderer);
         // Make sure we have at least the last frame available
         self.video.render().unwrap();
@@ -306,48 +332,6 @@ where
         }
     }
 
-    /// Device functions for an address
-    fn decode(&mut self, addr: Address, write: bool) -> (ReadFn<Self>, WriteFn<Self>) {
-        self.end_overlay(addr, write);
-        let overlay = self.overlay;
-        match addr {
-            0x0000_0000..=0x003F_FFFF if !overlay => (Self::ram_read, Self::ram_write),
-            // ROM in place of the RAM during the boot overlay
-            0x0000_0000..=0x000F_FFFF | 0x0020_0000..=0x002F_FFFF => {
-                (Self::rom_read, Self::no_write)
-            }
-            0x0040_0000..=0x0043_FFFF => (Self::rom_read, Self::no_write),
-            // Plus with SCSI has no repeated ROM images above 0x440000 as
-            // indication of SCSI controller present.
-            //
-            // 512Ke (using Plus ROM) does have repeated ROM images
-            0x0044_0000..=0x004F_FFFF if self.model == MacModel::Plus && !overlay => {
-                (Self::openbus_read, Self::no_write)
-            }
-            0x0044_0000..=0x004F_FFFF => (Self::rom_read, Self::no_write),
-            0x0058_0000..=0x005F_FFFF if self.model.has_scsi() => {
-                (Self::scsi_read, Self::scsi_write)
-            }
-            0x0060_0000..=0x006F_FFFF if !overlay => (Self::ram_read, Self::ram_write),
-            // RAM during the boot overlay
-            0x0060_0000..=0x007F_FFFF if overlay => (Self::ram_read, Self::ram_write_overlay),
-            // Phase adjust (ignore)
-            0x009F_FFF6..=0x009F_FFF9 if overlay && !write => {
-                (Self::scc_phase_read, Self::no_write)
-            }
-            0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => {
-                (Self::scc_read, Self::scc_write)
-            }
-            0x00DF_E1FF..=0x00DF_FFFF => (Self::iwm_read, Self::iwm_write),
-            0x00EF_0000..=0x00EF_FFFF => (Self::via_read, Self::via_write),
-            // Phase read (ignore)
-            0x00F0_0000..=0x00F7_FFFF if overlay => (Self::zero_read, Self::no_write),
-            // Test software region / extension ROM
-            0x00F8_0000..=0x00F9_FFFF => (Self::ext_rom_read, Self::no_write),
-            _ => (Self::no_read, Self::no_write),
-        }
-    }
-
     fn ram_read(&mut self, addr: Address, len: u32) -> Option<u32> {
         Some((addr..addr + len).fold(0, |v, a| {
             (v << 8) | u32::from(self.ram[a as usize & self.ram_mask])
@@ -408,10 +392,6 @@ where
 
     fn zero_read(&mut self, _addr: Address, _len: u32) -> Option<u32> {
         Some(0)
-    }
-
-    fn no_read(&mut self, _addr: Address, _len: u32) -> Option<u32> {
-        None
     }
 
     fn no_write(&mut self, _addr: Address, _len: u32, _val: u32) -> Option<()> {
@@ -674,8 +654,37 @@ where
         }
         let waits = std::mem::take(&mut self.stalled).waits;
 
-        let (read, write) = self.decode(acc.addr, acc.write);
-        let data = match bus_access_word(acc, waits, self, read, write) {
+        self.end_overlay(acc.addr, acc.write);
+        let region = self.map[usize::from(self.overlay)][(acc.addr >> MAP_BLOCK_SHIFT) as usize];
+        let resp = match region {
+            Region::Ram => bus_access_word(acc, waits, self, Self::ram_read, Self::ram_write),
+            Region::RamOverlay => {
+                bus_access_word(acc, waits, self, Self::ram_read, Self::ram_write_overlay)
+            }
+            Region::Rom => bus_access_word(acc, waits, self, Self::rom_read, Self::no_write),
+            Region::OpenBus => {
+                bus_access_word(acc, waits, self, Self::openbus_read, Self::no_write)
+            }
+            Region::Scsi => bus_access_word(acc, waits, self, Self::scsi_read, Self::scsi_write),
+            // TODO the SCC, IWM and VIA only take part of their block
+            Region::Scc | Region::Via if acc.addr & 0x0001_0000 == 0 => BusResponse::BusError,
+            Region::Iwm if acc.addr < 0x00DF_E1FF => BusResponse::BusError,
+            // Phase adjust (ignore)
+            Region::Scc
+                if self.overlay
+                    && !acc.write
+                    && (0x009F_FFF6..=0x009F_FFF9).contains(&acc.addr) =>
+            {
+                bus_access_word(acc, waits, self, Self::scc_phase_read, Self::no_write)
+            }
+            Region::Scc => bus_access_word(acc, waits, self, Self::scc_read, Self::scc_write),
+            Region::Iwm => bus_access_word(acc, waits, self, Self::iwm_read, Self::iwm_write),
+            Region::Via => bus_access_word(acc, waits, self, Self::via_read, Self::via_write),
+            Region::PhaseRead => bus_access_word(acc, waits, self, Self::zero_read, Self::no_write),
+            Region::ExtRom => bus_access_word(acc, waits, self, Self::ext_rom_read, Self::no_write),
+            Region::None => BusResponse::BusError,
+        };
+        let data = match resp {
             BusResponse::Ack { data, .. } => data,
             BusResponse::Stall(_) => unreachable!(),
             BusResponse::BusError if acc.write => {
@@ -902,8 +911,15 @@ where
         if addr >= 0x80_0000 {
             return None;
         }
-        let (read, _) = self.decode(addr, false);
-        read(self, addr, 1).map(|v| v as Byte)
+        self.end_overlay(addr, false);
+        let val = match self.map[usize::from(self.overlay)][(addr >> MAP_BLOCK_SHIFT) as usize] {
+            Region::Ram | Region::RamOverlay => self.ram_read(addr, 1),
+            Region::Rom => self.rom_read(addr, 1),
+            Region::OpenBus => self.openbus_read(addr, 1),
+            Region::Scsi => self.scsi_read(addr, 1),
+            _ => None,
+        };
+        val.map(|v| v as Byte)
     }
 
     fn inspect_write(&mut self, addr: Address, val: Byte) -> Option<()> {
@@ -911,9 +927,52 @@ where
         if addr >= 0x80_0000 {
             return None;
         }
-        let (_, write) = self.decode(addr, true);
-        write(self, addr, 1, val.into())
+        self.end_overlay(addr, true);
+        let val = val.into();
+        match self.map[usize::from(self.overlay)][(addr >> MAP_BLOCK_SHIFT) as usize] {
+            Region::Ram => self.ram_write(addr, 1, val),
+            Region::RamOverlay => self.ram_write_overlay(addr, 1, val),
+            Region::Scsi => self.scsi_write(addr, 1, val),
+            _ => None,
+        }
     }
+}
+
+/// Region at `addr`
+fn region(model: MacModel, overlay: bool, addr: Address) -> Region {
+    match addr {
+        0x0000_0000..=0x003F_FFFF if !overlay => Region::Ram,
+        // ROM in place of the RAM during the boot overlay
+        0x0000_0000..=0x000F_FFFF | 0x0020_0000..=0x002F_FFFF => Region::Rom,
+        0x0040_0000..=0x0043_FFFF => Region::Rom,
+        // Plus with SCSI has no repeated ROM images above 0x440000 as
+        // indication of SCSI controller present.
+        //
+        // 512Ke (using Plus ROM) does have repeated ROM images
+        0x0044_0000..=0x004F_FFFF if model == MacModel::Plus && !overlay => Region::OpenBus,
+        0x0044_0000..=0x004F_FFFF => Region::Rom,
+        0x0058_0000..=0x005F_FFFF if model.has_scsi() => Region::Scsi,
+        0x0060_0000..=0x006F_FFFF if !overlay => Region::Ram,
+        0x0060_0000..=0x007F_FFFF if overlay => Region::RamOverlay,
+        0x009E_0000..=0x009F_FFFF | 0x00BE_0000..=0x00BF_FFFF => Region::Scc,
+        0x00DE_0000..=0x00DF_FFFF => Region::Iwm,
+        0x00EE_0000..=0x00EF_FFFF => Region::Via,
+        0x00F0_0000..=0x00F7_FFFF if overlay => Region::PhaseRead,
+        0x00F8_0000..=0x00F9_FFFF => Region::ExtRom,
+        _ => Region::None,
+    }
+}
+
+fn build_map(model: MacModel) -> AddressMap {
+    std::array::from_fn(|overlay| {
+        std::array::from_fn(|block| {
+            region(model, overlay == 1, (block as Address) << MAP_BLOCK_SHIFT)
+        })
+    })
+}
+
+fn empty_map() -> AddressMap {
+    [[Region::None; MAP_BLOCKS]; 2]
 }
 
 impl<TRenderer> Debuggable for CompactMacBus<TRenderer>
