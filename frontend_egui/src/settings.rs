@@ -1,6 +1,7 @@
 use anyhow::Result;
 use egui_file_dialog::FileDialogStorage;
-use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer, Serialize};
 use snow_core::mac::{MacModel, NubusDeviceKind};
 use std::path::{Path, PathBuf};
 use strum::{Display, EnumIter};
@@ -29,6 +30,28 @@ pub enum CmdKeyMapping {
     RightCtrl,
 }
 
+/// Custom deserializer that skips entries that cannot be parsed (e.g. a model
+/// or card unknown to this version) instead of failing entirely
+fn deserialize_vec_lenient<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let values: Vec<serde_json::Value> = Vec::deserialize(deserializer)?;
+    let mut out = Vec::new();
+
+    for value in values {
+        match serde_json::from_value::<T>(value.clone()) {
+            Ok(v) => out.push(v),
+            Err(e) => {
+                log::warn!("Skipping invalid settings entry {}: {}", value, e);
+            }
+        }
+    }
+
+    Ok(out)
+}
+
 const MAX_RECENT_WORKSPACES: usize = 10;
 const MAX_RECENT_IMAGES: usize = 10;
 
@@ -42,10 +65,12 @@ pub struct AppSettings {
     pub recent_workspaces: Vec<PathBuf>,
     pub recent_floppy_images: Vec<PathBuf>,
     pub recent_cd_images: Vec<PathBuf>,
+    #[serde(deserialize_with = "deserialize_vec_lenient")]
     pub last_roms: Vec<(MacModel, PathBuf)>,
     // Deprecated; now roms_by_card
     #[serde(skip_serializing)]
     pub last_display_roms: Vec<(MacModel, PathBuf)>,
+    #[serde(deserialize_with = "deserialize_vec_lenient")]
     pub roms_by_card: Vec<(NubusDeviceKind, PathBuf)>,
 
     pub fd_hdd: FileDialogStorage,
@@ -289,5 +314,32 @@ impl AppSettings {
                 (i + 1, path.clone(), display_name)
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_models_and_cards_are_skipped() {
+        let json = r#"{
+            "last_roms": [["Plus", "/a.rom"], ["FutureMac", "/b.rom"], ["SE30", "/c.rom"]],
+            "roms_by_card": [["Toby", "/d.rom"], ["FutureCard", "/e.rom"]],
+            "hide_mode_toasts": true
+        }"#;
+        let settings: AppSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            settings.last_roms,
+            vec![
+                (MacModel::Plus, PathBuf::from("/a.rom")),
+                (MacModel::SE30, PathBuf::from("/c.rom"))
+            ]
+        );
+        assert_eq!(
+            settings.roms_by_card,
+            vec![(NubusDeviceKind::Toby, PathBuf::from("/d.rom"))]
+        );
+        assert!(settings.hide_mode_toasts);
     }
 }
