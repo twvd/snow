@@ -396,6 +396,11 @@ impl Swim {
         }
     }
 
+    /// One of the drive enable lines is asserted
+    fn ism_drive_enabled(&self) -> bool {
+        self.ism_mode.drive1_enable() || self.ism_mode.drive2_enable()
+    }
+
     fn ism_read_phases(&self) -> u8 {
         let mut phases = self.ism_phase_mask & 0xF0;
         if self.ca0 {
@@ -420,7 +425,7 @@ impl Swim {
         self.ca0 = outputs & (1 << 0) != 0;
         self.ca1 = outputs & (1 << 1) != 0;
         self.ca2 = outputs & (1 << 2) != 0;
-        if !self.lstrb && outputs & (1 << 3) != 0 {
+        if !self.lstrb && outputs & (1 << 3) != 0 && self.ism_drive_enabled() {
             // Write strobe
             let reg = self.get_selected_drive_reg_u8();
             let cycles = self.cycles;
@@ -650,10 +655,14 @@ mod tests {
 
     const MODE_CLEAR_FIFO: u8 = 0x01;
     const MODE_DRIVE1: u8 = 0x02;
+    const MODE_MOTOR: u8 = 0x80;
     const MODE_ACTION: u8 = 0x08;
     const MODE_WRITE: u8 = 0x10;
 
     const DRIVE_MOTOR_ON: u8 = 0b0100;
+
+    /// CA0, CA1 and CA2 high, LSTRB low then high: eject with SEL low
+    const PHASES_EJECT: [u8; 2] = [0xF7, 0xFF];
 
     fn reg(reg: Address) -> Address {
         reg << 9
@@ -819,5 +828,24 @@ mod tests {
         swim.tick(BYTE_TICKS, ()).unwrap();
         assert!(!swim.ism_mode.action());
         assert_eq!(swim.read(reg(REG_ERROR)), Some(0x01));
+    }
+
+    #[test]
+    fn strobe_no_drive_enabled() {
+        let mut swim = swim(0x20);
+        swim.write(reg(REG_MODE_ZERO), MODE_DRIVE1);
+
+        for phases in PHASES_EJECT {
+            swim.write(reg(REG_PHASES), phases);
+        }
+        swim.tick(1, ()).unwrap();
+        assert!(swim.drives[0].floppy_inserted);
+
+        swim.write(reg(REG_MODE_ONE), MODE_MOTOR | MODE_DRIVE1);
+        for phases in PHASES_EJECT {
+            swim.write(reg(REG_PHASES), phases);
+        }
+        swim.tick(1, ()).unwrap();
+        assert!(!swim.drives[0].floppy_inserted);
     }
 }
