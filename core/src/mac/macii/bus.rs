@@ -40,6 +40,10 @@ pub const DEFAULT_BUS_SPEED: Ticks = 16_000_000;
 /// Frequency of the master clock (C16M) the VIA clock is derived from
 const C16M_FREQUENCY: Ticks = 15_667_200;
 
+/// Wait states of a NuBus transaction, approximate: the 10 MHz NuBus and
+/// the crossing between its clock and the CPU's add up to about 7 clocks
+const NUBUS_WAITS: Ticks = 4;
+
 /// Time the SCC needs between accesses (2.2us)
 const SCC_RECOVERY: Ticks = DEFAULT_BUS_SPEED * 22 / 10_000_000;
 
@@ -795,10 +799,16 @@ where
             Region::ExtRom => {
                 bus_access_long(acc, mem_waits, self, Self::ext_rom_read, Self::no_write)
             }
-            Region::SuperSlot => {
-                bus_access_long(acc, 0, self, Self::superslot_read, Self::superslot_write)
+            Region::SuperSlot => bus_access_long(
+                acc,
+                NUBUS_WAITS,
+                self,
+                Self::superslot_read,
+                Self::superslot_write,
+            ),
+            Region::Slot => {
+                bus_access_long(acc, NUBUS_WAITS, self, Self::slot_read, Self::slot_write)
             }
-            Region::Slot => bus_access_long(acc, 0, self, Self::slot_read, Self::slot_write),
             Region::None => BusResponse::BusError,
         };
 
