@@ -10,7 +10,7 @@ pub mod regs;
 #[cfg(test)]
 pub mod tests;
 
-use num_traits::{FromBytes, ToBytes, WrappingAdd, WrappingShl, WrappingShr};
+use num_traits::ToBytes;
 
 use crate::bus::Address;
 use crate::types::{Long, MyUIntTraits, SignedLong};
@@ -56,13 +56,9 @@ pub const FPU_M68882: FpuM68kType = 68882;
 /// Long (u32)
 pub trait CpuSized:
     MyUIntTraits
-    + FromBytes
     + ToBytes
-    + WrappingAdd
     + std::convert::Into<Long>
     + std::convert::From<u8>
-    + WrappingShl
-    + WrappingShr
     + std::fmt::Display
     + std::fmt::UpperHex
     + std::ops::BitOrAssign
@@ -92,21 +88,15 @@ pub trait CpuSized:
 impl<T> CpuSized for T
 where
     T: MyUIntTraits
-        + FromBytes
         + ToBytes
-        + WrappingAdd
         + std::convert::Into<Long>
         + std::convert::From<u8>
-        + WrappingShl
-        + WrappingShr
         + std::fmt::Display
         + std::fmt::UpperHex
         + std::ops::BitOrAssign
         + std::ops::ShlAssign
         + std::ops::ShrAssign,
     Long: LossyInto<T>,
-    <T as ToBytes>::Bytes: AsMut<[u8]>,
-    T: FromBytes<Bytes = <T as ToBytes>::Bytes>,
 {
     const BITS: usize = std::mem::size_of::<T>() * 8;
 
