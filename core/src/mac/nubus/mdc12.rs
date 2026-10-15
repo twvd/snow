@@ -4,6 +4,7 @@ use anyhow::Result;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
+use super::NubusSlot;
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
@@ -112,16 +113,6 @@ where
             stride: Field32(0),
             palette_cnt: 0,
         }
-    }
-
-    pub fn reset(&mut self) {
-        self.vblank_irq = false;
-        self.vblank_enable = false;
-        self.ctrl.0 = 0;
-    }
-
-    pub fn get_irq(&self) -> bool {
-        self.vblank_irq
     }
 
     fn read_ctrl(&self) -> CtrlReg {
@@ -256,21 +247,40 @@ where
             }
         }
     }
+}
 
-    pub fn blank(&mut self) -> Result<()> {
+impl<TRenderer> NubusSlot<TRenderer> for Mdc12<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    fn reset(&mut self) {
+        self.vblank_irq = false;
+        self.vblank_enable = false;
+        self.ctrl.0 = 0;
+    }
+
+    fn get_irq(&self) -> bool {
+        self.vblank_irq
+    }
+
+    fn blank(&mut self) -> Result<()> {
         self.vram.fill(0xFF);
         self.ctrl.0 = 0;
         self.render()?;
         Ok(())
     }
 
-    pub fn render(&mut self) -> Result<()> {
+    fn render(&mut self) -> Result<()> {
         // We have to move the renderer so we don't upset the borrow checker.
         let mut renderer = self.renderer.take().unwrap();
         self.render_to(renderer.buffer_mut());
         self.renderer = Some(renderer);
         self.renderer.as_mut().unwrap().update()?;
         Ok(())
+    }
+
+    fn set_renderer(&mut self, renderer: TRenderer) {
+        self.renderer = Some(renderer);
     }
 }
 

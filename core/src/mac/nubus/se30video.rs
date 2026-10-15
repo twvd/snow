@@ -3,6 +3,7 @@ use std::fmt::Display;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use super::NubusSlot;
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::emulator::EmuContext;
@@ -55,16 +56,6 @@ where
         }
     }
 
-    pub fn reset(&mut self) {
-        self.vblank_irq = false;
-        self.vblank_enable = false;
-        self.fb_select = false;
-    }
-
-    pub fn get_irq(&self) -> bool {
-        self.vblank_irq
-    }
-
     pub fn framebuffer(&self) -> &[u8] {
         let base_offset = if !self.fb_select { 0 } else { 0x8000 };
 
@@ -92,20 +83,39 @@ where
             buf[idx * 4 + 3] = 0xFF;
         }
     }
+}
 
-    pub fn blank(&mut self) -> Result<()> {
+impl<TRenderer> NubusSlot<TRenderer> for SE30Video<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    fn reset(&mut self) {
+        self.vblank_irq = false;
+        self.vblank_enable = false;
+        self.fb_select = false;
+    }
+
+    fn get_irq(&self) -> bool {
+        self.vblank_irq
+    }
+
+    fn blank(&mut self) -> Result<()> {
         self.vram.fill(0xFF);
         self.render()?;
         Ok(())
     }
 
-    pub fn render(&mut self) -> Result<()> {
+    fn render(&mut self) -> Result<()> {
         // We have to move the renderer so we don't upset the borrow checker.
         let mut renderer = self.renderer.take().unwrap();
         self.render_to(renderer.buffer_mut());
         self.renderer = Some(renderer);
         self.renderer.as_mut().unwrap().update()?;
         Ok(())
+    }
+
+    fn set_renderer(&mut self, renderer: TRenderer) {
+        self.renderer = Some(renderer);
     }
 }
 
