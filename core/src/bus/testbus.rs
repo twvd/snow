@@ -3,7 +3,6 @@ use num_traits::{PrimInt, WrappingAdd};
 
 use super::access::CpuBus;
 use super::{Address, Bus, IrqSource};
-use crate::bus::BusResult;
 use crate::bus::access::{BusAccess, BusResponse};
 use crate::tickable::{Tickable, Ticks};
 
@@ -74,21 +73,8 @@ where
     pub fn get_trace(&self) -> Vec<TraceEntry<TA, TD>> {
         self.trace.borrow().clone()
     }
-}
 
-impl<TA, TD, C: CpuBus> Bus<TA, TD> for Testbus<TA, TD, C>
-where
-    TA: PrimInt + WrappingAdd + Hash + Debug,
-    TD: PrimInt,
-{
-    type Cpu = C;
-    const SIZED: bool = true;
-
-    fn get_mask(&self) -> TA {
-        self.mask
-    }
-
-    fn read(&mut self, addr: TA) -> BusResult<TD> {
+    pub fn read(&mut self, addr: TA) -> TD {
         assert_eq!(addr & self.mask, addr);
 
         #[allow(clippy::or_fun_call)]
@@ -102,10 +88,10 @@ where
                 cpu_cycle: self.cpu_cycles,
             });
         }
-        BusResult::Ok(val)
+        val
     }
 
-    fn write(&mut self, addr: TA, val: TD) -> BusResult<TD> {
+    pub fn write(&mut self, addr: TA, val: TD) {
         assert_eq!(addr & self.mask, addr);
 
         if self.trace_enabled {
@@ -117,7 +103,18 @@ where
             });
         }
         self.mem.insert(addr, val);
-        BusResult::Ok(val)
+    }
+}
+
+impl<TA, TD, C: CpuBus> Bus<TA, TD> for Testbus<TA, TD, C>
+where
+    TA: PrimInt + WrappingAdd + Hash + Debug,
+    TD: PrimInt,
+{
+    type Cpu = C;
+
+    fn get_mask(&self) -> TA {
+        self.mask
     }
 
     fn access(&mut self, acc: BusAccess<C>) -> Result<BusResponse> {
@@ -132,11 +129,9 @@ where
             let addr = TA::from(acc.addr.wrapping_add(i)).unwrap();
             if acc.write {
                 let val = TD::from((acc.data >> (8 * (acc.size - 1 - i))) & 0xFF).unwrap();
-                let _ = self.write(addr, val);
+                self.write(addr, val);
             } else {
-                let BusResult::Ok(val) = self.read(addr) else {
-                    unreachable!()
-                };
+                let val = self.read(addr);
                 data = (data << 8) | val.to_u32().unwrap();
             }
         }
@@ -198,13 +193,13 @@ mod tests {
         let mut b = Testbus::<u16, u8, Bus68000>::new(u16::MAX);
 
         for a in 0..=u16::MAX {
-            assert_eq!(b.read(a), BusResult::Ok(0));
+            assert_eq!(b.read(a), 0);
         }
         for a in 0..=u16::MAX {
-            assert_eq!(b.write(a, a as u8), BusResult::Ok(a as u8));
+            b.write(a, a as u8);
         }
         for a in 0..=u16::MAX {
-            assert_eq!(b.read(a), BusResult::Ok(a as u8));
+            assert_eq!(b.read(a), a as u8);
         }
     }
 
@@ -212,7 +207,7 @@ mod tests {
     fn in_mask() {
         let mut b = Testbus::<u16, u8, Bus68000>::new(u8::MAX.into());
 
-        assert_eq!(b.write(0x10, 1), BusResult::Ok(1));
+        b.write(0x10, 1);
     }
 
     #[test]
@@ -220,6 +215,6 @@ mod tests {
     fn out_mask() {
         let mut b = Testbus::<u16, u8, Bus68000>::new(u8::MAX.into());
 
-        let _ = b.write(0x100, 1);
+        b.write(0x100, 1);
     }
 }

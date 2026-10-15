@@ -221,7 +221,6 @@ dispatch! {
 
         fn bus_reset(&mut self) -> Result<bool> { bus.reset(true) }
         fn after_deserialize(&mut self, renderer: ChannelRenderer) -> () { bus.after_deserialize(renderer) }
-        fn bus_write(&mut self, addr: Address, val: Byte) -> crate::bus::BusResult<Byte> { bus.write(addr, val) }
         fn bus_inspect_read(&mut self, addr: Address) -> Option<Byte> { bus.inspect_read(addr) }
         fn bus_inspect_write(&mut self, addr: Address, val: Byte) -> Option<()> { bus.inspect_write(addr, val) }
 

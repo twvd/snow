@@ -799,7 +799,6 @@ where
     TRenderer: Renderer,
 {
     type Cpu = Bus68020;
-    const SIZED: bool = true;
 
     fn get_mask(&self) -> Address {
         0xFFFFFFFF
