@@ -315,7 +315,9 @@ where
         // TODO multiple cards
         assert_eq!(self.nubus_devices.iter().flatten().count(), 1);
         if let Some(card) = self.nubus_devices.iter_mut().flatten().next() {
-            card.reinstall_renderer(renderer).unwrap();
+            let slot = card.slot();
+            slot.set_renderer(renderer);
+            slot.render().unwrap();
         }
 
         self.asc.after_deserialize();
@@ -452,12 +454,7 @@ where
     fn slot_read(&mut self, addr: Address, len: u32) -> Option<u32> {
         let card = self.slot_card(addr)?;
         Some((addr..addr + len).fold(0, |v, a| {
-            let val = match card {
-                NubusCard::MDC12(dev) => dev.read(a & 0xFF_FFFF),
-                NubusCard::SE30Video(dev) => dev.read(a & 0xFF_FFFF),
-                NubusCard::Toby(dev) => dev.read(a & 0xFF_FFFF),
-            };
-            (v << 8) | u32::from(Self::dev_read(a, val))
+            (v << 8) | u32::from(Self::dev_read(a, card.read(a & 0xFF_FFFF)))
         }))
     }
 
@@ -465,12 +462,7 @@ where
         let card = self.slot_card(addr)?;
         for a in addr..addr + len {
             let val = (val >> (8 * (addr + len - 1 - a))) as Byte;
-            let written = match card {
-                NubusCard::MDC12(dev) => dev.write(a & 0xFF_FFFF, val),
-                NubusCard::SE30Video(dev) => dev.write(a & 0xFF_FFFF, val),
-                NubusCard::Toby(dev) => dev.write(a & 0xFF_FFFF, val),
-            };
-            Self::dev_write(a, val, written);
+            Self::dev_write(a, val, card.write(a & 0xFF_FFFF, val));
         }
         Some(())
     }
@@ -687,11 +679,7 @@ where
 
     pub fn video_blank(&mut self) -> Result<()> {
         for d in self.nubus_devices.iter_mut().flatten() {
-            match d {
-                NubusCard::MDC12(d) => d.blank()?,
-                NubusCard::SE30Video(d) => d.blank()?,
-                NubusCard::Toby(d) => d.blank()?,
-            }
+            d.slot().blank()?;
         }
         Ok(())
     }
@@ -793,7 +781,7 @@ where
         self.scc = Scc::new();
         self.via2 = Via2::new(self.model);
         for d in self.nubus_devices.iter_mut().filter_map(|f| f.as_mut()) {
-            d.reset();
+            d.slot().reset();
         }
         self.asc.reset();
 
