@@ -40,10 +40,6 @@ pub struct Asc {
     /// Last sample played on right channel
     r_last: u8,
 
-    /// Countdown to generate IRQs only every FIFO_SIZE (empty) samples when
-    /// FIFO is empty
-    empty_cycles: Ticks,
-
     filter: AudioFilter,
 }
 
@@ -105,7 +101,6 @@ impl Default for Asc {
             ctrl: Control(0),
             l_last: 0,
             r_last: 0,
-            empty_cycles: 0,
             filter: AudioFilter::new(),
         }
     }
@@ -119,7 +114,6 @@ impl Asc {
         self.fifo_l.clear();
         self.fifo_r.clear();
         self.wavetables.fill(0);
-        self.empty_cycles = 0;
         self.filter.reset();
     }
 
@@ -187,24 +181,13 @@ impl Asc {
             self.fifo_status.set_r_half(true);
             self.irq = true;
         }
-
-        if self.fifo_l.is_empty() && self.fifo_r.is_empty() {
-            // When outputting alert sounds, MacOS leaves the FIFO mode on and still expects IRQs,
-            // but too many will freeze the system. 'empty_cycles' will generate an IRQ once for
-            // every FIFO_SIZE (empty) samples.
-            if self.empty_cycles == 0 {
-                self.fifo_status = FifoStatus::default()
-                    .with_l_half(true)
-                    .with_r_half(true)
-                    .with_l_fullempty(true)
-                    .with_r_fullempty(true);
-                self.irq = true;
-                self.empty_cycles = FIFO_SIZE as Ticks;
-            } else {
-                self.empty_cycles -= 1;
-            }
-        } else {
-            self.empty_cycles = 0;
+        if self.fifo_l.len() == 1 {
+            self.fifo_status.set_l_fullempty(true);
+            self.irq = true;
+        }
+        if self.fifo_r.len() == 1 {
+            self.fifo_status.set_r_fullempty(true);
+            self.irq = true;
         }
 
         (l, r)
@@ -352,7 +335,6 @@ impl Debuggable for Asc {
             dbgprop_byte_bin!("FIFO status", self.fifo_status.0),
             dbgprop_udec!("FIFO L level", self.fifo_l.len()),
             dbgprop_udec!("FIFO R level", self.fifo_r.len()),
-            dbgprop_udec!("Empty cycles", self.empty_cycles),
         ]
     }
 }
