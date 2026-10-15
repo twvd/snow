@@ -13,10 +13,10 @@ use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
-use crate::mac::asc::Asc;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
+use crate::mac::sound::asc::Asc;
 use crate::mac::swim::Swim;
 use crate::mac::via_common::{LineState, ViaLine};
 use crate::renderer::{
