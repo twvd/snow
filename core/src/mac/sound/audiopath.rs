@@ -6,7 +6,8 @@ use crate::renderer::{AUDIO_BUFFER_SIZE, AudioSink, null_audio_sink};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-/// Takes 8-bit stereo samples to the audio sink, through the audio filter
+/// Takes 8 or 16-bit stereo samples to the audio sink, through the audio
+/// filter
 #[derive(Serialize, Deserialize)]
 pub struct AudioPath {
     #[serde(skip, default = "null_audio_sink")]
@@ -45,7 +46,17 @@ impl AudioPath {
         // Convert u8 (0-255) to f32 in standard audio range (-1.0 to 1.0)
         let sample_l = ((l as f32) - 128.0) / 128.0;
         let sample_r = ((r as f32) - 128.0) / 128.0;
+        self.queue(sample_l, sample_r)
+    }
 
+    pub fn push16(&mut self, l: i16, r: i16) -> Result<()> {
+        if (l, r) != (0, 0) {
+            self.silent = false;
+        }
+        self.queue(f32::from(l) / 32768.0, f32::from(r) / 32768.0)
+    }
+
+    fn queue(&mut self, sample_l: f32, sample_r: f32) -> Result<()> {
         // Apply filters
         let (filtered_l, filtered_r) = self.filter.filter_stereo(sample_l, sample_r);
 
