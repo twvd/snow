@@ -11,7 +11,6 @@ use crate::keymap::Keymap;
 use crate::tickable::Ticks;
 
 pub mod adb;
-pub mod asc;
 pub mod compact;
 pub mod localtalk_bridge;
 pub mod macii;
@@ -22,6 +21,7 @@ pub mod rtc;
 pub mod scc;
 pub mod scsi;
 pub mod serial_bridge;
+pub mod sound;
 pub mod swim;
 pub mod via;
 pub mod via_common;
