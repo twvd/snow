@@ -92,6 +92,11 @@ pub struct MacPortableBus<TRenderer: Renderer> {
 
     pub(crate) via: Via,
     via_clock: Ticks,
+    /// Stall of a VIA cycle up to the edge of the VIA clock, until the CPU
+    /// presents the cycle again. Not saved, as a cycle is never in progress
+    /// between instructions.
+    #[serde(skip)]
+    via_stall: Ticks,
     pub(crate) scc: Scc,
     /// Bus time the SCC can be accessed again
     scc_ready: Ticks,
@@ -191,6 +196,7 @@ where
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             via: Via::new(),
             via_clock: 0,
+            via_stall: 0,
             video: Video::new(renderer),
             scc: Scc::new(),
             scc_ready: 0,
@@ -364,6 +370,31 @@ where
         // The access itself takes 4 clocks
         self.scc_ready = now + waits + 4 + SCC_RECOVERY;
         bus_access_byte_lane::<2, 0, _, _>(acc, waits, self, Self::scc_read, Self::scc_write)
+    }
+
+    /// The VIA is on the upper byte lane, at even addresses. It is clocked
+    /// at C16M / 20 by the GLU, which also makes its chip select and /DTACK
+    /// (the CPU's E clock and /VMA only go to the expansion connector), so
+    /// an access is synchronous with the VIA clock: it starts on its next
+    /// edge and lasts half a VIA clock cycle, as on the Mac II. The cycle is
+    /// stalled up to that edge, with the bus ticked through it, for the VIA
+    /// to be accessed in its state at that time.
+    fn via_cycle(&mut self, acc: BusAccess<Bus68000>) -> Result<BusResponse> {
+        if self.via_stall == 0 {
+            self.via_stall = 20 - (self.via_clock + acc.pending) % 20;
+            return Ok(BusResponse::Stall(self.via_stall));
+        }
+        let to_edge = std::mem::take(&mut self.via_stall);
+
+        // Less the 4 clocks of the bus cycle
+        let waits = (to_edge + 10).saturating_sub(4);
+        Ok(bus_access_byte_lane::<2, 0, _, _>(
+            acc,
+            waits,
+            self,
+            Self::via_read,
+            Self::via_write,
+        ))
     }
 
     /// The ASC is on the upper byte lane with /UDS as its A0, and a buffer
@@ -560,14 +591,7 @@ where
                 Self::swim_read,
                 Self::swim_write,
             ),
-            // On the upper byte lane, at even addresses
-            Region::Via => bus_access_byte_lane::<2, 0, _, _>(
-                acc,
-                waits,
-                self,
-                Self::via_read,
-                Self::via_write,
-            ),
+            Region::Via => self.via_cycle(acc)?,
             // On the upper byte lane, its /IOR and /IOW decoded by the GLU
             Region::Scsi => bus_access_byte_lane::<2, 0, _, _>(
                 acc,
@@ -599,7 +623,7 @@ where
         };
         let (data, waits) = match resp {
             BusResponse::Ack { data, waits, .. } => (data, waits),
-            BusResponse::Stall(_) => unreachable!(),
+            BusResponse::Stall(_) => return Ok(resp),
             BusResponse::BusError if acc.write => {
                 warn!(
                     "Write to unimplemented address: {:08X} {:02X}",
@@ -695,7 +719,6 @@ where
 
         self.via_clock += ticks;
         while self.via_clock >= 20 {
-            // TODO VIA wait states
             self.via_clock -= 20;
 
             self.via.tick(1, ctx)?;
