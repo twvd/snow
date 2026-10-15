@@ -1,5 +1,4 @@
-use std::collections::VecDeque;
-
+use super::fifo::{FIFO_SIZE, Fifo};
 use crate::audio_filter::AudioFilter;
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
@@ -12,8 +11,6 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
-
-const FIFO_SIZE: usize = 0x400;
 
 /// Apple Sound Chip
 #[derive(Serialize, Deserialize)]
@@ -31,14 +28,8 @@ pub struct Asc {
     wavetables: [u8; 0x800],
     fifo_status: FifoStatus,
     irq: bool,
-    fifo_l: VecDeque<u8>,
-    fifo_r: VecDeque<u8>,
-
-    /// Last sample played on left channel
-    l_last: u8,
-
-    /// Last sample played on right channel
-    r_last: u8,
+    fifo_l: Fifo,
+    fifo_r: Fifo,
 
     filter: AudioFilter,
 }
@@ -94,13 +85,11 @@ impl Default for Asc {
             channels: Default::default(),
             wavetables: [0; 0x800],
             mode: AscMode::Off,
-            fifo_l: VecDeque::with_capacity(FIFO_SIZE),
-            fifo_r: VecDeque::with_capacity(FIFO_SIZE),
+            fifo_l: Fifo::new(0),
+            fifo_r: Fifo::new(0),
             fifo_status: Default::default(),
             irq: false,
             ctrl: Control(0),
-            l_last: 0,
-            r_last: 0,
             filter: AudioFilter::new(),
         }
     }
@@ -157,9 +146,11 @@ impl Asc {
             let table_offset = (c.phase.0 >> 15) & 0x1FF;
             sample += self.wavetables[i * 0x200 + table_offset as usize] as u16;
         }
-        self.l_last = (sample >> 2) as u8;
-        self.r_last = self.l_last;
-        (self.l_last, self.r_last)
+        // Held by the off mode, and by a FIFO that runs empty
+        let sample = (sample >> 2) as u8;
+        self.fifo_l.set_last(sample);
+        self.fifo_r.set_last(sample);
+        (sample, sample)
     }
 
     /// Sample the ASC for FIFO mode
@@ -167,23 +158,22 @@ impl Asc {
         // If a FIFO is empty, the ASC will continue to output the last sample of that channel.
         // A FIFO interrupts once when it drains below half full, so also after a refill that
         // leaves it exactly half full. There is no interrupt when it runs empty.
-        let l = self.fifo_l.pop_front().unwrap_or(self.l_last);
+        let l = self.fifo_l.pop();
         if self.fifo_l.len() == FIFO_SIZE / 2 - 1 {
             self.fifo_status.set_l_half(true);
             self.irq = true;
         }
         let r = if self.ctrl.stereo() {
-            let r = self.fifo_r.pop_front().unwrap_or(self.r_last);
+            let r = self.fifo_r.pop();
             if self.fifo_r.len() == FIFO_SIZE / 2 - 1 {
                 self.fifo_status.set_r_half(true);
                 self.irq = true;
             }
             r
         } else {
+            self.fifo_r.set_last(l);
             l
         };
-        self.l_last = l;
-        self.r_last = r;
 
         (l, r)
     }
@@ -192,7 +182,7 @@ impl Asc {
     pub fn tick(&mut self, queue_sample: bool) -> Result<()> {
         let (l, r) = match self.mode {
             // The output holds the last sample of the previous mode
-            AscMode::Off => (self.l_last, self.r_last),
+            AscMode::Off => (self.fifo_l.last(), self.fifo_r.last()),
             AscMode::Fifo => self.sample_fifo(),
             AscMode::Wavetable => self.sample_wavetable(),
         };
@@ -254,22 +244,16 @@ impl BusMember<Address> for Asc {
         match addr {
             // A FIFO interrupts once when a write fills it
             0x000..=0x3FF if self.mode == AscMode::Fifo => {
-                if self.fifo_l.len() < FIFO_SIZE {
-                    self.fifo_l.push_back(val);
-                    if self.fifo_l.len() == FIFO_SIZE {
-                        self.fifo_status.set_l_fullempty(true);
-                        self.irq = true;
-                    }
+                if self.fifo_l.push(val) {
+                    self.fifo_status.set_l_fullempty(true);
+                    self.irq = true;
                 }
                 Some(())
             }
             0x400..=0x7FF if self.mode == AscMode::Fifo => {
-                if self.fifo_r.len() < FIFO_SIZE {
-                    self.fifo_r.push_back(val);
-                    if self.fifo_r.len() == FIFO_SIZE {
-                        self.fifo_status.set_r_fullempty(true);
-                        self.irq = true;
-                    }
+                if self.fifo_r.push(val) {
+                    self.fifo_status.set_r_fullempty(true);
+                    self.irq = true;
                 }
                 Some(())
             }
