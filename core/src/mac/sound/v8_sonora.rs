@@ -15,7 +15,7 @@
 //! does not jump when a sound starts or ends.
 
 use super::audiopath::AudioPath;
-use super::fifo::{FIFO_SIZE, Fifo};
+use super::channel::{Channel, channel_reg};
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::renderer::AudioSink;
@@ -36,13 +36,6 @@ const REG_VOLUME: Address = 0x806;
 const REG_CLOCK: Address = 0x807;
 const REG_PLAY_RECORD: Address = 0x80A;
 const REG_TEST: Address = 0x80F;
-
-/// Registers of the channels of the Sonora, a block for each
-const CHANNEL_REGS: Address = 0xF00;
-const CHANNEL_REGS_SIZE: Address = 0x20;
-
-/// Register of a channel which disables its interrupt
-const CHANNEL_REG_IRQ: usize = 0x09;
 
 bitfield! {
     /// FIFO status register
@@ -92,55 +85,6 @@ impl V8Variant {
         match self {
             Self::V8 => 1,
             Self::Sonora => 0,
-        }
-    }
-}
-
-/// A channel: a FIFO and, in the Sonora, its registers
-#[derive(Serialize, Deserialize)]
-struct Channel {
-    fifo: Fifo,
-
-    /// Interrupt of the channel disabled
-    irq_disable: bool,
-
-    /// Registers which are only stored: FIFO pointers, sample rate, volume,
-    /// FIFO control, and coefficients for CD-XA sound
-    regs: [u8; CHANNEL_REGS_SIZE as usize],
-}
-
-impl Channel {
-    fn new() -> Self {
-        Self {
-            fifo: Fifo::new(0x80),
-            irq_disable: false,
-            regs: [0; CHANNEL_REGS_SIZE as usize],
-        }
-    }
-
-    fn half(&self) -> bool {
-        self.fifo.len() < FIFO_SIZE / 2
-    }
-
-    fn empty(&self) -> bool {
-        self.fifo.is_empty()
-    }
-
-    fn full(&self) -> bool {
-        self.fifo.len() == FIFO_SIZE
-    }
-
-    fn read_reg(&self, reg: usize) -> Byte {
-        match reg {
-            CHANNEL_REG_IRQ => self.irq_disable.into(),
-            _ => self.regs[reg],
-        }
-    }
-
-    fn write_reg(&mut self, reg: usize, val: Byte) {
-        match reg {
-            CHANNEL_REG_IRQ => self.irq_disable = val & 1 != 0,
-            _ => self.regs[reg] = val,
         }
     }
 }
@@ -238,16 +182,6 @@ impl V8Sound {
     pub fn after_deserialize(&mut self) {
         self.out.after_deserialize();
     }
-
-    /// Channel and number of the register at an address in the registers
-    /// of the channels
-    fn channel_reg(addr: Address) -> (usize, usize) {
-        let offset = addr - CHANNEL_REGS;
-        (
-            (offset / CHANNEL_REGS_SIZE) as usize,
-            (offset % CHANNEL_REGS_SIZE) as usize,
-        )
-    }
 }
 
 impl BusMember<Address> for V8Sound {
@@ -264,7 +198,7 @@ impl BusMember<Address> for V8Sound {
             REG_VOLUME => Some(self.volume),
             REG_PLAY_RECORD => Some(self.play_record),
             0xF00..=0xF3F if self.kind.channel_regs() => {
-                let (channel, reg) = Self::channel_reg(addr);
+                let (channel, reg) = channel_reg(addr);
                 Some(self.channels[channel].read_reg(reg))
             }
             _ => None,
@@ -289,7 +223,7 @@ impl BusMember<Address> for V8Sound {
             REG_VOLUME => self.volume = val,
             REG_PLAY_RECORD => self.play_record = val,
             0xF00..=0xF3F if self.kind.channel_regs() => {
-                let (channel, reg) = Self::channel_reg(addr);
+                let (channel, reg) = channel_reg(addr);
                 self.channels[channel].write_reg(reg, val);
             }
             // The status follows the FIFOs, and the other registers are fixed
@@ -328,6 +262,7 @@ impl Debuggable for V8Sound {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mac::sound::fifo::FIFO_SIZE;
 
     const REG_FIFO_A_IRQ: Address = 0xF09;
     const REG_FIFO_B_IRQ: Address = 0xF29;
