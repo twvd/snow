@@ -1,8 +1,8 @@
+use super::audiopath::AudioPath;
 use super::fifo::{FIFO_SIZE, Fifo};
-use crate::audio_filter::AudioFilter;
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
-use crate::renderer::{AUDIO_BUFFER_SIZE, AudioSink, null_audio_sink};
+use crate::renderer::AudioSink;
 use crate::tickable::Ticks;
 use crate::types::{Byte, Field32};
 use anyhow::Result;
@@ -15,11 +15,7 @@ use serde_big_array::BigArray;
 /// Apple Sound Chip
 #[derive(Serialize, Deserialize)]
 pub struct Asc {
-    #[serde(skip, default = "null_audio_sink")]
-    sink: Box<dyn AudioSink>,
-
-    buffer: Vec<f32>,
-    silent: bool,
+    out: AudioPath,
 
     mode: AscMode,
     ctrl: Control,
@@ -32,8 +28,6 @@ pub struct Asc {
     irq: bool,
     fifo_l: Fifo,
     fifo_r: Fifo,
-
-    filter: AudioFilter,
 }
 
 bitfield! {
@@ -81,9 +75,7 @@ enum AscMode {
 impl Default for Asc {
     fn default() -> Self {
         Self {
-            sink: null_audio_sink(),
-            buffer: Vec::with_capacity(AUDIO_BUFFER_SIZE),
-            silent: true,
+            out: AudioPath::default(),
             channels: Default::default(),
             wavetables: [0; 0x800],
             mode: AscMode::Off,
@@ -93,7 +85,6 @@ impl Default for Asc {
             irq: false,
             ctrl: Control(0),
             volume: 0,
-            filter: AudioFilter::new(),
         }
     }
 }
@@ -107,38 +98,15 @@ impl Asc {
         self.fifo_l.clear();
         self.fifo_r.clear();
         self.wavetables.fill(0);
-        self.filter.reset();
+        self.out.reset();
     }
 
     pub fn is_silent(&self) -> bool {
-        self.silent
+        self.out.is_silent()
     }
 
     pub fn get_irq(&self) -> bool {
         self.irq
-    }
-
-    fn push(&mut self, l: u8, r: u8) -> Result<()> {
-        if (l, r) != (0, 0) && (l, r) != (0xFF, 0xFF) {
-            self.silent = false;
-        }
-
-        // Convert u8 (0-255) to f32 in standard audio range (-1.0 to 1.0)
-        let sample_l = ((l as f32) - 128.0) / 128.0;
-        let sample_r = ((r as f32) - 128.0) / 128.0;
-
-        // Apply filters
-        let (filtered_l, filtered_r) = self.filter.filter_stereo(sample_l, sample_r);
-
-        self.buffer.push(filtered_l);
-        self.buffer.push(filtered_r);
-        // Assuming we're always aligned to 2 here
-        if self.buffer.len() >= AUDIO_BUFFER_SIZE {
-            let buffer = std::mem::replace(&mut self.buffer, Vec::with_capacity(AUDIO_BUFFER_SIZE));
-            self.silent = buffer.iter().all(|&s| s.abs() < 0.01);
-            self.sink.send(buffer.into_boxed_slice())?;
-        }
-        Ok(())
     }
 
     /// Sample the ASC for wavetable mode
@@ -191,7 +159,7 @@ impl Asc {
             AscMode::Wavetable => self.sample_wavetable(),
         };
         if queue_sample {
-            self.push(l, r)?;
+            self.out.push(l, r)?;
         }
 
         Ok(())
@@ -204,11 +172,11 @@ impl Asc {
     }
 
     pub fn set_sink(&mut self, sink: Box<dyn AudioSink>) {
-        self.sink = sink;
+        self.out.set_sink(sink);
     }
 
     pub fn after_deserialize(&mut self) {
-        self.set_sink(null_audio_sink());
+        self.out.after_deserialize();
     }
 }
 
