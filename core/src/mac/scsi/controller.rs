@@ -233,6 +233,10 @@ pub struct ScsiController {
     #[serde(with = "BigArray")]
     pub(crate) targets: [Option<Box<dyn ScsiTarget>>; Self::MAX_TARGETS],
 
+    /// Whether any target needs ticks, None when to be found out again
+    #[serde(skip)]
+    ticking: Option<bool>,
+
     set_req: LatchingEvent,
 
     #[serde(skip)]
@@ -335,6 +339,7 @@ impl ScsiController {
             status: 0,
             set_req: Default::default(),
             targets: Default::default(),
+            ticking: None,
             toolbox: BlueSCSI::default(),
             scsi_debug: false,
             scsi_trace_cdb,
@@ -352,6 +357,7 @@ impl ScsiController {
             bail!("File {} does not exist", filename.to_string_lossy());
         }
         self.targets[scsi_id] = Some(Box::new(ScsiTargetDisk::load_disk(filename)?));
+        self.ticking = None;
         Ok(())
     }
 
@@ -365,6 +371,7 @@ impl ScsiController {
             bail!("SCSI ID out of range: {}", scsi_id);
         }
         self.targets[scsi_id] = Some(Box::new(ScsiTargetDisk::new(image)));
+        self.ticking = None;
         Ok(())
     }
 
@@ -375,6 +382,7 @@ impl ScsiController {
         audio_provider: Option<&mut (dyn AudioProvider + '_)>,
     ) {
         self.targets[scsi_id] = Some(Box::new(ScsiTargetCdrom::new(audio_provider)));
+        self.ticking = None;
     }
 
     /// Attaches a folder-backed ("Toolbox managed") CD-ROM drive at the given
@@ -396,6 +404,7 @@ impl ScsiController {
             log::warn!("Folder CD-ROM at SCSI ID {}: {:#}", scsi_id, e);
         }
         self.targets[scsi_id] = Some(Box::new(cdrom));
+        self.ticking = None;
         Ok(())
     }
 
@@ -418,17 +427,20 @@ impl ScsiController {
     #[cfg(feature = "ethernet")]
     pub fn attach_ethernet_at(&mut self, scsi_id: usize) {
         self.targets[scsi_id] = Some(Box::new(ScsiTargetEthernet::default()));
+        self.ticking = None;
     }
 
     /// Attaches a LaserWriter IISC printer at the given SCSI ID
     #[cfg(feature = "printer")]
     pub fn attach_printer_at(&mut self, scsi_id: usize, output_dir: std::path::PathBuf) {
         self.targets[scsi_id] = Some(Box::new(ScsiTargetPrinter::new(output_dir)));
+        self.ticking = None;
     }
 
     /// Detaches a target from the given SCSI ID
     pub fn detach_target(&mut self, scsi_id: usize) {
         self.targets[scsi_id] = None;
+        self.ticking = None;
     }
 
     pub fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {
@@ -943,6 +955,13 @@ impl BusMember<Address> for ScsiController {
 
 impl Tickable<&dyn EmuContext> for ScsiController {
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
+        let targets = &self.targets;
+        if !*self
+            .ticking
+            .get_or_insert_with(|| targets.iter().flatten().any(|t| t.ticks()))
+        {
+            return Ok(ticks);
+        }
         for target in self.targets.iter_mut().flatten() {
             target.tick(ticks, ctx)?;
         }

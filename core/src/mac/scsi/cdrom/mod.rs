@@ -1650,6 +1650,10 @@ impl ScsiTarget for ScsiTargetCdrom {
         None
     }
 
+    fn ticks(&self) -> bool {
+        true
+    }
+
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<()> {
         if self.audio_state == AudioState::Playing {
             match self.try_pump_audio(ctx) {
