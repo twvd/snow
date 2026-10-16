@@ -102,11 +102,15 @@ impl Swim {
             5 => self.ca2 = true,
             6 => self.lstrb = false,
             7 => {
-                self.lstrb = true;
+                // The drive latches its control register on the rising edge of LSTRB,
+                // so touching LSTRBH while it is already high does nothing
+                if !self.lstrb {
+                    self.lstrb = true;
 
-                let reg = self.get_selected_drive_reg_u8();
-                let cycles = self.cycles;
-                self.get_selected_drive_mut().write_drive_reg(reg, cycles);
+                    let reg = self.get_selected_drive_reg_u8();
+                    let cycles = self.cycles;
+                    self.get_selected_drive_mut().write_drive_reg(reg, cycles);
+                }
             }
             8 => {
                 self.enable = false;
@@ -386,5 +390,42 @@ impl Swim {
             TrackType::Bitstream => self.iwm_tick_bitstream(ticks),
             TrackType::Flux => self.iwm_tick_flux(ticks),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bus::BusMember;
+    use crate::mac::swim::drive::DriveType;
+
+    const CA0L: Address = 0 << 9;
+    const CA0H: Address = 1 << 9;
+    const LSTRBL: Address = 6 << 9;
+    const LSTRBH: Address = 7 << 9;
+    const ENABLE: Address = 9 << 9;
+
+    #[test]
+    fn lstrb_writes_on_rising_edge_only() {
+        let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
+        swim.read(ENABLE);
+        let start = swim.drives[0].track;
+
+        // TRACKUP (all lines low), then TRACKSTEP (CA0 high) with LSTRBH accessed
+        // five times: one rising edge, one step
+        swim.read(CA0L);
+        swim.read(LSTRBH);
+        swim.read(LSTRBL);
+        swim.read(CA0H);
+        for _ in 0..5 {
+            swim.read(LSTRBH);
+        }
+        swim.read(LSTRBL);
+        assert_eq!(swim.drives[0].track, start + 1);
+
+        // A new pulse steps again
+        swim.read(LSTRBH);
+        swim.read(LSTRBL);
+        assert_eq!(swim.drives[0].track, start + 2);
     }
 }
