@@ -518,6 +518,7 @@ where
 
     fn via1_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
         Self::dev_write(addr, val as Byte, self.via1.write(addr, val as Byte));
+        self.sync_via1_pa();
         if self.model == MacModel::SE30 {
             let Some(NubusCard::SE30Video(d)) = self.nubus_devices[5].as_mut() else {
                 unreachable!()
@@ -526,6 +527,16 @@ where
             d.fb_select = self.via1.pa().page2();
         }
         Some(())
+    }
+
+    /// Syncs the devices driven by the VIA1 port A pins
+    fn sync_via1_pa(&mut self) {
+        if self.overlay && !self.via1.pa().overlay() {
+            debug!("Overlay off");
+            self.overlay = false;
+        }
+        self.swim.sel = self.via1.pa().sel();
+        self.swim.intdrive = self.via1.pa().drivesel();
     }
 
     fn via2_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
@@ -829,17 +840,6 @@ where
             Region::None => BusResponse::BusError,
         };
 
-        if acc.write {
-            if self.overlay && !self.via1.pa().overlay() {
-                debug!("Overlay off");
-                self.overlay = false;
-            }
-
-            // Sync values that live in multiple places
-            self.swim.sel = self.via1.pa().sel();
-            self.swim.intdrive = self.via1.pa().drivesel();
-        }
-
         if resp == BusResponse::BusError {
             let rw = if acc.write { "write" } else { "read" };
             if amu {
@@ -885,6 +885,7 @@ where
         self.amu_active = false;
         self.mouse_ready = false;
         self.overlay = true;
+        self.sync_via1_pa();
         Ok(false)
     }
 }
@@ -1008,7 +1009,6 @@ where
         self.via2.set_line(ViaLine::CB2, self.scsi.get_irq().into());
         self.via2.set_line(ViaLine::CA2, self.scsi.get_drq().into());
 
-        self.swim.intdrive = self.via1.pa().drivesel();
         self.swim.tick(ticks, ())?;
 
         Ok(1)
