@@ -294,8 +294,13 @@ impl BusMember<Address> for Asc {
                 }
                 Some(())
             }
-            // FIFO status
-            0x804 => Some(self.fifo_status.0 = val),
+            // FIFO status. Writing pending flags back raises the interrupt again, which
+            // SwapMMUMode on the Mac II relies on.
+            0x804 => {
+                self.fifo_status.0 = val;
+                self.irq |= val != 0;
+                Some(())
+            }
             // Clock rate
             0x807 => {
                 if val != 0 {
@@ -397,6 +402,31 @@ mod tests {
         assert!(asc.get_irq());
         assert_eq!(asc.read(0x804), Some(0x01));
         tick(&mut asc, FIFO_SIZE);
+        assert!(!asc.get_irq());
+    }
+
+    #[test]
+    fn fifo_irq_write_back() {
+        let mut asc = Asc::default();
+        asc.write(0x801, 1);
+        asc.write(0x802, 2);
+        for _ in 0..FIFO_SIZE / 2 {
+            asc.write(0x000, 0x80);
+            asc.write(0x400, 0x80);
+        }
+        tick(&mut asc, 1);
+
+        // Writing the flags back raises the interrupt again
+        let status = asc.read(0x804).unwrap();
+        assert_eq!(status, 0x05);
+        assert!(!asc.get_irq());
+        asc.write(0x804, status);
+        assert!(asc.get_irq());
+        assert_eq!(asc.read(0x804), Some(0x05));
+        assert!(!asc.get_irq());
+
+        // Writing no flags does not
+        asc.write(0x804, 0);
         assert!(!asc.get_irq());
     }
 }
