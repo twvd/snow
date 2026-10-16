@@ -765,8 +765,10 @@ where
 
         // The data bus keeps the last value on each lane
         let val = if acc.write { acc.data } else { data };
-        for a in acc.addr..acc.addr + acc.size {
-            self.openbus[(a & 1) as usize] = (val >> (8 * (acc.addr + acc.size - 1 - a))) as Byte;
+        if acc.size == 2 {
+            self.openbus = [(val >> 8) as Byte, val as Byte];
+        } else {
+            self.openbus[(acc.addr & 1) as usize] = val as Byte;
         }
 
         if acc.write {
