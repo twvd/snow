@@ -182,6 +182,12 @@ pub trait Renderer {
 
     /// Gets a reference to the back buffer
     fn buffer_mut(&mut self) -> &mut DisplayBuffer;
+
+    /// False while the last frame has not been picked up yet, so that
+    /// rendering a new one can be skipped
+    fn frame_wanted(&self) -> bool {
+        true
+    }
 }
 
 pub struct NullRenderer {

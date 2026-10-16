@@ -281,7 +281,8 @@ where
                 self.event_hblank.set();
             }
 
-            if before_vblank && !self.in_vblank() {
+            if before_vblank && !self.in_vblank() && self.renderer.as_ref().unwrap().frame_wanted()
+            {
                 // Just left VBlank
                 self.render()?;
             }

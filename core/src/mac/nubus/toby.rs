@@ -259,7 +259,9 @@ where
     fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
         self.vblank_ticks += ticks;
         if self.vblank_ticks >= ctx.bus_frequency() / 60 {
-            self.render()?;
+            if self.renderer.as_ref().unwrap().frame_wanted() {
+                self.render()?;
+            }
             self.vblank_ticks -= ctx.bus_frequency() / 60;
             if self.vblank_enable {
                 self.vblank_irq = true;
