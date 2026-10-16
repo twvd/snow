@@ -10,9 +10,11 @@ use anyhow::Result;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
-const IDLE_DTACK_DELAY: u8 = 64;
-const SLIM_DTACK_DELAY: u8 = 16;
-//const ROM_DTACK_DELAY: u8 = 2;
+/// Wait states of a RAM or ROM bus cycle at idle speed
+const IDLE_WAITS: Ticks = 64;
+/// Wait states for each byte of a SLIM access, until the DTACK delay is
+/// loaded
+const SLIM_WAITS: Ticks = 32;
 
 bitfield! {
     #[derive(Clone, Serialize, Deserialize)]
@@ -76,8 +78,6 @@ pub struct Normandy {
     slim2_protect: SlimProtect,
 
     slim_rom: Vec<u8>,
-
-    pub dtack_counter: u8,
 }
 
 impl Normandy {
@@ -96,49 +96,18 @@ impl Normandy {
             slim2_protect: SlimProtect(0),
 
             slim_rom: vec![0; 0x10000],
-
-            dtack_counter: 0,
         }
     }
 
-    pub(crate) fn waitstate(&mut self, addr: Address) -> bool {
-        match addr {
-            0x0000_0000..=0x008F_FFFF => {
-                if self.idle_speed {
-                    match self.dtack_counter {
-                        0 => {
-                            self.dtack_counter = IDLE_DTACK_DELAY;
-                            true
-                        }
-                        1 => {
-                            self.dtack_counter = 0;
-                            false
-                        }
-                        _ => {
-                            self.dtack_counter -= 1;
-                            true
-                        }
-                    }
-                } else if !self.slim_dtack & (0x0050_0000..=0x0050_FFFF).contains(&addr) {
-                    match self.dtack_counter {
-                        0 => {
-                            self.dtack_counter = SLIM_DTACK_DELAY;
-                            true
-                        }
-                        1 => {
-                            self.dtack_counter = 0;
-                            false
-                        }
-                        _ => {
-                            self.dtack_counter -= 1;
-                            true
-                        }
-                    }
-                } else {
-                    false
-                }
-            }
-            _ => false,
+    /// Wait states the GLU adds to a RAM or ROM bus cycle of `bytes` bytes,
+    /// if it overrides those of the memory
+    pub(crate) fn wait_states(&self, addr: Address, bytes: u32) -> Option<Ticks> {
+        if self.idle_speed {
+            Some(IDLE_WAITS)
+        } else if !self.slim_dtack && (0x0050_0000..=0x0050_FFFF).contains(&addr) {
+            Some(SLIM_WAITS * Ticks::from(bytes))
+        } else {
+            None
         }
     }
 }

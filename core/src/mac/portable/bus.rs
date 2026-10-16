@@ -66,17 +66,6 @@ enum Region {
 /// Address map: the region of each block, with the boot overlay off and on
 type AddressMap = [[Region; MAP_BLOCKS]; 2];
 
-/// Wait states of a bus cycle in progress
-#[derive(Default)]
-struct Stalled {
-    /// Wait states so far
-    waits: Ticks,
-    /// Bytes past their wait states
-    bytes: u32,
-    /// The second byte has been stalled for, 2 cycles into the bus cycle
-    second: bool,
-}
-
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct MacPortableBus<TRenderer: Renderer> {
@@ -109,10 +98,6 @@ pub struct MacPortableBus<TRenderer: Renderer> {
 
     #[serde(skip, default = "empty_map")]
     map: AddressMap,
-
-    /// Not saved, as a cycle is never in progress between instructions
-    #[serde(skip)]
-    stalled: Stalled,
 
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
@@ -206,7 +191,6 @@ where
 
             overlay: true,
             map: build_map(model),
-            stalled: Stalled::default(),
             speed: EmulatorSpeed::Accurate,
             bus_frequency: DEFAULT_BUS_SPEED,
             vblank_time: Instant::now(),
@@ -490,24 +474,14 @@ where
         self.mouse_mode = mode;
     }
 
-    /// Stall of a bus cycle which has to wait, polled every 2 cycles for
-    /// each byte with the bus ticked in between, as the byte interface did,
-    /// or None once it can go on
-    fn stall(&mut self, acc: &BusAccess<Bus68000>) -> Option<Ticks> {
-        let st = &mut self.stalled;
-        while st.bytes < acc.size {
-            if self.normandy.waitstate(acc.addr + st.bytes) {
-                st.waits += 2;
-                // The second byte comes 2 cycles into the bus cycle
-                if st.bytes > 0 && !st.second {
-                    st.second = true;
-                    return Some(4);
-                }
-                return Some(2);
+    /// Wait states of a bus cycle
+    fn wait_states(&self, region: Region, acc: &BusAccess<Bus68000>) -> Ticks {
+        match region {
+            Region::Ram | Region::Rom | Region::RomOverRam => {
+                self.normandy.wait_states(acc.addr, acc.size).unwrap_or(0)
             }
-            st.bytes += 1;
+            _ => 0,
         }
-        None
     }
 
     /// Programmer's key pressed
@@ -545,13 +519,9 @@ where
 
     #[inline(always)]
     fn access(&mut self, acc: BusAccess<Bus68000>) -> Result<BusResponse> {
-        if let Some(stall) = self.stall(&acc) {
-            return Ok(BusResponse::Stall(stall));
-        }
-        let waits = std::mem::take(&mut self.stalled).waits;
-
         self.end_overlay(acc.addr);
         let region = self.region(acc.addr);
+        let waits = self.wait_states(region, &acc);
         let resp = match region {
             // On the lower byte lane, at odd addresses
             Region::Swim => bus_access_byte_lane::<2, 1, _, _>(
