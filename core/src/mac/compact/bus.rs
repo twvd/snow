@@ -720,9 +720,12 @@ where
             bus_frequency: self.bus_frequency,
         };
 
-        // XXX: run one tick at a time to avoid missing hblanks and vblanks
-        for _ in 0..ticks {
-            let ticks = 1;
+        // Run up to the next E clock edge or blanking edge at a time, where
+        // anything below can change
+        let mut left = ticks;
+        while left > 0 {
+            let ticks = left.min(10 - self.eclock).min(self.video.cycles_to_edge());
+            left -= ticks;
 
             self.cycles += ticks;
 

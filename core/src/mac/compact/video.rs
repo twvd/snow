@@ -146,6 +146,28 @@ where
         self.dots % H_DOTS as u64 >= H_VISIBLE_DOTS as u64
     }
 
+    /// Dots until the next start or end of a blanking period
+    fn dots_to_edge(&self) -> u64 {
+        let x = self.dots % H_DOTS as u64;
+        let h = if x < H_VISIBLE_DOTS as u64 {
+            H_VISIBLE_DOTS as u64 - x
+        } else {
+            H_DOTS as u64 - x
+        };
+        let v = if self.dots < FRAME_VISIBLE_OFFSET as u64 {
+            FRAME_VISIBLE_OFFSET as u64 - self.dots
+        } else {
+            FRAME_DOTS as u64 - self.dots
+        };
+        h.min(v)
+    }
+
+    /// CPU cycles (two dots each) up to the one that reaches the next
+    /// blanking edge
+    pub fn cycles_to_edge(&self) -> Ticks {
+        self.dots_to_edge().div_ceil(2)
+    }
+
     /// Gets the current active scanline
     pub fn get_scanline(&self) -> usize {
         (self.dots / H_DOTS as u64).try_into().unwrap()
@@ -263,13 +285,16 @@ where
     T: Renderer,
 {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
-        // Simulate ticks one-at-a-time to ensure we don't miss a vblank or hblank.
-        for _ in 0..ticks {
+        // Advance up to the next blanking edge at a time so none is missed
+        let mut left = ticks;
+        while left > 0 {
+            let step = left.min(self.dots_to_edge());
+            left -= step;
             let before_vblank = self.in_vblank();
             let before_hblank = self.in_hblank();
 
             // Update beam position
-            self.dots = (self.dots + 1) % FRAME_DOTS as u64;
+            self.dots = (self.dots + step) % FRAME_DOTS as u64;
 
             if !before_vblank && self.in_vblank() {
                 // Just entered VBlank
