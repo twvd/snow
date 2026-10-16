@@ -766,6 +766,7 @@ mod tests {
             s: false,
             leaf_desc_addr: paddr + 0x10,
             modified: true,
+            generation: atc_generation_default(),
         }
     }
 
