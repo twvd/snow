@@ -77,7 +77,9 @@ where
 
         self.vblank_ticks += ticks;
         while self.vblank_ticks > frametime {
-            self.render()?;
+            if self.renderer.as_ref().unwrap().frame_wanted() {
+                self.render()?;
+            }
 
             self.vblank_ticks -= frametime;
         }

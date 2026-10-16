@@ -29,6 +29,10 @@ impl Renderer for ChannelRenderer {
         &mut self.displaybuffer
     }
 
+    fn frame_wanted(&self) -> bool {
+        self.channel.lock().unwrap().is_none()
+    }
+
     /// Renders changes to screen
     fn update(&mut self) -> Result<()> {
         let new_buffer = self.displaybuffer.new_from_this();
