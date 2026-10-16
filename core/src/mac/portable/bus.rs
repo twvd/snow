@@ -436,6 +436,37 @@ where
         }
     }
 
+    // RAM and ROM a word at a time: a word is at an even address, so its
+    // bytes are both in or both out of the RAM, and in the same page
+
+    fn ram_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        let idx = addr as usize;
+        Some(match self.ram.get(idx..idx + len as usize) {
+            Some(&[hi, lo]) => u32::from(u16::from_be_bytes([hi, lo])),
+            Some(&[b]) => u32::from(b),
+            _ => 0,
+        })
+    }
+
+    fn ram_write(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
+        let idx = addr as usize;
+        let bytes = &(val as u16).to_be_bytes()[2 - len as usize..];
+        if let Some(ram) = self.ram.get_mut(idx..idx + bytes.len()) {
+            ram.copy_from_slice(bytes);
+            self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
+        }
+        Some(())
+    }
+
+    fn rom_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        let idx = addr as usize & self.rom_mask;
+        Some(match self.rom.get(idx..idx + len as usize) {
+            Some(&[hi, lo]) => u32::from(u16::from_be_bytes([hi, lo])),
+            Some(&[b]) => u32::from(b),
+            _ => self.read_bytes(Region::Rom, addr, len),
+        })
+    }
+
     fn normal_ram_write(&mut self, addr: Address, val: Byte) -> Option<()> {
         if addr < self.ram.len() as u32 {
             let idx = addr as usize;
@@ -613,6 +644,8 @@ where
                 Self::normandy_write,
             ),
             Region::Asc => bus_access_word(acc, waits, self, Self::asc_read, Self::asc_write),
+            Region::Ram => bus_access_word(acc, waits, self, Self::ram_read, Self::ram_write),
+            Region::Rom => bus_access_word(acc, waits, self, Self::rom_read, |_, _, _, _| Some(())),
             _ => bus_access_word(
                 acc,
                 waits,
