@@ -459,12 +459,15 @@ impl Swim {
 
     pub(super) fn ism_tick(&mut self, ticks: Ticks) -> Result<()> {
         self.bit_cycles += ticks;
-        if self.bit_cycles < self.get_selected_drive().get_ticks_per_bit() {
-            return Ok(());
+        while self.bit_cycles >= self.get_selected_drive().get_ticks_per_bit() {
+            self.bit_cycles -= self.get_selected_drive().get_ticks_per_bit();
+            self.ism_tick_bit()?;
         }
+        Ok(())
+    }
 
-        self.bit_cycles -= self.get_selected_drive().get_ticks_per_bit();
-
+    /// Moves the head over one bit cell
+    fn ism_tick_bit(&mut self) -> Result<()> {
         if self.get_selected_drive().floppy.get_track_type(
             self.get_active_head(),
             self.get_selected_drive().get_active_track(),

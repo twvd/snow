@@ -273,50 +273,25 @@ impl Swim {
     fn iwm_tick_flux(&mut self, ticks: Ticks) -> Result<()> {
         let side = self.get_active_head();
         let track = self.get_selected_drive().get_active_track();
-        self.get_selected_drive_mut().flux_ticks_left -= ticks as i16;
 
-        // Not sure how long this should be?
-        if self.get_selected_drive().flux_ticks_left < self.get_selected_drive().flux_ticks - 20 {
-            self.get_selected_drive_mut().head_bit[side] = false;
-        }
+        // Run up to each flux transition within the ticks in turn
+        let mut left = ticks;
+        while left > 0 {
+            // A transition is at least one tick away
+            let to_flux = self.get_selected_drive().flux_ticks_left.max(1) as Ticks;
+            let step = left.min(to_flux);
+            left -= step;
+            self.get_selected_drive_mut().flux_ticks_left -= step as i16;
 
-        if self.get_selected_drive().flux_ticks_left <= 0 {
-            // Flux transition occured
-
-            // Introduce some pseudo-random jitter on the timing to emulate
-            // the minor differences introduced by motor RPM instability and
-            // physical movement of the disk donut.
-            let jitter = -3 + (self.cycles % 6) as i16;
-
-            // Check bit cell window
-            // TODO incorporate actual drive speed from PWM on 128K/512K?
-            if let Some(time) = FluxTransitionTime::from_ticks_ex(
-                self.get_selected_drive().flux_ticks + jitter,
-                self.iwm_mode.fast(),
-                self.iwm_mode.speed(),
-            ) {
-                // Transition occured within the window, shift bits into the
-                // IWM shift register.
-                for _ in 0..(time.get_zeroes()) {
-                    self.iwm_shift_bit(false);
-                }
-                self.iwm_shift_bit(true);
-                self.get_selected_drive_mut().head_bit[side] = true;
+            // Not sure how long this should be?
+            if self.get_selected_drive().flux_ticks_left < self.get_selected_drive().flux_ticks - 20
+            {
+                self.get_selected_drive_mut().head_bit[side] = false;
             }
 
-            // Advance image to the next transition
-            let TrackLength::Transitions(tlen) =
-                self.get_selected_drive().get_track_len(side, track)
-            else {
-                unreachable!()
-            };
-            self.get_selected_drive_mut().track_position =
-                (self.get_selected_drive().track_position + 1) % tlen;
-            self.get_selected_drive_mut().flux_ticks = self
-                .get_selected_drive()
-                .floppy
-                .get_track_transition(side, track, self.get_selected_drive().track_position);
-            self.get_selected_drive_mut().flux_ticks_left = self.get_selected_drive().flux_ticks;
+            if self.get_selected_drive().flux_ticks_left <= 0 {
+                self.iwm_flux_transition(side, track, self.cycles - left);
+            }
         }
 
         if self.write_pos == 0 && self.write_buffer.is_some() {
@@ -328,14 +303,54 @@ impl Swim {
         Ok(())
     }
 
-    fn iwm_tick_bitstream(&mut self, ticks: Ticks) -> Result<()> {
-        self.bit_cycles += ticks;
-        if self.bit_cycles < self.get_selected_drive().get_ticks_per_bit() {
-            return Ok(());
+    /// Handles a flux transition passing under the head at `cycles`
+    fn iwm_flux_transition(&mut self, side: usize, track: usize, cycles: Ticks) {
+        // Introduce some pseudo-random jitter on the timing to emulate
+        // the minor differences introduced by motor RPM instability and
+        // physical movement of the disk donut.
+        let jitter = -3 + (cycles % 6) as i16;
+
+        // Check bit cell window
+        // TODO incorporate actual drive speed from PWM on 128K/512K?
+        if let Some(time) = FluxTransitionTime::from_ticks_ex(
+            self.get_selected_drive().flux_ticks + jitter,
+            self.iwm_mode.fast(),
+            self.iwm_mode.speed(),
+        ) {
+            // Transition occured within the window, shift bits into the
+            // IWM shift register.
+            for _ in 0..(time.get_zeroes()) {
+                self.iwm_shift_bit(false);
+            }
+            self.iwm_shift_bit(true);
+            self.get_selected_drive_mut().head_bit[side] = true;
         }
 
-        self.bit_cycles -= self.get_selected_drive().get_ticks_per_bit();
+        // Advance image to the next transition
+        let TrackLength::Transitions(tlen) = self.get_selected_drive().get_track_len(side, track)
+        else {
+            unreachable!()
+        };
+        self.get_selected_drive_mut().track_position =
+            (self.get_selected_drive().track_position + 1) % tlen;
+        self.get_selected_drive_mut().flux_ticks = self
+            .get_selected_drive()
+            .floppy
+            .get_track_transition(side, track, self.get_selected_drive().track_position);
+        self.get_selected_drive_mut().flux_ticks_left = self.get_selected_drive().flux_ticks;
+    }
 
+    fn iwm_tick_bitstream(&mut self, ticks: Ticks) -> Result<()> {
+        self.bit_cycles += ticks;
+        while self.bit_cycles >= self.get_selected_drive().get_ticks_per_bit() {
+            self.bit_cycles -= self.get_selected_drive().get_ticks_per_bit();
+            self.iwm_tick_bit()?;
+        }
+        Ok(())
+    }
+
+    /// Moves the head over one bit cell
+    fn iwm_tick_bit(&mut self) -> Result<()> {
         let head = self.get_active_head();
 
         // Progress the head over the track
