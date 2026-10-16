@@ -5,8 +5,8 @@ use super::normandy::Normandy;
 use super::pmgr::Pmgr;
 use super::via::Via;
 use super::video::Video;
-use crate::bus::access::Bus68000;
-use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
+use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_word};
+use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
@@ -34,6 +34,48 @@ use serde::{Deserialize, Serialize};
 
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
+
+/// Size of the blocks of the address map
+const MAP_BLOCK_SHIFT: u32 = 16;
+const MAP_BLOCKS: usize = 1 << (24 - MAP_BLOCK_SHIFT);
+
+/// What answers in a block of the address map
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Region {
+    None,
+    Ram,
+    /// Writes ignored
+    Rom,
+    /// ROM on reads, RAM on writes
+    RomOverRam,
+    /// Reads unimplemented, writes ignored
+    Ignored,
+    /// SLIM ROM, writes ignored
+    SlimRom,
+    Normandy,
+    Swim,
+    Via,
+    /// Test software region / extension ROM
+    ExtRom,
+    Scsi,
+    Video,
+    Asc,
+    Scc,
+}
+
+/// Address map: the region of each block, with the boot overlay off and on
+type AddressMap = [[Region; MAP_BLOCKS]; 2];
+
+/// Wait states of a bus cycle in progress
+#[derive(Default)]
+struct Stalled {
+    /// Wait states so far
+    waits: Ticks,
+    /// Bytes past their wait states
+    bytes: u32,
+    /// The second byte has been stalled for, 2 cycles into the bus cycle
+    second: bool,
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
@@ -64,6 +106,13 @@ pub struct MacPortableBus<TRenderer: Renderer> {
     normandy: Normandy,
 
     overlay: bool,
+
+    #[serde(skip, default = "empty_map")]
+    map: AddressMap,
+
+    /// Not saved, as a cycle is never in progress between instructions
+    #[serde(skip)]
+    stalled: Stalled,
 
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
@@ -156,6 +205,8 @@ where
             mouse_ready: false,
 
             overlay: true,
+            map: build_map(model),
+            stalled: Stalled::default(),
             speed: EmulatorSpeed::Accurate,
             bus_frequency: DEFAULT_BUS_SPEED,
             vblank_time: Instant::now(),
@@ -180,6 +231,7 @@ where
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
     pub fn after_deserialize(&mut self, _renderer: TRenderer) {
+        self.map = build_map(self.model);
         self.asc.after_deserialize();
 
         // Mark all RAM pages as dirty after deserialization to update memory display
@@ -226,161 +278,73 @@ where
         T::from_u32(u32::from_be_bytes(tmp)).unwrap()
     }
 
-    fn write_overlay(&mut self, addr: Address, val: Byte) -> Option<()> {
-        match addr {
-            // ROM (disables overlay
-            0x0090_0000..=0x009F_FFFF => {
-                self.overlay = false;
-                self.write_normal(addr, val)
-            }
-            _ => self.write_normal(addr, val),
+    /// Ends the boot overlay on an access to the normal location of the ROM
+    fn end_overlay(&mut self, addr: Address) {
+        if (0x0090_0000..=0x009F_FFFF).contains(&addr) {
+            self.overlay = false;
         }
     }
 
-    fn write_normal(&mut self, addr: Address, val: Byte) -> Option<()> {
-        match addr {
-            // RAM
-            0x0000_0000..=0x008F_FFFF => self.normal_ram_write(addr, val),
-            // ROM, or Remapped RAM for 15MB RAM Mod
-            0x0090_0000..=0x009F_FFFF => {
-                if self.model == MacModel::Portable15MB {
-                    self.normal_ram_write(addr, val)
-                } else {
-                    Some(())
-                }
-            }
-            // ROM Disks, or Remapped RAM for 15MB RAM Mod
-            0x00A0_0000..=0x00DF_FFFF => {
-                if self.model == MacModel::Portable15MB {
-                    self.normal_ram_write(addr, val)
-                } else {
-                    Some(())
-                }
-            }
-            // SLIM ROM, or Remapped RAM for 15MB RAM Mod
-            0x00E0_0000..=0x00EF_FFFF => {
-                if self.model == MacModel::Portable15MB {
-                    self.normal_ram_write(addr, val)
-                } else {
-                    Some(())
-                }
-            }
-            // SLIM/Normandy, or Remapped ROM for 15MB RAM Mod
-            0x00F0_0000..=0x00F0_FFFF => {
-                if self.model == MacModel::Portable15MB {
-                    self.normal_ram_write(addr, val)
-                } else {
-                    self.normandy.write(addr, val)
-                }
-            }
-            // Remapped ROM for 15MB RAM Mod
-            0x00F1_0000..=0x00F3_FFFF => Some(()),
-            // SWIM
-            0x00F6_0000..=0x00F6_FFFF => self.swim.write(addr, val),
-            // VIA
-            0x00F7_0000..=0x00F7_FFFF => self.via.write(addr, val),
-            // SCSI
-            0x00F9_0000..=0x00F9_FFFF => self.scsi.write(addr, val),
-            // Video
-            0x00FA_0000..=0x00FA_FFFF => {
-                let offset = (addr & 0x7FFF) as usize;
-                Some(self.video.framebuffer[offset] = val)
-            }
-            // Sound
-            0x00FB_0000..=0x00FB_FFFF => self.asc.write(addr & 0xFFF, val),
-            // Normandy registers
-            0x00FC_0000..=0x00FC_FFFF => self.normandy.write(addr, val),
-            // SCC
-            0x00FD_0000..=0x00FD_FFFF => self.scc.write(addr >> 1, val),
-            // Normandy registers
-            0x00FE_0000..=0x00FE_FFFF => self.normandy.write(addr, val),
-            _ => None,
-        }
+    fn region(&self, addr: Address) -> Region {
+        self.map[usize::from(self.overlay)][(addr >> MAP_BLOCK_SHIFT) as usize]
     }
 
-    fn read_overlay(&mut self, addr: Address) -> Option<Byte> {
-        match addr {
-            0x0000_0000..=0x000F_FFFF => {
+    fn read_byte(&mut self, region: Region, addr: Address) -> Option<Byte> {
+        match region {
+            Region::Ram => self.normal_ram_read(addr),
+            Region::Rom | Region::RomOverRam => {
                 Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
             }
-            0x0090_0000..=0x009F_FFFF => {
-                self.overlay = false;
-                self.read_normal(addr)
-            }
-            _ => self.read_normal(addr),
-        }
-    }
-
-    fn read_normal(&mut self, addr: Address) -> Option<Byte> {
-        match addr {
-            0x0000_0000..=0x008F_FFFF => self.normal_ram_read(addr),
-            // ROM, or Remapped RAM for 15MB RAM Mod
-            0x0090_0000..=0x009F_FFFF => {
-                if self.model == MacModel::Portable15MB {
-                    self.normal_ram_read(addr)
-                } else {
-                    Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
-                }
-            }
-            // ROM Disks, or Remapped RAM for 15MB RAM Mod
-            0x00A0_0000..=0x00DF_FFFF => {
-                if self.model == MacModel::Portable15MB {
-                    self.normal_ram_read(addr)
-                } else {
-                    None
-                }
-            }
-            // SLIM ROM, or Remapped RAM for 15MB RAM Mod
-            0x00E0_0000..=0x00EF_FFFF => {
-                if self.model == MacModel::Portable15MB {
-                    self.normal_ram_read(addr)
-                } else {
-                    self.normandy.read(addr)
-                }
-            }
-            // SLIM/Normandy, or Remapped ROM for 15MB RAM Mod
-            0x00F0_0000..=0x00F0_FFFF => {
-                if self.model == MacModel::Portable15MB {
-                    Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
-                } else {
-                    self.normandy.read(addr)
-                }
-            }
-            // Remapped ROM for 15MB RAM Mod
-            0x00F1_0000..=0x00F3_FFFF => {
-                if self.model == MacModel::Portable15MB {
-                    Some(*self.rom.get(addr as usize & self.rom_mask).unwrap_or(&0xFF))
-                } else {
-                    None
-                }
-            }
-            // SWIM
-            0x00F6_0000..=0x00F6_FFFF => self.swim.read(addr),
-            // VIA
-            0x00F7_0000..=0x00F7_FFFF => self.via.read(addr),
-            // Test software region / extension ROM
-            0x00F8_0000..=0x00F8_FFFF => Some(
+            Region::SlimRom | Region::Normandy => self.normandy.read(addr),
+            Region::Swim => self.swim.read(addr),
+            Region::Via => self.via.read(addr),
+            Region::ExtRom => Some(
                 *self
                     .extension_rom
                     .get((addr - 0xF8_0000) as usize)
                     .unwrap_or(&0xFF),
             ),
-            // SCSI
-            0x00F9_0000..=0x00F9_FFFF => self.scsi.read(addr),
-            // Video
-            0x00FA_0000..=0x00FA_FFFF => {
-                let offset = (addr & 0x7FFF) as usize;
-                Some(self.video.framebuffer[offset])
+            Region::Scsi => self.scsi.read(addr),
+            Region::Video => Some(self.video.framebuffer[(addr & 0x7FFF) as usize]),
+            Region::Asc => self.asc.read(addr & 0xFFF),
+            Region::Scc => self.scc.read(addr >> 1),
+            Region::Ignored | Region::None => None,
+        }
+    }
+
+    fn write_byte(&mut self, region: Region, addr: Address, val: Byte) -> Option<()> {
+        match region {
+            Region::Ram | Region::RomOverRam => self.normal_ram_write(addr, val),
+            Region::Rom | Region::Ignored | Region::SlimRom => Some(()),
+            Region::Normandy => self.normandy.write(addr, val),
+            Region::Swim => self.swim.write(addr, val),
+            Region::Via => self.via.write(addr, val),
+            Region::Scsi => self.scsi.write(addr, val),
+            Region::Video => Some(self.video.framebuffer[(addr & 0x7FFF) as usize] = val),
+            Region::Asc => self.asc.write(addr & 0xFFF, val),
+            Region::Scc => self.scc.write(addr >> 1, val),
+            Region::ExtRom | Region::None => None,
+        }
+    }
+
+    /// Reads the bytes of a cycle one at a time, as the byte interface did
+    fn read_bytes(&mut self, region: Region, addr: Address, len: u32) -> u32 {
+        (addr..addr + len).fold(0, |v, a| {
+            let val = self.read_byte(region, a).unwrap_or_else(|| {
+                warn!("Read from unimplemented address: {:08X}", a);
+                Self::OPENBUS
+            });
+            (v << 8) | u32::from(val)
+        })
+    }
+
+    /// Writes the bytes of a cycle one at a time, as the byte interface did
+    fn write_bytes(&mut self, region: Region, addr: Address, len: u32, val: u32) {
+        for a in addr..addr + len {
+            let val = (val >> (8 * (addr + len - 1 - a))) as Byte;
+            if self.write_byte(region, a, val).is_none() {
+                warn!("Write to unimplemented address: {:08X} {:02X}", a, val);
             }
-            // Sound
-            0x00FB_0000..=0x00FB_FFFF => self.asc.read(addr & 0xFFF),
-            // Normandy registers
-            0x00FC_0000..=0x00FC_FFFF => self.normandy.read(addr),
-            // SCC
-            0x00FD_0000..=0x00FD_FFFF => self.scc.read(addr >> 1),
-            // Normandy registers
-            0x00FE_0000..=0x00FE_FFFF => self.normandy.read(addr),
-            _ => None,
         }
     }
 
@@ -482,12 +446,24 @@ where
         self.mouse_mode = mode;
     }
 
-    /// Tests for wait states on bus access
-    fn in_waitstate(&mut self, addr: Address) -> bool {
-        match addr {
-            0x0000_0000..=0x009F_FFFF => self.normandy.waitstate(addr),
-            _ => false,
+    /// Stall of a bus cycle which has to wait, polled every 2 cycles for
+    /// each byte with the bus ticked in between, as the byte interface did,
+    /// or None once it can go on
+    fn stall(&mut self, acc: &BusAccess<Bus68000>) -> Option<Ticks> {
+        let st = &mut self.stalled;
+        while st.bytes < acc.size {
+            if self.normandy.waitstate(acc.addr + st.bytes) {
+                st.waits += 2;
+                // The second byte comes 2 cycles into the bus cycle
+                if st.bytes > 0 && !st.second {
+                    st.second = true;
+                    return Some(4);
+                }
+                return Some(2);
+            }
+            st.bytes += 1;
         }
+        None
     }
 
     /// Programmer's key pressed
@@ -517,48 +493,45 @@ where
     TRenderer: Renderer,
 {
     type Cpu = Bus68000;
-
-    fn read(&mut self, addr: Address) -> BusResult<Byte> {
-        if self.in_waitstate(addr) {
-            return BusResult::WaitState;
-        }
-
-        let val = if self.overlay {
-            self.read_overlay(addr)
-        } else {
-            self.read_normal(addr)
-        };
-
-        if let Some(v) = val {
-            BusResult::Ok(v)
-        } else {
-            warn!("Read from unimplemented address: {:08X}", addr);
-            BusResult::Ok(Self::OPENBUS)
-        }
-    }
-
-    fn write(&mut self, addr: Address, val: Byte) -> BusResult<Byte> {
-        if self.in_waitstate(addr) {
-            return BusResult::WaitState;
-        }
-
-        let written = if self.overlay {
-            self.write_overlay(addr, val)
-        } else {
-            self.write_normal(addr, val)
-        };
-
-        // Sync values that live in multiple places
-        self.swim.sel = self.via.pb().headsel();
-
-        if written.is_none() {
-            warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
-        }
-        BusResult::Ok(val)
-    }
+    const SIZED: bool = true;
 
     fn get_mask(&self) -> Address {
         0x00FFFFFF
+    }
+
+    #[inline(always)]
+    fn access(&mut self, acc: BusAccess<Bus68000>) -> Result<BusResponse> {
+        if let Some(stall) = self.stall(&acc) {
+            return Ok(BusResponse::Stall(stall));
+        }
+        let waits = std::mem::take(&mut self.stalled).waits;
+
+        self.end_overlay(acc.addr);
+        let region = self.region(acc.addr);
+        let resp = bus_access_word(
+            acc,
+            waits,
+            self,
+            |bus, addr, len| Some(bus.read_bytes(region, addr, len)),
+            |bus, addr, len, val| {
+                bus.write_bytes(region, addr, len, val);
+                Some(())
+            },
+        );
+        let BusResponse::Ack { data, .. } = resp else {
+            unreachable!()
+        };
+
+        if acc.write {
+            // Sync values that live in multiple places
+            self.swim.sel = self.via.pb().headsel();
+        }
+
+        Ok(BusResponse::Ack {
+            width: 2,
+            data,
+            waits,
+        })
     }
 
     fn reset(&mut self, hard: bool) -> Result<bool> {
@@ -697,23 +670,59 @@ where
 {
     fn inspect_read(&mut self, addr: Address) -> Option<Byte> {
         if addr >= 0x00F0_0000 {
-            None
-        } else if self.overlay {
-            self.read_overlay(addr)
-        } else {
-            self.read_normal(addr)
+            return None;
         }
+        self.end_overlay(addr);
+        self.read_byte(self.region(addr), addr)
     }
 
     fn inspect_write(&mut self, addr: Address, val: Byte) -> Option<()> {
         if addr >= 0x00F0_0000 {
-            None
-        } else if self.overlay {
-            self.write_overlay(addr, val)
-        } else {
-            self.write_normal(addr, val)
+            return None;
         }
+        self.end_overlay(addr);
+        self.write_byte(self.region(addr), addr, val)
     }
+}
+
+fn region(model: MacModel, overlay: bool, addr: Address) -> Region {
+    // The 15MB RAM mod remaps RAM and the ROM
+    let ram15 = model == MacModel::Portable15MB;
+    match addr {
+        // ROM in place of the RAM during the boot overlay
+        0x0000_0000..=0x000F_FFFF if overlay => Region::RomOverRam,
+        0x0000_0000..=0x008F_FFFF => Region::Ram,
+        0x0090_0000..=0x00EF_FFFF if ram15 => Region::Ram,
+        0x0090_0000..=0x009F_FFFF => Region::Rom,
+        // ROM disks
+        0x00A0_0000..=0x00DF_FFFF => Region::Ignored,
+        0x00E0_0000..=0x00EF_FFFF => Region::SlimRom,
+        0x00F0_0000..=0x00F0_FFFF if ram15 => Region::RomOverRam,
+        0x00F0_0000..=0x00F0_FFFF => Region::Normandy,
+        0x00F1_0000..=0x00F3_FFFF if ram15 => Region::Rom,
+        0x00F1_0000..=0x00F3_FFFF => Region::Ignored,
+        0x00F6_0000..=0x00F6_FFFF => Region::Swim,
+        0x00F7_0000..=0x00F7_FFFF => Region::Via,
+        0x00F8_0000..=0x00F8_FFFF => Region::ExtRom,
+        0x00F9_0000..=0x00F9_FFFF => Region::Scsi,
+        0x00FA_0000..=0x00FA_FFFF => Region::Video,
+        0x00FB_0000..=0x00FB_FFFF => Region::Asc,
+        0x00FC_0000..=0x00FC_FFFF | 0x00FE_0000..=0x00FE_FFFF => Region::Normandy,
+        0x00FD_0000..=0x00FD_FFFF => Region::Scc,
+        _ => Region::None,
+    }
+}
+
+fn build_map(model: MacModel) -> AddressMap {
+    std::array::from_fn(|overlay| {
+        std::array::from_fn(|block| {
+            region(model, overlay == 1, (block as Address) << MAP_BLOCK_SHIFT)
+        })
+    })
+}
+
+fn empty_map() -> AddressMap {
+    [[Region::None; MAP_BLOCKS]; 2]
 }
 
 impl<TRenderer> Debuggable for MacPortableBus<TRenderer>
