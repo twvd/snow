@@ -330,31 +330,33 @@ where
         }
     }
 
+    // The 68000 transfers a byte or an even-addressed word, so both bytes of
+    // a word are in the same RAM page and framebuffer
+
     fn ram_read(&mut self, addr: Address, len: u32) -> Option<u32> {
-        Some((addr..addr + len).fold(0, |v, a| {
-            (v << 8) | u32::from(self.ram[a as usize & self.ram_mask])
-        }))
+        let idx = addr as usize & self.ram_mask;
+        Some(if len == 2 {
+            u32::from(u16::from_be_bytes([self.ram[idx], self.ram[idx + 1]]))
+        } else {
+            u32::from(self.ram[idx])
+        })
     }
 
     fn ram_write(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
-        for a in addr..addr + len {
-            let val = (val >> (8 * (addr + len - 1 - a))) as Byte;
+        let idx = addr as usize & self.ram_mask;
+        let bytes = &(val as u16).to_be_bytes()[2 - len as usize..];
 
-            // Duplicate framebuffers to video component
-            // (writes also go through RAM)
-            if self.fb_main.contains(&(a & self.ram_mask as Address)) {
-                let offset = ((a & self.ram_mask as Address) - self.fb_main.start) as usize;
-                self.video.framebuffers[0][offset] = val;
+        // Duplicate framebuffers to video component
+        // (writes also go through RAM)
+        for (fb, range) in [&self.fb_main, &self.fb_alt].into_iter().enumerate() {
+            if range.contains(&(idx as Address)) {
+                let offset = idx - range.start as usize;
+                self.video.framebuffers[fb][offset..offset + bytes.len()].copy_from_slice(bytes);
             }
-            if self.fb_alt.contains(&(a & self.ram_mask as Address)) {
-                let offset = ((a & self.ram_mask as Address) - self.fb_alt.start) as usize;
-                self.video.framebuffers[1][offset] = val;
-            }
-
-            let idx = a as usize & self.ram_mask;
-            self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
-            self.ram[idx] = val;
         }
+
+        self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
+        self.ram[idx..idx + bytes.len()].copy_from_slice(bytes);
         Some(())
     }
 
