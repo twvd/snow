@@ -26,8 +26,8 @@ use super::instruction::{
 };
 use super::regs::{Register, RegisterFile, RegisterSR, RestartRegisterFile};
 use super::{
-    CpuM68kType, CpuSized, M68000, M68010, M68020, M68020_SR_MASK, M68030_SR_MASK, TORDER_HIGHLOW,
-    TORDER_LOWHIGH,
+    CpuM68kType, CpuSized, FPU_NONE, M68000, M68010, M68020, M68020_SR_MASK, M68030_SR_MASK,
+    TORDER_HIGHLOW, TORDER_LOWHIGH,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -190,6 +190,14 @@ pub const VECTOR_TRACE: Address = 0x000024;
 pub const VECTOR_LINEA: Address = 0x000028;
 /// Line 1111 / F
 pub const VECTOR_LINEF: Address = 0x00002C;
+
+/// Function code of the CPU space
+const FC_CPU_SPACE: u8 = 7;
+/// Coprocessor interface registers of the FPU in the CPU space
+const FPU_CIR_BASE: Address = 0x0002_2000;
+const FPU_CIR_MASK: Address = 0x1F;
+/// Response (null primitive) and control registers of an idle FPU
+const FPU_CIR_RESPONSE_NULL: Long = 0x0802_0000;
 /// Auto vector offset (7 vectors)
 pub const VECTOR_AUTOVECTOR_OFFSET: Address = 0x000064;
 /// Trap exception vector offset (15 vectors)
@@ -1497,6 +1505,21 @@ where
             InstructionMnemonic::CAS_l => self.op_cas::<Long>(instr),
 
             // FPU ---------------------------------------------------------------------------------
+            InstructionMnemonic::FNOP
+            | InstructionMnemonic::FSAVE
+            | InstructionMnemonic::FRESTORE
+            | InstructionMnemonic::FOP_000
+            | InstructionMnemonic::FBcc_l
+            | InstructionMnemonic::FBcc_w
+            | InstructionMnemonic::FScc_b
+            | InstructionMnemonic::FDBcc
+            | InstructionMnemonic::FTRAPcc
+            | InstructionMnemonic::FTRAPcc_w
+            | InstructionMnemonic::FTRAPcc_l
+                if FPU_TYPE == FPU_NONE =>
+            {
+                self.op_linef(instr)
+            }
             InstructionMnemonic::FNOP => self.op_fnop(instr),
             InstructionMnemonic::FSAVE => self.op_fsave(instr),
             InstructionMnemonic::FRESTORE => self.op_frestore(instr),
@@ -3265,6 +3288,27 @@ where
         Ok(())
     }
 
+    /// Tests for an access to the coprocessor interface registers of the FPU,
+    /// which ends in a bus error if there is no FPU.
+    fn is_fpu_cir_access<T: CpuSized>(&self, fc: u8, addr: Address, read: bool) -> Result<bool> {
+        if fc != FC_CPU_SPACE || addr & !FPU_CIR_MASK != FPU_CIR_BASE {
+            return Ok(false);
+        }
+        if FPU_TYPE == FPU_NONE {
+            bail!(CpuError::BusError(Group0Details {
+                function_code: fc,
+                ir: 0,
+                size: std::mem::size_of::<T>(),
+                instruction: false,
+                read,
+                address: addr,
+                // Filled in later
+                start_pc: 0,
+            }));
+        }
+        Ok(true)
+    }
+
     /// MOVES - Move data to/from address space
     fn op_moves<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         // Fetch/decode the extension word
@@ -3283,7 +3327,17 @@ where
 
         if dir_mem_to_reg {
             // Memory to register transfer
-            let value = self.read_ticks_generic::<T, false>(self.regs.sfc as u8, ea)?;
+            let value = if self.is_fpu_cir_access::<T>(self.regs.sfc as u8, ea, true)? {
+                // Only the response register of an idle FPU is modelled
+                let regs = if ea == FPU_CIR_BASE {
+                    FPU_CIR_RESPONSE_NULL
+                } else {
+                    0
+                };
+                T::chop(regs >> (32 - 8 * std::mem::size_of::<T>()))
+            } else {
+                self.read_ticks_generic::<T, false>(self.regs.sfc as u8, ea)?
+            };
 
             if is_addr_reg {
                 // Memory to address register - sign extend
@@ -3306,11 +3360,13 @@ where
                 self.regs.read_d::<T>(reg_num as usize)
             };
 
-            self.write_ticks_order_generic::<T, TORDER_LOWHIGH, false>(
-                self.regs.dfc as u8,
-                ea,
-                value,
-            )?;
+            if !self.is_fpu_cir_access::<T>(self.regs.dfc as u8, ea, false)? {
+                self.write_ticks_order_generic::<T, TORDER_LOWHIGH, false>(
+                    self.regs.dfc as u8,
+                    ea,
+                    value,
+                )?;
+            }
 
             // 68020+ additional cycles for long transfers
             if CPU_TYPE >= M68020 && std::mem::size_of::<T>() == 4 {
