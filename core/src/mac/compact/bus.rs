@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use super::audio::AudioState;
 use super::video::Video;
-use crate::bus::access::Bus68000;
-use crate::bus::{Address, Bus, BusMember, BusResult, InspectableBus, IrqSource};
+use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_word};
+use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
@@ -36,6 +36,22 @@ use serde::{Deserialize, Serialize};
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
 
+/// Device read, for `len` bytes at `addr`
+type ReadFn<T> = fn(&mut T, Address, u32) -> Option<u32>;
+/// Device write, of `len` bytes at `addr`
+type WriteFn<T> = fn(&mut T, Address, u32, u32) -> Option<()>;
+
+/// A bus cycle being stalled, between the times the CPU presents it
+#[derive(Default)]
+struct Stalled {
+    /// Wait states so far
+    waits: Ticks,
+    /// VPA bytes synchronized to the E clock
+    vpa_bytes: u32,
+    /// The E clock has been waited for once for the current VPA byte
+    vpa_polled: bool,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct CompactMacBus<TRenderer: Renderer> {
@@ -59,6 +75,9 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     pub(crate) audio: AudioState,
 
     eclock: Ticks,
+    /// Not saved, as a cycle is never in progress between instructions
+    #[serde(skip)]
+    stalled: Stalled,
     mouse_ready: bool,
     pub(crate) swim: Swim,
     pub(crate) scsi: ScsiController,
@@ -95,9 +114,6 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     /// sleep for in Video speed mode.
     #[serde(skip, default = "Instant::now")]
     vblank_time: Instant,
-
-    /// VPA/E-clock sync in progress
-    vpa_sync: bool,
 
     /// Programmer's key pressed
     progkey_pressed: LatchingEvent,
@@ -177,6 +193,7 @@ where
             video: Video::new(renderer),
             audio: AudioState::default(),
             eclock: 0,
+            stalled: Stalled::default(),
             scc: Scc::new(),
             swim: Swim::new(&fdds, model.fdd_hd(), 8_000_000),
             scsi: ScsiController::new(),
@@ -198,7 +215,6 @@ where
             bus_frequency: DEFAULT_BUS_SPEED,
             last_audiosample: 0,
             vblank_time: Instant::now(),
-            vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
             mouse_mode,
             plusmouse_rel_x: 0,
@@ -281,155 +297,169 @@ where
         T::from_u32(u32::from_be_bytes(tmp)).unwrap()
     }
 
-    fn write_overlay(&mut self, addr: Address, val: Byte) -> Option<()> {
-        match addr {
-            // ROM (disables overlay)
-            0x0040_0000..=0x0057_FFFF if self.model >= MacModel::SE => {
-                self.overlay = false;
-                self.write_normal(addr, val)
-            }
-            // SCSI
-            0x0058_0000..=0x005F_FFFF if self.model.has_scsi() => self.scsi.write(addr, val),
-            // RAM
-            0x0060_0000..=0x007F_FFFF => {
-                let idx = ((addr as usize) - 0x60_0000) & self.ram_mask;
-                self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
-                Some(self.ram[idx] = val)
-            }
-            // SCC
-            0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr >> 1, val),
-            // IWM
-            0x00DF_E1FF..=0x00DF_FFFF => self.swim.write(addr, val),
-            // VIA
-            0x00EF_0000..=0x00EF_FFFF => self.via.write(addr, val),
-            _ => None,
+    /// Ends the boot overlay on an access to the normal location of the ROM
+    /// (Mac SE and later)
+    fn end_overlay(&mut self, addr: Address, write: bool) {
+        let end = if write { 0x0057_FFFF } else { 0x004F_FFFF };
+        if self.overlay && self.model >= MacModel::SE && (0x0040_0000..=end).contains(&addr) {
+            self.overlay = false;
         }
     }
 
-    fn write_normal(&mut self, addr: Address, val: Byte) -> Option<()> {
+    /// Device functions for an address
+    fn decode(&mut self, addr: Address, write: bool) -> (ReadFn<Self>, WriteFn<Self>) {
+        self.end_overlay(addr, write);
+        let overlay = self.overlay;
         match addr {
-            // RAM
-            0x0000_0000..=0x003F_FFFF | 0x0060_0000..=0x006F_FFFF => {
-                // Duplicate framebuffers to video component
-                // (writes also go through RAM)
-                if self.fb_main.contains(&(addr & self.ram_mask as Address)) {
-                    let offset = ((addr & self.ram_mask as Address) - self.fb_main.start) as usize;
-                    self.video.framebuffers[0][offset] = val;
-                }
-                if self.fb_alt.contains(&(addr & self.ram_mask as Address)) {
-                    let offset = ((addr & self.ram_mask as Address) - self.fb_alt.start) as usize;
-                    self.video.framebuffers[1][offset] = val;
-                }
-
-                let idx = addr as usize & self.ram_mask;
-                self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
-                Some(self.ram[idx] = val)
+            0x0000_0000..=0x003F_FFFF if !overlay => (Self::ram_read, Self::ram_write),
+            // ROM in place of the RAM during the boot overlay
+            0x0000_0000..=0x000F_FFFF | 0x0020_0000..=0x002F_FFFF => {
+                (Self::rom_read, Self::no_write)
             }
-            // SCSI
-            0x0058_0000..=0x005F_FFFF if self.model.has_scsi() => self.scsi.write(addr, val),
-            // SCC
-            0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.write(addr >> 1, val),
-            // IWM
-            0x00DF_E1FF..=0x00DF_FFFF => self.swim.write(addr, val),
-            // VIA
-            0x00EF_0000..=0x00EF_FFFF => {
-                self.via.write(addr, val);
-
-                Some(())
+            0x0040_0000..=0x0043_FFFF => (Self::rom_read, Self::no_write),
+            // Plus with SCSI has no repeated ROM images above 0x440000 as
+            // indication of SCSI controller present.
+            //
+            // 512Ke (using Plus ROM) does have repeated ROM images
+            0x0044_0000..=0x004F_FFFF if self.model == MacModel::Plus && !overlay => {
+                (Self::openbus_read, Self::no_write)
             }
-            _ => None,
-        }
-    }
-
-    fn read_overlay(&mut self, addr: Address) -> Option<Byte> {
-        match addr {
-            // Overlay flip for Mac SE+
-            0x0040_0000..=0x004F_FFFF if self.model >= MacModel::SE => {
-                self.overlay = false;
-                self.read_normal(addr)
+            0x0044_0000..=0x004F_FFFF => (Self::rom_read, Self::no_write),
+            0x0058_0000..=0x005F_FFFF if self.model.has_scsi() => {
+                (Self::scsi_read, Self::scsi_write)
             }
-            // ROM
-            0x0000_0000..=0x000F_FFFF | 0x0020_0000..=0x002F_FFFF | 0x0040_0000..=0x004F_FFFF => {
-                Some(
-                    *self
-                        .rom
-                        .get(addr as usize & self.rom_mask)
-                        .unwrap_or(&self.openbus[(addr & 1) as usize]),
-                )
-            }
-            // SCSI
-            0x0058_0000..=0x005F_FFFF if self.model.has_scsi() => self.scsi.read(addr),
-            // RAM
-            0x0060_0000..=0x007F_FFFF => Some(self.ram[addr as usize & self.ram_mask]),
+            0x0060_0000..=0x006F_FFFF if !overlay => (Self::ram_read, Self::ram_write),
+            // RAM during the boot overlay
+            0x0060_0000..=0x007F_FFFF if overlay => (Self::ram_read, Self::ram_write_overlay),
             // Phase adjust (ignore)
-            0x009F_FFF7 | 0x009F_FFF9 => Some(0),
-            // SCC
-            0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr >> 1),
-            // IWM
-            0x00DF_E1FF..=0x00DF_FFFF => self.swim.read(addr),
-            // VIA
-            0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
+            0x009F_FFF6..=0x009F_FFF9 if overlay && !write => {
+                (Self::scc_phase_read, Self::no_write)
+            }
+            0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => {
+                (Self::scc_read, Self::scc_write)
+            }
+            0x00DF_E1FF..=0x00DF_FFFF => (Self::iwm_read, Self::iwm_write),
+            0x00EF_0000..=0x00EF_FFFF => (Self::via_read, Self::via_write),
             // Phase read (ignore)
-            0x00F0_0000..=0x00F7_FFFF => Some(0),
+            0x00F0_0000..=0x00F7_FFFF if overlay => (Self::zero_read, Self::no_write),
             // Test software region / extension ROM
-            0x00F8_0000..=0x00F9_FFFF => Some(
-                *self
-                    .extension_rom
-                    .get((addr - 0xF8_0000) as usize)
-                    .unwrap_or(&self.openbus[(addr & 1) as usize]),
-            ),
-
-            _ => None,
+            0x00F8_0000..=0x00F9_FFFF => (Self::ext_rom_read, Self::no_write),
+            _ => (Self::no_read, Self::no_write),
         }
     }
 
-    fn read_normal(&mut self, addr: Address) -> Option<Byte> {
-        match addr {
-            // RAM
-            0x0000_0000..=0x003F_FFFF | 0x0060_0000..=0x006F_FFFF => {
-                Some(self.ram[addr as usize & self.ram_mask])
-            }
-            // ROM
-            0x0040_0000..=0x0043_FFFF => Some(
-                *self
-                    .rom
-                    .get(addr as usize & self.rom_mask)
-                    .unwrap_or(&self.openbus[(addr & 1) as usize]),
-            ),
-            0x0044_0000..=0x004F_FFFF => {
-                if self.model == MacModel::Plus {
-                    // Plus with SCSI has no repeated ROM images above 0x440000 as
-                    // indication of SCSI controller present.
-                    //
-                    // 512Ke (using Plus ROM) does have repeated ROM images
-                    Some(self.openbus[(addr & 1) as usize])
-                } else {
-                    Some(
-                        *self
-                            .rom
-                            .get(addr as usize & self.rom_mask)
-                            .unwrap_or(&self.openbus[(addr & 1) as usize]),
-                    )
-                }
-            }
-            // SCSI
-            0x0058_0000..=0x005F_FFFF if self.model.has_scsi() => self.scsi.read(addr),
-            // SCC
-            0x009F_0000..=0x009F_FFFF | 0x00BF_0000..=0x00BF_FFFF => self.scc.read(addr >> 1),
-            // IWM
-            0x00DF_E1FF..=0x00DF_FFFF => self.swim.read(addr),
-            // VIA
-            0x00EF_0000..=0x00EF_FFFF => self.via.read(addr),
-            // Test software region / extension ROM
-            0x00F8_0000..=0x00F9_FFFF => Some(
-                *self
-                    .extension_rom
-                    .get((addr - 0xF8_0000) as usize)
-                    .unwrap_or(&self.openbus[(addr & 1) as usize]),
-            ),
+    fn ram_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        Some((addr..addr + len).fold(0, |v, a| {
+            (v << 8) | u32::from(self.ram[a as usize & self.ram_mask])
+        }))
+    }
 
-            _ => None,
+    fn ram_write(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
+        for a in addr..addr + len {
+            let val = (val >> (8 * (addr + len - 1 - a))) as Byte;
+
+            // Duplicate framebuffers to video component
+            // (writes also go through RAM)
+            if self.fb_main.contains(&(a & self.ram_mask as Address)) {
+                let offset = ((a & self.ram_mask as Address) - self.fb_main.start) as usize;
+                self.video.framebuffers[0][offset] = val;
+            }
+            if self.fb_alt.contains(&(a & self.ram_mask as Address)) {
+                let offset = ((a & self.ram_mask as Address) - self.fb_alt.start) as usize;
+                self.video.framebuffers[1][offset] = val;
+            }
+
+            let idx = a as usize & self.ram_mask;
+            self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
+            self.ram[idx] = val;
         }
+        Some(())
+    }
+
+    fn ram_write_overlay(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
+        for a in addr..addr + len {
+            let idx = ((a as usize) - 0x60_0000) & self.ram_mask;
+            self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
+            self.ram[idx] = (val >> (8 * (addr + len - 1 - a))) as Byte;
+        }
+        Some(())
+    }
+
+    fn rom_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        Some((addr..addr + len).fold(0, |v, a| {
+            let open = self.openbus[(a & 1) as usize];
+            (v << 8) | u32::from(*self.rom.get(a as usize & self.rom_mask).unwrap_or(&open))
+        }))
+    }
+
+    fn ext_rom_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        Some((addr..addr + len).fold(0, |v, a| {
+            let open = self.openbus[(a & 1) as usize];
+            let rom = self.extension_rom.get((a - 0xF8_0000) as usize);
+            (v << 8) | u32::from(*rom.unwrap_or(&open))
+        }))
+    }
+
+    fn openbus_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        Some((addr..addr + len).fold(0, |v, a| {
+            (v << 8) | u32::from(self.openbus[(a & 1) as usize])
+        }))
+    }
+
+    fn zero_read(&mut self, _addr: Address, _len: u32) -> Option<u32> {
+        Some(0)
+    }
+
+    fn no_read(&mut self, _addr: Address, _len: u32) -> Option<u32> {
+        None
+    }
+
+    fn no_write(&mut self, _addr: Address, _len: u32, _val: u32) -> Option<()> {
+        None
+    }
+
+    // The byte-wide chips answer on every byte of their range. A word read
+    // gets the byte twice, a word write writes its low byte.
+
+    fn scsi_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        self.scsi.read(addr).map(|v| both_bytes(v, len))
+    }
+
+    fn scsi_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
+        self.scsi.write(addr, val as Byte)
+    }
+
+    fn scc_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        self.scc.read(addr >> 1).map(|v| both_bytes(v, len))
+    }
+
+    fn scc_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
+        self.scc.write(addr >> 1, val as Byte)
+    }
+
+    /// Reads of $9FFFF7 and $9FFFF9 adjust the phase
+    fn scc_phase_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        if addr & 1 != 0 {
+            Some(0)
+        } else {
+            self.scc_read(addr, len)
+        }
+    }
+
+    fn iwm_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        self.swim.read(addr).map(|v| both_bytes(v, len))
+    }
+
+    fn iwm_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
+        self.swim.write(addr, val as Byte)
+    }
+
+    fn via_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        self.via.read(addr).map(|v| both_bytes(v, len))
+    }
+
+    fn via_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
+        self.via.write(addr, val as Byte)
     }
 
     /// Updates the mouse position (relative coordinates) and button state
@@ -519,32 +549,43 @@ where
         self.bus_frequency = bus_frequency;
     }
 
-    /// Tests for wait states on bus access
-    fn in_waitstate(&mut self, addr: Address) -> bool {
-        // DTACK (only for RAM region)
-        if (0x0000_0000..=0x003F_FFFF).contains(&addr)
-            && !self.video.in_blanking_period()
-            && !self.model.ram_interleave_cpu(self.cycles)
-        {
-            // RAM access for CPU currently blocked by memory controller
+    /// Stalls the cycle for 2 wait cycles
+    fn wait2(&mut self, stall: Ticks) -> Option<Ticks> {
+        self.stalled.waits += 2;
+        Some(stall)
+    }
+
+    /// Stall of a bus cycle which has to wait, polled every 2 cycles with
+    /// the bus ticked in between, or None once it can go on
+    fn stall(&mut self, acc: &BusAccess<Bus68000>) -> Option<Ticks> {
+        match acc.addr {
+            // RAM, while the memory controller gives it to the video.
+            // The first check is against the bus as last ticked.
             // https://www.bigmessowires.com/2011/08/25/68000-interleaved-memory-controller-design/
-            return true;
-        }
-
-        // VPA
-        if addr >= 0xE0_0000 {
-            if !self.vpa_sync {
-                // Start E-Clock synchronization, wait for next low edge.
-                self.vpa_sync = true;
-            } else if self.eclock == 0 {
-                // Low edge, synchronized
-                self.vpa_sync = false;
-                return false;
+            0x0000_0000..=0x003F_FFFF => {
+                if !self.video.in_blanking_period() && !self.model.ram_interleave_cpu(self.cycles) {
+                    return self.wait2(2);
+                }
             }
-            return true;
+            // VPA: synchronized to the next low edge of the E clock.
+            // TODO done for each byte of a word, as the byte interface did,
+            // the second one 2 cycles into the bus cycle
+            0x00E0_0000..=0x00FF_FFFF => {
+                while self.stalled.vpa_bytes < acc.size {
+                    if !self.stalled.vpa_polled {
+                        self.stalled.vpa_polled = true;
+                        return self.wait2(if self.stalled.vpa_bytes > 0 { 4 } else { 2 });
+                    }
+                    if self.eclock != 0 {
+                        return self.wait2(2);
+                    }
+                    self.stalled.vpa_bytes += 1;
+                    self.stalled.vpa_polled = false;
+                }
+            }
+            _ => (),
         }
-
-        false
+        None
     }
 
     /// Programmer's key pressed
@@ -620,56 +661,57 @@ where
     TRenderer: Renderer,
 {
     type Cpu = Bus68000;
+    const SIZED: bool = true;
 
     fn get_mask(&self) -> Address {
         0x00FFFFFF
     }
 
-    fn read(&mut self, addr: Address) -> BusResult<Byte> {
-        if self.in_waitstate(addr) {
-            return BusResult::WaitState;
+    #[inline(always)]
+    fn access(&mut self, acc: BusAccess<Bus68000>) -> Result<BusResponse> {
+        if let Some(stall) = self.stall(&acc) {
+            return Ok(BusResponse::Stall(stall));
         }
+        let waits = std::mem::take(&mut self.stalled).waits;
 
-        let val = if self.overlay {
-            self.read_overlay(addr)
-        } else {
-            self.read_normal(addr)
+        let (read, write) = self.decode(acc.addr, acc.write);
+        let data = match bus_access_word(acc, waits, self, read, write) {
+            BusResponse::Ack { data, .. } => data,
+            BusResponse::Stall(_) => unreachable!(),
+            BusResponse::BusError if acc.write => {
+                warn!(
+                    "Write to unimplemented address: {:08X} {:02X}",
+                    acc.addr, acc.data
+                );
+                0
+            }
+            BusResponse::BusError => {
+                warn!("Read from unimplemented address: {:08X}", acc.addr);
+                self.openbus_read(acc.addr, acc.size).unwrap_or_default()
+            }
         };
 
-        if let Some(v) = val {
-            self.openbus[(addr & 1) as usize] = v;
-            BusResult::Ok(v)
-        } else {
-            warn!("Read from unimplemented address: {:08X}", addr);
-            BusResult::Ok(self.openbus[(addr & 1) as usize])
-        }
-    }
-
-    fn write(&mut self, addr: Address, val: Byte) -> BusResult<Byte> {
-        if self.in_waitstate(addr) {
-            return BusResult::WaitState;
+        // The data bus keeps the last value on each lane
+        let val = if acc.write { acc.data } else { data };
+        for a in acc.addr..acc.addr + acc.size {
+            self.openbus[(a & 1) as usize] = (val >> (8 * (acc.addr + acc.size - 1 - a))) as Byte;
         }
 
-        let written = if self.overlay {
-            self.write_overlay(addr, val)
-        } else {
-            self.write_normal(addr, val)
-        };
+        if acc.write {
+            if self.model <= MacModel::Plus {
+                self.overlay = self.via.pa().overlay();
+            }
 
-        if self.model <= MacModel::Plus {
-            self.overlay = self.via.pa().overlay();
+            // Sync values that live in multiple places
+            self.swim.sel = self.via.pa().sel();
+            self.video.framebuffer_select = self.via.pa().page2();
         }
 
-        // Sync values that live in multiple places
-        self.swim.sel = self.via.pa().sel();
-        self.video.framebuffer_select = self.via.pa().page2();
-
-        if written.is_none() {
-            warn!("Write to unimplemented address: {:08X} {:02X}", addr, val);
-        }
-
-        self.openbus[(addr & 1) as usize] = val;
-        BusResult::Ok(val)
+        Ok(BusResponse::Ack {
+            width: 2,
+            data,
+            waits,
+        })
     }
 
     fn reset(&mut self, hard: bool) -> Result<bool> {
@@ -858,23 +900,19 @@ where
     fn inspect_read(&mut self, addr: Address) -> Option<Byte> {
         // Everything up to 0x800000 is safe (RAM/ROM only)
         if addr >= 0x80_0000 {
-            None
-        } else if self.overlay {
-            self.read_overlay(addr)
-        } else {
-            self.read_normal(addr)
+            return None;
         }
+        let (read, _) = self.decode(addr, false);
+        read(self, addr, 1).map(|v| v as Byte)
     }
 
     fn inspect_write(&mut self, addr: Address, val: Byte) -> Option<()> {
         // Everything up to 0x800000 is safe (RAM/ROM only)
         if addr >= 0x80_0000 {
-            None
-        } else if self.overlay {
-            self.write_overlay(addr, val)
-        } else {
-            self.write_normal(addr, val)
+            return None;
         }
+        let (_, write) = self.decode(addr, true);
+        write(self, addr, 1, val.into())
     }
 }
 
@@ -901,5 +939,14 @@ where
         }
 
         result
+    }
+}
+
+/// A byte for every byte of a `len` bytes transfer
+fn both_bytes(val: Byte, len: u32) -> u32 {
+    if len == 2 {
+        u32::from(val) * 0x0101
+    } else {
+        u32::from(val)
     }
 }
