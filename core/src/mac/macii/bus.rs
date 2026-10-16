@@ -417,7 +417,14 @@ where
         }
     }
 
+    // RAM and ROM transfers stay within an aligned long word, which is in
+    // one RAM page: when it is all there, it is one access
+
     fn ram_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        let idx = addr as usize & self.ram_mask;
+        if let Some(bytes) = self.ram.get(idx..idx + len as usize) {
+            return Some(bytes.iter().fold(0, |v, &b| (v << 8) | u32::from(b)));
+        }
         Some((addr..addr + len).fold(0, |v, a| {
             let idx = a as usize & self.ram_mask;
             (v << 8) | u32::from(self.ram.get(idx).copied().unwrap_or(Self::OPENBUS))
@@ -425,6 +432,12 @@ where
     }
 
     fn ram_write(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
+        let idx = addr as usize & self.ram_mask;
+        if let Some(ram) = self.ram.get_mut(idx..idx + len as usize) {
+            ram.copy_from_slice(&val.to_be_bytes()[4 - len as usize..]);
+            self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
+            return Some(());
+        }
         for a in addr..addr + len {
             let idx = a as usize & self.ram_mask;
             // Ignore silently to avoid a lot of spam during memory tests
@@ -437,6 +450,10 @@ where
     }
 
     fn rom_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        let idx = addr as usize & self.rom_mask;
+        if let Some(bytes) = self.rom.get(idx..idx + len as usize) {
+            return Some(bytes.iter().fold(0, |v, &b| (v << 8) | u32::from(b)));
+        }
         Some((addr..addr + len).fold(0, |v, a| {
             let idx = a as usize & self.rom_mask;
             (v << 8) | u32::from(self.rom.get(idx).copied().unwrap_or(Self::OPENBUS))
