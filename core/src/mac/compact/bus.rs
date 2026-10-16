@@ -508,7 +508,18 @@ where
     }
 
     fn via_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
-        self.via.write(addr, val as Byte)
+        self.via.write(addr, val as Byte)?;
+        self.sync_via_pa();
+        Some(())
+    }
+
+    /// Syncs the devices driven by the VIA port A pins
+    fn sync_via_pa(&mut self) {
+        if self.model <= MacModel::Plus {
+            self.overlay = self.via.pa().overlay();
+        }
+        self.swim.sel = self.via.pa().sel();
+        self.video.framebuffer_select = self.via.pa().page2();
     }
 
     /// Updates the mouse position (relative coordinates) and button state
@@ -771,16 +782,6 @@ where
             self.openbus[(acc.addr & 1) as usize] = val as Byte;
         }
 
-        if acc.write {
-            if self.model <= MacModel::Plus {
-                self.overlay = self.via.pa().overlay();
-            }
-
-            // Sync values that live in multiple places
-            self.swim.sel = self.via.pa().sel();
-            self.video.framebuffer_select = self.via.pa().page2();
-        }
-
         Ok(BusResponse::Ack {
             width: 2,
             data,
@@ -807,6 +808,7 @@ where
         self.via.adb = adb;
         self.via.rtc = rtc;
         self.overlay = true;
+        self.sync_via_pa();
         self.scc = Scc::new();
 
         // All compact Macs have RESET and HALT tied together
