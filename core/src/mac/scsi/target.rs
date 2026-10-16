@@ -576,6 +576,11 @@ pub(crate) trait ScsiTarget: Send + Debuggable {
         }
     }
 
+    /// Whether tick() does anything for this target
+    fn ticks(&self) -> bool {
+        false
+    }
+
     fn tick(&mut self, _ticks: Ticks, _ctx: &dyn EmuContext) -> Result<()> {
         Ok(())
     }
