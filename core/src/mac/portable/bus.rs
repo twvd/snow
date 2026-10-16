@@ -330,7 +330,10 @@ where
     }
 
     fn via_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
-        self.via.write(addr, val as Byte)
+        self.via.write(addr, val as Byte)?;
+        // The SWIM SEL line is the VIA's PB5 pin
+        self.swim.sel = self.via.pb().headsel();
+        Some(())
     }
 
     fn scsi_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
@@ -637,11 +640,6 @@ where
             }
         };
 
-        if acc.write {
-            // Sync values that live in multiple places
-            self.swim.sel = self.via.pb().headsel();
-        }
-
         Ok(BusResponse::Ack {
             width: 2,
             data,
@@ -664,6 +662,7 @@ where
 
         self.scc = Scc::new();
         self.via.reset();
+        self.swim.sel = self.via.pb().headsel();
         self.asc.reset();
         self.mouse_ready = false;
         self.overlay = true;
