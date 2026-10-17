@@ -184,3 +184,39 @@ fn write_fault_with_pending_trace() {
     assert_eq!(read_word(&cpu, sp + 6), 0x2024);
     assert_eq!(read_long(&cpu, sp + 8), CODE);
 }
+
+#[test]
+fn address_error_frame() {
+    use crate::cpu_m68k::cpu::{ExceptionGroup, Group0Details, VECTOR_ADDRESS_ERROR};
+
+    let mut cpu = testcpu(&[0x4E71]);
+    write_long(&mut cpu, 0x0C, ACCESS_ERROR_HANDLER);
+    cpu.raise_exception(
+        ExceptionGroup::Group0,
+        VECTOR_ADDRESS_ERROR,
+        Some(Group0Details {
+            function_code: 6,
+            read: true,
+            instruction: true,
+            address: 0x0000_3001,
+            ir: 0,
+            start_pc: CODE,
+            size: 2,
+            atc_fault: false,
+        }),
+    )
+    .unwrap();
+
+    assert_eq!(cpu.regs.pc, ACCESS_ERROR_HANDLER);
+    let sp = *cpu.regs.ssp();
+    assert_eq!(sp, STACK - 12);
+    assert_eq!(read_long(&cpu, sp + 2), CODE);
+    assert_eq!(read_word(&cpu, sp + 6), 0x200C);
+    assert_eq!(read_long(&cpu, sp + 8), 0x0000_3000);
+
+    // RTE takes the format $2 frame
+    write_word(&mut cpu, ACCESS_ERROR_HANDLER, 0x4E73);
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, CODE);
+    assert_eq!(*cpu.regs.ssp(), STACK);
+}
