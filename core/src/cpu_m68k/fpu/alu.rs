@@ -1,4 +1,4 @@
-use crate::cpu_m68k::FpuM68kType;
+use crate::cpu_m68k::{FPU_M68040, FpuM68kType};
 use anyhow::{Result, bail};
 use arpfloat::{Float, RoundingMode, Semantics};
 
@@ -191,9 +191,20 @@ where
         debug_assert_eq!(dest.get_semantics(), SEMANTICS_EXTENDED);
 
         // The operands are used as they are, only the result gets the rounding
-        // precision of FPCR (MC68881UM 3.5.2). Operations work in extended
-        // precision with the rounding mode of FPCR.
-        let sem = self.fpu_rounding_mode_precision()?;
+        // precision of FPCR, or that of the instruction on the 68040 (MC68881UM
+        // 3.5.2). Operations work in extended precision with the rounding mode
+        // of FPCR.
+        let (opmode, sem) = match opmode::rounded(opmode) {
+            Some((op, double)) if FPU_TYPE == FPU_M68040 => {
+                let prec = if double {
+                    SEMANTICS_DOUBLE
+                } else {
+                    SEMANTICS_SINGLE
+                };
+                (op, prec.with_rm(self.fpu_rounding_mode()))
+            }
+            _ => (opmode, self.fpu_rounding_mode_precision()?),
+        };
         let ext = SEMANTICS_EXTENDED.with_rm(self.fpu_rounding_mode());
         let source = &source.cast(ext);
         let dest = &dest.cast(ext);
