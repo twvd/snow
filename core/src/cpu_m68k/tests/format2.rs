@@ -1,4 +1,4 @@
-//! Six word (format $2) exception stack frames of the 68020 and later
+//! Exception stack frames of the 68020 and later: format $2, RTE
 
 use crate::bus::Address;
 use crate::bus::access::Bus68020;
@@ -84,4 +84,45 @@ fn trace() {
     // NOP
     let cpu = run(&[0x4E71], 1, |cpu| cpu.regs.sr.set_trace(true));
     check_frame(&cpu, CODE + 2, 0x24, CODE);
+}
+
+#[test]
+fn rte_unknown_format_is_format_error() {
+    // RTE with a format $5 frame
+    let cpu = run(&[0x4E73], 1, |cpu| {
+        for (i, w) in [0x2700, 0x0000, 0x3000, 0x5000].iter().enumerate() {
+            write_word(cpu, STACK - 8 + 2 * i as Address, *w);
+        }
+        cpu.regs.isp = STACK - 8;
+    });
+    // Format error, the frame is left in place and the PC is the RTE
+    let sp = *cpu.regs.ssp();
+    assert_eq!(sp, STACK - 16);
+    assert_eq!(read_long(&cpu, sp + 2), CODE);
+    assert_eq!(read_word(&cpu, sp + 6), 0x0038);
+}
+
+#[test]
+fn rte_throwaway_frame() {
+    // RTE on the interrupt stack with a throwaway frame whose SR selects the
+    // master stack, holding a normal frame
+    let mut cpu = TestCpu::new(Testbus::new(M68030_ADDRESS_MASK));
+    write_word(&mut cpu, CODE, 0x4E73);
+    for (i, w) in [0x3700, 0x0000, 0x0000, 0x1000].iter().enumerate() {
+        write_word(&mut cpu, STACK - 8 + 2 * i as Address, *w);
+    }
+    for (i, w) in [0x2000, 0x0000, 0x3000, 0x0000].iter().enumerate() {
+        write_word(&mut cpu, 0x9000 - 8 + 2 * i as Address, *w);
+    }
+    cpu.regs.isp = STACK - 8;
+    cpu.regs.msp = 0x9000 - 8;
+    cpu.regs.sr.set_supervisor(true);
+    cpu.set_pc(CODE).unwrap();
+    cpu.prefetch_refill().unwrap();
+    cpu.step().unwrap();
+
+    assert_eq!(cpu.regs.pc, 0x3000);
+    assert_eq!(cpu.regs.isp, STACK);
+    assert_eq!(cpu.regs.msp, 0x9000);
+    assert!(!cpu.regs.sr.m());
 }
