@@ -78,6 +78,18 @@ pub(in crate::cpu_m68k) struct Group0Details {
     pub(in crate::cpu_m68k) atc_fault: bool,
 }
 
+/// M68040: a faulted data write waiting in a write-back slot for the access
+/// error handler to complete it (M68040UM 8.4.6)
+#[derive(Debug, Clone, Copy)]
+pub(in crate::cpu_m68k) struct WriteBack040 {
+    pub(in crate::cpu_m68k) details: Group0Details,
+    pub(in crate::cpu_m68k) data: Long,
+    /// The fault is in the second page of a misaligned write
+    pub(in crate::cpu_m68k) ma: bool,
+    /// A trace exception is pending for the instruction
+    pub(in crate::cpu_m68k) trace: bool,
+}
+
 /// An entry in the instruction prefetch queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PrefetchWord {
@@ -421,6 +433,15 @@ pub struct CpuM68k<
     /// bus fault.
     pub(in crate::cpu_m68k) restart_regs: Option<RestartRegisterFile>,
 
+    /// M68040: data writes of the current instruction may fault into a
+    /// write-back slot instead of aborting the instruction
+    #[serde(skip)]
+    pub(in crate::cpu_m68k) wb040_defer: bool,
+
+    /// M68040: faulted write of the current instruction
+    #[serde(skip)]
+    pub(in crate::cpu_m68k) wb040: Option<WriteBack040>,
+
     /// NMI edge trigger level
     in_nmi: bool,
 }
@@ -466,6 +487,8 @@ where
             icache_lines: core::array::from_fn(|_| Default::default()),
             icache_tags: [ICACHE_TAG_INVALID; ICACHE_LINES],
             restart_regs: None,
+            wb040_defer: false,
+            wb040: None,
             in_nmi: false,
         }
     }
@@ -779,7 +802,26 @@ where
         }
 
         let instr = self.decode_cache[opcode as usize].clone().unwrap();
+        // The M68040 restarts MOVEM and MOVE16, and faults the read-modify-write
+        // instructions on their read (M68040UM 8.4.6)
+        self.wb040_defer = CPU_TYPE == M68040
+            && !matches!(
+                instr.mnemonic,
+                InstructionMnemonic::MOVEM_mem_w
+                    | InstructionMnemonic::MOVEM_mem_l
+                    | InstructionMnemonic::MOVE16_inc
+                    | InstructionMnemonic::MOVE16_abs
+                    | InstructionMnemonic::TAS
+                    | InstructionMnemonic::CAS_b
+                    | InstructionMnemonic::CAS_w
+                    | InstructionMnemonic::CAS_l
+            );
         let execute_result = self.execute_instruction(&instr);
+        self.wb040_defer = false;
+        if execute_result.is_err() {
+            // The instruction restarts and writes again
+            self.wb040 = None;
+        }
 
         // Write history entry
         // This is done here already in case the instruction caused an
@@ -875,6 +917,16 @@ where
         };
 
         self.prefetch_refill()?;
+
+        if let Some(wb) = self.wb040.as_mut() {
+            // The instruction completed with a faulted write, the access error
+            // returns after it and carries the pending trace.
+            wb.trace = trace_exception && !self.step_inhibit_trace;
+            let mut details = wb.details;
+            details.ir = instr.data;
+            details.start_pc = start_pc;
+            self.raise_exception(ExceptionGroup::Group0, VECTOR_BUS_ERROR, Some(details))?;
+        }
 
         // Check pending trace
         if trace_exception && !self.step_inhibit_trace {
@@ -1095,6 +1147,9 @@ where
         let start_cycles = self.cycles;
         let mut saved_sr = self.regs.sr.sr();
 
+        // Stacking faults are not deferred
+        self.wb040_defer = false;
+
         // Resume in supervisor mode
         self.regs.sr.set_supervisor(true);
         self.regs.sr.set_trace(false);
@@ -1114,29 +1169,55 @@ where
 
                 match CPU_TYPE {
                     M68040 => {
-                        if let Some(regs) = self.restart_regs.take() {
-                            saved_sr = regs.sr.sr();
-                            regs.restore(&mut self.regs);
-                            self.regs.sr.set_supervisor(true);
-                            self.regs.sr.set_trace(false);
+                        // A faulted write of a completed instruction waits in a
+                        // write-back slot for the handler, which returns after
+                        // the instruction. Other faults restart the instruction.
+                        let wb = self.wb040.take();
+                        let pc = if wb.is_some() {
+                            self.regs.pc
                         } else {
-                            log::error!(
-                                "Cannot reset registers for stacking an access error frame"
-                            );
-                        }
+                            if let Some(regs) = self.restart_regs.take() {
+                                saved_sr = regs.sr.sr();
+                                regs.restore(&mut self.regs);
+                                self.regs.sr.set_supervisor(true);
+                                self.regs.sr.set_trace(false);
+                            } else {
+                                log::error!(
+                                    "Cannot reset registers for stacking an access error frame"
+                                );
+                            }
+                            details.start_pc
+                        };
+                        let trace = wb.is_some_and(|wb| wb.trace);
+                        let size: u16 = match details.size {
+                            1 => 0b01,
+                            2 => 0b10,
+                            16 => 0b11,
+                            // Long, and the default when the size is
+                            // not known (MMU faults)
+                            _ => 0b00,
+                        };
 
                         // Access error stack frame (format $7), M68040UM 8.4.6.
                         *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(0x3C);
                         let ssp = *self.regs.ssp();
 
                         self.write_ticks(ssp.wrapping_add(0x00), saved_sr)?;
-                        self.write_ticks(ssp.wrapping_add(0x02), details.start_pc)?;
+                        self.write_ticks(ssp.wrapping_add(0x02), pc)?;
                         self.write_ticks(
                             ssp.wrapping_add(0x06),
                             0b0111_0000_0000_0000 | (vector as u16),
                         )?;
-                        // Effective address of the faulted access
-                        self.write_ticks(ssp.wrapping_add(0x08), details.address)?;
+                        // Effective address: the traced instruction with a
+                        // pending trace, else the faulted access
+                        self.write_ticks(
+                            ssp.wrapping_add(0x08),
+                            if trace {
+                                details.start_pc
+                            } else {
+                                details.address
+                            },
+                        )?;
                         // Special status word
                         self.write_ticks(
                             ssp.wrapping_add(0x0C),
@@ -1144,23 +1225,40 @@ where
                                 .with_tm(details.function_code)
                                 .with_rw(details.read)
                                 .with_atc(details.atc_fault)
-                                .with_size(match details.size {
-                                    1 => 0b01,
-                                    2 => 0b10,
-                                    16 => 0b11,
-                                    // Long, and the default when the size is
-                                    // not known (MMU faults)
-                                    _ => 0b00,
-                                }),
+                                .with_ma(wb.is_some_and(|wb| wb.ma))
+                                .with_ct(trace)
+                                .with_size(size as u8),
                         )?;
-                        // Write-back status
-                        self.write_ticks(ssp.wrapping_add(0x0E), 0u16)?;
-                        self.write_ticks(ssp.wrapping_add(0x10), 0u16)?;
-                        self.write_ticks(ssp.wrapping_add(0x12), 0u16)?;
+
+                        // Write-back slots, WB3 to WB1: status, address, data.
+                        // WB2 holds a write the MMU faulted (register aligned
+                        // data), WB1 one faulted on the bus (data on its byte
+                        // lanes, M68040UM table 8-5).
+                        let mut slots = [(0u16, 0u32, 0u32); 3];
+                        if let Some(wb) = wb {
+                            let status = 0x80 | (size << 5) | u16::from(details.function_code);
+                            slots[if details.atc_fault { 1 } else { 2 }] = (
+                                status,
+                                details.address,
+                                if details.atc_fault {
+                                    wb.data
+                                } else {
+                                    (wb.data << (32 - 8 * details.size as u32))
+                                        .rotate_right(8 * (details.address & 3))
+                                },
+                            );
+                        }
+                        for (i, &(status, _, _)) in slots.iter().enumerate() {
+                            self.write_ticks(ssp.wrapping_add(0x0E + 2 * i as Address), status)?;
+                        }
                         // Fault address
                         self.write_ticks(ssp.wrapping_add(0x14), details.address)?;
-                        // Write-back address/data
-                        for offset in (0x18..0x3C).step_by(4) {
+                        for (i, &(_, addr, data)) in slots.iter().enumerate() {
+                            self.write_ticks(ssp.wrapping_add(0x18 + 8 * i as Address), addr)?;
+                            self.write_ticks(ssp.wrapping_add(0x1C + 8 * i as Address), data)?;
+                        }
+                        // Push data, long words 1 to 3
+                        for offset in (0x30..0x3C).step_by(4) {
                             self.write_ticks(ssp.wrapping_add(offset), 0u32)?;
                         }
                     }
@@ -2842,7 +2940,7 @@ where
         }
 
         // 68020+ version
-        let ssp = self.regs.ssp();
+        let ssp = *self.regs.ssp();
         let format = (self.read_ticks::<Word>(ssp.wrapping_add(6))? & 0b1111_0000_0000_0000) >> 12;
         match format {
             0b0000 => {
@@ -2866,6 +2964,32 @@ where
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
                 *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(92);
+                self.set_sr(sr);
+                self.set_pc(pc)?;
+            }
+            0b0111 if Ssw040(self.read_ticks(ssp.wrapping_add(0x0C))?).ct() => {
+                // M68040 access error with a pending trace: the frame becomes
+                // the format $2 frame of the trace exception (M68040UM 8.4.6.2)
+                let sr = self.read_ticks::<Word>(ssp.wrapping_add(0))?;
+                let pc = self.read_ticks::<Long>(ssp.wrapping_add(2))?;
+                let ea = self.read_ticks::<Long>(ssp.wrapping_add(8))?;
+                let ssp = ssp.wrapping_add(0x30);
+                *self.regs.ssp_mut() = ssp;
+                self.write_ticks(ssp.wrapping_add(0), sr)?;
+                self.write_ticks(ssp.wrapping_add(2), pc)?;
+                self.write_ticks(
+                    ssp.wrapping_add(6),
+                    0b0010_0000_0000_0000 | VECTOR_TRACE as u16,
+                )?;
+                self.write_ticks(ssp.wrapping_add(8), ea)?;
+                let new_pc = self.read_ticks::<Long>(self.regs.vbr.wrapping_add(VECTOR_TRACE))?;
+                self.set_pc(new_pc)?;
+            }
+            0b0010 => {
+                // Six word frame
+                let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
+                let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(12);
                 self.set_sr(sr);
                 self.set_pc(pc)?;
             }
