@@ -3776,13 +3776,18 @@ where
             return self.raise_privilege_violation();
         }
 
+        let ctrlreg = match instr.movec_ctrlreg() {
+            Ok(reg) if reg.exists_on(CPU_TYPE) => reg,
+            _ => return self.raise_illegal_instruction(),
+        };
+
         if instr.movec_ctrl_to_gen() {
-            let val = self.regs.read::<Long>(instr.movec_ctrlreg()?.into());
+            let val = self.regs.read::<Long>(ctrlreg.into());
             self.regs.write(instr.movec_reg(), val);
             self.advance_cycles(4)?;
         } else {
             let val = self.regs.read::<Long>(instr.movec_reg());
-            let destreg: Register = instr.movec_ctrlreg()?.into();
+            let destreg: Register = ctrlreg.into();
 
             if destreg == Register::CACR {
                 // Cache operations
