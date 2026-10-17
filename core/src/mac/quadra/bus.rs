@@ -2,7 +2,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::bus::access::{Bus68040, BusAccess, BusResponse};
-use crate::bus::native_clock::{C16M_FREQUENCY, NativeClock};
+use crate::bus::native_clock::NativeClock;
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -14,7 +14,7 @@ use crate::mac::quadra::dafb::Dafb;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::esp::Esp;
-use crate::mac::sound::asc::Asc;
+use crate::mac::sound::easc::Easc;
 use crate::mac::swim::Swim;
 use crate::mac::via::Via;
 use crate::mac::via_common::{LineState, ViaLine};
@@ -57,7 +57,7 @@ pub struct Quadra700Bus<TRenderer: Renderer> {
     pub(crate) via1: Via,
     pub(crate) via2: Via2,
     pub(crate) scc: Scc,
-    pub(crate) asc: Asc,
+    pub(crate) asc: Easc,
     asc_clock: Ticks,
     scc_clock: Ticks,
     mouse_ready: bool,
@@ -143,7 +143,7 @@ where
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), BUS_FREQUENCY),
             // MODE pins strapped for a 16-bit DMA bus (schematic 050-8020)
             scsi: Esp::new(true),
-            asc: Asc::default(),
+            asc: Easc::default(),
             asc_clock: 0,
             mouse_ready: false,
 
@@ -197,11 +197,12 @@ where
     }
 
     pub fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {
-        // Audio sample frequency is tied to monitor's horizontal sync
-        // 370 horizontal lines * 60.147 frames/sec = 22.254 KHz
-        // Round down to a safe commonly used value (22050), 0.9% off
         let sink = provider
-            .create_stream(22050, AUDIO_CHANNELS as u8, AUDIO_BUFFER_SAMPLES as u16)
+            .create_stream(
+                self.asc.sample_rate() as i32,
+                AUDIO_CHANNELS as u8,
+                AUDIO_BUFFER_SAMPLES as u16,
+            )
             .unwrap_or_else(|_| null_audio_sink());
         self.asc.set_sink(sink);
 
@@ -714,13 +715,12 @@ where
         }
 
         // Audio
-        // The interrupt output of the ASC is active low
-        self.via2
-            .set_line(ViaLine::CB1, (!self.asc.get_irq()).into());
+        // The interrupt output of the EASC is active low
+        self.via2.set_line(ViaLine::CB1, (!self.asc.irq()).into());
 
-        self.asc_clock += native_ticks * C16M_FREQUENCY;
-        while self.asc_clock >= self.asc.sample_period() * ctx.bus_frequency {
-            self.asc_clock -= self.asc.sample_period() * ctx.bus_frequency;
+        self.asc_clock += native_ticks;
+        while self.asc_clock >= ctx.bus_frequency / self.asc.sample_rate() {
+            self.asc_clock -= ctx.bus_frequency / self.asc.sample_rate();
 
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }
@@ -809,7 +809,7 @@ where
 
         let mut result = vec![
             dbgprop_nest!("Apple Desktop Bus", self.via1.adb),
-            dbgprop_nest!("Apple Sound Chip", self.asc),
+            dbgprop_nest!("Enhanced Apple Sound Chip", self.asc),
             dbgprop_nest!("Built-in video (DAFB)", self.dafb),
             dbgprop_nest!("SCSI controller (NCR 53C96)", self.scsi),
             dbgprop_nest!("SWIM", self.swim),
