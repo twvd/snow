@@ -17,6 +17,7 @@ const DESC_TYPE: Long = 0b11;
 const DESC_TYPE_INVALID: Long = 0;
 const DESC_TYPE_INDIRECT: Long = 2;
 const DESC_UDT_RESIDENT: Long = 1 << 1;
+const DESC_PDT_RESIDENT: Long = 1 << 0;
 const DESC_WP: Long = 1 << 2;
 const DESC_U: Long = 1 << 3;
 const DESC_M: Long = 1 << 4;
@@ -144,13 +145,13 @@ where
         };
         let page_idx = (vaddr >> page_shift) & if page_shift == 13 { 0x1F } else { 0x3F };
         let mut leaf_addr = (ptr_desc & table_mask).wrapping_add(page_idx * 4);
-        let mut leaf_desc = self.mmu040_read_descriptor(leaf_addr, DESC_TYPE)?;
+        let mut leaf_desc = self.mmu040_read_descriptor(leaf_addr, DESC_PDT_RESIDENT)?;
 
         // A leaf descriptor may point at another descriptor. Exactly one level
         // of indirection is allowed; anything deeper is invalid.
         if leaf_desc & DESC_TYPE == DESC_TYPE_INDIRECT {
             leaf_addr = leaf_desc & !DESC_TYPE;
-            leaf_desc = self.mmu040_read_descriptor(leaf_addr, DESC_TYPE)?;
+            leaf_desc = self.mmu040_read_descriptor(leaf_addr, DESC_PDT_RESIDENT)?;
             if leaf_desc & DESC_TYPE == DESC_TYPE_INDIRECT {
                 bail!(CpuError::Pagefault(PagefaultCause::Invalid));
             }
