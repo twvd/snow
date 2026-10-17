@@ -346,6 +346,10 @@ pub struct CpuM68k<
     /// Trace exception must be inhibited after this instruction
     step_inhibit_trace: bool,
 
+    /// Address of the instruction of this step
+    #[serde(skip)]
+    step_start_pc: Address,
+
     /// External address/data bus
     pub bus: TBus,
 
@@ -471,6 +475,7 @@ where
             step_ea_addr: None,
             step_exception: false,
             step_inhibit_trace: false,
+            step_start_pc: 0,
             step_ea_load: None,
             decode_cache: empty_decode_cache(),
             trace_mask: false,
@@ -756,6 +761,7 @@ where
 
         let start_cycles = self.cycles;
         let start_pc = self.regs.pc;
+        self.step_start_pc = start_pc;
         let opcode = match self.fetch() {
             Ok(o) => o,
             Err(e) => {
@@ -1422,6 +1428,26 @@ where
                         self.write_ticks(self.regs.ssp().wrapping_add(4), pc as u16)?;
                         self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
                         self.write_ticks(self.regs.ssp().wrapping_add(2), (pc >> 16) as u16)?;
+                    }
+                    M68020..
+                        if matches!(
+                            vector,
+                            VECTOR_DIV_ZERO | VECTOR_CHK | VECTOR_TRAPV | VECTOR_TRACE
+                        ) =>
+                    {
+                        // Six word frame (format $2) with the address of the
+                        // instruction that caused the exception (M68030UM
+                        // table 8-6, M68040UM 8.4.3). TRAPcc and cpTRAPcc share
+                        // the TRAPV vector, CHK2 the CHK one.
+                        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(12);
+                        let ssp = *self.regs.ssp();
+                        self.write_ticks(ssp.wrapping_add(0), saved_sr)?;
+                        self.write_ticks(ssp.wrapping_add(2), pc)?;
+                        self.write_ticks(
+                            ssp.wrapping_add(6),
+                            0b0010_0000_0000_0000 | (vector as u16),
+                        )?;
+                        self.write_ticks(ssp.wrapping_add(8), self.step_start_pc)?;
                     }
                     _ => {
                         *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8);
