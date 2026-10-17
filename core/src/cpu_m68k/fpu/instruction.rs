@@ -86,6 +86,42 @@ pub(in crate::cpu_m68k) mod opmode {
         FSUB    = 0b0101000, "FSUB";
         FCMP    = 0b0111000, "FCMP";
         FTST    = 0b0111010, "FTST";
+
+        // MC68040 only, rounded to single or double precision
+        FSMOVE  = 0b1000000, "FSMOVE";
+        FSSQRT  = 0b1000001, "FSSQRT";
+        FDMOVE  = 0b1000100, "FDMOVE";
+        FDSQRT  = 0b1000101, "FDSQRT";
+        FSABS   = 0b1011000, "FSABS";
+        FSNEG   = 0b1011010, "FSNEG";
+        FDABS   = 0b1011100, "FDABS";
+        FDNEG   = 0b1011110, "FDNEG";
+        FSDIV   = 0b1100000, "FSDIV";
+        FSADD   = 0b1100010, "FSADD";
+        FSMUL   = 0b1100011, "FSMUL";
+        FDDIV   = 0b1100100, "FDDIV";
+        FDADD   = 0b1100110, "FDADD";
+        FDMUL   = 0b1100111, "FDMUL";
+        FSSUB   = 0b1101000, "FSSUB";
+        FDSUB   = 0b1101100, "FDSUB";
+    }
+
+    /// For the single and double precision rounded opmodes of the MC68040:
+    /// the operation and whether it rounds to double precision
+    pub(in crate::cpu_m68k) fn rounded(opmode: u8) -> Option<(u8, bool)> {
+        let double = opmode & 0b0000100 != 0;
+        let op = match opmode {
+            FSMOVE | FDMOVE => FMOVE,
+            FSSQRT | FDSQRT => FSQRT,
+            FSABS | FDABS => FABS,
+            FSNEG | FDNEG => FNEG,
+            FSDIV | FDDIV => FDIV,
+            FSADD | FDADD => FADD,
+            FSMUL | FDMUL => FMUL,
+            FSSUB | FDSUB => FSUB,
+            _ => return None,
+        };
+        Some((op, double))
     }
 }
 
