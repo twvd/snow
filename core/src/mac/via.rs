@@ -98,8 +98,14 @@ bitfield! {
         /// VBlank enable for SE/30
         pub se30_vblank_enable: bool @ 6,
 
+        /// A/UX interrupt levels (false = enabled) (Quadra 700)
+        pub aux_inten: bool @ 6,
+
         /// Sound enable
         pub sndenb: bool @ 7,
+
+        /// Software interrupt (false = asserted) (Quadra 700)
+        pub soft_irq: bool @ 7,
 
         pub pb0: bool @ 0,
         pub pb1: bool @ 1,
