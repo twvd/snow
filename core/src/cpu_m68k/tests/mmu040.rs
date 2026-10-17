@@ -225,3 +225,27 @@ fn table_descriptor_type_01_is_invalid() {
         "U not set on an invalid descriptor"
     );
 }
+
+#[test]
+fn indirect_descriptor_not_updated() {
+    const INDIRECT: Address = 0x0001_3000;
+    let mut cpu = testcpu(0);
+    let leaf = read_long(&cpu, PAGE_TABLE + 4);
+    write_long(&mut cpu, INDIRECT, leaf);
+    write_long(&mut cpu, PAGE_TABLE + 4, INDIRECT | 2);
+
+    assert_eq!(
+        cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, true).unwrap(),
+        0x0020_0000
+    );
+    assert_eq!(
+        read_long(&cpu, PAGE_TABLE + 4),
+        INDIRECT | 2,
+        "indirect descriptor untouched"
+    );
+    assert_eq!(
+        read_long(&cpu, INDIRECT) & (3 << 3),
+        3 << 3,
+        "U and M on the page descriptor"
+    );
+}
