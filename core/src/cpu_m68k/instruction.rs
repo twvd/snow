@@ -375,7 +375,7 @@ pub enum MovecCtrlReg {
     DTT1 = 0x007,
     MMUSR040 = 0x805,
     SRP040 = 0x807,
-    URP040 = 0x80E,
+    URP040 = 0x806,
 }
 
 #[allow(clippy::from_over_into)]
