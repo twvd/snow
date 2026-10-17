@@ -70,7 +70,7 @@ impl FpuTimings {
     pub(in crate::cpu_m68k) fn alu(&self, opmode: u8, operand: FpuOperand) -> Ticks {
         let opmode = match opmode {
             opmode::FSINCOS..=opmode::FSINCOS_LAST => opmode::FSINCOS,
-            _ => opmode,
+            _ => opmode::rounded(opmode).map_or(opmode, |(op, _)| op),
         };
         self.alu[usize::from(opmode)][operand as usize].into()
     }
