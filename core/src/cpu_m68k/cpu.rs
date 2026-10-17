@@ -3551,9 +3551,13 @@ where
         // aligned 16-byte line.
         let (src, dest) = (src & !0xF, dest & !0xF);
 
-        for offset in (0..16).step_by(std::mem::size_of::<Long>()) {
-            let value = self.read_ticks::<Long>(src.wrapping_add(offset))?;
-            self.write_ticks::<Long>(dest.wrapping_add(offset), value)?;
+        // The whole line is read before any of it is written
+        let mut line = [0; 4];
+        for (i, value) in line.iter_mut().enumerate() {
+            *value = self.read_ticks::<Long>(src.wrapping_add(4 * i as Address))?;
+        }
+        for (i, &value) in line.iter().enumerate() {
+            self.write_ticks::<Long>(dest.wrapping_add(4 * i as Address), value)?;
         }
 
         Ok(())
