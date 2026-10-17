@@ -1,4 +1,5 @@
 mod divl;
+mod fpu040;
 mod group2_exceptions;
 mod illegal_exception;
 mod interrupt;
