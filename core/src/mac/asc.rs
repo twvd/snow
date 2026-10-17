@@ -165,16 +165,16 @@ impl Asc {
     /// Sample the ASC for FIFO mode
     fn sample_fifo(&mut self) -> (u8, u8) {
         // If a FIFO is empty, the ASC will continue to output the last sample of that channel.
-        // A FIFO interrupts once when it drains below half full, so also after a refill that
-        // leaves it exactly half full. There is no interrupt when it runs empty.
+        // A FIFO interrupts once when a sample leaves it exactly half full. There is no
+        // interrupt when it runs empty.
         let l = self.fifo_l.pop_front().unwrap_or(self.l_last);
-        if self.fifo_l.len() == FIFO_SIZE / 2 - 1 {
+        if self.fifo_l.len() == FIFO_SIZE / 2 {
             self.fifo_status.set_l_half(true);
             self.irq = true;
         }
         let r = if self.ctrl.stereo() {
             let r = self.fifo_r.pop_front().unwrap_or(self.r_last);
-            if self.fifo_r.len() == FIFO_SIZE / 2 - 1 {
+            if self.fifo_r.len() == FIFO_SIZE / 2 {
                 self.fifo_status.set_r_half(true);
                 self.irq = true;
             }
@@ -374,8 +374,8 @@ mod tests {
         asc.write(0x000, 0x80);
         assert!(!asc.get_irq());
 
-        // One interrupt when they drain below half full
-        tick(&mut asc, FIFO_SIZE / 2);
+        // One interrupt when they drain to half full
+        tick(&mut asc, FIFO_SIZE / 2 - 1);
         assert!(!asc.get_irq());
         tick(&mut asc, 1);
         assert!(asc.get_irq());
@@ -392,9 +392,9 @@ mod tests {
         let mut asc = Asc::default();
         asc.write(0x801, 1);
 
-        // Exactly half full interrupts on the next sample. The second FIFO is not played in
-        // mono and does not interrupt.
-        for _ in 0..FIFO_SIZE / 2 {
+        // One more than half full interrupts on the next sample. The second FIFO is not played
+        // in mono and does not interrupt.
+        for _ in 0..FIFO_SIZE / 2 + 1 {
             asc.write(0x000, 0x80);
             asc.write(0x400, 0x80);
         }
@@ -410,7 +410,7 @@ mod tests {
         let mut asc = Asc::default();
         asc.write(0x801, 1);
         asc.write(0x802, 2);
-        for _ in 0..FIFO_SIZE / 2 {
+        for _ in 0..FIFO_SIZE / 2 + 1 {
             asc.write(0x000, 0x80);
             asc.write(0x400, 0x80);
         }
