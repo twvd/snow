@@ -238,6 +238,8 @@ impl BusMember<Address> for Asc {
             }
             // Clock rate
             0x807 => Some(0),
+            // Not documented, reads zero
+            0x808 => Some(0),
             // Wavetable channel configuration
             0x810..=0x82F => {
                 let channel = (((addr - 0x810) >> 3) & 3) as usize;
