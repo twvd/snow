@@ -26,6 +26,8 @@ pub struct Asc {
 
     mode: AscMode,
     ctrl: Control,
+    /// Volume, stored only
+    volume: u8,
     channels: [AscChannel; 4],
     #[serde(with = "BigArray")]
     wavetables: [u8; 0x800],
@@ -99,6 +101,7 @@ impl Default for Asc {
             fifo_status: Default::default(),
             irq: false,
             ctrl: Control(0),
+            volume: 0,
             l_last: 0,
             r_last: 0,
             filter: AudioFilter::new(),
@@ -111,6 +114,7 @@ impl Asc {
         self.irq = false;
         self.fifo_status.0 = 0;
         self.mode = AscMode::Off;
+        self.volume = 0;
         self.fifo_l.clear();
         self.fifo_r.clear();
         self.wavetables.fill(0);
@@ -236,6 +240,8 @@ impl BusMember<Address> for Asc {
                 self.irq = false;
                 Some(*std::mem::take(&mut self.fifo_status))
             }
+            // Volume
+            0x806 => Some(self.volume),
             // Clock rate
             0x807 => Some(0),
             // Not documented, reads zero
@@ -302,6 +308,8 @@ impl BusMember<Address> for Asc {
                 self.irq |= self.fifo_status.0 != 0;
                 Some(())
             }
+            // Volume
+            0x806 => Some(self.volume = val),
             // Clock rate
             0x807 => {
                 if val != 0 {
