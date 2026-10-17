@@ -16,6 +16,7 @@ use anyhow::{Result, bail};
 const DESC_TYPE: Long = 0b11;
 const DESC_TYPE_INVALID: Long = 0;
 const DESC_TYPE_INDIRECT: Long = 2;
+const DESC_UDT_RESIDENT: Long = 1 << 1;
 const DESC_WP: Long = 1 << 2;
 const DESC_U: Long = 1 << 3;
 const DESC_M: Long = 1 << 4;
@@ -94,10 +95,11 @@ where
         None
     }
 
-    /// Reads a descriptor and sets its U bit
-    fn mmu040_read_descriptor(&mut self, addr: Address) -> Result<Long> {
+    /// Reads a descriptor and sets its U bit if any of the `resident` bits
+    /// of its type are set
+    fn mmu040_read_descriptor(&mut self, addr: Address, resident: Long) -> Result<Long> {
         let desc = self.read_ticks_physical::<Long>(addr)?;
-        if desc & DESC_TYPE != DESC_TYPE_INVALID && desc & DESC_U == 0 {
+        if desc & resident != 0 && desc & DESC_U == 0 {
             self.write_ticks_physical::<Long>(addr, desc | DESC_U)?;
         }
         Ok(desc)
@@ -122,15 +124,15 @@ where
 
         // Level 1: root table (128 entries)
         let root_addr = root_ptr.wrapping_add(((vaddr >> 25) & 0x7F) * 4);
-        let root_desc = self.mmu040_read_descriptor(root_addr)?;
-        if root_desc & DESC_TYPE == DESC_TYPE_INVALID {
+        let root_desc = self.mmu040_read_descriptor(root_addr, DESC_UDT_RESIDENT)?;
+        if root_desc & DESC_UDT_RESIDENT == 0 {
             bail!(CpuError::Pagefault(PagefaultCause::Invalid));
         }
 
         // Level 2: pointer table (128 entries, 512 byte aligned)
         let ptr_addr = (root_desc & !0x1FF).wrapping_add(((vaddr >> 18) & 0x7F) * 4);
-        let ptr_desc = self.mmu040_read_descriptor(ptr_addr)?;
-        if ptr_desc & DESC_TYPE == DESC_TYPE_INVALID {
+        let ptr_desc = self.mmu040_read_descriptor(ptr_addr, DESC_UDT_RESIDENT)?;
+        if ptr_desc & DESC_UDT_RESIDENT == 0 {
             bail!(CpuError::Pagefault(PagefaultCause::Invalid));
         }
 
@@ -142,13 +144,13 @@ where
         };
         let page_idx = (vaddr >> page_shift) & if page_shift == 13 { 0x1F } else { 0x3F };
         let mut leaf_addr = (ptr_desc & table_mask).wrapping_add(page_idx * 4);
-        let mut leaf_desc = self.mmu040_read_descriptor(leaf_addr)?;
+        let mut leaf_desc = self.mmu040_read_descriptor(leaf_addr, DESC_TYPE)?;
 
         // A leaf descriptor may point at another descriptor. Exactly one level
         // of indirection is allowed; anything deeper is invalid.
         if leaf_desc & DESC_TYPE == DESC_TYPE_INDIRECT {
             leaf_addr = leaf_desc & !DESC_TYPE;
-            leaf_desc = self.mmu040_read_descriptor(leaf_addr)?;
+            leaf_desc = self.mmu040_read_descriptor(leaf_addr, DESC_TYPE)?;
             if leaf_desc & DESC_TYPE == DESC_TYPE_INDIRECT {
                 bail!(CpuError::Pagefault(PagefaultCause::Invalid));
             }
