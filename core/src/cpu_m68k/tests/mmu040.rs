@@ -249,3 +249,31 @@ fn indirect_descriptor_not_updated() {
         "U and M on the page descriptor"
     );
 }
+
+#[test]
+fn pmmu_opcodes_are_line_f() {
+    use crate::cpu_m68k::instruction::{Instruction, InstructionMnemonic};
+    use crate::cpu_m68k::{M68030, M68040};
+
+    // PMOVE (A0),TC
+    assert_eq!(
+        Instruction::try_decode(M68030, 0xF010).unwrap().mnemonic,
+        InstructionMnemonic::POP_000
+    );
+    assert_eq!(
+        Instruction::try_decode(M68040, 0xF010).unwrap().mnemonic,
+        InstructionMnemonic::LINEF
+    );
+
+    // Taken as the F-line exception
+    let mut cpu = TestCpu::new(Testbus::new(M68040_ADDRESS_MASK));
+    write_long(&mut cpu, 0x1000, 0xF010_4000);
+    write_long(&mut cpu, 0x2C, 0x2000);
+    cpu.regs.isp = 0x8000;
+    cpu.regs.sr.set_supervisor(true);
+    cpu.set_pc(0x1000).unwrap();
+    cpu.prefetch_refill().unwrap();
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, 0x2000);
+    assert_eq!(read_long(&cpu, 0x8000 - 6), 0x1000);
+}
