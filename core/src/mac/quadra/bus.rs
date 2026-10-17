@@ -714,7 +714,8 @@ where
 
         self.scsi.tick(native_ticks, ctx)?;
 
-        self.via2.set_line(ViaLine::CB2, self.scsi.get_irq().into());
+        // The interrupt output of the 53C96 is active low
+        self.via2.set_line(ViaLine::CB2, (!self.scsi.get_irq()).into());
         self.via2.set_line(ViaLine::CA2, self.scsi.get_drq().into());
 
         self.swim.intdrive = self.via1.pa().drivesel();
