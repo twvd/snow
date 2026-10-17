@@ -289,8 +289,6 @@ impl BusMember<Address> for Asc {
                     // Clear FIFOs
                     self.fifo_l.clear();
                     self.fifo_r.clear();
-                    self.fifo_status.set_l_fullempty(true);
-                    self.fifo_status.set_r_fullempty(true);
                 }
                 Some(())
             }
@@ -428,5 +426,22 @@ mod tests {
         // Writing no flags does not
         asc.write(0x804, 0);
         assert!(!asc.get_irq());
+    }
+
+    #[test]
+    fn fifo_clear_flags() {
+        let mut asc = Asc::default();
+        asc.write(0x801, 1);
+        asc.write(0x802, 2);
+        for _ in 0..FIFO_SIZE / 2 {
+            asc.write(0x000, 0x80);
+            asc.write(0x400, 0x80);
+        }
+
+        // Clearing the FIFOs flags nothing, so nothing reads as full
+        asc.write(0x803, 0x80);
+        asc.write(0x803, 0);
+        assert!(!asc.get_irq());
+        assert_eq!(asc.read(0x804), Some(0x00));
     }
 }
