@@ -296,10 +296,10 @@ impl BusMember<Address> for Asc {
                 Some(())
             }
             // FIFO status. Writing pending flags back raises the interrupt again, which
-            // SwapMMUMode on the Mac II relies on.
+            // SwapMMUMode on the Mac II relies on. Only the four flags are kept.
             0x804 => {
-                self.fifo_status.0 = val;
-                self.irq |= val != 0;
+                self.fifo_status.0 = val & 0x0F;
+                self.irq |= self.fifo_status.0 != 0;
                 Some(())
             }
             // Clock rate
@@ -429,6 +429,11 @@ mod tests {
         // Writing no flags does not
         asc.write(0x804, 0);
         assert!(!asc.get_irq());
+
+        // Neither does writing the other bits, which aren't kept
+        asc.write(0x804, 0xF0);
+        assert!(!asc.get_irq());
+        assert_eq!(asc.read(0x804), Some(0x00));
     }
 
     #[test]
