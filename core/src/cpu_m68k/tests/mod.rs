@@ -16,6 +16,7 @@ mod m68k_rs_fixture;
 mod m68k_rs_pmove;
 mod m68k_rs_translate;
 mod mmu040;
+mod movec;
 mod movem;
 mod mull;
 mod no_fpu;
