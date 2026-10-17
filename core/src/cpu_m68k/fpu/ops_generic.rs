@@ -7,7 +7,7 @@ use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, IrqSource};
 
-use crate::cpu_m68k::cpu::CpuM68k;
+use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_FORMAT_ERROR};
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord};
 use crate::cpu_m68k::fpu::math::FloatMath;
@@ -83,7 +83,15 @@ where
                 }
                 // The MC68040 idle frame is only the format long word (9-41)
                 FPU_M68040 if state & 0xFFFF0000 == 0x41000000 => (),
-                _ => bail!("Unknown FPU state frame restored: {:08X}", state),
+                _ => {
+                    // Not a frame of this FPU: format error, at the FRESTORE
+                    // with the frame left alone (M68030UM table 8-6)
+                    log::warn!("Unknown FPU state frame restored: {:08X}", state);
+                    if let Some(regs) = self.restart_regs.take() {
+                        regs.restore(&mut self.regs);
+                    }
+                    return self.raise_exception(ExceptionGroup::Group2, VECTOR_FORMAT_ERROR, None);
+                }
             };
         }
 

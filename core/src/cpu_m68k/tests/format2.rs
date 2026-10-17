@@ -126,3 +126,17 @@ fn rte_throwaway_frame() {
     assert_eq!(cpu.regs.msp, 0x9000);
     assert!(!cpu.regs.sr.m());
 }
+
+#[test]
+fn frestore_unknown_frame_is_format_error() {
+    // FRESTORE (A0)+ of a frame that is not of the 68882
+    let cpu = run(&[0xF358], 1, |cpu| {
+        write_word(cpu, 0x4000, 0x1234);
+        cpu.regs.write_a(0, 0x4000_u32);
+    });
+    assert_eq!(cpu.regs.read_a::<Address>(0), 0x4000);
+    let sp = *cpu.regs.ssp();
+    assert_eq!(sp, STACK - 8);
+    assert_eq!(read_long(&cpu, sp + 2), CODE);
+    assert_eq!(read_word(&cpu, sp + 6), 0x0038);
+}
