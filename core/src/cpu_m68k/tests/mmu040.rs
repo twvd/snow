@@ -1,12 +1,13 @@
 //! Tests for the M68040 MMU
 
 use crate::bus::Address;
+use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::regs::Register;
 use crate::cpu_m68k::{CpuM68040Fpu, M68040_ADDRESS_MASK};
 use crate::types::{Field32, Long};
 
-type TestCpu = CpuM68040Fpu<Testbus<Address, u8>>;
+type TestCpu = CpuM68040Fpu<Testbus<Address, u8, Bus68020>>;
 
 // Physical addresses of the three table levels
 const ROOT_TABLE: Address = 0x0001_0000;
