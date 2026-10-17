@@ -212,3 +212,16 @@ fn separate_root_pointers() {
     assert!(cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, false).is_ok());
     assert!(cpu.pmmu_translate(FC_USER_DATA, LOGICAL, false).is_err());
 }
+
+#[test]
+fn table_descriptor_type_01_is_invalid() {
+    let mut cpu = testcpu(0);
+    write_long(&mut cpu, PTR_TABLE + 33 * 4, PAGE_TABLE | 1);
+
+    assert!(cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, false).is_err());
+    assert_eq!(
+        read_long(&cpu, PTR_TABLE + 33 * 4) & (1 << 3),
+        0,
+        "U not set on an invalid descriptor"
+    );
+}
