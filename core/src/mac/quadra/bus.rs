@@ -746,6 +746,26 @@ where
         if self.progkey_pressed.get_clear() {
             return Some(7);
         }
+
+        // The interrupt PAL (schematic U55) has a second set of levels for
+        // A/UX, selected by VIA1 PB6 (Developer Note table 2-7)
+        let pb = self.via1.pb();
+        if !pb.aux_inten() {
+            return if self.via1.irq() {
+                Some(6)
+            } else if self.asc.irq() {
+                Some(5)
+            } else if self.scc.get_irq() {
+                Some(4)
+            } else if self.via2.irq() {
+                Some(2)
+            } else if !pb.soft_irq() {
+                Some(1)
+            } else {
+                None
+            };
+        }
+
         if self.scc.get_irq() {
             return Some(4);
         }
