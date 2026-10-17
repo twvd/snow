@@ -357,8 +357,9 @@ where
             0x20_000E => Some(self.stride.set_be2(val)),
             0x20_000F => Some(self.stride.set_be3(val)),
 
-            // CRTC
-            0x20_013C => {
+            // CRTC. VBL disable is bit 1 of the long, so in its bottom byte
+            0x20_013C..=0x20_013E => Some(()),
+            0x20_013F => {
                 self.vblank_enable = val & (1 << 1) == 0;
                 Some(())
             }
