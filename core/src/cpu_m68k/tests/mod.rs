@@ -1,6 +1,7 @@
 mod cmp2;
 mod divl;
 mod fmovem;
+mod format2;
 mod group2_exceptions;
 mod illegal_exception;
 mod interrupt;
