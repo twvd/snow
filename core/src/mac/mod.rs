@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use swim::drive::DriveType;
 
 use crate::bus::Address;
-use crate::cpu_m68k::{CpuM68kType, M68000, M68020, M68030};
+use crate::cpu_m68k::{CpuM68kType, M68000, M68020, M68030, M68040};
 use crate::keymap::Keymap;
 use crate::tickable::Ticks;
 
@@ -20,6 +20,7 @@ pub mod maclc;
 pub mod nubus;
 pub mod pluskbd;
 pub mod portable;
+pub mod quadra;
 pub mod rtc;
 pub mod scc;
 pub mod scsi;
@@ -81,6 +82,8 @@ pub enum MacModel {
     LCII,
     /// Macintosh LC III
     LCIII,
+    /// Macintosh Quadra 700
+    Quadra700,
 }
 
 #[allow(clippy::match_like_matches_macro)]
@@ -125,6 +128,8 @@ impl MacModel {
         ("b2a411c1b24c92af8f6b58f745e52e0545cc0d4dcdc1e15a90e0a78937cde61e", &[Self::LCIII]),
         // Macintosh LC III (older)
         ("00e3b10758b01ba998bb3aba9366c29b15f52c5b0667658ec82ee674dde9b4e2", &[Self::LCIII]),
+        // Macintosh Quadra 700
+        ("c2093476e9c9a7d76973910a91fbfba23ca71163b84eb2623adf8608a6b03ed2", &[Self::Quadra700]),
     ];
 
     pub const fn has_adb(self) -> bool {
@@ -149,6 +154,7 @@ impl MacModel {
             | Self::SE30 => 8 * 1024 * 1024,
             Self::LC | Self::LCII => 10 * 1024 * 1024,
             Self::LCIII => 36 * 1024 * 1024,
+            Self::Quadra700 => 8 * 1024 * 1024,
         }
     }
 
@@ -227,6 +233,13 @@ impl MacModel {
                 20 * 1024 * 1024,
                 36 * 1024 * 1024,
             ],
+            Self::Quadra700 => &[
+                4 * 1024 * 1024,
+                8 * 1024 * 1024,
+                16 * 1024 * 1024,
+                32 * 1024 * 1024,
+                64 * 1024 * 1024,
+            ],
         }
     }
 
@@ -242,7 +255,8 @@ impl MacModel {
             | Self::SE30
             | Self::LC
             | Self::LCII
-            | Self::LCIII => true,
+            | Self::LCIII
+            | Self::Quadra700 => true,
         }
     }
 
@@ -264,9 +278,13 @@ impl MacModel {
                 DriveType::SuperDrive,
             ],
             Self::MacII => &[DriveType::GCR800K, DriveType::GCR800K],
-            Self::MacIIFDHD | Self::MacIIx | Self::MacIIcx | Self::SE30 | Self::LC | Self::LCII => {
-                &[DriveType::SuperDrive, DriveType::SuperDrive]
-            }
+            Self::MacIIFDHD
+            | Self::MacIIx
+            | Self::MacIIcx
+            | Self::SE30
+            | Self::LC
+            | Self::LCII
+            | Self::Quadra700 => &[DriveType::SuperDrive, DriveType::SuperDrive],
             Self::LCIII => &[DriveType::SuperDrive],
         }
     }
@@ -311,6 +329,7 @@ impl MacModel {
             | Self::Portable15MB => M68000,
             Self::MacII | Self::MacIIFDHD | Self::LC => M68020,
             Self::MacIIx | Self::MacIIcx | Self::SE30 | Self::LCII | Self::LCIII => M68030,
+            Self::Quadra700 => M68040,
         }
     }
 
@@ -345,6 +364,8 @@ impl MacModel {
             Self::LC | Self::LCII => via::RegisterA(0xD5),
             // The machine is identified by the CPU ID register
             Self::LCIII => via::RegisterA(0x80),
+            // Bit 0 = diagnostic mode (active low)
+            Self::Quadra700 => via::RegisterA(0xC1),
         }
     }
 
@@ -354,6 +375,7 @@ impl MacModel {
             Self::MacII | Self::MacIIFDHD | Self::MacIIx => &[0x9, 0xA, 0xB, 0xC, 0xD, 0xE],
             Self::MacIIcx => &[0x9, 0xA, 0xB],
             Self::SE30 => &[0xE],
+            Self::Quadra700 => &[0xD, 0xE],
             _ => &[],
         }
     }
@@ -374,6 +396,7 @@ impl MacModel {
             | Self::LCIII => panic!("Invalid operation for this model"),
             Self::MacII | Self::MacIIFDHD | Self::MacIIcx => macii::via2::RegisterB(0xFF),
             Self::MacIIx | Self::SE30 => macii::via2::RegisterB(0x87),
+            Self::Quadra700 => macii::via2::RegisterB(0xCF),
         }
     }
 }
@@ -431,6 +454,7 @@ impl Display for MacModel {
                 Self::LC => "Macintosh LC",
                 Self::LCII => "Macintosh LC II",
                 Self::LCIII => "Macintosh LC III",
+                Self::Quadra700 => "Macintosh Quadra 700",
             }
         )
     }
