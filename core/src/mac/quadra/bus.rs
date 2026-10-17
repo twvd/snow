@@ -680,18 +680,17 @@ where
             if step.via_tick {
                 self.via1.tick(1, ())?;
                 self.via2.tick(1, ())?;
+
+                // The 60.15 Hz interrupt of VIA 1 is the Timer 1 output of VIA 2
+                self.via1
+                    .set_line(ViaLine::CA1, self.via2.pb().v2vbl().into());
             }
         }
 
-        // Legacy VBlank interrupt, a 60 Hz square wave on CA1 of VIA 1
+        // Pacing at 60 Hz
         self.vblank_clock += native_ticks;
-        if self.vblank_clock >= ctx.bus_frequency / 120 {
-            self.via1.set_line(ViaLine::CA1, LineState::High);
-        }
         while self.vblank_clock >= ctx.bus_frequency / 60 {
             self.vblank_clock -= ctx.bus_frequency / 60;
-
-            self.via1.set_line(ViaLine::CA1, LineState::Low);
 
             match self.speed {
                 EmulatorSpeed::Video => {
