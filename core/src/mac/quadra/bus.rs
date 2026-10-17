@@ -179,7 +179,7 @@ where
             ram: vec![0; ram_size],
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             via1: Via::new(model),
-            via2: Via2::new(model),
+            via2: Self::new_via2(model),
             scc_clock: 0,
             scc: Scc::new(),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), BUS_FREQUENCY),
@@ -448,6 +448,15 @@ where
         }
     }
 
+    /// VIA 2 at power-up. CA2 is PIC_ISM_IRQ*, the SWIM I/O processor
+    /// interrupt of the Quadra 900 board design, pulled up and unused on the
+    /// Quadra 700 (the 53C96 DREQ goes to the DAFB, not to the VIA).
+    fn new_via2(model: MacModel) -> Via2 {
+        let mut via2 = Via2::new(model);
+        via2.set_line(ViaLine::CA2, LineState::High);
+        via2
+    }
+
     /// Syncs the devices driven by the VIA1 port A pins
     fn sync_via1_pa(&mut self) {
         self.swim.sel = self.via1.pa().sel();
@@ -620,7 +629,7 @@ where
         self.via1.rtc = rtc;
 
         self.scc = Scc::new();
-        self.via2 = Via2::new(self.model);
+        self.via2 = Self::new_via2(self.model);
         self.dafb.reset();
         self.asc.reset();
 
@@ -744,7 +753,6 @@ where
         // The interrupt output of the 53C96 is active low
         self.via2
             .set_line(ViaLine::CB2, (!self.scsi.get_irq()).into());
-        self.via2.set_line(ViaLine::CA2, self.scsi.get_drq().into());
 
         self.swim.intdrive = self.via1.pa().drivesel();
         self.swim.tick(native_ticks, ())?;
