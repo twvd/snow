@@ -384,7 +384,12 @@ where
         }
         match offset {
             // VIA 1
-            0x0_0000..=0x0_1FFF => self.via.write(addr, val),
+            0x0_0000..=0x0_1FFF => {
+                self.via.write(addr, val)?;
+                // The SWIM SEL line is the VIA's PA5 pin
+                self.swim.sel = self.via.pa().headsel();
+                Some(())
+            }
             // SCC
             0x0_4000..=0x0_5FFF => Self::dev_write(addr, val, self.scc.write(addr >> 1, val)),
             // SCSI
@@ -773,11 +778,6 @@ where
             None => BusResponse::BusError,
         };
 
-        if acc.write {
-            // Sync values that live in multiple places
-            self.swim.sel = self.via.pa().headsel();
-        }
-
         if resp == BusResponse::BusError {
             let rw = if acc.write { "write" } else { "read" };
             warn!("Bus error ({}) at unmapped address: {:08X}", rw, acc.addr);
@@ -799,6 +799,7 @@ where
 
         self.scc = Scc::new();
         self.via.reset();
+        self.swim.sel = self.via.pa().headsel();
         self.pseudovia.reset();
         self.sound.reset();
         self.overlay = true;
