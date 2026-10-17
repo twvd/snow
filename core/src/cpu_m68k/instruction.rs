@@ -850,10 +850,11 @@ impl Instruction {
 
     /// Attempts to decode an instruction.
     pub fn try_decode(cpu_type: CpuM68kType, data: Word) -> Result<Self> {
-        for &(_, val, mask, mnemonic) in Self::DECODE_TABLE
-            .iter()
-            .filter(|(t, _, _, _)| *t <= cpu_type)
-        {
+        for &(_, val, mask, mnemonic) in Self::DECODE_TABLE.iter().filter(|(t, _, _, m)| {
+            // The M68040 has its own MMU instructions, the 68851 and 68030
+            // ones are F-line exceptions (M68040UM 3.7.3)
+            *t <= cpu_type && !(cpu_type >= M68040 && *m == InstructionMnemonic::POP_000)
+        }) {
             if data & mask == val {
                 return Ok(Self {
                     mnemonic,
