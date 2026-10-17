@@ -1168,6 +1168,30 @@ where
                 let details = details.expect("Address error details not passed");
 
                 match CPU_TYPE {
+                    M68040 if vector == VECTOR_ADDRESS_ERROR => {
+                        if let Some(regs) = self.restart_regs.take() {
+                            saved_sr = regs.sr.sr();
+                            regs.restore(&mut self.regs);
+                            self.regs.sr.set_supervisor(true);
+                            self.regs.sr.set_trace(false);
+                        } else {
+                            log::error!(
+                                "Cannot reset registers for stacking an address error frame"
+                            );
+                        }
+
+                        // Six word stack frame (format $2) with the address,
+                        // bit 0 cleared (M68040UM 8.4.6.7)
+                        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(12);
+                        let ssp = *self.regs.ssp();
+                        self.write_ticks(ssp.wrapping_add(0), saved_sr)?;
+                        self.write_ticks(ssp.wrapping_add(2), details.start_pc)?;
+                        self.write_ticks(
+                            ssp.wrapping_add(6),
+                            0b0010_0000_0000_0000 | (vector as u16),
+                        )?;
+                        self.write_ticks(ssp.wrapping_add(8), details.address & !1)?;
+                    }
                     M68040 => {
                         // A faulted write of a completed instruction waits in a
                         // write-back slot for the handler, which returns after
