@@ -9,7 +9,7 @@ use strum::Display;
 
 use super::cpu::CpuError;
 use super::regs::Register;
-use super::{CpuM68kType, CpuSized, M68000, M68010, M68020, M68040};
+use super::{CpuM68kType, CpuSized, M68000, M68010, M68020, M68030, M68040};
 
 use crate::bus::Address;
 use crate::types::{Long, Word};
@@ -382,6 +382,26 @@ pub enum MovecCtrlReg {
     MMUSR040 = 0x805,
     SRP040 = 0x807,
     URP040 = 0x806,
+}
+
+impl MovecCtrlReg {
+    /// Whether the control register exists on the CPU. MOVEC with any other
+    /// register is an illegal instruction.
+    pub fn exists_on(&self, cpu_type: CpuM68kType) -> bool {
+        match self {
+            Self::SFC | Self::DFC | Self::USP | Self::VBR => cpu_type >= M68010,
+            Self::CACR | Self::MSP | Self::ISP => cpu_type >= M68020,
+            Self::CAAR => matches!(cpu_type, M68020 | M68030),
+            Self::TC040
+            | Self::ITT0
+            | Self::ITT1
+            | Self::DTT0
+            | Self::DTT1
+            | Self::MMUSR040
+            | Self::SRP040
+            | Self::URP040 => cpu_type == M68040,
+        }
+    }
 }
 
 #[allow(clippy::from_over_into)]
