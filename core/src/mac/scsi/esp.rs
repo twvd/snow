@@ -184,16 +184,25 @@ impl Esp {
         self.stat & STAT_INT != 0
     }
 
+    /// DREQ, only asserted during a DMA command (data sheet p.10)
     pub fn get_drq(&self) -> bool {
         if self.dma_in {
             // As long as the FIFO holds a word (or a byte on an 8-bit bus) for
-            // memory (p.10). The odd last byte of a 16-bit transfer is left
-            // to the processor if Config 3 says so (p.26).
+            // memory, and a last odd byte at the end of the transfer, unless
+            // Config 3 leaves it to the processor (p.26)
             let threshold = if self.dma16 { 2 } else { 1 };
+            let end = self.tc == 0 || self.phase() != PHASE_DATA_IN;
             self.fifo.len() >= threshold
-                || (self.fifo.len() == 1 && !(self.tc == 0 && self.cfg3 & CFG3_SAVE_RESIDUAL != 0))
+                || (self.fifo.len() == 1 && end && self.cfg3 & CFG3_SAVE_RESIDUAL == 0)
+        } else if self.dma && self.tc > 0 {
+            // The FIFO always has room, the target takes the bytes at once
+            match self.phase() {
+                PHASE_COMMAND => self.selecting || self.dma_xfer,
+                PHASE_DATA_OUT => self.dma_xfer && self.bus.dataout_len > 0,
+                _ => false,
+            }
         } else {
-            self.dma_xfer && self.tc > 0 && self.bus.dataout_len > 0
+            false
         }
     }
 
@@ -250,6 +259,12 @@ impl Esp {
                     self.identify_pending = false;
                 } else {
                     self.command_byte(val);
+                }
+                if self.dma_xfer && self.tc == 0 {
+                    // The count ran out before the end of the CDB
+                    self.dma_xfer = false;
+                    self.intr |= INTR_BS;
+                    self.raise_irq();
                 }
             }
             PHASE_DATA_OUT if self.dma_xfer => {
@@ -477,6 +492,7 @@ impl Esp {
         }
 
         self.seq = SEQ_CMD_DONE;
+        self.dma_xfer = false;
         match self.bus.cmd_run(None) {
             Ok(CmdOutcome::Status) => self.set_phase(PHASE_STATUS),
             Ok(CmdOutcome::DataIn) => self.set_phase(PHASE_DATA_IN),
@@ -554,6 +570,9 @@ impl Esp {
                 }
                 if self.cdb_complete() {
                     self.run_cdb();
+                } else if self.dma && self.tc > 0 {
+                    // The rest comes by DMA (write_dma)
+                    self.dma_xfer = true;
                 } else {
                     self.intr |= INTR_BS;
                     self.raise_irq();
