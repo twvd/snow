@@ -48,6 +48,8 @@ const INTR_RST: u8 = 1 << 7;
 const SEQ_0: u8 = 0;
 /// Sequence step: stopped in the message out phase
 const SEQ_MSG_OUT: u8 = 1;
+/// Sequence step: transferring the command
+const SEQ_CMD: u8 = 3;
 /// Sequence step: command transferred completely
 const SEQ_CMD_DONE: u8 = 4;
 
@@ -129,6 +131,12 @@ pub struct Esp {
 
     /// The DMA bus is 16 bits wide (MODE pins)
     dma16: bool,
+
+    /// A selection sequence waits for the rest of its CDB
+    selecting: bool,
+
+    /// A selection with ATN waits for its message byte by DMA
+    identify_pending: bool,
 }
 
 impl Esp {
@@ -157,6 +165,8 @@ impl Esp {
             dma_xfer: false,
             dma_in: false,
             dma16,
+            selecting: false,
+            identify_pending: false,
         }
     }
 
@@ -236,7 +246,11 @@ impl Esp {
                 if self.dma {
                     self.advance_tc(1);
                 }
-                self.command_byte(val);
+                if self.identify_pending {
+                    self.identify_pending = false;
+                } else {
+                    self.command_byte(val);
+                }
             }
             PHASE_DATA_OUT if self.dma_xfer => {
                 let mut pending = self.bus.dataout_len;
@@ -294,6 +308,8 @@ impl Esp {
         self.dma = false;
         self.dma_xfer = false;
         self.dma_in = false;
+        self.selecting = false;
+        self.identify_pending = false;
     }
 
     fn fifo_push(&mut self, val: u8) {
@@ -385,10 +401,17 @@ impl Esp {
         }
         self.bus.sel_id = id;
 
+        self.selected = true;
+
         // The identify message (if any) is consumed here; only LUN 0 is
-        // supported by the targets.
-        if atn && !self.fifo.is_empty() {
-            self.fifo_pop();
+        // supported by the targets. Without one in the FIFO it is the first
+        // DMA byte (data sheet p.31).
+        if atn {
+            if self.fifo.is_empty() && self.dma {
+                self.identify_pending = true;
+            } else {
+                self.fifo_pop();
+            }
         }
 
         if stop {
@@ -400,22 +423,28 @@ impl Esp {
             return;
         }
 
-        self.selected = true;
-
         // Whatever is in the FIFO is the start of the CDB
         self.set_phase(PHASE_COMMAND);
         while let Some(b) = self.fifo.pop_front() {
             self.bus.cmdbuf.push(b);
         }
 
+        self.selecting = true;
         if self.cdb_complete() {
             // Command already here
             self.run_cdb();
-        } else {
+        } else if !self.dma {
             // Wait for command
             self.intr |= INTR_BS | INTR_FC;
             self.seq = SEQ_CMD_DONE;
+            self.selecting = false;
             self.raise_irq();
+        }
+        // With DMA, the sequence goes on as the CDB bytes come, through DMA
+        // or the FIFO register, and interrupts once they are all sent (p.30).
+        // Meanwhile the sequence step shows the command phase (table 8).
+        else {
+            self.seq = SEQ_CMD;
         }
     }
 
@@ -460,7 +489,13 @@ impl Esp {
             }
         }
 
-        self.intr |= INTR_BS | INTR_FC;
+        // Function complete for a selection sequence, the target now asks for
+        // the next phase (p.17)
+        self.intr |= INTR_BS;
+        if self.selecting {
+            self.intr |= INTR_FC;
+            self.selecting = false;
+        }
         self.raise_irq();
     }
 
