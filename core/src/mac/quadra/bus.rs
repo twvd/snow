@@ -667,6 +667,9 @@ where
         self.via2 = Self::new_via2(self.model);
         self.dafb.reset();
         self.asc.reset();
+        // The DAFB drives the 53C96 reset
+        self.scsi.reset();
+        self.scsi_dma_stalled = false;
 
         self.amu_active = false;
         self.mouse_ready = false;
