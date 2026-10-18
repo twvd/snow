@@ -494,7 +494,8 @@ impl Esp {
                 let n = if self.dma {
                     self.tc.min(free).min(avail)
                 } else {
-                    free.min(avail)
+                    // One byte per command without DMA (data sheet p.33)
+                    free.min(avail).min(1)
                 };
                 for _ in 0..n {
                     let b = self.bus.responsebuf.pop_front().unwrap();
