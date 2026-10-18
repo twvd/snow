@@ -203,9 +203,10 @@ impl Asc {
         Ok(())
     }
 
-    pub const fn sample_rate(&self) -> Ticks {
-        // TODO configurable sample rate
-        22257
+    /// Time between two samples, in cycles of C16M (15.6672 MHz): 22254.5
+    /// Hz, 35.2 VIA clock cycles, as ASCTester measures on a IIci
+    pub const fn sample_period(&self) -> Ticks {
+        704
     }
 
     pub fn set_sink(&mut self, sink: Box<dyn AudioSink>) {
