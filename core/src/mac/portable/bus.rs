@@ -14,7 +14,6 @@ use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::asc::Asc;
-use crate::mac::macii::bus::DEFAULT_BUS_SPEED;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
@@ -40,8 +39,11 @@ const RAM_WAITS: Ticks = 1;
 /// Wait states of the ROM
 const ROM_WAITS: Ticks = 2;
 
+/// Frequency of the bus of the real hardware, without overclocking
+const BUS_FREQUENCY: Ticks = 16_000_000;
+
 /// Time the SCC needs between accesses (1.8us)
-const SCC_RECOVERY: Ticks = DEFAULT_BUS_SPEED * 18 / 10_000_000;
+const SCC_RECOVERY: Ticks = BUS_FREQUENCY * 18 / 10_000_000;
 
 /// Size of the blocks of the address map
 const MAP_BLOCK_SHIFT: u32 = 16;
@@ -117,7 +119,8 @@ pub struct MacPortableBus<TRenderer: Renderer> {
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
 
-    bus_frequency: Ticks,
+    /// Frequency of the bus, which includes any overclocking
+    act_bus_frequency: Ticks,
 
     /// Last vblank time (for syncing to video)
     /// Not serializing this because it is only used for determining how long to
@@ -194,13 +197,13 @@ where
             extension_rom: extension_rom.map(Vec::from).unwrap_or_default(),
             ram: vec![0; ram_size],
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
-            via: Via::new(),
+            via: Via::new(BUS_FREQUENCY),
             via_clock: 0,
             via_stall: 0,
             video: Video::new(renderer),
             scc: Scc::new(),
             scc_ready: 0,
-            swim: Swim::new(model.fdd_drives(), model.fdd_hd(), 16_000_000),
+            swim: Swim::new(model.fdd_drives(), model.fdd_hd(), BUS_FREQUENCY),
             scsi: ScsiController::new(),
             asc: Asc::default(),
             asc_clock: 0,
@@ -209,7 +212,7 @@ where
             overlay: true,
             map: build_map(model),
             speed: EmulatorSpeed::Accurate,
-            bus_frequency: DEFAULT_BUS_SPEED,
+            act_bus_frequency: BUS_FREQUENCY,
             vblank_time: Instant::now(),
             vblank_clock: 0,
             progkey_pressed: LatchingEvent::default(),
@@ -557,8 +560,16 @@ where
         self.speed = speed;
     }
 
-    pub fn set_bus_frequency(&mut self, bus_frequency: u64) {
-        self.bus_frequency = bus_frequency;
+    /// Frequency of the bus of the real hardware, without overclocking
+    #[inline(always)]
+    pub const fn bus_frequency(&self) -> Ticks {
+        BUS_FREQUENCY
+    }
+
+    /// Sets the frequency of the bus, or goes back to the one of the real
+    /// hardware
+    pub fn set_overclock(&mut self, bus_frequency: Option<u64>) {
+        self.act_bus_frequency = bus_frequency.unwrap_or_else(|| self.bus_frequency());
     }
 
     pub fn set_mouse_mode(&mut self, mode: MouseMode) {
@@ -743,7 +754,7 @@ where
 
         let ctx = &BusEmuContext {
             speed: self.speed,
-            bus_frequency: self.bus_frequency,
+            bus_frequency: self.act_bus_frequency,
         };
 
         self.cycles += ticks;
@@ -759,8 +770,8 @@ where
 
         // Legacy VBlank interrupt
         self.vblank_clock += ticks;
-        while self.vblank_clock >= self.bus_frequency / 60 {
-            self.vblank_clock -= self.bus_frequency / 60;
+        while self.vblank_clock >= self.act_bus_frequency / 60 {
+            self.vblank_clock -= self.act_bus_frequency / 60;
             self.via.set_line(ViaLine::CA1, LineState::Pulse);
             self.pmgr.tick_60hz();
 
@@ -778,8 +789,8 @@ where
         }
 
         self.asc_clock += ticks;
-        while self.asc_clock >= self.bus_frequency / self.asc.sample_rate() {
-            self.asc_clock -= self.bus_frequency / self.asc.sample_rate();
+        while self.asc_clock >= self.act_bus_frequency / self.asc.sample_rate() {
+            self.asc_clock -= self.act_bus_frequency / self.asc.sample_rate();
 
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }

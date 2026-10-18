@@ -12,7 +12,6 @@ use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
-use crate::mac::macii::bus::DEFAULT_BUS_SPEED;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
@@ -32,6 +31,9 @@ use bit_set::BitSet;
 use log::*;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
 use serde::{Deserialize, Serialize};
+
+/// Frequency of the bus of the real hardware, without overclocking
+const BUS_FREQUENCY: Ticks = 16_000_000;
 
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
@@ -126,7 +128,8 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
 
-    bus_frequency: Ticks,
+    /// Frequency of the bus, which includes any overclocking
+    act_bus_frequency: Ticks,
 
     /// Last pushed audio sample
     last_audiosample: u8,
@@ -211,7 +214,7 @@ where
             extension_rom: extension_rom.map(Vec::from).unwrap_or_default(),
             ram: vec![0; ram_size],
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
-            via: Via::new(model),
+            via: Via::new(model, BUS_FREQUENCY),
             video: Video::new(renderer),
             audio: AudioState::default(),
             eclock: 0,
@@ -235,7 +238,7 @@ where
             overlay: true,
             map: build_map(model),
             speed: EmulatorSpeed::Accurate,
-            bus_frequency: DEFAULT_BUS_SPEED,
+            act_bus_frequency: BUS_FREQUENCY,
             last_audiosample: 0,
             vblank_time: Instant::now(),
             progkey_pressed: LatchingEvent::default(),
@@ -607,8 +610,16 @@ where
         self.speed = speed;
     }
 
-    pub fn set_bus_frequency(&mut self, bus_frequency: u64) {
-        self.bus_frequency = bus_frequency;
+    /// Frequency of the bus of the real hardware, without overclocking
+    #[inline(always)]
+    pub const fn bus_frequency(&self) -> Ticks {
+        BUS_FREQUENCY
+    }
+
+    /// Sets the frequency of the bus, or goes back to the one of the real
+    /// hardware
+    pub fn set_overclock(&mut self, bus_frequency: Option<u64>) {
+        self.act_bus_frequency = bus_frequency.unwrap_or_else(|| self.bus_frequency());
     }
 
     /// Stalls the cycle for 2 wait cycles
@@ -805,7 +816,8 @@ where
         }
 
         // Keep the RTC and ADB for PRAM and event channels
-        let Via { adb, rtc, .. } = std::mem::replace(&mut self.via, Via::new(self.model));
+        let Via { adb, rtc, .. } =
+            std::mem::replace(&mut self.via, Via::new(self.model, BUS_FREQUENCY));
         self.via.adb = adb;
         self.via.rtc = rtc;
         self.overlay = true;
@@ -839,7 +851,7 @@ where
 
         let ctx = &BusEmuContext {
             speed: self.speed,
-            bus_frequency: self.bus_frequency,
+            bus_frequency: self.act_bus_frequency,
         };
 
         // Run up to the next E clock edge or blanking edge at a time, where

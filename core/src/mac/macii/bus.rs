@@ -34,8 +34,8 @@ use log::*;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
 use serde::{Deserialize, Serialize};
 
-/// Macintosh II main clock speed
-pub const DEFAULT_BUS_SPEED: Ticks = 16_000_000;
+/// Frequency of the bus of the real hardware, without overclocking
+const BUS_FREQUENCY: Ticks = 16_000_000;
 
 /// Frequency of the master clock (C16M) the VIA clock is derived from
 const C16M_FREQUENCY: Ticks = 15_667_200;
@@ -45,7 +45,7 @@ const C16M_FREQUENCY: Ticks = 15_667_200;
 const NUBUS_WAITS: Ticks = 4;
 
 /// Time the SCC needs between accesses (2.2us)
-const SCC_RECOVERY: Ticks = DEFAULT_BUS_SPEED * 22 / 10_000_000;
+const SCC_RECOVERY: Ticks = BUS_FREQUENCY * 22 / 10_000_000;
 
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
@@ -148,7 +148,8 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
 
-    bus_frequency: Ticks,
+    /// Frequency of the bus, which includes any overclocking
+    act_bus_frequency: Ticks,
 
     /// Last vblank time (for syncing to video)
     /// Not serializing this because it is only used for determining how long to
@@ -284,13 +285,13 @@ where
             extension_rom: extension_rom.map(Vec::from).unwrap_or_default(),
             ram: vec![0; ram_size],
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
-            via1: Via::new(model),
-            via2: Via2::new(model),
+            via1: Via::new(model, BUS_FREQUENCY),
+            via2: Via2::new(model, BUS_FREQUENCY),
             via_clock: 0,
             via_stall: 0,
             scc_ready: 0,
             scc: Scc::new(),
-            swim: Swim::new(model.fdd_drives(), model.fdd_hd(), 16_000_000),
+            swim: Swim::new(model.fdd_drives(), model.fdd_hd(), BUS_FREQUENCY),
             scsi: ScsiController::new(),
             asc: Asc::default(),
             asc_clock: 0,
@@ -304,7 +305,7 @@ where
             overlay: true,
             amu_active: false,
             speed: EmulatorSpeed::Accurate,
-            bus_frequency: DEFAULT_BUS_SPEED,
+            act_bus_frequency: BUS_FREQUENCY,
             //last_audiosample: 0,
             vblank_time: Instant::now(),
             vblank_clock: 0,
@@ -655,7 +656,7 @@ where
         read: fn(&mut Self, Address, u32) -> Option<u32>,
         write: fn(&mut Self, Address, u32, u32) -> Option<()>,
     ) -> Result<BusResponse> {
-        const PERIOD: Ticks = 20 * DEFAULT_BUS_SPEED;
+        const PERIOD: Ticks = 20 * BUS_FREQUENCY;
         if self.via_stall == 0 {
             let phase = (self.via_clock + acc.pending * C16M_FREQUENCY) % PERIOD;
             self.via_stall = (PERIOD - phase).div_ceil(C16M_FREQUENCY);
@@ -742,8 +743,16 @@ where
         self.speed = speed;
     }
 
-    pub fn set_bus_frequency(&mut self, bus_frequency: u64) {
-        self.bus_frequency = bus_frequency;
+    /// Frequency of the bus of the real hardware, without overclocking
+    #[inline(always)]
+    pub const fn bus_frequency(&self) -> Ticks {
+        BUS_FREQUENCY
+    }
+
+    /// Sets the frequency of the bus, or goes back to the one of the real
+    /// hardware
+    pub fn set_overclock(&mut self, bus_frequency: Option<u64>) {
+        self.act_bus_frequency = bus_frequency.unwrap_or_else(|| self.bus_frequency());
     }
 
     /// Programmer's key pressed
@@ -870,12 +879,13 @@ where
         }
 
         // Keep the RTC and ADB for PRAM and event channels
-        let Via { adb, rtc, .. } = std::mem::replace(&mut self.via1, Via::new(self.model));
+        let Via { adb, rtc, .. } =
+            std::mem::replace(&mut self.via1, Via::new(self.model, BUS_FREQUENCY));
         self.via1.adb = adb;
         self.via1.rtc = rtc;
 
         self.scc = Scc::new();
-        self.via2 = Via2::new(self.model);
+        self.via2 = Via2::new(self.model, BUS_FREQUENCY);
         for d in self.nubus_devices.iter_mut().filter_map(|f| f.as_mut()) {
             d.slot().reset();
         }
@@ -911,7 +921,7 @@ where
 
         let ctx = &BusEmuContext {
             speed: self.speed,
-            bus_frequency: self.bus_frequency,
+            bus_frequency: self.act_bus_frequency,
         };
 
         self.cycles += ticks;
@@ -926,8 +936,8 @@ where
         // The VIA clock is C16M / 20 (783.36 kHz). As the bus runs at a nominal
         // 16 MHz, that is slightly less than once every 20 bus cycles.
         self.via_clock += ticks * C16M_FREQUENCY;
-        while self.via_clock >= 20 * DEFAULT_BUS_SPEED {
-            self.via_clock -= 20 * DEFAULT_BUS_SPEED;
+        while self.via_clock >= 20 * self.bus_frequency() {
+            self.via_clock -= 20 * self.bus_frequency();
 
             self.via1.tick(1, ctx)?;
             self.via2.tick(1, ctx)?;

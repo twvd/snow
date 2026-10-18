@@ -14,12 +14,6 @@ use anyhow::Result;
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 
-/// The frequency at which to run the VIA.
-///
-/// Since the VIA is used as a timer, it is important to run at a consistent
-/// speed regardless of CPU/bus frequency.
-const VIA_FREQUENCY: Ticks = 16_000_000;
-
 bitfield! {
     /// VIA Register A
     #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -77,14 +71,16 @@ impl ViaWiring for PortableViaWiring {
 pub struct Via {
     core: ViaCommon<PortableViaWiring>,
 
-    bus_tick_converter: TickConverter<VIA_FREQUENCY>,
+    /// Runs the VIA at the speed of the bus of the real hardware, whatever
+    /// the bus frequency is: the VIA is used as a timer
+    bus_tick_converter: TickConverter,
 }
 
 impl Via {
-    pub fn new() -> Self {
+    pub fn new(bus_frequency: Ticks) -> Self {
         Self {
             core: ViaCommon::new(),
-            bus_tick_converter: Default::default(),
+            bus_tick_converter: TickConverter::new(bus_frequency),
         }
     }
 
@@ -163,7 +159,7 @@ mod tests {
 
     #[test]
     fn reg_a_no_handshake_keeps_irq_flags() {
-        let mut via = Via::new();
+        let mut via = Via::new(16_000_000);
 
         via.set_irq(IRQ_CA1);
         via.set_irq(IRQ_CA2);
@@ -175,7 +171,7 @@ mod tests {
 
     #[test]
     fn reg_a_handshake_clears_irq_flags() {
-        let mut via = Via::new();
+        let mut via = Via::new(16_000_000);
 
         via.set_irq(IRQ_CA1);
         via.set_irq(IRQ_CA2);
@@ -190,7 +186,7 @@ mod tests {
 
     #[test]
     fn independent_ca2_keeps_irq_flag() {
-        let mut via = Via::new();
+        let mut via = Via::new(16_000_000);
 
         // CA2 independent interrupt input, negative edge
         via.write(ADDR_PCR, 0x02);
