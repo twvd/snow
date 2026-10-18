@@ -16,12 +16,6 @@ use serde::{Deserialize, Serialize};
 use super::MacModel;
 use super::adb::AdbTransceiver;
 
-/// The frequency at which to run the VIA.
-///
-/// Since the VIA is used as a timer, it is important to run at a consistent
-/// speed regardless of CPU/bus frequency.
-const VIA_FREQUENCY: Ticks = 16_000_000;
-
 /// Counter at which to trigger the one second interrupt
 /// (counted on the E Clock)
 const ONESEC_TICKS: Ticks = 783360;
@@ -181,11 +175,13 @@ pub struct Via {
 
     pub(crate) adb: AdbTransceiver,
 
-    bus_tick_converter: TickConverter<VIA_FREQUENCY>,
+    /// Runs the VIA at the speed of the bus of the real hardware, whatever
+    /// the bus frequency is: the VIA is used as a timer
+    bus_tick_converter: TickConverter,
 }
 
 impl Via {
-    pub fn new(model: MacModel) -> Self {
+    pub fn new(model: MacModel, bus_frequency: Ticks) -> Self {
         let mut core = ViaCommon::new();
         core.a_in = model.via1_a_in();
 
@@ -202,7 +198,7 @@ impl Via {
             rtc: Rtc::default(),
             adb: AdbTransceiver::default(),
 
-            bus_tick_converter: Default::default(),
+            bus_tick_converter: TickConverter::new(bus_frequency),
         }
     }
 }
@@ -384,7 +380,7 @@ mod tests {
 
     #[test]
     fn reg_a_no_handshake_keeps_irq_flags() {
-        let mut via = Via::new(MacModel::Plus);
+        let mut via = Via::new(MacModel::Plus, 16_000_000);
 
         via.set_irq(IRQ_CA1);
         via.set_irq(IRQ_CA2);
@@ -396,7 +392,7 @@ mod tests {
 
     #[test]
     fn reg_a_handshake_clears_irq_flags() {
-        let mut via = Via::new(MacModel::Plus);
+        let mut via = Via::new(MacModel::Plus, 16_000_000);
 
         via.set_irq(IRQ_CA1);
         via.set_irq(IRQ_CA2);
@@ -411,7 +407,7 @@ mod tests {
 
     #[test]
     fn independent_ca2_keeps_irq_flag() {
-        let mut via = Via::new(MacModel::Plus);
+        let mut via = Via::new(MacModel::Plus, 16_000_000);
 
         // CA2 independent interrupt input, negative edge
         via.write(ADDR_PCR, 0x02);
@@ -433,7 +429,7 @@ mod tests {
 
     #[test]
     fn independent_cb2_keeps_irq_flag() {
-        let mut via = Via::new(MacModel::Plus);
+        let mut via = Via::new(MacModel::Plus, 16_000_000);
 
         via.set_irq(IRQ_CB2);
         via.set_irq(IRQ_CB1);
