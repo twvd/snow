@@ -57,6 +57,9 @@ const CMD_DMA: u8 = 0x80;
 /// Configuration 1: do not report a SCSI bus reset
 const CFG1_RESREPT: u8 = 1 << 6;
 
+/// Configuration 3: leave the odd last byte of a 16-bit DMA transfer in the FIFO
+const CFG3_SAVE_RESIDUAL: u8 = 1 << 2;
+
 /// Length of the CDB of an opcode: the known commands, else from the group
 /// code as the 53C96 decodes it as a target (data sheet p.16): 6 bytes for
 /// group 0, the reserved groups 3 and 4 and the vendor unique group 6, 10
@@ -116,10 +119,20 @@ pub struct Esp {
 
     /// The command being executed asked for a DMA transfer.
     dma: bool,
+
+    /// A DMA Transfer Information command is moving data
+    dma_xfer: bool,
+
+    /// The last command was a DMA transfer from the target, the DMA empties
+    /// the FIFO
+    dma_in: bool,
+
+    /// The DMA bus is 16 bits wide (MODE pins)
+    dma16: bool,
 }
 
 impl Esp {
-    pub fn new() -> Self {
+    pub fn new(dma16: bool) -> Self {
         Self {
             bus: ScsiBus::new(),
             fifo: VecDeque::with_capacity(FIFO_SIZE),
@@ -141,6 +154,9 @@ impl Esp {
             dataout_buf: vec![],
             selected: false,
             dma: false,
+            dma_xfer: false,
+            dma_in: false,
+            dma16,
         }
     }
 
@@ -159,37 +175,47 @@ impl Esp {
     }
 
     pub fn get_drq(&self) -> bool {
-        // Just shove bytes out as fast as we can, the driver doesn't
-        // seem to mind.
-        match self.phase() {
-            PHASE_DATA_IN => !self.bus.responsebuf.is_empty() || !self.fifo.is_empty(),
-            PHASE_DATA_OUT => self.bus.dataout_len > 0,
-            _ => false,
+        if self.dma_in {
+            // As long as the FIFO holds a word (or a byte on an 8-bit bus) for
+            // memory (p.10). The odd last byte of a 16-bit transfer is left
+            // to the processor if Config 3 says so (p.26).
+            let threshold = if self.dma16 { 2 } else { 1 };
+            self.fifo.len() >= threshold
+                || (self.fifo.len() == 1 && !(self.tc == 0 && self.cfg3 & CFG3_SAVE_RESIDUAL != 0))
+        } else {
+            self.dma_xfer && self.tc > 0 && self.bus.dataout_len > 0
         }
     }
 
     pub fn read_dma(&mut self) -> u8 {
-        if self.fifo.is_empty()
-            && self.phase() == PHASE_DATA_IN
+        let val = self.fifo_pop();
+        if self.dma_xfer {
+            self.dma_in_receive();
+        }
+        val
+    }
+
+    /// DMA transfer from the target: the counter counts the bytes received
+    /// into the FIFO, which the DMA empties. The transfer is complete once
+    /// the count runs out or the target has sent all its data (data sheet
+    /// p.33, Transfer Information).
+    fn dma_in_receive(&mut self) {
+        while self.tc > 0
+            && self.fifo.len() < FIFO_SIZE
             && let Some(b) = self.bus.responsebuf.pop_front()
         {
             self.fifo.push_back(b);
-        }
-
-        let val = self.fifo_pop();
-        if self.dma {
             self.advance_tc(1);
         }
-
-        if self.phase() == PHASE_DATA_IN && self.bus.responsebuf.is_empty() && self.fifo.is_empty()
-        {
-            // Done, status phase
+        if self.bus.responsebuf.is_empty() {
+            // The target goes on to the status phase
             self.set_phase(PHASE_STATUS);
+        }
+        if self.tc == 0 || self.phase() != PHASE_DATA_IN {
+            self.dma_xfer = false;
             self.intr |= INTR_BS;
             self.raise_irq();
         }
-
-        val
     }
 
     pub fn write_dma(&mut self, val: u8) {
@@ -212,7 +238,7 @@ impl Esp {
                 }
                 self.command_byte(val);
             }
-            PHASE_DATA_OUT => {
+            PHASE_DATA_OUT if self.dma_xfer => {
                 let mut pending = self.bus.dataout_len;
                 while let Some(b) = self.fifo.pop_front() {
                     self.dataout_buf.push(b);
@@ -230,8 +256,13 @@ impl Esp {
 
                 if outstanding && self.bus.dataout_len == 0 {
                     self.finish_dataout();
+                } else if self.tc == 0 {
+                    self.dma_xfer = false;
+                    self.intr |= INTR_BS;
+                    self.raise_irq();
                 }
             }
+            // No transfer going on: DACK writes the FIFO
             _ => self.fifo_push(val),
         }
     }
@@ -261,6 +292,8 @@ impl Esp {
         self.dataout_buf.clear();
         self.selected = false;
         self.dma = false;
+        self.dma_xfer = false;
+        self.dma_in = false;
     }
 
     fn fifo_push(&mut self, val: u8) {
@@ -284,6 +317,7 @@ impl Esp {
     /// Executes a command written to the command register
     fn run_command(&mut self, cmd: u8) {
         self.dma = cmd & CMD_DMA != 0;
+        self.dma_in = false;
         if self.dma {
             // DMA commands load the counter, a count of zero is the maximum.
             // Loading it clears the terminal count status (data sheet p.32).
@@ -340,6 +374,7 @@ impl Esp {
         self.seq = SEQ_0;
         self.bus.cmdbuf.clear();
         self.dataout_buf.clear();
+        self.dma_xfer = false;
 
         if id >= ScsiBus::MAX_TARGETS || self.bus.targets[id].is_none() {
             // Nothing at this ID: report a disconnect
@@ -438,6 +473,7 @@ impl Esp {
             return;
         }
 
+        self.dma_xfer = false;
         let data = std::mem::take(&mut self.dataout_buf);
         match self.bus.cmd_run(Some(&data)) {
             Ok(_) => self.set_phase(PHASE_STATUS),
@@ -488,21 +524,17 @@ impl Esp {
                     self.raise_irq();
                 }
             }
+            PHASE_DATA_IN if self.dma => {
+                self.dma_xfer = true;
+                self.dma_in = true;
+                self.dma_in_receive();
+            }
             PHASE_DATA_IN => {
-                let free = (FIFO_SIZE - self.fifo.len()) as u32;
-                let avail = self.bus.responsebuf.len() as u32;
-                let n = if self.dma {
-                    self.tc.min(free).min(avail)
-                } else {
-                    // One byte per command without DMA (data sheet p.33)
-                    free.min(avail).min(1)
-                };
-                for _ in 0..n {
-                    let b = self.bus.responsebuf.pop_front().unwrap();
+                // One byte per command without DMA (data sheet p.33)
+                if self.fifo.len() < FIFO_SIZE
+                    && let Some(b) = self.bus.responsebuf.pop_front()
+                {
                     self.fifo.push_back(b);
-                }
-                if self.dma {
-                    self.advance_tc(n);
                 }
 
                 if self.bus.responsebuf.is_empty() {
@@ -526,10 +558,16 @@ impl Esp {
 
                     if self.bus.dataout_len == 0 {
                         self.finish_dataout();
+                        return;
                     }
                 }
-                self.intr |= INTR_BS;
-                self.raise_irq();
+                if self.dma && self.tc > 0 {
+                    // The rest comes by DMA (write_dma)
+                    self.dma_xfer = true;
+                } else {
+                    self.intr |= INTR_BS;
+                    self.raise_irq();
+                }
             }
             _ => {
                 self.intr |= INTR_BS;
@@ -581,12 +619,6 @@ impl Esp {
         self.set_phase(PHASE_MSG_IN);
         self.intr |= INTR_FC;
         self.raise_irq();
-    }
-}
-
-impl Default for Esp {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
