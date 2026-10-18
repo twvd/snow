@@ -586,10 +586,9 @@ impl Esp {
                         let b = self.fifo_pop();
                         self.dataout_buf.push(b);
                     }
+                    // Bytes already in the FIFO don't count: in data out the
+                    // counter counts the DMA bytes (data sheet p.13)
                     self.bus.dataout_len -= n;
-                    if self.dma {
-                        self.advance_tc(n as u32);
-                    }
 
                     if self.bus.dataout_len == 0 {
                         self.finish_dataout();
