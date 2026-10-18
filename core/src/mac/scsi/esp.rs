@@ -57,6 +57,18 @@ const CMD_DMA: u8 = 0x80;
 /// Configuration 1: do not report a SCSI bus reset
 const CFG1_RESREPT: u8 = 1 << 6;
 
+/// Length of the CDB of an opcode: the known commands, else from the group
+/// code as the 53C96 decodes it as a target (data sheet p.16): 6 bytes for
+/// group 0, the reserved groups 3 and 4 and the vendor unique group 6, 10
+/// bytes for groups 1 and 2 and the vendor unique group 7, 12 for group 5.
+fn cdb_len(op: u8) -> usize {
+    scsi_cmd_len(op).unwrap_or(match op >> 5 {
+        1 | 2 | 7 => 10,
+        5 => 12,
+        _ => 6,
+    })
+}
+
 /// NCR 53C96 SCSI controller
 #[derive(Serialize, Deserialize)]
 pub struct Esp {
@@ -371,7 +383,7 @@ impl Esp {
     /// Whether the command buffer holds a complete CDB
     fn cdb_complete(&self) -> bool {
         match self.bus.cmdbuf.first() {
-            Some(op) => self.bus.cmdbuf.len() >= scsi_cmd_len(*op).unwrap_or(6),
+            Some(op) => self.bus.cmdbuf.len() >= cdb_len(*op),
             None => false,
         }
     }
@@ -393,8 +405,9 @@ impl Esp {
         }
         if scsi_cmd_len(self.bus.cmdbuf[0]).is_none() {
             warn!(
-                "unknown length for command ${:02X}, assumed 6",
-                self.bus.cmdbuf[0]
+                "unknown length for command ${:02X}, taken as {} bytes from its group",
+                self.bus.cmdbuf[0],
+                cdb_len(self.bus.cmdbuf[0])
             );
         }
 
