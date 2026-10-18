@@ -155,9 +155,9 @@ impl Esp {
             cfg1: 7,
             cfg2: 0,
             cfg3: 0,
-            clkconv: 0,
+            clkconv: 2,
             sel_timeout: 0,
-            sync_period: 0,
+            sync_period: 5,
             sync_offset: 0,
             dataout_buf: vec![],
             selected: false,
@@ -308,16 +308,27 @@ impl Esp {
         self.stat |= STAT_INT;
     }
 
-    fn reset_chip(&mut self) {
+    /// Hardware reset, or the Reset Chip command. The transfer count, the
+    /// destination ID and our bus ID in Config 1 are kept (data sheet p.13,
+    /// p.16, p.24).
+    pub fn reset(&mut self) {
         self.fifo.clear();
-        self.tc = 0;
-        self.stc = 0;
         self.cmd = 0;
         self.stat = 0;
         self.intr = 0;
         self.seq = 0;
-        self.bus_id = 0;
-        self.cfg1 = 7;
+        self.cfg1 &= 0b111;
+        self.cfg2 = 0;
+        self.cfg3 = 0;
+        self.clkconv = 2;
+        self.sync_period = 5;
+        self.sync_offset = 0;
+        self.disconnect();
+    }
+
+    /// Leaves the bus, as on a SCSI bus reset
+    fn disconnect(&mut self) {
+        self.set_phase(0);
         self.dataout_buf.clear();
         self.selected = false;
         self.dma = false;
@@ -374,9 +385,11 @@ impl Esp {
             // Miscellaneous
             0x00 => (), // NOP
             0x01 => self.fifo.clear(),
-            0x02 => self.reset_chip(),
+            0x02 => self.reset(),
             0x03 => {
-                // Reset SCSI bus
+                // Reset SCSI bus: the chip disconnects, and sees the reset
+                // as RSTO is wired to RSTI (p.29)
+                self.disconnect();
                 if self.cfg1 & CFG1_RESREPT == 0 {
                     self.intr |= INTR_RST;
                     self.raise_irq();
