@@ -45,6 +45,18 @@ impl CpuBus for Bus68020 {
     const CYCLE: Ticks = 3;
 }
 
+/// 68040: 32-bit data bus. The 68040 has no dynamic bus sizing, the glue
+/// logic of the machine sizes the cycles to narrower ports for it.
+#[derive(Clone, Copy, Debug)]
+pub struct Bus68040;
+
+impl CpuBus for Bus68040 {
+    const WIDTH: u32 = 4;
+    const DYN_SIZING: bool = true;
+    // Two BCLKs without wait states (MC68040UM 7.4.1)
+    const CYCLE: Ticks = 2;
+}
+
 /// One bus cycle as presented by the CPU, on the data bus `C` of the CPU
 #[derive(Clone, Copy, Debug)]
 pub struct BusAccess<C> {
