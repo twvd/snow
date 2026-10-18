@@ -39,8 +39,9 @@ const RAM_WAITS: Ticks = 1;
 /// Wait states of the ROM
 const ROM_WAITS: Ticks = 2;
 
-/// Frequency of the bus of the real hardware, without overclocking
-const BUS_FREQUENCY: Ticks = 16_000_000;
+/// Frequency of the bus of the real hardware, without overclocking: C16M,
+/// which the CPU runs at
+const BUS_FREQUENCY: Ticks = 15_667_200;
 
 /// Time the SCC needs between accesses (1.8us)
 const SCC_RECOVERY: Ticks = BUS_FREQUENCY * 18 / 10_000_000;
