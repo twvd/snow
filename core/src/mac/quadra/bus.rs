@@ -464,14 +464,42 @@ where
                 return BusResponse::Stall(Self::SCSI_DMA_TIMEOUT);
             }
             self.scsi_dma_stalled = false;
+            error!(
+                "ESP CHECK: pseudo-DMA {} at {:08X} size {} timed out: {}",
+                if acc.write { "write" } else { "read" },
+                acc.addr,
+                acc.size,
+                self.scsi.dbg()
+            );
             return BusResponse::BusError;
         }
         self.scsi_dma_stalled = false;
+        if acc.addr & 0xFE != 0 || acc.size == 4 {
+            error!(
+                "ESP CHECK: pseudo-DMA {} at {:08X} size {}",
+                if acc.write { "write" } else { "read" },
+                acc.addr,
+                acc.size
+            );
+        }
+        if acc.write && !self.scsi.get_drq() {
+            error!(
+                "ESP CHECK: pseudo-DMA write without DREQ: {}",
+                self.scsi.dbg()
+            );
+        }
         bus_access_word_lane::<4, 0, _, _>(acc, 0, self, Self::scsi_dma_read, Self::scsi_dma_write)
     }
 
     fn scsi_dma_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        let before = self.scsi.fifo_len();
         let [b0, b1] = self.scsi.dack_read();
+        if len == 1 && before >= 2 {
+            error!(
+                "ESP CHECK: byte pseudo-DMA read at {:08X} dropped a byte",
+                addr
+            );
+        }
         let word = u32::from_be_bytes([0, 0, b0, b1]);
         Some((word >> (8 * (2 - (addr & 1) - len))) & ((1 << (8 * len)) - 1))
     }
