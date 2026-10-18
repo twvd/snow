@@ -210,6 +210,9 @@ impl Esp {
     /// A lone last byte comes in DB7-0 with DB15-8 driven to ones (data
     /// sheet p.26).
     pub fn dack_read(&mut self) -> [u8; 2] {
+        if !self.get_drq() {
+            error!("ESP CHECK: DMA read without DREQ: {}", self.dbg());
+        }
         let first = self.read_dma();
         if !self.dma16 {
             return [first, 0xFF];
@@ -264,6 +267,7 @@ impl Esp {
 
     pub fn write_dma(&mut self, val: u8) {
         if !self.selected {
+            error!("ESP CHECK: DMA write while disconnected: {}", self.dbg());
             // Nothing is connected, so the byte goes out onto an idle bus and
             // disappears into an empty void of nothingness.
             //
@@ -364,12 +368,18 @@ impl Esp {
     }
 
     fn fifo_push(&mut self, val: u8) {
+        if self.fifo.len() >= FIFO_SIZE {
+            error!("ESP CHECK: FIFO overflow: {}", self.dbg());
+        }
         if self.fifo.len() < FIFO_SIZE {
             self.fifo.push_back(val);
         }
     }
 
     fn fifo_pop(&mut self) -> u8 {
+        if self.fifo.is_empty() {
+            error!("ESP CHECK: read from an empty FIFO: {}", self.dbg());
+        }
         self.fifo.pop_front().unwrap_or(0)
     }
 
@@ -393,6 +403,11 @@ impl Esp {
             _ => false,
         };
         if !legal {
+            error!(
+                "ESP CHECK: command ${:02X} illegal in this state: {}",
+                cmd,
+                self.dbg()
+            );
             self.illegal_command();
             return;
         }
@@ -432,8 +447,11 @@ impl Esp {
                 self.fifo.clear();
                 self.raise_irq();
             }
-            0x18 => self.transfer_pad(),
-            0x1A | 0x1B => (), // Set/reset ATN
+            0x18 => {
+                error!("ESP CHECK: Transfer Pad: {}", self.dbg());
+                self.transfer_pad();
+            }
+            0x1A | 0x1B => error!("ESP CHECK: ATN command ${:02X}: {}", cmd, self.dbg()),
 
             // Disconnected state
             0x41 => self.select(false, false),
@@ -448,7 +466,11 @@ impl Esp {
             }
 
             _ => {
-                warn!("illegal command ${:02X}", cmd);
+                error!(
+                    "ESP CHECK: unimplemented command ${:02X}: {}",
+                    cmd,
+                    self.dbg()
+                );
                 self.illegal_command();
             }
         }
@@ -602,6 +624,13 @@ impl Esp {
     /// Transfer Information: moves data between the FIFO and the target for the
     /// current phase.
     fn transfer_info(&mut self) {
+        if self.dma && !matches!(self.phase(), PHASE_COMMAND | PHASE_DATA_IN | PHASE_DATA_OUT) {
+            error!(
+                "ESP CHECK: DMA Transfer Information in phase {}: {}",
+                self.phase(),
+                self.dbg()
+            );
+        }
         match self.phase() {
             PHASE_MSG_OUT => {
                 // Identify message arriving through the FIFO instead of with
@@ -704,7 +733,14 @@ impl Esp {
     /// Initiator Command Complete: reads the status and message bytes off the
     /// bus into the FIFO.
     fn command_complete(&mut self) {
+        if self.dma {
+            error!("ESP CHECK: DMA Initiator Command Complete: {}", self.dbg());
+        }
         if self.phase() != PHASE_STATUS {
+            error!(
+                "ESP CHECK: Initiator Command Complete out of the status phase: {}",
+                self.dbg()
+            );
             self.intr |= INTR_IL;
             self.raise_irq();
             return;
@@ -762,6 +798,12 @@ impl BusMember<Address> for Esp {
                 self.stc = (self.stc & 0x00FF) | (u32::from(val) << 8);
             }
             0x2 => {
+                if self.dma_xfer {
+                    error!(
+                        "ESP CHECK: FIFO write during a DMA transfer: {}",
+                        self.dbg()
+                    );
+                }
                 if self.selected && self.phase() == PHASE_COMMAND {
                     self.command_byte(val);
                 } else {
@@ -769,6 +811,13 @@ impl BusMember<Address> for Esp {
                 }
             }
             0x3 => {
+                if self.get_irq() {
+                    error!(
+                        "ESP CHECK: command ${:02X} written with an interrupt pending: {}",
+                        val,
+                        self.dbg()
+                    );
+                }
                 self.cmd = val;
                 self.run_command(val);
             }
@@ -842,5 +891,32 @@ impl Debuggable for Esp {
             dbgprop_udec!("Response buffer len", self.bus.responsebuf.len()),
             dbgprop_udec!("Data out len", self.bus.dataout_len),
         ]
+    }
+}
+
+impl Esp {
+    /// State summary for the temporary checks
+    pub fn dbg(&self) -> String {
+        format!(
+            "cmd {:02X} phase {} tc {} stc {} fifo {} selected {} selecting {} dma {} xfer {} in {} cfg3 {:02X} cdb {:02X?} out {} resp {}",
+            self.cmd,
+            self.phase(),
+            self.tc,
+            self.stc,
+            self.fifo.len(),
+            self.selected,
+            self.selecting,
+            self.dma,
+            self.dma_xfer,
+            self.dma_in,
+            self.cfg3,
+            self.bus.cmdbuf,
+            self.bus.dataout_len,
+            self.bus.responsebuf.len()
+        )
+    }
+
+    pub fn fifo_len(&self) -> usize {
+        self.fifo.len()
     }
 }
