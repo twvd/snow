@@ -32,8 +32,9 @@ use log::*;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
 use serde::{Deserialize, Serialize};
 
-/// Frequency of the bus of the real hardware, without overclocking
-const BUS_FREQUENCY: Ticks = 16_000_000;
+/// Frequency of the bus of the real hardware, without overclocking: the
+/// CPU clock, C8M (7.8336 MHz), which a bus cycle is counted in
+const BUS_FREQUENCY: Ticks = 7_833_600;
 
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
@@ -220,7 +221,7 @@ where
             eclock: 0,
             stalled: Stalled::default(),
             scc: Scc::new(),
-            swim: Swim::new(&fdds, model.fdd_hd(), 8_000_000),
+            swim: Swim::new(&fdds, model.fdd_hd(), BUS_FREQUENCY),
             scsi: ScsiController::new(),
             mouse_ready: false,
 
