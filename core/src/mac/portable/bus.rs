@@ -43,6 +43,9 @@ const ROM_WAITS: Ticks = 2;
 /// which the CPU runs at
 const BUS_FREQUENCY: Ticks = 15_667_200;
 
+/// Frequency of the master clock (C16M) the ASC clock is derived from
+const C16M_FREQUENCY: Ticks = 15_667_200;
+
 /// Time the SCC needs between accesses (1.8us)
 const SCC_RECOVERY: Ticks = BUS_FREQUENCY * 18 / 10_000_000;
 
@@ -789,9 +792,9 @@ where
             }
         }
 
-        self.asc_clock += ticks;
-        while self.asc_clock >= self.act_bus_frequency / self.asc.sample_rate() {
-            self.asc_clock -= self.act_bus_frequency / self.asc.sample_rate();
+        self.asc_clock += ticks * C16M_FREQUENCY;
+        while self.asc_clock >= self.asc.sample_period() * self.act_bus_frequency {
+            self.asc_clock -= self.asc.sample_period() * self.act_bus_frequency;
 
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }

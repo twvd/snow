@@ -984,9 +984,9 @@ where
         self.via2
             .set_line(ViaLine::CB1, (!self.asc.get_irq()).into());
 
-        self.asc_clock += ticks;
-        while self.asc_clock >= ctx.bus_frequency / self.asc.sample_rate() {
-            self.asc_clock -= ctx.bus_frequency / self.asc.sample_rate();
+        self.asc_clock += ticks * C16M_FREQUENCY;
+        while self.asc_clock >= self.asc.sample_period() * ctx.bus_frequency {
+            self.asc_clock -= self.asc.sample_period() * ctx.bus_frequency;
 
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }
