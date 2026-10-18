@@ -1,7 +1,7 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::bus::access::{Bus68040, BusAccess, BusResponse, bus_access_long};
+use crate::bus::access::{Bus68040, BusAccess, BusResponse, bus_access_long, bus_access_word_lane};
 use crate::bus::native_clock::NativeClock;
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
@@ -111,6 +111,8 @@ pub struct Quadra700Bus<TRenderer: Renderer> {
     mouse_ready: bool,
     pub(crate) swim: Swim,
     pub(crate) scsi: Esp,
+    /// A pseudo-DMA access is held off, waiting for DREQ
+    scsi_dma_stalled: bool,
 
     rom_mask: usize,
 
@@ -149,6 +151,10 @@ where
     const OPENBUS: u8 = 0;
 
     const IO_MASK: Address = 0x3_FFFF;
+
+    /// CPU cycles before a pseudo-DMA access waiting for DREQ ends with a bus
+    /// error. The length of this timeout is not documented.
+    const SCSI_DMA_TIMEOUT: Ticks = 640;
 
     /// MTemp address, Y coordinate (16 bit, signed)
     const ADDR_MTEMP_Y: Address = 0x0828;
@@ -193,6 +199,7 @@ where
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), BUS_FREQUENCY),
             // MODE pins strapped for a 16-bit DMA bus (schematic 050-8020)
             scsi: Esp::new(true),
+            scsi_dma_stalled: false,
             asc: Easc::default(),
             asc_clock: 0,
             mouse_ready: false,
@@ -377,6 +384,9 @@ where
 
     /// The DAFB is reached a byte at a time
     fn video_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        if addr & 0xFF_FFFC == 0x80_0024 {
+            self.dafb.scsi_drq = self.scsi.get_drq();
+        }
         (addr..addr + len).try_fold(0, |v, a| {
             Some((v << 8) | u32::from(self.dafb.read(a & 0xFF_FFFF)?))
         })
@@ -416,7 +426,6 @@ where
             0x0000_E000..=0x0000_EFFF => Some(0),
             // SCSI (NCR 53C96)
             0x0000_F000..=0x0000_F0FF => Some(Self::dev_read(addr, self.scsi.read(addr))),
-            0x0000_F100..=0x0000_F1FF => Some(self.scsi.read_dma()),
             // ASC (sound)
             0x0001_4000..=0x0001_5FFF => Some(Self::dev_read(addr, self.asc.read(addr & 0xFFF))),
             // SWIM
@@ -444,7 +453,6 @@ where
             0x0000_E000..=0x0000_EFFF => Some(()),
             // SCSI (NCR 53C96)
             0x0000_F000..=0x0000_F0FF => Self::dev_write(addr, val, self.scsi.write(addr, val)),
-            0x0000_F100..=0x0000_F1FF => Some(self.scsi.write_dma(val)),
             // ASC (sound)
             0x0001_4000..=0x0001_5FFF => {
                 Self::dev_write(addr, val, self.asc.write(addr & 0xFFF, val))
@@ -454,6 +462,40 @@ where
             // Expansion area - unmapped
             _ => None,
         }
+    }
+
+    /// A pseudo-DMA access to the 53C96: the DAFB makes it one cycle of the
+    /// 16-bit DMA bus, on D31-D16. With the DREQ check on, it waits for DREQ,
+    /// which in this model can only come from the CPU, so it times out with
+    /// a bus error.
+    fn scsi_dma_cycle(&mut self, acc: BusAccess<Bus68040>) -> BusResponse {
+        if self.dafb.scsi_drq_check(acc.write) && !self.scsi.get_drq() {
+            if !self.scsi_dma_stalled {
+                self.scsi_dma_stalled = true;
+                return BusResponse::Stall(Self::SCSI_DMA_TIMEOUT);
+            }
+            self.scsi_dma_stalled = false;
+            return BusResponse::BusError;
+        }
+        self.scsi_dma_stalled = false;
+        bus_access_word_lane::<4, 0, _, _>(acc, 0, self, Self::scsi_dma_read, Self::scsi_dma_write)
+    }
+
+    fn scsi_dma_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        let [b0, b1] = self.scsi.dack_read();
+        let word = u32::from_be_bytes([0, 0, b0, b1]);
+        Some((word >> (8 * (2 - (addr & 1) - len))) & ((1 << (8 * len)) - 1))
+    }
+
+    fn scsi_dma_write(&mut self, _addr: Address, len: u32, val: u32) -> Option<()> {
+        // A byte is on both lanes, as the CPU replicates it
+        let data = if len == 2 {
+            [(val >> 8) as u8, val as u8]
+        } else {
+            [val as u8; 2]
+        };
+        self.scsi.dack_write(data);
+        Some(())
     }
 
     /// VIA 2 at power-up. CA2 is PIC_ISM_IRQ*, the SWIM I/O processor
@@ -601,6 +643,7 @@ where
         let resp = match MAP[usize::from(self.overlay)][block] {
             Region::Ram => bus_access_long(acc, 0, self, Self::ram_read, Self::ram_write),
             Region::Rom => bus_access_long(acc, 0, self, Self::rom_read, Self::ignore_write),
+            Region::Io if (acc.addr & Self::IO_MASK) >> 8 == 0xF1 => self.scsi_dma_cycle(acc),
             Region::Io => bus_access_long(acc, 0, self, Self::io_read, Self::io_write),
             Region::ExtRom => bus_access_long(acc, 0, self, Self::ext_rom_read, Self::no_write),
             Region::SuperSlot => {
