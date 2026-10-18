@@ -78,12 +78,11 @@ pub struct Esp {
     /// Data FIFO
     fifo: VecDeque<u8>,
 
-    /// Transfer counter (24-bit), counts down during a transfer
+    /// Transfer counter (16-bit, 0 is 65536), counts down during a transfer
     /// Used for DMA mode only
     tc: u32,
 
-    /// Transfer counter, reloaded into tc
-    /// Used for DMA mode only
+    /// Transfer count registers, loaded into tc by DMA commands
     stc: u32,
 
     /// Last command written to the command register
@@ -208,6 +207,9 @@ impl Esp {
                 while let Some(b) = self.fifo.pop_front() {
                     self.bus.cmdbuf.push(b);
                 }
+                if self.dma {
+                    self.advance_tc(1);
+                }
                 self.command_byte(val);
             }
             PHASE_DATA_OUT => {
@@ -283,8 +285,10 @@ impl Esp {
     fn run_command(&mut self, cmd: u8) {
         self.dma = cmd & CMD_DMA != 0;
         if self.dma {
-            // A transfer count of zero means the maximum
+            // DMA commands load the counter, a count of zero is the maximum.
+            // Loading it clears the terminal count status (data sheet p.32).
             self.tc = if self.stc == 0 { 65536 } else { self.stc };
+            self.stat &= !STAT_TC;
         }
 
         match cmd & !CMD_DMA {
@@ -339,7 +343,7 @@ impl Esp {
 
         if id >= ScsiBus::MAX_TARGETS || self.bus.targets[id].is_none() {
             // Nothing at this ID: report a disconnect
-            self.stat &= !(STAT_PHASE | STAT_TC);
+            self.stat &= !STAT_PHASE;
             self.intr |= INTR_DC;
             self.raise_irq();
             return;
@@ -390,9 +394,6 @@ impl Esp {
 
     fn command_byte(&mut self, val: u8) {
         self.bus.cmdbuf.push(val);
-        if self.dma {
-            self.advance_tc(1);
-        }
         if self.cdb_complete() {
             self.run_cdb();
         }
@@ -616,7 +617,6 @@ impl BusMember<Address> for Esp {
             0x8 => self.cfg1,
             0xB => self.cfg2,
             0xC => self.cfg3,
-            0xE => (self.tc >> 16) as u8,
             _ => 0,
         })
     }
@@ -626,12 +626,10 @@ impl BusMember<Address> for Esp {
 
         match reg {
             0x0 => {
-                self.stc = (self.stc & 0xFF_FF00) | u32::from(val);
-                self.stat &= !STAT_TC;
+                self.stc = (self.stc & 0xFF00) | u32::from(val);
             }
             0x1 => {
-                self.stc = (self.stc & 0xFF_00FF) | (u32::from(val) << 8);
-                self.stat &= !STAT_TC;
+                self.stc = (self.stc & 0x00FF) | (u32::from(val) << 8);
             }
             0x2 => {
                 if self.selected && self.phase() == PHASE_COMMAND {
@@ -653,10 +651,6 @@ impl BusMember<Address> for Esp {
             0xA => (),
             0xB => self.cfg2 = val,
             0xC => self.cfg3 = val,
-            0xE => {
-                self.stc = (self.stc & 0x00_FFFF) | (u32::from(val) << 16);
-                self.stat &= !STAT_TC;
-            }
             _ => (),
         }
 
