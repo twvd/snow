@@ -252,7 +252,7 @@ impl Esp {
         }
     }
 
-    pub fn read_dma(&mut self) -> u8 {
+    fn read_dma(&mut self) -> u8 {
         let val = self.fifo_pop();
         if self.dma_xfer {
             self.dma_in_receive();
@@ -283,7 +283,7 @@ impl Esp {
         }
     }
 
-    pub fn write_dma(&mut self, val: u8) {
+    fn write_dma(&mut self, val: u8) {
         if !self.selected {
             esp_check!("DMA write while disconnected: {}", self.dbg());
             // Nothing is connected, so the byte goes out onto an idle bus and

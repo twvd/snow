@@ -87,6 +87,9 @@ pub struct Dafb<TRenderer: Renderer> {
 
     /// 'Turbo SCSI' config, part of the DAFB block
     turbo_scsi: Field32,
+    /// DREQ of the 53C96, read back in the Turbo SCSI register
+    #[serde(skip)]
+    pub(crate) scsi_drq: bool,
 
     /// Swatch mode register
     swatch_mode: Field32,
@@ -162,6 +165,7 @@ where
             sense: Field32(0),
             test: Field32(0),
             turbo_scsi: Field32(0),
+            scsi_drq: false,
 
             swatch_mode: Field32(0),
             swatch_test: Field32(0),
@@ -215,6 +219,12 @@ where
 
     pub fn get_irq(&self) -> bool {
         self.int_status.0 != 0
+    }
+
+    /// Whether a pseudo-DMA access to the 53C96 waits for DREQ (Turbo SCSI
+    /// bit 7 for reads, bit 8 for writes)
+    pub fn scsi_drq_check(&self, write: bool) -> bool {
+        self.turbo_scsi.0 & (1 << if write { 8 } else { 7 }) != 0
     }
 
     /// Currently configured color depth
@@ -485,10 +495,10 @@ where
             // 'Turbo SCSI' config/handshake
             0x80_0024 => Some(self.turbo_scsi.be0()),
             0x80_0025 => Some(self.turbo_scsi.be1()),
-            // Bit 9 (in the full 32-bit value) is a DMA handshake bit;
-            // just always set it as ready because the SCSI controller will
-            // blast out bytes as fast as possible.
-            0x80_0026 => Some(Field32((self.turbo_scsi.0 & 0x1FF) | (1 << 9)).be2()),
+            // Bit 9 is the 53C96 DREQ
+            0x80_0026 => {
+                Some(Field32((self.turbo_scsi.0 & 0x1FF) | (u32::from(self.scsi_drq) << 9)).be2())
+            }
             0x80_0027 => Some(self.turbo_scsi.be3()),
             // Test register
             0x80_002C => Some(self.test.be0()),
