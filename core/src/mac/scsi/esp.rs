@@ -347,6 +347,20 @@ impl Esp {
 
     /// Executes a command written to the command register
     fn run_command(&mut self, cmd: u8) {
+        // Initiator and disconnected state commands are only taken in their
+        // state, target commands never as the chip is never selected
+        // (data sheet p.14, p.30, p.32, p.34)
+        let legal = match cmd & 0x70 {
+            0x00 => true,
+            0x10 => self.selected,
+            0x40 => !self.selected,
+            _ => false,
+        };
+        if !legal {
+            self.illegal_command();
+            return;
+        }
+
         self.dma = cmd & CMD_DMA != 0;
         self.dma_in = false;
         if self.dma {
@@ -387,16 +401,26 @@ impl Esp {
             0x41 => self.select(false, false),
             0x42 => self.select(true, false),
             0x43 => self.select(true, true),
-            // Target mode commands; ignore them, System 7.5.5 sends them
-            // for some reason.
-            0x44 | 0x45 => (),
+            // Enable selection/reselection, without an interrupt
+            0x44 => (),
+            // Disable selection/reselection: none was in progress (p.31)
+            0x45 => {
+                self.intr |= INTR_FC;
+                self.raise_irq();
+            }
 
             _ => {
                 warn!("illegal command ${:02X}", cmd);
-                self.intr |= INTR_IL;
-                self.raise_irq();
+                self.illegal_command();
             }
         }
+    }
+
+    /// An illegal command is ignored and cleared from the command register
+    fn illegal_command(&mut self) {
+        self.cmd = 0;
+        self.intr |= INTR_IL;
+        self.raise_irq();
     }
 
     /// Arbitrates and selects the target in the bus ID register
@@ -537,22 +561,9 @@ impl Esp {
         self.raise_irq();
     }
 
-    /// A transfer command issued with no target connected
-    fn disconnected_transfer(&mut self) {
-        self.fifo.clear();
-        self.intr |= INTR_DC;
-        self.seq = SEQ_0;
-        self.raise_irq();
-    }
-
     /// Transfer Information: moves data between the FIFO and the target for the
     /// current phase.
     fn transfer_info(&mut self) {
-        if !self.selected {
-            self.disconnected_transfer();
-            return;
-        }
-
         match self.phase() {
             PHASE_MSG_OUT => {
                 // Identify message arriving through the FIFO instead of with
@@ -631,11 +642,6 @@ impl Esp {
 
     /// Transfer Pad: like Transfer Information, but without moving real data
     fn transfer_pad(&mut self) {
-        if !self.selected {
-            self.disconnected_transfer();
-            return;
-        }
-
         let n = self.tc;
         match self.phase() {
             PHASE_DATA_IN => {
