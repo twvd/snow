@@ -206,6 +206,31 @@ impl Esp {
         }
     }
 
+    /// One DMA read cycle: a word on a 16-bit DMA bus, as (DB7-0, DB15-8).
+    /// A lone last byte comes in DB7-0 with DB15-8 driven to ones (data
+    /// sheet p.26).
+    pub fn dack_read(&mut self) -> [u8; 2] {
+        let first = self.read_dma();
+        if !self.dma16 {
+            return [first, 0xFF];
+        }
+        let second = if self.fifo.is_empty() {
+            0xFF
+        } else {
+            self.read_dma()
+        };
+        [first, second]
+    }
+
+    /// One DMA write cycle: a word on a 16-bit DMA bus, as (DB7-0, DB15-8).
+    /// Only DB7-0 is taken for the last byte of a transfer (p.26).
+    pub fn dack_write(&mut self, data: [u8; 2]) {
+        self.write_dma(data[0]);
+        if self.dma16 && !(self.dma && self.tc == 0) {
+            self.write_dma(data[1]);
+        }
+    }
+
     pub fn read_dma(&mut self) -> u8 {
         let val = self.fifo_pop();
         if self.dma_xfer {
