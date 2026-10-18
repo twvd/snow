@@ -34,8 +34,9 @@ use log::*;
 use num_traits::{FromPrimitive, PrimInt, ToBytes};
 use serde::{Deserialize, Serialize};
 
-/// Frequency of the bus of the real hardware, without overclocking
-const BUS_FREQUENCY: Ticks = 16_000_000;
+/// Frequency of the bus of the real hardware, without overclocking: C16M,
+/// which the CPU runs at
+const BUS_FREQUENCY: Ticks = 15_667_200;
 
 /// Frequency of the master clock (C16M) the VIA clock is derived from
 const C16M_FREQUENCY: Ticks = 15_667_200;
@@ -933,8 +934,8 @@ where
         // The Mac II generates the VIA clock through some dividers on the logic board.
         // This same logic generates wait states when the VIAs are accessed.
         //
-        // The VIA clock is C16M / 20 (783.36 kHz). As the bus runs at a nominal
-        // 16 MHz, that is slightly less than once every 20 bus cycles.
+        // The VIA clock is C16M / 20 (783.36 kHz), once every 20 bus cycles
+        // when not overclocking.
         self.via_clock += ticks * C16M_FREQUENCY;
         while self.via_clock >= 20 * self.bus_frequency() {
             self.via_clock -= 20 * self.bus_frequency();
