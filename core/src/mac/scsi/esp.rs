@@ -599,15 +599,20 @@ impl BusMember<Address> for Esp {
             0x3 => self.cmd,
             0x4 => self.stat,
             0x5 => {
-                // Reading the interrupt register clears it, the interrupt and
-                // every status bit except the phase and TC.
+                // Reading the interrupt register while the interrupt is
+                // asserted clears it, the status bits but TC and the phase,
+                // and the sequence step (data sheet p.16, p.32)
                 let val = self.intr;
-                self.intr = 0;
-                self.stat &= STAT_TC | STAT_PHASE;
+                if self.get_irq() {
+                    self.intr = 0;
+                    self.stat &= STAT_TC | STAT_PHASE;
+                    self.seq = SEQ_0;
+                }
                 val
             }
             0x6 => self.seq,
-            0x7 => self.fifo.len() as u8,
+            // FIFO flags, with a copy of the sequence step on top (p.23)
+            0x7 => self.fifo.len() as u8 | (self.seq << 5),
             0x8 => self.cfg1,
             0xB => self.cfg2,
             0xC => self.cfg3,
