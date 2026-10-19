@@ -22,7 +22,7 @@ pub const FC_SUPERVISOR_PROGRAM: u8 = 6;
 pub const FC_MASK: u8 = 0b1111;
 
 /// Low `bytes` bytes of `val`
-const fn low_bytes(val: Long, bytes: u32) -> Long {
+pub(in crate::cpu_m68k) const fn low_bytes(val: Long, bytes: u32) -> Long {
     if bytes >= 4 {
         val
     } else {
@@ -164,9 +164,9 @@ where
     }
 
     /// Runs a CPU access for the `size` bytes left of an operand, from
-    /// logical address `laddr`: translates it and runs its bus cycle. Adds
-    /// the duration of the cycle to `ticks` and returns the read data and
-    /// the number of bytes transferred.
+    /// logical address `laddr`, up to the end of the long word at most:
+    /// translates it and runs its bus cycles. Adds their duration to `ticks`
+    /// and returns the read data and the number of bytes transferred.
     #[inline(always)]
     fn cpu_access<const PHYSICAL: bool>(
         &mut self,
@@ -211,6 +211,8 @@ where
         };
 
         if CPU_TYPE < M68020 {
+            // The 68000 moves a long operand as two word accesses, with the
+            // address error check after the first one
             let addr = if CPU_TYPE == M68000 && len > 1 {
                 o_addr & !1
             } else {
@@ -244,6 +246,11 @@ where
         let mut done = 0;
         let mut result: u64 = 0;
         while done < len {
+            // An access goes at most to the end of a long word: the rest
+            // of the operand may be on another page, it is translated on
+            // its own. We pass cpu_access() the full size left in the
+            // operand, not just up to the next long word boundary, as the
+            // 68020 and 68030 show it on SIZ.
             let laddr = fault.o_addr.wrapping_add(done) & ADDRESS_MASK;
             let (data, n) =
                 self.cpu_access::<PHYSICAL>(fault, laddr, len - done, None, &mut ticks)?;
@@ -288,6 +295,10 @@ where
         };
 
         if CPU_TYPE < M68020 {
+            // The 68000 moves a long operand as two word accesses. Their
+            // order and the address error check after the first one belong
+            // to the instruction, not to the bus: a long written to -(An)
+            // has its low word written first (TORDER_HIGHLOW).
             let addr = if CPU_TYPE == M68000 && len > 1 {
                 o_addr & !1
             } else {
@@ -338,6 +349,7 @@ where
         let mut ticks = 0;
         let mut done = 0;
         while done < len {
+            // A long word at a time, as for reads
             let laddr = fault.o_addr.wrapping_add(done) & ADDRESS_MASK;
             let data = low_bytes(value, len - done);
             match self.cpu_access::<PHYSICAL>(fault, laddr, len - done, Some(data), &mut ticks) {
