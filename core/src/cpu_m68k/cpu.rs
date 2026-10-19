@@ -1,4 +1,5 @@
 use crate::cpu_m68k::FpuM68kType;
+use crate::cpu_m68k::bus::AccessKind;
 use std::collections::VecDeque;
 
 use anyhow::{Result, anyhow, bail};
@@ -4566,7 +4567,7 @@ where
                 };
                 T::chop(regs >> (32 - 8 * std::mem::size_of::<T>()))
             } else {
-                self.read_ticks_generic::<T, false>(self.regs.sfc as u8, ea)?
+                self.read_ticks_generic::<T>(AccessKind::Data, self.regs.sfc as u8, ea)?
             };
 
             if is_addr_reg {
@@ -4588,7 +4589,8 @@ where
             };
 
             if !self.is_fpu_cir_access::<T>(self.regs.dfc as u8, ea, false)? {
-                self.write_ticks_order_generic::<T, TORDER_LOWHIGH, false>(
+                self.write_ticks_order_generic::<T, TORDER_LOWHIGH>(
+                    AccessKind::Data,
                     self.regs.dfc as u8,
                     ea,
                     value,
