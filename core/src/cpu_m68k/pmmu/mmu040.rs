@@ -7,7 +7,9 @@
 
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::cpu::{CpuError, CpuM68k, PagefaultCause};
-use crate::cpu_m68k::pmmu::translate::{PMMU_ATC_SRP, PMMU_ATC_URP, PmmuAtcEntry};
+use crate::cpu_m68k::pmmu::translate::{
+    CacheMode, PMMU_ATC_SRP, PMMU_ATC_URP, PmmuAtcEntry, Translation,
+};
 use crate::cpu_m68k::{CpuM68kType, FpuM68kType, M68040};
 use crate::types::Long;
 
@@ -34,6 +36,20 @@ const MMUSR_R: Long = 1 << 0;
 const TT_ENABLE: Long = 1 << 15;
 const TT_WP: Long = 1 << 2;
 
+/// Cache mode (CM) field of page descriptors and TT registers
+const CM_MASK: Long = 0b11 << 5;
+const CM_WRITETHROUGH: Long = 0b00 << 5;
+const CM_COPYBACK: Long = 0b01 << 5;
+
+/// Cache mode of a page descriptor or TT register
+const fn cache_mode(desc: Long) -> CacheMode {
+    match desc & CM_MASK {
+        CM_WRITETHROUGH => CacheMode::WriteThrough,
+        CM_COPYBACK => CacheMode::CopyBack,
+        _ => CacheMode::Inhibited,
+    }
+}
+
 impl<
     TBus,
     const ADDRESS_MASK: Address,
@@ -59,11 +75,12 @@ where
         self.regs.mmu040.tc & TC_ENABLE != 0
     }
 
-    /// Returns true if any enabled TT register transparently maps this access.
-    /// TT regions bypass the page tables and the ATC entirely.
+    /// Returns the write protection and cache mode of the first enabled TT
+    /// register that transparently maps this access, if any. TT regions
+    /// bypass the page tables and the ATC entirely.
     ///
     /// Returns None if transparent translation is disabled.
-    fn mmu040_tt_match(&self, fc: u8, vaddr: Address) -> Option<bool> {
+    fn mmu040_tt_match(&self, fc: u8, vaddr: Address) -> Option<(bool, CacheMode)> {
         // FC: 1/5 = data, 2/6 = program
         let tts = if fc & 1 != 0 {
             &self.regs.mmu040.dtt
@@ -90,7 +107,7 @@ where
                 continue;
             }
 
-            return Some(tt & TT_WP != 0);
+            return Some((tt & TT_WP != 0, cache_mode(tt)));
         }
 
         None
@@ -113,7 +130,7 @@ where
         &mut self,
         fc: u8,
         vaddr: Address,
-    ) -> Result<(Address, bool, bool, Address, bool)> {
+    ) -> Result<(Address, bool, bool, Address, bool, CacheMode)> {
         // TODO change return tuple to struct
         debug_assert_eq!(CPU_TYPE, M68040);
 
@@ -170,13 +187,14 @@ where
             leaf_desc & DESC_S != 0,
             leaf_addr,
             leaf_desc & DESC_M != 0,
+            cache_mode(leaf_desc),
         ))
     }
 
     pub(in crate::cpu_m68k) fn mmu040_ptest(&mut self, fc: u8, vaddr: Address) -> Result<()> {
         // A transparent translation hit reports the logical address as the
         // physical one and no attributes beyond T/R and write protection.
-        if let Some(wp) = self.mmu040_tt_match(fc, vaddr) {
+        if let Some((wp, _)) = self.mmu040_tt_match(fc, vaddr) {
             self.regs.mmu040.mmusr =
                 (vaddr & !0xFFF) | MMUSR_T | MMUSR_R | if wp { MMUSR_W } else { 0 };
             return Ok(());
@@ -189,7 +207,7 @@ where
 
         // PTEST skips the ATC and always walks the tables
         match self.mmu040_translate_lookup(fc, vaddr) {
-            Ok((paddr, wp, s, leaf_addr, _)) => {
+            Ok((paddr, wp, s, leaf_addr, _, _)) => {
                 let desc = self.read_ticks_physical::<Long>(leaf_addr)?;
 
                 // Bits 10-4 of the leaf descriptor (G, U1/U0, S, CM, M) sit in
@@ -220,20 +238,28 @@ where
         fc: u8,
         vaddr: Address,
         writing: bool,
-    ) -> Result<Address> {
+    ) -> Result<Translation> {
         debug_assert_eq!(CPU_TYPE, M68040);
 
         // Transparent translation is in effect even when paging is disabled
-        if let Some(wp) = self.mmu040_tt_match(fc, vaddr) {
+        if let Some((wp, cache)) = self.mmu040_tt_match(fc, vaddr) {
             if writing && wp {
                 self.pmmu_record_pagefault(vaddr, writing);
                 return Err(Self::pmmu_pagefault_to_buserror(fc, vaddr, writing));
             }
-            return Ok(vaddr);
+            return Ok(Translation {
+                paddr: vaddr,
+                cache,
+            });
         }
 
+        // Without translation accesses are cachable, write-through
+        // (MC68040UM 4.3)
         if !self.mmu040_enabled() {
-            return Ok(vaddr);
+            return Ok(Translation {
+                paddr: vaddr,
+                cache: CacheMode::WriteThrough,
+            });
         }
 
         let supervisor = fc & (1 << 2) != 0;
@@ -260,10 +286,13 @@ where
                     ..entry
                 });
             }
-            return Ok(entry.paddr | (vaddr & page_mask));
+            return Ok(Translation {
+                paddr: entry.paddr | (vaddr & page_mask),
+                cache: entry.cache,
+            });
         }
 
-        let (paddr, wp, s, leaf_desc_addr, modified) = self
+        let (paddr, wp, s, leaf_desc_addr, modified, cache) = self
             .mmu040_translate_lookup(fc, vaddr)
             .map_err(|e| match e.downcast_ref() {
                 Some(CpuError::Pagefault(_)) => {
@@ -292,9 +321,10 @@ where
             s,
             leaf_desc_addr,
             modified,
+            cache,
             generation: self.pmmu_atc_generation,
         });
 
-        Ok(paddr)
+        Ok(Translation { paddr, cache })
     }
 }
