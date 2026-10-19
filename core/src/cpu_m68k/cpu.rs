@@ -732,22 +732,23 @@ where
     fn prefetch_pump_force(&mut self) -> Result<()> {
         let fetch_addr = self.regs.pc.wrapping_add(4) & ADDRESS_MASK;
 
-        let new_item = if CPU_TYPE >= M68020 && self.regs.cacr.e() {
-            if fetch_addr & 1 != 0 {
-                // Unaligned access through I-cache raises exception
-                bail!(CpuError::AddressError(Group0Details {
-                    function_code: self.fc_program(),
-                    ir: 0,
-                    size: std::mem::size_of::<Word>(),
-                    atc_fault: false,
-                    instruction: true,
-                    read: true,
-                    address: fetch_addr,
-                    // Filled in later
-                    start_pc: 0,
-                }));
-            }
+        // The 68020 and up raise an address error on a prefetch at an odd
+        // address (MC68020UM 5.1.2)
+        if CPU_TYPE >= M68020 && fetch_addr & 1 != 0 {
+            bail!(CpuError::AddressError(Group0Details {
+                function_code: self.fc_program(),
+                ir: 0,
+                size: std::mem::size_of::<Word>(),
+                atc_fault: false,
+                instruction: true,
+                read: true,
+                address: fetch_addr,
+                // Filled in later
+                start_pc: 0,
+            }));
+        }
 
+        let new_item = if CPU_TYPE >= M68020 && self.regs.cacr.e() {
             // We keep the tag full size so we can invalidate easily.
             // Supervisor is used to have FC2 in the tag so invalidation across
             // supervisor<-> user context switches occurs properly.
