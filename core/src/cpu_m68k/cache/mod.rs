@@ -7,8 +7,10 @@
 //! transfers go through it the same way.
 
 mod m68020;
+mod m68030;
 
 pub use m68020::Caches020;
+pub use m68030::Caches030;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
