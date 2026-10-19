@@ -82,6 +82,26 @@ where
         size: u32,
         wdata: Option<Long>,
     ) -> Result<(Long, u32)> {
+        let (data, width) = self.run(fault, paddr, size, wdata)?;
+        let len = if CPU_TYPE >= M68020 {
+            (width - paddr % width).min(size)
+        } else {
+            size
+        };
+        Ok((data, len))
+    }
+
+    /// Runs one bus cycle for the `size` bytes left of the operand of
+    /// `fault`, at physical address `paddr`, and adds its duration to the
+    /// access. Returns the read data and the width of the port.
+    #[inline(always)]
+    fn run(
+        &mut self,
+        fault: &FaultInfo,
+        paddr: Address,
+        size: u32,
+        wdata: Option<Long>,
+    ) -> Result<(Long, u32)> {
         // The bus has to be built for the data bus of this CPU
         const {
             assert!(<TBus::Cpu as CpuBus>::WIDTH == if CPU_TYPE >= M68020 { 4 } else { 2 });
@@ -119,12 +139,6 @@ where
             self.history.waitstates = true;
         }
         *self.ticks += <TBus::Cpu as CpuBus>::CYCLE + waits;
-
-        let len = if CPU_TYPE >= M68020 {
-            (width - paddr % width).min(size)
-        } else {
-            size
-        };
-        Ok((data, len))
+        Ok((data, width))
     }
 }
