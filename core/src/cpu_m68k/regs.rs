@@ -120,6 +120,20 @@ bitfield! {
         pub ce: bool @ 2,
         /// Clear cache
         pub c: bool @ 3,
+        /// Instruction burst enable (68030)
+        pub ibe: bool @ 4,
+        /// Enable data cache (68030)
+        pub ed: bool @ 8,
+        /// Freeze data cache (68030)
+        pub fd: bool @ 9,
+        /// Clear entry in data cache (68030)
+        pub ced: bool @ 10,
+        /// Clear data cache (68030)
+        pub cd: bool @ 11,
+        /// Data burst enable (68030)
+        pub dbe: bool @ 12,
+        /// Write allocate (68030)
+        pub wa: bool @ 13,
     }
 }
 

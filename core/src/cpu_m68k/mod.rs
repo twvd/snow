@@ -79,7 +79,7 @@ pub mod regs;
 pub mod tests;
 mod timing040;
 
-use cache::{Caches020, NoCaches};
+use cache::{Caches020, Caches030, NoCaches};
 
 use num_traits::ToBytes;
 
@@ -114,11 +114,11 @@ pub type CpuM68020Pmmu<TBus> =
 
 /// Motorola 68030
 pub type CpuM68030<TBus> =
-    cpu::CpuM68k<TBus, M68030_ADDRESS_MASK, M68030, FPU_NONE, true, Caches020>;
+    cpu::CpuM68k<TBus, M68030_ADDRESS_MASK, M68030, FPU_NONE, true, Caches030>;
 
 /// Motorola 68030 + 68882 FPU
 pub type CpuM68030Fpu<TBus> =
-    cpu::CpuM68k<TBus, M68030_ADDRESS_MASK, M68030, FPU_M68882, true, Caches020>;
+    cpu::CpuM68k<TBus, M68030_ADDRESS_MASK, M68030, FPU_M68882, true, Caches030>;
 pub const M68030_ADDRESS_MASK: Address = 0xFFFFFFFF;
 pub const M68030_SR_MASK: u16 = 0b1011011100011111;
 pub const M68030_CACR_MASK: u32 = 0b11111100011111;
