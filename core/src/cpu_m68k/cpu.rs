@@ -1,6 +1,7 @@
 use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::bus::AccessKind;
-use crate::cpu_m68k::cache::CpuCaches;
+use crate::cpu_m68k::bus_transaction::bus_transaction;
+use crate::cpu_m68k::cache::{CacheScope, CacheSelect, CpuCaches};
 use std::collections::VecDeque;
 
 use anyhow::{Result, anyhow, bail};
@@ -566,6 +567,7 @@ where
     pub fn reset(&mut self) -> Result<()> {
         self.regs = RegisterFile::new();
         self.icache_tags.fill(ICACHE_TAG_INVALID);
+        self.caches.reset();
 
         self.cycles = 0;
         self.last_bus_sync = 0;
@@ -4312,9 +4314,30 @@ where
         if instr.data & (1 << 7) != 0 {
             self.icache_tags.fill(ICACHE_TAG_INVALID);
         }
-        // TODO data cache
 
-        Ok(())
+        let caches = match (instr.data >> 6) & 0b11 {
+            0b01 => CacheSelect::Data,
+            0b10 => CacheSelect::Instruction,
+            0b11 => CacheSelect::Both,
+            _ => return Ok(()),
+        };
+        let scope = match (instr.data >> 3) & 0b11 {
+            0b01 => CacheScope::Line,
+            0b10 => CacheScope::Page(1 << self.mmu040_page_shift()),
+            0b11 => CacheScope::All,
+            _ => return Ok(()),
+        };
+        let push = instr.data & (1 << 5) != 0;
+        let paddr = self.regs.read_a::<Address>(instr.get_op2());
+        let mut ticks = 0;
+        self.caches.invalidate(
+            &mut bus_transaction!(self, &mut ticks),
+            caches,
+            scope,
+            paddr,
+            push,
+        )?;
+        self.advance_cycles(ticks)
     }
 
     /// PFLUSH/PFLUSHN/PFLUSHA/PFLUSHAN (M68040)
@@ -4383,7 +4406,7 @@ where
                     M68040 => M68040_CACR_MASK,
                     _ => unreachable!(),
                 };
-                let val = RegisterCACR(val);
+                let val = RegisterCACR(self.caches.write_cacr(val, self.regs.caar));
 
                 // I-cache operations
                 if val.c() {
