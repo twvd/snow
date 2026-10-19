@@ -1813,8 +1813,13 @@ where
                 account_040_time!(self, timing040::NOP);
                 Ok(())
             }
-            InstructionMnemonic::MOVE16_inc => self.op_move16_inc(instr),
-            InstructionMnemonic::MOVE16_abs => self.op_move16_abs(instr),
+            // Only the 68040 has MOVE16: this also keeps the line transfers
+            // out of the other CPUs at compile time
+            InstructionMnemonic::MOVE16_inc if CPU_TYPE >= M68040 => self.op_move16_inc(instr),
+            InstructionMnemonic::MOVE16_abs if CPU_TYPE >= M68040 => self.op_move16_abs(instr),
+            InstructionMnemonic::MOVE16_inc | InstructionMnemonic::MOVE16_abs => {
+                self.op_linef(instr)
+            }
             InstructionMnemonic::CINV | InstructionMnemonic::CPUSH => self.op_cxxx(instr),
             InstructionMnemonic::PFLUSH040 => self.op_pflush040(instr),
             InstructionMnemonic::PTEST040 => self.op_ptest040(instr),
@@ -4300,21 +4305,13 @@ where
     /// Transfers one 16-byte line from one physical address to another (MOVE16)
     fn move16_transfer(&mut self, src: Address, dest: Address) -> Result<()> {
         // The low four address bits are ignored: the transfer is always of an
-        // aligned 16-byte line.
-        let (src_line, dest_line) = (src & !0xF, dest & !0xF);
-
-        // The whole line is read before any of it is written
-        let mut line = [0; 4];
-        for (i, value) in line.iter_mut().enumerate() {
-            *value = self
-                .read_ticks::<Long>(src_line.wrapping_add(4 * i as Address))
-                .map_err(|e| Self::move16_fault(e, src))?;
-        }
-        for (i, &value) in line.iter().enumerate() {
-            self.write_ticks::<Long>(dest_line.wrapping_add(4 * i as Address), value)
-                .map_err(|e| Self::move16_fault(e, dest))?;
-        }
-
+        // aligned 16-byte line. The whole line is read before any of it is
+        // written.
+        let line = self
+            .line_ticks(src, None)
+            .map_err(|e| Self::move16_fault(e, src))?;
+        self.line_ticks(dest, Some(&line))
+            .map_err(|e| Self::move16_fault(e, dest))?;
         Ok(())
     }
 

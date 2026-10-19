@@ -149,11 +149,7 @@ where
                 data = (data << 8) | val.to_u32().unwrap();
             }
         }
-        Ok(BusResponse::Ack {
-            width,
-            data,
-            waits: 0,
-        })
+        Ok(BusResponse::ack(width, data, 0))
     }
 
     fn reset(&mut self, _hard: bool) -> Result<bool> {
