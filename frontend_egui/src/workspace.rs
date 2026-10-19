@@ -10,6 +10,7 @@ use crate::widgets::framebuffer::ScalingAlgorithm;
 use anyhow::{Context, Result};
 use eframe::egui;
 use serde::{Deserialize, Deserializer, Serialize};
+use snow_core::emulator::comm::Hd20Status;
 use snow_core::mac::MacModel;
 #[cfg(feature = "ethernet")]
 use snow_core::mac::scsi::ethernet::EthernetLinkType;
@@ -44,6 +45,14 @@ pub enum FramebufferMode {
     #[default]
     Centered,
     Detached,
+}
+
+/// An HD20 (Directly Connected Disk) on the external floppy port
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WorkspaceHd20 {
+    image: RelativePath,
+    #[serde(default)]
+    read_only: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -262,6 +271,9 @@ pub struct Workspace {
     /// Configured SCSI targets
     scsi_targets: [WorkspaceScsiTarget; 7],
 
+    /// HD20s (Directly Connected Disks) on the external floppy port, in daisy chain order
+    hd20: Vec<WorkspaceHd20>,
+
     /// Window positions
     windows: HashMap<String, [f32; 4]>,
 
@@ -329,6 +341,7 @@ impl Default for Workspace {
             extension_rom_path: None,
             disks: Default::default(),
             scsi_targets: Default::default(),
+            hd20: Vec::new(),
             windows: HashMap::new(),
             init_args: EmulatorInitArgs::default(),
             model: None,
@@ -392,6 +405,9 @@ impl Workspace {
         }
         if let Some(p) = result.shared_dir.as_mut() {
             p.after_deserialize(parent)?;
+        }
+        for d in &mut result.hd20 {
+            d.image.after_deserialize(parent)?;
         }
         for d in &mut result.scsi_targets {
             match d {
@@ -457,6 +473,9 @@ impl Workspace {
         if let Some(p) = self.shared_dir.as_mut() {
             p.before_serialize(parent)?;
         }
+        for d in &mut self.hd20 {
+            d.image.before_serialize(parent)?;
+        }
         // disks is deprecated
         for d in &mut self.scsi_targets {
             match d {
@@ -515,6 +534,26 @@ impl Workspace {
 
     pub fn get_pram_path(&self) -> Option<PathBuf> {
         self.pram_path.clone().map(|d| d.get_absolute())
+    }
+
+    /// HD20 images with their writable flag
+    pub fn get_hd20_images(&self) -> Vec<(PathBuf, bool)> {
+        self.hd20
+            .iter()
+            .map(|d| (d.image.get_absolute(), !d.read_only))
+            .collect()
+    }
+
+    pub fn set_hd20_images(&mut self, hd20: &[Hd20Status]) {
+        self.hd20 = hd20
+            .iter()
+            .filter_map(|d| {
+                Some(WorkspaceHd20 {
+                    image: RelativePath::from_absolute(d.image.as_ref()?),
+                    read_only: !d.writable,
+                })
+            })
+            .collect();
     }
 
     pub fn set_shared_dir(&mut self, p: Option<&Path>) {

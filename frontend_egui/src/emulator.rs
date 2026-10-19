@@ -17,8 +17,8 @@ use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
 use snow_core::cpu_m68k::regs::{Register, RegisterFile};
 use snow_core::debuggable::DebuggableProperties;
 use snow_core::emulator::comm::{
-    Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus, ScsiTargetStatus,
-    UserMessageType,
+    Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus, Hd20Status,
+    ScsiTargetStatus, UserMessageType,
 };
 use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus};
 use snow_core::emulator::{Emulator, MouseMode};
@@ -151,6 +151,10 @@ pub struct EmulatorState {
 
     /// Currently selected audio device on the host
     host_audio_device: Option<cpal::DeviceId>,
+
+    /// Disk images to attach as HD20s on the next initialization, with their
+    /// writable flag
+    pub hd20_images: Vec<(PathBuf, bool)>,
 }
 
 impl EmulatorState {
@@ -339,6 +343,13 @@ impl EmulatorState {
                         target_type: None, ..
                     } => (),
                 };
+            }
+        }
+
+        for (filename, writable) in &self.hd20_images {
+            match emulator.attach_hd20_image(filename, *writable) {
+                Ok(_) => info!("HD20: loaded image file {}", filename.to_string_lossy()),
+                Err(e) => error!("HD20: image load failed: {}", e),
             }
         }
 
@@ -722,6 +733,29 @@ impl EmulatorState {
             return None;
         }
         Some(&status.scsi)
+    }
+
+    /// Gets the HD20s on the external drive port, in daisy chain order
+    pub fn get_hd20_status(&self) -> Option<&[Hd20Status]> {
+        Some(&self.status.as_ref()?.hd20)
+    }
+
+    /// Attaches an HD20 to the end of the daisy chain
+    pub fn hd20_attach(&self, path: &Path, writable: bool) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender
+            .send(EmulatorCommand::Hd20Attach(path.to_path_buf(), writable))
+            .unwrap();
+    }
+
+    /// Detaches the HD20 at the given chain position
+    pub fn hd20_detach(&self, idx: usize) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender.send(EmulatorCommand::Hd20Detach(idx)).unwrap();
     }
 
     /// Gets a copy of SCSI targets and loaded media
