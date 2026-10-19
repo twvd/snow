@@ -207,6 +207,44 @@ where
         Ok((data, len))
     }
 
+    /// Transfers the 16-byte line holding logical address `laddr` (MOVE16):
+    /// reads it, or writes `wline`. The line counterpart of `cpu_access()`:
+    /// translates it, runs it on the bus and spends its time. Returns the
+    /// read line.
+    pub(in crate::cpu_m68k) fn line_ticks(
+        &mut self,
+        laddr: Address,
+        wline: Option<&[Long; 4]>,
+    ) -> Result<[Long; 4]> {
+        let laddr = laddr & !0xF;
+        let acc = CpuAccess {
+            kind: AccessKind::Data,
+            fault: FaultInfo {
+                fc: self.fc_data(),
+                o_addr: laddr,
+                size: 16,
+                write: wline.is_some(),
+            },
+            laddr,
+            size: 16,
+            wdata: None,
+        };
+        let paddr = self.translate(&acc)?;
+        let mut ticks = 0;
+        let line = bus_transaction!(self, &mut ticks).line_access(&acc.fault, paddr, wline)?;
+        self.advance_cycles(ticks)?;
+
+        // Data breakpoints, on the physical address of the access
+        if !self.breakpoints.is_empty() {
+            let data = wline.unwrap_or(&line);
+            for i in 0..16 {
+                let val = (data[i / 4] >> (8 * (3 - i % 4))) as u8;
+                self.data_breakpoint(acc.fault.write, paddr.wrapping_add(i as Address), val);
+            }
+        }
+        Ok(line)
+    }
+
     /// Reads a value from the bus and spends ticks.
     #[inline(always)]
     pub(in crate::cpu_m68k) fn read_ticks_generic<T: CpuSized>(
