@@ -72,7 +72,9 @@ where
 {
     #[inline(always)]
     fn fc_data(&self) -> u8 {
-        if PMMU {
+        // The 68020 and up drive their function codes whether there is an
+        // MMU or not: they also show in their bus error frames
+        if CPU_TYPE >= M68020 {
             if self.regs.sr.supervisor() {
                 FC_SUPERVISOR_DATA
             } else {
@@ -85,7 +87,7 @@ where
 
     #[inline(always)]
     pub(in crate::cpu_m68k) fn fc_program(&self) -> u8 {
-        if PMMU {
+        if CPU_TYPE >= M68020 {
             if self.regs.sr.supervisor() {
                 FC_SUPERVISOR_PROGRAM
             } else {
