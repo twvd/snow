@@ -12,7 +12,7 @@ pub mod regs;
 #[cfg(test)]
 pub mod tests;
 
-use cache::{Caches020, Caches030, NoCaches};
+use cache::{Caches020, Caches030, Caches040, NoCaches};
 
 use num_traits::ToBytes;
 
@@ -46,7 +46,7 @@ pub const M68030_CACR_MASK: u32 = 0b11111100011111;
 
 /// Motorola 68040 (integrated MMU + FPU)
 pub type CpuM68040Fpu<TBus> =
-    cpu::CpuM68k<TBus, M68040_ADDRESS_MASK, M68040, FPU_M68040, true, NoCaches>;
+    cpu::CpuM68k<TBus, M68040_ADDRESS_MASK, M68040, FPU_M68040, true, Caches040>;
 pub const M68040_ADDRESS_MASK: Address = 0xFFFFFFFF;
 pub const M68040_SR_MASK: u16 = 0b1011011100011111;
 pub const M68040_CACR_MASK: u32 = 0x80008000;
