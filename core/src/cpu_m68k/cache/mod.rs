@@ -8,9 +8,11 @@
 
 mod m68020;
 mod m68030;
+mod m68040;
 
 pub use m68020::Caches020;
 pub use m68030::Caches030;
+pub use m68040::Caches040;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};

@@ -134,6 +134,10 @@ bitfield! {
         pub dbe: bool @ 12,
         /// Write allocate (68030)
         pub wa: bool @ 13,
+        /// Enable instruction cache (68040)
+        pub ie: bool @ 15,
+        /// Enable data cache (68040)
+        pub de: bool @ 31,
     }
 }
 
