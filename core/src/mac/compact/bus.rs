@@ -787,11 +787,7 @@ where
             self.openbus[(acc.addr & 1) as usize] = val as Byte;
         }
 
-        Ok(BusResponse::Ack {
-            width: 2,
-            data,
-            waits,
-        })
+        Ok(BusResponse::ack(2, data, waits))
     }
 
     fn reset(&mut self, hard: bool) -> Result<bool> {
