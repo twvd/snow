@@ -358,7 +358,7 @@ where
             }
 
             let mut psr = RegisterPSR::default();
-            if self.pmmu_tt_match(fc, vaddr, writing) {
+            if self.pmmu_tt_match(fc, vaddr, writing).is_some() {
                 // M68030UM Table 9-3: T set; the remaining bits are
                 // undefined.
                 psr.set_transparent(true);
