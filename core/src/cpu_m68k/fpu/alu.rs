@@ -1,3 +1,4 @@
+use crate::cpu_m68k::cache::CpuCaches;
 use crate::cpu_m68k::{FPU_M68040, FpuM68kType};
 use anyhow::{Result, bail};
 use arpfloat::{Float, RoundingMode, Semantics};
@@ -18,9 +19,11 @@ impl<
     const CPU_TYPE: CpuM68kType,
     const FPU_TYPE: FpuM68kType,
     const PMMU: bool,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TCaches,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
+    TCaches: CpuCaches,
 {
     fn fpu_rounding_mode(&self) -> RoundingMode {
         // 3.5.2 Rounding modes
