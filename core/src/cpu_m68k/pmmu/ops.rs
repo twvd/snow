@@ -1,5 +1,6 @@
 //! M68851 PMMU - Opcode implementations
 
+use crate::cpu_m68k::cache::CpuCaches;
 use crate::cpu_m68k::{FpuM68kType, M68030};
 use anyhow::{Result, bail};
 
@@ -20,9 +21,11 @@ impl<
     const CPU_TYPE: CpuM68kType,
     const FPU_TYPE: FpuM68kType,
     const PMMU: bool,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TCaches,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
+    TCaches: CpuCaches,
 {
     // The idle cycles of the MMU instructions are given for the 68851 as the
     // 68020 times (m68020) and for the 68030 (m68030). Those of the 68851 are

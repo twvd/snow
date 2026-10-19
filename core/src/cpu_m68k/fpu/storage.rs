@@ -1,4 +1,5 @@
 use crate::cpu_m68k::FpuM68kType;
+use crate::cpu_m68k::cache::CpuCaches;
 use anyhow::Result;
 use arpfloat::{BigInt, Float};
 use arrayvec::ArrayVec;
@@ -261,9 +262,11 @@ impl<
     const CPU_TYPE: CpuM68kType,
     const FPU_TYPE: FpuM68kType,
     const PMMU: bool,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TCaches,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
+    TCaches: CpuCaches,
 {
     /// Read FPU extended precision value from memory
     pub(in crate::cpu_m68k) fn read_fpu_extended(&mut self, addr: Address) -> Result<Float> {

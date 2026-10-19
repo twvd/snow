@@ -3,6 +3,7 @@
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::bus_transaction::{FaultInfo, bus_transaction};
+use crate::cpu_m68k::cache::CpuCaches;
 use crate::cpu_m68k::cpu::{
     Breakpoint, BusBreakpoint, CpuError, CpuM68k, Group0Details, WriteBack040,
 };
@@ -63,9 +64,11 @@ impl<
     const CPU_TYPE: CpuM68kType,
     const FPU_TYPE: FpuM68kType,
     const PMMU: bool,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TCaches,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
+    TCaches: CpuCaches,
 {
     #[inline(always)]
     fn fc_data(&self) -> u8 {
