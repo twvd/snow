@@ -1,7 +1,7 @@
 use crate::cpu_m68k::FpuM68kType;
 use std::collections::VecDeque;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use arrayvec::ArrayVec;
 use either::Either;
 use log::*;
@@ -1263,6 +1263,8 @@ where
                             ssp.wrapping_add(0x0C),
                             *Ssw040::default()
                                 .with_tm(details.function_code)
+                                // Only MOVE16 has 16-byte operands
+                                .with_tt(u8::from(details.size == 16))
                                 .with_rw(details.read)
                                 .with_atc(details.atc_fault)
                                 .with_ma(wb.is_some_and(|wb| wb.ma))
@@ -3613,18 +3615,34 @@ where
     fn move16_transfer(&mut self, src: Address, dest: Address) -> Result<()> {
         // The low four address bits are ignored: the transfer is always of an
         // aligned 16-byte line.
-        let (src, dest) = (src & !0xF, dest & !0xF);
+        let (src_line, dest_line) = (src & !0xF, dest & !0xF);
 
         // The whole line is read before any of it is written
         let mut line = [0; 4];
         for (i, value) in line.iter_mut().enumerate() {
-            *value = self.read_ticks::<Long>(src.wrapping_add(4 * i as Address))?;
+            *value = self
+                .read_ticks::<Long>(src_line.wrapping_add(4 * i as Address))
+                .map_err(|e| Self::move16_fault(e, src))?;
         }
         for (i, &value) in line.iter().enumerate() {
-            self.write_ticks::<Long>(dest.wrapping_add(4 * i as Address), value)?;
+            self.write_ticks::<Long>(dest_line.wrapping_add(4 * i as Address), value)
+                .map_err(|e| Self::move16_fault(e, dest))?;
         }
 
         Ok(())
+    }
+
+    /// A MOVE16 access faults as a whole line, at the address the
+    /// instruction gave (M68040UM 8.4.6.4)
+    fn move16_fault(e: anyhow::Error, addr: Address) -> anyhow::Error {
+        match e.downcast_ref() {
+            Some(CpuError::BusError(details)) => anyhow!(CpuError::BusError(Group0Details {
+                size: 16,
+                address: addr,
+                ..*details
+            })),
+            _ => e,
+        }
     }
 
     /// MOVE16 (Ax)+,(Ay)+
