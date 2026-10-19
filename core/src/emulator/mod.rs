@@ -54,7 +54,7 @@ use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::swim::Swim;
 use comm::{
     Breakpoint, EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver,
-    EmulatorStatus, FddStatus, InputRecording, ScsiTargetStatus,
+    EmulatorStatus, FddStatus, Hd20Status, InputRecording, ScsiTargetStatus,
 };
 
 /// Mouse emulation mode
@@ -731,6 +731,17 @@ impl Emulator {
                                 .and_then(|d| d.eth_capture_status()),
                         })
                 }),
+                hd20: self
+                    .config
+                    .swim()
+                    .dcds
+                    .iter()
+                    .map(|d| Hd20Status {
+                        image: d.image_path().map(|p| p.to_path_buf()),
+                        capacity: d.blocks() * crate::mac::swim::dcd::DCD_BLOCKSIZE,
+                        writable: d.writable(),
+                    })
+                    .collect(),
                 speed: self.config.speed(),
                 effective_speed: self.config.effective_speed(),
             })))?;
@@ -822,6 +833,14 @@ impl Emulator {
 
     pub fn load_hdd_image(&mut self, filename: &Path, scsi_id: usize) -> Result<()> {
         self.config.scsi_mut().attach_hdd_at(filename, scsi_id)
+    }
+
+    /// Attaches an HD20 (Directly Connected Disk) with the given image to the end of the
+    /// daisy chain on the external floppy port. Images with an Apple partition map present
+    /// their first Apple_HFS partition. Returns the position in the chain.
+    pub fn attach_hd20_image(&mut self, filename: &Path, writable: bool) -> Result<usize> {
+        let dcd = crate::mac::swim::dcd::DcdDevice::open(filename, writable)?;
+        self.config.swim_mut().attach_dcd(dcd)
     }
 
     pub fn attach_disk_image_at(
@@ -1168,6 +1187,25 @@ impl Tickable for Emulator {
                     EmulatorCommand::DetachScsiTarget(id) => {
                         self.config.scsi_mut().detach_target(id);
                         info!("SCSI ID #{}: target detached", id);
+                        self.status_update()?;
+                    }
+                    EmulatorCommand::Hd20Attach(filename, writable) => {
+                        match self.attach_hd20_image(&filename, writable) {
+                            Ok(idx) => info!(
+                                "HD20 #{}: image '{}' attached{}",
+                                idx + 1,
+                                filename.display(),
+                                if writable { "" } else { " read-only" }
+                            ),
+                            Err(e) => self.user_error(&format!("HD20: {:#}", e)),
+                        }
+                        self.status_update()?;
+                    }
+                    EmulatorCommand::Hd20Detach(idx) => {
+                        match self.config.swim_mut().detach_dcd(idx) {
+                            Ok(_) => info!("HD20 #{}: detached", idx + 1),
+                            Err(e) => self.user_error(&format!("HD20: {:#}", e)),
+                        }
                         self.status_update()?;
                     }
                     EmulatorCommand::SaveFloppy(drive, filename) => {
