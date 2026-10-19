@@ -138,7 +138,9 @@ where
 
     /// `access()` on the 68040: a 32-bit bus without dynamic bus sizing,
     /// narrower devices are adapted by the board (on the Quadras, the I/O
-    /// bus adapter)
+    /// bus adapter). A misaligned access runs as aligned byte, word and long
+    /// word transfers, each showing its own size on SIZ (MC68040UM 7.2,
+    /// 7.3).
     #[inline(always)]
     fn access_68040(
         &mut self,
@@ -147,9 +149,26 @@ where
         size: u32,
         wdata: Option<Long>,
     ) -> Result<(Long, u32)> {
-        let (data, width) = self.run(fault, paddr, size, wdata)?;
-        debug_assert_eq!(width, 4, "68040 bus answered a {width}-byte port");
-        Ok((data, size.min(4 - paddr % 4)))
+        let len = size.min(4 - paddr % 4);
+        let mut data: u64 = 0;
+        let mut done = 0;
+        while done < len {
+            let addr = paddr.wrapping_add(done);
+            let n = if addr % 4 == 0 && len - done == 4 {
+                4
+            } else if addr % 2 == 0 && len - done >= 2 {
+                2
+            } else {
+                1
+            };
+            let left = size - done;
+            let wdata = wdata.map(|w| low_bytes(w >> (8 * (left - n)), n));
+            let (d, width) = self.run(fault, addr, n, wdata)?;
+            debug_assert_eq!(width, 4, "68040 bus answered a {width}-byte port");
+            data = (data << (8 * n)) | u64::from(d);
+            done += n;
+        }
+        Ok((data as Long, len))
     }
 
     /// Runs one bus cycle for the `size` bytes left of the operand of
