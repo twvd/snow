@@ -732,6 +732,28 @@ where
     }
 }
 
+impl<TRenderer> Quadra700Bus<TRenderer>
+where
+    TRenderer: Renderer,
+{
+    /// Wait states of the memories on the system bus (RAM and ROM behind the
+    /// MCU, VRAM behind the DAFB): for a single cycle or the first long word
+    /// of a burst, and for each further long word of a burst. None for the
+    /// other targets, which don't take bursts.
+    ///
+    /// No timing data is known: these are estimates from the parts (80 ns
+    /// fast page mode DRAM, 150 ns ROM without page mode) against the 40 ns
+    /// BCLK, averaged over page hits and misses.
+    fn memory_waits(region: Region, addr: Address) -> Option<(Ticks, Ticks)> {
+        match region {
+            Region::Ram => Some((2, 1)),
+            Region::Rom => Some((3, 3)),
+            Region::Video if (addr & 0xFF_FFFF) < 0x20_0000 => Some((2, 1)),
+            _ => None,
+        }
+    }
+}
+
 impl<TRenderer> Bus<Address, Byte> for Quadra700Bus<TRenderer>
 where
     TRenderer: Renderer,
@@ -749,21 +771,35 @@ where
             self.overlay = false;
         }
 
-        let resp = match MAP[usize::from(self.overlay)][block] {
-            Region::Ram => bus_access_long(acc, 0, self, Self::ram_read, Self::ram_write),
-            Region::Rom => bus_access_long(acc, 0, self, Self::rom_read, Self::ignore_write),
+        let region = MAP[usize::from(self.overlay)][block];
+        let memory = Self::memory_waits(region, acc.addr);
+        let waits = match memory {
+            Some((_, next)) if acc.burst && acc.addr & 0xF != 0 => next,
+            Some((first, _)) => first,
+            None => 0,
+        };
+
+        let mut resp = match region {
+            Region::Ram => bus_access_long(acc, waits, self, Self::ram_read, Self::ram_write),
+            Region::Rom => bus_access_long(acc, waits, self, Self::rom_read, Self::ignore_write),
             Region::Io => self.io_cycle(acc),
             Region::ExtRom => bus_access_long(acc, 0, self, Self::ext_rom_read, Self::no_write),
             Region::SuperSlot => {
                 bus_access_long(acc, 0, self, Self::superslot_read, Self::superslot_write)
             }
-            Region::Video => bus_access_long(acc, 0, self, Self::video_read, Self::video_write),
+            Region::Video => bus_access_long(acc, waits, self, Self::video_read, Self::video_write),
             Region::None => BusResponse::BusError,
         };
 
         if resp == BusResponse::BusError {
             let rw = if acc.write { "write" } else { "read" };
             warn!("Bus error ({}) at unmapped address: {:08X}", rw, acc.addr);
+        }
+        if acc.burst
+            && memory.is_some()
+            && let BusResponse::Ack { burst_reject, .. } = &mut resp
+        {
+            *burst_reject = false;
         }
         Ok(resp)
     }
