@@ -5,6 +5,7 @@ use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::M68040;
+use crate::cpu_m68k::cache::CpuCaches;
 use crate::cpu_m68k::cpu::{CpuError, CpuM68k, Group0Details, HistoryEntry};
 
 use anyhow::{Result, anyhow};
@@ -136,9 +137,11 @@ impl<
     const CPU_TYPE: CpuM68kType,
     const FPU_TYPE: FpuM68kType,
     const PMMU: bool,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TCaches,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
+    TCaches: CpuCaches,
 {
     /// Enlarges ATC size if needed by configuration
     pub(in crate::cpu_m68k) fn pmmu_cache_ensure(&mut self) {

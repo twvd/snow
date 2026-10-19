@@ -6,6 +6,7 @@
 //! Sorry if this is messy/hard to follow
 
 use crate::bus::{Address, Bus, IrqSource};
+use crate::cpu_m68k::cache::CpuCaches;
 use crate::cpu_m68k::cpu::{CpuError, CpuM68k, PagefaultCause};
 use crate::cpu_m68k::pmmu::translate::{
     CacheMode, PMMU_ATC_SRP, PMMU_ATC_URP, PmmuAtcEntry, Translation,
@@ -56,9 +57,11 @@ impl<
     const CPU_TYPE: CpuM68kType,
     const FPU_TYPE: FpuM68kType,
     const PMMU: bool,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TCaches,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
+    TCaches: CpuCaches,
 {
     /// Amount of address bits within a page (12 = 4KB, 13 = 8KB)
     #[inline(always)]

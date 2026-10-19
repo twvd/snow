@@ -1,5 +1,6 @@
 use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::bus::AccessKind;
+use crate::cpu_m68k::cache::CpuCaches;
 use std::collections::VecDeque;
 
 use anyhow::{Result, anyhow, bail};
@@ -345,8 +346,10 @@ pub struct CpuM68k<
     const CPU_TYPE: CpuM68kType,
     const FPU_TYPE: FpuM68kType,
     const PMMU: bool,
+    TCaches,
 > where
     TBus: Bus<Address, u8> + IrqSource,
+    TCaches: CpuCaches,
 {
     /// Exception occured this step
     pub step_exception: bool,
@@ -470,6 +473,10 @@ pub struct CpuM68k<
     #[serde(with = "BigArray")]
     icache_tags: [u32; ICACHE_LINES],
 
+    /// On-chip caches
+    #[serde(default)]
+    pub(in crate::cpu_m68k) caches: TCaches,
+
     /// Register state at the beginning of an instruction to allow
     /// restarting an instruction that caused a mid-instruction
     /// bus fault.
@@ -494,9 +501,11 @@ impl<
     const CPU_TYPE: CpuM68kType,
     const FPU_TYPE: FpuM68kType,
     const PMMU: bool,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TCaches,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
+    TCaches: CpuCaches,
 {
     /// Instruction history size
     pub const HISTORY_SIZE: usize = 10000;
@@ -536,6 +545,7 @@ where
             pmmu_atc_generation: atc_generation_default(),
             icache_lines: core::array::from_fn(|_| Default::default()),
             icache_tags: [ICACHE_TAG_INVALID; ICACHE_LINES],
+            caches: TCaches::default(),
             restart_regs: None,
             wb040_defer: false,
             wb040: None,
@@ -5697,9 +5707,11 @@ impl<
     const CPU_TYPE: CpuM68kType,
     const FPU_TYPE: FpuM68kType,
     const PMMU: bool,
-> Tickable for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TCaches,
+> Tickable for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
+    TCaches: CpuCaches,
 {
     fn tick(&mut self, _ticks: Ticks, _: ()) -> Result<Ticks> {
         self.step()?;

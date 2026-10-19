@@ -11,6 +11,7 @@
 use anyhow::Result;
 
 use crate::bus::{Address, Bus, IrqSource};
+use crate::cpu_m68k::cache::CpuCaches;
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::cpu_m68k::instruction::{
     AddressingMode, BfxExtWord, ExtWord, Instruction, InstructionMnemonic, MemoryIndirectAction,
@@ -1430,9 +1431,11 @@ impl<
     const CPU_TYPE: CpuM68kType,
     const FPU_TYPE: FpuM68kType,
     const PMMU: bool,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TCaches,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
+    TCaches: CpuCaches,
 {
     /// Row of the tables for the addressing mode `mode`, of the `nth` effective
     /// address of the instruction with a full format extension word, and one
