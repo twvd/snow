@@ -2,6 +2,7 @@
 
 use crate::bus::access::{BusAccess, BusResponse, CpuBus};
 use crate::bus::{Address, Bus, IrqSource};
+use crate::cpu_m68k::bus::low_bytes;
 use crate::cpu_m68k::cpu::{CpuError, Group0Details, HistoryEntryInstruction};
 use crate::cpu_m68k::{CpuM68kType, M68020, M68040};
 use crate::tickable::Ticks;
@@ -70,10 +71,13 @@ where
         Ok(())
     }
 
-    /// Runs the bus cycle of an access for the `size` bytes left of the
-    /// operand of `fault`, at physical address `paddr`. Adds its duration to
-    /// the access and returns the read data and the number of bytes
-    /// transferred.
+    /// Runs the bus cycles of an access for the `size` bytes left of the
+    /// operand of `fault`, at physical address `paddr`, up to the end of the
+    /// long word at most: the rest of the operand may be on another page.
+    /// `size` is the full size left in the operand, not just up to the next
+    /// long word boundary, as the 68020 and 68030 show it on SIZ. Adds the
+    /// duration of the cycles to the access and returns the read data and
+    /// the number of bytes transferred. A bus error ends the access.
     #[inline(always)]
     pub fn access(
         &mut self,
@@ -105,8 +109,10 @@ where
         Ok((data, size))
     }
 
-    /// `access()` on the 68020 and 68030: the port takes the bytes that fit
-    /// in its width (dynamic bus sizing)
+    /// `access()` on the 68020 and 68030: each cycle shows the bytes left in
+    /// the operand on SIZ, the port takes those that fit in its width at
+    /// that address, and the CPU runs further cycles for the rest (dynamic
+    /// bus sizing, MC68020UM 5.1)
     #[inline(always)]
     fn access_68020(
         &mut self,
@@ -115,8 +121,18 @@ where
         size: u32,
         wdata: Option<Long>,
     ) -> Result<(Long, u32)> {
-        let (data, width) = self.run(fault, paddr, size, wdata)?;
-        Ok((data, (width - paddr % width).min(size)))
+        let len = size.min(4 - paddr % 4);
+        let mut data: u64 = 0;
+        let mut done = 0;
+        while done < len {
+            let addr = paddr.wrapping_add(done);
+            let left = size - done;
+            let (d, width) = self.run(fault, addr, left, wdata.map(|w| low_bytes(w, left)))?;
+            let n = (width - addr % width).min(left);
+            data = (data << (8 * n)) | u64::from(d);
+            done += n;
+        }
+        Ok((data as Long, len))
     }
 
     /// `access()` on the 68040
