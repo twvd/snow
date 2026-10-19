@@ -99,6 +99,7 @@ fn table_reads(cpu: &TestCpu) -> usize {
 fn data(cpu: &mut TestCpu, logical: Address) -> Address {
     cpu.pmmu_translate(FC_SUPERVISOR_DATA, logical, false)
         .expect("translation must succeed")
+        .paddr
 }
 
 /// Runs the one instruction at CODE.
@@ -406,6 +407,7 @@ mod m68851 {
     fn data(cpu: &mut TestCpu, logical: Address) -> Address {
         cpu.pmmu_translate(FC_SUPERVISOR_DATA, logical, false)
             .expect("translation must succeed")
+            .paddr
     }
 
     fn run(cpu: &mut TestCpu, words: &[Word]) {

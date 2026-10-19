@@ -6,6 +6,7 @@ use crate::cpu_m68k::bus_transaction::{FaultInfo, bus_transaction};
 use crate::cpu_m68k::cpu::{
     Breakpoint, BusBreakpoint, CpuError, CpuM68k, Group0Details, WriteBack040,
 };
+use crate::cpu_m68k::pmmu::translate::{CacheMode, Translation};
 use crate::cpu_m68k::{CpuM68kType, CpuSized, M68000, M68020, TORDER_HIGHLOW, TORDER_LOWHIGH};
 use crate::tickable::Ticks;
 use crate::types::Long;
@@ -170,9 +171,12 @@ where
 
     /// Translates the logical address of an access
     #[inline(always)]
-    fn translate(&mut self, acc: &CpuAccess) -> Result<Address> {
+    fn translate(&mut self, acc: &CpuAccess) -> Result<Translation> {
         if acc.kind == AccessKind::Physical || !PMMU {
-            return Ok(acc.laddr);
+            return Ok(Translation {
+                paddr: acc.laddr,
+                cache: CacheMode::WriteThrough,
+            });
         }
         self.pmmu_translate(acc.fault.fc, acc.laddr, acc.fault.write)
             .map_err(|e| match e.downcast_ref() {
@@ -194,7 +198,7 @@ where
     fn cpu_access(&mut self, acc: &CpuAccess, ticks: &mut Ticks) -> Result<(Long, u32)> {
         // The bus controller finishes the last write first
         self.write_credit = 0;
-        let paddr = self.translate(acc)?;
+        let paddr = self.translate(acc)?.paddr;
         let (data, len) =
             bus_transaction!(self, ticks).access(&acc.fault, paddr, acc.size, acc.wdata)?;
 
@@ -233,7 +237,7 @@ where
             size: 16,
             wdata: None,
         };
-        let paddr = self.translate(&acc)?;
+        let paddr = self.translate(&acc)?.paddr;
         let mut ticks = 0;
         let line = bus_transaction!(self, &mut ticks).line_access(&acc.fault, paddr, wline)?;
         self.advance_cycles(ticks)?;

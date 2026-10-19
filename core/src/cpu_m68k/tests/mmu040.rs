@@ -70,13 +70,16 @@ fn translate_page() {
     let mut cpu = testcpu(0);
 
     assert_eq!(
-        cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, false).unwrap(),
+        cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, false)
+            .unwrap()
+            .paddr,
         0x0020_0000
     );
     // Offset within the page is preserved
     assert_eq!(
         cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL + 0x1ABC, false)
-            .unwrap(),
+            .unwrap()
+            .paddr,
         0x0020_1ABC
     );
     // next page is not mapped
@@ -92,7 +95,9 @@ fn translate_disabled_is_identity() {
     cpu.regs.write(Register::TC040, 0_u32);
 
     assert_eq!(
-        cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, false).unwrap(),
+        cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, false)
+            .unwrap()
+            .paddr,
         LOGICAL
     );
 }
@@ -158,7 +163,9 @@ fn indirect_descriptor() {
     write_long(&mut cpu, 0x0001_3000, 0x0030_0000 | RESIDENT);
 
     assert_eq!(
-        cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, false).unwrap(),
+        cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, false)
+            .unwrap()
+            .paddr,
         0x0030_0000
     );
 
@@ -177,7 +184,8 @@ fn transparent_translation() {
 
     assert_eq!(
         cpu.pmmu_translate(FC_SUPER_DATA, 0xF900_1234, false)
-            .unwrap(),
+            .unwrap()
+            .paddr,
         0xF900_1234
     );
     // Program access not translated (because DTT0)
@@ -235,7 +243,9 @@ fn indirect_descriptor_not_updated() {
     write_long(&mut cpu, PAGE_TABLE + 4, INDIRECT | 2);
 
     assert_eq!(
-        cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, true).unwrap(),
+        cpu.pmmu_translate(FC_SUPER_DATA, LOGICAL, true)
+            .unwrap()
+            .paddr,
         0x0020_0000
     );
     assert_eq!(

@@ -6,7 +6,9 @@ use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::cpu::{CpuError, CpuM68k, PagefaultCause};
 use crate::cpu_m68k::pmmu::regs::{PmmuPageDescriptorType, RegisterPSR, RootPointerReg};
-use crate::cpu_m68k::pmmu::translate::{PMMU_ATC_SRP, PMMU_ATC_URP, PmmuAtcEntry};
+use crate::cpu_m68k::pmmu::translate::{
+    CacheMode, PMMU_ATC_SRP, PMMU_ATC_URP, PmmuAtcEntry, Translation,
+};
 use crate::types::Long;
 
 use anyhow::{Result, anyhow, bail};
@@ -28,6 +30,17 @@ struct PmmuWalkResult {
     leaf_desc_addr: Address,
     /// Value of the M (modified) bit in the leaf descriptor.
     modified: bool,
+    /// Value of the CI (cache inhibit) bit in the leaf descriptor.
+    ci: bool,
+}
+
+/// Cache mode of a page descriptor or TT register from its CI bit
+const fn cache_mode(ci: bool) -> CacheMode {
+    if ci {
+        CacheMode::Inhibited
+    } else {
+        CacheMode::WriteThrough
+    }
 }
 
 /// How the page-table walk ended.
@@ -260,6 +273,7 @@ where
                     s,
                     leaf_desc_addr: entry_addr,
                     modified: entry.m(),
+                    ci: entry.ci(),
                 }))
             }
             PmmuPageDescriptorType::Valid4b | PmmuPageDescriptorType::Valid8b => {
@@ -337,6 +351,7 @@ where
                     s: s | entry.s(),
                     leaf_desc_addr: entry_addr,
                     modified: entry.m(),
+                    ci: entry.ci(),
                 }))
             }
             PmmuPageDescriptorType::Valid4b | PmmuPageDescriptorType::Valid8b => {
@@ -368,10 +383,16 @@ where
         }
     }
 
-    /// Returns true if any enabled TT register transparently maps this access.
-    /// TT regions bypass the page tables and the ATC entirely.
+    /// Returns the cache mode of the first enabled TT register that
+    /// transparently maps this access, if any. TT regions bypass the page
+    /// tables and the ATC entirely.
     #[inline]
-    pub(in crate::cpu_m68k) fn pmmu_tt_match(&self, fc: u8, vaddr: Address, writing: bool) -> bool {
+    pub(in crate::cpu_m68k) fn pmmu_tt_match(
+        &self,
+        fc: u8,
+        vaddr: Address,
+        writing: bool,
+    ) -> Option<CacheMode> {
         for tt in &self.regs.pmmu.tt {
             if !tt.e() {
                 continue;
@@ -390,9 +411,9 @@ where
             if ((vaddr >> 24) & addr_care) != (tt.le_base() & addr_care) {
                 continue;
             }
-            return true;
+            return Some(cache_mode(tt.ci()));
         }
-        false
+        None
     }
 
     /// The ATC slot index for a logical address under the current TC.
@@ -450,15 +471,21 @@ where
         fc: u8,
         vaddr: Address,
         writing: bool,
-    ) -> Result<Address> {
+    ) -> Result<Translation> {
         // Transparent translation runs even when TC.E=0; TT regions are
         // identity-mapped and bypass the page tables and the ATC.
-        if self.pmmu_tt_match(fc, vaddr, writing) {
-            return Ok(vaddr);
+        if let Some(cache) = self.pmmu_tt_match(fc, vaddr, writing) {
+            return Ok(Translation {
+                paddr: vaddr,
+                cache,
+            });
         }
 
         if !self.regs.pmmu.tc.enable() {
-            return Ok(vaddr);
+            return Ok(Translation {
+                paddr: vaddr,
+                cache: CacheMode::WriteThrough,
+            });
         }
 
         // This is formally tested in PMOVE when translation is enabled
@@ -510,11 +537,15 @@ where
                     ..entry
                 });
             }
-            return Ok(entry.paddr | (vaddr & page_mask));
+            return Ok(Translation {
+                paddr: entry.paddr | (vaddr & page_mask),
+                cache: entry.cache,
+            });
         }
 
-        let (paddr, wp, s, leaf_desc_addr, modified) =
+        let (paddr, wp, s, leaf_desc_addr, modified, ci) =
             self.pmmu_translate_lookup::<false>(fc, vaddr, writing, u8::MAX)?;
+        let cache = cache_mode(ci);
         let cache_key = self.pmmu_atc_key(vaddr);
         self.pmmu_atc[atc][cache_key] = Some(PmmuAtcEntry {
             paddr: paddr & !page_mask,
@@ -523,9 +554,10 @@ where
             leaf_desc_addr,
             modified,
             fc_mask: 1 << (fc & 0b111),
+            cache,
             generation: self.pmmu_atc_generation,
         });
-        Ok(paddr)
+        Ok(Translation { paddr, cache })
     }
 
     /// Set PSR for a failure during ATC lookup
@@ -552,7 +584,7 @@ where
     }
 
     /// Perform address translation by performing a page table lookup.
-    /// Returns (physical address, wp, s, leaf descriptor address, M-bit), or error:
+    /// Returns (physical address, wp, s, leaf descriptor address, M-bit, CI-bit), or error:
     ///  - bus error stack frame for translation,
     ///  - simple error on PTEST.
     pub(in crate::cpu_m68k) fn pmmu_translate_lookup<const PTEST: bool>(
@@ -561,7 +593,7 @@ where
         vaddr: Address,
         writing: bool,
         level: u8,
-    ) -> Result<(Address, bool, bool, Address, bool)> {
+    ) -> Result<(Address, bool, bool, Address, bool, bool)> {
         let rootptr = self.pmmu_rootptr(fc);
 
         // Table search: about 20 cycles on the 68851 (MC68851UM 11.2, given as the
@@ -650,7 +682,7 @@ where
                 _ => e,
             });
 
-        let (page_addr, wp, s, leaf_desc_addr, mut modified) = match walk? {
+        let (page_addr, wp, s, leaf_desc_addr, mut modified, ci) = match walk? {
             PmmuWalkEnd::Page(r) => {
                 let PmmuWalkResult {
                     page_addr,
@@ -658,8 +690,9 @@ where
                     s,
                     leaf_desc_addr,
                     modified,
+                    ci,
                 } = r;
-                (page_addr, wp, s, leaf_desc_addr, modified)
+                (page_addr, wp, s, leaf_desc_addr, modified, ci)
             }
             PmmuWalkEnd::LevelStop { wp, s } => {
                 // The level limit stopped the search on a valid table
@@ -674,7 +707,7 @@ where
                     self.regs.pmmu.psr.set_supervisor_violation(true);
                 }
                 self.regs.pmmu.psr.set_level_number(fetched);
-                return Ok((0, wp, s, 0, false));
+                return Ok((0, wp, s, 0, false, false));
             }
         };
 
@@ -743,6 +776,6 @@ where
             }
             self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
         }
-        Ok((paddr, wp, s, leaf_desc_addr, modified))
+        Ok((paddr, wp, s, leaf_desc_addr, modified, ci))
     }
 }
