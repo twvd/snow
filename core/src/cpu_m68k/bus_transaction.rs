@@ -105,7 +105,8 @@ where
         size: u32,
         wdata: Option<Long>,
     ) -> Result<(Long, u32)> {
-        let (data, _) = self.run(fault, paddr, size, wdata)?;
+        let (data, width) = self.run(fault, paddr, size, wdata)?;
+        debug_assert_eq!(width, 2, "68000 bus answered a {width}-byte port");
         Ok((data, size))
     }
 
@@ -135,7 +136,9 @@ where
         Ok((data as Long, len))
     }
 
-    /// `access()` on the 68040
+    /// `access()` on the 68040: a 32-bit bus without dynamic bus sizing,
+    /// narrower devices are adapted by the board (on the Quadras, the I/O
+    /// bus adapter)
     #[inline(always)]
     fn access_68040(
         &mut self,
@@ -145,7 +148,8 @@ where
         wdata: Option<Long>,
     ) -> Result<(Long, u32)> {
         let (data, width) = self.run(fault, paddr, size, wdata)?;
-        Ok((data, (width - paddr % width).min(size)))
+        debug_assert_eq!(width, 4, "68040 bus answered a {width}-byte port");
+        Ok((data, size.min(4 - paddr % 4)))
     }
 
     /// Runs one bus cycle for the `size` bytes left of the operand of
