@@ -6,6 +6,10 @@
 //! fills, write backs) on the bus transaction of the access. MOVE16 line
 //! transfers go through it the same way.
 
+mod m68020;
+
+pub use m68020::Caches020;
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
