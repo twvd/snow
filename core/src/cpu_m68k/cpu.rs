@@ -11,14 +11,12 @@ use log::*;
 use num_traits::{FromBytes, PrimInt, ToBytes};
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
-use serde_big_array::BigArray;
 use thiserror::Error;
 
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
 use crate::cpu_m68k::pmmu::translate::atc_generation_default;
-use crate::cpu_m68k::regs::RegisterCACR;
 use crate::cpu_m68k::{
     M68000_SR_MASK, M68020_CACR_MASK, M68030, M68030_CACR_MASK, M68040, M68040_CACR_MASK,
     M68040_SR_MASK,
@@ -279,28 +277,6 @@ fn empty_decode_cache() -> DecodeCache {
     vec![None; Word::MAX as usize + 1]
 }
 
-/// I-cache cache line size (68020/68030)
-pub const ICACHE_LINE_SIZE: usize = 4;
-
-/// I-cache amount of cache lines (68020/68030)
-pub const ICACHE_LINES: usize = 64;
-
-/// Clocks taken by an instruction word from the I-cache: in the cache case
-/// timings of the 68020 and 68030, the pipe takes two clocks per word
-pub const ICACHE_HIT_TICKS: Ticks = 2;
-
-/// I-cache tag marking a line as invalid
-///
-/// Tags are normally 30-bit, we keep 32.
-/// We store the line address as full width address, with the lower
-/// (index/offset) bits masked to 0. This is why this value works as an
-/// 'invalid' marker, as the lower 8 bits are normally always 0.
-pub const ICACHE_TAG_INVALID: u32 = 0xFFFF_FFFF;
-
-pub const ICACHE_TAG_MASK: Address = 0xFFFF_FF00;
-pub const ICACHE_INDEX_MASK: Address = 0x0000_00FC;
-pub const ICACHE_OFFSET_MASK: Address = 0x000_0003;
-
 #[derive(Clone, Eq, PartialEq)]
 // The point of this enum is to mostly store instructions without allocation
 #[allow(clippy::large_enum_variant)]
@@ -466,14 +442,6 @@ pub struct CpuM68k<
     #[serde(default = "crate::cpu_m68k::pmmu::translate::atc_generation_default")]
     pub(in crate::cpu_m68k) pmmu_atc_generation: u32,
 
-    /// 68020+ I-cache lines
-    #[serde(with = "BigArray")]
-    icache_lines: [[u8; ICACHE_LINE_SIZE]; ICACHE_LINES],
-
-    /// 68020+ I-cache tags
-    #[serde(with = "BigArray")]
-    icache_tags: [u32; ICACHE_LINES],
-
     /// On-chip caches
     #[serde(default)]
     pub(in crate::cpu_m68k) caches: TCaches,
@@ -544,8 +512,6 @@ where
             systrap_history_enabled: false,
             pmmu_atc: Default::default(),
             pmmu_atc_generation: atc_generation_default(),
-            icache_lines: core::array::from_fn(|_| Default::default()),
-            icache_tags: [ICACHE_TAG_INVALID; ICACHE_LINES],
             caches: TCaches::default(),
             restart_regs: None,
             wb040_defer: false,
@@ -566,7 +532,6 @@ where
     /// Resets the CPU, loads reset vector and initial SP
     pub fn reset(&mut self) -> Result<()> {
         self.regs = RegisterFile::new();
-        self.icache_tags.fill(ICACHE_TAG_INVALID);
         self.caches.reset();
 
         self.cycles = 0;
@@ -677,51 +642,10 @@ where
             }));
         }
 
-        let new_item = if CPU_TYPE >= M68020 && self.regs.cacr.e() {
-            // We keep the tag full size so we can invalidate easily.
-            // Supervisor is used to have FC2 in the tag so invalidation across
-            // supervisor<-> user context switches occurs properly.
-            let cache_tag = (fetch_addr & ICACHE_TAG_MASK) | u32::from(self.regs.sr.supervisor());
-            let cache_idx = ((fetch_addr & ICACHE_INDEX_MASK) >> 2) as usize;
-            let cache_offset = (fetch_addr & ICACHE_OFFSET_MASK) as usize;
-            if self.icache_tags[cache_idx] == cache_tag {
-                // Cache hit
-                self.history_current.icache_hit = true;
-                self.advance_cycles(ICACHE_HIT_TICKS)?;
-                PrefetchWord::Word(u16::from_be_bytes([
-                    self.icache_lines[cache_idx][cache_offset],
-                    self.icache_lines[cache_idx][cache_offset + 1],
-                ]))
-            } else if !self.regs.cacr.f() {
-                // Cache miss, fill cache line
-                self.history_current.icache_miss = true;
-
-                let addr = fetch_addr & !ICACHE_OFFSET_MASK;
-                match self.read_ticks_program::<Long>(addr) {
-                    Ok(v) => {
-                        self.icache_lines[cache_idx] = v.to_be_bytes();
-                        self.icache_tags[cache_idx] = cache_tag;
-                        PrefetchWord::Word(u16::from_be_bytes([
-                            self.icache_lines[cache_idx][cache_offset],
-                            self.icache_lines[cache_idx][cache_offset + 1],
-                        ]))
-                    }
-                    Err(e) => prefetch_defer_fault(e, fetch_addr)?,
-                }
-            } else {
-                // Cache miss and cache frozen, normal fetch
-                self.history_current.icache_miss = true;
-                match self.read_ticks_program::<Word>(fetch_addr) {
-                    Ok(w) => PrefetchWord::Word(w),
-                    Err(e) => prefetch_defer_fault(e, fetch_addr)?,
-                }
-            }
-        } else {
-            // Cache disabled/not available
-            match self.read_ticks_program::<Word>(fetch_addr) {
-                Ok(w) => PrefetchWord::Word(w),
-                Err(e) => prefetch_defer_fault(e, fetch_addr)?,
-            }
+        // An instruction cache, if any, is behind the fetch
+        let new_item = match self.read_ticks_program::<Word>(fetch_addr) {
+            Ok(w) => PrefetchWord::Word(w),
+            Err(e) => prefetch_defer_fault(e, fetch_addr)?,
         };
         self.prefetch.push_back(new_item);
 
@@ -4312,10 +4236,6 @@ where
         }
 
         // Cache field: 01 = data, 10 = instruction, 11 = both
-        if instr.data & (1 << 7) != 0 {
-            self.icache_tags.fill(ICACHE_TAG_INVALID);
-        }
-
         let caches = match (instr.data >> 6) & 0b11 {
             0b01 => CacheSelect::Data,
             0b10 => CacheSelect::Instruction,
@@ -4407,23 +4327,9 @@ where
                     M68040 => M68040_CACR_MASK,
                     _ => unreachable!(),
                 };
-                let val = RegisterCACR(self.caches.write_cacr(val, self.regs.caar));
-
-                // I-cache operations
-                if val.c() {
-                    // Full clear
-                    self.icache_tags.fill(ICACHE_TAG_INVALID);
-                }
-                if val.ce() {
-                    // Clear specified index
-                    let index = ((self.regs.caar & ICACHE_INDEX_MASK) >> 2) as usize;
-                    self.icache_tags[index] = ICACHE_TAG_INVALID;
-                }
-
-                // TODO 68030 D-cache
-
-                self.regs
-                    .write(destreg, val.with_c(false).with_ce(false).0 & mask);
+                // The caches run the cache operations and say what stays
+                let val = self.caches.write_cacr(val, self.regs.caar);
+                self.regs.write(destreg, val & mask);
             } else {
                 self.regs.write(destreg, val);
 
