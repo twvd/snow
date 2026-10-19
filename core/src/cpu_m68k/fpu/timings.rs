@@ -1,6 +1,7 @@
 //! Instruction timings of the floating point units
 
 use crate::bus::{Address, Bus, IrqSource};
+use crate::cpu_m68k::cache::CpuCaches;
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::cpu_m68k::fpu::instruction::opmode;
 use crate::cpu_m68k::{CpuM68kType, FPU_M68040, FPU_M68881, FPU_M68882, FpuM68kType};
@@ -276,9 +277,11 @@ impl<
     const CPU_TYPE: CpuM68kType,
     const FPU_TYPE: FpuM68kType,
     const PMMU: bool,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TCaches,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
+    TCaches: CpuCaches,
 {
     /// Instruction timings of the FPU this CPU is configured with
     #[inline(always)]

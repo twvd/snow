@@ -1,4 +1,5 @@
 use crate::cpu_m68k::FpuM68kType;
+use crate::cpu_m68k::cache::CpuCaches;
 use anyhow::{Result, bail};
 use arpfloat::Float;
 use either::Either;
@@ -25,9 +26,11 @@ impl<
     const CPU_TYPE: CpuM68kType,
     const FPU_TYPE: FpuM68kType,
     const PMMU: bool,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TCaches,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
+    TCaches: CpuCaches,
 {
     /// FNOP
     pub(in crate::cpu_m68k) fn op_fnop(&mut self, _instr: &Instruction) -> Result<()> {

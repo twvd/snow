@@ -1,6 +1,7 @@
 pub mod alu;
 pub mod bus;
 mod bus_transaction;
+mod cache;
 pub mod cpu;
 pub mod disassembler;
 pub mod ea;
@@ -11,6 +12,8 @@ pub mod regs;
 #[cfg(test)]
 pub mod tests;
 
+use cache::NoCaches;
+
 use num_traits::ToBytes;
 
 use crate::bus::Address;
@@ -18,27 +21,32 @@ use crate::types::{Long, MyUIntTraits, SignedLong};
 use crate::util::lossyinto::LossyInto;
 
 /// Motorola 68000
-pub type CpuM68000<TBus> = cpu::CpuM68k<TBus, M68000_ADDRESS_MASK, M68000, FPU_NONE, false>;
+pub type CpuM68000<TBus> =
+    cpu::CpuM68k<TBus, M68000_ADDRESS_MASK, M68000, FPU_NONE, false, NoCaches>;
 pub const M68000_ADDRESS_MASK: Address = 0x00FFFFFF;
 pub const M68000_SR_MASK: u16 = 0b1010011100011111;
 
 /// Motorola 68020 + 68881 FPU
-pub type CpuM68020Fpu<TBus> = cpu::CpuM68k<TBus, M68020_ADDRESS_MASK, M68020, FPU_M68881, false>;
+pub type CpuM68020Fpu<TBus> =
+    cpu::CpuM68k<TBus, M68020_ADDRESS_MASK, M68020, FPU_M68881, false, NoCaches>;
 pub const M68020_ADDRESS_MASK: Address = 0xFFFFFFFF;
 pub const M68020_SR_MASK: u16 = 0b1011011100011111;
 pub const M68020_CACR_MASK: u32 = 0b1111;
 
 /// Motorola 68020 + 68851 PMMU + 68881 FPU
-pub type CpuM68020Pmmu<TBus> = cpu::CpuM68k<TBus, M68020_ADDRESS_MASK, M68020, FPU_M68881, true>;
+pub type CpuM68020Pmmu<TBus> =
+    cpu::CpuM68k<TBus, M68020_ADDRESS_MASK, M68020, FPU_M68881, true, NoCaches>;
 
 /// Motorola 68030 (integrated MMU + FPU)
-pub type CpuM68030Fpu<TBus> = cpu::CpuM68k<TBus, M68030_ADDRESS_MASK, M68030, FPU_M68882, true>;
+pub type CpuM68030Fpu<TBus> =
+    cpu::CpuM68k<TBus, M68030_ADDRESS_MASK, M68030, FPU_M68882, true, NoCaches>;
 pub const M68030_ADDRESS_MASK: Address = 0xFFFFFFFF;
 pub const M68030_SR_MASK: u16 = 0b1011011100011111;
 pub const M68030_CACR_MASK: u32 = 0b11111100011111;
 
 /// Motorola 68040 (integrated MMU + FPU)
-pub type CpuM68040Fpu<TBus> = cpu::CpuM68k<TBus, M68040_ADDRESS_MASK, M68040, FPU_M68040, true>;
+pub type CpuM68040Fpu<TBus> =
+    cpu::CpuM68k<TBus, M68040_ADDRESS_MASK, M68040, FPU_M68040, true, NoCaches>;
 pub const M68040_ADDRESS_MASK: Address = 0xFFFFFFFF;
 pub const M68040_SR_MASK: u16 = 0b1011011100011111;
 pub const M68040_CACR_MASK: u32 = 0x80008000;
