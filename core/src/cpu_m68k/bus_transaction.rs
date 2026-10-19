@@ -148,6 +148,51 @@ where
         Ok((data as Long, len))
     }
 
+    /// Fills a 68030 cache line from the long word at physical address
+    /// `paddr` (long word aligned), with a burst if the port takes one
+    /// (MC68030UM 6.1.3). Returns the line, and a mask of the long words of
+    /// it that were read.
+    ///
+    /// The 68030 burst is unlike the 68040 line transfer:
+    ///
+    /// - it starts with the long word the CPU needs, not with the first one
+    ///   of the line, as a normal cycle asking for a burst (CBREQ);
+    /// - if the port acknowledges the burst (CBACK, on a synchronous 32-bit
+    ///   cycle), the three other long words of the line follow, the address
+    ///   wrapping around within the line;
+    /// - if it doesn't, that first cycle ends as a normal one and only the
+    ///   long word the CPU needs is read: the rest of the line isn't read
+    ///   with further cycles, it stays invalid in the cache.
+    ///
+    /// A port narrower than 32 bits can't burst: the long word is completed
+    /// with the usual dynamic bus sizing cycles, and that's all.
+    pub fn line_fill_68030(
+        &mut self,
+        fault: &FaultInfo,
+        paddr: Address,
+    ) -> Result<([Long; 4], u8)> {
+        let first = (paddr >> 2) as usize % 4;
+        let mut line = [0; 4];
+        let (data, width, burst) = self.run(fault, paddr, 4, None, Beat::First)?;
+        if width < 4 {
+            let (rest, _) = self.access_68020(fault, paddr.wrapping_add(width), 4 - width, None)?;
+            line[first] = (data << (8 * (4 - width))) | rest;
+            return Ok((line, 1 << first));
+        }
+        line[first] = data;
+        if !burst {
+            return Ok((line, 1 << first));
+        }
+        let base = paddr & !0xF;
+        for i in 1..4 {
+            let entry = (first + i) % 4;
+            let addr = base.wrapping_add(4 * entry as Address);
+            let (data, _, _) = self.run(fault, addr, 4, None, Beat::Next)?;
+            line[entry] = data;
+        }
+        Ok((line, 0xF))
+    }
+
     /// `access()` on the 68040: a 32-bit bus without dynamic bus sizing,
     /// narrower devices are adapted by the board (on the Quadras, the I/O
     /// bus adapter). A misaligned access runs as aligned byte, word and long
