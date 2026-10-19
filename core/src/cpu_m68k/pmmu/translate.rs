@@ -10,6 +10,27 @@ use crate::cpu_m68k::cpu::{CpuError, CpuM68k, Group0Details, HistoryEntry};
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 
+/// How the on-chip caches may treat an access, as the MMU gives it
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CacheMode {
+    /// Cachable, writes go to memory. Also the mode of an access without
+    /// translation.
+    #[default]
+    WriteThrough,
+    /// Cachable, writes stay in the cache (68040)
+    CopyBack,
+    /// Not cachable. The 68040 serialized and non-serialized modes are not
+    /// told apart.
+    Inhibited,
+}
+
+/// Result of an address translation
+#[derive(Clone, Copy, Debug)]
+pub struct Translation {
+    pub paddr: Address,
+    pub cache: CacheMode,
+}
+
 /// Index in CpuM68k::pmmu_atc tables when URP is in use
 pub(in crate::cpu_m68k) const PMMU_ATC_URP: usize = 0;
 /// Index in CpuM68k::pmmu_atc tables when SRP is in use
@@ -39,6 +60,9 @@ pub(in crate::cpu_m68k) struct PmmuAtcEntry {
     /// Whether the M bit of the leaf descriptor is already set. When false,
     /// the next write through this entry must RMW the descriptor to set M.
     pub modified: bool,
+    /// Cache mode of the page.
+    #[serde(default)]
+    pub cache: CacheMode,
     // If < current generation, then this entry has been flushed.
     // 0 means never used.
     #[serde(default)]
@@ -164,14 +188,18 @@ where
         }
     }
 
+    /// Translates a logical address
     pub(in crate::cpu_m68k) fn pmmu_translate(
         &mut self,
         fc: u8,
         vaddr: Address,
         writing: bool,
-    ) -> Result<Address> {
+    ) -> Result<Translation> {
         if !PMMU {
-            return Ok(vaddr);
+            return Ok(Translation {
+                paddr: vaddr,
+                cache: CacheMode::WriteThrough,
+            });
         }
 
         if CPU_TYPE == M68040 {
@@ -221,6 +249,7 @@ mod tests {
             s: false,
             leaf_desc_addr: paddr + 0x10,
             modified: true,
+            cache: CacheMode::WriteThrough,
             generation: atc_generation_default(),
         }
     }

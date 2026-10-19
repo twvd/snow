@@ -69,12 +69,12 @@ fn test_pload_replaces_atc_entry() {
     cpu.regs.write_a::<Address>(0, 0x5000);
 
     // The ATC has the translation of the page
-    assert_eq!(cpu.pmmu_translate(FC, 0x5000, false).unwrap(), 0x5000);
+    assert_eq!(cpu.pmmu_translate(FC, 0x5000, false).unwrap().paddr, 0x5000);
 
     // PLOAD searches the tables again for the new translation, and sets U
     write_long(&mut cpu, page_desc(0x5000), 0x9000 | 0b01);
     cpu.step().unwrap();
-    assert_eq!(cpu.pmmu_translate(FC, 0x5000, false).unwrap(), 0x9000);
+    assert_eq!(cpu.pmmu_translate(FC, 0x5000, false).unwrap().paddr, 0x9000);
     assert_ne!(read_long(&cpu, page_desc(0x5000)) & (1 << 3), 0);
 }
 
@@ -118,7 +118,7 @@ fn test_ptest_levels() {
 
     // Once the ATC has it, with the M bit
     write_long(&mut cpu, page_desc(0x5000), 0x5000 | 1 << 4 | 0b01);
-    cpu.pmmu_translate(FC, 0x5000, false).unwrap();
+    cpu.pmmu_translate(FC, 0x5000, false).unwrap().paddr;
     cpu.set_pc(INITIAL_PC).unwrap();
     cpu.prefetch_refill().unwrap();
     cpu.step().unwrap();

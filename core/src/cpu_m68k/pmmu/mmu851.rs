@@ -6,7 +6,9 @@ use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::cpu::{CpuError, CpuM68k, PagefaultCause};
 use crate::cpu_m68k::pmmu::regs::{PmmuPageDescriptorType, RegisterPSR, RootPointerReg};
-use crate::cpu_m68k::pmmu::translate::{PMMU_ATC_SRP, PMMU_ATC_URP, PmmuAtcEntry};
+use crate::cpu_m68k::pmmu::translate::{
+    CacheMode, PMMU_ATC_SRP, PMMU_ATC_URP, PmmuAtcEntry, Translation,
+};
 use crate::types::Long;
 
 use anyhow::{Result, anyhow, bail};
@@ -28,6 +30,17 @@ struct PmmuWalkResult {
     leaf_desc_addr: Address,
     /// Value of the M (modified) bit in the leaf descriptor.
     modified: bool,
+    /// Value of the CI (cache inhibit) bit in the leaf descriptor.
+    ci: bool,
+}
+
+/// Cache mode of a page descriptor or TT register from its CI bit
+const fn cache_mode(ci: bool) -> CacheMode {
+    if ci {
+        CacheMode::Inhibited
+    } else {
+        CacheMode::WriteThrough
+    }
 }
 
 bitfield! {
@@ -124,15 +137,21 @@ where
         fc: u8,
         vaddr: Address,
         writing: bool,
-    ) -> Result<Address> {
+    ) -> Result<Translation> {
         // Transparent translation runs even when TC.E=0; TT regions are
         // identity-mapped and bypass the page tables and the ATC.
-        if self.pmmu_tt_match(fc, vaddr, writing) {
-            return Ok(vaddr);
+        if let Some(cache) = self.pmmu_tt_match(fc, vaddr, writing) {
+            return Ok(Translation {
+                paddr: vaddr,
+                cache,
+            });
         }
 
         if !self.regs.pmmu.tc.enable() {
-            return Ok(vaddr);
+            return Ok(Translation {
+                paddr: vaddr,
+                cache: CacheMode::WriteThrough,
+            });
         }
 
         // This is formally tested in PMOVE when translation is enabled
@@ -173,20 +192,25 @@ where
                     ..entry
                 });
             }
-            return Ok(entry.paddr | (vaddr & page_mask));
+            return Ok(Translation {
+                paddr: entry.paddr | (vaddr & page_mask),
+                cache: entry.cache,
+            });
         }
 
-        let (paddr, wp, s, leaf_desc_addr, modified) =
+        let (paddr, wp, s, leaf_desc_addr, modified, ci) =
             self.pmmu_translate_lookup::<false>(fc, vaddr, writing, 7)?;
+        let cache = cache_mode(ci);
         self.pmmu_atc[atc][cache_key] = Some(PmmuAtcEntry {
             paddr: paddr & !page_mask,
             wp,
             s,
             leaf_desc_addr,
             modified,
+            cache,
             generation: self.pmmu_atc_generation,
         });
-        Ok(paddr)
+        Ok(Translation { paddr, cache })
     }
 
     /// Returns the ATC key of the page of `vaddr`
@@ -204,7 +228,7 @@ where
         } else {
             None
         };
-        if self.pmmu_tt_match(fc, vaddr, writing) {
+        if self.pmmu_tt_match(fc, vaddr, writing).is_some() {
             psr.set_transparent(true);
         } else if let Some(entry) = entry {
             psr.set_write_protected(entry.wp);
@@ -347,6 +371,7 @@ where
                     s,
                     leaf_desc_addr: entry_addr,
                     modified: entry.m(),
+                    ci: entry.ci(),
                 })
             }
             PmmuPageDescriptorType::Valid4b | PmmuPageDescriptorType::Valid8b => {
@@ -365,6 +390,7 @@ where
                         s,
                         leaf_desc_addr: entry_addr,
                         modified: false,
+                        ci: false,
                     });
                 }
                 self.pmmu_fetch_table(
@@ -432,6 +458,7 @@ where
                     s: s | entry.s(),
                     leaf_desc_addr: entry_addr,
                     modified: entry.m(),
+                    ci: entry.ci(),
                 })
             }
             PmmuPageDescriptorType::Valid4b | PmmuPageDescriptorType::Valid8b => {
@@ -451,6 +478,7 @@ where
                         s: s | entry.s(),
                         leaf_desc_addr: entry_addr,
                         modified: false,
+                        ci: false,
                     });
                 }
                 self.pmmu_fetch_table(
@@ -472,10 +500,11 @@ where
         }
     }
 
-    /// Returns true if any enabled TT register transparently maps this access.
-    /// TT regions bypass the page tables and the ATC entirely.
+    /// Returns the cache mode of the first enabled TT register that
+    /// transparently maps this access, if any. TT regions bypass the page
+    /// tables and the ATC entirely.
     #[inline]
-    fn pmmu_tt_match(&self, fc: u8, vaddr: Address, writing: bool) -> bool {
+    fn pmmu_tt_match(&self, fc: u8, vaddr: Address, writing: bool) -> Option<CacheMode> {
         for tt in &self.regs.pmmu.tt {
             if !tt.e() {
                 continue;
@@ -494,9 +523,9 @@ where
             if ((vaddr >> 24) & addr_care) != (tt.le_base() & addr_care) {
                 continue;
             }
-            return true;
+            return Some(cache_mode(tt.ci()));
         }
-        false
+        None
     }
 
     /// Set PSR for a failure during ATC lookup
@@ -524,7 +553,7 @@ where
 
     /// Perform address translation by performing a page table lookup, through at
     /// most `max_levels` tables.
-    /// Returns (physical address, wp, s, leaf descriptor address, M-bit), or error:
+    /// Returns (physical address, wp, s, leaf descriptor address, M-bit, CI-bit), or error:
     ///  - bus error stack frame for translation,
     ///  - simple error on PTEST.
     ///
@@ -536,7 +565,7 @@ where
         vaddr: Address,
         writing: bool,
         max_levels: u8,
-    ) -> Result<(Address, bool, bool, Address, bool)> {
+    ) -> Result<(Address, bool, bool, Address, bool, bool)> {
         let rootptr = self.pmmu_rootptr(fc);
 
         // Table search: about 20 cycles on the 68851 (MC68851UM 11.2, given as the
@@ -610,6 +639,7 @@ where
             s,
             leaf_desc_addr,
             mut modified,
+            ci,
         } = walk?;
 
         let mask = 0xFFFFFFFFu32.unbounded_shr(used_bits);
@@ -624,7 +654,7 @@ where
             psr.set_write_protected(wp);
             psr.set_modified(modified);
             psr.set_level_number((levels - tis.len()) as u8);
-            return Ok((paddr, wp, s, leaf_desc_addr, modified));
+            return Ok((paddr, wp, s, leaf_desc_addr, modified, ci));
         }
 
         // Enforce supervisor-only access on the resolved page
@@ -660,6 +690,6 @@ where
             modified = true;
         }
 
-        Ok((paddr, wp, s, leaf_desc_addr, modified))
+        Ok((paddr, wp, s, leaf_desc_addr, modified, ci))
     }
 }
