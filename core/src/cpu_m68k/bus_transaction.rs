@@ -3,7 +3,7 @@
 use crate::bus::access::{BusAccess, BusResponse, CpuBus};
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::cpu::{CpuError, Group0Details, HistoryEntryInstruction};
-use crate::cpu_m68k::{CpuM68kType, M68020};
+use crate::cpu_m68k::{CpuM68kType, M68020, M68040};
 use crate::tickable::Ticks;
 use crate::types::Long;
 
@@ -82,13 +82,54 @@ where
         size: u32,
         wdata: Option<Long>,
     ) -> Result<(Long, u32)> {
-        let (data, width) = self.run(fault, paddr, size, wdata)?;
-        let len = if CPU_TYPE >= M68020 {
-            (width - paddr % width).min(size)
+        if CPU_TYPE >= M68040 {
+            self.access_68040(fault, paddr, size, wdata)
+        } else if CPU_TYPE >= M68020 {
+            self.access_68020(fault, paddr, size, wdata)
         } else {
-            size
-        };
-        Ok((data, len))
+            self.access_68000(fault, paddr, size, wdata)
+        }
+    }
+
+    /// `access()` on the 68000: a fixed 16-bit bus, the CPU only asks for
+    /// what it takes
+    #[inline(always)]
+    fn access_68000(
+        &mut self,
+        fault: &FaultInfo,
+        paddr: Address,
+        size: u32,
+        wdata: Option<Long>,
+    ) -> Result<(Long, u32)> {
+        let (data, _) = self.run(fault, paddr, size, wdata)?;
+        Ok((data, size))
+    }
+
+    /// `access()` on the 68020 and 68030: the port takes the bytes that fit
+    /// in its width (dynamic bus sizing)
+    #[inline(always)]
+    fn access_68020(
+        &mut self,
+        fault: &FaultInfo,
+        paddr: Address,
+        size: u32,
+        wdata: Option<Long>,
+    ) -> Result<(Long, u32)> {
+        let (data, width) = self.run(fault, paddr, size, wdata)?;
+        Ok((data, (width - paddr % width).min(size)))
+    }
+
+    /// `access()` on the 68040
+    #[inline(always)]
+    fn access_68040(
+        &mut self,
+        fault: &FaultInfo,
+        paddr: Address,
+        size: u32,
+        wdata: Option<Long>,
+    ) -> Result<(Long, u32)> {
+        let (data, width) = self.run(fault, paddr, size, wdata)?;
+        Ok((data, (width - paddr % width).min(size)))
     }
 
     /// Runs one bus cycle for the `size` bytes left of the operand of
