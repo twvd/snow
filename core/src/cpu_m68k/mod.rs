@@ -1,5 +1,6 @@
 pub mod alu;
 pub mod bus;
+mod bus_transaction;
 pub mod cpu;
 pub mod disassembler;
 pub mod ea;

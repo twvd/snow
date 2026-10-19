@@ -1,8 +1,8 @@
 //! M68k CPU - Bus access functionality
 
-use crate::bus::access::{BusAccess, BusResponse, CpuBus};
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::FpuM68kType;
+use crate::cpu_m68k::bus_transaction::{FaultInfo, bus_transaction};
 use crate::cpu_m68k::cpu::{
     Breakpoint, BusBreakpoint, CpuError, CpuM68k, Group0Details, WriteBack040,
 };
@@ -118,8 +118,8 @@ where
         self.read_ticks_generic::<T, true>(FC_UNUSED, o_paddr)
     }
 
-    /// Triggers bus access breakpoints
-    fn bus_breakpoint(&mut self, write: bool, addr: Address, val: u8) {
+    /// Triggers data access breakpoints
+    fn data_breakpoint(&mut self, write: bool, addr: Address, val: u8) {
         let kind = if write {
             BusBreakpoint::Write
         } else {
@@ -140,86 +140,53 @@ where
         }
     }
 
-    /// Runs one bus cycle for the `size` bytes left of an operand
-    /// at `o_addr`, from logical address `laddr`. Adds the duration of the
-    /// cycle to `ticks` and returns the read data and the number of bytes
-    /// transferred.
+    /// Translates logical address `laddr` of an operand access
     #[inline(always)]
-    fn bus_cycle<T: CpuSized, const PHYSICAL: bool>(
+    fn translate<const PHYSICAL: bool>(
         &mut self,
-        fc: u8,
-        o_addr: Address,
+        fault: &FaultInfo,
+        laddr: Address,
+    ) -> Result<Address> {
+        if PHYSICAL || !PMMU {
+            return Ok(laddr);
+        }
+        self.pmmu_translate(fault.fc, laddr, fault.write)
+            .map_err(|e| match e.downcast_ref() {
+                Some(CpuError::BusError(details)) => {
+                    anyhow!(CpuError::BusError(Group0Details {
+                        size: fault.size,
+                        address: laddr,
+                        ..*details
+                    }))
+                }
+                _ => e,
+            })
+    }
+
+    /// Runs a CPU access for the `size` bytes left of an operand, from
+    /// logical address `laddr`: translates it and runs its bus cycle. Adds
+    /// the duration of the cycle to `ticks` and returns the read data and
+    /// the number of bytes transferred.
+    #[inline(always)]
+    fn cpu_access<const PHYSICAL: bool>(
+        &mut self,
+        fault: &FaultInfo,
         laddr: Address,
         size: u32,
         wdata: Option<Long>,
         ticks: &mut Ticks,
     ) -> Result<(Long, u32)> {
-        let write = wdata.is_some();
-        let paddr = if PHYSICAL || !PMMU {
-            laddr
-        } else {
-            self.pmmu_translate(fc, laddr, write)
-                .map_err(|e| match e.downcast_ref() {
-                    Some(CpuError::BusError(details)) => {
-                        anyhow!(CpuError::BusError(Group0Details {
-                            size: std::mem::size_of::<T>(),
-                            address: laddr,
-                            ..*details
-                        }))
-                    }
-                    _ => e,
-                })?
-        };
+        let paddr = self.translate::<PHYSICAL>(fault, laddr)?;
+        let (data, len) = bus_transaction!(self, ticks).access(fault, paddr, size, wdata)?;
 
-        // The bus has to be built for the data bus of this CPU
-        const {
-            assert!(<TBus::Cpu as CpuBus>::WIDTH == if CPU_TYPE >= M68020 { 4 } else { 2 });
-        }
-
-        let (width, data, waits) = loop {
-            let pending = self.cycles + *ticks - self.last_bus_sync;
-            let acc = match wdata {
-                Some(data) => BusAccess::write(paddr, size, data, pending),
-                None => BusAccess::read(paddr, size, pending),
-            };
-            match self.bus.access(acc)? {
-                BusResponse::Ack { width, data, waits } => break (width, data, waits),
-                // Wait with the bus ticked through the stall, then retry
-                BusResponse::Stall(stall) => {
-                    self.history_current.waitstates = true;
-                    self.advance_cycles(std::mem::take(ticks) + stall)?;
-                    self.sync_bus()?;
-                }
-                BusResponse::BusError => bail!(CpuError::BusError(Group0Details {
-                    function_code: fc,
-                    ir: 0,
-                    size: std::mem::size_of::<T>(),
-                    atc_fault: false,
-                    instruction: false,
-                    read: !write,
-                    address: o_addr,
-                    // Filled in later
-                    start_pc: 0,
-                })),
-            }
-        };
-        if waits > 0 {
-            self.history_current.waitstates = true;
-        }
-        *ticks += <TBus::Cpu as CpuBus>::CYCLE + waits;
-
-        let len = if CPU_TYPE >= M68020 {
-            (width - paddr % width).min(size)
-        } else {
-            size
-        };
+        // Data breakpoints, on the physical address of the access
         if !self.breakpoints.is_empty() {
             for i in 0..len {
                 let val = match wdata {
                     Some(d) => d >> (8 * (size - 1 - i)),
                     None => data >> (8 * (len - 1 - i)),
                 };
-                self.bus_breakpoint(write, paddr.wrapping_add(i), val as u8);
+                self.data_breakpoint(fault.write, paddr.wrapping_add(i), val as u8);
             }
         }
         Ok((data, len))
@@ -234,6 +201,12 @@ where
     ) -> Result<T> {
         let len = std::mem::size_of::<T>() as u32;
         let mut result: u64 = 0;
+        let fault = FaultInfo {
+            fc,
+            o_addr,
+            size: std::mem::size_of::<T>(),
+            write: false,
+        };
 
         if CPU_TYPE < M68020 {
             let addr = if CPU_TYPE == M68000 && len > 1 {
@@ -245,7 +218,7 @@ where
                 let mut ticks = 0;
                 let laddr = addr.wrapping_add(2 * w) & ADDRESS_MASK;
                 let (data, n) =
-                    self.bus_cycle::<T, PHYSICAL>(fc, o_addr, laddr, len.min(2), None, &mut ticks)?;
+                    self.cpu_access::<PHYSICAL>(&fault, laddr, len.min(2), None, &mut ticks)?;
                 result = (result << (8 * n)) | u64::from(data);
                 self.advance_cycles(ticks)?;
 
@@ -260,7 +233,7 @@ where
             while done < len {
                 let laddr = o_addr.wrapping_add(done) & ADDRESS_MASK;
                 let (data, n) =
-                    self.bus_cycle::<T, PHYSICAL>(fc, o_addr, laddr, len - done, None, &mut ticks)?;
+                    self.cpu_access::<PHYSICAL>(&fault, laddr, len - done, None, &mut ticks)?;
                 result = (result << (8 * n)) | u64::from(data);
                 done += n;
             }
@@ -284,6 +257,12 @@ where
     ) -> Result<()> {
         let len = std::mem::size_of::<T>() as u32;
         let value = value.expand();
+        let fault = FaultInfo {
+            fc,
+            o_addr,
+            size: std::mem::size_of::<T>(),
+            write: true,
+        };
 
         if CPU_TYPE < M68020 {
             let addr = if CPU_TYPE == M68000 && len > 1 {
@@ -302,7 +281,7 @@ where
                 let mut ticks = 0;
                 let laddr = addr.wrapping_add(2 * w) & ADDRESS_MASK;
                 let data = low_bytes(value >> (8 * (len - size - 2 * w)), size);
-                self.bus_cycle::<T, PHYSICAL>(fc, o_addr, laddr, size, Some(data), &mut ticks)?;
+                self.cpu_access::<PHYSICAL>(&fault, laddr, size, Some(data), &mut ticks)?;
                 self.advance_cycles(ticks)?;
 
                 if CPU_TYPE == M68000
@@ -323,14 +302,8 @@ where
             while done < len {
                 let laddr = o_addr.wrapping_add(done) & ADDRESS_MASK;
                 let data = low_bytes(value, len - done);
-                match self.bus_cycle::<T, PHYSICAL>(
-                    fc,
-                    o_addr,
-                    laddr,
-                    len - done,
-                    Some(data),
-                    &mut ticks,
-                ) {
+                match self.cpu_access::<PHYSICAL>(&fault, laddr, len - done, Some(data), &mut ticks)
+                {
                     Ok((_, n)) => done += n,
                     Err(e) if !PHYSICAL && self.wb040_defer => {
                         self.wb040_defer_write(e, o_addr, value, done > 0)?;
