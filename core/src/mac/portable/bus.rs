@@ -701,11 +701,7 @@ where
             }
         };
 
-        Ok(BusResponse::Ack {
-            width: 2,
-            data,
-            waits,
-        })
+        Ok(BusResponse::ack(2, data, waits))
     }
 
     fn reset(&mut self, hard: bool) -> Result<bool> {

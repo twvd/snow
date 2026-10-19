@@ -10,6 +10,17 @@ use crate::types::Long;
 
 use anyhow::{Result, bail};
 
+/// Place of a bus cycle in a line transfer
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Beat {
+    /// Not part of a burst
+    Single,
+    /// First long word of a line, asking for a burst
+    First,
+    /// Second to fourth long word of a burst the port took
+    Next,
+}
+
 /// The operand a bus cycle is for, as a bus error reports it
 #[derive(Clone, Copy)]
 pub struct FaultInfo {
@@ -105,7 +116,7 @@ where
         size: u32,
         wdata: Option<Long>,
     ) -> Result<(Long, u32)> {
-        let (data, width) = self.run(fault, paddr, size, wdata)?;
+        let (data, width, _) = self.run(fault, paddr, size, wdata, Beat::Single)?;
         debug_assert_eq!(width, 2, "68000 bus answered a {width}-byte port");
         Ok((data, size))
     }
@@ -128,7 +139,8 @@ where
         while done < len {
             let addr = paddr.wrapping_add(done);
             let left = size - done;
-            let (d, width) = self.run(fault, addr, left, wdata.map(|w| low_bytes(w, left)))?;
+            let wdata = wdata.map(|w| low_bytes(w, left));
+            let (d, width, _) = self.run(fault, addr, left, wdata, Beat::Single)?;
             let n = (width - addr % width).min(left);
             data = (data << (8 * n)) | u64::from(d);
             done += n;
@@ -163,7 +175,7 @@ where
             };
             let left = size - done;
             let wdata = wdata.map(|w| low_bytes(w >> (8 * (left - n)), n));
-            let (d, width) = self.run(fault, addr, n, wdata)?;
+            let (d, width, _) = self.run(fault, addr, n, wdata, Beat::Single)?;
             debug_assert_eq!(width, 4, "68040 bus answered a {width}-byte port");
             data = (data << (8 * n)) | u64::from(d);
             done += n;
@@ -171,9 +183,43 @@ where
         Ok((data as Long, len))
     }
 
+    /// Transfers the 16-byte line at physical address `paddr` (68040): reads
+    /// it, or writes `wline`. It runs as a burst when the port takes one:
+    /// two clocks for the first long word and one for each of the others,
+    /// plus wait states. Otherwise (TBI) the rest of the line runs as long
+    /// word transfers. Returns the read line.
+    ///
+    /// The line always starts at its first long word, where the 68040
+    /// starts with the one it needs first: the time is the same, and
+    /// nothing uses the data before the whole line is in.
+    pub fn line_access(
+        &mut self,
+        fault: &FaultInfo,
+        paddr: Address,
+        wline: Option<&[Long; 4]>,
+    ) -> Result<[Long; 4]> {
+        let mut line = [0; 4];
+        let mut beat = Beat::First;
+        for (i, long) in line.iter_mut().enumerate() {
+            let addr = paddr.wrapping_add(4 * i as Address);
+            // This long word of the line, for a write
+            let wdata = wline.map(|l| l[i]);
+            let (data, width, burst) = self.run(fault, addr, 4, wdata, beat)?;
+            debug_assert_eq!(width, 4, "68040 bus answered a {width}-byte port");
+            *long = data;
+            beat = if burst && beat != Beat::Single {
+                Beat::Next
+            } else {
+                Beat::Single
+            };
+        }
+        Ok(line)
+    }
+
     /// Runs one bus cycle for the `size` bytes left of the operand of
-    /// `fault`, at physical address `paddr`, and adds its duration to the
-    /// access. Returns the read data and the width of the port.
+    /// `fault`, at physical address `paddr`, as `beat` of a line transfer,
+    /// and adds its duration to the access. Returns the read data, the
+    /// width of the port and whether it takes a burst.
     #[inline(always)]
     fn run(
         &mut self,
@@ -181,20 +227,27 @@ where
         paddr: Address,
         size: u32,
         wdata: Option<Long>,
-    ) -> Result<(Long, u32)> {
+        beat: Beat,
+    ) -> Result<(Long, u32, bool)> {
         // The bus has to be built for the data bus of this CPU
         const {
             assert!(<TBus::Cpu as CpuBus>::WIDTH == if CPU_TYPE >= M68020 { 4 } else { 2 });
         }
 
-        let (width, data, waits) = loop {
+        let (width, data, waits, burst_reject) = loop {
             let pending = *self.cycles + *self.ticks - *self.last_bus_sync;
-            let acc = match wdata {
+            let mut acc = match wdata {
                 Some(data) => BusAccess::write(paddr, size, data, pending),
                 None => BusAccess::read(paddr, size, pending),
             };
+            acc.burst = beat != Beat::Single;
             match self.bus.access(acc)? {
-                BusResponse::Ack { width, data, waits } => break (width, data, waits),
+                BusResponse::Ack {
+                    width,
+                    data,
+                    waits,
+                    burst_reject,
+                } => break (width, data, waits, burst_reject),
                 // Wait with the bus ticked through the stall, then retry
                 BusResponse::Stall(stall) => {
                     self.history.waitstates = true;
@@ -218,7 +271,12 @@ where
         if waits > 0 {
             self.history.waitstates = true;
         }
-        *self.ticks += <TBus::Cpu as CpuBus>::CYCLE + waits;
-        Ok((data, width))
+        let ticks = if beat == Beat::Next {
+            1
+        } else {
+            <TBus::Cpu as CpuBus>::CYCLE
+        };
+        *self.ticks += ticks + waits;
+        Ok((data, width, !burst_reject))
     }
 }
