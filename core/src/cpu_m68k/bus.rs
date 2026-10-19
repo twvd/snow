@@ -193,13 +193,28 @@ where
     }
 
     /// Runs a CPU access, up to the end of the long word at most: translates
-    /// it and runs its bus cycles. Adds their duration to `ticks` and returns
-    /// the read data and the number of bytes transferred.
+    /// it, then lets the caches run it, on the bus as needed. Adds its
+    /// duration to `ticks` and returns the read data and the number of bytes
+    /// transferred.
     #[inline(always)]
     fn cpu_access(&mut self, acc: &CpuAccess, ticks: &mut Ticks) -> Result<(Long, u32)> {
-        let paddr = self.translate(acc)?.paddr;
-        let (data, len) =
-            bus_transaction!(self, ticks).access(&acc.fault, paddr, acc.size, acc.wdata)?;
+        // Reads that hit in logically tagged caches need no translation.
+        // Data breakpoints need the physical address: they skip this.
+        if acc.wdata.is_none()
+            && (acc.kind == AccessKind::Fetch || self.breakpoints.is_empty())
+            && let Some(res) =
+                self.caches
+                    .read_hit(self.regs.cacr, acc, ticks, &mut self.history_current)
+        {
+            return Ok(res);
+        }
+
+        let tr = self.translate(acc)?;
+        let paddr = tr.paddr;
+        let cacr = self.regs.cacr;
+        let (data, len) = self
+            .caches
+            .access(&mut bus_transaction!(self, ticks), cacr, acc, &tr)?;
 
         // Data breakpoints, on the physical address of the access
         if !self.breakpoints.is_empty() {
@@ -216,7 +231,7 @@ where
 
     /// Transfers the 16-byte line holding logical address `laddr` (MOVE16):
     /// reads it, or writes `wline`. The line counterpart of `cpu_access()`:
-    /// translates it, runs it on the bus and spends its time. Returns the
+    /// translates it, lets the caches run it and spends its time. Returns the
     /// read line.
     pub(in crate::cpu_m68k) fn line_ticks(
         &mut self,
@@ -236,9 +251,17 @@ where
             size: 16,
             wdata: None,
         };
-        let paddr = self.translate(&acc)?.paddr;
+        let tr = self.translate(&acc)?;
+        let paddr = tr.paddr;
+        let cacr = self.regs.cacr;
         let mut ticks = 0;
-        let line = bus_transaction!(self, &mut ticks).line_access(&acc.fault, paddr, wline)?;
+        let line = self.caches.line_access(
+            &mut bus_transaction!(self, &mut ticks),
+            cacr,
+            &acc,
+            &tr,
+            wline,
+        )?;
         self.advance_cycles(ticks)?;
 
         // Data breakpoints, on the physical address of the access
