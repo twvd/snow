@@ -1,4 +1,5 @@
 use crate::cpu_m68k::FpuM68kType;
+use crate::cpu_m68k::bus::AccessKind;
 use std::collections::VecDeque;
 
 use anyhow::{Result, anyhow, bail};
@@ -3723,7 +3724,7 @@ where
 
         if dir_mem_to_reg {
             // Memory to register transfer
-            let value = self.read_ticks_generic::<T, false>(self.regs.sfc as u8, ea)?;
+            let value = self.read_ticks_generic::<T>(AccessKind::Data, self.regs.sfc as u8, ea)?;
 
             if is_addr_reg {
                 // Memory to address register - sign extend
@@ -3746,7 +3747,8 @@ where
                 self.regs.read_d::<T>(reg_num as usize)
             };
 
-            self.write_ticks_order_generic::<T, TORDER_LOWHIGH, false>(
+            self.write_ticks_order_generic::<T, TORDER_LOWHIGH>(
+                AccessKind::Data,
                 self.regs.dfc as u8,
                 ea,
                 value,
