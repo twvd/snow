@@ -218,8 +218,9 @@ where
             .caches
             .access(&mut bus_transaction!(self, ticks), cacr, acc, &tr)?;
 
-        // Data breakpoints, on the physical address of the access
-        if !self.breakpoints.is_empty() {
+        // Data breakpoints, on the physical address of the access. They
+        // are about data: instruction fetches don't trigger them.
+        if !self.breakpoints.is_empty() && acc.kind != AccessKind::Fetch {
             for i in 0..len {
                 let val = match acc.wdata {
                     Some(d) => d >> (8 * (acc.size - 1 - i)),
