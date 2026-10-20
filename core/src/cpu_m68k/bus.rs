@@ -7,7 +7,9 @@ use crate::cpu_m68k::cache::CpuCaches;
 use crate::cpu_m68k::cpu::{
     Breakpoint, BusBreakpoint, CpuError, CpuM68k, Group0Details, WriteBack040,
 };
-use crate::cpu_m68k::pmmu::translate::{CacheMode, Translation};
+use crate::cpu_m68k::pmmu::translate::{
+    CacheMode, LAST_TRANSLATION_FETCH, LAST_TRANSLATION_READ, LAST_TRANSLATION_WRITE, Translation,
+};
 use crate::cpu_m68k::{CpuM68kType, CpuSized, M68000, M68020, TORDER_HIGHLOW, TORDER_LOWHIGH};
 use crate::tickable::Ticks;
 use crate::types::Long;
@@ -183,7 +185,23 @@ where
                 cache: CacheMode::WriteThrough,
             });
         }
-        self.pmmu_translate(acc.fault.fc, acc.laddr, acc.fault.write)
+        // Accesses reuse the last translation of their kind made in the same
+        // page. The ATC still holds it, until pmmu_translation_changed(), and
+        // for a write with the page marked modified.
+        let fc = acc.fault.fc;
+        let slot = if acc.fault.write {
+            LAST_TRANSLATION_WRITE
+        } else if acc.kind == AccessKind::Fetch {
+            LAST_TRANSLATION_FETCH
+        } else {
+            LAST_TRANSLATION_READ
+        };
+        if let Some(tr) = self.last_translation_find(slot, fc, acc.laddr) {
+            return Ok(tr);
+        }
+
+        let tr = self
+            .pmmu_translate(fc, acc.laddr, acc.fault.write)
             .map_err(|e| match e.downcast_ref() {
                 Some(CpuError::BusError(details)) => {
                     anyhow!(CpuError::BusError(Group0Details {
@@ -193,7 +211,9 @@ where
                     }))
                 }
                 _ => e,
-            })
+            })?;
+        self.last_translation_add(slot, fc, acc.laddr, &tr);
+        Ok(tr)
     }
 
     /// Runs a CPU access, up to the end of the long word at most: translates

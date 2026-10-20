@@ -32,6 +32,60 @@ pub struct Translation {
     pub cache: CacheMode,
 }
 
+/// A recent translation, which later accesses of the same kind in the same
+/// page reuse without going through the MMU
+#[derive(Clone, Copy)]
+pub(in crate::cpu_m68k) struct LastTranslation {
+    /// Logical address of the page, with the FC in its low bits: a page is
+    /// at least 256 bytes
+    pub tag: Address,
+    /// Address bits of the page
+    pub page_mask: Address,
+    /// Physical address of the page
+    pub paddr: Address,
+    pub cache: CacheMode,
+}
+
+impl LastTranslation {
+    /// No translation: bits 3-7 of a tag are clear
+    const NONE: Self = Self {
+        tag: 0xF8,
+        page_mask: 0,
+        paddr: 0,
+        cache: CacheMode::WriteThrough,
+    };
+
+    #[inline(always)]
+    fn hit(&self, fc: u8, laddr: Address) -> bool {
+        (laddr & self.page_mask) | Address::from(fc) == self.tag
+    }
+}
+
+/// No last translations, of any kind
+pub(in crate::cpu_m68k) fn last_translations_none() -> [[LastTranslation; LAST_TRANSLATIONS]; 3] {
+    [[LastTranslation::NONE; LAST_TRANSLATIONS]; 3]
+}
+
+/// Index of the last translations of data reads, instruction fetches and
+/// data writes in CpuM68k::last_translation
+pub(in crate::cpu_m68k) const LAST_TRANSLATION_READ: usize = 0;
+pub(in crate::cpu_m68k) const LAST_TRANSLATION_FETCH: usize = 1;
+pub(in crate::cpu_m68k) const LAST_TRANSLATION_WRITE: usize = 2;
+
+/// Last translations kept per kind of access, one per 4 KB page modulo
+/// their number (a power of two). 32 is the fastest on a Ryzen 9 9950X3D,
+/// 16 and 64 are close; a host with smaller caches may prefer fewer.
+pub(in crate::cpu_m68k) const LAST_TRANSLATIONS: usize = 32;
+const _: () = assert!(LAST_TRANSLATIONS.is_power_of_two());
+
+/// Entry of the last translations of a kind for logical address `laddr`: by
+/// 4 KB page, whatever the page size, which only makes pages of other sizes
+/// share or spread over entries
+#[inline(always)]
+fn last_translation_index(laddr: Address) -> usize {
+    (laddr >> 12) as usize % LAST_TRANSLATIONS
+}
+
 /// Index in CpuM68k::pmmu_atc tables when URP is in use
 pub(in crate::cpu_m68k) const PMMU_ATC_URP: usize = 0;
 /// Index in CpuM68k::pmmu_atc tables when SRP is in use
@@ -173,8 +227,62 @@ where
         }
     }
 
+    /// Forgets the last translations, after anything that may change
+    /// translations: ATC flushes, MMU register writes, reset
+    pub(in crate::cpu_m68k) fn pmmu_translation_changed(&mut self) {
+        self.last_translation = last_translations_none();
+    }
+
+    /// One of the last translations of kind `slot` for an access at `laddr`
+    #[inline(always)]
+    pub(in crate::cpu_m68k) fn last_translation_find(
+        &self,
+        slot: usize,
+        fc: u8,
+        laddr: Address,
+    ) -> Option<Translation> {
+        let e = &self.last_translation[slot][last_translation_index(laddr)];
+        if !e.hit(fc, laddr) {
+            return None;
+        }
+        Some(Translation {
+            paddr: e.paddr | (laddr & !e.page_mask),
+            cache: e.cache,
+        })
+    }
+
+    /// Keeps a translation for later accesses of kind `slot`
+    pub(in crate::cpu_m68k) fn last_translation_add(
+        &mut self,
+        slot: usize,
+        fc: u8,
+        laddr: Address,
+        tr: &Translation,
+    ) {
+        let page_mask = !self.pmmu_page_mask();
+        self.last_translation[slot][last_translation_index(laddr)] = LastTranslation {
+            tag: (laddr & page_mask) | Address::from(fc),
+            page_mask,
+            paddr: tr.paddr & page_mask,
+            cache: tr.cache,
+        };
+    }
+
+    /// Address bits within an MMU page
+    pub(in crate::cpu_m68k) fn pmmu_page_mask(&self) -> Address {
+        let shift = if CPU_TYPE == M68040 {
+            self.mmu040_page_shift()
+        } else if self.regs.pmmu.tc.enable() {
+            Address::from(self.regs.pmmu.tc.ps())
+        } else {
+            12
+        };
+        (1 << shift) - 1
+    }
+
     /// Flushes complete ATC
     pub(in crate::cpu_m68k) fn pmmu_cache_invalidate(&mut self) {
+        self.pmmu_translation_changed();
         // Incrementing generation invalidates all entries with a lower generation,
         // making ATC flushes very cheap rather than zeroizing the entire cache.
         self.pmmu_atc_generation = self.pmmu_atc_generation.wrapping_add(1);
