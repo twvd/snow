@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use super::via2::Via2;
 use crate::bus::access::{Bus68020, BusAccess, BusResponse, bus_access_byte, bus_access_long};
-use crate::bus::native_clock::NativeClock;
+use crate::bus::native_clock::{DeviceCycle, NativeClock, WaitTicks};
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::cpu_m68k::M68020;
 use crate::debuggable::Debuggable;
@@ -110,8 +110,6 @@ const MAP: [[Region; 256]; 2] = {
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
-    cycles: Ticks,
-
     /// The currently emulated Macintosh model
     model: MacModel,
 
@@ -126,13 +124,7 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     pub(crate) via2: Via2,
     pub(crate) scc: Scc,
     pub(crate) asc: Asc,
-    via_clock: Ticks,
-    /// A VIA cycle is stalled up to the edge of the VIA clock, until the CPU
-    /// presents it again. Not saved, as a cycle is never in progress between
-    /// instructions.
-    #[serde(skip)]
-    via_stalled: bool,
-    /// Bus time the SCC can be accessed again
+    /// Native time the SCC can be accessed again
     scc_ready: Ticks,
     asc_clock: Ticks,
     mouse_ready: bool,
@@ -280,7 +272,6 @@ where
         }
 
         let mut bus = Self {
-            cycles: 0,
             model,
 
             rom: Vec::from(rom),
@@ -289,8 +280,6 @@ where
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             via1: Via::new(model),
             via2: Via2::new(model),
-            via_clock: 0,
-            via_stalled: false,
             scc_ready: 0,
             scc: Scc::new(),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), BUS_FREQUENCY),
@@ -614,64 +603,73 @@ where
         Self::dev_write(addr, val as Byte, self.swim.write(addr, val as Byte))
     }
 
-    /// I/O devices are byte-wide, 8-bit ports. The GLUE inserts one wait
-    /// state for the IWM and the SCSI controller (without handshake), two
-    /// for ASC reads and one for ASC writes.
-    fn io_cycle(&mut self, acc: BusAccess<Bus68020>) -> Result<BusResponse> {
-        Ok(match (acc.addr & 0x1_FFFF) >> 13 {
-            0 => self.via_cycle(acc, Self::via1_read, Self::via1_write)?,
-            1 => self.via_cycle(acc, Self::via2_read, Self::via2_write)?,
-            2 => self.scc_cycle(acc),
+    /// I/O devices are byte-wide, 8-bit ports. Their cycles take native
+    /// time: the VIAs are synchronous with the VIA clock, the other devices
+    /// start on a native tick, and the GLUE inserts one wait state for the
+    /// IWM and the SCSI controller (without handshake), two for ASC reads and
+    /// one for ASC writes.
+    fn io_cycle(&mut self, acc: BusAccess<Bus68020>) -> BusResponse {
+        let device = (acc.addr & 0x1_FFFF) >> 13;
+        match device {
+            0 => return self.via_cycle(acc, Self::via1_read, Self::via1_write),
+            1 => return self.via_cycle(acc, Self::via2_read, Self::via2_write),
+            _ => (),
+        }
+        let w = match self.native_clock.device_sync(&acc) {
+            DeviceCycle::Stall(n) => return BusResponse::Stall(n),
+            DeviceCycle::Access(w) => w,
+        };
+        match device {
+            2 => self.scc_cycle(acc, w),
             // SCSI pseudo-DMA only takes the lower 4KB of its slot
             3 if acc.addr & 0x1000 == 0 => {
-                bus_access_byte(acc, 0, self, Self::scsi_dma_read, Self::scsi_dma_write)
+                bus_access_byte(acc, w, self, Self::scsi_dma_read, Self::scsi_dma_write)
             }
-            8 => bus_access_byte(acc, 1, self, Self::scsi_read, Self::scsi_write),
-            9 => bus_access_byte(acc, 0, self, Self::scsi_dma_read, Self::scsi_dma_write),
+            8 => {
+                let w = self.native_clock.scale_dev_waits(w, 1);
+                bus_access_byte(acc, w, self, Self::scsi_read, Self::scsi_write)
+            }
+            9 => bus_access_byte(acc, w, self, Self::scsi_dma_read, Self::scsi_dma_write),
             10 => {
-                let waits = if acc.write { 1 } else { 2 };
-                bus_access_byte(acc, waits, self, Self::asc_read, Self::asc_write)
+                let w = self
+                    .native_clock
+                    .scale_dev_waits(w, if acc.write { 1 } else { 2 });
+                bus_access_byte(acc, w, self, Self::asc_read, Self::asc_write)
             }
-            11 => bus_access_byte(acc, 1, self, Self::swim_read, Self::swim_write),
+            11 => {
+                let w = self.native_clock.scale_dev_waits(w, 1);
+                bus_access_byte(acc, w, self, Self::swim_read, Self::swim_write)
+            }
             // Expansion area
             _ => BusResponse::BusError,
-        })
+        }
     }
 
     /// The GLUE holds off an access to the SCC until it has had the time it
     /// needs since the previous one
-    fn scc_cycle(&mut self, acc: BusAccess<Bus68020>) -> BusResponse {
-        let now = self.cycles + acc.pending;
-        let waits = self.scc_ready.saturating_sub(now);
+    fn scc_cycle(&mut self, acc: BusAccess<Bus68020>, w: WaitTicks) -> BusResponse {
+        // When overclocking, acc.pending is 0 after device_sync(), and native
+        // ticks are CPU ticks otherwise
+        let now = self.native_clock.native_ticks() + acc.pending;
+        let hold = self.scc_ready.saturating_sub(now);
         // The access itself takes 3 clocks
-        self.scc_ready = now + waits + 3 + SCC_RECOVERY;
-        bus_access_byte(acc, waits, self, Self::scc_read, Self::scc_write)
+        self.scc_ready = now + hold + 3 + SCC_RECOVERY;
+        let w = self.native_clock.scale_dev_waits(w, hold);
+        bus_access_byte(acc, w, self, Self::scc_read, Self::scc_write)
     }
 
-    /// VIA accesses are synchronous with the VIA clock: one starts on its
-    /// next edge and lasts half a VIA clock cycle. The cycle is stalled up to
-    /// that edge, with the bus ticked through it, for the VIA to be accessed
-    /// in its state at that time.
+    /// VIA accesses are synchronous with the VIA clock: one starts on a VIA
+    /// tick and lasts a VIA clock cycle
     fn via_cycle(
         &mut self,
         acc: BusAccess<Bus68020>,
         read: fn(&mut Self, Address, u32) -> Option<u32>,
         write: fn(&mut Self, Address, u32, u32) -> Option<()>,
-    ) -> Result<BusResponse> {
-        const PERIOD: Ticks = 20 * BUS_FREQUENCY;
-        if !self.via_stalled {
-            self.via_stalled = true;
-            let phase = (self.via_clock + acc.pending * C16M_FREQUENCY) % PERIOD;
-            return Ok(BusResponse::Stall(
-                (PERIOD - phase).div_ceil(C16M_FREQUENCY),
-            ));
+    ) -> BusResponse {
+        match self.native_clock.via_sync(&acc) {
+            DeviceCycle::Stall(n) => BusResponse::Stall(n),
+            DeviceCycle::Access(w) => bus_access_byte(acc, w, self, read, write),
         }
-        self.via_stalled = false;
-        let half = PERIOD / C16M_FREQUENCY / 2;
-
-        // Less the 3 clocks of the bus cycle
-        let waits = half - 3;
-        Ok(bus_access_byte(acc, waits, self, read, write))
     }
 
     /// Updates the mouse position (relative coordinates) and button state
@@ -836,7 +834,7 @@ where
             Region::RomOverlay => {
                 bus_access_long(acc, mem_waits, self, Self::rom_read, Self::no_write)
             }
-            Region::Io => self.io_cycle(acc)?,
+            Region::Io => self.io_cycle(acc),
             Region::ExtRom => {
                 bus_access_long(acc, mem_waits, self, Self::ext_rom_read, Self::no_write)
             }
@@ -928,8 +926,6 @@ where
             bus_frequency: self.bus_frequency(),
         };
 
-        self.cycles += ticks;
-
         if AMU {
             self.amu_active = !self.via2.pb().vfc3();
         }
@@ -950,10 +946,7 @@ where
             }
             cpu -= step.cpu_used;
             native_ticks += step.native;
-            self.via_clock += step.native * C16M_FREQUENCY;
             if step.via_tick {
-                self.via_clock -= 20 * self.bus_frequency();
-
                 self.via1.tick(1, ())?;
                 self.via2.tick(1, ())?;
 

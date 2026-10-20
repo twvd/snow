@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use super::audio::AudioState;
 use super::video::Video;
 use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_byte_lane, bus_access_word};
-use crate::bus::native_clock::NativeClock;
+use crate::bus::native_clock::{DeviceCycle, NativeClock};
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -69,8 +69,6 @@ type AddressMap = [[Region; MAP_BLOCKS]; 2];
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct CompactMacBus<TRenderer: Renderer> {
-    cycles: Ticks,
-
     /// The currently emulated Macintosh model
     model: MacModel,
 
@@ -88,11 +86,6 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     #[serde(skip)]
     pub(crate) audio: AudioState,
 
-    eclock: Ticks,
-    /// The VPA cycle in progress has waited once, as it always does. Not
-    /// saved, as a cycle is never in progress between instructions.
-    #[serde(skip)]
-    vpa_polled: bool,
     mouse_ready: bool,
     pub(crate) swim: Swim,
     pub(crate) scsi: ScsiController,
@@ -201,7 +194,6 @@ where
         }
 
         let mut bus = Self {
-            cycles: 0,
             model,
 
             rom: Vec::from(rom),
@@ -211,8 +203,6 @@ where
             via: Via::new(model),
             video: Video::new(renderer),
             audio: AudioState::default(),
-            eclock: 0,
-            vpa_polled: false,
             scc: Scc::new(),
             swim: Swim::new(&fdds, model.fdd_hd(), BUS_FREQUENCY),
             scsi: ScsiController::new(),
@@ -617,28 +607,55 @@ where
             .set_cpu_frequency(bus_frequency.unwrap_or_else(|| self.bus_frequency()));
     }
 
-    /// Stall of a bus cycle which has to wait, polled every 2 cycles with
-    /// the bus ticked in between, or None once it can go on
-    fn stall(&mut self, acc: &BusAccess<Bus68000>) -> Option<Ticks> {
-        match acc.addr {
-            // RAM, while the memory controller gives it to the video.
-            // The first check is against the bus as last ticked.
-            // https://www.bigmessowires.com/2011/08/25/68000-interleaved-memory-controller-design/
-            0x0000_0000..=0x003F_FFFF => {
-                if !self.video.in_blanking_period() && !self.model.ram_interleave_cpu(self.cycles) {
-                    return Some(2);
-                }
+    /// Stall of a RAM cycle while the memory controller gives the RAM to the
+    /// video, polled every 2 cycles with the bus ticked in between, or None
+    /// once it can go on. The check is against the bus as last ticked.
+    /// https://www.bigmessowires.com/2011/08/25/68000-interleaved-memory-controller-design/
+    fn stall(&self, acc: &BusAccess<Bus68000>) -> Option<Ticks> {
+        let ram = (0x0000_0000..=0x003F_FFFF).contains(&acc.addr);
+        let interleave = self
+            .model
+            .ram_interleave_cpu(self.native_clock.native_ticks());
+        (ram && !self.video.in_blanking_period() && !interleave).then_some(2)
+    }
+
+    /// A VPA cycle is synchronous with the E clock. Once the CPU has seen
+    /// /VPA, it waits for E to be low, and the device transfers while E is
+    /// high: the cycle ends with E, when the VIA ticks. In time from that
+    /// VIA tick, the cycle takes a full E period, of 10 native ticks
+    /// (MC68000 User's Manual, Appendix B).
+    fn vpa_cycle(&mut self, acc: BusAccess<Bus68000>, region: Region) -> BusResponse {
+        let w = match self.native_clock.via_sync(&acc) {
+            DeviceCycle::Stall(n) => return BusResponse::Stall(n),
+            DeviceCycle::Access(w) => w,
+        };
+        match region {
+            // On the upper byte lane, at even addresses
+            Region::Via => {
+                bus_access_byte_lane::<2, 0, _, _>(acc, w, self, Self::via_read, Self::via_write)
             }
-            // VPA: synchronized to the next low edge of the E clock
-            0x00E0_0000..=0x00FF_FFFF => {
-                if !self.vpa_polled || self.eclock != 0 {
-                    self.vpa_polled = true;
-                    return Some(2);
-                }
-            }
-            _ => (),
+            Region::PhaseRead => bus_access_word(acc, w, self, Self::zero_read, Self::no_write),
+            Region::ExtRom => bus_access_word(acc, w, self, Self::ext_rom_read, Self::no_write),
+            _ => BusResponse::BusError,
         }
-        None
+    }
+
+    /// An access to the other devices takes native time: it starts on a
+    /// native tick
+    fn io_access(&mut self, acc: BusAccess<Bus68000>, region: Region) -> BusResponse {
+        let w = match self.native_clock.device_sync(&acc) {
+            DeviceCycle::Stall(n) => return BusResponse::Stall(n),
+            DeviceCycle::Access(w) => w,
+        };
+        match region {
+            Region::Scsi => self.scsi_cycle(acc, w),
+            Region::Scc => self.scc_cycle(acc, w),
+            // On the lower byte lane, at odd addresses
+            Region::Iwm => {
+                bus_access_byte_lane::<2, 1, _, _>(acc, w, self, Self::iwm_read, Self::iwm_write)
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Programmer's key pressed
@@ -724,34 +741,29 @@ where
         if let Some(stall) = self.stall(&acc) {
             return Ok(BusResponse::Stall(stall));
         }
-        self.vpa_polled = false;
 
         self.end_overlay(acc.addr, acc.write);
         let region = self.map[usize::from(self.overlay)][(acc.addr >> MAP_BLOCK_SHIFT) as usize];
-        let resp = match region {
-            Region::Ram => bus_access_word(acc, 0, self, Self::ram_read, Self::ram_write),
-            Region::RamOverlay => {
-                bus_access_word(acc, 0, self, Self::ram_read, Self::ram_write_overlay)
+        // /VPA is asserted for $E00000-$FFFFFF
+        let resp = if acc.addr >= 0x00E0_0000 {
+            self.vpa_cycle(acc, region)
+        } else {
+            match region {
+                Region::Ram => bus_access_word(acc, 0, self, Self::ram_read, Self::ram_write),
+                Region::RamOverlay => {
+                    bus_access_word(acc, 0, self, Self::ram_read, Self::ram_write_overlay)
+                }
+                Region::Rom => bus_access_word(acc, 0, self, Self::rom_read, Self::no_write),
+                Region::OpenBus => {
+                    bus_access_word(acc, 0, self, Self::openbus_read, Self::no_write)
+                }
+                Region::Scsi | Region::Scc | Region::Iwm => self.io_access(acc, region),
+                _ => BusResponse::BusError,
             }
-            Region::Rom => bus_access_word(acc, 0, self, Self::rom_read, Self::no_write),
-            Region::OpenBus => bus_access_word(acc, 0, self, Self::openbus_read, Self::no_write),
-            Region::Scsi => self.scsi_cycle(acc, 0),
-            Region::Scc => self.scc_cycle(acc, 0),
-            // On the lower byte lane, at odd addresses
-            Region::Iwm => {
-                bus_access_byte_lane::<2, 1, _, _>(acc, 0, self, Self::iwm_read, Self::iwm_write)
-            }
-            // On the upper byte lane, at even addresses
-            Region::Via => {
-                bus_access_byte_lane::<2, 0, _, _>(acc, 0, self, Self::via_read, Self::via_write)
-            }
-            Region::PhaseRead => bus_access_word(acc, 0, self, Self::zero_read, Self::no_write),
-            Region::ExtRom => bus_access_word(acc, 0, self, Self::ext_rom_read, Self::no_write),
-            Region::None => BusResponse::BusError,
         };
         let (data, waits) = match resp {
             BusResponse::Ack { data, waits, .. } => (data, waits),
-            BusResponse::Stall(_) => unreachable!(),
+            BusResponse::Stall(_) => return Ok(resp),
             BusResponse::BusError if acc.write => {
                 warn!(
                     "Write to unimplemented address: {:08X} {:02X}",
@@ -832,8 +844,6 @@ where
             bus_frequency: self.bus_frequency(),
         };
 
-        self.cycles += ticks;
-
         // The devices run at the native frequency, whatever the CPU is
         // overclocked to. Run up to the next E clock tick or blanking edge at
         // a time, where anything below can change.
@@ -848,11 +858,8 @@ where
             cpu -= step.cpu_used;
             let ticks = step.native;
 
-            self.eclock += ticks;
             if step.via_tick {
                 // The E Clock is 1/10th of the native CPU clock
-                self.eclock -= 10;
-
                 self.via.tick(1, ())?;
             }
 
