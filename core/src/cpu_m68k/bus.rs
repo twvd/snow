@@ -7,7 +7,7 @@ use crate::cpu_m68k::cache::CpuCaches;
 use crate::cpu_m68k::cpu::{
     Breakpoint, BusBreakpoint, CpuError, CpuM68k, Group0Details, WriteBack040,
 };
-use crate::cpu_m68k::pmmu::translate::{CacheMode, Translation};
+use crate::cpu_m68k::pmmu::translate::{CacheMode, LastTranslation, Translation};
 use crate::cpu_m68k::{CpuM68kType, CpuSized, M68000, M68020, TORDER_HIGHLOW, TORDER_LOWHIGH};
 use crate::tickable::Ticks;
 use crate::types::Long;
@@ -181,7 +181,24 @@ where
                 cache: CacheMode::WriteThrough,
             });
         }
-        self.pmmu_translate(acc.fault.fc, acc.laddr, acc.fault.write)
+        // Reads reuse the last translation made in the same page. The ATC
+        // still holds it, until pmmu_translation_changed().
+        let fc = acc.fault.fc;
+        let slot = usize::from(acc.kind == AccessKind::Fetch);
+        let last = self.last_translation[slot];
+        if !acc.fault.write
+            && last.generation == self.pmmu_xlat_generation
+            && last.fc == fc
+            && acc.laddr & !last.offset_mask == last.page
+        {
+            return Ok(Translation {
+                paddr: last.paddr | (acc.laddr & last.offset_mask),
+                cache: last.cache,
+            });
+        }
+
+        let tr = self
+            .pmmu_translate(fc, acc.laddr, acc.fault.write)
             .map_err(|e| match e.downcast_ref() {
                 Some(CpuError::BusError(details)) => {
                     anyhow!(CpuError::BusError(Group0Details {
@@ -191,7 +208,19 @@ where
                     }))
                 }
                 _ => e,
-            })
+            })?;
+        if !acc.fault.write {
+            let offset_mask = self.pmmu_page_mask();
+            self.last_translation[slot] = LastTranslation {
+                generation: self.pmmu_xlat_generation,
+                fc,
+                page: acc.laddr & !offset_mask,
+                offset_mask,
+                paddr: tr.paddr & !offset_mask,
+                cache: tr.cache,
+            };
+        }
+        Ok(tr)
     }
 
     /// Runs a CPU access, up to the end of the long word at most: translates

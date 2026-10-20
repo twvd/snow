@@ -32,6 +32,27 @@ pub struct Translation {
     pub cache: CacheMode,
 }
 
+/// A recent read translation, which later reads in the same page reuse
+/// without going through the MMU
+#[derive(Clone, Copy, Default)]
+pub(in crate::cpu_m68k) struct LastTranslation {
+    /// CpuM68k::pmmu_xlat_generation when it was made, 0 for none
+    pub generation: u32,
+    pub fc: u8,
+    /// Logical address of the page
+    pub page: Address,
+    /// Address bits within the page
+    pub offset_mask: Address,
+    /// Physical address of the page
+    pub paddr: Address,
+    pub cache: CacheMode,
+}
+
+/// Initial CpuM68k::pmmu_xlat_generation: never that of a LastTranslation
+pub(in crate::cpu_m68k) fn xlat_generation_default() -> u32 {
+    1
+}
+
 /// Index in CpuM68k::pmmu_atc tables when URP is in use
 pub(in crate::cpu_m68k) const PMMU_ATC_URP: usize = 0;
 /// Index in CpuM68k::pmmu_atc tables when SRP is in use
@@ -165,8 +186,31 @@ where
         }
     }
 
+    /// Forgets the last translations, after anything that may change
+    /// translations: ATC flushes, MMU register writes, reset
+    pub(in crate::cpu_m68k) fn pmmu_translation_changed(&mut self) {
+        self.pmmu_xlat_generation = self.pmmu_xlat_generation.wrapping_add(1);
+        if self.pmmu_xlat_generation == 0 {
+            self.last_translation = Default::default();
+            self.pmmu_xlat_generation = xlat_generation_default();
+        }
+    }
+
+    /// Address bits within an MMU page
+    pub(in crate::cpu_m68k) fn pmmu_page_mask(&self) -> Address {
+        let shift = if CPU_TYPE == M68040 {
+            self.mmu040_page_shift()
+        } else if self.regs.pmmu.tc.enable() {
+            Address::from(self.regs.pmmu.tc.ps())
+        } else {
+            12
+        };
+        (1 << shift) - 1
+    }
+
     /// Flushes complete ATC
     pub(in crate::cpu_m68k) fn pmmu_cache_invalidate(&mut self) {
+        self.pmmu_translation_changed();
         // Incrementing generation invalidates all entries with a lower generation,
         // making ATC flushes very cheap rather than zeroizing the entire cache.
         self.pmmu_atc_generation = self.pmmu_atc_generation.wrapping_add(1);

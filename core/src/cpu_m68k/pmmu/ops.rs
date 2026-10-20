@@ -28,6 +28,7 @@ where
     TCaches: CpuCaches,
 {
     pub(in crate::cpu_m68k) fn op_pop_000(&mut self, instr: &Instruction) -> Result<()> {
+        self.pmmu_translation_changed();
         if !PMMU {
             return self.op_linef(instr);
         }
