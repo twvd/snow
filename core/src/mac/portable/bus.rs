@@ -406,6 +406,8 @@ where
         match region {
             // On the lower byte lane, at odd addresses
             Region::Swim => {
+                let hold = self.swim.hold(&self.native_clock);
+                let w = self.native_clock.scale_dev_waits(w, hold);
                 bus_access_byte_lane::<2, 1, _, _>(acc, w, self, Self::swim_read, Self::swim_write)
             }
             // On the upper byte lane, its /IOR and /IOW decoded by the GLU
