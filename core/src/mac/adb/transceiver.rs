@@ -2,8 +2,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::mac::adb::{AdbDeviceResponse, AdbEvent};
+use crate::tickable::Ticks;
 
 use super::{AdbDevice, AdbDeviceInstance};
+
+/// Time to shift a byte through the VIA shift register, in VIA ticks (3 ms)
+const SHIFT_DELAY: Ticks = 783_360 * 3 / 1000;
 
 /// ADB Bus/transceiver states
 #[derive(
@@ -46,6 +50,11 @@ pub struct AdbTransceiver {
 
     /// Command data being clocked in
     cmd: Vec<u8>,
+
+    /// VIA ticks until the byte being shifted is through
+    shift_time: Ticks,
+    /// Byte to shift into the VIA
+    shift_in: u8,
 }
 
 impl AdbTransceiver {
@@ -62,7 +71,46 @@ impl AdbTransceiver {
         self.devices.push(Box::new(device));
     }
 
-    pub fn get_int(&self) -> bool {
+    /// Runs the transceiver for one VIA tick, with the ADB state lines ST0
+    /// and ST1 from VIA PB4/PB5. When it has clocked a byte through the shift
+    /// register, it calls `shift` with the byte it drives and gets the VIA's
+    /// byte back. Returns the state of the ADB interrupt line to VIA PB3:
+    /// true when asserted (PB3 low).
+    pub fn tick(&mut self, st0: bool, st1: bool, mut shift: impl FnMut(u8) -> u8) -> bool {
+        let state = self.state;
+        if let Some(b) = self.io(st0, st1) {
+            self.shift_in = b;
+        }
+        if self.state != state {
+            // A new state starts the shift of a byte
+            self.shift_time = SHIFT_DELAY;
+        }
+
+        if self.shift_time > 0 {
+            self.shift_time -= 1;
+            if self.shift_time == 0 {
+                let listen_data = matches!(self.state, AdbBusState::Data1 | AdbBusState::Data2)
+                    && self.is_listen();
+                if self.state == AdbBusState::Command || listen_data {
+                    // A command or Listen data from the VIA
+                    let data = shift(0);
+                    self.data_in(data);
+                } else {
+                    shift(self.shift_in);
+                    self.shift_time = SHIFT_DELAY;
+                }
+            }
+        }
+
+        self.get_int()
+    }
+
+    /// The command being clocked in is a Listen
+    fn is_listen(&self) -> bool {
+        self.cmd.first().is_some_and(|c| (c >> 2) & 3 == 0b10)
+    }
+
+    fn get_int(&self) -> bool {
         // The INT line has a different meaning in each phase.
         // In Data1, it signals that the command response has ended or that the
         // device did not respond (e.g. a keyboard Talk with no events pending).
@@ -82,7 +130,7 @@ impl AdbTransceiver {
         self.devices.iter().any(|d| d.get_srq())
     }
 
-    pub fn io(&mut self, st0: bool, st1: bool) -> Option<u8> {
+    fn io(&mut self, st0: bool, st1: bool) -> Option<u8> {
         let newstate = AdbBusState::from_io(st0, st1);
 
         if newstate == self.state {
@@ -119,7 +167,7 @@ impl AdbTransceiver {
         }
     }
 
-    pub fn data_in(&mut self, data: u8) {
+    fn data_in(&mut self, data: u8) {
         if self.state == AdbBusState::Command && self.cmd.is_empty() {
             // New command, clear response buffer
             self.response.clear();

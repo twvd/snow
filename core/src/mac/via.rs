@@ -215,12 +215,6 @@ impl BusMember<Address> for Via {
         let reg = ViaReg::from_addr(addr);
 
         match reg {
-            ViaReg::B => {
-                // Lazy update ADB Int to current state
-                if self.model.has_adb() {
-                    self.core.b_in.set_adb_int(!self.adb.get_int());
-                }
-            }
             ViaReg::A | ViaReg::ANH => {
                 // The SCC write request bit is used for checking if there's data ready
                 // from the SCC in critical sections where SCC interrupts are disabled.
@@ -236,7 +230,8 @@ impl BusMember<Address> for Via {
     fn write(&mut self, addr: Address, val: Byte) -> Option<()> {
         let reg = ViaReg::from_addr(addr);
 
-        if reg == ViaReg::ACR {
+        // The keyboard of the compact Macs without ADB
+        if reg == ViaReg::ACR && !self.model.has_adb() {
             let oldmode = self.core.acr.sr_mode();
             self.core.write(reg, val);
             let newmode = self.core.acr.sr_mode();
@@ -258,7 +253,7 @@ impl BusMember<Address> for Via {
 
         match reg {
             // Keyboard shift register
-            ViaReg::SR => {
+            ViaReg::SR if !self.model.has_adb() => {
                 if self.core.acr.sr_mode() == ACR_SHIFT_OUT {
                     // Start shift-out
                     self.kbdshift_out_time = SHIFT_DELAY;
@@ -271,14 +266,6 @@ impl BusMember<Address> for Via {
                     self.core.pb().rtcdata(),
                 );
                 self.core.b_in.set_rtcdata(rtcin);
-
-                if self.model.has_adb()
-                    && let Some(b) = self
-                        .adb
-                        .io(self.core.pb().adb_st0(), self.core.pb().adb_st1())
-                {
-                    self.kbdshift_in = b;
-                }
             }
             _ => (),
         }
@@ -308,16 +295,25 @@ impl Via {
 
         self.core.tick_timers(ticks)?;
 
-        // ADB/Keyboard response
+        if self.model.has_adb() {
+            // The ADB transceiver reads ST0/ST1, clocks the shift register and
+            // drives PB3
+            for _ in 0..ticks {
+                let pb = self.core.pb();
+                let int = self
+                    .adb
+                    .tick(pb.adb_st0(), pb.adb_st1(), |b| self.core.shift_sr(b));
+                self.core.b_in.set_adb_int(!int);
+            }
+            return Ok(ticks);
+        }
+
+        // Keyboard response
         if self.kbdshift_out_time > 0 {
             self.kbdshift_out_time = self.kbdshift_out_time.saturating_sub(ticks);
             if self.kbdshift_out_time == 0 {
                 let data = self.core.shift_sr(0);
-                if !self.model.has_adb() {
-                    self.kbdshift_in = self.keyboard.cmd(data)?;
-                } else {
-                    self.adb.data_in(data);
-                }
+                self.kbdshift_in = self.keyboard.cmd(data)?;
             }
         }
         if self.kbdshift_in_time > 0 {
