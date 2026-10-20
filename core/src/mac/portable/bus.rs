@@ -6,7 +6,7 @@ use super::pmgr::Pmgr;
 use super::via::Via;
 use super::video::Video;
 use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_byte_lane, bus_access_word};
-use crate::bus::native_clock::NativeClock;
+use crate::bus::native_clock::{DeviceCycle, NativeClock, WaitTicks};
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -84,8 +84,6 @@ type AddressMap = [[Region; MAP_BLOCKS]; 2];
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct MacPortableBus<TRenderer: Renderer> {
-    cycles: Ticks,
-
     /// The currently emulated Macintosh model
     model: MacModel,
 
@@ -101,14 +99,8 @@ pub struct MacPortableBus<TRenderer: Renderer> {
     /// Counts clock ticks at native frequency for the power manager, which
     /// is ticked on each CPU cycle, regardless of overclocking
     pmgr_clock: NativeClock,
-    via_clock: Ticks,
-    /// A VIA cycle is stalled up to the edge of the VIA clock, until the CPU
-    /// presents it again. Not saved, as a cycle is never in progress between
-    /// instructions.
-    #[serde(skip)]
-    via_stalled: bool,
     pub(crate) scc: Scc,
-    /// Bus time the SCC can be accessed again
+    /// Native time the SCC can be accessed again
     scc_ready: Ticks,
     pub(crate) video: Video<TRenderer>,
     pub(crate) asc: Asc,
@@ -197,7 +189,6 @@ where
         };
 
         let mut bus = Self {
-            cycles: 0,
             model,
 
             rom_mask: rom.len() - 1,
@@ -207,8 +198,6 @@ where
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             via: Via::new(),
             pmgr_clock: NativeClock::new(BUS_FREQUENCY, 20),
-            via_clock: 0,
-            via_stalled: false,
             video: Video::new(renderer),
             scc: Scc::new(),
             scc_ready: 0,
@@ -379,37 +368,62 @@ where
     /// The GLU makes its /RD and /WR from A15 too: reads are documented at
     /// $FD0000 and writes at $FD8000. What an access to the other half does
     /// isn't, so the SCC is read on reads and written on writes anywhere.
-    fn scc_cycle(&mut self, acc: BusAccess<Bus68000>) -> BusResponse {
-        let now = self.cycles + acc.pending;
-        let waits = self.scc_ready.saturating_sub(now);
+    fn scc_cycle(&mut self, acc: BusAccess<Bus68000>, w: WaitTicks) -> BusResponse {
+        // When overclocking, acc.pending is 0 after device_sync(), and native
+        // ticks are CPU ticks otherwise
+        let now = self.native_clock.native_ticks() + acc.pending;
+        let hold = self.scc_ready.saturating_sub(now);
         // The access itself takes 4 clocks
-        self.scc_ready = now + waits + 4 + SCC_RECOVERY;
-        bus_access_byte_lane::<2, 0, _, _>(acc, waits, self, Self::scc_read, Self::scc_write)
+        self.scc_ready = now + hold + 4 + SCC_RECOVERY;
+        let w = self.native_clock.scale_dev_waits(w, hold);
+        bus_access_byte_lane::<2, 0, _, _>(acc, w, self, Self::scc_read, Self::scc_write)
     }
 
     /// The VIA is on the upper byte lane, at even addresses. It is clocked
     /// at C16M / 20 by the GLU, which also makes its chip select and /DTACK
     /// (the CPU's E clock and /VMA only go to the expansion connector), so
-    /// an access is synchronous with the VIA clock: it starts on its next
-    /// edge and lasts half a VIA clock cycle, as on the Mac II. The cycle is
-    /// stalled up to that edge, with the bus ticked through it, for the VIA
-    /// to be accessed in its state at that time.
-    fn via_cycle(&mut self, acc: BusAccess<Bus68000>) -> Result<BusResponse> {
-        if !self.via_stalled {
-            self.via_stalled = true;
-            return Ok(BusResponse::Stall(20 - (self.via_clock + acc.pending) % 20));
+    /// an access is synchronous with the VIA clock: it starts on a VIA tick
+    /// and lasts a VIA clock cycle, as on the Mac II.
+    fn via_cycle(&mut self, acc: BusAccess<Bus68000>) -> BusResponse {
+        match self.native_clock.via_sync(&acc) {
+            DeviceCycle::Stall(n) => BusResponse::Stall(n),
+            DeviceCycle::Access(w) => {
+                bus_access_byte_lane::<2, 0, _, _>(acc, w, self, Self::via_read, Self::via_write)
+            }
         }
-        self.via_stalled = false;
+    }
 
-        // Half a VIA clock cycle, less the 4 clocks of the bus cycle
-        let waits = 10 - 4;
-        Ok(bus_access_byte_lane::<2, 0, _, _>(
-            acc,
-            waits,
-            self,
-            Self::via_read,
-            Self::via_write,
-        ))
+    /// An access to a device takes native time: the VIA is synchronous with
+    /// the VIA clock, the other devices start on a native tick.
+    fn io_access(&mut self, acc: BusAccess<Bus68000>, region: Region) -> BusResponse {
+        if matches!(region, Region::Via) {
+            return self.via_cycle(acc);
+        }
+        let w = match self.native_clock.device_sync(&acc) {
+            DeviceCycle::Stall(n) => return BusResponse::Stall(n),
+            DeviceCycle::Access(w) => w,
+        };
+        match region {
+            // On the lower byte lane, at odd addresses
+            Region::Swim => {
+                bus_access_byte_lane::<2, 1, _, _>(acc, w, self, Self::swim_read, Self::swim_write)
+            }
+            // On the upper byte lane, its /IOR and /IOW decoded by the GLU
+            Region::Scsi => {
+                bus_access_byte_lane::<2, 0, _, _>(acc, w, self, Self::scsi_read, Self::scsi_write)
+            }
+            Region::Scc => self.scc_cycle(acc, w),
+            // The CPU GLU only has D0-D3: on the lower byte lane
+            Region::Normandy => bus_access_byte_lane::<2, 1, _, _>(
+                acc,
+                w,
+                self,
+                Self::normandy_read,
+                Self::normandy_write,
+            ),
+            Region::Asc => bus_access_word(acc, w, self, Self::asc_read, Self::asc_write),
+            _ => unreachable!(),
+        }
     }
 
     /// The ASC is on the upper byte lane with /UDS as its A0, and a buffer
@@ -638,33 +652,12 @@ where
         let region = self.region(acc.addr);
         let waits = self.wait_states(region, &acc);
         let resp = match region {
-            // On the lower byte lane, at odd addresses
-            Region::Swim => bus_access_byte_lane::<2, 1, _, _>(
-                acc,
-                waits,
-                self,
-                Self::swim_read,
-                Self::swim_write,
-            ),
-            Region::Via => self.via_cycle(acc)?,
-            // On the upper byte lane, its /IOR and /IOW decoded by the GLU
-            Region::Scsi => bus_access_byte_lane::<2, 0, _, _>(
-                acc,
-                waits,
-                self,
-                Self::scsi_read,
-                Self::scsi_write,
-            ),
-            Region::Scc => self.scc_cycle(acc),
-            // The CPU GLU only has D0-D3: on the lower byte lane
-            Region::Normandy => bus_access_byte_lane::<2, 1, _, _>(
-                acc,
-                waits,
-                self,
-                Self::normandy_read,
-                Self::normandy_write,
-            ),
-            Region::Asc => bus_access_word(acc, waits, self, Self::asc_read, Self::asc_write),
+            Region::Swim
+            | Region::Via
+            | Region::Scsi
+            | Region::Scc
+            | Region::Normandy
+            | Region::Asc => self.io_access(acc, region),
             Region::Ram => bus_access_word(acc, waits, self, Self::ram_read, Self::ram_write),
             Region::Rom => bus_access_word(acc, waits, self, Self::rom_read, |_, _, _, _| Some(())),
             _ => bus_access_word(
@@ -778,8 +771,6 @@ where
             bus_frequency: self.bus_frequency(),
         };
 
-        self.cycles += ticks;
-
         // The devices run at the native frequency, whatever the CPU is
         // overclocked to. The VIA clock is C16M / 20, once every 20 native
         // ticks.
@@ -792,9 +783,7 @@ where
             }
             cpu -= step.cpu_used;
             native_ticks += step.native;
-            self.via_clock += step.native;
             if step.via_tick {
-                self.via_clock -= 20;
                 self.via.tick(1, ())?;
             }
         }

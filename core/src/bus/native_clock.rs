@@ -2,7 +2,24 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::bus::access::{BusAccess, CpuBus};
 use crate::tickable::Ticks;
+
+/// Wait states, in CPU ticks
+pub type WaitTicks = Ticks;
+
+/// What a device access cycle does
+pub enum DeviceCycle {
+    /// Stall the CPU for this many CPU ticks, then it presents the cycle
+    /// again
+    Stall(Ticks),
+    /// Do the access now. device_sync() and via_sync() return in WaitTicks the
+    /// wait states, in CPU ticks, to give the CPU so that the access lasts
+    /// as long as the corresponding device bus cycle: a native bus cycle
+    /// for device_sync(), a VIA (E clock) cycle for via_sync(). The device
+    /// can add any extra wait states on top of that with scale_dev_waits().
+    Access(WaitTicks),
+}
 
 /// What a step of the native clock did
 pub struct Step {
@@ -40,6 +57,8 @@ pub struct NativeClock {
     cpu_since_native_times_den: Ticks,
     /// Native ticks since the last VIA tick
     native_since_via: Ticks,
+    /// Native ticks elapsed since boot
+    native_ticks: Ticks,
 }
 
 impl NativeClock {
@@ -53,6 +72,7 @@ impl NativeClock {
             native_per_via,
             cpu_since_native_times_den: 0,
             native_since_via: 0,
+            native_ticks: 0,
         }
     }
 
@@ -62,6 +82,16 @@ impl NativeClock {
         self.cpu_per_native_num = cpu_freq / gcd;
         self.cpu_per_native_den = self.native_freq / gcd;
         self.cpu_since_native_times_den = 0;
+    }
+
+    /// True when the CPU runs faster than the native clock
+    pub fn is_overclocking(&self) -> bool {
+        self.cpu_per_native_num != self.cpu_per_native_den
+    }
+
+    /// Native ticks elapsed since boot
+    pub fn native_ticks(&self) -> Ticks {
+        self.native_ticks
     }
 
     /// Runs the clock for up to `cpu_ticks` CPU ticks, stopping at the next
@@ -105,6 +135,7 @@ impl NativeClock {
             }
         };
 
+        self.native_ticks += native;
         self.native_since_via += native;
         let via_tick = self.native_since_via == self.native_per_via;
         if via_tick {
@@ -116,11 +147,96 @@ impl NativeClock {
             cpu_used,
         }
     }
+
+    /// Start of a device access cycle.
+    ///
+    /// When overclocking, the CPU waits until the native clock has caught
+    /// up with it and a native tick starts; the access then lasts a native
+    /// bus cycle: the CPU's bus cycle (`CpuBus::CYCLE`) in native ticks.
+    /// Without overclocking, the access goes ahead with no wait states.
+    ///
+    /// Returns a DeviceCycle, which indicates whether to stall, or the wait
+    /// states of the native bus cycle.
+    pub fn device_sync<C: CpuBus>(&self, acc: &BusAccess<C>) -> DeviceCycle {
+        if !self.is_overclocking() {
+            return DeviceCycle::Access(0);
+        }
+        let num = self.cpu_per_native_num;
+        let den = self.cpu_per_native_den;
+        // CPU ticks since the last native tick, at the access, times `den`
+        let cpu_since_native_times_den =
+            (self.cpu_since_native_times_den + acc.pending * den) % num;
+        // The native tick started less than one CPU tick ago
+        let on_tick = cpu_since_native_times_den < den;
+        if on_tick && acc.pending == 0 {
+            // CPU ticks to the end of the native bus cycle, rounded up
+            let cycle = (C::CYCLE * num - cpu_since_native_times_den).div_ceil(den);
+            // Less the CPU ticks the CPU counts itself for the cycle
+            return DeviceCycle::Access(cycle - C::CYCLE);
+        }
+        if on_tick {
+            // Only to let the clock catch up with the CPU
+            return DeviceCycle::Stall(0);
+        }
+        // CPU ticks to the next native tick, rounded up
+        DeviceCycle::Stall((num - cpu_since_native_times_den).div_ceil(den))
+    }
+
+    /// Start of a VIA access cycle: the same, on a VIA tick instead of a
+    /// native tick, with or without overclocking. The access then lasts a
+    /// VIA cycle, which is one cycle of the VIA clock (the E clock).
+    ///
+    /// Returns a DeviceCycle, which indicates whether to stall, or the wait
+    /// states of the VIA cycle.
+    pub fn via_sync<C: CpuBus>(&self, acc: &BusAccess<C>) -> DeviceCycle {
+        let num = self.cpu_per_native_num;
+        let den = self.cpu_per_native_den;
+        // CPU ticks the access is ahead of the start of the clock's current
+        // native tick, times `den`
+        let cpu_ahead_times_den = self.cpu_since_native_times_den + acc.pending * den;
+        // Native ticks completed by then
+        let native_done = cpu_ahead_times_den / num;
+        // CPU ticks since the last native tick, at the access, times `den`
+        let cpu_since_native_times_den = cpu_ahead_times_den % num;
+        // Native ticks since the last VIA tick, at the access
+        let native_since_via = (self.native_since_via + native_done) % self.native_per_via;
+        // The VIA tick started less than one CPU tick ago
+        let on_via_tick = native_since_via == 0 && cpu_since_native_times_den < den;
+        if on_via_tick && acc.pending == 0 {
+            // CPU ticks to the end of the VIA cycle, rounded up
+            let cycle = (self.native_per_via * num - cpu_since_native_times_den).div_ceil(den);
+            // Less the CPU ticks the CPU counts itself for the cycle
+            return DeviceCycle::Access(cycle - C::CYCLE);
+        }
+        if on_via_tick {
+            // Only to let the clock catch up with the CPU
+            return DeviceCycle::Stall(0);
+        }
+        // Native ticks to the next VIA tick
+        let native_to_via = self.native_per_via - native_since_via;
+        // CPU ticks to the next VIA tick, rounded up
+        DeviceCycle::Stall((native_to_via * num - cpu_since_native_times_den).div_ceil(den))
+    }
+
+    /// Adds the device's own wait states to the wait states of a device
+    /// cycle, and returns the resulting total wait states, scaled to the CPU
+    /// clock.
+    ///
+    /// `w` is what device_sync() or via_sync() returned: the duration of the
+    /// device access cycle itself, beyond the CPU's base cycle
+    /// (`CpuBus::CYCLE`), already in CPU ticks. `extra` is the number of
+    /// native wait states the device adds itself (wait states inserted by
+    /// the GLUE, or a recovery time). Without overclocking, this is
+    /// `w + extra`.
+    pub fn scale_dev_waits(&self, w: WaitTicks, extra: Ticks) -> WaitTicks {
+        w + (extra * self.cpu_per_native_num).div_ceil(self.cpu_per_native_den)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::access::Bus68000;
 
     /// Runs `cpu` CPU ticks through the clock, returns the native ticks and
     /// the VIA ticks
@@ -175,6 +291,85 @@ mod tests {
         assert_eq!((step.native, step.via_tick, step.cpu_used), (3, false, 12));
         let step = clock.advance(100, Some(20));
         assert_eq!((step.native, step.via_tick, step.cpu_used), (7, true, 28));
+    }
+
+    fn read(pending: Ticks) -> BusAccess<Bus68000> {
+        BusAccess::read(0, 1, pending)
+    }
+
+    fn sync(clock: &mut NativeClock, cycle: &DeviceCycle) -> Option<WaitTicks> {
+        match *cycle {
+            DeviceCycle::Stall(n) => {
+                run(clock, n);
+                None
+            }
+            DeviceCycle::Access(w) => Some(w),
+        }
+    }
+
+    #[test]
+    fn device_sync_native_speed() {
+        let clock = NativeClock::new(1000, 10);
+        assert!(matches!(
+            clock.device_sync(&read(7)),
+            DeviceCycle::Access(0)
+        ));
+    }
+
+    #[test]
+    fn device_sync_overclocked() {
+        let mut clock = NativeClock::new(1000, 10);
+        clock.set_cpu_frequency(4000);
+        // 6 CPU ticks in: half way through the second native tick
+        let cycle = clock.device_sync(&read(6));
+        assert!(matches!(cycle, DeviceCycle::Stall(2)));
+        run(&mut clock, 8);
+        // On a native tick: 4 native ticks of the 68000's cycle
+        let cycle = clock.device_sync(&read(0));
+        let w = sync(&mut clock, &cycle);
+        assert_eq!(w, Some(16 - 4));
+    }
+
+    #[test]
+    fn device_sync_uneven_ratio() {
+        let mut clock = NativeClock::new(1000, 10);
+        clock.set_cpu_frequency(2500);
+        run(&mut clock, 3);
+        // Native tick 1 started at 2.5 CPU ticks: on it, and the 4 native
+        // ticks of the 68000's cycle end at 12.5, rounded up to 13
+        assert!(matches!(
+            clock.device_sync(&read(0)),
+            DeviceCycle::Access(w) if w == 10 - 4
+        ));
+        run(&mut clock, 4);
+        // 2 CPU ticks into native tick 2, native tick 3 starts at 7.5
+        assert!(matches!(clock.device_sync(&read(0)), DeviceCycle::Stall(1)));
+    }
+
+    #[test]
+    fn via_sync_native_speed() {
+        let mut clock = NativeClock::new(1000, 10);
+        // On a VIA tick, up to date: 10 native ticks of the VIA cycle
+        assert!(matches!(clock.via_sync(&read(0)), DeviceCycle::Access(6)));
+        // On a VIA tick, but the clock has to be brought up to date first
+        assert!(matches!(clock.via_sync(&read(10)), DeviceCycle::Stall(0)));
+        run(&mut clock, 3);
+        assert!(matches!(clock.via_sync(&read(0)), DeviceCycle::Stall(7)));
+        assert!(matches!(clock.via_sync(&read(2)), DeviceCycle::Stall(5)));
+    }
+
+    #[test]
+    fn via_sync_overclocked() {
+        let mut clock = NativeClock::new(1000, 10);
+        clock.set_cpu_frequency(3000);
+        run(&mut clock, 4);
+        // A third of a native tick past native tick 1
+        let cycle = clock.via_sync(&read(0));
+        assert!(matches!(cycle, DeviceCycle::Stall(26)));
+        assert_eq!(sync(&mut clock, &cycle), None);
+        let cycle = clock.via_sync(&read(0));
+        let w = sync(&mut clock, &cycle);
+        assert_eq!(w, Some(30 - 4));
     }
 
     #[test]

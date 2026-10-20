@@ -20,6 +20,8 @@ pub trait CpuBus: Copy {
     const WIDTH: u32;
     /// Dynamic bus sizing
     const DYN_SIZING: bool;
+    /// CPU ticks of a bus cycle without wait states
+    const CYCLE: Ticks;
 }
 
 /// 68000: fixed 16-bit data bus
@@ -29,6 +31,7 @@ pub struct Bus68000;
 impl CpuBus for Bus68000 {
     const WIDTH: u32 = 2;
     const DYN_SIZING: bool = false;
+    const CYCLE: Ticks = 4;
 }
 
 /// 68020 and 68030: 32-bit data bus with dynamic bus sizing
@@ -38,6 +41,8 @@ pub struct Bus68020;
 impl CpuBus for Bus68020 {
     const WIDTH: u32 = 4;
     const DYN_SIZING: bool = true;
+    // The asynchronous bus cycle of the 68020 and 68030
+    const CYCLE: Ticks = 3;
 }
 
 /// One bus cycle as presented by the CPU, on the data bus `C` of the CPU
