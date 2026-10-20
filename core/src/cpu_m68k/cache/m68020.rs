@@ -67,19 +67,22 @@ impl CpuCaches for Caches020 {
     fn read_hit(
         &mut self,
         cacr: RegisterCACR,
-        acc: &CpuAccess,
+        kind: AccessKind,
+        fc: u8,
+        laddr: Address,
+        size: u32,
         ticks: &mut Ticks,
         history: &mut HistoryEntryInstruction,
     ) -> Option<(Long, u32)> {
-        if acc.kind != AccessKind::Fetch || !cacr.e() {
+        if kind != AccessKind::Fetch || !cacr.e() {
             return None;
         }
-        let index = Self::index(acc.laddr);
-        if self.tags[index] != Self::tag(acc.laddr, acc.fault.fc) {
+        let index = Self::index(laddr);
+        if self.tags[index] != Self::tag(laddr, fc) {
             return None;
         }
-        let offset = acc.laddr % 4;
-        let len = acc.size.min(4 - offset);
+        let offset = laddr % 4;
+        let len = size.min(4 - offset);
         history.icache_hit = true;
         *ticks += HIT_TICKS;
         Some((
