@@ -98,11 +98,11 @@ pub struct MacPortableBus<TRenderer: Renderer> {
 
     pub(crate) via: Via,
     via_clock: Ticks,
-    /// Stall of a VIA cycle up to the edge of the VIA clock, until the CPU
-    /// presents the cycle again. Not saved, as a cycle is never in progress
-    /// between instructions.
+    /// A VIA cycle is stalled up to the edge of the VIA clock, until the CPU
+    /// presents it again. Not saved, as a cycle is never in progress between
+    /// instructions.
     #[serde(skip)]
-    via_stall: Ticks,
+    via_stalled: bool,
     pub(crate) scc: Scc,
     /// Bus time the SCC can be accessed again
     scc_ready: Ticks,
@@ -203,7 +203,7 @@ where
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             via: Via::new(BUS_FREQUENCY),
             via_clock: 0,
-            via_stall: 0,
+            via_stalled: false,
             video: Video::new(renderer),
             scc: Scc::new(),
             scc_ready: 0,
@@ -390,14 +390,14 @@ where
     /// stalled up to that edge, with the bus ticked through it, for the VIA
     /// to be accessed in its state at that time.
     fn via_cycle(&mut self, acc: BusAccess<Bus68000>) -> Result<BusResponse> {
-        if self.via_stall == 0 {
-            self.via_stall = 20 - (self.via_clock + acc.pending) % 20;
-            return Ok(BusResponse::Stall(self.via_stall));
+        if !self.via_stalled {
+            self.via_stalled = true;
+            return Ok(BusResponse::Stall(20 - (self.via_clock + acc.pending) % 20));
         }
-        let to_edge = std::mem::take(&mut self.via_stall);
+        self.via_stalled = false;
 
-        // Less the 4 clocks of the bus cycle
-        let waits = (to_edge + 10).saturating_sub(4);
+        // Half a VIA clock cycle, less the 4 clocks of the bus cycle
+        let waits = 10 - 4;
         Ok(bus_access_byte_lane::<2, 0, _, _>(
             acc,
             waits,

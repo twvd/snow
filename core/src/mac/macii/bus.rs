@@ -126,11 +126,11 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     pub(crate) scc: Scc,
     pub(crate) asc: Asc,
     via_clock: Ticks,
-    /// Stall of a VIA cycle up to the edge of the VIA clock, until the CPU
-    /// presents the cycle again. Not saved, as a cycle is never in progress
-    /// between instructions.
+    /// A VIA cycle is stalled up to the edge of the VIA clock, until the CPU
+    /// presents it again. Not saved, as a cycle is never in progress between
+    /// instructions.
     #[serde(skip)]
-    via_stall: Ticks,
+    via_stalled: bool,
     /// Bus time the SCC can be accessed again
     scc_ready: Ticks,
     asc_clock: Ticks,
@@ -289,7 +289,7 @@ where
             via1: Via::new(model, BUS_FREQUENCY),
             via2: Via2::new(model, BUS_FREQUENCY),
             via_clock: 0,
-            via_stall: 0,
+            via_stalled: false,
             scc_ready: 0,
             scc: Scc::new(),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), BUS_FREQUENCY),
@@ -658,16 +658,18 @@ where
         write: fn(&mut Self, Address, u32, u32) -> Option<()>,
     ) -> Result<BusResponse> {
         const PERIOD: Ticks = 20 * BUS_FREQUENCY;
-        if self.via_stall == 0 {
+        if !self.via_stalled {
+            self.via_stalled = true;
             let phase = (self.via_clock + acc.pending * C16M_FREQUENCY) % PERIOD;
-            self.via_stall = (PERIOD - phase).div_ceil(C16M_FREQUENCY);
-            return Ok(BusResponse::Stall(self.via_stall));
+            return Ok(BusResponse::Stall(
+                (PERIOD - phase).div_ceil(C16M_FREQUENCY),
+            ));
         }
-        let to_edge = std::mem::take(&mut self.via_stall);
+        self.via_stalled = false;
         let half = PERIOD / C16M_FREQUENCY / 2;
 
         // Less the 3 clocks of the bus cycle
-        let waits = (to_edge + half).saturating_sub(3);
+        let waits = half - 3;
         Ok(bus_access_byte(acc, waits, self, read, write))
     }
 

@@ -65,15 +65,6 @@ enum Region {
 /// Address map: the region of each block, with the boot overlay off and on
 type AddressMap = [[Region; MAP_BLOCKS]; 2];
 
-/// A bus cycle being stalled, between the times the CPU presents it
-#[derive(Default)]
-struct Stalled {
-    /// Wait states so far
-    waits: Ticks,
-    /// The VPA cycle has waited once, as it always does
-    vpa_polled: bool,
-}
-
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct CompactMacBus<TRenderer: Renderer> {
@@ -97,9 +88,10 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     pub(crate) audio: AudioState,
 
     eclock: Ticks,
-    /// Not saved, as a cycle is never in progress between instructions
+    /// The VPA cycle in progress has waited once, as it always does. Not
+    /// saved, as a cycle is never in progress between instructions.
     #[serde(skip)]
-    stalled: Stalled,
+    vpa_polled: bool,
     mouse_ready: bool,
     pub(crate) swim: Swim,
     pub(crate) scsi: ScsiController,
@@ -219,7 +211,7 @@ where
             video: Video::new(renderer),
             audio: AudioState::default(),
             eclock: 0,
-            stalled: Stalled::default(),
+            vpa_polled: false,
             scc: Scc::new(),
             swim: Swim::new(&fdds, model.fdd_hd(), BUS_FREQUENCY),
             scsi: ScsiController::new(),
@@ -623,12 +615,6 @@ where
         self.act_bus_frequency = bus_frequency.unwrap_or_else(|| self.bus_frequency());
     }
 
-    /// Stalls the cycle for 2 wait cycles
-    fn wait2(&mut self) -> Option<Ticks> {
-        self.stalled.waits += 2;
-        Some(2)
-    }
-
     /// Stall of a bus cycle which has to wait, polled every 2 cycles with
     /// the bus ticked in between, or None once it can go on
     fn stall(&mut self, acc: &BusAccess<Bus68000>) -> Option<Ticks> {
@@ -638,14 +624,14 @@ where
             // https://www.bigmessowires.com/2011/08/25/68000-interleaved-memory-controller-design/
             0x0000_0000..=0x003F_FFFF => {
                 if !self.video.in_blanking_period() && !self.model.ram_interleave_cpu(self.cycles) {
-                    return self.wait2();
+                    return Some(2);
                 }
             }
             // VPA: synchronized to the next low edge of the E clock
             0x00E0_0000..=0x00FF_FFFF => {
-                if !self.stalled.vpa_polled || self.eclock != 0 {
-                    self.stalled.vpa_polled = true;
-                    return self.wait2();
+                if !self.vpa_polled || self.eclock != 0 {
+                    self.vpa_polled = true;
+                    return Some(2);
                 }
             }
             _ => (),
@@ -736,54 +722,44 @@ where
         if let Some(stall) = self.stall(&acc) {
             return Ok(BusResponse::Stall(stall));
         }
-        let waits = std::mem::take(&mut self.stalled).waits;
+        self.vpa_polled = false;
 
         self.end_overlay(acc.addr, acc.write);
         let region = self.map[usize::from(self.overlay)][(acc.addr >> MAP_BLOCK_SHIFT) as usize];
         let resp = match region {
-            Region::Ram => bus_access_word(acc, waits, self, Self::ram_read, Self::ram_write),
+            Region::Ram => bus_access_word(acc, 0, self, Self::ram_read, Self::ram_write),
             Region::RamOverlay => {
-                bus_access_word(acc, waits, self, Self::ram_read, Self::ram_write_overlay)
+                bus_access_word(acc, 0, self, Self::ram_read, Self::ram_write_overlay)
             }
-            Region::Rom => bus_access_word(acc, waits, self, Self::rom_read, Self::no_write),
-            Region::OpenBus => {
-                bus_access_word(acc, waits, self, Self::openbus_read, Self::no_write)
-            }
-            Region::Scsi => self.scsi_cycle(acc, waits),
-            Region::Scc => self.scc_cycle(acc, waits),
+            Region::Rom => bus_access_word(acc, 0, self, Self::rom_read, Self::no_write),
+            Region::OpenBus => bus_access_word(acc, 0, self, Self::openbus_read, Self::no_write),
+            Region::Scsi => self.scsi_cycle(acc, 0),
+            Region::Scc => self.scc_cycle(acc, 0),
             // On the lower byte lane, at odd addresses
-            Region::Iwm => bus_access_byte_lane::<2, 1, _, _>(
-                acc,
-                waits,
-                self,
-                Self::iwm_read,
-                Self::iwm_write,
-            ),
+            Region::Iwm => {
+                bus_access_byte_lane::<2, 1, _, _>(acc, 0, self, Self::iwm_read, Self::iwm_write)
+            }
             // On the upper byte lane, at even addresses
-            Region::Via => bus_access_byte_lane::<2, 0, _, _>(
-                acc,
-                waits,
-                self,
-                Self::via_read,
-                Self::via_write,
-            ),
-            Region::PhaseRead => bus_access_word(acc, waits, self, Self::zero_read, Self::no_write),
-            Region::ExtRom => bus_access_word(acc, waits, self, Self::ext_rom_read, Self::no_write),
+            Region::Via => {
+                bus_access_byte_lane::<2, 0, _, _>(acc, 0, self, Self::via_read, Self::via_write)
+            }
+            Region::PhaseRead => bus_access_word(acc, 0, self, Self::zero_read, Self::no_write),
+            Region::ExtRom => bus_access_word(acc, 0, self, Self::ext_rom_read, Self::no_write),
             Region::None => BusResponse::BusError,
         };
-        let data = match resp {
-            BusResponse::Ack { data, .. } => data,
+        let (data, waits) = match resp {
+            BusResponse::Ack { data, waits, .. } => (data, waits),
             BusResponse::Stall(_) => unreachable!(),
             BusResponse::BusError if acc.write => {
                 warn!(
                     "Write to unimplemented address: {:08X} {:02X}",
                     acc.addr, acc.data
                 );
-                0
+                (0, 0)
             }
             BusResponse::BusError => {
                 warn!("Read from unimplemented address: {:08X}", acc.addr);
-                self.openbus_read(acc.addr, acc.size).unwrap_or_default()
+                (self.openbus_read(acc.addr, acc.size).unwrap_or_default(), 0)
             }
         };
 
