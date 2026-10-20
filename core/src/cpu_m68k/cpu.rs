@@ -513,6 +513,16 @@ pub struct CpuM68k<
     #[serde(default = "crate::cpu_m68k::pmmu::translate::atc_generation_default")]
     pub(in crate::cpu_m68k) pmmu_atc_generation: u32,
 
+    /// Last translations, for data reads, instruction fetches and data
+    /// writes
+    #[serde(
+        skip,
+        default = "crate::cpu_m68k::pmmu::translate::last_translations_none"
+    )]
+    pub(in crate::cpu_m68k) last_translation: [[crate::cpu_m68k::pmmu::translate::LastTranslation;
+        crate::cpu_m68k::pmmu::translate::LAST_TRANSLATIONS];
+        3],
+
     /// On-chip caches
     #[serde(default)]
     pub(in crate::cpu_m68k) caches: TCaches,
@@ -583,6 +593,7 @@ where
             systrap_history_enabled: false,
             pmmu_atc: Default::default(),
             pmmu_atc_generation: atc_generation_default(),
+            last_translation: crate::cpu_m68k::pmmu::translate::last_translations_none(),
             caches: TCaches::default(),
             restart_regs: None,
             wb040_defer: false,
@@ -604,6 +615,7 @@ where
     pub fn reset(&mut self) -> Result<()> {
         self.regs = RegisterFile::new();
         self.caches.reset();
+        self.pmmu_translation_changed();
 
         self.cycles = 0;
         self.last_bus_sync = 0;
@@ -4422,6 +4434,7 @@ where
                 self.regs.write(destreg, val & mask);
             } else {
                 self.regs.write(destreg, val);
+                self.pmmu_translation_changed();
 
                 if CPU_TYPE >= M68040
                     && matches!(
