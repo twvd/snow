@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
-use crate::cpu_m68k::bus::CpuAccess;
+use crate::cpu_m68k::bus::{AccessKind, CpuAccess};
 use crate::cpu_m68k::bus_transaction::BusTransaction;
 use crate::cpu_m68k::cpu::HistoryEntryInstruction;
 use crate::cpu_m68k::pmmu::translate::Translation;
@@ -69,16 +69,21 @@ pub trait CpuCaches: Default {
         bus.access(&acc.fault, tr.paddr, acc.size, acc.wdata)
     }
 
-    /// Runs the part of a read access from `acc.laddr` on from the caches,
-    /// before it is translated, if it hits in caches tagged with logical
-    /// addresses: adds the time it takes to `ticks` and returns the read
-    /// data and the number of bytes done. Returns None when the access has
-    /// to be translated and run with access().
+    /// Runs the part of a read access of `size` bytes left in the operand
+    /// from logical address `laddr` on from the caches, before it is
+    /// translated, if it hits in caches tagged with logical addresses: adds
+    /// the time it takes to `ticks` and returns the read data and the number
+    /// of bytes done. Returns None when the access has to be translated and
+    /// run with access().
+    #[allow(clippy::too_many_arguments)]
     #[inline(always)]
     fn read_hit(
         &mut self,
         _cacr: RegisterCACR,
-        _acc: &CpuAccess,
+        _kind: AccessKind,
+        _fc: u8,
+        _laddr: Address,
+        _size: u32,
         _ticks: &mut Ticks,
         _history: &mut HistoryEntryInstruction,
     ) -> Option<(Long, u32)> {

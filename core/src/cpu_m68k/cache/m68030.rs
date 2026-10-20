@@ -119,30 +119,32 @@ impl CpuCaches for Caches030 {
     fn read_hit(
         &mut self,
         cacr: RegisterCACR,
-        acc: &CpuAccess,
+        kind: AccessKind,
+        fc: u8,
+        laddr: Address,
+        size: u32,
         ticks: &mut Ticks,
         history: &mut HistoryEntryInstruction,
     ) -> Option<(Long, u32)> {
-        let fc = acc.fault.fc;
-        let (cache, tag) = match acc.kind {
-            AccessKind::Fetch if cacr.e() => (&self.icache, Cache030::tag(acc.laddr, fc & 0b100)),
+        let (cache, tag) = match kind {
+            AccessKind::Fetch if cacr.e() => (&self.icache, Cache030::tag(laddr, fc & 0b100)),
             AccessKind::Data if cacr.ed() && fc != FC_CPU_SPACE => {
-                (&self.dcache, Cache030::tag(acc.laddr, fc))
+                (&self.dcache, Cache030::tag(laddr, fc))
             }
             _ => return None,
         };
-        if !cache.hit(tag, acc.laddr) {
+        if !cache.hit(tag, laddr) {
             return None;
         }
-        if acc.kind == AccessKind::Fetch {
+        if kind == AccessKind::Fetch {
             history.icache_hit = true;
             *ticks += FETCH_HIT_TICKS;
         } else {
             *ticks += DATA_HIT_TICKS;
         }
-        let offset = acc.laddr % 4;
-        let len = acc.size.min(4 - offset);
-        let long = cache.data[Cache030::line(acc.laddr)][Cache030::entry(acc.laddr)];
+        let offset = laddr % 4;
+        let len = size.min(4 - offset);
+        let long = cache.data[Cache030::line(laddr)][Cache030::entry(laddr)];
         Some((low_bytes(long >> (8 * (4 - offset - len)), len), len))
     }
 
