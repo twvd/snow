@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use super::audio::AudioState;
 use super::video::Video;
 use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_byte_lane, bus_access_word};
+use crate::bus::native_clock::NativeClock;
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -121,8 +122,8 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
 
-    /// Frequency of the bus, which includes any overclocking
-    act_bus_frequency: Ticks,
+    /// Counts clock ticks at native frequency, regardless of overclocking
+    native_clock: NativeClock,
 
     /// Last pushed audio sample
     last_audiosample: u8,
@@ -207,7 +208,7 @@ where
             extension_rom: extension_rom.map(Vec::from).unwrap_or_default(),
             ram: vec![0; ram_size],
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
-            via: Via::new(model, BUS_FREQUENCY),
+            via: Via::new(model),
             video: Video::new(renderer),
             audio: AudioState::default(),
             eclock: 0,
@@ -231,7 +232,7 @@ where
             overlay: true,
             map: build_map(model),
             speed: EmulatorSpeed::Accurate,
-            act_bus_frequency: BUS_FREQUENCY,
+            native_clock: NativeClock::new(BUS_FREQUENCY, 10),
             last_audiosample: 0,
             vblank_time: Instant::now(),
             progkey_pressed: LatchingEvent::default(),
@@ -612,7 +613,8 @@ where
     /// Sets the frequency of the bus, or goes back to the one of the real
     /// hardware
     pub fn set_overclock(&mut self, bus_frequency: Option<u64>) {
-        self.act_bus_frequency = bus_frequency.unwrap_or_else(|| self.bus_frequency());
+        self.native_clock
+            .set_cpu_frequency(bus_frequency.unwrap_or_else(|| self.bus_frequency()));
     }
 
     /// Stall of a bus cycle which has to wait, polled every 2 cycles with
@@ -793,8 +795,7 @@ where
         }
 
         // Keep the RTC and ADB for PRAM and event channels
-        let Via { adb, rtc, .. } =
-            std::mem::replace(&mut self.via, Via::new(self.model, BUS_FREQUENCY));
+        let Via { adb, rtc, .. } = std::mem::replace(&mut self.via, Via::new(self.model));
         self.via.adb = adb;
         self.via.rtc = rtc;
         self.overlay = true;
@@ -828,25 +829,31 @@ where
 
         let ctx = &BusEmuContext {
             speed: self.speed,
-            bus_frequency: self.act_bus_frequency,
+            bus_frequency: self.bus_frequency(),
         };
 
-        // Run up to the next E clock edge or blanking edge at a time, where
-        // anything below can change
-        let mut left = ticks;
-        while left > 0 {
-            let ticks = left.min(10 - self.eclock).min(self.video.cycles_to_edge());
-            left -= ticks;
+        self.cycles += ticks;
 
-            self.cycles += ticks;
+        // The devices run at the native frequency, whatever the CPU is
+        // overclocked to. Run up to the next E clock tick or blanking edge at
+        // a time, where anything below can change.
+        let mut cpu = ticks;
+        while cpu > 0 {
+            let step = self
+                .native_clock
+                .advance(cpu, Some(self.video.cycles_to_edge()));
+            if step.native == 0 {
+                break;
+            }
+            cpu -= step.cpu_used;
+            let ticks = step.native;
 
             self.eclock += ticks;
-            while self.eclock >= 10 {
-                // The E Clock is roughly 1/10th of the CPU clock
-                // TODO ticks when VPA is asserted
+            if step.via_tick {
+                // The E Clock is 1/10th of the native CPU clock
                 self.eclock -= 10;
 
-                self.via.tick(1, ctx)?;
+                self.via.tick(1, ())?;
             }
 
             // Pixel clock (15.6672 MHz) is roughly 2x CPU speed

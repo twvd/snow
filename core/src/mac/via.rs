@@ -2,11 +2,10 @@ use std::ops::{Deref, DerefMut};
 
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
-use crate::emulator::EmuContext;
 use crate::mac::pluskbd::PlusKeyboard;
 use crate::mac::rtc::Rtc;
 use crate::mac::via_common::{LineState, ViaCommon, ViaLine, ViaReg, ViaWiring};
-use crate::tickable::{TickConverter, Tickable, Ticks};
+use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
 use anyhow::Result;
@@ -174,14 +173,10 @@ pub struct Via {
     pub(crate) rtc: Rtc,
 
     pub(crate) adb: AdbTransceiver,
-
-    /// Runs the VIA at the speed of the bus of the real hardware, whatever
-    /// the bus frequency is: the VIA is used as a timer
-    bus_tick_converter: TickConverter,
 }
 
 impl Via {
-    pub fn new(model: MacModel, bus_frequency: Ticks) -> Self {
+    pub fn new(model: MacModel) -> Self {
         let mut core = ViaCommon::new();
         core.a_in = model.via1_a_in();
 
@@ -197,8 +192,6 @@ impl Via {
             keyboard: PlusKeyboard::default(),
             rtc: Rtc::default(),
             adb: AdbTransceiver::default(),
-
-            bus_tick_converter: TickConverter::new(bus_frequency),
         }
     }
 }
@@ -294,16 +287,10 @@ impl BusMember<Address> for Via {
     }
 }
 
-impl Tickable<&dyn EmuContext> for Via {
-    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
-        self.bus_tick_converter.add_a_ticks(ticks);
-        let via_ticks = self.bus_tick_converter.get_b_ticks(ctx.bus_frequency());
-        if via_ticks > 0 {
-            self.tick_16mhz(via_ticks)?;
-            self.bus_tick_converter
-                .subtract_b_ticks(via_ticks, ctx.bus_frequency());
-        }
-        Ok(ticks)
+/// Ticked with VIA (E) clock ticks
+impl Tickable for Via {
+    fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
+        self.tick_16mhz(ticks)
     }
 }
 
@@ -380,7 +367,7 @@ mod tests {
 
     #[test]
     fn reg_a_no_handshake_keeps_irq_flags() {
-        let mut via = Via::new(MacModel::Plus, 16_000_000);
+        let mut via = Via::new(MacModel::Plus);
 
         via.set_irq(IRQ_CA1);
         via.set_irq(IRQ_CA2);
@@ -392,7 +379,7 @@ mod tests {
 
     #[test]
     fn reg_a_handshake_clears_irq_flags() {
-        let mut via = Via::new(MacModel::Plus, 16_000_000);
+        let mut via = Via::new(MacModel::Plus);
 
         via.set_irq(IRQ_CA1);
         via.set_irq(IRQ_CA2);
@@ -407,7 +394,7 @@ mod tests {
 
     #[test]
     fn independent_ca2_keeps_irq_flag() {
-        let mut via = Via::new(MacModel::Plus, 16_000_000);
+        let mut via = Via::new(MacModel::Plus);
 
         // CA2 independent interrupt input, negative edge
         via.write(ADDR_PCR, 0x02);
@@ -429,7 +416,7 @@ mod tests {
 
     #[test]
     fn independent_cb2_keeps_irq_flag() {
-        let mut via = Via::new(MacModel::Plus, 16_000_000);
+        let mut via = Via::new(MacModel::Plus);
 
         via.set_irq(IRQ_CB2);
         via.set_irq(IRQ_CB1);

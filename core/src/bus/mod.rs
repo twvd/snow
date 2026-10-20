@@ -1,4 +1,5 @@
 pub mod access;
+pub mod native_clock;
 pub mod testbus;
 
 use crate::bus::access::{BusAccess, BusResponse, CpuBus};

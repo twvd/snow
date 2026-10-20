@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use super::via2::Via2;
 use crate::bus::access::{Bus68020, BusAccess, BusResponse, bus_access_byte, bus_access_long};
+use crate::bus::native_clock::NativeClock;
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::cpu_m68k::M68020;
 use crate::debuggable::Debuggable;
@@ -149,8 +150,8 @@ pub struct MacIIBus<TRenderer: Renderer, const AMU: bool> {
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
 
-    /// Frequency of the bus, which includes any overclocking
-    act_bus_frequency: Ticks,
+    /// Counts clock ticks at native frequency, regardless of overclocking
+    native_clock: NativeClock,
 
     /// Last vblank time (for syncing to video)
     /// Not serializing this because it is only used for determining how long to
@@ -286,8 +287,8 @@ where
             extension_rom: extension_rom.map(Vec::from).unwrap_or_default(),
             ram: vec![0; ram_size],
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
-            via1: Via::new(model, BUS_FREQUENCY),
-            via2: Via2::new(model, BUS_FREQUENCY),
+            via1: Via::new(model),
+            via2: Via2::new(model),
             via_clock: 0,
             via_stalled: false,
             scc_ready: 0,
@@ -306,7 +307,7 @@ where
             overlay: true,
             amu_active: false,
             speed: EmulatorSpeed::Accurate,
-            act_bus_frequency: BUS_FREQUENCY,
+            native_clock: NativeClock::new(BUS_FREQUENCY, 20),
             //last_audiosample: 0,
             vblank_time: Instant::now(),
             vblank_clock: 0,
@@ -755,7 +756,8 @@ where
     /// Sets the frequency of the bus, or goes back to the one of the real
     /// hardware
     pub fn set_overclock(&mut self, bus_frequency: Option<u64>) {
-        self.act_bus_frequency = bus_frequency.unwrap_or_else(|| self.bus_frequency());
+        self.native_clock
+            .set_cpu_frequency(bus_frequency.unwrap_or_else(|| self.bus_frequency()));
     }
 
     /// Programmer's key pressed
@@ -882,13 +884,12 @@ where
         }
 
         // Keep the RTC and ADB for PRAM and event channels
-        let Via { adb, rtc, .. } =
-            std::mem::replace(&mut self.via1, Via::new(self.model, BUS_FREQUENCY));
+        let Via { adb, rtc, .. } = std::mem::replace(&mut self.via1, Via::new(self.model));
         self.via1.adb = adb;
         self.via1.rtc = rtc;
 
         self.scc = Scc::new();
-        self.via2 = Via2::new(self.model, BUS_FREQUENCY);
+        self.via2 = Via2::new(self.model);
         for d in self.nubus_devices.iter_mut().filter_map(|f| f.as_mut()) {
             d.slot().reset();
         }
@@ -924,7 +925,7 @@ where
 
         let ctx = &BusEmuContext {
             speed: self.speed,
-            bus_frequency: self.act_bus_frequency,
+            bus_frequency: self.bus_frequency(),
         };
 
         self.cycles += ticks;
@@ -933,28 +934,40 @@ where
             self.amu_active = !self.via2.pb().vfc3();
         }
 
+        // The devices run at the native frequency, whatever the CPU is
+        // overclocked to.
+        //
         // The Mac II generates the VIA clock through some dividers on the logic board.
         // This same logic generates wait states when the VIAs are accessed.
         //
-        // The VIA clock is C16M / 20 (783.36 kHz), once every 20 bus cycles
-        // when not overclocking.
-        self.via_clock += ticks * C16M_FREQUENCY;
-        while self.via_clock >= 20 * self.bus_frequency() {
-            self.via_clock -= 20 * self.bus_frequency();
+        // The VIA clock is C16M / 20 (783.36 kHz), once every 20 native ticks.
+        let mut native_ticks = 0;
+        let mut cpu = ticks;
+        while cpu > 0 {
+            let step = self.native_clock.advance(cpu, None);
+            if step.native == 0 {
+                break;
+            }
+            cpu -= step.cpu_used;
+            native_ticks += step.native;
+            self.via_clock += step.native * C16M_FREQUENCY;
+            if step.via_tick {
+                self.via_clock -= 20 * self.bus_frequency();
 
-            self.via1.tick(1, ctx)?;
-            self.via2.tick(1, ctx)?;
+                self.via1.tick(1, ())?;
+                self.via2.tick(1, ())?;
 
-            // Legacy VBlank interrupt (60.15 Hz)
-            //
-            // This is the square wave output of VIA2 timer 1 on PB7, which is
-            // wired to CA1 of VIA1.
-            self.via1
-                .set_line(ViaLine::CA1, self.via2.pb().v2vbl().into());
+                // Legacy VBlank interrupt (60.15 Hz)
+                //
+                // This is the square wave output of VIA2 timer 1 on PB7, which is
+                // wired to CA1 of VIA1.
+                self.via1
+                    .set_line(ViaLine::CA1, self.via2.pb().v2vbl().into());
+            }
         }
 
         // Host frame pacing
-        self.vblank_clock += ticks;
+        self.vblank_clock += native_ticks;
         while self.vblank_clock >= ctx.bus_frequency / 60 {
             self.vblank_clock -= ctx.bus_frequency / 60;
 
@@ -986,7 +999,7 @@ where
         self.via2
             .set_line(ViaLine::CB1, (!self.asc.get_irq()).into());
 
-        self.asc_clock += ticks * C16M_FREQUENCY;
+        self.asc_clock += native_ticks * C16M_FREQUENCY;
         while self.asc_clock >= self.asc.sample_period() * ctx.bus_frequency {
             self.asc_clock -= self.asc.sample_period() * ctx.bus_frequency;
 
@@ -997,7 +1010,7 @@ where
         let mut slot_irqs = 0;
         for slot in 0..(self.nubus_devices.len()) {
             if let Some(dev) = self.nubus_devices[slot].as_mut() {
-                dev.tick(ticks, ctx)?;
+                dev.tick(native_ticks, ctx)?;
                 if dev.get_irq() {
                     slot_irqs |= 1 << slot;
                 }
@@ -1014,14 +1027,14 @@ where
             },
         );
 
-        self.scsi.tick(ticks, ctx)?;
+        self.scsi.tick(native_ticks, ctx)?;
 
         // IRQ and DRQ of the SCSI controller are active high and directly
         // connected to CB2 and CA2
         self.via2.set_line(ViaLine::CB2, self.scsi.get_irq().into());
         self.via2.set_line(ViaLine::CA2, self.scsi.get_drq().into());
 
-        self.swim.tick(ticks, ())?;
+        self.swim.tick(native_ticks, ())?;
 
         Ok(1)
     }

@@ -6,6 +6,7 @@ use super::pmgr::Pmgr;
 use super::via::Via;
 use super::video::Video;
 use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_byte_lane, bus_access_word};
+use crate::bus::native_clock::NativeClock;
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -97,6 +98,9 @@ pub struct MacPortableBus<TRenderer: Renderer> {
     pub(crate) ram_dirty: BitSet,
 
     pub(crate) via: Via,
+    /// Counts clock ticks at native frequency for the power manager, which
+    /// is ticked on each CPU cycle, regardless of overclocking
+    pmgr_clock: NativeClock,
     via_clock: Ticks,
     /// A VIA cycle is stalled up to the edge of the VIA clock, until the CPU
     /// presents it again. Not saved, as a cycle is never in progress between
@@ -123,8 +127,8 @@ pub struct MacPortableBus<TRenderer: Renderer> {
     /// Emulation speed setting
     pub(crate) speed: EmulatorSpeed,
 
-    /// Frequency of the bus, which includes any overclocking
-    act_bus_frequency: Ticks,
+    /// Counts clock ticks at native frequency, regardless of overclocking
+    native_clock: NativeClock,
 
     /// Last vblank time (for syncing to video)
     /// Not serializing this because it is only used for determining how long to
@@ -201,7 +205,8 @@ where
             extension_rom: extension_rom.map(Vec::from).unwrap_or_default(),
             ram: vec![0; ram_size],
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
-            via: Via::new(BUS_FREQUENCY),
+            via: Via::new(),
+            pmgr_clock: NativeClock::new(BUS_FREQUENCY, 20),
             via_clock: 0,
             via_stalled: false,
             video: Video::new(renderer),
@@ -216,7 +221,7 @@ where
             overlay: true,
             map: build_map(model),
             speed: EmulatorSpeed::Accurate,
-            act_bus_frequency: BUS_FREQUENCY,
+            native_clock: NativeClock::new(BUS_FREQUENCY, 20),
             vblank_time: Instant::now(),
             vblank_clock: 0,
             progkey_pressed: LatchingEvent::default(),
@@ -573,7 +578,9 @@ where
     /// Sets the frequency of the bus, or goes back to the one of the real
     /// hardware
     pub fn set_overclock(&mut self, bus_frequency: Option<u64>) {
-        self.act_bus_frequency = bus_frequency.unwrap_or_else(|| self.bus_frequency());
+        let freq = bus_frequency.unwrap_or_else(|| self.bus_frequency());
+        self.native_clock.set_cpu_frequency(freq);
+        self.pmgr_clock.set_cpu_frequency(freq);
     }
 
     pub fn set_mouse_mode(&mut self, mode: MouseMode) {
@@ -722,7 +729,17 @@ where
         self.pmgr.a_out = self.via.pa().0;
         self.pmgr.a_in = self.via.a_in.0;
         self.pmgr.pmreq = self.via.pb().pmreq();
-        self.pmgr.tick(ticks, ())?;
+        let mut pmgr_ticks = 0;
+        let mut cpu = ticks;
+        while cpu > 0 {
+            let step = self.pmgr_clock.advance(cpu, None);
+            if step.native == 0 {
+                break;
+            }
+            cpu -= step.cpu_used;
+            pmgr_ticks += step.native;
+        }
+        self.pmgr.tick(pmgr_ticks, ())?;
         self.via.b_in.set_pmack(self.pmgr.pmack);
         self.via.a_in.0 = self.pmgr.a_in;
         if self.pmgr.take_pmint() {
@@ -758,24 +775,36 @@ where
 
         let ctx = &BusEmuContext {
             speed: self.speed,
-            bus_frequency: self.act_bus_frequency,
+            bus_frequency: self.bus_frequency(),
         };
 
         self.cycles += ticks;
 
-        self.via_clock += ticks;
-        while self.via_clock >= 20 {
-            self.via_clock -= 20;
-
-            self.via.tick(1, ctx)?;
+        // The devices run at the native frequency, whatever the CPU is
+        // overclocked to. The VIA clock is C16M / 20, once every 20 native
+        // ticks.
+        let mut native_ticks = 0;
+        let mut cpu = ticks;
+        while cpu > 0 {
+            let step = self.native_clock.advance(cpu, None);
+            if step.native == 0 {
+                break;
+            }
+            cpu -= step.cpu_used;
+            native_ticks += step.native;
+            self.via_clock += step.native;
+            if step.via_tick {
+                self.via_clock -= 20;
+                self.via.tick(1, ())?;
+            }
         }
 
-        self.video.tick(ticks, ctx)?;
+        self.video.tick(native_ticks, ctx)?;
 
         // Legacy VBlank interrupt
-        self.vblank_clock += ticks;
-        while self.vblank_clock >= self.act_bus_frequency / 60 {
-            self.vblank_clock -= self.act_bus_frequency / 60;
+        self.vblank_clock += native_ticks;
+        while self.vblank_clock >= ctx.bus_frequency / 60 {
+            self.vblank_clock -= ctx.bus_frequency / 60;
             self.via.set_line(ViaLine::CA1, LineState::Pulse);
             self.pmgr.tick_60hz();
 
@@ -792,15 +821,15 @@ where
             }
         }
 
-        self.asc_clock += ticks * C16M_FREQUENCY;
-        while self.asc_clock >= self.asc.sample_period() * self.act_bus_frequency {
-            self.asc_clock -= self.asc.sample_period() * self.act_bus_frequency;
+        self.asc_clock += native_ticks * C16M_FREQUENCY;
+        while self.asc_clock >= self.asc.sample_period() * ctx.bus_frequency {
+            self.asc_clock -= self.asc.sample_period() * ctx.bus_frequency;
 
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }
 
         self.swim.intdrive = self.via.pb().drivesel();
-        self.swim.tick(ticks, ())?;
+        self.swim.tick(native_ticks, ())?;
 
         Ok(ticks)
     }

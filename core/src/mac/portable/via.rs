@@ -5,9 +5,7 @@ use std::ops::{Deref, DerefMut};
 use crate::bus::Address;
 use crate::bus::BusMember;
 use crate::debuggable::{Debuggable, DebuggableProperties};
-use crate::emulator::EmuContext;
 use crate::mac::via_common::{ViaCommon, ViaReg, ViaWiring};
-use crate::tickable::TickConverter;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 use anyhow::Result;
@@ -70,17 +68,12 @@ impl ViaWiring for PortableViaWiring {
 #[derive(Serialize, Deserialize)]
 pub struct Via {
     core: ViaCommon<PortableViaWiring>,
-
-    /// Runs the VIA at the speed of the bus of the real hardware, whatever
-    /// the bus frequency is: the VIA is used as a timer
-    bus_tick_converter: TickConverter,
 }
 
 impl Via {
-    pub fn new(bus_frequency: Ticks) -> Self {
+    pub fn new() -> Self {
         Self {
             core: ViaCommon::new(),
-            bus_tick_converter: TickConverter::new(bus_frequency),
         }
     }
 
@@ -125,15 +118,10 @@ impl BusMember<Address> for Via {
     }
 }
 
-impl Tickable<&dyn EmuContext> for Via {
-    fn tick(&mut self, ticks: Ticks, ctx: &dyn EmuContext) -> Result<Ticks> {
-        self.bus_tick_converter.add_a_ticks(ticks);
-        let via_ticks = self.bus_tick_converter.get_b_ticks(ctx.bus_frequency());
-        if via_ticks > 0 {
-            self.core.tick_timers(via_ticks)?;
-            self.bus_tick_converter
-                .subtract_b_ticks(via_ticks, ctx.bus_frequency());
-        }
+/// Ticked with VIA clock ticks
+impl Tickable for Via {
+    fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
+        self.core.tick_timers(ticks)?;
         Ok(ticks)
     }
 }
@@ -159,7 +147,7 @@ mod tests {
 
     #[test]
     fn reg_a_no_handshake_keeps_irq_flags() {
-        let mut via = Via::new(16_000_000);
+        let mut via = Via::new();
 
         via.set_irq(IRQ_CA1);
         via.set_irq(IRQ_CA2);
@@ -171,7 +159,7 @@ mod tests {
 
     #[test]
     fn reg_a_handshake_clears_irq_flags() {
-        let mut via = Via::new(16_000_000);
+        let mut via = Via::new();
 
         via.set_irq(IRQ_CA1);
         via.set_irq(IRQ_CA2);
@@ -186,7 +174,7 @@ mod tests {
 
     #[test]
     fn independent_ca2_keeps_irq_flag() {
-        let mut via = Via::new(16_000_000);
+        let mut via = Via::new();
 
         // CA2 independent interrupt input, negative edge
         via.write(ADDR_PCR, 0x02);
