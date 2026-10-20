@@ -179,8 +179,6 @@ where
             assert!(<TBus::Cpu as CpuBus>::WIDTH == if CPU_TYPE >= M68020 { 4 } else { 2 });
         }
 
-        // CPU cycles of this bus cycle already spent stalled
-        let mut stalled = 0;
         let (width, data, waits) = loop {
             let pending = self.cycles + *ticks - self.last_bus_sync;
             let acc = match wdata {
@@ -194,7 +192,6 @@ where
                     self.history_current.waitstates = true;
                     self.advance_cycles(std::mem::take(ticks) + stall)?;
                     self.sync_bus()?;
-                    stalled += stall;
                 }
                 BusResponse::BusError => bail!(CpuError::BusError(Group0Details {
                     function_code: fc,
@@ -211,7 +208,7 @@ where
         if waits > 0 {
             self.history_current.waitstates = true;
         }
-        *ticks += (bus_cycle_ticks(CPU_TYPE) + waits).saturating_sub(stalled);
+        *ticks += bus_cycle_ticks(CPU_TYPE) + waits;
 
         let len = if CPU_TYPE >= M68020 {
             (width - paddr % width).min(size)

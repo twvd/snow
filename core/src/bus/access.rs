@@ -105,13 +105,11 @@ pub enum BusResponse {
         width: u32,
         /// Read data, right-aligned to the bytes the port took
         data: u32,
-        /// Wait states of the whole cycle, in CPU cycles, including any
-        /// time it was stalled for
+        /// Wait states of the cycle, in CPU cycles
         waits: Ticks,
     },
-    /// The port can't take the cycle yet: this many CPU cycles of it pass,
-    /// with the bus ticked through them, then the CPU presents it again.
-    /// They count towards the duration of the cycle.
+    /// The port can't take the cycle yet: the CPU waits this many cycles,
+    /// with the bus ticked through them, then presents the cycle again
     Stall(Ticks),
     /// BERR
     BusError,
