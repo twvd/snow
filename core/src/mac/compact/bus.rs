@@ -652,6 +652,8 @@ where
             Region::Scc => self.scc_cycle(acc, w),
             // On the lower byte lane, at odd addresses
             Region::Iwm => {
+                let hold = self.swim.hold(&self.native_clock);
+                let w = self.native_clock.scale_dev_waits(w, hold);
                 bus_access_byte_lane::<2, 1, _, _>(acc, w, self, Self::iwm_read, Self::iwm_write)
             }
             _ => unreachable!(),

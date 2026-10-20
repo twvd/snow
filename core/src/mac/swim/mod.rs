@@ -18,11 +18,17 @@ use serde::{Deserialize, Serialize};
 use snow_floppy::flux::FluxTicks;
 use snow_floppy::{Floppy, FloppyImage};
 
+use crate::bus::native_clock::NativeClock;
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::mac::swim::ism::IsmFifoEntry;
 use crate::tickable::{Tickable, Ticks};
 use crate::types::LatchingEvent;
+
+/// Time from one access to the SWIM to the next an overclocked CPU is held
+/// to, in ns. Any closer, and the polling loops of the Sony driver run out
+/// before the drive has answered.
+const OVERCLOCK_ACCESS_INTERVAL_NS: Ticks = 1500;
 
 enum FluxTransitionTime {
     /// 1
@@ -102,6 +108,11 @@ pub struct Swim {
     bit_cycles: Ticks,
     mode: SwimMode,
 
+    /// OVERCLOCK_ACCESS_INTERVAL_NS in native ticks
+    access_interval: Ticks,
+    /// Native time of the last access by an overclocked CPU, after its hold
+    last_access: Ticks,
+
     pub ca0: bool,
     pub ca1: bool,
     pub ca2: bool,
@@ -167,6 +178,10 @@ impl Swim {
             // SWIM boots in IWM mode
             mode: Default::default(),
 
+            access_interval: (base_frequency * OVERCLOCK_ACCESS_INTERVAL_NS)
+                .div_ceil(1_000_000_000),
+            last_access: 0,
+
             ca0: false,
             ca1: false,
             ca2: false,
@@ -216,6 +231,22 @@ impl Swim {
         swim.ism_mode.set_ism(true);
         swim.ism_params = vec![0; 4];
         swim
+    }
+
+    /// Native ticks an access is held for, called after device_sync(). When
+    /// overclocking, the CPU runs the code between two accesses faster than
+    /// the real hardware: the accesses are held to be at least
+    /// OVERCLOCK_ACCESS_INTERVAL_NS apart. Without overclocking, nothing is
+    /// held.
+    pub fn hold(&mut self, clock: &NativeClock) -> Ticks {
+        if !clock.is_overclocking() {
+            return 0;
+        }
+        // After device_sync(), the clock is up to date when overclocking
+        let now = clock.native_ticks();
+        let hold = (self.last_access + self.access_interval).saturating_sub(now);
+        self.last_access = now + hold;
+        hold
     }
 
     fn get_selected_drive_idx(&self) -> usize {

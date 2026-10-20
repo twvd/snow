@@ -637,7 +637,8 @@ where
                 bus_access_byte(acc, w, self, Self::asc_read, Self::asc_write)
             }
             11 => {
-                let w = self.native_clock.scale_dev_waits(w, 1);
+                let hold = self.swim.hold(&self.native_clock);
+                let w = self.native_clock.scale_dev_waits(w, 1 + hold);
                 bus_access_byte(acc, w, self, Self::swim_read, Self::swim_write)
             }
             // Expansion area
