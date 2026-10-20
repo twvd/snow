@@ -290,13 +290,13 @@ impl BusMember<Address> for Via {
 /// Ticked with VIA (E) clock ticks
 impl Tickable for Via {
     fn tick(&mut self, ticks: Ticks, _: ()) -> Result<Ticks> {
-        self.tick_16mhz(ticks)
+        self.tick_e(ticks)
     }
 }
 
 impl Via {
-    fn tick_16mhz(&mut self, ticks: Ticks) -> Result<Ticks> {
-        // This is ticked on the E Clock
+    /// Runs the VIA for `ticks` ticks of its E clock
+    fn tick_e(&mut self, ticks: Ticks) -> Result<Ticks> {
         self.onesec += ticks;
 
         // One second interrupt
