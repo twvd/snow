@@ -200,17 +200,43 @@ where
     /// transferred.
     #[inline(always)]
     fn cpu_access(&mut self, acc: &CpuAccess, ticks: &mut Ticks) -> Result<(Long, u32)> {
-        // Reads that hit in logically tagged caches need no translation.
-        // Data breakpoints need the physical address: they skip this.
         if acc.wdata.is_none()
-            && (acc.kind == AccessKind::Fetch || self.breakpoints.is_empty())
-            && let Some(res) =
-                self.caches
-                    .read_hit(self.regs.cacr, acc, ticks, &mut self.history_current)
+            && let Some(res) = self.read_hit(acc.kind, acc.fault.fc, acc.laddr, acc.size, ticks)
         {
             return Ok(res);
         }
+        self.cpu_access_translated(acc, ticks)
+    }
 
+    /// Runs a read from logically tagged caches, before translation, if
+    /// they hold it: see CpuCaches::read_hit(). Data breakpoints need the
+    /// physical address: data reads skip this when any is set.
+    #[inline(always)]
+    fn read_hit(
+        &mut self,
+        kind: AccessKind,
+        fc: u8,
+        laddr: Address,
+        size: u32,
+        ticks: &mut Ticks,
+    ) -> Option<(Long, u32)> {
+        if kind != AccessKind::Fetch && !self.breakpoints.is_empty() {
+            return None;
+        }
+        self.caches.read_hit(
+            self.regs.cacr,
+            kind,
+            fc,
+            laddr,
+            size,
+            ticks,
+            &mut self.history_current,
+        )
+    }
+
+    /// cpu_access() past the caches' read hits
+    #[inline(always)]
+    fn cpu_access_translated(&mut self, acc: &CpuAccess, ticks: &mut Ticks) -> Result<(Long, u32)> {
         let tr = self.translate(acc)?;
         let paddr = tr.paddr;
         let cacr = self.regs.cacr;
@@ -322,16 +348,23 @@ where
                 }
             }
         } else if (o_addr & 3) + len <= 4 {
-            // The operand is within a long word: a single access
+            // The operand is within a long word: a single access. The access
+            // is only described for translation, after a cache miss.
             let mut ticks = 0;
-            let acc = CpuAccess {
-                kind,
-                fault,
-                laddr: o_addr & ADDRESS_MASK,
-                size: len,
-                wdata: None,
+            let laddr = o_addr & ADDRESS_MASK;
+            let data = match self.read_hit(kind, fc, laddr, len, &mut ticks) {
+                Some((data, _)) => data,
+                None => {
+                    let acc = CpuAccess {
+                        kind,
+                        fault,
+                        laddr,
+                        size: len,
+                        wdata: None,
+                    };
+                    self.cpu_access_translated(&acc, &mut ticks)?.0
+                }
             };
-            let (data, _) = self.cpu_access(&acc, &mut ticks)?;
             self.advance_cycles(ticks)?;
             return Ok(T::chop(data));
         } else {
