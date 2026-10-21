@@ -31,16 +31,16 @@ pub struct Step {
     pub cpu_used: Ticks,
 }
 
-/// Helper struct used to work with fractional tick values when scaling from
-/// an input frequency to an output frequency.
+/// Helper struct used to scale a clock from input frequency to an output frequency.
 ///
 /// Rational arithmetic is used to avoid errors.
 #[derive(Copy, Clone, Serialize, Deserialize)]
 struct ClockScaler {
-    /// Represents the number of elapsed output ticks.
+    /// Represents a fractional number of elapsed ticks.
     ///
-    /// The number of elapsed output ticks is `N / in_freq`. On each input tick,
-    /// the value increases by `out_freq`.
+    /// On each input tick, this value increases by `out_freq`.
+    /// The number of elapsed input ticks is `n / out_freq`.
+    /// The number of elapsed output ticks is `n / in_freq`.
     n: Ticks,
     in_freq: Ticks,
     out_freq: Ticks,
@@ -55,14 +55,21 @@ impl ClockScaler {
         }
     }
 
-    fn add_in_ticks(&mut self, in_ticks: Ticks) {
-        self.n += in_ticks * self.out_freq;
+    fn plus_in_ticks(&self, in_ticks: Ticks) -> Self {
+        Self {
+            n: self.n + in_ticks * self.out_freq,
+            ..*self
+        }
     }
 
-    fn subtract_out_ticks(&mut self, out_ticks: Ticks) {
-        self.n -= out_ticks * self.in_freq;
+    fn minus_out_ticks(&self, out_ticks: Ticks) -> Self {
+        Self {
+            n: self.n - out_ticks * self.in_freq,
+            ..*self
+        }
     }
 
+    /// Return the number of output ticks that have elapsed, rounded down
     fn out_ticks(&self) -> Ticks {
         self.n / self.in_freq
     }
@@ -156,22 +163,24 @@ impl NativeClock {
             let needed = self.native_clockgen.in_ticks_until_out_ticks(limit);
             if needed <= cpu_ticks {
                 // The last CPU tick may run into the next native tick
-                self.native_clockgen.add_in_ticks(needed);
-                self.native_clockgen.subtract_out_ticks(limit);
+                self.native_clockgen = self
+                    .native_clockgen
+                    .plus_in_ticks(needed)
+                    .minus_out_ticks(limit);
                 (limit, needed)
             } else {
-                self.native_clockgen.add_in_ticks(cpu_ticks);
+                self.native_clockgen = self.native_clockgen.plus_in_ticks(cpu_ticks);
                 let native = self.native_clockgen.out_ticks();
-                self.native_clockgen.subtract_out_ticks(native);
+                self.native_clockgen = self.native_clockgen.minus_out_ticks(native);
                 (native, cpu_ticks)
             }
         };
 
         self.native_ticks += native;
         self.native_since_via += native;
-        let via_tick = self.native_since_via == self.native_per_via;
+        let via_tick = self.native_since_via >= self.native_per_via;
         if via_tick {
-            self.native_since_via = 0;
+            self.native_since_via -= self.native_per_via;
         }
         Step {
             native,
@@ -193,16 +202,20 @@ impl NativeClock {
         if !self.is_overclocking() {
             return DeviceCycle::Access(0);
         }
-        let (_, into_tick) = self.cpu_position(acc.pending);
-        let on_tick = into_tick < self.native_freq;
+        // `after_pending` is the value of native_clockgen after acc.pending CPU ticks have passed.
+        let after_pending = self.native_clockgen.plus_in_ticks(acc.pending);
+        // `partial_tick` is the progress of `after_pending` into the following native tick.
+        let partial_tick = after_pending.minus_out_ticks(after_pending.out_ticks());
+        // `on_tick` is true if `partial_tick` is less than one CPU tick.
+        let on_tick = partial_tick.n < self.native_freq;
         if on_tick && acc.pending == 0 {
-            return DeviceCycle::Access(self.cpu_ticks_until(C::CYCLE, into_tick) - C::CYCLE);
+            return DeviceCycle::Access(partial_tick.in_ticks_until_out_ticks(C::CYCLE) - C::CYCLE);
         }
         if on_tick {
             // Only to let the clock catch up with the CPU
             return DeviceCycle::Stall(0);
         }
-        DeviceCycle::Stall(self.cpu_ticks_until(1, into_tick))
+        DeviceCycle::Stall(partial_tick.in_ticks_until_out_ticks(1))
     }
 
     /// Start of a VIA access cycle: the same, on a VIA tick instead of a
@@ -212,19 +225,27 @@ impl NativeClock {
     /// Returns a DeviceCycle, which indicates whether to stall, or the wait
     /// states of the VIA cycle.
     pub fn via_sync<C: CpuBus>(&self, acc: &BusAccess<C>) -> DeviceCycle {
-        let (ticks_done, into_tick) = self.cpu_position(acc.pending);
+        // `after_pending` is the value of native_clockgen after acc.pending CPU ticks have passed.
+        let after_pending = self.native_clockgen.plus_in_ticks(acc.pending);
+        // `ticks_done` is the number of native ticks represented by `after_pending`.
+        let ticks_done = after_pending.out_ticks();
+        // `partial_tick` is the progress of `after_pending` into the following native tick.
+        let partial_tick = after_pending.minus_out_ticks(ticks_done);
         let native_since_via = (self.native_since_via + ticks_done) % self.native_per_via;
-        let on_via_tick = native_since_via == 0 && into_tick < self.native_freq;
+        // `on_via_tick` is true if the via phase is 0 and `partial_tick` is less than one CPU tick.
+        let on_via_tick = native_since_via == 0 && partial_tick.n < self.native_freq;
         if on_via_tick && acc.pending == 0 {
             return DeviceCycle::Access(
-                self.cpu_ticks_until(self.native_per_via, into_tick) - C::CYCLE,
+                partial_tick.in_ticks_until_out_ticks(self.native_per_via) - C::CYCLE,
             );
         }
         if on_via_tick {
             // Only to let the clock catch up with the CPU
             return DeviceCycle::Stall(0);
         }
-        DeviceCycle::Stall(self.cpu_ticks_until(self.native_per_via - native_since_via, into_tick))
+        DeviceCycle::Stall(
+            partial_tick.in_ticks_until_out_ticks(self.native_per_via - native_since_via),
+        )
     }
 
     /// Adds the device's own wait states to the wait states of a device
@@ -239,28 +260,6 @@ impl NativeClock {
     /// `w + extra`.
     pub fn scale_dev_waits(&self, w: WaitTicks, extra: Ticks) -> WaitTicks {
         w + (extra * self.cpu_freq).div_ceil(self.native_freq)
-    }
-}
-
-/// Private helpers of device_sync() and via_sync()
-impl NativeClock {
-    /// Where the CPU is, `cpu_ahead` CPU ticks after the clock was last
-    /// advanced: the native ticks it has completed since, and how far it is
-    /// into the next one
-    ///
-    /// TODO (beholdnec): I'd like to get rid of this method
-    fn cpu_position(&self, cpu_ahead: Ticks) -> (Ticks, Ticks) {
-        let mut progress = self.native_clockgen;
-        progress.add_in_ticks(cpu_ahead);
-        (progress.out_ticks(), progress.n % self.cpu_freq)
-    }
-
-    /// CPU ticks until `native_ticks` more native ticks have completed, from
-    /// `into_tick` into the current one
-    ///
-    /// TODO (beholdnec): I'd like to get rid of this method
-    fn cpu_ticks_until(&self, native_ticks: Ticks, into_tick: Ticks) -> Ticks {
-        (native_ticks * self.cpu_freq - into_tick).div_ceil(self.native_freq)
     }
 }
 
