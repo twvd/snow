@@ -32,17 +32,38 @@ const ADB_FLAG_NO_DATA: u8 = 1 << 1;
 const ADB_FLAG_AUTOPOLL: u8 = 1 << 6;
 
 /// Pseudo commands
+const CMD_WARM_START: u8 = 0x00;
 const CMD_AUTOPOLL: u8 = 0x01;
 const CMD_READ_RAM: u8 = 0x02;
 const CMD_READ_CLOCK: u8 = 0x03;
+const CMD_ROM_SIZE: u8 = 0x04;
+const CMD_ROM_BASE: u8 = 0x05;
+const CMD_ROM_HEADER: u8 = 0x06;
 const CMD_READ_PRAM: u8 = 0x07;
 const CMD_WRITE_RAM: u8 = 0x08;
 const CMD_SET_CLOCK: u8 = 0x09;
+const CMD_POWER_DOWN: u8 = 0x0A;
+const CMD_SET_POWER_UP_TIME: u8 = 0x0B;
 const CMD_WRITE_PRAM: u8 = 0x0C;
+const CMD_MONOSTABLE_RESET: u8 = 0x0D;
 const CMD_WRITE_DFAC: u8 = 0x0E;
+const CMD_DIAGNOSTICS: u8 = 0x0F;
+const CMD_CONTROL_PANEL_ENABLE: u8 = 0x10;
+const CMD_RESET: u8 = 0x11;
+const CMD_VPP: u8 = 0x12;
+const CMD_FILE_SERVER: u8 = 0x13;
+const CMD_SET_AUTOPOLL_RATE: u8 = 0x14;
+const CMD_PRAM_SIZE: u8 = 0x15;
+const CMD_GET_AUTOPOLL_RATE: u8 = 0x16;
+const CMD_SET_BUS_DELAY: u8 = 0x17;
+const CMD_GET_BUS_DELAY: u8 = 0x18;
 const CMD_SET_DEVICE_LIST: u8 = 0x19;
+const CMD_GET_DEVICE_LIST: u8 = 0x1A;
 const CMD_ONE_SEC_MODE: u8 = 0x1B;
 const CMD_KEYBOARD_NMI: u8 = 0x1C;
+const CMD_KEYBOARD_POST_PARSE: u8 = 0x1D;
+const CMD_SET_HANG_THRESHOLD: u8 = 0x1E;
+const CMD_GET_HANG_THRESHOLD: u8 = 0x1F;
 
 /// Frequency of the VIA clock, which the model is run from. The Egret has
 /// its own 32.768 kHz crystal.
@@ -362,6 +383,13 @@ impl EgretCommon {
 
     fn egret_command(&mut self, cmd: u8, params: &[u8]) -> Vec<u8> {
         let result = match cmd {
+            // Warm start: turn autopoll and the one second packets off
+            CMD_WARM_START => Self::params(params).map(|[]| {
+                self.autopoll = false;
+                self.one_sec_mode = 0;
+                vec![]
+            }),
+
             // Start or stop polling the ADB devices
             CMD_AUTOPOLL => Self::params(params).map(|[enable]| {
                 self.autopoll = enable != 0;
@@ -401,6 +429,13 @@ impl EgretCommon {
                 vec![]
             }),
 
+            // Size, base address and header address of the ROM of the
+            // microcontroller. Fake it returning what the firmware
+            // would return.
+            CMD_ROM_SIZE => Self::params(params).map(|[]| vec![0x10, 0x00]),
+            CMD_ROM_BASE => Self::params(params).map(|[]| vec![0x0F, 0x00]),
+            CMD_ROM_HEADER => Self::params(params).map(|[]| vec![0x0F, 0x5A]),
+
             // Access the parameter RAM
             CMD_READ_PRAM => Self::params(params).and_then(|addr| {
                 self.reading = Some(Reading::Pram(Self::pram_addr(addr)?));
@@ -417,15 +452,56 @@ impl EgretCommon {
                 _ => Err(ERROR_PARAMS),
             },
 
+            // Turn the power off, which only machines with soft power do
+            CMD_POWER_DOWN => Self::params(params).map(|[]| vec![]),
+
+            // Set when machines with soft power turn on, rejected with a power switch
+            CMD_SET_POWER_UP_TIME => Self::params::<4>(params).and(Err(ERROR_COMMAND)),
+
+            // Choose whether some event resets the CPU (unknown, not modelled)
+            CMD_MONOSTABLE_RESET => Self::params(params).map(|[_]| vec![]),
+
             // Set up the sound input circuit (not modelled)
             CMD_WRITE_DFAC if (1..=4).contains(&params.len()) => Ok(vec![]),
             CMD_WRITE_DFAC => Err(ERROR_PARAMS),
+
+            // Run the self test of the microcontroller (always passes)
+            CMD_DIAGNOSTICS => Self::params(params).map(|[]| vec![0, 0]),
+
+            // Read a pin of the microcontroller (always $00)
+            CMD_CONTROL_PANEL_ENABLE => Self::params(params).map(|[]| vec![0]),
+
+            // Restart the firmware, which resets the CPU and ADB (not modelled)
+            CMD_RESET => Self::params(params).map(|[]| {
+                warn!("Egret reset not modelled");
+                vec![]
+            }),
+
+            // Drive the VPP pin of the microcontroller (not modelled)
+            CMD_VPP => Self::params(params).map(|[_]| vec![]),
+
+            // Turn on when AC power comes back, rejected with a power switch
+            CMD_FILE_SERVER => Self::params::<1>(params).and(Err(ERROR_COMMAND)),
+
+            // Set or get the autopoll rate (fixed in the model, not stored)
+            CMD_SET_AUTOPOLL_RATE => Self::params(params).map(|[_]| vec![]),
+            CMD_GET_AUTOPOLL_RATE => Self::params(params).map(|[]| vec![0]),
+
+            // Get the size of the parameter RAM
+            CMD_PRAM_SIZE => Self::params(params).map(|[]| PRAM_SIZE.to_be_bytes().to_vec()),
+
+            // Set or get the delay of the ADB bus (not modelled)
+            CMD_SET_BUS_DELAY => Self::params(params).map(|[_]| vec![]),
+            CMD_GET_BUS_DELAY => Self::params(params).map(|[]| vec![0]),
 
             // List of the ADB devices to autopoll
             CMD_SET_DEVICE_LIST => Self::params(params).map(|list| {
                 self.adb_device_list = u16::from_be_bytes(list);
                 vec![]
             }),
+            CMD_GET_DEVICE_LIST => {
+                Self::params(params).map(|[]| self.adb_device_list.to_be_bytes().to_vec())
+            }
 
             // Choose the packet sent every second, if any
             CMD_ONE_SEC_MODE => Self::params(params).map(|[mode]| {
@@ -439,6 +515,13 @@ impl EgretCommon {
                 self.keyboard_nmi = enable != 0;
                 vec![]
             }),
+
+            // Post-parse register 2 of the keyboard (not modelled)
+            CMD_KEYBOARD_POST_PARSE => Self::params(params).map(|[_]| vec![]),
+
+            // Set or get the hang threshold (not modelled)
+            CMD_SET_HANG_THRESHOLD => Self::params(params).map(|[_]| vec![]),
+            CMD_GET_HANG_THRESHOLD => Self::params(params).map(|[]| vec![0]),
 
             // Unknown or unimplemented command
             _ => {
@@ -705,6 +788,30 @@ mod tests {
         // No packet when the device has no data
         egret.tick(AUTOPOLL_TICKS);
         assert_eq!(egret.packet(), None);
+    }
+
+    #[test]
+    fn other_commands() {
+        let mut egret = EgretCommon::default();
+
+        egret.command(&[0x01, 0x01, 0x01]);
+        egret.command(&[0x01, 0x1B, 0x03]);
+        assert_eq!(egret.command(&[0x01, 0x00]), [0x01, 0x00, 0x00]);
+        assert!(!egret.autopoll);
+        assert_eq!(egret.one_sec_mode, 0);
+
+        assert_eq!(egret.command(&[0x01, 0x15]), [0x01, 0x00, 0x15, 0x01, 0x08]);
+
+        egret.command(&[0x01, 0x19, 0x00, 0x0C]);
+        assert_eq!(egret.command(&[0x01, 0x1A]), [0x01, 0x00, 0x1A, 0x00, 0x0C]);
+
+        // Only for machines with soft power
+        assert_eq!(
+            egret.command(&[0x01, 0x0B, 0x00, 0x00, 0x00, 0x00]),
+            [0x02, 0x02, 0x01, 0x0B]
+        );
+        assert_eq!(egret.command(&[0x01, 0x13, 0x01]), [0x02, 0x02, 0x01, 0x13]);
+        assert_eq!(egret.command(&[0x01, 0x13]), [0x02, 0x03, 0x01, 0x13]);
     }
 
     #[test]
