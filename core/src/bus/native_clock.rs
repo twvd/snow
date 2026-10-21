@@ -48,7 +48,7 @@ struct ClockScaler {
 
 impl ClockScaler {
     fn new(in_freq: Ticks, out_freq: Ticks) -> Self {
-        ClockScaler {
+        Self {
             n: 0,
             in_freq,
             out_freq,
