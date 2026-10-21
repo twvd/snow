@@ -61,6 +61,11 @@ pub enum EmulatorCommand {
     #[cfg(feature = "ethernet")]
     EthernetStopCapture(usize),
     DetachScsiTarget(usize),
+    /// Attaches an HD20 to the end of the daisy chain.
+    /// Parameters: image, writable
+    Hd20Attach(PathBuf, bool),
+    /// Detaches the HD20 at the given chain position
+    Hd20Detach(usize),
     MouseUpdateAbsolute {
         x: u16,
         y: u16,
@@ -137,6 +142,16 @@ pub struct EmulatorStatus {
     pub speed: EmulatorSpeed,
     pub effective_speed: f64,
     pub scsi: [Option<ScsiTargetStatus>; 7],
+    /// HD20s on the external drive port, in daisy chain order
+    pub hd20: Vec<Hd20Status>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Hd20Status {
+    pub image: Option<PathBuf>,
+    /// Size of the volume in bytes
+    pub capacity: usize,
+    pub writable: bool,
 }
 
 #[cfg(feature = "ethernet")]
