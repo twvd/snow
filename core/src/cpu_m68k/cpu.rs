@@ -1140,34 +1140,32 @@ where
                                 self.regs.ssp().wrapping_add(0x06),
                                 0b1010_0000_0000_0000 | (vector as u16),
                             )?;
-                            // Internal register
-                            self.write_ticks(self.regs.ssp().wrapping_add(0x08), 0u16)?;
-                            // Special status register
+                            // Internal register and special status register
                             // TODO size
                             self.write_ticks(
-                                self.regs.ssp().wrapping_add(0x0A),
-                                *Group0Ssw::default()
-                                    .with_read(details.read)
-                                    .with_df(true)
-                                    .with_function_code(details.function_code)
-                                    .with_size(match details.size {
-                                        1 => 1,
-                                        2 => 2,
-                                        4 => 0,
-                                        _ => {
-                                            log::error!(
-                                                "Unknown size in group 0 details: {}",
-                                                details.size
-                                            );
-                                            // Assume long
-                                            0
-                                        }
-                                    }),
+                                self.regs.ssp().wrapping_add(0x08),
+                                Long::from(
+                                    *Group0Ssw::default()
+                                        .with_read(details.read)
+                                        .with_df(true)
+                                        .with_function_code(details.function_code)
+                                        .with_size(match details.size {
+                                            1 => 1,
+                                            2 => 2,
+                                            4 => 0,
+                                            _ => {
+                                                log::error!(
+                                                    "Unknown size in group 0 details: {}",
+                                                    details.size
+                                                );
+                                                // Assume long
+                                                0
+                                            }
+                                        }),
+                                ),
                             )?;
-                            // Instruction pipe stage C
-                            self.write_ticks(self.regs.ssp().wrapping_add(0x0C), 0u16)?;
-                            // Instruction pipe stage B
-                            self.write_ticks(self.regs.ssp().wrapping_add(0x0E), 0u16)?;
+                            // Instruction pipe stages C and B
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x0C), 0u32)?;
                             // Data cycle fault address
                             self.write_ticks(self.regs.ssp().wrapping_add(0x10), details.address)?;
                             // Internal registers
@@ -1185,40 +1183,38 @@ where
                                 self.regs.ssp().wrapping_add(0x06),
                                 0b1011_0000_0000_0000 | (vector as u16),
                             )?;
-                            // Internal register
-                            self.write_ticks(self.regs.ssp().wrapping_add(0x08), 0u16)?;
-                            // Special status register
+                            // Internal register and special status register
                             // TODO size
                             self.write_ticks(
-                                self.regs.ssp().wrapping_add(0x0A),
-                                *Group0Ssw::default()
-                                    .with_read(details.read)
-                                    .with_df(true)
-                                    .with_function_code(details.function_code)
-                                    .with_size(match details.size {
-                                        1 => 1,
-                                        2 => 2,
-                                        4 => 0,
-                                        _ => {
-                                            log::error!(
-                                                "Unknown size in group 0 details: {}",
-                                                details.size
-                                            );
-                                            // Assume long
-                                            0
-                                        }
-                                    }),
+                                self.regs.ssp().wrapping_add(0x08),
+                                Long::from(
+                                    *Group0Ssw::default()
+                                        .with_read(details.read)
+                                        .with_df(true)
+                                        .with_function_code(details.function_code)
+                                        .with_size(match details.size {
+                                            1 => 1,
+                                            2 => 2,
+                                            4 => 0,
+                                            _ => {
+                                                log::error!(
+                                                    "Unknown size in group 0 details: {}",
+                                                    details.size
+                                                );
+                                                // Assume long
+                                                0
+                                            }
+                                        }),
+                                ),
                             )?;
-                            // Instruction pipe stage C
-                            self.write_ticks(self.regs.ssp().wrapping_add(0x0C), 0u16)?;
-                            // Instruction pipe stage B
-                            self.write_ticks(self.regs.ssp().wrapping_add(0x0E), 0u16)?;
+                            // Instruction pipe stages C and B
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x0C), 0u32)?;
                             // Data cycle fault address
                             self.write_ticks(self.regs.ssp().wrapping_add(0x10), details.address)?;
 
                             // More internal stuff
-                            for i in (0x14..=0x5A).step_by(2) {
-                                self.write_ticks(self.regs.ssp().wrapping_add(i), 0u16)?;
+                            for i in (0x14..0x5C).step_by(4) {
+                                self.write_ticks(self.regs.ssp().wrapping_add(i), 0u32)?;
                             }
                         }
                     }
@@ -1952,7 +1948,7 @@ where
                 self.regs.read_d(instr.get_op2()),
                 self.regs.read_d(instr.get_op1()),
             ),
-            (AddressingMode::IndirectPreDec, 4) => {
+            (AddressingMode::IndirectPreDec, 4) if CPU_TYPE == M68000 => {
                 self.advance_cycles(2)?;
                 // The order here is very explicit due to the way registers need to be left if
                 // an address error occurs.
@@ -1970,7 +1966,12 @@ where
                 )
             }
             (AddressingMode::IndirectPreDec, _) => {
-                self.advance_cycles(2)?;
+                // MC68020UM 8.2.10, MC68030UM 11.6.10
+                if CPU_TYPE == M68000 {
+                    self.advance_cycles(2)?;
+                } else {
+                    self.advance_cycles(1)?;
+                }
                 // The order here is very explicit due to the way registers need to be left if
                 // an address error occurs.
                 let a_addr = self.regs.read_a_predec(instr.get_op2(), sz);
@@ -1991,7 +1992,7 @@ where
                 self.prefetch_pump()?;
                 self.regs.write_d(instr.get_op1(), result);
             }
-            (AddressingMode::IndirectPreDec, 4) => {
+            (AddressingMode::IndirectPreDec, 4) if CPU_TYPE == M68000 => {
                 // This writes in 16-bit steps, with a prefetch in between..
                 let result = result.expand();
                 let addr_low = self.regs.read_a::<Address>(instr.get_op1()).wrapping_add(2);
@@ -2660,6 +2661,8 @@ where
         self.op_alu_x::<Byte>(instr, Self::alu_sub_bcd)?;
         if instr.get_addr_mode_x()? == AddressingMode::DataRegister {
             self.advance_cycles(2)?;
+        } else if CPU_TYPE >= M68020 {
+            self.advance_cycles(4)?;
         }
 
         Ok(())
@@ -2670,6 +2673,8 @@ where
         self.op_alu_x::<Byte>(instr, Self::alu_add_bcd)?;
         if instr.get_addr_mode_x()? == AddressingMode::DataRegister {
             self.advance_cycles(2)?;
+        } else if CPU_TYPE >= M68020 {
+            self.advance_cycles(4)?;
         }
 
         Ok(())
@@ -3077,7 +3082,11 @@ where
             let v = self.regs.read::<T>(reg);
             if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
                 addr = addr.wrapping_sub(std::mem::size_of::<T>() as Address);
-                self.write_ticks_wflip(addr, v)?;
+                if CPU_TYPE == M68000 {
+                    self.write_ticks_wflip(addr, v)?;
+                } else {
+                    self.write_ticks(addr, v)?;
+                }
             } else {
                 self.write_ticks(addr, v)?;
                 addr = addr.wrapping_add(std::mem::size_of::<T>() as Address);
