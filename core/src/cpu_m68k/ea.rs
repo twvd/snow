@@ -462,9 +462,13 @@ where
         ea_in: usize,
         value: [u8; SZ],
     ) -> Result<()> {
+        // Only the 68020+ FPU and PMMU instructions use this, with multiples of 4 bytes,
+        // which go over the bus as long words
+        debug_assert_eq!(SZ % 4, 0);
         let ea = self.calc_ea_addr_sz::<SZ>(instr, instr.get_addr_mode()?, ea_in)?;
-        for (i, b) in value.into_iter().enumerate() {
-            self.write_ticks(ea.wrapping_add(i as Address), b)?;
+        for (i, l) in value.chunks_exact(4).enumerate() {
+            let l = Long::from_be_bytes([l[0], l[1], l[2], l[3]]);
+            self.write_ticks(ea.wrapping_add(4 * i as Address), l)?;
         }
 
         Ok(())
@@ -476,11 +480,14 @@ where
         instr: &Instruction,
         ea_in: usize,
     ) -> Result<[u8; SZ]> {
+        // As write_ea_sz()
+        debug_assert_eq!(SZ % 4, 0);
         let ea = self.calc_ea_addr_sz::<SZ>(instr, instr.get_addr_mode()?, ea_in)?;
         let mut v = ArrayVec::<u8, SZ>::new();
 
-        for i in 0..SZ {
-            v.push(self.read_ticks(ea.wrapping_add(i as Address))?);
+        for i in 0..SZ / 4 {
+            let l: Long = self.read_ticks(ea.wrapping_add(4 * i as Address))?;
+            v.extend(l.to_be_bytes());
         }
 
         Ok(v.into_inner().unwrap())
