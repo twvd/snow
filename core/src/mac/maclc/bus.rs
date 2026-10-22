@@ -5,7 +5,9 @@ use super::pseudovia::PseudoVia;
 use super::via::Via;
 use super::video::{self, Video};
 use super::{sonora, v8};
-use crate::bus::access::{Bus68020, BusAccess, BusResponse, bus_access_byte, bus_access_long};
+use crate::bus::access::{
+    Bus68020, BusAccess, BusResponse, bus_access_byte, bus_access_long, bus_access_word,
+};
 use crate::bus::native_clock::{DeviceCycle, NativeClock};
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
@@ -33,7 +35,8 @@ use bit_set::BitSet;
 use log::*;
 use serde::{Deserialize, Serialize};
 
-/// Wait states of a bus cycle
+/// Wait states of a bus cycle on the Sonora, where every cycle runs on a
+/// 32-bit port
 const BUS_WAITS: Ticks = 1;
 
 /// Frequency of the bus of the LC and LC II, without overclocking: C16M,
@@ -42,6 +45,23 @@ const V8_BUS_FREQUENCY: Ticks = 15_667_200;
 
 /// Frequency of the bus of the LC III, without overclocking
 const SONORA_BUS_FREQUENCY: Ticks = 25_000_000;
+
+/// Wait states of an I/O bus cycle, when not measured
+pub(super) const IO_WAITS: Ticks = 1;
+
+/// Port answering a bus cycle on the V8
+enum Port {
+    /// RAM and video RAM, 16-bit, on a slot
+    Ram,
+    /// RAM write, which the V8 takes as a 32-bit port and posts
+    RamWrite,
+    /// ROM, 32-bit
+    Rom,
+    /// Sound and V8 registers, in the V8: 8-bit, on a slot
+    V8Io,
+    /// Other I/O chips, 8-bit, with their wait states
+    Io(Ticks),
+}
 
 /// Frequency of the main clock (C16M)
 pub(super) const C16M_FREQUENCY: Ticks = 15_667_200;
@@ -101,6 +121,10 @@ pub struct MacLCBus<TRenderer: Renderer> {
 
     pub(crate) via: Via,
     egret: Egret,
+    /// Native time the V8 can start its next RAM cycle
+    v8_ready: Ticks,
+    /// Native time the V8 can take the next RAM write
+    v8_write_ready: Ticks,
     tick60_clock: Ticks,
     pub(crate) scc: Scc,
     pub(crate) swim: Swim,
@@ -219,6 +243,8 @@ where
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             via: Via::new(model),
             egret,
+            v8_ready: 0,
+            v8_write_ready: 0,
             tick60_clock: 0,
             scc: Scc::new(),
             swim,
@@ -413,6 +439,48 @@ where
         }
     }
 
+    /// The RAM and video RAM data buses of the V8 are 16-bit, the ROM is
+    /// 32-bit and the rest of the devices 8-bit. During the boot overlay,
+    /// reads of the RAM area go to the ROM and writes to the RAM.
+    fn v8_port(&self, addr: Address, write: bool) -> Port {
+        match self.decode(addr) {
+            Some(Region::Ram(_)) if self.overlay && !write => Port::Rom,
+            Some(Region::Ram(_)) if write => Port::RamWrite,
+            Some(Region::Ram(_) | Region::Vram(_)) => Port::Ram,
+            Some(Region::Rom) => Port::Rom,
+            Some(Region::Io(0x1_4000..=0x1_5FFF | 0x2_6000..=0x2_7FFF)) => Port::V8Io,
+            Some(Region::Io(offset)) => Port::Io(v8::io_waits(offset, write)),
+            // The byte decode logs the bus error of an unmapped address
+            Some(Region::CpuId(_)) | None => Port::Io(IO_WAITS),
+        }
+    }
+
+    /// Wait states for a cycle of the V8 RAM, of its registers or of the
+    /// ASC to start on the next free slot. RAM writes are posted: the CPU
+    /// only waits for the V8 to take the write, which it then does in one
+    /// cycle per 16-bit half, back to back.
+    ///
+    /// When overclocking, the slots are not modelled.
+    fn v8_slot_waits(&mut self, acc: &BusAccess<Bus68020>, ram_write: bool) -> Ticks {
+        if self.native_clock.is_overclocking() {
+            return 0;
+        }
+        let now = self.native_clock.native_ticks() + acc.pending;
+        let slot = |t: Ticks| (t + v8::CYCLE_SLOT - 1) & !(v8::CYCLE_SLOT - 1);
+        if !ram_write {
+            let start = slot(now.max(self.v8_ready));
+            self.v8_ready = start + v8::RAM_CYCLE;
+            return start - now;
+        }
+        let hold = self.v8_write_ready.saturating_sub(now);
+        let len = acc.size.min(4 - (acc.addr & 3));
+        let second_half = Ticks::from((acc.addr + len - 1) / 2 - acc.addr / 2);
+        let last = slot((now + hold).max(self.v8_ready)) + second_half * 2 * v8::CYCLE_SLOT;
+        self.v8_ready = last + v8::RAM_CYCLE;
+        self.v8_write_ready = last;
+        hold
+    }
+
     fn read_byte(&mut self, addr: Address) -> Option<Byte> {
         let val = match self.decode(addr) {
             // ROM (overlay)
@@ -596,13 +664,37 @@ where
         if let Some(Region::Io(0x0_0000..=0x0_1FFF)) = self.decode(acc.addr) {
             return Ok(self.via_cycle(acc));
         }
-        Ok(bus_access_long(
-            acc,
-            BUS_WAITS,
-            self,
-            Self::read_bytes,
-            Self::write_bytes,
-        ))
+        let (read, write) = (Self::read_bytes, Self::write_bytes);
+        Ok(match self.gate_array {
+            GateArray::V8 => match self.v8_port(acc.addr, acc.write) {
+                Port::Ram => {
+                    let waits = v8::RAM_WAITS + self.v8_slot_waits(&acc, false);
+                    bus_access_word(acc, waits, self, read, write)
+                }
+                Port::RamWrite => {
+                    let waits = self.v8_slot_waits(&acc, true);
+                    bus_access_long(acc, waits, self, read, write)
+                }
+                Port::Rom => bus_access_long(acc, v8::ROM_WAITS, self, read, write),
+                // I/O cycles take native time
+                Port::V8Io => match self.native_clock.device_sync(&acc) {
+                    DeviceCycle::Stall(n) => BusResponse::Stall(n),
+                    DeviceCycle::Access(w) => {
+                        let waits = v8::RAM_WAITS + self.v8_slot_waits(&acc, false);
+                        let w = self.native_clock.scale_dev_waits(w, waits);
+                        bus_access_byte(acc, w, self, read, write)
+                    }
+                },
+                Port::Io(waits) => match self.native_clock.device_sync(&acc) {
+                    DeviceCycle::Stall(n) => BusResponse::Stall(n),
+                    DeviceCycle::Access(w) => {
+                        let w = self.native_clock.scale_dev_waits(w, waits);
+                        bus_access_byte(acc, w, self, read, write)
+                    }
+                },
+            },
+            GateArray::Sonora { .. } => bus_access_long(acc, BUS_WAITS, self, read, write),
+        })
     }
 
     fn get_mask(&self) -> Address {

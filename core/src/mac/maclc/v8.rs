@@ -3,10 +3,11 @@
 //! What is particular to the V8: its address map, the layout of the RAM and
 //! of the video RAM, and its video modes. Its registers are in `pseudovia`.
 
-use super::bus::Region;
+use super::bus::{IO_WAITS, Region};
 use super::pseudovia::{RegisterExp, RegisterMonP};
 use super::video::Mode;
 use crate::bus::Address;
+use crate::bus::access::{Bus68020, CpuBus};
 use crate::mac::MacMonitor;
 use crate::tickable::Ticks;
 
@@ -15,6 +16,16 @@ pub(super) const IO_BASE: Address = 0xF0_0000;
 
 /// Bits of the address which select a register of the V8
 pub(super) const PSEUDOVIA_MASK: Address = 0x13;
+
+/// The V8 starts its RAM cycles, and those of its own registers and of the
+/// ASC, on a slot of this many clocks. A power of two.
+pub(super) const CYCLE_SLOT: Ticks = 4;
+/// Length of a RAM cycle from the start of its slot, in clocks
+pub(super) const RAM_CYCLE: Ticks = 6;
+/// Wait states of a RAM cycle that starts on a slot
+pub(super) const RAM_WAITS: Ticks = RAM_CYCLE - Bus68020::CYCLE;
+/// Wait states of a ROM bus cycle
+pub(super) const ROM_WAITS: Ticks = 2;
 
 /// Start of the window of the video RAM
 const VRAM_BASE: Address = 0xF4_0000;
@@ -103,6 +114,22 @@ pub(super) fn video_mode(monitor: MacMonitor, exp: RegisterExp, monp: RegisterMo
         depth: monp.depth(),
         row_bytes: if exp.vram_256k() { 512 } else { 1024 },
         direct_palette: true,
+    }
+}
+
+/// Wait states of an I/O cycle, measured with BusTiming on a real LC II
+pub(super) fn io_waits(offset: Address, write: bool) -> Ticks {
+    match offset {
+        // SCC
+        0x0_4000..=0x0_5FFF => 10,
+        // SCSI
+        0x0_6000..=0x0_7FFF | 0x1_0000..=0x1_3FFF if write => 0,
+        0x0_6000..=0x0_7FFF | 0x1_0000..=0x1_3FFF => 2,
+        // Sound and V8 registers, in the V8
+        0x1_4000..=0x1_5FFF | 0x2_6000..=0x2_7FFF => RAM_WAITS,
+        // SWIM
+        0x1_6000..=0x1_7FFF => 4,
+        _ => IO_WAITS,
     }
 }
 
