@@ -296,7 +296,7 @@ where
             overlay: true,
             amu_active: false,
             speed: EmulatorSpeed::Accurate,
-            native_clock: NativeClock::new(BUS_FREQUENCY, 20),
+            native_clock: NativeClock::new(BUS_FREQUENCY),
             //last_audiosample: 0,
             vblank_time: Instant::now(),
             vblank_clock: 0,

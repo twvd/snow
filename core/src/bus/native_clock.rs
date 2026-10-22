@@ -8,6 +8,16 @@ use crate::tickable::Ticks;
 /// Wait states, in CPU ticks
 pub type WaitTicks = Ticks;
 
+/// Frequency of C16M (15.6672 MHz), the 16 MHz clock of the Macs
+pub const C16M_FREQUENCY: Ticks = 15_667_200;
+
+/// The VIA clock is C16M / 20 (783.36 kHz) on the Macs with C16M
+const C16M_PER_VIA: Ticks = 20;
+
+/// The VIA clock (E clock) is C8M / 10 on the compact Macs, which have no
+/// C16M
+const C8M_PER_VIA: Ticks = 10;
+
 /// What a device access cycle does
 pub enum DeviceCycle {
     /// Stall the CPU for this many CPU ticks, then it presents the cycle
@@ -88,42 +98,91 @@ impl ClockScaler {
 ///
 /// The CPU runs on CPU ticks, the devices on native ticks. A native tick is
 /// never shorter than a CPU tick. The clock also produces the VIA clock,
-/// known as the E clock on the 68000 Macs, which ticks every `native_per_via`
-/// native ticks.
+/// known as the E clock on the 68000 Macs.
+///
+/// With `C16M`, the clock also produces C16M, the 16 MHz clock of the Macs
+/// from the Mac II on, which the native clock may differ from: the VIA clock
+/// is then C16M / 20, and devices clocked by C16M can have their cycles and
+/// time counted in C16M ticks. Without it, on the compact Macs, the native
+/// clock is C8M and the VIA clock is C8M / 10.
 #[derive(Serialize, Deserialize)]
-pub struct NativeClock {
+pub struct NativeClock<const C16M: bool = true> {
     /// Native frequency, in Hz
     native_freq: Ticks,
     /// Frequency of the CPU in Hz, which includes any overclocking
     cpu_freq: Ticks,
-    /// Native ticks per VIA tick
+    /// Native ticks per VIA tick, when C16M is not scaled
     native_per_via: Ticks,
     /// The value `n` in the CPU-to-native clock downscaler
     native_clockgen: ClockScaler,
-    /// Native ticks since the last VIA tick
-    native_since_via: Ticks,
+    /// The value `n` in the CPU-to-C16M clock downscaler, when C16M is scaled
+    c16m_clockgen: ClockScaler,
+    /// Ticks since the last VIA tick: C16M ticks when C16M is scaled, native
+    /// ticks otherwise
+    since_via: Ticks,
     /// Native ticks elapsed since boot
     native_ticks: Ticks,
+    /// C16M ticks elapsed since boot, when C16M is scaled
+    c16m_ticks: Ticks,
 }
 
-impl NativeClock {
-    /// Native clock at `native_freq` Hz, with a VIA tick every
-    /// `native_per_via` native ticks
-    pub fn new(native_freq: Ticks, native_per_via: Ticks) -> Self {
+impl NativeClock<true> {
+    /// C16M ticks elapsed since boot
+    pub fn c16m_ticks(&self) -> Ticks {
+        if self.scaled_c16m() {
+            self.c16m_ticks
+        } else {
+            self.native_ticks
+        }
+    }
+
+    /// Start of a device access cycle on C16M: the same as device_sync(),
+    /// for a device clocked by C16M instead of the native clock. The access
+    /// lasts the CPU's bus cycle in C16M ticks, or the CPU's own bus cycle
+    /// if that is longer.
+    pub fn device16_sync<C: CpuBus>(&self, acc: &BusAccess<C>) -> DeviceCycle {
+        if !self.scaled_c16m() {
+            return self.device_sync(acc);
+        }
+        Self::sync(acc, self.c16m_clockgen, 1, 0, C::CYCLE)
+    }
+
+    /// Adds the device's own wait states, `extra` C16M ticks, to the wait
+    /// states `w` that device16_sync() returned, scaled to the CPU clock
+    pub fn scale_dev16_waits(&self, w: WaitTicks, extra: Ticks) -> WaitTicks {
+        w + (extra * self.cpu_freq).div_ceil(C16M_FREQUENCY)
+    }
+}
+
+impl<const C16M: bool> NativeClock<C16M> {
+    /// Native clock at `native_freq` Hz. With C16M, the VIA clock is
+    /// C16M / 20. Without, the native clock is C8M and the VIA clock is
+    /// C8M / 10.
+    pub fn new(native_freq: Ticks) -> Self {
         Self {
             native_freq,
             cpu_freq: native_freq,
-            native_per_via,
+            native_per_via: if C16M { C16M_PER_VIA } else { C8M_PER_VIA },
             native_clockgen: ClockScaler::new(native_freq, native_freq),
-            native_since_via: 0,
+            c16m_clockgen: ClockScaler::new(native_freq, C16M_FREQUENCY),
+            since_via: 0,
             native_ticks: 0,
+            c16m_ticks: 0,
         }
+    }
+
+    /// C16M is produced from the CPU clock by a clock scaler, when there is
+    /// C16M and the native clock is not C16M
+    #[inline(always)]
+    fn scaled_c16m(&self) -> bool {
+        C16M && self.native_freq != C16M_FREQUENCY
     }
 
     /// Sets the frequency of the CPU in Hz, which includes any overclocking
     pub fn set_cpu_frequency(&mut self, cpu_freq: Ticks) {
         self.cpu_freq = cpu_freq;
         self.native_clockgen = ClockScaler::new(cpu_freq, self.native_freq);
+        self.c16m_clockgen = ClockScaler::new(cpu_freq, C16M_FREQUENCY);
     }
 
     /// True when the CPU runs faster than the native clock
@@ -150,8 +209,19 @@ impl NativeClock {
     #[inline]
     pub fn advance(&mut self, cpu_ticks: Ticks, max: Option<Ticks>) -> Step {
         debug_assert!(max != Some(0));
-        // Native ticks to the next VIA tick, and to run at most
-        let to_via = self.native_per_via - self.native_since_via;
+        // Native ticks to the next VIA tick, or to the native tick in which
+        // it happens, and to run at most
+        let to_via = if self.scaled_c16m() {
+            // The CPU tick that completes the C16M tick of the VIA tick, and
+            // the native ticks up to the end of the one it falls in
+            let cpu = self
+                .c16m_clockgen
+                .in_ticks_until_out_ticks(C16M_PER_VIA - self.since_via);
+            let at_via = self.native_clockgen.plus_in_ticks(cpu);
+            at_via.n.div_ceil(at_via.in_freq)
+        } else {
+            self.native_per_via - self.since_via
+        };
         let limit = max.map_or(to_via, |max| max.min(to_via));
 
         // Native ticks advanced, and the CPU ticks they used
@@ -177,10 +247,20 @@ impl NativeClock {
         };
 
         self.native_ticks += native;
-        self.native_since_via += native;
-        let via_tick = self.native_since_via >= self.native_per_via;
+        let per_via = if self.scaled_c16m() {
+            self.c16m_clockgen = self.c16m_clockgen.plus_in_ticks(cpu_used);
+            let c16m = self.c16m_clockgen.out_ticks();
+            self.c16m_clockgen = self.c16m_clockgen.minus_out_ticks(c16m);
+            self.c16m_ticks += c16m;
+            self.since_via += c16m;
+            C16M_PER_VIA
+        } else {
+            self.since_via += native;
+            self.native_per_via
+        };
+        let via_tick = self.since_via >= per_via;
         if via_tick {
-            self.native_since_via -= self.native_per_via;
+            self.since_via -= per_via;
         }
         Step {
             native,
@@ -202,20 +282,7 @@ impl NativeClock {
         if !self.is_overclocking() {
             return DeviceCycle::Access(0);
         }
-        // `after_pending` is the value of native_clockgen after acc.pending CPU ticks have passed.
-        let after_pending = self.native_clockgen.plus_in_ticks(acc.pending);
-        // `partial_tick` is the progress of `after_pending` into the following native tick.
-        let partial_tick = after_pending.minus_out_ticks(after_pending.out_ticks());
-        // `on_tick` is true if `partial_tick` is less than one CPU tick.
-        let on_tick = partial_tick.n < self.native_freq;
-        if on_tick && acc.pending == 0 {
-            return DeviceCycle::Access(partial_tick.in_ticks_until_out_ticks(C::CYCLE) - C::CYCLE);
-        }
-        if on_tick {
-            // Only to let the clock catch up with the CPU
-            return DeviceCycle::Stall(0);
-        }
-        DeviceCycle::Stall(partial_tick.in_ticks_until_out_ticks(1))
+        Self::sync(acc, self.native_clockgen, 1, 0, C::CYCLE)
     }
 
     /// Start of a VIA access cycle: the same, on a VIA tick instead of a
@@ -225,27 +292,18 @@ impl NativeClock {
     /// Returns a DeviceCycle, which indicates whether to stall, or the wait
     /// states of the VIA cycle.
     pub fn via_sync<C: CpuBus>(&self, acc: &BusAccess<C>) -> DeviceCycle {
-        // `after_pending` is the value of native_clockgen after acc.pending CPU ticks have passed.
-        let after_pending = self.native_clockgen.plus_in_ticks(acc.pending);
-        // `ticks_done` is the number of native ticks represented by `after_pending`.
-        let ticks_done = after_pending.out_ticks();
-        // `partial_tick` is the progress of `after_pending` into the following native tick.
-        let partial_tick = after_pending.minus_out_ticks(ticks_done);
-        let native_since_via = (self.native_since_via + ticks_done) % self.native_per_via;
-        // `on_via_tick` is true if the via phase is 0 and `partial_tick` is less than one CPU tick.
-        let on_via_tick = native_since_via == 0 && partial_tick.n < self.native_freq;
-        if on_via_tick && acc.pending == 0 {
-            return DeviceCycle::Access(
-                partial_tick.in_ticks_until_out_ticks(self.native_per_via) - C::CYCLE,
-            );
+        if self.scaled_c16m() {
+            Self::sync(
+                acc,
+                self.c16m_clockgen,
+                C16M_PER_VIA,
+                self.since_via,
+                C16M_PER_VIA,
+            )
+        } else {
+            let per_via = self.native_per_via;
+            Self::sync(acc, self.native_clockgen, per_via, self.since_via, per_via)
         }
-        if on_via_tick {
-            // Only to let the clock catch up with the CPU
-            return DeviceCycle::Stall(0);
-        }
-        DeviceCycle::Stall(
-            partial_tick.in_ticks_until_out_ticks(self.native_per_via - native_since_via),
-        )
     }
 
     /// Adds the device's own wait states to the wait states of a device
@@ -261,6 +319,39 @@ impl NativeClock {
     pub fn scale_dev_waits(&self, w: WaitTicks, extra: Ticks) -> WaitTicks {
         w + (extra * self.cpu_freq).div_ceil(self.native_freq)
     }
+
+    /// Start of an access cycle on the clock that `clockgen` produces from
+    /// the CPU clock, synchronous with every `period` ticks of it, `phase`
+    /// ticks into the period. The access then lasts `cycle` ticks.
+    fn sync<C: CpuBus>(
+        acc: &BusAccess<C>,
+        clockgen: ClockScaler,
+        period: Ticks,
+        phase: Ticks,
+        cycle: Ticks,
+    ) -> DeviceCycle {
+        // `after_pending` is the value of clockgen after acc.pending CPU ticks have passed.
+        let after_pending = clockgen.plus_in_ticks(acc.pending);
+        // `ticks_done` is the number of ticks represented by `after_pending`.
+        let ticks_done = after_pending.out_ticks();
+        // `partial_tick` is the progress of `after_pending` into the following tick.
+        let partial_tick = after_pending.minus_out_ticks(ticks_done);
+        let since_start = (phase + ticks_done) % period;
+        // `on_start` is true if the phase is 0 and `partial_tick` is less than one CPU tick.
+        let on_start = since_start == 0 && partial_tick.n < clockgen.out_freq;
+        if on_start && acc.pending == 0 {
+            return DeviceCycle::Access(
+                partial_tick
+                    .in_ticks_until_out_ticks(cycle)
+                    .saturating_sub(C::CYCLE),
+            );
+        }
+        if on_start {
+            // Only to let the clock catch up with the CPU
+            return DeviceCycle::Stall(0);
+        }
+        DeviceCycle::Stall(partial_tick.in_ticks_until_out_ticks(period - since_start))
+    }
 }
 
 #[cfg(test)]
@@ -270,7 +361,7 @@ mod tests {
 
     /// Runs `cpu` CPU ticks through the clock, returns the native ticks and
     /// the VIA ticks
-    fn run(clock: &mut NativeClock, mut cpu: Ticks) -> (Ticks, Ticks) {
+    fn run<const C16M: bool>(clock: &mut NativeClock<C16M>, mut cpu: Ticks) -> (Ticks, Ticks) {
         let (mut native, mut via) = (0, 0);
         while cpu > 0 {
             let step = clock.advance(cpu, None);
@@ -286,7 +377,7 @@ mod tests {
 
     #[test]
     fn native_speed() {
-        let mut clock = NativeClock::new(1000, 10);
+        let mut clock = NativeClock::<false>::new(1000);
         assert_eq!(run(&mut clock, 25), (25, 2));
         let step = clock.advance(100, None);
         assert_eq!((step.native, step.via_tick, step.cpu_used), (5, true, 5));
@@ -294,7 +385,7 @@ mod tests {
 
     #[test]
     fn twice_as_fast() {
-        let mut clock = NativeClock::new(1000, 10);
+        let mut clock = NativeClock::<false>::new(1000);
         clock.set_cpu_frequency(2000);
         assert_eq!(run(&mut clock, 41), (20, 2));
         // The odd CPU tick is half a native tick: one more completes it
@@ -303,7 +394,7 @@ mod tests {
 
     #[test]
     fn uneven_ratio() {
-        let mut clock = NativeClock::new(3, 10);
+        let mut clock = NativeClock::<false>::new(3);
         clock.set_cpu_frequency(7);
         // 70 CPU ticks are 30 native ticks, whatever the batches
         let mut native = 0;
@@ -315,7 +406,7 @@ mod tests {
 
     #[test]
     fn stops_at_max() {
-        let mut clock = NativeClock::new(1000, 10);
+        let mut clock = NativeClock::<false>::new(1000);
         clock.set_cpu_frequency(4000);
         let step = clock.advance(100, Some(3));
         assert_eq!((step.native, step.via_tick, step.cpu_used), (3, false, 12));
@@ -327,7 +418,10 @@ mod tests {
         BusAccess::read(0, 1, pending)
     }
 
-    fn sync(clock: &mut NativeClock, cycle: &DeviceCycle) -> Option<WaitTicks> {
+    fn sync<const C16M: bool>(
+        clock: &mut NativeClock<C16M>,
+        cycle: &DeviceCycle,
+    ) -> Option<WaitTicks> {
         match *cycle {
             DeviceCycle::Stall(n) => {
                 run(clock, n);
@@ -339,7 +433,7 @@ mod tests {
 
     #[test]
     fn device_sync_native_speed() {
-        let clock = NativeClock::new(1000, 10);
+        let clock = NativeClock::<false>::new(1000);
         assert!(matches!(
             clock.device_sync(&read(7)),
             DeviceCycle::Access(0)
@@ -348,7 +442,7 @@ mod tests {
 
     #[test]
     fn device_sync_overclocked() {
-        let mut clock = NativeClock::new(1000, 10);
+        let mut clock = NativeClock::<false>::new(1000);
         clock.set_cpu_frequency(4000);
         // 6 CPU ticks in: half way through the second native tick
         let cycle = clock.device_sync(&read(6));
@@ -362,7 +456,7 @@ mod tests {
 
     #[test]
     fn device_sync_uneven_ratio() {
-        let mut clock = NativeClock::new(1000, 10);
+        let mut clock = NativeClock::<false>::new(1000);
         clock.set_cpu_frequency(2500);
         run(&mut clock, 3);
         // Native tick 1 started at 2.5 CPU ticks: on it, and the 4 native
@@ -378,7 +472,7 @@ mod tests {
 
     #[test]
     fn via_sync_native_speed() {
-        let mut clock = NativeClock::new(1000, 10);
+        let mut clock = NativeClock::<false>::new(1000);
         // On a VIA tick, up to date: 10 native ticks of the VIA cycle
         assert!(matches!(clock.via_sync(&read(0)), DeviceCycle::Access(6)));
         // On a VIA tick, but the clock has to be brought up to date first
@@ -390,7 +484,7 @@ mod tests {
 
     #[test]
     fn via_sync_overclocked() {
-        let mut clock = NativeClock::new(1000, 10);
+        let mut clock = NativeClock::<false>::new(1000);
         clock.set_cpu_frequency(3000);
         run(&mut clock, 4);
         // A third of a native tick past native tick 1
@@ -404,11 +498,112 @@ mod tests {
 
     #[test]
     fn short_batch() {
-        let mut clock = NativeClock::new(1000, 10);
+        let mut clock = NativeClock::<false>::new(1000);
         clock.set_cpu_frequency(4000);
         let step = clock.advance(3, None);
         assert_eq!((step.native, step.via_tick, step.cpu_used), (0, false, 3));
         let step = clock.advance(1, None);
         assert_eq!((step.native, step.via_tick, step.cpu_used), (1, false, 1));
+    }
+
+    /// 25 MHz and 33.33 MHz, whose ticks don't divide C16M
+    const F25M: Ticks = 25_000_000;
+    const F33M: Ticks = 33_333_333;
+
+    #[test]
+    fn via_from_c16m() {
+        for freq in [F25M, F33M] {
+            let mut clock = NativeClock::<true>::new(freq);
+            assert_eq!(run(&mut clock, freq), (freq, C16M_FREQUENCY / 20));
+            let mut clock = NativeClock::<true>::new(freq);
+            clock.set_cpu_frequency(2 * freq);
+            assert_eq!(run(&mut clock, 2 * freq), (freq, C16M_FREQUENCY / 20));
+        }
+    }
+
+    #[test]
+    fn via_sync_c16m() {
+        // A VIA cycle is 31.91 CPU ticks
+        let mut clock = NativeClock::<true>::new(F25M);
+        assert!(matches!(clock.via_sync(&read(0)), DeviceCycle::Access(w) if w == 32 - 4));
+        run(&mut clock, 5);
+        assert!(matches!(clock.via_sync(&read(0)), DeviceCycle::Stall(27)));
+        run(&mut clock, 27);
+        // 0.09 CPU ticks past the VIA tick, the next one is at 63.83
+        assert!(matches!(clock.via_sync(&read(0)), DeviceCycle::Access(w) if w == 32 - 4));
+        assert!(matches!(clock.via_sync(&read(3)), DeviceCycle::Stall(29)));
+    }
+
+    #[test]
+    fn via_sync_c16m_33m() {
+        // A VIA cycle is 42.55 CPU ticks
+        let mut clock = NativeClock::<true>::new(F33M);
+        assert!(matches!(clock.via_sync(&read(0)), DeviceCycle::Access(w) if w == 43 - 4));
+        run(&mut clock, 5);
+        assert!(matches!(clock.via_sync(&read(0)), DeviceCycle::Stall(38)));
+        run(&mut clock, 38);
+        // 0.45 CPU ticks past the VIA tick, the next one is at 85.10
+        assert!(matches!(clock.via_sync(&read(0)), DeviceCycle::Access(w) if w == 43 - 4));
+    }
+
+    #[test]
+    fn device16_sync() {
+        // A C16M tick is 1.60 CPU ticks
+        let mut clock = NativeClock::<true>::new(F25M);
+        // 4 C16M ticks end at 6.38
+        assert!(matches!(clock.device16_sync(&read(0)), DeviceCycle::Access(w) if w == 7 - 4));
+        run(&mut clock, 1);
+        assert!(matches!(
+            clock.device16_sync(&read(0)),
+            DeviceCycle::Stall(1)
+        ));
+        run(&mut clock, 1);
+        // 0.40 CPU ticks past the C16M tick at 1.60, 4 C16M ticks end at 7.98
+        assert!(matches!(clock.device16_sync(&read(0)), DeviceCycle::Access(w) if w == 6 - 4));
+        assert_eq!(clock.scale_dev16_waits(0, 2), 4);
+    }
+
+    #[test]
+    fn device16_sync_33m() {
+        // A C16M tick is 2.13 CPU ticks
+        let mut clock = NativeClock::<true>::new(F33M);
+        // 4 C16M ticks end at 8.51
+        assert!(matches!(clock.device16_sync(&read(0)), DeviceCycle::Access(w) if w == 9 - 4));
+        run(&mut clock, 1);
+        assert!(matches!(
+            clock.device16_sync(&read(0)),
+            DeviceCycle::Stall(2)
+        ));
+        run(&mut clock, 2);
+        // 0.87 CPU ticks past the C16M tick at 2.13, 4 C16M ticks end at 10.64
+        assert!(matches!(clock.device16_sync(&read(0)), DeviceCycle::Access(w) if w == 8 - 4));
+        assert_eq!(clock.scale_dev16_waits(0, 2), 5);
+    }
+
+    #[test]
+    fn device16_sync_native_c16m() {
+        let mut clock = NativeClock::<true>::new(C16M_FREQUENCY);
+        assert!(matches!(
+            clock.device16_sync(&read(5)),
+            DeviceCycle::Access(0)
+        ));
+        clock.set_cpu_frequency(4 * C16M_FREQUENCY);
+        run(&mut clock, 6);
+        assert!(matches!(
+            clock.device16_sync(&read(0)),
+            DeviceCycle::Stall(2)
+        ));
+        assert_eq!(clock.scale_dev16_waits(0, 2), 8);
+    }
+
+    #[test]
+    fn c16m_ticks() {
+        let mut clock = NativeClock::<true>::new(F25M);
+        run(&mut clock, F25M);
+        assert_eq!(clock.c16m_ticks(), C16M_FREQUENCY);
+        let mut clock = NativeClock::<true>::new(C16M_FREQUENCY);
+        clock.set_cpu_frequency(2 * C16M_FREQUENCY);
+        run(&mut clock, 2 * C16M_FREQUENCY);
+        assert_eq!(clock.c16m_ticks(), C16M_FREQUENCY);
     }
 }
