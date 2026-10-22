@@ -2086,8 +2086,17 @@ where
 
         self.prefetch_pump()?;
 
-        // Computation time
-        self.advance_cycles(34 + (b.count_ones() as Ticks) * 2)?;
+        // Computation time. On the 68020/68030 MUL and DIV take the maximum times
+        // from the manuals (MC68020UM 8.2.8, MC68030UM 11.6.8). The real times
+        // depend on the operands, but there is no data on how. Other emulators use
+        // fixed times as well, and the few measurements found online roughly match.
+        if CPU_TYPE == M68000 {
+            self.advance_cycles(34 + (b.count_ones() as Ticks) * 2)?;
+        } else if CPU_TYPE == M68030 {
+            self.advance_cycles(26)?;
+        } else {
+            self.advance_cycles(25)?;
+        }
 
         self.regs.sr.set_v(false);
         self.regs.sr.set_c(false);
@@ -2107,8 +2116,14 @@ where
 
         self.prefetch_pump()?;
 
-        // Computation time
-        self.advance_cycles(34 + (((b << 1) ^ b).count_ones() as Ticks) * 2)?;
+        // Computation time (68020/68030: maximum from the manuals, see op_mulu)
+        if CPU_TYPE == M68000 {
+            self.advance_cycles(34 + (((b << 1) ^ b).count_ones() as Ticks) * 2)?;
+        } else if CPU_TYPE == M68030 {
+            self.advance_cycles(26)?;
+        } else {
+            self.advance_cycles(25)?;
+        }
 
         self.regs.sr.set_v(false);
         self.regs.sr.set_c(false);
@@ -2142,7 +2157,12 @@ where
 
         self.regs.sr.set_c(false);
         self.regs.sr.set_z(false);
-        self.advance_cycles(6)?;
+        if CPU_TYPE == M68000 {
+            self.advance_cycles(6)?;
+        } else {
+            // Maximum from the manuals, see op_mulu
+            self.advance_cycles(42)?;
+        }
         if result > Word::MAX.into() {
             // Overflow
             self.regs.sr.set_v(true);
@@ -2153,22 +2173,24 @@ where
         }
 
         // Simulate the cycle time
-        self.advance_cycles(6)?;
-        divisor <<= 16;
-        let mut last_msb;
-        for _ in 0..15 {
-            self.advance_cycles(4)?;
-            last_msb = dividend & 0x8000_0000 != 0;
-            dividend <<= 1;
-            if !last_msb {
-                self.advance_cycles(2)?;
-                if dividend < divisor {
+        if CPU_TYPE == M68000 {
+            self.advance_cycles(6)?;
+            divisor <<= 16;
+            let mut last_msb;
+            for _ in 0..15 {
+                self.advance_cycles(4)?;
+                last_msb = dividend & 0x8000_0000 != 0;
+                dividend <<= 1;
+                if !last_msb {
                     self.advance_cycles(2)?;
+                    if dividend < divisor {
+                        self.advance_cycles(2)?;
+                    }
                 }
-            }
 
-            if last_msb || dividend >= divisor {
-                dividend = dividend.wrapping_sub(divisor);
+                if last_msb || dividend >= divisor {
+                    dividend = dividend.wrapping_sub(divisor);
+                }
             }
         }
 
@@ -2205,13 +2227,20 @@ where
 
         self.regs.sr.set_c(false);
         self.regs.sr.set_z(false);
-        self.advance_cycles(8)?;
-        if dividend < 0 {
-            self.advance_cycles(2)?;
+        if CPU_TYPE == M68000 {
+            self.advance_cycles(8)?;
+            if dividend < 0 {
+                self.advance_cycles(2)?;
+            }
+        } else {
+            // Maximum from the manuals, see op_mulu
+            self.advance_cycles(54)?;
         }
         if dividend.wrapping_abs() >= (divisor.wrapping_abs() << 16) && divisor != i16::MIN as i32 {
             // Overflow (detected before calculation)
-            self.advance_cycles(4)?;
+            if CPU_TYPE == M68000 {
+                self.advance_cycles(4)?;
+            }
 
             self.regs.sr.set_v(true);
             self.regs.sr.set_n(true);
@@ -2221,17 +2250,19 @@ where
         }
 
         // Simulate the cycle time
-        if divisor < 0 {
-            // +2 for negative divisor
-            self.advance_cycles(2)?;
-        } else if dividend < 0 {
-            // +4 for positive divisor, negative dividend
-            self.advance_cycles(4)?;
-        }
+        if CPU_TYPE == M68000 {
+            if divisor < 0 {
+                // +2 for negative divisor
+                self.advance_cycles(2)?;
+            } else if dividend < 0 {
+                // +4 for positive divisor, negative dividend
+                self.advance_cycles(4)?;
+            }
 
-        // Count zeroes in top 15 most significant bits
-        let zeroes = ((result.wrapping_abs() as u16) | 1).count_zeros() as Ticks;
-        self.advance_cycles(108 + zeroes * 2)?;
+            // Count zeroes in top 15 most significant bits
+            let zeroes = ((result.wrapping_abs() as u16) | 1).count_zeros() as Ticks;
+            self.advance_cycles(108 + zeroes * 2)?;
+        }
 
         if result > i16::MAX.into() || result < i16::MIN.into() {
             // Overflow (detected during calculation)
@@ -4190,19 +4221,20 @@ where
             let a = self.regs.read_d::<Long>(extword.dl()) as i32 as i64;
             let b = self.read_ea::<Long>(instr, instr.get_op2())? as i32 as i64;
 
-            // Computation time
-            self.advance_cycles(34 + (((b << 1) ^ b).count_ones() as Ticks) * 2)?;
-
             a.wrapping_mul(b)
         } else {
             let a = self.regs.read_d::<Long>(extword.dl()) as u64;
             let b = self.read_ea::<Long>(instr, instr.get_op2())? as u64;
 
-            // Computation time
-            self.advance_cycles(34 + (((b << 1) ^ b).count_ones() as Ticks) * 2)?;
-
             a.wrapping_mul(b) as i64
         };
+
+        // Computation time (68020/68030: maximum from the manuals, see op_mulu)
+        if CPU_TYPE == M68030 {
+            self.advance_cycles(40)?;
+        } else {
+            self.advance_cycles(39)?;
+        }
 
         self.prefetch_pump()?;
 
@@ -4268,15 +4300,19 @@ where
             (q, dividend % divisor, q > u64::from(u32::MAX))
         };
 
+        // Computation time (68020/68030: maximum from the manuals, see op_mulu)
+        if extword.signed() {
+            self.advance_cycles(86)?;
+        } else {
+            self.advance_cycles(74)?;
+        }
+
         // The quotient must fit in 32 bits; the operands are left unchanged
         if overflow {
             debug!("DIV.l overflow");
             self.regs.sr.set_v(true);
             return Ok(());
         }
-
-        // 76-79 cycles
-        self.advance_cycles(76)?;
 
         self.regs.sr.set_v(false);
         self.regs.sr.set_c(false);
