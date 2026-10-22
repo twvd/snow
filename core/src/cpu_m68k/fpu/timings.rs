@@ -38,6 +38,9 @@ pub(in crate::cpu_m68k) struct FpuTimings {
     /// FMOVE FPn to <ea>, indexed by the destination format field
     store: [Word; 8],
 
+    /// FMOVECR
+    movecr: Word,
+
     /// FNOP
     nop: Word,
 
@@ -78,6 +81,11 @@ impl FpuTimings {
     /// FMOVE FPn to <ea> with the given destination format
     pub(in crate::cpu_m68k) fn store(&self, dest_fmt: u8) -> Ticks {
         self.store[usize::from(dest_fmt)].into()
+    }
+
+    /// FMOVECR
+    pub(in crate::cpu_m68k) fn movecr(&self) -> Ticks {
+        self.movecr.into()
     }
 
     /// FNOP
@@ -179,9 +187,9 @@ const MC68881: FpuTimings = FpuTimings {
     ]),
 
     // long, single, extended, packed, word, double, byte, packed (dynamic K)
-    // TODO the timings of both packed formats are guesses
-    store: [100, 80, 72, 80, 100, 86, 100, 80],
+    store: [100, 80, 72, 2002, 100, 86, 100, 2016],
 
+    movecr: 29,
     nop: 16,
     save: 50,
     restore: 55,
@@ -196,6 +204,61 @@ const MC68881: FpuTimings = FpuTimings {
     // subtract five or two clock cycles, respectively."
     dn_src: 5,
     dn_dst: 2,
+};
+
+/// MC68882 timings, Table 8-3 of the MC68881/MC68882 user's manual, for an
+/// instruction run on its own: its overlap with the CPU (the head and tail
+/// times of the table) is not modelled. The other times are those of the
+/// MC68881.
+const MC68882: FpuTimings = FpuTimings {
+    #[rustfmt::skip]
+    alu: alu_table(&[
+        //                 FPn  int  sgl  dbl  ext  packed
+        (opmode::FMOVE,   [ 21,  48,  34,  40,  46,  891]),
+        (opmode::FINT,    [ 58,  88,  71,  77,  83,  913]),
+        (opmode::FSINH,   [690, 720, 703, 709, 715, 1545]),
+        (opmode::FINTRZ,  [ 58,  88,  71,  77,  83,  913]),
+        (opmode::FSQRT,   [110, 140, 123, 129, 135,  965]),
+        (opmode::FLOGNP1, [574, 604, 587, 593, 599, 1429]),
+        (opmode::FETOXM1, [548, 578, 561, 567, 573, 1403]),
+        (opmode::FTANH,   [664, 694, 677, 683, 689, 1519]),
+        (opmode::FATAN,   [406, 436, 419, 425, 431, 1261]),
+        (opmode::FASIN,   [584, 614, 597, 603, 609, 1439]),
+        (opmode::FATANH,  [696, 726, 709, 715, 721, 1551]),
+        (opmode::FSIN,    [394, 424, 407, 413, 419, 1249]),
+        (opmode::FTAN,    [476, 506, 489, 495, 501, 1331]),
+        (opmode::FETOX,   [500, 530, 513, 519, 525, 1355]),
+        (opmode::FTWOTOX, [570, 600, 583, 589, 595, 1425]),
+        (opmode::FTENTOX, [570, 600, 583, 589, 595, 1425]),
+        (opmode::FLOGN,   [528, 558, 541, 547, 553, 1383]),
+        (opmode::FLOG10,  [584, 614, 597, 603, 609, 1439]),
+        (opmode::FLOG2,   [584, 614, 597, 603, 609, 1439]),
+        (opmode::FABS,    [ 38,  68,  51,  57,  63,  893]),
+        (opmode::FCOSH,   [610, 640, 623, 629, 635, 1465]),
+        (opmode::FNEG,    [ 38,  68,  51,  57,  63,  893]),
+        (opmode::FACOS,   [628, 658, 641, 647, 653, 1483]),
+        (opmode::FCOS,    [394, 424, 407, 413, 419, 1249]),
+        (opmode::FSINCOS, [454, 484, 467, 473, 479, 1309]),
+        (opmode::FGETEXP, [ 48,  78,  61,  67,  73,  903]),
+        (opmode::FGETMAN, [ 34,  64,  47,  53,  59,  889]),
+        (opmode::FDIV,    [108, 146, 121, 127, 133,  961]),
+        (opmode::FMOD,    [ 75, 113,  88,  94, 100,  928]),
+        (opmode::FADD,    [ 56,  94,  69,  75,  81,  909]),
+        (opmode::FMUL,    [ 76, 114,  89,  95, 101,  929]),
+        (opmode::FSGLDIV, [ 74, 112,  87,  93,  99,  927]),
+        (opmode::FREM,    [105, 143, 118, 124, 130,  958]),
+        (opmode::FSCALE,  [ 46,  84,  59,  65,  71,  899]),
+        (opmode::FSGLMUL, [ 64, 102,  77,  83,  89,  917]),
+        (opmode::FSUB,    [ 56,  94,  69,  75,  81,  909]),
+        (opmode::FCMP,    [ 38,  76,  51,  57,  63,  891]),
+        (opmode::FTST,    [ 36,  66,  49,  55,  61,  891]),
+    ]),
+
+    // long, single, extended, packed, word, double, byte, packed (dynamic K)
+    store: [110, 38, 50, 2006, 110, 44, 110, 2020],
+
+    movecr: 32,
+    ..MC68881
 };
 
 /// MC68040 timings, section 10.7 of the M68040 user's manual
@@ -245,6 +308,8 @@ const MC68040: FpuTimings = FpuTimings {
     // Packed decimal throws an unsupported data type exception on the MC68040
     store: [19, 6, 8, 0, 19, 6, 19, 0],
 
+    // Not executed in hardware, left to the 68040FPSP like the opmodes above
+    movecr: 0,
     nop: 6,
     save: 11,
     restore: 12,
@@ -264,8 +329,7 @@ const MC68040: FpuTimings = FpuTimings {
 static TIMINGS_68881: FpuTimings = MC68881;
 
 /// MC68882 instruction timings
-/// TODO use actual 68882 timings
-static TIMINGS_68882: FpuTimings = MC68881;
+static TIMINGS_68882: FpuTimings = MC68882;
 
 /// MC68040 instruction timings
 static TIMINGS_68040: FpuTimings = MC68040;

@@ -364,9 +364,9 @@ where
                         };
 
                         // No ALU operation
-                        // Not sure how many cycles this costs, assuming its cheap
                         let value = self.regs.fpu.fp[fpx].clone();
                         self.fpu_condition_codes(&value);
+                        self.advance_cycles(Self::fpu_timings().movecr())?;
                         return Ok(());
                     }
                     0b011 if instr.get_addr_mode()? == AddressingMode::Immediate => {
