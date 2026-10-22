@@ -78,7 +78,7 @@ where
             // FMOVE
             0b0000000 => (source.clone(), [33, 60, 52, 58, 56, 870]),
             // FSQRT
-            0b0000100 => (source.sqrt(), [107, 134, 126, 132, 130, 844]),
+            0b0000100 => (source.sqrt(), [107, 134, 126, 132, 130, 944]),
             // FABS
             0b0011000 => (source.abs(), [35, 62, 54, 60, 58, 872]),
             // FADD
@@ -86,22 +86,22 @@ where
             // FSUB
             0b0101000 => (dest - source, [51, 80, 72, 78, 76, 888]),
             // FMUL
-            0b0100011 => (dest * source, [71, 100, 92, 98, 96, 895]),
+            0b0100011 => (dest * source, [71, 100, 92, 98, 96, 908]),
             // FDIV
-            0b0100000 => (dest / source, [105, 132, 124, 130, 128, 940]),
+            0b0100000 => (dest / source, [103, 132, 124, 130, 128, 940]),
             // FSGLMUL - single precision with FPCR rounding mode
             0b0100111 => {
                 let sem = SEMANTICS_SINGLE.with_rm(self.fpu_rounding_mode());
                 let source = &source.cast(sem);
                 let dest = &dest.cast(sem);
-                (dest * source, [59, 88, 80, 86, 84, 895])
+                (dest * source, [59, 88, 80, 86, 84, 896])
             }
             // FSGLDIV - single precision with FPCR rounding mode
             0b0100100 => {
                 let sem = SEMANTICS_SINGLE.with_rm(self.fpu_rounding_mode());
                 let source = &source.cast(sem);
                 let dest = &dest.cast(sem);
-                (dest / source, [69, 98, 90, 96, 94, 936])
+                (dest / source, [69, 98, 90, 96, 94, 906])
             }
             // FINT
             0b0000001 => {
@@ -117,7 +117,7 @@ where
                     RoundingMode::None | RoundingMode::NearestTiesToAway => unreachable!(),
                 };
 
-                (rounded.cast(SEMANTICS_EXTENDED), [65, 92, 74, 80, 78, 892])
+                (rounded.cast(SEMANTICS_EXTENDED), [55, 82, 74, 80, 78, 892])
             }
             // FINTRZ
             0b0000011 => (
@@ -132,7 +132,7 @@ where
                 let result = dest - source;
                 self.fpu_condition_codes(&result);
                 // TODO flags
-                return Ok((dest.cast(SEMANTICS_EXTENDED), [35, 62, 54, 60, 58, 870]));
+                return Ok((dest.cast(SEMANTICS_EXTENDED), [33, 62, 54, 60, 58, 870]));
             }
             // FREM - always uses round-to-nearest regardless of FPCR
             0b0100101 => {
@@ -154,14 +154,14 @@ where
                 let n = quotient.trunc();
                 self.regs.fpu.fpsr.set_quotient(n.to_i64() as u8);
                 self.regs.fpu.fpsr.set_quotient_s(n.is_negative());
-                (dest - (source * n), [80, 99, 91, 97, 95, 907])
+                (dest - (source * n), [70, 99, 91, 97, 95, 907])
             }
             // FGETEXP
             0b0011110 => {
                 // No need to remove the bias here as we store FPx registers unbiased
                 (
                     Float::from_i64(SEMANTICS_EXTENDED, source.get_exp()),
-                    [35, 72, 64, 70, 68, 882],
+                    [45, 72, 64, 70, 68, 882],
                 )
             }
             // FTST
@@ -195,13 +195,13 @@ where
             // FASIN
             0b0001100 => (source.asin(), [581, 608, 600, 606, 604, 1418]),
             // FTAN
-            0b0001111 => (source.tan(), [473, 500, 492, 498, 495, 1310]),
+            0b0001111 => (source.tan(), [473, 500, 492, 498, 496, 1310]),
             // FLOGN
-            0b0010100 => (source.log(), [525, 552, 544, 550, 548, 1352]),
+            0b0010100 => (source.log(), [525, 552, 544, 550, 548, 1362]),
             // FLOGNP1
             0b0000110 => (
                 (source + Float::one(source.get_semantics(), false)).log(),
-                [571, 598, 590, 596, 594, 1428],
+                [571, 598, 590, 596, 594, 1408],
             ),
             // FLOG2
             0b0010110 => (source.log2(), [581, 608, 600, 606, 604, 1418]),
@@ -232,7 +232,7 @@ where
             // FCOSH
             0b0011001 => (source.cosh(), [607, 634, 626, 632, 630, 1444]),
             // FTANH
-            0b0001001 => (source.tanh(), [661, 688, 680, 686, 684, 1439]),
+            0b0001001 => (source.tanh(), [661, 688, 680, 686, 684, 1498]),
             // FATANH
             0b0001101 => (source.atanh(), [693, 720, 712, 718, 716, 1530]),
             // FSCALE
@@ -254,7 +254,7 @@ where
                         let mantissa = source.get_mantissa();
                         Float::from_parts(SEMANTICS_EXTENDED, false, 0, mantissa)
                     },
-                    [31, 58, 50, 56, 54, 858],
+                    [31, 58, 50, 56, 54, 868],
                 )
             }
 
