@@ -3215,14 +3215,84 @@ where
         self.regs.write_d(instr.get_op2(), result);
         self.regs.sr.set_ccr(ccr);
 
-        self.advance_cycles(2 * count as Ticks)?;
+        if CPU_TYPE == M68000 {
+            self.advance_cycles(2 * count as Ticks)?;
 
-        match std::mem::size_of::<T>() {
-            4 => self.advance_cycles(4)?,
-            _ => self.advance_cycles(2)?,
-        };
+            match std::mem::size_of::<T>() {
+                4 => self.advance_cycles(4)?,
+                _ => self.advance_cycles(2)?,
+            };
+        } else {
+            let bits = std::mem::size_of::<T>() * 8;
+            self.advance_cycles(Self::shrot_idle_020(instr, count as usize > bits))?;
+        }
 
         Ok(())
+    }
+
+    /// Idle cycles of a register shift/rotate on the 68020/68030. The barrel shifter
+    /// takes a fixed time whatever the count, but the 68030 is slower when a count
+    /// in a register is larger than the operand size (MC68030UM 11.6.12).
+    fn shrot_idle_020(instr: &Instruction, count_over_size: bool) -> Ticks {
+        let dynamic = matches!(instr.get_sh_count(), Either::Right(_));
+
+        match instr.mnemonic {
+            InstructionMnemonic::LSL_b
+            | InstructionMnemonic::LSL_w
+            | InstructionMnemonic::LSL_l
+            | InstructionMnemonic::LSR_b
+            | InstructionMnemonic::LSR_w
+            | InstructionMnemonic::LSR_l => {
+                if !dynamic {
+                    2
+                } else if CPU_TYPE == M68030 && count_over_size {
+                    6
+                } else {
+                    4
+                }
+            }
+            InstructionMnemonic::ASL_b
+            | InstructionMnemonic::ASL_w
+            | InstructionMnemonic::ASL_l => {
+                if CPU_TYPE == M68030 && !dynamic {
+                    4
+                } else {
+                    6
+                }
+            }
+            InstructionMnemonic::ASR_b
+            | InstructionMnemonic::ASR_w
+            | InstructionMnemonic::ASR_l => {
+                if CPU_TYPE == M68020 {
+                    4
+                } else if !dynamic {
+                    2
+                } else if count_over_size {
+                    8
+                } else {
+                    4
+                }
+            }
+            InstructionMnemonic::ROL_b
+            | InstructionMnemonic::ROL_w
+            | InstructionMnemonic::ROL_l
+            | InstructionMnemonic::ROR_b
+            | InstructionMnemonic::ROR_w
+            | InstructionMnemonic::ROR_l => {
+                if CPU_TYPE == M68030 && !dynamic {
+                    4
+                } else {
+                    6
+                }
+            }
+            InstructionMnemonic::ROXL_b
+            | InstructionMnemonic::ROXL_w
+            | InstructionMnemonic::ROXL_l
+            | InstructionMnemonic::ROXR_b
+            | InstructionMnemonic::ROXR_w
+            | InstructionMnemonic::ROXR_l => 10,
+            _ => unreachable!(),
+        }
     }
 
     /// ASd, LSd, ROd, ROXd (effective address, always Word)
@@ -3238,6 +3308,16 @@ where
         let (result, ccr) = calcfn(value, 1, self.regs.sr);
         self.write_ea::<Word>(instr, instr.get_op2(), result)?;
         self.regs.sr.set_ccr(ccr);
+
+        // Idle cycles
+        match instr.mnemonic {
+            InstructionMnemonic::ASL_ea if CPU_TYPE == M68020 => self.advance_cycles(1)?,
+            InstructionMnemonic::ASL_ea if CPU_TYPE == M68030 => self.advance_cycles(2)?,
+            InstructionMnemonic::ROL_ea | InstructionMnemonic::ROR_ea if CPU_TYPE != M68000 => {
+                self.advance_cycles(2)?;
+            }
+            _ => (),
+        }
 
         Ok(())
     }
