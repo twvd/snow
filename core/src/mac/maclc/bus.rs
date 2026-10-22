@@ -49,18 +49,9 @@ const SONORA_BUS_FREQUENCY: Ticks = 25_000_000;
 /// Wait states of an I/O bus cycle, when not measured
 pub(super) const IO_WAITS: Ticks = 1;
 
-/// Port answering a bus cycle on the V8
-enum Port {
-    /// RAM and video RAM, 16-bit, on a slot
-    Ram,
-    /// RAM write, which the V8 takes as a 32-bit port and posts
-    RamWrite,
-    /// ROM, 32-bit
-    Rom,
-    /// Sound and V8 registers, in the V8: 8-bit, on a slot
-    V8Io,
-    /// Other I/O chips, 8-bit, with their wait states
-    Io(Ticks),
+/// Bytes as a big endian number
+fn be_bytes(bytes: &[u8]) -> u32 {
+    bytes.iter().fold(0, |v, &b| (v << 8) | u32::from(b))
 }
 
 /// Frequency of the main clock (C16M)
@@ -439,19 +430,22 @@ where
         }
     }
 
-    /// The RAM and video RAM data buses of the V8 are 16-bit, the ROM is
-    /// 32-bit and the rest of the devices 8-bit. During the boot overlay,
-    /// reads of the RAM area go to the ROM and writes to the RAM.
-    fn v8_port(&self, addr: Address, write: bool) -> Port {
-        match self.decode(addr) {
-            Some(Region::Ram(_)) if self.overlay && !write => Port::Rom,
-            Some(Region::Ram(_)) if write => Port::RamWrite,
-            Some(Region::Ram(_) | Region::Vram(_)) => Port::Ram,
-            Some(Region::Rom) => Port::Rom,
-            Some(Region::Io(0x1_4000..=0x1_5FFF | 0x2_6000..=0x2_7FFF)) => Port::V8Io,
-            Some(Region::Io(offset)) => Port::Io(v8::io_waits(offset, write)),
-            // The byte decode logs the bus error of an unmapped address
-            Some(Region::CpuId(_)) | None => Port::Io(IO_WAITS),
+    /// Width in bytes and wait states of the port answering a region. The
+    /// RAM and video RAM data buses of the V8 are 16-bit, the ROM is 32-bit
+    /// and the rest of the devices 8-bit. The V8 takes RAM writes as a
+    /// 32-bit port, and writes the RAM in 16-bit halves after. The Sonora
+    /// runs every cycle on a 32-bit port.
+    ///
+    /// The wait states of the V8 RAM are those of a cycle that starts on a
+    /// slot: v8_slot_waits() adds the rest.
+    fn port(&self, region: &Region, write: bool) -> (u32, Ticks) {
+        match (&self.gate_array, region) {
+            (GateArray::V8, Region::Ram(_)) if write => (4, 0),
+            (GateArray::V8, Region::Ram(_) | Region::Vram(_)) => (2, v8::RAM_WAITS),
+            (GateArray::V8, Region::Rom) => (4, v8::ROM_WAITS),
+            (GateArray::V8, Region::Io(offset)) => (1, v8::io_waits(*offset, write)),
+            (GateArray::V8, Region::CpuId(_)) => (1, IO_WAITS),
+            (GateArray::Sonora { .. }, _) => (4, BUS_WAITS),
         }
     }
 
@@ -481,56 +475,110 @@ where
         hold
     }
 
-    fn read_byte(&mut self, addr: Address) -> Option<Byte> {
-        let val = match self.decode(addr) {
-            // ROM (overlay)
-            Some(Region::Ram(_)) if self.overlay => self.read_rom(addr),
-            Some(Region::Ram(addr)) => Some(self.read_ram_byte(addr)),
-            Some(Region::Rom) => {
-                self.overlay = false;
-                self.read_rom(addr)
+    /// Runs a bus cycle on a port of `width` bytes
+    fn cycle(
+        &mut self,
+        acc: BusAccess<Bus68020>,
+        (width, waits): (u32, Ticks),
+        read: impl FnOnce(&mut Self, Address, u32) -> Option<u32>,
+        write: impl FnOnce(&mut Self, Address, u32, u32) -> Option<()>,
+    ) -> BusResponse {
+        match width {
+            1 => bus_access_byte(acc, waits, self, read, write),
+            2 => bus_access_word(acc, waits, self, read, write),
+            _ => bus_access_long(acc, waits, self, read, write),
+        }
+    }
+
+    /// I/O cycles take native time: when overclocking, they start on a
+    /// native tick and last a native bus cycle plus the wait states of the
+    /// port
+    fn io_cycle(
+        &mut self,
+        acc: BusAccess<Bus68020>,
+        (width, waits): (u32, Ticks),
+        offset: Address,
+    ) -> BusResponse {
+        let w = match self.native_clock.device_sync(&acc) {
+            DeviceCycle::Stall(n) => return BusResponse::Stall(n),
+            DeviceCycle::Access(w) => w,
+        };
+        let waits = match (&self.gate_array, offset) {
+            (GateArray::V8, 0x1_4000..=0x1_5FFF | 0x2_6000..=0x2_7FFF) => {
+                waits + self.v8_slot_waits(&acc, false)
             }
-            Some(Region::Io(offset)) => self.read_io(offset),
-            Some(Region::Vram(offset)) => Some(self.read_vram(offset)),
-            Some(Region::CpuId(n)) => Some(sonora::CPU_ID_LCIII.to_be_bytes()[n]),
-            None => None,
+            _ => waits,
         };
+        let waits = self.native_clock.scale_dev_waits(w, waits);
+        self.cycle(
+            acc,
+            (width, waits),
+            move |s, _, len| s.io_read_bytes(offset, len),
+            move |s, _, len, val| s.io_write_bytes(offset, len, val),
+        )
+    }
 
-        if val.is_none() {
-            warn!("Bus error (read) at unmapped address: {:08X}", addr);
+    fn ignore_write(&mut self, _addr: Address, _len: u32, _val: u32) -> Option<()> {
+        Some(())
+    }
+
+    fn rom_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        let idx = addr as usize & self.rom_mask;
+        if let Some(bytes) = self.rom.get(idx..idx + len as usize) {
+            return Some(be_bytes(bytes));
         }
-        val
+        (addr..addr + len).try_fold(0, |v, a| Some((v << 8) | u32::from(self.read_rom(a)?)))
     }
 
-    fn write_byte(&mut self, addr: Address, val: Byte) -> Option<()> {
-        let written = match self.decode(addr) {
-            Some(Region::Ram(addr)) => Some(self.write_ram_byte(addr, val)),
-            Some(Region::Rom) => Some(()),
-            Some(Region::Io(offset)) => self.write_io(offset, val),
-            Some(Region::Vram(offset)) => Some(self.write_vram(offset, val)),
-            Some(Region::CpuId(_)) => Some(()),
-            None => None,
-        };
+    /// Index in the RAM of `len` bytes of the RAM area at `addr`, if they
+    /// are all in the RAM and follow each other there
+    fn ram_range(&self, addr: Address, len: u32) -> Option<usize> {
+        let idx = self.ram_index(addr)?;
+        (self.ram_index(addr + len - 1)? == idx + len as usize - 1).then_some(idx)
+    }
 
-        // Sync values that live in multiple places
-        self.swim.sel = self.via.pa().headsel();
-
-        if written.is_none() {
-            warn!(
-                "Bus error (write) at unmapped address: {:08X} {:02X}",
-                addr, val
-            );
+    fn ram_read(&self, addr: Address, len: u32) -> Option<u32> {
+        if let Some(idx) = self.ram_range(addr, len) {
+            return Some(be_bytes(&self.ram[idx..idx + len as usize]));
         }
-        written
+        Some((addr..addr + len).fold(0, |v, a| (v << 8) | u32::from(self.read_ram_byte(a))))
     }
 
-    fn read_bytes(&mut self, addr: Address, len: u32) -> Option<u32> {
-        (addr..addr + len).try_fold(0, |v, a| Some((v << 8) | u32::from(self.read_byte(a)?)))
-    }
-
-    fn write_bytes(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
+    fn ram_write(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
+        if let Some(idx) = self.ram_range(addr, len) {
+            self.ram[idx..idx + len as usize]
+                .copy_from_slice(&val.to_be_bytes()[4 - len as usize..]);
+            self.ram_dirty.insert(idx / RAM_DIRTY_PAGESIZE);
+            self.ram_dirty
+                .insert((idx + len as usize - 1) / RAM_DIRTY_PAGESIZE);
+            return Some(());
+        }
         for a in addr..addr + len {
-            self.write_byte(a, (val >> (8 * (addr + len - 1 - a))) as Byte)?;
+            self.write_ram_byte(a, (val >> (8 * (addr + len - 1 - a))) as Byte);
+        }
+        Some(())
+    }
+
+    fn vram_read(&self, offset: usize, len: u32) -> Option<u32> {
+        Some(
+            (offset..offset + len as usize).fold(0, |v, o| (v << 8) | u32::from(self.read_vram(o))),
+        )
+    }
+
+    fn vram_write(&mut self, offset: usize, len: u32, val: u32) -> Option<()> {
+        for o in offset..offset + len as usize {
+            self.write_vram(o, (val >> (8 * (offset + len as usize - 1 - o))) as Byte);
+        }
+        Some(())
+    }
+
+    fn io_read_bytes(&mut self, offset: Address, len: u32) -> Option<u32> {
+        (offset..offset + len).try_fold(0, |v, o| Some((v << 8) | u32::from(self.read_io(o)?)))
+    }
+
+    fn io_write_bytes(&mut self, offset: Address, len: u32, val: u32) -> Option<()> {
+        for o in offset..offset + len {
+            self.write_io(o, (val >> (8 * (offset + len - 1 - o))) as Byte)?;
         }
         Some(())
     }
@@ -538,12 +586,16 @@ where
     /// VIA 1 runs at C16M / 20 and its accesses are synchronous with its
     /// clock, as on the Mac II: one starts on a VIA tick and lasts a VIA
     /// clock cycle.
-    fn via_cycle(&mut self, acc: BusAccess<Bus68020>) -> BusResponse {
+    fn via_cycle(&mut self, acc: BusAccess<Bus68020>, offset: Address) -> BusResponse {
         match self.native_clock.via_sync(&acc) {
             DeviceCycle::Stall(n) => BusResponse::Stall(n),
-            DeviceCycle::Access(w) => {
-                bus_access_byte(acc, w, self, Self::read_bytes, Self::write_bytes)
-            }
+            DeviceCycle::Access(w) => bus_access_byte(
+                acc,
+                w,
+                self,
+                move |s, _, len| s.io_read_bytes(offset, len),
+                move |s, _, len, val| s.io_write_bytes(offset, len, val),
+            ),
         }
     }
 
@@ -660,41 +712,77 @@ where
 {
     type Cpu = Bus68020;
 
+    /// The address is decoded once per bus cycle. Every device is as wide
+    /// as its port, so the device callbacks get the address of the cycle.
     fn access(&mut self, acc: BusAccess<Bus68020>) -> Result<BusResponse> {
-        if let Some(Region::Io(0x0_0000..=0x0_1FFF)) = self.decode(acc.addr) {
-            return Ok(self.via_cycle(acc));
+        let resp = match self.decode(acc.addr) {
+            // During the boot overlay, reads of the RAM area go to the ROM
+            Some(Region::Ram(_)) if self.overlay && !acc.write => {
+                let port = self.port(&Region::Rom, false);
+                self.cycle(acc, port, Self::rom_read, Self::ignore_write)
+            }
+            Some(region @ Region::Ram(addr)) => {
+                let (width, waits) = self.port(&region, acc.write);
+                let waits = match self.gate_array {
+                    GateArray::V8 => waits + self.v8_slot_waits(&acc, acc.write),
+                    GateArray::Sonora { .. } => waits,
+                };
+                self.cycle(
+                    acc,
+                    (width, waits),
+                    move |s, _, len| s.ram_read(addr, len),
+                    move |s, _, len, val| s.ram_write(addr, len, val),
+                )
+            }
+            Some(region @ Region::Rom) => self.cycle(
+                acc,
+                self.port(&region, acc.write),
+                |s, addr, len| {
+                    s.overlay = false;
+                    s.rom_read(addr, len)
+                },
+                Self::ignore_write,
+            ),
+            Some(Region::Io(offset @ 0x0_0000..=0x0_1FFF)) => self.via_cycle(acc, offset),
+            Some(region @ Region::Io(offset)) => {
+                self.io_cycle(acc, self.port(&region, acc.write), offset)
+            }
+            Some(region @ Region::Vram(offset)) => {
+                let (width, waits) = self.port(&region, acc.write);
+                let waits = match self.gate_array {
+                    GateArray::V8 => waits + self.v8_slot_waits(&acc, false),
+                    GateArray::Sonora { .. } => waits,
+                };
+                self.cycle(
+                    acc,
+                    (width, waits),
+                    move |s, _, len| s.vram_read(offset, len),
+                    move |s, _, len, val| s.vram_write(offset, len, val),
+                )
+            }
+            Some(region @ Region::CpuId(n)) => self.cycle(
+                acc,
+                self.port(&region, acc.write),
+                move |_, _, len| {
+                    Some(be_bytes(
+                        &sonora::CPU_ID_LCIII.to_be_bytes()[n..][..len as usize],
+                    ))
+                },
+                Self::ignore_write,
+            ),
+            None => BusResponse::BusError,
+        };
+
+        if acc.write {
+            // Sync values that live in multiple places
+            self.swim.sel = self.via.pa().headsel();
         }
-        let (read, write) = (Self::read_bytes, Self::write_bytes);
-        Ok(match self.gate_array {
-            GateArray::V8 => match self.v8_port(acc.addr, acc.write) {
-                Port::Ram => {
-                    let waits = v8::RAM_WAITS + self.v8_slot_waits(&acc, false);
-                    bus_access_word(acc, waits, self, read, write)
-                }
-                Port::RamWrite => {
-                    let waits = self.v8_slot_waits(&acc, true);
-                    bus_access_long(acc, waits, self, read, write)
-                }
-                Port::Rom => bus_access_long(acc, v8::ROM_WAITS, self, read, write),
-                // I/O cycles take native time
-                Port::V8Io => match self.native_clock.device_sync(&acc) {
-                    DeviceCycle::Stall(n) => BusResponse::Stall(n),
-                    DeviceCycle::Access(w) => {
-                        let waits = v8::RAM_WAITS + self.v8_slot_waits(&acc, false);
-                        let w = self.native_clock.scale_dev_waits(w, waits);
-                        bus_access_byte(acc, w, self, read, write)
-                    }
-                },
-                Port::Io(waits) => match self.native_clock.device_sync(&acc) {
-                    DeviceCycle::Stall(n) => BusResponse::Stall(n),
-                    DeviceCycle::Access(w) => {
-                        let w = self.native_clock.scale_dev_waits(w, waits);
-                        bus_access_byte(acc, w, self, read, write)
-                    }
-                },
-            },
-            GateArray::Sonora { .. } => bus_access_long(acc, BUS_WAITS, self, read, write),
-        })
+
+        if resp == BusResponse::BusError {
+            let rw = if acc.write { "write" } else { "read" };
+            warn!("Bus error ({}) at unmapped address: {:08X}", rw, acc.addr);
+        }
+        Ok(resp)
     }
 
     fn get_mask(&self) -> Address {
