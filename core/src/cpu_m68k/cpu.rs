@@ -2637,12 +2637,21 @@ where
         let value: Long =
             self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
 
+        // On the 68020/68030 the calculate EA tables (MC68020UM 8.2.3, MC68030UM
+        // 11.6.3) give 1 cycle more than the fetch EA times for (An), none for the
+        // brief format and 2 for the full format.
         match instr.get_addr_mode()? {
             AddressingMode::IndirectIndex | AddressingMode::PCIndex => {
-                self.advance_cycles(2)?;
+                if CPU_TYPE == M68000 || instr.get_extword().is_full() {
+                    self.advance_cycles(2)?;
+                }
                 self.prefetch_pump()?;
             }
             AddressingMode::AbsoluteShort | AddressingMode::AbsoluteLong => (),
+            AddressingMode::Indirect if CPU_TYPE >= M68020 => {
+                self.advance_cycles(1)?;
+                self.prefetch_pump()?;
+            }
             _ => self.prefetch_pump()?,
         }
 
@@ -2735,6 +2744,9 @@ where
         let val = self.read_ticks::<Address>(addr)?;
         self.regs.write_a(7, addr.wrapping_add(4));
         self.regs.write_a(instr.get_op2(), val);
+        if CPU_TYPE >= M68020 {
+            self.advance_cycles(1)?;
+        }
         Ok(())
     }
 
@@ -2845,6 +2857,9 @@ where
     fn op_rts(&mut self, _instr: &Instruction) -> Result<()> {
         let pc = self.read_ticks(self.regs.read_a(7))?;
         self.regs.read_a_postinc::<Address>(7, 4);
+        if CPU_TYPE >= M68020 {
+            self.advance_cycles(3)?;
+        }
         self.set_pc(pc)?;
         self.prefetch_refill()?;
 
@@ -2860,6 +2875,9 @@ where
         let pc = self.read_ticks(sp.wrapping_add(2))?;
         self.regs.read_a_postinc::<Address>(7, 6);
         self.regs.sr.set_ccr(ccr);
+        if CPU_TYPE >= M68020 {
+            self.advance_cycles(4)?;
+        }
         self.set_pc(pc)?;
         self.prefetch_refill()?;
         Ok(())
@@ -2879,7 +2897,9 @@ where
 
         let pc = match instr.get_addr_mode()? {
             AddressingMode::AbsoluteShort => {
-                self.advance_cycles(2)?;
+                if CPU_TYPE == M68000 || instr.mnemonic == InstructionMnemonic::JMP {
+                    self.advance_cycles(2)?;
+                }
                 self.regs.pc = self.regs.pc.wrapping_add(2) & ADDRESS_MASK;
                 self.fetch()?.expand_signed().cast_unsigned()
             }
@@ -2895,14 +2915,30 @@ where
             _ => self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?,
         };
 
-        // Idle cycles
-        match instr.get_addr_mode()? {
-            AddressingMode::IndirectDisplacement | AddressingMode::PCDisplacement => {
-                self.advance_cycles(2)?;
+        // Idle cycles. On the 68020/68030 these come from the jump EA tables
+        // (MC68020UM 8.2.5, MC68030UM 11.6.5) less the fetch EA times. JSR takes 2
+        // cycles less than JMP there, as the stacking overlaps. The totals of JMP
+        // and JSR are still a few clocks off the manuals.
+        if CPU_TYPE == M68000 {
+            match instr.get_addr_mode()? {
+                AddressingMode::IndirectDisplacement | AddressingMode::PCDisplacement => {
+                    self.advance_cycles(2)?;
+                }
+                AddressingMode::IndirectIndex | AddressingMode::PCIndex => {
+                    self.advance_cycles(4)?;
+                }
+                _ => (),
             }
-            AddressingMode::IndirectIndex | AddressingMode::PCIndex => self.advance_cycles(4)?,
-            _ => (),
-        };
+        } else if instr.mnemonic == InstructionMnemonic::JMP {
+            match instr.get_addr_mode()? {
+                AddressingMode::Indirect => self.advance_cycles(1)?,
+                AddressingMode::IndirectDisplacement
+                | AddressingMode::PCDisplacement
+                | AddressingMode::IndirectIndex
+                | AddressingMode::PCIndex => self.advance_cycles(2)?,
+                _ => (),
+            }
+        }
 
         self.step_over_addr = Some(self.get_fetch_addr());
 
@@ -3485,6 +3521,11 @@ where
         let sp = self.regs.read_a::<Address>(7);
         self.regs
             .write_a(7, sp.wrapping_add_signed(4 + displacement));
+        match CPU_TYPE {
+            M68020 => self.advance_cycles(3)?,
+            M68030 => self.advance_cycles(4)?,
+            _ => (),
+        }
         self.set_pc(pc)?;
         self.prefetch_refill()?;
 
