@@ -30,7 +30,7 @@ where
     /// each prefetch and operand bus cycle (the coprocessor interface cycles are not
     /// modelled), and those of MC68030UM 11.7.2 in the cache case, less the
     /// instruction words and the operand bus cycles.
-    fn pmmu_idle(&mut self, c68851: Ticks, c68030: Ticks) -> Result<()> {
+    pub(super) fn pmmu_idle(&mut self, c68851: Ticks, c68030: Ticks) -> Result<()> {
         if CPU_TYPE >= M68030 {
             self.advance_cycles(c68030)
         } else {

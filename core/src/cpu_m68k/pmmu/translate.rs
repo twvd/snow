@@ -355,6 +355,7 @@ where
         self.regs.pmmu.last_desc = entry_addr;
 
         let entry_word = self.read_ticks_physical::<Long>(entry_addr)?;
+        self.pmmu_idle(2, 3)?;
         let child_dt = PmmuPageDescriptorType::from_u32(entry_word & 0b11).unwrap();
         match child_dt {
             PmmuPageDescriptorType::Invalid => {
@@ -382,6 +383,7 @@ where
                 // Set U on the table descriptor we just walked through
                 if mutate && !entry.u() {
                     self.write_ticks_physical::<Long>(entry_addr, entry_word | (1 << 3))?;
+                    self.pmmu_idle(0, 2)?;
                 }
                 self.pmmu_fetch_table(
                     vaddr << ti,
@@ -426,6 +428,7 @@ where
 
         let entry_word1 = self.read_ticks_physical::<Long>(entry_addr)?;
         let entry_word2 = self.read_ticks_physical::<Long>(entry_addr + 4)?;
+        self.pmmu_idle(2, 3)?;
 
         let child_dt = PmmuPageDescriptorType::from_u32(entry_word1 & 0b11).unwrap();
         match child_dt {
@@ -456,6 +459,7 @@ where
                     .with_lsl(entry_word2);
                 if mutate && !entry.u() {
                     self.write_ticks_physical::<Long>(entry_addr, entry_word1 | (1 << 3))?;
+                    self.pmmu_idle(0, 2)?;
                 }
                 self.pmmu_fetch_table(
                     vaddr << ti,
@@ -636,6 +640,10 @@ where
         writing: bool,
     ) -> Result<(Address, bool, bool, Address, bool)> {
         let rootptr = self.pmmu_rootptr(fc);
+
+        // Table search: about 20 cycles on the 68851 (MC68851UM 11.2) and 23 on the
+        // 68030 (MC68030UM 11.7), then some for each descriptor
+        self.pmmu_idle(20, 23)?;
 
         if PTEST {
             self.regs.pmmu.psr = RegisterPSR::default();
