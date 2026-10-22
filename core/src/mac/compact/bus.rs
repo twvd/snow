@@ -116,7 +116,7 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     pub(crate) speed: EmulatorSpeed,
 
     /// Counts clock ticks at native frequency, regardless of overclocking
-    native_clock: NativeClock,
+    native_clock: NativeClock<false>,
 
     /// Last pushed audio sample
     last_audiosample: u8,
@@ -222,7 +222,7 @@ where
             overlay: true,
             map: build_map(model),
             speed: EmulatorSpeed::Accurate,
-            native_clock: NativeClock::new(BUS_FREQUENCY, 10),
+            native_clock: NativeClock::new(BUS_FREQUENCY),
             last_audiosample: 0,
             vblank_time: Instant::now(),
             progkey_pressed: LatchingEvent::default(),

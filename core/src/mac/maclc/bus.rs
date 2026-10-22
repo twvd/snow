@@ -183,7 +183,7 @@ where
 
             overlay: true,
             speed: EmulatorSpeed::Accurate,
-            native_clock: NativeClock::new(BUS_FREQUENCY, 20),
+            native_clock: NativeClock::new(BUS_FREQUENCY),
             vblank_time: Instant::now(),
             vblank_clock: 0,
             progkey_pressed: LatchingEvent::default(),

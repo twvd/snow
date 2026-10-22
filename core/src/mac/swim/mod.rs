@@ -282,7 +282,7 @@ impl Swim {
     /// the real hardware: the accesses are held to be at least
     /// OVERCLOCK_ACCESS_INTERVAL_NS apart. Without overclocking, nothing is
     /// held.
-    pub fn hold(&mut self, clock: &NativeClock) -> Ticks {
+    pub fn hold<const C16M: bool>(&mut self, clock: &NativeClock<C16M>) -> Ticks {
         if !clock.is_overclocking() {
             return 0;
         }
