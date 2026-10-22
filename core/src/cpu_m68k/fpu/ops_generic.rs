@@ -14,6 +14,7 @@ use crate::cpu_m68k::fpu::math::FloatMath;
 use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
 use crate::cpu_m68k::{CpuM68kType, FPU_M68881, FPU_M68882};
+use crate::tickable::Ticks;
 use crate::types::{Byte, Long, Word};
 
 use super::storage::{DOUBLE_SIZE, EXTENDED_SIZE, PACKED_SIZE, SINGLE_SIZE};
@@ -43,7 +44,8 @@ where
         // Fetch second word (0000)
         self.fetch()?;
 
-        self.advance_cycles(16)?;
+        // 18 cycles (MC68881/MC68882UM Table 8-7)
+        self.advance_cycles(14)?;
 
         Ok(())
     }
@@ -65,7 +67,9 @@ where
             _ => todo!(),
         };
 
-        self.advance_cycles(50)?;
+        // Idle state frame: 52 cycles on the 68881, 100 on the 68882 (MC68881/MC68882UM
+        // Table 8-8), with 7 or 15 writes of 3 cycles
+        self.advance_cycles(if FPU_TYPE == FPU_M68882 { 53 } else { 29 })?;
 
         Ok(())
     }
@@ -73,9 +77,13 @@ where
     /// FRESTORE
     pub(in crate::cpu_m68k) fn op_frestore(&mut self, instr: &Instruction) -> Result<()> {
         let state = self.read_ea::<Long>(instr, instr.get_op2())?;
+
+        // 21 cycles for a null state frame, 57 for an idle one on the 68881 and 105 on the
+        // 68882 (MC68881/MC68882UM Table 8-8), with 1, 7 or 15 reads of 3 cycles
         if state & 0xFF000000 == 0 {
             // NULL state frame, reset FPU
             self.regs.fpu = FpuRegisterFile::default();
+            self.advance_cycles(16)?;
         } else if state & 0xFF000000 == 0x1F000000 {
             // Idle state frame
             // We've already read 4 bytes
@@ -89,11 +97,10 @@ where
                 }
                 _ => todo!(),
             };
+            self.advance_cycles(if FPU_TYPE == FPU_M68882 { 58 } else { 34 })?;
         } else {
             bail!("Unknown FPU state frame restored: {:08X}", state);
         }
-
-        self.advance_cycles(55)?;
 
         Ok(())
     }
@@ -130,7 +137,7 @@ where
                     self.step_ea_addr = None;
                 }
 
-                self.advance_cycles(29)?;
+                self.advance_cycles(Self::fmove_ctrl_idle(instr, extword.reg(), true)?)?;
             }
             0b101 => {
                 // From control reg to EA
@@ -147,7 +154,7 @@ where
                     self.step_ea_addr = None;
                 }
 
-                self.advance_cycles(29)?;
+                self.advance_cycles(Self::fmove_ctrl_idle(instr, extword.reg(), false)?)?;
             }
             0b010 => {
                 // EA to FPU register, with ALU op
@@ -637,6 +644,28 @@ where
         Ok(())
     }
 
+    /// Idle cycles of FMOVE and FMOVEM of control registers: the times of
+    /// MC68881/MC68882UM Table 8-6 less the 2 instruction words, the immediate data
+    /// and the operand bus cycles of 3 cycles.
+    fn fmove_ctrl_idle(instr: &Instruction, regs: u8, to_fpu: bool) -> Result<Ticks> {
+        let n = Ticks::from(regs.count_ones());
+        let mode = instr.get_addr_mode()?;
+        let register = matches!(
+            mode,
+            AddressingMode::DataRegister | AddressingMode::AddressRegister
+        );
+        Ok(match (n, to_fpu) {
+            // FMOVE: 28 from Rn, 30 from #<data>, 33 from <ea>, 31 to Rn, 33 to <ea>
+            (1, true) if register => 24,
+            (1, true) if mode == AddressingMode::Immediate => 22,
+            (1, false) if register => 27,
+            (1, _) => 26,
+            // FMOVEM: 25 + 6n from #<data>, 27 + 6n otherwise
+            (_, true) if mode == AddressingMode::Immediate => 21 + 2 * n,
+            _ => 23 + 3 * n,
+        })
+    }
+
     /// FMOVEM registers to EA
     fn op_fmovem_regs_to_ea(
         &mut self,
@@ -646,7 +675,9 @@ where
     ) -> Result<()> {
         let mut addr = self.calc_ea_addr_no_mod::<Address>(instr, instr.get_op2())?;
 
-        self.advance_cycles(35)?;
+        // 37 + 25n cycles (MC68881/MC68882UM Table 8-6), with 3 writes of 3 cycles
+        // for each register
+        self.advance_cycles(33)?;
 
         let range = if !reverse_order {
             Either::Left((0..8).rev())
@@ -670,8 +701,7 @@ where
                 addr = addr.wrapping_add(12);
             }
 
-            // 3 * 4 cycles spent writing (for long-aligned access)
-            self.advance_cycles(25 - 12)?;
+            self.advance_cycles(25 - 9)?;
         }
 
         // Update address register for predec/postinc modes
@@ -700,7 +730,9 @@ where
             Either::Right(0..8)
         };
 
-        self.advance_cycles(33)?;
+        // 35 + 31n cycles (MC68881/MC68882UM Table 8-6), with 3 reads of 3 cycles
+        // for each register
+        self.advance_cycles(31)?;
 
         for (bit, fp_reg) in range.enumerate() {
             if reglist & (1 << bit as u8) == 0 {
@@ -716,8 +748,7 @@ where
                 addr = addr.wrapping_add(12);
             }
 
-            // 3 * 4 cycles spent reading (for long-aligned access)
-            self.advance_cycles(31 - 12)?;
+            self.advance_cycles(31 - 9)?;
         }
 
         // Update address register for predec/postinc modes
