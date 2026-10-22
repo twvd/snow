@@ -102,6 +102,7 @@ where
     pub(in crate::cpu_m68k) fn op_f000(&mut self, instr: &Instruction) -> Result<()> {
         // Fetch extension word
         let extword = FmoveExtWord(self.fetch_pump()?);
+        let m68882 = FPU_TYPE == FPU_M68882;
 
         match extword.subop() {
             0b000 => {
@@ -260,7 +261,7 @@ where
                         };
 
                         // No ALU operation
-                        // Not sure how many cycles this costs, assuming its cheap
+                        self.advance_cycles(if m68882 { 32 } else { 29 })?;
                         return Ok(());
                     }
                     0b011 if instr.get_addr_mode()? == AddressingMode::Immediate => {
@@ -324,7 +325,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
 
-                        self.advance_cycles(100)?;
+                        self.advance_cycles(if m68882 { 110 } else { 100 })?;
                         self.write_ticks(ea, out as Long)?;
                     }
                     0b100 => {
@@ -351,7 +352,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
 
-                        self.advance_cycles(100)?;
+                        self.advance_cycles(if m68882 { 110 } else { 100 })?;
                         self.write_ticks(ea, out as Word)?;
                     }
                     0b110 => {
@@ -378,7 +379,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
 
-                        self.advance_cycles(100)?;
+                        self.advance_cycles(if m68882 { 110 } else { 100 })?;
                         self.write_ticks(ea, out as Byte)?;
                     }
                     0b010 => {
@@ -393,7 +394,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(false);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
 
-                        self.advance_cycles(72)?;
+                        self.advance_cycles(if m68882 { 50 } else { 72 })?;
                         self.write_fpu_extended(ea, &self.regs.fpu.fp[fpx].clone())?;
                     }
                     0b101 => {
@@ -408,7 +409,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(false);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
 
-                        self.advance_cycles(86)?;
+                        self.advance_cycles(if m68882 { 44 } else { 86 })?;
                         self.write_fpu_double(ea, &self.regs.fpu.fp[fpx].clone())?;
                     }
                     0b001 => {
@@ -423,7 +424,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(false);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
 
-                        self.advance_cycles(80)?;
+                        self.advance_cycles(if m68882 { 38 } else { 80 })?;
                         self.write_fpu_single(ea, &self.regs.fpu.fp[fpx].clone())?;
                     }
                     0b011 => {
@@ -438,7 +439,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(false);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
 
-                        self.advance_cycles(80)?; // todo
+                        self.advance_cycles(if m68882 { 2006 } else { 2002 })?;
                         self.write_fpu_packed(
                             ea,
                             &self.regs.fpu.fp[fpx].clone(),
@@ -461,7 +462,8 @@ where
                             .regs
                             .read_d::<Byte>(extword.k_factor() as usize >> 4 & 0b111)
                             as i8;
-                        self.advance_cycles(80)?; // todo
+                        // 14 more for a dynamic k factor
+                        self.advance_cycles(if m68882 { 2020 } else { 2016 })?;
                         self.write_fpu_packed(ea, &self.regs.fpu.fp[fpx].clone(), k)?;
                     }
                     _ => {
@@ -510,7 +512,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
 
-                        self.advance_cycles(100 - 2)?;
+                        self.advance_cycles(if m68882 { 110 - 2 } else { 100 - 2 })?;
                         self.regs.write_d(dn, out as Long);
                     }
                     0b100 => {
@@ -532,7 +534,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
 
-                        self.advance_cycles(100 - 2)?;
+                        self.advance_cycles(if m68882 { 110 - 2 } else { 100 - 2 })?;
                         self.regs.write_d(dn, out as Word);
                     }
                     0b110 => {
@@ -554,7 +556,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
 
-                        self.advance_cycles(100 - 2)?;
+                        self.advance_cycles(if m68882 { 110 - 2 } else { 100 - 2 })?;
                         self.regs.write_d(dn, out as Byte);
                     }
                     0b001 => {
@@ -565,7 +567,7 @@ where
                         self.regs.fpu.fpsr.exs_mut().set_inex2(false);
                         self.regs.fpu.fpsr.exs_mut().set_inex1(false);
 
-                        self.advance_cycles(80 - 2)?;
+                        self.advance_cycles(if m68882 { 38 - 2 } else { 80 - 2 })?;
                         self.regs
                             .write_d(dn, self.regs.fpu.fp[fpx].as_f32().to_bits());
                     }

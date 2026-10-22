@@ -1,4 +1,4 @@
-use crate::cpu_m68k::FpuM68kType;
+use crate::cpu_m68k::{FPU_M68882, FpuM68kType};
 use anyhow::{Result, bail};
 use arpfloat::{Float, RoundingMode, Semantics};
 
@@ -132,7 +132,10 @@ where
                 let result = dest - source;
                 self.fpu_condition_codes(&result);
                 // TODO flags
-                return Ok((dest.cast(SEMANTICS_EXTENDED), [33, 62, 54, 60, 58, 870]));
+                return Ok((
+                    dest.cast(SEMANTICS_EXTENDED),
+                    Self::fpu_cycles(opmode, [33, 62, 54, 60, 58, 870]),
+                ));
             }
             // FREM - always uses round-to-nearest regardless of FPCR
             0b0100101 => {
@@ -167,7 +170,10 @@ where
             // FTST
             0b0111010 => {
                 self.fpu_condition_codes(source);
-                return Ok((dest.cast(SEMANTICS_EXTENDED), [33, 60, 52, 58, 56, 870]));
+                return Ok((
+                    dest.cast(SEMANTICS_EXTENDED),
+                    Self::fpu_cycles(opmode, [33, 60, 52, 58, 56, 870]),
+                ));
             }
             // FNEG
             0b0011010 => (source.neg(), [35, 62, 54, 60, 58, 872]),
@@ -276,7 +282,86 @@ where
         self.fpu_condition_codes(&result);
 
         // Cast result back to EXTENDED for storage in FPU registers
-        Ok((result.cast(SEMANTICS_EXTENDED), cycles))
+        Ok((
+            result.cast(SEMANTICS_EXTENDED),
+            Self::fpu_cycles(opmode, cycles),
+        ))
+    }
+
+    /// Returns the execution times of an arithmetic operation, which are those of the
+    /// 68881 (`m68881`) or, on a 68882, those of Table 8-3 of the MC68881/MC68882
+    /// user's manual. The overlap of the 68882 with the CPU is not modelled.
+    fn fpu_cycles(opmode: u8, m68881: [Ticks; FPU_CYCLES_LEN]) -> [Ticks; FPU_CYCLES_LEN] {
+        if FPU_TYPE != FPU_M68882 {
+            return m68881;
+        }
+
+        // [FPn to FPn, integer, single, double, extended, packed]
+        match opmode {
+            // FMOVE
+            0b0000000 => [21, 48, 34, 40, 46, 891],
+            // FINT, FINTRZ
+            0b0000001 | 0b0000011 => [58, 88, 71, 77, 83, 913],
+            // FSINH
+            0b0000010 => [690, 720, 703, 709, 715, 1545],
+            // FSQRT
+            0b0000100 => [110, 140, 123, 129, 135, 965],
+            // FLOGNP1
+            0b0000110 => [574, 604, 587, 593, 599, 1429],
+            // FETOXM1
+            0b0001000 => [548, 578, 561, 567, 573, 1403],
+            // FTANH
+            0b0001001 => [664, 694, 677, 683, 689, 1519],
+            // FATAN
+            0b0001010 => [406, 436, 419, 425, 431, 1261],
+            // FASIN, FLOG10, FLOG2
+            0b0001100 | 0b0010101 | 0b0010110 => [584, 614, 597, 603, 609, 1439],
+            // FATANH
+            0b0001101 => [696, 726, 709, 715, 721, 1551],
+            // FSIN, FCOS
+            0b0001110 | 0b0011101 => [394, 424, 407, 413, 419, 1249],
+            // FTAN
+            0b0001111 => [476, 506, 489, 495, 501, 1331],
+            // FETOX
+            0b0010000 => [500, 530, 513, 519, 525, 1355],
+            // FTWOTOX, FTENTOX
+            0b0010001 | 0b0010010 => [570, 600, 583, 589, 595, 1425],
+            // FLOGN
+            0b0010100 => [528, 558, 541, 547, 553, 1383],
+            // FABS, FNEG
+            0b0011000 | 0b0011010 => [38, 68, 51, 57, 63, 893],
+            // FCOSH
+            0b0011001 => [610, 640, 623, 629, 635, 1465],
+            // FACOS
+            0b0011100 => [628, 658, 641, 647, 653, 1483],
+            // FGETEXP
+            0b0011110 => [48, 78, 61, 67, 73, 903],
+            // FGETMAN
+            0b0011111 => [34, 64, 47, 53, 59, 889],
+            // FDIV
+            0b0100000 => [108, 146, 121, 127, 133, 961],
+            // FMOD
+            0b0100001 => [75, 113, 88, 94, 100, 928],
+            // FADD, FSUB
+            0b0100010 | 0b0101000 => [56, 94, 69, 75, 81, 909],
+            // FMUL
+            0b0100011 => [76, 114, 89, 95, 101, 929],
+            // FSGLDIV
+            0b0100100 => [74, 112, 87, 93, 99, 927],
+            // FREM
+            0b0100101 => [105, 143, 118, 124, 130, 958],
+            // FSCALE
+            0b0100110 => [46, 84, 59, 65, 71, 899],
+            // FSGLMUL
+            0b0100111 => [64, 102, 77, 83, 89, 917],
+            // FSINCOS
+            0b0110000..=0b0110111 => [454, 484, 467, 473, 479, 1309],
+            // FCMP
+            0b0111000 => [38, 76, 51, 57, 63, 891],
+            // FTST
+            0b0111010 => [36, 66, 49, 55, 61, 891],
+            _ => m68881,
+        }
     }
 
     fn fpu_condition_codes(&mut self, result: &Float) {
