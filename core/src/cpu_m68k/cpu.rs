@@ -3092,14 +3092,19 @@ where
             self.prefetch_pump()?;
         }
 
-        let result = if self.cc(instr.get_cc()) {
-            if instr.get_addr_mode()? == AddressingMode::DataRegister {
+        let result = if self.cc(instr.get_cc()) { 0xFF } else { 0 };
+
+        // Idle cycles
+        let dn = instr.get_addr_mode()? == AddressingMode::DataRegister;
+        if CPU_TYPE == M68000 {
+            if dn && result != 0 {
                 self.advance_cycles(2)?;
             }
-            0xFF
+        } else if dn {
+            self.advance_cycles(2)?;
         } else {
-            0
-        };
+            self.advance_cycles(1)?;
+        }
 
         self.write_ea::<Byte>(instr, instr.get_op2(), result)?;
         Ok(())
@@ -3135,7 +3140,9 @@ where
             }
         } else {
             self.history_current.branch_taken = Some(false);
-            self.advance_cycles(2)?; // idle
+            if CPU_TYPE == M68000 {
+                self.advance_cycles(2)?; // idle
+            }
         }
 
         Ok(())
@@ -3143,10 +3150,11 @@ where
 
     /// Bcc/BSR
     fn op_bcc<const BSR: bool>(&mut self, instr: &Instruction) -> Result<()> {
+        let long = CPU_TYPE >= M68020 && instr.get_bxx_displacement_raw() == 0xFF;
         let displacement = if instr.get_bxx_displacement() == 0 {
             instr.fetch_extword(|| self.fetch())?;
             instr.get_displacement()
-        } else if CPU_TYPE >= M68020 && instr.get_bxx_displacement_raw() == 0xFF {
+        } else if long {
             let msb = self.fetch_pump()? as Address;
             let lsb = self.fetch_pump()? as Address;
             // -4 since we just nudged the PC twice
@@ -3155,7 +3163,12 @@ where
             instr.get_bxx_displacement()
         };
 
-        self.advance_cycles(2)?; // idle
+        // On the 68020/68030, BSR and the long forms have no idle cycles. The
+        // totals of the word and long forms are still a few clocks off the
+        // manuals, as their extension words and the refill take that long already.
+        if CPU_TYPE == M68000 || !(BSR || long) {
+            self.advance_cycles(2)?; // idle
+        }
 
         if BSR || self.cc(instr.get_cc()) {
             // Branch taken
@@ -3194,7 +3207,9 @@ where
             // Branch not taken
             self.history_current.branch_taken = Some(false);
 
-            self.advance_cycles(2)?; // idle
+            if CPU_TYPE == M68000 {
+                self.advance_cycles(2)?; // idle
+            }
         }
         Ok(())
     }
