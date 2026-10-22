@@ -229,6 +229,10 @@ pub const ICACHE_LINE_SIZE: usize = 4;
 /// I-cache amount of cache lines (68020/68030)
 pub const ICACHE_LINES: usize = 64;
 
+/// Clocks taken by an instruction word from the I-cache: in the cache case
+/// timings of the 68020 and 68030, the pipe takes two clocks per word
+pub const ICACHE_HIT_TICKS: Ticks = 2;
+
 /// I-cache tag marking a line as invalid
 ///
 /// Tags are normally 30-bit, we keep 32.
@@ -558,7 +562,7 @@ where
             if self.icache_tags[cache_idx] == cache_tag {
                 // Cache hit
                 self.history_current.icache_hit = true;
-                self.advance_cycles(1)?;
+                self.advance_cycles(ICACHE_HIT_TICKS)?;
                 PrefetchWord::Word(u16::from_be_bytes([
                     self.icache_lines[cache_idx][cache_offset],
                     self.icache_lines[cache_idx][cache_offset + 1],
