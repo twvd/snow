@@ -22,7 +22,7 @@ use crate::types::{Byte, LatchingEvent, Long, Word};
 
 use super::instruction::{
     AddressingMode, BfxExtWord, Direction, DivlExtWord, Instruction, InstructionMnemonic,
-    MulxExtWord,
+    MovecCtrlReg, MulxExtWord,
 };
 use super::regs::{Register, RegisterFile, RegisterSR, RestartRegisterFile};
 use super::{
@@ -842,7 +842,7 @@ where
 
         // Check pending trace
         if trace_exception && !self.step_inhibit_trace {
-            self.exception_idle(3, 6)?;
+            self.idle_020_030(3, 6)?;
             self.raise_exception(ExceptionGroup::Group1, VECTOR_TRACE, None)?;
         }
 
@@ -953,11 +953,11 @@ where
         self.regs.pc.wrapping_add(prefetch_offset * 2) & ADDRESS_MASK
     }
 
-    /// Spends the idle cycles of an exception on the 68020 (`c020`) or the 68030
-    /// (`c030`): the time from the exception tables (MC68020UM 8.2.17/8.2.18,
-    /// MC68030UM 11.6.17/11.6.18) less the bus cycles and the 2 words fetched
-    /// at the handler. Nothing on the 68000, which has its own idle cycles.
-    fn exception_idle(&mut self, c020: Ticks, c030: Ticks) -> Result<()> {
+    /// Spends idle cycles on the 68020 (`c020`) or the 68030 (`c030`), and none on
+    /// the 68000, which has its own. For an exception, these are the time from the
+    /// exception tables (MC68020UM 8.2.17/8.2.18, MC68030UM 11.6.17/11.6.18) less
+    /// the bus cycles and the 2 words fetched at the handler.
+    fn idle_020_030(&mut self, c020: Ticks, c030: Ticks) -> Result<()> {
         match CPU_TYPE {
             M68020 => self.advance_cycles(c020),
             M68030 => self.advance_cycles(c030),
@@ -975,7 +975,7 @@ where
         if CPU_TYPE == M68000 {
             self.advance_cycles(4)?;
         }
-        self.exception_idle(1, 4)?;
+        self.idle_020_030(1, 4)?;
         self.raise_exception(ExceptionGroup::Group1, VECTOR_ILLEGAL, None)?;
         Ok(())
     }
@@ -989,7 +989,7 @@ where
         if CPU_TYPE == M68000 {
             self.advance_cycles(4)?;
         }
-        self.exception_idle(1, 4)?;
+        self.idle_020_030(1, 4)?;
         self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None)?;
         Ok(())
     }
@@ -1026,7 +1026,7 @@ where
             _ => {
                 *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8);
                 // Idle cycles and the interrupt acknowledge cycle
-                self.exception_idle(7, 9)?;
+                self.idle_020_030(7, 9)?;
 
                 self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
                 self.write_ticks(self.regs.ssp().wrapping_add(2), (self.regs.pc >> 16) as u16)?;
@@ -1132,7 +1132,7 @@ where
 
                         if self.regs.pc == details.start_pc && self.prefetch.len() == 2 {
                             // Bus error at instruction boundary
-                            self.exception_idle(6, 10)?;
+                            self.idle_020_030(6, 10)?;
                             *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(32);
                             self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
                             self.write_ticks(self.regs.ssp().wrapping_add(0x02), details.start_pc)?;
@@ -1175,7 +1175,7 @@ where
                             // Internal registers
                             self.write_ticks(self.regs.ssp().wrapping_add(0x1C), 0u32)?;
                         } else {
-                            self.exception_idle(0, 8)?;
+                            self.idle_020_030(0, 8)?;
                             *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(92);
                             self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
                             self.write_ticks(self.regs.ssp().wrapping_add(0x02), details.start_pc)?;
@@ -1500,7 +1500,7 @@ where
                 if CPU_TYPE == M68000 {
                     self.advance_cycles(4)?;
                 }
-                self.exception_idle(1, 4)?;
+                self.idle_020_030(1, 4)?;
                 self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEA, None)
             }
             InstructionMnemonic::LINEF => self.op_linef(instr),
@@ -1557,7 +1557,7 @@ where
         if CPU_TYPE == M68000 {
             self.advance_cycles(4)?;
         }
-        self.exception_idle(1, 4)?;
+        self.idle_020_030(1, 4)?;
         self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEF, None)
     }
 
@@ -1571,6 +1571,7 @@ where
         self.regs.sr.set_n(result & (1 << 31) != 0);
         self.regs.sr.set_z(result == 0);
         self.regs.write_d(instr.get_op2(), result);
+        self.idle_020_030(2, 2)?;
 
         Ok(())
     }
@@ -1715,7 +1716,7 @@ where
         if CPU_TYPE == M68000 {
             self.advance_cycles(4)?;
         }
-        self.exception_idle(1, 4)?;
+        self.idle_020_030(1, 4)?;
         self.raise_exception(
             ExceptionGroup::Group2,
             instr.trap_get_vector() * 4 + VECTOR_TRAP_OFFSET,
@@ -1728,11 +1729,11 @@ where
         self.prefetch_pump()?;
 
         if !self.regs.sr.v() {
-            self.exception_idle(2, 2)?;
+            self.idle_020_030(2, 2)?;
             return Ok(());
         }
 
-        self.exception_idle(1, 4)?;
+        self.idle_020_030(1, 4)?;
         self.raise_exception(ExceptionGroup::Group2, VECTOR_TRAPV, None)
     }
 
@@ -1749,15 +1750,15 @@ where
         self.prefetch_pump()?;
 
         if !taken {
-            self.exception_idle(2, 2)?;
+            self.idle_020_030(2, 2)?;
             return Ok(());
         }
 
         // The 68020 takes the same time with or without the operand words
         if OPERAND_WORDS == 0 {
-            self.exception_idle(1, 4)?;
+            self.idle_020_030(1, 4)?;
         } else {
-            self.exception_idle(0, 4)?;
+            self.idle_020_030(0, 4)?;
         }
         self.raise_exception(ExceptionGroup::Group2, VECTOR_TRAPV, None)
     }
@@ -2100,6 +2101,7 @@ where
         self.regs.sr.set_x(last_x);
 
         self.prefetch_pump()?;
+        self.idle_020_030(1, 2)?;
 
         Ok(())
     }
@@ -2192,7 +2194,7 @@ where
             if CPU_TYPE == M68000 {
                 self.advance_cycles(8)?;
             }
-            self.exception_idle(3, 6)?;
+            self.idle_020_030(3, 6)?;
             self.regs.sr.set_n(false);
             self.regs.sr.set_c(false);
             self.regs.sr.set_z(false);
@@ -2266,7 +2268,7 @@ where
             if CPU_TYPE == M68000 {
                 self.advance_cycles(8)?;
             }
-            self.exception_idle(3, 6)?;
+            self.idle_020_030(3, 6)?;
             self.regs.sr.set_n(false);
             self.regs.sr.set_c(false);
             self.regs.sr.set_z(false);
@@ -2411,6 +2413,7 @@ where
                 let b_addr = addr.wrapping_add((i * 2) as Address);
                 self.write_ticks::<Byte>(b_addr, b)?;
             }
+            self.idle_020_030(1, 2)?;
         } else {
             // From bus
             let mut data = [0; N];
@@ -2421,6 +2424,7 @@ where
 
             self.regs
                 .write_d::<T>(instr.get_op1(), T::from_be_bytes(&data));
+            self.idle_020_030(2, 2)?;
         }
 
         Ok(())
@@ -2541,6 +2545,7 @@ where
             self.advance_cycles(4)?;
             self.read_ticks::<Word>(self.regs.pc.wrapping_add(2) & ADDRESS_MASK)?;
         }
+        self.idle_020_030(6, 6)?;
 
         self.set_sr(value);
         Ok(())
@@ -2551,11 +2556,12 @@ where
         let value: Word = self.read_ea(instr, instr.get_op2())?;
 
         // Idle cycles + discarded read
-        self.advance_cycles(4)?;
         if CPU_TYPE == M68000 {
+            self.advance_cycles(4)?;
             self.read_ticks::<Word>(self.regs.pc.wrapping_add(2) & ADDRESS_MASK)?;
             self.prefetch_pump()?;
         }
+        self.idle_020_030(2, 2)?;
 
         self.regs.sr.set_ccr(value as Byte);
         Ok(())
@@ -2563,7 +2569,9 @@ where
 
     /// MOVEfromCCR
     fn op_move_from_ccr(&mut self, instr: &Instruction) -> Result<()> {
-        self.advance_cycles(4)?;
+        if instr.get_addr_mode()? == AddressingMode::DataRegister {
+            self.advance_cycles(2)?;
+        }
         self.write_ea::<Word>(instr, instr.get_op2(), self.regs.sr.ccr().into())?;
         self.prefetch_pump()?;
 
@@ -2578,6 +2586,7 @@ where
         let value: Address = self.regs.read_a(instr.get_op2());
 
         self.regs.usp = value;
+        self.idle_020_030(0, 2)?;
         Ok(())
     }
 
@@ -2589,6 +2598,7 @@ where
         let value: Address = self.regs.usp;
 
         self.regs.write_a(instr.get_op2(), value);
+        self.idle_020_030(0, 2)?;
         Ok(())
     }
 
@@ -2653,6 +2663,7 @@ where
         self.regs.sr.set_c(false);
         self.regs.sr.set_z(result == T::zero());
         self.write_ea::<T>(instr, instr.get_op2(), result)?;
+        self.idle_020_030(2, 2)?;
         Ok(())
     }
 
@@ -2684,7 +2695,10 @@ where
     fn op_nbcd(&mut self, instr: &Instruction) -> Result<()> {
         self.op_alu_zero::<Byte>(instr, Self::alu_sub_bcd)?;
         if instr.get_addr_mode()? == AddressingMode::DataRegister {
-            self.advance_cycles(2)?;
+            if CPU_TYPE == M68000 {
+                self.advance_cycles(2)?;
+            }
+            self.idle_020_030(4, 4)?;
         }
 
         Ok(())
@@ -2742,6 +2756,9 @@ where
         let v = self.read_ea::<Byte>(instr, instr.get_op2())?;
         if instr.get_addr_mode()? != AddressingMode::DataRegister {
             self.advance_cycles(2)?;
+            self.idle_020_030(3, 5)?;
+        } else {
+            self.idle_020_030(2, 2)?;
         }
         self.write_ea(instr, instr.get_op2(), v | 0x80)?;
         self.regs.sr.set_z(v == 0);
@@ -2891,7 +2908,7 @@ where
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
                 *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(8);
-                self.exception_idle(5, 6)?;
+                self.idle_020_030(5, 6)?;
                 self.set_sr(sr);
                 self.set_pc(pc)?;
             }
@@ -3051,6 +3068,9 @@ where
         if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
             addr = addr.wrapping_sub(std::mem::size_of::<T>() as Address);
         }
+        let n = Ticks::from(mask.count_ones());
+        self.idle_020_030(4 + n, 4 + 2 * n)?;
+
         // Discarded read
         if CPU_TYPE == M68000 {
             self.read_ticks::<Word>(addr)?;
@@ -3350,7 +3370,10 @@ where
         self.regs.write(reg_r, left);
 
         self.prefetch_pump()?;
-        self.advance_cycles(2)?; // idle
+        if CPU_TYPE == M68000 {
+            self.advance_cycles(2)?; // idle
+        }
+        self.idle_020_030(0, 2)?;
 
         Ok(())
     }
@@ -3494,7 +3517,7 @@ where
         if instr.movec_ctrl_to_gen() {
             let val = self.regs.read::<Long>(instr.movec_ctrlreg()?.into());
             self.regs.write(instr.movec_reg(), val);
-            self.advance_cycles(4)?;
+            self.advance_cycles(2)?;
         } else {
             let val = self.regs.read::<Long>(instr.movec_reg());
             let destreg: Register = instr.movec_ctrlreg()?.into();
@@ -3526,7 +3549,14 @@ where
             } else {
                 self.regs.write(destreg, val);
             }
-            self.advance_cycles(2)?;
+            // The 68030 is faster for the control registers other than SFC, DFC
+            // and CACR (MC68030UM 11.6.7)
+            match instr.movec_ctrlreg()? {
+                MovecCtrlReg::SFC | MovecCtrlReg::DFC | MovecCtrlReg::CACR => {
+                    self.advance_cycles(8)?;
+                }
+                _ => self.idle_020_030(8, 2)?,
+            }
         }
 
         Ok(())
@@ -3542,7 +3572,7 @@ where
         let dir_mem_to_reg = (ext_word & 0x0800) == 0;
 
         if !self.regs.sr.supervisor() {
-            self.exception_idle(1, 4)?;
+            self.idle_020_030(1, 4)?;
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
         }
 
@@ -3561,10 +3591,7 @@ where
                 self.regs.write_d::<T>(reg_num as usize, value);
             }
 
-            // 68020+ additional cycles
-            if CPU_TYPE >= M68020 {
-                self.advance_cycles(2)?;
-            }
+            self.idle_020_030(0, 1)?;
         } else {
             // Register to memory transfer
             let value = if is_addr_reg {
@@ -3578,11 +3605,6 @@ where
                 ea,
                 value,
             )?;
-
-            // 68020+ additional cycles for long transfers
-            if CPU_TYPE >= M68020 && std::mem::size_of::<T>() == 4 {
-                self.advance_cycles(2)?;
-            }
         }
 
         self.prefetch_pump()?;
@@ -4469,7 +4491,7 @@ where
             if CPU_TYPE == M68000 {
                 self.advance_cycles(8)?;
             }
-            self.exception_idle(3, 6)?;
+            self.idle_020_030(3, 6)?;
             self.regs.sr.set_n(false);
             self.regs.sr.set_c(false);
             self.regs.sr.set_z(false);
@@ -4541,6 +4563,7 @@ where
         let old_x = self.regs.sr.x();
         self.regs.sr.set_ccr(ccr);
         self.regs.sr.set_x(old_x); // X is unaffected
+        self.idle_020_030(5, 5)?;
 
         if self.regs.sr.z() {
             self.write_ea(instr, instr.get_op2(), update_op)?;
