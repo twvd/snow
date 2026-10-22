@@ -1575,18 +1575,20 @@ where
         }
 
         // Idle cycles
-        match (
-            instr.get_addr_mode()?,
-            instr.get_direction(),
-            std::mem::size_of::<T>(),
-        ) {
-            (AddressingMode::DataRegister | AddressingMode::Immediate, _, 4) => {
-                self.advance_cycles(4)?;
-            }
+        if CPU_TYPE == M68000 {
+            match (
+                instr.get_addr_mode()?,
+                instr.get_direction(),
+                std::mem::size_of::<T>(),
+            ) {
+                (AddressingMode::DataRegister | AddressingMode::Immediate, _, 4) => {
+                    self.advance_cycles(4)?;
+                }
 
-            (_, Direction::Right, 4) => self.advance_cycles(2)?,
-            _ => (),
-        };
+                (_, Direction::Right, 4) => self.advance_cycles(2)?,
+                _ => (),
+            }
+        }
 
         Ok(())
     }
@@ -1613,14 +1615,16 @@ where
         self.write_ea(instr, instr.get_op2(), result)?;
 
         // Idle cycles
-        match (
-            instr.get_addr_mode()?,
-            instr.get_direction(),
-            std::mem::size_of::<T>(),
-        ) {
-            (AddressingMode::DataRegister, _, 4) => self.advance_cycles(4)?,
-            _ => (),
-        };
+        if CPU_TYPE == M68000 {
+            match (
+                instr.get_addr_mode()?,
+                instr.get_direction(),
+                std::mem::size_of::<T>(),
+            ) {
+                (AddressingMode::DataRegister, _, 4) => self.advance_cycles(4)?,
+                _ => (),
+            }
+        }
 
         Ok(())
     }
@@ -1740,19 +1744,21 @@ where
         }
 
         // Idle cycles
-        match (
-            instr.get_addr_mode()?,
-            instr.get_direction(),
-            std::mem::size_of::<T>(),
-        ) {
-            (AddressingMode::DataRegister | AddressingMode::Immediate, _, 4) => {
-                self.advance_cycles(4)?;
-            }
-            (AddressingMode::AddressRegister, _, 4) => self.advance_cycles(4)?,
+        if CPU_TYPE == M68000 {
+            match (
+                instr.get_addr_mode()?,
+                instr.get_direction(),
+                std::mem::size_of::<T>(),
+            ) {
+                (AddressingMode::DataRegister | AddressingMode::Immediate, _, 4) => {
+                    self.advance_cycles(4)?;
+                }
+                (AddressingMode::AddressRegister, _, 4) => self.advance_cycles(4)?,
 
-            (_, Direction::Right, 4) => self.advance_cycles(2)?,
-            _ => (),
-        };
+                (_, Direction::Right, 4) => self.advance_cycles(2)?,
+                _ => (),
+            }
+        }
 
         Ok(())
     }
@@ -1773,14 +1779,16 @@ where
         self.write_ea(instr, instr.get_op2(), result)?;
 
         // Idle cycles
-        match (
-            instr.get_addr_mode()?,
-            instr.get_direction(),
-            std::mem::size_of::<T>(),
-        ) {
-            (AddressingMode::DataRegister, _, 4) => self.advance_cycles(4)?,
-            _ => (),
-        };
+        if CPU_TYPE == M68000 {
+            match (
+                instr.get_addr_mode()?,
+                instr.get_direction(),
+                std::mem::size_of::<T>(),
+            ) {
+                (AddressingMode::DataRegister, _, 4) => self.advance_cycles(4)?,
+                _ => (),
+            }
+        }
 
         Ok(())
     }
@@ -1800,14 +1808,16 @@ where
         self.write_ea(instr, instr.get_op2(), result)?;
 
         // Idle cycles
-        match (
-            instr.get_addr_mode()?,
-            instr.get_direction(),
-            std::mem::size_of::<T>(),
-        ) {
-            (AddressingMode::DataRegister, _, 4) => self.advance_cycles(2)?,
-            _ => (),
-        };
+        if CPU_TYPE == M68000 {
+            match (
+                instr.get_addr_mode()?,
+                instr.get_direction(),
+                std::mem::size_of::<T>(),
+            ) {
+                (AddressingMode::DataRegister, _, 4) => self.advance_cycles(2)?,
+                _ => (),
+            }
+        }
 
         Ok(())
     }
@@ -1835,11 +1845,13 @@ where
         self.ea_commit();
 
         // Idle cycles
-        match (instr.get_addr_mode()?, std::mem::size_of::<T>()) {
-            (AddressingMode::DataRegister, 4) => self.advance_cycles(4)?,
-            (AddressingMode::AddressRegister, 4) => self.advance_cycles(4)?,
-            _ => (),
-        };
+        if CPU_TYPE == M68000 {
+            match (instr.get_addr_mode()?, std::mem::size_of::<T>()) {
+                (AddressingMode::DataRegister, 4) => self.advance_cycles(4)?,
+                (AddressingMode::AddressRegister, 4) => self.advance_cycles(4)?,
+                _ => (),
+            }
+        }
 
         Ok(())
     }
@@ -1863,14 +1875,21 @@ where
         self.regs.write_a::<Long>(instr.get_op1(), result);
 
         // Idle cycles
-        match (instr.get_addr_mode()?, std::mem::size_of::<T>()) {
-            (AddressingMode::AddressRegister, _) => self.advance_cycles(4)?,
-            (AddressingMode::DataRegister, _) => self.advance_cycles(4)?,
-            (AddressingMode::Immediate, _) => self.advance_cycles(4)?,
-            (_, 2) => self.advance_cycles(4)?,
-            (_, 4) => self.advance_cycles(2)?,
-            _ => unreachable!(),
-        };
+        if CPU_TYPE == M68000 {
+            match (instr.get_addr_mode()?, std::mem::size_of::<T>()) {
+                (AddressingMode::AddressRegister, _) => self.advance_cycles(4)?,
+                (AddressingMode::DataRegister, _) => self.advance_cycles(4)?,
+                (AddressingMode::Immediate, _) => self.advance_cycles(4)?,
+                (_, 2) => self.advance_cycles(4)?,
+                (_, 4) => self.advance_cycles(2)?,
+                _ => unreachable!(),
+            }
+        } else if CPU_TYPE == M68030 && std::mem::size_of::<T>() == 2 {
+            // The 68030 manual gives ADDA.W/SUBA.W 4 clocks and the .L forms 2,
+            // the 68020 manual has one 2-clock row for both sizes. It is not
+            // known whether the 68020 really differs; we follow each manual.
+            self.advance_cycles(2)?;
+        }
 
         Ok(())
     }
@@ -1947,10 +1966,12 @@ where
         };
 
         // Idle cycles
-        match (instr.get_addr_mode_x()?, sz) {
-            (AddressingMode::DataRegister, 4) => self.advance_cycles(4)?,
-            _ => (),
-        };
+        if CPU_TYPE == M68000 {
+            match (instr.get_addr_mode_x()?, sz) {
+                (AddressingMode::DataRegister, 4) => self.advance_cycles(4)?,
+                _ => (),
+            }
+        }
 
         Ok(())
     }
@@ -1969,19 +1990,21 @@ where
         self.prefetch_pump()?;
 
         // Idle cycles
-        match (
-            instr.get_addr_mode()?,
-            instr.get_direction(),
-            std::mem::size_of::<T>(),
-        ) {
-            (AddressingMode::DataRegister | AddressingMode::Immediate, _, 4) => {
-                self.advance_cycles(2)?;
-            }
-            (AddressingMode::AddressRegister, _, 4) => self.advance_cycles(2)?,
+        if CPU_TYPE == M68000 {
+            match (
+                instr.get_addr_mode()?,
+                instr.get_direction(),
+                std::mem::size_of::<T>(),
+            ) {
+                (AddressingMode::DataRegister | AddressingMode::Immediate, _, 4) => {
+                    self.advance_cycles(2)?;
+                }
+                (AddressingMode::AddressRegister, _, 4) => self.advance_cycles(2)?,
 
-            (_, Direction::Right, 4) => self.advance_cycles(2)?,
-            _ => (),
-        };
+                (_, Direction::Right, 4) => self.advance_cycles(2)?,
+                _ => (),
+            }
+        }
 
         Ok(())
     }
@@ -2000,14 +2023,16 @@ where
         self.prefetch_pump()?;
 
         // Idle cycles
-        match (
-            instr.get_addr_mode()?,
-            instr.get_direction(),
-            std::mem::size_of::<T>(),
-        ) {
-            (AddressingMode::DataRegister, _, 4) => self.advance_cycles(2)?,
-            _ => (),
-        };
+        if CPU_TYPE == M68000 {
+            match (
+                instr.get_addr_mode()?,
+                instr.get_direction(),
+                std::mem::size_of::<T>(),
+            ) {
+                (AddressingMode::DataRegister, _, 4) => self.advance_cycles(2)?,
+                _ => (),
+            }
+        }
 
         Ok(())
     }
@@ -2496,7 +2521,7 @@ where
         self.write_ea(instr, instr.get_op2(), T::zero())?;
 
         // Idle cycles
-        if std::mem::size_of::<T>() == 4 {
+        if CPU_TYPE == M68000 && std::mem::size_of::<T>() == 4 {
             match instr.get_addr_mode()? {
                 AddressingMode::DataRegister | AddressingMode::AddressRegister => {
                     self.advance_cycles(2)?;
@@ -2521,7 +2546,7 @@ where
         self.write_ea(instr, instr.get_op2(), result)?;
 
         // Idle cycles
-        if std::mem::size_of::<T>() == 4 {
+        if CPU_TYPE == M68000 && std::mem::size_of::<T>() == 4 {
             match instr.get_addr_mode()? {
                 AddressingMode::DataRegister | AddressingMode::AddressRegister => {
                     self.advance_cycles(2)?;
