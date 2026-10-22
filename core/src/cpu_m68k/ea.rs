@@ -90,12 +90,20 @@ where
         let addr = match addrmode {
             AddressingMode::DataRegister => bail!("calc_ea_addr invalid addressing mode Dn"),
             AddressingMode::AddressRegister => bail!("calc_ea_addr invalid addressing mode An"),
-            AddressingMode::Indirect => self.regs.read_a(ea_in),
+            AddressingMode::Indirect => {
+                if CPU_TYPE >= M68020 {
+                    self.advance_cycles(1)?;
+                }
+                self.regs.read_a(ea_in)
+            }
             AddressingMode::IndirectPreDec => {
                 self.advance_cycles(2)?; // 2x idle
                 self.regs.read_a_predec::<Address>(ea_in, SZ)
             }
             AddressingMode::IndirectPostInc => {
+                if CPU_TYPE >= M68020 {
+                    self.advance_cycles(1)?;
+                }
                 let addr = self.regs.read_a::<Address>(ea_in);
                 let inc_addr = if ea_in == 7 {
                     // Minimum of 2 for A7
@@ -188,7 +196,6 @@ where
             }
             AddressingMode::IndirectIndexBase | AddressingMode::PCIndexBase => {
                 // also Memory Indirect modes
-                // TODO cycles?
                 debug_assert!(instr.has_extword());
                 let extword = instr.get_extword();
 
@@ -212,8 +219,26 @@ where
                 };
                 let disp_addr = addr.wrapping_add_signed(displacement);
                 let pre_addr = disp_addr.wrapping_add(index.wrapping_mul(u32::from(scale)));
+                let indirect = extword.full_memindirectmode()?;
 
-                match extword.full_memindirectmode()? {
+                // The brief format path took 2 idle cycles already. The fetch EA tables
+                // (MC68020UM 8.2.1, MC68030UM 11.6.1) give 2 more for a 32-bit base
+                // displacement and for memory indirection, and 2 less for a 32-bit
+                // outer displacement.
+                let mut idle = 0;
+                if extword.full_displacement_size() == 0b11 {
+                    idle += 2;
+                }
+                match indirect {
+                    MemoryIndirectAction::None => (),
+                    MemoryIndirectAction::PreIndexLong
+                    | MemoryIndirectAction::PostIndexLong
+                    | MemoryIndirectAction::Long => (),
+                    _ => idle += 2,
+                }
+                self.advance_cycles(idle)?;
+
+                match indirect {
                     MemoryIndirectAction::None => {
                         // Address Register Indirect with Index (Base Displacement) Mode
                         pre_addr
