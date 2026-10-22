@@ -842,6 +842,7 @@ where
 
         // Check pending trace
         if trace_exception && !self.step_inhibit_trace {
+            self.exception_idle(3, 6)?;
             self.raise_exception(ExceptionGroup::Group1, VECTOR_TRACE, None)?;
         }
 
@@ -952,6 +953,18 @@ where
         self.regs.pc.wrapping_add(prefetch_offset * 2) & ADDRESS_MASK
     }
 
+    /// Spends the idle cycles of an exception on the 68020 (`c020`) or the 68030
+    /// (`c030`): the time from the exception tables (MC68020UM 8.2.17/8.2.18,
+    /// MC68030UM 11.6.17/11.6.18) less the bus cycles and the 2 words fetched
+    /// at the handler. Nothing on the 68000, which has its own idle cycles.
+    fn exception_idle(&mut self, c020: Ticks, c030: Ticks) -> Result<()> {
+        match CPU_TYPE {
+            M68020 => self.advance_cycles(c020),
+            M68030 => self.advance_cycles(c030),
+            _ => Ok(()),
+        }
+    }
+
     /// Raises an illegal instruction exception
     fn raise_illegal_instruction(&mut self) -> Result<()> {
         // "If the instruction is not executed because the instruction is illegal or privileged,
@@ -959,7 +972,10 @@ where
         self.step_inhibit_trace = true;
 
         warn!("Illegal instruction at PC ${:08X}", self.regs.pc);
-        self.advance_cycles(4)?;
+        if CPU_TYPE == M68000 {
+            self.advance_cycles(4)?;
+        }
+        self.exception_idle(1, 4)?;
         self.raise_exception(ExceptionGroup::Group1, VECTOR_ILLEGAL, None)?;
         Ok(())
     }
@@ -970,7 +986,10 @@ where
         // the trace exception does not occur."
         self.step_inhibit_trace = true;
 
-        self.advance_cycles(4)?;
+        if CPU_TYPE == M68000 {
+            self.advance_cycles(4)?;
+        }
+        self.exception_idle(1, 4)?;
         self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None)?;
         Ok(())
     }
@@ -1006,8 +1025,8 @@ where
             #[allow(clippy::identity_op)]
             _ => {
                 *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8);
-                // 6 cycles idle, interrupt ack, 4 cycles idle
-                self.advance_cycles(6 + 4 + 4)?;
+                // Idle cycles and the interrupt acknowledge cycle
+                self.exception_idle(7, 9)?;
 
                 self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
                 self.write_ticks(self.regs.ssp().wrapping_add(2), (self.regs.pc >> 16) as u16)?;
@@ -1035,7 +1054,9 @@ where
         let new_pc = self.read_ticks::<Long>(vector_base.wrapping_add(vector))?;
         self.set_pc(new_pc)?;
         self.prefetch_pump()?;
-        self.advance_cycles(2)?; // 2x idle
+        if CPU_TYPE == M68000 {
+            self.advance_cycles(2)?; // 2x idle
+        }
         self.prefetch_pump()?;
 
         if self.history_enabled {
@@ -1072,7 +1093,9 @@ where
                 // instruction replays on RTE.
                 self.step_inhibit_trace = true;
 
-                self.advance_cycles(8)?; // idle
+                if CPU_TYPE == M68000 {
+                    self.advance_cycles(8)?; // idle
+                }
                 let details = details.expect("Address error details not passed");
 
                 match CPU_TYPE {
@@ -1109,6 +1132,7 @@ where
 
                         if self.regs.pc == details.start_pc && self.prefetch.len() == 2 {
                             // Bus error at instruction boundary
+                            self.exception_idle(6, 10)?;
                             *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(32);
                             self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
                             self.write_ticks(self.regs.ssp().wrapping_add(0x02), details.start_pc)?;
@@ -1153,6 +1177,7 @@ where
                             // Internal registers
                             self.write_ticks(self.regs.ssp().wrapping_add(0x1C), 0u32)?;
                         } else {
+                            self.exception_idle(0, 8)?;
                             *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(92);
                             self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
                             self.write_ticks(self.regs.ssp().wrapping_add(0x02), details.start_pc)?;
@@ -1239,7 +1264,9 @@ where
         let new_pc = self.read_ticks::<Long>(vector_base.wrapping_add(vector))?;
         self.set_pc(new_pc)?;
         self.prefetch_pump()?;
-        self.advance_cycles(2)?; // 2x idle
+        if CPU_TYPE == M68000 {
+            self.advance_cycles(2)?; // 2x idle
+        }
         self.prefetch_pump()?;
 
         if self.history_enabled {
@@ -1474,7 +1501,10 @@ where
                     });
                 }
 
-                self.advance_cycles(4)?;
+                if CPU_TYPE == M68000 {
+                    self.advance_cycles(4)?;
+                }
+                self.exception_idle(1, 4)?;
                 self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEA, None)
             }
             InstructionMnemonic::LINEF => self.op_linef(instr),
@@ -1528,7 +1558,10 @@ where
             self.breakpoint_hit.set();
         }
 
-        self.advance_cycles(4)?;
+        if CPU_TYPE == M68000 {
+            self.advance_cycles(4)?;
+        }
+        self.exception_idle(1, 4)?;
         self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEF, None)
     }
 
@@ -1683,7 +1716,10 @@ where
         // Offset PC correctly for exception stack frame for TRAP
         self.regs.pc = self.regs.pc.wrapping_add(2);
 
-        self.advance_cycles(4)?;
+        if CPU_TYPE == M68000 {
+            self.advance_cycles(4)?;
+        }
+        self.exception_idle(1, 4)?;
         self.raise_exception(
             ExceptionGroup::Group2,
             instr.trap_get_vector() * 4 + VECTOR_TRAP_OFFSET,
@@ -1696,9 +1732,11 @@ where
         self.prefetch_pump()?;
 
         if !self.regs.sr.v() {
+            self.exception_idle(2, 2)?;
             return Ok(());
         }
 
+        self.exception_idle(1, 4)?;
         self.raise_exception(ExceptionGroup::Group2, VECTOR_TRAPV, None)
     }
 
@@ -1715,9 +1753,16 @@ where
         self.prefetch_pump()?;
 
         if !taken {
+            self.exception_idle(2, 2)?;
             return Ok(());
         }
 
+        // The 68020 takes the same time with or without the operand words
+        if OPERAND_WORDS == 0 {
+            self.exception_idle(1, 4)?;
+        } else {
+            self.exception_idle(0, 4)?;
+        }
         self.raise_exception(ExceptionGroup::Group2, VECTOR_TRAPV, None)
     }
 
@@ -2141,8 +2186,12 @@ where
         let mut divisor = self.read_ea::<Word>(instr, instr.get_op2())? as Long;
 
         if divisor == 0 {
-            // Division by zero
-            self.advance_cycles(8)?;
+            // Division by zero. The manuals have no time for this on the 68020/68030;
+            // take that of TRAPV, which stacks the same frame.
+            if CPU_TYPE == M68000 {
+                self.advance_cycles(8)?;
+            }
+            self.exception_idle(3, 6)?;
             self.regs.sr.set_n(false);
             self.regs.sr.set_c(false);
             self.regs.sr.set_z(false);
@@ -2211,8 +2260,12 @@ where
         let divisor = self.read_ea::<Word>(instr, instr.get_op2())? as i16 as i32;
 
         if divisor == 0 {
-            // Division by zero
-            self.advance_cycles(8)?;
+            // Division by zero. The manuals have no time for this on the 68020/68030;
+            // take that of TRAPV, which stacks the same frame.
+            if CPU_TYPE == M68000 {
+                self.advance_cycles(8)?;
+            }
+            self.exception_idle(3, 6)?;
             self.regs.sr.set_n(false);
             self.regs.sr.set_c(false);
             self.regs.sr.set_z(false);
@@ -2757,7 +2810,12 @@ where
         }
 
         debug!("RESET instruction");
-        self.advance_cycles(128)?;
+        if CPU_TYPE == M68000 {
+            self.advance_cycles(128)?;
+        } else {
+            // 518 clocks (MC68020UM 8.2.17, MC68030UM 11.6.17)
+            self.advance_cycles(516)?;
+        }
 
         // The MacII / System 4.2 restart routine relies on part of a JMP
         // being in the prefetch queue because pulling on reset will re-
@@ -2791,6 +2849,9 @@ where
 
         self.prefetch_pump()?;
         self.set_sr(new_sr);
+        if CPU_TYPE >= M68020 {
+            self.advance_cycles(4)?;
+        }
 
         // TODO STOP ignored for now
         // Enables keyboard input in A/UX
@@ -2825,6 +2886,7 @@ where
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
                 *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(8);
+                self.exception_idle(5, 6)?;
                 self.set_sr(sr);
                 self.set_pc(pc)?;
             }
@@ -3052,8 +3114,11 @@ where
         self.regs.sr.set_v(false);
 
         if t.v() || t.n() {
-            // Short trap
+            // Short trap. Only the 68030 manual has a time for the trap; the 68020
+            // takes the same here.
             match instr.get_addr_mode()? {
+                AddressingMode::Indirect if CPU_TYPE != M68000 => self.advance_cycles(12)?,
+                _ if CPU_TYPE != M68000 => self.advance_cycles(14)?,
                 AddressingMode::Indirect => {
                     self.advance_cycles(6)?;
                 }
@@ -3065,6 +3130,8 @@ where
         } else if self.regs.sr.n() {
             // Long trap
             match instr.get_addr_mode()? {
+                AddressingMode::Indirect if CPU_TYPE != M68000 => self.advance_cycles(12)?,
+                _ if CPU_TYPE != M68000 => self.advance_cycles(14)?,
                 AddressingMode::Indirect => self.advance_cycles(8)?,
                 _ => self.advance_cycles(10)?,
             }
@@ -3466,7 +3533,7 @@ where
         let dir_mem_to_reg = (ext_word & 0x0800) == 0;
 
         if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
+            self.exception_idle(1, 4)?;
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
         }
 
@@ -4388,8 +4455,12 @@ where
         let divisor = self.read_ea::<Long>(instr, instr.get_op2())? as u64;
 
         if divisor == 0 {
-            // Division by zero
-            self.advance_cycles(8)?;
+            // Division by zero. The manuals have no time for this on the 68020/68030;
+            // take that of TRAPV, which stacks the same frame.
+            if CPU_TYPE == M68000 {
+                self.advance_cycles(8)?;
+            }
+            self.exception_idle(3, 6)?;
             self.regs.sr.set_n(false);
             self.regs.sr.set_c(false);
             self.regs.sr.set_z(false);
