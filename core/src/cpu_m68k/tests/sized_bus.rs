@@ -134,8 +134,13 @@ fn bitfield_operand_cycles() {
     assert_eq!(three.cycles, long.cycles);
 
     // On a byte port, a 1-byte field takes 1 read and 1 write cycle
-    // instead of 4 + 4
+    // instead of 4 + 4. Counted as bus cycles (one byte each on this
+    // port), not clocks: the last write overlaps the internal clocks that
+    // follow it, and a longer write hides more of them.
     let long = bfins(1, DATA, 0, 32);
     let one = bfins(1, DATA, 6, 2);
-    assert_eq!(one.cycles + 6 * 3, long.cycles);
+    assert_eq!(data_accesses(&long, Access::Read).len(), 4);
+    assert_eq!(data_accesses(&long, Access::Write).len(), 4);
+    assert_eq!(data_accesses(&one, Access::Read).len(), 1);
+    assert_eq!(data_accesses(&one, Access::Write).len(), 1);
 }
