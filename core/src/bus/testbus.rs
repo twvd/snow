@@ -37,6 +37,8 @@ pub struct Testbus<TA: PrimInt + WrappingAdd + Hash + Debug, TD: PrimInt, C> {
     trace_enabled: bool,
     mask: TA,
     pub irq_level: Option<u8>,
+    /// Bus cycle from which irq_level is requested
+    pub irq_from: Ticks,
     _cpu: PhantomData<C>,
     /// Port widths for sized accesses, the CPU's data bus width elsewhere
     pub port_widths: Vec<(RangeInclusive<Address>, u32)>,
@@ -58,6 +60,7 @@ where
             trace_enabled: false,
             mask,
             irq_level: None,
+            irq_from: 0,
             _cpu: PhantomData,
             port_widths: vec![],
             bus_errors: vec![],
@@ -175,7 +178,11 @@ where
     TD: PrimInt,
 {
     fn get_irq(&mut self) -> Option<u8> {
-        self.irq_level
+        if self.bus_cycles >= self.irq_from {
+            self.irq_level
+        } else {
+            None
+        }
     }
 }
 
