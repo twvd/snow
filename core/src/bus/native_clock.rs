@@ -88,7 +88,8 @@ impl ClockScaler {
         (advanced.minus_out_ticks(out_ticks), out_ticks)
     }
 
-    /// Return the number of input ticks that have elapsed, rounded down
+    /// Return the number of input ticks since the last output tick, rounded
+    /// down, once the output ticks have been subtracted
     fn in_ticks(&self) -> Ticks {
         self.n / self.out_freq
     }
@@ -259,17 +260,16 @@ impl<const C16M: bool> NativeClock<C16M> {
                     .minus_out_ticks(limit);
                 (limit, needed)
             } else {
-                let (next_native_clockgen, native) =
-                    self.native_clockgen.advance_and_wrap(cpu_ticks);
-                self.native_clockgen = next_native_clockgen;
+                let native;
+                (self.native_clockgen, native) = self.native_clockgen.advance_and_wrap(cpu_ticks);
                 (native, cpu_ticks)
             }
         };
 
         self.native_ticks += native;
         let per_via = if self.scaled_c16m() {
-            let (next_c16m_clockgen, c16m) = self.c16m_clockgen.advance_and_wrap(cpu_used);
-            self.c16m_clockgen = next_c16m_clockgen;
+            let c16m;
+            (self.c16m_clockgen, c16m) = self.c16m_clockgen.advance_and_wrap(cpu_used);
             self.c16m_ticks += c16m;
             self.since_via += c16m;
             C16M_PER_VIA
@@ -349,12 +349,15 @@ impl<const C16M: bool> NativeClock<C16M> {
         phase: Ticks,
         cycle: Ticks,
     ) -> DeviceCycle {
-        let (after_pending, ticks_done) = clockgen.advance_and_wrap(acc.pending);
+        // The clock after acc.pending CPU ticks: the ticks done, and
+        // `partial_tick`, the progress into the following tick
+        let (partial_tick, ticks_done) = clockgen.advance_and_wrap(acc.pending);
         let since_start = (phase + ticks_done) % period;
-        let on_start = since_start == 0 && after_pending.in_ticks() < 1;
+        // On the start of the period if less than one CPU tick into it
+        let on_start = since_start == 0 && partial_tick.in_ticks() < 1;
         if on_start && acc.pending == 0 {
             return DeviceCycle::Access(
-                after_pending
+                partial_tick
                     .in_ticks_until_out_ticks(cycle)
                     .saturating_sub(C::CYCLE),
             );
@@ -363,7 +366,7 @@ impl<const C16M: bool> NativeClock<C16M> {
             // Only to let the clock catch up with the CPU
             return DeviceCycle::Stall(0);
         }
-        DeviceCycle::Stall(after_pending.in_ticks_until_out_ticks(period - since_start))
+        DeviceCycle::Stall(partial_tick.in_ticks_until_out_ticks(period - since_start))
     }
 }
 
