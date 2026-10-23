@@ -12,7 +12,7 @@ use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::macii::via2::Via2;
 use crate::mac::quadra::dafb::Dafb;
 use crate::mac::rtc::Rtc;
-use crate::mac::scc::{RTXC_FREQUENCY, Scc};
+use crate::mac::scc::Scc;
 use crate::mac::scsi::esp::Esp;
 use crate::mac::sound::easc::Easc;
 use crate::mac::swim::Swim;
@@ -45,8 +45,15 @@ const BUS_FREQUENCY: Ticks = 25_000_000;
 /// 2 on.
 const IO_BUS_WAITS: Ticks = 6;
 
-/// SCC serial controller clock (PCLK)
-pub const SCC_CLOCK: Ticks = 3_672_000;
+/// Extra wait states, in C16M ticks, of an SCC access, for PCLK. PCLK is
+/// 8.336 MHz, asynchronous to C16M: ideally NativeClock would produce it too,
+/// to synchronise the access with it, as device16_sync() does with C16M. For
+/// now the access is stretched by about two PCLK cycles. Not measured.
+const SCC_PCLK_WAITS: Ticks = 4;
+
+/// Clock of the RTxCA and RTxCB pins of the SCC, 3.6864 MHz, which the baud
+/// rate generators run from
+const SCC_RTXC_FREQUENCY: Ticks = 3_686_400;
 
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
@@ -203,7 +210,7 @@ where
             via2: Self::new_via2(model),
             aux_irq_mode: false,
             soft_irq: false,
-            scc: Scc::new(RTXC_FREQUENCY),
+            scc: Scc::new(SCC_RTXC_FREQUENCY),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), C16M_FREQUENCY),
             // MODE pins strapped for a 16-bit DMA bus (schematic 050-8020)
             scsi: Esp::new(true),
@@ -474,14 +481,16 @@ where
         match acc.addr & Self::IO_MASK {
             // VIA 1 and VIA 2
             0x0000_0000..=0x0000_3FFF => self.via_cycle(acc),
-            // Ethernet controller, SCC
-            0x0000_8000..=0x0000_DFFF => self.io_bus_cycle(acc, false),
+            // Ethernet controller
+            0x0000_8000..=0x0000_BFFF => self.io_bus_cycle(acc, 0, false),
+            // SCC
+            0x0000_C000..=0x0000_DFFF => self.io_bus_cycle(acc, SCC_PCLK_WAITS, false),
             // 53C96 pseudo-DMA, through the DAFB
             0x0000_F100..=0x0000_F1FF => self.scsi_dma_cycle(acc),
             // EASC
-            0x0001_4000..=0x0001_5FFF => self.io_bus_cycle(acc, false),
+            0x0001_4000..=0x0001_5FFF => self.io_bus_cycle(acc, 0, false),
             // SWIM
-            0x0001_E000..=0x0001_FFFF => self.io_bus_cycle(acc, true),
+            0x0001_E000..=0x0001_FFFF => self.io_bus_cycle(acc, 0, true),
             // MCU, 53C96
             _ => match self.native_clock.device_sync(&acc) {
                 DeviceCycle::Stall(n) => BusResponse::Stall(n),
@@ -505,9 +514,10 @@ where
 
     /// An access to a device on the I/O bus: it starts on a C16M tick and
     /// lasts a bus cycle in C16M ticks, plus the IO_BUS_WAITS of the
-    /// Relayer. When overclocking, the SWIM accesses are also held as far
-    /// apart as Swim::hold16() needs.
-    fn io_bus_cycle(&mut self, acc: BusAccess<Bus68040>, swim: bool) -> BusResponse {
+    /// Relayer and the device's own `waits`, in C16M ticks. When
+    /// overclocking, the SWIM accesses are also held as far apart as
+    /// Swim::hold16() needs.
+    fn io_bus_cycle(&mut self, acc: BusAccess<Bus68040>, waits: Ticks, swim: bool) -> BusResponse {
         let w = match self.native_clock.device16_sync(&acc) {
             DeviceCycle::Stall(n) => return BusResponse::Stall(n),
             DeviceCycle::Access(w) => w,
@@ -517,7 +527,9 @@ where
         } else {
             0
         };
-        let w = self.native_clock.scale_dev16_waits(w, IO_BUS_WAITS + hold);
+        let w = self
+            .native_clock
+            .scale_dev16_waits(w, IO_BUS_WAITS + waits + hold);
         bus_access_long(acc, w, self, Self::io_read, Self::io_write)
     }
 
@@ -762,7 +774,7 @@ where
         self.via1.adb = adb;
         self.via1.rtc = rtc;
 
-        self.scc = Scc::new(RTXC_FREQUENCY);
+        self.scc = Scc::new(SCC_RTXC_FREQUENCY);
         self.via2 = Self::new_via2(self.model);
         self.dafb.reset();
         self.asc.reset();
