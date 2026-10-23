@@ -41,7 +41,8 @@ pub struct Step {
     pub cpu_used: Ticks,
 }
 
-/// Helper struct used to scale a clock from input frequency to an output frequency.
+/// Helper struct used to scale a clock from an input frequency to an output
+/// frequency.
 ///
 /// Rational arithmetic is used to avoid errors.
 #[derive(Copy, Clone, Serialize, Deserialize)]
@@ -65,23 +66,41 @@ impl ClockScaler {
         }
     }
 
-    fn plus_in_ticks(&self, in_ticks: Ticks) -> Self {
+    fn plus_in_ticks(self, in_ticks: Ticks) -> Self {
         Self {
             n: self.n + in_ticks * self.out_freq,
-            ..*self
+            ..self
         }
     }
 
-    fn minus_out_ticks(&self, out_ticks: Ticks) -> Self {
+    fn minus_out_ticks(self, out_ticks: Ticks) -> Self {
         Self {
             n: self.n - out_ticks * self.in_freq,
-            ..*self
+            ..self
         }
+    }
+
+    /// Return a new scaler advanced by the given input ticks, then wrapped
+    /// around to the next output tick. Returns (wrapped scaler, output ticks).
+    fn advance_and_wrap(self, in_ticks: Ticks) -> (Self, Ticks) {
+        let advanced = self.plus_in_ticks(in_ticks);
+        let out_ticks = advanced.out_ticks();
+        (advanced.minus_out_ticks(out_ticks), out_ticks)
+    }
+
+    /// Return the number of input ticks that have elapsed, rounded down
+    fn in_ticks(&self) -> Ticks {
+        self.n / self.out_freq
     }
 
     /// Return the number of output ticks that have elapsed, rounded down
     fn out_ticks(&self) -> Ticks {
         self.n / self.in_freq
+    }
+
+    /// Return the number of output ticks that have elapsed, rounded up
+    fn out_ticks_rounded_up(&self) -> Ticks {
+        self.n.div_ceil(self.in_freq)
     }
 
     /// Return the number of input ticks needed until a given number of output ticks
@@ -113,9 +132,9 @@ pub struct NativeClock<const C16M: bool = true> {
     cpu_freq: Ticks,
     /// Native ticks per VIA tick, when C16M is not scaled
     native_per_via: Ticks,
-    /// The value `n` in the CPU-to-native clock downscaler
+    /// The CPU-to-native clock downscaler
     native_clockgen: ClockScaler,
-    /// The value `n` in the CPU-to-C16M clock downscaler, when C16M is scaled
+    /// The CPU-to-C16M clock downscaler, when C16M is scaled
     c16m_clockgen: ClockScaler,
     /// Ticks since the last VIA tick: C16M ticks when C16M is scaled, native
     /// ticks otherwise
@@ -217,8 +236,9 @@ impl<const C16M: bool> NativeClock<C16M> {
             let cpu = self
                 .c16m_clockgen
                 .in_ticks_until_out_ticks(C16M_PER_VIA - self.since_via);
-            let at_via = self.native_clockgen.plus_in_ticks(cpu);
-            at_via.n.div_ceil(at_via.in_freq)
+            self.native_clockgen
+                .plus_in_ticks(cpu)
+                .out_ticks_rounded_up()
         } else {
             self.native_per_via - self.since_via
         };
@@ -239,18 +259,17 @@ impl<const C16M: bool> NativeClock<C16M> {
                     .minus_out_ticks(limit);
                 (limit, needed)
             } else {
-                self.native_clockgen = self.native_clockgen.plus_in_ticks(cpu_ticks);
-                let native = self.native_clockgen.out_ticks();
-                self.native_clockgen = self.native_clockgen.minus_out_ticks(native);
+                let (next_native_clockgen, native) =
+                    self.native_clockgen.advance_and_wrap(cpu_ticks);
+                self.native_clockgen = next_native_clockgen;
                 (native, cpu_ticks)
             }
         };
 
         self.native_ticks += native;
         let per_via = if self.scaled_c16m() {
-            self.c16m_clockgen = self.c16m_clockgen.plus_in_ticks(cpu_used);
-            let c16m = self.c16m_clockgen.out_ticks();
-            self.c16m_clockgen = self.c16m_clockgen.minus_out_ticks(c16m);
+            let (next_c16m_clockgen, c16m) = self.c16m_clockgen.advance_and_wrap(cpu_used);
+            self.c16m_clockgen = next_c16m_clockgen;
             self.c16m_ticks += c16m;
             self.since_via += c16m;
             C16M_PER_VIA
@@ -330,18 +349,12 @@ impl<const C16M: bool> NativeClock<C16M> {
         phase: Ticks,
         cycle: Ticks,
     ) -> DeviceCycle {
-        // `after_pending` is the value of clockgen after acc.pending CPU ticks have passed.
-        let after_pending = clockgen.plus_in_ticks(acc.pending);
-        // `ticks_done` is the number of ticks represented by `after_pending`.
-        let ticks_done = after_pending.out_ticks();
-        // `partial_tick` is the progress of `after_pending` into the following tick.
-        let partial_tick = after_pending.minus_out_ticks(ticks_done);
+        let (after_pending, ticks_done) = clockgen.advance_and_wrap(acc.pending);
         let since_start = (phase + ticks_done) % period;
-        // `on_start` is true if the phase is 0 and `partial_tick` is less than one CPU tick.
-        let on_start = since_start == 0 && partial_tick.n < clockgen.out_freq;
+        let on_start = since_start == 0 && after_pending.in_ticks() < 1;
         if on_start && acc.pending == 0 {
             return DeviceCycle::Access(
-                partial_tick
+                after_pending
                     .in_ticks_until_out_ticks(cycle)
                     .saturating_sub(C::CYCLE),
             );
@@ -350,7 +363,7 @@ impl<const C16M: bool> NativeClock<C16M> {
             // Only to let the clock catch up with the CPU
             return DeviceCycle::Stall(0);
         }
-        DeviceCycle::Stall(partial_tick.in_ticks_until_out_ticks(period - since_start))
+        DeviceCycle::Stall(after_pending.in_ticks_until_out_ticks(period - since_start))
     }
 }
 
