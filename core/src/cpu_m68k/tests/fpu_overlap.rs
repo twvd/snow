@@ -3,7 +3,7 @@
 use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
-use crate::cpu_m68k::{CpuM68020Fpu, M68020_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68020Fpu, CpuM68030Fpu, M68020_ADDRESS_MASK, M68030_ADDRESS_MASK};
 use crate::types::Word;
 
 type TestCpu = CpuM68020Fpu<Testbus<Address, u8, Bus68020>>;
@@ -79,4 +79,35 @@ fn test_interrupt_while_busy() {
         | (Address::from(cpu.bus.mem[&(0x800 - 4)]) << 8)
         | Address::from(cpu.bus.mem[&(0x800 - 3)]);
     assert_eq!(stacked_pc, INITIAL_PC + 6);
+}
+
+#[test]
+fn test_68882_head() {
+    type TestCpu030 = CpuM68030Fpu<Testbus<Address, u8, Bus68020>>;
+
+    let mut cpu = TestCpu030::new(Testbus::new(M68030_ADDRESS_MASK));
+    #[rustfmt::skip]
+    let code: &[Word] = &[
+        0xF200, 0x0422, // FADD.X FP1,FP0
+        0xF200, 0x0422, // FADD.X FP1,FP0
+        0x4E71, 0x4E71, // NOP, NOP
+    ];
+    for (i, &word) in code.iter().enumerate() {
+        let addr = INITIAL_PC + i as Address * 2;
+        cpu.bus.mem.insert(addr, (word >> 8) as u8);
+        cpu.bus.mem.insert(addr + 1, word as u8);
+    }
+    cpu.regs.isp = 0x800;
+    cpu.regs.sr.set_supervisor(true);
+    cpu.regs.sr.set_int_prio_mask(7);
+    cpu.set_pc(INITIAL_PC).unwrap();
+    cpu.prefetch_refill().unwrap();
+
+    // The second FADD starts its head of 17 clocks before the first ends
+    cpu.step().unwrap();
+    let first_end = cpu.fpu_free_at;
+    cpu.step().unwrap();
+    // FADD FPn on the 68882: 56 clocks, after the prefetch bus cycle (3 clocks,
+    // the cache is off) that takes its extension word
+    assert_eq!(cpu.fpu_free_at, first_end - 17 + 3 + 56);
 }
