@@ -157,6 +157,8 @@ where
         ticks: &mut Ticks,
     ) -> Result<(Long, u32)> {
         let write = wdata.is_some();
+        // The bus controller finishes the last write first
+        self.write_credit = 0;
         let paddr = if PHYSICAL || !PMMU {
             laddr
         } else {
@@ -385,7 +387,9 @@ where
                 Err(e) => return Err(e),
             }
         }
-        self.advance_cycles(ticks)
+        self.advance_cycles(ticks)?;
+        self.write_credit = ticks;
+        Ok(())
     }
 
     /// Writes the low `len` bytes (1-4) of `value` as a data operand and
