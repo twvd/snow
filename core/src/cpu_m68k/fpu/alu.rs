@@ -290,7 +290,7 @@ where
 
     /// Returns the execution times of an arithmetic operation, which are those of the
     /// 68881 (`m68881`) or, on a 68882, those of Table 8-3 of the MC68881/MC68882
-    /// user's manual. The overlap of the 68882 with the CPU is not modelled.
+    /// user's manual.
     fn fpu_cycles(opmode: u8, m68881: [Ticks; FPU_CYCLES_LEN]) -> [Ticks; FPU_CYCLES_LEN] {
         if FPU_TYPE != FPU_M68882 {
             return m68881;

@@ -39,6 +39,28 @@ impl<
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
+    /// Spends the time of an arithmetic operation, `total` from the `fmt` column of
+    /// the timing tables, less `less`. The CPU only waits for the transfer of the
+    /// operation, and the FPU runs the rest on its own, until the next FPU instruction
+    /// (MC68881/MC68882UM 5.1.1.1, 8.6). The time the CPU waits for is the total less
+    /// the allowed overlap: the numbers of Table 8-25 on the 68881, and the total less
+    /// the T column of Table 8-3 on the 68882, the same for every operation.
+    ///
+    /// The 68882 can also start the next arithmetic operation during the tail of this
+    /// one (H column of Table 8-3). That is not modelled: the next FPU instruction
+    /// waits for the end of this one, as on the 68881.
+    fn fpu_arith_cycles(&mut self, total: Ticks, fmt: usize, less: Ticks) -> Result<()> {
+        let cpu: Ticks = match FPU_TYPE {
+            FPU_M68882 => [21, 40, 31, 37, 43, 82],
+            _ => [3, 22, 22, 28, 34, 34],
+        }[fmt];
+        let total = total - less;
+        let cpu = cpu.saturating_sub(less).min(total);
+        self.advance_cycles(cpu)?;
+        self.fpu_free_at = self.cycles + total - cpu;
+        Ok(())
+    }
+
     /// FNOP
     pub(in crate::cpu_m68k) fn op_fnop(&mut self, _instr: &Instruction) -> Result<()> {
         // Fetch second word (0000)
@@ -120,7 +142,7 @@ where
 
                 let (result, cycles) = self.fpu_alu_op(opmode, &src, &dest)?;
                 self.regs.fpu.fp[extword.dst_reg()] = result;
-                self.advance_cycles(cycles[FPU_CYCLES_FPN])?;
+                self.fpu_arith_cycles(cycles[FPU_CYCLES_FPN], FPU_CYCLES_FPN, 0)?;
             }
             0b100 => {
                 // From EA to control reg
@@ -305,11 +327,12 @@ where
 
                 // Table 8-2: "If the source or destination is an MPU data register,
                 // subtract five or two clock cycles, respectively."
-                if instr.get_addr_mode()? == AddressingMode::DataRegister {
-                    self.advance_cycles(cycles[cycle_idx] - 5)?;
+                let less = if instr.get_addr_mode()? == AddressingMode::DataRegister {
+                    5
                 } else {
-                    self.advance_cycles(cycles[cycle_idx])?;
-                }
+                    0
+                };
+                self.fpu_arith_cycles(cycles[cycle_idx], cycle_idx, less)?;
             }
             0b011 if instr.get_addr_mode()? != AddressingMode::DataRegister => {
                 // Register to EA

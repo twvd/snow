@@ -16,7 +16,7 @@ use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
 use crate::cpu_m68k::pmmu::translate::atc_generation_default;
 use crate::cpu_m68k::regs::RegisterCACR;
-use crate::cpu_m68k::{M68000_SR_MASK, M68020_CACR_MASK, M68030, M68030_CACR_MASK};
+use crate::cpu_m68k::{FPU_NONE, M68000_SR_MASK, M68020_CACR_MASK, M68030, M68030_CACR_MASK};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
 
@@ -318,6 +318,9 @@ pub struct CpuM68k<
     /// finishes the write (MC68020UM 8.1.4, MC68030UM 11.1)
     pub(in crate::cpu_m68k) write_credit: Ticks,
 
+    /// Time at which the FPU finishes the arithmetic operation it runs on its own
+    pub(in crate::cpu_m68k) fpu_free_at: Ticks,
+
     /// Time of last bus sync in cycles
     pub last_bus_sync: Ticks,
 
@@ -421,6 +424,7 @@ where
             regs: RegisterFile::new(),
             cycles: 0,
             write_credit: 0,
+            fpu_free_at: 0,
             last_bus_sync: 0,
             prefetch: VecDeque::with_capacity(3),
             step_ea_addr: None,
@@ -463,6 +467,8 @@ where
 
         self.cycles = 0;
         self.last_bus_sync = 0;
+        self.write_credit = 0;
+        self.fpu_free_at = 0;
         let init_ssp = self.read_ticks(VECTOR_SP)?;
         let init_pc = self.read_ticks(VECTOR_RESET)?;
 
@@ -760,7 +766,12 @@ where
             // coprocessor, which its idle clocks stand for
             self.write_credit = 0;
         }
-        let execute_result = self.execute_instruction(&instr);
+        let execute_result =
+            if FPU_TYPE != FPU_NONE && instr.data & 0xFE00 == 0xF200 && !self.fpu_wait()? {
+                Ok(())
+            } else {
+                self.execute_instruction(&instr)
+            };
 
         // Write history entry
         // This is done here already in case the instruction caused an
@@ -947,6 +958,31 @@ where
         self.cycles += ticks;
         self.bus.cpu_tick(ticks)?;
         Ok(())
+    }
+
+    /// Waits for the FPU to finish the arithmetic operation it runs on its own,
+    /// before an FPU instruction. An interrupt that comes first is taken before
+    /// the instruction, which starts again after it, as the CPU does when the
+    /// FPU answers busy (MC68020UM 7.4.3). Returns false in that case.
+    fn fpu_wait(&mut self) -> Result<bool> {
+        // About one read of the response CIR between the interrupt checks
+        const POLL: Ticks = 4;
+
+        while self.cycles < self.fpu_free_at {
+            let pending = match self.bus.get_irq() {
+                Some(7) => !self.in_nmi,
+                Some(level) => level > self.regs.sr.int_prio_mask(),
+                None => false,
+            };
+            if pending {
+                self.step_inhibit_trace = true;
+                self.set_pc(self.step_start_pc)?;
+                return Ok(false);
+            }
+            self.advance_cycles((self.fpu_free_at - self.cycles).min(POLL))?;
+            self.sync_bus()?;
+        }
+        Ok(true)
     }
 
     /// Sets the program counter and flushes the prefetch queue
