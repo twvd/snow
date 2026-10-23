@@ -9,6 +9,7 @@ use crate::cpu_m68k::bus::FC_MASK;
 use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_PRIVILEGE_VIOLATION};
 use crate::cpu_m68k::instruction::Instruction;
 use crate::cpu_m68k::pmmu::instruction::{Pmove3Extword, PtestExtword};
+use crate::tickable::Ticks;
 use crate::types::{DoubleLong, Long, Word};
 
 use super::instruction::Pmove1Extword;
@@ -24,6 +25,25 @@ impl<
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
+    /// Spends the idle cycles of an MMU instruction on the 68851 (`c68851`) or the
+    /// 68030 (`c68030`). These are the times of MC68851UM 11.3.2, less 3 cycles for
+    /// each prefetch and operand bus cycle (the coprocessor interface cycles are not
+    /// modelled), and those of MC68030UM 11.7.2 in the cache case, less the
+    /// instruction words and the operand bus cycles.
+    pub(super) fn pmmu_idle(&mut self, c68851: Ticks, c68030: Ticks) -> Result<()> {
+        if CPU_TYPE >= M68030 {
+            self.advance_cycles(c68030)
+        } else {
+            self.advance_cycles(c68851)
+        }
+    }
+
+    /// Tells whether the function code field of PFLUSH, PLOAD and PTEST takes the
+    /// function code from SFC or DFC, which the 68030 is slower for
+    fn pmmu_fc_from_reg(extword: Word) -> bool {
+        extword & 0b11110 == 0
+    }
+
     pub(in crate::cpu_m68k) fn op_pop_000(&mut self, instr: &Instruction) -> Result<()> {
         if !PMMU {
             return self.op_linef(instr);
@@ -38,12 +58,22 @@ where
         } else if extword & 0b1110_0011_0000_0000 == 0b0010_0000_0000_0000 {
             // PFLUSH
             self.pmmu_cache_invalidate();
+            let fc_reg = Self::pmmu_fc_from_reg(extword);
+            match (extword >> 10) & 0b111 {
+                // PFLUSHA
+                0b001 => self.pmmu_idle(34, 8)?,
+                // PFLUSH (fc),#mask,<ea>
+                0b110 | 0b111 => self.pmmu_idle(102, if fc_reg { 16 } else { 12 })?,
+                // PFLUSH (fc),#mask
+                _ => self.pmmu_idle(70, if fc_reg { 16 } else { 12 })?,
+            }
             Ok(())
         } else if extword == 0b1010_0000_0000_0000 {
             // PFLUSHR
             // TODO specific flush
             self.read_ea_sz::<8>(instr, instr.get_op2())?;
             self.pmmu_cache_invalidate();
+            self.pmmu_idle(74, 0)?;
             Ok(())
         } else if extword & 0b1110_0000_1111_1111 == 0b0100_0000_0000_0000 && CPU_TYPE >= M68030 {
             // PMOVE 68030 version
@@ -64,6 +94,7 @@ where
             if extword.write() {
                 // Register to EA
                 self.write_ea::<Long>(instr, instr.get_op2(), self.regs.pmmu.tt[tt_idx].0)?;
+                self.advance_cycles(2)?;
             } else {
                 // EA to register
                 let val = self.read_ea::<Long>(instr, instr.get_op2())?;
@@ -71,6 +102,7 @@ where
                 // TT changes can shadow or expose previously-cached translations.
                 self.pmmu_cache_ensure();
                 self.pmmu_cache_invalidate();
+                self.advance_cycles(6)?;
             }
             Ok(())
         } else if extword & 0b1110_0001_1111_1111 == 0b0100_0000_0000_0000 {
@@ -193,6 +225,17 @@ where
             _ => unreachable!(),
         }
 
+        match (extword.preg(), extword.write()) {
+            // TC
+            (0b000, false) => self.pmmu_idle(146, 0)?,
+            // DRP, SRP, CRP
+            (0b001..=0b011, false) => self.pmmu_idle(96, 0)?,
+            (0b001..=0b011, true) => self.pmmu_idle(72, 0)?,
+            // CAL, VAL, SCC, AC
+            (_, false) => self.pmmu_idle(48, 0)?,
+            (_, true) => self.pmmu_idle(61, 0)?,
+        }
+
         Ok(())
     }
 
@@ -222,6 +265,11 @@ where
                 self.regs.pmmu.pcsr.0 = self.read_ea(instr, instr.get_op2())?;
             }
             _ => bail!("PMOVE3 invalid Preg: {}", extword.preg()),
+        }
+        if extword.write() {
+            self.pmmu_idle(61, 0)?;
+        } else {
+            self.pmmu_idle(48, 0)?;
         }
 
         Ok(())
@@ -278,6 +326,15 @@ where
             _ => bail!("PMOVE 68030 invalid Preg: {}", extword.preg()),
         }
 
+        match (extword.preg(), extword.write()) {
+            // TC, with translation enabled or not
+            (0b000, false) if self.regs.pmmu.tc.enable() => self.advance_cycles(32)?,
+            (0b000, false) => self.advance_cycles(8)?,
+            // SRP, CRP
+            (_, false) => self.advance_cycles(4)?,
+            (_, true) => (),
+        }
+
         if !extword.fd() {
             self.pmmu_cache_invalidate();
         }
@@ -293,17 +350,24 @@ where
         let extword = PtestExtword(extword);
 
         let fc = self.decode_pmmu_fc(extword.fc(), "PTEST")?;
+        if extword.a_set() {
+            self.pmmu_idle(130, 18)?;
+        } else {
+            self.pmmu_idle(104, 18)?;
+        }
 
         let vaddr = self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-        let result = self.pmmu_translate_lookup::<true>(fc, vaddr, !extword.read());
-        match result {
-            Ok(_) => {
-                if extword.a_set() {
-                    self.regs.write_a(extword.an(), self.regs.pmmu.last_desc);
-                }
-            }
-            // PTEST never raises: PSR reflects what happened.
-            Err(_) => (),
+
+        // Level 0 searches the ATC only, the others the tables down to that level
+        if extword.level() == 0 {
+            self.pmmu_ptest_atc(fc, vaddr, !extword.read());
+            return Ok(());
+        }
+        // PTEST never raises: PSR reflects what happened.
+        let _ = self.pmmu_translate_lookup::<true>(fc, vaddr, !extword.read(), extword.level());
+        // An gets the last descriptor fetched, even when the search fails
+        if extword.a_set() {
+            self.regs.write_a(extword.an(), self.regs.pmmu.last_desc);
         }
         Ok(())
     }
@@ -323,11 +387,22 @@ where
         let extword = PtestExtword(extword);
 
         let fc = self.decode_pmmu_fc(extword.fc(), "PLOAD")?;
+        self.pmmu_idle(
+            94,
+            if Self::pmmu_fc_from_reg(extword.0) {
+                8
+            } else {
+                4
+            },
+        )?;
         let vaddr = self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
         let writing = !extword.read();
 
         // PLOAD does not affect PSR. The walk inside pmmu_translate may modify PSR
         let saved_psr = self.regs.pmmu.psr;
+        // PLOAD always searches the tables, so drop the entry that the ATC may
+        // have first (MC68030UM 9.8, MC68851UM 6.2)
+        self.pmmu_atc_flush_entry(fc, vaddr);
         // Ignore failures during the walk
         let _ = self.pmmu_translate(fc, vaddr, writing);
         self.regs.pmmu.psr = saved_psr;

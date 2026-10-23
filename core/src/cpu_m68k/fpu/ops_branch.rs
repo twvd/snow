@@ -5,7 +5,7 @@ use crate::bus::{Address, Bus, IrqSource};
 
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_TRAPV};
-use crate::cpu_m68k::instruction::Instruction;
+use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
 use crate::types::{Byte, Word};
 
 impl<
@@ -82,7 +82,8 @@ where
             lsb as i16 as i32 - 2
         };
 
-        self.advance_cycles(2)?; // idle
+        // Idle cycles (MC68881/MC68882UM Table 8-7: 20 taken, 18 not taken)
+        self.advance_cycles(if L { 12 } else { 14 })?;
 
         let (test, bsun) = self.fcc(instr.get_fcc())?;
         self.regs.fpu.fpsr.exs_mut().set_bsun(bsun);
@@ -99,8 +100,6 @@ where
         } else {
             // Branch not taken
             self.history_current.branch_taken = Some(false);
-
-            self.advance_cycles(2)?; // idle
         }
         Ok(())
     }
@@ -110,6 +109,16 @@ where
         let cc = usize::from(self.fetch()? & 0b111111);
         let (test, bsun) = self.fcc(cc)?;
         self.regs.fpu.fpsr.exs_mut().set_bsun(bsun);
+
+        // Idle cycles (MC68881/MC68882UM Table 8-7: 18 for Dn, 20 for memory and
+        // 22 for (An)+ and -(An), 1 less if the condition is false)
+        match instr.get_addr_mode()? {
+            AddressingMode::DataRegister => self.advance_cycles(14)?,
+            AddressingMode::IndirectPostInc | AddressingMode::IndirectPreDec => {
+                self.advance_cycles(if test { 15 } else { 14 })?;
+            }
+            _ => self.advance_cycles(13)?,
+        }
 
         self.write_ea::<Byte>(instr, instr.get_op2(), if test { 0xFF } else { 0 })?;
         Ok(())
@@ -132,10 +141,14 @@ where
         }
         self.prefetch_pump()?;
 
+        // Idle cycles (MC68881/MC68882UM Table 8-7: 18 not taken, 39 taken, 2 more
+        // for each operand word)
         if !test {
+            self.advance_cycles(14)?;
             return Ok(());
         }
 
+        self.advance_cycles(16)?;
         self.raise_exception(ExceptionGroup::Group2, VECTOR_TRAPV, None)
     }
 
@@ -144,7 +157,9 @@ where
         let cc = usize::from(self.fetch()? & 0b111111);
         let displacement = self.fetch_pump()? as i16 as i32;
 
-        self.advance_cycles(2)?; // idle
+        // Idle cycles (MC68881/MC68882UM Table 8-7: 20 when the condition is true or
+        // the branch taken, 24 when the count expires)
+        self.advance_cycles(14)?;
 
         let (test, bsun) = self.fcc(cc)?;
         self.regs.fpu.fpsr.exs_mut().set_bsun(bsun);
@@ -172,7 +187,6 @@ where
             }
         } else {
             self.history_current.branch_taken = Some(false);
-            self.advance_cycles(2)?; // idle
         }
 
         Ok(())
