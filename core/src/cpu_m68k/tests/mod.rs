@@ -13,6 +13,7 @@ mod mmu040;
 mod movec;
 mod no_fpu;
 mod pack;
+mod pmmu_68030;
 mod pmmu_atc;
 mod privilege_violation;
 mod privilege_violation_68020;
