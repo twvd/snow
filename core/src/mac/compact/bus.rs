@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use super::audio::AudioState;
 use super::video::Video;
 use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_byte_lane, bus_access_word};
-use crate::bus::native_clock::{DeviceCycle, NativeClock};
+use crate::bus::native_clock::{C8M_PER_VIA, DeviceCycle, NativeClock};
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -625,7 +625,7 @@ where
     /// VIA tick, the cycle takes a full E period, of 10 native ticks
     /// (MC68000 User's Manual, Appendix B).
     fn vpa_cycle(&mut self, acc: BusAccess<Bus68000>, region: Region) -> BusResponse {
-        let w = match self.native_clock.via_sync(&acc) {
+        let w = match self.native_clock.via_sync(&acc, C8M_PER_VIA) {
             DeviceCycle::Stall(n) => return BusResponse::Stall(n),
             DeviceCycle::Access(w) => w,
         };
