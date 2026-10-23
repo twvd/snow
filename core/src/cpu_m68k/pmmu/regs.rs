@@ -133,6 +133,8 @@ bitfield! {
         pub modified: bool @ 9,
         pub gate: bool @ 8,
         pub globally_shared: bool @ 7,
+        /// Transparent translation (MMUSR of the 68030)
+        pub transparent: bool @ 6,
         pub level_number: u8 @ 0..=2,
     }
 }
