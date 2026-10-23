@@ -360,15 +360,17 @@ where
         }
 
         let vaddr = self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-        let result = self.pmmu_translate_lookup::<true>(fc, vaddr, !extword.read());
-        match result {
-            Ok(_) => {
-                if extword.a_set() {
-                    self.regs.write_a(extword.an(), self.regs.pmmu.last_desc);
-                }
-            }
-            // PTEST never raises: PSR reflects what happened.
-            Err(_) => (),
+
+        // Level 0 searches the ATC only, the others the tables down to that level
+        if extword.level() == 0 {
+            self.pmmu_ptest_atc(fc, vaddr, !extword.read());
+            return Ok(());
+        }
+        // PTEST never raises: PSR reflects what happened.
+        let _ = self.pmmu_translate_lookup::<true>(fc, vaddr, !extword.read(), extword.level());
+        // An gets the last descriptor fetched, even when the search fails
+        if extword.a_set() {
+            self.regs.write_a(extword.an(), self.regs.pmmu.last_desc);
         }
         Ok(())
     }

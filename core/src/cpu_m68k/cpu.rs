@@ -123,10 +123,6 @@ fn prefetch_defer_fault(e: anyhow::Error, fetch_addr: Address) -> Result<Prefetc
 pub(in crate::cpu_m68k) enum PagefaultCause {
     /// Descriptor DT was Invalid along the walk
     Invalid,
-    /// Write access to a page whose descriptor (or any ancestor table) has WP set
-    WriteProtected,
-    /// User-mode access to a page whose descriptor has S set
-    SupervisorOnly,
     /// Index into a table violated the limit set by the parent long-format
     /// descriptor (RP or long table descriptor): LU=0 = upper limit, LU=1 = lower.
     LimitViolation,
