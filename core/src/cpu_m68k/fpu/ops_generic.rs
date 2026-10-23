@@ -238,6 +238,13 @@ where
                     }
                     0b111 => {
                         // ROM constant (FMOVECR)
+                        // 10^n rounded once from a wider precision, as the
+                        // squarings in powi() lose bits from 10^64 up
+                        let pow10 = |n| {
+                            Float::from_u64(SEMANTICS_EXTENDED.increase_precision(64), 10)
+                                .powi(n)
+                                .cast(SEMANTICS_EXTENDED)
+                        };
                         self.regs.fpu.fp[fpx] = match extword.movecr_offset() {
                             0x00 => Float::pi(SEMANTICS_EXTENDED),
                             0x0B => Float::from_u64(SEMANTICS_EXTENDED, 2).log10(),
@@ -251,16 +258,16 @@ where
                             0x33 => Float::from_i64(SEMANTICS_EXTENDED, 10),
                             0x34 => Float::from_i64(SEMANTICS_EXTENDED, 100),
                             0x35 => Float::from_i64(SEMANTICS_EXTENDED, 10000),
-                            0x36 => Float::one(SEMANTICS_EXTENDED, false).powi(8),
-                            0x37 => Float::one(SEMANTICS_EXTENDED, false).powi(16),
-                            0x38 => Float::one(SEMANTICS_EXTENDED, false).powi(32),
-                            0x39 => Float::one(SEMANTICS_EXTENDED, false).powi(64),
-                            0x3A => Float::one(SEMANTICS_EXTENDED, false).powi(128),
-                            0x3B => Float::one(SEMANTICS_EXTENDED, false).powi(256),
-                            0x3C => Float::one(SEMANTICS_EXTENDED, false).powi(512),
-                            0x3D => Float::one(SEMANTICS_EXTENDED, false).powi(1024),
-                            0x3E => Float::one(SEMANTICS_EXTENDED, false).powi(2048),
-                            0x3F => Float::one(SEMANTICS_EXTENDED, false).powi(4096),
+                            0x36 => pow10(8),
+                            0x37 => pow10(16),
+                            0x38 => pow10(32),
+                            0x39 => pow10(64),
+                            0x3A => pow10(128),
+                            0x3B => pow10(256),
+                            0x3C => pow10(512),
+                            0x3D => pow10(1024),
+                            0x3E => pow10(2048),
+                            0x3F => pow10(4096),
                             _ => bail!(
                                 "Unimplemented FMOVECR offset ${:02X}",
                                 extword.movecr_offset()
