@@ -313,6 +313,11 @@ pub struct CpuM68k<
     /// Total cycle counter
     pub cycles: Ticks,
 
+    /// Clocks of the last write that the following internal clocks can
+    /// overlap (68020+): the sequencer goes on while the bus controller
+    /// finishes the write (MC68020UM 8.1.4, MC68030UM 11.1)
+    pub(in crate::cpu_m68k) write_credit: Ticks,
+
     /// Time of last bus sync in cycles
     pub last_bus_sync: Ticks,
 
@@ -415,6 +420,7 @@ where
             bus,
             regs: RegisterFile::new(),
             cycles: 0,
+            write_credit: 0,
             last_bus_sync: 0,
             prefetch: VecDeque::with_capacity(3),
             step_ea_addr: None,
@@ -749,6 +755,11 @@ where
         }
 
         let instr = self.decode_cache[opcode as usize].clone().unwrap();
+        if instr.data & 0xF000 == 0xF000 {
+            // A coprocessor instruction starts with a bus cycle to the
+            // coprocessor, which its idle clocks stand for
+            self.write_credit = 0;
+        }
         let execute_result = self.execute_instruction(&instr);
 
         // Write history entry
@@ -928,8 +939,11 @@ where
         }
     }
 
-    /// Advances by the given amount of cycles
+    /// Advances by the given amount of cycles, less what overlaps the last write
     pub(in crate::cpu_m68k) fn advance_cycles(&mut self, ticks: Ticks) -> Result<()> {
+        let overlap = ticks.min(self.write_credit);
+        self.write_credit -= overlap;
+        let ticks = ticks - overlap;
         self.cycles += ticks;
         self.bus.cpu_tick(ticks)?;
         Ok(())
