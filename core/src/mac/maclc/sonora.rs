@@ -31,6 +31,9 @@ pub(super) const ROM_WAITS: Ticks = 3;
 /// Wait states of a video RAM bus cycle, not documented
 pub(super) const VRAM_WAITS: Ticks = 1;
 
+/// C16M ticks into a VIA cycle at which the Sonora releases the CPU
+pub(super) const VIA_RELEASE: Ticks = 13;
+
 /// Native ticks from the start of an SCC cycle to the start of the next one
 pub(super) const SCC_INTERVAL: Ticks = 12;
 /// Native ticks from the start of a SWIM cycle to the start of the next one
