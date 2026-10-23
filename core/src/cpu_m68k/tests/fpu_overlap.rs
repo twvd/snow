@@ -4,6 +4,7 @@ use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::{CpuM68020Fpu, CpuM68030Fpu, M68020_ADDRESS_MASK, M68030_ADDRESS_MASK};
+use crate::tickable::Ticks;
 use crate::types::Word;
 
 type TestCpu = CpuM68020Fpu<Testbus<Address, u8, Bus68020>>;
@@ -148,4 +149,41 @@ fn test_68882_head() {
     // FADD FPn on the 68882: 56 clocks, after the prefetch bus cycle (3 clocks,
     // the cache is off) that takes its extension word
     assert_eq!(cpu.fpu_free_at, first_end - 17 + 3 + 56);
+}
+
+/// Runs FMUL.X FP1,FP0 and then `code` on a 68030 + 68882, and returns the time
+/// at which the second instruction ends
+fn fmove_after_fmul(code: &[Word]) -> Ticks {
+    type TestCpu030 = CpuM68030Fpu<Testbus<Address, u8, Bus68020>>;
+
+    let mut cpu = TestCpu030::new(Testbus::new(M68030_ADDRESS_MASK));
+    let words = [&[0xF200, 0x0423], code, &[0x4E71, 0x4E71]].concat();
+    for (i, &word) in words.iter().enumerate() {
+        let addr = INITIAL_PC + i as Address * 2;
+        cpu.bus.mem.insert(addr, (word >> 8) as u8);
+        cpu.bus.mem.insert(addr + 1, word as u8);
+    }
+    cpu.regs.isp = 0x800;
+    cpu.regs.write_a::<Address>(0, 0x3000);
+    cpu.regs.sr.set_supervisor(true);
+    cpu.regs.sr.set_int_prio_mask(7);
+    cpu.set_pc(INITIAL_PC).unwrap();
+    cpu.prefetch_refill().unwrap();
+
+    cpu.step().unwrap();
+    cpu.step().unwrap();
+    cpu.cycles
+}
+
+#[test]
+fn test_68882_fmove_heads() {
+    // FMOVE.X FP2,FP3: a head of 21 clocks, 10 if it uses the register that the
+    // FMUL writes
+    let free = fmove_after_fmul(&[0xF200, 0x0980]);
+    assert_eq!(fmove_after_fmul(&[0xF200, 0x0800]), free + 21 - 10);
+    assert_eq!(fmove_after_fmul(&[0xF200, 0x0180]), free + 21 - 10);
+
+    // FMOVE.X FP2,(A0): a head of 50 clocks, none if FP0 is the source
+    let free = fmove_after_fmul(&[0xF210, 0x6900]);
+    assert_eq!(fmove_after_fmul(&[0xF210, 0x6800]), free + 50);
 }
