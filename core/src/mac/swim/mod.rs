@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use snow_floppy::flux::FluxTicks;
 use snow_floppy::{Floppy, FloppyImage};
 
-use crate::bus::native_clock::NativeClock;
+use crate::bus::native_clock::{C16M_FREQUENCY, NativeClock};
 use crate::bus::{Address, BusMember};
 use crate::debuggable::Debuggable;
 use crate::mac::swim::ism::IsmFifoEntry;
@@ -143,7 +143,8 @@ pub struct Swim {
     bit_cycles: Ticks,
     mode: SwimMode,
 
-    /// Native time of the last access by an overclocked CPU, after its hold
+    /// Time of the last access by an overclocked CPU, after its hold, in ticks
+    /// of the base frequency (native or C16M ticks)
     last_access: Ticks,
 
     pub ca0: bool,
@@ -313,9 +314,21 @@ impl Swim {
             return 0;
         }
         // After device_sync(), the clock is up to date when overclocking
-        let now = clock.native_ticks();
-        let interval =
-            (clock.native_frequency() * OVERCLOCK_ACCESS_INTERVAL_NS).div_ceil(1_000_000_000);
+        self.hold_at(clock.native_ticks(), clock.native_frequency())
+    }
+
+    /// The same as hold(), for a SWIM clocked by C16M: C16M ticks an access
+    /// is held for, called after device16_sync()
+    pub fn hold16(&mut self, clock: &NativeClock) -> Ticks {
+        if !clock.is_overclocking() {
+            return 0;
+        }
+        // After device16_sync(), the clock is up to date
+        self.hold_at(clock.c16m_ticks(), C16M_FREQUENCY)
+    }
+
+    fn hold_at(&mut self, now: Ticks, frequency: Ticks) -> Ticks {
+        let interval = (frequency * OVERCLOCK_ACCESS_INTERVAL_NS).div_ceil(1_000_000_000);
         let hold = (self.last_access + interval).saturating_sub(now);
         self.last_access = now + hold;
         hold
