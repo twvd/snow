@@ -15,6 +15,7 @@ use crate::cpu_m68k::fpu::regs::{FpuRegisterFile, Unimp040};
 use crate::cpu_m68k::fpu::timings::FpuOperand;
 use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
 use crate::cpu_m68k::{CpuM68kType, FPU_M68040, FPU_M68881, FPU_M68882};
+use crate::tickable::Ticks;
 use crate::types::{Byte, Long, Word};
 
 use super::storage::{DOUBLE_SIZE, EXTENDED_SIZE, PACKED_SIZE, SINGLE_SIZE};
@@ -54,6 +55,26 @@ where
         self.prefetch_pump()?;
         self.step_fpu_unimp = true;
         self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEF, None)
+    }
+
+    /// Spends the time of an arithmetic operation of `opmode` on an `operand`,
+    /// less `less`. The CPU only waits for the transfer of the operation, and the
+    /// FPU runs the rest on its own, until the next FPU instruction
+    /// (MC68881/MC68882UM 5.1.1.1, 8.6).
+    ///
+    /// The 68882 can also start the next arithmetic operation during the tail of this
+    /// one (H column of Table 8-3). That is not modelled: the next FPU instruction
+    /// waits for the end of this one, as on the 68881.
+    fn fpu_arith_cycles(&mut self, opmode: u8, operand: FpuOperand, less: Ticks) -> Result<()> {
+        let timings = Self::fpu_timings();
+        let total = timings.alu(opmode, operand).saturating_sub(less);
+        let cpu = match timings.alu_cpu(operand) {
+            Some(cpu) => cpu.saturating_sub(less).min(total),
+            None => total,
+        };
+        self.advance_cycles(cpu)?;
+        self.fpu_free_at = self.cycles + total - cpu;
+        Ok(())
     }
 
     /// FNOP
@@ -179,7 +200,7 @@ where
                     );
                 }
                 self.regs.fpu.fp[extword.dst_reg()] = self.fpu_alu_op(opmode, &src, &dest)?;
-                self.advance_cycles(Self::fpu_timings().alu(opmode, FpuOperand::Fpn))?;
+                self.fpu_arith_cycles(opmode, FpuOperand::Fpn, 0)?;
             }
             0b100 => {
                 // From EA to control reg
@@ -410,13 +431,12 @@ where
                 }
                 self.regs.fpu.fp[fpx] = self.fpu_alu_op(extword.opmode(), &value_in, &dest)?;
 
-                let timings = Self::fpu_timings();
-                let cycles = timings.alu(extword.opmode(), operand);
-                if instr.get_addr_mode()? == AddressingMode::DataRegister {
-                    self.advance_cycles(cycles.saturating_sub(timings.dn_src()))?;
+                let less = if instr.get_addr_mode()? == AddressingMode::DataRegister {
+                    Self::fpu_timings().dn_src()
                 } else {
-                    self.advance_cycles(cycles)?;
-                }
+                    0
+                };
+                self.fpu_arith_cycles(extword.opmode(), operand, less)?;
             }
             0b011 if instr.get_addr_mode()? != AddressingMode::DataRegister => {
                 // Register to EA

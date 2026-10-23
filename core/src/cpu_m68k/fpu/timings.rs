@@ -46,6 +46,10 @@ pub(in crate::cpu_m68k) struct FpuTimings {
     /// ALU operations, indexed by opmode and source operand type
     alu: [AluRow; opmode::COUNT],
 
+    /// Part of an ALU operation the CPU waits for, by source operand type: the
+    /// FPU runs the rest alongside the CPU. None if the overlap isn't modelled.
+    alu_cpu: Option<AluRow>,
+
     /// FMOVE FPn to <ea>, indexed by the destination format field
     store: [Word; 8],
 
@@ -90,6 +94,12 @@ impl FpuTimings {
             _ => opmode::rounded(opmode).map_or(opmode, |(op, _)| op),
         };
         self.alu[usize::from(opmode)][operand as usize].into()
+    }
+
+    /// Part of an ALU operation on the given source operand type that the CPU
+    /// waits for, if the overlap is modelled
+    pub(in crate::cpu_m68k) fn alu_cpu(&self, operand: FpuOperand) -> Option<Ticks> {
+        self.alu_cpu.map(|row| row[operand as usize].into())
     }
 
     /// FMOVE FPn to <ea> with the given destination format
@@ -230,6 +240,9 @@ const MC68881: FpuTimings = FpuTimings {
         (opmode::FTST,    [ 33,  60,  52,  58,  56,  870]),
     ]),
 
+    // Table 8-25: the CPU waits 3 cycles from FPm, 22 to 34 from memory
+    alu_cpu: Some([3, 22, 22, 28, 34, 34]),
+
     // long, single, extended, packed, word, double, byte, packed (dynamic K)
     store: [100, 80, 72, 2002, 100, 86, 100, 2016],
 
@@ -307,6 +320,9 @@ const MC68882: FpuTimings = FpuTimings {
         (opmode::FTST,    [ 36,  66,  49,  55,  61,  891]),
     ]),
 
+    // Table 8-3: the total less the T column
+    alu_cpu: Some([21, 40, 31, 37, 43, 82]),
+
     // long, single, extended, packed, word, double, byte, packed (dynamic K)
     store: [110, 38, 50, 2006, 110, 44, 110, 2020],
 
@@ -363,6 +379,9 @@ const MC68040: FpuTimings = FpuTimings {
         // TODO throw unimplemented F-line with $2 frame and implement
         // 'unimplemented instruction' state frame.
     ]),
+
+    // The overlap of the integer unit and the FPU is not modelled
+    alu_cpu: None,
 
     // long, single, extended, packed, word, double, byte, packed (dynamic K)
     // Packed decimal throws an unsupported data type exception on the MC68040
