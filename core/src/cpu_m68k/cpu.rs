@@ -945,10 +945,12 @@ where
             // coprocessor, which its idle clocks stand for
             self.write_credit = 0;
         }
+        let mut irq_taken = false;
         let execute_result = if FPU_TYPE != FPU_NONE
             && instr.data & 0xFE00 == 0xF200
             && !self.fpu_wait(instr.data)?
         {
+            irq_taken = true;
             Ok(())
         } else {
             // The refill is for the instructions that only set the PC: an
@@ -1084,40 +1086,11 @@ where
         }
 
         // Check pending interrupts
-        // Level 7 is taken on a transition to 7 whatever the mask, and on the
-        // normal comparison below a mask of 7 (MC68000UM 6.3.2, MC68030UM 8.1.9)
-        if irq_exception != Some(7) {
-            self.in_nmi = false;
-        }
-        let irq_exception_masked = match irq_exception {
-            Some(7) => {
-                if !self.in_nmi || self.regs.sr.int_prio_mask() < 7 {
-                    self.in_nmi = true;
-                    7
-                } else {
-                    0
-                }
+        if !irq_taken {
+            let level = self.irq_level(irq_exception);
+            if level != 0 {
+                self.take_irq(level, false)?;
             }
-            Some(level) if level > self.regs.sr.int_prio_mask() => level,
-            _ => 0,
-        };
-        if irq_exception_masked != 0 {
-            let level = irq_exception_masked;
-            if self
-                .breakpoints
-                .contains(&Breakpoint::InterruptLevel(level))
-            {
-                info!(
-                    "Breakpoint hit (interrupt level): {}, PC: ${:08X}",
-                    level, self.regs.pc
-                );
-                self.breakpoint_hit.set();
-            }
-
-            self.raise_irq(
-                level,
-                VECTOR_AUTOVECTOR_OFFSET + (Address::from(level - 1) * 4),
-            )?;
         }
 
         if !self.breakpoints.is_empty() {
@@ -1179,23 +1152,21 @@ where
 
     /// Waits for the FPU to finish the arithmetic operation it runs on its own,
     /// before the FPU instruction `opcode`, less the head of the new operation on
-    /// the 68882. An interrupt that comes first is taken before the instruction,
-    /// which starts again after it, as the CPU does when the FPU answers busy
-    /// (MC68020UM 7.4.3). Returns false in that case.
+    /// the 68882. Meanwhile the FPU answers "come again, interrupts allowed", so an
+    /// interrupt that comes first is taken with a mid-instruction frame
+    /// (MC68881/MC68882UM 5.1.1.2, 6.2.5). Returns false in that case. RTE then
+    /// starts the instruction again, which has not changed anything yet.
     fn fpu_wait(&mut self, opcode: Word) -> Result<bool> {
         // About one read of the response CIR between the interrupt checks
         const POLL: Ticks = 4;
 
         let free_at = self.fpu_free_at.saturating_sub(self.fpu_head(opcode));
         while self.cycles < free_at {
-            let pending = match self.bus.get_irq() {
-                Some(7) => !self.in_nmi,
-                Some(level) => level > self.regs.sr.int_prio_mask(),
-                None => false,
-            };
-            if pending {
+            let irq = self.bus.get_irq();
+            let level = self.irq_level(irq);
+            if level != 0 {
                 self.step_inhibit_trace = true;
-                self.set_pc(self.step_start_pc)?;
+                self.take_irq(level, true)?;
                 return Ok(false);
             }
             self.advance_cycles((free_at - self.cycles).min(POLL))?;
@@ -1264,8 +1235,51 @@ where
         Ok(())
     }
 
+    /// Returns the level of the interrupt to take for the interrupt request `irq`,
+    /// or 0 if there is none to take
+    fn irq_level(&mut self, irq: Option<u8>) -> u8 {
+        // Level 7 is taken on a transition to 7 whatever the mask, and on the
+        // normal comparison below a mask of 7 (MC68000UM 6.3.2, MC68030UM 8.1.9)
+        if irq != Some(7) {
+            self.in_nmi = false;
+        }
+        match irq {
+            Some(7) => {
+                if !self.in_nmi || self.regs.sr.int_prio_mask() < 7 {
+                    self.in_nmi = true;
+                    7
+                } else {
+                    0
+                }
+            }
+            Some(level) if level > self.regs.sr.int_prio_mask() => level,
+            _ => 0,
+        }
+    }
+
+    /// Takes the interrupt of `level`, during the dialog of an FPU instruction if
+    /// `mid_instruction`
+    fn take_irq(&mut self, level: u8, mid_instruction: bool) -> Result<()> {
+        if self
+            .breakpoints
+            .contains(&Breakpoint::InterruptLevel(level))
+        {
+            info!(
+                "Breakpoint hit (interrupt level): {}, PC: ${:08X}",
+                level, self.regs.pc
+            );
+            self.breakpoint_hit.set();
+        }
+
+        self.raise_irq(
+            level,
+            VECTOR_AUTOVECTOR_OFFSET + (Address::from(level - 1) * 4),
+            mid_instruction,
+        )
+    }
+
     /// Raises an IRQ to be executed next
-    fn raise_irq(&mut self, level: u8, vector: Address) -> Result<()> {
+    fn raise_irq(&mut self, level: u8, vector: Address, mid_instruction: bool) -> Result<()> {
         let start_cycles = self.cycles;
         let saved_sr = self.regs.sr.sr();
 
@@ -1297,7 +1311,23 @@ where
                 advance_cycles!(self, m68000: 0, m68020: 7, m68030: 9)?;
 
                 let master = self.regs.sr.m();
-                self.push_irq_frame(saved_sr, 0, vector)?;
+                if mid_instruction {
+                    // The coprocessor mid-instruction frame (format $9) has the
+                    // scanPC, past the command word, and the address of the
+                    // instruction (MC68020UM figure 7-43)
+                    *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(20);
+                    let ssp = *self.regs.ssp();
+                    let scan_pc = self.step_start_pc.wrapping_add(4) & ADDRESS_MASK;
+                    self.write_ticks(ssp.wrapping_add(0), saved_sr)?;
+                    self.write_ticks(ssp.wrapping_add(2), scan_pc)?;
+                    self.write_ticks(ssp.wrapping_add(6), (0b1001 << 12) | (vector as Word))?;
+                    self.write_ticks(ssp.wrapping_add(8), self.step_start_pc)?;
+                    // Internal registers
+                    self.write_ticks(ssp.wrapping_add(0x0C), 0u32)?;
+                    self.write_ticks(ssp.wrapping_add(0x10), 0u32)?;
+                } else {
+                    self.push_irq_frame(saved_sr, 0, vector)?;
+                }
                 if master {
                     // The frame above is on the master stack. A throwaway copy
                     // with S set goes on the interrupt stack, which the handler
@@ -3588,6 +3618,20 @@ where
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
                 *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(12);
                 advance_cycles!(self, m68000: 0, m68020: 5, m68030: 2)?;
+                self.set_sr(sr);
+                self.set_pc(pc)?;
+            }
+            0b1001 if (M68020..=M68030).contains(&CPU_TYPE) => {
+                // Coprocessor mid-instruction: the CPU reads the whole frame and the
+                // FPU instruction starts again from its address
+                let ssp = *self.regs.ssp();
+                let sr = self.read_ticks::<Word>(ssp)?;
+                self.read_ticks::<Long>(ssp.wrapping_add(2))?;
+                let pc = self.read_ticks(ssp.wrapping_add(8))?;
+                self.read_ticks::<Long>(ssp.wrapping_add(0x0C))?;
+                self.read_ticks::<Long>(ssp.wrapping_add(0x10))?;
+                *self.regs.ssp_mut() = ssp.wrapping_add(20);
+                advance_cycles!(self, m68000: 0, m68020: 7, m68030: 8)?;
                 self.set_sr(sr);
                 self.set_pc(pc)?;
             }
