@@ -74,6 +74,13 @@ impl GateArray {
         }
     }
 
+    const fn via_release(&self) -> Ticks {
+        match self {
+            Self::V8 => v8::VIA_RELEASE,
+            Self::Sonora { .. } => sonora::VIA_RELEASE,
+        }
+    }
+
     const fn scc_interval(&self) -> Ticks {
         match self {
             Self::V8 => v8::SCC_INTERVAL,
@@ -619,9 +626,13 @@ where
 
     /// VIA 1 runs at C16M / 20 and its accesses are synchronous with its
     /// clock, as on the Mac II: one starts on a VIA tick and lasts a VIA
-    /// clock cycle.
+    /// clock cycle. The CPU is released near the end of it on the V8, at
+    /// about 0.7 of it on the Sonora (BusTiming on a real LC II and LC III).
     fn via_cycle(&mut self, acc: BusAccess<Bus68020>, offset: Address) -> BusResponse {
-        match self.native_clock.via_sync(&acc) {
+        match self
+            .native_clock
+            .via_sync(&acc, self.gate_array.via_release())
+        {
             DeviceCycle::Stall(n) => BusResponse::Stall(n),
             DeviceCycle::Access(w) => bus_access_byte(
                 acc,

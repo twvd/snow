@@ -6,7 +6,7 @@ use super::pmgr::Pmgr;
 use super::via::Via;
 use super::video::Video;
 use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_byte_lane, bus_access_word};
-use crate::bus::native_clock::{DeviceCycle, NativeClock, WaitTicks};
+use crate::bus::native_clock::{C16M_PER_VIA, DeviceCycle, NativeClock, WaitTicks};
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -385,7 +385,7 @@ where
     /// an access is synchronous with the VIA clock: it starts on a VIA tick
     /// and lasts a VIA clock cycle, as on the Mac II.
     fn via_cycle(&mut self, acc: BusAccess<Bus68000>) -> BusResponse {
-        match self.native_clock.via_sync(&acc) {
+        match self.native_clock.via_sync(&acc, C16M_PER_VIA / 2) {
             DeviceCycle::Stall(n) => BusResponse::Stall(n),
             DeviceCycle::Access(w) => {
                 bus_access_byte_lane::<2, 0, _, _>(acc, w, self, Self::via_read, Self::via_write)

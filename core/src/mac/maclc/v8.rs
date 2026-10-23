@@ -27,6 +27,9 @@ pub(super) const RAM_WAITS: Ticks = RAM_CYCLE - Bus68020::CYCLE;
 /// Wait states of a ROM bus cycle
 pub(super) const ROM_WAITS: Ticks = 2;
 
+/// C16M ticks into a VIA cycle at which the V8 releases the CPU
+pub(super) const VIA_RELEASE: Ticks = 18;
+
 /// Native ticks from the start of an SCC cycle to the start of the next one
 pub(super) const SCC_INTERVAL: Ticks = 43;
 /// Native ticks from the start of a SWIM cycle to the start of the next one
