@@ -29,7 +29,7 @@ fn testcpu() -> TestCpu {
     for (i, &word) in CODE.iter().enumerate() {
         write_word(&mut cpu, INITIAL_PC + i as Address * 2, word);
     }
-    write_word(&mut cpu, HANDLER_ADDR, 0x4E71);
+    write_word(&mut cpu, HANDLER_ADDR, 0x4E73); // RTE
     // Level 3 autovector
     write_word(&mut cpu, 0x6C, (HANDLER_ADDR >> 16) as Word);
     write_word(&mut cpu, 0x6E, HANDLER_ADDR as Word);
@@ -63,22 +63,60 @@ fn test_overlap() {
     assert!(cpu.cycles >= start + busy);
 }
 
+fn read_word(cpu: &TestCpu, addr: Address) -> Word {
+    (Word::from(cpu.bus.mem[&addr]) << 8) | Word::from(cpu.bus.mem[&(addr + 1)])
+}
+
+fn read_long(cpu: &TestCpu, addr: Address) -> Address {
+    (Address::from(read_word(cpu, addr)) << 16) | Address::from(read_word(cpu, addr + 2))
+}
+
+/// Checks that the interrupt was taken during the second FADD with a
+/// mid-instruction frame, and that the FADD runs after the RTE
+fn check_mid_instruction_irq(cpu: &mut TestCpu) {
+    assert_eq!(cpu.regs.pc, HANDLER_ADDR);
+    let sp = 0x800 - 20;
+    assert_eq!(cpu.regs.isp, sp);
+    // Format $9, level 3 autovector
+    assert_eq!(read_word(cpu, sp + 6), 0x9000 | 0x6C);
+    // scanPC past the command word, and the address of the instruction
+    assert_eq!(read_long(cpu, sp + 2), INITIAL_PC + 10);
+    assert_eq!(read_long(cpu, sp + 8), INITIAL_PC + 6);
+
+    cpu.bus.irq_level = None;
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, INITIAL_PC + 6);
+    assert_eq!(cpu.regs.isp, 0x800);
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, INITIAL_PC + 10);
+}
+
 #[test]
 fn test_interrupt_while_busy() {
     let mut cpu = testcpu();
     cpu.step().unwrap();
     cpu.step().unwrap();
 
-    // An interrupt while the FPU is busy is taken before the second FADD,
-    // which starts again after it
+    // An interrupt while the FPU is busy is taken while the second FADD waits
     cpu.bus.irq_level = Some(3);
     cpu.step().unwrap();
-    assert_eq!(cpu.regs.pc, HANDLER_ADDR);
-    let stacked_pc = (Address::from(cpu.bus.mem[&(0x800 - 6)]) << 24)
-        | (Address::from(cpu.bus.mem[&(0x800 - 5)]) << 16)
-        | (Address::from(cpu.bus.mem[&(0x800 - 4)]) << 8)
-        | Address::from(cpu.bus.mem[&(0x800 - 3)]);
-    assert_eq!(stacked_pc, INITIAL_PC + 6);
+    check_mid_instruction_irq(&mut cpu);
+}
+
+#[test]
+fn test_interrupt_during_wait() {
+    let mut cpu = testcpu();
+    cpu.step().unwrap();
+    cpu.step().unwrap();
+
+    // The interrupt comes after the second FADD started to wait
+    let start = cpu.cycles;
+    assert!(cpu.fpu_free_at > start + 8);
+    cpu.bus.irq_level = Some(3);
+    cpu.bus.irq_from = start + 8;
+    cpu.step().unwrap();
+    assert!(cpu.cycles > start + 8);
+    check_mid_instruction_irq(&mut cpu);
 }
 
 #[test]
