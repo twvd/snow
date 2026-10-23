@@ -398,6 +398,9 @@ where
 
         // PLOAD does not affect PSR. The walk inside pmmu_translate may modify PSR
         let saved_psr = self.regs.pmmu.psr;
+        // PLOAD always searches the tables, so drop the entry that the ATC may
+        // have first (MC68030UM 9.8, MC68851UM 6.2)
+        self.pmmu_atc_flush_entry(fc, vaddr);
         // Ignore failures during the walk
         let _ = self.pmmu_translate(fc, vaddr, writing);
         self.regs.pmmu.psr = saved_psr;

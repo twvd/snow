@@ -255,6 +255,24 @@ where
         }
     }
 
+    /// Returns the ATC key of the page of `vaddr`
+    fn pmmu_atc_key(&self, vaddr: Address) -> usize {
+        let is_mask = Address::MAX.unbounded_shl(32 - self.regs.pmmu.tc.is());
+        ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize
+    }
+
+    /// Removes the ATC entry of `vaddr` for the function code `fc`
+    pub(in crate::cpu_m68k) fn pmmu_atc_flush_entry(&mut self, fc: u8, vaddr: Address) {
+        if !self.regs.pmmu.tc.enable() {
+            return;
+        }
+        let atc = self.pmmu_atc_tableidx(fc);
+        let key = self.pmmu_atc_key(vaddr);
+        if let Some(entry) = self.pmmu_atc[atc].get_mut(key) {
+            *entry = None;
+        }
+    }
+
     #[inline(always)]
     fn pmmu_rootptr(&self, fc: u8) -> RootPointerReg {
         // M68851 manual 5.1.4.2
@@ -540,9 +558,8 @@ where
 
         let supervisor = fc & (1 << 2) != 0;
         let atc = self.pmmu_atc_tableidx(fc);
-        let is_mask = Address::MAX.unbounded_shl(32 - self.regs.pmmu.tc.is());
         let page_mask = (1u32 << self.regs.pmmu.tc.ps()) - 1;
-        let cache_key = ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize;
+        let cache_key = self.pmmu_atc_key(vaddr);
         if let Some(entry) = self.pmmu_atc_lookup(atc, cache_key) {
             if !supervisor && entry.s {
                 self.pmmu_record_atc_fault(vaddr, writing, |psr| {
@@ -571,7 +588,6 @@ where
 
         let (paddr, wp, s, leaf_desc_addr, modified) =
             self.pmmu_translate_lookup::<false>(fc, vaddr, writing)?;
-        let cache_key = ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize;
         self.pmmu_atc[atc][cache_key] = Some(PmmuAtcEntry {
             paddr: paddr & !page_mask,
             wp,
