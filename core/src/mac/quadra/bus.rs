@@ -2,7 +2,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::bus::access::{Bus68040, BusAccess, BusResponse, bus_access_long, bus_access_word_lane};
-use crate::bus::native_clock::NativeClock;
+use crate::bus::native_clock::{C16M_FREQUENCY, NativeClock};
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -196,7 +196,7 @@ where
             soft_irq: false,
             scc_clock: 0,
             scc: Scc::new(),
-            swim: Swim::new(model.fdd_drives(), model.fdd_hd(), BUS_FREQUENCY),
+            swim: Swim::new(model.fdd_drives(), model.fdd_hd(), C16M_FREQUENCY),
             // MODE pins strapped for a 16-bit DMA bus (schematic 050-8020)
             scsi: Esp::new(true),
             scsi_dma_stalled: false,
@@ -750,6 +750,7 @@ where
 
         // The devices run at the native frequency, whatever the CPU is
         // overclocked to. The VIA clock is C16M / 20 (783.36 kHz).
+        let c16m_start = self.native_clock.c16m_ticks();
         let mut native_ticks = 0;
         let mut cpu = ticks;
         while cpu > 0 {
@@ -835,8 +836,10 @@ where
         self.via2
             .set_line(ViaLine::CB2, (!self.scsi.get_irq()).into());
 
+        // The SWIM is on the I/O bus, clocked by C16M
         self.swim.intdrive = self.via1.pa().drivesel();
-        self.swim.tick(native_ticks, ())?;
+        self.swim
+            .tick(self.native_clock.c16m_ticks() - c16m_start, ())?;
 
         Ok(1)
     }
