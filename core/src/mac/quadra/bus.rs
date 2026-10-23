@@ -2,7 +2,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::bus::access::{Bus68040, BusAccess, BusResponse, bus_access_long, bus_access_word_lane};
-use crate::bus::native_clock::{C16M_FREQUENCY, NativeClock};
+use crate::bus::native_clock::{C16M_FREQUENCY, C16M_PER_VIA, DeviceCycle, NativeClock};
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -34,6 +34,19 @@ use serde::{Deserialize, Serialize};
 /// Frequency of the bus of the real hardware, without overclocking: the
 /// 25 MHz of the 68040
 const BUS_FREQUENCY: Ticks = 25_000_000;
+
+/// Wait states, in C16M ticks, of an access to a device on the I/O bus, on
+/// top of the bus cycle itself. The I/O bus runs at 15.6672 MHz, "completely
+/// asynchronous to the system bus clock", and the Relayer converts the
+/// timing signals between the two buses (Quadra 700 Developer Note, "I/O bus
+/// adapter ICs"): it synchronises the cycle with the I/O bus clock, and its
+/// termination back with the 25 MHz bus. Not measured, a guess: the floppy
+/// driver of the ROM fails to read disks without wait states, and works from
+/// 2 on.
+const IO_BUS_WAITS: Ticks = 6;
+
+/// SCC serial controller clock (PCLK)
+pub const SCC_CLOCK: Ticks = 3_672_000;
 
 /// Size of a RAM page in MacBus::ram_dirty
 pub const RAM_DIRTY_PAGESIZE: usize = 256;
@@ -453,11 +466,70 @@ where
         }
     }
 
+    /// An access to the I/O area. The VIAs, the SCC, the EASC, the SWIM and
+    /// the Ethernet controller are on the I/O bus, behind the JDB and the
+    /// Relayer; the 53C96, the DAFB and the MCU are on the system bus
+    /// (Quadra 700 Developer Note, chapter 1).
+    fn io_cycle(&mut self, acc: BusAccess<Bus68040>) -> BusResponse {
+        match acc.addr & Self::IO_MASK {
+            // VIA 1 and VIA 2
+            0x0000_0000..=0x0000_3FFF => self.via_cycle(acc),
+            // Ethernet controller, SCC
+            0x0000_8000..=0x0000_DFFF => self.io_bus_cycle(acc, false),
+            // 53C96 pseudo-DMA, through the DAFB
+            0x0000_F100..=0x0000_F1FF => self.scsi_dma_cycle(acc),
+            // EASC
+            0x0001_4000..=0x0001_5FFF => self.io_bus_cycle(acc, false),
+            // SWIM
+            0x0001_E000..=0x0001_FFFF => self.io_bus_cycle(acc, true),
+            // MCU, 53C96
+            _ => match self.native_clock.device_sync(&acc) {
+                DeviceCycle::Stall(n) => BusResponse::Stall(n),
+                DeviceCycle::Access(w) => {
+                    bus_access_long(acc, w, self, Self::io_read, Self::io_write)
+                }
+            },
+        }
+    }
+
+    /// The Relayer clocks the VIAs at C16M / 20, 783.36 kHz (Developer Note,
+    /// "I/O bus adapter ICs"; schematic 050-8020, VIACLK), and their accesses
+    /// are synchronous with that clock: one starts on a VIA tick and the CPU
+    /// is released half way through the VIA cycle.
+    fn via_cycle(&mut self, acc: BusAccess<Bus68040>) -> BusResponse {
+        match self.native_clock.via_sync(&acc, C16M_PER_VIA / 2) {
+            DeviceCycle::Stall(n) => BusResponse::Stall(n),
+            DeviceCycle::Access(w) => bus_access_long(acc, w, self, Self::io_read, Self::io_write),
+        }
+    }
+
+    /// An access to a device on the I/O bus: it starts on a C16M tick and
+    /// lasts a bus cycle in C16M ticks, plus the IO_BUS_WAITS of the
+    /// Relayer. When overclocking, the SWIM accesses are also held as far
+    /// apart as Swim::hold16() needs.
+    fn io_bus_cycle(&mut self, acc: BusAccess<Bus68040>, swim: bool) -> BusResponse {
+        let w = match self.native_clock.device16_sync(&acc) {
+            DeviceCycle::Stall(n) => return BusResponse::Stall(n),
+            DeviceCycle::Access(w) => w,
+        };
+        let hold = if swim {
+            self.swim.hold16(&self.native_clock)
+        } else {
+            0
+        };
+        let w = self.native_clock.scale_dev16_waits(w, IO_BUS_WAITS + hold);
+        bus_access_long(acc, w, self, Self::io_read, Self::io_write)
+    }
+
     /// A pseudo-DMA access to the 53C96: the DAFB makes it one cycle of the
     /// 16-bit DMA bus, on D31-D16. With the DREQ check on, it waits for DREQ,
     /// which in this model can only come from the CPU, so it times out with
     /// a bus error.
     fn scsi_dma_cycle(&mut self, acc: BusAccess<Bus68040>) -> BusResponse {
+        let w = match self.native_clock.device_sync(&acc) {
+            DeviceCycle::Stall(n) => return BusResponse::Stall(n),
+            DeviceCycle::Access(w) => w,
+        };
         if self.dafb.scsi_drq_check(acc.write) && !self.scsi.get_drq() {
             if !self.scsi_dma_stalled {
                 self.scsi_dma_stalled = true;
@@ -488,7 +560,7 @@ where
                 self.scsi.dbg()
             );
         }
-        bus_access_word_lane::<4, 0, _, _>(acc, 0, self, Self::scsi_dma_read, Self::scsi_dma_write)
+        bus_access_word_lane::<4, 0, _, _>(acc, w, self, Self::scsi_dma_read, Self::scsi_dma_write)
     }
 
     fn scsi_dma_read(&mut self, addr: Address, len: u32) -> Option<u32> {
@@ -660,8 +732,7 @@ where
         let resp = match MAP[usize::from(self.overlay)][block] {
             Region::Ram => bus_access_long(acc, 0, self, Self::ram_read, Self::ram_write),
             Region::Rom => bus_access_long(acc, 0, self, Self::rom_read, Self::ignore_write),
-            Region::Io if (acc.addr & Self::IO_MASK) >> 8 == 0xF1 => self.scsi_dma_cycle(acc),
-            Region::Io => bus_access_long(acc, 0, self, Self::io_read, Self::io_write),
+            Region::Io => self.io_cycle(acc),
             Region::ExtRom => bus_access_long(acc, 0, self, Self::ext_rom_read, Self::no_write),
             Region::SuperSlot => {
                 bus_access_long(acc, 0, self, Self::superslot_read, Self::superslot_write)
