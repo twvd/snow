@@ -383,6 +383,10 @@ pub struct CpuM68k<
     /// Time at which the FPU finishes the arithmetic operation it runs on its own
     pub(in crate::cpu_m68k) fpu_free_at: Ticks,
 
+    /// FPU data registers that the operation the FPU runs on its own writes, a bit
+    /// for each
+    pub(in crate::cpu_m68k) fpu_busy_regs: u8,
+
     /// Execute stage time of the instruction of this step on the 68040
     #[serde(skip)]
     pub(in crate::cpu_m68k) exec040: Exec040,
@@ -509,6 +513,7 @@ where
             cycles: 0,
             write_credit: 0,
             fpu_free_at: 0,
+            fpu_busy_regs: 0,
             exec040: Exec040::DEFAULT,
             exec040_prev: 0,
             step_ea040: [None; 2],
@@ -559,6 +564,7 @@ where
         self.last_bus_sync = 0;
         self.write_credit = 0;
         self.fpu_free_at = 0;
+        self.fpu_busy_regs = 0;
         self.exec040_prev = 0;
         let init_ssp = self.read_ticks(VECTOR_SP)?;
         let init_pc = self.read_ticks(VECTOR_RESET)?;
@@ -1073,6 +1079,9 @@ where
         // About one read of the response CIR between the interrupt checks
         const POLL: Ticks = 4;
 
+        if self.cycles >= self.fpu_free_at {
+            self.fpu_busy_regs = 0;
+        }
         let free_at = self.fpu_free_at.saturating_sub(self.fpu_head(opcode));
         while self.cycles < free_at {
             let irq = self.bus.get_irq();
