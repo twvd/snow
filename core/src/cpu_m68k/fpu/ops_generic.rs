@@ -46,26 +46,71 @@ where
     /// the allowed overlap: the numbers of Table 8-25 on the 68881, and the total less
     /// the T column of Table 8-3 on the 68882, the same for every operation.
     ///
+    /// On the 68882, an FMOVE to FPn in single, double or extended format has no
+    /// tail, or one of 6 clocks when it runs with less concurrency.
+    ///
     /// The 68882 can also start the next arithmetic operation before the end of this
     /// one: see fpu_head().
-    fn fpu_arith_cycles(&mut self, total: Ticks, fmt: usize, less: Ticks) -> Result<()> {
-        let cpu: Ticks = match FPU_TYPE {
-            FPU_M68882 => [21, 40, 31, 37, 43, 82],
-            _ => [3, 22, 22, 28, 34, 34],
-        }[fmt];
+    fn fpu_arith_cycles(
+        &mut self,
+        extword: FmoveExtWord,
+        total: Ticks,
+        fmt: usize,
+        less: Ticks,
+    ) -> Result<()> {
         let total = total - less;
-        let cpu = cpu.saturating_sub(less).min(total);
+        let cpu = if FPU_TYPE == FPU_M68882
+            && extword.opmode() == 0
+            && (FPU_CYCLES_MEM_SINGLE..=FPU_CYCLES_MEM_EXTENDED).contains(&fmt)
+        {
+            if self.fpu_fmove_degraded(1 << extword.dst_reg()) {
+                total - 6
+            } else {
+                total
+            }
+        } else {
+            let cpu: Ticks = match FPU_TYPE {
+                FPU_M68882 => [21, 40, 31, 37, 43, 82],
+                _ => [3, 22, 22, 28, 34, 34],
+            }[fmt];
+            cpu.saturating_sub(less).min(total)
+        };
         self.advance_cycles(cpu)?;
         self.fpu_free_at = self.cycles + total - cpu;
+        if total > cpu {
+            self.fpu_busy_regs = Self::fpu_dest_regs(extword);
+        }
         Ok(())
+    }
+
+    /// Returns the FPU data registers that the arithmetic operation of `extword`
+    /// writes, a bit for each
+    fn fpu_dest_regs(extword: FmoveExtWord) -> u8 {
+        let dst = 1 << extword.dst_reg();
+        match extword.opmode() {
+            // FCMP, FTST
+            0b0111000 | 0b0111010 => 0,
+            // FSINCOS
+            0b0110000..=0b0110111 => dst | 1 << (extword.opmode() & 0b111),
+            _ => dst,
+        }
+    }
+
+    /// Tells whether an FMOVE to FPn on the 68882 that uses the FPU data registers
+    /// `regs` runs with less concurrency: when the operation the FPU still runs
+    /// writes one of them, or when the rounding precision is single or double
+    /// (MC68881/MC68882UM 5.1.2.2, Table 5-5). Operands that are NANs, unnormalized
+    /// or denormalized do the same, which is not modelled.
+    fn fpu_fmove_degraded(&self, regs: u8) -> bool {
+        self.fpu_busy_regs & regs != 0 || self.regs.fpu.fpcr.prec() != 0
     }
 
     /// Returns the head of the arithmetic operation that the general FPU instruction
     /// `opcode` starts, from its extension word at the front of the prefetch queue:
     /// the time at its start that the 68882 overlaps with the end of the previous
     /// operation (MC68881/MC68882UM 8.5.1.3, H column of Table 8-3, about the same
-    /// for every operation in a format). Returns 0 on the 68881, which cannot
-    /// overlap two operations, and for the other instructions.
+    /// for every operation in a format but FMOVE). Returns 0 on the 68881, which
+    /// cannot overlap two operations, and for the other instructions.
     pub(in crate::cpu_m68k) fn fpu_head(&self, opcode: Word) -> Ticks {
         if FPU_TYPE != FPU_M68882 || opcode & 0b0000_0001_1100_0000 != 0 {
             return 0;
@@ -75,13 +120,49 @@ where
             _ => return 0,
         };
         // [FPm, integer, single, double, extended, packed]
+        let fmove = extword.opmode() == 0;
         match (extword.subop(), extword.src_spec()) {
+            // FMOVE FPm,FPn
+            (0b000, _) if fmove => {
+                let regs = 1 << extword.src_spec() | 1 << extword.dst_reg();
+                if self.fpu_fmove_degraded(regs) {
+                    10
+                } else {
+                    21
+                }
+            }
             (0b000, _) => 17,
+            // FMOVE <ea>,FPn in single, double or extended format
+            (0b010, spec @ (0b001 | 0b101 | 0b010)) if fmove => {
+                let head = match spec {
+                    0b001 => 34,
+                    0b101 => 40,
+                    _ => 46,
+                };
+                if self.fpu_fmove_degraded(1 << extword.dst_reg()) {
+                    head - 6
+                } else {
+                    head
+                }
+            }
             (0b010, 0b000 | 0b100 | 0b110) => 21,
             (0b010, 0b001) => 30,
             (0b010, 0b101) => 36,
             (0b010, 0b010) => 42,
             (0b010, 0b011) => 13,
+            // FMOVE FPm,<ea> in single, double or extended format, which waits for
+            // the end of the previous operation if that writes FPm
+            (0b011, fmt @ (0b001 | 0b101 | 0b010)) => {
+                if self.fpu_busy_regs & 1 << extword.src_reg() != 0 {
+                    0
+                } else {
+                    match fmt {
+                        0b001 => 38,
+                        0b101 => 44,
+                        _ => 50,
+                    }
+                }
+            }
             _ => 0,
         }
     }
@@ -167,7 +248,7 @@ where
 
                 let (result, cycles) = self.fpu_alu_op(opmode, &src, &dest)?;
                 self.regs.fpu.fp[extword.dst_reg()] = result;
-                self.fpu_arith_cycles(cycles[FPU_CYCLES_FPN], FPU_CYCLES_FPN, 0)?;
+                self.fpu_arith_cycles(extword, cycles[FPU_CYCLES_FPN], FPU_CYCLES_FPN, 0)?;
             }
             0b100 => {
                 // From EA to control reg
@@ -357,7 +438,7 @@ where
                 } else {
                     0
                 };
-                self.fpu_arith_cycles(cycles[cycle_idx], cycle_idx, less)?;
+                self.fpu_arith_cycles(extword, cycles[cycle_idx], cycle_idx, less)?;
             }
             0b011 if instr.get_addr_mode()? != AddressingMode::DataRegister => {
                 // Register to EA
