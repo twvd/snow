@@ -942,12 +942,14 @@ where
             // coprocessor, which its idle clocks stand for
             self.write_credit = 0;
         }
-        let execute_result =
-            if FPU_TYPE != FPU_NONE && instr.data & 0xFE00 == 0xF200 && !self.fpu_wait()? {
-                Ok(())
-            } else {
-                self.execute_instruction(&instr)
-            };
+        let execute_result = if FPU_TYPE != FPU_NONE
+            && instr.data & 0xFE00 == 0xF200
+            && !self.fpu_wait(instr.data)?
+        {
+            Ok(())
+        } else {
+            self.execute_instruction(&instr)
+        };
         self.wb040_defer = false;
         if CPU_TYPE == M68040 && execute_result.is_ok() {
             self.execute040()?;
@@ -1162,14 +1164,16 @@ where
     }
 
     /// Waits for the FPU to finish the arithmetic operation it runs on its own,
-    /// before an FPU instruction. An interrupt that comes first is taken before
-    /// the instruction, which starts again after it, as the CPU does when the
-    /// FPU answers busy (MC68020UM 7.4.3). Returns false in that case.
-    fn fpu_wait(&mut self) -> Result<bool> {
+    /// before the FPU instruction `opcode`, less the head of the new operation on
+    /// the 68882. An interrupt that comes first is taken before the instruction,
+    /// which starts again after it, as the CPU does when the FPU answers busy
+    /// (MC68020UM 7.4.3). Returns false in that case.
+    fn fpu_wait(&mut self, opcode: Word) -> Result<bool> {
         // About one read of the response CIR between the interrupt checks
         const POLL: Ticks = 4;
 
-        while self.cycles < self.fpu_free_at {
+        let free_at = self.fpu_free_at.saturating_sub(self.fpu_head(opcode));
+        while self.cycles < free_at {
             let pending = match self.bus.get_irq() {
                 Some(7) => !self.in_nmi,
                 Some(level) => level > self.regs.sr.int_prio_mask(),
@@ -1180,7 +1184,7 @@ where
                 self.set_pc(self.step_start_pc)?;
                 return Ok(false);
             }
-            self.advance_cycles((self.fpu_free_at - self.cycles).min(POLL))?;
+            self.advance_cycles((free_at - self.cycles).min(POLL))?;
             self.sync_bus()?;
         }
         Ok(true)
