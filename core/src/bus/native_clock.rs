@@ -12,11 +12,11 @@ pub type WaitTicks = Ticks;
 pub const C16M_FREQUENCY: Ticks = 15_667_200;
 
 /// The VIA clock is C16M / 20 (783.36 kHz) on the Macs with C16M
-const C16M_PER_VIA: Ticks = 20;
+pub const C16M_PER_VIA: Ticks = 20;
 
 /// The VIA clock (E clock) is C8M / 10 on the compact Macs, which have no
 /// C16M
-const C8M_PER_VIA: Ticks = 10;
+pub const C8M_PER_VIA: Ticks = 10;
 
 /// What a device access cycle does
 pub enum DeviceCycle {
@@ -26,7 +26,7 @@ pub enum DeviceCycle {
     /// Do the access now. device_sync() and via_sync() return in WaitTicks the
     /// wait states, in CPU ticks, to give the CPU so that the access lasts
     /// as long as the corresponding device bus cycle: a native bus cycle
-    /// for device_sync(), a VIA (E clock) cycle for via_sync(). The device
+    /// for device_sync(), the CPU's part of a VIA cycle for via_sync(). The device
     /// can add any extra wait states on top of that with scale_dev_waits().
     Access(WaitTicks),
 }
@@ -305,23 +305,37 @@ impl<const C16M: bool> NativeClock<C16M> {
     }
 
     /// Start of a VIA access cycle: the same, on a VIA tick instead of a
-    /// native tick, with or without overclocking. The access then lasts a
-    /// VIA cycle, which is one cycle of the VIA clock (the E clock).
+    /// native tick, with or without overclocking.
+    ///
+    /// On the VIA side, the access takes a whole VIA clock cycle. The CPU is
+    /// released `release` ticks into it, of the clock that the VIA clock is
+    /// divided from: C16M, or C8M on the compact Macs.
+    ///
+    /// On the compact Macs, the access is a 68000 VPA cycle and lasts a
+    /// whole cycle of the E clock (C8M_PER_VIA).
+    ///
+    /// With C16M, the glue logic releases the CPU once the data returned by
+    /// the VIA is latched, which depends on the machine: half way through
+    /// the cycle on a Macintosh IIci, at about 0.7 of it on an LC III and
+    /// near its end on an LC II (measured with BusTiming). If it were held
+    /// until the end of the cycle, it would miss the start of the next one,
+    /// and back to back accesses would take two VIA cycles each instead of
+    /// one.
     ///
     /// Returns a DeviceCycle, which indicates whether to stall, or the wait
     /// states of the VIA cycle.
-    pub fn via_sync<C: CpuBus>(&self, acc: &BusAccess<C>) -> DeviceCycle {
+    pub fn via_sync<C: CpuBus>(&self, acc: &BusAccess<C>, release: Ticks) -> DeviceCycle {
         if self.scaled_c16m() {
             Self::sync(
                 acc,
                 self.c16m_clockgen,
                 C16M_PER_VIA,
                 self.since_via,
-                C16M_PER_VIA,
+                release,
             )
         } else {
             let per_via = self.native_per_via;
-            Self::sync(acc, self.native_clockgen, per_via, self.since_via, per_via)
+            Self::sync(acc, self.native_clockgen, per_via, self.since_via, release)
         }
     }
 
@@ -490,12 +504,24 @@ mod tests {
     fn via_sync_native_speed() {
         let mut clock = NativeClock::<false>::new(1000);
         // On a VIA tick, up to date: 10 native ticks of the VIA cycle
-        assert!(matches!(clock.via_sync(&read(0)), DeviceCycle::Access(6)));
+        assert!(matches!(
+            clock.via_sync(&read(0), C8M_PER_VIA),
+            DeviceCycle::Access(6)
+        ));
         // On a VIA tick, but the clock has to be brought up to date first
-        assert!(matches!(clock.via_sync(&read(10)), DeviceCycle::Stall(0)));
+        assert!(matches!(
+            clock.via_sync(&read(10), C8M_PER_VIA),
+            DeviceCycle::Stall(0)
+        ));
         run(&mut clock, 3);
-        assert!(matches!(clock.via_sync(&read(0)), DeviceCycle::Stall(7)));
-        assert!(matches!(clock.via_sync(&read(2)), DeviceCycle::Stall(5)));
+        assert!(matches!(
+            clock.via_sync(&read(0), C8M_PER_VIA),
+            DeviceCycle::Stall(7)
+        ));
+        assert!(matches!(
+            clock.via_sync(&read(2), C8M_PER_VIA),
+            DeviceCycle::Stall(5)
+        ));
     }
 
     #[test]
@@ -504,10 +530,10 @@ mod tests {
         clock.set_cpu_frequency(3000);
         run(&mut clock, 4);
         // A third of a native tick past native tick 1
-        let cycle = clock.via_sync(&read(0));
+        let cycle = clock.via_sync(&read(0), C8M_PER_VIA);
         assert!(matches!(cycle, DeviceCycle::Stall(26)));
         assert_eq!(sync(&mut clock, &cycle), None);
-        let cycle = clock.via_sync(&read(0));
+        let cycle = clock.via_sync(&read(0), C8M_PER_VIA);
         let w = sync(&mut clock, &cycle);
         assert_eq!(w, Some(30 - 4));
     }
@@ -539,27 +565,44 @@ mod tests {
 
     #[test]
     fn via_sync_c16m() {
-        // A VIA cycle is 31.91 CPU ticks
+        // A VIA cycle is 31.91 CPU ticks, the CPU is released after half of it
         let mut clock = NativeClock::<true>::new(F25M);
-        assert!(matches!(clock.via_sync(&read(0)), DeviceCycle::Access(w) if w == 32 - 4));
+        assert!(
+            matches!(clock.via_sync(&read(0), C16M_PER_VIA / 2), DeviceCycle::Access(w) if w == 16 - 4)
+        );
         run(&mut clock, 5);
-        assert!(matches!(clock.via_sync(&read(0)), DeviceCycle::Stall(27)));
+        assert!(matches!(
+            clock.via_sync(&read(0), C16M_PER_VIA / 2),
+            DeviceCycle::Stall(27)
+        ));
         run(&mut clock, 27);
         // 0.09 CPU ticks past the VIA tick, the next one is at 63.83
-        assert!(matches!(clock.via_sync(&read(0)), DeviceCycle::Access(w) if w == 32 - 4));
-        assert!(matches!(clock.via_sync(&read(3)), DeviceCycle::Stall(29)));
+        assert!(
+            matches!(clock.via_sync(&read(0), C16M_PER_VIA / 2), DeviceCycle::Access(w) if w == 16 - 4)
+        );
+        assert!(matches!(
+            clock.via_sync(&read(3), C16M_PER_VIA / 2),
+            DeviceCycle::Stall(29)
+        ));
     }
 
     #[test]
     fn via_sync_c16m_33m() {
-        // A VIA cycle is 42.55 CPU ticks
+        // A VIA cycle is 42.55 CPU ticks, the CPU is released after half of it
         let mut clock = NativeClock::<true>::new(F33M);
-        assert!(matches!(clock.via_sync(&read(0)), DeviceCycle::Access(w) if w == 43 - 4));
+        assert!(
+            matches!(clock.via_sync(&read(0), C16M_PER_VIA / 2), DeviceCycle::Access(w) if w == 22 - 4)
+        );
         run(&mut clock, 5);
-        assert!(matches!(clock.via_sync(&read(0)), DeviceCycle::Stall(38)));
+        assert!(matches!(
+            clock.via_sync(&read(0), C16M_PER_VIA / 2),
+            DeviceCycle::Stall(38)
+        ));
         run(&mut clock, 38);
         // 0.45 CPU ticks past the VIA tick, the next one is at 85.10
-        assert!(matches!(clock.via_sync(&read(0)), DeviceCycle::Access(w) if w == 43 - 4));
+        assert!(
+            matches!(clock.via_sync(&read(0), C16M_PER_VIA / 2), DeviceCycle::Access(w) if w == 21 - 4)
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use super::via2::Via2;
 use crate::bus::access::{Bus68020, BusAccess, BusResponse, bus_access_byte, bus_access_long};
-use crate::bus::native_clock::{DeviceCycle, NativeClock, WaitTicks};
+use crate::bus::native_clock::{C16M_PER_VIA, DeviceCycle, NativeClock, WaitTicks};
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::cpu_m68k::M68020;
 use crate::debuggable::Debuggable;
@@ -667,7 +667,7 @@ where
         read: fn(&mut Self, Address, u32) -> Option<u32>,
         write: fn(&mut Self, Address, u32, u32) -> Option<()>,
     ) -> BusResponse {
-        match self.native_clock.via_sync(&acc) {
+        match self.native_clock.via_sync(&acc, C16M_PER_VIA / 2) {
             DeviceCycle::Stall(n) => BusResponse::Stall(n),
             DeviceCycle::Access(w) => bus_access_byte(acc, w, self, read, write),
         }
