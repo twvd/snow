@@ -7,7 +7,9 @@ use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, IrqSource};
 
-use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_FORMAT_ERROR, VECTOR_LINEF};
+use crate::cpu_m68k::cpu::{
+    CpuM68k, ExceptionGroup, PrefetchWord, VECTOR_FORMAT_ERROR, VECTOR_LINEF,
+};
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord, opmode};
 use crate::cpu_m68k::fpu::math::FloatMath;
@@ -62,9 +64,8 @@ where
     /// FPU runs the rest on its own, until the next FPU instruction
     /// (MC68881/MC68882UM 5.1.1.1, 8.6).
     ///
-    /// The 68882 can also start the next arithmetic operation during the tail of this
-    /// one (H column of Table 8-3). That is not modelled: the next FPU instruction
-    /// waits for the end of this one, as on the 68881.
+    /// The 68882 can also start the next arithmetic operation before the end of this
+    /// one: see fpu_head().
     fn fpu_arith_cycles(&mut self, opmode: u8, operand: FpuOperand, less: Ticks) -> Result<()> {
         let timings = Self::fpu_timings();
         let total = timings.alu(opmode, operand).saturating_sub(less);
@@ -75,6 +76,32 @@ where
         self.advance_cycles(cpu)?;
         self.fpu_free_at = self.cycles + total - cpu;
         Ok(())
+    }
+
+    /// Returns the head of the arithmetic operation that the general FPU instruction
+    /// `opcode` starts, from its extension word at the front of the prefetch queue:
+    /// the time at its start that the 68882 overlaps with the end of the previous
+    /// operation (MC68881/MC68882UM 8.5.1.3, H column of Table 8-3, about the same
+    /// for every operation in a format). Returns 0 on the 68881, which cannot
+    /// overlap two operations, and for the other instructions.
+    pub(in crate::cpu_m68k) fn fpu_head(&self, opcode: Word) -> Ticks {
+        if opcode & 0b0000_0001_1100_0000 != 0 {
+            return 0;
+        }
+        let extword = match self.prefetch.front() {
+            Some(PrefetchWord::Word(w)) => FmoveExtWord(*w),
+            _ => return 0,
+        };
+        let operand = match (extword.subop(), extword.src_spec()) {
+            (0b000, _) => FpuOperand::Fpn,
+            (0b010, 0b000 | 0b100 | 0b110) => FpuOperand::Int,
+            (0b010, 0b001) => FpuOperand::Single,
+            (0b010, 0b101) => FpuOperand::Double,
+            (0b010, 0b010) => FpuOperand::Extended,
+            (0b010, 0b011) => FpuOperand::Packed,
+            _ => return 0,
+        };
+        Self::fpu_timings().alu_head(operand)
     }
 
     /// FNOP
