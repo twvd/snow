@@ -300,6 +300,10 @@ pub struct CpuM68k<
     /// Trace exception must be inhibited after this instruction
     step_inhibit_trace: bool,
 
+    /// Address of the instruction executed this step
+    #[serde(skip)]
+    step_start_pc: Address,
+
     /// External address/data bus
     pub bus: TBus,
 
@@ -416,6 +420,7 @@ where
             step_ea_addr: None,
             step_exception: false,
             step_inhibit_trace: false,
+            step_start_pc: 0,
             step_ea_load: None,
             decode_cache: empty_decode_cache(),
             trace_mask: false,
@@ -697,6 +702,7 @@ where
 
         let start_cycles = self.cycles;
         let start_pc = self.regs.pc;
+        self.step_start_pc = start_pc;
         let opcode = match self.fetch() {
             Ok(o) => o,
             Err(e) => {
@@ -1235,11 +1241,26 @@ where
                         self.write_ticks(self.regs.ssp().wrapping_add(2), (pc >> 16) as u16)?;
                     }
                     _ => {
-                        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8);
+                        // These stack the six word frame (format $2) with the
+                        // address of the instruction that caused the exception
+                        // (MC68020UM table 6-5, MC68030UM table 8-5)
+                        let six_word = CPU_TYPE >= M68020
+                            && matches!(
+                                vector,
+                                VECTOR_CHK | VECTOR_TRAPV | VECTOR_DIV_ZERO | VECTOR_TRACE
+                            );
+                        let format: u16 = if six_word {
+                            *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(12);
+                            self.write_ticks(self.regs.ssp().wrapping_add(8), self.step_start_pc)?;
+                            0b0010_0000_0000_0000
+                        } else {
+                            *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8);
+                            0
+                        };
                         self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
                         self.write_ticks(self.regs.ssp().wrapping_add(2), (pc >> 16) as u16)?;
                         self.write_ticks(self.regs.ssp().wrapping_add(4), pc as u16)?;
-                        self.write_ticks(self.regs.ssp().wrapping_add(6), vector as u16)?;
+                        self.write_ticks(self.regs.ssp().wrapping_add(6), format | vector as u16)?;
                     }
                 }
             }
@@ -2903,11 +2924,12 @@ where
         let ssp = self.regs.ssp();
         let format = (self.read_ticks::<Word>(ssp.wrapping_add(6))? & 0b1111_0000_0000_0000) >> 12;
         match format {
-            0b0000 => {
-                // Normal format
+            0b0000 | 0b0010 => {
+                // Normal format, or six word format with the instruction address
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
-                *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(8);
+                let frame_size = if format == 0 { 8 } else { 12 };
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(frame_size);
                 self.idle_020_030(5, 6)?;
                 self.set_sr(sr);
                 self.set_pc(pc)?;
