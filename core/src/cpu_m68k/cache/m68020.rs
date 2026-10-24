@@ -7,7 +7,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 
-use crate::bus::{Address, Bus, IrqSource};
+use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::bus::{AccessKind, CpuAccess, low_bytes};
 use crate::cpu_m68k::bus_transaction::BusTransaction;
@@ -16,7 +16,7 @@ use crate::cpu_m68k::cpu::HistoryEntryInstruction;
 use crate::cpu_m68k::pmmu::translate::Translation;
 use crate::cpu_m68k::regs::RegisterCACR;
 use crate::tickable::Ticks;
-use crate::types::Long;
+use crate::types::{Byte, Long};
 
 /// Number of entries
 const ENTRIES: usize = 64;
@@ -142,6 +142,23 @@ impl CpuCaches for Caches020 {
             self.tags[Self::index(caar)] = INVALID;
         }
         val.with_c(false).with_ce(false).0
+    }
+
+    /// The tags hold logical addresses, but the entry index bits are the
+    /// same in the physical address: a write invalidates the entries of the
+    /// range whatever their tag
+    fn host_flush<TBus>(&mut self, _bus: &mut TBus, paddr: Address, len: Address, write: bool)
+    where
+        TBus: InspectableBus<Address, Byte>,
+    {
+        if !write || len == 0 {
+            return;
+        }
+        let first = paddr >> 2;
+        let last = paddr.wrapping_add(len - 1) >> 2;
+        for addr in first..=last.min(first + ENTRIES as Address - 1) {
+            self.tags[Self::index(addr << 2)] = INVALID;
+        }
     }
 
     fn reset(&mut self) {
