@@ -10,7 +10,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 
-use crate::bus::{Address, Bus, IrqSource};
+use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::bus::{AccessKind, CpuAccess, low_bytes};
 use crate::cpu_m68k::bus_transaction::{BusTransaction, FaultInfo};
@@ -18,7 +18,7 @@ use crate::cpu_m68k::cache::{CacheScope, CacheSelect, CpuCaches};
 use crate::cpu_m68k::pmmu::translate::{CacheMode, Translation};
 use crate::cpu_m68k::regs::RegisterCACR;
 use crate::tickable::Ticks;
-use crate::types::Long;
+use crate::types::{Byte, Long};
 
 /// Number of sets
 const SETS: usize = 64;
@@ -171,6 +171,35 @@ impl Caches040 {
         cache.tags[set][way] = Cache040::tag(paddr);
         cache.data[set][way] = line;
         Ok((line, way))
+    }
+
+    /// Writes back the dirty long words of a data cache line straight to
+    /// memory, for host_flush(). Returns false if memory can't take them.
+    fn host_push<TBus>(bus: &mut TBus, cache: &mut Cache040, set: usize, way: usize) -> bool
+    where
+        TBus: InspectableBus<Address, Byte>,
+    {
+        let addr = Cache040::line_addr(set, cache.tags[set][way]);
+        for entry in 0..4 {
+            if cache.dirty[set][way] & (1 << entry) == 0 {
+                continue;
+            }
+            let long_addr = addr.wrapping_add(4 * entry as Address);
+            for (i, byte) in cache.data[set][way][entry]
+                .to_be_bytes()
+                .into_iter()
+                .enumerate()
+            {
+                if bus
+                    .inspect_write(long_addr.wrapping_add(i as Address), byte)
+                    .is_none()
+                {
+                    return false;
+                }
+            }
+            cache.dirty[set][way] &= !(1 << entry);
+        }
+        true
     }
 
     /// A cache inhibited access, or MOVE16 writing over it, takes a line out
@@ -352,6 +381,29 @@ impl CpuCaches for Caches040 {
             Self::invalidate_cache(bus, &fault, &mut self.dcache, paddr, mask, push)?;
         }
         Ok(())
+    }
+
+    fn host_flush<TBus>(&mut self, bus: &mut TBus, paddr: Address, len: Address, write: bool)
+    where
+        TBus: InspectableBus<Address, Byte>,
+    {
+        if len == 0 {
+            return;
+        }
+        let first = paddr & !0xF;
+        let last = paddr.wrapping_add(len - 1) & !0xF;
+        for line in (first..=last).step_by(16) {
+            if let Some(way) = self.dcache.find(line) {
+                let set = Cache040::set(line);
+                // With nowhere to write the data back to, the line stays
+                if Self::host_push(bus, &mut self.dcache, set, way) && write {
+                    self.dcache.tags[set][way] = INVALID;
+                }
+            }
+            if write && let Some(way) = self.icache.find(line) {
+                self.icache.tags[Cache040::set(line)][way] = INVALID;
+            }
+        }
     }
 
     fn reset(&mut self) {

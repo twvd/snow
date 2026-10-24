@@ -9,7 +9,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::bus::{Address, Bus, IrqSource};
+use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::bus::{AccessKind, CpuAccess, low_bytes};
 use crate::cpu_m68k::bus_transaction::BusTransaction;
@@ -18,7 +18,7 @@ use crate::cpu_m68k::cpu::HistoryEntryInstruction;
 use crate::cpu_m68k::pmmu::translate::{CacheMode, Translation};
 use crate::cpu_m68k::regs::RegisterCACR;
 use crate::tickable::Ticks;
-use crate::types::Long;
+use crate::types::{Byte, Long};
 
 /// Number of lines
 const LINES: usize = 16;
@@ -101,6 +101,17 @@ impl Cache030 {
     /// Invalidates the whole cache
     fn invalidate(&mut self) {
         self.valid = [0; LINES];
+    }
+
+    /// Invalidates the lines whose index is that of a physical address in
+    /// the `len` bytes from `paddr`, whatever their tag: the tags hold
+    /// logical addresses, but the index bits are the same in both
+    fn invalidate_range(&mut self, paddr: Address, len: Address) {
+        let first = paddr >> 4;
+        let last = paddr.wrapping_add(len - 1) >> 4;
+        for line in first..=last.min(first + LINES as Address - 1) {
+            self.valid[Self::line(line << 4)] = 0;
+        }
     }
 }
 
@@ -263,6 +274,19 @@ impl CpuCaches for Caches030 {
             .with_cd(false)
             .with_ced(false)
             .0
+    }
+
+    /// The data cache is write-through: memory is always current, only a
+    /// write makes the cached copies stale
+    fn host_flush<TBus>(&mut self, _bus: &mut TBus, paddr: Address, len: Address, write: bool)
+    where
+        TBus: InspectableBus<Address, Byte>,
+    {
+        if !write || len == 0 {
+            return;
+        }
+        self.icache.invalidate_range(paddr, len);
+        self.dcache.invalidate_range(paddr, len);
     }
 
     fn reset(&mut self) {

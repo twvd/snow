@@ -17,7 +17,7 @@ pub use m68040::Caches040;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::bus::{Address, Bus, IrqSource};
+use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::bus::{AccessKind, CpuAccess};
 use crate::cpu_m68k::bus_transaction::BusTransaction;
@@ -25,7 +25,7 @@ use crate::cpu_m68k::cpu::HistoryEntryInstruction;
 use crate::cpu_m68k::pmmu::translate::Translation;
 use crate::cpu_m68k::regs::RegisterCACR;
 use crate::tickable::Ticks;
-use crate::types::Long;
+use crate::types::{Byte, Long};
 
 /// Which caches CINV and CPUSH act on
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,6 +129,17 @@ pub trait CpuCaches: Default {
         TBus: Bus<Address, u8> + IrqSource,
     {
         bus.line_access(&acc.fault, tr.paddr, wline)
+    }
+
+    /// Makes the caches and memory agree before the host (debugger, mouse
+    /// emulation) reads, or if `write` writes, `len` bytes of memory at
+    /// physical address `paddr` behind the CPU's back: dirty data in the
+    /// range is written back to memory, and before a write the cached copies
+    /// are invalidated. Takes no CPU time.
+    fn host_flush<TBus>(&mut self, _bus: &mut TBus, _paddr: Address, _len: Address, _write: bool)
+    where
+        TBus: InspectableBus<Address, Byte>,
+    {
     }
 
     /// Hardware reset
