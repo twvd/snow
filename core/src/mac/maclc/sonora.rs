@@ -31,6 +31,12 @@ pub(super) const ROM_WAITS: Ticks = 3;
 /// Wait states of a video RAM bus cycle, not documented
 pub(super) const VRAM_WAITS: Ticks = 1;
 
+/// Native ticks from the start of an SCC cycle to the start of the next one
+pub(super) const SCC_INTERVAL: Ticks = 12;
+/// Native ticks from the start of a SWIM cycle to the start of the next one
+/// in ISM mode
+pub(super) const SWIM_INTERVAL: Ticks = 10;
+
 /// CPU ID register of the Macintosh LC III
 pub(super) const CPU_ID_LCIII: u32 = 0xA55A_0001;
 
