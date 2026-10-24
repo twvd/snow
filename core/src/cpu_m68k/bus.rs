@@ -1,9 +1,13 @@
 //! M68k CPU - Bus access functionality
 
-use crate::bus::access::{BusAccess, BusResponse, CpuBus};
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::FpuM68kType;
-use crate::cpu_m68k::cpu::{Breakpoint, BusBreakpoint, CpuError, CpuM68k, Group0Details};
+use crate::cpu_m68k::bus_transaction::{FaultInfo, bus_transaction};
+use crate::cpu_m68k::cache::CpuCaches;
+use crate::cpu_m68k::cpu::{
+    Breakpoint, BusBreakpoint, CpuError, CpuM68k, Group0Details, WriteBack040,
+};
+use crate::cpu_m68k::pmmu::translate::{CacheMode, LastTranslation, Translation};
 use crate::cpu_m68k::{CpuM68kType, CpuSized, M68000, M68020, TORDER_HIGHLOW, TORDER_LOWHIGH};
 use crate::tickable::Ticks;
 use crate::types::Long;
@@ -19,8 +23,34 @@ pub const FC_SUPERVISOR_DATA: u8 = 5;
 pub const FC_SUPERVISOR_PROGRAM: u8 = 6;
 pub const FC_MASK: u8 = 0b1111;
 
+/// What a CPU access is for
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccessKind {
+    /// Operand read or write, including PC relative operands and MOVES
+    Data,
+    /// Instruction prefetch
+    Fetch,
+    /// Access to a physical address: translation table searches and
+    /// descriptor updates
+    Physical,
+}
+
+/// The part of an operand access from logical address `laddr` on, as it is
+/// translated and accessed
+#[derive(Clone, Copy)]
+pub struct CpuAccess {
+    pub kind: AccessKind,
+    /// The operand, for bus errors
+    pub fault: FaultInfo,
+    pub laddr: Address,
+    /// Bytes left in the operand from `laddr`
+    pub size: u32,
+    /// Write data, right-aligned to `size`
+    pub wdata: Option<Long>,
+}
+
 /// Low `bytes` bytes of `val`
-const fn low_bytes(val: Long, bytes: u32) -> Long {
+pub(in crate::cpu_m68k) const fn low_bytes(val: Long, bytes: u32) -> Long {
     if bytes >= 4 {
         val
     } else {
@@ -34,13 +64,17 @@ impl<
     const CPU_TYPE: CpuM68kType,
     const FPU_TYPE: FpuM68kType,
     const PMMU: bool,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TCaches,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
+    TCaches: CpuCaches,
 {
     #[inline(always)]
     fn fc_data(&self) -> u8 {
-        if PMMU {
+        // The 68020 and up drive their function codes whether there is an
+        // MMU or not: they also show in their bus error frames
+        if CPU_TYPE >= M68020 {
             if self.regs.sr.supervisor() {
                 FC_SUPERVISOR_DATA
             } else {
@@ -53,7 +87,7 @@ where
 
     #[inline(always)]
     pub(in crate::cpu_m68k) fn fc_program(&self) -> u8 {
-        if PMMU {
+        if CPU_TYPE >= M68020 {
             if self.regs.sr.supervisor() {
                 FC_SUPERVISOR_PROGRAM
             } else {
@@ -76,6 +110,7 @@ where
                     function_code: 0,
                     ir: 0,
                     size: std::mem::size_of::<T>(),
+                    atc_fault: false,
 
                     // TODO instruction bit
                     instruction: false,
@@ -93,7 +128,7 @@ where
     /// Reads a value from the bus and spends ticks.
     /// Virtual address version, data FC
     pub(in crate::cpu_m68k) fn read_ticks<T: CpuSized>(&mut self, vaddr: Address) -> Result<T> {
-        self.read_ticks_generic::<T, false>(self.fc_data(), vaddr)
+        self.read_ticks_generic::<T>(AccessKind::Data, self.fc_data(), vaddr)
     }
 
     /// Reads a value from the bus and spends ticks.
@@ -102,7 +137,7 @@ where
         &mut self,
         vaddr: Address,
     ) -> Result<T> {
-        self.read_ticks_generic::<T, false>(self.fc_program(), vaddr)
+        self.read_ticks_generic::<T>(AccessKind::Fetch, self.fc_program(), vaddr)
     }
 
     /// Reads a value from the bus and spends ticks.
@@ -112,11 +147,11 @@ where
         o_paddr: Address,
     ) -> Result<T> {
         // FC unused for physical addressing
-        self.read_ticks_generic::<T, true>(FC_UNUSED, o_paddr)
+        self.read_ticks_generic::<T>(AccessKind::Physical, FC_UNUSED, o_paddr)
     }
 
-    /// Triggers bus access breakpoints
-    fn bus_breakpoint(&mut self, write: bool, addr: Address, val: u8) {
+    /// Triggers data access breakpoints
+    fn data_breakpoint(&mut self, write: bool, addr: Address, val: u8) {
         let kind = if write {
             BusBreakpoint::Write
         } else {
@@ -137,101 +172,187 @@ where
         }
     }
 
-    /// Runs one bus cycle for the `size` bytes left of an operand
-    /// at `o_addr`, from logical address `laddr`. Adds the duration of the
-    /// cycle to `ticks` and returns the read data and the number of bytes
+    /// Translates the logical address of an access
+    #[inline(always)]
+    fn translate(&mut self, acc: &CpuAccess) -> Result<Translation> {
+        if acc.kind == AccessKind::Physical || !PMMU {
+            return Ok(Translation {
+                paddr: acc.laddr,
+                cache: CacheMode::WriteThrough,
+            });
+        }
+        // Reads reuse the last translation made in the same page. The ATC
+        // still holds it, until pmmu_translation_changed().
+        let fc = acc.fault.fc;
+        let slot = usize::from(acc.kind == AccessKind::Fetch);
+        let last = self.last_translation[slot];
+        if !acc.fault.write
+            && last.generation == self.pmmu_xlat_generation
+            && last.fc == fc
+            && acc.laddr & !last.offset_mask == last.page
+        {
+            return Ok(Translation {
+                paddr: last.paddr | (acc.laddr & last.offset_mask),
+                cache: last.cache,
+            });
+        }
+
+        let tr = self
+            .pmmu_translate(fc, acc.laddr, acc.fault.write)
+            .map_err(|e| match e.downcast_ref() {
+                Some(CpuError::BusError(details)) => {
+                    anyhow!(CpuError::BusError(Group0Details {
+                        size: acc.fault.size,
+                        address: acc.laddr,
+                        ..*details
+                    }))
+                }
+                _ => e,
+            })?;
+        if !acc.fault.write {
+            let offset_mask = self.pmmu_page_mask();
+            self.last_translation[slot] = LastTranslation {
+                generation: self.pmmu_xlat_generation,
+                fc,
+                page: acc.laddr & !offset_mask,
+                offset_mask,
+                paddr: tr.paddr & !offset_mask,
+                cache: tr.cache,
+            };
+        }
+        Ok(tr)
+    }
+
+    /// Runs a CPU access, up to the end of the long word at most: translates
+    /// it, then lets the caches run it, on the bus as needed. Adds its
+    /// duration to `ticks` and returns the read data and the number of bytes
     /// transferred.
     #[inline(always)]
-    fn bus_cycle<T: CpuSized, const PHYSICAL: bool>(
+    fn cpu_access(&mut self, acc: &CpuAccess, ticks: &mut Ticks) -> Result<(Long, u32)> {
+        if acc.wdata.is_none()
+            && let Some(res) = self.read_hit(acc.kind, acc.fault.fc, acc.laddr, acc.size, ticks)
+        {
+            return Ok(res);
+        }
+        self.cpu_access_translated(acc, ticks)
+    }
+
+    /// Runs a read from logically tagged caches, before translation, if
+    /// they hold it: see CpuCaches::read_hit(). Data breakpoints need the
+    /// physical address: data reads skip this when any is set.
+    #[inline(always)]
+    fn read_hit(
         &mut self,
+        kind: AccessKind,
         fc: u8,
-        o_addr: Address,
         laddr: Address,
         size: u32,
-        wdata: Option<Long>,
         ticks: &mut Ticks,
-    ) -> Result<(Long, u32)> {
-        let write = wdata.is_some();
-        let paddr = if PHYSICAL || !PMMU {
-            laddr
-        } else {
-            self.pmmu_translate(fc, laddr, write)
-                .map_err(|e| match e.downcast_ref() {
-                    Some(CpuError::BusError(details)) => {
-                        anyhow!(CpuError::BusError(Group0Details {
-                            size: std::mem::size_of::<T>(),
-                            address: laddr,
-                            ..*details
-                        }))
-                    }
-                    _ => e,
-                })?
-        };
-
-        // The bus has to be built for the data bus of this CPU
-        const {
-            assert!(<TBus::Cpu as CpuBus>::WIDTH == if CPU_TYPE >= M68020 { 4 } else { 2 });
+    ) -> Option<(Long, u32)> {
+        if kind != AccessKind::Fetch && !self.breakpoints.is_empty() {
+            return None;
         }
+        self.caches.read_hit(
+            self.regs.cacr,
+            kind,
+            fc,
+            laddr,
+            size,
+            ticks,
+            &mut self.history_current,
+        )
+    }
 
-        let (width, data, waits) = loop {
-            let pending = self.cycles + *ticks - self.last_bus_sync;
-            let acc = match wdata {
-                Some(data) => BusAccess::write(paddr, size, data, pending),
-                None => BusAccess::read(paddr, size, pending),
-            };
-            match self.bus.access(acc)? {
-                BusResponse::Ack { width, data, waits } => break (width, data, waits),
-                // Wait with the bus ticked through the stall, then retry
-                BusResponse::Stall(stall) => {
-                    self.history_current.waitstates = true;
-                    self.advance_cycles(std::mem::take(ticks) + stall)?;
-                    self.sync_bus()?;
-                }
-                BusResponse::BusError => bail!(CpuError::BusError(Group0Details {
-                    function_code: fc,
-                    ir: 0,
-                    size: std::mem::size_of::<T>(),
-                    instruction: false,
-                    read: !write,
-                    address: o_addr,
-                    // Filled in later
-                    start_pc: 0,
-                })),
-            }
-        };
-        if waits > 0 {
-            self.history_current.waitstates = true;
-        }
-        *ticks += <TBus::Cpu as CpuBus>::CYCLE + waits;
+    /// cpu_access() past the caches' read hits
+    #[inline(always)]
+    fn cpu_access_translated(&mut self, acc: &CpuAccess, ticks: &mut Ticks) -> Result<(Long, u32)> {
+        let tr = self.translate(acc)?;
+        let paddr = tr.paddr;
+        let cacr = self.regs.cacr;
+        let (data, len) = self
+            .caches
+            .access(&mut bus_transaction!(self, ticks), cacr, acc, &tr)?;
 
-        let len = if CPU_TYPE >= M68020 {
-            (width - paddr % width).min(size)
-        } else {
-            size
-        };
-        if !self.breakpoints.is_empty() {
+        // Data breakpoints, on the physical address of the access. They
+        // are about data: instruction fetches don't trigger them.
+        if !self.breakpoints.is_empty() && acc.kind != AccessKind::Fetch {
             for i in 0..len {
-                let val = match wdata {
-                    Some(d) => d >> (8 * (size - 1 - i)),
+                let val = match acc.wdata {
+                    Some(d) => d >> (8 * (acc.size - 1 - i)),
                     None => data >> (8 * (len - 1 - i)),
                 };
-                self.bus_breakpoint(write, paddr.wrapping_add(i), val as u8);
+                self.data_breakpoint(acc.fault.write, paddr.wrapping_add(i), val as u8);
             }
         }
         Ok((data, len))
     }
 
+    /// Transfers the 16-byte line holding logical address `laddr` (MOVE16):
+    /// reads it, or writes `wline`. The line counterpart of `cpu_access()`:
+    /// translates it, lets the caches run it and spends its time. Returns the
+    /// read line.
+    pub(in crate::cpu_m68k) fn line_ticks(
+        &mut self,
+        laddr: Address,
+        wline: Option<&[Long; 4]>,
+    ) -> Result<[Long; 4]> {
+        let laddr = laddr & !0xF;
+        let acc = CpuAccess {
+            kind: AccessKind::Data,
+            fault: FaultInfo {
+                fc: self.fc_data(),
+                o_addr: laddr,
+                size: 16,
+                write: wline.is_some(),
+            },
+            laddr,
+            size: 16,
+            wdata: None,
+        };
+        let tr = self.translate(&acc)?;
+        let paddr = tr.paddr;
+        let cacr = self.regs.cacr;
+        let mut ticks = 0;
+        let line = self.caches.line_access(
+            &mut bus_transaction!(self, &mut ticks),
+            cacr,
+            &acc,
+            &tr,
+            wline,
+        )?;
+        self.advance_cycles(ticks)?;
+
+        // Data breakpoints, on the physical address of the access
+        if !self.breakpoints.is_empty() {
+            let data = wline.unwrap_or(&line);
+            for i in 0..16 {
+                let val = (data[i / 4] >> (8 * (3 - i % 4))) as u8;
+                self.data_breakpoint(acc.fault.write, paddr.wrapping_add(i as Address), val);
+            }
+        }
+        Ok(line)
+    }
+
     /// Reads a value from the bus and spends ticks.
     #[inline(always)]
-    pub(in crate::cpu_m68k) fn read_ticks_generic<T: CpuSized, const PHYSICAL: bool>(
+    pub(in crate::cpu_m68k) fn read_ticks_generic<T: CpuSized>(
         &mut self,
+        kind: AccessKind,
         fc: u8,
         o_addr: Address,
     ) -> Result<T> {
         let len = std::mem::size_of::<T>() as u32;
         let mut result: u64 = 0;
+        let fault = FaultInfo {
+            fc,
+            o_addr,
+            size: std::mem::size_of::<T>(),
+            write: false,
+        };
 
         if CPU_TYPE < M68020 {
+            // The 68000 moves a long operand as two word accesses, with the
+            // address error check after the first one
             let addr = if CPU_TYPE == M68000 && len > 1 {
                 o_addr & !1
             } else {
@@ -239,9 +360,14 @@ where
             };
             for w in 0..len.div_ceil(2) {
                 let mut ticks = 0;
-                let laddr = addr.wrapping_add(2 * w) & ADDRESS_MASK;
-                let (data, n) =
-                    self.bus_cycle::<T, PHYSICAL>(fc, o_addr, laddr, len.min(2), None, &mut ticks)?;
+                let acc = CpuAccess {
+                    kind,
+                    fault,
+                    laddr: addr.wrapping_add(2 * w) & ADDRESS_MASK,
+                    size: len.min(2),
+                    wdata: None,
+                };
+                let (data, n) = self.cpu_access(&acc, &mut ticks)?;
                 result = (result << (8 * n)) | u64::from(data);
                 self.advance_cycles(ticks)?;
 
@@ -250,13 +376,43 @@ where
                     self.verify_access_physical::<T>(o_addr, true)?;
                 }
             }
+        } else if (o_addr & 3) + len <= 4 {
+            // The operand is within a long word: a single access. The access
+            // is only described for translation, after a cache miss.
+            let mut ticks = 0;
+            let laddr = o_addr & ADDRESS_MASK;
+            let data = match self.read_hit(kind, fc, laddr, len, &mut ticks) {
+                Some((data, _)) => data,
+                None => {
+                    let acc = CpuAccess {
+                        kind,
+                        fault,
+                        laddr,
+                        size: len,
+                        wdata: None,
+                    };
+                    self.cpu_access_translated(&acc, &mut ticks)?.0
+                }
+            };
+            self.advance_cycles(ticks)?;
+            return Ok(T::chop(data));
         } else {
             let mut ticks = 0;
             let mut done = 0;
             while done < len {
-                let laddr = o_addr.wrapping_add(done) & ADDRESS_MASK;
-                let (data, n) =
-                    self.bus_cycle::<T, PHYSICAL>(fc, o_addr, laddr, len - done, None, &mut ticks)?;
+                // An access goes at most to the end of a long word: the rest
+                // of the operand may be on another page, it is translated on
+                // its own. We pass cpu_access() the full size left in the
+                // operand, not just up to the next long word boundary, as the
+                // 68020 and 68030 show it on SIZ.
+                let acc = CpuAccess {
+                    kind,
+                    fault,
+                    laddr: o_addr.wrapping_add(done) & ADDRESS_MASK,
+                    size: len - done,
+                    wdata: None,
+                };
+                let (data, n) = self.cpu_access(&acc, &mut ticks)?;
                 result = (result << (8 * n)) | u64::from(data);
                 done += n;
             }
@@ -268,20 +424,27 @@ where
 
     /// Writes a value to the bus and spends ticks.
     #[inline(always)]
-    pub(in crate::cpu_m68k) fn write_ticks_order_generic<
-        T: CpuSized,
-        const TORDER: usize,
-        const PHYSICAL: bool,
-    >(
+    pub(in crate::cpu_m68k) fn write_ticks_order_generic<T: CpuSized, const TORDER: usize>(
         &mut self,
+        kind: AccessKind,
         fc: u8,
         o_addr: Address,
         value: T,
     ) -> Result<()> {
         let len = std::mem::size_of::<T>() as u32;
         let value = value.expand();
+        let fault = FaultInfo {
+            fc,
+            o_addr,
+            size: std::mem::size_of::<T>(),
+            write: true,
+        };
 
         if CPU_TYPE < M68020 {
+            // The 68000 moves a long operand as two word accesses. Their
+            // order and the address error check after the first one belong
+            // to the instruction, not to the bus: a long written to -(An)
+            // has its low word written first (TORDER_HIGHLOW).
             let addr = if CPU_TYPE == M68000 && len > 1 {
                 o_addr & !1
             } else {
@@ -296,9 +459,14 @@ where
                     i
                 };
                 let mut ticks = 0;
-                let laddr = addr.wrapping_add(2 * w) & ADDRESS_MASK;
-                let data = low_bytes(value >> (8 * (len - size - 2 * w)), size);
-                self.bus_cycle::<T, PHYSICAL>(fc, o_addr, laddr, size, Some(data), &mut ticks)?;
+                let acc = CpuAccess {
+                    kind,
+                    fault,
+                    laddr: addr.wrapping_add(2 * w) & ADDRESS_MASK,
+                    size,
+                    wdata: Some(low_bytes(value >> (8 * (len - size - 2 * w)), size)),
+                };
+                self.cpu_access(&acc, &mut ticks)?;
                 self.advance_cycles(ticks)?;
 
                 if CPU_TYPE == M68000
@@ -317,17 +485,22 @@ where
             let mut ticks = 0;
             let mut done = 0;
             while done < len {
-                let laddr = o_addr.wrapping_add(done) & ADDRESS_MASK;
-                let data = low_bytes(value, len - done);
-                let (_, n) = self.bus_cycle::<T, PHYSICAL>(
-                    fc,
-                    o_addr,
-                    laddr,
-                    len - done,
-                    Some(data),
-                    &mut ticks,
-                )?;
-                done += n;
+                // A long word at a time, as for reads
+                let acc = CpuAccess {
+                    kind,
+                    fault,
+                    laddr: o_addr.wrapping_add(done) & ADDRESS_MASK,
+                    size: len - done,
+                    wdata: Some(low_bytes(value, len - done)),
+                };
+                match self.cpu_access(&acc, &mut ticks) {
+                    Ok((_, n)) => done += n,
+                    Err(e) if kind != AccessKind::Physical && self.wb040_defer => {
+                        self.wb040_defer_write(e, o_addr, value, done > 0)?;
+                        break;
+                    }
+                    Err(e) => return Err(e),
+                }
             }
             self.advance_cycles(ticks)?;
         }
@@ -353,7 +526,12 @@ where
         vaddr: Address,
         value: T,
     ) -> Result<()> {
-        self.write_ticks_order_generic::<T, TORDER_LOWHIGH, false>(self.fc_data(), vaddr, value)
+        self.write_ticks_order_generic::<T, TORDER_LOWHIGH>(
+            AccessKind::Data,
+            self.fc_data(),
+            vaddr,
+            value,
+        )
     }
 
     /// Writes a value to the bus (big endian) and spends ticks.
@@ -363,7 +541,7 @@ where
         vaddr: Address,
         value: T,
     ) -> Result<()> {
-        self.write_ticks_order_generic::<T, TORDER, false>(self.fc_data(), vaddr, value)
+        self.write_ticks_order_generic::<T, TORDER>(AccessKind::Data, self.fc_data(), vaddr, value)
     }
 
     /// Writes a value to the bus (big endian) and spends ticks, but writes
@@ -377,18 +555,21 @@ where
         match std::mem::size_of::<T>() {
             4 => {
                 let v: Long = value.expand();
-                self.write_ticks_order_generic::<Word, TORDER_LOWHIGH, false>(
+                self.write_ticks_order_generic::<Word, TORDER_LOWHIGH>(
+                    AccessKind::Data,
                     self.fc_data(),
                     addr.wrapping_add(2),
                     v as Word,
                 )?;
-                self.write_ticks_order_generic::<Word, TORDER_LOWHIGH, false>(
+                self.write_ticks_order_generic::<Word, TORDER_LOWHIGH>(
+                    AccessKind::Data,
                     self.fc_data(),
                     addr,
                     (v >> 16) as Word,
                 )
             }
-            _ => self.write_ticks_order_generic::<T, TORDER_LOWHIGH, false>(
+            _ => self.write_ticks_order_generic::<T, TORDER_LOWHIGH>(
+                AccessKind::Data,
                 self.fc_data(),
                 addr,
                 value,
@@ -396,11 +577,42 @@ where
         }
     }
 
+    /// M68040: a data write of the instruction faulted. Unless the
+    /// instruction is restarted on faults, the instruction completes and the
+    /// write waits in a write-back slot for the access error handler
+    /// (M68040UM 8.4.6). One write can wait that way, a second fault restarts
+    /// the instruction.
+    fn wb040_defer_write(
+        &mut self,
+        e: anyhow::Error,
+        o_addr: Address,
+        value: Long,
+        second_page: bool,
+    ) -> Result<()> {
+        if self.wb040.is_some() {
+            return Err(e);
+        }
+        let Some(CpuError::BusError(details)) = e.downcast_ref() else {
+            return Err(e);
+        };
+        self.wb040 = Some(WriteBack040 {
+            details: Group0Details {
+                // The fault address is the start of the operand
+                address: o_addr,
+                ..*details
+            },
+            data: value,
+            ma: second_page && details.atc_fault,
+            trace: false,
+        });
+        Ok(())
+    }
+
     pub(in crate::cpu_m68k) fn write_ticks_order_physical<T: CpuSized, const TORDER: usize>(
         &mut self,
         o_paddr: Address,
         value: T,
     ) -> Result<()> {
-        self.write_ticks_order_generic::<T, TORDER, true>(FC_UNUSED, o_paddr, value)
+        self.write_ticks_order_generic::<T, TORDER>(AccessKind::Physical, FC_UNUSED, o_paddr, value)
     }
 }

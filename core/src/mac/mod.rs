@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use swim::drive::DriveType;
 
 use crate::bus::Address;
-use crate::cpu_m68k::{CpuM68kType, M68000, M68020, M68030};
+use crate::cpu_m68k::{CpuM68kType, M68000, M68020, M68030, M68040};
 use crate::keymap::Keymap;
 use crate::tickable::Ticks;
 
@@ -17,6 +17,7 @@ pub mod macii;
 pub mod nubus;
 pub mod pluskbd;
 pub mod portable;
+pub mod quadra;
 pub mod rtc;
 pub mod scc;
 pub mod scsi;
@@ -69,6 +70,8 @@ pub enum MacModel {
     MacIIcx,
     /// Macintosh SE/30
     SE30,
+    /// Macintosh Quadra 700
+    Quadra700,
 }
 
 #[allow(clippy::match_like_matches_macro)]
@@ -105,6 +108,8 @@ impl MacModel {
         ("79fae48e2d5cfde68520e46616503963f8c16430903f410514b62c1379af20cb", &[Self::MacIIFDHD, Self::MacIIx, Self::MacIIcx, Self::SE30]),
         // ROMinator II
         ("adb794a53976b5ddfe7e580c4071a2f38a89d0b8583bf5d342306228c1d58a4f", &[Self::MacIIx, Self::MacIIcx, Self::SE30]),
+        // Macintosh Quadra 700
+        ("c2093476e9c9a7d76973910a91fbfba23ca71163b84eb2623adf8608a6b03ed2", &[Self::Quadra700]),
     ];
 
     pub const fn has_adb(self) -> bool {
@@ -127,6 +132,7 @@ impl MacModel {
             | Self::MacIIx
             | Self::MacIIcx
             | Self::SE30 => 8 * 1024 * 1024,
+            Self::Quadra700 => 8 * 1024 * 1024,
         }
     }
 
@@ -184,6 +190,13 @@ impl MacModel {
                     128 * 1024 * 1024,
                 ]
             }
+            Self::Quadra700 => &[
+                4 * 1024 * 1024,
+                8 * 1024 * 1024,
+                16 * 1024 * 1024,
+                32 * 1024 * 1024,
+                64 * 1024 * 1024,
+            ],
         }
     }
 
@@ -193,7 +206,7 @@ impl MacModel {
             Self::Early128K | Self::Early512K | Self::Early512Ke | Self::Plus | Self::SE => false,
             Self::SeFdhd | Self::Classic | Self::Portable | Self::Portable15MB => true,
             Self::MacII => false,
-            Self::MacIIFDHD | Self::MacIIx | Self::MacIIcx | Self::SE30 => true,
+            Self::MacIIFDHD | Self::MacIIx | Self::MacIIcx | Self::SE30 | Self::Quadra700 => true,
         }
     }
 
@@ -215,7 +228,7 @@ impl MacModel {
                 DriveType::SuperDrive,
             ],
             Self::MacII => &[DriveType::GCR800K, DriveType::GCR800K],
-            Self::MacIIFDHD | Self::MacIIx | Self::MacIIcx | Self::SE30 => {
+            Self::MacIIFDHD | Self::MacIIx | Self::MacIIcx | Self::SE30 | Self::Quadra700 => {
                 &[DriveType::SuperDrive, DriveType::SuperDrive]
             }
         }
@@ -262,6 +275,8 @@ impl MacModel {
             | Self::MacIIx
             | Self::MacIIcx
             | Self::SE30 => Some((0x000CFC, 0x574C5343)),
+            // TODO
+            Self::Quadra700 => None,
         }
     }
 
@@ -278,6 +293,7 @@ impl MacModel {
             | Self::Portable15MB => M68000,
             Self::MacII | Self::MacIIFDHD => M68020,
             Self::MacIIx | Self::MacIIcx | Self::SE30 => M68030,
+            Self::Quadra700 => M68040,
         }
     }
 
@@ -308,6 +324,8 @@ impl MacModel {
             // PA1 follows.
             Self::MacII | Self::MacIIFDHD | Self::MacIIx => via::RegisterA(0xFF).with_model6(false),
             Self::MacIIcx | Self::SE30 => via::RegisterA(0xFF),
+            // Bit 0 = diagnostic mode (active low)
+            Self::Quadra700 => via::RegisterA(0xC1),
         }
     }
 
@@ -317,6 +335,7 @@ impl MacModel {
             Self::MacII | Self::MacIIFDHD | Self::MacIIx => &[0x9, 0xA, 0xB, 0xC, 0xD, 0xE],
             Self::MacIIcx => &[0x9, 0xA, 0xB],
             Self::SE30 => &[0xE],
+            Self::Quadra700 => &[0xD, 0xE],
             _ => &[],
         }
     }
@@ -334,6 +353,7 @@ impl MacModel {
             | Self::Classic => panic!("Invalid operation for this model"),
             Self::MacII | Self::MacIIFDHD | Self::MacIIcx => macii::via2::RegisterB(0xFF),
             Self::MacIIx | Self::SE30 => macii::via2::RegisterB(0x87),
+            Self::Quadra700 => macii::via2::RegisterB(0xCF),
         }
     }
 }
@@ -388,6 +408,7 @@ impl Display for MacModel {
                 Self::MacIIx => "Macintosh IIx",
                 Self::MacIIcx => "Macintosh IIcx",
                 Self::SE30 => "Macintosh SE/30",
+                Self::Quadra700 => "Macintosh Quadra 700",
             }
         )
     }

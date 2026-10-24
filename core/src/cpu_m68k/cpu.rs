@@ -1,22 +1,26 @@
 use crate::cpu_m68k::FpuM68kType;
+use crate::cpu_m68k::bus::AccessKind;
+use crate::cpu_m68k::bus_transaction::bus_transaction;
+use crate::cpu_m68k::cache::{CacheScope, CacheSelect, CpuCaches};
 use std::collections::VecDeque;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use arrayvec::ArrayVec;
 use either::Either;
 use log::*;
 use num_traits::{FromBytes, PrimInt, ToBytes};
 use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
-use serde_big_array::BigArray;
 use thiserror::Error;
 
-use crate::bus::{Address, Bus, IrqSource};
+use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
 use crate::cpu_m68k::pmmu::translate::atc_generation_default;
-use crate::cpu_m68k::regs::RegisterCACR;
-use crate::cpu_m68k::{M68000_SR_MASK, M68020_CACR_MASK, M68030, M68030_CACR_MASK};
+use crate::cpu_m68k::{
+    M68000_SR_MASK, M68020_CACR_MASK, M68030, M68030_CACR_MASK, M68040, M68040_CACR_MASK,
+    M68040_SR_MASK,
+};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
 
@@ -71,6 +75,20 @@ pub(in crate::cpu_m68k) struct Group0Details {
     pub(in crate::cpu_m68k) ir: Word,
     pub(in crate::cpu_m68k) start_pc: Address,
     pub(in crate::cpu_m68k) size: usize,
+    /// M68040 only (MMU page fault)
+    pub(in crate::cpu_m68k) atc_fault: bool,
+}
+
+/// M68040: a faulted data write waiting in a write-back slot for the access
+/// error handler to complete it (M68040UM 8.4.6)
+#[derive(Debug, Clone, Copy)]
+pub(in crate::cpu_m68k) struct WriteBack040 {
+    pub(in crate::cpu_m68k) details: Group0Details,
+    pub(in crate::cpu_m68k) data: Long,
+    /// The fault is in the second page of a misaligned write
+    pub(in crate::cpu_m68k) ma: bool,
+    /// A trace exception is pending for the instruction
+    pub(in crate::cpu_m68k) trace: bool,
 }
 
 /// An entry in the instruction prefetch queue.
@@ -165,6 +183,35 @@ bitfield! {
     }
 }
 
+bitfield! {
+    /// M68040 access error stack frame Special Status Word
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+    pub struct Ssw040(pub Word): Debug, FromStorage, IntoStorage, DerefStorage {
+        /// Transfer modifier (function code)
+        pub tm: u8 @ 0..=2,
+        /// Transfer type (0 = normal)
+        pub tt: u8 @ 3..=4,
+        /// Transfer size (0 = long, 1 = byte, 2 = word, 3 = line)
+        pub size: u8 @ 5..=6,
+        /// Read (1) / write (0)
+        pub rw: bool @ 8,
+        /// Locked transfer
+        pub lk: bool @ 9,
+        /// Fault from the ATC rather than from the bus
+        pub atc: bool @ 10,
+        /// Misaligned access
+        pub ma: bool @ 11,
+        /// Continuation: MOVEM
+        pub cm: bool @ 12,
+        /// Continuation: trace
+        pub ct: bool @ 13,
+        /// Continuation: unimplemented floating point
+        pub cu: bool @ 14,
+        /// Continuation: floating point post-instruction
+        pub cp: bool @ 15,
+    }
+}
+
 // Exception vectors
 /// Stack pointer initialization
 pub const VECTOR_SP: Address = 0x00000000;
@@ -190,6 +237,8 @@ pub const VECTOR_TRACE: Address = 0x000024;
 pub const VECTOR_LINEA: Address = 0x000028;
 /// Line 1111 / F
 pub const VECTOR_LINEF: Address = 0x00002C;
+/// Format error exception vector
+pub const VECTOR_FORMAT_ERROR: Address = 0x000038;
 /// Auto vector offset (7 vectors)
 pub const VECTOR_AUTOVECTOR_OFFSET: Address = 0x000064;
 /// Trap exception vector offset (15 vectors)
@@ -222,28 +271,6 @@ type DecodeCache = Vec<Option<Instruction>>;
 fn empty_decode_cache() -> DecodeCache {
     vec![None; Word::MAX as usize + 1]
 }
-
-/// I-cache cache line size (68020/68030)
-pub const ICACHE_LINE_SIZE: usize = 4;
-
-/// I-cache amount of cache lines (68020/68030)
-pub const ICACHE_LINES: usize = 64;
-
-/// Clocks taken by an instruction word from the I-cache: in the cache case
-/// timings of the 68020 and 68030, the pipe takes two clocks per word
-pub const ICACHE_HIT_TICKS: Ticks = 2;
-
-/// I-cache tag marking a line as invalid
-///
-/// Tags are normally 30-bit, we keep 32.
-/// We store the line address as full width address, with the lower
-/// (index/offset) bits masked to 0. This is why this value works as an
-/// 'invalid' marker, as the lower 8 bits are normally always 0.
-pub const ICACHE_TAG_INVALID: u32 = 0xFFFF_FFFF;
-
-pub const ICACHE_TAG_MASK: Address = 0xFFFF_FF00;
-pub const ICACHE_INDEX_MASK: Address = 0x0000_00FC;
-pub const ICACHE_OFFSET_MASK: Address = 0x000_0003;
 
 #[derive(Clone, Eq, PartialEq)]
 // The point of this enum is to mostly store instructions without allocation
@@ -291,14 +318,20 @@ pub struct CpuM68k<
     const CPU_TYPE: CpuM68kType,
     const FPU_TYPE: FpuM68kType,
     const PMMU: bool,
+    TCaches,
 > where
     TBus: Bus<Address, u8> + IrqSource,
+    TCaches: CpuCaches,
 {
     /// Exception occured this step
     pub step_exception: bool,
 
     /// Trace exception must be inhibited after this instruction
     step_inhibit_trace: bool,
+
+    /// Address of the instruction of this step
+    #[serde(skip)]
+    step_start_pc: Address,
 
     /// External address/data bus
     pub bus: TBus,
@@ -374,18 +407,35 @@ pub struct CpuM68k<
     #[serde(default = "crate::cpu_m68k::pmmu::translate::atc_generation_default")]
     pub(in crate::cpu_m68k) pmmu_atc_generation: u32,
 
-    /// 68020+ I-cache lines
-    #[serde(with = "BigArray")]
-    icache_lines: [[u8; ICACHE_LINE_SIZE]; ICACHE_LINES],
+    /// Last read translations, for instruction fetches and data reads
+    #[serde(skip)]
+    pub(in crate::cpu_m68k) last_translation:
+        [crate::cpu_m68k::pmmu::translate::LastTranslation; 2],
 
-    /// 68020+ I-cache tags
-    #[serde(with = "BigArray")]
-    icache_tags: [u32; ICACHE_LINES],
+    /// Generation of the last translations, see pmmu_translation_changed()
+    #[serde(
+        skip,
+        default = "crate::cpu_m68k::pmmu::translate::xlat_generation_default"
+    )]
+    pub(in crate::cpu_m68k) pmmu_xlat_generation: u32,
+
+    /// On-chip caches
+    #[serde(default)]
+    pub(in crate::cpu_m68k) caches: TCaches,
 
     /// Register state at the beginning of an instruction to allow
     /// restarting an instruction that caused a mid-instruction
     /// bus fault.
     pub(in crate::cpu_m68k) restart_regs: Option<RestartRegisterFile>,
+
+    /// M68040: data writes of the current instruction may fault into a
+    /// write-back slot instead of aborting the instruction
+    #[serde(skip)]
+    pub(in crate::cpu_m68k) wb040_defer: bool,
+
+    /// M68040: faulted write of the current instruction
+    #[serde(skip)]
+    pub(in crate::cpu_m68k) wb040: Option<WriteBack040>,
 
     /// NMI edge trigger level
     in_nmi: bool,
@@ -397,15 +447,17 @@ impl<
     const CPU_TYPE: CpuM68kType,
     const FPU_TYPE: FpuM68kType,
     const PMMU: bool,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TCaches,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
+    TCaches: CpuCaches,
 {
     /// Instruction history size
     pub const HISTORY_SIZE: usize = 10000;
 
     pub fn new(bus: TBus) -> Self {
-        assert!([M68000, M68020, M68030].contains(&CPU_TYPE));
+        assert!([M68000, M68020, M68030, M68040].contains(&CPU_TYPE));
 
         Self {
             bus,
@@ -416,6 +468,7 @@ where
             step_ea_addr: None,
             step_exception: false,
             step_inhibit_trace: false,
+            step_start_pc: 0,
             step_ea_load: None,
             decode_cache: empty_decode_cache(),
             trace_mask: false,
@@ -429,9 +482,12 @@ where
             systrap_history_enabled: false,
             pmmu_atc: Default::default(),
             pmmu_atc_generation: atc_generation_default(),
-            icache_lines: core::array::from_fn(|_| Default::default()),
-            icache_tags: [ICACHE_TAG_INVALID; ICACHE_LINES],
+            last_translation: Default::default(),
+            pmmu_xlat_generation: crate::cpu_m68k::pmmu::translate::xlat_generation_default(),
+            caches: TCaches::default(),
             restart_regs: None,
+            wb040_defer: false,
+            wb040: None,
             in_nmi: false,
         }
     }
@@ -448,7 +504,8 @@ where
     /// Resets the CPU, loads reset vector and initial SP
     pub fn reset(&mut self) -> Result<()> {
         self.regs = RegisterFile::new();
-        self.icache_tags.fill(ICACHE_TAG_INVALID);
+        self.caches.reset();
+        self.pmmu_translation_changed();
 
         self.cycles = 0;
         self.last_bus_sync = 0;
@@ -463,6 +520,15 @@ where
         self.prefetch_refill()?;
 
         Ok(())
+    }
+
+    /// Makes the caches and memory agree before the host reads, or if
+    /// `write` writes, `len` bytes of memory at physical address `paddr`
+    pub fn host_flush(&mut self, paddr: Address, len: Address, write: bool)
+    where
+        TBus: InspectableBus<Address, Byte>,
+    {
+        self.caches.host_flush(&mut self.bus, paddr, len, write);
     }
 
     /// Tests if a breakpoint was hit
@@ -538,65 +604,26 @@ where
     fn prefetch_pump_force(&mut self) -> Result<()> {
         let fetch_addr = self.regs.pc.wrapping_add(4) & ADDRESS_MASK;
 
-        let new_item = if CPU_TYPE >= M68020 && self.regs.cacr.e() {
-            if fetch_addr & 1 != 0 {
-                // Unaligned access through I-cache raises exception
-                bail!(CpuError::AddressError(Group0Details {
-                    function_code: self.fc_program(),
-                    ir: 0,
-                    size: std::mem::size_of::<Word>(),
-                    instruction: true,
-                    read: true,
-                    address: fetch_addr,
-                    // Filled in later
-                    start_pc: 0,
-                }));
-            }
+        // The 68020 and up raise an address error on a prefetch at an odd
+        // address (MC68020UM 5.1.2)
+        if CPU_TYPE >= M68020 && fetch_addr & 1 != 0 {
+            bail!(CpuError::AddressError(Group0Details {
+                function_code: self.fc_program(),
+                ir: 0,
+                size: std::mem::size_of::<Word>(),
+                atc_fault: false,
+                instruction: true,
+                read: true,
+                address: fetch_addr,
+                // Filled in later
+                start_pc: 0,
+            }));
+        }
 
-            // We keep the tag full size so we can invalidate easily.
-            // Supervisor is used to have FC2 in the tag so invalidation across
-            // supervisor<-> user context switches occurs properly.
-            let cache_tag = (fetch_addr & ICACHE_TAG_MASK) | u32::from(self.regs.sr.supervisor());
-            let cache_idx = ((fetch_addr & ICACHE_INDEX_MASK) >> 2) as usize;
-            let cache_offset = (fetch_addr & ICACHE_OFFSET_MASK) as usize;
-            if self.icache_tags[cache_idx] == cache_tag {
-                // Cache hit
-                self.history_current.icache_hit = true;
-                self.advance_cycles(ICACHE_HIT_TICKS)?;
-                PrefetchWord::Word(u16::from_be_bytes([
-                    self.icache_lines[cache_idx][cache_offset],
-                    self.icache_lines[cache_idx][cache_offset + 1],
-                ]))
-            } else if !self.regs.cacr.f() {
-                // Cache miss, fill cache line
-                self.history_current.icache_miss = true;
-
-                let addr = fetch_addr & !ICACHE_OFFSET_MASK;
-                match self.read_ticks_program::<Long>(addr) {
-                    Ok(v) => {
-                        self.icache_lines[cache_idx] = v.to_be_bytes();
-                        self.icache_tags[cache_idx] = cache_tag;
-                        PrefetchWord::Word(u16::from_be_bytes([
-                            self.icache_lines[cache_idx][cache_offset],
-                            self.icache_lines[cache_idx][cache_offset + 1],
-                        ]))
-                    }
-                    Err(e) => prefetch_defer_fault(e, fetch_addr)?,
-                }
-            } else {
-                // Cache miss and cache frozen, normal fetch
-                self.history_current.icache_miss = true;
-                match self.read_ticks_program::<Word>(fetch_addr) {
-                    Ok(w) => PrefetchWord::Word(w),
-                    Err(e) => prefetch_defer_fault(e, fetch_addr)?,
-                }
-            }
-        } else {
-            // Cache disabled/not available
-            match self.read_ticks_program::<Word>(fetch_addr) {
-                Ok(w) => PrefetchWord::Word(w),
-                Err(e) => prefetch_defer_fault(e, fetch_addr)?,
-            }
+        // An instruction cache, if any, is behind the fetch
+        let new_item = match self.read_ticks_program::<Word>(fetch_addr) {
+            Ok(w) => PrefetchWord::Word(w),
+            Err(e) => prefetch_defer_fault(e, fetch_addr)?,
         };
         self.prefetch.push_back(new_item);
 
@@ -636,6 +663,7 @@ where
                 function_code: self.fc_program(),
                 ir: 0,
                 size: std::mem::size_of::<Word>(),
+                atc_fault: false,
                 instruction: true,
                 read: true,
                 address,
@@ -697,6 +725,7 @@ where
 
         let start_cycles = self.cycles;
         let start_pc = self.regs.pc;
+        self.step_start_pc = start_pc;
         let opcode = match self.fetch() {
             Ok(o) => o,
             Err(e) => {
@@ -743,7 +772,26 @@ where
         }
 
         let instr = self.decode_cache[opcode as usize].clone().unwrap();
+        // The M68040 restarts MOVEM and MOVE16, and faults the read-modify-write
+        // instructions on their read (M68040UM 8.4.6)
+        self.wb040_defer = CPU_TYPE == M68040
+            && !matches!(
+                instr.mnemonic,
+                InstructionMnemonic::MOVEM_mem_w
+                    | InstructionMnemonic::MOVEM_mem_l
+                    | InstructionMnemonic::MOVE16_inc
+                    | InstructionMnemonic::MOVE16_abs
+                    | InstructionMnemonic::TAS
+                    | InstructionMnemonic::CAS_b
+                    | InstructionMnemonic::CAS_w
+                    | InstructionMnemonic::CAS_l
+            );
         let execute_result = self.execute_instruction(&instr);
+        self.wb040_defer = false;
+        if execute_result.is_err() {
+            // The instruction restarts and writes again
+            self.wb040 = None;
+        }
 
         // Write history entry
         // This is done here already in case the instruction caused an
@@ -839,6 +887,16 @@ where
         };
 
         self.prefetch_refill()?;
+
+        if let Some(wb) = self.wb040.as_mut() {
+            // The instruction completed with a faulted write, the access error
+            // returns after it and carries the pending trace.
+            wb.trace = trace_exception && !self.step_inhibit_trace;
+            let mut details = wb.details;
+            details.ir = instr.data;
+            details.start_pc = start_pc;
+            self.raise_exception(ExceptionGroup::Group0, VECTOR_BUS_ERROR, Some(details))?;
+        }
 
         // Check pending trace
         if trace_exception && !self.step_inhibit_trace {
@@ -941,6 +999,7 @@ where
             M68000 => sr & M68000_SR_MASK,
             M68020 => sr & M68020_SR_MASK,
             M68030 => sr & M68030_SR_MASK,
+            M68040 => sr & M68040_SR_MASK,
             _ => unreachable!(),
         });
     }
@@ -1058,6 +1117,9 @@ where
         let start_cycles = self.cycles;
         let mut saved_sr = self.regs.sr.sr();
 
+        // Stacking faults are not deferred
+        self.wb040_defer = false;
+
         // Resume in supervisor mode
         self.regs.sr.set_supervisor(true);
         self.regs.sr.set_trace(false);
@@ -1076,6 +1138,126 @@ where
                 let details = details.expect("Address error details not passed");
 
                 match CPU_TYPE {
+                    M68040 if vector == VECTOR_ADDRESS_ERROR => {
+                        if let Some(regs) = self.restart_regs.take() {
+                            saved_sr = regs.sr.sr();
+                            regs.restore(&mut self.regs);
+                            self.regs.sr.set_supervisor(true);
+                            self.regs.sr.set_trace(false);
+                        } else {
+                            log::error!(
+                                "Cannot reset registers for stacking an address error frame"
+                            );
+                        }
+
+                        // Six word stack frame (format $2) with the address,
+                        // bit 0 cleared (M68040UM 8.4.6.7)
+                        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(12);
+                        let ssp = *self.regs.ssp();
+                        self.write_ticks(ssp.wrapping_add(0), saved_sr)?;
+                        self.write_ticks(ssp.wrapping_add(2), details.start_pc)?;
+                        self.write_ticks(
+                            ssp.wrapping_add(6),
+                            0b0010_0000_0000_0000 | (vector as u16),
+                        )?;
+                        self.write_ticks(ssp.wrapping_add(8), details.address & !1)?;
+                    }
+                    M68040 => {
+                        // A faulted write of a completed instruction waits in a
+                        // write-back slot for the handler, which returns after
+                        // the instruction. Other faults restart the instruction.
+                        let wb = self.wb040.take();
+                        let pc = if wb.is_some() {
+                            self.regs.pc
+                        } else {
+                            if let Some(regs) = self.restart_regs.take() {
+                                saved_sr = regs.sr.sr();
+                                regs.restore(&mut self.regs);
+                                self.regs.sr.set_supervisor(true);
+                                self.regs.sr.set_trace(false);
+                            } else {
+                                log::error!(
+                                    "Cannot reset registers for stacking an access error frame"
+                                );
+                            }
+                            details.start_pc
+                        };
+                        let trace = wb.is_some_and(|wb| wb.trace);
+                        let size: u16 = match details.size {
+                            1 => 0b01,
+                            2 => 0b10,
+                            16 => 0b11,
+                            // Long, and the default when the size is
+                            // not known (MMU faults)
+                            _ => 0b00,
+                        };
+
+                        // Access error stack frame (format $7), M68040UM 8.4.6.
+                        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(0x3C);
+                        let ssp = *self.regs.ssp();
+
+                        self.write_ticks(ssp.wrapping_add(0x00), saved_sr)?;
+                        self.write_ticks(ssp.wrapping_add(0x02), pc)?;
+                        self.write_ticks(
+                            ssp.wrapping_add(0x06),
+                            0b0111_0000_0000_0000 | (vector as u16),
+                        )?;
+                        // Effective address: the traced instruction with a
+                        // pending trace, else the faulted access
+                        self.write_ticks(
+                            ssp.wrapping_add(0x08),
+                            if trace {
+                                details.start_pc
+                            } else {
+                                details.address
+                            },
+                        )?;
+                        // Special status word
+                        self.write_ticks(
+                            ssp.wrapping_add(0x0C),
+                            *Ssw040::default()
+                                .with_tm(details.function_code)
+                                // Only MOVE16 has 16-byte operands
+                                .with_tt(u8::from(details.size == 16))
+                                .with_rw(details.read)
+                                .with_atc(details.atc_fault)
+                                .with_ma(wb.is_some_and(|wb| wb.ma))
+                                .with_ct(trace)
+                                .with_size(size as u8),
+                        )?;
+
+                        // Write-back slots, WB3 to WB1: status, address, data.
+                        // WB2 holds a write the MMU faulted (register aligned
+                        // data), WB1 one faulted on the bus (data on its byte
+                        // lanes, M68040UM table 8-5).
+                        let mut slots = [(0u16, 0u32, 0u32); 3];
+                        if let Some(wb) = wb {
+                            let status = 0x80 | (size << 5) | u16::from(details.function_code);
+                            slots[if details.atc_fault { 1 } else { 2 }] = (
+                                status,
+                                details.address,
+                                if details.atc_fault {
+                                    wb.data
+                                } else {
+                                    (wb.data << (32 - 8 * details.size as u32))
+                                        .rotate_right(8 * (details.address & 3))
+                                },
+                            );
+                        }
+                        for (i, &(status, _, _)) in slots.iter().enumerate() {
+                            self.write_ticks(ssp.wrapping_add(0x0E + 2 * i as Address), status)?;
+                        }
+                        // Fault address
+                        self.write_ticks(ssp.wrapping_add(0x14), details.address)?;
+                        for (i, &(_, addr, data)) in slots.iter().enumerate() {
+                            self.write_ticks(ssp.wrapping_add(0x18 + 8 * i as Address), addr)?;
+                            self.write_ticks(ssp.wrapping_add(0x1C + 8 * i as Address), data)?;
+                        }
+                        // Push data, long words 1 to 3
+                        for offset in (0x30..0x3C).step_by(4) {
+                            self.write_ticks(ssp.wrapping_add(offset), 0u32)?;
+                        }
+                    }
                     M68000 => {
                         *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(14);
                         self.write_ticks(self.regs.ssp().wrapping_add(12), self.regs.pc as u16)?;
@@ -1213,6 +1395,26 @@ where
                         self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
                         self.write_ticks(self.regs.ssp().wrapping_add(2), (pc >> 16) as u16)?;
                     }
+                    M68020..
+                        if matches!(
+                            vector,
+                            VECTOR_DIV_ZERO | VECTOR_CHK | VECTOR_TRAPV | VECTOR_TRACE
+                        ) =>
+                    {
+                        // Six word frame (format $2) with the address of the
+                        // instruction that caused the exception (M68030UM
+                        // table 8-6, M68040UM 8.4.3). TRAPcc and cpTRAPcc share
+                        // the TRAPV vector, CHK2 the CHK one.
+                        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(12);
+                        let ssp = *self.regs.ssp();
+                        self.write_ticks(ssp.wrapping_add(0), saved_sr)?;
+                        self.write_ticks(ssp.wrapping_add(2), pc)?;
+                        self.write_ticks(
+                            ssp.wrapping_add(6),
+                            0b0010_0000_0000_0000 | (vector as u16),
+                        )?;
+                        self.write_ticks(ssp.wrapping_add(8), self.step_start_pc)?;
+                    }
                     _ => {
                         *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8);
                         self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
@@ -1347,6 +1549,16 @@ where
             InstructionMnemonic::DIVU_w => self.op_divu(instr),
             InstructionMnemonic::DIVS_w => self.op_divs(instr),
             InstructionMnemonic::NOP => Ok(()),
+            // Only the 68040 has MOVE16: this also keeps the line transfers
+            // out of the other CPUs at compile time
+            InstructionMnemonic::MOVE16_inc if CPU_TYPE >= M68040 => self.op_move16_inc(instr),
+            InstructionMnemonic::MOVE16_abs if CPU_TYPE >= M68040 => self.op_move16_abs(instr),
+            InstructionMnemonic::MOVE16_inc | InstructionMnemonic::MOVE16_abs => {
+                self.op_linef(instr)
+            }
+            InstructionMnemonic::CINV | InstructionMnemonic::CPUSH => self.op_cxxx(instr),
+            InstructionMnemonic::PFLUSH040 => self.op_pflush040(),
+            InstructionMnemonic::PTEST040 => self.op_ptest040(instr),
             InstructionMnemonic::SWAP => self.op_swap(instr),
             InstructionMnemonic::TRAP => self.op_trap(instr),
             InstructionMnemonic::BTST_imm => self.op_bit::<true>(instr, None),
@@ -2748,8 +2960,8 @@ where
             return Ok(());
         }
 
-        // 68020+ version
-        let ssp = self.regs.ssp();
+        // 68010+ version
+        let ssp = *self.regs.ssp();
         let format = (self.read_ticks::<Word>(ssp.wrapping_add(6))? & 0b1111_0000_0000_0000) >> 12;
         match format {
             0b0000 => {
@@ -2760,7 +2972,15 @@ where
                 self.set_sr(sr);
                 self.set_pc(pc)?;
             }
-            0b1010 => {
+            0b0001 if CPU_TYPE >= M68020 => {
+                // Throwaway frame: its SR selects the stack holding the frame
+                // to return through (M68030UM 8.4, M68040UM figure 8-6)
+                let sr = self.read_ticks::<Word>(ssp.wrapping_add(0))?;
+                *self.regs.ssp_mut() = ssp.wrapping_add(8);
+                self.set_sr(sr);
+                return self.op_rte(_instr);
+            }
+            0b1010 if (M68020..=M68030).contains(&CPU_TYPE) => {
                 // Bus error at instruction boundary
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
@@ -2768,7 +2988,7 @@ where
                 self.set_sr(sr);
                 self.set_pc(pc)?;
             }
-            0b1011 => {
+            0b1011 if (M68020..=M68030).contains(&CPU_TYPE) => {
                 // Bus error during instruction
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
@@ -2776,7 +2996,56 @@ where
                 self.set_sr(sr);
                 self.set_pc(pc)?;
             }
-            _ => bail!("Unknown exception frame format: {:04b}", format),
+            0b0111
+                if CPU_TYPE >= M68040 && Ssw040(self.read_ticks(ssp.wrapping_add(0x0C))?).ct() =>
+            {
+                // M68040 access error with a pending trace: the frame becomes
+                // the format $2 frame of the trace exception (M68040UM 8.4.6.2)
+                let sr = self.read_ticks::<Word>(ssp.wrapping_add(0))?;
+                let pc = self.read_ticks::<Long>(ssp.wrapping_add(2))?;
+                let ea = self.read_ticks::<Long>(ssp.wrapping_add(8))?;
+                let ssp = ssp.wrapping_add(0x30);
+                *self.regs.ssp_mut() = ssp;
+                self.write_ticks(ssp.wrapping_add(0), sr)?;
+                self.write_ticks(ssp.wrapping_add(2), pc)?;
+                self.write_ticks(
+                    ssp.wrapping_add(6),
+                    0b0010_0000_0000_0000 | VECTOR_TRACE as u16,
+                )?;
+                self.write_ticks(ssp.wrapping_add(8), ea)?;
+                let new_pc = self.read_ticks::<Long>(self.regs.vbr.wrapping_add(VECTOR_TRACE))?;
+                self.set_pc(new_pc)?;
+            }
+            0b0010 if CPU_TYPE >= M68020 => {
+                // Six word frame
+                let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
+                let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(12);
+                self.set_sr(sr);
+                self.set_pc(pc)?;
+            }
+            0b0011 if CPU_TYPE >= M68040 => {
+                // M68040 floating-point post-instruction, six words (M68040UM 8.4.4)
+                let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
+                let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(12);
+                self.set_sr(sr);
+                self.set_pc(pc)?;
+            }
+            0b0111 if CPU_TYPE >= M68040 => {
+                // M68040 access error
+                let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
+                let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(0x3C);
+                self.set_sr(sr);
+                self.set_pc(pc)?;
+            }
+            0b1001 if (M68020..=M68030).contains(&CPU_TYPE) => {
+                bail!("Coprocessor mid-instruction frame not supported")
+            }
+            0b1000 if CPU_TYPE == M68010 => bail!("68010 bus error frame not supported"),
+            // Not a frame of this CPU
+            _ => return self.raise_exception(ExceptionGroup::Group2, VECTOR_FORMAT_ERROR, None),
         }
 
         self.prefetch_refill()?;
@@ -3217,6 +3486,133 @@ where
         Ok(())
     }
 
+    /// Transfers one 16-byte line from one physical address to another (MOVE16)
+    fn move16_transfer(&mut self, src: Address, dest: Address) -> Result<()> {
+        // The low four address bits are ignored: the transfer is always of an
+        // aligned 16-byte line. The whole line is read before any of it is
+        // written.
+        let line = self
+            .line_ticks(src, None)
+            .map_err(|e| Self::move16_fault(e, src))?;
+        self.line_ticks(dest, Some(&line))
+            .map_err(|e| Self::move16_fault(e, dest))?;
+        Ok(())
+    }
+
+    /// A MOVE16 access faults as a whole line, at the address the
+    /// instruction gave (M68040UM 8.4.6.4)
+    fn move16_fault(e: anyhow::Error, addr: Address) -> anyhow::Error {
+        match e.downcast_ref() {
+            Some(CpuError::BusError(details)) => anyhow!(CpuError::BusError(Group0Details {
+                size: 16,
+                address: addr,
+                ..*details
+            })),
+            _ => e,
+        }
+    }
+
+    /// MOVE16 (Ax)+,(Ay)+
+    fn op_move16_inc(&mut self, instr: &Instruction) -> Result<()> {
+        instr.fetch_extword(|| self.fetch())?;
+
+        let ax = instr.get_op2();
+        let ay = usize::from((u16::from(instr.get_extword()) >> 12) & 0b111);
+        let src = self.regs.read_a::<Address>(ax);
+        let dest = self.regs.read_a::<Address>(ay);
+
+        self.prefetch_pump()?;
+        self.move16_transfer(src, dest)?;
+
+        // Both registers are incremented by 16, but if they are the same
+        // register it is only incremented once.
+        self.regs.write_a(ax, src.wrapping_add(16));
+        if ax != ay {
+            self.regs.write_a(ay, dest.wrapping_add(16));
+        }
+
+        Ok(())
+    }
+
+    /// MOVE16 (absolute modes)
+    fn op_move16_abs(&mut self, instr: &Instruction) -> Result<()> {
+        let to_absolute = instr.data & (1 << 3) == 0;
+        let postinc = instr.data & (1 << 4) == 0;
+
+        let an = instr.get_op2();
+        let anaddr = self.regs.read_a::<Address>(an);
+        let absaddr = ((self.fetch_pump()? as Address) << 16) | self.fetch_pump()? as Address;
+
+        self.prefetch_pump()?;
+        if to_absolute {
+            self.move16_transfer(anaddr, absaddr)?;
+        } else {
+            self.move16_transfer(absaddr, anaddr)?;
+        }
+
+        if postinc {
+            self.regs.write_a(an, anaddr.wrapping_add(16));
+        }
+
+        Ok(())
+    }
+
+    /// CINV/CPUSH
+    fn op_cxxx(&mut self, instr: &Instruction) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            return self.raise_privilege_violation();
+        }
+
+        // Cache field: 01 = data, 10 = instruction, 11 = both
+        let caches = match (instr.data >> 6) & 0b11 {
+            0b01 => CacheSelect::Data,
+            0b10 => CacheSelect::Instruction,
+            0b11 => CacheSelect::Both,
+            _ => return Ok(()),
+        };
+        let scope = match (instr.data >> 3) & 0b11 {
+            0b01 => CacheScope::Line,
+            0b10 => CacheScope::Page(1 << self.mmu040_page_shift()),
+            0b11 => CacheScope::All,
+            _ => return Ok(()),
+        };
+        let push = instr.data & (1 << 5) != 0;
+        let paddr = self.regs.read_a::<Address>(instr.get_op2());
+        let mut ticks = 0;
+        self.caches.invalidate(
+            &mut bus_transaction!(self, &mut ticks),
+            caches,
+            scope,
+            paddr,
+            push,
+        )?;
+        self.advance_cycles(ticks)
+    }
+
+    /// PFLUSH/PFLUSHN/PFLUSHA/PFLUSHAN (M68040)
+    fn op_pflush040(&mut self) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            return self.raise_privilege_violation();
+        }
+
+        // Just conservatively flush the entire ATC
+        // TODO targetted flushing (I dont think it matters on the Mac)
+        self.pmmu_cache_invalidate();
+        Ok(())
+    }
+
+    /// PTESTR/PTESTW (M68040)
+    fn op_ptest040(&mut self, instr: &Instruction) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            return self.raise_privilege_violation();
+        }
+
+        // The address space to search comes from DFC, the address from An.
+        let fc = (self.regs.dfc & 0b111) as u8;
+        let vaddr = self.regs.read_a::<Address>(instr.get_op2());
+        self.mmu040_ptest(fc, vaddr)
+    }
+
     /// MOVEC
     fn op_movec(&mut self, instr: &Instruction) -> Result<()> {
         // Bus access and cycles are an approximation based on UM/PRM
@@ -3228,40 +3624,43 @@ where
             return self.raise_privilege_violation();
         }
 
+        let ctrlreg = match instr.movec_ctrlreg() {
+            Ok(reg) if reg.exists_on(CPU_TYPE) => reg,
+            _ => return self.raise_illegal_instruction(),
+        };
+
         if instr.movec_ctrl_to_gen() {
-            let val = self.regs.read::<Long>(instr.movec_ctrlreg()?.into());
+            let val = self.regs.read::<Long>(ctrlreg.into());
             self.regs.write(instr.movec_reg(), val);
             self.advance_cycles(4)?;
         } else {
             let val = self.regs.read::<Long>(instr.movec_reg());
-            let destreg: Register = instr.movec_ctrlreg()?.into();
+            let destreg: Register = ctrlreg.into();
 
             if destreg == Register::CACR {
                 // Cache operations
                 let mask = match CPU_TYPE {
                     M68020 => M68020_CACR_MASK,
                     M68030 => M68030_CACR_MASK,
+                    M68040 => M68040_CACR_MASK,
                     _ => unreachable!(),
                 };
-                let val = RegisterCACR(val);
-
-                // I-cache operations
-                if val.c() {
-                    // Full clear
-                    self.icache_tags.fill(ICACHE_TAG_INVALID);
-                }
-                if val.ce() {
-                    // Clear specified index
-                    let index = ((self.regs.caar & ICACHE_INDEX_MASK) >> 2) as usize;
-                    self.icache_tags[index] = ICACHE_TAG_INVALID;
-                }
-
-                // TODO 68030 D-cache
-
-                self.regs
-                    .write(destreg, val.with_c(false).with_ce(false).0 & mask);
+                // The caches run the cache operations and say what stays
+                let val = self.caches.write_cacr(val, self.regs.caar);
+                self.regs.write(destreg, val & mask);
             } else {
                 self.regs.write(destreg, val);
+                self.pmmu_translation_changed();
+
+                if CPU_TYPE >= M68040
+                    && matches!(
+                        destreg,
+                        Register::TC040 | Register::SRP040 | Register::URP040
+                    )
+                {
+                    self.pmmu_cache_invalidate();
+                    self.pmmu_cache_ensure();
+                }
             }
             self.advance_cycles(2)?;
         }
@@ -3287,7 +3686,7 @@ where
 
         if dir_mem_to_reg {
             // Memory to register transfer
-            let value = self.read_ticks_generic::<T, false>(self.regs.sfc as u8, ea)?;
+            let value = self.read_ticks_generic::<T>(AccessKind::Data, self.regs.sfc as u8, ea)?;
 
             if is_addr_reg {
                 // Memory to address register - sign extend
@@ -3310,7 +3709,8 @@ where
                 self.regs.read_d::<T>(reg_num as usize)
             };
 
-            self.write_ticks_order_generic::<T, TORDER_LOWHIGH, false>(
+            self.write_ticks_order_generic::<T, TORDER_LOWHIGH>(
+                AccessKind::Data,
                 self.regs.dfc as u8,
                 ea,
                 value,
@@ -4284,9 +4684,11 @@ impl<
     const CPU_TYPE: CpuM68kType,
     const FPU_TYPE: FpuM68kType,
     const PMMU: bool,
-> Tickable for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TCaches,
+> Tickable for CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
+    TCaches: CpuCaches,
 {
     fn tick(&mut self, _ticks: Ticks, _: ()) -> Result<Ticks> {
         self.step()?;

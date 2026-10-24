@@ -1,5 +1,6 @@
 //! M68851 PMMU - Opcode implementations
 
+use crate::cpu_m68k::cache::CpuCaches;
 use crate::cpu_m68k::{FpuM68kType, M68030};
 use anyhow::{Result, bail};
 
@@ -20,11 +21,14 @@ impl<
     const CPU_TYPE: CpuM68kType,
     const FPU_TYPE: FpuM68kType,
     const PMMU: bool,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TCaches,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
+    TCaches: CpuCaches,
 {
     pub(in crate::cpu_m68k) fn op_pop_000(&mut self, instr: &Instruction) -> Result<()> {
+        self.pmmu_translation_changed();
         if !PMMU {
             return self.op_linef(instr);
         }

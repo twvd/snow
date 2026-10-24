@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use super::audio::AudioState;
 use super::video::Video;
 use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_byte_lane, bus_access_word};
-use crate::bus::native_clock::{DeviceCycle, NativeClock};
+use crate::bus::native_clock::{C8M_PER_VIA, DeviceCycle, NativeClock};
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -116,7 +116,7 @@ pub struct CompactMacBus<TRenderer: Renderer> {
     pub(crate) speed: EmulatorSpeed,
 
     /// Counts clock ticks at native frequency, regardless of overclocking
-    native_clock: NativeClock,
+    native_clock: NativeClock<false>,
 
     /// Last pushed audio sample
     last_audiosample: u8,
@@ -222,7 +222,7 @@ where
             overlay: true,
             map: build_map(model),
             speed: EmulatorSpeed::Accurate,
-            native_clock: NativeClock::new(BUS_FREQUENCY, 10),
+            native_clock: NativeClock::new(BUS_FREQUENCY),
             last_audiosample: 0,
             vblank_time: Instant::now(),
             progkey_pressed: LatchingEvent::default(),
@@ -276,7 +276,7 @@ where
             .unwrap_or_else(|_| null_audio_sink());
         self.audio.set_sink(sink);
 
-        self.scsi.set_audio_provider(provider)
+        self.scsi.bus_mut().set_audio_provider(provider)
     }
 
     fn soundbuf(&mut self) -> &mut [u8] {
@@ -625,7 +625,7 @@ where
     /// VIA tick, the cycle takes a full E period, of 10 native ticks
     /// (MC68000 User's Manual, Appendix B).
     fn vpa_cycle(&mut self, acc: BusAccess<Bus68000>, region: Region) -> BusResponse {
-        let w = match self.native_clock.via_sync(&acc) {
+        let w = match self.native_clock.via_sync(&acc, C8M_PER_VIA) {
             DeviceCycle::Stall(n) => return BusResponse::Stall(n),
             DeviceCycle::Access(w) => w,
         };
@@ -787,11 +787,7 @@ where
             self.openbus[(acc.addr & 1) as usize] = val as Byte;
         }
 
-        Ok(BusResponse::Ack {
-            width: 2,
-            data,
-            waits,
-        })
+        Ok(BusResponse::ack(2, data, waits))
     }
 
     fn reset(&mut self, hard: bool) -> Result<bool> {

@@ -45,6 +45,18 @@ impl CpuBus for Bus68020 {
     const CYCLE: Ticks = 3;
 }
 
+/// 68040: 32-bit data bus. The 68040 has no dynamic bus sizing, the glue
+/// logic of the machine sizes the cycles to narrower ports for it.
+#[derive(Clone, Copy, Debug)]
+pub struct Bus68040;
+
+impl CpuBus for Bus68040 {
+    const WIDTH: u32 = 4;
+    const DYN_SIZING: bool = true;
+    // Two BCLKs without wait states (MC68040UM 7.4.1)
+    const CYCLE: Ticks = 2;
+}
+
 /// One bus cycle as presented by the CPU, on the data bus `C` of the CPU
 #[derive(Clone, Copy, Debug)]
 pub struct BusAccess<C> {
@@ -59,6 +71,9 @@ pub struct BusAccess<C> {
     // pub fc: u8,
     /// CPU cycles elapsed since the bus was last ticked
     pub pending: Ticks,
+    /// One long word of a line transfer, which the CPU would like to run as
+    /// a burst
+    pub burst: bool,
     /// Label with CPU type for compile time checking
     _cpu: PhantomData<C>,
 }
@@ -77,6 +92,7 @@ impl<C: CpuBus> BusAccess<C> {
             write: false,
             // fc,
             pending,
+            burst: false,
             _cpu: PhantomData,
         }
     }
@@ -95,6 +111,7 @@ impl<C: CpuBus> BusAccess<C> {
             write: true,
             // fc,
             pending,
+            burst: false,
             _cpu: PhantomData,
         }
     }
@@ -112,12 +129,28 @@ pub enum BusResponse {
         data: u32,
         /// Wait states of the cycle, in CPU cycles
         waits: Ticks,
+        /// The port can't burst (TBI): the CPU runs the rest of a line
+        /// transfer as single cycles
+        burst_reject: bool,
     },
     /// The port can't take the cycle yet: the CPU waits this many cycles,
     /// with the bus ticked through them, then presents the cycle again
     Stall(Ticks),
     /// BERR
     BusError,
+}
+
+impl BusResponse {
+    /// DSACK of a port of `width` bytes
+    pub const fn ack(width: u32, data: u32, waits: Ticks) -> Self {
+        Self::Ack {
+            width,
+            data,
+            waits,
+            // By default we don't do burst, the bus will clear this if it can
+            burst_reject: true,
+        }
+    }
 }
 
 /// Mask for the low `bytes` bytes
@@ -222,20 +255,12 @@ pub fn bus_access<const BUS_W: u32, const DEV_W: u32, const OFFSET: u32, C: CpuB
             if write(dev, acc.addr, acc.size, acc.data).is_none() {
                 return BusResponse::BusError;
             }
-            return BusResponse::Ack {
-                width: BUS_W,
-                data: 0,
-                waits,
-            };
+            return BusResponse::ack(BUS_W, 0, waits);
         }
         let Some(val) = read(dev, acc.addr, acc.size) else {
             return BusResponse::BusError;
         };
-        return BusResponse::Ack {
-            width: BUS_W,
-            data: val & mask(acc.size),
-            waits,
-        };
+        return BusResponse::ack(BUS_W, val & mask(acc.size), waits);
     }
 
     // Figure out the lanes...
@@ -285,11 +310,7 @@ pub fn bus_access<const BUS_W: u32, const DEV_W: u32, const OFFSET: u32, C: CpuB
         if write(dev, base + lo, hi - lo, val).is_none() {
             return BusResponse::BusError;
         }
-        BusResponse::Ack {
-            width: BUS_W,
-            data: 0,
-            waits,
-        }
+        BusResponse::ack(BUS_W, 0, waits)
     } else {
         // We hit the device even if it's not "in_transfer" because while
         // we might ignore the returned data, the read can have side effects
@@ -307,12 +328,12 @@ pub fn bus_access<const BUS_W: u32, const DEV_W: u32, const OFFSET: u32, C: CpuB
         // Device bytes on their lanes, the other lanes of the port floating
         let shift = 8 * (BUS_W - hi);
         let lanes = (mask(BUS_W) & !(mask(hi - lo) << shift)) | ((val & mask(hi - lo)) << shift);
-        BusResponse::Ack {
-            width: BUS_W,
+        BusResponse::ack(
+            BUS_W,
             // Bytes of the transfer, right-aligned
-            data: (lanes >> (8 * (BUS_W - start - len))) & mask(len),
+            (lanes >> (8 * (BUS_W - start - len))) & mask(len),
             waits,
-        }
+        )
     }
 }
 

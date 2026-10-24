@@ -83,6 +83,7 @@ impl DisassemblyWidget {
             | MacModel::MacIIcx
             | MacModel::SE30 => 0x40000,
             MacModel::Classic => 0x80000,
+            MacModel::Quadra700 => 0x100000,
             _ => 0x200000,
         };
 
@@ -93,6 +94,7 @@ impl DisassemblyWidget {
             MacModel::Portable => Some("MacPortableROM"),
             MacModel::Classic => Some("MacClassicROM"),
             MacModel::MacII => Some("MacIIROM"),
+            MacModel::Quadra700 => Some("MacQuadra700ROM"),
             MacModel::MacIIFDHD | MacModel::MacIIx | MacModel::MacIIcx | MacModel::SE30 => {
                 Some("MacIIxROM")
             }

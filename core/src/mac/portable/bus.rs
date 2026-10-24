@@ -6,7 +6,7 @@ use super::pmgr::Pmgr;
 use super::via::Via;
 use super::video::Video;
 use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_byte_lane, bus_access_word};
-use crate::bus::native_clock::{DeviceCycle, NativeClock, WaitTicks};
+use crate::bus::native_clock::{C16M_PER_VIA, DeviceCycle, NativeClock, WaitTicks};
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -197,7 +197,7 @@ where
             ram: vec![0; ram_size],
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             via: Via::new(),
-            pmgr_clock: NativeClock::new(BUS_FREQUENCY, 20),
+            pmgr_clock: NativeClock::new(BUS_FREQUENCY),
             video: Video::new(renderer),
             scc: Scc::new(),
             scc_ready: 0,
@@ -210,7 +210,7 @@ where
             overlay: true,
             map: build_map(model),
             speed: EmulatorSpeed::Accurate,
-            native_clock: NativeClock::new(BUS_FREQUENCY, 20),
+            native_clock: NativeClock::new(BUS_FREQUENCY),
             vblank_time: Instant::now(),
             vblank_clock: 0,
             progkey_pressed: LatchingEvent::default(),
@@ -255,7 +255,7 @@ where
             .unwrap_or_else(|_| null_audio_sink());
         self.asc.set_sink(sink);
 
-        self.scsi.set_audio_provider(provider)
+        self.scsi.bus_mut().set_audio_provider(provider)
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -385,7 +385,7 @@ where
     /// an access is synchronous with the VIA clock: it starts on a VIA tick
     /// and lasts a VIA clock cycle, as on the Mac II.
     fn via_cycle(&mut self, acc: BusAccess<Bus68000>) -> BusResponse {
-        match self.native_clock.via_sync(&acc) {
+        match self.native_clock.via_sync(&acc, C16M_PER_VIA / 2) {
             DeviceCycle::Stall(n) => BusResponse::Stall(n),
             DeviceCycle::Access(w) => {
                 bus_access_byte_lane::<2, 0, _, _>(acc, w, self, Self::via_read, Self::via_write)
@@ -689,11 +689,7 @@ where
             }
         };
 
-        Ok(BusResponse::Ack {
-            width: 2,
-            data,
-            waits,
-        })
+        Ok(BusResponse::ack(2, data, waits))
     }
 
     fn reset(&mut self, hard: bool) -> Result<bool> {

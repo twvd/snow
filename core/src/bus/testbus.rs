@@ -40,6 +40,8 @@ pub struct Testbus<TA: PrimInt + WrappingAdd + Hash + Debug, TD: PrimInt, C> {
     _cpu: PhantomData<C>,
     /// Port widths for sized accesses, the CPU's data bus width elsewhere
     pub port_widths: Vec<(RangeInclusive<Address>, u32)>,
+    /// Ranges that answer with a bus error
+    pub bus_errors: Vec<RangeInclusive<Address>>,
 }
 
 impl<TA, TD, C> Testbus<TA, TD, C>
@@ -58,6 +60,7 @@ where
             irq_level: None,
             _cpu: PhantomData,
             port_widths: vec![],
+            bus_errors: vec![],
         }
     }
 
@@ -118,6 +121,9 @@ where
     }
 
     fn access(&mut self, acc: BusAccess<C>) -> Result<BusResponse> {
+        if self.bus_errors.iter().any(|r| r.contains(&acc.addr)) {
+            return Ok(BusResponse::BusError);
+        }
         let width = self
             .port_widths
             .iter()
@@ -135,11 +141,7 @@ where
                 data = (data << 8) | val.to_u32().unwrap();
             }
         }
-        Ok(BusResponse::Ack {
-            width,
-            data,
-            waits: 0,
-        })
+        Ok(BusResponse::ack(width, data, 0))
     }
 
     fn reset(&mut self, _hard: bool) -> Result<bool> {
