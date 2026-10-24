@@ -9,6 +9,7 @@ use anyhow::{Result, anyhow, bail};
 use eframe::egui;
 use sha2::{Digest, Sha256};
 use snow_core::emulator::MouseMode;
+use snow_core::mac::maclc::video as lc_video;
 use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{MacModel, MacMonitor, NubusDeviceKind};
 use strum::IntoEnumIterator;
@@ -211,6 +212,7 @@ impl ModelSelectionDialog {
         self.update_display_rom_requirement();
 
         self.init_args.ram_size = None;
+        self.init_args.vram_size = None;
 
         // Load from last used ROMs if possible
         if let Some((_, path)) = self
@@ -564,6 +566,48 @@ impl ModelSelectionDialog {
                         ui.end_row();
                     }
                 }
+                if matches!(
+                    self.selected_model,
+                    MacModel::LC | MacModel::LCII | MacModel::LCIII
+                ) {
+                    if !lc_video::monitors(self.selected_model).contains(&self.selected_monitor) {
+                        self.selected_monitor = MacMonitor::default();
+                    }
+                    ui.label("Monitor");
+                    egui::ComboBox::new(egui::Id::new("Select LC monitor"), "")
+                        .selected_text(format!("{}", self.selected_monitor))
+                        .show_ui(ui, |ui| {
+                            for &monitor in lc_video::monitors(self.selected_model) {
+                                ui.selectable_value(
+                                    &mut self.selected_monitor,
+                                    monitor,
+                                    monitor.to_string(),
+                                );
+                            }
+                        });
+                    ui.end_row();
+
+                    ui.label("Video RAM");
+                    egui::ComboBox::new(egui::Id::new("Select LC video RAM"), "")
+                        .selected_text(format_ram(
+                            self.init_args.vram_size.unwrap_or_else(|| {
+                                lc_video::vram_size_default(self.selected_model)
+                            }),
+                        ))
+                        .show_ui(ui, |ui| {
+                            for &sz in lc_video::vram_sizes(self.selected_model) {
+                                ui.selectable_value(
+                                    &mut self.init_args.vram_size,
+                                    Some(sz),
+                                    format_ram(sz),
+                                );
+                            }
+                        });
+                    ui.end_row();
+
+                    ui.checkbox(&mut self.init_args.fpu_enabled, "Enable 68882 FPU");
+                    ui.end_row();
+                }
                 if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
                     ui.checkbox(&mut self.init_args.pmmu_enabled, "Enable 68851 PMMU");
                 }
@@ -719,6 +763,13 @@ impl ModelSelectionDialog {
                         if !matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
                             self.init_args.pmmu_enabled = false;
                         }
+                        if !matches!(
+                            self.selected_model,
+                            MacModel::LC | MacModel::LCII | MacModel::LCIII
+                        ) {
+                            self.init_args.fpu_enabled = false;
+                            self.init_args.vram_size = None;
+                        }
 
                         self.result = Some(ModelSelectionResult {
                             model: self.selected_model,
@@ -741,7 +792,11 @@ impl ModelSelectionDialog {
                                 Some(PathBuf::from(&self.extension_rom_path))
                             },
                             init_args: EmulatorInitArgs {
-                                monitor: if self.display_rom_required {
+                                monitor: if self.display_rom_required
+                                    || matches!(
+                                        self.selected_model,
+                                        MacModel::LC | MacModel::LCII | MacModel::LCIII
+                                    ) {
                                     Some(self.selected_monitor)
                                 } else {
                                     None

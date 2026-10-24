@@ -238,7 +238,7 @@ impl Swim {
     /// the real hardware: the accesses are held to be at least
     /// OVERCLOCK_ACCESS_INTERVAL_NS apart. Without overclocking, nothing is
     /// held.
-    pub fn hold(&mut self, clock: &NativeClock) -> Ticks {
+    pub fn hold<const C16M: bool>(&mut self, clock: &NativeClock<C16M>) -> Ticks {
         if !clock.is_overclocking() {
             return 0;
         }
@@ -268,6 +268,18 @@ impl Swim {
                 // ???
                 0
             }
+        }
+    }
+
+    /// Time the ISM needs between two accesses, in FCLK cycles: "the time
+    /// between successive chip accesses must be no less than 4 FCLKs (if the
+    /// Setup register's FCLK/2 bit is "0") or 8 FCLKs (if FCLK/2 is "1")"
+    /// (SWIM Chip User's Reference, 1988).
+    pub fn ism_recovery(&self) -> Ticks {
+        match (self.ism_mode.ism(), self.ism_setup.fclk_div2()) {
+            (false, _) => 0,
+            (true, false) => 4,
+            (true, true) => 8,
         }
     }
 
