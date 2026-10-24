@@ -35,10 +35,6 @@ use bit_set::BitSet;
 use log::*;
 use serde::{Deserialize, Serialize};
 
-/// Wait states of a bus cycle on the Sonora, where every cycle runs on a
-/// 32-bit port
-const BUS_WAITS: Ticks = 1;
-
 /// Frequency of the bus of the LC and LC II, without overclocking: C16M,
 /// which the CPU runs at
 const V8_BUS_FREQUENCY: Ticks = 15_667_200;
@@ -435,22 +431,35 @@ where
         }
     }
 
-    /// Width in bytes and wait states of the port answering a region. The
-    /// RAM and video RAM data buses of the V8 are 16-bit, the ROM is 32-bit
-    /// and the rest of the devices 8-bit. The V8 takes RAM writes as a
-    /// 32-bit port, and writes the RAM in 16-bit halves after. The Sonora
-    /// runs every cycle on a 32-bit port.
+    /// Width in bytes and wait states of the port answering a region.
+    ///
+    /// The RAM and video RAM data buses of the V8 are 16-bit, the ROM is
+    /// 32-bit. The V8 takes RAM writes as a 32-bit port, and writes the RAM
+    /// in 16-bit halves after. The Sonora has a 32-bit RAM and ROM and a
+    /// 16-bit video RAM. The I/O devices are on D31-D24, as an 8-bit port, on
+    /// both.
     ///
     /// The wait states of the V8 RAM are those of a cycle that starts on a
     /// slot: v8_slot_waits() adds the rest.
     fn port(&self, region: &Region, write: bool) -> (u32, Ticks) {
         match (&self.gate_array, region) {
+            (_, Region::Io(offset)) => (1, self.io_waits(*offset, write)),
             (GateArray::V8, Region::Ram(_)) if write => (4, 0),
             (GateArray::V8, Region::Ram(_) | Region::Vram(_)) => (2, v8::RAM_WAITS),
             (GateArray::V8, Region::Rom) => (4, v8::ROM_WAITS),
-            (GateArray::V8, Region::Io(offset)) => (1, v8::io_waits(*offset, write)),
-            (GateArray::V8, Region::CpuId(_)) => (1, IO_WAITS),
-            (GateArray::Sonora { .. }, _) => (4, BUS_WAITS),
+            (GateArray::Sonora { .. }, Region::Ram(_)) if write => (4, sonora::RAM_WRITE_WAITS),
+            (GateArray::Sonora { .. }, Region::Ram(_)) => (4, sonora::RAM_READ_WAITS),
+            (GateArray::Sonora { .. }, Region::Rom) => (4, sonora::ROM_WAITS),
+            (GateArray::Sonora { .. }, Region::Vram(_)) => (2, sonora::VRAM_WAITS),
+            (_, Region::CpuId(_)) => (4, IO_WAITS),
+        }
+    }
+
+    /// Wait states of an I/O cycle
+    fn io_waits(&self, offset: Address, write: bool) -> Ticks {
+        match self.gate_array {
+            GateArray::V8 => v8::io_waits(offset, write),
+            GateArray::Sonora { .. } => sonora::io_waits(offset, write),
         }
     }
 
