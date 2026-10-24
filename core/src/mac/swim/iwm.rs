@@ -4,7 +4,6 @@ use anyhow::Result;
 use log::*;
 use num::clamp;
 use proc_bitfield::bitfield;
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use snow_floppy::{TrackLength, TrackType};
 
@@ -260,7 +259,7 @@ impl Swim {
             // This is sometimes called 'weak bits'. Some copy protection schemes rely on
             // this phenomenon.
             self.iwm_zeroes += 1;
-            if self.iwm_zeroes > 4 && rand::rng().random() {
+            if self.iwm_zeroes > 4 && self.weak_bit_rng.random_bool() {
                 self.shdata |= 1;
             }
         }
