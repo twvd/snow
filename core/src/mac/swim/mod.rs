@@ -315,6 +315,18 @@ impl Swim {
         }
     }
 
+    /// Time the ISM needs between two accesses, in FCLK cycles: "the time
+    /// between successive chip accesses must be no less than 4 FCLKs (if the
+    /// Setup register's FCLK/2 bit is "0") or 8 FCLKs (if FCLK/2 is "1")"
+    /// (SWIM Chip User's Reference, 1988).
+    pub fn ism_recovery(&self) -> Ticks {
+        match (self.ism_mode.ism(), self.ism_setup.fclk_div2()) {
+            (false, _) => 0,
+            (true, false) => 4,
+            (true, true) => 8,
+        }
+    }
+
     pub fn is_writing(&self) -> bool {
         self.write_buffer.is_some()
     }

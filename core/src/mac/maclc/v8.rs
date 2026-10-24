@@ -27,6 +27,12 @@ pub(super) const RAM_WAITS: Ticks = RAM_CYCLE - Bus68020::CYCLE;
 /// Wait states of a ROM bus cycle
 pub(super) const ROM_WAITS: Ticks = 2;
 
+/// Native ticks from the start of an SCC cycle to the start of the next one
+pub(super) const SCC_INTERVAL: Ticks = 43;
+/// Native ticks from the start of a SWIM cycle to the start of the next one
+/// in ISM mode
+pub(super) const SWIM_INTERVAL: Ticks = 13;
+
 /// Start of the window of the video RAM
 const VRAM_BASE: Address = 0xF4_0000;
 
