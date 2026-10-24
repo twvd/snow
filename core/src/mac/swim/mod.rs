@@ -7,10 +7,12 @@ pub mod drive;
 pub mod ism;
 pub mod iwm;
 
+use std::cell::Cell;
 use std::collections::VecDeque;
 
 use anyhow::{Result, bail};
 use ism::{IsmError, IsmSetup, IsmStatus};
+use rand::Rng;
 
 use drive::{DriveType, FloppyDrive};
 use iwm::{IwmMode, IwmStatus};
@@ -29,6 +31,35 @@ use crate::types::LatchingEvent;
 /// to, in ns. Any closer, and the polling loops of the Sony driver run out
 /// before the drive has answered.
 const OVERCLOCK_ACCESS_INTERVAL_NS: Ticks = 1500;
+
+/// Source of randomness for floppy analogue noise
+///
+/// Unseeded, this draws from the thread RNG. Once seeded, it produces a
+/// deterministic sequence (SplitMix64) so runs can be reproduced.
+#[derive(Serialize, Deserialize, Default)]
+pub(crate) struct WeakBitRng {
+    state: Cell<Option<u64>>,
+}
+
+impl WeakBitRng {
+    pub(crate) fn seed(&self, seed: Option<u64>) {
+        self.state.set(seed);
+    }
+
+    pub(crate) fn random_bool(&self) -> bool {
+        let Some(mut state) = self.state.get() else {
+            return rand::rng().random();
+        };
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        self.state.set(Some(state));
+
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        z & (1 << 63) != 0
+    }
+}
 
 enum FluxTransitionTime {
     /// 1
@@ -131,6 +162,7 @@ pub struct Swim {
     shdata: u8,
     datareg: u8,
     iwm_zeroes: usize,
+    weak_bit_rng: WeakBitRng,
     write_shift: u8,
     write_pos: usize,
     write_buffer: Option<u8>,
@@ -195,6 +227,7 @@ impl Swim {
             shdata: 0,
             datareg: 0,
             iwm_zeroes: 0,
+            weak_bit_rng: WeakBitRng::default(),
             write_shift: 0,
             write_pos: 0,
             write_buffer: None,
@@ -221,6 +254,17 @@ impl Swim {
             enable: false,
             dbg_pc: 0,
             dbg_break: LatchingEvent::default(),
+        }
+    }
+
+    /// Seeds the random number generators used for floppy noise (weak bits).
+    /// `None` reverts to non-deterministic randomness.
+    pub fn seed_weak_bits(&mut self, seed: Option<u64>) {
+        self.weak_bit_rng.seed(seed);
+        for (i, drive) in self.drives.iter().enumerate() {
+            drive
+                .weak_bit_rng
+                .seed(seed.map(|s| s.wrapping_add(i as u64 + 1)));
         }
     }
 

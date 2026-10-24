@@ -1329,6 +1329,9 @@ impl Tickable for Emulator {
                             c.bus.video.debug_framebuffers = v;
                         }
                     }
+                    EmulatorCommand::SetFloppyWeakBitsSeed(seed) => {
+                        self.config.swim_mut().seed_weak_bits(seed);
+                    }
                     EmulatorCommand::SetFloppyRpmAdjustment(drive, adjustment) => {
                         if drive < self.config.swim_mut().drives.len() {
                             self.config.swim_mut().drives[drive].rpm_adjustment = adjustment;

@@ -4,12 +4,12 @@ use anyhow::Result;
 use log::*;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use snow_floppy::flux::FluxTicks;
 use snow_floppy::{Floppy, FloppyImage, FloppyType, TrackLength, TrackType};
 use strum::Display;
 
+use super::WeakBitRng;
 use crate::debuggable::Debuggable;
 use crate::tickable::Ticks;
 use crate::{dbgprop_bool, dbgprop_enum, dbgprop_sdec, dbgprop_udec};
@@ -260,6 +260,9 @@ pub(crate) struct FloppyDrive {
     /// Cached ticks-per-bit
     ticks_per_bit: Ticks,
 
+    /// Noise source for garbage read while the drive is not ready
+    pub(super) weak_bit_rng: WeakBitRng,
+
     /// Source file path of the currently inserted image, if it was loaded
     /// from a writeback-capable file. Cleared on eject.
     #[serde(skip)]
@@ -313,6 +316,7 @@ impl FloppyDrive {
             pwm_dutycycle: 0,
             rpm_adjustment: 0,
             ticks_per_bit: Ticks::MAX,
+            weak_bit_rng: WeakBitRng::default(),
 
             image_path: None,
             writeback_enabled: false,
@@ -605,7 +609,7 @@ impl FloppyDrive {
 
         // Garbage if drive is not yet ready
         if self.not_ready > self.cycles {
-            return rand::rng().random();
+            return self.weak_bit_rng.random_bool();
         }
 
         match self.floppy.get_track_type(head, track) {

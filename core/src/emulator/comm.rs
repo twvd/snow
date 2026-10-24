@@ -100,6 +100,9 @@ pub enum EmulatorCommand {
     SaveState(PathBuf, Option<Vec<u8>>),
     SetDebugFramebuffers(bool),
     SetFloppyRpmAdjustment(usize, i32),
+    /// Seeds the floppy noise (weak bits) RNG for deterministic behaviour.
+    /// `None` reverts to non-deterministic randomness.
+    SetFloppyWeakBitsSeed(Option<u64>),
     #[serde(skip)]
     SerialBridgeEnable(SccCh, SerialBridgeConfig),
     SerialBridgeDisable(SccCh),
