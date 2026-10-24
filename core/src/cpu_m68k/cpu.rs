@@ -13,7 +13,7 @@ use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::bus::{Address, Bus, IrqSource};
+use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
 use crate::cpu_m68k::pmmu::translate::atc_generation_default;
@@ -520,6 +520,15 @@ where
         self.prefetch_refill()?;
 
         Ok(())
+    }
+
+    /// Makes the caches and memory agree before the host reads, or if
+    /// `write` writes, `len` bytes of memory at physical address `paddr`
+    pub fn host_flush(&mut self, paddr: Address, len: Address, write: bool)
+    where
+        TBus: InspectableBus<Address, Byte>,
+    {
+        self.caches.host_flush(&mut self.bus, paddr, len, write);
     }
 
     /// Tests if a breakpoint was hit

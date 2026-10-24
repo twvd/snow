@@ -160,6 +160,10 @@ macro_rules! dispatch {
     };
 }
 
+/// Low memory globals the absolute mouse mode reads and writes: MTemp and
+/// RawMouse, CrsrNew
+const MOUSE_GLOBALS: [(Address, Address); 2] = [(0x0828, 8), (0x08CE, 1)];
+
 /// Emulator config. Basically an abstraction on top of the CPU for multiple different model groups
 /// that provides access to the inner components by the emulator runner through dynamic dispatch.
 #[derive(Serialize, Deserialize)]
@@ -228,6 +232,7 @@ dispatch! {
 
         fn bus_reset(&mut self) -> Result<bool> { bus.reset(true) }
         fn after_deserialize(&mut self, renderer: ChannelRenderer) -> () { bus.after_deserialize(renderer) }
+        fn cpu_host_flush(&mut self, paddr: Address, len: Address, write: bool) -> () { host_flush(paddr, len, write) }
         fn bus_inspect_read(&mut self, addr: Address) -> Option<Byte> { bus.inspect_read(addr) }
         fn bus_inspect_write(&mut self, addr: Address, val: Byte) -> Option<()> { bus.inspect_write(addr, val) }
 
@@ -739,6 +744,7 @@ impl Emulator {
     }
 
     fn disassemble(&mut self, addr: Address, len: usize) -> Result<()> {
+        self.config.cpu_host_flush(addr, len as Address, false);
         let ops = (addr..)
             .take(len)
             .flat_map(|addr| self.config.bus_inspect_read(addr))
@@ -995,6 +1001,9 @@ impl Tickable for Emulator {
                             r.push((cycles, cmd));
                         }
 
+                        for (addr, len) in MOUSE_GLOBALS {
+                            self.config.cpu_host_flush(addr, len, true);
+                        }
                         self.config.mouse_update_abs(x, y);
                     }
                     EmulatorCommand::SetMouseMode(mode) => {
@@ -1219,6 +1228,8 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     EmulatorCommand::BusInspectWrite(start, data) => {
+                        self.config
+                            .cpu_host_flush(start, data.len() as Address, true);
                         for (i, d) in data.into_iter().enumerate() {
                             let addr = start.wrapping_add(i as Address);
                             if self.config.bus_inspect_write(addr, d).is_none() {
