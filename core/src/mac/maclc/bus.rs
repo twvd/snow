@@ -73,6 +73,20 @@ impl GateArray {
             Self::Sonora { .. } => SONORA_BUS_FREQUENCY,
         }
     }
+
+    const fn scc_interval(&self) -> Ticks {
+        match self {
+            Self::V8 => v8::SCC_INTERVAL,
+            Self::Sonora { .. } => sonora::SCC_INTERVAL,
+        }
+    }
+
+    const fn swim_interval(&self) -> Ticks {
+        match self {
+            Self::V8 => v8::SWIM_INTERVAL,
+            Self::Sonora { .. } => sonora::SWIM_INTERVAL,
+        }
+    }
 }
 
 /// What an address selects
@@ -108,6 +122,10 @@ pub struct MacLCBus<TRenderer: Renderer> {
 
     pub(crate) via: Via,
     egret: Egret,
+    /// Native time the SCC can be accessed again
+    scc_ready: Ticks,
+    /// Native time the SWIM can be accessed again
+    swim_ready: Ticks,
     /// Native time the V8 can start its next RAM cycle
     v8_ready: Ticks,
     /// Native time the V8 can take the next RAM write
@@ -230,6 +248,8 @@ where
             ram_dirty: BitSet::from_iter(0..(ram_size / RAM_DIRTY_PAGESIZE)),
             via: Via::new(model),
             egret,
+            scc_ready: 0,
+            swim_ready: 0,
             v8_ready: 0,
             v8_write_ready: 0,
             tick60_clock: 0,
@@ -613,6 +633,66 @@ where
         }
     }
 
+    /// The gate array holds an SCC cycle off until some time has passed
+    /// since the start of the previous one (BusTiming on a real LC II and LC
+    /// III)
+    fn scc_cycle(&mut self, acc: BusAccess<Bus68020>, offset: Address) -> BusResponse {
+        let w = match self.native_clock.device_sync(&acc) {
+            DeviceCycle::Stall(n) => return BusResponse::Stall(n),
+            DeviceCycle::Access(w) => w,
+        };
+        // When overclocking, acc.pending is 0 after device_sync(), and native
+        // ticks are CPU ticks otherwise
+        let now = self.native_clock.native_ticks() + acc.pending;
+        let hold = self.scc_ready.saturating_sub(now);
+        self.scc_ready = now + hold + self.gate_array.scc_interval();
+        let w = self
+            .native_clock
+            .scale_dev_waits(w, self.io_waits(offset, acc.write) + hold);
+        bus_access_byte(
+            acc,
+            w,
+            self,
+            move |s, _, len| s.io_read_bytes(offset, len),
+            move |s, _, len, val| s.io_write_bytes(offset, len, val),
+        )
+    }
+
+    /// In ISM mode, the gate array holds a SWIM cycle off until some time
+    /// has passed since the start of the previous one (BusTiming on a real
+    /// LC II and LC III), and at least the time the ISM needs between two
+    /// accesses (Swim::ism_recovery()).
+    /// When overclocking, the accesses are also held as far apart as
+    /// Swim::hold() needs.
+    fn swim_cycle(&mut self, acc: BusAccess<Bus68020>, offset: Address) -> BusResponse {
+        let w = match self.native_clock.device_sync(&acc) {
+            DeviceCycle::Stall(n) => return BusResponse::Stall(n),
+            DeviceCycle::Access(w) => w,
+        };
+        // When overclocking, acc.pending is 0 after device_sync(), and native
+        // ticks are CPU ticks otherwise
+        let now = self.native_clock.native_ticks() + acc.pending;
+        let hold = self
+            .swim_ready
+            .saturating_sub(now)
+            .max(self.swim.hold(&self.native_clock));
+        // FCLK is C16M
+        let recovery = (self.swim.ism_recovery() * self.bus_frequency()).div_ceil(C16M_FREQUENCY);
+        if recovery > 0 {
+            self.swim_ready = now + hold + recovery.max(self.gate_array.swim_interval());
+        }
+        let w = self
+            .native_clock
+            .scale_dev_waits(w, self.io_waits(offset, acc.write) + hold);
+        bus_access_byte(
+            acc,
+            w,
+            self,
+            move |s, _, len| s.io_read_bytes(offset, len),
+            move |s, _, len, val| s.io_write_bytes(offset, len, val),
+        )
+    }
+
     /// Updates the mouse position (relative coordinates) and button state
     pub fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) {
         if self.mouse_mode == MouseMode::Disabled {
@@ -758,6 +838,8 @@ where
                 Self::ignore_write,
             ),
             Some(Region::Io(offset @ 0x0_0000..=0x0_1FFF)) => self.via_cycle(acc, offset),
+            Some(Region::Io(offset @ 0x0_4000..=0x0_5FFF)) => self.scc_cycle(acc, offset),
+            Some(Region::Io(offset @ 0x1_6000..=0x1_7FFF)) => self.swim_cycle(acc, offset),
             Some(region @ Region::Io(offset)) => {
                 self.io_cycle(acc, self.port(&region, acc.write), offset)
             }
