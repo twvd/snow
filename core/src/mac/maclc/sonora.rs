@@ -7,7 +7,7 @@
 //!
 //! The 560x384 mode of the Apple IIe card is not implemented.
 
-use super::bus::Region;
+use super::bus::{IO_WAITS, Region};
 use super::video::Mode;
 use crate::bus::Address;
 use crate::mac::MacMonitor;
@@ -21,6 +21,15 @@ pub(super) const IO_BASE: Address = 0x50F0_0000;
 
 /// Bits of the address which select a register of the Sonora
 pub(super) const PSEUDOVIA_MASK: Address = 0x1F;
+
+/// Wait states of a RAM read bus cycle
+pub(super) const RAM_READ_WAITS: Ticks = 3;
+/// Wait states of a RAM write bus cycle
+pub(super) const RAM_WRITE_WAITS: Ticks = 0;
+/// Wait states of a ROM bus cycle
+pub(super) const ROM_WAITS: Ticks = 3;
+/// Wait states of a video RAM bus cycle, not documented
+pub(super) const VRAM_WAITS: Ticks = 1;
 
 /// CPU ID register of the Macintosh LC III
 pub(super) const CPU_ID_LCIII: u32 = 0xA55A_0001;
@@ -214,6 +223,22 @@ impl VideoRegs {
             VIDEO_SENSE => self.sense = val & 0x0F,
             _ => (),
         }
+    }
+}
+
+/// Wait states of an I/O cycle, measured with BusTiming on a real LC III
+pub(super) fn io_waits(offset: Address, write: bool) -> Ticks {
+    match offset {
+        // SCC
+        0x0_4000..=0x0_5FFF => 6,
+        // SCSI
+        0x0_6000..=0x0_7FFF | 0x1_0000..=0x1_3FFF if write => 1,
+        0x0_6000..=0x0_7FFF | 0x1_0000..=0x1_3FFF => 3,
+        // Sound and Sonora registers
+        0x1_4000..=0x1_5FFF | 0x2_6000..=0x2_7FFF => 2,
+        // SWIM
+        0x1_6000..=0x1_7FFF => 3,
+        _ => IO_WAITS,
     }
 }
 
