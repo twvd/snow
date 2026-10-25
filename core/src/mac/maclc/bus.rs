@@ -941,7 +941,7 @@ where
         let mut cpu = ticks;
         while cpu > 0 {
             let step = self.native_clock.advance(cpu, None);
-            if step.native == 0 {
+            if step.native == 0 && !step.via_tick {
                 break;
             }
             cpu -= step.cpu_used;
