@@ -35,7 +35,7 @@ pub enum DeviceCycle {
 pub struct Step {
     /// Native ticks that elapsed
     pub native: Ticks,
-    /// The VIA clock ticked at the end of them
+    /// The VIA clock ticked at the end of them, or during the CPU ticks
     pub via_tick: bool,
     /// CPU ticks they consumed
     pub cpu_used: Ticks,
@@ -225,7 +225,8 @@ impl<const C16M: bool> NativeClock<C16M> {
     /// Returns how many native ticks were advanced, how many CPU ticks they
     /// consumed, and whether the clock stopped on a VIA tick. When
     /// the CPU ticks don't complete a native tick, they are all consumed and
-    /// 0 native ticks are advanced.
+    /// 0 native ticks are advanced. With C16M scaled from the CPU clock,
+    /// the VIA clock can still tick during these CPU ticks.
     #[inline]
     pub fn advance(&mut self, cpu_ticks: Ticks, max: Option<Ticks>) -> Step {
         debug_assert!(max != Some(0));
@@ -395,7 +396,7 @@ mod tests {
         let (mut native, mut via) = (0, 0);
         while cpu > 0 {
             let step = clock.advance(cpu, None);
-            if step.native == 0 {
+            if step.native == 0 && !step.via_tick {
                 break;
             }
             cpu -= step.cpu_used;
@@ -561,6 +562,19 @@ mod tests {
             clock.set_cpu_frequency(2 * freq);
             assert_eq!(run(&mut clock, 2 * freq), (freq, C16M_FREQUENCY / 20));
         }
+    }
+
+    #[test]
+    fn via_from_c16m_single_ticks() {
+        // Overclocked, a VIA tick can fall on a CPU tick that doesn't end a
+        // native tick
+        let mut clock = NativeClock::<true>::new(F25M);
+        clock.set_cpu_frequency(2 * F25M);
+        let mut via = 0;
+        for _ in 0..20_000 {
+            via += run(&mut clock, 1).1;
+        }
+        assert_eq!(via, 20_000 * C16M_FREQUENCY / 20 / (2 * F25M));
     }
 
     #[test]
