@@ -27,6 +27,15 @@ use crate::cpu_m68k::regs::RegisterCACR;
 use crate::tickable::Ticks;
 use crate::types::{Byte, Long};
 
+/// CPU cycles of a 68020/030 prefetch that hits in the instruction cache or
+/// the cache holding register. The manuals give no delay for a hit
+/// (MC68020UM 8.1.1, MC68030UM 11.2.3): these are rather the execution time
+/// of a one-word instruction in the cache case (MOVE Rn,Dn: 2, tail 0,
+/// MC68030UM 11.6.6). Charging them per word gives the same timings in
+/// practice: a run of `move.l d1,d5` takes 2.0 clocks per instruction on a
+/// real IIci and LC III, with every other word from the holding register.
+pub(in crate::cpu_m68k) const FETCH_HIT_TICKS: Ticks = 2;
+
 /// Which caches CINV and CPUSH act on
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CacheSelect {

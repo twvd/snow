@@ -1,7 +1,7 @@
 use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::bus::AccessKind;
 use crate::cpu_m68k::bus_transaction::bus_transaction;
-use crate::cpu_m68k::cache::{CacheScope, CacheSelect, CpuCaches};
+use crate::cpu_m68k::cache::{CacheScope, CacheSelect, CpuCaches, FETCH_HIT_TICKS};
 use std::collections::VecDeque;
 
 use anyhow::{Result, anyhow, bail};
@@ -454,6 +454,20 @@ pub struct CpuM68k<
     /// Current prefetch queue
     pub prefetch: PrefetchQueue,
 
+    /// 68020/030 cache holding register: the second word of the last
+    /// aligned long word fetched
+    #[serde(skip)]
+    holding: Word,
+
+    /// `holding` is valid, for the next fetch
+    #[serde(skip)]
+    holding_valid: bool,
+
+    /// Address of the word in `holding`, to check the next fetch is for it
+    #[cfg(debug_assertions)]
+    #[serde(skip)]
+    holding_addr: Address,
+
     /// Effective Address cache for this step
     pub(in crate::cpu_m68k) step_ea_addr: Option<Address>,
 
@@ -575,6 +589,10 @@ where
             step_ea040: [None; 2],
             last_bus_sync: 0,
             prefetch: PrefetchQueue::default(),
+            holding: 0,
+            holding_valid: false,
+            #[cfg(debug_assertions)]
+            holding_addr: 0,
             step_ea_addr: None,
             step_exception: false,
             step_inhibit_trace: false,
@@ -734,10 +752,38 @@ where
             }));
         }
 
-        // An instruction cache, if any, is behind the fetch
-        let new_item = match self.read_ticks_program::<Word>(fetch_addr) {
-            Ok(w) => PrefetchWord::Word(w),
-            Err(e) => prefetch_defer_fault(e, fetch_addr)?,
+        // The 68020/030 always fetch the whole long word, even for an odd
+        // word (MC68020UM 5.2.3, MC68030UM 11.2.5.3). After an aligned word,
+        // they keep the second one in the cache holding register for the next
+        // fetch, with the I-cache enabled or not (MC68020UM 8.1.1, MC68030UM
+        // 11.2.2). set_pc() invalidates it.
+        let holding = CPU_TYPE == M68020 || CPU_TYPE == M68030;
+        let new_item = if holding && self.holding_valid && fetch_addr & 3 == 2 {
+            #[cfg(debug_assertions)]
+            assert_eq!(self.holding_addr, fetch_addr);
+            self.holding_valid = false;
+            self.advance_cycles(FETCH_HIT_TICKS)?;
+            PrefetchWord::Word(self.holding)
+        } else if holding {
+            match self.read_ticks_program::<Long>(fetch_addr & !3) {
+                Ok(l) if fetch_addr & 3 == 0 => {
+                    self.holding = l as Word;
+                    self.holding_valid = true;
+                    #[cfg(debug_assertions)]
+                    {
+                        self.holding_addr = fetch_addr.wrapping_add(2) & ADDRESS_MASK;
+                    }
+                    PrefetchWord::Word((l >> 16) as Word)
+                }
+                Ok(l) => PrefetchWord::Word(l as Word),
+                Err(e) => prefetch_defer_fault(e, fetch_addr)?,
+            }
+        } else {
+            // An instruction cache, if any, is behind the fetch
+            match self.read_ticks_program::<Word>(fetch_addr) {
+                Ok(w) => PrefetchWord::Word(w),
+                Err(e) => prefetch_defer_fault(e, fetch_addr)?,
+            }
         };
         self.prefetch.push_back(new_item);
 
@@ -1133,6 +1179,7 @@ where
     /// Sets the program counter and flushes the prefetch queue
     pub fn set_pc(&mut self, pc: Address) -> Result<()> {
         self.prefetch.clear();
+        self.holding_valid = false;
         self.regs.pc = pc.wrapping_sub(4) & ADDRESS_MASK;
         Ok(())
     }

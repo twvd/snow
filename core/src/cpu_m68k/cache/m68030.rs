@@ -13,7 +13,7 @@ use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::bus::{AccessKind, CpuAccess, low_bytes};
 use crate::cpu_m68k::bus_transaction::BusTransaction;
-use crate::cpu_m68k::cache::CpuCaches;
+use crate::cpu_m68k::cache::{CpuCaches, FETCH_HIT_TICKS};
 use crate::cpu_m68k::cpu::HistoryEntryInstruction;
 use crate::cpu_m68k::pmmu::translate::{CacheMode, Translation};
 use crate::cpu_m68k::regs::RegisterCACR;
@@ -25,10 +25,6 @@ const LINES: usize = 16;
 
 /// Function code of CPU space accesses, never cached
 const FC_CPU_SPACE: u8 = 7;
-
-/// CPU cycles of a prefetch that hits in the instruction cache: in the cache
-/// case timings of the 68030, the pipe takes two clocks per word
-const FETCH_HIT_TICKS: Ticks = 2;
 
 /// CPU cycles of a data access that hits in the data cache
 const DATA_HIT_TICKS: Ticks = 1;

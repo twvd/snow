@@ -11,7 +11,7 @@ use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::bus::{AccessKind, CpuAccess, low_bytes};
 use crate::cpu_m68k::bus_transaction::BusTransaction;
-use crate::cpu_m68k::cache::CpuCaches;
+use crate::cpu_m68k::cache::{CpuCaches, FETCH_HIT_TICKS};
 use crate::cpu_m68k::cpu::HistoryEntryInstruction;
 use crate::cpu_m68k::pmmu::translate::Translation;
 use crate::cpu_m68k::regs::RegisterCACR;
@@ -23,10 +23,6 @@ const ENTRIES: usize = 64;
 
 /// Tag of an entry that holds nothing: a real tag has its bits 7-1 clear
 const INVALID: u32 = u32::MAX;
-
-/// CPU cycles of a prefetch that hits in the cache: in the cache case
-/// timings of the 68020, the pipe takes two clocks per word
-const HIT_TICKS: Ticks = 2;
 
 /// The 68020 instruction cache
 #[derive(Clone, Serialize, Deserialize)]
@@ -84,7 +80,7 @@ impl CpuCaches for Caches020 {
         let offset = laddr % 4;
         let len = size.min(4 - offset);
         history.icache_hit = true;
-        *ticks += HIT_TICKS;
+        *ticks += FETCH_HIT_TICKS;
         Some((
             low_bytes(self.data[index] >> (8 * (4 - offset - len)), len),
             len,
@@ -113,7 +109,7 @@ impl CpuCaches for Caches020 {
 
         if self.tags[index] == tag {
             bus.history.icache_hit = true;
-            *bus.ticks += HIT_TICKS;
+            *bus.ticks += FETCH_HIT_TICKS;
             return Ok((
                 low_bytes(self.data[index] >> (8 * (4 - offset - len)), len),
                 len,
