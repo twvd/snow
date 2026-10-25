@@ -140,6 +140,10 @@ pub struct MacLCBus<TRenderer: Renderer> {
     /// Address and native start time of the second half of a long RAM read,
     /// which the V8 started before the end of the first half
     v8_next_half: Option<(Address, Ticks)>,
+    /// Address of the second half of a long video RAM read on the Sonora
+    sonora_vram_next_half: Option<Address>,
+    /// Native time the Sonora video RAM is done with the last write
+    sonora_vram_ready: Ticks,
     tick60_clock: Ticks,
     pub(crate) scc: Scc,
     pub(crate) swim: Swim,
@@ -263,6 +267,8 @@ where
             v8_ready: 0,
             v8_write_ready: 0,
             v8_next_half: None,
+            sonora_vram_next_half: None,
+            sonora_vram_ready: 0,
             tick60_clock: 0,
             scc: Scc::new(),
             swim,
@@ -481,7 +487,8 @@ where
             (GateArray::Sonora { .. }, Region::Ram(_)) if write => (4, sonora::RAM_WRITE_WAITS),
             (GateArray::Sonora { .. }, Region::Ram(_)) => (4, sonora::RAM_READ_WAITS),
             (GateArray::Sonora { .. }, Region::Rom) => (4, sonora::ROM_WAITS),
-            (GateArray::Sonora { .. }, Region::Vram(_)) => (2, sonora::VRAM_WAITS),
+            (GateArray::Sonora { .. }, Region::Vram(_)) if write => (2, sonora::VRAM_WRITE_WAITS),
+            (GateArray::Sonora { .. }, Region::Vram(_)) => (2, sonora::VRAM_READ_WAITS),
             (_, Region::CpuId(_)) => (4, IO_WAITS),
         }
     }
@@ -543,6 +550,33 @@ where
                 waits
             }
         }
+    }
+
+    /// Wait states of a cycle of the Sonora video RAM. Writes are posted:
+    /// the CPU only waits for the video RAM to finish the previous write.
+    /// When the CPU reads more than one 16-bit half, the Sonora reads the
+    /// next half in page mode, faster.
+    ///
+    /// When overclocking, only the wait states of the port are modelled.
+    fn sonora_vram_waits(&mut self, acc: &BusAccess<Bus68020>, waits: Ticks) -> Ticks {
+        if self.native_clock.is_overclocking() {
+            return waits;
+        }
+        let now = self.native_clock.native_ticks() + acc.pending;
+        let hold = self.sonora_vram_ready.saturating_sub(now);
+        if acc.write {
+            self.sonora_vram_ready = now + hold + sonora::VRAM_WRITE_CYCLE;
+            return waits + hold;
+        }
+        let waits = match self.sonora_vram_next_half.take() {
+            Some(addr) if addr == acc.addr => sonora::VRAM_NEXT_HALF_READ_WAITS,
+            _ => waits,
+        };
+        let len = 2 - acc.addr % 2;
+        if acc.size > len {
+            self.sonora_vram_next_half = Some(acc.addr + len);
+        }
+        waits + hold
     }
 
     /// Runs a bus cycle on a port of `width` bytes
@@ -889,7 +923,7 @@ where
                 let waits = match self.gate_array {
                     GateArray::V8 if acc.write => waits + self.v8_slot_waits(&acc, true),
                     GateArray::V8 => self.v8_ram_read_waits(&acc, waits),
-                    GateArray::Sonora { .. } => waits,
+                    GateArray::Sonora { .. } => self.sonora_vram_waits(&acc, waits),
                 };
                 self.cycle(
                     acc,

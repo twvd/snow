@@ -28,8 +28,16 @@ pub(super) const RAM_READ_WAITS: Ticks = 3;
 pub(super) const RAM_WRITE_WAITS: Ticks = 0;
 /// Wait states of a ROM bus cycle
 pub(super) const ROM_WAITS: Ticks = 3;
-/// Wait states of a video RAM bus cycle, not documented
-pub(super) const VRAM_WAITS: Ticks = 1;
+/// Wait states of a video RAM read bus cycle, measured with BusTiming on a
+/// real LC III
+pub(super) const VRAM_READ_WAITS: Ticks = 3;
+/// Wait states of a video RAM write bus cycle, measured likewise
+pub(super) const VRAM_WRITE_WAITS: Ticks = 0;
+/// Wait states of the read of the second 16-bit half of a long in the video
+/// RAM, which the Sonora reads in page mode after the first
+pub(super) const VRAM_NEXT_HALF_READ_WAITS: Ticks = 2;
+/// Clocks the video RAM is busy from the start of a posted write
+pub(super) const VRAM_WRITE_CYCLE: Ticks = 4;
 
 /// C16M ticks into a VIA cycle at which the Sonora releases the CPU
 pub(super) const VIA_RELEASE: Ticks = 13;
