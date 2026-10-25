@@ -85,7 +85,8 @@ fn test_privilege_violation_exception_68020(code: &[u16], test_name: &str, expec
         0xffff, // sentinel
     ];
 
-    const HANDLER_ADDR: Address = 0x200;
+    // An odd word handler: the 27 clocks don't include a holding register hit
+    const HANDLER_ADDR: Address = 0x202;
     for (i, &word) in handler_code.iter().enumerate() {
         let addr = HANDLER_ADDR + (i as u32 * 2);
         write_word(&mut cpu, addr, word);
