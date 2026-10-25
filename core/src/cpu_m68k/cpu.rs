@@ -1337,8 +1337,10 @@ where
                             ssp.wrapping_add(0x0C),
                             *Ssw040::default()
                                 .with_tm(details.function_code)
-                                // Only MOVE16 has 16-byte operands
-                                .with_tt(u8::from(details.size == 16))
+                                // A 16-byte operand is a MOVE16 line transfer,
+                                // except a cache push, which reports as a write
+                                // with TM=0, TT=0 (MC68040UM 8.4.6)
+                                .with_tt(u8::from(details.size == 16 && details.function_code != 0))
                                 .with_rw(details.read)
                                 .with_atc(details.atc_fault)
                                 .with_ma(wb.is_some_and(|wb| wb.ma))
