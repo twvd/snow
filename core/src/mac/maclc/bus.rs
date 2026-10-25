@@ -6,7 +6,7 @@ use super::via::Via;
 use super::video::{self, Video};
 use super::{sonora, v8};
 use crate::bus::access::{
-    Bus68020, BusAccess, BusResponse, bus_access_byte, bus_access_long, bus_access_word,
+    Bus68020, BusAccess, BusResponse, CpuBus, bus_access_byte, bus_access_long, bus_access_word,
 };
 use crate::bus::native_clock::{DeviceCycle, NativeClock};
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
@@ -137,6 +137,9 @@ pub struct MacLCBus<TRenderer: Renderer> {
     v8_ready: Ticks,
     /// Native time the V8 can take the next RAM write
     v8_write_ready: Ticks,
+    /// Address and native start time of the second half of a long RAM read,
+    /// which the V8 started before the end of the first half
+    v8_next_half: Option<(Address, Ticks)>,
     tick60_clock: Ticks,
     pub(crate) scc: Scc,
     pub(crate) swim: Swim,
@@ -259,6 +262,7 @@ where
             swim_ready: 0,
             v8_ready: 0,
             v8_write_ready: 0,
+            v8_next_half: None,
             tick60_clock: 0,
             scc: Scc::new(),
             swim,
@@ -461,17 +465,17 @@ where
     /// Width in bytes and wait states of the port answering a region.
     ///
     /// The RAM and video RAM data buses of the V8 are 16-bit, the ROM is
-    /// 32-bit. The V8 takes RAM writes as a 32-bit port, and writes the RAM
-    /// in 16-bit halves after. The Sonora has a 32-bit RAM and ROM and a
-    /// 16-bit video RAM. The I/O devices are on D31-D24, as an 8-bit port, on
-    /// both.
+    /// 32-bit. The V8 takes RAM and video RAM writes as a 32-bit port, and
+    /// writes them in 16-bit halves after. The Sonora has a 32-bit RAM and
+    /// ROM and a 16-bit video RAM. The I/O devices are on D31-D24, as an
+    /// 8-bit port, on both.
     ///
     /// The wait states of the V8 RAM are those of a cycle that starts on a
     /// slot: v8_slot_waits() adds the rest.
     fn port(&self, region: &Region, write: bool) -> (u32, Ticks) {
         match (&self.gate_array, region) {
             (_, Region::Io(offset)) => (1, self.io_waits(*offset, write)),
-            (GateArray::V8, Region::Ram(_)) if write => (4, 0),
+            (GateArray::V8, Region::Ram(_) | Region::Vram(_)) if write => (4, 0),
             (GateArray::V8, Region::Ram(_) | Region::Vram(_)) => (2, v8::RAM_WAITS),
             (GateArray::V8, Region::Rom) => (4, v8::ROM_WAITS),
             (GateArray::Sonora { .. }, Region::Ram(_)) if write => (4, sonora::RAM_WRITE_WAITS),
@@ -493,7 +497,7 @@ where
     /// Wait states for a cycle of the V8 RAM, of its registers or of the
     /// ASC to start on the next free slot. RAM writes are posted: the CPU
     /// only waits for the V8 to take the write, which it then does in one
-    /// cycle per 16-bit half, back to back.
+    /// cycle per 16-bit half, one slot apart.
     ///
     /// When overclocking, the slots are not modelled.
     fn v8_slot_waits(&mut self, acc: &BusAccess<Bus68020>, ram_write: bool) -> Ticks {
@@ -510,10 +514,35 @@ where
         let hold = self.v8_write_ready.saturating_sub(now);
         let len = acc.size.min(4 - (acc.addr & 3));
         let second_half = Ticks::from((acc.addr + len - 1) / 2 - acc.addr / 2);
-        let last = slot((now + hold).max(self.v8_ready)) + second_half * 2 * v8::CYCLE_SLOT;
+        let last = slot((now + hold).max(self.v8_ready)) + second_half * v8::CYCLE_SLOT;
         self.v8_ready = last + v8::RAM_CYCLE;
         self.v8_write_ready = last;
         hold
+    }
+
+    /// Wait states of a read of the V8 RAM or video RAM. When the CPU reads
+    /// more than one 16-bit half, the V8 starts the next half on the next
+    /// slot, before the end of this cycle.
+    fn v8_ram_read_waits(&mut self, acc: &BusAccess<Bus68020>, waits: Ticks) -> Ticks {
+        if self.native_clock.is_overclocking() {
+            return waits;
+        }
+        match self.v8_next_half.take() {
+            Some((addr, start)) if addr == acc.addr => {
+                let now = self.native_clock.native_ticks() + acc.pending;
+                self.v8_ready = start + v8::RAM_CYCLE;
+                self.v8_ready.saturating_sub(now + Bus68020::CYCLE)
+            }
+            _ => {
+                let waits = waits + self.v8_slot_waits(acc, false);
+                let len = 2 - acc.addr % 2;
+                if acc.size > len {
+                    let start = self.v8_ready - v8::RAM_CYCLE;
+                    self.v8_next_half = Some((acc.addr + len, start + v8::CYCLE_SLOT));
+                }
+                waits
+            }
+        }
     }
 
     /// Runs a bus cycle on a port of `width` bytes
@@ -829,7 +858,8 @@ where
             Some(region @ Region::Ram(addr)) => {
                 let (width, waits) = self.port(&region, acc.write);
                 let waits = match self.gate_array {
-                    GateArray::V8 => waits + self.v8_slot_waits(&acc, acc.write),
+                    GateArray::V8 if acc.write => waits + self.v8_slot_waits(&acc, true),
+                    GateArray::V8 => self.v8_ram_read_waits(&acc, waits),
                     GateArray::Sonora { .. } => waits,
                 };
                 self.cycle(
@@ -857,7 +887,8 @@ where
             Some(region @ Region::Vram(offset)) => {
                 let (width, waits) = self.port(&region, acc.write);
                 let waits = match self.gate_array {
-                    GateArray::V8 => waits + self.v8_slot_waits(&acc, false),
+                    GateArray::V8 if acc.write => waits + self.v8_slot_waits(&acc, true),
+                    GateArray::V8 => self.v8_ram_read_waits(&acc, waits),
                     GateArray::Sonora { .. } => waits,
                 };
                 self.cycle(
