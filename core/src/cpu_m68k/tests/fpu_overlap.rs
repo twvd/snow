@@ -48,10 +48,11 @@ fn test_overlap() {
     let mut cpu = testcpu();
 
     // FADD FPn: 51 clocks on the 68881, of which the CPU waits 3, and the
-    // prefetch refill (a 3 clock bus cycle) already overlaps
+    // prefetch refill (2 clocks from the cache holding register) already
+    // overlaps
     cpu.step().unwrap();
     let busy = cpu.fpu_free_at - cpu.cycles;
-    assert_eq!(busy, 51 - 3 - 3);
+    assert_eq!(busy, 51 - 3 - 2);
 
     // The MOVEQ runs while the FPU is busy
     let start = cpu.cycles;
