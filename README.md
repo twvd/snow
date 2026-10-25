@@ -23,6 +23,7 @@ It currently supports the following models:
 * Macintosh Portable / PowerBook 100
 * Macintosh II (both non-FDHD and FDHD)
 * Macintosh IIx, IIcx, SE/30
+* Macintosh LC, LC II, LC III
 
 Currently supported hardware:
 
@@ -37,6 +38,7 @@ Currently supported hardware:
 * Original Macintosh and ADB keyboard/mouse
 * Audio output (PWM-based audio on compact Macs and ASC on newer models)
 * Macintosh Display Card 8-24 with various monitor types (models with NuBus)
+* Macintosh II "Toby" Display Card with various monitor types (models with NuBus)
 * DaynaPORT SCSI/Link Ethernet adapter
 
 Supported floppy image formats:

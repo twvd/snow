@@ -19,6 +19,7 @@ It currently emulates the following Macintosh models:
  * Macintosh Portable / PowerBook 100
  * Macintosh II (non-FDHD and FDHD)
  * Macintosh IIx, IIcx, SE/30
+ * Macintosh LC, LC II, LC III
 
 If you're looking to obtain Snow, head over to [Obtaining binaries](./getting_started/binaries.md).
 
