@@ -48,6 +48,10 @@ struct Cache040 {
     data: [[[Long; 4]; WAYS]; SETS],
     /// Replacement counter (MC68040UM 4.1)
     counter: usize,
+    /// Last fetched half-line, to move the replacement counter once per
+    /// fetched half-line
+    #[serde(default)]
+    last_fetch: Address,
 }
 
 impl Default for Cache040 {
@@ -57,6 +61,7 @@ impl Default for Cache040 {
             dirty: [[0; WAYS]; SETS],
             data: [[[0; 4]; WAYS]; SETS],
             counter: 0,
+            last_fetch: u32::MAX,
         }
     }
 }
@@ -103,10 +108,21 @@ impl Cache040 {
         *long = (*long & !mask) | (bytes << shift);
     }
 
-    /// Accounts for an access, for the replacement counter. The real
-    /// counter moves on each half-line access; it moves on each access here.
+    /// Accounts for an access, for the replacement counter. An operand
+    /// access is at most one long word, which a read touches as one
+    /// half-line and a copyback write as one line (MC68040UM 4.1).
     fn count(&mut self) {
         self.counter = (self.counter + 1) % WAYS;
+    }
+
+    /// Accounts for an instruction fetch, for the replacement counter:
+    /// the prefetch fetches and keeps a half-line at a time, so the
+    /// counter moves once per half-line (MC68040UM 4.1).
+    fn count_fetch(&mut self, paddr: Address) {
+        if (paddr >> 3) != (self.last_fetch >> 3) {
+            self.counter = (self.counter + 1) % WAYS;
+            self.last_fetch = paddr;
+        }
     }
 }
 
@@ -255,7 +271,11 @@ impl CpuCaches for Caches040 {
         if !enabled {
             return bus.access(&acc.fault, tr.paddr, acc.size, acc.wdata);
         }
-        cache.count();
+        if fetch {
+            cache.count_fetch(tr.paddr);
+        } else {
+            cache.count();
+        }
 
         // A cache inhibited access writes back and invalidates a line it
         // hits (MC68040UM 4.3.2)
