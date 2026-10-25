@@ -86,18 +86,12 @@ impl Cache040 {
     }
 
     /// Picks the line a new line of the set of `paddr` replaces: the first
-    /// invalid one, else the one the replacement counter points to. The
-    /// real counter moves on each half-line access; it moves on each access
-    /// here.
-    fn victim(&mut self, paddr: Address) -> usize {
+    /// invalid one, else the one the replacement counter points to
+    fn victim(&self, paddr: Address) -> usize {
         let set = &self.tags[Self::set(paddr)];
         match set.iter().position(|&t| t == INVALID) {
             Some(way) => way,
-            None => {
-                let way = self.counter;
-                self.counter = (self.counter + 1) % WAYS;
-                way
-            }
+            None => self.counter,
         }
     }
 
@@ -109,7 +103,8 @@ impl Cache040 {
         *long = (*long & !mask) | (bytes << shift);
     }
 
-    /// Accounts for an access, for the replacement counter
+    /// Accounts for an access, for the replacement counter. The real
+    /// counter moves on each half-line access; it moves on each access here.
     fn count(&mut self) {
         self.counter = (self.counter + 1) % WAYS;
     }
