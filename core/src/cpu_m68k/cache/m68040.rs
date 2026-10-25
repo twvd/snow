@@ -119,10 +119,10 @@ pub struct Caches040 {
 
 impl Caches040 {
     /// Writes back the dirty long words of a data cache line: a single long
-    /// word on its own, more as a line transfer (MC68040UM 4.6.2).
+    /// word on its own, more as a line transfer (MC68040UM 4.6.2). A push
+    /// bus error reports the physical address, with TM=0 (MC68040UM 8.4.6).
     fn push<TBus, const CPU_TYPE: CpuM68kType>(
         bus: &mut BusTransaction<'_, TBus, CPU_TYPE>,
-        fault: &FaultInfo,
         cache: &mut Cache040,
         set: usize,
         way: usize,
@@ -138,9 +138,21 @@ impl Caches040 {
         if dirty.count_ones() == 1 {
             let entry = dirty.trailing_zeros() as usize;
             let addr = addr.wrapping_add(4 * entry as Address);
-            bus.access(fault, addr, 4, Some(cache.data[set][way][entry]))?;
+            let fault = FaultInfo {
+                fc: 0,
+                o_addr: addr,
+                size: 4,
+                write: true,
+            };
+            bus.access(&fault, addr, 4, Some(cache.data[set][way][entry]))?;
         } else {
-            bus.line_access(fault, addr, Some(&cache.data[set][way]))?;
+            let fault = FaultInfo {
+                fc: 0,
+                o_addr: addr,
+                size: 16,
+                write: true,
+            };
+            bus.line_access(&fault, addr, Some(&cache.data[set][way]))?;
         }
         cache.dirty[set][way] = 0;
         Ok(())
@@ -162,7 +174,7 @@ impl Caches040 {
         let way = cache.victim(paddr);
         // The 68040 reads the new line before it writes back the old one
         let line = bus.line_access(fault, paddr & !0xF, None)?;
-        Self::push(bus, fault, cache, set, way)?;
+        Self::push(bus, cache, set, way)?;
         cache.tags[set][way] = Cache040::tag(paddr);
         cache.data[set][way] = line;
         Ok((line, way))
@@ -201,7 +213,6 @@ impl Caches040 {
     /// of the cache: written back first if dirty and `push`
     fn evict<TBus, const CPU_TYPE: CpuM68kType>(
         bus: &mut BusTransaction<'_, TBus, CPU_TYPE>,
-        fault: &FaultInfo,
         cache: &mut Cache040,
         paddr: Address,
         push: bool,
@@ -212,7 +223,7 @@ impl Caches040 {
         if let Some(way) = cache.find(paddr) {
             let set = Cache040::set(paddr);
             if push {
-                Self::push(bus, fault, cache, set, way)?;
+                Self::push(bus, cache, set, way)?;
             }
             cache.tags[set][way] = INVALID;
             cache.dirty[set][way] = 0;
@@ -250,7 +261,7 @@ impl CpuCaches for Caches040 {
         // hits (MC68040UM 4.3.2)
         let paddr = tr.paddr;
         if tr.cache == CacheMode::Inhibited {
-            Self::evict(bus, &acc.fault, cache, paddr, true)?;
+            Self::evict(bus, cache, paddr, true)?;
             return bus.access(&acc.fault, paddr, acc.size, acc.wdata);
         }
 
@@ -327,14 +338,14 @@ impl CpuCaches for Caches040 {
         }
         cache.count();
         if tr.cache == CacheMode::Inhibited {
-            Self::evict(bus, &acc.fault, cache, paddr, true)?;
+            Self::evict(bus, cache, paddr, true)?;
             return bus.line_access(&acc.fault, paddr, wline);
         }
         // MOVE16 doesn't allocate: a read that hits is served by the cache,
         // a write that hits invalidates the line, which it overwrites in
         // memory as a whole (MC68040UM 4.3.3)
         if wline.is_some() {
-            Self::evict(bus, &acc.fault, cache, paddr, false)?;
+            Self::evict(bus, cache, paddr, false)?;
             return bus.line_access(&acc.fault, paddr, wline);
         }
         match cache.find(paddr) {
@@ -363,17 +374,11 @@ impl CpuCaches for Caches040 {
             CacheScope::Page(size) => !(size - 1),
             CacheScope::All => 0,
         };
-        let fault = FaultInfo {
-            fc: 0,
-            o_addr: paddr,
-            size: 16,
-            write: true,
-        };
         if caches != CacheSelect::Data {
-            Self::invalidate_cache(bus, &fault, &mut self.icache, paddr, mask, false)?;
+            Self::invalidate_cache(bus, &mut self.icache, paddr, mask, false)?;
         }
         if caches != CacheSelect::Instruction {
-            Self::invalidate_cache(bus, &fault, &mut self.dcache, paddr, mask, push)?;
+            Self::invalidate_cache(bus, &mut self.dcache, paddr, mask, push)?;
         }
         Ok(())
     }
@@ -411,7 +416,6 @@ impl Caches040 {
     /// matches `paddr` under `mask`, written back first if `push`
     fn invalidate_cache<TBus, const CPU_TYPE: CpuM68kType>(
         bus: &mut BusTransaction<'_, TBus, CPU_TYPE>,
-        fault: &FaultInfo,
         cache: &mut Cache040,
         paddr: Address,
         mask: Address,
@@ -427,7 +431,7 @@ impl Caches040 {
                     continue;
                 }
                 if push {
-                    Self::push(bus, fault, cache, set, way)?;
+                    Self::push(bus, cache, set, way)?;
                 }
                 cache.tags[set][way] = INVALID;
                 cache.dirty[set][way] = 0;
