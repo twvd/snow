@@ -609,27 +609,23 @@ where
         let mode = extword.movem_mode();
         let reglist = extword.movem_reglist();
 
-        match mode {
-            0b00 | 0b10 => {
-                // Static register list
-                // For predecrement mode, iterate in reverse order
-                let reverse_mode = mode & 0b10 == 0;
+        // The register list is static in bits 7-0, or dynamic in the low
+        // byte of the data register of bits 6-4 (M68000PRM FMOVEM)
+        let reglist = match mode {
+            0b00 | 0b10 => reglist,
+            _ => self
+                .regs
+                .read_d::<Byte>(usize::from((reglist >> 4) & 0b111)),
+        };
+        // For predecrement mode, iterate in reverse order
+        let reverse_mode = mode & 0b10 == 0;
 
-                if !extword.movem_dir() {
-                    // EA to registers
-                    self.op_fmovem_ea_to_regs(instr, reglist, reverse_mode)?;
-                } else {
-                    // Registers to EA
-                    self.op_fmovem_regs_to_ea(instr, reglist, reverse_mode)?;
-                }
-            }
-            0b01 | 0b11 => {
-                // Dynamic register list (from control register)
-                bail!("Dynamic FMOVEM register list not implemented");
-            }
-            _ => {
-                bail!("Invalid FMOVEM mode {:02b}", mode);
-            }
+        if !extword.movem_dir() {
+            // EA to registers
+            self.op_fmovem_ea_to_regs(instr, reglist, reverse_mode)?;
+        } else {
+            // Registers to EA
+            self.op_fmovem_regs_to_ea(instr, reglist, reverse_mode)?;
         }
 
         Ok(())

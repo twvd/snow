@@ -88,3 +88,26 @@ fn control_load() {
     assert_eq!(cpu.regs.fpu.fp[1].as_f64(), 1.0);
     assert_eq!(cpu.regs.fpu.fp[3].as_f64(), 3.0);
 }
+
+#[test]
+fn dynamic_postincrement_load() {
+    // FMOVEM.X (A0)+,D1 with FP0/FP2 in D1
+    let cpu = run(0xF218, 0xD810, |cpu| {
+        cpu.regs.write_d::<Long>(1, 0xA0);
+        set_ext(cpu, DATA, THREE);
+        set_ext(cpu, DATA + 12, ONE);
+    });
+    assert_eq!(cpu.regs.fpu.fp[0].as_f64(), 3.0);
+    assert_eq!(cpu.regs.fpu.fp[2].as_f64(), 1.0);
+    assert_eq!(cpu.regs.read_a::<Address>(0), DATA + 24);
+}
+
+#[test]
+fn dynamic_predecrement_store() {
+    // FMOVEM.X D1,-(A0) with FP0/FP2 in D1
+    let cpu = run(0xF220, 0xE810, |cpu| cpu.regs.write_d::<Long>(1, 0x05));
+    let base = DATA - 24;
+    assert_eq!(cpu.regs.read_a::<Address>(0), base);
+    assert_eq!(ext_at(&cpu, base), ONE);
+    assert_eq!(ext_at(&cpu, base + 12), THREE);
+}
