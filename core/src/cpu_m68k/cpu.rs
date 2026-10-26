@@ -190,6 +190,8 @@ pub const VECTOR_TRACE: Address = 0x000024;
 pub const VECTOR_LINEA: Address = 0x000028;
 /// Line 1111 / F
 pub const VECTOR_LINEF: Address = 0x00002C;
+/// Format error exception vector
+pub const VECTOR_FORMAT_ERROR: Address = 0x000038;
 
 /// Function code of the CPU space
 const FC_CPU_SPACE: u8 = 7;
@@ -2866,8 +2868,8 @@ where
             return Ok(());
         }
 
-        // 68020+ version
-        let ssp = self.regs.ssp();
+        // 68010+ version
+        let ssp = *self.regs.ssp();
         let format = (self.read_ticks::<Word>(ssp.wrapping_add(6))? & 0b1111_0000_0000_0000) >> 12;
         match format {
             0b0000 => {
@@ -2878,7 +2880,15 @@ where
                 self.set_sr(sr);
                 self.set_pc(pc)?;
             }
-            0b0010 => {
+            0b0001 if CPU_TYPE >= M68020 => {
+                // Throwaway frame: its SR selects the stack holding the frame
+                // to return through (M68030UM 8.4, M68040UM figure 8-6)
+                let sr = self.read_ticks::<Word>(ssp.wrapping_add(0))?;
+                *self.regs.ssp_mut() = ssp.wrapping_add(8);
+                self.set_sr(sr);
+                return self.op_rte(_instr);
+            }
+            0b0010 if CPU_TYPE >= M68020 => {
                 // Six word frame
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
@@ -2886,7 +2896,7 @@ where
                 self.set_sr(sr);
                 self.set_pc(pc)?;
             }
-            0b1010 => {
+            0b1010 if (M68020..=M68030).contains(&CPU_TYPE) => {
                 // Bus error at instruction boundary
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
@@ -2894,7 +2904,7 @@ where
                 self.set_sr(sr);
                 self.set_pc(pc)?;
             }
-            0b1011 => {
+            0b1011 if (M68020..=M68030).contains(&CPU_TYPE) => {
                 // Bus error during instruction
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
@@ -2902,7 +2912,12 @@ where
                 self.set_sr(sr);
                 self.set_pc(pc)?;
             }
-            _ => bail!("Unknown exception frame format: {:04b}", format),
+            0b1001 if (M68020..=M68030).contains(&CPU_TYPE) => {
+                bail!("Coprocessor mid-instruction frame not supported")
+            }
+            0b1000 if CPU_TYPE == M68010 => bail!("68010 bus error frame not supported"),
+            // Not a frame of this CPU
+            _ => return self.raise_exception(ExceptionGroup::Group2, VECTOR_FORMAT_ERROR, None),
         }
 
         self.prefetch_refill()?;
