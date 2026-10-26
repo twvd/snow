@@ -11,7 +11,7 @@ use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_FORMAT_ERROR};
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord};
 use crate::cpu_m68k::fpu::math::FloatMath;
-use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
+use crate::cpu_m68k::fpu::regs::{FpuRegisterFile, Unimp040};
 use crate::cpu_m68k::fpu::timings::FpuOperand;
 use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
 use crate::cpu_m68k::{CpuM68kType, FPU_M68040, FPU_M68881, FPU_M68882};
@@ -53,9 +53,13 @@ where
                 stateframe[0..4].copy_from_slice(&0x1F380000u32.to_be_bytes());
                 self.write_ea_sz(instr, instr.get_op2(), stateframe)?;
             }
-            FPU_M68040 => {
-                self.write_ea_sz(instr, instr.get_op2(), 0x41000000u32.to_be_bytes())?;
-            }
+            // FSAVE takes a pending exception out of the FPU, so that the other
+            // floating-point instructions of the handler don't report it
+            // again (MC68040UM 9.8)
+            FPU_M68040 => match self.regs.fpu.unimp040.take() {
+                Some(unimp) => self.write_ea_sz(instr, instr.get_op2(), unimp.to_frame())?,
+                None => self.write_ea_sz(instr, instr.get_op2(), 0x41000000u32.to_be_bytes())?,
+            },
             _ => todo!(),
         };
 
@@ -82,7 +86,29 @@ where
                     self.read_ea_sz::<{ 60 - 4 }>(instr, instr.get_op2())?;
                 }
                 // The MC68040 idle frame is only the format long word (9-41)
-                FPU_M68040 if state & 0xFFFF0000 == 0x41000000 => (),
+                FPU_M68040 if state & 0xFFFF0000 == 0x41000000 => {
+                    self.regs.fpu.unimp040 = None;
+                }
+                FPU_M68040 if state & 0xFFFF0000 == Unimp040::FRAME_FORMAT => {
+                    let rest =
+                        self.read_ea_sz::<{ Unimp040::FRAME_SIZE - 4 }>(instr, instr.get_op2())?;
+                    let mut frame = [0; Unimp040::FRAME_SIZE];
+                    frame[..4].copy_from_slice(&state.to_be_bytes());
+                    frame[4..].copy_from_slice(&rest);
+                    self.regs.fpu.unimp040 = Some(Unimp040::from_frame(&frame));
+                    log::warn!(
+                        "FRESTORE of an MC68040 unimplemented instruction state frame: \
+                         its exception is not reported"
+                    );
+                }
+                // Busy frame, 100 bytes
+                FPU_M68040 if state & 0xFFFF0000 == 0x41600000 => {
+                    self.read_ea_sz::<{ 100 - 4 }>(instr, instr.get_op2())?;
+                    self.regs.fpu.unimp040 = None;
+                    log::warn!(
+                        "FRESTORE of an MC68040 busy state frame: its exception is not reported"
+                    );
+                }
                 _ => {
                     // Not a frame of this FPU: format error, at the FRESTORE
                     // with the frame left alone (M68030UM table 8-6)
