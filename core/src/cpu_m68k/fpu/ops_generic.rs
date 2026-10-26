@@ -646,13 +646,9 @@ where
 
         self.advance_cycles(35)?;
 
-        let range = if !reverse_order {
-            Either::Left((0..8).rev())
-        } else {
-            Either::Right(0..8)
-        };
-        for (bit, fp_reg) in range.enumerate() {
-            if reglist & (1 << bit as u8) == 0 {
+        for fp_reg in fmovem_order(reverse_order) {
+            let bit = if reverse_order { fp_reg } else { 7 - fp_reg };
+            if reglist & (1 << bit) == 0 {
                 continue;
             }
 
@@ -692,16 +688,11 @@ where
     ) -> Result<()> {
         let mut addr = self.calc_ea_addr_no_mod::<Address>(instr, instr.get_op2())?;
 
-        let range = if !reverse_order {
-            Either::Left((0..8).rev())
-        } else {
-            Either::Right(0..8)
-        };
-
         self.advance_cycles(33)?;
 
-        for (bit, fp_reg) in range.enumerate() {
-            if reglist & (1 << bit as u8) == 0 {
+        for fp_reg in fmovem_order(reverse_order) {
+            let bit = if reverse_order { fp_reg } else { 7 - fp_reg };
+            if reglist & (1 << bit) == 0 {
                 continue;
             }
             if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
@@ -727,5 +718,19 @@ where
         }
 
         Ok(())
+    }
+}
+
+/// The order in which FMOVEM moves the floating-point data registers: from FP0
+/// up to increasing addresses, or from FP7 down to decreasing addresses in the
+/// predecrement mode, whose register list has FP7 in bit 7 instead of FP0, so
+/// that the lowest numbered register is always at the lowest address
+/// (M68000PRM FMOVEM)
+fn fmovem_order(predecrement: bool) -> impl Iterator<Item = usize> {
+    let up = 0..8;
+    if predecrement {
+        Either::Left(up.rev())
+    } else {
+        Either::Right(up)
     }
 }
