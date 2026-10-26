@@ -360,6 +360,11 @@ pub struct CpuM68k<
     #[serde(skip)]
     step_start_pc: Address,
 
+    /// The F-line exception raised this step is the MC68040 unimplemented
+    /// floating-point instruction exception
+    #[serde(skip)]
+    pub(in crate::cpu_m68k) step_fpu_unimp: bool,
+
     /// External address/data bus
     pub bus: TBus,
 
@@ -486,6 +491,7 @@ where
             step_exception: false,
             step_inhibit_trace: false,
             step_start_pc: 0,
+            step_fpu_unimp: false,
             step_ea_load: None,
             decode_cache: empty_decode_cache(),
             trace_mask: false,
@@ -1438,23 +1444,28 @@ where
                 //);
 
                 let pc = self.regs.pc;
-                match CPU_TYPE {
-                    M68000 => {
+                // The address of the six word frame (format $2): of the
+                // instruction that caused the exception (M68030UM table 8-6,
+                // M68040UM 8.4.3), or the calculated effective address for an
+                // unimplemented floating-point instruction (M68040UM 9.6.1).
+                // TRAPcc and cpTRAPcc share the TRAPV vector, CHK2 the CHK one.
+                let fpu_unimp = std::mem::take(&mut self.step_fpu_unimp);
+                let six_word = match vector {
+                    _ if CPU_TYPE < M68020 => None,
+                    VECTOR_DIV_ZERO | VECTOR_CHK | VECTOR_TRAPV | VECTOR_TRACE => {
+                        Some(self.step_start_pc)
+                    }
+                    VECTOR_LINEF if fpu_unimp => Some(self.step_ea_addr.unwrap_or(0)),
+                    _ => None,
+                };
+                match (CPU_TYPE, six_word) {
+                    (M68000, _) => {
                         *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(6);
                         self.write_ticks(self.regs.ssp().wrapping_add(4), pc as u16)?;
                         self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
                         self.write_ticks(self.regs.ssp().wrapping_add(2), (pc >> 16) as u16)?;
                     }
-                    M68020..
-                        if matches!(
-                            vector,
-                            VECTOR_DIV_ZERO | VECTOR_CHK | VECTOR_TRAPV | VECTOR_TRACE
-                        ) =>
-                    {
-                        // Six word frame (format $2) with the address of the
-                        // instruction that caused the exception (M68030UM
-                        // table 8-6, M68040UM 8.4.3). TRAPcc and cpTRAPcc share
-                        // the TRAPV vector, CHK2 the CHK one.
+                    (_, Some(address)) => {
                         *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(12);
                         let ssp = *self.regs.ssp();
                         self.write_ticks(ssp.wrapping_add(0), saved_sr)?;
@@ -1463,7 +1474,7 @@ where
                             ssp.wrapping_add(6),
                             0b0010_0000_0000_0000 | (vector as u16),
                         )?;
-                        self.write_ticks(ssp.wrapping_add(8), self.step_start_pc)?;
+                        self.write_ticks(ssp.wrapping_add(8), address)?;
                     }
                     _ => {
                         *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8);

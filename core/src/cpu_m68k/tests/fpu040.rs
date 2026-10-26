@@ -129,3 +129,136 @@ fn unimp_fsave_frestore() {
     assert_eq!(cpu.regs.isp, STACK);
     assert_eq!(cpu.regs.fpu.unimp040, Some(UNIMP));
 }
+
+mod unimplemented {
+    use super::*;
+    use crate::cpu_m68k::fpu::regs::Unimp040;
+    use crate::types::{Long, Word};
+
+    const CODE: Address = 0x1000;
+    const HANDLER: Address = 0x2000;
+    const STACK: Address = 0x8000;
+    const OPERAND: Address = 0x3000;
+
+    fn write_word(cpu: &mut TestCpu, addr: Address, value: Word) {
+        cpu.bus.mem.insert(addr, (value >> 8) as u8);
+        cpu.bus.mem.insert(addr + 1, value as u8);
+    }
+
+    fn write_long(cpu: &mut TestCpu, addr: Address, value: Long) {
+        write_word(cpu, addr, (value >> 16) as Word);
+        write_word(cpu, addr + 2, value as Word);
+    }
+
+    fn read_word(cpu: &TestCpu, addr: Address) -> Word {
+        (Word::from(cpu.bus.mem[&addr]) << 8) | Word::from(cpu.bus.mem[&(addr + 1)])
+    }
+
+    fn read_long(cpu: &TestCpu, addr: Address) -> Long {
+        (Long::from(read_word(cpu, addr)) << 16) | Long::from(read_word(cpu, addr + 2))
+    }
+
+    /// Runs the first instruction of `code`, with 1.0 in FP1 and infinity
+    /// in FP2
+    fn run(code: &[Word], setup: impl Fn(&mut TestCpu)) -> TestCpu {
+        let mut cpu = TestCpu::new(Testbus::new(M68040_ADDRESS_MASK));
+        for (i, &w) in code.iter().enumerate() {
+            write_word(&mut cpu, CODE + 2 * i as Address, w);
+        }
+        write_long(&mut cpu, 0x2C, HANDLER);
+        cpu.regs.isp = STACK;
+        cpu.regs.sr.set_supervisor(true);
+        cpu.regs.fpu.fp[1] = ext(1.0);
+        cpu.regs.fpu.fp[2] = Float::inf(SEMANTICS_EXTENDED, false);
+        setup(&mut cpu);
+        cpu.set_pc(CODE).unwrap();
+        cpu.prefetch_refill().unwrap();
+        cpu.step().unwrap();
+        cpu
+    }
+
+    /// Checks the format $2 frame of the exception
+    fn check_frame(cpu: &TestCpu, next_pc: Address, address: Address) {
+        assert_eq!(cpu.regs.pc, HANDLER);
+        let sp = STACK - 12;
+        assert_eq!(cpu.regs.isp, sp);
+        assert_eq!(read_long(cpu, sp + 2), next_pc);
+        assert_eq!(read_word(cpu, sp + 6), 0x202C);
+        assert_eq!(read_long(cpu, sp + 8), address);
+    }
+
+    const ONE: [Long; 3] = [0x3FFF_0000, 0x8000_0000, 0];
+    // Snow writes infinity with the explicit integer bit set
+    const INF: [Long; 3] = [0x7FFF_0000, 0x8000_0000, 0];
+
+    #[test]
+    fn register_source() {
+        // FSIN FP1,FP2
+        let cpu = run(&[0xF200, 0x050E], |_| ());
+        check_frame(&cpu, CODE + 4, 0);
+        assert_eq!(
+            cpu.regs.fpu.unimp040,
+            Some(Unimp040 {
+                cmdreg1b: 0x050E,
+                etemp: ONE,
+                stag: 0,
+                fptemp: INF,
+                dtag: 2,
+                packed: false,
+            })
+        );
+        assert!(cpu.regs.fpu.fp[2].is_inf());
+    }
+
+    #[test]
+    fn memory_source() {
+        // FSIN.X (A0)+,FP2
+        let cpu = run(&[0xF218, 0x490E], |cpu| {
+            cpu.regs.write_a(0, OPERAND);
+            write_long(cpu, OPERAND, 0x4000_0000);
+            write_long(cpu, OPERAND + 4, 0x8000_0000);
+            write_long(cpu, OPERAND + 8, 0);
+        });
+        check_frame(&cpu, CODE + 4, OPERAND);
+        assert_eq!(cpu.regs.read_a::<Address>(0), OPERAND + 12);
+        let unimp = cpu.regs.fpu.unimp040.unwrap();
+        assert_eq!(unimp.cmdreg1b, 0x490E);
+        assert_eq!(unimp.etemp, [0x4000_0000, 0x8000_0000, 0]);
+        assert_eq!(unimp.fptemp, INF);
+    }
+
+    #[test]
+    fn packed_source() {
+        // FSIN.P (A0),FP2
+        let cpu = run(&[0xF210, 0x4D0E], |cpu| {
+            cpu.regs.write_a(0, OPERAND);
+            write_long(cpu, OPERAND, 0x0000_0001);
+            write_long(cpu, OPERAND + 4, 0x2345_6789);
+            write_long(cpu, OPERAND + 8, 0xABCD_EF01);
+        });
+        check_frame(&cpu, CODE + 4, OPERAND);
+        let unimp = cpu.regs.fpu.unimp040.unwrap();
+        assert!(unimp.packed);
+        assert_eq!(unimp.etemp, [0, 0x2345_6789, 0xABCD_EF01]);
+        assert_eq!(unimp.fptemp, [0, 0, 0x0000_0001]);
+        assert_eq!(unimp.dtag, 2);
+    }
+
+    #[test]
+    fn fmovecr() {
+        // FMOVECR #$00,FP2
+        let cpu = run(&[0xF200, 0x5D00], |_| ());
+        check_frame(&cpu, CODE + 4, 0);
+        assert_eq!(cpu.regs.fpu.unimp040.unwrap().cmdreg1b, 0x5D00);
+        assert!(cpu.regs.fpu.fp[2].is_inf());
+    }
+
+    #[test]
+    fn implemented() {
+        // FADD FP1,FP0 runs in hardware
+        let cpu = run(&[0xF200, 0x0422], |cpu| cpu.regs.fpu.fp[0] = ext(2.0));
+        assert_eq!(cpu.regs.pc, CODE + 4);
+        assert_eq!(cpu.regs.fpu.unimp040, None);
+        assert_eq!(cpu.regs.fpu.fp[0].as_f64(), 3.0);
+    }
+}

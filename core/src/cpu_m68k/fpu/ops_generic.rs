@@ -7,9 +7,9 @@ use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, IrqSource};
 
-use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_FORMAT_ERROR};
+use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_FORMAT_ERROR, VECTOR_LINEF};
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
-use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord};
+use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord, opmode};
 use crate::cpu_m68k::fpu::math::FloatMath;
 use crate::cpu_m68k::fpu::regs::{FpuRegisterFile, Unimp040};
 use crate::cpu_m68k::fpu::timings::FpuOperand;
@@ -29,6 +29,33 @@ impl<
 where
     TBus: Bus<Address, u8> + IrqSource,
 {
+    /// Takes the unimplemented floating-point instruction exception of the
+    /// MC68040 for the instruction of `extword`, once its source operand is
+    /// fetched (MC68040UM 9.6.1). The FPU keeps the instruction and its
+    /// operands, `etemp` and `fptemp` with their tags, for FSAVE; `packed` for
+    /// a packed decimal real source, which ETEMP and FPTEMP hold as it is.
+    fn fpu_unimp040(
+        &mut self,
+        extword: FmoveExtWord,
+        (etemp, stag): ([Long; 3], u8),
+        (fptemp, dtag): ([Long; 3], u8),
+        packed: bool,
+    ) -> Result<()> {
+        self.regs.fpu.unimp040 = Some(Unimp040 {
+            cmdreg1b: extword.0,
+            etemp,
+            stag,
+            fptemp,
+            dtag,
+            packed,
+        });
+        // With the prefetch queue refilled, the PC is that of the next
+        // instruction, which the exception stack frame holds
+        self.prefetch_pump()?;
+        self.step_fpu_unimp = true;
+        self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEF, None)
+    }
+
     /// FNOP
     pub(in crate::cpu_m68k) fn op_fnop(&mut self, _instr: &Instruction) -> Result<()> {
         // Fetch second word (0000)
@@ -138,6 +165,14 @@ where
                 let dest = self.regs.fpu.fp[extword.dst_reg()].clone();
                 let opmode = extword.opmode();
 
+                if FPU_TYPE == FPU_M68040 && !opmode::implemented_040(opmode) {
+                    return self.fpu_unimp040(
+                        extword,
+                        Unimp040::operand(&src),
+                        Unimp040::operand(&dest),
+                        false,
+                    );
+                }
                 self.regs.fpu.fp[extword.dst_reg()] = self.fpu_alu_op(opmode, &src, &dest)?;
                 self.advance_cycles(Self::fpu_timings().alu(opmode, FpuOperand::Fpn))?;
             }
@@ -178,6 +213,36 @@ where
             0b010 => {
                 // EA to FPU register, with ALU op
                 let fpx = extword.dst_reg();
+                let unimp040 = FPU_TYPE == FPU_M68040 && !opmode::implemented_040(extword.opmode());
+                if unimp040 && extword.src_spec() == 0b011 {
+                    // A packed decimal real source stays as it is, bits 63-0
+                    // in ETEMP and bits 95-64 in FPTEMP (MC68040UM table 9-16)
+                    let packed: [Long; 3] = if instr.get_addr_mode()? == AddressingMode::Immediate {
+                        [
+                            self.fetch_immediate()?,
+                            self.fetch_immediate()?,
+                            self.fetch_immediate()?,
+                        ]
+                    } else {
+                        let ea = self.calc_ea_addr_sz::<PACKED_SIZE>(
+                            instr,
+                            instr.get_addr_mode()?,
+                            instr.get_op2(),
+                        )?;
+                        [
+                            self.read_ticks(ea)?,
+                            self.read_ticks(ea.wrapping_add(4))?,
+                            self.read_ticks(ea.wrapping_add(8))?,
+                        ]
+                    };
+                    let dtag = Unimp040::operand(&self.regs.fpu.fp[fpx]).1;
+                    return self.fpu_unimp040(
+                        extword,
+                        ([0, packed[1], packed[2]], 0),
+                        ([0, 0, packed[0]], dtag),
+                        true,
+                    );
+                }
                 let (value_in, operand) = match extword.src_spec() {
                     0b000 => {
                         // Long
@@ -255,6 +320,17 @@ where
                         )?;
                         (self.read_fpu_extended(ea)?, FpuOperand::Extended)
                     }
+                    0b111 if FPU_TYPE == FPU_M68040 => {
+                        // FMOVECR is not in the hardware of the MC68040
+                        // (MC68040UM table 9-10)
+                        let zero = Float::zero(SEMANTICS_EXTENDED, false);
+                        return self.fpu_unimp040(
+                            extword,
+                            Unimp040::operand(&zero),
+                            Unimp040::operand(&self.regs.fpu.fp[fpx].clone()),
+                            false,
+                        );
+                    }
                     0b111 => {
                         // ROM constant (FMOVECR)
                         self.regs.fpu.fp[fpx] = match extword.movecr_offset() {
@@ -312,6 +388,14 @@ where
                 };
 
                 let dest = self.regs.fpu.fp[fpx].clone();
+                if unimp040 {
+                    return self.fpu_unimp040(
+                        extword,
+                        Unimp040::operand(&value_in),
+                        Unimp040::operand(&dest),
+                        false,
+                    );
+                }
                 self.regs.fpu.fp[fpx] = self.fpu_alu_op(extword.opmode(), &value_in, &dest)?;
 
                 let timings = Self::fpu_timings();
