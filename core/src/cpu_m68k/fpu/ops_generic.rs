@@ -7,7 +7,7 @@ use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, IrqSource};
 
-use crate::cpu_m68k::cpu::CpuM68k;
+use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_FORMAT_ERROR};
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord};
 use crate::cpu_m68k::fpu::math::FloatMath;
@@ -90,7 +90,13 @@ where
                 _ => todo!(),
             };
         } else {
-            bail!("Unknown FPU state frame restored: {:08X}", state);
+            // Not a frame of this FPU: format error, at the FRESTORE with the
+            // frame left alone (M68030UM table 8-6)
+            log::warn!("Unknown FPU state frame restored: {:08X}", state);
+            if let Some(regs) = self.restart_regs.take() {
+                regs.restore(&mut self.regs);
+            }
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_FORMAT_ERROR, None);
         }
 
         self.advance_cycles(55)?;
