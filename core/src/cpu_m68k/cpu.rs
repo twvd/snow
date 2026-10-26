@@ -1137,6 +1137,7 @@ where
                                     .with_size(match details.size {
                                         1 => 1,
                                         2 => 2,
+                                        3 => 3,
                                         4 => 0,
                                         _ => {
                                             log::error!(
@@ -1181,6 +1182,7 @@ where
                                     .with_size(match details.size {
                                         1 => 1,
                                         2 => 2,
+                                        3 => 3,
                                         4 => 0,
                                         _ => {
                                             log::error!(
@@ -3398,6 +3400,33 @@ where
         Ok(())
     }
 
+    /// Reads the part of a memory bit field that lies in the long word at
+    /// `ea` (`offset` is 0-7), left-aligned in a long word.
+    ///
+    /// Only the bytes the field spans are accessed. The Motorola manuals
+    /// are not explicit about the size of a bit field's operand transfer:
+    /// the MC68020/MC68030 timing tables only say a field takes one
+    /// operand cycle up to 4 bytes and two for 5, and the MC68030 manual
+    /// (3.5.3) warns that a field insert into a peripheral register may
+    /// affect other fields of that register. Other evidence agrees on
+    /// sizing by span: WinUAE's cycle-exact cores do so, a 68030 was seen
+    /// issuing a 3-byte transfer for `bftst (a0){0:24}` at an odd address
+    /// (NetBSD amiga-dev, March 1994), and the Apple IIe Card's driver
+    /// updates two bits of a card register with BFINS three bytes before
+    /// a data port that a long access would disturb.
+    fn read_bitfield(&mut self, ea: Address, offset: i32, width: Long) -> Result<Long> {
+        let len = (offset as Long + width).div_ceil(8).min(4);
+        Ok(self.read_ticks_len(ea, len)? << (8 * (4 - len)))
+    }
+
+    /// Writes back the part of a memory bit field that lies in the long
+    /// word at `ea`, accessing only the bytes the field spans (see
+    /// [`Self::read_bitfield`]).
+    fn write_bitfield(&mut self, ea: Address, offset: i32, width: Long, value: Long) -> Result<()> {
+        let len = (offset as Long + width).div_ceil(8).min(4);
+        self.write_ticks_len(ea, len, value >> (8 * (4 - len)))
+    }
+
     /// BFCLR
     fn op_bfclr(&mut self, instr: &Instruction) -> Result<()> {
         let sec = BfxExtWord(self.fetch_pump()?);
@@ -3457,7 +3486,7 @@ where
                 let mask_base = 0xFFFFFFFF_u32 << (32 - width);
                 let mask_long = mask_base >> (offset as isize);
 
-                let data_long = self.read_ticks::<Long>(ea)?;
+                let data_long = self.read_bitfield(ea, offset, width)?;
                 self.regs
                     .sr
                     .set_n((data_long << (offset as isize)) & 0x80000000 != 0);
@@ -3465,7 +3494,7 @@ where
                 self.regs.sr.set_v(false);
                 self.regs.sr.set_c(false);
 
-                self.write_ticks(ea, data_long & !mask_long)?;
+                self.write_bitfield(ea, offset, width, data_long & !mask_long)?;
 
                 // Handle bit fields that cross 32-bit boundaries
                 if (width as i32 + offset) > 32 {
@@ -3548,7 +3577,7 @@ where
 
                 width = ((width.wrapping_sub(1)) & 31) + 1;
 
-                let mut data = self.read_ticks::<Long>(ea)?;
+                let mut data = self.read_bitfield(ea, offset, width)?;
                 data <<= offset as isize;
 
                 // If the bit field crosses a 32-bit boundary, read an additional byte
@@ -3628,7 +3657,7 @@ where
 
                 width = ((width.wrapping_sub(1)) & 31) + 1;
 
-                let mut data = self.read_ticks::<Long>(ea)?;
+                let mut data = self.read_bitfield(ea, offset, width)?;
                 data <<= offset as isize;
 
                 // If the bit field crosses a 32-bit boundary, read an additional byte
@@ -3725,7 +3754,7 @@ where
 
                 width = ((width.wrapping_sub(1)) & 31) + 1;
 
-                let mut data = self.read_ticks::<Long>(ea)?;
+                let mut data = self.read_bitfield(ea, local_offset, width)?;
                 data <<= local_offset as isize;
 
                 // If the bit field crosses a 32-bit boundary, read an additional byte
@@ -3820,7 +3849,7 @@ where
                 let mask_base = 0xFFFFFFFF_u32 << (32 - width);
                 let mask_long = mask_base >> (offset as isize);
 
-                let data_long = self.read_ticks::<Long>(ea)?;
+                let data_long = self.read_bitfield(ea, offset, width)?;
 
                 self.regs
                     .sr
@@ -3829,7 +3858,7 @@ where
                 self.regs.sr.set_v(false);
                 self.regs.sr.set_c(false);
 
-                self.write_ticks(ea, data_long | mask_long)?;
+                self.write_bitfield(ea, offset, width, data_long | mask_long)?;
 
                 // Handle bit fields that cross 32-bit boundaries
                 if (width as i32 + offset) > 32 {
@@ -3908,7 +3937,7 @@ where
                 let mask_base = 0xFFFFFFFF_u32 << (32 - width);
                 let mask_long = mask_base >> (offset as isize);
 
-                let data_long = self.read_ticks::<Long>(ea)?;
+                let data_long = self.read_bitfield(ea, offset, width)?;
 
                 let n_bit = (data_long & (0x80000000 >> (offset as isize))) != 0;
                 self.regs.sr.set_n(n_bit);
@@ -3994,7 +4023,7 @@ where
                 let mask_base = 0xFFFFFFFF_u32 << (32 - width);
                 let mask_long = mask_base >> (offset as isize);
 
-                let data_long = self.read_ticks::<Long>(ea)?;
+                let data_long = self.read_bitfield(ea, offset, width)?;
                 self.regs
                     .sr
                     .set_n((data_long << (offset as isize)) & 0x80000000 != 0);
@@ -4003,7 +4032,7 @@ where
                 self.regs.sr.set_c(false);
 
                 // Write result back
-                self.write_ticks(ea, data_long ^ mask_long)?;
+                self.write_bitfield(ea, offset, width, data_long ^ mask_long)?;
 
                 // Handle bit fields that cross 32-bit boundaries
                 if (width as i32 + offset) > 32 {
@@ -4107,13 +4136,13 @@ where
 
                 let insert_long = insert_base >> (offset as isize);
 
-                let data_long = self.read_ticks::<Long>(ea)?;
+                let data_long = self.read_bitfield(ea, offset, width)?;
 
                 self.regs.sr.set_v(false);
                 self.regs.sr.set_c(false);
 
                 // Combine data and insert values and write back
-                self.write_ticks(ea, (data_long & !mask_long) | insert_long)?;
+                self.write_bitfield(ea, offset, width, (data_long & !mask_long) | insert_long)?;
 
                 // Handle bit fields that cross 32-bit boundaries
                 if (width as i32 + offset) > 32 {

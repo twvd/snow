@@ -137,15 +137,17 @@ where
         }
     }
 
-    /// Runs one bus cycle for the `size` bytes left of an operand
-    /// at `o_addr`, from logical address `laddr`. Adds the duration of the
-    /// cycle to `ticks` and returns the read data and the number of bytes
-    /// transferred.
+    /// Runs one bus cycle for the `size` bytes left of the `o_len`-byte
+    /// operand at `o_addr`, from logical address `laddr`. Adds the duration
+    /// of the cycle to `ticks` and returns the read data and the number of
+    /// bytes transferred.
     #[inline(always)]
-    fn bus_cycle<T: CpuSized, const PHYSICAL: bool>(
+    #[allow(clippy::too_many_arguments)]
+    fn bus_cycle<const PHYSICAL: bool>(
         &mut self,
         fc: u8,
         o_addr: Address,
+        o_len: u32,
         laddr: Address,
         size: u32,
         wdata: Option<Long>,
@@ -159,7 +161,7 @@ where
                 .map_err(|e| match e.downcast_ref() {
                     Some(CpuError::BusError(details)) => {
                         anyhow!(CpuError::BusError(Group0Details {
-                            size: std::mem::size_of::<T>(),
+                            size: o_len as usize,
                             address: laddr,
                             ..*details
                         }))
@@ -190,7 +192,7 @@ where
                 BusResponse::BusError => bail!(CpuError::BusError(Group0Details {
                     function_code: fc,
                     ir: 0,
-                    size: std::mem::size_of::<T>(),
+                    size: o_len as usize,
                     instruction: false,
                     read: !write,
                     address: o_addr,
@@ -240,8 +242,15 @@ where
             for w in 0..len.div_ceil(2) {
                 let mut ticks = 0;
                 let laddr = addr.wrapping_add(2 * w) & ADDRESS_MASK;
-                let (data, n) =
-                    self.bus_cycle::<T, PHYSICAL>(fc, o_addr, laddr, len.min(2), None, &mut ticks)?;
+                let (data, n) = self.bus_cycle::<PHYSICAL>(
+                    fc,
+                    o_addr,
+                    len,
+                    laddr,
+                    len.min(2),
+                    None,
+                    &mut ticks,
+                )?;
                 result = (result << (8 * n)) | u64::from(data);
                 self.advance_cycles(ticks)?;
 
@@ -251,19 +260,39 @@ where
                 }
             }
         } else {
-            let mut ticks = 0;
-            let mut done = 0;
-            while done < len {
-                let laddr = o_addr.wrapping_add(done) & ADDRESS_MASK;
-                let (data, n) =
-                    self.bus_cycle::<T, PHYSICAL>(fc, o_addr, laddr, len - done, None, &mut ticks)?;
-                result = (result << (8 * n)) | u64::from(data);
-                done += n;
-            }
-            self.advance_cycles(ticks)?;
+            result = u64::from(self.read_operand::<PHYSICAL>(fc, o_addr, len)?);
         }
 
         Ok(T::chop(result as Long))
+    }
+
+    /// Reads an operand of `len` bytes (1-4, a 3-byte one included) with
+    /// as many bus cycles as the port sizes need (68020+).
+    #[inline(always)]
+    fn read_operand<const PHYSICAL: bool>(
+        &mut self,
+        fc: u8,
+        o_addr: Address,
+        len: u32,
+    ) -> Result<Long> {
+        let mut ticks = 0;
+        let mut done = 0;
+        let mut result: u64 = 0;
+        while done < len {
+            let laddr = o_addr.wrapping_add(done) & ADDRESS_MASK;
+            let (data, n) =
+                self.bus_cycle::<PHYSICAL>(fc, o_addr, len, laddr, len - done, None, &mut ticks)?;
+            result = (result << (8 * n)) | u64::from(data);
+            done += n;
+        }
+        self.advance_cycles(ticks)?;
+        Ok(result as Long)
+    }
+
+    /// Reads a data operand of `len` bytes (1-4) and spends ticks (68020+).
+    /// Virtual address version, data FC
+    pub(in crate::cpu_m68k) fn read_ticks_len(&mut self, vaddr: Address, len: u32) -> Result<Long> {
+        self.read_operand::<false>(self.fc_data(), vaddr, len)
     }
 
     /// Writes a value to the bus and spends ticks.
@@ -298,7 +327,7 @@ where
                 let mut ticks = 0;
                 let laddr = addr.wrapping_add(2 * w) & ADDRESS_MASK;
                 let data = low_bytes(value >> (8 * (len - size - 2 * w)), size);
-                self.bus_cycle::<T, PHYSICAL>(fc, o_addr, laddr, size, Some(data), &mut ticks)?;
+                self.bus_cycle::<PHYSICAL>(fc, o_addr, len, laddr, size, Some(data), &mut ticks)?;
                 self.advance_cycles(ticks)?;
 
                 if CPU_TYPE == M68000
@@ -314,25 +343,50 @@ where
                 }
             }
         } else {
-            let mut ticks = 0;
-            let mut done = 0;
-            while done < len {
-                let laddr = o_addr.wrapping_add(done) & ADDRESS_MASK;
-                let data = low_bytes(value, len - done);
-                let (_, n) = self.bus_cycle::<T, PHYSICAL>(
-                    fc,
-                    o_addr,
-                    laddr,
-                    len - done,
-                    Some(data),
-                    &mut ticks,
-                )?;
-                done += n;
-            }
-            self.advance_cycles(ticks)?;
+            self.write_operand::<PHYSICAL>(fc, o_addr, len, value)?;
         }
 
         Ok(())
+    }
+
+    /// Writes the low `len` bytes (1-4, a 3-byte operand included) of
+    /// `value` with as many bus cycles as the port sizes need (68020+).
+    #[inline(always)]
+    fn write_operand<const PHYSICAL: bool>(
+        &mut self,
+        fc: u8,
+        o_addr: Address,
+        len: u32,
+        value: Long,
+    ) -> Result<()> {
+        let mut ticks = 0;
+        let mut done = 0;
+        while done < len {
+            let laddr = o_addr.wrapping_add(done) & ADDRESS_MASK;
+            let data = low_bytes(value, len - done);
+            let (_, n) = self.bus_cycle::<PHYSICAL>(
+                fc,
+                o_addr,
+                len,
+                laddr,
+                len - done,
+                Some(data),
+                &mut ticks,
+            )?;
+            done += n;
+        }
+        self.advance_cycles(ticks)
+    }
+
+    /// Writes the low `len` bytes (1-4) of `value` as a data operand and
+    /// spends ticks (68020+). Virtual address version, data FC
+    pub(in crate::cpu_m68k) fn write_ticks_len(
+        &mut self,
+        vaddr: Address,
+        len: u32,
+        value: Long,
+    ) -> Result<()> {
+        self.write_operand::<false>(self.fc_data(), vaddr, len, value)
     }
 
     /// Writes a value to the bus (big endian) and spends ticks.
