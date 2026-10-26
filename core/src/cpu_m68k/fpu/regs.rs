@@ -1,7 +1,7 @@
 use crate::bus::Address;
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::fpu::storage::float_array_as_ext_real;
-use crate::types::{Byte, Long};
+use crate::types::{Byte, Long, Word};
 use arpfloat::Float;
 use num_traits::Zero;
 use proc_bitfield::bitfield;
@@ -126,6 +126,74 @@ bitfield! {
     }
 }
 
+/// Internal state of an MC68040 FPU after an unimplemented floating-point
+/// instruction exception, which FSAVE saves as the unimplemented instruction
+/// state frame (MC68040UM 9.6.1, 9.8)
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unimp040 {
+    /// Command word of the instruction (CMDREG1B)
+    pub cmdreg1b: Word,
+    /// Source operand in extended precision, as in memory (ETEMP)
+    pub etemp: [Long; 3],
+    /// Data type of the source operand (STAG)
+    pub stag: u8,
+    /// Destination operand in extended precision, as in memory (FPTEMP)
+    pub fptemp: [Long; 3],
+    /// Data type of the destination operand (DTAG)
+    pub dtag: u8,
+    /// The source operand is a packed decimal real, kept as it is: bits
+    /// 63-0 in ETEMP, bits 95-64 in FPTEMP (E1)
+    pub packed: bool,
+}
+
+impl Unimp040 {
+    /// Size of the unimplemented instruction state frame in bytes
+    pub const FRAME_SIZE: usize = 52;
+
+    /// Format long word of the unimplemented instruction state frame
+    pub const FRAME_FORMAT: Long = 0x4130_0000;
+
+    /// The unimplemented instruction state frame (MC68040UM figure 9-10 (d),
+    /// table 9-16)
+    pub fn to_frame(&self) -> [u8; Self::FRAME_SIZE] {
+        let mut longs = [0; Self::FRAME_SIZE / 4];
+        longs[0] = Self::FRAME_FORMAT;
+        longs[3] = Long::from(self.stag) << 29;
+        longs[4] = Long::from(self.cmdreg1b) << 16;
+        longs[5] = Long::from(self.dtag) << 29;
+        // E1 for a packed decimal real source, T clear. This differs from
+        // table 9-16 of the MC68040UM, which has E1 always set for an
+        // unimplemented instruction, but follows the definition of E1 in
+        // 9.8: "for the unimplemented instruction state frame, the source
+        // operand's unsupported data type is packed if the E1 bit is set".
+        // The M68040FPSP does the same: with E1 always set, running it in
+        // Snow took every source operand for a packed decimal real and gave
+        // wrong results.
+        longs[6] = Long::from(self.packed) << 26;
+        longs[7..10].copy_from_slice(&self.fptemp);
+        longs[10..13].copy_from_slice(&self.etemp);
+
+        let mut frame = [0; Self::FRAME_SIZE];
+        for (bytes, long) in frame.chunks_exact_mut(4).zip(longs) {
+            bytes.copy_from_slice(&long.to_be_bytes());
+        }
+        frame
+    }
+
+    /// The state an unimplemented instruction state frame holds
+    pub fn from_frame(frame: &[u8; Self::FRAME_SIZE]) -> Self {
+        let long = |i: usize| Long::from_be_bytes(frame[4 * i..4 * i + 4].try_into().unwrap());
+        Self {
+            cmdreg1b: (long(4) >> 16) as Word,
+            etemp: [long(10), long(11), long(12)],
+            stag: (long(3) >> 29) as u8,
+            fptemp: [long(7), long(8), long(9)],
+            dtag: (long(5) >> 29) as u8,
+            packed: long(6) & (1 << 26) != 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FpuRegisterFile {
     #[serde(with = "float_array_as_ext_real")]
@@ -133,6 +201,9 @@ pub struct FpuRegisterFile {
     pub fpcr: RegisterFPCR,
     pub fpsr: RegisterFPSR,
     pub fpiar: Address,
+    /// MC68040: state after an unimplemented floating-point instruction
+    /// exception, until FSAVE
+    pub unimp040: Option<Unimp040>,
 }
 
 impl FpuRegisterFile {
@@ -172,6 +243,7 @@ impl Default for FpuRegisterFile {
             fpcr: RegisterFPCR(0),
             fpsr: RegisterFPSR(0),
             fpiar: Address::zero(),
+            unimp040: None,
         }
     }
 }
