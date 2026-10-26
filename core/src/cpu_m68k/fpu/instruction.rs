@@ -106,6 +106,40 @@ pub(in crate::cpu_m68k) mod opmode {
         FDSUB   = 0b1101100, "FDSUB";
     }
 
+    /// Tests if the MC68040 runs `opmode` in hardware: the others take the
+    /// unimplemented floating-point instruction exception (MC68040UM
+    /// table 9-10)
+    pub(in crate::cpu_m68k) const fn implemented_040(opmode: u8) -> bool {
+        !matches!(
+            opmode,
+            FINT | FSINH
+                | FINTRZ
+                | FLOGNP1
+                | FETOXM1
+                | FTANH
+                | FATAN
+                | FASIN
+                | FATANH
+                | FSIN
+                | FTAN
+                | FETOX
+                | FTWOTOX
+                | FTENTOX
+                | FLOGN
+                | FLOG10
+                | FLOG2
+                | FCOSH
+                | FACOS
+                | FCOS
+                | FGETEXP
+                | FGETMAN
+                | FMOD
+                | FREM
+                | FSCALE
+                | FSINCOS..=FSINCOS_LAST
+        )
+    }
+
     /// For the single and double precision rounded opmodes of the MC68040:
     /// the operation and whether it rounds to double precision
     pub(in crate::cpu_m68k) fn rounded(opmode: u8) -> Option<(u8, bool)> {
