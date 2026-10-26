@@ -1,3 +1,4 @@
+mod cmp2;
 mod divl;
 mod group2_exceptions;
 mod illegal_exception;
