@@ -1493,10 +1493,13 @@ where
                         self.write_ticks(self.regs.ssp().wrapping_add(2), (pc >> 16) as u16)?;
                     }
                     (_, Some(address)) => {
+                        // The PC takes two writes, five in all as the
+                        // exception tables count
                         *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(12);
                         let ssp = *self.regs.ssp();
                         self.write_ticks(ssp.wrapping_add(0), saved_sr)?;
-                        self.write_ticks(ssp.wrapping_add(2), pc)?;
+                        self.write_ticks(ssp.wrapping_add(2), (pc >> 16) as u16)?;
+                        self.write_ticks(ssp.wrapping_add(4), pc as u16)?;
                         self.write_ticks(
                             ssp.wrapping_add(6),
                             0b0010_0000_0000_0000 | (vector as u16),
@@ -3429,6 +3432,7 @@ where
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
                 *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(12);
+                advance_cycles!(self, m68000: 0, m68020: 5, m68030: 2)?;
                 self.set_sr(sr);
                 self.set_pc(pc)?;
             }
