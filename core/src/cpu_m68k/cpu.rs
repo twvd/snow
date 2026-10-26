@@ -1398,6 +1398,8 @@ where
             InstructionMnemonic::EXT_w => self.op_ext::<Word, Byte>(instr),
             InstructionMnemonic::EXTB_l => self.op_ext::<Long, Byte>(instr),
             InstructionMnemonic::SBCD => self.op_sbcd(instr),
+            InstructionMnemonic::PACK => self.op_pack(instr),
+            InstructionMnemonic::UNPK => self.op_unpk(instr),
             InstructionMnemonic::NBCD => self.op_nbcd(instr),
             InstructionMnemonic::ABCD => self.op_abcd(instr),
             InstructionMnemonic::PEA => self.op_lea_pea(instr),
@@ -2581,6 +2583,68 @@ where
             self.advance_cycles(2)?;
         }
 
+        Ok(())
+    }
+
+    /// PACK: adds the adjustment to the two bytes of unpacked BCD of the
+    /// source and packs their low nibbles into the destination byte. In
+    /// memory, the source bytes are read from -(Ax), the one at the lower
+    /// address being the high one (M68000PRM PACK).
+    fn op_pack(&mut self, instr: &Instruction) -> Result<()> {
+        let adjustment = self.fetch_pump()?;
+        let (rx, ry) = (instr.get_op2(), instr.get_op1());
+        let packed = |v: Word| (((v >> 4) & 0xF0) | (v & 0x0F)) as Byte;
+
+        if instr.get_addr_mode_x()? == AddressingMode::DataRegister {
+            let v = self.regs.read_d::<Word>(rx).wrapping_add(adjustment);
+            self.regs.write_d(ry, packed(v));
+            // MC68020UM 8.2: 6 clocks in the cache case, 2 for each of the 2
+            // instruction words and 2 internal
+            self.advance_cycles(2)?;
+        } else {
+            let addr = self.regs.read_a_predec::<Address>(rx, 1);
+            let low = self.read_ticks::<Byte>(addr)?;
+            let addr = self.regs.read_a_predec::<Address>(rx, 1);
+            let high = self.read_ticks::<Byte>(addr)?;
+            let v = Word::from_be_bytes([high, low]).wrapping_add(adjustment);
+            let addr = self.regs.read_a_predec::<Address>(ry, 1);
+            // 13 clocks in the cache case: 2 for each of the 2 instruction
+            // words and 3 for each of the 3 bus cycles, the 2 byte reads and
+            // the write, with no internal time left
+            self.write_ticks(addr, packed(v))?;
+        }
+        Ok(())
+    }
+
+    /// UNPK: unpacks the two BCD digits of the source byte into the low
+    /// nibbles of two bytes and adds the adjustment. In memory, the two bytes
+    /// are written to -(Ay), the high one at the lower address (M68000PRM
+    /// UNPK).
+    fn op_unpk(&mut self, instr: &Instruction) -> Result<()> {
+        let adjustment = self.fetch_pump()?;
+        let (rx, ry) = (instr.get_op2(), instr.get_op1());
+        let unpacked = |v: Byte| {
+            let v = Word::from(v);
+            (((v & 0xF0) << 4) | (v & 0x0F)).wrapping_add(adjustment)
+        };
+
+        if instr.get_addr_mode_x()? == AddressingMode::DataRegister {
+            let v = unpacked(self.regs.read_d::<Byte>(rx));
+            self.regs.write_d(ry, v);
+            // MC68020UM 8.2: 8 clocks in the cache case, 2 for each of the 2
+            // instruction words and 4 internal
+            self.advance_cycles(4)?;
+        } else {
+            let addr = self.regs.read_a_predec::<Address>(rx, 1);
+            let [high, low] = unpacked(self.read_ticks::<Byte>(addr)?).to_be_bytes();
+            // 13 clocks in the cache case: 2 for each of the 2 instruction
+            // words and 3 for each of the 3 bus cycles, the read and the 2
+            // byte writes, with no internal time left
+            let addr = self.regs.read_a_predec::<Address>(ry, 1);
+            self.write_ticks(addr, low)?;
+            let addr = self.regs.read_a_predec::<Address>(ry, 1);
+            self.write_ticks(addr, high)?;
+        }
         Ok(())
     }
 

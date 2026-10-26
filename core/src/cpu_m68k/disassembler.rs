@@ -1117,6 +1117,17 @@ impl<'a> Disassembler<'a> {
                 format!("FTRAP{}.l #${:08X}", Self::fcc_mnemonic(cc), imm)
             }
 
+            InstructionMnemonic::PACK | InstructionMnemonic::UNPK => {
+                let adjustment = self.get16()?;
+                format!(
+                    "{} {},{},#${:04X}",
+                    mnemonic,
+                    self.ea_with(instr, instr.get_addr_mode_x()?, instr.get_op2())?,
+                    self.ea_with(instr, instr.get_addr_mode_x()?, instr.get_op1())?,
+                    adjustment
+                )
+            }
+
             InstructionMnemonic::CMP2_b
             | InstructionMnemonic::CMP2_w
             | InstructionMnemonic::CMP2_l => {

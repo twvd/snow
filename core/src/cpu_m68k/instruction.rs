@@ -56,6 +56,8 @@ pub enum InstructionMnemonic {
     ABCD,
     NBCD,
     SBCD,
+    PACK,
+    UNPK,
     ADD_l,
     ADD_w,
     ADD_b,
@@ -666,6 +668,8 @@ impl Instruction {
         (M68000, 0b0100_0001_1100_0000, 0b1111_0001_1100_0000, InstructionMnemonic::LEA),
         (M68000, 0b0100_0001_1000_0000, 0b1111_0001_1100_0000, InstructionMnemonic::CHK_w),
         (M68000, 0b1000_0001_0000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::SBCD),
+        (M68020, 0b1000_0001_0100_0000, 0b1111_0001_1111_0000, InstructionMnemonic::PACK),
+        (M68020, 0b1000_0001_1000_0000, 0b1111_0001_1111_0000, InstructionMnemonic::UNPK),
         (M68000, 0b1000_0000_0000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_b),
         (M68000, 0b1000_0000_0100_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_w),
         (M68000, 0b1000_0000_1000_0000, 0b1111_0000_1100_0000, InstructionMnemonic::OR_l),
@@ -1243,7 +1247,9 @@ impl Instruction {
             | InstructionMnemonic::TRAPcc
             | InstructionMnemonic::TRAPcc_w
             | InstructionMnemonic::TRAPcc_l
-            | InstructionMnemonic::POP_000 => InstructionSize::None,
+            | InstructionMnemonic::POP_000
+            | InstructionMnemonic::PACK
+            | InstructionMnemonic::UNPK => InstructionSize::None,
 
             InstructionMnemonic::MOVES_b => InstructionSize::Byte,
             InstructionMnemonic::MOVES_w => InstructionSize::Word,
