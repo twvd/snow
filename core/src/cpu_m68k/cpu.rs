@@ -1509,6 +1509,9 @@ where
             InstructionMnemonic::CAS_b => self.op_cas::<Byte>(instr),
             InstructionMnemonic::CAS_w => self.op_cas::<Word>(instr),
             InstructionMnemonic::CAS_l => self.op_cas::<Long>(instr),
+            InstructionMnemonic::CMP2_b => self.op_cmp2::<Byte>(instr),
+            InstructionMnemonic::CMP2_w => self.op_cmp2::<Word>(instr),
+            InstructionMnemonic::CMP2_l => self.op_cmp2::<Long>(instr),
 
             // FPU ---------------------------------------------------------------------------------
             InstructionMnemonic::FNOP
@@ -4295,6 +4298,72 @@ where
             self.regs.write_d(dc, ea_op);
         }
 
+        Ok(())
+    }
+
+    /// CMP2 and CHK2: compare a register with the bounds pair at the
+    /// effective address, the lower bound first. A data register is compared
+    /// in its low part, an address register whole, against the bounds
+    /// sign-extended to 32 bits. CHK2 traps when the register is out of
+    /// bounds (M68000PRM CHK2, CMP2).
+    fn op_cmp2<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+        // Control addressing modes only. Checked before fetching the extension
+        // word, so that the illegal instruction exception stacks the address
+        // of the instruction.
+        if !matches!(
+            instr.get_addr_mode()?,
+            AddressingMode::Indirect
+                | AddressingMode::IndirectDisplacement
+                | AddressingMode::IndirectIndex
+                | AddressingMode::IndirectIndexBase
+                | AddressingMode::PCDisplacement
+                | AddressingMode::PCIndex
+                | AddressingMode::PCIndexBase
+                | AddressingMode::AbsoluteShort
+                | AddressingMode::AbsoluteLong
+        ) {
+            return self.raise_illegal_instruction();
+        }
+        let extword = self.fetch_pump()?;
+
+        let ea = self.calc_ea_addr::<T>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+        let lower = self.read_ticks::<T>(ea)?;
+        let upper = self.read_ticks::<T>(ea.wrapping_add(std::mem::size_of::<T>() as Address))?;
+
+        let reg = usize::from((extword >> 12) & 0b111);
+        let (value, lower, upper, mask) = if extword & (1 << 15) != 0 {
+            (
+                self.regs.read_a::<Long>(reg),
+                lower.expand_signed() as Long,
+                upper.expand_signed() as Long,
+                Long::MAX,
+            )
+        } else {
+            (
+                self.regs.read_d::<T>(reg).expand(),
+                lower.expand(),
+                upper.expand(),
+                T::chop(Long::MAX).expand(),
+            )
+        };
+
+        // The bounds can be signed or unsigned, the lower bound being the
+        // smaller one either way: the register is in bounds when its
+        // distance above the lower bound is at most that of the upper one.
+        let out = value.wrapping_sub(lower) & mask > upper.wrapping_sub(lower) & mask;
+        self.regs.sr.set_z(value == lower || value == upper);
+        self.regs.sr.set_c(out);
+
+        // MC68020UM 8.2: 18 clocks in the cache case, 2 for each of the 2
+        // instruction words, 3 for each of the 2 reads of the bounds and 8
+        // internal
+        self.advance_cycles(8)?;
+
+        if out && extword & (1 << 11) != 0 {
+            // CHK2, with the next instruction in the exception frame
+            self.prefetch_pump()?;
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_CHK, None);
+        }
         Ok(())
     }
 

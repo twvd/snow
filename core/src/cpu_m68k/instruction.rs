@@ -126,6 +126,10 @@ pub enum InstructionMnemonic {
     CMPM_l,
     CMPM_w,
     CMPM_b,
+    /// CMP2 and CHK2, which the extension word tells apart
+    CMP2_b,
+    CMP2_w,
+    CMP2_l,
     DBcc,
     DIVx_l,
     DIVS_w,
@@ -774,6 +778,9 @@ impl Instruction {
         (M68020, 0b0000_1010_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CAS_b),
         (M68020, 0b0000_1100_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CAS_w),
         (M68020, 0b0000_1110_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CAS_l),
+        (M68020, 0b0000_0000_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CMP2_b),
+        (M68020, 0b0000_0010_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CMP2_w),
+        (M68020, 0b0000_0100_1100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::CMP2_l),
 
         // M68881 FPU instructions
         (M68020, 0b1111_0011_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::FSAVE),
@@ -1040,6 +1047,7 @@ impl Instruction {
             | InstructionMnemonic::CMPA_l
             | InstructionMnemonic::CMPI_l
             | InstructionMnemonic::CMPM_l
+            | InstructionMnemonic::CMP2_l
             | InstructionMnemonic::DIVx_l
             | InstructionMnemonic::EOR_l
             | InstructionMnemonic::EORI_l
@@ -1086,6 +1094,7 @@ impl Instruction {
             | InstructionMnemonic::CMPA_w
             | InstructionMnemonic::CMPI_w
             | InstructionMnemonic::CMPM_w
+            | InstructionMnemonic::CMP2_w
             | InstructionMnemonic::DIVS_w
             | InstructionMnemonic::DIVU_w
             | InstructionMnemonic::EOR_w
@@ -1132,6 +1141,7 @@ impl Instruction {
             | InstructionMnemonic::CMP_b
             | InstructionMnemonic::CMPI_b
             | InstructionMnemonic::CMPM_b
+            | InstructionMnemonic::CMP2_b
             | InstructionMnemonic::EOR_b
             | InstructionMnemonic::EORI_b
             | InstructionMnemonic::EXTB_l

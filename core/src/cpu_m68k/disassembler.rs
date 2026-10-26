@@ -1117,6 +1117,26 @@ impl<'a> Disassembler<'a> {
                 format!("FTRAP{}.l #${:08X}", Self::fcc_mnemonic(cc), imm)
             }
 
+            InstructionMnemonic::CMP2_b
+            | InstructionMnemonic::CMP2_w
+            | InstructionMnemonic::CMP2_l => {
+                let extword = self.get16()?;
+                let name = if extword & (1 << 11) != 0 {
+                    "CHK2"
+                } else {
+                    "CMP2"
+                };
+                let reg = if extword & (1 << 15) != 0 { 'A' } else { 'D' };
+                format!(
+                    "{}.{} {},{}{}",
+                    name,
+                    sz,
+                    self.ea(instr)?,
+                    reg,
+                    (extword >> 12) & 0b111
+                )
+            }
+
             InstructionMnemonic::CAS_b
             | InstructionMnemonic::CAS_l
             | InstructionMnemonic::CAS_w => {
