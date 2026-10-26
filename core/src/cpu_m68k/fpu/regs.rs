@@ -1,6 +1,6 @@
 use crate::bus::Address;
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
-use crate::cpu_m68k::fpu::storage::float_array_as_ext_real;
+use crate::cpu_m68k::fpu::storage::{BitsExtReal, float_array_as_ext_real};
 use crate::types::{Byte, Long, Word};
 use arpfloat::Float;
 use num_traits::Zero;
@@ -152,6 +152,25 @@ impl Unimp040 {
 
     /// Format long word of the unimplemented instruction state frame
     pub const FRAME_FORMAT: Long = 0x4130_0000;
+
+    /// An operand in extended precision as in memory, and its data type
+    /// tag (STAG or DTAG, MC68040UM 9.8)
+    pub fn operand(value: &Float) -> ([Long; 3], u8) {
+        let bits = BitsExtReal::from(value);
+        let tag = if bits.is_zero() {
+            0b001
+        } else if bits.is_inf() {
+            0b010
+        } else if bits.is_nan() {
+            0b011
+        } else if !bits.i() {
+            // Denormalized or unnormalized
+            0b100
+        } else {
+            0b000
+        };
+        ([bits.high(), bits.mid(), bits.low()], tag)
+    }
 
     /// The unimplemented instruction state frame (MC68040UM figure 9-10 (d),
     /// table 9-16)
