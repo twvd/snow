@@ -205,6 +205,11 @@ pub struct SnowGui {
     cdrom_files_dialog: SnowFileDialog,
     cdrom_folder_dialog: SnowFileDialog,
     floppy_dialog: SnowFileDialog,
+    iie_disk_dialog: SnowFileDialog,
+    /// The IIe 5.25" drive the image picker loads into.
+    iie_disk_dialog_drive: usize,
+    /// The last-loaded IIe 5.25" image paths (for the menu labels).
+    iie_disk_image: [Option<String>; 2],
     floppy_dialog_last: Option<DirectoryEntry>,
     floppy_dialog_last_image: Option<FloppyImage>,
     floppy_dialog_last_type: Option<ImageType>,
@@ -430,7 +435,14 @@ impl SnowGui {
                 .default_save_extension("Applesauce MOOF")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
-                .storage(settings.fd_floppy),
+                .storage(settings.fd_floppy.clone()),
+            iie_disk_image: [None, None],
+            iie_disk_dialog_drive: 0,
+            iie_disk_dialog: SnowFileDialog::new()
+                .add_filter("Apple II 5.25\" disks", &["dsk", "do", "po", "2mg"])
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
+                .initial_directory(Self::default_dir())
+                .storage(settings.fd_floppy.clone()),
             record_dialog: SnowFileDialog::new()
                 .allow_path_edit_to_save_file_without_extension(false)
                 .add_save_extension("Snow recording", "snowr")
@@ -893,6 +905,39 @@ impl SnowGui {
                 ui.menu_button("Drives", |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH);
                     self.draw_menu_floppies(ui);
+                    if self.emu.iie_drives_525() > 0 {
+                        ui.separator();
+                    }
+                    for drive in 0..self.emu.iie_drives_525() {
+                        ui.menu_button(
+                            format!(
+                                "Apple IIe 5.25\" drive {}: {}",
+                                drive + 1,
+                                self.iie_disk_image[drive]
+                                    .as_deref()
+                                    .and_then(|p| std::path::Path::new(p).file_name())
+                                    .map_or_else(|| "(ejected)".to_string(), |f| f.to_string_lossy().into())
+                            ),
+                            |ui| {
+                                ui.set_min_width(Self::SUBMENU_WIDTH);
+                                if ui.button("Load image...").clicked() {
+                                    self.iie_disk_dialog_drive = drive;
+                                    self.iie_disk_dialog
+                                        .pick_file(self.settings.native_file_dialogs);
+                                }
+                                if ui
+                                    .add_enabled(
+                                        self.iie_disk_image[drive].is_some(),
+                                        egui::Button::new("Eject"),
+                                    )
+                                    .clicked()
+                                {
+                                    self.emu.eject_iie_disk(drive);
+                                    self.iie_disk_image[drive] = None;
+                                }
+                            },
+                        );
+                    }
 
                     // Needs cloning for the later borrow to call create_disk_dialog.open()
                     let targets = self.emu.get_scsi_target_status().map(|d| d.to_owned());
@@ -3593,6 +3638,15 @@ impl eframe::App for SnowGui {
             self.settings.save();
         }
         self.ui_active &= *self.floppy_dialog.state() != egui_file_dialog::DialogState::Open;
+
+        // Apple IIe 5.25" disk image picker
+        self.iie_disk_dialog.update(ctx, frame);
+        if let Some(path) = self.iie_disk_dialog.take_picked() {
+            let drive = self.iie_disk_dialog_drive;
+            self.iie_disk_image[drive] = Some(path.to_string_lossy().to_string());
+            self.emu.load_iie_disk(drive, &path);
+        }
+        self.ui_active &= *self.iie_disk_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // HDD image picker dialog
         self.hdd_dialog.update(ctx, frame);
