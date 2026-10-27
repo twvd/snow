@@ -3,7 +3,7 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::pds_iie::PdsIIeCard;
+use super::pds_iie::{IieCardSettings, PdsIIeCard};
 use super::pseudovia::PseudoVia;
 use super::v8;
 use super::via::Via;
@@ -144,7 +144,7 @@ where
         ram_size: Option<usize>,
         monitor: Option<MacMonitor>,
         vram_size: Option<usize>,
-        iie_card: bool,
+        iie_card: Option<IieCardSettings>,
     ) -> Self {
         const MB: usize = 1024 * 1024;
 
@@ -196,7 +196,7 @@ where
             sound: V8Sound::new(V8Variant::V8),
             sound_clock: 0,
 
-            iie_card: iie_card.then(PdsIIeCard::new),
+            iie_card: iie_card.map(|_| PdsIIeCard::new()),
 
             overlay: true,
             speed: EmulatorSpeed::Accurate,
@@ -221,6 +221,12 @@ where
 
     pub fn model(&self) -> MacModel {
         self.model
+    }
+
+    /// Sets the Egret's J17 "security" jumper (installed locks out the
+    /// Apple IIe Card's Option Panel configuration panels).
+    pub fn set_security_jumper(&mut self, installed: bool) {
+        self.egret.set_security_jumper(installed);
     }
 
     pub fn get_effective_speed(&self) -> f64 {
@@ -1092,7 +1098,7 @@ mod tests {
             None,
             None,
             None,
-            false,
+            None,
         );
         bus.set_speed(EmulatorSpeed::Uncapped);
         bus.set_overclock(overclock);
@@ -1127,7 +1133,7 @@ mod tests {
             None,
             None,
             None,
-            true,
+            Some(IieCardSettings::default()),
         );
 
         // The card is a 16-bit port
