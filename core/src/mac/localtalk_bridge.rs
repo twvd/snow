@@ -189,7 +189,9 @@ impl LocalTalkBridge {
         let server_node = Self::pick_server_node(0);
         let (node_tx, thread_rx) = crossbeam_channel::bounded(256);
         let (thread_tx, node_rx) = crossbeam_channel::bounded(256);
-        std::thread::spawn(move || snow_appletalk::node::Node::new(thread_rx, thread_tx).run());
+        std::thread::spawn(move || {
+            snow_appletalk::node::Node::new(server_node, 0, thread_rx, thread_tx).run()
+        });
 
         Self {
             socket: None,
