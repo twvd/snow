@@ -612,6 +612,9 @@ impl ModelSelectionDialog {
 
                     ui.checkbox(&mut self.init_args.fpu_enabled, "Enable 68882 FPU");
                     ui.end_row();
+
+                    ui.checkbox(&mut self.init_args.iie_card, "Install Apple IIe Card");
+                    ui.end_row();
                 }
                 if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
                     ui.checkbox(&mut self.init_args.pmmu_enabled, "Enable 68851 PMMU");
@@ -774,6 +777,7 @@ impl ModelSelectionDialog {
                         ) {
                             self.init_args.fpu_enabled = false;
                             self.init_args.vram_size = None;
+                            self.init_args.iie_card = false;
                         }
 
                         self.result = Some(ModelSelectionResult {

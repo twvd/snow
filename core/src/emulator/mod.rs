@@ -305,6 +305,7 @@ impl Emulator {
             false,
             None,
             None,
+            false,
         )
     }
 
@@ -321,6 +322,7 @@ impl Emulator {
         fpu_enabled: bool,
         vram_size: Option<usize>,
         shared_dir: Option<PathBuf>,
+        iie_card_enabled: bool,
     ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
@@ -517,7 +519,14 @@ impl Emulator {
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
                 let bus = MacLCBus::new(
-                    model, rom, renderer, mouse_mode, ram_size, monitor, vram_size,
+                    model,
+                    rom,
+                    renderer,
+                    mouse_mode,
+                    ram_size,
+                    monitor,
+                    vram_size,
+                    iie_card_enabled,
                 );
                 if fpu_enabled {
                     EmulatorConfig::MacLCFpu(Box::new(CpuM68020Fpu68882::new(bus)))
@@ -531,7 +540,14 @@ impl Emulator {
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
                 let bus = MacLCBus::new(
-                    model, rom, renderer, mouse_mode, ram_size, monitor, vram_size,
+                    model,
+                    rom,
+                    renderer,
+                    mouse_mode,
+                    ram_size,
+                    monitor,
+                    vram_size,
+                    iie_card_enabled,
                 );
                 if fpu_enabled {
                     EmulatorConfig::MacLCIIFpu(Box::new(CpuM68030Fpu::new(bus)))

@@ -1,6 +1,7 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
+use super::pds_iie::PdsIIeCard;
 use super::pseudovia::PseudoVia;
 use super::via::Via;
 use super::video::{self, Video};
@@ -105,6 +106,8 @@ pub(super) enum Region {
     Io(Address),
     /// Video RAM, with the offset in its window
     Vram(usize),
+    /// PDS slot $E card, with the offset in the slot window
+    IieCard(Address),
     /// CPU ID register of the Sonora, with the number of the byte
     CpuId(usize),
 }
@@ -153,6 +156,9 @@ pub struct MacLCBus<TRenderer: Renderer> {
     sound: V8Sound,
     sound_clock: Ticks,
 
+    /// Apple IIe Card in the PDS slot, when installed
+    iie_card: Option<PdsIIeCard>,
+
     overlay: bool,
 
     /// Emulation speed setting
@@ -196,6 +202,7 @@ where
     /// CrsrNew address
     const ADDR_CRSRNEW: Address = 0x08CE;
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         model: MacModel,
         rom: &[u8],
@@ -204,6 +211,7 @@ where
         ram_size: Option<usize>,
         monitor: Option<MacMonitor>,
         vram_size: Option<usize>,
+        iie_card: bool,
     ) -> Self {
         const MB: usize = 1024 * 1024;
 
@@ -277,6 +285,8 @@ where
             video,
             sound: V8Sound::new(sound_kind),
             sound_clock: 0,
+
+            iie_card: iie_card.then(PdsIIeCard::new),
 
             overlay: true,
             speed: EmulatorSpeed::Accurate,
@@ -503,6 +513,24 @@ where
         }
     }
 
+    /// Reads from the Apple IIe Card.  `offset` is the offset in the
+    /// card's own address space.  Nothing on the card answers yet: it
+    /// reads open bus.
+    fn iie_read(&self, _offset: Address, len: u32) -> Option<u32> {
+        Some(Self::iie_open_bus(len))
+    }
+
+    /// Open bus for a `len`-byte read of the card.
+    fn iie_open_bus(len: u32) -> u32 {
+        (0..len).fold(0, |v, _| v << 8 | u32::from(Self::OPENBUS))
+    }
+
+    /// Writes to the Apple IIe Card: nothing on the card takes writes
+    /// yet.
+    fn iie_write(&self, _offset: Address, _len: u32, _val: u32) -> Option<()> {
+        Some(())
+    }
+
     /// Width in bytes and wait states of the port answering a region.
     ///
     /// The RAM and video RAM data buses of the V8 are 16-bit, the ROM is
@@ -525,6 +553,9 @@ where
             (GateArray::Sonora { .. }, Region::Vram(_)) if write => (2, sonora::VRAM_WRITE_WAITS),
             (GateArray::Sonora { .. }, Region::Vram(_)) => (2, sonora::VRAM_READ_WAITS),
             (_, Region::CpuId(_)) => (4, IO_WAITS),
+            // The Apple IIe Card is a 16-bit port (its declaration ROM
+            // sits on the odd bytes, byte lanes 1+3).
+            (_, Region::IieCard(_)) => (2, IO_WAITS),
         }
     }
 
@@ -977,6 +1008,12 @@ where
                 },
                 Self::ignore_write,
             ),
+            Some(region @ Region::IieCard(offset)) => self.cycle(
+                acc,
+                self.port(&region, acc.write),
+                move |s, _, len| s.iie_read(offset, len),
+                move |s, _, len, val| s.iie_write(offset, len, val),
+            ),
             None => BusResponse::BusError,
         };
 
@@ -1007,6 +1044,11 @@ where
         self.sound.reset();
         self.overlay = true;
         self.mouse_ready = false;
+        // The card is an independent computer: only a hard reset (power
+        // on) resets it.  The host reloads the firmware after.
+        if hard && let Some(card) = &mut self.iie_card {
+            card.reset(true);
+        }
         Ok(false)
     }
 }
@@ -1066,6 +1108,13 @@ where
                     self.via.set_line(ViaLine::CA1, LineState::Pulse);
                 }
             }
+        }
+
+        // The Apple IIe Card runs in its own clock domain, ticked at C16M.
+        let bus_frequency = self.bus_frequency();
+        if let Some(card) = &mut self.iie_card {
+            let ticks = native_ticks * C16M_FREQUENCY / bus_frequency;
+            card.tick(ticks, ())?;
         }
 
         // Host frame pacing
@@ -1188,6 +1237,7 @@ where
     TRenderer: Renderer,
 {
     fn get_debug_properties(&self) -> crate::debuggable::DebuggableProperties {
+        use crate::dbgprop_group;
         use crate::dbgprop_nest;
         use crate::debuggable::*;
 
@@ -1199,6 +1249,10 @@ where
             dbgprop_nest!("Gate array registers", self.pseudovia),
             dbgprop_nest!("Video", self.video),
             dbgprop_nest!("VIA 1", self.via),
+            match &self.iie_card {
+                Some(card) => dbgprop_nest!("Apple IIe Card", card),
+                None => dbgprop_group!("Apple IIe Card (absent)", Vec::new()),
+            },
         ]
     }
 }
@@ -1219,6 +1273,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         bus.set_speed(EmulatorSpeed::Uncapped);
         bus.set_overclock(overclock);
