@@ -149,6 +149,8 @@ pub struct EmulatorState {
     peripheral_debug: DebuggableProperties,
     scc_tx: [VecDeque<u8>; 2],
     mouse_mode: MouseMode,
+    /// The settings of the Apple IIe Card, if the machine has one
+    iie_card: Option<IieCardSettings>,
 
     // Clear these when emulator is de-initialized
     instruction_history_enabled: bool,
@@ -256,6 +258,7 @@ impl EmulatorState {
             args.mouse_mode
         };
         self.mouse_mode = mouse_mode;
+        self.iie_card = args.iie_card.then_some(args.iie_card_settings);
 
         let (mut emulator, frame_recv) = Emulator::new_with_extra(
             rom,
@@ -269,7 +272,7 @@ impl EmulatorState {
             args.fpu_enabled,
             args.vram_size,
             shared_dir,
-            args.iie_card.then_some(args.iie_card_settings),
+            self.iie_card,
         )?;
 
         let cmd = emulator.create_cmd_sender();
@@ -773,6 +776,30 @@ impl EmulatorState {
                 wp,
             ))
             .unwrap();
+    }
+
+    /// The number of 5.25" drives connected to the Apple IIe Card.
+    pub fn iie_drives_525(&self) -> usize {
+        self.iie_card.map_or(0, |s| s.drives_525())
+    }
+
+    /// Loads an Apple II 5.25" DSK image into one of the IIe card's
+    /// drives (0 or 1).
+    pub fn load_iie_disk(&self, drive: usize, path: &Path) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender
+            .send(EmulatorCommand::InsertIieDisk(drive, path.to_path_buf()))
+            .unwrap();
+    }
+
+    /// Ejects one of the Apple IIe card's 5.25" drives (0 or 1).
+    pub fn eject_iie_disk(&self, drive: usize) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender.send(EmulatorCommand::EjectIieDisk(drive)).unwrap();
     }
 
     /// Loads the included toolbox floppy.

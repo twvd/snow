@@ -5,7 +5,7 @@ pub mod save;
 
 use serde::{Deserialize, Serialize};
 use snow_floppy::Floppy;
-use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof};
+use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof, TwoImg};
 use std::collections::VecDeque;
 #[cfg(feature = "savestates")]
 use std::fs::File;
@@ -30,6 +30,7 @@ use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
 use crate::mac::macii::bus::MacIIBus;
 use crate::mac::maclc::bus::MacLCBus;
 use crate::mac::maclc::pds_iie::IieCardSettings;
+use crate::mac::maclc::pds_iie::disk::DskOrder;
 use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
@@ -1071,6 +1072,76 @@ impl Tickable for Emulator {
                             }
                         }
                         self.status_update()?;
+                    }
+                    EmulatorCommand::InsertIieDisk(drive, path) => {
+                        match std::fs::read(&path) {
+                            Ok(bytes) => {
+                                // A 2IMG header names the sector order, else
+                                // the extension does
+                                let (bytes, order) = if TwoImg::detect(&bytes) {
+                                    match TwoImg::parse(&bytes) {
+                                        Ok(img) if img.format == TwoImg::FORMAT_PRODOS => {
+                                            (img.data, DskOrder::Prodos)
+                                        }
+                                        Ok(img) => (img.data, DskOrder::Dos),
+                                        Err(e) => {
+                                            self.user_error(&format!(
+                                                "Cannot read '{}': {}",
+                                                path.display(),
+                                                e
+                                            ));
+                                            continue;
+                                        }
+                                    }
+                                } else if path
+                                    .extension()
+                                    .is_some_and(|e| e.eq_ignore_ascii_case("po"))
+                                {
+                                    (&bytes[..], DskOrder::Prodos)
+                                } else {
+                                    (&bytes[..], DskOrder::Dos)
+                                };
+                                let card = match &mut self.config {
+                                    EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
+                                    EmulatorConfig::MacLCFpu(inner) => inner.bus.iie_card_mut(),
+                                    EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
+                                    EmulatorConfig::MacLCIIFpu(inner) => inner.bus.iie_card_mut(),
+                                    _ => None,
+                                };
+                                match card {
+                                    Some(card) => {
+                                        if let Err(e) = card.insert_disk(drive, bytes, order) {
+                                            self.user_error(&format!(
+                                                "Cannot insert IIe disk '{}': {}",
+                                                path.display(),
+                                                e
+                                            ));
+                                        }
+                                    }
+                                    None => self.user_error("No Apple IIe Card installed"),
+                                }
+                            }
+                            Err(e) => {
+                                self.user_error(&format!(
+                                    "Cannot read '{}': {}",
+                                    path.display(),
+                                    e
+                                ));
+                            }
+                        }
+                        self.status_update()?;
+                    }
+                    EmulatorCommand::EjectIieDisk(drive) => {
+                        let card = match &mut self.config {
+                            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
+                            EmulatorConfig::MacLCFpu(inner) => inner.bus.iie_card_mut(),
+                            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
+                            EmulatorConfig::MacLCIIFpu(inner) => inner.bus.iie_card_mut(),
+                            _ => None,
+                        };
+                        if let Some(card) = card {
+                            card.eject_disk(drive);
+                        }
                     }
                     EmulatorCommand::InsertFloppyImage(drive, mut img, wp) => {
                         if wp {

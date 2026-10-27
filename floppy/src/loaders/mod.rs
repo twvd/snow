@@ -27,7 +27,7 @@ pub use moof::Moof;
 pub use pfi::PFI;
 pub use pri::PRI;
 pub use raw::RawImage;
-pub use twoimg::TwoImg;
+pub use twoimg::{TwoImg, TwoImgData};
 
 use crate::FloppyImage;
 

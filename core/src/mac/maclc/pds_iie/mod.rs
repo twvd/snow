@@ -86,10 +86,11 @@
 //! marked in the source.
 
 pub mod cpu;
+pub mod disk;
 
 use std::cell::RefCell;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use super::bus::C16M_FREQUENCY;
@@ -100,14 +101,49 @@ use log::{Level, log_enabled};
 
 use cpu::cpu::Cpu;
 use cpu::{Address, Bus6502, ReadKind, Variant};
+use disk::{DiskII, DskImage, DskOrder};
+
+/// A device on the card's external disk port (the Y-cable's floppy
+/// connector)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IieDiskDevice {
+    /// Nothing connected
+    #[default]
+    None,
+    /// An Apple 5.25 Drive
+    Apple525,
+}
 
 /// Settings of the Apple IIe Card, chosen with the machine
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IieCardSettings {
     /// The Egret's J17 "security" jumper is installed, which locks out
     /// the Option Panel configuration
     pub security_jumper: bool,
+    /// The devices on the external disk port, in daisy-chain order.
+    /// The second device plugs into the first.
+    pub disk_chain: [IieDiskDevice; 2],
+}
+
+impl Default for IieCardSettings {
+    fn default() -> Self {
+        Self {
+            security_jumper: false,
+            disk_chain: [IieDiskDevice::Apple525, IieDiskDevice::None],
+        }
+    }
+}
+
+impl IieCardSettings {
+    /// The number of 5.25" drives on the external disk port, which the
+    /// IIe numbers in chain order.
+    pub fn drives_525(&self) -> usize {
+        self.disk_chain
+            .iter()
+            .filter(|&&d| d == IieDiskDevice::Apple525)
+            .count()
+    }
 }
 
 /// Debug output for the card, compiled in only with the `iie-debug`
@@ -545,6 +581,8 @@ struct BusState {
     btn: [bool; 3],
     /// Slot 6 drive motor (set by the trapped `$C0E8`/`$C0E9` accesses).
     motor_on: bool,
+    /// The Disk II controller + two 5.25" drives.
+    disk: DiskII,
 
     // --- Debug log state (iie-debug)
     /// Last logged 65C02 I/O access (0 = read, 1 = write, address,
@@ -976,15 +1014,38 @@ impl BusState {
             // clear), and the paddles.
             0xC061..=0xC063 => b7(self.btn[(addr - 0xC061) as usize]),
             0xC064..=0xC067 => b7(self.paddle[(addr - 0xC064) as usize] > 0),
-            // Language card switches.
+            // Language card switches ($C08C/$C08D included: the Disk
+            // II firmware reaches the IWM via `LDA $C08C,X` with
+            // X=$60, i.e. $C0EC).
             0xC080..=0xC08F => {
                 self.lc_switch(addr);
                 self.kbd
             }
-            // The drive motor switch acts on any access.
+            // The Disk II soft switches are read-sensitive: the access
+            // applies the same effect as a write to the address (the
+            // firmware's seek routine steps by *reading* the phase
+            // switches, and turns the motor/drive select on by reading
+            // $C0E9/$C0EA), and bit 7 returns the state.
+            0xC0E0..=0xC0E7 => {
+                let p = ((addr - 0xC0E0) / 2) as usize;
+                self.disk.phase_write(p, addr & 1 != 0);
+                b7(self.disk.phase_bits(p))
+            }
             0xC0E8 | 0xC0E9 => {
                 self.motor_on = addr == 0xC0E9;
                 b7(self.motor_on)
+            }
+            0xC0EA | 0xC0EB => {
+                self.disk.selected = addr == 0xC0EB;
+                b7(self.disk.selected)
+            }
+            // The IWM registers: the reads return the data, status
+            // or handshake register per Q6/Q7 (MAME iwm.cpp — the
+            // odd addresses return the same register).
+            0xC0EC..=0xC0EF => {
+                let active = self.disk.active(self.motor_on);
+                self.disk.iwm_access(addr, false, 0, active);
+                self.disk.iwm_read(active)
             }
             // Unused I/O reads return the last key pressed (no floating
             // bus on the card — M.G., "Problematic Software").
@@ -1058,8 +1119,22 @@ impl BusState {
             // IOUDIS: not implemented on the card (TN AIIE #10).
             0xC07E | 0xC07F => {}
             0xC080..=0xC08F => self.lc_switch(addr),
+            // The Disk II switches act on writes too.
+            0xC0E0..=0xC0E7 => {
+                let p = ((addr - 0xC0E0) / 2) as usize;
+                self.disk.phase_write(p, addr & 1 != 0);
+            }
             0xC0E8 => self.motor_on = false,
             0xC0E9 => self.motor_on = true,
+            0xC0EA => self.disk.selected = false,
+            0xC0EB => self.disk.selected = true,
+            // The IWM registers: any access toggles Q6/Q7 (the
+            // parity rule); a Q6+Q7 write loads the mode (motor off)
+            // or the write data (motor on).
+            0xC0EC..=0xC0EF => {
+                let active = self.disk.active(self.motor_on);
+                self.disk.iwm_access(addr, true, val, active);
+            }
             // `$CFFF` writes just deselect the C8 space (see
             // `c8_select`, applied before the trap in `write`).
             _ => {}
@@ -1287,6 +1362,7 @@ impl BusState {
         self.kbd_strobe = false;
         self.paddle = [0; 4];
         self.btn = [false; 3];
+        self.disk.reset();
         self.irq = false;
         self.nmi = false;
         self.int_bank = false;
@@ -1372,13 +1448,16 @@ impl Bus6502 for PdsIIeBus {
         0xFFFF
     }
 
-    /// Peripheral (non-CPU) time in 65C02 cycles: the paddle timers.
+    /// Peripheral (non-CPU) time in 65C02 cycles: the paddle timers
+    /// and the Disk II spindle.
     fn tick(&mut self, cycles: Ticks) -> Result<Ticks> {
         let mut s = self.state.borrow_mut();
         for p in &mut s.paddle {
             let c = (*p).min(cycles as u16);
             *p -= c;
         }
+        let motor = s.motor_on;
+        s.disk.tick(cycles, motor);
         Ok(cycles)
     }
 
@@ -1443,10 +1522,16 @@ const LC_BANK2_AT_C000: bool = false;
 const BANK_NAMES: [&str; 7] = ["rom", "slot", "slot-c8", "lc1", "lc2", "aux-lc1", "aux-lc2"];
 
 impl PdsIIeCard {
+    /// Creates a card with its 65C02 stopped and the default settings.
+    pub fn new() -> Self {
+        Self::with_settings(&IieCardSettings::default())
+    }
+
     /// Creates a card with its 65C02 stopped.  The host loads the
     /// firmware and sets control register 2 bit 7 to run it.
-    pub fn new() -> Self {
+    pub fn with_settings(settings: &IieCardSettings) -> Self {
         let cpu = Cpu::new(PdsIIeBus::new(), Variant::M65C02);
+        cpu.bus.state.borrow_mut().disk = DiskII::new(settings.drives_525());
         Self {
             cpu,
             data_out: 0,
@@ -1766,6 +1851,35 @@ impl PdsIIeCard {
     /// The latched trap address.
     pub fn trap_addr(&self) -> u16 {
         self.cpu.bus.state.borrow().trap.map_or(0, |t| t.addr)
+    }
+
+    /// Inserts a 16-sector DSK image into a 5.25" drive (0 or 1).
+    pub fn insert_disk(&mut self, drive: usize, bytes: &[u8], order: DskOrder) -> Result<()> {
+        let img = DskImage::load(bytes, order)
+            .ok_or_else(|| anyhow::anyhow!("not a 143 360-byte 16-sector DSK image"))?;
+        if !self
+            .cpu
+            .bus
+            .state
+            .borrow_mut()
+            .disk
+            .insert(drive, Some(img))
+        {
+            bail!("5.25\" drive {} is not connected", drive + 1);
+        }
+        log::debug!(
+            "IIe Card 5.25\" disk inserted in drive {} ({} bytes, {:?})",
+            drive + 1,
+            bytes.len(),
+            order
+        );
+        Ok(())
+    }
+
+    /// Ejects a 5.25" drive's image.
+    pub fn eject_disk(&mut self, drive: usize) {
+        self.cpu.bus.state.borrow_mut().disk.insert(drive, None);
+        log::debug!("IIe Card 5.25\" disk ejected from drive {}", drive + 1);
     }
 
     /// Loads firmware into a bank through the host path, at the load
@@ -3443,6 +3557,29 @@ mod tests {
         }
         assert_eq!(card.host_read(0x08, 1).unwrap(), 0x00);
 
+        // Step 16: the IWM mode round-trips ($C0ED sets Q6, the
+        // $C0EF write loads the mode, the $C0EE read returns it
+        // through the status register), a BIT $C0E8 traps $28, and
+        // the final STX $C07D carries 0 (X = pass).
+        load_program(
+            &mut card,
+            0x2000,
+            &[
+                0xA9, 0x1F, 0x8D, 0xED, 0xC0, 0x8D, 0xEF, 0xC0, 0xAD, 0xEE, 0xC0, 0x8D, 0x7D, 0xC0,
+                0x2C, 0xE8, 0xC0, 0xA2, 0x00, 0x8E, 0x7D, 0xC0, 0x4C, 0x16, 0x20,
+            ],
+        );
+        card.cpu.reset_pc(0x2000);
+        wait_trap(&mut card); // the Q7 mailbox
+        assert_eq!(card.host_read(0x0C, 1).unwrap(), 0x1F);
+        card.host_write(0x0C, 1, 0x00).unwrap();
+        wait_trap(&mut card); // BIT $C0E8 → motor off
+        assert_eq!(card.trap_code(), 0x28);
+        card.host_write(0x0C, 1, 0x00).unwrap();
+        wait_trap(&mut card); // the pass code
+        assert_eq!(card.host_read(0x0C, 1).unwrap(), 0x00);
+        card.host_write(0x0C, 1, 0x00).unwrap();
+
         // LC RAM (unverified layout, marked [INF] in the model): two
         // $C08B accesses enable bank-1 writes ($E000 → phys $D000,
         // $D000 → phys $C000); $C083 selects bank 2 ($D000 → $F000).
@@ -3515,5 +3652,105 @@ mod tests {
 
         // Step 17: $20 = $0802 (stop).
         hw16(&mut card, 0x20, 0x0802);
+    }
+
+    /// The slot-5 send routine's register protocol (a hand-assembled
+    /// equivalent of the real `$C9B3`–`$CAF4`, which has three waits
+    /// with no time limit).  The
+    /// caller sets the mode to `$07` (latched async) with the motor
+    /// off and PH1+PH3 on; the routine sends the `$CAF5` sync bytes
+    /// paced by the ready bit, waits out the write underrun, and then
+    /// the 10-try `/ACK` poll must time out on the status register
+    /// (the sense line stays high — no UniDisk to answer) and return
+    /// with C=1.  No disk is inserted: the write shifter runs on the
+    /// spindle's cells regardless.  The motor-on read traps to the
+    /// host (the `$38` motor snoop).
+    #[test]
+    fn the_slot5_send_routine_times_out_with_carry() {
+        let mut card = PdsIIeCard::new();
+        load_program(
+            &mut card,
+            0x2000,
+            &[
+                // The caller: the mode write (Q6/Q7 on, motor off)
+                // and PH1+PH3.
+                0xA9, 0x07, 0x8D, 0xED, 0xC0, 0x8D, 0xEF, 0xC0, 0xAD, 0xE3, 0xC0, 0xAD, 0xE7, 0xC0,
+                // JSR the routine; C=1 → $AA at $0300, C=0 → $55.
+                0x20, 0x23, 0x20, 0xB0, 0x08, 0xA9, 0x55, 0x8D, 0x00, 0x03, 0x4C, 0x20, 0x20, 0xA9,
+                0xAA, 0x8D, 0x00, 0x03, 0x4C, 0x20, 0x20,
+                // The routine ($C9B3–$CAF4 equivalent): drive select
+                // and motor, then the first wait polls the STATUS
+                // register (Q7 goes 0) for the sense line — a 50-try
+                // limit.
+                0xAD, 0xEA, 0xC0, 0xAD, 0xE9, 0xC0, 0xA0, 0x32, 0xAD, 0xEE, 0xC0, 0x30, 0x06, 0x88,
+                0xD0, 0xF8, 0x38, 0xB0, 0x46,
+                // PH0 on, then the $CAF5 sync bytes paced by the
+                // ready bit (the ASL $C0EC wait has no limit).
+                0xAD, 0xE1, 0xC0, 0xA0, 0x05, 0xA9, 0xFF, 0x8D, 0xEF, 0xC0, 0xB9, 0x83, 0x20, 0x0E,
+                0xEC, 0xC0, 0x90, 0xFB, 0x8D, 0xED, 0xC0, 0x88, 0x10, 0xED,
+                // Two more packet bytes (the $CC4A sends), then the
+                // underrun wait (LDA $C0EC / AND #$40 / BNE, no
+                // limit), the trailing STA $C0ED, and the 10-try
+                // /ACK poll.
+                0xA9, 0xAA, 0xAC, 0xEC, 0xC0, 0x10, 0xFB, 0x8D, 0xED, 0xC0, 0xA9, 0xC8, 0xAC, 0xEC,
+                0xC0, 0x10, 0xFB, 0x8D, 0xED, 0xC0, 0xAD, 0xEC, 0xC0, 0x29, 0x40, 0xD0, 0xF9, 0x8D,
+                0xED, 0xC0, 0xA0, 0x0A, 0x88, 0xD0, 0x05, 0xA9, 0x01, 0x38, 0xB0, 0x06, 0xAD, 0xEE,
+                0xC0, 0x30, 0xF3, 0x18,
+                // The shared exit: PH0 off, one last data read, RTS.
+                0xAD, 0xE0, 0xC0, 0xAD, 0xEC, 0xC0, 0x60,
+                // The $CAF5 table: C3 FF FC F3 CF 3F.
+                0xC3, 0xFF, 0xFC, 0xF3, 0xCF, 0x3F,
+            ],
+        );
+        run_program(&mut card, 0x2000);
+        // The motor-on read traps to the host (the $38 motor snoop);
+        // ack it like the real driver does.
+        wait_trap(&mut card);
+        assert_eq!(card.trap_code(), 0x38);
+        card.host_write(0x0C, 1, 0x00).unwrap();
+        // The routine then runs to its spin at $2020; the send must
+        // have returned with C=1 (no UniDisk to answer the /ACK).
+        run(&mut card, 2000);
+        let s = card.cpu.bus.state.borrow();
+        assert_eq!(
+            s.ram[MAIN_RAM + 0x0300],
+            0xAA,
+            "the slot-5 send routine must time out with C=1"
+        );
+    }
+
+    /// The slot 5 send writes most packet bytes without polling the
+    /// handshake, exactly 32 cycles apart: the IWM must take a byte
+    /// every 32 cycles, or it underruns in the middle of the packet.
+    #[test]
+    fn unpolled_writes_32_cycles_apart_do_not_underrun() {
+        let mut card = PdsIIeCard::new();
+        load_program(
+            &mut card,
+            0x2000,
+            &[
+                // Mode $07 (Q6+Q7 write with the motor off), motor on.
+                0xA9, 0x07, 0x8D, 0xED, 0xC0, 0x8D, 0xEF, 0xC0, 0xAD, 0xE9, 0xC0,
+                // The first byte starts writing; wait for ready.
+                0xA9, 0xFF, 0x8D, 0xEF, 0xC0, 0x0E, 0xEC, 0xC0, 0x90, 0xFB,
+                // 32 bytes, one every 32 cycles: STA $C0ED (4),
+                // 10 NOPs (20), BIT $00 (3), DEX (2), BNE (3).
+                0xA2, 0x20, 0x8D, 0xED, 0xC0, 0xEA, 0xEA, 0xEA, 0xEA, 0xEA, 0xEA, 0xEA, 0xEA, 0xEA,
+                0xEA, 0x24, 0x00, 0xCA, 0xD0, 0xEE,
+                // The handshake to $0300, then spin.
+                0xAD, 0xEC, 0xC0, 0x8D, 0x00, 0x03, 0x4C, 0x2F, 0x20,
+            ],
+        );
+        run_program(&mut card, 0x2000);
+        wait_trap(&mut card);
+        assert_eq!(card.trap_code(), 0x38);
+        card.host_write(0x0C, 1, 0x00).unwrap();
+        run(&mut card, 2000);
+        let s = card.cpu.bus.state.borrow();
+        assert_eq!(
+            s.ram[MAIN_RAM + 0x0300] & 0x40,
+            0x40,
+            "the IWM underran between writes 32 cycles apart"
+        );
     }
 }

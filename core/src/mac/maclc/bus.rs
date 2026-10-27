@@ -286,7 +286,7 @@ where
             sound: V8Sound::new(sound_kind),
             sound_clock: 0,
 
-            iie_card: iie_card.map(|_| PdsIIeCard::new()),
+            iie_card: iie_card.map(|settings| PdsIIeCard::with_settings(&settings)),
 
             overlay: true,
             speed: EmulatorSpeed::Accurate,
@@ -321,6 +321,11 @@ where
     /// Apple IIe Card's Option Panel configuration panels).
     pub fn set_security_jumper(&mut self, installed: bool) {
         self.egret.set_security_jumper(installed);
+    }
+
+    /// The Apple IIe card in the PDS slot, if installed.
+    pub fn iie_card_mut(&mut self) -> Option<&mut PdsIIeCard> {
+        self.iie_card.as_mut()
     }
 
     pub fn get_effective_speed(&self) -> f64 {

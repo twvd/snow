@@ -40,6 +40,11 @@ pub enum EmulatorCommand {
     InsertFloppyImage(usize, Box<FloppyImage>, bool),
     SaveFloppy(usize, PathBuf),
     EjectFloppy(usize),
+    /// Inserts a 16-sector DSK image into one of the Apple IIe card's
+    /// 5.25" drives (0 or 1).
+    InsertIieDisk(usize, PathBuf),
+    /// Ejects one of the Apple IIe card's 5.25" drives (0 or 1).
+    EjectIieDisk(usize),
     /// Toggle automatic writeback for a floppy drive.
     /// Parameters: drive id, enabled
     SetFloppyWriteback(usize, bool),

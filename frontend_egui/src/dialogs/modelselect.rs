@@ -9,6 +9,7 @@ use anyhow::{Result, anyhow, bail};
 use eframe::egui;
 use sha2::{Digest, Sha256};
 use snow_core::emulator::MouseMode;
+use snow_core::mac::maclc::pds_iie::IieDiskDevice;
 use snow_core::mac::maclc::video as lc_video;
 use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{MacModel, MacMonitor, NubusDeviceKind};
@@ -27,6 +28,14 @@ pub fn video_rom_card(model: MacModel, video_card: NubusDeviceKind) -> NubusDevi
         NubusDeviceKind::SE30Video
     } else {
         video_card
+    }
+}
+
+/// The name of a device on the Apple IIe Card's external disk port
+fn iie_disk_device_name(device: IieDiskDevice) -> &'static str {
+    match device {
+        IieDiskDevice::None => "None",
+        IieDiskDevice::Apple525 => "Apple 5.25 Drive",
     }
 }
 
@@ -873,6 +882,44 @@ impl ModelSelectionDialog {
                 &mut settings.security_jumper,
                 "Lock the Option Panel (J17 jumper)",
             );
+
+            ui.separator();
+            ui.label("External drives (Y-cable), in daisy-chain order:");
+            egui::Grid::new("iie_drives_grid").show(ui, |ui| {
+                ui.label("First drive:");
+                egui::ComboBox::new(egui::Id::new("IIe first drive"), "")
+                    .selected_text(iie_disk_device_name(settings.disk_chain[0]))
+                    .show_ui(ui, |ui| {
+                        for device in [IieDiskDevice::None, IieDiskDevice::Apple525] {
+                            ui.selectable_value(
+                                &mut settings.disk_chain[0],
+                                device,
+                                iie_disk_device_name(device),
+                            );
+                        }
+                    });
+                ui.end_row();
+
+                // The second drive plugs into the first
+                if settings.disk_chain[0] == IieDiskDevice::None {
+                    settings.disk_chain[1] = IieDiskDevice::None;
+                }
+                ui.label("Second drive:");
+                ui.add_enabled_ui(settings.disk_chain[0] != IieDiskDevice::None, |ui| {
+                    egui::ComboBox::new(egui::Id::new("IIe second drive"), "")
+                        .selected_text(iie_disk_device_name(settings.disk_chain[1]))
+                        .show_ui(ui, |ui| {
+                            for device in [IieDiskDevice::None, IieDiskDevice::Apple525] {
+                                ui.selectable_value(
+                                    &mut settings.disk_chain[1],
+                                    device,
+                                    iie_disk_device_name(device),
+                                );
+                            }
+                        });
+                });
+                ui.end_row();
+            });
 
             ui.separator();
             egui::Sides::new().show(
