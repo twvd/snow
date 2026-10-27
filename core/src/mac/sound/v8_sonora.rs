@@ -230,8 +230,9 @@ impl V8Sound {
         }
     }
 
-    /// Plays a sample, at the sample rate
-    pub fn tick(&mut self, queue_sample: bool) -> Result<()> {
+    /// Plays a sample, at the sample rate, mixed with the analog `input`
+    /// (-1.0 to 1.0)
+    pub fn tick(&mut self, queue_sample: bool, input: f32) -> Result<()> {
         let mut samples = [0; 2];
         let recording = self.recording();
         if recording {
@@ -244,10 +245,10 @@ impl V8Sound {
         }
         if queue_sample {
             if self.kind == V8Variant::PrimeTime {
-                self.out.push(samples[0], samples[1])?;
+                self.out.push_mixed(samples[0], samples[1], input)?;
             } else {
                 // The first channel goes to both sides
-                self.out.push(samples[0], samples[0])?;
+                self.out.push_mixed(samples[0], samples[0], input)?;
             }
         }
         Ok(())
@@ -397,7 +398,7 @@ mod tests {
         assert_eq!(sound.read(REG_FIFO_STATUS), Some(0x02));
 
         // Playing a sample brings the level below full
-        sound.tick(false).unwrap();
+        sound.tick(false, 0.0).unwrap();
         assert_eq!(sound.read(REG_FIFO_STATUS), Some(0x00));
 
         sound.write(REG_FIFO_MODE, 0x80);
@@ -409,8 +410,8 @@ mod tests {
     fn last_sample_held() {
         let mut sound = V8Sound::new(V8Variant::V8);
         sound.write(0x000, 0x12);
-        sound.tick(false).unwrap();
-        sound.tick(false).unwrap();
+        sound.tick(false, 0.0).unwrap();
+        sound.tick(false, 0.0).unwrap();
         assert_eq!(sound.channels[0].fifo.pop(), 0x12);
     }
 
@@ -457,7 +458,7 @@ mod tests {
         assert_eq!(sound.read(REG_FIFO_STATUS), Some(0x02));
         assert!(!sound.irq());
 
-        sound.tick(false).unwrap();
+        sound.tick(false, 0.0).unwrap();
         assert_eq!(sound.read(REG_FIFO_STATUS), Some(0x06));
         assert!(sound.irq());
 
@@ -482,14 +483,14 @@ mod tests {
         sound.write(0xF29, 1);
         assert!(!sound.irq());
         for _ in 0..600 {
-            sound.tick(false).unwrap();
+            sound.tick(false, 0.0).unwrap();
         }
         assert!(sound.irq());
         assert_eq!(sound.read(0x000), Some(0x80));
 
         // And doesn't go past full
         for _ in 0..2000 {
-            sound.tick(false).unwrap();
+            sound.tick(false, 0.0).unwrap();
         }
         assert_eq!(sound.channels[0].fifo.len(), PRIMETIME_FIFO_SIZE);
     }
@@ -499,8 +500,8 @@ mod tests {
         let mut sound = V8Sound::new(V8Variant::Sonora);
         sound.write(0x000, 0x12);
         sound.write(0x400, 0x34);
-        sound.tick(false).unwrap();
-        sound.tick(false).unwrap();
+        sound.tick(false, 0.0).unwrap();
+        sound.tick(false, 0.0).unwrap();
         assert_eq!(sound.channels[0].fifo.pop(), 0x12);
         assert_eq!(sound.channels[1].fifo.pop(), 0x34);
     }
