@@ -1076,9 +1076,11 @@ where
                 )),
                 GateArray::Sonora { video, .. } => video.video_mode(),
             };
-            match mode {
-                Some(mode) => self.video.render(&mode)?,
-                None => self.video.blank()?,
+            if self.video.renderer.as_ref().unwrap().frame_wanted() {
+                match mode {
+                    Some(mode) => self.video.render(&mode)?,
+                    None => self.video.blank()?,
+                }
             }
             self.pseudovia.set_vblank();
         }
