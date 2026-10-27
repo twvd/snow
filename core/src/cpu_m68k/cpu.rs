@@ -4342,6 +4342,9 @@ where
             self.regs.sr.set_z(false);
             self.regs.sr.set_v(false);
 
+            // Offset PC to the next instruction for the exception stack frame:
+            // the prefetch queue holds one word less than a full one here
+            self.regs.pc = self.regs.pc.wrapping_add(2);
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_DIV_ZERO, None);
         }
 

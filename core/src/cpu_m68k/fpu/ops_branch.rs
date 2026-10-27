@@ -120,7 +120,7 @@ where
         &mut self,
         _instr: &Instruction,
     ) -> Result<()> {
-        let cc = usize::from(self.fetch()? & 0b111111);
+        let cc = usize::from(self.fetch_pump()? & 0b111111);
         let (test, bsun) = self.fcc(cc)?;
         self.regs.fpu.fpsr.exs_mut().set_bsun(bsun);
 
