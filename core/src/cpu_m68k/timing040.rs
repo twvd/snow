@@ -1384,6 +1384,18 @@ pub(in crate::cpu_m68k) const FDBCC_FALSE: Exec040 = e(1, 9);
 /// a taken trap, which is taken as this and the exception.
 pub(in crate::cpu_m68k) const FTRAPCC: Exec040 = e(1, 5);
 
+/// CINV and CPUSH (10.3), by scope (line, page, all), when nothing has to
+/// be pushed: the pushes add the time of their bus cycles. The time the
+/// instruction waits for the pending writes and prefetches isn't modelled.
+pub(in crate::cpu_m68k) const fn cinv_cpush(push: bool, scope: u16) -> Exec040 {
+    match (push, scope) {
+        (false, 0b10) => e(0, 266),
+        (false, _) => e(0, 9),
+        (true, 0b01) => e(0, 6),
+        (true, _) => e(0, 267),
+    }
+}
+
 /// Index of the destination column of MOVE for an addressing mode row
 const fn move_dst_column(row: Ea040) -> usize {
     match row {
