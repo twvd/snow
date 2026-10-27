@@ -421,6 +421,7 @@ impl Emulator {
             false,
             None,
             None,
+            false,
         )
     }
 
@@ -437,6 +438,7 @@ impl Emulator {
         fpu_enabled: bool,
         vram_size: Option<usize>,
         shared_dir: Option<PathBuf>,
+        iie_card_enabled: bool,
     ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
@@ -621,7 +623,14 @@ impl Emulator {
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
                 let bus = LcIBus::new(
-                    model, rom, renderer, mouse_mode, ram_size, monitor, vram_size,
+                    model,
+                    rom,
+                    renderer,
+                    mouse_mode,
+                    ram_size,
+                    monitor,
+                    vram_size,
+                    iie_card_enabled,
                 );
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
                 EmulatorConfig::MacLC(Box::new(CpuM68020::new(MachineBus020::LcI(bus), fpu)))
@@ -632,7 +641,14 @@ impl Emulator {
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
                 let bus = LcIBus::new(
-                    model, rom, renderer, mouse_mode, ram_size, monitor, vram_size,
+                    model,
+                    rom,
+                    renderer,
+                    mouse_mode,
+                    ram_size,
+                    monitor,
+                    vram_size,
+                    iie_card_enabled,
                 );
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
                 EmulatorConfig::MacLCII(Box::new(CpuM68030::new(MachineBus020::LcI(bus), fpu)))
@@ -643,7 +659,14 @@ impl Emulator {
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
                 let bus = LcIIIBus::new(
-                    model, rom, renderer, mouse_mode, ram_size, monitor, vram_size,
+                    model,
+                    rom,
+                    renderer,
+                    mouse_mode,
+                    ram_size,
+                    monitor,
+                    vram_size,
+                    iie_card_enabled,
                 );
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
                 EmulatorConfig::MacLCIII(Box::new(CpuM68030::new(MachineBus020::LcIII(bus), fpu)))
