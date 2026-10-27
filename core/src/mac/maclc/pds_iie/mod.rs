@@ -852,6 +852,23 @@ impl PdsIIeCard {
         Self { cpu, clock_acc: 0 }
     }
 
+    /// What a `len`-byte read of the slot reads when nothing answers
+    pub fn open_bus(len: u32) -> u32 {
+        (0..len).fold(0, |v, _| v << 8 | 0xFF)
+    }
+
+    /// A read of the card, with the offset in the slot.  Nothing on the
+    /// card answers yet: it reads open bus.
+    #[allow(clippy::unused_self)]
+    pub fn slot_read(&mut self, _offset: u32, len: u32) -> u32 {
+        Self::open_bus(len)
+    }
+
+    /// A write to the card, with the offset in the slot: nothing on the
+    /// card takes writes yet.
+    #[allow(clippy::unused_self)]
+    pub fn slot_write(&mut self, _offset: u32, _len: u32, _val: u32) {}
+
     /// Loads firmware into a bank through the host path, at the load
     /// address from a Monx resource header (the firmware offset,
     /// relative to card `0x20000`): `$0000`–`$3FFF` = the main ROM

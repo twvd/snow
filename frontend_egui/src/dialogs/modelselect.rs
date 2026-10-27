@@ -630,6 +630,9 @@ impl ModelSelectionDialog {
 
                     ui.checkbox(&mut self.init_args.fpu_enabled, "Enable 68882 FPU");
                     ui.end_row();
+
+                    ui.checkbox(&mut self.init_args.iie_card, "Install Apple IIe Card");
+                    ui.end_row();
                 }
                 if self.selected_model == MacModel::LC475 {
                     // The CPU is socketed, and some owners fit a 68040
@@ -835,6 +838,7 @@ impl ModelSelectionDialog {
                         ) {
                             self.init_args.fpu_enabled = false;
                             self.init_args.vram_size = None;
+                            self.init_args.iie_card = false;
                         }
 
                         self.result = Some(ModelSelectionResult {
