@@ -4929,6 +4929,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "snow_appletalk"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "snow_core"
 version = "1.5.0"
 dependencies = [
