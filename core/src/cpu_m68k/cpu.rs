@@ -4408,6 +4408,7 @@ where
         };
         let push = instr.data & (1 << 5) != 0;
         let paddr = self.regs.read_a::<Address>(instr.get_op2());
+        account_040_time!(self, timing040::cinv_cpush(push, (instr.data >> 3) & 0b11));
         let mut ticks = 0;
         self.caches.invalidate(
             &mut bus_transaction!(self, &mut ticks),

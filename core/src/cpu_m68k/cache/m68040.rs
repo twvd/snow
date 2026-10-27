@@ -17,7 +17,6 @@ use crate::cpu_m68k::bus_transaction::{BusTransaction, FaultInfo};
 use crate::cpu_m68k::cache::{CacheScope, CacheSelect, CpuCaches};
 use crate::cpu_m68k::pmmu::translate::{CacheMode, Translation};
 use crate::cpu_m68k::regs::RegisterCACR;
-use crate::tickable::Ticks;
 use crate::types::{Byte, Long};
 
 /// Number of sets
@@ -30,9 +29,6 @@ const INVALID: u32 = u32::MAX;
 
 /// Function code of CPU space accesses, never cached
 const FC_CPU_SPACE: u8 = 7;
-
-/// CPU cycles of an access that hits in a cache
-const HIT_TICKS: Ticks = 1;
 
 /// One of the two caches
 #[derive(Clone, Serialize, Deserialize)]
@@ -298,10 +294,11 @@ impl CpuCaches for Caches040 {
         let Some(wdata) = acc.wdata else {
             // Read
             if let Some(way) = hit {
+                // A hit takes no time of its own: the instruction times of the
+                // 68040 are those of accesses that hit (MC68040UM 10.1)
                 if fetch {
                     bus.history.icache_hit = true;
                 }
-                *bus.ticks += HIT_TICKS;
                 return Ok((low_bytes(cache.data[set][way][entry] >> shift, len), len));
             }
             if fetch {
@@ -329,10 +326,7 @@ impl CpuCaches for Caches040 {
             }
             // Copyback: a hit only updates the line and marks it dirty, a
             // miss loads the line first (4.3.1.2)
-            Some(way) => {
-                *bus.ticks += HIT_TICKS;
-                way
-            }
+            Some(way) => way,
             None => Self::fill(bus, &acc.fault, cache, paddr)?.1,
         };
         cache.update(set, way, entry, shift, len, bytes);
@@ -369,10 +363,7 @@ impl CpuCaches for Caches040 {
             return bus.line_access(&acc.fault, paddr, wline);
         }
         match cache.find(paddr) {
-            Some(way) => {
-                *bus.ticks += HIT_TICKS;
-                Ok(cache.data[Cache040::set(paddr)][way])
-            }
+            Some(way) => Ok(cache.data[Cache040::set(paddr)][way]),
             None => bus.line_access(&acc.fault, paddr, None),
         }
     }
