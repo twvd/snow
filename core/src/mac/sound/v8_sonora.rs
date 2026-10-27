@@ -9,6 +9,12 @@
 //! of registers, among which one disables its interrupt. The registers at
 //! 0x800 and the interrupt output are common to both.
 //!
+//! The LC III plays only the first channel. Its schematic has a single PWM
+//! line from the Sonora to the mono DFAC, its Gestalt reports no stereo
+//! output and no stereo mixing, and its ROM pans the first channel fully
+//! left and the second fully right. The Sound Manager writes mono sounds to
+//! both FIFOs, so they play in full.
+//!
 //! Sound input is not implemented.
 //!
 //! The last sample played is held when a FIFO is empty, so that the output
@@ -175,9 +181,8 @@ impl V8Sound {
             *sample = channel.fifo.pop();
         }
         if queue_sample {
-            // The only channel of the V8 goes to both sides
-            let right = samples[self.channels.len() - 1];
-            self.out.push(samples[0], right)?;
+            // The first channel goes to both sides
+            self.out.push(samples[0], samples[0])?;
         }
         Ok(())
     }
