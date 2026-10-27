@@ -26,6 +26,13 @@ pub enum SerialBridgeConfig {
     Tcp(u16),
     /// LocalTalk over UDP multicast
     LocalTalk,
+    /// Built-in AppleTalk stack on a private LocalTalk network (no
+    /// external connectivity), serving the given directory as a
+    /// read-only AFP volume (the SNOW_AFP_ROOT environment variable
+    /// when unset) under the given volume name (default "Snow") and
+    /// advertising the given AFP version ceiling
+    #[cfg(feature = "afp_server")]
+    AppleTalk,
 }
 
 impl std::fmt::Display for SerialBridgeConfig {
@@ -34,6 +41,8 @@ impl std::fmt::Display for SerialBridgeConfig {
             Self::Pty => write!(f, "PTY"),
             Self::Tcp(port) => write!(f, "TCP:{}", port),
             Self::LocalTalk => write!(f, "LocalTalk"),
+            #[cfg(feature = "afp_server")]
+            Self::AppleTalk => write!(f, "AppleTalk"),
         }
     }
 }
@@ -323,6 +332,13 @@ impl SerialBridge {
                     "LocalTalk should use SccBridge::new() instead",
                 ));
             }
+            #[cfg(feature = "afp_server")]
+            SerialBridgeConfig::AppleTalk { .. } => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "AppleTalk should use SccBridge::new() instead",
+                ));
+            }
         };
 
         Ok(Self {
@@ -395,14 +411,22 @@ impl SccBridge {
             SerialBridgeConfig::LocalTalk => Ok(Self::LocalTalk(
                 super::localtalk_bridge::LocalTalkBridge::new()?,
             )),
+            #[cfg(feature = "afp_server")]
+            SerialBridgeConfig::AppleTalk => Ok(Self::LocalTalk(
+                super::localtalk_bridge::LocalTalkBridge::new_private(),
+            )),
             _ => Ok(Self::Serial(SerialBridge::new(config)?)),
         }
     }
 
-    /// Write data from the SCC TX queue to the bridge
-    pub fn write_from_scc(&mut self, data: &[u8]) {
+    /// Write data from the SCC TX queue to the bridge.
+    /// Returns packets to inject into the SCC RX buffer immediately.
+    pub fn write_from_scc(&mut self, data: &[u8]) -> Vec<Vec<u8>> {
         match self {
-            Self::Serial(bridge) => bridge.write_from_scc(data),
+            Self::Serial(bridge) => {
+                bridge.write_from_scc(data);
+                Vec::new()
+            }
             Self::LocalTalk(bridge) => bridge.write_from_scc(data),
         }
     }
@@ -447,13 +471,6 @@ impl SccBridge {
     pub fn set_address_search_mode(&mut self, mode: bool) {
         if let Self::LocalTalk(bridge) = self {
             bridge.set_address_search_mode(mode);
-        }
-    }
-
-    /// Send a complete SDLC frame (LocalTalk only)
-    pub fn send_frame(&mut self, llap: &[u8]) {
-        if let Self::LocalTalk(bridge) = self {
-            bridge.send_frame(llap);
         }
     }
 }

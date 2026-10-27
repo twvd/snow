@@ -1475,26 +1475,19 @@ impl Tickable for Emulator {
                         bridge.set_node_address(sdlc_addr);
                         bridge
                             .set_address_search_mode(self.config.scc().is_address_search_mode(ch));
-
-                        // Prefer SDLC frame-boundary path if frames are ready
-                        let frames = self.config.scc_mut().take_tx_frames(ch);
-                        if !frames.is_empty() {
-                            for frame in &frames {
-                                bridge.send_frame(frame);
-                            }
-                            // Drain tx_queue to avoid double-sending via byte-stream
-                            self.config.scc_mut().take_tx(ch);
-                        }
                     }
                 }
 
-                // Check for TX data from SCC (byte-stream path / fallback)
+                // Check for TX data from SCC (byte-stream path)
                 if self.config.scc().has_tx_data(ch) {
                     let tx_data = self.config.scc_mut().take_tx(ch);
 
                     // Route through bridge if active, otherwise send to frontend
                     if let Some(ref mut bridge) = self.serial_bridges[ch_idx] {
-                        bridge.write_from_scc(&tx_data);
+                        let replies = bridge.write_from_scc(&tx_data);
+                        for reply in replies {
+                            self.config.scc_mut().push_rx_frame(ch, reply);
+                        }
                     } else {
                         self.event_sender
                             .send(EmulatorEvent::SccTransmitData(ch, tx_data))?;
@@ -1509,8 +1502,16 @@ impl Tickable for Emulator {
                             .send(EmulatorEvent::SerialBridgeStatus(ch, Some(bridge.status())))?;
                     }
 
-                    // Read incoming data from bridge and send to SCC
-                    let rx_data = bridge.read_to_scc();
+                    // Read incoming data from bridge and send to SCC. For LocalTalk,
+                    // only feed data when the SCC receiver is ready, so control
+                    // packets (CTS) are not lost while the Mac still has its
+                    // receiver disabled.
+                    let rx_data =
+                        if bridge.is_localtalk() && !self.config.scc().is_rx_ready_for_data(ch) {
+                            Vec::new()
+                        } else {
+                            bridge.read_to_scc()
+                        };
                     if !rx_data.is_empty() {
                         self.config.scc_mut().push_rx(ch, &rx_data);
                     }
@@ -1532,16 +1533,15 @@ impl Tickable for Emulator {
                 }
                 self.try_step();
 
-                // Demand-driven LocalTalk polling: poll immediately when Mac re-enables RX
-                // Only poll if RX is enabled and no character is available (ready for new packet)
+                // Demand-driven LocalTalk polling: poll immediately when the
+                // Mac writes TX data or re-enables RX, so the byte-stream
+                // path delivers frames promptly (the driver's CTS poll
+                // window is too short for the next tick batch). Frames
+                // injected while the receiver is off are queued in the SCC.
                 if self
                     .config
                     .scc_mut()
                     .take_localtalk_poll_needed(crate::mac::scc::SccCh::B)
-                    && self
-                        .config
-                        .scc()
-                        .is_rx_ready_for_data(crate::mac::scc::SccCh::B)
                     && let Some(ref mut bridge) = self.serial_bridges[1]
                     && bridge.is_localtalk()
                 {
@@ -1554,23 +1554,17 @@ impl Tickable for Emulator {
                             .is_address_search_mode(crate::mac::scc::SccCh::B),
                     );
 
-                    // Prefer SDLC frame-boundary path if frames are ready
-                    let frames = self
-                        .config
-                        .scc_mut()
-                        .take_tx_frames(crate::mac::scc::SccCh::B);
-                    if !frames.is_empty() {
-                        for frame in &frames {
-                            bridge.send_frame(frame);
-                        }
-                        // Drain tx_queue to avoid double-sending
-                        self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
-                    }
-
-                    // Byte-stream TX path (fallback when no frame boundaries detected)
+                    // Byte-stream TX path: the bridge extracts complete
+                    // packets and returns immediate responses (e.g. the
+                    // CTS for a unicast RTS)
                     if self.config.scc().has_tx_data(crate::mac::scc::SccCh::B) {
                         let tx_data = self.config.scc_mut().take_tx(crate::mac::scc::SccCh::B);
-                        bridge.write_from_scc(&tx_data);
+                        let replies = bridge.write_from_scc(&tx_data);
+                        for reply in replies {
+                            self.config
+                                .scc_mut()
+                                .push_rx_frame(crate::mac::scc::SccCh::B, reply);
+                        }
                     }
 
                     // Now poll for incoming data and pending CTS

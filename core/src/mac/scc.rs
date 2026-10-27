@@ -268,8 +268,6 @@ struct SccChannel {
     // LocalTalk/SDLC TX frame state
     /// SDLC TX frame accumulation buffer
     lt_tx_frame: Vec<u8>,
-    /// Completed SDLC TX frames ready for bridge
-    lt_tx_complete: VecDeque<Vec<u8>>,
 }
 
 /// Zilog Z8530 Serial Communications Controller
@@ -366,6 +364,13 @@ impl Scc {
         // The TX buffer is busy until the status is read again (the byte
         // is transmitted instantly in the emulation)
         self.ch[chi].tx_busy = true;
+        // In SDLC mode the LocalTalk bridge extracts complete packets
+        // from the byte stream, so have the emulator poll it right away:
+        // the driver's CTS poll window is too short to wait for the next
+        // tick batch
+        if self.ch[chi].sdlc {
+            self.ch[chi].localtalk_poll_needed = true;
+        }
         if self.ch[chi].tx_enable && self.ch[chi].tx_ie && self.mic.mie() {
             self.ch[chi].tx_ip = true;
         }
@@ -583,8 +588,7 @@ impl Scc {
                         // again when the frame finishes transmitting
                         self.ch[chi].tx_underrun = false;
                         if self.ch[chi].sdlc && !self.ch[chi].lt_tx_frame.is_empty() {
-                            let frame = std::mem::take(&mut self.ch[chi].lt_tx_frame);
-                            self.ch[chi].lt_tx_complete.push_back(frame);
+                            std::mem::take(&mut self.ch[chi].lt_tx_frame);
                             // The frame is fully transmitted at the
                             // boundary, so the underrun/EOM latch sets
                             self.ch[chi].tx_underrun = true;
@@ -687,16 +691,6 @@ impl Scc {
 
     pub fn get_irq(&mut self) -> bool {
         self.get_irq_pending().is_some()
-    }
-
-    /// Take completed SDLC TX frames for a channel
-    pub fn take_tx_frames(&mut self, ch: SccCh) -> VecDeque<Vec<u8>> {
-        std::mem::take(&mut self.ch[ch.to_usize().unwrap()].lt_tx_complete)
-    }
-
-    /// Check if there are completed SDLC TX frames waiting
-    pub fn has_tx_frames(&self, ch: SccCh) -> bool {
-        !self.ch[ch.to_usize().unwrap()].lt_tx_complete.is_empty()
     }
 
     /// Check and clear the LocalTalk poll needed flag for a channel.
