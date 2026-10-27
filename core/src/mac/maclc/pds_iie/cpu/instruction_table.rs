@@ -11,7 +11,9 @@ macro_rules! instr {
     };
 }
 
-pub const INSTRUCTION_TABLE: [InstructionDef; 256] = [
+/// 65816 native-mode opcode table, from siena (kept verbatim).
+#[cfg(feature = "w65816")]
+pub const TABLE_65816: [InstructionDef; 256] = [
     // 0x00 - BRK
     // ....01.., 1 bytes, 8-e cycles
     instr!("BRK", AddressingMode::Implied, InstructionType::BRK, 1),
@@ -1260,4 +1262,1798 @@ pub const INSTRUCTION_TABLE: [InstructionDef; 256] = [
     // 0xFF - SBC $FEDCBA,X
     // mm....mm, 4 bytes, 6-m cycles
     instr!("SBC @,X", AddressingMode::LongX, InstructionType::SBC, 4),
+];
+
+// ---------------------------------------------------------------------------
+// 6502 / 65C02 tables
+// ---------------------------------------------------------------------------
+//
+// The 6502/65C02 variants always run with M = X = 1 (8-bit registers), so
+// ImmediateM / ImmediateX modes are replaced by Immediate8.  BRK is a
+// 2-byte instruction on both (the signature byte is fetched), hence the
+// Immediate8 mode (Implied would only fetch 1 byte).
+//
+// Entries marked InstructionType::Undefined are the NMOS 6502 illegal
+// opcodes (not modelled) and are never executed by the tests.
+
+/// NMOS 6502 opcode table.
+pub const TABLE_6502: [InstructionDef; 256] = [
+    // 0x00
+    instr!("BRK", AddressingMode::Immediate8, InstructionType::BRK, 2),
+    instr!(
+        "ORA (@,X)",
+        AddressingMode::DirectXPtr16,
+        InstructionType::ORA,
+        2
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("ORA @", AddressingMode::Direct, InstructionType::ORA, 2),
+    instr!("ASL @", AddressingMode::Direct, InstructionType::ASL, 2),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("PHP", AddressingMode::Implied, InstructionType::PHP, 1),
+    instr!(
+        "ORA #@",
+        AddressingMode::Immediate8,
+        InstructionType::ORA,
+        2
+    ),
+    instr!("ASL", AddressingMode::Accumulator, InstructionType::ASL, 1),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("ORA @", AddressingMode::Absolute, InstructionType::ORA, 3),
+    instr!("ASL @", AddressingMode::Absolute, InstructionType::ASL, 3),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    // 0x10
+    instr!("BPL @", AddressingMode::Relative8, InstructionType::BPL, 2),
+    instr!(
+        "ORA (@),Y",
+        AddressingMode::DirectPtr16Y,
+        InstructionType::ORA,
+        2
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("ORA @,X", AddressingMode::DirectX, InstructionType::ORA, 2),
+    instr!("ASL @,X", AddressingMode::DirectX, InstructionType::ASL, 2),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("CLC", AddressingMode::Implied, InstructionType::CLC, 1),
+    instr!(
+        "ORA @,Y",
+        AddressingMode::AbsoluteY,
+        InstructionType::ORA,
+        3
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "ORA @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::ORA,
+        3
+    ),
+    instr!(
+        "ASL @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::ASL,
+        3
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    // 0x20
+    instr!("JSR @", AddressingMode::Absolute, InstructionType::JSR, 3),
+    instr!(
+        "AND (@,X)",
+        AddressingMode::DirectXPtr16,
+        InstructionType::AND,
+        2
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("BIT @", AddressingMode::Direct, InstructionType::BIT, 2),
+    instr!("AND @", AddressingMode::Direct, InstructionType::AND, 2),
+    instr!("ROL @", AddressingMode::Direct, InstructionType::ROL, 2),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("PLP", AddressingMode::Implied, InstructionType::PLP, 1),
+    instr!(
+        "AND #@",
+        AddressingMode::Immediate8,
+        InstructionType::AND,
+        2
+    ),
+    instr!("ROL", AddressingMode::Accumulator, InstructionType::ROL, 1),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("BIT @", AddressingMode::Absolute, InstructionType::BIT, 3),
+    instr!("AND @", AddressingMode::Absolute, InstructionType::AND, 3),
+    instr!("ROL @", AddressingMode::Absolute, InstructionType::ROL, 3),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    // 0x30
+    instr!("BMI @", AddressingMode::Relative8, InstructionType::BMI, 2),
+    instr!(
+        "AND (@),Y",
+        AddressingMode::DirectPtr16Y,
+        InstructionType::AND,
+        2
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("AND @,X", AddressingMode::DirectX, InstructionType::AND, 2),
+    instr!("ROL @,X", AddressingMode::DirectX, InstructionType::ROL, 2),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("SEC", AddressingMode::Implied, InstructionType::SEC, 1),
+    instr!(
+        "AND @,Y",
+        AddressingMode::AbsoluteY,
+        InstructionType::AND,
+        3
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "AND @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::AND,
+        3
+    ),
+    instr!(
+        "ROL @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::ROL,
+        3
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    // 0x40
+    instr!("RTI", AddressingMode::Implied, InstructionType::RTI, 1),
+    instr!(
+        "EOR (@,X)",
+        AddressingMode::DirectXPtr16,
+        InstructionType::EOR,
+        2
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("EOR @", AddressingMode::Direct, InstructionType::EOR, 2),
+    instr!("LSR @", AddressingMode::Direct, InstructionType::LSR, 2),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("PHA", AddressingMode::Implied, InstructionType::PHA, 1),
+    instr!(
+        "EOR #@",
+        AddressingMode::Immediate8,
+        InstructionType::EOR,
+        2
+    ),
+    instr!("LSR", AddressingMode::Accumulator, InstructionType::LSR, 1),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("JMP @", AddressingMode::Absolute, InstructionType::JMP, 3),
+    instr!("EOR @", AddressingMode::Absolute, InstructionType::EOR, 3),
+    instr!("LSR @", AddressingMode::Absolute, InstructionType::LSR, 3),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    // 0x50
+    instr!("BVC @", AddressingMode::Relative8, InstructionType::BVC, 2),
+    instr!(
+        "EOR (@),Y",
+        AddressingMode::DirectPtr16Y,
+        InstructionType::EOR,
+        2
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("EOR @,X", AddressingMode::DirectX, InstructionType::EOR, 2),
+    instr!("LSR @,X", AddressingMode::DirectX, InstructionType::LSR, 2),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("CLI", AddressingMode::Implied, InstructionType::CLI, 1),
+    instr!(
+        "EOR @,Y",
+        AddressingMode::AbsoluteY,
+        InstructionType::EOR,
+        3
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "EOR @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::EOR,
+        3
+    ),
+    instr!(
+        "LSR @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::LSR,
+        3
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    // 0x60
+    instr!("RTS", AddressingMode::Implied, InstructionType::RTS, 1),
+    instr!(
+        "ADC (@,X)",
+        AddressingMode::DirectXPtr16,
+        InstructionType::ADC,
+        2
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("ADC @", AddressingMode::Direct, InstructionType::ADC, 2),
+    instr!("ROR @", AddressingMode::Direct, InstructionType::ROR, 2),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("PLA", AddressingMode::Implied, InstructionType::PLA, 1),
+    instr!(
+        "ADC #@",
+        AddressingMode::Immediate8,
+        InstructionType::ADC,
+        2
+    ),
+    instr!("ROR", AddressingMode::Accumulator, InstructionType::ROR, 1),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "JMP (@)",
+        AddressingMode::AbsolutePtr16,
+        InstructionType::JMP,
+        3
+    ),
+    instr!("ADC @", AddressingMode::Absolute, InstructionType::ADC, 3),
+    instr!("ROR @", AddressingMode::Absolute, InstructionType::ROR, 3),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    // 0x70
+    instr!("BVS @", AddressingMode::Relative8, InstructionType::BVS, 2),
+    instr!(
+        "ADC (@),Y",
+        AddressingMode::DirectPtr16Y,
+        InstructionType::ADC,
+        2
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("ADC @,X", AddressingMode::DirectX, InstructionType::ADC, 2),
+    instr!("ROR @,X", AddressingMode::DirectX, InstructionType::ROR, 2),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("SEI", AddressingMode::Implied, InstructionType::SEI, 1),
+    instr!(
+        "ADC @,Y",
+        AddressingMode::AbsoluteY,
+        InstructionType::ADC,
+        3
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "ADC @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::ADC,
+        3
+    ),
+    instr!(
+        "ROR @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::ROR,
+        3
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    // 0x80
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "STA (@,X)",
+        AddressingMode::DirectXPtr16,
+        InstructionType::STA,
+        2
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("STY @", AddressingMode::Direct, InstructionType::STY, 2),
+    instr!("STA @", AddressingMode::Direct, InstructionType::STA, 2),
+    instr!("STX @", AddressingMode::Direct, InstructionType::STX, 2),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("DEY", AddressingMode::Implied, InstructionType::DEY, 1),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("TXA", AddressingMode::Implied, InstructionType::TXA, 1),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("STY @", AddressingMode::Absolute, InstructionType::STY, 3),
+    instr!("STA @", AddressingMode::Absolute, InstructionType::STA, 3),
+    instr!("STX @", AddressingMode::Absolute, InstructionType::STX, 3),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    // 0x90
+    instr!("BCC @", AddressingMode::Relative8, InstructionType::BCC, 2),
+    instr!(
+        "STA (@),Y",
+        AddressingMode::DirectPtr16Y,
+        InstructionType::STA,
+        2
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("STY @,X", AddressingMode::DirectX, InstructionType::STY, 2),
+    instr!("STA @,X", AddressingMode::DirectX, InstructionType::STA, 2),
+    instr!("STX @,Y", AddressingMode::DirectY, InstructionType::STX, 2),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("TYA", AddressingMode::Implied, InstructionType::TYA, 1),
+    instr!(
+        "STA @,Y",
+        AddressingMode::AbsoluteY,
+        InstructionType::STA,
+        3
+    ),
+    instr!("TXS", AddressingMode::Implied, InstructionType::TXS, 1),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "STA @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::STA,
+        3
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    // 0xA0
+    instr!(
+        "LDY #@",
+        AddressingMode::Immediate8,
+        InstructionType::LDY,
+        2
+    ),
+    instr!(
+        "LDA (@,X)",
+        AddressingMode::DirectXPtr16,
+        InstructionType::LDA,
+        2
+    ),
+    instr!(
+        "LDX #@",
+        AddressingMode::Immediate8,
+        InstructionType::LDX,
+        2
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("LDY @", AddressingMode::Direct, InstructionType::LDY, 2),
+    instr!("LDA @", AddressingMode::Direct, InstructionType::LDA, 2),
+    instr!("LDX @", AddressingMode::Direct, InstructionType::LDX, 2),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("TAY", AddressingMode::Implied, InstructionType::TAY, 1),
+    instr!(
+        "LDA #@",
+        AddressingMode::Immediate8,
+        InstructionType::LDA,
+        2
+    ),
+    instr!("TAX", AddressingMode::Implied, InstructionType::TAX, 1),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("LDY @", AddressingMode::Absolute, InstructionType::LDY, 3),
+    instr!("LDA @", AddressingMode::Absolute, InstructionType::LDA, 3),
+    instr!("LDX @", AddressingMode::Absolute, InstructionType::LDX, 3),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    // 0xB0
+    instr!("BCS @", AddressingMode::Relative8, InstructionType::BCS, 2),
+    instr!(
+        "LDA (@),Y",
+        AddressingMode::DirectPtr16Y,
+        InstructionType::LDA,
+        2
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("LDY @,X", AddressingMode::DirectX, InstructionType::LDY, 2),
+    instr!("LDA @,X", AddressingMode::DirectX, InstructionType::LDA, 2),
+    instr!("LDX @,Y", AddressingMode::DirectY, InstructionType::LDX, 2),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("CLV", AddressingMode::Implied, InstructionType::CLV, 1),
+    instr!(
+        "LDA @,Y",
+        AddressingMode::AbsoluteY,
+        InstructionType::LDA,
+        3
+    ),
+    instr!("TSX", AddressingMode::Implied, InstructionType::TSX, 1),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "LDY @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::LDY,
+        3
+    ),
+    instr!(
+        "LDA @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::LDA,
+        3
+    ),
+    instr!(
+        "LDX @,Y",
+        AddressingMode::AbsoluteY,
+        InstructionType::LDX,
+        3
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    // 0xC0
+    instr!(
+        "CPY #@",
+        AddressingMode::Immediate8,
+        InstructionType::CPY,
+        2
+    ),
+    instr!(
+        "CMP (@,X)",
+        AddressingMode::DirectXPtr16,
+        InstructionType::CMP,
+        2
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("CPY @", AddressingMode::Direct, InstructionType::CPY, 2),
+    instr!("CMP @", AddressingMode::Direct, InstructionType::CMP, 2),
+    instr!("DEC @", AddressingMode::Direct, InstructionType::DEC, 2),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("INY", AddressingMode::Implied, InstructionType::INY, 1),
+    instr!(
+        "CMP #@",
+        AddressingMode::Immediate8,
+        InstructionType::CMP,
+        2
+    ),
+    instr!("DEX", AddressingMode::Implied, InstructionType::DEX, 1),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("CPY @", AddressingMode::Absolute, InstructionType::CPY, 3),
+    instr!("CMP @", AddressingMode::Absolute, InstructionType::CMP, 3),
+    instr!("DEC @", AddressingMode::Absolute, InstructionType::DEC, 3),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    // 0xD0
+    instr!("BNE @", AddressingMode::Relative8, InstructionType::BNE, 2),
+    instr!(
+        "CMP (@),Y",
+        AddressingMode::DirectPtr16Y,
+        InstructionType::CMP,
+        2
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("CMP @,X", AddressingMode::DirectX, InstructionType::CMP, 2),
+    instr!("DEC @,X", AddressingMode::DirectX, InstructionType::DEC, 2),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("CLD", AddressingMode::Implied, InstructionType::CLD, 1),
+    instr!(
+        "CMP @,Y",
+        AddressingMode::AbsoluteY,
+        InstructionType::CMP,
+        3
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "CMP @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::CMP,
+        3
+    ),
+    instr!(
+        "DEC @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::DEC,
+        3
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    // 0xE0
+    instr!(
+        "CPX #@",
+        AddressingMode::Immediate8,
+        InstructionType::CPX,
+        2
+    ),
+    instr!(
+        "SBC (@,X)",
+        AddressingMode::DirectXPtr16,
+        InstructionType::SBC,
+        2
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("CPX @", AddressingMode::Direct, InstructionType::CPX, 2),
+    instr!("SBC @", AddressingMode::Direct, InstructionType::SBC, 2),
+    instr!("INC @", AddressingMode::Direct, InstructionType::INC, 2),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("INX", AddressingMode::Implied, InstructionType::INX, 1),
+    instr!(
+        "SBC #@",
+        AddressingMode::Immediate8,
+        InstructionType::SBC,
+        2
+    ),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("CPX @", AddressingMode::Absolute, InstructionType::CPX, 3),
+    instr!("SBC @", AddressingMode::Absolute, InstructionType::SBC, 3),
+    instr!("INC @", AddressingMode::Absolute, InstructionType::INC, 3),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    // 0xF0
+    instr!("BEQ @", AddressingMode::Relative8, InstructionType::BEQ, 2),
+    instr!(
+        "SBC (@),Y",
+        AddressingMode::DirectPtr16Y,
+        InstructionType::SBC,
+        2
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("SBC @,X", AddressingMode::DirectX, InstructionType::SBC, 2),
+    instr!("INC @,X", AddressingMode::DirectX, InstructionType::INC, 2),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!("SED", AddressingMode::Implied, InstructionType::SED, 1),
+    instr!(
+        "SBC @,Y",
+        AddressingMode::AbsoluteY,
+        InstructionType::SBC,
+        3
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+    instr!(
+        "SBC @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::SBC,
+        3
+    ),
+    instr!(
+        "INC @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::INC,
+        3
+    ),
+    instr!(
+        "???",
+        AddressingMode::Implied,
+        InstructionType::Undefined,
+        1
+    ),
+];
+
+/// WDC 65C02 opcode table (all 256 opcodes defined).
+pub const TABLE_65C02: [InstructionDef; 256] = [
+    // 0x00
+    instr!("BRK", AddressingMode::Immediate8, InstructionType::BRK, 2),
+    instr!(
+        "ORA (@,X)",
+        AddressingMode::DirectXPtr16,
+        InstructionType::ORA,
+        2
+    ),
+    instr!(
+        "NOP #@",
+        AddressingMode::Immediate8,
+        InstructionType::NOP,
+        2
+    ),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("TSB @", AddressingMode::Direct, InstructionType::TSB, 2),
+    instr!("ORA @", AddressingMode::Direct, InstructionType::ORA, 2),
+    instr!("ASL @", AddressingMode::Direct, InstructionType::ASL, 2),
+    instr!("RMB0 @", AddressingMode::Direct, InstructionType::RMB, 2),
+    instr!("PHP", AddressingMode::Implied, InstructionType::PHP, 1),
+    instr!(
+        "ORA #@",
+        AddressingMode::Immediate8,
+        InstructionType::ORA,
+        2
+    ),
+    instr!("ASL", AddressingMode::Accumulator, InstructionType::ASL, 1),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("TSB @", AddressingMode::Absolute, InstructionType::TSB, 3),
+    instr!("ORA @", AddressingMode::Absolute, InstructionType::ORA, 3),
+    instr!("ASL @", AddressingMode::Absolute, InstructionType::ASL, 3),
+    instr!(
+        "BBR0 @,@",
+        AddressingMode::DirectRelative,
+        InstructionType::BBR,
+        3
+    ),
+    // 0x10
+    instr!("BPL @", AddressingMode::Relative8, InstructionType::BPL, 2),
+    instr!(
+        "ORA (@),Y",
+        AddressingMode::DirectPtr16Y,
+        InstructionType::ORA,
+        2
+    ),
+    instr!(
+        "ORA (@)",
+        AddressingMode::DirectPtr16,
+        InstructionType::ORA,
+        2
+    ),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("TRB @", AddressingMode::Direct, InstructionType::TRB, 2),
+    instr!("ORA @,X", AddressingMode::DirectX, InstructionType::ORA, 2),
+    instr!("ASL @,X", AddressingMode::DirectX, InstructionType::ASL, 2),
+    instr!("RMB1 @", AddressingMode::Direct, InstructionType::RMB, 2),
+    instr!("CLC", AddressingMode::Implied, InstructionType::CLC, 1),
+    instr!(
+        "ORA @,Y",
+        AddressingMode::AbsoluteY,
+        InstructionType::ORA,
+        3
+    ),
+    instr!("INC", AddressingMode::Accumulator, InstructionType::INC, 1),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("TRB @", AddressingMode::Absolute, InstructionType::TRB, 3),
+    instr!(
+        "ORA @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::ORA,
+        3
+    ),
+    instr!(
+        "ASL @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::ASL,
+        3
+    ),
+    instr!(
+        "BBR1 @,@",
+        AddressingMode::DirectRelative,
+        InstructionType::BBR,
+        3
+    ),
+    // 0x20
+    instr!("JSR @", AddressingMode::Absolute, InstructionType::JSR, 3),
+    instr!(
+        "AND (@,X)",
+        AddressingMode::DirectXPtr16,
+        InstructionType::AND,
+        2
+    ),
+    instr!(
+        "NOP #@",
+        AddressingMode::Immediate8,
+        InstructionType::NOP,
+        2
+    ),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("BIT @", AddressingMode::Direct, InstructionType::BIT, 2),
+    instr!("AND @", AddressingMode::Direct, InstructionType::AND, 2),
+    instr!("ROL @", AddressingMode::Direct, InstructionType::ROL, 2),
+    instr!("RMB2 @", AddressingMode::Direct, InstructionType::RMB, 2),
+    instr!("PLP", AddressingMode::Implied, InstructionType::PLP, 1),
+    instr!(
+        "AND #@",
+        AddressingMode::Immediate8,
+        InstructionType::AND,
+        2
+    ),
+    instr!("ROL", AddressingMode::Accumulator, InstructionType::ROL, 1),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("BIT @", AddressingMode::Absolute, InstructionType::BIT, 3),
+    instr!("AND @", AddressingMode::Absolute, InstructionType::AND, 3),
+    instr!("ROL @", AddressingMode::Absolute, InstructionType::ROL, 3),
+    instr!(
+        "BBR2 @,@",
+        AddressingMode::DirectRelative,
+        InstructionType::BBR,
+        3
+    ),
+    // 0x30
+    instr!("BMI @", AddressingMode::Relative8, InstructionType::BMI, 2),
+    instr!(
+        "AND (@),Y",
+        AddressingMode::DirectPtr16Y,
+        InstructionType::AND,
+        2
+    ),
+    instr!(
+        "AND (@)",
+        AddressingMode::DirectPtr16,
+        InstructionType::AND,
+        2
+    ),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("BIT @,X", AddressingMode::DirectX, InstructionType::BIT, 2),
+    instr!("AND @,X", AddressingMode::DirectX, InstructionType::AND, 2),
+    instr!("ROL @,X", AddressingMode::DirectX, InstructionType::ROL, 2),
+    instr!("RMB3 @", AddressingMode::Direct, InstructionType::RMB, 2),
+    instr!("SEC", AddressingMode::Implied, InstructionType::SEC, 1),
+    instr!(
+        "AND @,Y",
+        AddressingMode::AbsoluteY,
+        InstructionType::AND,
+        3
+    ),
+    instr!("DEC", AddressingMode::Accumulator, InstructionType::DEC, 1),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!(
+        "BIT @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::BIT,
+        3
+    ),
+    instr!(
+        "AND @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::AND,
+        3
+    ),
+    instr!(
+        "ROL @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::ROL,
+        3
+    ),
+    instr!(
+        "BBR3 @,@",
+        AddressingMode::DirectRelative,
+        InstructionType::BBR,
+        3
+    ),
+    // 0x40
+    instr!("RTI", AddressingMode::Implied, InstructionType::RTI, 1),
+    instr!(
+        "EOR (@,X)",
+        AddressingMode::DirectXPtr16,
+        InstructionType::EOR,
+        2
+    ),
+    instr!(
+        "NOP #@",
+        AddressingMode::Immediate8,
+        InstructionType::NOP,
+        2
+    ),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("NOP @", AddressingMode::Direct, InstructionType::NOP, 2),
+    instr!("EOR @", AddressingMode::Direct, InstructionType::EOR, 2),
+    instr!("LSR @", AddressingMode::Direct, InstructionType::LSR, 2),
+    instr!("RMB4 @", AddressingMode::Direct, InstructionType::RMB, 2),
+    instr!("PHA", AddressingMode::Implied, InstructionType::PHA, 1),
+    instr!(
+        "EOR #@",
+        AddressingMode::Immediate8,
+        InstructionType::EOR,
+        2
+    ),
+    instr!("LSR", AddressingMode::Accumulator, InstructionType::LSR, 1),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("JMP @", AddressingMode::Absolute, InstructionType::JMP, 3),
+    instr!("EOR @", AddressingMode::Absolute, InstructionType::EOR, 3),
+    instr!("LSR @", AddressingMode::Absolute, InstructionType::LSR, 3),
+    instr!(
+        "BBR4 @,@",
+        AddressingMode::DirectRelative,
+        InstructionType::BBR,
+        3
+    ),
+    // 0x50
+    instr!("BVC @", AddressingMode::Relative8, InstructionType::BVC, 2),
+    instr!(
+        "EOR (@),Y",
+        AddressingMode::DirectPtr16Y,
+        InstructionType::EOR,
+        2
+    ),
+    instr!(
+        "EOR (@)",
+        AddressingMode::DirectPtr16,
+        InstructionType::EOR,
+        2
+    ),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("NOP @,X", AddressingMode::DirectX, InstructionType::NOP, 2),
+    instr!("EOR @,X", AddressingMode::DirectX, InstructionType::EOR, 2),
+    instr!("LSR @,X", AddressingMode::DirectX, InstructionType::LSR, 2),
+    instr!("RMB5 @", AddressingMode::Direct, InstructionType::RMB, 2),
+    instr!("CLI", AddressingMode::Implied, InstructionType::CLI, 1),
+    instr!(
+        "EOR @,Y",
+        AddressingMode::AbsoluteY,
+        InstructionType::EOR,
+        3
+    ),
+    instr!("PHY", AddressingMode::Implied, InstructionType::PHY, 1),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!(
+        "NOP @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::NOP,
+        3
+    ),
+    instr!(
+        "EOR @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::EOR,
+        3
+    ),
+    instr!(
+        "LSR @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::LSR,
+        3
+    ),
+    instr!(
+        "BBR5 @,@",
+        AddressingMode::DirectRelative,
+        InstructionType::BBR,
+        3
+    ),
+    // 0x60
+    instr!("RTS", AddressingMode::Implied, InstructionType::RTS, 1),
+    instr!(
+        "ADC (@,X)",
+        AddressingMode::DirectXPtr16,
+        InstructionType::ADC,
+        2
+    ),
+    instr!(
+        "NOP #@",
+        AddressingMode::Immediate8,
+        InstructionType::NOP,
+        2
+    ),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("STZ @", AddressingMode::Direct, InstructionType::STZ, 2),
+    instr!("ADC @", AddressingMode::Direct, InstructionType::ADC, 2),
+    instr!("ROR @", AddressingMode::Direct, InstructionType::ROR, 2),
+    instr!("RMB6 @", AddressingMode::Direct, InstructionType::RMB, 2),
+    instr!("PLA", AddressingMode::Implied, InstructionType::PLA, 1),
+    instr!(
+        "ADC #@",
+        AddressingMode::Immediate8,
+        InstructionType::ADC,
+        2
+    ),
+    instr!("ROR", AddressingMode::Accumulator, InstructionType::ROR, 1),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!(
+        "JMP (@)",
+        AddressingMode::AbsolutePtr16,
+        InstructionType::JMP,
+        3
+    ),
+    instr!("ADC @", AddressingMode::Absolute, InstructionType::ADC, 3),
+    instr!("ROR @", AddressingMode::Absolute, InstructionType::ROR, 3),
+    instr!(
+        "BBR6 @,@",
+        AddressingMode::DirectRelative,
+        InstructionType::BBR,
+        3
+    ),
+    // 0x70
+    instr!("BVS @", AddressingMode::Relative8, InstructionType::BVS, 2),
+    instr!(
+        "ADC (@),Y",
+        AddressingMode::DirectPtr16Y,
+        InstructionType::ADC,
+        2
+    ),
+    instr!(
+        "ADC (@)",
+        AddressingMode::DirectPtr16,
+        InstructionType::ADC,
+        2
+    ),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("STZ @,X", AddressingMode::DirectX, InstructionType::STZ, 2),
+    instr!("ADC @,X", AddressingMode::DirectX, InstructionType::ADC, 2),
+    instr!("ROR @,X", AddressingMode::DirectX, InstructionType::ROR, 2),
+    instr!("RMB7 @", AddressingMode::Direct, InstructionType::RMB, 2),
+    instr!("SEI", AddressingMode::Implied, InstructionType::SEI, 1),
+    instr!(
+        "ADC @,Y",
+        AddressingMode::AbsoluteY,
+        InstructionType::ADC,
+        3
+    ),
+    instr!("PLY", AddressingMode::Implied, InstructionType::PLY, 1),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!(
+        "JMP (@,X)",
+        AddressingMode::AbsoluteXPtr16,
+        InstructionType::JMP,
+        3
+    ),
+    instr!(
+        "ADC @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::ADC,
+        3
+    ),
+    instr!(
+        "ROR @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::ROR,
+        3
+    ),
+    instr!(
+        "BBR7 @,@",
+        AddressingMode::DirectRelative,
+        InstructionType::BBR,
+        3
+    ),
+    // 0x80
+    instr!("BRA @", AddressingMode::Relative8, InstructionType::BRA, 2),
+    instr!(
+        "STA (@,X)",
+        AddressingMode::DirectXPtr16,
+        InstructionType::STA,
+        2
+    ),
+    instr!(
+        "NOP #@",
+        AddressingMode::Immediate8,
+        InstructionType::NOP,
+        2
+    ),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("STY @", AddressingMode::Direct, InstructionType::STY, 2),
+    instr!("STA @", AddressingMode::Direct, InstructionType::STA, 2),
+    instr!("STX @", AddressingMode::Direct, InstructionType::STX, 2),
+    instr!("SMB0 @", AddressingMode::Direct, InstructionType::SMB, 2),
+    instr!("DEY", AddressingMode::Implied, InstructionType::DEY, 1),
+    instr!(
+        "BIT #@",
+        AddressingMode::Immediate8,
+        InstructionType::BIT,
+        2
+    ),
+    instr!("TXA", AddressingMode::Implied, InstructionType::TXA, 1),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("STY @", AddressingMode::Absolute, InstructionType::STY, 3),
+    instr!("STA @", AddressingMode::Absolute, InstructionType::STA, 3),
+    instr!("STX @", AddressingMode::Absolute, InstructionType::STX, 3),
+    instr!(
+        "BBS0 @,@",
+        AddressingMode::DirectRelative,
+        InstructionType::BBS,
+        3
+    ),
+    // 0x90
+    instr!("BCC @", AddressingMode::Relative8, InstructionType::BCC, 2),
+    instr!(
+        "STA (@),Y",
+        AddressingMode::DirectPtr16Y,
+        InstructionType::STA,
+        2
+    ),
+    instr!(
+        "STA (@)",
+        AddressingMode::DirectPtr16,
+        InstructionType::STA,
+        2
+    ),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("STY @,X", AddressingMode::DirectX, InstructionType::STY, 2),
+    instr!("STA @,X", AddressingMode::DirectX, InstructionType::STA, 2),
+    instr!("STX @,Y", AddressingMode::DirectY, InstructionType::STX, 2),
+    instr!("SMB1 @", AddressingMode::Direct, InstructionType::SMB, 2),
+    instr!("TYA", AddressingMode::Implied, InstructionType::TYA, 1),
+    instr!(
+        "STA @,Y",
+        AddressingMode::AbsoluteY,
+        InstructionType::STA,
+        3
+    ),
+    instr!("TXS", AddressingMode::Implied, InstructionType::TXS, 1),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("STZ @", AddressingMode::Absolute, InstructionType::STZ, 3),
+    instr!(
+        "STA @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::STA,
+        3
+    ),
+    instr!(
+        "STZ @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::STZ,
+        3
+    ),
+    instr!(
+        "BBS1 @,@",
+        AddressingMode::DirectRelative,
+        InstructionType::BBS,
+        3
+    ),
+    // 0xA0
+    instr!(
+        "LDY #@",
+        AddressingMode::Immediate8,
+        InstructionType::LDY,
+        2
+    ),
+    instr!(
+        "LDA (@,X)",
+        AddressingMode::DirectXPtr16,
+        InstructionType::LDA,
+        2
+    ),
+    instr!(
+        "LDX #@",
+        AddressingMode::Immediate8,
+        InstructionType::LDX,
+        2
+    ),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("LDY @", AddressingMode::Direct, InstructionType::LDY, 2),
+    instr!("LDA @", AddressingMode::Direct, InstructionType::LDA, 2),
+    instr!("LDX @", AddressingMode::Direct, InstructionType::LDX, 2),
+    instr!("SMB2 @", AddressingMode::Direct, InstructionType::SMB, 2),
+    instr!("TAY", AddressingMode::Implied, InstructionType::TAY, 1),
+    instr!(
+        "LDA #@",
+        AddressingMode::Immediate8,
+        InstructionType::LDA,
+        2
+    ),
+    instr!("TAX", AddressingMode::Implied, InstructionType::TAX, 1),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("LDY @", AddressingMode::Absolute, InstructionType::LDY, 3),
+    instr!("LDA @", AddressingMode::Absolute, InstructionType::LDA, 3),
+    instr!("LDX @", AddressingMode::Absolute, InstructionType::LDX, 3),
+    instr!(
+        "BBS2 @,@",
+        AddressingMode::DirectRelative,
+        InstructionType::BBS,
+        3
+    ),
+    // 0xB0
+    instr!("BCS @", AddressingMode::Relative8, InstructionType::BCS, 2),
+    instr!(
+        "LDA (@),Y",
+        AddressingMode::DirectPtr16Y,
+        InstructionType::LDA,
+        2
+    ),
+    instr!(
+        "LDA (@)",
+        AddressingMode::DirectPtr16,
+        InstructionType::LDA,
+        2
+    ),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("LDY @,X", AddressingMode::DirectX, InstructionType::LDY, 2),
+    instr!("LDA @,X", AddressingMode::DirectX, InstructionType::LDA, 2),
+    instr!("LDX @,Y", AddressingMode::DirectY, InstructionType::LDX, 2),
+    instr!("SMB3 @", AddressingMode::Direct, InstructionType::SMB, 2),
+    instr!("CLV", AddressingMode::Implied, InstructionType::CLV, 1),
+    instr!(
+        "LDA @,Y",
+        AddressingMode::AbsoluteY,
+        InstructionType::LDA,
+        3
+    ),
+    instr!("TSX", AddressingMode::Implied, InstructionType::TSX, 1),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!(
+        "LDY @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::LDY,
+        3
+    ),
+    instr!(
+        "LDA @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::LDA,
+        3
+    ),
+    instr!(
+        "LDX @,Y",
+        AddressingMode::AbsoluteY,
+        InstructionType::LDX,
+        3
+    ),
+    instr!(
+        "BBS3 @,@",
+        AddressingMode::DirectRelative,
+        InstructionType::BBS,
+        3
+    ),
+    // 0xC0
+    instr!(
+        "CPY #@",
+        AddressingMode::Immediate8,
+        InstructionType::CPY,
+        2
+    ),
+    instr!(
+        "CMP (@,X)",
+        AddressingMode::DirectXPtr16,
+        InstructionType::CMP,
+        2
+    ),
+    instr!(
+        "NOP #@",
+        AddressingMode::Immediate8,
+        InstructionType::NOP,
+        2
+    ),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("CPY @", AddressingMode::Direct, InstructionType::CPY, 2),
+    instr!("CMP @", AddressingMode::Direct, InstructionType::CMP, 2),
+    instr!("DEC @", AddressingMode::Direct, InstructionType::DEC, 2),
+    instr!("SMB4 @", AddressingMode::Direct, InstructionType::SMB, 2),
+    instr!("INY", AddressingMode::Implied, InstructionType::INY, 1),
+    instr!(
+        "CMP #@",
+        AddressingMode::Immediate8,
+        InstructionType::CMP,
+        2
+    ),
+    instr!("DEX", AddressingMode::Implied, InstructionType::DEX, 1),
+    instr!("WAI", AddressingMode::Implied, InstructionType::WAI, 1),
+    instr!("CPY @", AddressingMode::Absolute, InstructionType::CPY, 3),
+    instr!("CMP @", AddressingMode::Absolute, InstructionType::CMP, 3),
+    instr!("DEC @", AddressingMode::Absolute, InstructionType::DEC, 3),
+    instr!(
+        "BBS4 @,@",
+        AddressingMode::DirectRelative,
+        InstructionType::BBS,
+        3
+    ),
+    // 0xD0
+    instr!("BNE @", AddressingMode::Relative8, InstructionType::BNE, 2),
+    instr!(
+        "CMP (@),Y",
+        AddressingMode::DirectPtr16Y,
+        InstructionType::CMP,
+        2
+    ),
+    instr!(
+        "CMP (@)",
+        AddressingMode::DirectPtr16,
+        InstructionType::CMP,
+        2
+    ),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("NOP @,X", AddressingMode::DirectX, InstructionType::NOP, 2),
+    instr!("CMP @,X", AddressingMode::DirectX, InstructionType::CMP, 2),
+    instr!("DEC @,X", AddressingMode::DirectX, InstructionType::DEC, 2),
+    instr!("SMB5 @", AddressingMode::Direct, InstructionType::SMB, 2),
+    instr!("CLD", AddressingMode::Implied, InstructionType::CLD, 1),
+    instr!(
+        "CMP @,Y",
+        AddressingMode::AbsoluteY,
+        InstructionType::CMP,
+        3
+    ),
+    instr!("PHX", AddressingMode::Implied, InstructionType::PHX, 1),
+    instr!("STP", AddressingMode::Implied, InstructionType::STP, 1),
+    instr!("NOP @", AddressingMode::Absolute, InstructionType::NOP, 3),
+    instr!(
+        "CMP @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::CMP,
+        3
+    ),
+    instr!(
+        "DEC @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::DEC,
+        3
+    ),
+    instr!(
+        "BBS5 @,@",
+        AddressingMode::DirectRelative,
+        InstructionType::BBS,
+        3
+    ),
+    // 0xE0
+    instr!(
+        "CPX #@",
+        AddressingMode::Immediate8,
+        InstructionType::CPX,
+        2
+    ),
+    instr!(
+        "SBC (@,X)",
+        AddressingMode::DirectXPtr16,
+        InstructionType::SBC,
+        2
+    ),
+    instr!(
+        "NOP #@",
+        AddressingMode::Immediate8,
+        InstructionType::NOP,
+        2
+    ),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("CPX @", AddressingMode::Direct, InstructionType::CPX, 2),
+    instr!("SBC @", AddressingMode::Direct, InstructionType::SBC, 2),
+    instr!("INC @", AddressingMode::Direct, InstructionType::INC, 2),
+    instr!("SMB6 @", AddressingMode::Direct, InstructionType::SMB, 2),
+    instr!("INX", AddressingMode::Implied, InstructionType::INX, 1),
+    instr!(
+        "SBC #@",
+        AddressingMode::Immediate8,
+        InstructionType::SBC,
+        2
+    ),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("CPX @", AddressingMode::Absolute, InstructionType::CPX, 3),
+    instr!("SBC @", AddressingMode::Absolute, InstructionType::SBC, 3),
+    instr!("INC @", AddressingMode::Absolute, InstructionType::INC, 3),
+    instr!(
+        "BBS6 @,@",
+        AddressingMode::DirectRelative,
+        InstructionType::BBS,
+        3
+    ),
+    // 0xF0
+    instr!("BEQ @", AddressingMode::Relative8, InstructionType::BEQ, 2),
+    instr!(
+        "SBC (@),Y",
+        AddressingMode::DirectPtr16Y,
+        InstructionType::SBC,
+        2
+    ),
+    instr!(
+        "SBC (@)",
+        AddressingMode::DirectPtr16,
+        InstructionType::SBC,
+        2
+    ),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!("NOP @,X", AddressingMode::DirectX, InstructionType::NOP, 2),
+    instr!("SBC @,X", AddressingMode::DirectX, InstructionType::SBC, 2),
+    instr!("INC @,X", AddressingMode::DirectX, InstructionType::INC, 2),
+    instr!("SMB7 @", AddressingMode::Direct, InstructionType::SMB, 2),
+    instr!("SED", AddressingMode::Implied, InstructionType::SED, 1),
+    instr!(
+        "SBC @,Y",
+        AddressingMode::AbsoluteY,
+        InstructionType::SBC,
+        3
+    ),
+    instr!("PLX", AddressingMode::Implied, InstructionType::PLX, 1),
+    instr!("NOP", AddressingMode::Implied, InstructionType::NOP, 1),
+    instr!(
+        "NOP @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::NOP,
+        3
+    ),
+    instr!(
+        "SBC @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::SBC,
+        3
+    ),
+    instr!(
+        "INC @,X",
+        AddressingMode::AbsoluteX,
+        InstructionType::INC,
+        3
+    ),
+    instr!(
+        "BBS7 @,@",
+        AddressingMode::DirectRelative,
+        InstructionType::BBS,
+        3
+    ),
 ];

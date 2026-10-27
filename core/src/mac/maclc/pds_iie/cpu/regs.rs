@@ -89,25 +89,23 @@ impl Register {
     /// Width of the register.
     pub const fn width(&self) -> RegisterWidth {
         match self {
-            Register::A
-            | Register::B
-            | Register::DBR
-            | Register::DL
-            | Register::DH
-            | Register::K
-            | Register::P
-            | Register::PCL
-            | Register::PCH
-            | Register::SL
-            | Register::SH
-            | Register::XL
-            | Register::XH
-            | Register::YL
-            | Register::YH => RegisterWidth::EightBit,
+            Self::A
+            | Self::B
+            | Self::DBR
+            | Self::DL
+            | Self::DH
+            | Self::K
+            | Self::P
+            | Self::PCL
+            | Self::PCH
+            | Self::SL
+            | Self::SH
+            | Self::XL
+            | Self::XH
+            | Self::YL
+            | Self::YH => RegisterWidth::EightBit,
 
-            Register::C | Register::D | Register::PC | Register::S | Register::X | Register::Y => {
-                RegisterWidth::SixteenBit
-            }
+            Self::C | Self::D | Self::PC | Self::S | Self::X | Self::Y => RegisterWidth::SixteenBit,
         }
     }
 }
@@ -334,7 +332,17 @@ impl fmt::Display for RegisterFile {
         write!(
             f,
             "C:{:04X} DBR:{:02X} D:{:04X} K|PC:{:02X}|{:04X} S:{:04X} X:{:04X} Y:{:04X} P:{:02X} ({}) E:{}",
-            self.c, self.dbr, self.d, self.k, self.pc, self.s, self.x, self.y, self.p, flags, self.emulation
+            self.c,
+            self.dbr,
+            self.d,
+            self.k,
+            self.pc,
+            self.s,
+            self.x,
+            self.y,
+            self.p,
+            flags,
+            self.emulation
         )
     }
 }

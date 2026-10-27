@@ -3,6 +3,7 @@
 pub mod lc_475_bus;
 pub mod lc_i_bus;
 pub mod lc_iii_bus;
+pub mod pds_iie;
 mod pseudovia;
 mod sonora;
 mod v8;
