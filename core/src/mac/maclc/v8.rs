@@ -129,12 +129,28 @@ pub(super) fn frame_period(monitor: MacMonitor) -> Ticks {
 
 /// Video mode set in the expansion and monitor parameters registers
 pub(super) fn video_mode(monitor: MacMonitor, exp: RegisterExp, monp: RegisterMonP) -> Mode {
-    Mode {
-        width: monitor.width(),
-        height: monitor.height(),
-        depth: monp.depth(),
-        row_bytes: if exp.vram_256k() { 512 } else { 1024 },
-        direct_palette: true,
+    if exp.a2mode() {
+        // The Apple IIe card's mode: 560x384, scanned from VRAM (the
+        // Mac side renders the IIe screen with QuickDraw; the card has
+        // no video of its own).  The driver programs the V8 depth
+        // field one higher than the Ariel's while A2 mode is on, so
+        // the real pixel depth is the field minus one ([INF]; verify
+        // in the LC ROM's V8 driver).
+        Mode {
+            width: 560,
+            height: 384,
+            depth: monp.depth().saturating_sub(1),
+            row_bytes: if exp.vram_256k() { 512 } else { 1024 },
+            direct_palette: true,
+        }
+    } else {
+        Mode {
+            width: monitor.width(),
+            height: monitor.height(),
+            depth: monp.depth(),
+            row_bytes: if exp.vram_256k() { 512 } else { 1024 },
+            direct_palette: true,
+        }
     }
 }
 

@@ -84,7 +84,7 @@ struct Ramdac {
     /// The depth of the gate array is used for rendering.
     control: u8,
 
-    /// Key colour, for the video overlay of the Apple IIe card
+    /// Key colour register (unused: Mac OS never drives it)
     key: u8,
 }
 
