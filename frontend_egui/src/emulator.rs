@@ -112,6 +112,9 @@ pub struct EmulatorInitArgs {
     /// Configured video RAM size or default if None (Macintosh LC only)
     pub vram_size: Option<usize>,
 
+    /// Install the Apple IIe Card in the PDS slot (Macintosh LC family)
+    pub iie_card: bool,
+
     /// Selected NuBus video card (if applicable)
     pub video_card: NubusDeviceKind,
 
@@ -262,6 +265,7 @@ impl EmulatorState {
             args.fpu_enabled,
             args.vram_size,
             shared_dir,
+            args.iie_card,
         )?;
 
         let cmd = emulator.create_cmd_sender();

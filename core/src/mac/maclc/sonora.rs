@@ -65,14 +65,28 @@ pub const MONITORS: &[MacMonitor] = &[
 pub const VRAM_SIZES: &[usize] = &[VRAM_SOLDERED, 768 * 1024];
 const VRAM_SOLDERED: usize = 512 * 1024;
 
+/// Start of the PDS slot $E window in 32-bit address space (the
+/// standard NuBus-style slot space alias — LC III developer note)
+pub(super) const PDS_BASE: Address = 0xFE00_0000;
+
 /// Finds what an address selects
 pub(super) fn decode(addr: Address) -> Option<Region> {
     match addr {
         0x0000_0000..=0x3FFF_FFFF => Some(Region::Ram(addr)),
         0x4000_0000..=0x4FFF_FFFF => Some(Region::Rom),
-        0x5000_0000..=0x50FF_FFFF => Some(Region::Io(addr & 0x0F_FFFF)),
+        0x5000_0000..=0x50FB_FFFF => Some(Region::Io(addr & 0x0F_FFFF)),
+        // The PDS is selected only in slot $E space (LC III developer
+        // note, /PDS.AS), not at $50FC 0000: software reaches the IIe
+        // Card there through the MMU, which maps it to $FEE0 0000.
+        // The ROM reads $50FC 0000 right after reset; MAME has a VIA1
+        // mirror there (mirror 0x00FC0000), which does not bus error.
+        0x50FC_0000..=0x50FC_1FFF => Some(Region::Io(addr & 0x1FFF)),
+        0x50FC_2000..=0x50FF_FFFF => Some(Region::Io(addr & 0x0F_FFFF)),
         0x5FFF_FFFC..=0x5FFF_FFFF => Some(Region::CpuId(addr as usize & 3)),
         0x6000_0000..=0x6FFF_FFFF => Some(Region::Vram(addr as usize & 0x0F_FFFF)),
+        // The super slot space and the standard slot space of slot $E
+        0xE000_0000..=0xEFFF_FFFF => Some(Region::IieCard(addr & 0x00FF_FFFF)),
+        0xFE00_0000..=0xFEFF_FFFF => Some(Region::IieCard(addr - PDS_BASE)),
         _ => None,
     }
 }
