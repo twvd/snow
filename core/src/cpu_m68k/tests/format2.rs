@@ -86,6 +86,34 @@ fn zero_divide() {
 }
 
 #[test]
+fn zero_divide_long() {
+    // DIVU.L D0,D1
+    let cpu = run(&[0x4C40, 0x1001], 1, |_| ());
+    check_frame(&cpu, CODE + 4, 0x14, CODE);
+
+    // DIVU.L (d16,A0),D1
+    let cpu = run(&[0x4C68, 0x1001, 0x0010], 1, |cpu| {
+        cpu.regs.write_a::<Address>(0, 0x3000);
+    });
+    check_frame(&cpu, CODE + 6, 0x14, CODE);
+}
+
+#[test]
+fn ftrapcc() {
+    // FTRAPT
+    let cpu = run(&[0xF27C, 0x000F], 1, |_| ());
+    check_frame(&cpu, CODE + 4, 0x1C, CODE);
+
+    // FTRAPT.W #$1234
+    let cpu = run(&[0xF27A, 0x000F, 0x1234], 1, |_| ());
+    check_frame(&cpu, CODE + 6, 0x1C, CODE);
+
+    // FTRAPT.L #$12345678
+    let cpu = run(&[0xF27B, 0x000F, 0x1234, 0x5678], 1, |_| ());
+    check_frame(&cpu, CODE + 8, 0x1C, CODE);
+}
+
+#[test]
 fn trapv() {
     // TRAPV
     let cpu = run(&[0x4E76], 1, |cpu| cpu.regs.sr.set_v(true));
