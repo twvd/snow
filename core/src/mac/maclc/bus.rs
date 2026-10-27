@@ -1,7 +1,7 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::pds_iie::PdsIIeCard;
+use super::pds_iie::{DECL_ROM, PdsIIeCard};
 use super::pseudovia::PseudoVia;
 use super::via::Via;
 use super::video::{self, Video};
@@ -514,9 +514,29 @@ where
     }
 
     /// Reads from the Apple IIe Card.  `offset` is the offset in the
-    /// card's own address space.  Nothing on the card answers yet: it
-    /// reads open bus.
-    fn iie_read(&self, _offset: Address, len: u32) -> Option<u32> {
+    /// card's own address space.  The card decodes only A19-A0 [INF], so
+    /// the declaration ROM sits at the top of every 1 MB of its space
+    /// (`$FFC00`-`$FFFFF`, on the odd bytes = byte lanes 1 and 3; even
+    /// bytes read open bus).  Everything else, and everything when no
+    /// card is installed, reads open bus.
+    fn iie_read(&self, offset: Address, len: u32) -> Option<u32> {
+        // The declaration ROM: an 8-bit ROM on the odd bytes of the
+        // 16-bit port (byte lanes 1+3); even bytes read open bus.
+        if (0xF_FC00..=0xF_FFFF).contains(&(offset & 0xF_FFFF)) {
+            return Some((0..len).fold(0u32, |v, i| {
+                let off = offset.wrapping_add(i);
+                let b = if off & 1 != 0 {
+                    let n = ((0xF_FFFF - (off & 0xF_FFFF)) / 2) as usize;
+                    self.iie_card.as_ref().map_or(Self::OPENBUS, |_| {
+                        DECL_ROM.get(n).copied().unwrap_or(Self::OPENBUS)
+                    })
+                } else {
+                    Self::OPENBUS
+                };
+                v << 8 | u32::from(b)
+            }));
+        }
+
         Some(Self::iie_open_bus(len))
     }
 
