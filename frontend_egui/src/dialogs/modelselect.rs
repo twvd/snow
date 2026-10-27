@@ -868,6 +868,13 @@ impl ModelSelectionDialog {
             ui.heading("Apple IIe Card settings");
             ui.separator();
 
+            let settings = &mut self.init_args.iie_card_settings;
+            ui.checkbox(
+                &mut settings.security_jumper,
+                "Lock the Option Panel (J17 jumper)",
+            );
+
+            ui.separator();
             egui::Sides::new().show(
                 ui,
                 |_ui| {},

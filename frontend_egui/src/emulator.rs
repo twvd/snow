@@ -23,6 +23,7 @@ use snow_core::emulator::comm::{
 use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus};
 use snow_core::emulator::{Emulator, MouseMode};
 use snow_core::keymap::Scancode;
+use snow_core::mac::maclc::pds_iie::IieCardSettings;
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
@@ -114,6 +115,9 @@ pub struct EmulatorInitArgs {
 
     /// Install the Apple IIe Card in the PDS slot (Macintosh LC family)
     pub iie_card: bool,
+
+    /// Apple IIe Card settings (used if `iie_card` is set)
+    pub iie_card_settings: IieCardSettings,
 
     /// Selected NuBus video card (if applicable)
     pub video_card: NubusDeviceKind,
@@ -265,7 +269,7 @@ impl EmulatorState {
             args.fpu_enabled,
             args.vram_size,
             shared_dir,
-            args.iie_card,
+            args.iie_card.then_some(args.iie_card_settings),
         )?;
 
         let cmd = emulator.create_cmd_sender();
