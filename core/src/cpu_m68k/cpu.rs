@@ -3222,6 +3222,14 @@ where
                 let new_pc = self.read_ticks::<Long>(self.regs.vbr.wrapping_add(VECTOR_TRACE))?;
                 self.set_pc(new_pc)?;
             }
+            0b0011 if CPU_TYPE >= M68040 => {
+                // M68040 floating-point post-instruction, six words (M68040UM 8.4.4)
+                let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
+                let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(12);
+                self.set_sr(sr);
+                self.set_pc(pc)?;
+            }
             0b0111 if CPU_TYPE >= M68040 => {
                 // M68040 access error
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
