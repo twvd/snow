@@ -14,6 +14,7 @@ use crate::mac::macii::bus::MacIIBus;
 use crate::mac::maclc::lc_475_bus::Lc475Bus;
 use crate::mac::maclc::lc_i_bus::LcIBus;
 use crate::mac::maclc::lc_iii_bus::LcIIIBus;
+use crate::mac::maclc::pds_iie::PdsIIeCard;
 use crate::mac::quadra::bus::Quadra700Bus;
 use crate::renderer::channel::ChannelRenderer;
 use crate::tickable::{Tickable, Ticks};
@@ -147,6 +148,17 @@ machine_bus!(
     LcI(LcIBus<ChannelRenderer>, lc_i, lc_i_mut),
     LcIII(LcIIIBus<ChannelRenderer>, lc_iii, lc_iii_mut),
 );
+
+impl MachineBus020 {
+    /// The Apple IIe Card in the PDS of an LC
+    pub fn iie_card_mut(&mut self) -> Option<&mut PdsIIeCard> {
+        match self {
+            Self::MacII(_) => None,
+            Self::LcI(bus) => bus.iie_card_mut(),
+            Self::LcIII(bus) => bus.iie_card_mut(),
+        }
+    }
+}
 
 machine_bus!(
     /// The bus of a machine with a 68040
