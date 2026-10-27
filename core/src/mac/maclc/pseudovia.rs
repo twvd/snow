@@ -261,7 +261,11 @@ impl BusMember<Address> for PseudoVia {
             }
             // The flags follow their source, there is nothing to clear
             REG_IFR => (),
-            REG_MONP => self.monp = RegisterMonP(val),
+            REG_MONP => {
+                #[cfg(feature = "iie-debug")]
+                debug!("Monitor parameters register: {:02X}", val);
+                self.monp = RegisterMonP(val);
+            }
             REG_SLOT_IER => {
                 self.slot_ier =
                     RegisterSlot(Self::write_set_clear(self.slot_ier.0, val) & SLOT_MASK);

@@ -10,6 +10,10 @@ built = { version = "0.8.0", features = ["chrono", "git2"] }
 [features]
 # Enables the Daynaport SCSI/Link Ethernet device emulation
 ethernet = ["dep:crc", "dep:binrw"]
+# Enables the Apple IIe Card's debug output (very slow): every card
+# access, the 65C02's own accesses, a trace ring dumped on BRK, and the
+# full instruction stream to the file named by SNOW_IIE_TRACE
+iie-debug = []
 # Enables Ethernet bridging (currently broken!)
 ethernet_raw = ["ethernet", "dep:pnet"]
 # Enables Ethernet over userland NAT
