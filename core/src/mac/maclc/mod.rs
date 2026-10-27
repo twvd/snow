@@ -1,6 +1,7 @@
 //! Implementation of the Macintosh LC
 
 pub mod bus;
+pub mod pds_iie;
 mod pseudovia;
 mod sonora;
 mod v8;
