@@ -515,11 +515,18 @@ where
 
     /// Reads from the Apple IIe Card.  `offset` is the offset in the
     /// card's own address space.  The card decodes only A19-A0 [INF], so
-    /// the declaration ROM sits at the top of every 1 MB of its space
-    /// (`$FFC00`-`$FFFFF`, on the odd bytes = byte lanes 1 and 3; even
-    /// bytes read open bus).  Everything else, and everything when no
-    /// card is installed, reads open bus.
-    fn iie_read(&self, offset: Address, len: u32) -> Option<u32> {
+    /// every 1 MB of its space holds the register block at the bottom and
+    /// the declaration ROM at the top (`$FFC00`-`$FFFFF`, on the odd bytes
+    /// = byte lanes 1 and 3).  The LC III's 24-bit MMU table needs this:
+    /// it maps the 24-bit `$E0 0000` to `$FE00 0000`, and `$FC 0000` (the
+    /// IIe app's `$50FC 0000` base) to `$FEE0 0000`, and the app reaches
+    /// the same registers through both.  Everything else, and everything
+    /// when no card is installed, reads open bus.
+    ///
+    /// The card is a 16-bit port: the register block gets one access per
+    /// bus cycle (the Slinky transfers once per cycle), and even bytes
+    /// of the declaration ROM area read open bus.
+    fn iie_read(&mut self, offset: Address, len: u32) -> Option<u32> {
         // The declaration ROM: an 8-bit ROM on the odd bytes of the
         // 16-bit port (byte lanes 1+3); even bytes read open bus.
         if (0xF_FC00..=0xF_FFFF).contains(&(offset & 0xF_FFFF)) {
@@ -537,6 +544,15 @@ where
             }));
         }
 
+        // The register block, at the bottom of every 1 MB.
+        if offset & 0xF_FFFF < 0x1_0000
+            && let Some(card) = self.iie_card.as_mut()
+        {
+            let v = card
+                .host_read((offset & 0xFFFF) as u16, len)
+                .unwrap_or_else(|| Self::iie_open_bus(len));
+            return Some(v);
+        }
         Some(Self::iie_open_bus(len))
     }
 
@@ -545,9 +561,15 @@ where
         (0..len).fold(0, |v, _| v << 8 | u32::from(Self::OPENBUS))
     }
 
-    /// Writes to the Apple IIe Card: nothing on the card takes writes
-    /// yet.
-    fn iie_write(&self, _offset: Address, _len: u32, _val: u32) -> Option<()> {
+    /// Writes to the Apple IIe Card register block (see [`Self::iie_read`]
+    /// for the address windows).  Bytes outside the block are ignored,
+    /// as are all writes when no card is installed.
+    fn iie_write(&mut self, offset: Address, len: u32, val: u32) -> Option<()> {
+        if offset & 0xF_FFFF < 0x1_0000
+            && let Some(card) = self.iie_card.as_mut()
+        {
+            card.host_write((offset & 0xFFFF) as u16, len, val);
+        }
         Some(())
     }
 
@@ -1316,5 +1338,100 @@ mod tests {
         // Overclocked
         assert_eq!(clock_seconds(MacModel::LC, Some(32_000_000), 0), 1);
         assert_eq!(clock_seconds(MacModel::LC, Some(32_000_000), 20), 0);
+    }
+
+    /// The Apple IIe Card register block answers from its windows in
+    /// PDS slot $E space and the pseudo-slot I/O space, and bytes
+    /// outside it read open bus.
+    #[test]
+    fn iie_card_register_block_in_slot_space() {
+        let mut bus = MacLCBus::new(
+            MacModel::LC,
+            &vec![0; 512 * 1024],
+            NullRenderer::new(0, 0).unwrap(),
+            MouseMode::Disabled,
+            None,
+            None,
+            None,
+            true,
+        );
+
+        let ack = |data| BusResponse::Ack {
+            width: 2, // the card is a 16-bit port
+            data,
+            waits: IO_WAITS,
+        };
+
+        // Pseudo-slot I/O window ($50FC 0000 in the 32-bit map): the
+        // trap-code register reads 0 when not trapped.
+        let resp = bus
+            .access(BusAccess::<Bus68020>::read(0xFC_0000, 1, 0))
+            .unwrap();
+        assert_eq!(resp, ack(0));
+
+        // Keyboard register through the same window: write $18 high
+        // byte, read it back (key | strobe).
+        let _ = bus
+            .access(BusAccess::<Bus68020>::write(0xFC_0018, 1, 0x41, 0))
+            .unwrap();
+        let resp = bus
+            .access(BusAccess::<Bus68020>::read(0xFC_0018, 1, 0))
+            .unwrap();
+        assert_eq!(resp, ack(0xC1));
+
+        // The same register block at the bottom of the 24-bit slot
+        // window ($E0 0000).
+        let resp = bus
+            .access(BusAccess::<Bus68020>::read(0xE0_0018, 1, 0))
+            .unwrap();
+        assert_eq!(resp, ack(0xC1));
+
+        // Outside the register block reads open bus.
+        let resp = bus
+            .access(BusAccess::<Bus68020>::read(0xFC_0100, 1, 0))
+            .unwrap();
+        assert_eq!(resp, ack(0xFF));
+        let resp = bus
+            .access(BusAccess::<Bus68020>::read(0xE8_0018, 1, 0))
+            .unwrap();
+        assert_eq!(resp, ack(0xFF));
+    }
+
+    /// The LC III's 24-bit MMU table maps the 24-bit $E0 0000 to
+    /// $FE00 0000 and $FC 0000 (the IIe app's $50FC 0000 base) to
+    /// $FEE0 0000: both reach the register block, and the declaration
+    /// ROM sits at the top of each 1 MB.
+    #[test]
+    fn iie_card_lciii_slot_aliases() {
+        let mut bus = MacLCBus::new(
+            MacModel::LCIII,
+            &vec![0; 1024 * 1024],
+            NullRenderer::new(0, 0).unwrap(),
+            MouseMode::Disabled,
+            None,
+            None,
+            None,
+            true,
+        );
+        fn read(bus: &mut MacLCBus<NullRenderer>, addr: Address) -> u32 {
+            match bus.access(BusAccess::<Bus68020>::read(addr, 1, 0)).unwrap() {
+                BusResponse::Ack { data, .. } => data,
+                r => panic!("{addr:08X}: {r:?}"),
+            }
+        }
+
+        let _ = bus
+            .access(BusAccess::<Bus68020>::write(0xFE00_0018, 1, 0x41, 0))
+            .unwrap();
+        for base in [0xFE00_0000, 0xFEE0_0000, 0xEEE0_0000] {
+            assert_eq!(read(&mut bus, base + 0x18), 0xC1, "registers at {base:08X}");
+        }
+        // The declaration ROM's last byte (byte lane 3), at the top of
+        // each 1 MB.
+        let top = read(&mut bus, 0xFEFF_FFFF);
+        assert_eq!(read(&mut bus, 0xFE0F_FFFF), top);
+        assert_eq!(read(&mut bus, 0xFEEF_FFFF), top);
+        // $50FC 0000 is not the PDS on the LC III.
+        assert_ne!(read(&mut bus, 0x50FC_0018), 0xC1);
     }
 }
