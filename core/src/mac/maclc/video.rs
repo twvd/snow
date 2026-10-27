@@ -206,6 +206,12 @@ where
     }
 
     pub fn write_vram(&mut self, idx: usize, val: Byte) {
+        // The pixels the Mac side actually changes, for correlating with
+        // what the Apple IIe Card's screen shows.
+        #[cfg(feature = "iie-debug")]
+        if log::log_enabled!(log::Level::Debug) && self.vram[idx] != val {
+            log::debug!("V8 VRAM write {:05X} <- {:02X}", idx, val);
+        }
         self.vram[idx] = val;
     }
 
