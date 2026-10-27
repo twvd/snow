@@ -462,7 +462,7 @@ struct SoftSwitches {
     /// reads `$FF` (shim `$2143` needs `$FFFA` to change).  [INF]
     /// cleared by the next `$C028`/`$C029` access.
     non_ram_bank: bool,
-    /// `$C030` speaker toggle (not played yet).
+    /// `$C030` speaker toggle.
     speaker: bool,
 }
 
@@ -1491,6 +1491,10 @@ pub struct PdsIIeCard {
     /// cycles run, scaled by C16M in Hz. It goes below zero when an
     /// instruction takes more cycles than the ticks received.
     clock_acc: i64,
+    /// C16M ticks with the speaker high, and in all, since the last
+    /// [`Self::take_speaker_level`].
+    speaker_high: Ticks,
+    speaker_total: Ticks,
     /// Last (code, address) pair logged for a trap, to keep the
     /// repeated-trap debug output to the distinct cases.
     #[cfg(feature = "iie-debug")]
@@ -1548,6 +1552,8 @@ impl PdsIIeCard {
             data_out: 0,
             mem_addr: 0,
             clock_acc: 0,
+            speaker_high: 0,
+            speaker_total: 0,
             #[cfg(feature = "iie-debug")]
             last_trap_log: (0, 0),
             #[cfg(feature = "iie-debug")]
@@ -1960,6 +1966,20 @@ impl PdsIIeCard {
         self.cpu.reset();
     }
 
+    /// The average level of the speaker output since the last call, from 0
+    /// (low) to 1 (high). The card drives the speaker onto the PDS, and the
+    /// LC mixes it into its sound output.
+    pub fn take_speaker_level(&mut self) -> f32 {
+        let level = if self.speaker_total == 0 {
+            0.0
+        } else {
+            self.speaker_high as f32 / self.speaker_total as f32
+        };
+        self.speaker_high = 0;
+        self.speaker_total = 0;
+        level
+    }
+
     /// The 65C02 and its bus, for the debugger and tests.
     pub fn cpu(&self) -> &Cpu<PdsIIeBus> {
         &self.cpu
@@ -1980,6 +2000,11 @@ impl Tickable for PdsIIeCard {
         // Stopped until control register 2 bit 7 is set.
         let run = s.host.ctrl2 & 0x80 != 0;
         let fast = s.sw.c02b & 0x04 != 0;
+        // The speaker kept its level since the previous tick.
+        if s.sw.speaker {
+            self.speaker_high += ticks;
+        }
+        self.speaker_total += ticks;
         drop(s);
         if !run {
             return Ok(ticks);

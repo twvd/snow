@@ -49,6 +49,17 @@ impl AudioPath {
         self.queue(sample_l, sample_r)
     }
 
+    /// As [`Self::push`], plus an analog input (-1.0 to 1.0) on both sides
+    pub fn push_mixed(&mut self, l: u8, r: u8, input: f32) -> Result<()> {
+        if (l, r) != (0, 0) && (l, r) != (0xFF, 0xFF) {
+            self.silent = false;
+        }
+
+        let sample_l = ((l as f32) - 128.0) / 128.0 + input;
+        let sample_r = ((r as f32) - 128.0) / 128.0 + input;
+        self.queue(sample_l.clamp(-1.0, 1.0), sample_r.clamp(-1.0, 1.0))
+    }
+
     pub fn push16(&mut self, l: i16, r: i16) -> Result<()> {
         if (l, r) != (0, 0) {
             self.silent = false;
