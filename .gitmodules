@@ -1,3 +1,7 @@
 [submodule "testdata/m68000"]
 	path = testdata/m68000
 	url = https://github.com/SingleStepTests/m68000.git
+[submodule "testdata/65x02"]
+	path = testdata/65x02
+	url = https://github.com/SingleStepTests/65x02.git
+	update = none
