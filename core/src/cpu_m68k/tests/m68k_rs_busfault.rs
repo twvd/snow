@@ -284,12 +284,9 @@ fn rte_with_df_cleared_absorbs_the_faulted_write() {
 }
 
 /// PTEST reports accumulated write-protect on the walked path in MMUSR W,
-/// for read tests too.
-///
-/// Ignored: Snow's PTEST only sets MMUSR cause bits on faults, never the
-/// write-protect bit for a successful read probe of a WP page.
+/// for read tests too (M68030UM Table 9-3: W is set when any descriptor
+/// encountered during the search has WP set).
 #[test]
-#[ignore = "Snow's PTEST does not set MMUSR W for a resident write-protected page (m68k-rs expects MMUSR = W | N=2)"]
 fn ptest_reports_write_protect_on_read_walks() {
     let mut cpu = user_mode_030_with_table(0x0000_0005); // DT=1 | WP
 

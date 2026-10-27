@@ -36,9 +36,8 @@ where
             // PLOAD
             self.op_pload(instr, extword)
         } else if extword & 0b1110_0011_0000_0000 == 0b0010_0000_0000_0000 {
-            // PFLUSH
-            self.pmmu_cache_invalidate();
-            Ok(())
+            // PFLUSH / PFLUSHA (M68000PRM 6-32..6-34)
+            self.op_pflush(instr, extword)
         } else if extword == 0b1010_0000_0000_0000 {
             // PFLUSHR
             // TODO specific flush
@@ -308,6 +307,50 @@ where
         Ok(())
     }
 
+    /// PFLUSH / PFLUSHA (M68000PRM 6-32..6-34).
+    ///
+    /// Extension word: bits 15-13 = 001, bits 12-10 = MODE, bits 9-8 = 00,
+    /// bits 7-5 = MASK, bits 4-0 = FC field.
+    ///
+    /// MODE 001 flushes all entries (PFLUSHA). MODE 100 flushes by function
+    /// code: entries whose tag FC matches the FC operand in the bits the
+    /// mask selects. MODE 110 additionally restricts the flush to the page
+    /// holding the effective address; the EA is the flush key itself and is
+    /// never dereferenced.
+    pub(in crate::cpu_m68k) fn op_pflush(
+        &mut self,
+        instr: &Instruction,
+        extword: Word,
+    ) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+
+        let mode = (extword >> 10) & 0b111;
+        let mask = ((extword >> 5) & 0b111) as u8;
+        let fc_field = (extword & 0b11111) as u8;
+
+        match mode {
+            // PFLUSHA: invalidate all entries (mask and FC field are zero).
+            0b001 => self.pmmu_cache_invalidate(),
+            // PFLUSH fc,#mask: flush by function code.
+            0b100 => {
+                let fc = self.decode_pmmu_fc(fc_field, "PFLUSH")?;
+                self.pmmu_flush(fc, mask, None);
+            }
+            // PFLUSH fc,#mask,<ea>: flush by function code and page.
+            0b110 => {
+                let fc = self.decode_pmmu_fc(fc_field, "PFLUSH")?;
+                let vaddr =
+                    self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+                self.pmmu_flush(fc, mask, Some(vaddr));
+            }
+            _ => return self.op_linef(instr),
+        }
+        Ok(())
+    }
+
     /// PLOAD - load an ATC entry without raising on failure
     pub(in crate::cpu_m68k) fn op_pload(
         &mut self,
@@ -325,6 +368,12 @@ where
         let fc = self.decode_pmmu_fc(extword.fc(), "PLOAD")?;
         let vaddr = self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
         let writing = !extword.read();
+
+        // M68030UM 9.8: any existing entry translating this address (in this
+        // function code space) is flushed before the search, so a failed
+        // walk leaves the address untranslated rather than served by a stale
+        // entry.
+        self.pmmu_flush(fc, 0b111, Some(vaddr));
 
         // PLOAD does not affect PSR. The walk inside pmmu_translate may modify PSR
         let saved_psr = self.regs.pmmu.psr;

@@ -56,6 +56,11 @@ pub(in crate::cpu_m68k) struct PmmuAtcEntry {
     /// Whether the M bit of the leaf descriptor is already set. When false,
     /// the next write through this entry must RMW the descriptor to set M.
     pub modified: bool,
+    /// Function code of the access that created the entry. M68030UM 9.3.1:
+    /// the ATC tag holds the full 3-bit function code, so entries for
+    /// different FC spaces of the same logical page are distinct.
+    #[serde(default)]
+    pub fc: u8,
     // If < current generation, then this entry has been flushed.
     // 0 means never used.
     #[serde(default)]
@@ -503,6 +508,41 @@ where
         false
     }
 
+    /// The ATC slot index for a logical address under the current TC.
+    #[inline(always)]
+    fn pmmu_atc_key(&self, vaddr: Address) -> usize {
+        let is_mask = Address::MAX.unbounded_shl(32 - self.regs.pmmu.tc.is());
+        ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize
+    }
+
+    /// PFLUSH fc,#mask[,<ea>] (M68000PRM 6-32..6-34): invalidate the ATC
+    /// entries whose tag function code matches `fc` in the bits selected by
+    /// `mask`, optionally restricted to the page holding `vaddr`. Mask bits
+    /// are don't-cares: an entry is flushed when `(entry.fc ^ fc) & mask` is
+    /// zero.
+    pub(in crate::cpu_m68k) fn pmmu_flush(&mut self, fc: u8, mask: u8, vaddr: Option<Address>) {
+        let key = vaddr.map(|v| self.pmmu_atc_key(v));
+        for table in &mut self.pmmu_atc {
+            if let Some(key) = key {
+                if let Some(slot) = table.get_mut(key) {
+                    if let Some(entry) = *slot {
+                        if (entry.fc ^ fc) & mask == 0 {
+                            *slot = None;
+                        }
+                    }
+                }
+            } else {
+                for slot in table.iter_mut() {
+                    if let Some(entry) = *slot {
+                        if (entry.fc ^ fc) & mask == 0 {
+                            *slot = None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub(in crate::cpu_m68k) fn pmmu_translate(
         &mut self,
         fc: u8,
@@ -536,44 +576,47 @@ where
 
         let supervisor = fc & (1 << 2) != 0;
         let atc = self.pmmu_atc_tableidx(fc);
-        let is_mask = Address::MAX.unbounded_shl(32 - self.regs.pmmu.tc.is());
         let page_mask = (1u32 << self.regs.pmmu.tc.ps()) - 1;
-        let cache_key = ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize;
+        let cache_key = self.pmmu_atc_key(vaddr);
         if let Some(entry) = self.pmmu_atc_lookup(atc, cache_key) {
-            if !supervisor && entry.s {
-                self.pmmu_record_atc_fault(vaddr, writing, |psr| {
-                    psr.set_supervisor_violation(true);
-                });
-                return Err(Self::pmmu_pagefault_to_buserror(fc, vaddr, writing));
+            if entry.fc == (fc & 0b111) {
+                if !supervisor && entry.s {
+                    self.pmmu_record_atc_fault(vaddr, writing, |psr| {
+                        psr.set_supervisor_violation(true);
+                    });
+                    return Err(Self::pmmu_pagefault_to_buserror(fc, vaddr, writing));
+                }
+                if writing && entry.wp {
+                    self.pmmu_record_atc_fault(vaddr, writing, |psr| {
+                        psr.set_write_protected(true);
+                    });
+                    return Err(Self::pmmu_pagefault_to_buserror(fc, vaddr, writing));
+                }
+                if writing && !entry.modified {
+                    // First write through an unmodified page: RMW the leaf
+                    // descriptor to set the M bit, then promote the ATC entry.
+                    let desc = self.read_ticks_physical::<Long>(entry.leaf_desc_addr)?;
+                    self.write_ticks_physical::<Long>(entry.leaf_desc_addr, desc | (1 << 4))?;
+                    self.pmmu_atc[atc][cache_key] = Some(PmmuAtcEntry {
+                        modified: true,
+                        ..entry
+                    });
+                }
+                return Ok(entry.paddr | (vaddr & page_mask));
             }
-            if writing && entry.wp {
-                self.pmmu_record_atc_fault(vaddr, writing, |psr| {
-                    psr.set_write_protected(true);
-                });
-                return Err(Self::pmmu_pagefault_to_buserror(fc, vaddr, writing));
-            }
-            if writing && !entry.modified {
-                // First write through an unmodified page: RMW the leaf
-                // descriptor to set the M bit, then promote the ATC entry.
-                let desc = self.read_ticks_physical::<Long>(entry.leaf_desc_addr)?;
-                self.write_ticks_physical::<Long>(entry.leaf_desc_addr, desc | (1 << 4))?;
-                self.pmmu_atc[atc][cache_key] = Some(PmmuAtcEntry {
-                    modified: true,
-                    ..entry
-                });
-            }
-            return Ok(entry.paddr | (vaddr & page_mask));
+            // Tagged for another function code: a miss (M68030UM 9.3.1).
         }
 
         let (paddr, wp, s, leaf_desc_addr, modified) =
             self.pmmu_translate_lookup::<false>(fc, vaddr, writing)?;
-        let cache_key = ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize;
+        let cache_key = self.pmmu_atc_key(vaddr);
         self.pmmu_atc[atc][cache_key] = Some(PmmuAtcEntry {
             paddr: paddr & !page_mask,
             wp,
             s,
             leaf_desc_addr,
             modified,
+            fc: fc & 0b111,
             generation: self.pmmu_atc_generation,
         });
         Ok(paddr)
@@ -749,6 +792,17 @@ where
         let paddr = (page_addr & !mask) | (vaddr & mask);
 
         if PTEST {
+            // M68030UM Table 9-3: report conditions encountered during the
+            // search, regardless of the PTEST access attributes.
+            if wp {
+                self.regs.pmmu.psr.set_write_protected(true);
+            }
+            if s && !supervisor {
+                self.regs.pmmu.psr.set_supervisor_violation(true);
+            }
+            if modified {
+                self.regs.pmmu.psr.set_modified(true);
+            }
             self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
         }
         Ok((paddr, wp, s, leaf_desc_addr, modified))
@@ -766,6 +820,7 @@ mod tests {
             s: false,
             leaf_desc_addr: paddr + 0x10,
             modified: true,
+            fc: 0,
             generation: atc_generation_default(),
         }
     }
