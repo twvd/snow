@@ -94,6 +94,12 @@ impl Egret {
         self.common.adb_add_device(device);
     }
 
+    /// Sets the J17 "security" jumper input pin (installed locks out
+    /// the IIe Option Panel's configuration panels).
+    pub fn set_security_jumper(&mut self, installed: bool) {
+        self.common.security_jumper = installed;
+    }
+
     pub fn adb_event(&mut self, event: &AdbEvent) {
         self.common.adb_event(event);
     }

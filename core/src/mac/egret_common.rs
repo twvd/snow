@@ -161,6 +161,11 @@ pub struct EgretCommon {
     /// The programmer's key combination on the keyboard raises an NMI
     keyboard_nmi: bool,
 
+    /// The J17 "security" jumper input pin: installed locks out the
+    /// Apple IIe Option Panel's configuration panels (the host asks
+    /// with the Control Panel Enable command, `$10`).
+    pub(crate) security_jumper: bool,
+
     /// Clock and the first 256 bytes of PRAM. Only the storage is used.
     pub(crate) rtc: Rtc,
 
@@ -212,6 +217,7 @@ impl EgretCommon {
             autopoll_rate: AUTOPOLL_MS,
             autopoll_period: Self::autopoll_rate_ticks(AUTOPOLL_MS),
             reset_requested: false,
+            security_jumper: false,
             cuda_ram: if kind == McuKind::Cuda {
                 let mut ram = vec![0; CUDA_RAM_SIZE];
                 ram[usize::from(CUDA_FLAGS - CUDA_RAM)] = CUDA_FLAGS_RESET;
@@ -729,8 +735,12 @@ impl EgretCommon {
             // Run the self test of the microcontroller (always passes)
             CMD_DIAGNOSTICS => Self::params(params).map(|[]| vec![0, 0]),
 
-            // Read a pin of the microcontroller (always $00)
-            CMD_CONTROL_PANEL_ENABLE => Self::params(params).map(|[]| vec![0]),
+            // Read the J17 "security" jumper pin of the microcontroller:
+            // 0 = jumper installed (the Option Panel's configuration
+            // panels are locked out), 1 = the panels are available.
+            CMD_CONTROL_PANEL_ENABLE => {
+                Self::params(params).map(|[]| vec![u8::from(!self.security_jumper)])
+            }
 
             // Restart the firmware, which resets the CPU and ADB (not modelled)
             CMD_RESET => Self::params(params).map(|[]| {
