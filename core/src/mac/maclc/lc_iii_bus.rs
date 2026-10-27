@@ -1073,4 +1073,42 @@ mod tests {
         assert_eq!(clock_seconds(None, 0), 1);
         assert_eq!(clock_seconds(None, 20), 0);
     }
+
+    /// The LC III's 24-bit MMU table maps the 24-bit $E0 0000 to
+    /// $FE00 0000 and $FC 0000 (the IIe app's $50FC 0000 base) to
+    /// $FEE0 0000: both reach the register block, and the declaration
+    /// ROM sits at the top of each 1 MB.
+    #[test]
+    fn iie_card_lciii_slot_aliases() {
+        let mut bus = LcIIIBus::new(
+            MacModel::LCIII,
+            &vec![0; 1024 * 1024],
+            NullRenderer::new(0, 0).unwrap(),
+            MouseMode::Disabled,
+            None,
+            None,
+            None,
+            true,
+        );
+        fn read(bus: &mut LcIIIBus<NullRenderer>, addr: Address) -> u32 {
+            match bus.access(BusAccess::<Bus68020>::read(addr, 1, 0)).unwrap() {
+                BusResponse::Ack { data, .. } => data,
+                r => panic!("{addr:08X}: {r:?}"),
+            }
+        }
+
+        let _ = bus
+            .access(BusAccess::<Bus68020>::write(0xFE00_0018, 1, 0x41, 0))
+            .unwrap();
+        for base in [0xFE00_0000, 0xFEE0_0000, 0xEEE0_0000] {
+            assert_eq!(read(&mut bus, base + 0x18), 0xC1, "registers at {base:08X}");
+        }
+        // The declaration ROM's last byte (byte lane 3), at the top of
+        // each 1 MB.
+        let top = read(&mut bus, 0xFEFF_FFFF);
+        assert_eq!(read(&mut bus, 0xFE0F_FFFF), top);
+        assert_eq!(read(&mut bus, 0xFEEF_FFFF), top);
+        // $50FC 0000 is not the PDS on the LC III.
+        assert_ne!(read(&mut bus, 0x50FC_0018), 0xC1);
+    }
 }

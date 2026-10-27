@@ -1113,4 +1113,58 @@ mod tests {
         assert_eq!(clock_seconds(Some(32_000_000), 0), 1);
         assert_eq!(clock_seconds(Some(32_000_000), 20), 0);
     }
+
+    /// The Apple IIe Card register block answers from its windows in
+    /// PDS slot $E space and the pseudo-slot I/O space, and bytes
+    /// outside it read open bus.
+    #[test]
+    fn iie_card_register_block_in_slot_space() {
+        let mut bus = LcIBus::new(
+            MacModel::LC,
+            &vec![0; 512 * 1024],
+            NullRenderer::new(0, 0).unwrap(),
+            MouseMode::Disabled,
+            None,
+            None,
+            None,
+            true,
+        );
+
+        // The card is a 16-bit port
+        let ack = |data| BusResponse::ack(2, data, IO_WAITS);
+
+        // Pseudo-slot I/O window ($50FC 0000 in the 32-bit map): the
+        // trap-code register reads 0 when not trapped.
+        let resp = bus
+            .access(BusAccess::<Bus68020>::read(0xFC_0000, 1, 0))
+            .unwrap();
+        assert_eq!(resp, ack(0));
+
+        // Keyboard register through the same window: write $18 high
+        // byte, read it back (key | strobe).
+        let _ = bus
+            .access(BusAccess::<Bus68020>::write(0xFC_0018, 1, 0x41, 0))
+            .unwrap();
+        let resp = bus
+            .access(BusAccess::<Bus68020>::read(0xFC_0018, 1, 0))
+            .unwrap();
+        assert_eq!(resp, ack(0xC1));
+
+        // The same register block at the bottom of the 24-bit slot
+        // window ($E0 0000).
+        let resp = bus
+            .access(BusAccess::<Bus68020>::read(0xE0_0018, 1, 0))
+            .unwrap();
+        assert_eq!(resp, ack(0xC1));
+
+        // Outside the register block reads open bus.
+        let resp = bus
+            .access(BusAccess::<Bus68020>::read(0xFC_0100, 1, 0))
+            .unwrap();
+        assert_eq!(resp, ack(0xFF));
+        let resp = bus
+            .access(BusAccess::<Bus68020>::read(0xE8_0018, 1, 0))
+            .unwrap();
+        assert_eq!(resp, ack(0xFF));
+    }
 }
