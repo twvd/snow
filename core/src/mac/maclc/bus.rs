@@ -1,7 +1,7 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use super::pds_iie::{DECL_ROM, PdsIIeCard};
+use super::pds_iie::{DECL_ROM, PdsIIeCard, iie_debug};
 use super::pseudovia::PseudoVia;
 use super::via::Via;
 use super::video::{self, Video};
@@ -540,6 +540,7 @@ where
                 } else {
                     Self::OPENBUS
                 };
+                iie_debug!("IIe Card read {:06X} -> {:02X}", off, b);
                 v << 8 | u32::from(b)
             }));
         }
@@ -551,8 +552,15 @@ where
             let v = card
                 .host_read((offset & 0xFFFF) as u16, len)
                 .unwrap_or_else(|| Self::iie_open_bus(len));
+            #[cfg(feature = "iie-debug")]
+            for i in 0..len {
+                let off = offset.wrapping_add(i);
+                let b = ((v >> (8 * (len - 1 - i))) & 0xFF) as u8;
+                log::debug!("IIe Card read {:06X} -> {:02X}", off, b);
+            }
             return Some(v);
         }
+        iie_debug!("IIe Card read {:06X} -> open bus", offset);
         Some(Self::iie_open_bus(len))
     }
 
@@ -565,10 +573,18 @@ where
     /// for the address windows).  Bytes outside the block are ignored,
     /// as are all writes when no card is installed.
     fn iie_write(&mut self, offset: Address, len: u32, val: u32) -> Option<()> {
-        if offset & 0xF_FFFF < 0x1_0000
-            && let Some(card) = self.iie_card.as_mut()
-        {
-            card.host_write((offset & 0xFFFF) as u16, len, val);
+        if offset & 0xF_FFFF < 0x1_0000 {
+            if let Some(card) = self.iie_card.as_mut() {
+                card.host_write((offset & 0xFFFF) as u16, len, val);
+            }
+            #[cfg(feature = "iie-debug")]
+            for i in 0..len {
+                let off = offset.wrapping_add(i);
+                let b = (val >> (8 * (len - 1 - i))) as u8;
+                log::debug!("IIe Card write {:06X} <- {:02X}", off, b);
+            }
+        } else {
+            iie_debug!("IIe Card write {:06X} ignored", offset);
         }
         Some(())
     }

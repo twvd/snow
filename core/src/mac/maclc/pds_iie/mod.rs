@@ -95,9 +95,21 @@ use serde::{Deserialize, Serialize};
 use super::bus::C16M_FREQUENCY;
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::tickable::{Tickable, Ticks};
+#[cfg(feature = "iie-debug")]
+use log::{Level, log_enabled};
 
 use cpu::cpu::Cpu;
 use cpu::{Address, Bus6502, ReadKind, Variant};
+
+/// Debug output for the card, compiled in only with the `iie-debug`
+/// cargo feature.
+macro_rules! iie_debug {
+    ($($arg:tt)*) => {
+        #[cfg(feature = "iie-debug")]
+        log::debug!($($arg)*);
+    };
+}
+pub(crate) use iie_debug;
 
 /// Size of the card RAM: 256 KB.
 pub const RAM_SIZE: usize = 256 * 1024;
@@ -524,6 +536,20 @@ struct BusState {
     btn: [bool; 3],
     /// Slot 6 drive motor (set by the trapped `$C0E8`/`$C0E9` accesses).
     motor_on: bool,
+
+    // --- Debug log state (iie-debug)
+    /// Last logged 65C02 I/O access (0 = read, 1 = write, address,
+    /// value), to deduplicate the I/O log.
+    #[cfg(feature = "iie-debug")]
+    last_io: Option<(u8, u16, u8)>,
+    /// Last logged bank-served read (address, tag), to deduplicate the
+    /// bank log.
+    #[cfg(feature = "iie-debug")]
+    last_bank: Option<(u16, u8)>,
+    /// Last logged RAM-bank read (address, 0 = main, 1 = aux), to
+    /// deduplicate the RAM bank log.
+    #[cfg(feature = "iie-debug")]
+    last_ram: Option<(u16, u8)>,
 }
 
 impl BusState {
@@ -653,6 +679,48 @@ impl BusState {
             base + if LC_BANK2_AT_C000 { 0xC000 } else { 0xF000 } + addr as usize - 0xD000
         } else {
             base + if LC_BANK2_AT_C000 { 0xD000 } else { 0xC000 } + addr as usize - 0xD000
+        }
+    }
+
+    /// A side-effect-free read of the byte at `addr`, for the
+    /// instruction trace (the opcode the 65C02 is about to fetch).
+    /// The `$C0xx` window is the only side-effectful range, and the
+    /// CPU never fetches instructions from it.
+    #[cfg(feature = "iie-debug")]
+    fn peek(&self, addr: u16) -> u8 {
+        match addr {
+            0x0000..=0xBFFF => self.ram_read(addr),
+            0xC000..=0xC0FF => 0xFF,
+            0xC100..=0xFFFF => self.rom_read(addr),
+        }
+    }
+
+    /// Which physical bank serves a read of the ROM/RAM window, for
+    /// the bank log (mirrors the `rom_read` decisions):
+    /// 0 = ROM (selected bank), 1 = slot ROM, 2 = slot `$C8xx` image,
+    /// 3 = main LC bank 1, 4 = main LC bank 2, 5 = aux LC bank 1,
+    /// 6 = aux LC bank 2.
+    #[cfg(feature = "iie-debug")]
+    fn bank_tag(&self, addr: u16) -> u8 {
+        match addr {
+            0xC100..=0xC2FF | 0xC400..=0xC7FF if !self.sw.intcxrom => 1,
+            0xC300..=0xC3FF if !self.sw.intc3rom => 1,
+            0xC800..=0xCFFF if !self.sw.intcxrom && !self.sw.intc8rom && self.sw.cnxx_slot != 0 => {
+                2
+            }
+            0xD000..=0xFFFF => {
+                if self.sw.lc_read {
+                    let aux = self.sw.altzp as u8;
+                    if addr < 0xE000 && self.sw.lc_bank2 {
+                        4 + aux * 2 // main/aux LC bank 2
+                    } else {
+                        3 + aux * 2 // main/aux LC bank 1
+                    }
+                } else {
+                    0
+                }
+            }
+            _ => 0,
         }
     }
 
@@ -1036,7 +1104,7 @@ impl BusState {
         // deselection is idempotent anyway.
         self.c8_select(addr);
 
-        if let Some(kind) = self.trap_kind(addr, false) {
+        let v = if let Some(kind) = self.trap_kind(addr, false) {
             // The access still takes effect where the Gemini applies it
             // in hardware: the read-sensitive display switches.
             if matches!(addr, 0xC000..=0xC0FF) {
@@ -1052,7 +1120,45 @@ impl BusState {
                 0xC000..=0xC0FF => self.io_read(addr),
                 0xC100..=0xFFFF => self.rom_read(addr),
             }
+        };
+
+        // The 65C02's own accesses to its devices, and which physical
+        // bank the ROM/RAM window served (deduplicated per (address,
+        // value) to keep the loops small).
+        #[cfg(feature = "iie-debug")]
+        if log_enabled!(Level::Debug) {
+            if matches!(addr, 0xC000..=0xC0FF) && self.last_io != Some((0, addr, v)) {
+                self.last_io = Some((0, addr, v));
+                log::debug!("IIe Card io read {:04X} -> {:02X}", addr, v);
+            }
+            if matches!(addr, 0x0200..=0xBFFF) {
+                // Which RAM bank served the access (the aux_side rule),
+                // to catch bank-mapping errors in relocated code.
+                let tag = if self.aux_side(addr, false) { 1 } else { 0 };
+                if self.last_ram != Some((addr, tag)) {
+                    self.last_ram = Some((addr, tag));
+                    log::debug!(
+                        "IIe Card ram read {:04X} <- {:02X} ({})",
+                        addr,
+                        v,
+                        if tag == 0 { "main" } else { "aux" }
+                    );
+                }
+            }
+            if matches!(addr, 0xD000..=0xFFFF) {
+                let tag = self.bank_tag(addr);
+                if self.last_bank != Some((addr, tag)) {
+                    self.last_bank = Some((addr, tag));
+                    log::debug!(
+                        "IIe Card bank read {:04X} <- {:02X} ({})",
+                        addr,
+                        v,
+                        BANK_NAMES[tag as usize]
+                    );
+                }
+            }
         }
+        v
     }
 
     /// A 65C02 bus write, with the trap check.
@@ -1069,6 +1175,14 @@ impl BusState {
                 self.io_write(addr, val);
             }
             self.latch(kind, addr, val, true);
+            #[cfg(feature = "iie-debug")]
+            if log_enabled!(Level::Debug)
+                && matches!(addr, 0xC000..=0xC0FF)
+                && self.last_io != Some((1, addr, val))
+            {
+                self.last_io = Some((1, addr, val));
+                log::debug!("IIe Card io write {:04X} <- {:02X}", addr, val);
+            }
             return;
         }
 
@@ -1104,11 +1218,36 @@ impl BusState {
                 {
                     let i = self.c8_index(addr, base);
                     self.ram[i] = val;
+                    #[cfg(feature = "iie-debug")]
+                    if log_enabled!(Level::Debug) {
+                        // Catch a write landing in the main ROM's C8
+                        // pages while only the interrupt-window bank
+                        // is active — that would corrupt the
+                        // 80-column firmware.
+                        let int_win =
+                            self.int_bank && matches!(addr, 0xFFFA..=0xFFFF | 0xD000..=0xD3FF);
+                        if (FW_MAIN + 0x800..FW_MAIN + 0x1000).contains(&i) {
+                            log::debug!(
+                                "IIe Card c8 write {:04X} <- {:02X} (main ROM C8, int_win {})",
+                                addr,
+                                val,
+                                int_win
+                            );
+                        }
+                    }
                 }
             }
             // Writes to the ROM image area are ignored (read-only to
             // the 65C02; the host loads it through the Slinky).
             _ => {}
+        }
+        #[cfg(feature = "iie-debug")]
+        if log_enabled!(Level::Debug)
+            && matches!(addr, 0xC000..=0xC0FF)
+            && self.last_io != Some((1, addr, val))
+        {
+            self.last_io = Some((1, addr, val));
+            log::debug!("IIe Card io write {:04X} <- {:02X}", addr, val);
         }
     }
 
@@ -1207,6 +1346,14 @@ impl Bus6502 for PdsIIeBus {
             s.nmi = false;
         }
         if s.int_bank != on {
+            iie_debug!(
+                "IIe Card interrupt bank {}",
+                if on {
+                    "on (alternate firmware)"
+                } else {
+                    "off (main)"
+                }
+            );
             s.int_bank = on;
         }
     }
@@ -1246,13 +1393,45 @@ pub struct PdsIIeCard {
     /// cycles run, scaled by C16M in Hz. It goes below zero when an
     /// instruction takes more cycles than the ticks received.
     clock_acc: i64,
+    /// Last (code, address) pair logged for a trap, to keep the
+    /// repeated-trap debug output to the distinct cases.
+    #[cfg(feature = "iie-debug")]
+    #[serde(skip, default)]
+    last_trap_log: (u8, u16),
+    /// Instruction trace ring: the last
+    /// `TRACE_DEPTH` executed instructions, dumped to the log when the
+    /// 65C02 executes a BRK (a firmware crash or a deliberate
+    /// software call into the monitor) or first enters the `$C8xx`
+    /// disk-ROM space or the `$A000`–`$BFFF` RAM (a jump into
+    /// unloaded memory).
+    #[cfg(feature = "iie-debug")]
+    #[serde(skip, default)]
+    trace: std::collections::VecDeque<(u16, u8, u8, u8, u8, u8)>,
+    /// The previous recorded PC, for edge-triggering the trace dumps.
+    #[cfg(feature = "iie-debug")]
+    #[serde(skip, default)]
+    trace_prev_pc: Option<u16>,
+    /// The full instruction stream, for offline analysis: written to the
+    /// file named by `SNOW_IIE_TRACE`, restarted at every 65C02 boot (a
+    /// line per instruction makes the boot very slow).
+    #[cfg(feature = "iie-debug")]
+    #[serde(skip, default)]
+    trace_file: Option<std::fs::File>,
 }
+
+/// How many instructions the BRK trace ring keeps.
+#[cfg(feature = "iie-debug")]
+const TRACE_DEPTH: usize = 8192;
 
 /// The language-card physical layout (the A/B test switch): false =
 /// this model's original guess (bank 1 at `$C000`, bank 2 at `$F000`),
 /// true = the MAME / IIgs Mega II layout (spec §14: bank 2 at `$C000`,
 /// bank 1 at `$D000`, `$E000` at `$E000`).
 const LC_BANK2_AT_C000: bool = false;
+
+/// The bank names for the bank log (`bank_tag`).
+#[cfg(feature = "iie-debug")]
+const BANK_NAMES: [&str; 7] = ["rom", "slot", "slot-c8", "lc1", "lc2", "aux-lc1", "aux-lc2"];
 
 impl PdsIIeCard {
     /// Creates a card with its 65C02 stopped.  The host loads the
@@ -1264,6 +1443,14 @@ impl PdsIIeCard {
             data_out: 0,
             mem_addr: 0,
             clock_acc: 0,
+            #[cfg(feature = "iie-debug")]
+            last_trap_log: (0, 0),
+            #[cfg(feature = "iie-debug")]
+            trace: std::collections::VecDeque::new(),
+            #[cfg(feature = "iie-debug")]
+            trace_prev_pc: None,
+            #[cfg(feature = "iie-debug")]
+            trace_file: None,
         }
     }
 
@@ -1286,6 +1473,13 @@ impl PdsIIeCard {
             // What the host reads back through the Slinky (the driver
             // renders the IIe screen this way): the lane addresses, the
             // `$0D` half and the values.
+            iie_debug!(
+                "IIe Card slinky read {:04X} (main {:02X} aux {:02X}, half {})",
+                a,
+                s.ram[bm + a],
+                s.ram[ba + a],
+                s.host.ctrl & 0x08
+            );
             self.mem_addr = self.mem_addr.wrapping_add(1);
             return Some(v);
         }
@@ -1434,6 +1628,20 @@ impl PdsIIeCard {
                     let mut s = self.cpu.bus.state.borrow_mut();
                     s.kbd = val & 0x7F;
                     s.kbd_strobe = true;
+                    // Dump the stack on the keypress, to see the call
+                    // chain the 65C02 has when it processes the key.
+                    #[cfg(feature = "iie-debug")]
+                    if log_enabled!(Level::Debug) {
+                        log::debug!(
+                            "IIe Card keypress {:02X}: stack top (S {:02X}):",
+                            val,
+                            self.cpu.regs.s
+                        );
+                        for i in 0..24 {
+                            let a = 0x0100 + ((self.cpu.regs.s as usize + 1 + i) & 0xFF);
+                            log::debug!("  {:04X} {:02X}", a, s.ram[MAIN_RAM + a]);
+                        }
+                    }
                 } else {
                     self.data_out = val;
                     // The answer completes a trapped read: the CPU
@@ -1469,6 +1677,12 @@ impl PdsIIeCard {
                         // $FFFC); the host sets bit 3 and acks to let
                         // the fetch complete.
                         s.soft_reset();
+                        // Start a fresh full instruction trace per boot.
+                        #[cfg(feature = "iie-debug")]
+                        {
+                            self.trace_file = std::env::var_os("SNOW_IIE_TRACE")
+                                .and_then(|p| std::fs::File::create(p).ok());
+                        }
                         if val & 0x08 != 0 {
                             drop(s);
                             self.cpu.reset();
@@ -1620,6 +1834,22 @@ impl Tickable for PdsIIeCard {
         self.clock_acc += ticks as i64 * hz;
         while self.clock_acc >= C16M_HZ {
             self.clock_acc -= C16M_HZ;
+            #[cfg(feature = "iie-debug")]
+            let prev = {
+                let s = self.cpu.bus.state.borrow();
+                // The instruction about to run, for the BRK trace ring.
+                let trace = log_enabled!(Level::Debug).then(|| {
+                    (
+                        self.cpu.regs.pc,
+                        s.peek(self.cpu.regs.pc),
+                        self.cpu.regs.c as u8,
+                        self.cpu.regs.x as u8,
+                        self.cpu.regs.y as u8,
+                        self.cpu.regs.s as u8,
+                    )
+                });
+                (s.trap.is_some(), s.int_bank, trace)
+            };
             // `$20` bit 3 hold [INF]: while held the CPU makes no bus
             // cycles.  Nothing is latched: the driver saves the `$01`
             // it reads during the hold and dispatches it afterwards
@@ -1641,6 +1871,79 @@ impl Tickable for PdsIIeCard {
                     // boundary (the next opcode fetch).
                     let mut s = self.cpu.bus.state.borrow_mut();
                     s.retry = None;
+                }
+                // An instruction actually executed: record it in the
+                // trace ring and dump the ring on a BRK (a firmware
+                // crash or a deliberate call into the monitor) or on
+                // the first entry into the $C8xx disk-ROM space or the
+                // $A000-$BFFF RAM (a jump into unloaded memory).
+                #[cfg(feature = "iie-debug")]
+                if let Some((pc, op, a, x, y, sp)) = prev.2
+                    && cyc > 0
+                {
+                    // The full instruction stream, for offline analysis.
+                    if let Some(f) = self.trace_file.as_mut() {
+                        use std::io::Write;
+                        let _ = writeln!(
+                            f,
+                            "{:04X} {:02X} A {:02X} X {:02X} Y {:02X} S {:02X} P {:02X}",
+                            pc, op, a, x, y, sp, self.cpu.regs.p
+                        );
+                    }
+                    let prev_pc = self.trace_prev_pc.replace(pc);
+                    let entered = |lo: u16, hi: u16| {
+                        (lo..=hi).contains(&pc) && prev_pc.is_none_or(|p| !(lo..=hi).contains(&p))
+                    };
+                    self.trace.push_back((pc, op, a, x, y, sp));
+                    if self.trace.len() > TRACE_DEPTH {
+                        self.trace.pop_front();
+                    }
+                    if op == 0x00
+                        || entered(0xC800, 0xCFFF)
+                        || entered(0xA000, 0xBFFF)
+                        || entered(0x4000, 0x5FFF)
+                    {
+                        log::debug!(
+                            "IIe Card trace dump at {:04X} (op {:02X}, A {:02X} X {:02X} Y {:02X} S {:02X}) — last instructions:",
+                            pc,
+                            op,
+                            a,
+                            x,
+                            y,
+                            sp
+                        );
+                        for (p, o, ra, rx, ry, rs) in &self.trace {
+                            log::debug!(
+                                "IIe Card trace {:04X} {:02X} A {:02X} X {:02X} Y {:02X} S {:02X}",
+                                p,
+                                o,
+                                ra,
+                                rx,
+                                ry,
+                                rs
+                            );
+                        }
+                        self.trace.clear();
+                    }
+                }
+            }
+            #[cfg(feature = "iie-debug")]
+            {
+                let s = self.cpu.bus.state.borrow();
+                if s.int_bank && !prev.1 {
+                    log::debug!("IIe Card interrupt taken, pc {:04X}", self.cpu.regs.pc);
+                }
+                if let Some(t) = s.trap
+                    && !prev.0
+                    && (t.code, t.addr) != self.last_trap_log
+                {
+                    self.last_trap_log = (t.code, t.addr);
+                    log::debug!(
+                        "IIe Card trap {:02X} @ {:04X} from pc {:04X}",
+                        t.code,
+                        t.addr,
+                        self.cpu.regs.pc
+                    );
                 }
             }
         }
