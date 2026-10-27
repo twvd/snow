@@ -101,6 +101,15 @@ use log::{Level, log_enabled};
 use cpu::cpu::Cpu;
 use cpu::{Address, Bus6502, ReadKind, Variant};
 
+/// Settings of the Apple IIe Card, chosen with the machine
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IieCardSettings {
+    /// The Egret's J17 "security" jumper is installed, which locks out
+    /// the Option Panel configuration
+    pub security_jumper: bool,
+}
+
 /// Debug output for the card, compiled in only with the `iie-debug`
 /// cargo feature.
 macro_rules! iie_debug {

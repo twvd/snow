@@ -29,6 +29,7 @@ use crate::keymap::KeyEvent;
 use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
 use crate::mac::macii::bus::MacIIBus;
 use crate::mac::maclc::bus::MacLCBus;
+use crate::mac::maclc::pds_iie::IieCardSettings;
 use crate::mac::portable::bus::MacPortableBus;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
@@ -305,7 +306,7 @@ impl Emulator {
             false,
             None,
             None,
-            false,
+            None,
         )
     }
 
@@ -322,7 +323,7 @@ impl Emulator {
         fpu_enabled: bool,
         vram_size: Option<usize>,
         shared_dir: Option<PathBuf>,
-        iie_card_enabled: bool,
+        iie_card: Option<IieCardSettings>,
     ) -> Result<(Self, Arc<Mutex<Option<DisplayBuffer>>>)> {
         // Set up channels
         let (cmds, cmdr) = crossbeam_channel::unbounded();
@@ -518,16 +519,10 @@ impl Emulator {
 
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
-                let bus = MacLCBus::new(
-                    model,
-                    rom,
-                    renderer,
-                    mouse_mode,
-                    ram_size,
-                    monitor,
-                    vram_size,
-                    iie_card_enabled,
+                let mut bus = MacLCBus::new(
+                    model, rom, renderer, mouse_mode, ram_size, monitor, vram_size, iie_card,
                 );
+                bus.set_security_jumper(iie_card.is_some_and(|s| s.security_jumper));
                 if fpu_enabled {
                     EmulatorConfig::MacLCFpu(Box::new(CpuM68020Fpu68882::new(bus)))
                 } else {
@@ -539,16 +534,10 @@ impl Emulator {
 
                 // Initialize bus and CPU
                 // The FPU is an option on an expansion card
-                let bus = MacLCBus::new(
-                    model,
-                    rom,
-                    renderer,
-                    mouse_mode,
-                    ram_size,
-                    monitor,
-                    vram_size,
-                    iie_card_enabled,
+                let mut bus = MacLCBus::new(
+                    model, rom, renderer, mouse_mode, ram_size, monitor, vram_size, iie_card,
                 );
+                bus.set_security_jumper(iie_card.is_some_and(|s| s.security_jumper));
                 if fpu_enabled {
                     EmulatorConfig::MacLCIIFpu(Box::new(CpuM68030Fpu::new(bus)))
                 } else {
