@@ -1,11 +1,8 @@
 //! 68030 ATC and PMMU-instruction vectors, ported for Snow from the m68k-rs
 //! test suite (tests/mmu_030_atc_tests.rs): per-page ATC caching, early
 //! termination, PFLUSH/PLOAD/PMOVE flush semantics, and write-protect
-//! enforcement on ATC hits.
-//!
-//! Known deviations from the upstream vectors, where Snow intentionally or
-//! currently behaves differently, are documented inline and encoded as
-//! `#[ignore]`d tests so they stay visible without failing the suite.
+//! enforcement on ATC hits. Encodings cross-checked against the M68000
+//! Family Programmer's Reference Manual (6-32..6-34) and the M68030 UM.
 //!
 //! Portions derived from m68k-rs (https://github.com/benletchford/m68k-rs),
 //! Copyright (c) 2026 Ben Letchford, used under the MIT License:
@@ -32,7 +29,7 @@
 use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::{Access, Testbus};
-use crate::cpu_m68k::bus::{FC_SUPERVISOR_DATA, FC_SUPERVISOR_PROGRAM};
+use crate::cpu_m68k::bus::{FC_SUPERVISOR_DATA, FC_SUPERVISOR_PROGRAM, FC_USER_DATA};
 use crate::cpu_m68k::cpu::CpuError;
 use crate::cpu_m68k::pmmu::regs::{RootPointerReg, TcReg};
 use crate::cpu_m68k::pmmu::translate::PMMU_ATC_URP;
@@ -114,11 +111,9 @@ fn run(cpu: &mut TestCpu, words: &[Word]) {
     cpu.step().expect("step");
 }
 
-/// A repeat access to a page is answered without a table search, and the
-/// cache tags by FC2 (supervisor vs user), not by the full function code:
-/// data and program spaces share entries, as on the 68030. The upstream
-/// m68k-rs vector expects one entry per full FC; Snow's FC2-only tagging is
-/// the hardware-accurate model.
+/// A repeat access to a page is answered without a table search, and each
+/// function code space has its own entry (M68030UM 9.3.1: the ATC tag holds
+/// the full 3-bit function code).
 #[test]
 fn repeat_access_to_a_page_needs_no_table_search() {
     let mut cpu = cpu_mmu_030();
@@ -132,10 +127,15 @@ fn repeat_access_to_a_page_needs_no_table_search() {
     assert_eq!(data(&mut cpu, 0x4000), 0x4000);
     assert_eq!(table_reads(&cpu), 2, "next page: another search");
 
-    // Supervisor program space shares the supervisor ATC entries.
+    // Supervisor program space has its own entry.
     cpu.pmmu_translate(FC_SUPERVISOR_PROGRAM, 0x3010, false)
         .expect("translate");
-    assert_eq!(table_reads(&cpu), 2, "program space: ATC hit");
+    assert_eq!(table_reads(&cpu), 3, "program space: its own entry");
+
+    // And so does the user data space.
+    cpu.pmmu_translate(FC_USER_DATA, 0x3010, false)
+        .expect("translate");
+    assert_eq!(table_reads(&cpu), 4, "user data space: its own entry");
 }
 
 /// A two-level tree whose level-A descriptor terminates early maps a whole
@@ -176,11 +176,8 @@ fn early_termination_descriptor_is_cached_one_page_at_a_time() {
     }
 }
 
-/// Snow's PFLUSH is currently a full-ATC flush (a safe over-invalidation),
-/// where real silicon flushes only the addressed page/FC entries. The
-/// upstream vector asserts the page-6 entry survives PFLUSH #5,#7,(A0);
-/// under Snow both pages re-walk. The important semantics -- the edited
-/// descriptor takes effect only after the flush -- hold either way.
+/// PFLUSH #5,#7,(A0) flushes only page 5's supervisor-data entry; page 6's
+/// entry survives until PFLUSH #4,#4 flushes every supervisor entry.
 #[test]
 fn stale_translation_lasts_until_pflush() {
     let mut cpu = cpu_mmu_030();
@@ -192,45 +189,16 @@ fn stale_translation_lasts_until_pflush() {
     map(&mut cpu.bus, 6, 0xA);
     assert_eq!(data(&mut cpu, 0x5004), 0x5004, "stale entry held");
 
-    // PFLUSH #5,#7,(A0)
+    // PFLUSH #5,#7,(A0) with A0 in page 5: only that page's supervisor
+    // data entry goes.
     cpu.regs.a[0] = 0x5000;
     run(&mut cpu, &[0xF010, 0x38F5]);
     assert_eq!(data(&mut cpu, 0x5004), 0x9004);
-    // DEVIATION from upstream: Snow flushed everything, so page 6 also
-    // re-walks and sees its new mapping.
-    assert_eq!(
-        data(&mut cpu, 0x6004),
-        0xA004,
-        "Snow's full flush re-walks page 6"
-    );
+    assert_eq!(data(&mut cpu, 0x6004), 0x6004, "page 6 kept");
 
-    // PFLUSH #4,#4
+    // PFLUSH #4,#4: every supervisor entry.
     run(&mut cpu, &[0xF000, 0x3094]);
     assert_eq!(data(&mut cpu, 0x6004), 0xA004);
-}
-
-/// The upstream vector for selective PFLUSH (#5,#7 keeps page 6's entry).
-/// Ignored: Snow's PFLUSH is a full flush (see the running test above).
-#[test]
-#[ignore = "Snow PFLUSH over-invalidates: selective page/FC flush not modeled (m68k-rs expects page 6's ATC entry to survive PFLUSH #5,#7,(A0))"]
-fn pflush_selective_keeps_other_pages() {
-    let mut cpu = cpu_mmu_030();
-    assert_eq!(data(&mut cpu, 0x5004), 0x5004);
-    assert_eq!(data(&mut cpu, 0x6004), 0x6004);
-    map(&mut cpu.bus, 5, 0x9);
-    map(&mut cpu.bus, 6, 0xA);
-    assert_eq!(data(&mut cpu, 0x5004), 0x5004);
-
-    cpu.regs.a[0] = 0x5000;
-    run(&mut cpu, &[0xF010, 0x38F5]); // PFLUSH #5,#7,(A0)
-    assert_eq!(data(&mut cpu, 0x5004), 0x9004, "page 5 flushed");
-    cpu.bus.reset_trace();
-    assert_eq!(
-        data(&mut cpu, 0x6004),
-        0x6004,
-        "page 6's stale entry must survive the selective flush"
-    );
-    assert_eq!(table_reads(&cpu), 0);
 }
 
 #[test]
@@ -301,12 +269,9 @@ fn pmove_operand_fetch_uses_the_cached_translation() {
     assert_eq!(data(&mut cpu, 0x7004), 0xE004);
 }
 
-/// The upstream vector: PLOAD of a page whose descriptor was invalidated
-/// must drop the stale ATC entry so the next access faults. Ignored: Snow's
-/// PLOAD cannot observe the invalidation because pmmu_translate answers from
-/// the stale ATC entry without ever reaching the tables.
+/// PLOAD of a page whose descriptor was invalidated drops the stale ATC
+/// entry before the search (M68030UM 9.8), so the next access faults.
 #[test]
-#[ignore = "Snow PLOAD leaves stale ATC entries in place: a later access still hits the old translation instead of faulting (m68k-rs drops the entry before searching)"]
 fn pload_of_an_invalidated_page_drops_its_old_entry() {
     let mut cpu = cpu_mmu_030();
     assert_eq!(data(&mut cpu, 0x9004), 0x9004);
