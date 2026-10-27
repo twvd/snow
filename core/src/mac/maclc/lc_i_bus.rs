@@ -52,6 +52,9 @@ fn be_bytes(bytes: &[u8]) -> u32 {
 /// Period of the 60.15 Hz interrupt, in VIA clock cycles
 const TICK60_PERIOD: Ticks = 13024;
 
+/// Swing of the Apple IIe Card's speaker in the sound output, full scale = 1
+const IIE_SPEAKER_GAIN: f32 = 0.5;
+
 /// What an address selects
 pub(super) enum Region {
     /// RAM area, with the address in it
@@ -986,7 +989,14 @@ where
         while self.sound_clock >= self.sound.sample_period() * self.bus_frequency() {
             self.sound_clock -= self.sound.sample_period() * self.bus_frequency();
 
-            self.sound.tick(self.speed == EmulatorSpeed::Accurate)?;
+            // The Apple IIe Card's speaker is mixed in after the DFAC. The
+            // level is a guess; the sound filter takes its DC out.
+            let speaker = self
+                .iie_card
+                .as_mut()
+                .map_or(0.0, |card| card.take_speaker_level() * IIE_SPEAKER_GAIN);
+            self.sound
+                .tick(self.speed == EmulatorSpeed::Accurate, speaker)?;
         }
         self.pseudovia.set_asc_irq(self.sound.irq());
 

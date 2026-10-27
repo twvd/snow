@@ -1234,7 +1234,8 @@ where
         self.sound_clock += c16m_ticks;
         while self.sound_clock >= self.sound.sample_period() {
             self.sound_clock -= self.sound.sample_period();
-            self.sound.tick(self.speed == EmulatorSpeed::Accurate)?;
+            self.sound
+                .tick(self.speed == EmulatorSpeed::Accurate, 0.0)?;
         }
 
         self.dafb.tick(native_ticks, ctx)?;
