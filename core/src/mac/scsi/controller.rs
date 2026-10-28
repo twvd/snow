@@ -711,24 +711,12 @@ impl ScsiController {
 
         // Pseudo-DMA path: writes to the DMA window auto-pulse ACK, so we
         // advance the REQ/ACK handshake here instead of waiting for an
-        // explicit ICR ACK toggle.
+        // explicit ICR ACK toggle. Until a DMA send is started, the write
+        // only loads the register.
         if self.dma_armed && matches!(self.busphase, ScsiBusPhase::DataOut | ScsiBusPhase::Command)
         {
             self.assert_ack();
             self.deassert_ack();
-            return;
-        }
-
-        // Legacy PIO DataOut path (byte buffered here, ACK handled via ICR).
-        if self.busphase == ScsiBusPhase::DataOut && self.phase_match() {
-            self.responsebuf.push_back(val);
-            self.dataout_len -= 1;
-            if self.dataout_len == 0 {
-                let datavec = Vec::from_iter(self.responsebuf.iter().cloned());
-                if let Err(e) = self.cmd_run(Some(&datavec)) {
-                    log::error!("SCSI command run error: {:#}", e);
-                }
-            }
         }
     }
 
@@ -871,7 +859,7 @@ impl BusMember<Address> for ScsiController {
 
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
         let _is_write = addr & 1 != 0;
-        let _dack = addr & 0b0010_0000_0000 != 0;
+        let dack = addr & 0b0010_0000_0000 != 0;
         let reg = NcrWriteReg::from_u32((addr >> 4) & 0b111).unwrap();
 
         //debug!(
@@ -880,6 +868,13 @@ impl BusMember<Address> for ScsiController {
         //);
 
         match reg {
+            // A CPU write (CS) only loads the Output Data Register. The byte
+            // is sent by the ACK handshake (ICR) or, with DACK, by DMA.
+            NcrWriteReg::ODR if !dack => {
+                self.reg_odr = val;
+                self.try_complete_selection();
+                Some(())
+            }
             NcrWriteReg::ODR => {
                 self.write_datareg(val);
                 self.try_complete_selection();
