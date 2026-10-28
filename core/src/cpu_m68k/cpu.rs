@@ -1706,7 +1706,10 @@ where
             InstructionMnemonic::MULS_w => self.op_muls_w(instr),
             InstructionMnemonic::DIVU_w => self.op_divu(instr),
             InstructionMnemonic::DIVS_w => self.op_divs(instr),
-            InstructionMnemonic::NOP => Ok(()),
+            InstructionMnemonic::NOP => {
+                account_040_time!(self, timing040::NOP);
+                Ok(())
+            }
             InstructionMnemonic::MOVE16_inc => self.op_move16_inc(instr),
             InstructionMnemonic::MOVE16_abs => self.op_move16_abs(instr),
             InstructionMnemonic::CINV | InstructionMnemonic::CPUSH => self.op_cxxx(instr),
@@ -3133,12 +3136,23 @@ where
         let value: Long =
             self.calc_ea_addr::<Long>(instr, instr.get_addr_mode()?, instr.get_op2())?;
 
+        // On the 68020/68030 the calculate EA tables (MC68020UM 8.2.3, MC68030UM
+        // 11.6.3) give 1 cycle more than the fetch EA times for (An), none for the
+        // brief format and 2 for the full format.
         match instr.get_addr_mode()? {
             AddressingMode::IndirectIndex | AddressingMode::PCIndex => {
-                self.advance_cycles(2)?;
+                advance_cycles!(
+                    self,
+                    m68000: 2,
+                    others: if instr.get_extword().is_full() { 2 } else { 0 },
+                )?;
                 self.prefetch_pump()?;
             }
             AddressingMode::AbsoluteShort | AddressingMode::AbsoluteLong => (),
+            AddressingMode::Indirect => {
+                advance_cycles!(self, m68000: 0, others: 1)?;
+                self.prefetch_pump()?;
+            }
             _ => self.prefetch_pump()?,
         }
 
@@ -3151,6 +3165,15 @@ where
             }
             _ => unreachable!(),
         }
+        account_040_time!(
+            self,
+            if instr.mnemonic == InstructionMnemonic::PEA {
+                timing040::PEA
+            } else {
+                timing040::LEA
+            },
+            instr.get_addr_mode()?,
+        );
         Ok(())
     }
 
@@ -3216,6 +3239,7 @@ where
         self.regs
             .write_a(7, sp.wrapping_add_signed(instr.get_displacement()));
 
+        account_040_time!(self, timing040::LINK);
         Ok(())
     }
 
@@ -3235,6 +3259,7 @@ where
         self.regs.read_a_predec::<Address>(7, 4);
         self.regs.write_a(7, sp.wrapping_add_signed(displacement));
 
+        account_040_time!(self, timing040::LINK);
         Ok(())
     }
 
@@ -3244,6 +3269,8 @@ where
         let val = self.read_ticks::<Address>(addr)?;
         self.regs.write_a(7, addr.wrapping_add(4));
         self.regs.write_a(instr.get_op2(), val);
+        advance_cycles!(self, m68000: 0, others: 1)?;
+        account_040_time!(self, timing040::UNLK);
         Ok(())
     }
 
@@ -3411,6 +3438,8 @@ where
     fn op_rts(&mut self, _instr: &Instruction) -> Result<()> {
         let pc = self.read_ticks(self.regs.read_a(7))?;
         self.regs.read_a_postinc::<Address>(7, 4);
+        advance_cycles!(self, m68000: 0, others: 3)?;
+        account_040_time!(self, timing040::RTS);
         self.set_pc(pc)?;
         self.prefetch_refill()?;
 
@@ -3426,6 +3455,8 @@ where
         let pc = self.read_ticks(sp.wrapping_add(2))?;
         self.regs.read_a_postinc::<Address>(7, 6);
         self.regs.sr.set_ccr(ccr);
+        advance_cycles!(self, m68000: 0, others: 4)?;
+        account_040_time!(self, timing040::RTR);
         self.set_pc(pc)?;
         self.prefetch_refill()?;
         Ok(())
@@ -3445,7 +3476,11 @@ where
 
         let pc = match instr.get_addr_mode()? {
             AddressingMode::AbsoluteShort => {
-                self.advance_cycles(2)?;
+                advance_cycles!(
+                    self,
+                    m68000: 2,
+                    others: if instr.mnemonic == InstructionMnemonic::JMP { 2 } else { 0 },
+                )?;
                 self.regs.pc = self.regs.pc.wrapping_add(2) & ADDRESS_MASK;
                 self.fetch()?.expand_signed().cast_unsigned()
             }
@@ -3461,14 +3496,39 @@ where
             _ => self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?,
         };
 
-        // Idle cycles
-        match instr.get_addr_mode()? {
-            AddressingMode::IndirectDisplacement | AddressingMode::PCDisplacement => {
-                self.advance_cycles(2)?;
-            }
-            AddressingMode::IndirectIndex | AddressingMode::PCIndex => self.advance_cycles(4)?,
-            _ => (),
-        };
+        // Idle cycles. On the 68020/68030 these come from the jump EA tables
+        // (MC68020UM 8.2.5, MC68030UM 11.6.5) less the fetch EA times. JSR takes 2
+        // cycles less than JMP there, as the stacking overlaps. The totals of JMP
+        // and JSR are still a few clocks off the manuals.
+        advance_cycles!(
+            self,
+            m68000: match instr.get_addr_mode()? {
+                AddressingMode::IndirectDisplacement | AddressingMode::PCDisplacement => 2,
+                AddressingMode::IndirectIndex | AddressingMode::PCIndex => 4,
+                _ => 0,
+            },
+            others: if instr.mnemonic == InstructionMnemonic::JMP {
+                match instr.get_addr_mode()? {
+                    AddressingMode::Indirect => 1,
+                    AddressingMode::IndirectDisplacement
+                    | AddressingMode::PCDisplacement
+                    | AddressingMode::IndirectIndex
+                    | AddressingMode::PCIndex => 2,
+                    _ => 0,
+                }
+            } else {
+                0
+            },
+        )?;
+        account_040_time!(
+            self,
+            if instr.mnemonic == InstructionMnemonic::JSR {
+                timing040::JSR
+            } else {
+                timing040::JMP
+            },
+            instr.get_addr_mode()?,
+        );
 
         self.step_over_addr = Some(self.get_fetch_addr());
 
@@ -4242,6 +4302,8 @@ where
         let sp = self.regs.read_a::<Address>(7);
         self.regs
             .write_a(7, sp.wrapping_add_signed(4 + displacement));
+        advance_cycles!(self, m68000: 0, m68020: 3, m68030: 4)?;
+        account_040_time!(self, timing040::RTD);
         self.set_pc(pc)?;
         self.prefetch_refill()?;
 
