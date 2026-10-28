@@ -7,6 +7,7 @@
 pub mod asp;
 pub mod atp;
 pub mod ddp;
+pub mod ids;
 pub mod link;
 pub mod nbp;
 pub mod node;
