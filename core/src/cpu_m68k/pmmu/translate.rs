@@ -798,12 +798,14 @@ where
         }
 
         let mask = 0xFFFFFFFFu32.unbounded_shr(used_bits);
-        // M68030UM 9.5.3.1: the physical address is the SUM of the page
-        // address field in the descriptor and the offset (the logical
-        // address with the bits used in the search set to zero). The page
-        // field need not be aligned to the page granularity, so the low
-        // bits must be added, not ORed.
-        let paddr = page_addr.wrapping_add(vaddr & mask);
+        let page_mask = (1u32 << self.regs.pmmu.tc.ps()) - 1;
+        // M68030UM 9.5.3.1 and 9-22: the physical address is the sum of the
+        // descriptor's page-address field and the offset, at page
+        // granularity. Field bits below the page size (A_{PS-1}..A_8) are
+        // unused, so both terms are masked with !page_mask and the in-page
+        // offset comes straight from the logical address. This also keeps a
+        // table walk and a later ATC hit on the same page in agreement.
+        let paddr = ((page_addr & !page_mask) + (vaddr & mask & !page_mask)) | (vaddr & page_mask);
 
         if PTEST {
             // M68030UM Table 9-3: report conditions encountered during the

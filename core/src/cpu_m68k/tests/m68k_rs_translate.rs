@@ -234,3 +234,24 @@ fn write_protected_page_reads_ok_and_writes_fault() {
         "PSR must report the write-protect cause"
     );
 }
+
+/// Descriptor page-field bits below the page size (A_{PS-1}..A_8) are unused
+/// (M68030UM 9-22): a field with junk in bits 11-8 must translate the same
+/// as the clean field, on the first walk and on ATC hits alike.
+#[test]
+fn descriptor_field_bits_below_page_size_are_ignored() {
+    let mut cpu = testcpu();
+    mmu_on(&mut cpu, TC, TABLE, 32);
+    // Page 1 descriptor: page field 0x000F00 has junk in bits 11-8.
+    write_long(&mut cpu.bus, TABLE + 4, 0x0000_0F01);
+
+    // The used field bits (31:12) are zero, so the page maps to physical
+    // page 0; the junk bits 11-8 must not leak into the physical address
+    // (the old byte-granular sum produced 0xF00 + 0x234 = 0xF34 here).
+    let p = data(&mut cpu, 0x1234);
+    assert_eq!(p, 0x234, "junk field bits ignored on the walk");
+
+    // A second access hits the ATC and must agree with the walk.
+    assert_eq!(data(&mut cpu, 0x1234), p, "ATC hit agrees with the walk");
+    assert_eq!(data(&mut cpu, 0x1ABC), 0xABC, "same page via ATC");
+}
