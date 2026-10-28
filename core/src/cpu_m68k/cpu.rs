@@ -93,6 +93,75 @@ impl PrefetchWord {
     }
 }
 
+/// The instruction prefetch queue: two words at most. fetch() pops a word
+/// before it pumps the next one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrefetchQueue {
+    words: [PrefetchWord; 2],
+    len: usize,
+}
+
+impl Default for PrefetchQueue {
+    fn default() -> Self {
+        Self {
+            words: [PrefetchWord::Word(0); 2],
+            len: 0,
+        }
+    }
+}
+
+impl PrefetchQueue {
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    pub fn front(&self) -> Option<&PrefetchWord> {
+        self.get(0)
+    }
+
+    pub fn get(&self, i: usize) -> Option<&PrefetchWord> {
+        self.words[..self.len].get(i)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &PrefetchWord> {
+        self.words[..self.len].iter()
+    }
+
+    pub fn push_back(&mut self, word: PrefetchWord) {
+        assert!(self.len < 2, "prefetch queue overflow");
+        self.words[self.len] = word;
+        self.len += 1;
+    }
+
+    pub fn pop_front(&mut self) -> Option<PrefetchWord> {
+        if self.len == 0 {
+            return None;
+        }
+        let word = self.words[0];
+        self.words[0] = self.words[1];
+        self.len -= 1;
+        Some(word)
+    }
+}
+
+impl FromIterator<PrefetchWord> for PrefetchQueue {
+    fn from_iter<I: IntoIterator<Item = PrefetchWord>>(iter: I) -> Self {
+        let mut queue = Self::default();
+        for word in iter {
+            queue.push_back(word);
+        }
+        queue
+    }
+}
+
 fn prefetch_defer_fault(e: anyhow::Error, fetch_addr: Address) -> Result<PrefetchWord> {
     match e.downcast_ref::<CpuError>() {
         Some(CpuError::BusError(_)) => Ok(PrefetchWord::Fault(fetch_addr)),
@@ -325,7 +394,7 @@ pub struct CpuM68k<
     pub last_bus_sync: Ticks,
 
     /// Current prefetch queue
-    pub prefetch: VecDeque<PrefetchWord>,
+    pub prefetch: PrefetchQueue,
 
     /// Effective Address cache for this step
     pub(in crate::cpu_m68k) step_ea_addr: Option<Address>,
@@ -424,7 +493,7 @@ where
             regs: RegisterFile::new(),
             cycles: 0,
             last_bus_sync: 0,
-            prefetch: VecDeque::with_capacity(3),
+            prefetch: PrefetchQueue::default(),
             step_ea_addr: None,
             step_exception: false,
             step_inhibit_trace: false,
