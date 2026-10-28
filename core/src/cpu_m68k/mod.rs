@@ -1,3 +1,71 @@
+/// Advances by the internal clocks of an instruction on the 68000 to 68030:
+/// `m68000` on the 68000 and 68010, `m68020` or `m68030`, `all` on every one
+/// of them, or `others` on those not named. A CPU that isn't named takes no
+/// clocks when there is no `others`. CPU_TYPE picks the value of this CPU at
+/// compile time, and only that expression is evaluated. The 68040 takes the
+/// time of its instructions from its own tables instead (timing040.rs,
+/// account_040_time!), so this does nothing on the 68040.
+#[allow(unused_macros)]
+macro_rules! advance_cycles {
+    ($cpu:expr, all: $c:expr $(,)?) => {
+        advance_cycles!($cpu, m68000: $c, m68020: $c, m68030: $c)
+    };
+    ($cpu:expr, m68000: $c000:expr, others: $c:expr $(,)?) => {
+        advance_cycles!($cpu, m68000: $c000, m68020: $c, m68030: $c)
+    };
+    ($cpu:expr, m68020: $c020:expr, others: $c:expr $(,)?) => {
+        advance_cycles!($cpu, m68000: $c, m68020: $c020, m68030: $c)
+    };
+    ($cpu:expr, m68030: $c030:expr, others: $c:expr $(,)?) => {
+        advance_cycles!($cpu, m68000: $c, m68020: $c, m68030: $c030)
+    };
+    ($cpu:expr, m68000: $c000:expr $(,)?) => {
+        advance_cycles!($cpu, m68000: $c000, others: 0)
+    };
+    ($cpu:expr, m68020: $c020:expr $(,)?) => {
+        advance_cycles!($cpu, m68020: $c020, others: 0)
+    };
+    ($cpu:expr, m68030: $c030:expr $(,)?) => {
+        advance_cycles!($cpu, m68030: $c030, others: 0)
+    };
+    (
+        $cpu:expr,
+        m68000: $c000:expr,
+        m68020: $c020:expr,
+        m68030: $c030:expr $(,)?
+    ) => {{
+        let ticks: $crate::tickable::Ticks = match CPU_TYPE {
+            $crate::cpu_m68k::M68000 | $crate::cpu_m68k::M68010 => $c000,
+            $crate::cpu_m68k::M68020 => $c020,
+            $crate::cpu_m68k::M68030 => $c030,
+            _ => 0,
+        };
+        if ticks == 0 {
+            Ok(())
+        } else {
+            $cpu.advance_cycles(ticks)
+        }
+    }};
+}
+
+/// Sets the execute stage time of the instruction of this step on the 68040,
+/// which the step charges at its end (timing040.rs): a fixed time, or the time
+/// in a column of the tables for an addressing mode. Compiles to nothing on
+/// the other CPUs, and only evaluates its arguments on the 68040.
+#[allow(unused_macros)]
+macro_rules! account_040_time {
+    ($cpu:expr, $time:expr $(,)?) => {
+        if CPU_TYPE == $crate::cpu_m68k::M68040 {
+            $cpu.exec040 = $time;
+        }
+    };
+    ($cpu:expr, $column:expr, $mode:expr $(,)?) => {
+        if CPU_TYPE == $crate::cpu_m68k::M68040 {
+            $cpu.exec040 = $cpu.exec040_ea(&$column, $mode);
+        }
+    };
+}
+
 pub mod alu;
 pub mod bus;
 pub mod cpu;

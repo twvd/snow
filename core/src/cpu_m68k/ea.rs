@@ -10,7 +10,8 @@ use crate::types::Long;
 
 use super::cpu::CpuM68k;
 use super::instruction::{AddressingMode, IndexSize, Instruction, Xn};
-use super::{CpuM68kType, CpuSized, M68020, TORDER_HIGHLOW};
+use super::timing040::FullEa040;
+use super::{CpuM68kType, CpuSized, M68020, M68040, TORDER_HIGHLOW};
 
 impl<
     TBus,
@@ -212,8 +213,16 @@ where
                 };
                 let disp_addr = addr.wrapping_add_signed(displacement);
                 let pre_addr = disp_addr.wrapping_add(index.wrapping_mul(u32::from(scale)));
+                let indirect = extword.full_memindirectmode()?;
+                if CPU_TYPE == M68040 {
+                    self.record_ea040(FullEa040::new(
+                        &extword,
+                        indirect,
+                        addrmode == AddressingMode::PCIndexBase,
+                    ));
+                }
 
-                match extword.full_memindirectmode()? {
+                match indirect {
                     MemoryIndirectAction::None => {
                         // Address Register Indirect with Index (Base Displacement) Mode
                         pre_addr
