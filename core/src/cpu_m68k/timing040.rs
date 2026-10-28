@@ -8,9 +8,6 @@
 //! through the earlier stages, which a long enough previous instruction hides.
 //! Bus cycles add their own time, like a cache miss does on the 68040 (10.1).
 
-// The instructions start using the tables as they get their 68040 times
-#![allow(dead_code)]
-
 use anyhow::Result;
 
 use crate::bus::{Address, Bus, IrqSource};
