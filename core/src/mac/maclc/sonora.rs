@@ -52,9 +52,14 @@ pub(super) const SWIM_INTERVAL: Ticks = 10;
 pub(super) const CPU_ID_LCIII: u32 = 0xA55A_0001;
 
 /// Monitors for the Sonora: 512x384, 640x480 (and 640x400, which the system
-/// offers on the same monitor), 832x624. The Sonora also supports VGA and
-/// the 15" Portrait monitors.
-pub const MONITORS: &[MacMonitor] = &[MacMonitor::RGB12, MacMonitor::HiRes14, MacMonitor::RGB16];
+/// offers on the same monitor), 640x870, 832x624. The Sonora also supports
+/// VGA monitors.
+pub const MONITORS: &[MacMonitor] = &[
+    MacMonitor::RGB12,
+    MacMonitor::HiRes14,
+    MacMonitor::PortraitBW,
+    MacMonitor::RGB16,
+];
 
 /// Sizes of the video RAM: 512 KB are soldered, a SIMM adds 256 KB
 pub const VRAM_SIZES: &[usize] = &[VRAM_SOLDERED, 768 * 1024];
