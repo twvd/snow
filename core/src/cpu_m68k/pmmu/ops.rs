@@ -35,8 +35,10 @@ where
         if extword & 0b1111_1101_1110_0000 == 0b0010_0000_0000_0000 {
             // PLOAD
             self.op_pload(instr, extword)
-        } else if extword & 0b1110_0011_0000_0000 == 0b0010_0000_0000_0000 {
-            // PFLUSH / PFLUSHA (M68000PRM 6-32..6-34)
+        } else if extword & 0b1110_0010_0000_0000 == 0b0010_0000_0000_0000 {
+            // PFLUSH / PFLUSHA / PFLUSHS (M68000PRM 6-32..6-34,
+            // MC68851 UM A-6..A-7). Bit 8 is part of the 68851's 4-bit
+            // mask and must not gate the dispatch.
             self.op_pflush(instr, extword)
         } else if extword == 0b1010_0000_0000_0000 {
             // PFLUSHR
@@ -307,16 +309,18 @@ where
         Ok(())
     }
 
-    /// PFLUSH / PFLUSHA (M68000PRM 6-32..6-34).
+    /// PFLUSH / PFLUSHA (M68000PRM 6-32..6-34) and PFLUSHS (MC68851 UM
+    /// A-6..A-7).
     ///
-    /// Extension word: bits 15-13 = 001, bits 12-10 = MODE, bits 9-8 = 00,
-    /// bits 7-5 = MASK, bits 4-0 = FC field.
+    /// Extension word: bits 15-13 = 001, bits 12-10 = MODE, bit 9 = 0,
+    /// MASK, bits 4-0 = FC field. The 68030 mask is 3 bits in 7-5 (bits
+    /// 9-8 zero); the 68851 mask is 4 bits in 8-5.
     ///
     /// MODE 001 flushes all entries (PFLUSHA). MODE 100 flushes by function
-    /// code: entries whose tag FC matches the FC operand in the bits the
-    /// mask selects. MODE 110 additionally restricts the flush to the page
-    /// holding the effective address; the EA is the flush key itself and is
-    /// never dereferenced.
+    /// code. MODE 110 additionally restricts the flush to the page holding
+    /// the effective address; the EA is the flush key itself and is never
+    /// dereferenced. The 68851 MODEs 101/111 are PFLUSHS, which also flush
+    /// globally shared entries.
     pub(in crate::cpu_m68k) fn op_pflush(
         &mut self,
         instr: &Instruction,
@@ -328,7 +332,13 @@ where
         }
 
         let mode = (extword >> 10) & 0b111;
-        let mask = ((extword >> 5) & 0b111) as u8;
+        let mask = if CPU_TYPE < M68030 {
+            // MC68851 UM A-7: 4-bit mask in bits 8-5.
+            ((extword >> 5) & 0b1111) as u8
+        } else {
+            // M68000PRM 6-33: 3-bit mask in bits 7-5.
+            ((extword >> 5) & 0b111) as u8
+        };
         let fc_field = (extword & 0b11111) as u8;
 
         match mode {
@@ -341,6 +351,12 @@ where
             // time, so a full flush is always legal; do the cheap O(1)
             // generation bump instead.
             0b100 => self.pmmu_cache_invalidate(),
+            // PFLUSHS fc,#mask (68851 only): also flushes globally shared
+            // entries. Snow's ATC does not track the SG bit, so a full
+            // flush is the only correct over-flush. The 68030 does not
+            // implement PFLUSHS and takes an F-line emulator exception
+            // instead (M68030UM 9.8).
+            0b101 | 0b111 if CPU_TYPE < M68030 => self.pmmu_cache_invalidate(),
             // PFLUSH fc,#mask,<ea>: flush by function code and page.
             0b110 => {
                 let fc = self.decode_pmmu_fc(fc_field, "PFLUSH")?;

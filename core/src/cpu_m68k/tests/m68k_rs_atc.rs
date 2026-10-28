@@ -373,3 +373,75 @@ fn atc_hit_write_sets_leaf_descriptor_m_bit() {
         "M bit set in the leaf descriptor"
     );
 }
+
+/// MC68851 PFLUSH forms (MC68851 UM A-6..A-7), which also run on Snow's
+/// 68020 PMMU. The 68851 mask is 4 bits in bits 8-5 and modes 101/111 are
+/// PFLUSHS, which also flushes globally shared entries.
+mod m68851 {
+    use super::*;
+    use crate::cpu_m68k::{CpuM68020Pmmu, M68020_ADDRESS_MASK};
+
+    type TestCpu = CpuM68020Pmmu<TestBus>;
+
+    /// A supervisor-mode 68020 with the 68851 enabled over the same
+    /// identity-mapped table as `cpu_mmu_030`.
+    fn cpu_68851() -> TestCpu {
+        let bus = Testbus::new(M68020_ADDRESS_MASK);
+        let mut cpu = TestCpu::new(bus);
+        cpu.regs.sr.set_supervisor(true);
+        cpu.regs.sr.set_int_prio_mask(7);
+        for page in 0..32 {
+            map(&mut cpu.bus, page, page);
+        }
+        let mut crp = RootPointerReg(0);
+        crp.set_table_addr(TABLE >> 4);
+        crp.set_dt(2);
+        crp.set_limit(0x7FFF);
+        cpu.regs.pmmu.crp = crp;
+        cpu.regs.pmmu.tc = TcReg(TC);
+        cpu.pmmu_cache_ensure();
+        cpu
+    }
+
+    fn data(cpu: &mut TestCpu, logical: Address) -> Address {
+        cpu.pmmu_translate(FC_SUPERVISOR_DATA, logical, false)
+            .expect("translation must succeed")
+    }
+
+    fn run(cpu: &mut TestCpu, words: &[Word]) {
+        for (i, &w) in words.iter().enumerate() {
+            write_word(&mut cpu.bus, CODE + i as Address * 2, w);
+        }
+        cpu.set_pc(CODE).expect("set_pc");
+        cpu.prefetch_refill().expect("prefetch");
+        cpu.step().expect("step");
+    }
+
+    /// PFLUSHS (mode 101) must flush everything, shared entries included.
+    /// Snow's ATC does not track the SG bit, so it over-flushes, which the
+    /// hardware model allows.
+    #[test]
+    fn pflushs_flushes_shared_entries() {
+        let mut cpu = cpu_68851();
+        assert_eq!(data(&mut cpu, 0x5004), 0x5004);
+        map(&mut cpu.bus, 5, 0x9);
+        assert_eq!(data(&mut cpu, 0x5004), 0x5004, "stale entry held");
+
+        run(&mut cpu, &[0xF000, 0x3400]); // PFLUSHS
+        assert_eq!(data(&mut cpu, 0x5004), 0x9004, "shared entry flushed");
+    }
+
+    /// The 68851's 4-bit mask lives in bits 8-5; a form with mask bit 3 set
+    /// must still dispatch as PFLUSH rather than taking the F-line path.
+    #[test]
+    fn pflush_68851_four_bit_mask_decodes() {
+        let mut cpu = cpu_68851();
+        assert_eq!(data(&mut cpu, 0x5004), 0x5004);
+        map(&mut cpu.bus, 5, 0x9);
+        assert_eq!(data(&mut cpu, 0x5004), 0x5004, "stale entry held");
+
+        cpu.regs.a[0] = 0x5000;
+        run(&mut cpu, &[0xF010, 0x3915]); // PFLUSH #5,#8,(A0): mask bit 3
+        assert_eq!(data(&mut cpu, 0x5004), 0x9004, "entry flushed");
+    }
+}
