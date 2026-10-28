@@ -139,14 +139,9 @@ fn repeat_access_to_a_page_needs_no_table_search() {
 }
 
 /// A two-level tree whose level-A descriptor terminates early maps a whole
-/// 1 MB region; each 4 KB page is still cached as its own entry.
-///
-/// Note on the upstream vector: m68k-rs expects an early-termination page
-/// descriptor with page field 0x00050000 to map the region to
-/// `0x0005_0000 + (logical & 0xFFFFF)`. On real silicon the page field is
-/// masked to the page granularity (1 MB here: only bits 31:20 count), so the
-/// physical base must be 1 MB-aligned. The descriptors here use base
-/// 0x0050_0000, which both implementations translate identically.
+/// 1 MB region; each 4 KB page is still cached as its own entry. Per
+/// M68030UM 9.5.3.1 the translated address is the sum of the descriptor's
+/// page field and the offset, so the base need not be page-aligned.
 #[test]
 fn early_termination_descriptor_is_cached_one_page_at_a_time() {
     let mut cpu = cpu_mmu_030();
@@ -160,15 +155,15 @@ fn early_termination_descriptor_is_cached_one_page_at_a_time() {
     crp.set_limit(0x7FFF);
     cpu.regs.pmmu.crp = crp;
     // Early-termination descriptor at each TIA index the test uses (the
-    // upstream vector only writes index 0 and would fault on the third
-    // logical address; the descriptors are spelled out here).
+    // upstream vector only writes index 0; the descriptors are spelled out
+    // here).
     for logical in [0x0000_1234u32, 0x0000_1FFF, 0x000F_F000] {
         let idx = (logical >> 20) & 0xF;
-        write_long(&mut cpu.bus, root + idx * 4, 0x0050_0001);
+        write_long(&mut cpu.bus, root + idx * 4, 0x0005_0001);
     }
 
     for logical in [0x0000_1234u32, 0x0000_1FFF, 0x000F_F000] {
-        let walked = 0x0050_0000 + (logical & 0x000F_FFFF);
+        let walked = 0x0005_0000 + (logical & 0x000F_FFFF);
         assert_eq!(data(&mut cpu, logical), walked);
         cpu.bus.reset_trace();
         assert_eq!(data(&mut cpu, logical ^ 0x10), walked ^ 0x10);
