@@ -1508,6 +1508,9 @@ where
             InstructionMnemonic::BFEXTS | InstructionMnemonic::BFEXTU => (&BF_EXTRACT, 2),
             InstructionMnemonic::BFFFO => (&BFFFO, 2),
             InstructionMnemonic::BFINS => (&BFINS, 7),
+            // No spanning time: the BFTST column only has note a. Note d,
+            // which the Dn rows of that page cite, has the text of note c
+            // of BFCHG on the previous page.
             InstructionMnemonic::BFTST => (&BFTST, 0),
             _ => unreachable!(),
         };
