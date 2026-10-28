@@ -28,6 +28,7 @@ use super::instruction::{
     MulxExtWord,
 };
 use super::regs::{Register, RegisterFile, RegisterSR, RestartRegisterFile};
+use super::timing040::Exec040;
 use super::{
     CpuM68kType, CpuSized, FPU_NONE, M68000, M68010, M68020, M68020_SR_MASK, M68030_SR_MASK,
     TORDER_HIGHLOW, TORDER_LOWHIGH,
@@ -374,6 +375,14 @@ pub struct CpuM68k<
     /// Total cycle counter
     pub cycles: Ticks,
 
+    /// Execute stage time of the instruction of this step on the 68040
+    #[serde(skip)]
+    pub(in crate::cpu_m68k) exec040: Exec040,
+
+    /// Base execute stage time of the previous instruction on the 68040
+    #[serde(skip)]
+    pub(in crate::cpu_m68k) exec040_prev: u16,
+
     /// Time of last bus sync in cycles
     pub last_bus_sync: Ticks,
 
@@ -485,6 +494,8 @@ where
             bus,
             regs: RegisterFile::new(),
             cycles: 0,
+            exec040: Exec040::DEFAULT,
+            exec040_prev: 0,
             last_bus_sync: 0,
             prefetch: VecDeque::with_capacity(3),
             step_ea_addr: None,
@@ -530,6 +541,7 @@ where
 
         self.cycles = 0;
         self.last_bus_sync = 0;
+        self.exec040_prev = 0;
         let init_ssp = self.read_ticks(VECTOR_SP)?;
         let init_pc = self.read_ticks(VECTOR_RESET)?;
 
@@ -760,6 +772,7 @@ where
         self.step_inhibit_trace = false;
         self.step_over_addr = None;
         self.step_ea_load = None;
+        self.exec040 = Exec040::DEFAULT;
 
         if CPU_TYPE >= M68020 {
             self.restart_regs = Some(RestartRegisterFile::from(&self.regs));
@@ -840,6 +853,9 @@ where
             );
         let execute_result = self.execute_instruction(&instr);
         self.wb040_defer = false;
+        if CPU_TYPE == M68040 && execute_result.is_ok() {
+            self.execute040()?;
+        }
         if execute_result.is_err() {
             // The instruction restarts and writes again
             self.wb040 = None;
