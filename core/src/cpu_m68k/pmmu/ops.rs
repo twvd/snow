@@ -296,15 +296,13 @@ where
         let fc = self.decode_pmmu_fc(extword.fc(), "PTEST")?;
 
         let vaddr = self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-        let result = self.pmmu_translate_lookup::<true>(fc, vaddr, !extword.read());
-        match result {
-            Ok(_) => {
-                if extword.a_set() {
-                    self.regs.write_a(extword.an(), self.regs.pmmu.last_desc);
-                }
-            }
-            // PTEST never raises: PSR reflects what happened.
-            Err(_) => (),
+        // PTEST never raises: PSR reflects what happened.
+        let _ = self.pmmu_translate_lookup::<true>(fc, vaddr, !extword.read());
+        // M68030UM 9.8: if the A bit is set, An is loaded with the physical
+        // address of the last descriptor fetched during the search, whether
+        // or not the search found a valid translation.
+        if extword.a_set() {
+            self.regs.write_a(extword.an(), self.regs.pmmu.last_desc);
         }
         Ok(())
     }
@@ -329,6 +327,14 @@ where
         if !self.regs.sr.supervisor() {
             self.advance_cycles(4)?;
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+
+        // M68000PRM 6-32: on the 68030 bits 9-8 of the extension word must
+        // be zero (the mask is 3 bits in 7-5), so an encoding with bit 8
+        // set is not a valid 68030 form and takes the F-line path. On the
+        // 68851 bit 8 is part of the 4-bit mask (MC68851 UM A-7).
+        if CPU_TYPE >= M68030 && extword & 0b0000_0001_0000_0000 != 0 {
+            return self.op_linef(instr);
         }
 
         let mode = (extword >> 10) & 0b111;

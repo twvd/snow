@@ -360,6 +360,35 @@ fn ptest_reports_supervisor_only_on_user_probe() {
     );
 }
 
+/// PTEST with the A bit loads An with the address of the last descriptor
+/// fetched during the search, even when the search finds an invalid
+/// descriptor (M68030UM 9.8).
+#[test]
+fn ptest_a_bit_returns_last_descriptor_on_failure() {
+    let mut cpu = user_mode_030_with_table(0); // B[2] invalid
+
+    cpu.regs.sr.set_supervisor(true);
+    cpu.regs.isp = SSP;
+    cpu.regs.a[0] = FAULT_PAGE;
+    cpu.regs.d[0] = 1; // SFC = 1
+    write_word(&mut cpu.bus, CODE, 0x4E7B); // MOVEC D0,SFC
+    write_word(&mut cpu.bus, CODE + 2, 0x0000);
+    write_word(&mut cpu.bus, CODE + 4, 0xF010); // PTESTR SFC,(A0),#2,A1
+    write_word(&mut cpu.bus, CODE + 6, 0x8B20);
+    reload(&mut cpu);
+
+    step_n(&mut cpu, 2);
+    assert_eq!(
+        cpu.regs.a[1], FAULT_DESC,
+        "A1 holds the invalid descriptor's address"
+    );
+    assert_eq!(
+        cpu.regs.pmmu.psr.0 & 0x0400,
+        0x0400,
+        "MMUSR I set for the invalid translation"
+    );
+}
+
 /// MOVES in user mode is a privilege violation regardless of direction.
 #[test]
 fn moves_is_privileged() {
