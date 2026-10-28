@@ -156,6 +156,23 @@ impl IieCardSettings {
     }
 }
 
+/// What is connected to the card's game port (the Y-cable's 9-pin
+/// connector), as the host sees it
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GamePort {
+    /// Paddle (joystick axis) positions, 0 to 255, or None if nothing
+    /// is connected. The 9-pin connector has paddles 0 and 1 only, as
+    /// on the IIc [INF].
+    pub paddles: [Option<u8>; 2],
+    /// Buttons 0 and 1
+    pub buttons: [bool; 2],
+    /// Host keys are driving the joystick. Once they stop, it stays
+    /// connected and centred until the next reset of the IIe: a game
+    /// that found it would take an empty port for a stick held down and
+    /// to the right.
+    pub keep_stick: bool,
+}
+
 /// Debug output for the card, compiled in only with the `iie-debug`
 /// cargo feature.
 macro_rules! iie_debug {
@@ -249,13 +266,6 @@ pub const DECL_ROM: [u8; 512] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
-/// The paddle timers after a `$C070` trigger, in 65C02 cycles: a
-/// centred joystick, 128 of the PREAD loop's ~11-cycle counts.  Nothing
-/// is modelled on the game port yet, and a centred stick is what
-/// software expects at rest (an empty port reads as fully deflected,
-/// which joystick-mode games take for constant input).
-const PADDLE_CENTRE: u16 = 1408;
-
 /// The 65C02's clock in normal mode: a IIe's average, 14.31818 MHz × 65 / 912
 /// (Apple: 1.02 MHz)
 const NORMAL_HZ: i64 = 1_020_484;
@@ -266,6 +276,17 @@ const FAST_HZ: i64 = 1_900_000;
 
 /// C16M, which clocks the card, in Hz
 const C16M_HZ: i64 = C16M_FREQUENCY as i64;
+
+/// A paddle timer's length per count of PREAD, in normal-mode cycles:
+/// PREAD (`$FB1E`) is an 11 µs loop, and 255 takes about 2.82 ms (Apple
+/// TN AIIE #6). Its loop reads `$C064,X` every 11 cycles, the first
+/// read 10 cycles after the `$C070` trigger.
+const PADDLE_CYCLES_PER_COUNT: i64 = 11;
+/// A paddle timer's length at position 0, in normal-mode cycles: half a
+/// PREAD loop before its first read, so that position n reads as n
+const PADDLE_BASE_CYCLES: i64 = 5;
+/// The position of a joystick kept connected after `GamePort::keep_stick`
+const PADDLE_CENTRE: u8 = 128;
 
 /// What kind of access trapped the 65C02.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -584,10 +605,19 @@ struct BusState {
     kbd: u8,
     /// The keyboard strobe: a key is waiting (`$C000` bit 7, cleared by `$C010`).
     kbd_strobe: bool,
-    /// Paddle timer counters (reset by `$C070`, counted down per cycle).
-    paddle: [u16; 4],
+    /// Paddle timers in nanoseconds left, started by `$C070` and
+    /// counted down in real time, as the 558 timer runs whatever the
+    /// 65C02's speed. None never times out: nothing is attached to the
+    /// game port, as on a IIe without a joystick, so its read stays at
+    /// 255. Games such as Lode Runner then choose the keyboard.
+    paddle: [Option<u32>; 4],
     /// Open-Apple / closed-Apple / shift button inputs (bit 7 read).
     btn: [bool; 3],
+    /// The game port's state, set by the host. Unlike the timers, it
+    /// survives a reset of the 65C02.
+    game_port: GamePort,
+    /// `GamePort::keep_stick` was set since the last reset
+    stick_kept: bool,
     /// Slot 6 drive motor (set by the trapped `$C0E8`/`$C0E9` accesses).
     motor_on: bool,
     /// The Disk II controller + two 5.25" drives.
@@ -1022,7 +1052,7 @@ impl BusState {
             // Game I/O: the buttons when not trapped (`$21` bit 1
             // clear), and the paddles.
             0xC061..=0xC063 => b7(self.btn[(addr - 0xC061) as usize]),
-            0xC064..=0xC067 => b7(self.paddle[(addr - 0xC064) as usize] > 0),
+            0xC064..=0xC067 => b7(self.paddle[(addr - 0xC064) as usize] != Some(0)),
             // Language card switches ($C08C/$C08D included: the Disk
             // II firmware reaches the IWM via `LDA $C08C,X` with
             // X=$60, i.e. $C0EC).
@@ -1047,6 +1077,13 @@ impl BusState {
             0xC0EA | 0xC0EB => {
                 self.disk.selected = addr == 0xC0EB;
                 b7(self.disk.selected)
+            }
+            // PDLTRIG: a read starts the paddle timers too, as PREAD
+            // does it with `LDA $C070`. The read traps and the host
+            // answers it.
+            0xC070 => {
+                self.trigger_paddles();
+                self.kbd
             }
             // The IWM registers: the reads return the data, status
             // or handshake register per Q6/Q7 (MAME iwm.cpp — the
@@ -1119,7 +1156,7 @@ impl BusState {
                 self.sw.an[3] = true;
                 self.sw.dhires = false;
             }
-            0xC070 => self.paddle = [PADDLE_CENTRE; 4],
+            0xC070 => self.trigger_paddles(),
             // $C072: firmware writes $5A (paired with setting $C02B
             // bits 4/5) or $00 (paired with clearing them).
             0xC072 => self.sw.c072 = val,
@@ -1361,6 +1398,27 @@ impl BusState {
             | (self.sw.store80 as u8)
     }
 
+    /// `$C070` starts the four paddle timers. A timer still running
+    /// is not restarted: its capacitor only discharges when it times
+    /// out (Apple TN AIIE #6).
+    fn trigger_paddles(&mut self) {
+        let kept = self.stick_kept.then_some(PADDLE_CENTRE);
+        for (i, timer) in self.paddle.iter_mut().enumerate() {
+            if timer.is_some_and(|t| t > 0) {
+                continue;
+            }
+            let pos = match self.game_port.paddles.get(i) {
+                Some(pos) => pos.or(kept),
+                // Paddles 2 and 3 are not on the connector
+                None => None,
+            };
+            *timer = pos.map(|pos| {
+                let cycles = PADDLE_BASE_CYCLES + PADDLE_CYCLES_PER_COUNT * pos as i64;
+                (cycles * 1_000_000_000 / NORMAL_HZ) as u32
+            });
+        }
+    }
+
     /// Soft reset (a released 65C02 reset or a Mac-side reset).
     fn soft_reset(&mut self) {
         self.sw = SoftSwitches::default();
@@ -1369,8 +1427,9 @@ impl BusState {
         self.retry = None;
         self.kbd = 0;
         self.kbd_strobe = false;
-        self.paddle = [0; 4];
-        self.btn = [false; 3];
+        self.paddle = [None; 4];
+        self.stick_kept = self.game_port.keep_stick;
+        self.btn = [self.game_port.buttons[0], self.game_port.buttons[1], false];
         self.disk.reset();
         self.irq = false;
         self.nmi = false;
@@ -1461,9 +1520,14 @@ impl Bus6502 for PdsIIeBus {
     /// and the Disk II spindle.
     fn tick(&mut self, cycles: Ticks) -> Result<Ticks> {
         let mut s = self.state.borrow_mut();
-        for p in &mut s.paddle {
-            let c = (*p).min(cycles as u16);
-            *p -= c;
+        let hz = if s.sw.c02b & 0x04 != 0 {
+            FAST_HZ
+        } else {
+            NORMAL_HZ
+        };
+        let ns = (cycles as i64 * 1_000_000_000 / hz) as u32;
+        for p in s.paddle.iter_mut().flatten() {
+            *p = p.saturating_sub(ns);
         }
         let motor = s.motor_on;
         s.disk.tick(cycles, motor);
@@ -1725,7 +1789,16 @@ impl PdsIIeCard {
                     if let Some(t) = s.trap.take()
                         && !t.write
                     {
-                        s.retry = Some((t.raw_addr, self.data_out));
+                        // A game button read acked without an answer
+                        // reads the game port's button [INF]: the app
+                        // only answers $FF, when the Mac modifier is
+                        // down (code_5 0x1BB8, 0x1BE0), and otherwise
+                        // acks, which returned the stale $19.
+                        let val = match t.raw_addr {
+                            0xC061..=0xC063 => s.io_read(t.raw_addr),
+                            _ => self.data_out,
+                        };
+                        s.retry = Some((t.raw_addr, val));
                     }
                 } else {
                     // $0D low byte: the control register.
@@ -1963,6 +2036,16 @@ impl PdsIIeCard {
     pub fn eject_disk(&mut self, drive: usize) {
         self.cpu.bus.state.borrow_mut().disk.insert(drive, None);
         log::debug!("IIe Card 5.25\" disk ejected from drive {}", drive + 1);
+    }
+
+    /// Sets what the host has on the game port: the paddle positions
+    /// for the next `$C070` and the buttons.
+    pub fn set_game_port(&mut self, port: GamePort) {
+        let mut s = self.cpu.bus.state.borrow_mut();
+        s.game_port = port;
+        s.stick_kept |= port.keep_stick;
+        s.btn[0] = port.buttons[0];
+        s.btn[1] = port.buttons[1];
     }
 
     /// Inserts a 400K or 800K block image (ProDOS order) into the
@@ -2644,6 +2727,32 @@ mod tests {
         assert_eq!(card.cpu.regs.c as u8, 0x00);
     }
 
+    /// A button read acked without an answer reads the game port's
+    /// button, not the last `$19` answer.
+    #[test]
+    fn button_read_acked_without_answer_reads_the_button() {
+        // LDA $C061 / JMP $1003
+        let program = [0xAD, 0x61, 0xC0, 0x4C, 0x03, 0x10];
+        for pressed in [false, true] {
+            let mut card = PdsIIeCard::new();
+            load_program(&mut card, 0x1000, &program);
+            run_program(&mut card, 0x1000);
+            // A stale answer from an earlier trap
+            card.host_write(0x19, 1, 0xFF).unwrap();
+            {
+                let mut s = card.cpu.bus.state.borrow_mut();
+                s.host.ctrl3 = 0x02;
+                s.btn[0] = pressed;
+            }
+            run(&mut card, 8);
+            assert_eq!(card.trap_addr(), 0xC061);
+            card.host_write(0x0C, 1, 0).unwrap();
+            run(&mut card, 8);
+            assert_eq!(card.cpu.regs.pc, 0x1003);
+            assert_eq!(card.cpu.regs.c as u8 & 0x80, if pressed { 0x80 } else { 0 });
+        }
+    }
+
     /// The 65C02 runs at its clock rate however finely the host time is
     /// given to it.
     #[test]
@@ -2665,6 +2774,121 @@ mod tests {
             let cycles = (card.cpu.cycles - start) as i64;
             assert!((cycles - hz / 10).abs() <= 3, "{cycles} cycles at {hz} Hz");
         }
+    }
+
+    /// With no joystick, a paddle never times out after `$C070`.
+    #[test]
+    fn paddles_without_joystick_never_time_out() {
+        // LDA $C070 / two 256-pass DEX loops / LDA $C064 / JMP $100E
+        let program = [
+            0xAD, 0x70, 0xC0, 0xA2, 0x00, 0xCA, 0xD0, 0xFD, 0xCA, 0xD0, 0xFD, 0xAD, 0x64, 0xC0,
+            0x4C, 0x0E, 0x10,
+        ];
+        let mut card = PdsIIeCard::new();
+        load_program(&mut card, 0x1000, &program);
+        run_program(&mut card, 0x1000);
+        // $C070 traps to the host, which acks
+        run(&mut card, 8);
+        assert_eq!(card.trap_addr(), 0xC070);
+        card.host_write(0x0C, 1, 0).unwrap();
+        run(&mut card, 400);
+        assert_eq!(card.cpu.regs.pc, 0x100E);
+        assert_eq!(card.cpu.regs.c as u8 & 0x80, 0x80);
+    }
+
+    /// Runs the monitor's PREAD loop on paddle 0 at a joystick
+    /// position, returns the count in Y.
+    fn pread(pos: u8, fast: bool) -> u8 {
+        // LDX #0 / LDA $C070 / LDY #0 / NOP / NOP /
+        // loop: LDA $C064,X / BPL done / INY / BNE loop / DEY /
+        // done: JMP done
+        let program = [
+            0xA2, 0x00, 0xAD, 0x70, 0xC0, 0xA0, 0x00, 0xEA, 0xEA, 0xBD, 0x64, 0xC0, 0x10, 0x04,
+            0xC8, 0xD0, 0xF8, 0x88, 0x4C, 0x12, 0x10,
+        ];
+        let mut card = PdsIIeCard::new();
+        card.set_game_port(GamePort {
+            paddles: [Some(pos), None],
+            buttons: [false; 2],
+            keep_stick: false,
+        });
+        load_program(&mut card, 0x1000, &program);
+        run_program(&mut card, 0x1000);
+        if fast {
+            card.cpu.bus.state.borrow_mut().sw.c02b |= 0x04;
+        }
+        // $C070 traps to the host, which acks
+        run(&mut card, 8);
+        assert_eq!(card.trap_addr(), 0xC070);
+        card.host_write(0x0C, 1, 0).unwrap();
+        run(&mut card, 400);
+        assert_eq!(card.cpu.regs.pc, 0x1012);
+        card.cpu.regs.y as u8
+    }
+
+    /// PREAD reads back the joystick position at normal speed.
+    #[test]
+    fn pread_reads_the_joystick() {
+        for pos in [0, 1, 2, 100, 127, 128, 254, 255] {
+            assert_eq!(pread(pos, false), pos);
+        }
+    }
+
+    /// A joystick driven by host keys stays connected and centred when
+    /// they stop, until a reset empties the port.
+    #[test]
+    fn keep_stick_lasts_until_a_reset() {
+        let mut card = PdsIIeCard::new();
+        let timers = |card: &PdsIIeCard| {
+            let mut s = card.cpu.bus.state.borrow_mut();
+            s.paddle = [None; 4];
+            s.trigger_paddles();
+            s.paddle
+        };
+        assert_eq!(timers(&card), [None; 4], "empty port");
+        card.set_game_port(GamePort {
+            paddles: [Some(0), Some(0)],
+            buttons: [false; 2],
+            keep_stick: true,
+        });
+        // The keys stop: the port itself is now empty
+        card.set_game_port(GamePort::default());
+        let [x, y, p2, p3] = timers(&card);
+        assert!(x.is_some() && x == y);
+        assert_eq!((p2, p3), (None, None), "not on the connector");
+        card.reset(false);
+        assert_eq!(timers(&card), [None; 4], "empty again after a reset");
+    }
+
+    /// The paddle timers run in real time, so in fast mode PREAD counts
+    /// further in the same time.
+    #[test]
+    fn pread_in_fast_mode() {
+        let fast = pread(100, true) as i64;
+        let expected = 100 * FAST_HZ / NORMAL_HZ;
+        assert!((fast - expected).abs() <= 2, "{fast}, expected {expected}");
+    }
+
+    /// A trigger does not restart a timer that is still running.
+    #[test]
+    fn paddle_retrigger_while_running() {
+        let mut card = PdsIIeCard::new();
+        card.set_game_port(GamePort {
+            paddles: [Some(255), None],
+            buttons: [false; 2],
+            keep_stick: false,
+        });
+        let mut s = card.cpu.bus.state.borrow_mut();
+        s.trigger_paddles();
+        let first = s.paddle[0];
+        s.paddle[0] = first.map(|t| t / 2);
+        s.trigger_paddles();
+        assert_eq!(s.paddle[0], first.map(|t| t / 2));
+        s.paddle[0] = Some(0);
+        s.trigger_paddles();
+        assert_eq!(s.paddle[0], first);
+        // Nothing connected on paddle 1
+        assert_eq!(s.paddle[1], None);
     }
 
     #[test]
