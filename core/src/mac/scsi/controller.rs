@@ -691,8 +691,9 @@ impl ScsiController {
         Ok(())
     }
 
+    /// DRQ only occurs in DMA mode (NCR 5380 manual, DRQ pin)
     pub fn get_drq(&self) -> bool {
-        self.reg_csr.req() || self.set_req.peek()
+        self.reg_mr.dma_mode() && (self.reg_csr.req() || self.set_req.peek())
     }
 
     pub fn read_dma(&mut self) -> u8 {
@@ -722,11 +723,12 @@ impl ScsiController {
 
     fn read_datareg(&mut self) -> u8 {
         let val = self.reg_cdr;
-        // I feel this SHOULD BE 'if self.dma_armed', however, during A/UX
-        // drive enumeration at boot, it will run a READ CAPACITY CDB after
-        // which it will enable DMA mode, but NOT arm DMA before starting
-        // to read from the DMA bus region.
-        // Needs more investigation at some point...
+        // A DACK read. The manual has the Start DMA Initiator Receive
+        // write initiate the receive, but the handshake doesn't wait for
+        // it here: in DATA IN, A/UX on the IIcx sets DMA mode, polls DRQ
+        // and reads the handshake area without writing that register
+        // (Mac OS always writes it). A/UX works on real hardware, so the
+        // chip presumably handshakes in DMA mode alone; not verified.
         if self.reg_mr.dma_mode() && self.phase_match() {
             self.assert_ack();
             self.deassert_ack();
@@ -819,7 +821,9 @@ impl BusMember<Address> for ScsiController {
         //}
 
         match reg {
-            NcrReadReg::CDR | NcrReadReg::IDR => Some(self.read_datareg()),
+            // A CPU read (CS) doesn't handshake: that's the ICR ACK or, with
+            // DACK, DMA (read_dma())
+            NcrReadReg::CDR | NcrReadReg::IDR => Some(self.reg_cdr),
             NcrReadReg::MR => Some(self.reg_mr.0),
             NcrReadReg::ICR => Some(self.reg_icr.0),
             NcrReadReg::TCR => Some(self.reg_tcr.0),
