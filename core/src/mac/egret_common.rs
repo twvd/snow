@@ -392,6 +392,13 @@ impl EgretCommon {
 
             // Start or stop polling the ADB devices
             CMD_AUTOPOLL => Self::params(params).map(|[enable]| {
+                // The first poll must come one period after the start,
+                // otherwise polling too early sends a packet in the middle
+                // of the ROM's ADB setup which drops it: a key pressed before
+                // (Shift at startup on the LC II) never reaches KeyMap.
+                if !self.autopoll && enable != 0 {
+                    self.autopoll_ticks = 0;
+                }
                 self.autopoll = enable != 0;
                 vec![]
             }),
@@ -788,6 +795,24 @@ mod tests {
         // No packet when the device has no data
         egret.tick(AUTOPOLL_TICKS);
         assert_eq!(egret.packet(), None);
+    }
+
+    #[test]
+    fn adb_autopoll_start() {
+        let mut egret = EgretCommon::default();
+        egret.adb_add_device(AdbMouse::new());
+        egret.adb_event(&AdbEvent::Mouse(MouseEvent {
+            button: Some(true),
+            rel_movement: None,
+        }));
+        egret.command(&[0x01, 0x19, 0x00, 0x08]);
+
+        // The time spent without autopoll does not count
+        egret.tick(AUTOPOLL_TICKS);
+        egret.command(&[0x01, 0x01, 0x01]);
+        assert_eq!(egret.packet(), None);
+        egret.tick(AUTOPOLL_TICKS);
+        assert!(egret.packet().is_some());
     }
 
     #[test]
