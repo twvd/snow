@@ -3669,16 +3669,18 @@ where
             self.prefetch_pump()?;
         }
 
-        let result = if self.cc(instr.get_cc()) {
-            if instr.get_addr_mode()? == AddressingMode::DataRegister {
-                self.advance_cycles(2)?;
-            }
-            0xFF
-        } else {
-            0
-        };
+        let result = if self.cc(instr.get_cc()) { 0xFF } else { 0 };
+
+        // Idle cycles
+        let dn = instr.get_addr_mode()? == AddressingMode::DataRegister;
+        advance_cycles!(
+            self,
+            m68000: if dn && result != 0 { 2 } else { 0 },
+            others: if dn { 2 } else { 1 },
+        )?;
 
         self.write_ea::<Byte>(instr, instr.get_op2(), result)?;
+        account_040_time!(self, timing040::SCC, instr.get_addr_mode()?);
         Ok(())
     }
 
@@ -3687,7 +3689,7 @@ where
         instr.fetch_extword(|| self.fetch())?;
         let displacement = instr.get_displacement();
 
-        self.advance_cycles(2)?; // idle
+        advance_cycles!(self, all: 2)?; // idle
 
         if !self.cc(instr.get_cc()) {
             let dn = self.regs.read_d::<Word>(instr.get_op2()).wrapping_sub(1);
@@ -3705,14 +3707,17 @@ where
 
                 // Trigger address error now if unaligned..
                 self.prefetch_refill()?;
+                account_040_time!(self, timing040::DBCC_TAKEN);
             } else {
                 // Loop terminated
                 self.history_current.branch_taken = Some(false);
-                self.advance_cycles(4)?; // idle
+                advance_cycles!(self, all: 4)?; // idle
+                account_040_time!(self, timing040::DBCC_NOT_TAKEN);
             }
         } else {
             self.history_current.branch_taken = Some(false);
-            self.advance_cycles(2)?; // idle
+            advance_cycles!(self, m68000: 2)?; // idle
+            account_040_time!(self, timing040::DBCC_NOT_TAKEN);
         }
 
         Ok(())
@@ -3720,10 +3725,11 @@ where
 
     /// Bcc/BSR
     fn op_bcc<const BSR: bool>(&mut self, instr: &Instruction) -> Result<()> {
+        let long = CPU_TYPE >= M68020 && instr.get_bxx_displacement_raw() == 0xFF;
         let displacement = if instr.get_bxx_displacement() == 0 {
             instr.fetch_extword(|| self.fetch())?;
             instr.get_displacement()
-        } else if CPU_TYPE >= M68020 && instr.get_bxx_displacement_raw() == 0xFF {
+        } else if long {
             let msb = self.fetch_pump()? as Address;
             let lsb = self.fetch_pump()? as Address;
             // -4 since we just nudged the PC twice
@@ -3732,7 +3738,14 @@ where
             instr.get_bxx_displacement()
         };
 
-        self.advance_cycles(2)?; // idle
+        // On the 68020/68030, BSR and the long forms have no idle cycles. The
+        // totals of the word and long forms are still a few clocks off the
+        // manuals, as their extension words and the refill take that long already.
+        advance_cycles!(
+            self,
+            m68000: 2,
+            others: if BSR || long { 0 } else { 2 },
+        )?; // idle
 
         if BSR || self.cc(instr.get_cc()) {
             // Branch taken
@@ -3767,11 +3780,20 @@ where
 
             // Trigger address error now if unaligned..
             self.prefetch_refill()?;
+            account_040_time!(
+                self,
+                if BSR {
+                    timing040::BSR
+                } else {
+                    timing040::BCC_TAKEN
+                },
+            );
         } else {
             // Branch not taken
             self.history_current.branch_taken = Some(false);
 
-            self.advance_cycles(2)?; // idle
+            advance_cycles!(self, m68000: 2)?; // idle
+            account_040_time!(self, timing040::BCC_NOT_TAKEN);
         }
         Ok(())
     }
