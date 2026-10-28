@@ -1042,6 +1042,7 @@ where
 
         // Check pending trace
         if trace_exception && !self.step_inhibit_trace {
+            advance_cycles!(self, m68000: 0, m68020: 3, m68030: 6)?;
             self.raise_exception(ExceptionGroup::Group1, VECTOR_TRACE, None)?;
         }
 
@@ -1167,7 +1168,8 @@ where
         self.step_inhibit_trace = true;
 
         warn!("Illegal instruction at PC ${:08X}", self.regs.pc);
-        self.advance_cycles(4)?;
+        advance_cycles!(self, m68020: 1, others: 4)?;
+        account_040_time!(self, timing040::TRAP);
         self.raise_exception(ExceptionGroup::Group1, VECTOR_ILLEGAL, None)?;
         Ok(())
     }
@@ -1178,7 +1180,8 @@ where
         // the trace exception does not occur."
         self.step_inhibit_trace = true;
 
-        self.advance_cycles(4)?;
+        advance_cycles!(self, m68020: 1, others: 4)?;
+        account_040_time!(self, timing040::TRAP);
         self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None)?;
         Ok(())
     }
@@ -1214,8 +1217,8 @@ where
             #[allow(clippy::identity_op)]
             _ => {
                 *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8);
-                // 6 cycles idle, interrupt ack, 4 cycles idle
-                self.advance_cycles(6 + 4 + 4)?;
+                // Idle cycles and the interrupt acknowledge cycle
+                advance_cycles!(self, m68000: 0, m68020: 7, m68030: 9)?;
 
                 self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
                 self.write_ticks(self.regs.ssp().wrapping_add(2), (self.regs.pc >> 16) as u16)?;
@@ -1243,8 +1246,11 @@ where
         let new_pc = self.read_ticks::<Long>(vector_base.wrapping_add(vector))?;
         self.set_pc(new_pc)?;
         self.prefetch_pump()?;
-        self.advance_cycles(2)?; // 2x idle
+        advance_cycles!(self, m68000: 2)?; // 2x idle
         self.prefetch_pump()?;
+        if CPU_TYPE == M68040 {
+            self.advance_cycles(timing040::EXCEPTION)?;
+        }
 
         if self.history_enabled {
             self.history.push_back(HistoryEntry::Exception {
@@ -1283,7 +1289,7 @@ where
                 // instruction replays on RTE.
                 self.step_inhibit_trace = true;
 
-                self.advance_cycles(8)?; // idle
+                advance_cycles!(self, m68000: 8)?; // idle
                 let details = details.expect("Address error details not passed");
 
                 match CPU_TYPE {
@@ -1442,6 +1448,7 @@ where
 
                         if self.regs.pc == details.start_pc && self.prefetch.len() == 2 {
                             // Bus error at instruction boundary
+                            advance_cycles!(self, m68000: 0, m68020: 6, m68030: 10)?;
                             *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(32);
                             self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
                             self.write_ticks(self.regs.ssp().wrapping_add(0x02), details.start_pc)?;
@@ -1487,6 +1494,7 @@ where
                             // Internal registers
                             self.write_ticks(self.regs.ssp().wrapping_add(0x1C), 0u32)?;
                         } else {
+                            advance_cycles!(self, m68030: 8)?;
                             *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(92);
                             self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
                             self.write_ticks(self.regs.ssp().wrapping_add(0x02), details.start_pc)?;
@@ -1599,8 +1607,11 @@ where
         let new_pc = self.read_ticks::<Long>(vector_base.wrapping_add(vector))?;
         self.set_pc(new_pc)?;
         self.prefetch_pump()?;
-        self.advance_cycles(2)?; // 2x idle
+        advance_cycles!(self, m68000: 2)?; // 2x idle
         self.prefetch_pump()?;
+        if CPU_TYPE == M68040 {
+            self.advance_cycles(timing040::EXCEPTION)?;
+        }
 
         if self.history_enabled {
             self.history.push_back(HistoryEntry::Exception {
@@ -1844,7 +1855,8 @@ where
                     });
                 }
 
-                self.advance_cycles(4)?;
+                advance_cycles!(self, m68020: 1, others: 4)?;
+                account_040_time!(self, timing040::TRAP);
                 self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEA, None)
             }
             InstructionMnemonic::LINEF => self.op_linef(instr),
@@ -1916,7 +1928,8 @@ where
             self.breakpoint_hit.set();
         }
 
-        self.advance_cycles(4)?;
+        advance_cycles!(self, m68020: 1, others: 4)?;
+        account_040_time!(self, timing040::TRAP);
         self.raise_exception(ExceptionGroup::Group2, VECTOR_LINEF, None)
     }
 
@@ -2072,7 +2085,8 @@ where
         // Offset PC correctly for exception stack frame for TRAP
         self.regs.pc = self.regs.pc.wrapping_add(2);
 
-        self.advance_cycles(4)?;
+        advance_cycles!(self, m68020: 1, others: 4)?;
+        account_040_time!(self, timing040::TRAP);
         self.raise_exception(
             ExceptionGroup::Group2,
             instr.trap_get_vector() * 4 + VECTOR_TRAP_OFFSET,
@@ -2085,9 +2099,13 @@ where
         self.prefetch_pump()?;
 
         if !self.regs.sr.v() {
+            advance_cycles!(self, m68000: 0, others: 2)?;
+            account_040_time!(self, timing040::TRAPCC_NOT_TAKEN);
             return Ok(());
         }
 
+        advance_cycles!(self, m68000: 0, m68020: 1, m68030: 4)?;
+        account_040_time!(self, timing040::TRAPCC_TAKEN);
         self.raise_exception(ExceptionGroup::Group2, VECTOR_TRAPV, None)
     }
 
@@ -2104,9 +2122,18 @@ where
         self.prefetch_pump()?;
 
         if !taken {
+            advance_cycles!(self, m68000: 0, others: 2)?;
+            account_040_time!(self, timing040::TRAPCC_NOT_TAKEN);
             return Ok(());
         }
 
+        // The 68020 takes the same time with or without the operand words
+        if OPERAND_WORDS == 0 {
+            advance_cycles!(self, m68000: 0, m68020: 1, m68030: 4)?;
+        } else {
+            advance_cycles!(self, m68030: 4)?;
+        }
+        account_040_time!(self, timing040::TRAPCC_TAKEN);
         self.raise_exception(ExceptionGroup::Group2, VECTOR_TRAPV, None)
     }
 
@@ -2562,8 +2589,10 @@ where
         let mut divisor = self.read_ea::<Word>(instr, instr.get_op2())? as Long;
 
         if divisor == 0 {
-            // Division by zero
-            self.advance_cycles(8)?;
+            // Division by zero. The manuals have no time for this on the 68020/68030;
+            // take that of TRAPV, which stacks the same frame.
+            advance_cycles!(self, m68000: 8, m68020: 3, m68030: 6)?;
+            account_040_time!(self, timing040::DIV_W_ZERO);
             self.regs.sr.set_n(false);
             self.regs.sr.set_c(false);
             self.regs.sr.set_z(false);
@@ -2630,8 +2659,10 @@ where
         let divisor = self.read_ea::<Word>(instr, instr.get_op2())? as i16 as i32;
 
         if divisor == 0 {
-            // Division by zero
-            self.advance_cycles(8)?;
+            // Division by zero. The manuals have no time for this on the 68020/68030;
+            // take that of TRAPV, which stacks the same frame.
+            advance_cycles!(self, m68000: 8, m68020: 3, m68030: 6)?;
+            account_040_time!(self, timing040::DIV_W_ZERO);
             self.regs.sr.set_n(false);
             self.regs.sr.set_c(false);
             self.regs.sr.set_z(false);
@@ -3281,7 +3312,9 @@ where
         }
 
         debug!("RESET instruction");
-        self.advance_cycles(128)?;
+        // 518 clocks on the 68020/68030 (MC68020UM 8.2.17, MC68030UM 11.6.17)
+        advance_cycles!(self, m68000: 128, others: 516)?;
+        account_040_time!(self, timing040::RESET);
 
         // The MacII / System 4.2 restart routine relies on part of a JMP
         // being in the prefetch queue because pulling on reset will re-
@@ -3315,6 +3348,7 @@ where
 
         self.prefetch_pump()?;
         self.set_sr(new_sr);
+        advance_cycles!(self, m68000: 0, others: 4)?;
 
         // TODO STOP ignored for now
         // Enables keyboard input in A/UX
@@ -3322,6 +3356,18 @@ where
     }
 
     /// RTE
+    /// RTE reads the rest of a bus fault frame of the 68020/68030: `longs`
+    /// long words after the format word. The manuals count 10 reads for the
+    /// short frame, 24 (68020) or 25 (68030) for the long one, the SR, PC
+    /// and format word reads included (MC68020UM 8.2.18, MC68030UM 11.6.18).
+    fn rte_fault_frame(&mut self, longs: Address) -> Result<()> {
+        let ssp = *self.regs.ssp();
+        for i in 0..longs {
+            self.read_ticks::<Long>(ssp.wrapping_add(8 + 4 * i))?;
+        }
+        Ok(())
+    }
+
     fn op_rte(&mut self, _instr: &Instruction) -> Result<()> {
         if !self.regs.sr.supervisor() {
             return self.raise_privilege_violation();
@@ -3349,6 +3395,7 @@ where
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
                 *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(8);
+                advance_cycles!(self, m68000: 0, m68020: 5, m68030: 2)?;
                 self.set_sr(sr);
                 self.set_pc(pc)?;
             }
@@ -3358,7 +3405,9 @@ where
                 let sr = self.read_ticks::<Word>(ssp.wrapping_add(0))?;
                 *self.regs.ssp_mut() = ssp.wrapping_add(8);
                 self.set_sr(sr);
-                return self.op_rte(_instr);
+                self.op_rte(_instr)?;
+                account_040_time!(self, timing040::rte(format));
+                return Ok(());
             }
             0b0010 if CPU_TYPE >= M68020 => {
                 // Six word frame
@@ -3372,6 +3421,8 @@ where
                 // Bus error at instruction boundary
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+                self.rte_fault_frame(6)?;
+                advance_cycles!(self, m68000: 0, m68020: 9, m68030: 2)?;
                 *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(32);
                 self.set_sr(sr);
                 self.set_pc(pc)?;
@@ -3380,6 +3431,9 @@ where
                 // Bus error during instruction
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+                self.rte_fault_frame(if CPU_TYPE == M68030 { 21 } else { 20 })?;
+                // The 68030 takes 3 clocks more than the manual: our reads take 3 clocks
+                advance_cycles!(self, m68020: 16)?;
                 *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(92);
                 self.set_sr(sr);
                 self.set_pc(pc)?;
@@ -3431,6 +3485,7 @@ where
         self.prefetch_refill()?;
         self.test_step_out();
 
+        account_040_time!(self, timing040::rte(format));
         Ok(())
     }
 
@@ -3642,10 +3697,8 @@ where
             Self::alu_sub::<T>(T::chop(max as u32), T::chop(value as u32), self.regs.sr);
         let t = RegisterSR::default().with_ccr(ccr);
 
-        match instr.get_addr_mode()? {
-            AddressingMode::Indirect => self.advance_cycles(2)?,
-            _ => (),
-        }
+        let indirect = instr.get_addr_mode()? == AddressingMode::Indirect;
+        advance_cycles!(self, all: if indirect { 2 } else { 0 })?;
 
         self.regs.sr.set_n(value < 0);
         self.regs.sr.set_z(value == 0);
@@ -3653,31 +3706,30 @@ where
         self.regs.sr.set_v(false);
 
         if t.v() || t.n() {
-            // Short trap
-            match instr.get_addr_mode()? {
-                AddressingMode::Indirect => {
-                    self.advance_cycles(6)?;
-                }
-                _ => self.advance_cycles(8)?,
-            }
+            // Short trap. Only the 68030 manual has a time for the trap; the 68020
+            // takes the same here.
+            advance_cycles!(
+                self,
+                m68000: if indirect { 6 } else { 8 },
+                others: if indirect { 12 } else { 14 },
+            )?;
             // Offset PC correctly for exception stack frame for CHK
             self.regs.pc = self.regs.pc.wrapping_add(2);
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_CHK, None);
         } else if self.regs.sr.n() {
             // Long trap
-            match instr.get_addr_mode()? {
-                AddressingMode::Indirect => self.advance_cycles(8)?,
-                _ => self.advance_cycles(10)?,
-            }
+            advance_cycles!(
+                self,
+                m68000: if indirect { 8 } else { 10 },
+                others: if indirect { 12 } else { 14 },
+            )?;
             // Offset PC correctly for exception stack frame for CHK
             self.regs.pc = self.regs.pc.wrapping_add(2);
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_CHK, None);
         }
 
-        match instr.get_addr_mode()? {
-            AddressingMode::Indirect => self.advance_cycles(4)?,
-            _ => self.advance_cycles(6)?,
-        }
+        advance_cycles!(self, all: if indirect { 4 } else { 6 })?;
+        account_040_time!(self, timing040::CHK, instr.get_addr_mode()?);
         Ok(())
     }
 
@@ -4235,7 +4287,8 @@ where
         let dir_mem_to_reg = (ext_word & 0x0800) == 0;
 
         if !self.regs.sr.supervisor() {
-            self.advance_cycles(4)?;
+            advance_cycles!(self, m68000: 0, m68020: 1, m68030: 4)?;
+            account_040_time!(self, timing040::TRAP);
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
         }
 
@@ -5238,8 +5291,10 @@ where
         let divisor = self.read_ea::<Long>(instr, instr.get_op2())? as u64;
 
         if divisor == 0 {
-            // Division by zero
-            self.advance_cycles(8)?;
+            // Division by zero. The manuals have no time for this on the 68020/68030;
+            // take that of TRAPV, which stacks the same frame.
+            advance_cycles!(self, m68000: 8, m68020: 3, m68030: 6)?;
+            account_040_time!(self, timing040::DIV_L_ZERO);
             self.regs.sr.set_n(false);
             self.regs.sr.set_c(false);
             self.regs.sr.set_z(false);
