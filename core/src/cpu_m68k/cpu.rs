@@ -2745,17 +2745,20 @@ where
                 let val: Long = self.read_ea(instr, instr.get_op2())?;
                 let bit = 1_u32 << (bitnum % 32);
                 self.regs.sr.set_z(val & bit == 0);
-                self.advance_cycles(2)?;
+                advance_cycles!(self, all: 2)?;
                 if let Some(cf) = calcfn {
+                    // The 68030 takes two more clocks than the 68020 to change
+                    // the bit (MC68020UM 8.2.13, MC68030UM 11.6.13)
+                    advance_cycles!(self, m68030: 2)?;
                     self.write_ea(instr, instr.get_op2(), cf(val, bit))?;
                     if bitnum % 32 > 15 {
-                        self.advance_cycles(2)?;
+                        advance_cycles!(self, m68000: 2)?;
                     }
                     if instr.mnemonic == InstructionMnemonic::BCLR_dn
                         || instr.mnemonic == InstructionMnemonic::BCLR_imm
                     {
                         // :'(
-                        self.advance_cycles(2)?;
+                        advance_cycles!(self, m68000: 2)?;
                     }
                 }
             }
@@ -2765,6 +2768,7 @@ where
                 self.regs.sr.set_z(val & bit == 0);
                 self.prefetch_pump()?;
                 if let Some(cf) = calcfn {
+                    advance_cycles!(self, m68030: 2)?;
                     self.write_ea(instr, instr.get_op2(), cf(val as Long, bit.into()) as Byte)?;
                 }
             }
@@ -2772,9 +2776,22 @@ where
 
         // Idle cycles
         if instr.get_addr_mode()? == AddressingMode::Immediate {
-            self.advance_cycles(2)?;
+            advance_cycles!(self, all: 2)?;
         }
 
+        account_040_time!(
+            self,
+            self.exec040_ea(
+                if calcfn.is_some() {
+                    &timing040::BIT_CHANGE
+                } else {
+                    &timing040::BTST
+                },
+                instr.get_addr_mode()?,
+            )
+            // One more clock with the bit number in a register
+            .plus(u16::from(!IMM)),
+        );
         Ok(())
     }
 
@@ -4265,6 +4282,76 @@ where
         self.write_ticks_len(ea, len, value >> (8 * (4 - len)))
     }
 
+    /// Idle clocks of a bit field instruction on the 68020: the table time
+    /// (MC68020UM 8.2.14) less the opcode and extension words and the operand bus
+    /// cycles. `five_bytes` is None for a data register, otherwise whether the field
+    /// in memory spans five bytes.
+    fn bf_idle_020(instr: &Instruction, five_bytes: Option<bool>) -> Ticks {
+        // Dn, memory < 5 bytes, memory 5 bytes
+        let (dn, mem, mem5) = match instr.mnemonic {
+            InstructionMnemonic::BFTST => (2, 4, 5),
+            InstructionMnemonic::BFCHG
+            | InstructionMnemonic::BFCLR
+            | InstructionMnemonic::BFSET => (8, 6, 8),
+            InstructionMnemonic::BFEXTS | InstructionMnemonic::BFEXTU => (4, 6, 8),
+            InstructionMnemonic::BFINS => (6, 4, 4),
+            InstructionMnemonic::BFFFO => (14, 17, 22),
+            _ => unreachable!(),
+        };
+        match five_bytes {
+            None => dn,
+            Some(false) => mem,
+            Some(true) => mem5,
+        }
+    }
+
+    /// Idle clocks of a bit field instruction on the 68030, like bf_idle_020()
+    /// (MC68030UM 11.6.14)
+    fn bf_idle_030(instr: &Instruction, five_bytes: Option<bool>) -> Ticks {
+        // Dn, memory < 5 bytes, memory 5 bytes
+        let (dn, mem, mem5) = match instr.mnemonic {
+            InstructionMnemonic::BFTST => (4, 4, 6),
+            InstructionMnemonic::BFCHG
+            | InstructionMnemonic::BFCLR
+            | InstructionMnemonic::BFSET => (10, 6, 10),
+            InstructionMnemonic::BFEXTS | InstructionMnemonic::BFEXTU => (6, 6, 10),
+            InstructionMnemonic::BFINS => (8, 4, 6),
+            InstructionMnemonic::BFFFO => (16, 16, 20),
+            _ => unreachable!(),
+        };
+        match five_bytes {
+            None => dn,
+            Some(false) => mem,
+            Some(true) => mem5,
+        }
+    }
+
+    /// Internal time of a bit field instruction. `field` is None for a data
+    /// register, otherwise the field in memory: the address of its first byte,
+    /// its offset in that byte (0-7) and its width.
+    fn bf_cycles(
+        &mut self,
+        instr: &Instruction,
+        sec: BfxExtWord,
+        field: Option<(Address, i32, Long)>,
+    ) -> Result<()> {
+        let (five_bytes, spans) = match field {
+            None => (None, None),
+            Some((ea, offset, width)) => (
+                Some(offset + width as i32 > 32),
+                Some(Self::bf_spans040(ea, offset, width)),
+            ),
+        };
+        advance_cycles!(
+            self,
+            m68000: 0,
+            m68020: Self::bf_idle_020(instr, five_bytes),
+            m68030: Self::bf_idle_030(instr, five_bytes),
+        )?;
+        account_040_time!(self, self.exec040_bf(instr, sec, spans)?);
+        Ok(())
+    }
+
     /// BFCLR
     fn op_bfclr(&mut self, instr: &Instruction) -> Result<()> {
         let sec = BfxExtWord(self.fetch_pump()?);
@@ -4297,6 +4384,7 @@ where
                 self.regs.sr.set_v(false);
                 self.regs.sr.set_c(false);
                 self.regs.write_d(instr.get_op2(), data & !mask);
+                self.bf_cycles(instr, sec, None)?;
             }
             _ => {
                 // Memory version
@@ -4335,7 +4423,8 @@ where
                 self.write_bitfield(ea, offset, width, data_long & !mask_long)?;
 
                 // Handle bit fields that cross 32-bit boundaries
-                if (width as i32 + offset) > 32 {
+                let five_bytes = width as i32 + offset > 32;
+                if five_bytes {
                     let mask_byte = (mask_base as Byte) << (8 - offset);
                     let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
 
@@ -4346,6 +4435,7 @@ where
 
                     self.write_ticks(ea.wrapping_add(4), data_byte & !mask_byte)?;
                 }
+                self.bf_cycles(instr, sec, Some((ea, offset, width)))?;
             }
         }
 
@@ -4391,6 +4481,7 @@ where
                 self.regs.sr.set_c(false);
 
                 self.regs.write_d(sec.reg(), data);
+                self.bf_cycles(instr, sec, None)?;
             }
             _ => {
                 // Memory version
@@ -4419,7 +4510,8 @@ where
                 data <<= offset as isize;
 
                 // If the bit field crosses a 32-bit boundary, read an additional byte
-                if (offset + width as i32) > 32 {
+                let five_bytes = offset + width as i32 > 32;
+                if five_bytes {
                     let extra_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))? as Long;
                     data |= (extra_byte << (offset as isize)) >> 8;
                 }
@@ -4434,6 +4526,7 @@ where
                 self.regs.sr.set_v(false);
                 self.regs.sr.set_c(false);
                 self.regs.write_d(sec.reg(), data);
+                self.bf_cycles(instr, sec, Some((ea, offset, width)))?;
             }
         }
 
@@ -4473,6 +4566,7 @@ where
                 self.regs.sr.set_v(false);
                 self.regs.sr.set_c(false);
                 self.regs.write_d(sec.reg(), result);
+                self.bf_cycles(instr, sec, None)?;
             }
             _ => {
                 // Memory version
@@ -4499,7 +4593,8 @@ where
                 data <<= offset as isize;
 
                 // If the bit field crosses a 32-bit boundary, read an additional byte
-                if (offset + width as i32) > 32 {
+                let five_bytes = offset + width as i32 > 32;
+                if five_bytes {
                     let extra_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))? as Long;
                     data |= (extra_byte << (offset as isize)) >> 8;
                 }
@@ -4512,6 +4607,7 @@ where
                 self.regs.sr.set_v(false);
                 self.regs.sr.set_c(false);
                 self.regs.write_d(sec.reg(), result);
+                self.bf_cycles(instr, sec, Some((ea, offset, width)))?;
             }
         }
 
@@ -4563,6 +4659,7 @@ where
                 }
 
                 self.regs.write_d(sec.reg(), result_offset);
+                self.bf_cycles(instr, sec, None)?;
             }
             _ => {
                 // Memory version
@@ -4596,7 +4693,8 @@ where
                 data <<= local_offset as isize;
 
                 // If the bit field crosses a 32-bit boundary, read an additional byte
-                if (local_offset + width as i32) > 32 {
+                let five_bytes = local_offset + width as i32 > 32;
+                if five_bytes {
                     let extra_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))? as Long;
                     data |= (extra_byte << (local_offset as isize)) >> 8;
                 }
@@ -4621,6 +4719,7 @@ where
                 }
 
                 self.regs.write_d(sec.reg(), result_offset as Long);
+                self.bf_cycles(instr, sec, Some((ea, local_offset, width)))?;
             }
         }
 
@@ -4660,6 +4759,7 @@ where
                 self.regs.sr.set_v(false);
                 self.regs.sr.set_c(false);
                 self.regs.write_d(instr.get_op2(), data | mask);
+                self.bf_cycles(instr, sec, None)?;
             }
             _ => {
                 // Memory version
@@ -4699,7 +4799,8 @@ where
                 self.write_bitfield(ea, offset, width, data_long | mask_long)?;
 
                 // Handle bit fields that cross 32-bit boundaries
-                if (width as i32 + offset) > 32 {
+                let five_bytes = width as i32 + offset > 32;
+                if five_bytes {
                     let mask_byte = (mask_base as Byte) << (8 - offset);
                     let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
 
@@ -4710,6 +4811,7 @@ where
 
                     self.write_ticks(ea.wrapping_add(4), data_byte | mask_byte)?;
                 }
+                self.bf_cycles(instr, sec, Some((ea, offset, width)))?;
             }
         }
 
@@ -4749,6 +4851,7 @@ where
                 self.regs.sr.set_c(false);
 
                 // No data modification for BFTST
+                self.bf_cycles(instr, sec, None)?;
             }
             _ => {
                 // Memory version
@@ -4782,7 +4885,8 @@ where
                 self.regs.sr.set_z(data_long & mask_long == 0);
 
                 // Handle bit fields that cross 32-bit boundaries
-                if (width as i32 + offset) > 32 {
+                let five_bytes = width as i32 + offset > 32;
+                if five_bytes {
                     let mask_byte = (mask_base as Byte) << (8 - offset);
                     let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
 
@@ -4795,6 +4899,7 @@ where
                 self.regs.sr.set_c(false);
 
                 // No data modification for BFTST
+                self.bf_cycles(instr, sec, Some((ea, offset, width)))?;
             }
         }
 
@@ -4835,6 +4940,7 @@ where
                 self.regs.sr.set_c(false);
 
                 self.regs.write_d(data_reg, data ^ mask);
+                self.bf_cycles(instr, sec, None)?;
             }
             _ => {
                 // Memory version
@@ -4873,7 +4979,8 @@ where
                 self.write_bitfield(ea, offset, width, data_long ^ mask_long)?;
 
                 // Handle bit fields that cross 32-bit boundaries
-                if (width as i32 + offset) > 32 {
+                let five_bytes = width as i32 + offset > 32;
+                if five_bytes {
                     let mask_byte = (mask_base as Byte) << (8 - offset);
                     let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
 
@@ -4885,6 +4992,7 @@ where
                     // Write the extended part
                     self.write_ticks(ea.wrapping_add(4), data_byte ^ mask_byte)?;
                 }
+                self.bf_cycles(instr, sec, Some((ea, offset, width)))?;
             }
         }
 
@@ -4938,6 +5046,7 @@ where
                 data &= !mask;
                 data |= insert;
                 self.regs.write_d(data_reg, data);
+                self.bf_cycles(instr, sec, None)?;
             }
             _ => {
                 // Memory version
@@ -4983,7 +5092,8 @@ where
                 self.write_bitfield(ea, offset, width, (data_long & !mask_long) | insert_long)?;
 
                 // Handle bit fields that cross 32-bit boundaries
-                if (width as i32 + offset) > 32 {
+                let five_bytes = width as i32 + offset > 32;
+                if five_bytes {
                     let mask_byte = (mask_base as Byte) << (8 - offset);
                     let insert_byte = (insert_base as Byte) << (8 - offset);
                     let data_byte = self.read_ticks::<Byte>(ea.wrapping_add(4))?;
@@ -4994,6 +5104,7 @@ where
                     // Write the extended part
                     self.write_ticks(ea.wrapping_add(4), (data_byte & !mask_byte) | insert_byte)?;
                 }
+                self.bf_cycles(instr, sec, Some((ea, offset, width)))?;
             }
         }
 
