@@ -9,6 +9,7 @@ pub mod pmmu;
 pub mod regs;
 #[cfg(test)]
 pub mod tests;
+mod timing040;
 
 use num_traits::ToBytes;
 
