@@ -859,7 +859,7 @@ impl BusMember<Address> for ScsiController {
 
     fn write(&mut self, addr: Address, val: u8) -> Option<()> {
         let _is_write = addr & 1 != 0;
-        let dack = addr & 0b0010_0000_0000 != 0;
+        let _dack = addr & 0b0010_0000_0000 != 0;
         let reg = NcrWriteReg::from_u32((addr >> 4) & 0b111).unwrap();
 
         //debug!(
@@ -869,14 +869,10 @@ impl BusMember<Address> for ScsiController {
 
         match reg {
             // A CPU write (CS) only loads the Output Data Register. The byte
-            // is sent by the ACK handshake (ICR) or, with DACK, by DMA.
-            NcrWriteReg::ODR if !dack => {
-                self.reg_odr = val;
-                self.try_complete_selection();
-                Some(())
-            }
+            // is sent by the ACK handshake (ICR) or, with DACK, by DMA
+            // (write_dma()).
             NcrWriteReg::ODR => {
-                self.write_datareg(val);
+                self.reg_odr = val;
                 self.try_complete_selection();
                 Some(())
             }
