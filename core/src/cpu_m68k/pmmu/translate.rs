@@ -760,21 +760,17 @@ where
             mut modified,
         } = walk?;
 
-        // Enforce supervisor-only access on the resolved page
+        // Enforce supervisor-only access on the resolved page. M68030UM
+        // Table 9-3: PTEST completes the search and reports S in MMUSR; a
+        // real access faults instead.
         let supervisor = fc & (1 << 2) != 0;
-        if !supervisor && s {
-            if !PTEST {
-                self.regs.pmmu.psr = RegisterPSR::default();
-            }
+        if !PTEST && !supervisor && s {
+            self.regs.pmmu.psr = RegisterPSR::default();
             self.regs.pmmu.psr.set_supervisor_violation(true);
             self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
-            if PTEST {
-                return Err(anyhow!(CpuError::Pagefault(PagefaultCause::SupervisorOnly)));
-            } else {
-                self.regs.pmmu.psr.set_bus_error(true);
-                self.pmmu_record_pagefault(vaddr, writing);
-                return Err(Self::pmmu_pagefault_to_buserror(fc, vaddr, writing));
-            }
+            self.regs.pmmu.psr.set_bus_error(true);
+            self.pmmu_record_pagefault(vaddr, writing);
+            return Err(Self::pmmu_pagefault_to_buserror(fc, vaddr, writing));
         }
 
         // Enforce write-protect on the resolved page

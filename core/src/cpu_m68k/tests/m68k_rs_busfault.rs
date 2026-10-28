@@ -308,6 +308,58 @@ fn ptest_reports_write_protect_on_read_walks() {
     );
 }
 
+/// PTEST completes a search that finds a supervisor-only long-format page
+/// descriptor and reports S in MMUSR (M68030UM Table 9-3) instead of
+/// aborting; a real user access to the same page still faults.
+#[test]
+fn ptest_reports_supervisor_only_on_user_probe() {
+    let bus = Testbus::new(M68030_ADDRESS_MASK);
+    let mut cpu = TestCpu::new(bus);
+
+    const ROOT: Address = 0x8000;
+    const B: Address = 0x8800;
+    const PAGE: Address = 0x0001_0000; // root idx 0, B idx 2
+    // Long-format root descriptor (DT=3, LU=1: no lower-limit violation)
+    // -> long-format B table.
+    write_long(&mut cpu.bus, ROOT, 0x8000_0003);
+    write_long(&mut cpu.bus, ROOT + 4, B);
+    // B[0]: identity page 0. B[1]: identity page 0x8000.
+    write_long(&mut cpu.bus, B, 0x0000_0001);
+    write_long(&mut cpu.bus, B + 4, 0x0000_0000);
+    write_long(&mut cpu.bus, B + 8, 0x0000_0001);
+    write_long(&mut cpu.bus, B + 12, 0x0000_8000);
+    // B[2]: long page descriptor, DT=1, S set, page 0.
+    write_long(&mut cpu.bus, B + 16, 0x0000_0101);
+    write_long(&mut cpu.bus, B + 20, 0x0000_0000);
+
+    let mut crp = RootPointerReg(0);
+    crp.set_table_addr(ROOT >> 4);
+    crp.set_dt(3); // long-format root descriptors
+    crp.set_limit(0x7FFF);
+    cpu.regs.pmmu.crp = crp;
+    // E=1, IS=0, TIA=8, TIB=9, PS=32 KB.
+    cpu.regs.pmmu.tc = TcReg(0x80F0_8900);
+    cpu.pmmu_cache_ensure();
+
+    cpu.regs.sr.set_supervisor(true);
+    cpu.regs.isp = SSP;
+    cpu.regs.a[0] = PAGE;
+    cpu.regs.d[0] = 1; // SFC = 1: user data space
+    write_word(&mut cpu.bus, CODE, 0x4E7B); // MOVEC D0,SFC
+    write_word(&mut cpu.bus, CODE + 2, 0x0000);
+    write_word(&mut cpu.bus, CODE + 4, 0xF010); // PTESTR SFC,(A0),#7
+    write_word(&mut cpu.bus, CODE + 6, 0x9E00);
+    cpu.set_pc(CODE).expect("set_pc");
+    cpu.prefetch_refill().expect("prefetch");
+
+    cpu.step().expect("MOVEC");
+    cpu.step().expect("PTESTR");
+    assert_eq!(
+        cpu.regs.pmmu.psr.0, 0x2002,
+        "MMUSR = S | N=2: supervisor-only page probed from user space"
+    );
+}
+
 /// MOVES in user mode is a privilege violation regardless of direction.
 #[test]
 fn moves_is_privileged() {
