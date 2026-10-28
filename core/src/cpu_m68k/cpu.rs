@@ -28,7 +28,7 @@ use super::instruction::{
     MulxExtWord,
 };
 use super::regs::{Register, RegisterFile, RegisterSR, RestartRegisterFile};
-use super::timing040::Exec040;
+use super::timing040::{Exec040, FullEa040};
 use super::{
     CpuM68kType, CpuSized, FPU_NONE, M68000, M68010, M68020, M68020_SR_MASK, M68030_SR_MASK,
     TORDER_HIGHLOW, TORDER_LOWHIGH,
@@ -383,6 +383,11 @@ pub struct CpuM68k<
     #[serde(skip)]
     pub(in crate::cpu_m68k) exec040_prev: u16,
 
+    /// Addressing modes of the effective addresses with a full format
+    /// extension word of this step, in order, for the 68040 times
+    #[serde(skip)]
+    pub(in crate::cpu_m68k) step_ea040: [Option<FullEa040>; 2],
+
     /// Time of last bus sync in cycles
     pub last_bus_sync: Ticks,
 
@@ -496,6 +501,7 @@ where
             cycles: 0,
             exec040: Exec040::DEFAULT,
             exec040_prev: 0,
+            step_ea040: [None; 2],
             last_bus_sync: 0,
             prefetch: VecDeque::with_capacity(3),
             step_ea_addr: None,
@@ -773,6 +779,7 @@ where
         self.step_over_addr = None;
         self.step_ea_load = None;
         self.exec040 = Exec040::DEFAULT;
+        self.step_ea040 = [None; 2];
 
         if CPU_TYPE >= M68020 {
             self.restart_regs = Some(RestartRegisterFile::from(&self.regs));
