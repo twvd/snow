@@ -23,7 +23,7 @@ use crate::mac::scsi::controller::ScsiController;
 use crate::mac::sound::v8_sonora::{V8Sound, V8Variant};
 use crate::mac::swim::Swim;
 use crate::mac::via_common::{LineState, ViaLine};
-use crate::mac::{MacModel, MacMonitor};
+use crate::mac::{MacModel, MacMonitor, WARM_START_SIGNATURE};
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
@@ -251,7 +251,7 @@ where
         egret.adb_add_device(AdbMouse::new());
         egret.adb_add_device(AdbKeyboard::new());
 
-        Self {
+        let mut bus = Self {
             model,
             gate_array,
 
@@ -286,7 +286,11 @@ where
             progkey_pressed: LatchingEvent::default(),
             mouse_mode,
             mouse_ready: false,
-        }
+        };
+
+        bus.disable_memtest();
+
+        bus
     }
 
     /// Reinstalls things that can't be serialized and does some updates upon deserialization
@@ -323,6 +327,37 @@ where
             GateArray::V8 => v8::decode(addr, self.pseudovia.b().fc3()),
             GateArray::Sonora { .. } => sonora::decode(addr),
         }
+    }
+
+    /// Makes the ROM skip its memory test
+    ///
+    /// These ROMs do not look for the warm start signature at $CFC but in the
+    /// long just below the memory table that they build at the top of the
+    /// first RAM bank they find. On the V8 that is the soldered bank, and the
+    /// table has one more entry with a SIMM; on the Sonora it is the top of
+    /// the RAM. The offsets were measured by running the ROMs with every RAM
+    /// size.
+    fn disable_memtest(&mut self) {
+        const MB: usize = 1024 * 1024;
+
+        let simm_size = self.ram.len() - self.ram_soldered;
+        let index = match self.gate_array {
+            GateArray::V8 => {
+                // Only 2 MB of the soldered RAM are used with an 8 MB SIMM
+                let soldered_size = if self.model == MacModel::LCII && simm_size == 8 * MB {
+                    2 * MB
+                } else {
+                    self.ram_soldered
+                };
+                let below_top = if simm_size == 0 { 0x18 } else { 0x20 };
+                simm_size + soldered_size - below_top
+            }
+            // The SIMM, when there is one, is the top of the RAM
+            GateArray::Sonora { .. } if simm_size != 0 => simm_size - 0x38,
+            GateArray::Sonora { .. } => self.ram.len() - 0x38,
+        };
+        info!("Skipping memory test");
+        self.ram[index..index + 4].copy_from_slice(&WARM_START_SIGNATURE.1.to_be_bytes());
     }
 
     /// Translates an address in the RAM area to an index in the RAM, if
@@ -960,6 +995,7 @@ where
         if hard {
             // Clear RAM
             self.ram.fill(0);
+            self.disable_memtest();
             self.ram_dirty
                 .extend(0..(self.ram.len() / RAM_DIRTY_PAGESIZE));
         }
