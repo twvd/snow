@@ -691,9 +691,15 @@ impl ScsiController {
         Ok(())
     }
 
-    /// DRQ only occurs in DMA mode (NCR 5380 manual, DRQ pin)
+    /// DRQ only occurs in DMA mode (NCR 5380 manual, DRQ pin). A phase
+    /// mismatch prevents the recognition of REQ (manual 8.5), except in a
+    /// send, where the chip leaves the bus: DRQ then lets the pending
+    /// writes complete (as MAME does). A/UX relies on it: it writes its
+    /// CDBs with long words, two bytes past the end of the command.
     pub fn get_drq(&self) -> bool {
-        self.reg_mr.dma_mode() && (self.reg_csr.req() || self.set_req.peek())
+        self.reg_mr.dma_mode()
+            && (self.reg_csr.req() || self.set_req.peek())
+            && (self.phase_match() || !self.reg_tcr.assert_io())
     }
 
     pub fn read_dma(&mut self) -> u8 {
