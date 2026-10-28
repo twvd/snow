@@ -169,7 +169,12 @@ where
             };
         }
 
-        self.advance_cycles(Self::fpu_timings().restore())?;
+        let timings = Self::fpu_timings();
+        self.advance_cycles(if state & 0xFF000000 == 0 {
+            timings.restore_null()
+        } else {
+            timings.restore()
+        })?;
 
         Ok(())
     }
@@ -663,7 +668,7 @@ where
             }
         }
 
-        self.advance_cycles(Self::fpu_timings().move_creg())
+        self.advance_cycles(Self::fpu_timings().move_creg(instr, extword.reg(), !to_ea)?)
     }
 
     /// FMOVEM - Multiple FPU register move

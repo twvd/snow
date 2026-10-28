@@ -5,7 +5,6 @@
 /// compile time, and only that expression is evaluated. The 68040 takes the
 /// time of its instructions from its own tables instead (timing040.rs,
 /// account_040_time!), so this does nothing on the 68040.
-#[allow(unused_macros)]
 macro_rules! advance_cycles {
     ($cpu:expr, all: $c:expr $(,)?) => {
         advance_cycles!($cpu, m68000: $c, m68020: $c, m68030: $c)
@@ -52,7 +51,6 @@ macro_rules! advance_cycles {
 /// which the step charges at its end (timing040.rs): a fixed time, or the time
 /// in a column of the tables for an addressing mode. Compiles to nothing on
 /// the other CPUs, and only evaluates its arguments on the 68040.
-#[allow(unused_macros)]
 macro_rules! account_040_time {
     ($cpu:expr, $time:expr $(,)?) => {
         if CPU_TYPE == $crate::cpu_m68k::M68040 {
