@@ -389,6 +389,35 @@ fn ptest_a_bit_returns_last_descriptor_on_failure() {
     );
 }
 
+/// PTEST with a level operand ends the search at that level (M68000PRM
+/// 6-62): after one level on a two-level tree the search stops on the valid
+/// root descriptor and reports N=1 without I, and the A bit returns the last
+/// successfully fetched descriptor.
+#[test]
+fn ptest_level_limit_stops_the_search() {
+    let mut cpu = user_mode_030_with_table(0);
+
+    cpu.regs.sr.set_supervisor(true);
+    cpu.regs.isp = SSP;
+    cpu.regs.a[0] = FAULT_PAGE;
+    cpu.regs.d[0] = 1; // SFC = 1
+    write_word(&mut cpu.bus, CODE, 0x4E7B); // MOVEC D0,SFC
+    write_word(&mut cpu.bus, CODE + 2, 0x0000);
+    write_word(&mut cpu.bus, CODE + 4, 0xF010); // PTESTR SFC,(A0),#1,A1
+    write_word(&mut cpu.bus, CODE + 6, 0x8720);
+    reload(&mut cpu);
+
+    step_n(&mut cpu, 2);
+    assert_eq!(
+        cpu.regs.pmmu.psr.0, 0x0001,
+        "MMUSR = N=1, no I: the search stopped on the root descriptor"
+    );
+    assert_eq!(
+        cpu.regs.a[1], ROOT_TABLE,
+        "A bit returns the last successfully fetched descriptor"
+    );
+}
+
 /// MOVES in user mode is a privilege violation regardless of direction.
 #[test]
 fn moves_is_privileged() {

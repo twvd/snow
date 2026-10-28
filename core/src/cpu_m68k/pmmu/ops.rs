@@ -6,13 +6,13 @@ use anyhow::{Result, bail};
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::bus::FC_MASK;
-use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_PRIVILEGE_VIOLATION};
+use crate::cpu_m68k::cpu::{CpuError, CpuM68k, ExceptionGroup, VECTOR_PRIVILEGE_VIOLATION};
 use crate::cpu_m68k::instruction::Instruction;
 use crate::cpu_m68k::pmmu::instruction::{Pmove3Extword, PtestExtword};
 use crate::types::{DoubleLong, Long, Word};
 
 use super::instruction::Pmove1Extword;
-use super::regs::{TcReg, TrTranslationReg};
+use super::regs::{RegisterPSR, TcReg, TrTranslationReg};
 
 impl<
     TBus,
@@ -291,16 +291,62 @@ where
         instr: &Instruction,
         extword: Word,
     ) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+
         let extword = PtestExtword(extword);
 
         let fc = self.decode_pmmu_fc(extword.fc(), "PTEST")?;
 
         let vaddr = self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-        // PTEST never raises: PSR reflects what happened.
-        let _ = self.pmmu_translate_lookup::<true>(fc, vaddr, !extword.read());
-        // M68030UM 9.8: if the A bit is set, An is loaded with the physical
-        // address of the last descriptor fetched during the search, whether
-        // or not the search found a valid translation.
+        let writing = !extword.read();
+
+        if extword.level() == 0 {
+            // M68000PRM 6-62..6-64: level 0 searches the ATC only. With an
+            // address-register operand the MC68030 takes an F-line
+            // unimplemented instruction exception.
+            if extword.a_set() {
+                return self.op_linef(instr);
+            }
+
+            let mut psr = RegisterPSR::default();
+            if self.pmmu_tt_match(fc, vaddr, writing) {
+                // M68030UM Table 9-3: T set; the remaining bits are
+                // undefined.
+                psr.set_transparent(true);
+            } else if let Some(entry) = self.pmmu_atc_probe(fc, vaddr) {
+                // Snow's ATC entries carry no bus-error bit, so B stays
+                // clear.
+                if entry.wp {
+                    psr.set_write_protected(true);
+                }
+                if entry.modified {
+                    psr.set_modified(true);
+                }
+            } else {
+                psr.set_invalid(true);
+            }
+            self.regs.pmmu.psr = psr;
+            return Ok(());
+        }
+
+        // Levels 1-7 search the translation tables to the requested level.
+        // PTEST never raises: fault conditions are recorded in the PSR by
+        // the walk itself.
+        match self.pmmu_translate_lookup::<true>(fc, vaddr, writing, extword.level()) {
+            Ok(_) => {}
+            Err(e) => match e.downcast_ref::<CpuError>() {
+                // Fault-type outcomes and bus errors reading descriptors
+                // have already been recorded in the PSR.
+                Some(CpuError::Pagefault(_) | CpuError::AddressError(_)) => {}
+                other => log::warn!("PTEST unexpected walk error: {other:?}"),
+            },
+        }
+        // M68000PRM 6-63: if the A bit is set, An is loaded with the
+        // physical address of the last descriptor successfully fetched
+        // during the search, whether or not a valid translation was found.
         if extword.a_set() {
             self.regs.write_a(extword.an(), self.regs.pmmu.last_desc);
         }

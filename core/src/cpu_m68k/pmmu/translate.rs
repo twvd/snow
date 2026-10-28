@@ -34,6 +34,15 @@ struct PmmuWalkResult {
     modified: bool,
 }
 
+/// How the page-table walk ended.
+enum PmmuWalkEnd {
+    /// A page (or early-termination) descriptor ended the walk.
+    Page(PmmuWalkResult),
+    /// The PTEST level limit stopped the walk on a valid table descriptor,
+    /// with the write-protect/supervisor status accumulated so far.
+    LevelStop { wp: bool, s: bool },
+}
+
 pub(in crate::cpu_m68k) fn atc_generation_default() -> u32 {
     // 0 is reserved for unused entries
     1
@@ -300,7 +309,14 @@ where
         wp: bool,
         s: bool,
         mutate: bool,
-    ) -> Result<PmmuWalkResult> {
+        remaining: &mut u8,
+    ) -> Result<PmmuWalkEnd> {
+        // PTEST level limit: stop on a valid table descriptor (M68000PRM
+        // 6-63). Full walks pass u8::MAX and never stop here.
+        if *remaining == 0 {
+            return Ok(PmmuWalkEnd::LevelStop { wp, s });
+        }
+        *remaining -= 1;
         match dt {
             PmmuPageDescriptorType::Valid4b => self.pmmu_fetch_table_short(
                 vaddr,
@@ -311,6 +327,7 @@ where
                 wp,
                 s,
                 mutate,
+                remaining,
             ),
             PmmuPageDescriptorType::Valid8b => self.pmmu_fetch_table_long(
                 vaddr,
@@ -321,6 +338,7 @@ where
                 wp,
                 s,
                 mutate,
+                remaining,
             ),
             _ => bail!("Unimplemented DT {:?}", dt),
         }
@@ -348,7 +366,8 @@ where
         wp: bool,
         s: bool,
         mutate: bool,
-    ) -> Result<PmmuWalkResult> {
+        remaining: &mut u8,
+    ) -> Result<PmmuWalkEnd> {
         let Some(ti) = tis.pop() else {
             bail!("PMMU table search beyond maximum depth");
         };
@@ -359,9 +378,12 @@ where
         Self::pmmu_check_limit(idx, parent_limit)?;
         let entry_addr = table_addr.wrapping_add(idx * 4);
 
+        let entry_word = self.read_ticks_physical::<Long>(entry_addr)?;
+        // Record the last descriptor only once it has been fetched
+        // successfully (M68000PRM 6-63: a bus error leaves An at the last
+        // successfully fetched descriptor).
         self.regs.pmmu.last_desc = entry_addr;
 
-        let entry_word = self.read_ticks_physical::<Long>(entry_addr)?;
         let child_dt = PmmuPageDescriptorType::from_u32(entry_word & 0b11).unwrap();
         match child_dt {
             PmmuPageDescriptorType::Invalid => {
@@ -374,14 +396,14 @@ where
                 if mutate && !entry.u() {
                     self.write_ticks_physical::<Long>(entry_addr, entry_word | (1 << 3))?;
                 }
-                Ok(PmmuWalkResult {
+                Ok(PmmuWalkEnd::Page(PmmuWalkResult {
                     page_addr: entry.page_addr() << 8,
                     wp: wp | entry.wp(),
                     // Short format has no S bit; pass the accumulator through unchanged
                     s,
                     leaf_desc_addr: entry_addr,
                     modified: entry.m(),
-                })
+                }))
             }
             PmmuPageDescriptorType::Valid4b | PmmuPageDescriptorType::Valid8b => {
                 // Recurse to child
@@ -402,6 +424,7 @@ where
                     wp | entry.wp(),
                     s,
                     mutate,
+                    remaining,
                 )
             }
         }
@@ -418,7 +441,8 @@ where
         wp: bool,
         s: bool,
         mutate: bool,
-    ) -> Result<PmmuWalkResult> {
+        remaining: &mut u8,
+    ) -> Result<PmmuWalkEnd> {
         let Some(ti) = tis.pop() else {
             bail!("PMMU table search beyond maximum depth");
         };
@@ -429,10 +453,10 @@ where
         Self::pmmu_check_limit(idx, parent_limit)?;
         let entry_addr = table_addr.wrapping_add(idx * 8);
 
-        self.regs.pmmu.last_desc = entry_addr;
-
         let entry_word1 = self.read_ticks_physical::<Long>(entry_addr)?;
         let entry_word2 = self.read_ticks_physical::<Long>(entry_addr + 4)?;
+        // Record the last descriptor only once fetched successfully.
+        self.regs.pmmu.last_desc = entry_addr;
 
         let child_dt = PmmuPageDescriptorType::from_u32(entry_word1 & 0b11).unwrap();
         match child_dt {
@@ -448,13 +472,13 @@ where
                 if mutate && !entry.u() {
                     self.write_ticks_physical::<Long>(entry_addr, entry_word1 | (1 << 3))?;
                 }
-                Ok(PmmuWalkResult {
+                Ok(PmmuWalkEnd::Page(PmmuWalkResult {
                     page_addr: entry.page_addr() << 8,
                     wp: wp | entry.wp(),
                     s: s | entry.s(),
                     leaf_desc_addr: entry_addr,
                     modified: entry.m(),
-                })
+                }))
             }
             PmmuPageDescriptorType::Valid4b | PmmuPageDescriptorType::Valid8b => {
                 // Recurse to child
@@ -478,6 +502,7 @@ where
                     // S is inherited from any long-format ancestor
                     s | entry.s(),
                     mutate,
+                    remaining,
                 )
             }
         }
@@ -486,7 +511,7 @@ where
     /// Returns true if any enabled TT register transparently maps this access.
     /// TT regions bypass the page tables and the ATC entirely.
     #[inline]
-    fn pmmu_tt_match(&self, fc: u8, vaddr: Address, writing: bool) -> bool {
+    pub(in crate::cpu_m68k) fn pmmu_tt_match(&self, fc: u8, vaddr: Address, writing: bool) -> bool {
         for tt in &self.regs.pmmu.tt {
             if !tt.e() {
                 continue;
@@ -515,6 +540,17 @@ where
     fn pmmu_atc_key(&self, vaddr: Address) -> usize {
         let is_mask = Address::MAX.unbounded_shl(32 - self.regs.pmmu.tc.is());
         ((vaddr & !is_mask) >> self.regs.pmmu.tc.ps()) as usize
+    }
+
+    /// Generation-aware ATC lookup for PTEST level 0: the shared slot's entry
+    /// for the page holding `vaddr` in the `fc` address space.
+    pub(in crate::cpu_m68k) fn pmmu_atc_probe(
+        &self,
+        fc: u8,
+        vaddr: Address,
+    ) -> Option<PmmuAtcEntry> {
+        let atc = self.pmmu_atc_tableidx(fc);
+        self.pmmu_atc_lookup(atc, self.pmmu_atc_key(vaddr))
     }
 
     /// The set of function codes `f` for which `(f ^ fc) & mask == 0`: the
@@ -621,7 +657,7 @@ where
         }
 
         let (paddr, wp, s, leaf_desc_addr, modified) =
-            self.pmmu_translate_lookup::<false>(fc, vaddr, writing)?;
+            self.pmmu_translate_lookup::<false>(fc, vaddr, writing, u8::MAX)?;
         let cache_key = self.pmmu_atc_key(vaddr);
         self.pmmu_atc[atc][cache_key] = Some(PmmuAtcEntry {
             paddr: paddr & !page_mask,
@@ -690,6 +726,7 @@ where
         fc: u8,
         vaddr: Address,
         writing: bool,
+        level: u8,
     ) -> Result<(Address, bool, bool, Address, bool)> {
         let rootptr = self.pmmu_rootptr(fc);
 
@@ -705,6 +742,9 @@ where
             self.regs.pmmu.tc.tia(),
         ]);
         let mut used_bits = self.regs.pmmu.tc.is() as Address;
+        // PTEST searches to the requested level and stops there (M68000PRM
+        // 6-62); real translations walk to completion.
+        let mut remaining = if PTEST { level } else { u8::MAX };
         let walk = self
             .pmmu_fetch_table(
                 vaddr << self.regs.pmmu.tc.is(),
@@ -717,9 +757,19 @@ where
                 false,
                 false,
                 !PTEST,
+                &mut remaining,
             )
             .map_err(|e| match e.downcast_ref() {
                 Some(CpuError::AddressError(ae)) => {
+                    if PTEST {
+                        // M68000PRM 6-64: B is set if a bus error is
+                        // encountered during the table search; I is set
+                        // whenever B (or L) is set.
+                        self.regs.pmmu.psr = RegisterPSR::default();
+                        self.regs.pmmu.psr.set_bus_error(true);
+                        self.regs.pmmu.psr.set_invalid(true);
+                        self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
+                    }
                     anyhow!("Address error while reading page tables: {:X?}", ae)
                 }
                 Some(CpuError::Pagefault(cause)) => {
@@ -752,13 +802,33 @@ where
                 _ => e,
             });
 
-        let PmmuWalkResult {
-            page_addr,
-            wp,
-            s,
-            leaf_desc_addr,
-            mut modified,
-        } = walk?;
+        let (page_addr, wp, s, leaf_desc_addr, mut modified) = match walk? {
+            PmmuWalkEnd::Page(r) => {
+                let PmmuWalkResult {
+                    page_addr,
+                    wp,
+                    s,
+                    leaf_desc_addr,
+                    modified,
+                } = r;
+                (page_addr, wp, s, leaf_desc_addr, modified)
+            }
+            PmmuWalkEnd::LevelStop { wp, s } => {
+                // The level limit stopped the search on a valid table
+                // descriptor: report the accumulated status without a fault
+                // (PTEST only; full walks never stop here).
+                let fetched = level.saturating_sub(remaining);
+                self.regs.pmmu.psr = RegisterPSR::default();
+                if wp {
+                    self.regs.pmmu.psr.set_write_protected(true);
+                }
+                if s && fc & (1 << 2) == 0 {
+                    self.regs.pmmu.psr.set_supervisor_violation(true);
+                }
+                self.regs.pmmu.psr.set_level_number(fetched);
+                return Ok((0, wp, s, 0, false));
+            }
+        };
 
         // Enforce supervisor-only access on the resolved page. M68030UM
         // Table 9-3: PTEST completes the search and reports S in MMUSR; a
