@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::ids::{IdTable, ROOT_DIR_ID};
+use crate::meta::Meta;
 
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
@@ -24,7 +25,12 @@ const CMD_GET_SRVR_PARMS: u8 = 16;
 const CMD_GET_VOL_PARMS: u8 = 17;
 const CMD_LOGIN: u8 = 18;
 const CMD_LOGOUT: u8 = 20;
+const CMD_ENUMERATE: u8 = 9;
 const CMD_OPEN_VOL: u8 = 24;
+const CMD_GET_FILE_DIR_PARMS: u8 = 34;
+const CMD_CREATE_ID: u8 = 39;
+const CMD_DELETE_ID: u8 = 40;
+const CMD_RESOLVE_ID: u8 = 41;
 
 /// AFP error codes (afpdocs reference.md "Result Codes")
 const ERR_BAD_UAM: i32 = -5002;
@@ -32,12 +38,22 @@ const ERR_BAD_VERS: i32 = -5003;
 const ERR_OBJECT_NOT_FOUND: i32 = -5018;
 const ERR_PARAM: i32 = -5019;
 const ERR_CALL_NOT_SUPPORTED: i32 = -5024;
+const ERR_BITMAP: i32 = -5004;
+#[allow(dead_code)] // used by the fork commands once they land
+const ERR_EOF: i32 = -5009;
+const ERR_BAD_ID: i32 = -5039;
+const ERR_ID_NOT_FOUND: i32 = -5034;
+/// A file ID already exists for the file (kept for the error
+/// reference table; the identity-table design never reports it)
+#[allow(dead_code)]
+const ERR_ID_EXISTS: i32 = -5035;
+const ERR_DIR_NOT_FOUND: i32 = -5029;
+const ERR_OBJECT_TYPE: i32 = -5025;
 
 /// The identifier of the single volume
 const VOLUME_ID: u16 = 1;
 
 /// The identifier of the root directory's parent (the HFS convention)
-#[allow(dead_code)] // read by the path resolution once the directory commands land
 const ROOT_PARENT_DIR_ID: u32 = 1;
 
 /// The AFP protocol versions the server speaks
@@ -49,6 +65,16 @@ pub enum AfpVersion {
     V20,
     /// AFP 2.1: handled on the same wire as 2.0
     V21,
+}
+
+/// The File/DirFlag value marking a directory in GetFileDirParms and
+/// Enumerate replies: bit 7 (0x80) in every AFP version. The book's
+/// reply diagrams draw the flag as the high bit of the byte, and the
+/// "0 = file, 1 = directory" text gives the bit value; CAP's
+/// FDP_DIRFLG is 0x80 too. A 1.1 client tests bit 7, so the value 1
+/// would make every subdirectory look like a file.
+fn dir_flag() -> u8 {
+    0x80
 }
 
 impl AfpVersion {
@@ -193,14 +219,12 @@ pub struct Afp {
     max_version: MaxVersion,
     /// Mangled wire name → original host name (the per-volume mangling
     /// table)
-    #[allow(dead_code)] // read by the path resolution once the directory commands land
     mangles: HashMap<String, String>,
     /// The AFP version negotiated at login, per session
     versions: HashMap<u8, AfpVersion>,
     /// The advanced server settings
     settings: AfpSettings,
     /// The volume's ID table (file and directory IDs)
-    #[allow(dead_code)] // read by the directory commands once they land
     ids: IdTable,
     /// The response capacity of the request being served (the ATP
     /// requester's offered buffers in bytes): FPRead caps its read at
@@ -303,6 +327,13 @@ impl Afp {
             // FPLogin has no reserved byte after the function in either
             // version
             CMD_LOGIN => self.cmd_login(session, data.get(1..).unwrap_or(&[])),
+            // FPEnumerate in 1.1 carries a FileFlag byte where 2.0 has
+            // the reserved byte
+            CMD_ENUMERATE if version == AfpVersion::V11 => {
+                let file_flag = data.get(1).copied();
+                self.cmd_enumerate(version, data.get(2..).unwrap_or(&[]), file_flag)
+            }
+            CMD_ENUMERATE => self.cmd_enumerate(version, data.get(2..).unwrap_or(&[]), None),
             // FPGetSrvrParms and FPLogout carry no SRefNum: the
             // function byte stands alone in every AFP version (both
             // the 1.1 and the 2.1 clients send a bare byte)
@@ -326,6 +357,16 @@ impl Afp {
                     CMD_OPEN_VOL => self.cmd_open_vol(version, params),
                     CMD_GET_VOL_PARMS => self.cmd_get_vol_parms(version, params),
                     CMD_CLOSE_VOL | CMD_LOGOUT => (ok(), Vec::new()),
+                    CMD_GET_FILE_DIR_PARMS => self.cmd_get_file_dir_parms(version, params),
+                    // The file-ID calls are AFP 2.1 and up
+                    CMD_CREATE_ID | CMD_DELETE_ID | CMD_RESOLVE_ID
+                        if !matches!(version, AfpVersion::V21) =>
+                    {
+                        (err(ERR_CALL_NOT_SUPPORTED), Vec::new())
+                    }
+                    CMD_CREATE_ID => self.cmd_create_id(params),
+                    CMD_DELETE_ID => self.cmd_delete_id(params),
+                    CMD_RESOLVE_ID => self.cmd_resolve_id(params),
                     _ => {
                         log::debug!("AFP: dropped unsupported command {}", cmd);
                         (err(ERR_CALL_NOT_SUPPORTED), Vec::new())
@@ -434,7 +475,6 @@ impl Afp {
     /// the mangling table and the `/` → `:` bijection, and — like the
     /// case-insensitive Mac file system — a case variant of a host
     /// name resolves to the real entry.
-    #[allow(dead_code)] // called by the directory commands once they land
     fn resolve_from(&self, base: &Path, path: &str) -> Option<PathBuf> {
         let mut base = base.to_path_buf();
         // The AFP pathname grammar (ch13): the path is relative to the
@@ -527,7 +567,6 @@ impl Afp {
     /// pathname grammar, with the reserved parent ID 1 whose only
     /// child is the volume itself, addressed by its name as the first
     /// element
-    #[allow(dead_code)] // called by the directory commands once they land
     fn resolve_path(&self, dir_id: u32, path: &str) -> Option<PathBuf> {
         if dir_id == ROOT_PARENT_DIR_ID {
             // [volume name]\0... — anything else is ObjectNotFound
@@ -546,7 +585,6 @@ impl Afp {
     /// The fixed Directory ID of a host directory (the root itself is
     /// the reserved ID 2): the identity table's ID, minted on first
     /// contact; 0 marks a vanished directory
-    #[allow(dead_code)] // called by the directory commands once they land
     fn dir_id(&mut self, abs: &Path) -> u32 {
         if abs == self.root {
             return ROOT_DIR_ID;
@@ -598,13 +636,532 @@ impl Afp {
     /// The host directory a Directory ID refers to (the root is the
     /// fixed ID 2), only while the recorded path still holds the
     /// recorded directory
-    #[allow(dead_code)] // called by the directory commands once they land
     fn dir_base(&self, dir_id: u32) -> Option<PathBuf> {
         if dir_id == ROOT_DIR_ID {
             return Some(self.root.clone());
         }
         self.ids.verified_path(dir_id).map(|p| p.to_path_buf())
     }
+
+    fn meta_open(&self, path: &Path) -> Meta {
+        crate::meta::open_with(
+            path,
+            &crate::meta::ProbeFlags {
+                apple_double: self.settings.probe_apple_double,
+                apple_single: self.settings.probe_apple_single,
+            },
+        )
+    }
+    /// The parent Directory ID of a host path: the root's parent is
+    /// the reserved ID 1 (the HFS convention, where the parent walk
+    /// terminates), a directory's parent is the ID of its parent
+    /// directory otherwise
+    fn parent_id_of(&mut self, abs: &Path) -> u32 {
+        if abs == self.root {
+            return ROOT_PARENT_DIR_ID;
+        }
+        match abs.parent() {
+            Some(parent) if parent != abs => self.dir_id(parent),
+            _ => ROOT_DIR_ID,
+        }
+    }
+
+    /// The wire name of a resolved host path, registering the mangling
+    /// table entry when the name has to be mangled
+    fn mac_name_of(&mut self, target: &Path) -> String {
+        let host_name = target
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let (mac_name, original) = crate::name::to_mac(&host_name);
+        if let Some(original) = original {
+            self.mangles.insert(mac_name.clone(), original);
+        }
+        mac_name
+    }
+
+    /// FPGetFileDirParms: parameters of a file or directory
+    fn cmd_get_file_dir_parms(
+        &mut self,
+        _version: AfpVersion,
+        params: &[u8],
+    ) -> (Vec<u8>, Vec<u8>) {
+        let Some(volume_id) = get_u16(params) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        if volume_id != VOLUME_ID {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        }
+        let Some(dir_id) = params.get(2..).and_then(get_u32) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(file_bitmap) = params.get(6..).and_then(get_u16) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(dir_bitmap) = params.get(8..).and_then(get_u16) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some((path, _)) = params.get(11..).and_then(get_pstring) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        if file_bitmap & !FILE_BITMAP_ALLOWED != 0 || dir_bitmap & !DIR_BITMAP_ALLOWED != 0 {
+            return (err(ERR_BITMAP), Vec::new());
+        }
+        log::debug!(
+            "AFP: GetFileDirParms dir {} path '{}' file bm {:04x} dir bm {:04x}",
+            dir_id,
+            path,
+            file_bitmap,
+            dir_bitmap
+        );
+
+        // Resolve relative to the given directory
+        let Some(target) = self.resolve_path(dir_id, &path) else {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        };
+        let Ok(fs_meta) = std::fs::metadata(&target) else {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        };
+        let meta = self.meta_open(&target);
+        let name = if target == self.root {
+            self.volume_name.clone()
+        } else {
+            self.mac_name_of(&target)
+        };
+        let parent_id = self.parent_id_of(&target);
+        let mut reply = Vec::new();
+        reply.extend_from_slice(&file_bitmap.to_be_bytes());
+        reply.extend_from_slice(&dir_bitmap.to_be_bytes());
+        if fs_meta.is_dir() {
+            let offspring = visible_offspring(&target, self.settings.hidden_files);
+            reply.push(dir_flag());
+            // The reserved byte after the File/DirFlag exists in both
+            // AFP 1.1 and AFP 2.0
+            reply.push(0);
+            reply.extend_from_slice(&dir_params(
+                dir_bitmap,
+                &name,
+                &meta,
+                offspring,
+                self.dir_id(&target),
+                parent_id,
+                self.settings.read_only,
+            ));
+        } else {
+            reply.push(0);
+            reply.push(0);
+            let file_id = self.ids.id_of(&target).unwrap_or(0);
+            reply.extend_from_slice(&file_params(file_bitmap, &name, &meta, parent_id, file_id));
+        }
+        (ok(), reply)
+    }
+
+    /// FPEnumerate: list the offspring of a directory
+    fn cmd_enumerate(
+        &mut self,
+        _version: AfpVersion,
+        params: &[u8],
+        file_flag: Option<u8>,
+    ) -> (Vec<u8>, Vec<u8>) {
+        let Some(volume_id) = get_u16(params) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        if volume_id != VOLUME_ID {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        }
+        let Some(dir_id) = params.get(2..).and_then(get_u32) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(file_bitmap) = params.get(6..).and_then(get_u16) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(dir_bitmap) = params.get(8..).and_then(get_u16) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(req_count) = params.get(10..).and_then(get_u16) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(start_index) = params.get(12..).and_then(get_u16) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(max_reply_size) = params.get(14..).and_then(get_u16) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some((path, _)) = params.get(17..).and_then(get_pstring) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        if file_bitmap & !FILE_BITMAP_ALLOWED != 0 || dir_bitmap & !DIR_BITMAP_ALLOWED != 0 {
+            return (err(ERR_BITMAP), Vec::new());
+        }
+        // Both bitmaps null is a bitmap error; a null File Bitmap
+        // enumerates only directories, a null Directory Bitmap only
+        // files
+        if file_bitmap == 0 && dir_bitmap == 0 {
+            return (err(ERR_BITMAP), Vec::new());
+        }
+
+        let Some(dir) = self.resolve_path(dir_id, &path) else {
+            return (err(ERR_DIR_NOT_FOUND), Vec::new());
+        };
+        // Enumerating a file answers afpObjectTypeErr
+        if !std::fs::metadata(&dir).is_ok_and(|m| m.is_dir()) {
+            return (err(ERR_OBJECT_TYPE), Vec::new());
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return (err(ERR_DIR_NOT_FOUND), Vec::new());
+        };
+        // The parent Directory ID the offspring report
+        let parent_id = self.dir_id(&dir);
+
+        let mut reply = Vec::new();
+        reply.extend_from_slice(&file_bitmap.to_be_bytes());
+        reply.extend_from_slice(&dir_bitmap.to_be_bytes());
+        reply.extend_from_slice(&0u16.to_be_bytes()); // actual count, filled in
+
+        // An empty request enumerates nothing
+        if req_count == 0 {
+            return (ok(), reply);
+        }
+
+        // The visible offspring (dotfiles, .AppleDouble entries and ._
+        // sidecars are hidden), sorted by wire name for a stable
+        // enumeration order
+        let mut offspring: Vec<(PathBuf, String)> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter_map(|p| {
+                let host_name = p.file_name()?.to_string_lossy().into_owned();
+                let hidden = crate::name::is_hidden(&host_name);
+                if hidden && self.settings.hidden_files == HiddenFiles::Hide {
+                    return None;
+                }
+                if crate::name::is_meta_name(&host_name) {
+                    // The server's metadata store is never enumerated
+                    return None;
+                }
+                let (mac_name, original) = crate::name::to_mac(&host_name);
+                if let Some(original) = original {
+                    self.mangles.insert(mac_name.clone(), original);
+                }
+                Some((p, mac_name))
+            })
+            .collect();
+        // The null bitmaps and the 1.1 FileFlag filter the record set;
+        // the Start Index counts the filtered list
+        let files_included = file_flag.is_none_or(|f| f & 0x80 == 0);
+        let is_dir_entry = |p: &PathBuf| std::fs::metadata(p).is_ok_and(|m| m.is_dir());
+        if file_bitmap == 0 || !files_included {
+            offspring.retain(|(p, _)| is_dir_entry(p));
+        } else if dir_bitmap == 0 {
+            offspring.retain(|(p, _)| !is_dir_entry(p));
+        }
+        offspring.sort_by(|a, b| a.1.cmp(&b.1));
+
+        // The enumeration index space: the book's ObjectNotFound means
+        // "no more offspring exist to be enumerated" — the client pages
+        // until it gets that error, so a Start Index past the last
+        // visible offspring must end the enumeration
+        let skip = usize::from(start_index.saturating_sub(1));
+        if skip >= offspring.len() {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        }
+
+        let mut count = 0u16;
+        for (target, mac_name) in offspring.iter().skip(skip) {
+            let Ok(fs_meta) = std::fs::metadata(target) else {
+                continue;
+            };
+            let meta = self.meta_open(target);
+            let (flag, params) = if fs_meta.is_dir() {
+                let offspring_count = visible_offspring(target, self.settings.hidden_files);
+                (
+                    dir_flag(),
+                    dir_params(
+                        dir_bitmap,
+                        mac_name,
+                        &meta,
+                        offspring_count,
+                        self.dir_id(target),
+                        parent_id,
+                        self.settings.read_only,
+                    ),
+                )
+            } else {
+                let file_id = self.ids.id_of(target).unwrap_or(0);
+                (
+                    0,
+                    file_params(file_bitmap, mac_name, &meta, parent_id, file_id),
+                )
+            };
+            let mut record = Vec::new();
+            record.push(0); // struct length, filled in
+            record.push(flag);
+            record.extend_from_slice(&params);
+            if record.len() % 2 != 0 {
+                record.push(0);
+            }
+            record[0] = record.len() as u8;
+            // Honor the client's MaxReplySize: no partial offspring
+            // structures are returned
+            if reply.len() + record.len() > max_reply_size as usize {
+                break;
+            }
+            reply.extend_from_slice(&record);
+            count += 1;
+            if count >= req_count {
+                break;
+            }
+        }
+        reply[4..6].copy_from_slice(&count.to_be_bytes());
+        (ok(), reply)
+    }
+
+    /// FPCreateID: [vol][dir id][path name] → the file ID (the
+    /// identity table's ID, minted on first contact)
+    fn cmd_create_id(&mut self, params: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let Some(volume_id) = get_u16(params) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        if volume_id != VOLUME_ID {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        }
+        let Some(dir_id) = params.get(2..).and_then(get_u32) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some((name, _)) = params.get(6..).and_then(get_long_path) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(target) = self.resolve_path(dir_id, &name) else {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        };
+        if std::fs::metadata(&target).is_ok_and(|m| m.is_dir()) {
+            return (err(ERR_OBJECT_TYPE), Vec::new());
+        }
+        // The identity table mints the ID on first contact and keeps
+        // it stable thereafter
+        let Some(id) = self.ids.id_of(&target) else {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        };
+        (ok(), id.to_be_bytes().to_vec())
+    }
+
+    /// FPDeleteID: [vol][file id] — invalidate a file ID
+    fn cmd_delete_id(&mut self, params: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let Some(volume_id) = get_u16(params) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        if volume_id != VOLUME_ID {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        }
+        let Some(id) = params.get(2..).and_then(get_u32) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        // Only a file's ID can be invalidated: a directory's ID is the
+        // server's own naming, an unknown or replaced ID answers
+        // afpIDNotFound
+        let Some(path) = self.ids.verified_path(id).map(|p| p.to_path_buf()) else {
+            return (err(ERR_ID_NOT_FOUND), Vec::new());
+        };
+        match std::fs::metadata(&path) {
+            Ok(m) if m.is_dir() => return (err(ERR_OBJECT_TYPE), Vec::new()),
+            Ok(_) => {}
+            Err(_) => return (err(ERR_ID_NOT_FOUND), Vec::new()),
+        }
+        self.ids.remove_id(id);
+        (ok(), Vec::new())
+    }
+
+    /// FPResolveID: [vol][file id][file bitmap] → the file parameters
+    fn cmd_resolve_id(&mut self, params: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let Some(volume_id) = get_u16(params) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        if volume_id != VOLUME_ID {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        }
+        let Some(id) = params.get(2..).and_then(get_u32) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(bitmap) = params.get(6..).and_then(get_u16) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        if bitmap & !FILE_BITMAP_ALLOWED != 0 {
+            return (err(ERR_BITMAP), Vec::new());
+        }
+        // The recorded path must still hold the recorded file: a host
+        // save-by-rename replaces the inode, and the old ID must fail,
+        // never alias the replacement
+        let Some(target) = self.ids.verified_path(id).map(|p| p.to_path_buf()) else {
+            return (err(ERR_BAD_ID), Vec::new());
+        };
+        // A directory's ID is not a file ID
+        if std::fs::metadata(&target).is_ok_and(|m| m.is_dir()) {
+            return (err(ERR_OBJECT_TYPE), Vec::new());
+        }
+        let meta = self.meta_open(&target);
+        let name = self.mac_name_of(&target);
+        let parent_id = self.parent_id_of(&target);
+        let mut reply = Vec::new();
+        reply.extend_from_slice(&bitmap.to_be_bytes());
+        // The resolved ID itself is the file number (the CNID)
+        reply.extend_from_slice(&file_params(bitmap, &name, &meta, parent_id, id));
+        (ok(), reply)
+    }
+}
+
+/// The AFP 2.x path name: [path type][Pascal string] (the same shape
+/// FPGetFileDirParms uses). The path type is ignored (every type
+/// addresses the same volume).
+fn get_long_path(data: &[u8]) -> Option<(String, &[u8])> {
+    let len = usize::from(*data.get(1)?);
+    let end = 2 + len;
+    if data.len() < end {
+        return None;
+    }
+    let (s, _, _) = encoding_rs::MACINTOSH.decode(&data[2..end]);
+    Some((s.into_owned(), &data[end..]))
+}
+
+/// Pack the parameters of a file or directory in bitmap order (bit 0
+/// first). The variable-length name fields (bits 6 and 7, the long and
+/// short names) are represented by offsets from the start of the
+/// parameters, with the names packed after all fixed parameters. The
+/// closure returns the bytes of each fixed parameter; for bits 6 and 7
+/// it returns the name to append.
+fn pack_params<F>(bitmap: u16, mut param: F) -> Vec<u8>
+where
+    F: FnMut(usize) -> Vec<u8>,
+{
+    let mut out = Vec::new();
+    let mut name_offsets: Vec<usize> = Vec::new();
+    let mut names: Vec<Vec<u8>> = Vec::new();
+    for bit in 0..16 {
+        if bitmap & (1 << bit) == 0 {
+            continue;
+        }
+        if bit == 6 || bit == 7 {
+            // A placeholder for the offset to this name
+            out.extend_from_slice(&0u16.to_be_bytes());
+            name_offsets.push(out.len() - 2);
+            names.push(param(bit));
+        } else {
+            out.extend_from_slice(&param(bit));
+        }
+    }
+    // The names follow the fixed parameters; patch the placeholders at
+    // their recorded positions
+    let mut pos = out.len();
+    for (i, off_pos) in name_offsets.iter().enumerate() {
+        out[*off_pos..*off_pos + 2].copy_from_slice(&(pos as u16).to_be_bytes());
+        pos += names[i].len();
+    }
+    for name in names {
+        out.extend_from_slice(&name);
+    }
+    out
+}
+
+/// The bits of the file bitmap a 2.0 server can return
+const FILE_BITMAP_ALLOWED: u16 = 0x27FF; // bits 0-10 and 13
+/// The bits of the directory bitmap a 2.0 server can return
+const DIR_BITMAP_ALLOWED: u16 = 0x3FFF; // bits 0-13
+
+/// The file parameters requested by a bitmap
+fn file_params(bitmap: u16, name: &str, meta: &Meta, parent_id: u32, file_id: u32) -> Vec<u8> {
+    pack_params(bitmap, |bit| match bit {
+        0 => 0u16.to_be_bytes().to_vec(), // attributes (they arrive with the write backends)
+        1 => parent_id.to_be_bytes().to_vec(),
+        2 => date(meta.create_date).to_be_bytes().to_vec(),
+        3 => date(meta.mod_date).to_be_bytes().to_vec(),
+        4 => date(meta.backup_date).to_be_bytes().to_vec(),
+        5 => finder_info(meta), // FInfo + FXInfo
+        6 => pstring(name),     // long name
+        7 => pstring(&short_name(name)),
+        8 => file_id.to_be_bytes().to_vec(),
+        9 => (meta.data_len.min(0x7FFF_FFFF) as u32)
+            .to_be_bytes()
+            .to_vec(),
+        10 => meta.rsrc_fork_len.to_be_bytes().to_vec(),
+        13 => vec![0; 6], // ProDOS info
+        _ => Vec::new(),  // filtered by the allowed mask
+    })
+}
+
+/// The directory parameters requested by a bitmap
+fn dir_params(
+    bitmap: u16,
+    name: &str,
+    meta: &Meta,
+    offspring: u16,
+    self_id: u32,
+    parent_id: u32,
+    read_only: bool,
+) -> Vec<u8> {
+    pack_params(bitmap, |bit| match bit {
+        0 => 0u16.to_be_bytes().to_vec(), // attributes (they arrive with the write backends)
+        1 => parent_id.to_be_bytes().to_vec(),
+        2 => date(meta.create_date).to_be_bytes().to_vec(),
+        3 => date(meta.mod_date).to_be_bytes().to_vec(),
+        4 => date(meta.backup_date).to_be_bytes().to_vec(),
+        5 => finder_info(meta), // DInfo + DXInfo
+        6 => pstring(name),
+        7 => pstring(&short_name(name)),
+        8 => self_id.to_be_bytes().to_vec(),
+        9 => offspring.to_be_bytes().to_vec(),
+        10 => 0u32.to_be_bytes().to_vec(), // owner ID
+        11 => 0u32.to_be_bytes().to_vec(), // group ID
+        12 => access_rights(read_only),
+        13 => vec![0; 6], // ProDOS info
+        _ => Vec::new(),  // filtered by the allowed mask
+    })
+}
+
+/// The 4-byte access rights long, big-endian on the wire:
+/// [UARights][world][group][owner], each byte bit 0 = search,
+/// bit 1 = read, bit 2 = write (make changes). The UARights owner bit
+/// is set because the volume is not owned by any registered user; a
+/// read-only volume strips the write bits everywhere, and the client
+/// checks them before allowing a New Folder or a drop.
+fn access_rights(read_only: bool) -> Vec<u8> {
+    if read_only {
+        0x8303_0303u32.to_be_bytes().to_vec()
+    } else {
+        0x8707_0707u32.to_be_bytes().to_vec()
+    }
+}
+
+/// A short (12-character) form of a name, used for the Short Name
+/// parameter when requested
+fn short_name(name: &str) -> String {
+    name.chars().take(12).collect()
+}
+
+/// The Finder Info parameter: 32 bytes (FInfo+FXInfo / DInfo+DXInfo)
+/// in both AFP 1.1 and AFP 2.0
+fn finder_info(meta: &Meta) -> Vec<u8> {
+    meta.finder_info.to_vec()
+}
+
+/// The number of offspring, honoring the server's hidden-file mode
+fn visible_offspring(dir: &Path, mode: HiddenFiles) -> u16 {
+    std::fs::read_dir(dir).map_or(0, |d| {
+        d.flatten()
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                (mode != HiddenFiles::Hide || !name.starts_with('.'))
+                    && !crate::name::is_meta_name(&name)
+            })
+            .count()
+            .min(65535)
+    }) as u16
+}
+
+/// An AFP 2.0 date for the wire (signed seconds since 2000-01-01):
+/// 0 is a valid date (2000-01-01) and 0x80000000 is the spec's
+/// "never" value — both are sent as stored (backup software relies on
+/// the never value to skip files)
+fn date(value: u32) -> u32 {
+    value
 }
 
 /// The 4-byte command result for "no error"
@@ -640,7 +1197,6 @@ fn get_u16(data: &[u8]) -> Option<u16> {
     Some(u16::from_be_bytes([*data.first()?, *data.get(1)?]))
 }
 
-#[allow(dead_code)] // used by the directory commands once they land
 fn get_u32(data: &[u8]) -> Option<u32> {
     Some(u32::from_be_bytes([
         *data.first()?,
@@ -863,6 +1419,278 @@ mod tests {
         data.extend_from_slice(b"No User Authent");
         let (result, _) = result_of(server.command(1, &data));
         assert_eq!(result, ERR_BAD_VERS);
+    }
+    /// An AFP 2.x path name: [type 2][Pascal string]
+    fn long_path(name: &str) -> Vec<u8> {
+        let mut out = vec![2, name.len() as u8];
+        out.extend_from_slice(name.as_bytes());
+        out
+    }
+
+    #[test]
+    fn test_enumerate_spec_layout() {
+        let (mut server, dir) = test_server("enumerate");
+        std::fs::write(dir.join("hello.txt"), b"hello").unwrap();
+        std::fs::create_dir(dir.join("subdir")).unwrap();
+        // [Enumerate][0][vol 1][dir 2][file bm 0x0340][dir bm 0x0340]
+        // [count 20][start 1][max 512][path type 2][path ""]
+        let data = [
+            9, 0, 0, 1, 0, 0, 0, 2, 0x03, 0x40, 0x03, 0x40, 0, 20, 0, 1, 0x02, 0x00, 2, 0,
+        ];
+        let (result, reply) = result_of(server.command(1, &data));
+        assert_eq!(result, 0);
+        assert_eq!(reply[0..2], [0x03, 0x40]); // file bitmap
+        assert_eq!(reply[2..4], [0x03, 0x40]); // directory bitmap
+        assert_eq!(reply[4..6], [0, 2]); // two entries
+
+        // First record: hello.txt, a file. The long-name offset comes
+        // first (bit 6), then the file number and the data fork length.
+        let rec0_len = reply[6] as usize;
+        let rec0 = &reply[6..6 + rec0_len];
+        assert_eq!(rec0[1], 0); // a file
+        let off0 = u16::from_be_bytes([rec0[2], rec0[3]]) as usize;
+        assert_eq!(off0, 10);
+        assert_eq!(&rec0[2 + off0..2 + off0 + 10], b"\x09hello.txt");
+        let file_num = u32::from_be_bytes(rec0[4..8].try_into().unwrap());
+        // The file number is the file's ID from the identity table
+        // (minted, stable), not a name hash
+        assert_ne!(file_num, 0);
+        assert_eq!(file_num, server.ids.id_of(&dir.join("hello.txt")).unwrap());
+        let data_len = u32::from_be_bytes(rec0[8..12].try_into().unwrap());
+        assert_eq!(data_len, 5);
+
+        // Second record: subdir, a directory. Its own Directory ID
+        // (not the root's), offspring count and the long name.
+        let rec1 = &reply[6 + rec0_len..];
+        assert_eq!(rec1.len(), 18);
+        assert_eq!(rec1[1], dir_flag());
+        let sub_id = server.dir_id(&dir.join("subdir"));
+        assert_eq!(rec1[4..8], sub_id.to_be_bytes()); // directory ID
+        assert_ne!(sub_id, ROOT_DIR_ID);
+        let off1 = u16::from_be_bytes([rec1[2], rec1[3]]) as usize;
+        assert_eq!(off1, 8);
+        assert_eq!(&rec1[2 + off1..2 + off1 + 7], b"\x06subdir");
+    }
+
+    #[test]
+    fn test_enumerate_subdirectory_by_id() {
+        // A directory opened by its Directory ID enumerates its own
+        // offspring, not the root's
+        let (mut server, dir) = test_server("enumerate-sub");
+        std::fs::write(dir.join("top.txt"), b"t").unwrap();
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub").join("inner.txt"), b"i").unwrap();
+        let sub_id = server.dir_id(&dir.join("sub"));
+
+        // [Enumerate][0][vol 1][dir = sub_id][file bm 0x0340]
+        // [dir bm 0x0340][count 20][start 1][max 512][ptype 2][path ""]
+        let mut data = [
+            9, 0, 0, 1, 0, 0, 0, 2, 0x03, 0x40, 0x03, 0x40, 0, 20, 0, 1, 0x02, 0x00, 2, 0,
+        ];
+        data[4..8].copy_from_slice(&sub_id.to_be_bytes());
+        let (result, reply) = result_of(server.command(1, &data));
+        assert_eq!(result, 0);
+        assert_eq!(reply[4..6], [0, 1]); // one entry
+        let rec_len = reply[6] as usize;
+        assert_eq!(reply[7], 0); // a file
+        let off = u16::from_be_bytes([reply[8], reply[9]]) as usize;
+        assert_eq!(&reply[6 + 2 + off..6 + 2 + off + 10], b"\x09inner.txt");
+        let _ = rec_len;
+
+        // A GetFileDirParms on the same ID resolves the directory too
+        // (null bitmaps: just the bitmaps and the flag come back)
+        let mut g = vec![34, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0];
+        g[4..8].copy_from_slice(&sub_id.to_be_bytes());
+        let (result, reply) = result_of(server.command(1, &g));
+        assert_eq!(result, 0);
+        assert_eq!(reply[4], 0x80); // a directory
+    }
+
+    #[test]
+    fn test_nul_separated_path_grammar() {
+        let (mut server, dir) = test_server("nul-paths");
+        std::fs::create_dir(dir.join("a")).unwrap();
+        std::fs::create_dir(dir.join("a").join("b")).unwrap();
+        std::fs::write(dir.join("a").join("b").join("f.txt"), b"x").unwrap();
+        std::fs::write(dir.join("a").join("f.txt"), b"y").unwrap();
+        // A single leading NUL is ignored: the path stays relative to
+        // the Directory ID (ch13's rule, not "from the root")
+        let mut data = vec![34, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 2, 10];
+        data.extend_from_slice(b"\0a\0b\0f.txt");
+        let (result, _) = result_of(server.command(1, &data));
+        assert_eq!(result, 0);
+        // Two consecutive NULs ascend one level: from a/b, "\0\0f.txt"
+        // is a/f.txt
+        let b_id = server.dir_id(&dir.join("a").join("b"));
+        let mut data = vec![34, 0, 0, 1];
+        data.extend_from_slice(&b_id.to_be_bytes());
+        data.extend_from_slice(&[0, 0, 0, 0, 2, 7]);
+        data.extend_from_slice(b"\0\0f.txt");
+        let (result, _) = result_of(server.command(1, &data));
+        assert_eq!(result, 0);
+        // Ascending above the root answers ObjectNotFound
+        let a_id = server.dir_id(&dir.join("a"));
+        let mut data = vec![34, 0, 0, 1];
+        data.extend_from_slice(&a_id.to_be_bytes());
+        data.extend_from_slice(&[0, 0, 0, 0, 2, 8]);
+        data.extend_from_slice(b"\0\0\0x.txt");
+        let (result, _) = result_of(server.command(1, &data));
+        assert_eq!(result, ERR_OBJECT_NOT_FOUND);
+        // Directory ID 1 plus the volume name as the first element
+        // addresses the root
+        let mut data = vec![34, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 2, 12];
+        data.extend_from_slice(b"Snow\0a\0f.txt");
+        let (result, _) = result_of(server.command(1, &data));
+        assert_eq!(result, 0);
+        // A colon is not part of the path syntax: one name, not a
+        // separator
+        let mut data = vec![34, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 2, 9];
+        data.extend_from_slice(b"a:b:f.txt");
+        let (result, _) = result_of(server.command(1, &data));
+        assert_eq!(result, ERR_OBJECT_NOT_FOUND);
+        // Parent traversal as names stays rejected
+        let mut data = vec![34, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 2, 9];
+        data.extend_from_slice(b"a\0..\0x.txt");
+        let (result, _) = result_of(server.command(1, &data));
+        assert_eq!(result, ERR_OBJECT_NOT_FOUND);
+    }
+
+    #[test]
+    fn test_root_parent_is_one() {
+        let (mut server, dir) = test_server("parent-chain");
+        std::fs::create_dir(dir.join("child")).unwrap();
+        // [GetFileDirParms][0][vol 1][dir 2][file bm 0][dir bm 0x0002
+        // (parent ID)][path type 2][path ""] — the root's parent is the
+        // reserved ID 1, where the client's parent walk terminates
+        let data = [34, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0x00, 0x02, 2, 0];
+        let (result, reply) = result_of(server.command(1, &data));
+        assert_eq!(result, 0);
+        assert_eq!(reply[4], 0x80); // a directory
+        assert_eq!(reply[6..10], [0, 0, 0, 1]); // parent = 1
+        // A first-level directory's parent is the root (ID 2)
+        let mut data = vec![34, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0x00, 0x02, 2, 5];
+        data.extend_from_slice(b"child");
+        let (result, reply) = result_of(server.command(1, &data));
+        assert_eq!(result, 0);
+        assert_eq!(reply[6..10], [0, 0, 0, 2]);
+    }
+
+    #[test]
+    fn test_enumerate_zero_count_and_file_target() {
+        let (mut server, dir) = test_server("enumerate-zero");
+        std::fs::write(dir.join("a.txt"), b"a").unwrap();
+        std::fs::write(dir.join("b.txt"), b"b").unwrap();
+        // A request for zero entries answers an empty enumeration
+        let data = [
+            9, 0, 0, 1, 0, 0, 0, 2, 0x03, 0x40, 0x03, 0x40, 0, 0, 0, 1, 0x02, 0x00, 2, 0,
+        ];
+        let (result, reply) = result_of(server.command(1, &data));
+        assert_eq!(result, 0);
+        assert_eq!(reply[4..6], [0, 0]);
+        // Enumerating a file answers afpObjectTypeErr
+        let mut data = vec![
+            9, 0, 0, 1, 0, 0, 0, 2, 0x03, 0x40, 0x03, 0x40, 0, 20, 0, 1, 0x02, 0x00, 2, 5,
+        ];
+        data.extend_from_slice(b"a.txt");
+        let (result, _) = result_of(server.command(1, &data));
+        assert_eq!(result, ERR_OBJECT_TYPE);
+    }
+
+    #[test]
+    fn test_enumerate_empty_dir_returns_object_not_found() {
+        let (mut server, dir) = test_server("enumerate-empty");
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        // Enumerate the empty "sub" directory from the start
+        let mut data = vec![
+            9, 0, 0, 1, 0, 0, 0, 2, 0x03, 0x40, 0x03, 0x40, 0, 20, 0, 1, 0x02, 0x00, 2, 3,
+        ];
+        data.extend_from_slice(b"sub");
+        let (result, _) = result_of(server.command(1, &data));
+        assert_eq!(result, ERR_OBJECT_NOT_FOUND);
+    }
+
+    #[test]
+    fn test_enumerate_past_end_returns_object_not_found() {
+        let (mut server, dir) = test_server("enumerate-end");
+        std::fs::write(dir.join("one.txt"), b"1").unwrap();
+        // [Enumerate][0][vol 1][dir 2][file bm 0x0340][dir bm 0x0340]
+        // [count 20][start 2 (past the single entry)][max 512]
+        // [path type 2][path ""]
+        let data = [
+            9, 0, 0, 1, 0, 0, 0, 2, 0x03, 0x40, 0x03, 0x40, 0, 20, 0, 2, 0x02, 0x00, 2, 0,
+        ];
+        let (result, _) = result_of(server.command(1, &data));
+        assert_eq!(result, ERR_OBJECT_NOT_FOUND);
+    }
+
+    #[test]
+    fn test_date_never_value_and_pre_2000() {
+        // A pre-2000 date (negative on the wire) is reported verbatim
+        let afp_1995 = (-157_785_600i32) as u32;
+        assert_eq!(date(afp_1995), afp_1995);
+        // 0 is a valid date: 2000-01-01
+        assert_eq!(date(0), 0);
+        // The never value passes through as stored (backup software
+        // relies on it to skip files)
+        assert_eq!(date(0x8000_0000), 0x8000_0000);
+    }
+
+    #[test]
+    fn test_file_id_calls_and_volume_attributes() {
+        let (mut server, dir) = test_server("file-ids");
+        std::fs::write(dir.join("f.txt"), b"x").unwrap();
+        // A 2.0 session sees no SupportsFileIDs bit and the file-ID
+        // calls answer afpCallNotSupported
+        let (r, reply) = result_of(server.command(1, &[17, 0, 0, 1, 0, 1]));
+        assert_eq!(r, 0);
+        assert_eq!(reply, [0, 1, 0, 1]); // read-only, no file IDs
+        let mut data = vec![39, 0, 0, 1, 0, 0, 0, 2];
+        data.extend_from_slice(&long_path("f.txt"));
+        assert_eq!(
+            result_of(server.command(1, &data)).0,
+            ERR_CALL_NOT_SUPPORTED
+        );
+        // A 2.1 session sees the bit, and FPCreateID answers the
+        // file's ID
+        server.versions.insert(1, AfpVersion::V21);
+        let (r, reply) = result_of(server.command(1, &[17, 0, 0, 1, 0, 1]));
+        assert_eq!(r, 0);
+        assert_eq!(reply, [0, 1, 0, 5]); // read-only + SupportsFileIDs
+        let mut data = vec![39, 0, 0, 1, 0, 0, 0, 2];
+        data.extend_from_slice(&long_path("f.txt"));
+        let (r, reply) = result_of(server.command(1, &data));
+        assert_eq!(r, 0);
+        let id = u32::from_be_bytes(reply.try_into().unwrap());
+        // FPResolveID serves the file's parameters by ID
+        let mut data = vec![41, 0, 0, 1];
+        data.extend_from_slice(&id.to_be_bytes());
+        data.extend_from_slice(&0x0340u16.to_be_bytes());
+        let (r, reply) = result_of(server.command(1, &data));
+        assert_eq!(r, 0);
+        assert_eq!(reply[0..2], 0x0340u16.to_be_bytes());
+        assert_eq!(reply[4..8], id.to_be_bytes()); // the file number
+        // FPResolveID on a directory's ID answers afpObjectTypeErr
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        let dir_id = server.dir_id(&dir.join("sub"));
+        let mut data = vec![41, 0, 0, 1];
+        data.extend_from_slice(&dir_id.to_be_bytes());
+        data.extend_from_slice(&0x0340u16.to_be_bytes());
+        assert_eq!(result_of(server.command(1, &data)).0, ERR_OBJECT_TYPE);
+        // FPDeleteID on a directory's ID answers afpObjectTypeErr too
+        let mut data = vec![40, 0, 0, 1];
+        data.extend_from_slice(&dir_id.to_be_bytes());
+        assert_eq!(result_of(server.command(1, &data)).0, ERR_OBJECT_TYPE);
+        // FPDeleteID on an unknown ID answers afpIDNotFound
+        let data = vec![40, 0, 0, 1, 0x7F, 0xFF, 0xFF, 0xFE];
+        assert_eq!(result_of(server.command(1, &data)).0, ERR_ID_NOT_FOUND);
+        // FPDeleteID on the file's ID invalidates it permanently
+        let mut data = vec![40, 0, 0, 1];
+        data.extend_from_slice(&id.to_be_bytes());
+        assert_eq!(result_of(server.command(1, &data)).0, 0);
+        let mut data = vec![41, 0, 0, 1];
+        data.extend_from_slice(&id.to_be_bytes());
+        data.extend_from_slice(&0x0340u16.to_be_bytes());
+        assert_eq!(result_of(server.command(1, &data)).0, ERR_BAD_ID);
     }
 }
 
