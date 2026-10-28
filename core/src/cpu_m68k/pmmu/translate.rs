@@ -789,7 +789,12 @@ where
         }
 
         let mask = 0xFFFFFFFFu32.unbounded_shr(used_bits);
-        let paddr = (page_addr & !mask) | (vaddr & mask);
+        // M68030UM 9.5.3.1: the physical address is the SUM of the page
+        // address field in the descriptor and the offset (the logical
+        // address with the bits used in the search set to zero). The page
+        // field need not be aligned to the page granularity, so the low
+        // bits must be added, not ORed.
+        let paddr = page_addr.wrapping_add(vaddr & mask);
 
         if PTEST {
             // M68030UM Table 9-3: report conditions encountered during the
