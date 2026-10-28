@@ -1498,6 +1498,11 @@ impl Tickable for Emulator {
                     // Check for state changes (e.g., new TCP connection, LocalTalk status)
                     let has_data = bridge.poll();
                     if has_data {
+                        log::debug!(
+                            "sending SerialBridgeStatus for {:?}: {:?}",
+                            ch,
+                            bridge.status()
+                        );
                         self.event_sender
                             .send(EmulatorEvent::SerialBridgeStatus(ch, Some(bridge.status())))?;
                     }

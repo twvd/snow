@@ -15,6 +15,8 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+pub use crate::dtdb::ScanStatus;
+use crate::dtdb::{DT_REF_NUM, DeskBatch, DeskDb, scan_volume};
 use crate::ids::{IdTable, ROOT_DIR_ID};
 use crate::meta::Meta;
 
@@ -27,6 +29,17 @@ const CMD_CLOSE_FORK: u8 = 4;
 const CMD_GET_FORK_PARMS: u8 = 14;
 const CMD_OPEN_FORK: u8 = 26;
 const CMD_READ: u8 = 27;
+const CMD_OPEN_DT: u8 = 48;
+const CMD_CLOSE_DT: u8 = 49;
+const CMD_GET_ICON: u8 = 51;
+const CMD_GET_ICON_INFO: u8 = 52;
+const CMD_ADD_APPL: u8 = 53;
+const CMD_RMV_APPL: u8 = 54;
+const CMD_GET_APPL: u8 = 55;
+const CMD_ADD_CMT: u8 = 56;
+const CMD_RMV_CMT: u8 = 57;
+const CMD_GET_CMT: u8 = 58;
+const CMD_ADD_ICON: u8 = 192;
 const CMD_GET_SRVR_PARMS: u8 = 16;
 const CMD_GET_VOL_PARMS: u8 = 17;
 const CMD_LOGIN: u8 = 18;
@@ -286,6 +299,16 @@ pub struct Afp {
     forks: HashMap<u16, Fork>,
     /// The next fork reference number
     next_fork_ref: u16,
+    /// The desktop database (synthesized by the background scan)
+    desktop: Option<DeskDb>,
+    /// Whether the background desktop scan was started
+    scan_started: bool,
+    /// The abort flag shared with the scan thread
+    scan_abort: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// The channel the scan thread reports its findings on
+    scan_rx: Option<std::sync::mpsc::Receiver<DeskBatch>>,
+    /// The progress-reporting channel to the frontend
+    scan_status_tx: Option<crossbeam_channel::Sender<ScanStatus>>,
 }
 
 impl Afp {
@@ -320,6 +343,11 @@ impl Afp {
             req_capacity: crate::atp::MAX_RESPONSE,
             forks: HashMap::new(),
             next_fork_ref: 1,
+            desktop: None,
+            scan_started: false,
+            scan_abort: None,
+            scan_rx: None,
+            scan_status_tx: None,
         }
     }
 
@@ -379,6 +407,8 @@ impl Afp {
             return (err(ERR_PARAM), Vec::new());
         }
         let cmd = data[0];
+        // Merge any findings the background desktop scan has reported
+        self.poll_scan();
         match cmd {
             // FPLogin has no reserved byte after the function in either
             // version
@@ -415,6 +445,19 @@ impl Afp {
                     CMD_GET_VOL_PARMS => self.cmd_get_vol_parms(version, params),
                     CMD_CLOSE_VOL | CMD_LOGOUT => (ok(), Vec::new()),
                     CMD_GET_FILE_DIR_PARMS => self.cmd_get_file_dir_parms(version, params),
+                    CMD_OPEN_DT => self.cmd_open_dt(params),
+                    CMD_CLOSE_DT => self.cmd_close_dt(params),
+                    CMD_GET_ICON => self.cmd_get_icon(params),
+                    CMD_GET_ICON_INFO => self.cmd_get_icon_info(params),
+                    CMD_GET_APPL => self.cmd_get_appl(params),
+                    CMD_ADD_APPL | CMD_RMV_APPL | CMD_ADD_CMT | CMD_RMV_CMT | CMD_ADD_ICON => {
+                        if self.settings.read_only {
+                            (err(ERR_VOL_LOCKED), Vec::new())
+                        } else {
+                            (ok(), Vec::new())
+                        }
+                    }
+                    CMD_GET_CMT => (err(ERR_CALL_NOT_SUPPORTED), Vec::new()),
                     CMD_READ => self.cmd_read(params),
                     CMD_GET_FORK_PARMS => self.cmd_get_fork_parms(params),
                     CMD_CLOSE_FORK => {
@@ -796,6 +839,16 @@ impl Afp {
             self.mac_name_of(&target)
         };
         let parent_id = self.parent_id_of(&target);
+        // The desktop database is fed by the files the client asks
+        // about: register an application and its bundle icons now, so
+        // the desktop calls that follow find them
+        if !fs_meta.is_dir()
+            && let Some(db) = &mut self.desktop
+        {
+            db.register_appl(&target, &name, &meta, parent_id);
+        }
+
+        let parent_id = self.parent_id_of(&target);
         let mut reply = Vec::new();
         reply.extend_from_slice(&file_bitmap.to_be_bytes());
         reply.extend_from_slice(&dir_bitmap.to_be_bytes());
@@ -1146,9 +1199,11 @@ impl Afp {
         }
         let meta = self.meta_open(&target);
         let parent_id = self.parent_id_of(&target);
-        // The desktop database registration lands with the desktop
-        // database commit
+        // Feed the desktop database while the file is in hand
         let fork_name = self.mac_name_of(&target);
+        if let Some(db) = &mut self.desktop {
+            db.register_appl(&target, &fork_name, &meta, parent_id);
+        }
         // The fork: the data fork lives at data_offset inside the host
         // file (nonzero for AppleSingle); the resource fork lives in
         // the metadata container. An absent resource fork reads as an
@@ -1321,6 +1376,235 @@ impl Afp {
             &fork.meta,
             fork.parent,
             fork.file_id,
+        ));
+        (ok(), reply)
+    }
+
+    /// Connect the UI's progress reporting channel
+    pub fn set_scan_status_tx(&mut self, tx: crossbeam_channel::Sender<ScanStatus>) {
+        self.scan_status_tx = Some(tx);
+    }
+
+    /// Start the background desktop scan: the volume is walked on a
+    /// separate thread and its findings are merged as they arrive, so
+    /// the AFP thread never blocks on a large share
+    pub fn start_scan(&mut self) {
+        if self.scan_started {
+            return;
+        }
+        self.scan_started = true;
+        let root = self.root.clone();
+        let abort = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (tx, rx) = std::sync::mpsc::channel::<DeskBatch>();
+        self.scan_abort = Some(abort.clone());
+        self.scan_rx = Some(rx);
+        let status_tx = self.scan_status_tx.clone();
+        let settings = self.settings;
+        log::debug!("AFP: desktop scan started on '{}'", root.display());
+        std::thread::spawn(move || scan_volume(root, &tx, &abort, status_tx.as_ref(), settings));
+    }
+
+    /// Merge whatever the background desktop scan has reported so far
+    fn poll_scan(&mut self) {
+        let Some(rx) = self.scan_rx.take() else {
+            return;
+        };
+        loop {
+            match rx.try_recv() {
+                Ok(batch) => {
+                    for group in batch.groups {
+                        let dir_id = self.dir_id(&group.parent);
+                        let db = self.desktop.get_or_insert_with(DeskDb::new);
+                        db.merge_group(group, dir_id, &mut self.mangles);
+                    }
+                    let (appls, icons) = self
+                        .desktop
+                        .as_ref()
+                        .map(|db| (db.application_count(), db.icon_count()))
+                        .unwrap_or((0, 0));
+                    log::debug!(
+                        "AFP: desktop scan progress: {} applications and {} icons",
+                        appls,
+                        icons
+                    );
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.scan_rx = Some(rx);
+                    return;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.scan_abort = None;
+                    let (appls, icons) = self
+                        .desktop
+                        .as_ref()
+                        .map(|db| (db.application_count(), db.icon_count()))
+                        .unwrap_or((0, 0));
+                    log::debug!(
+                        "AFP: desktop scan finished: {} applications and {} icons",
+                        appls,
+                        icons
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    /// FPOpenDT: open the volume's desktop database and hand out its
+    /// reference number
+    fn cmd_open_dt(&mut self, params: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let Some(volume_id) = get_u16(params) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        if volume_id != VOLUME_ID {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        }
+        self.desktop.get_or_insert_with(DeskDb::new).set_open(true);
+        let mut reply = Vec::new();
+        reply.extend_from_slice(&DT_REF_NUM.to_be_bytes());
+        (ok(), reply)
+    }
+
+    /// FPCloseDT: close the desktop database
+    fn cmd_close_dt(&mut self, params: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let Some(ref_num) = get_u16(params) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        if ref_num != DT_REF_NUM {
+            return (err(ERR_PARAM), Vec::new());
+        }
+        if let Some(db) = &mut self.desktop {
+            db.set_open(false);
+        }
+        (ok(), Vec::new())
+    }
+
+    /// FPGetIcon: the icon bitmap for a creator and file type
+    fn cmd_get_icon(&self, params: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let Some(ref_num) = get_u16(params) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        if ref_num != DT_REF_NUM {
+            return (err(ERR_PARAM), Vec::new());
+        }
+        let Some(creator) = params.get(2..).and_then(get_u32) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(ftype) = params.get(6..).and_then(get_u32) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(icon_type) = params.get(10).copied() else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(length) = params.get(12..).and_then(get_u16) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let icon = self.desktop.as_ref().and_then(|db| db.icon(creator, ftype));
+        let Some(icon) = icon else {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        };
+        // The bitmap for the requested IconType: 1 large monochrome,
+        // 2 large 4-bit, 3 large 8-bit, 4 small 4-bit, 5 small
+        // monochrome, 6 small 8-bit
+        let bitmap: Option<&Vec<u8>> = match icon_type {
+            1 => Some(&icon.mono),
+            2 => icon.color4.as_ref(),
+            3 => icon.color8.as_ref(),
+            4 => icon.small4.as_ref(),
+            5 => icon.small_mono.as_ref(),
+            6 => icon.small8.as_ref(),
+            _ => None,
+        };
+        let Some(bitmap) = bitmap else {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        };
+        // The reply is the icon bitmap, truncated to the requested length;
+        // a length of 0 tests presence only
+        let len = (length as usize).min(bitmap.len());
+        let mut reply = Vec::new();
+        reply.extend_from_slice(&bitmap[..len]);
+        (ok(), reply)
+    }
+
+    /// FPGetIconInfo: information about one icon of a creator, by index
+    fn cmd_get_icon_info(&self, params: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let Some(ref_num) = get_u16(params) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        if ref_num != DT_REF_NUM {
+            return (err(ERR_PARAM), Vec::new());
+        }
+        let Some(creator) = params.get(2..).and_then(get_u32) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(index) = params.get(6..).and_then(get_u16) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let icons = self
+            .desktop
+            .as_ref()
+            .map(|db| db.icons(creator))
+            .unwrap_or_default();
+        let Some(icon) = icons.get(index.max(1) as usize - 1) else {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        };
+        // Advertise the best format available: 8-bit color (IconType
+        // 3), else 4-bit color (2), else monochrome (1)
+        let (icon_type, size) = if icon.color8.is_some() {
+            (3, crate::rfork::ICL8_LEN)
+        } else if icon.color4.is_some() {
+            (2, crate::rfork::ICL4_LEN)
+        } else {
+            (1, icon.mono.len())
+        };
+        let mut reply = Vec::new();
+        reply.extend_from_slice(&icon.ftype.to_be_bytes()); // the icon tag
+        reply.extend_from_slice(&icon.ftype.to_be_bytes());
+        reply.push(icon_type);
+        reply.push(0); // reserved
+        reply.extend_from_slice(&(size as u16).to_be_bytes());
+        (ok(), reply)
+    }
+
+    /// FPGetAPPL: one APPL mapping for a creator, by index
+    fn cmd_get_appl(&mut self, params: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let Some(ref_num) = get_u16(params) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        if ref_num != DT_REF_NUM {
+            return (err(ERR_PARAM), Vec::new());
+        }
+        let Some(creator) = params.get(2..).and_then(get_u32) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(index) = params.get(6..).and_then(get_u16) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(bitmap) = params.get(8..).and_then(get_u16) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        if bitmap & !FILE_BITMAP_ALLOWED != 0 {
+            return (err(ERR_BITMAP), Vec::new());
+        }
+        let appls = self
+            .desktop
+            .as_ref()
+            .map(|db| db.applications(creator))
+            .unwrap_or_default();
+        // An APPL index of 0 returns the first mapping
+        let Some(appl) = appls.get(index.max(1) as usize - 1) else {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        };
+        let mut reply = Vec::new();
+        reply.extend_from_slice(&bitmap.to_be_bytes());
+        let file_id = self.ids.id_of(&appl.path).unwrap_or(0);
+        reply.extend_from_slice(&file_id.to_be_bytes()); // APPL tag
+        reply.extend_from_slice(&file_params(
+            bitmap,
+            &appl.name,
+            &appl.meta,
+            appl.dir_id,
+            file_id,
         ));
         (ok(), reply)
     }
@@ -2114,6 +2398,259 @@ mod tests {
         assert_eq!(result, 0);
         assert_eq!(reply.len(), 1500);
         assert_eq!(reply, content);
+    }
+    /// Build an AppleDouble container (version 2) holding the given
+    /// entries
+    fn apple_double(entries: &[(u32, &[u8])]) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&[0x00, 0x05, 0x16, 0x07]); // magic
+        data.extend_from_slice(&0x00020000u32.to_be_bytes()); // version
+        data.extend_from_slice(&[0; 16]);
+        data.extend_from_slice(&(entries.len() as u16).to_be_bytes());
+        let mut body = 26 + 12 * entries.len();
+        let mut table = Vec::new();
+        for (id, bytes) in entries {
+            table.push((*id, body, bytes.len()));
+            body += bytes.len();
+        }
+        for (id, offset, len) in &table {
+            data.extend_from_slice(&id.to_be_bytes());
+            data.extend_from_slice(&(*offset as u32).to_be_bytes());
+            data.extend_from_slice(&(*len as u32).to_be_bytes());
+        }
+        for (_, bytes) in entries {
+            data.extend_from_slice(bytes);
+        }
+        data
+    }
+
+    #[test]
+    fn test_desktop_database_commands() {
+        let (mut server, dir) = test_server("desktop-db");
+        // An APPL file whose AppleDouble sidecar carries its Finder
+        // info and a resource fork with a BNDL/FREF/ICN# bundle
+        std::fs::write(dir.join("App"), b"x").unwrap();
+        std::fs::create_dir(dir.join(".AppleDouble")).unwrap();
+        let mut finder = Vec::new();
+        finder.extend_from_slice(b"APPL"); // file type
+        finder.extend_from_slice(b"TEST"); // creator
+        finder.extend_from_slice(&[0u8; 24]);
+        let fork = crate::rfork::test_support::fork(
+            &crate::rfork::test_support::bndl_with_fref(),
+            Some(&crate::rfork::test_support::fref_entries()),
+        );
+        let container = apple_double(&[(2, &fork), (9, &finder)]);
+        std::fs::write(dir.join(".AppleDouble").join("App"), container).unwrap();
+
+        // FPOpenDT hands out the desktop database reference number
+        let (r, reply) = result_of(server.command(1, &[48, 0, 0, 1]));
+        assert_eq!(r, 0);
+        assert_eq!(reply, [0, 1]);
+
+        // FPGetFileDirParms on the application registers it in the
+        // desktop database: the tables are fed by the files the client
+        // asks about
+        let mut gfd = vec![34, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 2, 3];
+        gfd.extend_from_slice(b"App");
+        let (r, _) = result_of(server.command(1, &gfd));
+        assert_eq!(r, 0);
+
+        // FPGetAPPL: creator 'TEST', index 0, bitmap 0x0340 (long name,
+        // file number, data fork length)
+        let mut cmd = vec![55, 0, 0, 1];
+        cmd.extend_from_slice(b"TEST");
+        cmd.extend_from_slice(&[0, 0]);
+        cmd.extend_from_slice(&0x0340u16.to_be_bytes());
+        let (r, reply) = result_of(server.command(1, &cmd));
+        assert_eq!(r, 0);
+        assert_eq!(reply[0..2], 0x0340u16.to_be_bytes());
+        assert_eq!(reply[6..8], [0, 10]); // the long name offset
+        assert_eq!(&reply[16..20], &[3, b'A', b'p', b'p']);
+        assert_eq!(reply[12..16], [0, 0, 0, 1]); // the data fork length
+
+        // FPGetIconInfo: creator 'TEST', index 0 — the APPL icon
+        let mut cmd = vec![52, 0, 0, 1];
+        cmd.extend_from_slice(b"TEST");
+        cmd.extend_from_slice(&[0, 0]);
+        let (r, reply) = result_of(server.command(1, &cmd));
+        assert_eq!(r, 0);
+        assert_eq!(&reply[0..4], b"APPL"); // the icon tag
+        assert_eq!(&reply[4..8], b"APPL"); // the file type
+        assert_eq!(reply[8], 3); // large 8-bit color, the best available
+        assert_eq!(reply[9], 0); // reserved
+        assert_eq!(reply[10..12], [0x04, 0x00]); // 1024 bytes
+
+        // FPGetIcon: 'TEST'/'APPL', IconType 1 — the icon bitmap
+        let mut cmd = vec![51, 0, 0, 1];
+        cmd.extend_from_slice(b"TEST");
+        cmd.extend_from_slice(b"APPL");
+        cmd.extend_from_slice(&[1, 0]);
+        cmd.extend_from_slice(&256u16.to_be_bytes());
+        let (r, reply) = result_of(server.command(1, &cmd));
+        assert_eq!(r, 0);
+        assert_eq!(reply.len(), 256);
+        assert_eq!(reply[0], 0x11);
+
+        // A request for only the first 128 bytes of the icon
+        let mut cmd = vec![51, 0, 0, 1];
+        cmd.extend_from_slice(b"TEST");
+        cmd.extend_from_slice(b"APPL");
+        cmd.extend_from_slice(&[1, 0]);
+        cmd.extend_from_slice(&128u16.to_be_bytes());
+        let (r, reply) = result_of(server.command(1, &cmd));
+        assert_eq!(r, 0);
+        assert_eq!(reply.len(), 128);
+
+        // A zero length only tests for the icon's presence
+        let mut cmd = vec![51, 0, 0, 1];
+        cmd.extend_from_slice(b"TEST");
+        cmd.extend_from_slice(b"APPL");
+        cmd.extend_from_slice(&[1, 0, 0, 0]);
+        let (r, reply) = result_of(server.command(1, &cmd));
+        assert_eq!(r, 0);
+        assert!(reply.is_empty());
+
+        // FPGetIcon for the 8-bit color icon (IconType 3)
+        let mut cmd = vec![51, 0, 0, 1];
+        cmd.extend_from_slice(b"TEST");
+        cmd.extend_from_slice(b"APPL");
+        cmd.extend_from_slice(&[3, 0]);
+        cmd.extend_from_slice(&1024u16.to_be_bytes());
+        let (r, reply) = result_of(server.command(1, &cmd));
+        assert_eq!(r, 0);
+        assert_eq!(reply.len(), 1024);
+        assert_eq!(reply[0], 0x33);
+
+        // FPGetIcon for the 4-bit color icon (IconType 2)
+        let mut cmd = vec![51, 0, 0, 1];
+        cmd.extend_from_slice(b"TEST");
+        cmd.extend_from_slice(b"APPL");
+        cmd.extend_from_slice(&[2, 0]);
+        cmd.extend_from_slice(&512u16.to_be_bytes());
+        let (r, reply) = result_of(server.command(1, &cmd));
+        assert_eq!(r, 0);
+        assert_eq!(reply.len(), 512);
+        assert_eq!(reply[0], 0x55);
+
+        // FPGetIcon for the small 4-bit icon (IconType 4)
+        let mut cmd = vec![51, 0, 0, 1];
+        cmd.extend_from_slice(b"TEST");
+        cmd.extend_from_slice(b"APPL");
+        cmd.extend_from_slice(&[4, 0]);
+        cmd.extend_from_slice(&128u16.to_be_bytes());
+        let (r, reply) = result_of(server.command(1, &cmd));
+        assert_eq!(r, 0);
+        assert_eq!(reply.len(), 128);
+        assert_eq!(reply[0], 0x99);
+
+        // FPGetIcon for the small monochrome icon (IconType 5)
+        let mut cmd = vec![51, 0, 0, 1];
+        cmd.extend_from_slice(b"TEST");
+        cmd.extend_from_slice(b"APPL");
+        cmd.extend_from_slice(&[5, 0]);
+        cmd.extend_from_slice(&64u16.to_be_bytes());
+        let (r, reply) = result_of(server.command(1, &cmd));
+        assert_eq!(r, 0);
+        assert_eq!(reply.len(), 64);
+        assert_eq!(reply[0], 0xbb);
+
+        // An IconType the server has nothing for
+        let mut cmd = vec![51, 0, 0, 1];
+        cmd.extend_from_slice(b"TEST");
+        cmd.extend_from_slice(b"APPL");
+        cmd.extend_from_slice(&[9, 0]);
+        cmd.extend_from_slice(&64u16.to_be_bytes());
+        let (r, _) = result_of(server.command(1, &cmd));
+        assert_eq!(r, ERR_OBJECT_NOT_FOUND);
+
+        // FPGetAPPL past the end of the mappings
+        let mut cmd = vec![55, 0, 0, 1];
+        cmd.extend_from_slice(b"TEST");
+        cmd.extend_from_slice(&[0, 2]);
+        cmd.extend_from_slice(&0x0340u16.to_be_bytes());
+        let (r, _) = result_of(server.command(1, &cmd));
+        assert_eq!(r, ERR_OBJECT_NOT_FOUND);
+
+        // FPGetIconInfo past the end
+        let mut cmd = vec![52, 0, 0, 1];
+        cmd.extend_from_slice(b"TEST");
+        cmd.extend_from_slice(&[0, 9]);
+        let (r, _) = result_of(server.command(1, &cmd));
+        assert_eq!(r, ERR_OBJECT_NOT_FOUND);
+
+        // FPGetIcon for a creator with no icons
+        let mut cmd = vec![51, 0, 0, 1];
+        cmd.extend_from_slice(b"NOPE");
+        cmd.extend_from_slice(b"APPL");
+        cmd.extend_from_slice(&[1, 0]);
+        cmd.extend_from_slice(&256u16.to_be_bytes());
+        let (r, _) = result_of(server.command(1, &cmd));
+        assert_eq!(r, ERR_OBJECT_NOT_FOUND);
+
+        // FPAddAPPL is refused on the read-only volume
+        let mut cmd = vec![53, 0, 0, 1, 0, 0, 0, 2];
+        cmd.extend_from_slice(b"TEST");
+        cmd.extend_from_slice(&[0, 0, 0, 0, 2, 0]);
+        let (r, _) = result_of(server.command(1, &cmd));
+        assert_eq!(r, ERR_VOL_LOCKED);
+
+        // A bad DTRefNum is a parameter error
+        let (r, _) = result_of(server.command(1, &[52, 0, 0, 9, b'T', b'E', b'S', b'T', 0, 0]));
+        assert_eq!(r, ERR_PARAM);
+
+        // A volume the server does not have cannot be opened
+        let (r, _) = result_of(server.command(1, &[48, 0, 0, 9]));
+        assert_eq!(r, ERR_OBJECT_NOT_FOUND);
+    }
+
+    #[test]
+    fn test_desktop_scan_merges_in_background() {
+        let (mut server, dir) = test_server("desktop-scan");
+        std::fs::create_dir(dir.join(".AppleDouble")).unwrap();
+        let mut finder = Vec::new();
+        finder.extend_from_slice(b"APPL");
+        finder.extend_from_slice(b"TEST");
+        finder.extend_from_slice(&[0u8; 24]);
+        for i in 0..5 {
+            let name = format!("app{i}");
+            std::fs::write(dir.join(&name), b"x").unwrap();
+            std::fs::write(
+                dir.join(".AppleDouble").join(&name),
+                apple_double(&[(9, &finder)]),
+            )
+            .unwrap();
+        }
+        // The scan walks the tree on its own thread and the findings
+        // merge as they arrive
+        server.start_scan();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            server.poll_scan();
+            if server
+                .desktop
+                .as_ref()
+                .map(|db| db.application_count())
+                .unwrap_or(0)
+                >= 5
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the scan never merged"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // FPGetAPPL finds one of the scanned applications
+        let mut cmd = vec![55, 0, 0, 1];
+        cmd.extend_from_slice(b"TEST");
+        cmd.extend_from_slice(&[0, 0]);
+        cmd.extend_from_slice(&0u16.to_be_bytes());
+        let (r, _) = result_of(server.command(1, &cmd));
+        assert_eq!(r, 0);
+        // Starting the scan again is a no-op
+        server.start_scan();
+        assert_eq!(server.desktop.as_ref().unwrap().application_count(), 5);
     }
 }
 
