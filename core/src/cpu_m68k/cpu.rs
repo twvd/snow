@@ -28,7 +28,7 @@ use super::instruction::{
     MulxExtWord,
 };
 use super::regs::{Register, RegisterFile, RegisterSR, RestartRegisterFile};
-use super::timing040::{Exec040, FullEa040};
+use super::timing040::{self, Exec040, FullEa040};
 use super::{
     CpuM68kType, CpuSized, FPU_NONE, M68000, M68010, M68020, M68020_SR_MASK, M68030_SR_MASK,
     TORDER_HIGHLOW, TORDER_LOWHIGH,
@@ -1960,18 +1960,19 @@ where
         }
 
         // Idle cycles
-        match (
-            instr.get_addr_mode()?,
-            instr.get_direction(),
-            std::mem::size_of::<T>(),
-        ) {
-            (AddressingMode::DataRegister | AddressingMode::Immediate, _, 4) => {
-                self.advance_cycles(4)?;
-            }
-
-            (_, Direction::Right, 4) => self.advance_cycles(2)?,
-            _ => (),
-        };
+        advance_cycles!(
+            self,
+            m68000: match (
+                instr.get_addr_mode()?,
+                instr.get_direction(),
+                std::mem::size_of::<T>(),
+            ) {
+                (AddressingMode::DataRegister | AddressingMode::Immediate, _, 4) => 4,
+                (_, Direction::Right, 4) => 2,
+                _ => 0,
+            },
+        )?;
+        account_040_time!(self, timing040::ALU, instr.get_addr_mode()?);
 
         Ok(())
     }
@@ -1998,14 +1999,18 @@ where
         self.write_ea(instr, instr.get_op2(), result)?;
 
         // Idle cycles
-        match (
-            instr.get_addr_mode()?,
-            instr.get_direction(),
-            std::mem::size_of::<T>(),
-        ) {
-            (AddressingMode::DataRegister, _, 4) => self.advance_cycles(4)?,
-            _ => (),
-        };
+        advance_cycles!(
+            self,
+            m68000: match (
+                instr.get_addr_mode()?,
+                instr.get_direction(),
+                std::mem::size_of::<T>(),
+            ) {
+                (AddressingMode::DataRegister, _, 4) => 4,
+                _ => 0,
+            },
+        )?;
+        account_040_time!(self, timing040::ALU_IMMEDIATE, instr.get_addr_mode()?);
 
         Ok(())
     }
@@ -2125,19 +2130,20 @@ where
         }
 
         // Idle cycles
-        match (
-            instr.get_addr_mode()?,
-            instr.get_direction(),
-            std::mem::size_of::<T>(),
-        ) {
-            (AddressingMode::DataRegister | AddressingMode::Immediate, _, 4) => {
-                self.advance_cycles(4)?;
-            }
-            (AddressingMode::AddressRegister, _, 4) => self.advance_cycles(4)?,
-
-            (_, Direction::Right, 4) => self.advance_cycles(2)?,
-            _ => (),
-        };
+        advance_cycles!(
+            self,
+            m68000: match (
+                instr.get_addr_mode()?,
+                instr.get_direction(),
+                std::mem::size_of::<T>(),
+            ) {
+                (AddressingMode::DataRegister | AddressingMode::Immediate, _, 4) => 4,
+                (AddressingMode::AddressRegister, _, 4) => 4,
+                (_, Direction::Right, 4) => 2,
+                _ => 0,
+            },
+        )?;
+        account_040_time!(self, timing040::ALU, instr.get_addr_mode()?);
 
         Ok(())
     }
@@ -2158,14 +2164,18 @@ where
         self.write_ea(instr, instr.get_op2(), result)?;
 
         // Idle cycles
-        match (
-            instr.get_addr_mode()?,
-            instr.get_direction(),
-            std::mem::size_of::<T>(),
-        ) {
-            (AddressingMode::DataRegister, _, 4) => self.advance_cycles(4)?,
-            _ => (),
-        };
+        advance_cycles!(
+            self,
+            m68000: match (
+                instr.get_addr_mode()?,
+                instr.get_direction(),
+                std::mem::size_of::<T>(),
+            ) {
+                (AddressingMode::DataRegister, _, 4) => 4,
+                _ => 0,
+            },
+        )?;
+        account_040_time!(self, timing040::ALU_IMMEDIATE, instr.get_addr_mode()?);
 
         Ok(())
     }
@@ -2185,14 +2195,18 @@ where
         self.write_ea(instr, instr.get_op2(), result)?;
 
         // Idle cycles
-        match (
-            instr.get_addr_mode()?,
-            instr.get_direction(),
-            std::mem::size_of::<T>(),
-        ) {
-            (AddressingMode::DataRegister, _, 4) => self.advance_cycles(2)?,
-            _ => (),
-        };
+        advance_cycles!(
+            self,
+            m68000: match (
+                instr.get_addr_mode()?,
+                instr.get_direction(),
+                std::mem::size_of::<T>(),
+            ) {
+                (AddressingMode::DataRegister, _, 4) => 2,
+                _ => 0,
+            },
+        )?;
+        account_040_time!(self, timing040::NEG, instr.get_addr_mode()?);
 
         Ok(())
     }
@@ -2220,11 +2234,15 @@ where
         self.ea_commit();
 
         // Idle cycles
-        match (instr.get_addr_mode()?, std::mem::size_of::<T>()) {
-            (AddressingMode::DataRegister, 4) => self.advance_cycles(4)?,
-            (AddressingMode::AddressRegister, 4) => self.advance_cycles(4)?,
-            _ => (),
-        };
+        advance_cycles!(
+            self,
+            m68000: match (instr.get_addr_mode()?, std::mem::size_of::<T>()) {
+                (AddressingMode::DataRegister, 4) => 4,
+                (AddressingMode::AddressRegister, 4) => 4,
+                _ => 0,
+            },
+        )?;
+        account_040_time!(self, timing040::ADDQ_SUBQ, instr.get_addr_mode()?);
 
         Ok(())
     }
@@ -2247,15 +2265,37 @@ where
         self.prefetch_pump()?;
         self.regs.write_a::<Long>(instr.get_op1(), result);
 
-        // Idle cycles
-        match (instr.get_addr_mode()?, std::mem::size_of::<T>()) {
-            (AddressingMode::AddressRegister, _) => self.advance_cycles(4)?,
-            (AddressingMode::DataRegister, _) => self.advance_cycles(4)?,
-            (AddressingMode::Immediate, _) => self.advance_cycles(4)?,
-            (_, 2) => self.advance_cycles(4)?,
-            (_, 4) => self.advance_cycles(2)?,
-            _ => unreachable!(),
-        };
+        // Idle cycles. The 68030 manual gives ADDA.W/SUBA.W 4 clocks and the .L
+        // forms 2, the 68020 manual has one 2-clock row for both sizes. It is not
+        // known whether the 68020 really differs; we follow each manual.
+        advance_cycles!(
+            self,
+            m68000: match (instr.get_addr_mode()?, std::mem::size_of::<T>()) {
+                (
+                    AddressingMode::AddressRegister
+                    | AddressingMode::DataRegister
+                    | AddressingMode::Immediate,
+                    _,
+                ) => 4,
+                (_, 2) => 4,
+                (_, 4) => 2,
+                _ => unreachable!(),
+            },
+            m68020: 0,
+            m68030: if std::mem::size_of::<T>() == 2 { 2 } else { 0 },
+        )?;
+        account_040_time!(
+            self,
+            if matches!(
+                instr.mnemonic,
+                InstructionMnemonic::SUBA_l | InstructionMnemonic::SUBA_w
+            ) {
+                timing040::SUBA
+            } else {
+                timing040::ADDA
+            },
+            instr.get_addr_mode()?,
+        );
 
         Ok(())
     }
@@ -2274,7 +2314,7 @@ where
                 self.regs.read_d(instr.get_op1()),
             ),
             (AddressingMode::IndirectPreDec, 4) => {
-                self.advance_cycles(2)?;
+                advance_cycles!(self, all: 2)?;
                 // The order here is very explicit due to the way registers need to be left if
                 // an address error occurs.
                 let a_addr_low = self.regs.read_a_predec(instr.get_op2(), 2);
@@ -2291,7 +2331,7 @@ where
                 )
             }
             (AddressingMode::IndirectPreDec, _) => {
-                self.advance_cycles(2)?;
+                advance_cycles!(self, all: 2)?;
                 // The order here is very explicit due to the way registers need to be left if
                 // an address error occurs.
                 let a_addr = self.regs.read_a_predec(instr.get_op2(), sz);
@@ -2332,10 +2372,21 @@ where
         };
 
         // Idle cycles
-        match (instr.get_addr_mode_x()?, sz) {
-            (AddressingMode::DataRegister, 4) => self.advance_cycles(4)?,
-            _ => (),
-        };
+        advance_cycles!(
+            self,
+            m68000: match (instr.get_addr_mode_x()?, sz) {
+                (AddressingMode::DataRegister, 4) => 4,
+                _ => 0,
+            },
+        )?;
+        account_040_time!(
+            self,
+            if instr.get_addr_mode_x()? == AddressingMode::DataRegister {
+                timing040::ADDX_DN
+            } else {
+                timing040::ADDX_PREDEC
+            },
+        );
 
         Ok(())
     }
@@ -2354,19 +2405,20 @@ where
         self.prefetch_pump()?;
 
         // Idle cycles
-        match (
-            instr.get_addr_mode()?,
-            instr.get_direction(),
-            std::mem::size_of::<T>(),
-        ) {
-            (AddressingMode::DataRegister | AddressingMode::Immediate, _, 4) => {
-                self.advance_cycles(2)?;
-            }
-            (AddressingMode::AddressRegister, _, 4) => self.advance_cycles(2)?,
-
-            (_, Direction::Right, 4) => self.advance_cycles(2)?,
-            _ => (),
-        };
+        advance_cycles!(
+            self,
+            m68000: match (
+                instr.get_addr_mode()?,
+                instr.get_direction(),
+                std::mem::size_of::<T>(),
+            ) {
+                (AddressingMode::DataRegister | AddressingMode::Immediate, _, 4) => 2,
+                (AddressingMode::AddressRegister, _, 4) => 2,
+                (_, Direction::Right, 4) => 2,
+                _ => 0,
+            },
+        )?;
+        account_040_time!(self, timing040::CMP, instr.get_addr_mode()?);
 
         Ok(())
     }
@@ -2385,14 +2437,18 @@ where
         self.prefetch_pump()?;
 
         // Idle cycles
-        match (
-            instr.get_addr_mode()?,
-            instr.get_direction(),
-            std::mem::size_of::<T>(),
-        ) {
-            (AddressingMode::DataRegister, _, 4) => self.advance_cycles(2)?,
-            _ => (),
-        };
+        advance_cycles!(
+            self,
+            m68000: match (
+                instr.get_addr_mode()?,
+                instr.get_direction(),
+                std::mem::size_of::<T>(),
+            ) {
+                (AddressingMode::DataRegister, _, 4) => 2,
+                _ => 0,
+            },
+        )?;
+        account_040_time!(self, timing040::CMPI, instr.get_addr_mode()?);
 
         Ok(())
     }
@@ -2415,6 +2471,7 @@ where
 
         self.prefetch_pump()?;
 
+        account_040_time!(self, timing040::CMPM);
         Ok(())
     }
 
@@ -2433,7 +2490,8 @@ where
         self.regs.sr.set_x(old_x);
 
         self.prefetch_pump()?;
-        self.advance_cycles(2)?; // 2x idle
+        advance_cycles!(self, all: 2)?; // 2x idle
+        account_040_time!(self, timing040::CMPA_L, instr.get_addr_mode()?);
 
         Ok(())
     }
@@ -2882,14 +2940,14 @@ where
         self.write_ea(instr, instr.get_op2(), T::zero())?;
 
         // Idle cycles
-        if std::mem::size_of::<T>() == 4 {
-            match instr.get_addr_mode()? {
-                AddressingMode::DataRegister | AddressingMode::AddressRegister => {
-                    self.advance_cycles(2)?;
-                }
-                _ => (),
-            }
-        }
+        advance_cycles!(
+            self,
+            m68000: match (instr.get_addr_mode()?, std::mem::size_of::<T>()) {
+                (AddressingMode::DataRegister | AddressingMode::AddressRegister, 4) => 2,
+                _ => 0,
+            },
+        )?;
+        account_040_time!(self, timing040::CLR, instr.get_addr_mode()?);
 
         Ok(())
     }
@@ -2907,14 +2965,15 @@ where
         self.write_ea(instr, instr.get_op2(), result)?;
 
         // Idle cycles
-        if std::mem::size_of::<T>() == 4 {
-            match instr.get_addr_mode()? {
-                AddressingMode::DataRegister | AddressingMode::AddressRegister => {
-                    self.advance_cycles(2)?;
-                }
-                _ => (),
-            }
-        }
+        advance_cycles!(
+            self,
+            m68000: match (instr.get_addr_mode()?, std::mem::size_of::<T>()) {
+                (AddressingMode::DataRegister | AddressingMode::AddressRegister, 4) => 2,
+                _ => 0,
+            },
+        )?;
+        account_040_time!(self, timing040::NEG, instr.get_addr_mode()?);
+
         Ok(())
     }
 
@@ -3083,6 +3142,7 @@ where
         self.regs.sr.set_n(result & T::msb() != T::zero());
         self.regs.sr.set_c(false);
         self.regs.sr.set_v(false);
+        account_040_time!(self, timing040::ALU, instr.get_addr_mode()?);
         Ok(())
     }
 
