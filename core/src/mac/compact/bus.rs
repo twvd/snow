@@ -396,7 +396,12 @@ where
         self.scsi.read(addr).map(u32::from)
     }
 
+    /// A9 is the controller's DACK: a pseudo-DMA data register write
     fn scsi_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
+        if addr & 0x200 != 0 {
+            self.scsi.write_dma(val as Byte);
+            return Some(());
+        }
         self.scsi.write(addr, val as Byte)
     }
 
@@ -425,7 +430,7 @@ where
                 };
                 // Latches its lane, which it drives itself on a word read
                 if iow {
-                    bus.scsi.write(addr, val as Byte)?;
+                    bus.scsi_write(addr, 1, val)?;
                 }
                 Some(val)
             },
@@ -434,7 +439,7 @@ where
                     bus.scsi.read(addr)?;
                 }
                 if iow {
-                    bus.scsi.write(addr, val as Byte)?;
+                    bus.scsi_write(addr, 1, val)?;
                 }
                 Some(())
             },
