@@ -2430,8 +2430,16 @@ where
 
         self.prefetch_pump()?;
 
-        // Computation time
-        self.advance_cycles(34 + (b.count_ones() as Ticks) * 2)?;
+        // Computation time. On the 68020/68030 MUL and DIV take the maximum times
+        // from the manuals (MC68020UM 8.2.8, MC68030UM 11.6.8). The real times
+        // depend on the operands, but there is no data on how. Other emulators use
+        // fixed times as well, and the few measurements found online roughly match.
+        advance_cycles!(
+            self,
+            m68000: 34 + (b.count_ones() as Ticks) * 2,
+            m68020: 25,
+            m68030: 26,
+        )?;
 
         self.regs.sr.set_v(false);
         self.regs.sr.set_c(false);
@@ -2440,6 +2448,7 @@ where
 
         self.regs.write_d(instr.get_op1(), result);
 
+        account_040_time!(self, timing040::MULU_W, instr.get_addr_mode()?);
         Ok(())
     }
 
@@ -2451,8 +2460,13 @@ where
 
         self.prefetch_pump()?;
 
-        // Computation time
-        self.advance_cycles(34 + (((b << 1) ^ b).count_ones() as Ticks) * 2)?;
+        // Computation time (68020/68030: maximum from the manuals, see op_mulu)
+        advance_cycles!(
+            self,
+            m68000: 34 + (((b << 1) ^ b).count_ones() as Ticks) * 2,
+            m68020: 25,
+            m68030: 26,
+        )?;
 
         self.regs.sr.set_v(false);
         self.regs.sr.set_c(false);
@@ -2461,6 +2475,7 @@ where
 
         self.regs.write_d(instr.get_op1(), result);
 
+        account_040_time!(self, timing040::MULS_W, instr.get_addr_mode()?);
         Ok(())
     }
 
@@ -2481,12 +2496,15 @@ where
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_DIV_ZERO, None);
         }
 
+        account_040_time!(self, timing040::DIV_W, instr.get_addr_mode()?);
+
         let result = dividend / divisor;
         let result_rem = dividend % divisor;
 
         self.regs.sr.set_c(false);
         self.regs.sr.set_z(false);
-        self.advance_cycles(6)?;
+        // Maximum from the manuals on the 68020/68030, see op_mulu
+        advance_cycles!(self, m68000: 6, others: 42)?;
         if result > Word::MAX.into() {
             // Overflow
             self.regs.sr.set_v(true);
@@ -2497,22 +2515,24 @@ where
         }
 
         // Simulate the cycle time
-        self.advance_cycles(6)?;
-        divisor <<= 16;
-        let mut last_msb;
-        for _ in 0..15 {
-            self.advance_cycles(4)?;
-            last_msb = dividend & 0x8000_0000 != 0;
-            dividend <<= 1;
-            if !last_msb {
-                self.advance_cycles(2)?;
-                if dividend < divisor {
+        if CPU_TYPE == M68000 {
+            self.advance_cycles(6)?;
+            divisor <<= 16;
+            let mut last_msb;
+            for _ in 0..15 {
+                self.advance_cycles(4)?;
+                last_msb = dividend & 0x8000_0000 != 0;
+                dividend <<= 1;
+                if !last_msb {
                     self.advance_cycles(2)?;
+                    if dividend < divisor {
+                        self.advance_cycles(2)?;
+                    }
                 }
-            }
 
-            if last_msb || dividend >= divisor {
-                dividend = dividend.wrapping_sub(divisor);
+                if last_msb || dividend >= divisor {
+                    dividend = dividend.wrapping_sub(divisor);
+                }
             }
         }
 
@@ -2544,18 +2564,22 @@ where
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_DIV_ZERO, None);
         }
 
+        account_040_time!(self, timing040::DIV_W, instr.get_addr_mode()?);
+
         let result = dividend / divisor;
         let result_rem = dividend % divisor;
 
         self.regs.sr.set_c(false);
         self.regs.sr.set_z(false);
-        self.advance_cycles(8)?;
-        if dividend < 0 {
-            self.advance_cycles(2)?;
-        }
+        // Maximum from the manuals on the 68020/68030, see op_mulu
+        advance_cycles!(
+            self,
+            m68000: if dividend < 0 { 10 } else { 8 },
+            others: 54,
+        )?;
         if dividend.wrapping_abs() >= (divisor.wrapping_abs() << 16) && divisor != i16::MIN as i32 {
             // Overflow (detected before calculation)
-            self.advance_cycles(4)?;
+            advance_cycles!(self, m68000: 4)?;
 
             self.regs.sr.set_v(true);
             self.regs.sr.set_n(true);
@@ -2564,18 +2588,22 @@ where
             return Ok(());
         }
 
-        // Simulate the cycle time
-        if divisor < 0 {
-            // +2 for negative divisor
-            self.advance_cycles(2)?;
-        } else if dividend < 0 {
-            // +4 for positive divisor, negative dividend
-            self.advance_cycles(4)?;
-        }
-
-        // Count zeroes in top 15 most significant bits
-        let zeroes = ((result.wrapping_abs() as u16) | 1).count_zeros() as Ticks;
-        self.advance_cycles(108 + zeroes * 2)?;
+        // Simulate the cycle time: +2 for a negative divisor, +4 for a positive
+        // divisor and a negative dividend, and 2 per zero in the top 15 bits
+        advance_cycles!(
+            self,
+            m68000: {
+                let sign = if divisor < 0 {
+                    2
+                } else if dividend < 0 {
+                    4
+                } else {
+                    0
+                };
+                let zeroes = ((result.wrapping_abs() as u16) | 1).count_zeros() as Ticks;
+                sign + 108 + zeroes * 2
+            },
+        )?;
 
         if result > i16::MAX.into() || result < i16::MIN.into() {
             // Overflow (detected during calculation)
@@ -4866,20 +4894,15 @@ where
         let result = if extword.signed() {
             let a = self.regs.read_d::<Long>(extword.dl()) as i32 as i64;
             let b = self.read_ea::<Long>(instr, instr.get_op2())? as i32 as i64;
-
-            // Computation time
-            self.advance_cycles(34 + (((b << 1) ^ b).count_ones() as Ticks) * 2)?;
-
             a.wrapping_mul(b)
         } else {
             let a = self.regs.read_d::<Long>(extword.dl()) as u64;
             let b = self.read_ea::<Long>(instr, instr.get_op2())? as u64;
-
-            // Computation time
-            self.advance_cycles(34 + (((b << 1) ^ b).count_ones() as Ticks) * 2)?;
-
             a.wrapping_mul(b) as i64
         };
+
+        // Computation time (maximum from the manuals, see op_mulu)
+        advance_cycles!(self, m68030: 40, others: 39)?;
 
         self.prefetch_pump()?;
 
@@ -4898,6 +4921,15 @@ where
                 .write_d(extword.dh(), (result >> 32) as i32 as Long);
         }
 
+        account_040_time!(
+            self,
+            if extword.signed() {
+                timing040::MULS_L
+            } else {
+                timing040::MULU_L
+            },
+            instr.get_addr_mode()?,
+        );
         Ok(())
     }
 
@@ -4929,6 +4961,7 @@ where
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_DIV_ZERO, None);
         }
 
+        account_040_time!(self, timing040::DIV_L, instr.get_addr_mode()?);
         self.prefetch_pump()?;
 
         let (quotient, remainder, overflow) = if extword.signed() {
@@ -4948,15 +4981,15 @@ where
             (q, dividend % divisor, q > u64::from(u32::MAX))
         };
 
+        // Computation time (maximum from the manuals, see op_mulu)
+        advance_cycles!(self, all: if extword.signed() { 86 } else { 74 })?;
+
         // The quotient must fit in 32 bits; the operands are left unchanged
         if overflow {
             debug!("DIV.l overflow");
             self.regs.sr.set_v(true);
             return Ok(());
         }
-
-        // 76-79 cycles
-        self.advance_cycles(76)?;
 
         self.regs.sr.set_v(false);
         self.regs.sr.set_c(false);
