@@ -418,6 +418,50 @@ fn ptest_level_limit_stops_the_search() {
     );
 }
 
+/// A bus error while fetching a descriptor during a PTEST walk sets MMUSR B
+/// and I (M68000PRM 6-64). The B-table entry for the tested page faults on
+/// the test bus while the code/stack entries stay readable.
+#[test]
+fn ptest_reports_bus_error_during_table_search() {
+    const ROOT: Address = 0x8000;
+    const B: Address = 0x6000;
+    const PAGE: Address = 0x0001_0000; // root idx 0, B idx 2
+
+    let bus = Testbus::new(M68030_ADDRESS_MASK);
+    let mut cpu = TestCpu::new(bus);
+    // Fault only the B[2] descriptor the test probes.
+    cpu.bus.fault_ranges.push(B + 8..=B + 11);
+    write_long(&mut cpu.bus, ROOT, B | 2); // root[0] -> B table (short)
+    write_long(&mut cpu.bus, B, 0x0000_0001); // B[0]: identity page 0
+    write_long(&mut cpu.bus, B + 4, 0x0000_8001); // B[1]: identity page 0x8000
+
+    let mut crp = RootPointerReg(0);
+    crp.set_table_addr(ROOT >> 4);
+    crp.set_dt(2);
+    crp.set_limit(0x7FFF);
+    cpu.regs.pmmu.crp = crp;
+    // E=1, IS=0, TIA=8, TIB=9, PS=32 KB.
+    cpu.regs.pmmu.tc = TcReg(0x80F0_8900);
+    cpu.pmmu_cache_ensure();
+
+    cpu.regs.sr.set_supervisor(true);
+    cpu.regs.isp = SSP;
+    cpu.regs.a[0] = PAGE;
+    cpu.regs.d[0] = 1; // SFC = 1
+    write_word(&mut cpu.bus, CODE, 0x4E7B); // MOVEC D0,SFC
+    write_word(&mut cpu.bus, CODE + 2, 0x0000);
+    write_word(&mut cpu.bus, CODE + 4, 0xF010); // PTESTR SFC,(A0),#7
+    write_word(&mut cpu.bus, CODE + 6, 0x9E00);
+    reload(&mut cpu);
+
+    step_n(&mut cpu, 2);
+    assert_eq!(
+        cpu.regs.pmmu.psr.0 & 0x8400,
+        0x8400,
+        "MMUSR B and I set for a bus error during the search"
+    );
+}
+
 /// MOVES in user mode is a privilege violation regardless of direction.
 #[test]
 fn moves_is_privileged() {

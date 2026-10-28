@@ -340,7 +340,9 @@ where
             Err(e) => match e.downcast_ref::<CpuError>() {
                 // Fault-type outcomes and bus errors reading descriptors
                 // have already been recorded in the PSR.
-                Some(CpuError::Pagefault(_) | CpuError::AddressError(_)) => {}
+                Some(
+                    CpuError::Pagefault(_) | CpuError::BusError(_) | CpuError::AddressError(_),
+                ) => {}
                 other => log::warn!("PTEST unexpected walk error: {other:?}"),
             },
         }

@@ -760,17 +760,29 @@ where
                 &mut remaining,
             )
             .map_err(|e| match e.downcast_ref() {
-                Some(CpuError::AddressError(ae)) => {
+                Some(CpuError::BusError(details)) => {
                     if PTEST {
                         // M68000PRM 6-64: B is set if a bus error is
-                        // encountered during the table search; I is set
-                        // whenever B (or L) is set.
+                        // encountered during the table search, and I is
+                        // set whenever B (or L) is set.
                         self.regs.pmmu.psr = RegisterPSR::default();
                         self.regs.pmmu.psr.set_bus_error(true);
                         self.regs.pmmu.psr.set_invalid(true);
                         self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
                     }
-                    anyhow!("Address error while reading page tables: {:X?}", ae)
+                    anyhow!(CpuError::BusError(*details))
+                }
+                Some(CpuError::AddressError(ae)) => {
+                    if PTEST {
+                        // Descriptor reads cannot be unaligned on the
+                        // 68020/68851 and 68030, so this is unreachable;
+                        // treat it like a bus error for PTEST reporting.
+                        self.regs.pmmu.psr = RegisterPSR::default();
+                        self.regs.pmmu.psr.set_bus_error(true);
+                        self.regs.pmmu.psr.set_invalid(true);
+                        self.regs.pmmu.psr.set_level_number((4 - tis.len()) as u8);
+                    }
+                    anyhow!(CpuError::AddressError(*ae))
                 }
                 Some(CpuError::Pagefault(cause)) => {
                     let cause = *cause;
