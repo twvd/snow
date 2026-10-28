@@ -4,8 +4,6 @@
 //! the layout of the RAM and of the video RAM, and its video registers for
 //! the mode, the depth and the sense lines of the monitor. The registers
 //! which it shares with the V8 are in `pseudovia`.
-//!
-//! The 560x384 mode of the Apple IIe card is not implemented.
 
 use super::bus::{IO_WAITS, Region};
 use super::video::Mode;
@@ -196,6 +194,10 @@ impl VideoRegs {
         match self.mode & 0x1F {
             // 12" RGB: 640 x 407 dots at 15.6672 MHz (60.15 Hz)
             0x02 => Some((512, 384, 640 * 407)),
+            // 12" RGB at 560x384, for the Apple IIe card: 704 x 407 dots at
+            // 17.234 MHz, 1.1 times the clock of the 12" mode, so the lines
+            // and the frames are as long
+            0x0A => Some((560, 384, 640 * 407)),
             // 13" RGB: 864 x 525 dots at 30.24 MHz (66.67 Hz)
             0x06 => Some((640, 480, 864 * 525 * 15_667_200 / 30_240_000)),
             // 13" RGB with 400 lines, which leaves room for 16 bpp in 512 KB,
@@ -390,6 +392,13 @@ mod tests {
         assert_eq!((mode.width, mode.height), (640, 400));
         assert_eq!((mode.depth, mode.row_bytes), (4, 1280));
 
+        // 560x384 at 4 bpp
+        video.write(VIDEO_MODE, 0x0A);
+        video.write(VIDEO_DEPTH, 2);
+        let mode = video.video_mode().unwrap();
+        assert_eq!((mode.width, mode.height), (560, 384));
+        assert_eq!((mode.depth, mode.row_bytes), (2, 280));
+
         // Blanked
         video.write(VIDEO_MODE, 0x8D);
         assert!(video.video_mode().is_none());
@@ -404,6 +413,7 @@ mod tests {
             15_667_200 / video.frame_period()
         };
         assert_eq!(frames(0x02), 60);
+        assert_eq!(frames(0x0A), 60);
         assert_eq!(frames(0x06), 66);
         assert_eq!(frames(0x0D), 66);
         assert_eq!(frames(0x01), 75);
