@@ -3692,14 +3692,79 @@ where
         self.regs.write_d(instr.get_op2(), result);
         self.regs.sr.set_ccr(ccr);
 
-        self.advance_cycles(2 * count as Ticks)?;
-
-        match std::mem::size_of::<T>() {
-            4 => self.advance_cycles(4)?,
-            _ => self.advance_cycles(2)?,
-        };
+        // The 68000 takes 2 clocks per bit, the 68020/68030 barrel shifter a
+        // fixed time whatever the count
+        let dynamic = instr.get_sh_count().is_right();
+        let count_over_size = count as usize > std::mem::size_of::<T>() * 8;
+        advance_cycles!(
+            self,
+            m68000: 2 * count as Ticks + if std::mem::size_of::<T>() == 4 { 4 } else { 2 },
+            m68020: Self::shrot_idle_020(instr, dynamic),
+            m68030: Self::shrot_idle_030(instr, dynamic, count_over_size),
+        )?;
+        account_040_time!(
+            self,
+            self.exec040_ea(
+                timing040::shift_column(instr.mnemonic),
+                AddressingMode::DataRegister
+            )
+            .plus(u16::from(dynamic)),
+        );
 
         Ok(())
+    }
+
+    /// Idle clocks of a register shift or rotate on the 68020 (MC68020UM 8.2.12)
+    fn shrot_idle_020(instr: &Instruction, dynamic: bool) -> Ticks {
+        use InstructionMnemonic::*;
+        match instr.mnemonic {
+            LSL_b | LSL_w | LSL_l | LSR_b | LSR_w | LSR_l => {
+                if dynamic {
+                    4
+                } else {
+                    2
+                }
+            }
+            ASL_b | ASL_w | ASL_l => 6,
+            ASR_b | ASR_w | ASR_l => 4,
+            ROL_b | ROL_w | ROL_l | ROR_b | ROR_w | ROR_l => 6,
+            ROXL_b | ROXL_w | ROXL_l | ROXR_b | ROXR_w | ROXR_l => 10,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Idle clocks of a register shift or rotate on the 68030 (MC68030UM 11.6.12),
+    /// which is slower when a count in a register is larger than the operand size
+    fn shrot_idle_030(instr: &Instruction, dynamic: bool, count_over_size: bool) -> Ticks {
+        use InstructionMnemonic::*;
+        match instr.mnemonic {
+            LSL_b | LSL_w | LSL_l | LSR_b | LSR_w | LSR_l => match (dynamic, count_over_size) {
+                (false, _) => 2,
+                (true, false) => 4,
+                (true, true) => 6,
+            },
+            ASL_b | ASL_w | ASL_l => {
+                if dynamic {
+                    6
+                } else {
+                    4
+                }
+            }
+            ASR_b | ASR_w | ASR_l => match (dynamic, count_over_size) {
+                (false, _) => 2,
+                (true, false) => 4,
+                (true, true) => 8,
+            },
+            ROL_b | ROL_w | ROL_l | ROR_b | ROR_w | ROR_l => {
+                if dynamic {
+                    6
+                } else {
+                    4
+                }
+            }
+            ROXL_b | ROXL_w | ROXL_l | ROXR_b | ROXR_w | ROXR_l => 10,
+            _ => unreachable!(),
+        }
     }
 
     /// ASd, LSd, ROd, ROXd (effective address, always Word)
@@ -3715,6 +3780,26 @@ where
         let (result, ccr) = calcfn(value, 1, self.regs.sr);
         self.write_ea::<Word>(instr, instr.get_op2(), result)?;
         self.regs.sr.set_ccr(ccr);
+
+        // Idle cycles: ASL and the rotates take longer than the other shifts
+        let (asl, rotate) = (
+            instr.mnemonic == InstructionMnemonic::ASL_ea,
+            matches!(
+                instr.mnemonic,
+                InstructionMnemonic::ROL_ea | InstructionMnemonic::ROR_ea
+            ),
+        );
+        advance_cycles!(
+            self,
+            m68000: 0,
+            m68020: if asl { 1 } else if rotate { 2 } else { 0 },
+            m68030: if asl || rotate { 2 } else { 0 },
+        )?;
+        account_040_time!(
+            self,
+            *timing040::shift_column(instr.mnemonic),
+            instr.get_addr_mode()?,
+        );
 
         Ok(())
     }
