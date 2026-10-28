@@ -551,11 +551,16 @@ impl ModelSelectionDialog {
                     if self.selected_model != MacModel::SE30
                         && VIDEO_CARDS_WITH_MONITOR.contains(&self.selected_video_card)
                     {
+                        if self.selected_monitor == MacMonitor::VGA {
+                            self.selected_monitor = MacMonitor::default();
+                        }
                         ui.label("Monitor");
                         egui::ComboBox::new(egui::Id::new("Select monitor"), "")
                             .selected_text(format!("{}", self.selected_monitor))
                             .show_ui(ui, |ui| {
-                                for monitor in MacMonitor::iter() {
+                                // VGA monitors are only known to work on the LC III
+                                for monitor in MacMonitor::iter().filter(|&m| m != MacMonitor::VGA)
+                                {
                                     ui.selectable_value(
                                         &mut self.selected_monitor,
                                         monitor,
