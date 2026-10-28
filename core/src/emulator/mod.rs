@@ -2108,6 +2108,16 @@ impl Tickable for Emulator {
                     // Check for state changes (e.g., new TCP connection, LocalTalk status)
                     let has_data = bridge.poll();
                     if has_data {
+                        // A LocalTalk bridge reports every frame
+                        if !bridge.is_localtalk()
+                            || crate::mac::localtalk_bridge::LocalTalkBridge::wire_debug()
+                        {
+                            log::debug!(
+                                "sending SerialBridgeStatus for {:?}: {:?}",
+                                ch,
+                                bridge.status()
+                            );
+                        }
                         self.event_sender
                             .send(EmulatorEvent::SerialBridgeStatus(ch, Some(bridge.status())))?;
                     }

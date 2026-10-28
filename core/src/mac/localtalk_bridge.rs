@@ -10,13 +10,16 @@
 //! - Packets are LLAP frames prefixed with a 4-byte sender ID
 //! - RTS/CTS collision avoidance is handled locally (not sent over network)
 
+use std::collections::VecDeque;
+use std::io;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+#[cfg(feature = "afp_server")]
+use std::path::PathBuf;
+
 use log::*;
 #[cfg(feature = "afp_server")]
 use rand::Rng;
 use socket2::{Domain, Protocol, Socket, Type};
-use std::collections::VecDeque;
-use std::io;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 
 #[cfg(feature = "afp_server")]
 use snow_appletalk::link::{DdpHeaderKind, Packet};
@@ -75,13 +78,53 @@ pub struct LocalTalkStatus {
     pub tx_packets: u64,
     /// Number of packets received
     pub rx_packets: u64,
+    /// APPL files the desktop scan has found so far
+    #[cfg(feature = "afp_server")]
+    pub scan_apps: usize,
+    /// Icons the desktop scan has extracted so far
+    #[cfg(feature = "afp_server")]
+    pub scan_icons: usize,
+    /// Directory entries the desktop scan has visited so far
+    #[cfg(feature = "afp_server")]
+    pub scan_entries: usize,
+    /// The total number of entries, once the counting pass is done
+    #[cfg(feature = "afp_server")]
+    pub scan_total: Option<usize>,
+    /// Whether the desktop scan has finished
+    #[cfg(feature = "afp_server")]
+    pub scan_done: bool,
+}
+
+/// The desktop-scan part of the status line (empty without the AFP
+/// server)
+#[cfg(feature = "afp_server")]
+fn desktop_suffix(status: &LocalTalkStatus) -> String {
+    if status.scan_apps == 0 {
+        String::new()
+    } else {
+        format!(
+            ", desktop: {} apps, {} icons{}",
+            status.scan_apps,
+            status.scan_icons,
+            if status.scan_done {
+                " (done)"
+            } else {
+                " (scanning)"
+            }
+        )
+    }
+}
+
+#[cfg(not(feature = "afp_server"))]
+fn desktop_suffix(_status: &LocalTalkStatus) -> String {
+    String::new()
 }
 
 impl std::fmt::Display for LocalTalkStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "LocalTalk (node {}{}, tx:{} rx:{})",
+            "LocalTalk (node {}{}, tx:{} rx:{}{})",
             if self.node_address == 0 {
                 "?".to_string()
             } else {
@@ -94,6 +137,7 @@ impl std::fmt::Display for LocalTalkStatus {
             },
             self.tx_packets,
             self.rx_packets,
+            desktop_suffix(self)
         )
     }
 }
@@ -132,6 +176,12 @@ pub struct LocalTalkBridge {
     /// Statistics
     tx_packets: u64,
     rx_packets: u64,
+    /// The desktop scan's progress reports, if the AFP server is on
+    #[cfg(feature = "afp_server")]
+    scan_status_rx: Option<crossbeam_channel::Receiver<snow_appletalk::afp::ScanStatus>>,
+    /// The latest desktop scan progress
+    #[cfg(feature = "afp_server")]
+    scan_status: snow_appletalk::afp::ScanStatus,
 }
 
 impl LocalTalkBridge {
@@ -186,17 +236,35 @@ impl LocalTalkBridge {
             node_rx: None,
             tx_packets: 0,
             rx_packets: 0,
+            #[cfg(feature = "afp_server")]
+            scan_status_rx: None,
+            #[cfg(feature = "afp_server")]
+            scan_status: snow_appletalk::afp::ScanStatus::default(),
         })
     }
 
     /// Create a private bridge for the built-in AppleTalk node, with no
     /// connection to the outside network. The node runs on its own thread
-    /// and uses a server node address from the range 128-254.
+    /// and uses a server node address from the range 128-254. The AFP
+    /// server shares the given directory as a volume (the SNOW_AFP_ROOT
+    /// environment variable when unset) under the given name (default
+    /// "Snow").
     #[cfg(feature = "afp_server")]
-    pub fn new_private() -> Self {
+    pub fn new_private(
+        share_root: Option<PathBuf>,
+        volume_name: Option<String>,
+        max_version: snow_appletalk::afp::MaxVersion,
+        settings: snow_appletalk::afp::AfpSettings,
+    ) -> Self {
+        // The wire-level dumps follow the server's diagnostic setting; off
+        // leaves the SNOW_AT_WIRE_DEBUG environment variable in charge
+        if settings.wire_debug {
+            snow_appletalk::wire::set_wire_debug(true);
+        }
         let server_node = Self::pick_server_node(0);
         let (node_tx, thread_rx) = crossbeam_channel::bounded(256);
         let (thread_tx, node_rx) = crossbeam_channel::bounded(256);
+        let (scan_tx, scan_rx) = crossbeam_channel::unbounded();
         let server_address = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(server_node));
         let node_address = server_address.clone();
         std::thread::spawn(move || {
@@ -205,10 +273,11 @@ impl LocalTalkBridge {
                 0,
                 thread_rx,
                 thread_tx,
-                None,
-                None,
-                snow_appletalk::afp::MaxVersion::default(),
-                snow_appletalk::afp::AfpSettings::default(),
+                share_root,
+                volume_name,
+                max_version,
+                Some(scan_tx),
+                settings,
             )
             .with_shared_address(node_address)
             .run();
@@ -229,6 +298,8 @@ impl LocalTalkBridge {
             node_rx: Some(node_rx),
             tx_packets: 0,
             rx_packets: 0,
+            scan_status_rx: Some(scan_rx),
+            scan_status: snow_appletalk::afp::ScanStatus::default(),
         }
     }
 
@@ -250,6 +321,16 @@ impl LocalTalkBridge {
             server_node: self.server_node,
             tx_packets: self.tx_packets,
             rx_packets: self.rx_packets,
+            #[cfg(feature = "afp_server")]
+            scan_apps: self.scan_status.apps,
+            #[cfg(feature = "afp_server")]
+            scan_icons: self.scan_status.icons,
+            #[cfg(feature = "afp_server")]
+            scan_entries: self.scan_status.entries,
+            #[cfg(feature = "afp_server")]
+            scan_total: self.scan_status.total,
+            #[cfg(feature = "afp_server")]
+            scan_done: self.scan_status.done,
         }
     }
 
@@ -427,6 +508,22 @@ impl LocalTalkBridge {
     /// every tick batch.
     pub fn poll(&mut self) -> bool {
         let mut received_any = false;
+
+        // Drain the desktop scan's progress reports
+        #[cfg(feature = "afp_server")]
+        {
+            if let Some(rx) = &self.scan_status_rx {
+                while let Ok(status) = rx.try_recv() {
+                    if status != self.scan_status {
+                        if Self::wire_debug() {
+                            log::debug!("LocalTalk: desktop scan status {:?}", status);
+                        }
+                        self.scan_status = status;
+                        received_any = true;
+                    }
+                }
+            }
+        }
 
         // Collect pending UDP packets. Not in the middle of a frame the guest
         // is sending: this runs for every byte it writes, and the line is
@@ -820,7 +917,12 @@ mod tests {
 
         #[test]
         fn test_enq_ack() {
-            let mut bridge = LocalTalkBridge::new_private();
+            let mut bridge = LocalTalkBridge::new_private(
+                None,
+                None,
+                snow_appletalk::afp::MaxVersion::default(),
+                snow_appletalk::afp::AfpSettings::default(),
+            );
 
             // The Mac tries the AppleTalk node's address: the real frame has
             // it as both destination and source
@@ -835,7 +937,12 @@ mod tests {
 
         #[test]
         fn test_a_mac_holding_the_address_moves_the_node() {
-            let mut bridge = LocalTalkBridge::new_private();
+            let mut bridge = LocalTalkBridge::new_private(
+                None,
+                None,
+                snow_appletalk::afp::MaxVersion::default(),
+                snow_appletalk::afp::AfpSettings::default(),
+            );
             let server = bridge.server_node;
             bridge.handle_tx_packet(&[0xFF, server, 0x01, 0, 5, 2, 2, 2]);
             assert_ne!(bridge.server_node, server);
@@ -847,8 +954,29 @@ mod tests {
         }
 
         #[test]
+        fn test_poll_is_quiet_while_a_frame_waits() {
+            let mut bridge = LocalTalkBridge::new_private(
+                None,
+                None,
+                snow_appletalk::afp::MaxVersion::default(),
+                snow_appletalk::afp::AfpSettings::default(),
+            );
+            // Let the desktop scan of the fallback share finish reporting
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            bridge.poll();
+            bridge.rx_queue.push(vec![0x20, bridge.server_node, 0x01]);
+            assert!(!bridge.poll());
+            assert_eq!(bridge.rx_queue_len(), 1);
+        }
+
+        #[test]
         fn test_rts_gets_immediate_cts() {
-            let mut bridge = LocalTalkBridge::new_private();
+            let mut bridge = LocalTalkBridge::new_private(
+                None,
+                None,
+                snow_appletalk::afp::MaxVersion::default(),
+                snow_appletalk::afp::AfpSettings::default(),
+            );
 
             // A unicast RTS to the AppleTalk node is answered immediately
             // (the driver's CTS poll window is too short to wait for a
@@ -864,7 +992,12 @@ mod tests {
 
         #[test]
         fn test_echo() {
-            let mut bridge = LocalTalkBridge::new_private();
+            let mut bridge = LocalTalkBridge::new_private(
+                None,
+                None,
+                snow_appletalk::afp::MaxVersion::default(),
+                snow_appletalk::afp::AfpSettings::default(),
+            );
 
             // The Mac broadcasts a test datagram from node 0x20
             let mut llap = vec![0xFF, 0x20, 0x01];

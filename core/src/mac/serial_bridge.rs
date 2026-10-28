@@ -413,7 +413,12 @@ impl SccBridge {
             )),
             #[cfg(feature = "afp_server")]
             SerialBridgeConfig::AppleTalk => Ok(Self::LocalTalk(
-                super::localtalk_bridge::LocalTalkBridge::new_private(),
+                super::localtalk_bridge::LocalTalkBridge::new_private(
+                    None,
+                    None,
+                    snow_appletalk::afp::MaxVersion::default(),
+                    snow_appletalk::afp::AfpSettings::default(),
+                ),
             )),
             _ => Ok(Self::Serial(SerialBridge::new(config)?)),
         }

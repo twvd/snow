@@ -5,7 +5,7 @@
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::afp::{Afp, AfpSettings, MaxVersion};
+use crate::afp::{Afp, AfpSettings, MaxVersion, ScanStatus};
 use crate::asp::Asp;
 use crate::atp::{ATP_SOCKET, ATP_TYPE, Atp};
 use crate::ddp::{DdpShortHeader, build_short, parse_short};
@@ -49,6 +49,7 @@ impl Node {
         share_root: Option<std::path::PathBuf>,
         volume_name: Option<String>,
         max_version: MaxVersion,
+        scan_status_tx: Option<crossbeam_channel::Sender<ScanStatus>>,
         settings: AfpSettings,
     ) -> Self {
         Self {
@@ -68,12 +69,14 @@ impl Node {
                 }],
             ),
             atp: Atp::new(),
-            asp: Asp::new(Afp::new_with(
-                share_root,
-                volume_name,
-                max_version,
-                settings,
-            )),
+            asp: {
+                let mut afp = Afp::new_with(share_root, volume_name, max_version, settings);
+                if let Some(tx) = scan_status_tx {
+                    afp.set_scan_status_tx(tx);
+                }
+                afp.start_scan();
+                Asp::new(afp)
+            },
         }
     }
 
@@ -240,6 +243,7 @@ mod tests {
             None,
             None,
             MaxVersion::default(),
+            None,
             AfpSettings::default(),
         )
     }
@@ -256,6 +260,7 @@ mod tests {
             None,
             None,
             MaxVersion::default(),
+            None,
             AfpSettings::default(),
         );
 
@@ -285,6 +290,7 @@ mod tests {
             None,
             None,
             MaxVersion::default(),
+            None,
             AfpSettings::default(),
         );
 
@@ -364,6 +370,7 @@ mod tests {
             None,
             None,
             MaxVersion::default(),
+            None,
             AfpSettings::default(),
         );
 
