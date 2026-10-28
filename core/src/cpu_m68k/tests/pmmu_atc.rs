@@ -3,7 +3,6 @@
 use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
-use crate::cpu_m68k::bus::FC_SUPERVISOR_DATA;
 use crate::cpu_m68k::pmmu::translate::{PMMU_ATC_SRP, PmmuAtcEntry};
 use crate::cpu_m68k::{CpuM68030Fpu, M68030_ADDRESS_MASK};
 
@@ -24,7 +23,7 @@ fn entry(cpu: &TestCpu, paddr: Address) -> PmmuAtcEntry {
         s: false,
         leaf_desc_addr: 0x1000,
         modified: false,
-        fc: FC_SUPERVISOR_DATA,
+        fc_mask: 0,
         generation: cpu.pmmu_atc_generation,
     }
 }
