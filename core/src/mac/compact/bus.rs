@@ -11,7 +11,6 @@ use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
-use crate::mac::MacModel;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::{Scc, SccCh};
@@ -20,6 +19,7 @@ use crate::mac::swim::Swim;
 use crate::mac::swim::drive::DriveType;
 use crate::mac::via::Via;
 use crate::mac::via_common::{LineState, ViaLine};
+use crate::mac::{MacModel, WARM_START_SIGNATURE};
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
@@ -232,11 +232,7 @@ where
             openbus: Default::default(),
         };
 
-        // Disable memory test
-        if let Some((addr, value)) = model.disable_memtest() {
-            info!("Skipping memory test");
-            bus.write_ram(addr, value);
-        }
+        bus.disable_memtest();
 
         // Initialize ADB devices
         if model.has_adb() {
@@ -285,6 +281,17 @@ where
         } else {
             &mut self.ram[self.soundbuf_alt.clone()]
         }
+    }
+
+    /// Makes the ROM skip its memory test
+    fn disable_memtest(&mut self) {
+        let (addr, value) = match self.model {
+            MacModel::Early128K | MacModel::Early512K => return,
+            MacModel::Early512Ke | MacModel::Plus => (0x0002AE, 0x0040_0000),
+            _ => WARM_START_SIGNATURE,
+        };
+        info!("Skipping memory test");
+        self.write_ram(addr, value);
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -799,10 +806,7 @@ where
             // Clear RAM
             self.ram.fill(0);
 
-            // Disable memory test
-            if let Some((addr, value)) = self.model.disable_memtest() {
-                self.write_ram(addr, value);
-            }
+            self.disable_memtest();
 
             self.ram_dirty
                 .extend(0..(self.ram.len() / RAM_DIRTY_PAGESIZE));

@@ -12,7 +12,6 @@ use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
-use crate::mac::MacModel;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
@@ -20,6 +19,7 @@ use crate::mac::scsi::controller::ScsiController;
 use crate::mac::sound::asc::Asc;
 use crate::mac::swim::Swim;
 use crate::mac::via_common::{LineState, ViaLine};
+use crate::mac::{MacModel, WARM_START_SIGNATURE};
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
@@ -219,11 +219,7 @@ where
             normandy: Normandy::new(),
         };
 
-        // Disable memory test
-        if let Some((addr, value)) = model.disable_memtest() {
-            info!("Skipping memory test");
-            bus.write_ram(addr, value);
-        }
+        bus.disable_memtest();
 
         bus.pmgr.adb_add_device(AdbMouse::new());
         bus.pmgr.adb_add_device(AdbKeyboard::new());
@@ -256,6 +252,13 @@ where
         self.asc.set_sink(sink);
 
         self.scsi.set_audio_provider(provider)
+    }
+
+    /// Makes the ROM skip its memory test
+    fn disable_memtest(&mut self) {
+        let (addr, value) = WARM_START_SIGNATURE;
+        info!("Skipping memory test");
+        self.write_ram(addr, value);
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -701,10 +704,7 @@ where
             // Clear RAM
             self.ram.fill(0);
 
-            // Disable memory test
-            if let Some((addr, value)) = self.model.disable_memtest() {
-                self.write_ram(addr, value);
-            }
+            self.disable_memtest();
         }
 
         self.pmgr.reset();
