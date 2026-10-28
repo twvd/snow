@@ -31,7 +31,7 @@ use crate::bus::access::Bus68020;
 use crate::bus::testbus::{Access, Testbus};
 use crate::cpu_m68k::bus::{FC_SUPERVISOR_DATA, FC_SUPERVISOR_PROGRAM, FC_USER_DATA};
 use crate::cpu_m68k::cpu::CpuError;
-use crate::cpu_m68k::pmmu::regs::{RootPointerReg, TcReg};
+use crate::cpu_m68k::pmmu::regs::{RootPointerReg, TcReg, TrTranslationReg};
 use crate::cpu_m68k::pmmu::translate::PMMU_ATC_URP;
 use crate::cpu_m68k::{CpuM68030Fpu, M68030_ADDRESS_MASK};
 use crate::types::{Long, Word};
@@ -444,4 +444,66 @@ mod m68851 {
         run(&mut cpu, &[0xF010, 0x3915]); // PFLUSH #5,#8,(A0): mask bit 3
         assert_eq!(data(&mut cpu, 0x5004), 0x9004, "entry flushed");
     }
+}
+
+/// PTEST level 0 searches the ATC only (M68000PRM 6-62): a cached entry is
+/// reported with its WP/M status, an uncached address reports I.
+#[test]
+fn ptest_level_0_searches_the_atc() {
+    let mut cpu = cpu_mmu_030();
+    // Cache page 3 with a read, then a write so the entry is modified.
+    assert_eq!(data(&mut cpu, 0x3000), 0x3000);
+    cpu.pmmu_translate(FC_SUPERVISOR_DATA, 0x3000, true)
+        .expect("write");
+
+    cpu.regs.a[0] = 0x3000;
+    run(&mut cpu, &[0xF010, 0x8215]); // PTESTR #5,(A0),#0
+    assert_eq!(
+        cpu.regs.pmmu.psr.0, 0x0200,
+        "resident, modified entry: M set, no I"
+    );
+
+    // An uncached address reports I.
+    cpu.regs.a[0] = 0x9000;
+    run(&mut cpu, &[0xF010, 0x8215]);
+    assert_eq!(cpu.regs.pmmu.psr.0, 0x0400, "not resident: I set");
+
+    // A write-protected page reports W.
+    write_long(&mut cpu.bus, TABLE + 4 * 4, (4 << 12) | 1 | 4); // page 4 WP
+    assert_eq!(data(&mut cpu, 0x4000), 0x4000, "walk caches the WP entry");
+    cpu.regs.a[0] = 0x4000;
+    run(&mut cpu, &[0xF010, 0x8215]);
+    assert_eq!(cpu.regs.pmmu.psr.0, 0x0800, "write-protected entry: W set");
+}
+
+/// PTEST level 0 reports a transparent-translation match in MMUSR T
+/// (M68030UM Table 9-3).
+#[test]
+fn ptest_level_0_reports_transparent_translation() {
+    let mut cpu = cpu_mmu_030();
+    // TT0 matches every supervisor-data access (RW masked).
+    let mut tt = TrTranslationReg(0);
+    tt.set_e(true);
+    tt.set_fc_base(FC_SUPERVISOR_DATA & 0b111);
+    tt.set_fc_mask(0);
+    tt.set_rwm(true);
+    cpu.regs.pmmu.tt[0] = tt;
+
+    cpu.regs.a[0] = 0x3000;
+    run(&mut cpu, &[0xF010, 0x8215]); // PTESTR #5,(A0),#0
+    assert_eq!(cpu.regs.pmmu.psr.0, 0x0040, "T set on TT match");
+}
+
+/// PTEST level 0 with an address-register operand takes an F-line
+/// unimplemented instruction exception (M68000PRM 6-63).
+#[test]
+fn ptest_level_0_with_a_register_is_f_line() {
+    const HANDLER: Address = 0x0300;
+
+    let mut cpu = cpu_mmu_030();
+    cpu.regs.isp = 0x1000; // supervisor stack for the exception frame
+    write_long(&mut cpu.bus, 11 * 4, HANDLER); // vector 11: F-line emulator
+    cpu.regs.a[0] = 0x3000;
+    run(&mut cpu, &[0xF010, 0x8315]); // PTESTR #5,(A0),#0,A0
+    assert_eq!(cpu.regs.pc, HANDLER, "F-line exception taken");
 }
