@@ -10,6 +10,7 @@ pub mod atp;
 pub mod ddp;
 pub mod ids;
 pub mod link;
+pub mod meta;
 pub mod name;
 pub mod nbp;
 pub mod node;
