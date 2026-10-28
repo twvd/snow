@@ -12,6 +12,7 @@ use crate::debuggable::DebuggableProperties;
 use crate::emulator::MouseMode;
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
+use crate::mac::maclc::pds_iie::GamePort;
 use crate::mac::scc::SccCh;
 #[cfg(feature = "ethernet")]
 use crate::mac::scsi::ethernet::EthernetLinkType;
@@ -45,6 +46,8 @@ pub enum EmulatorCommand {
     InsertIieDisk(usize, PathBuf),
     /// Ejects one of the Apple IIe card's 5.25" drives (0 or 1).
     EjectIieDisk(usize),
+    /// Sets the joystick and buttons on the Apple IIe card's game port.
+    SetIieGamePort(GamePort),
     /// Inserts a 400K or 800K ProDOS-order image (raw or 2IMG) into
     /// the Apple IIe card's UniDisk 3.5.
     InsertIieUniDisk(PathBuf),
