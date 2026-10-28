@@ -29,6 +29,9 @@ pub mod swim;
 pub mod via;
 pub mod via_common;
 
+/// Warm start signature: the ROM skips its memory test when it finds it
+pub const WARM_START_SIGNATURE: (Address, u32) = (0x000CFC, 0x574C5343);
+
 /// Differentiation of Macintosh models and their features
 #[derive(
     Debug,
@@ -292,23 +295,6 @@ impl MacModel {
             Self::SE | Self::SeFdhd | Self::Classic => cycles % 16 >= 4,
             // No interleave for Portable, MacII (and probably onwards)
             _ => true,
-        }
-    }
-
-    pub const fn disable_memtest(self) -> Option<(Address, u32)> {
-        match self {
-            Self::Early128K | Self::Early512K | Self::LC | Self::LCII | Self::LCIII => None,
-            Self::Early512Ke | Self::Plus => Some((0x0002AE, 0x0040_0000)),
-            Self::SE
-            | Self::SeFdhd
-            | Self::Classic
-            | Self::Portable
-            | Self::Portable15MB
-            | Self::MacII
-            | Self::MacIIFDHD
-            | Self::MacIIx
-            | Self::MacIIcx
-            | Self::SE30 => Some((0x000CFC, 0x574C5343)),
         }
     }
 
