@@ -417,7 +417,10 @@ code before anything else. [FW]
 - **Game buttons** `$C061`-`$C063`: reads trap (code `$21`) while `$21`
   bit 1 is set. The host answers from the Mac's modifier keys
   (`$C061` Open-Apple, `$C062` Closed-Apple, `$C063` shift as
-  `$FF`/`$7F`; code_5 0x1BB8, 0x1BE0, 0x1BF6). **Restart IIe** uses
+  `$FF`/`$7F`; code_5 0x1BB8, 0x1BE0, 0x1BF6). For `$C061`/`$C062` it
+  answers only `$FF` (modifier down) and otherwise acks without
+  writing `$19`; the read then returns the game port's button. [INF]
+  **Restart IIe** uses
   this to cold-start the IIe:
   1. stop the 65C02;
   2. fill the text page with spaces;
@@ -544,6 +547,22 @@ cannot set the flags and the PWRUP slot scan never ends.
   9-pin game connector). Several drives share the disk connector by
   daisy-chaining: a UniDisk 3.5 passes through to an Apple 5.25 Drive
   (§9.0.2). [INF][GSFW]
+
+### 9.0a The game port
+
+- The Y-cable's 9-pin game connector is wired like the IIc's: paddles
+  0 and 1 (pins 5 and 8), buttons 0 and 1 (pins 7 and 1), +5 V and
+  ground; paddles 2 and 3 and button 2 are not on it [TIL IIc pinout,
+  INF for the card].
+- A paddle is a 0-150 kΩ resistor in a 558 timer. `$C070` triggers all
+  four timers; `$C064`-`$C067` bit 7 is set while a timer runs. PREAD
+  (`$FB1E`) counts in an 11 µs loop, 255 at about 2.82 ms. A timer that
+  is still running is not restarted by a trigger: its capacitor only
+  discharges when it times out. With no paddle the timer never times
+  out (the "no paddle connected" case of TN AIIE #6). [TN]
+- The timers run in real time, so in the card's fast mode PREAD counts
+  further for the same position. Whether the card slows the 65C02 for
+  paddle reads, as the IIGS does, is not known. [OPEN]
 
 ### 9.0 The IWM
 

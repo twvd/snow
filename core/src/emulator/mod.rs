@@ -1131,6 +1131,18 @@ impl Tickable for Emulator {
                         }
                         self.status_update()?;
                     }
+                    EmulatorCommand::SetIieGamePort(port) => {
+                        let card = match &mut self.config {
+                            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
+                            EmulatorConfig::MacLCFpu(inner) => inner.bus.iie_card_mut(),
+                            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
+                            EmulatorConfig::MacLCIIFpu(inner) => inner.bus.iie_card_mut(),
+                            _ => None,
+                        };
+                        if let Some(card) = card {
+                            card.set_game_port(port);
+                        }
+                    }
                     EmulatorCommand::EjectIieDisk(drive) => {
                         let card = match &mut self.config {
                             EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
