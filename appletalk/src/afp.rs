@@ -73,6 +73,9 @@ pub enum AfpVersion {
     V20,
     /// AFP 2.1: handled on the same wire as 2.0
     V21,
+    /// AFP 2.2 (without TCP): same wire plus the extended volume
+    /// bitmap bits
+    V22,
 }
 
 /// The File/DirFlag value marking a directory in GetFileDirParms and
@@ -91,6 +94,7 @@ impl AfpVersion {
             "AFPVersion 1.1" => Some(Self::V11),
             "AFPVersion 2.0" | "AFP2.0" => Some(Self::V20),
             "AFPVersion 2.1" | "AFP2.1" => Some(Self::V21),
+            "AFP2.2" => Some(Self::V22),
             _ => None,
         }
     }
@@ -100,6 +104,7 @@ impl AfpVersion {
             Self::V11 => "AFPVersion 1.1",
             Self::V20 => "AFPVersion 2.0",
             Self::V21 => "AFPVersion 2.1",
+            Self::V22 => "AFP2.2",
         }
     }
 }
@@ -117,8 +122,10 @@ pub enum MaxVersion {
     Max20,
     /// Advertise and accept AFP up to 2.1
     #[serde(alias = "Both21First", alias = "V21Only")]
-    #[default]
     Max21,
+    /// Advertise and accept AFP up to 2.2 (without TCP)
+    #[default]
+    Max22,
 }
 
 impl MaxVersion {
@@ -128,6 +135,12 @@ impl MaxVersion {
             Self::Max11 => &[AfpVersion::V11],
             Self::Max20 => &[AfpVersion::V20, AfpVersion::V11],
             Self::Max21 => &[AfpVersion::V21, AfpVersion::V20, AfpVersion::V11],
+            Self::Max22 => &[
+                AfpVersion::V22,
+                AfpVersion::V21,
+                AfpVersion::V20,
+                AfpVersion::V11,
+            ],
         }
     }
 
@@ -143,6 +156,7 @@ impl std::fmt::Display for MaxVersion {
             Self::Max11 => write!(f, "1.1"),
             Self::Max20 => write!(f, "2.0"),
             Self::Max21 => write!(f, "2.1"),
+            Self::Max22 => write!(f, "2.2"),
         }
     }
 }
@@ -406,7 +420,7 @@ impl Afp {
 ,
                     // The file-ID calls are AFP 2.1 and up
                     CMD_CREATE_ID | CMD_DELETE_ID | CMD_RESOLVE_ID
-                        if !matches!(version, AfpVersion::V21) =>
+                        if !matches!(version, AfpVersion::V21 | AfpVersion::V22) =>
                     {
                         (err(ERR_CALL_NOT_SUPPORTED), Vec::new())
                     }
@@ -485,7 +499,7 @@ impl Afp {
                 &self.volume_name,
                 &self.root,
                 self.settings.read_only,
-                matches!(version, AfpVersion::V21),
+                matches!(version, AfpVersion::V21 | AfpVersion::V22),
             ),
         )
     }
@@ -508,7 +522,7 @@ impl Afp {
                 &self.volume_name,
                 &self.root,
                 self.settings.read_only,
-                matches!(version, AfpVersion::V21),
+                matches!(version, AfpVersion::V21 | AfpVersion::V22),
             ),
         )
     }
@@ -2289,17 +2303,18 @@ mod version_tests {
         let (server, _dir) = test_server("versions-info");
         let info = server.server_info();
         let versions_off = u16::from_be_bytes([info[2], info[3]]) as usize;
-        assert_eq!(info[versions_off], 3); // three version strings
+        assert_eq!(info[versions_off], 4); // four version strings
+        assert_eq!(&info[versions_off + 1..versions_off + 8], b"\x06AFP2.2");
         assert_eq!(
-            &info[versions_off + 1..versions_off + 16],
+            &info[versions_off + 8..versions_off + 23],
             b"\x0eAFPVersion 2.1"
         );
         assert_eq!(
-            &info[versions_off + 16..versions_off + 31],
+            &info[versions_off + 23..versions_off + 38],
             b"\x0eAFPVersion 2.0"
         );
         assert_eq!(
-            &info[versions_off + 31..versions_off + 46],
+            &info[versions_off + 38..versions_off + 53],
             b"\x0eAFPVersion 1.1"
         );
     }
