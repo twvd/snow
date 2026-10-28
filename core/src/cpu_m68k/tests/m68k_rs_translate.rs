@@ -235,6 +235,35 @@ fn write_protected_page_reads_ok_and_writes_fault() {
     );
 }
 
+/// The page-granular sum must wrap at 32 bits like the hardware address
+/// adder: an early-termination descriptor near the top of physical memory
+/// plus a large offset overflows. A plain + would panic in test/debug
+/// builds; the wrapped result drops the high bits.
+#[test]
+fn page_granular_sum_wraps_at_32_bits() {
+    let mut cpu = testcpu();
+    // TC: E, PS=4 KB, IS=8, TIA=4: the level-A descriptor terminates
+    // early and maps a 1 MB region.
+    cpu.regs.pmmu.tc = TcReg(0x80C8_4800);
+    cpu.pmmu_cache_ensure();
+    let root: Address = 0x1_8000;
+    let mut crp = RootPointerReg(0);
+    crp.set_table_addr(root >> 4);
+    crp.set_dt(2);
+    crp.set_limit(0x7FFF);
+    cpu.regs.pmmu.crp = crp;
+    // Early-termination descriptor: page field 0xFFF50000, so the sum
+    // overflows for large logical offsets. TIA=4 indexes bits 23-20 of the
+    // logical address: vaddr 0x0FFFFFFF selects entry 0xF. Bits 19-0 are
+    // the offset (0xFFFFF), of which bits 19-12 (0xFF000) take part in the
+    // sum: 0xFFF50000 + 0xFF000 wraps.
+    write_long(&mut cpu.bus, root + 0xF * 4, 0xFFF5_0001);
+
+    let vaddr: Address = 0x0FFF_FFFF;
+    let expected = 0xFFF5_0000u32.wrapping_add(0xF_F000) | (vaddr & 0xFFF);
+    assert_eq!(data(&mut cpu, vaddr), expected);
+}
+
 /// Descriptor page-field bits below the page size (A_{PS-1}..A_8) are unused
 /// (M68030UM 9-22): a field with junk in bits 11-8 must translate the same
 /// as the clean field, on the first walk and on ATC hits alike.

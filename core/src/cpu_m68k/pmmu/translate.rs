@@ -805,7 +805,11 @@ where
         // unused, so both terms are masked with !page_mask and the in-page
         // offset comes straight from the logical address. This also keeps a
         // table walk and a later ATC hit on the same page in agreement.
-        let paddr = ((page_addr & !page_mask) + (vaddr & mask & !page_mask)) | (vaddr & page_mask);
+        // Guest-controlled page tables make the sum overflow, so wrap like
+        // the hardware's 32-bit address adder (a plain + would panic in
+        // test/debug builds).
+        let paddr =
+            (page_addr & !page_mask).wrapping_add(vaddr & mask & !page_mask) | (vaddr & page_mask);
 
         if PTEST {
             // M68030UM Table 9-3: report conditions encountered during the
