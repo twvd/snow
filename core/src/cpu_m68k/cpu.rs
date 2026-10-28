@@ -25,7 +25,7 @@ use crate::types::{Byte, LatchingEvent, Long, Word};
 
 use super::instruction::{
     AddressingMode, BfxExtWord, Direction, DivlExtWord, Instruction, InstructionMnemonic,
-    MulxExtWord,
+    MovecCtrlReg, MulxExtWord,
 };
 use super::regs::{Register, RegisterFile, RegisterSR, RestartRegisterFile};
 use super::timing040::{self, Exec040, FullEa040};
@@ -1646,7 +1646,7 @@ where
             InstructionMnemonic::MOVE16_inc => self.op_move16_inc(instr),
             InstructionMnemonic::MOVE16_abs => self.op_move16_abs(instr),
             InstructionMnemonic::CINV | InstructionMnemonic::CPUSH => self.op_cxxx(instr),
-            InstructionMnemonic::PFLUSH040 => self.op_pflush040(),
+            InstructionMnemonic::PFLUSH040 => self.op_pflush040(instr),
             InstructionMnemonic::PTEST040 => self.op_ptest040(instr),
             InstructionMnemonic::SWAP => self.op_swap(instr),
             InstructionMnemonic::TRAP => self.op_trap(instr),
@@ -1865,6 +1865,8 @@ where
         self.regs.sr.set_n(result & (1 << 31) != 0);
         self.regs.sr.set_z(result == 0);
         self.regs.write_d(instr.get_op2(), result);
+        advance_cycles!(self, m68000: 0, others: 2)?;
+        account_040_time!(self, timing040::SWAP);
 
         Ok(())
     }
@@ -1964,12 +1966,13 @@ where
         self.regs.sr.set_ccr(calcfn(a, b));
 
         // Idle cycles and dummy read
-        self.advance_cycles(8)?;
+        advance_cycles!(self, all: 8)?;
         if CPU_TYPE == M68000 {
             self.read_ticks::<Word>(self.regs.pc.wrapping_add(2) & ADDRESS_MASK)?;
         }
         self.prefetch_pump()?;
 
+        account_040_time!(self, timing040::BITWISE_CCR);
         Ok(())
     }
 
@@ -1993,12 +1996,13 @@ where
         self.set_sr(calcfn(a, b));
 
         // Idle cycles and dummy read
-        self.advance_cycles(8)?;
+        advance_cycles!(self, all: 8)?;
         if CPU_TYPE == M68000 {
             self.read_ticks::<Word>(self.regs.pc.wrapping_add(2) & ADDRESS_MASK)?;
         }
         self.prefetch_pump()?;
 
+        account_040_time!(self, timing040::BITWISE_SR);
         Ok(())
     }
 
@@ -2423,6 +2427,7 @@ where
         self.regs.sr.set_x(last_x);
 
         self.prefetch_pump()?;
+        advance_cycles!(self, m68000: 0, m68020: 1, m68030: 2)?;
 
         account_040_time!(self, timing040::CMPM);
         Ok(())
@@ -2746,6 +2751,7 @@ where
                 let b_addr = addr.wrapping_add((i * 2) as Address);
                 self.write_ticks::<Byte>(b_addr, b)?;
             }
+            advance_cycles!(self, m68000: 0, m68020: 1, m68030: 2)?;
         } else {
             // From bus
             let mut data = [0; N];
@@ -2756,8 +2762,18 @@ where
 
             self.regs
                 .write_d::<T>(instr.get_op1(), T::from_be_bytes(&data));
+            advance_cycles!(self, m68000: 0, others: 2)?;
         }
 
+        account_040_time!(
+            self,
+            match (instr.get_direction_movep() == Direction::Right, N) {
+                (true, 2) => timing040::MOVEP_W_TO_MEM,
+                (true, _) => timing040::MOVEP_L_TO_MEM,
+                (false, 2) => timing040::MOVEP_W_TO_DN,
+                (false, _) => timing040::MOVEP_L_TO_DN,
+            },
+        );
         Ok(())
     }
 
@@ -2765,6 +2781,18 @@ where
     fn op_movea<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         let value: T = self.read_ea(instr, instr.get_op2())?;
         self.regs.write_a(instr.get_op1(), value);
+        // MOVEA.W sign-extends memory operands in one more clock
+        let mode = instr.get_addr_mode()?;
+        account_040_time!(
+            self,
+            self.exec040_ea(&timing040::MOVEA_L, mode).plus(u16::from(
+                std::mem::size_of::<T>() == 2
+                    && !matches!(
+                        mode,
+                        AddressingMode::DataRegister | AddressingMode::Immediate
+                    )
+            )),
+        );
         Ok(())
     }
 
@@ -2834,6 +2862,10 @@ where
             )?,
         }
 
+        account_040_time!(
+            self,
+            self.exec040_move(instr.get_addr_mode()?, instr.get_addr_mode_left()?),
+        );
         Ok(())
     }
 
@@ -2854,13 +2886,13 @@ where
         self.write_ea(instr, instr.get_op2(), value)?;
 
         // Idle cycles
-        match instr.get_addr_mode()? {
-            AddressingMode::DataRegister | AddressingMode::AddressRegister => {
-                self.advance_cycles(2)?;
-            }
-            _ => (),
-        }
+        let register = matches!(
+            instr.get_addr_mode()?,
+            AddressingMode::DataRegister | AddressingMode::AddressRegister
+        );
+        advance_cycles!(self, all: if register { 2 } else { 0 })?;
 
+        account_040_time!(self, timing040::MOVE_FROM_SR, instr.get_addr_mode()?);
         Ok(())
     }
 
@@ -2876,8 +2908,10 @@ where
             self.advance_cycles(4)?;
             self.read_ticks::<Word>(self.regs.pc.wrapping_add(2) & ADDRESS_MASK)?;
         }
+        advance_cycles!(self, m68000: 0, others: 6)?;
 
         self.set_sr(value);
+        account_040_time!(self, timing040::MOVE_TO_SR, instr.get_addr_mode()?);
         Ok(())
     }
 
@@ -2886,22 +2920,26 @@ where
         let value: Word = self.read_ea(instr, instr.get_op2())?;
 
         // Idle cycles + discarded read
-        self.advance_cycles(4)?;
         if CPU_TYPE == M68000 {
+            self.advance_cycles(4)?;
             self.read_ticks::<Word>(self.regs.pc.wrapping_add(2) & ADDRESS_MASK)?;
             self.prefetch_pump()?;
         }
+        advance_cycles!(self, m68000: 0, others: 2)?;
 
         self.regs.sr.set_ccr(value as Byte);
+        account_040_time!(self, timing040::MOVE_TO_CCR, instr.get_addr_mode()?);
         Ok(())
     }
 
     /// MOVEfromCCR
     fn op_move_from_ccr(&mut self, instr: &Instruction) -> Result<()> {
-        self.advance_cycles(4)?;
+        let dn = instr.get_addr_mode()? == AddressingMode::DataRegister;
+        advance_cycles!(self, all: if dn { 2 } else { 0 })?;
         self.write_ea::<Word>(instr, instr.get_op2(), self.regs.sr.ccr().into())?;
         self.prefetch_pump()?;
 
+        account_040_time!(self, timing040::MOVE_FROM_CCR, instr.get_addr_mode()?);
         Ok(())
     }
 
@@ -2913,6 +2951,8 @@ where
         let value: Address = self.regs.read_a(instr.get_op2());
 
         self.regs.usp = value;
+        advance_cycles!(self, m68030: 2)?;
+        account_040_time!(self, timing040::MOVE_TO_USP);
         Ok(())
     }
 
@@ -2924,6 +2964,8 @@ where
         let value: Address = self.regs.usp;
 
         self.regs.write_a(instr.get_op2(), value);
+        advance_cycles!(self, m68030: 2)?;
+        account_040_time!(self, timing040::MOVE_FROM_USP);
         Ok(())
     }
 
@@ -2989,6 +3031,15 @@ where
         self.regs.sr.set_c(false);
         self.regs.sr.set_z(result == T::zero());
         self.write_ea::<T>(instr, instr.get_op2(), result)?;
+        advance_cycles!(self, m68000: 0, others: 2)?;
+        account_040_time!(
+            self,
+            if std::mem::size_of::<T>() == 2 {
+                timing040::EXT_W
+            } else {
+                timing040::EXT_L
+            },
+        );
         Ok(())
     }
 
@@ -3027,7 +3078,7 @@ where
             self.regs.write_d(ry, packed(v));
             // MC68020UM 8.2: 6 clocks in the cache case, 2 for each of the 2
             // instruction words and 2 internal
-            self.advance_cycles(2)?;
+            advance_cycles!(self, all: 2)?;
         } else {
             let addr = self.regs.read_a_predec::<Address>(rx, 1);
             let low = self.read_ticks::<Byte>(addr)?;
@@ -3040,6 +3091,14 @@ where
             // the write, with no internal time left
             self.write_ticks(addr, packed(v))?;
         }
+        account_040_time!(
+            self,
+            if instr.get_addr_mode_x()? == AddressingMode::DataRegister {
+                timing040::PACK_DN
+            } else {
+                timing040::PACK_PREDEC
+            },
+        );
         Ok(())
     }
 
@@ -3060,7 +3119,7 @@ where
             self.regs.write_d(ry, v);
             // MC68020UM 8.2: 8 clocks in the cache case, 2 for each of the 2
             // instruction words and 4 internal
-            self.advance_cycles(4)?;
+            advance_cycles!(self, all: 4)?;
         } else {
             let addr = self.regs.read_a_predec::<Address>(rx, 1);
             let [high, low] = unpacked(self.read_ticks::<Byte>(addr)?).to_be_bytes();
@@ -3072,6 +3131,14 @@ where
             let addr = self.regs.read_a_predec::<Address>(ry, 1);
             self.write_ticks(addr, high)?;
         }
+        account_040_time!(
+            self,
+            if instr.get_addr_mode_x()? == AddressingMode::DataRegister {
+                timing040::UNPK_DN
+            } else {
+                timing040::UNPK_PREDEC
+            },
+        );
         Ok(())
     }
 
@@ -3100,9 +3167,10 @@ where
     fn op_nbcd(&mut self, instr: &Instruction) -> Result<()> {
         self.op_alu_zero::<Byte>(instr, Self::alu_sub_bcd)?;
         if instr.get_addr_mode()? == AddressingMode::DataRegister {
-            self.advance_cycles(2)?;
+            advance_cycles!(self, m68000: 2, others: 4)?;
         }
 
+        account_040_time!(self, timing040::NBCD, instr.get_addr_mode()?);
         Ok(())
     }
 
@@ -3168,13 +3236,16 @@ where
 
         let v = self.read_ea::<Byte>(instr, instr.get_op2())?;
         if instr.get_addr_mode()? != AddressingMode::DataRegister {
-            self.advance_cycles(2)?;
+            advance_cycles!(self, m68000: 2, m68020: 5, m68030: 7)?;
+        } else {
+            advance_cycles!(self, m68000: 0, others: 2)?;
         }
         self.write_ea(instr, instr.get_op2(), v | 0x80)?;
         self.regs.sr.set_z(v == 0);
         self.regs.sr.set_n(v & 0x80 != 0);
         self.regs.sr.set_c(false);
         self.regs.sr.set_v(false);
+        account_040_time!(self, timing040::TAS, instr.get_addr_mode()?);
         Ok(())
     }
 
@@ -3573,6 +3644,9 @@ where
         if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
             addr = addr.wrapping_sub(std::mem::size_of::<T>() as Address);
         }
+        let n = Ticks::from(mask.count_ones());
+        advance_cycles!(self, m68000: 0, others: 5 + n)?;
+
         // Discarded read
         if CPU_TYPE == M68000 {
             self.read_ticks::<Word>(addr)?;
@@ -3586,6 +3660,10 @@ where
             _ => (),
         }
 
+        account_040_time!(
+            self,
+            self.exec040_movem(instr, mask, true, std::mem::size_of::<T>() == 2)?,
+        );
         Ok(())
     }
 
@@ -3593,6 +3671,9 @@ where
     fn op_movem_mem<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
         let mask = self.fetch_pump()?;
         let mut addr = self.calc_ea_addr_no_mod::<T>(instr, instr.get_op2())?;
+        // MC68020UM 8.2.7: 4 + 3n clocks, MC68030UM 11.6.7: 4 + 2n, with
+        // n writes. Our writes take 3 clocks: the 68030 runs n clocks long.
+        advance_cycles!(self, m68000: 0, others: 4)?;
 
         let regs = if instr.get_addr_mode()? != AddressingMode::IndirectPreDec {
             Either::Left(MOVEM_REGS.iter().rev())
@@ -3622,6 +3703,10 @@ where
             _ => (),
         }
 
+        account_040_time!(
+            self,
+            self.exec040_movem(instr, mask, false, std::mem::size_of::<T>() == 2)?,
+        );
         Ok(())
     }
 
@@ -3858,6 +3943,7 @@ where
         self.regs.sr.set_z(value == 0);
         self.regs.sr.set_n(value & Long::msb() != 0);
 
+        account_040_time!(self, timing040::MOVEQ);
         Ok(())
     }
 
@@ -3871,7 +3957,15 @@ where
         self.regs.write(reg_r, left);
 
         self.prefetch_pump()?;
-        self.advance_cycles(2)?; // idle
+        advance_cycles!(self, m68020: 0, others: 2)?; // idle
+        account_040_time!(
+            self,
+            if matches!(reg_l, Register::An(_)) {
+                timing040::EXG_AN
+            } else {
+                timing040::EXG
+            },
+        );
 
         Ok(())
     }
@@ -4059,6 +4153,7 @@ where
             self.regs.write_a(ay, dest.wrapping_add(16));
         }
 
+        account_040_time!(self, timing040::MOVE16_INC);
         Ok(())
     }
 
@@ -4082,6 +4177,14 @@ where
             self.regs.write_a(an, anaddr.wrapping_add(16));
         }
 
+        account_040_time!(
+            self,
+            if !to_absolute && postinc {
+                timing040::MOVE16_TO_AN_INC
+            } else {
+                timing040::MOVE16_ABS
+            },
+        );
         Ok(())
     }
 
@@ -4101,7 +4204,7 @@ where
     }
 
     /// PFLUSH/PFLUSHN/PFLUSHA/PFLUSHAN (M68040)
-    fn op_pflush040(&mut self) -> Result<()> {
+    fn op_pflush040(&mut self, instr: &Instruction) -> Result<()> {
         if !self.regs.sr.supervisor() {
             return self.raise_privilege_violation();
         }
@@ -4109,6 +4212,15 @@ where
         // Just conservatively flush the entire ATC
         // TODO targetted flushing (I dont think it matters on the Mac)
         self.pmmu_cache_invalidate();
+        // Opmode 10 is PFLUSHAN
+        account_040_time!(
+            self,
+            if instr.data & 0b11000 == 0b10000 {
+                timing040::PFLUSHAN
+            } else {
+                timing040::PFLUSH
+            },
+        );
         Ok(())
     }
 
@@ -4121,6 +4233,7 @@ where
         // The address space to search comes from DFC, the address from An.
         let fc = (self.regs.dfc & 0b111) as u8;
         let vaddr = self.regs.read_a::<Address>(instr.get_op2());
+        account_040_time!(self, timing040::PTEST);
         self.mmu040_ptest(fc, vaddr)
     }
 
@@ -4143,7 +4256,7 @@ where
         if instr.movec_ctrl_to_gen() {
             let val = self.regs.read::<Long>(ctrlreg.into());
             self.regs.write(instr.movec_reg(), val);
-            self.advance_cycles(4)?;
+            advance_cycles!(self, all: 2)?;
         } else {
             let val = self.regs.read::<Long>(instr.movec_reg());
             let destreg: Register = ctrlreg.into();
@@ -4186,9 +4299,24 @@ where
                     self.pmmu_cache_ensure();
                 }
             }
-            self.advance_cycles(2)?;
+            // The 68030 is faster for the control registers other than SFC, DFC
+            // and CACR (MC68030UM 11.6.7)
+            match instr.movec_ctrlreg()? {
+                MovecCtrlReg::SFC | MovecCtrlReg::DFC | MovecCtrlReg::CACR => {
+                    advance_cycles!(self, all: 8)?;
+                }
+                _ => advance_cycles!(self, m68000: 0, m68020: 8, m68030: 2)?,
+            }
         }
 
+        account_040_time!(
+            self,
+            if instr.movec_ctrl_to_gen() {
+                timing040::MOVEC_FROM_CTRL
+            } else {
+                timing040::MOVEC_TO_CTRL
+            },
+        );
         Ok(())
     }
 
@@ -4254,10 +4382,7 @@ where
                 self.regs.write_d::<T>(reg_num as usize, value);
             }
 
-            // 68020+ additional cycles
-            if CPU_TYPE >= M68020 {
-                self.advance_cycles(2)?;
-            }
+            advance_cycles!(self, m68030: 1)?;
         } else {
             // Register to memory transfer
             let value = if is_addr_reg {
@@ -4273,14 +4398,18 @@ where
                     value,
                 )?;
             }
-
-            // 68020+ additional cycles for long transfers
-            if CPU_TYPE >= M68020 && std::mem::size_of::<T>() == 4 {
-                self.advance_cycles(2)?;
-            }
         }
 
         self.prefetch_pump()?;
+        account_040_time!(
+            self,
+            match (dir_mem_to_reg, is_addr_reg) {
+                (true, true) => timing040::MOVES_TO_AN,
+                (true, false) => timing040::MOVES_TO_DN,
+                (false, _) => timing040::MOVES_TO_MEM,
+            },
+            instr.get_addr_mode()?,
+        );
         Ok(())
     }
 
@@ -5294,6 +5423,7 @@ where
         let old_x = self.regs.sr.x();
         self.regs.sr.set_ccr(ccr);
         self.regs.sr.set_x(old_x); // X is unaffected
+        advance_cycles!(self, m68000: 0, others: 5)?;
 
         if self.regs.sr.z() {
             self.write_ea(instr, instr.get_op2(), update_op)?;
@@ -5301,6 +5431,7 @@ where
             self.regs.write_d(dc, ea_op);
         }
 
+        account_040_time!(self, timing040::CAS, instr.get_addr_mode()?);
         Ok(())
     }
 
@@ -5360,7 +5491,21 @@ where
         // MC68020UM 8.2: 18 clocks in the cache case, 2 for each of the 2
         // instruction words, 3 for each of the 2 reads of the bounds and 8
         // internal
-        self.advance_cycles(8)?;
+        advance_cycles!(self, all: 8)?;
+
+        // On the 68040, three more clocks for CHK2 when UB < LB, which the manual
+        // doesn't say how it compares: compared here as the values the instruction
+        // compares unsigned. One more clock for an address register.
+        account_040_time!(
+            self,
+            if extword & (1 << 11) == 0 {
+                self.exec040_ea(&timing040::CMP2, instr.get_addr_mode()?)
+            } else {
+                self.exec040_ea(&timing040::CHK2, instr.get_addr_mode()?)
+                    .plus(if upper < lower { 3 } else { 0 })
+                    .plus(u16::from(extword & (1 << 15) != 0))
+            },
+        );
 
         if out && extword & (1 << 11) != 0 {
             // CHK2, with the next instruction in the exception frame
@@ -5399,6 +5544,9 @@ where
         let mem_addr2 = self.regs.read::<Address>(rn2);
         let mem_op1 = self.read_ticks::<T>(mem_addr1)?;
         let mem_op2 = self.read_ticks::<T>(mem_addr2)?;
+        // MC68020UM 8.2.16: 25 clocks, 22 when the compare fails. MC68030UM
+        // 11.6.16: 24 either way.
+        advance_cycles!(self, m68000: 0, m68020: 10, m68030: 9)?;
         let comp_op1 = self.regs.read_d::<T>(dc1);
         let comp_op2 = self.regs.read_d::<T>(dc2);
         let update_op1 = self.regs.read_d::<T>(du1);
@@ -5421,16 +5569,19 @@ where
                 self.write_ticks(mem_addr1, update_op1)?;
                 self.write_ticks(mem_addr2, update_op2)?;
 
+                account_040_time!(self, timing040::CAS2_TRUE);
                 return Ok(());
             }
         }
 
         // Failed
+        advance_cycles!(self, m68030: 3)?;
         // Write Dc1 last, as the PRM states that MemOp1 will be written to
         // the register if Dc1 == Dc2
         self.regs.write_d(dc2, mem_op2);
         self.regs.write_d(dc1, mem_op1);
 
+        account_040_time!(self, timing040::CAS2_FALSE);
         Ok(())
     }
 }
