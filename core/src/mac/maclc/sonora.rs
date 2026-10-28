@@ -52,13 +52,13 @@ pub(super) const SWIM_INTERVAL: Ticks = 10;
 pub(super) const CPU_ID_LCIII: u32 = 0xA55A_0001;
 
 /// Monitors for the Sonora: 512x384, 640x480 (and 640x400, which the system
-/// offers on the same monitor), 640x870, 832x624. The Sonora also supports
-/// VGA monitors.
+/// offers on the same monitor), 640x870, 832x624, and VGA monitors.
 pub const MONITORS: &[MacMonitor] = &[
     MacMonitor::RGB12,
     MacMonitor::HiRes14,
     MacMonitor::PortraitBW,
     MacMonitor::RGB16,
+    MacMonitor::VGA,
 ];
 
 /// Sizes of the video RAM: 512 KB are soldered, a SIMM adds 256 KB
@@ -342,6 +342,16 @@ mod tests {
         assert_eq!(video.read(VIDEO_SENSE, MacMonitor::RGB16), 0x55);
         video.write(VIDEO_SENSE, 6);
         assert_eq!(video.read(VIDEO_SENSE, MacMonitor::RGB16), 0x26);
+
+        // As is a VGA monitor
+        video.write(VIDEO_SENSE, 7);
+        assert_eq!(video.read(VIDEO_SENSE, MacMonitor::VGA), 0x77);
+        video.write(VIDEO_SENSE, 3);
+        assert_eq!(video.read(VIDEO_SENSE, MacMonitor::VGA), 0x13);
+        video.write(VIDEO_SENSE, 5);
+        assert_eq!(video.read(VIDEO_SENSE, MacMonitor::VGA), 0x15);
+        video.write(VIDEO_SENSE, 6);
+        assert_eq!(video.read(VIDEO_SENSE, MacMonitor::VGA), 0x66);
     }
 
     #[test]
