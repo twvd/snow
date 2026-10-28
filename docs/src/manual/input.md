@@ -60,6 +60,12 @@ the right ALT or CTRL as an alternative.
 To enable or disable mapping an alternate key for Command, use the menu item
 'Options > Input > Map alternate Cmd key'. This option persists globally.
 
+### Power key
+
+The Power key of the Apple Desktop Bus keyboards (the triangle key) is on the
+Menu key of PC keyboards. On the Macintosh LC with the Apple IIe Card,
+Control-Power is the Apple IIe's Control-Reset.
+
 ## Mouse
 
 Snow supports two ways of emulating the mouse, which can be chosen under
