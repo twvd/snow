@@ -334,17 +334,19 @@ where
         match mode {
             // PFLUSHA: invalidate all entries (mask and FC field are zero).
             0b001 => self.pmmu_cache_invalidate(),
-            // PFLUSH fc,#mask: flush by function code.
-            0b100 => {
-                let fc = self.decode_pmmu_fc(fc_field, "PFLUSH")?;
-                self.pmmu_flush(fc, mask, None);
-            }
+            // PFLUSH fc,#mask: flush by function code. Snow's ATC slot for a
+            // page is shared across function codes and there is no per-FC
+            // index, so honouring this precisely would mean scanning every
+            // slot (up to 2^20). The hardware may drop ATC entries at any
+            // time, so a full flush is always legal; do the cheap O(1)
+            // generation bump instead.
+            0b100 => self.pmmu_cache_invalidate(),
             // PFLUSH fc,#mask,<ea>: flush by function code and page.
             0b110 => {
                 let fc = self.decode_pmmu_fc(fc_field, "PFLUSH")?;
                 let vaddr =
                     self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-                self.pmmu_flush(fc, mask, Some(vaddr));
+                self.pmmu_flush(fc, mask, vaddr);
             }
             _ => return self.op_linef(instr),
         }
@@ -369,11 +371,11 @@ where
         let vaddr = self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
         let writing = !extword.read();
 
-        // M68030UM 9.8: any existing entry translating this address (in this
-        // function code space) is flushed before the search, so a failed
-        // walk leaves the address untranslated rather than served by a stale
-        // entry.
-        self.pmmu_flush(fc, 0b111, Some(vaddr));
+        // M68030UM 9.8: any existing entry translating this address is
+        // flushed before the search, so a failed walk leaves the address
+        // untranslated rather than served by a stale entry. Mask 0 matches
+        // every function code the shared slot has served.
+        self.pmmu_flush(0, 0, vaddr);
 
         // PLOAD does not affect PSR. The walk inside pmmu_translate may modify PSR
         let saved_psr = self.regs.pmmu.psr;

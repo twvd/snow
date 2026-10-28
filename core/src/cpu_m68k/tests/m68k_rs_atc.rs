@@ -111,9 +111,12 @@ fn run(cpu: &mut TestCpu, words: &[Word]) {
     cpu.step().expect("step");
 }
 
-/// A repeat access to a page is answered without a table search, and each
-/// function code space has its own entry (M68030UM 9.3.1: the ATC tag holds
-/// the full 3-bit function code).
+/// A repeat access to a page is answered without a table search. Snow's
+/// ATC is direct-mapped and its slot for a page is shared across function
+/// codes: translation does not depend on FC unless SRE or FCL are set, and
+/// the hardware may drop ATC entries at any time, so serving FC 5, 6 and 1
+/// from the same entry is legal (the hardware's fully associative ATC would
+/// hold separate entries; Snow only differs in table-search counts).
 #[test]
 fn repeat_access_to_a_page_needs_no_table_search() {
     let mut cpu = cpu_mmu_030();
@@ -127,15 +130,15 @@ fn repeat_access_to_a_page_needs_no_table_search() {
     assert_eq!(data(&mut cpu, 0x4000), 0x4000);
     assert_eq!(table_reads(&cpu), 2, "next page: another search");
 
-    // Supervisor program space has its own entry.
+    // Supervisor program space reuses the shared slot.
     cpu.pmmu_translate(FC_SUPERVISOR_PROGRAM, 0x3010, false)
         .expect("translate");
-    assert_eq!(table_reads(&cpu), 3, "program space: its own entry");
+    assert_eq!(table_reads(&cpu), 2, "program space: shared-slot hit");
 
     // And so does the user data space.
     cpu.pmmu_translate(FC_USER_DATA, 0x3010, false)
         .expect("translate");
-    assert_eq!(table_reads(&cpu), 4, "user data space: its own entry");
+    assert_eq!(table_reads(&cpu), 2, "user data space: shared-slot hit");
 }
 
 /// A two-level tree whose level-A descriptor terminates early maps a whole
@@ -335,10 +338,7 @@ fn reset_disables_translation_without_flushing_the_atc() {
 
     cpu.reset().expect("reset");
 
-    assert!(
-        !cpu.regs.pmmu.tc.enable(),
-        "RESET clears the TC E bit"
-    );
+    assert!(!cpu.regs.pmmu.tc.enable(), "RESET clears the TC E bit");
     assert!(
         cpu.regs.pmmu.tt.iter().all(|tt| !tt.e()),
         "RESET clears the TTx E bits"

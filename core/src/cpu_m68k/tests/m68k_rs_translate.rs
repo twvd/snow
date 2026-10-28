@@ -67,12 +67,6 @@ fn read_word(bus: &TestBus, addr: Address) -> Word {
     (hi << 8) | lo
 }
 
-fn read_long(bus: &TestBus, addr: Address) -> Long {
-    let hi = read_word(bus, addr) as Long;
-    let lo = read_word(bus, addr + 2) as Long;
-    (hi << 16) | lo
-}
-
 /// Supervisor-mode 68030 with `pages` 4 KB pages identity-mapped through a
 /// short-format root table at `table`, and the PMMU enabled with `tc`.
 ///
