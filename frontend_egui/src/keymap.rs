@@ -173,6 +173,8 @@ pub fn map_winit_keycode(
         KeyCode::PrintScreen => Some(0x69),
         KeyCode::ScrollLock => Some(0x6B),
         KeyCode::Pause => Some(0x71),
+        // PC keyboards have no Power key: use the Menu key
+        KeyCode::ContextMenu => Some(0x7F),
 
         // ,-----------------------------------------------------------. ,-----------. ,---------------.
         // |  `|  1|  2|  3|  4|  5|  6|  7|  8|  9|  0|  -|  =|Backspa| |Ins|Hom|PgU| |NmL|  =|  /|  *|
