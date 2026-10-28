@@ -1,8 +1,11 @@
 //! Instruction timings of the floating point units
 
+use anyhow::Result;
+
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::cpu::CpuM68k;
 use crate::cpu_m68k::fpu::instruction::opmode;
+use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
 use crate::cpu_m68k::{CpuM68kType, FPU_M68040, FPU_M68881, FPU_M68882, FpuM68kType};
 use crate::tickable::Ticks;
 use crate::types::Word;
@@ -30,6 +33,14 @@ const OPERANDS: usize = 6;
 /// One row of ALU timings, indexed by FpuOperand
 type AluRow = [Word; OPERANDS];
 
+/// Times of FMOVE and FMOVEM of the control registers
+pub(in crate::cpu_m68k) enum CregTimes {
+    /// The same time for every addressing mode and number of registers
+    Fixed(Word),
+    /// The times of MC68881/MC68882UM Table 8-6
+    Mc6888x,
+}
+
 /// Instruction timings of a single FPU model
 pub(in crate::cpu_m68k) struct FpuTimings {
     /// ALU operations, indexed by opmode and source operand type
@@ -47,11 +58,14 @@ pub(in crate::cpu_m68k) struct FpuTimings {
     /// FSAVE
     save: Word,
 
+    /// FRESTORE of a null state frame
+    restore_null: Word,
+
     /// FRESTORE
     restore: Word,
 
-    /// FMOVE to/from a control register
-    move_creg: Word,
+    /// FMOVE and FMOVEM of the control registers
+    move_creg: CregTimes,
 
     /// FMOVEM to <ea>: fixed cost and cost per register, excluding the bus
     /// accesses of the transfer itself
@@ -98,14 +112,44 @@ impl FpuTimings {
         self.save.into()
     }
 
+    /// FRESTORE of a null state frame
+    pub(in crate::cpu_m68k) fn restore_null(&self) -> Ticks {
+        self.restore_null.into()
+    }
+
     /// FRESTORE
     pub(in crate::cpu_m68k) fn restore(&self) -> Ticks {
         self.restore.into()
     }
 
-    /// FMOVE to/from a control register
-    pub(in crate::cpu_m68k) fn move_creg(&self) -> Ticks {
-        self.move_creg.into()
+    /// FMOVE and FMOVEM of `regs`, the control register field, to or from
+    /// the FPU. For Table 8-6, the times of the table less the 2 instruction
+    /// words, the immediate data and the operand bus cycles of 3 cycles.
+    pub(in crate::cpu_m68k) fn move_creg(
+        &self,
+        instr: &Instruction,
+        regs: u8,
+        to_fpu: bool,
+    ) -> Result<Ticks> {
+        if let CregTimes::Fixed(time) = self.move_creg {
+            return Ok(time.into());
+        }
+        let n = Ticks::from(regs.count_ones());
+        let mode = instr.get_addr_mode()?;
+        let register = matches!(
+            mode,
+            AddressingMode::DataRegister | AddressingMode::AddressRegister
+        );
+        Ok(match (n, to_fpu) {
+            // FMOVE: 28 from Rn, 30 from #<data>, 33 from <ea>, 31 to Rn, 33 to <ea>
+            (1, true) if register => 24,
+            (1, true) if mode == AddressingMode::Immediate => 22,
+            (1, false) if register => 27,
+            (1, _) => 26,
+            // FMOVEM: 25 + 6n from #<data>, 27 + 6n otherwise
+            (_, true) if mode == AddressingMode::Immediate => 21 + 2 * n,
+            _ => 23 + 3 * n,
+        })
     }
 
     /// FMOVEM to <ea>: fixed cost and cost per register, excluding the bus
@@ -190,15 +234,24 @@ const MC68881: FpuTimings = FpuTimings {
     store: [100, 80, 72, 2002, 100, 86, 100, 2016],
 
     movecr: 29,
-    nop: 16,
-    save: 50,
-    restore: 55,
-    move_creg: 29,
 
-    // Table 8-2 lists 25 and 31 per register, including the three long word
-    // transfers of the extended precision operand
-    fmovem_to_ea: (35, 25 - 12),
-    fmovem_to_regs: (33, 31 - 12),
+    // Table 8-7: 18, less the instruction words
+    nop: 14,
+
+    // Table 8-8: 52 for an idle state frame, with 7 writes of 3 cycles
+    save: 29,
+
+    // Table 8-8: 21 for a null state frame and 57 for an idle one, with 1 or
+    // 7 reads of 3 cycles
+    restore_null: 16,
+    restore: 34,
+
+    move_creg: CregTimes::Mc6888x,
+
+    // Table 8-6: 37 + 25n to memory and 35 + 31n from memory, with 3 writes
+    // or reads of 3 cycles for each register
+    fmovem_to_ea: (33, 25 - 9),
+    fmovem_to_regs: (31, 31 - 9),
 
     // Table 8-2: "If the source or destination is an MPU data register,
     // subtract five or two clock cycles, respectively."
@@ -258,6 +311,13 @@ const MC68882: FpuTimings = FpuTimings {
     store: [110, 38, 50, 2006, 110, 44, 110, 2020],
 
     movecr: 32,
+
+    // Table 8-8: 100 for an idle state frame, with 15 writes of 3 cycles
+    save: 53,
+
+    // Table 8-8: 105 for an idle state frame, with 15 reads of 3 cycles
+    restore: 58,
+
     ..MC68881
 };
 
@@ -312,8 +372,9 @@ const MC68040: FpuTimings = FpuTimings {
     movecr: 0,
     nop: 6,
     save: 11,
+    restore_null: 12,
     restore: 12,
-    move_creg: 7,
+    move_creg: CregTimes::Fixed(7),
 
     // 15 cycles in the integer unit and 2 + 3 per register in the FPU, of which
     // 3 + 3 per register is for the second and further registers
