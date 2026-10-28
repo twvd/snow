@@ -794,9 +794,6 @@ where
                         PagefaultCause::WriteProtected => {
                             self.regs.pmmu.psr.set_write_protected(true);
                         }
-                        PagefaultCause::SupervisorOnly => {
-                            self.regs.pmmu.psr.set_supervisor_violation(true);
-                        }
                         PagefaultCause::LimitViolation => {
                             self.regs.pmmu.psr.set_limit_violation(true);
                         }
