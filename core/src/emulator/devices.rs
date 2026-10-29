@@ -312,8 +312,8 @@ pub trait Cdrom {
 pub trait Ethernet {
     /// Fills in the status from the adapter's state; true if anything changed
     fn update_status(&mut self, status: &mut EthernetStatus) -> bool;
-    fn link(&self) -> crate::mac::scsi::ethernet::EthernetLinkType;
-    fn set_link(&mut self, link: crate::mac::scsi::ethernet::EthernetLinkType) -> Result<()>;
+    fn link(&self) -> crate::net::EthernetLinkType;
+    fn set_link(&mut self, link: crate::net::EthernetLinkType) -> Result<()>;
     fn start_capture(&mut self, filename: &Path) -> Result<()>;
     fn stop_capture(&mut self) -> Option<(PathBuf, usize)>;
     fn capture_status(&self) -> Option<super::comm::EthernetCaptureStatus>;
@@ -501,7 +501,7 @@ impl Default for FloppyStatus {
 #[cfg(feature = "ethernet")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EthernetStatus {
-    pub link: crate::mac::scsi::ethernet::EthernetLinkType,
+    pub link: crate::net::EthernetLinkType,
     pub capture: Option<super::comm::EthernetCaptureStatus>,
 }
 
@@ -509,7 +509,7 @@ pub struct EthernetStatus {
 impl Default for EthernetStatus {
     fn default() -> Self {
         Self {
-            link: crate::mac::scsi::ethernet::EthernetLinkType::Down,
+            link: crate::net::EthernetLinkType::Down,
             capture: None,
         }
     }
@@ -2315,7 +2315,7 @@ mod tests {
     #[test]
     #[cfg(feature = "ethernet")]
     fn ethernet_round_trips() {
-        use crate::mac::scsi::ethernet::EthernetLinkType;
+        use crate::net::EthernetLinkType;
         let config = DeviceConfig::of_model(
             bus_id::SCSI,
             "5",

@@ -16,9 +16,9 @@ use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::maclc::pds_iie::GamePort;
 use crate::mac::scc::SccCh;
-#[cfg(feature = "ethernet")]
-use crate::mac::scsi::ethernet::EthernetLinkType;
 use crate::mac::serial_bridge::SerialBridgeStatus;
+#[cfg(feature = "ethernet")]
+use crate::net::EthernetLinkType;
 use crate::tickable::Ticks;
 
 pub use crate::cpu_m68k::cpu::{Breakpoint, BusBreakpoint};
