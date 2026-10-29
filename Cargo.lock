@@ -4933,6 +4933,8 @@ name = "snow_appletalk"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "crossbeam-channel",
+ "log",
 ]
 
 [[package]]
