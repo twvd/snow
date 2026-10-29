@@ -7,11 +7,6 @@
 //! current path is kept alongside for reverse resolution
 //! (FPResolveID). The IDs are in-memory, for the life of the server.
 
-// Removed once the write support lands and every item has a user:
-// until then the AFP core has not arrived and a plain (non-test)
-// clippy build would flag the whole module as dead code
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -144,6 +139,18 @@ impl IdTable {
                     self.by_inode.insert(new_key, id);
                     *key = new_key;
                 }
+            }
+        }
+    }
+
+    /// Two files swapped their contents, which is to say their inodes, and
+    /// each path keeps its ID (FPExchangeFiles): the IDs go with the names,
+    /// so each identity now maps to the other ID
+    pub(crate) fn exchange(&mut self, a: (u32, &Path), b: (u32, &Path)) {
+        for (id, path) in [a, b] {
+            if let Some(key) = identity(path) {
+                self.by_inode.insert(key, id);
+                self.by_id.insert(id, (path.to_path_buf(), key));
             }
         }
     }
