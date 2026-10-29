@@ -58,7 +58,11 @@ pub struct AdbKeyboard {
     #[serde(with = "BigArray")]
     reported_keys: [bool; 256],
 
-    capslock: bool,
+    /// Keys down on the keyboard, from the key events received. The events
+    /// still in the queue are not in `reported_keys` yet. Caps Lock is a
+    /// locking key: it is down while locked.
+    #[serde(with = "BigArray")]
+    physical_keys: [bool; 256],
 }
 
 impl AdbKeyboard {
@@ -72,7 +76,7 @@ impl AdbKeyboard {
             address: Self::INITIAL_ADDRESS,
             handler_id: Self::INITIAL_HANDLER_ID,
             reported_keys: [false; 256],
-            capslock: false,
+            physical_keys: [false; 256],
         }
     }
 }
@@ -81,12 +85,37 @@ impl AdbKeyboard {
 impl AdbDevice for AdbKeyboard {
     fn event(&mut self, event: &AdbEvent) {
         match event {
-            AdbEvent::Key(ke) => self.event_queue.push_back(*ke),
+            AdbEvent::Key(ke) => match ke.translate_scancode(Self::KEYMAP) {
+                // Caps Lock locks down on one press and comes back up on the
+                // next one, the release of the key does nothing
+                Some(KeyEvent::KeyDown(SC_CAPSLOCK, _)) => {
+                    let locked = !self.physical_keys[SC_CAPSLOCK as usize];
+                    self.physical_keys[SC_CAPSLOCK as usize] = locked;
+                    self.event_queue.push_back(if locked {
+                        KeyEvent::KeyDown(SC_CAPSLOCK, Self::KEYMAP)
+                    } else {
+                        KeyEvent::KeyUp(SC_CAPSLOCK, Self::KEYMAP)
+                    });
+                }
+                Some(KeyEvent::KeyUp(SC_CAPSLOCK, _)) => (),
+                Some(ke @ KeyEvent::KeyDown(sc, _)) => {
+                    self.physical_keys[sc as usize] = true;
+                    self.event_queue.push_back(ke);
+                }
+                Some(ke @ KeyEvent::KeyUp(sc, _)) => {
+                    self.physical_keys[sc as usize] = false;
+                    self.event_queue.push_back(ke);
+                }
+                None => (),
+            },
+            // We cannot know the state of the host keyboard, Caps Lock
+            // included: release everything rather than leave keys stuck
             AdbEvent::ReleaseAll => {
-                for (sc, _) in self.reported_keys.iter().enumerate().filter(|(_, s)| **s) {
+                for (sc, _) in self.physical_keys.iter().enumerate().filter(|(_, d)| **d) {
                     self.event_queue
                         .push_back(KeyEvent::KeyUp(sc.try_into().unwrap(), Self::KEYMAP));
                 }
+                self.physical_keys = [false; 256];
             }
             _ => (),
         }
@@ -103,42 +132,35 @@ impl AdbDevice for AdbKeyboard {
     }
 
     fn flush(&mut self) {
+        // The keyboard firmware (M0115, M3501) marks all the keys up on a
+        // reset or a flush, so its next scan reports again the keys down in
+        // `physical_keys`. The Mac OS relies on it: it clears KeyMap and
+        // flushes the keyboard at startup, and Shift held from power on must
+        // still turn off the extensions.
         self.event_queue.clear();
+        self.reported_keys = [false; 256];
+        for (sc, _) in self.physical_keys.iter().enumerate().filter(|(_, d)| **d) {
+            self.event_queue
+                .push_back(KeyEvent::KeyDown(sc.try_into().unwrap(), Self::KEYMAP));
+        }
     }
 
     fn talk(&mut self, reg: u8) -> AdbDeviceResponse {
         match reg {
             0 => {
                 let mut response = AdbDeviceResponse::default();
+                // The events are already in the keyboard's key map
                 for _ in 0..2 {
-                    if let Some(ke) = self
-                        .event_queue
-                        .pop_front()
-                        .and_then(|ke| ke.translate_scancode(Self::KEYMAP))
-                    {
-                        match ke {
-                            KeyEvent::KeyDown(sc, _) => {
-                                self.reported_keys[sc as usize] = true;
-                                if sc == SC_CAPSLOCK {
-                                    // Capslock is a mechanical sticking key
-                                    self.capslock = !self.capslock;
-                                    if self.capslock {
-                                        response.push(sc);
-                                    } else {
-                                        response.push(0x80 | sc);
-                                    }
-                                } else {
-                                    // Normal/other keys
-                                    response.push(sc);
-                                }
-                            }
-                            KeyEvent::KeyUp(sc, _) => {
-                                self.reported_keys[sc as usize] = false;
-                                if sc != SC_CAPSLOCK {
-                                    response.push(0x80 | sc);
-                                }
-                            }
+                    match self.event_queue.pop_front() {
+                        Some(KeyEvent::KeyDown(sc, _)) => {
+                            self.reported_keys[sc as usize] = true;
+                            response.push(sc);
                         }
+                        Some(KeyEvent::KeyUp(sc, _)) => {
+                            self.reported_keys[sc as usize] = false;
+                            response.push(0x80 | sc);
+                        }
+                        None => (),
                     }
                 }
                 if response.len() == 1 {
@@ -152,10 +174,10 @@ impl AdbDevice for AdbKeyboard {
                 AdbKeyboardReg2(0xFFFF)
                     // LED state bits (0..2) are host-controlled and active-high
                     .with_led_numlock(self.reported_keys[SC_NUMLOCK as usize])
-                    .with_led_capslock(self.capslock)
+                    .with_led_capslock(self.reported_keys[SC_CAPSLOCK as usize])
                     .with_led_scrolllock(self.reported_keys[SC_SCROLLOCK as usize])
                     .with_numlock(!self.reported_keys[SC_NUMLOCK as usize])
-                    .with_capslock(!self.capslock)
+                    .with_capslock(!self.reported_keys[SC_CAPSLOCK as usize])
                     .with_scrolllock(!self.reported_keys[SC_SCROLLOCK as usize])
                     .with_cmd(!self.reported_keys[SC_COMMAND as usize])
                     .with_control(
@@ -206,5 +228,84 @@ impl AdbDevice for AdbKeyboard {
 
     fn get_srq(&self) -> bool {
         !self.event_queue.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(down: bool, sc: u8) -> AdbEvent {
+        AdbEvent::Key(if down {
+            KeyEvent::KeyDown(sc, AdbKeyboard::KEYMAP)
+        } else {
+            KeyEvent::KeyUp(sc, AdbKeyboard::KEYMAP)
+        })
+    }
+
+    fn reg2(kbd: &mut AdbKeyboard) -> AdbKeyboardReg2 {
+        AdbKeyboardReg2(u16::from_be_bytes(kbd.talk(2)[..].try_into().unwrap()))
+    }
+
+    #[test]
+    fn reset_reports_keys_down() {
+        let mut kbd = AdbKeyboard::new();
+        kbd.event(&key(true, SC_LSHIFT));
+        kbd.reset();
+        assert_eq!(kbd.talk(0).as_slice(), [SC_LSHIFT, 0xFF]);
+        assert!(!kbd.get_srq());
+
+        kbd.reset();
+        assert_eq!(kbd.talk(0).as_slice(), [SC_LSHIFT, 0xFF]);
+    }
+
+    #[test]
+    fn flush_reports_keys_down() {
+        let mut kbd = AdbKeyboard::new();
+        kbd.event(&key(true, SC_LSHIFT));
+        kbd.event(&key(true, SC_COMMAND));
+        assert_eq!(kbd.talk(0).as_slice(), [SC_LSHIFT, SC_COMMAND]);
+
+        // A release not sent yet is not lost
+        kbd.event(&key(false, SC_COMMAND));
+        kbd.flush();
+        assert_eq!(kbd.talk(0).as_slice(), [SC_LSHIFT, 0xFF]);
+        assert!(kbd.talk(0).is_empty());
+        let reg2 = reg2(&mut kbd);
+        assert!(!reg2.shift());
+        assert!(reg2.cmd());
+    }
+
+    #[test]
+    fn capslock_locks() {
+        let mut kbd = AdbKeyboard::new();
+        kbd.event(&key(true, SC_CAPSLOCK));
+        kbd.event(&key(false, SC_CAPSLOCK));
+        assert_eq!(kbd.talk(0).as_slice(), [SC_CAPSLOCK, 0xFF]);
+        assert!(!reg2(&mut kbd).capslock());
+
+        // Still locked after a flush
+        kbd.flush();
+        assert_eq!(kbd.talk(0).as_slice(), [SC_CAPSLOCK, 0xFF]);
+
+        kbd.event(&key(true, SC_CAPSLOCK));
+        kbd.event(&key(false, SC_CAPSLOCK));
+        assert_eq!(kbd.talk(0).as_slice(), [0x80 | SC_CAPSLOCK, 0xFF]);
+        assert!(reg2(&mut kbd).capslock());
+    }
+
+    #[test]
+    fn release_all() {
+        let mut kbd = AdbKeyboard::new();
+        kbd.event(&key(true, SC_CAPSLOCK));
+        kbd.event(&key(true, SC_LSHIFT));
+        kbd.event(&AdbEvent::ReleaseAll);
+        assert_eq!(kbd.talk(0).as_slice(), [SC_CAPSLOCK, SC_LSHIFT]);
+        assert_eq!(
+            kbd.talk(0).as_slice(),
+            [0x80 | SC_LSHIFT, 0x80 | SC_CAPSLOCK]
+        );
+        kbd.flush();
+        assert!(kbd.talk(0).is_empty());
     }
 }
