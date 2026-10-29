@@ -3,8 +3,16 @@ name = "snow_appletalk"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+test_module = []
+# Verbose wire-level logging: every LLAP frame and DDP datagram with a
+# hex dump, for protocol diagnosis. Off by default.
+wire_debug = []
+
 [dependencies]
 anyhow = "1.0"
+crossbeam-channel = "0.5"
+log = "0.4"
 
 [lints]
 workspace = true
