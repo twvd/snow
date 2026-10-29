@@ -55,10 +55,15 @@ fn main() -> Result<()> {
             PathBuf::from(path),
         ))?;
     }
-    // The server shares SNOW_AFP_ROOT
+    // No root given: the server shares SNOW_AFP_ROOT
     cmd.send(EmulatorCommand::SerialBridgeEnable(
         SccCh::B,
-        SerialBridgeConfig::AppleTalk,
+        SerialBridgeConfig::AppleTalk {
+            root: None,
+            volume_name: None,
+            max_version: Default::default(),
+            settings: Default::default(),
+        },
     ))?;
     cmd.send(EmulatorCommand::Run)?;
     cmd.send(EmulatorCommand::SetSpeed(EmulatorSpeed::Uncapped))?;
