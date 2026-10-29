@@ -4371,6 +4371,7 @@ where
         if overflow {
             debug!("DIV.l overflow");
             self.regs.sr.set_v(true);
+            self.regs.sr.set_c(false);
             return Ok(());
         }
 
