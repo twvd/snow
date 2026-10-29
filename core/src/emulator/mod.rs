@@ -117,6 +117,7 @@ macro_rules! dispatch {
     ) => {
         #[allow(dead_code)]
         impl EmulatorConfig {
+
             // Generate immutable reference methods
             $(
                 pub fn $ref_method(&self) -> $ref_ret {
@@ -336,6 +337,23 @@ enum EmulatorConfig {
     LC475(Box<CpuM68040<MachineBus040>>),
     /// Macintosh Quadra 800 (68040)
     Quadra800(Box<CpuM68040<MachineBus040>>),
+}
+
+impl EmulatorConfig {
+    /// The Ethernet port of a card, or of the logic board, by its bus and slot
+    #[cfg(feature = "ethernet")]
+    fn card_ethernet_mut(
+        &mut self,
+        bus: devices::BusKind,
+        _slot: u8,
+    ) -> Option<&mut crate::net::EthernetPort> {
+        match (self, bus) {
+            (Self::Quadra700(cpu), devices::BusKind::BuiltIn) => {
+                Some(cpu.bus.quadra700_mut().sonic.port_mut())
+            }
+            _ => None,
+        }
+    }
 }
 
 dispatch! {
@@ -2012,23 +2030,21 @@ impl Tickable for Emulator {
                     }
                     #[cfg(feature = "ethernet")]
                     EmulatorCommand::EthernetStartCapture(addr, filename) => {
-                        let Ok(idx) = self.scsi_id_at(addr) else {
-                            continue;
-                        };
+                        let label = self.slot_label(addr);
                         match self
                             .ethernet_at(addr, |ethernet| ethernet.start_capture(&filename))?
                         {
                             Ok(_) => {
                                 self.user_success(&format!(
-                                    "SCSI #{}: Started pcap capture to '{}'",
-                                    idx,
+                                    "{}: Started pcap capture to '{}'",
+                                    label,
                                     filename.display()
                                 ));
                             }
                             Err(e) => {
                                 self.user_error(&format!(
-                                    "SCSI #{}: Failed to start capture: {}",
-                                    idx, e
+                                    "{}: Failed to start capture: {}",
+                                    label, e
                                 ));
                             }
                         }
@@ -2036,20 +2052,18 @@ impl Tickable for Emulator {
                     }
                     #[cfg(feature = "ethernet")]
                     EmulatorCommand::EthernetStopCapture(addr) => {
-                        let Ok(idx) = self.scsi_id_at(addr) else {
-                            continue;
-                        };
+                        let label = self.slot_label(addr);
                         match self.ethernet_at(addr, |ethernet| ethernet.stop_capture())? {
                             Some((filename, count)) => {
                                 self.user_success(&format!(
-                                    "SCSI #{}: Stopped capture, wrote {} packets to '{}'",
-                                    idx,
+                                    "{}: Stopped capture, wrote {} packets to '{}'",
+                                    label,
                                     count,
                                     filename.display()
                                 ));
                             }
                             None => {
-                                self.user_warning(&format!("SCSI #{}: No capture was active", idx));
+                                self.user_warning(&format!("{}: No capture was active", label));
                             }
                         }
                         self.status_update()?;

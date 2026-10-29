@@ -98,6 +98,8 @@ pub enum DeviceModel {
     ScsiCdrom,
     #[cfg(feature = "ethernet")]
     DaynaPortScsiLink,
+    #[cfg(feature = "ethernet")]
+    BuiltInSonic,
     #[cfg(feature = "printer")]
     LaserWriterIISC,
     Mac400KDrive,
@@ -192,6 +194,8 @@ pub static MODELS: &[&ModelInfo] = &[
     &crate::mac::scsi::cdrom::INFO,
     #[cfg(feature = "ethernet")]
     &crate::mac::scsi::ethernet::INFO,
+    #[cfg(feature = "ethernet")]
+    &crate::mac::ethernet::sonic::INFO,
     #[cfg(feature = "printer")]
     &crate::mac::scsi::printer::INFO,
     &crate::mac::swim::drive::INFO_400K,
@@ -790,6 +794,16 @@ impl MacModel {
             });
         }
 
+        #[cfg(feature = "ethernet")]
+        if self == Self::Quadra700 {
+            buses.push(Bus {
+                kind: BusKind::BuiltIn,
+                id: bus_id::BUILT_IN.to_owned(),
+                title: "Built-in".to_owned(),
+                slots: vec![Slot::fixed("0", DeviceModel::BuiltInSonic)],
+            });
+        }
+
         if self == Self::SE30 {
             buses.push(Bus {
                 kind: BusKind::BuiltIn,
@@ -1017,6 +1031,14 @@ impl BuildPlan {
                 self.take_video(0xE, device, &rom.rom, None, config)?;
                 Ok(false)
             }
+            #[cfg(feature = "ethernet")]
+            DeviceModel::BuiltInSonic => {
+                if config.bus != bus_id::BUILT_IN || !fits(BusKind::BuiltIn) {
+                    bail!("This machine can't take a {}", device.name());
+                }
+                // The SE/30 always has its video: the entry only gives its settings
+                Ok(true)
+            }
             DeviceModel::AppleIIePdsCard => {
                 if config.bus != bus_id::PDS_LC || !fits(BusKind::LcPds) {
                     bail!("This machine can't take a {}", device.name());
@@ -1112,7 +1134,9 @@ enum SlotTarget {
     /// A position on the HD20 chain
     Hd20(usize),
     Scsi(usize),
-    Card,
+    /// A card, or a device on the logic board, which can only be added when the machine is
+    /// built: its bus, and its slot number on NuBus
+    Card(BusKind, u8),
     IieDrive(usize),
     Serial(SccCh),
 }
@@ -1128,7 +1152,10 @@ fn slot_target(bus: &Bus, slot: &Slot) -> SlotTarget {
         BusKind::IieDisk => SlotTarget::IieDrive(number(1)),
         BusKind::Serial if slot.id == "A" => SlotTarget::Serial(SccCh::A),
         BusKind::Serial => SlotTarget::Serial(SccCh::B),
-        BusKind::Nubus | BusKind::LcPds | BusKind::Se30Pds | BusKind::BuiltIn => SlotTarget::Card,
+        BusKind::Nubus => SlotTarget::Card(bus.kind, u8::from_str_radix(&slot.id, 16).unwrap_or(0)),
+        BusKind::LcPds | BusKind::Se30Pds | BusKind::BuiltIn => {
+            SlotTarget::Card(bus.kind, number(0) as u8)
+        }
     }
 }
 
@@ -1554,8 +1581,14 @@ impl Emulator {
             }
             SlotTarget::Hd20(i) => FunctionMut::HardDisk(self.config.swim_mut().dcds.get_mut(i)?),
             SlotTarget::Scsi(id) => self.config.scsi_mut().targets[id].as_mut()?.function(),
-            SlotTarget::Card => match model.function() {
+            // Only the Ethernet function needs the bus and the slot, to find the card's port
+            #[cfg_attr(not(feature = "ethernet"), allow(unused_variables))]
+            SlotTarget::Card(bus, slot) => match model.function() {
                 FunctionKind::AppleIIe => FunctionMut::AppleIIe,
+                #[cfg(feature = "ethernet")]
+                FunctionKind::Ethernet => {
+                    FunctionMut::Ethernet(self.config.card_ethernet_mut(bus, slot)?)
+                }
                 _ => FunctionMut::Video,
             },
             SlotTarget::Serial(ch) => {
@@ -1899,15 +1932,6 @@ impl Emulator {
         }
     }
 
-    /// The SCSI ID of a slot
-    #[cfg(feature = "ethernet")]
-    pub(super) fn scsi_id_at(&self, addr: SlotAddr) -> Result<usize> {
-        match self.target_at(addr)? {
-            SlotTarget::Scsi(id) => Ok(id),
-            t => bail!("{:?} is not on SCSI", t),
-        }
-    }
-
     /// How messages name a slot, such as "SCSI #3"
     #[cfg(feature = "ethernet")]
     pub(super) fn slot_label(&self, addr: SlotAddr) -> String {
@@ -2024,13 +2048,17 @@ impl Emulator {
                 };
                 device(model, Map::new())
             }
-            SlotTarget::Card => {
+            SlotTarget::Card(..) => {
                 let config = self
                     .device_book
                     .cards
                     .iter()
-                    .find(|c| c.bus == bus.id && c.slot == slot.id)?;
-                device(config.known_model()?, config.settings.clone())
+                    .find(|c| c.bus == bus.id && c.slot == slot.id);
+                match config {
+                    Some(config) => device(config.known_model()?, config.settings.clone()),
+                    // No entry: a device the machine always has, such as its built-in Ethernet
+                    None => slot.device.clone(),
+                }
             }
             SlotTarget::IieDrive(i) => device(*self.device_book.iie_chain.get(i)?, Map::new()),
             SlotTarget::Serial(ch) => match self.device_book.serial[ch as usize].as_ref()? {
@@ -2355,6 +2383,30 @@ mod tests {
             assert_round_trip(MacModel::Plus, vec![config.clone()]),
             [config]
         );
+    }
+
+    #[test]
+    #[cfg(feature = "ethernet")]
+    fn the_quadra_700_has_built_in_ethernet() {
+        use crate::net::EthernetLinkType;
+        assert_eq!(slots(MacModel::Quadra700, bus_id::BUILT_IN), ["0"]);
+        let config = DeviceConfig {
+            bus: bus_id::BUILT_IN.to_owned(),
+            slot: "0".to_owned(),
+            model: None,
+            settings: settings_map(
+                &serde_json::json!({ "mac": [8, 0, 7, 1, 2, 3], "link": EthernetLinkType::Down }),
+            ),
+        };
+        assert_eq!(
+            assert_round_trip(MacModel::Quadra700, vec![config.clone()]),
+            [config]
+        );
+        // Without an entry, the Quadra 700 still reports its built-in Ethernet
+        let (mut emu, _) = build(MacModel::Quadra700, vec![]);
+        let reported = emu.devices();
+        assert_eq!(reported.len(), 1);
+        assert_eq!(reported[0].bus, bus_id::BUILT_IN);
     }
 
     #[test]

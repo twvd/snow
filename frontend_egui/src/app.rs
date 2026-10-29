@@ -3439,6 +3439,15 @@ impl SnowGui {
 
     fn handle_model_selection_result(&mut self, result: &ModelSelectionResult) {
         let mut devices = card_entries(&result.video_cards, &result.init_args);
+        // When the machine stays the same, its built-in Ethernet keeps its MAC address and
+        // link. Its entry names no model, because the machine always has it.
+        if self.workspace.model == Some(result.model) {
+            devices.extend(self.emu.devices().into_iter().filter(|d| {
+                d.model.is_none()
+                    && d.model_on(result.model)
+                        .is_some_and(|m| m.function() == FunctionKind::Ethernet)
+            }));
+        }
         // What's plugged in stays plugged in, and what couldn't be used gets another chance
         devices.extend(
             self.emu

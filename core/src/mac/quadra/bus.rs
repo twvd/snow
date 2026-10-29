@@ -11,6 +11,8 @@ use crate::emulator::comm::EmulatorSpeed;
 use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
+#[cfg(feature = "ethernet")]
+use crate::mac::ethernet::sonic::{Sonic, SonicDma};
 use crate::mac::macii::via2::Via2;
 use crate::mac::nubus::Nubus;
 use crate::mac::quadra::dafb::{Dafb, DafbKind};
@@ -61,6 +63,36 @@ const NUBUS_WAITS: Ticks = 5;
 /// Clock of the RTxCA and RTxCB pins of the SCC, 3.6864 MHz, which the baud
 /// rate generators run from
 const SCC_RTXC_FREQUENCY: Ticks = 3_686_400;
+
+/// Silicon revision of the SONIC. Nobody has read it on a Quadra 700, so
+/// this is a guess: Linux boot logs show revision 4 on the Quadra 650
+/// built-in SONIC and on other Macs, the DP83932C datasheet (and MAME)
+/// give 6 for the DP83932CVF, and QEMU's q800 uses 4.
+#[cfg(feature = "ethernet")]
+const SONIC_REVISION: u16 = 4;
+
+/// The SONIC as a bus master: it reaches RAM only
+#[cfg(feature = "ethernet")]
+struct RamDma<'a> {
+    ram: &'a mut [u8],
+    /// Memory notifiers only see what the CPU writes: a write here changes
+    /// the bus's inspect generation, so they read their ranges again
+    dma_generation: &'a mut u32,
+}
+
+#[cfg(feature = "ethernet")]
+impl SonicDma for RamDma<'_> {
+    fn read_byte(&mut self, addr: Address) -> u8 {
+        self.ram.get(addr as usize).copied().unwrap_or(0)
+    }
+
+    fn write_byte(&mut self, addr: Address, val: u8) {
+        if let Some(b) = self.ram.get_mut(addr as usize) {
+            *b = val;
+            *self.dma_generation = self.dma_generation.wrapping_add(1);
+        }
+    }
+}
 
 /// What answers in a 16MB block of the address space
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -135,6 +167,13 @@ pub struct Quadra700Bus<TRenderer: Renderer> {
     mouse_ready: bool,
     pub(crate) swim: Swim,
     pub(crate) scsi: Esp,
+    /// Built-in Ethernet controller
+    #[cfg(feature = "ethernet")]
+    pub(crate) sonic: Sonic,
+    /// Changes when the SONIC writes RAM, for inspect_generation()
+    #[cfg(feature = "ethernet")]
+    #[serde(skip)]
+    dma_generation: u32,
     /// A pseudo-DMA access is held off, waiting for DREQ
     scsi_dma_stalled: bool,
 
@@ -236,6 +275,20 @@ where
             // MODE pins strapped for a 16-bit DMA bus (schematic 050-8020)
             scsi: Esp::new(true),
             scsi_dma_stalled: false,
+            #[cfg(feature = "ethernet")]
+            sonic: Sonic::new(
+                SONIC_REVISION,
+                crate::net::EthernetPort::new([
+                    0x08,
+                    0x00,
+                    0x07,
+                    rand::random(),
+                    rand::random(),
+                    rand::random(),
+                ]),
+            ),
+            #[cfg(feature = "ethernet")]
+            dma_generation: 0,
             asc: Easc::default(),
             asc_clock: 0,
             mouse_ready: false,
@@ -311,6 +364,8 @@ where
         self.nubus.set_renderers(&mut renderers);
 
         self.asc.after_deserialize();
+        #[cfg(feature = "ethernet")]
+        self.sonic.after_deserialize();
     }
 
     pub fn model(&self) -> MacModel {
@@ -463,8 +518,10 @@ where
             0x0000_0000..=0x0000_1FFF => Some(Self::dev_read(addr, self.via1.read(addr))),
             // VIA 2
             0x0000_2000..=0x0000_3FFF => Some(Self::dev_read(addr, self.via2.read(addr))),
+            // Ethernet MAC address PROM
+            0x0000_8000..=0x0000_8007 => Some(self.mac_prom(addr)),
             // Ethernet controller
-            0x0000_8000..=0x0000_8007 | 0x0000_A000..=0x0000_B0FF => Some(0),
+            0x0000_A000..=0x0000_B0FF => Some(0),
             // SCC
             0x0000_C000..=0x0000_DFFF => Some(Self::dev_read(addr, self.scc.read(addr >> 1))),
             // Orwell memory controller
@@ -518,8 +575,13 @@ where
         match acc.addr & Self::IO_MASK {
             // VIA 1 and VIA 2
             0x0000_0000..=0x0000_3FFF => self.via_cycle(acc),
+            // Ethernet MAC address PROM
+            0x0000_8000..=0x0000_9FFF => self.io_bus_cycle(acc, 0, false),
             // Ethernet controller
-            0x0000_8000..=0x0000_BFFF => self.io_bus_cycle(acc, 0, false),
+            #[cfg(feature = "ethernet")]
+            0x0000_A000..=0x0000_BFFF => self.sonic_cycle(acc),
+            #[cfg(not(feature = "ethernet"))]
+            0x0000_A000..=0x0000_BFFF => self.io_bus_cycle(acc, 0, false),
             // SCC
             0x0000_C000..=0x0000_DFFF => self.io_bus_cycle(acc, SCC_PCLK_WAITS, false),
             // 53C96 pseudo-DMA, through the DAFB
@@ -568,6 +630,95 @@ where
             .native_clock
             .scale_dev16_waits(w, IO_BUS_WAITS + waits + hold);
         bus_access_long(acc, w, self, Self::io_read, Self::io_write)
+    }
+
+    /// An access to the SONIC registers: an I/O bus device with 16-bit
+    /// registers, one per long word, on D15-D0
+    #[cfg(feature = "ethernet")]
+    fn sonic_cycle(&mut self, acc: BusAccess<Bus68040>) -> BusResponse {
+        let w = match self.native_clock.device16_sync(&acc) {
+            DeviceCycle::Stall(n) => return BusResponse::Stall(n),
+            DeviceCycle::Access(w) => w,
+        };
+        let w = self.native_clock.scale_dev16_waits(w, IO_BUS_WAITS);
+        bus_access_long(acc, w, self, Self::sonic_read, Self::sonic_write)
+    }
+
+    /// The SONIC register at an I/O address, if any
+    #[cfg(feature = "ethernet")]
+    fn sonic_reg(addr: Address) -> Option<usize> {
+        match addr & Self::IO_MASK {
+            a @ 0x0000_A000..=0x0000_B0FF => Some(((a - 0xA000) >> 2) as usize),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "ethernet")]
+    fn sonic_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        (addr..addr + len).try_fold(0, |v, a| {
+            let reg = self.sonic.read(Self::sonic_reg(a)?);
+            let b = match a & 3 {
+                2 => reg >> 8,
+                3 => reg & 0xFF,
+                _ => 0,
+            };
+            Some((v << 8) | u32::from(b))
+        })
+    }
+
+    #[cfg(feature = "ethernet")]
+    fn sonic_write(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
+        let byte = |a: Address| (val >> (8 * (addr + len - 1 - a))) as u16 & 0xFF;
+        let mut a = addr;
+        while a < addr + len {
+            let reg = Self::sonic_reg(a)?;
+            // A byte write merges with the register's current value
+            let (value, n) = match a & 3 {
+                2 if a + 1 < addr + len => ((byte(a) << 8) | byte(a + 1), 2),
+                2 => ((byte(a) << 8) | (self.sonic.read(reg) & 0xFF), 1),
+                3 => ((self.sonic.read(reg) & 0xFF00) | byte(a), 1),
+                _ => {
+                    // D31-D16 are not connected
+                    a += 1;
+                    continue;
+                }
+            };
+            let Self {
+                sonic,
+                ram,
+                dma_generation,
+                ..
+            } = self;
+            sonic.write(
+                reg,
+                value,
+                &mut RamDma {
+                    ram,
+                    dma_generation,
+                },
+            );
+            a += n;
+        }
+        Some(())
+    }
+
+    /// The MAC address PROM: the address bytes with their bits reversed,
+    /// then a check byte (as in QEMU's q800, unverified)
+    fn mac_prom(&self, addr: Address) -> Byte {
+        #[cfg(feature = "ethernet")]
+        {
+            let mac = self.sonic.port().mac();
+            match (addr & 7) as usize {
+                i @ 0..=5 => mac[i].reverse_bits(),
+                6 => 0,
+                _ => 0xFF - mac.iter().fold(0, |x, b| x ^ b.reverse_bits()),
+            }
+        }
+        #[cfg(not(feature = "ethernet"))]
+        {
+            let _ = addr;
+            0
+        }
     }
 
     /// A pseudo-DMA access to the 53C96: the DAFB makes it one cycle of the
@@ -867,6 +1018,8 @@ where
         self.asc.reset();
         // The DAFB drives the 53C96 reset
         self.scsi.reset();
+        #[cfg(feature = "ethernet")]
+        self.sonic.reset();
         self.scsi_dma_stalled = false;
 
         self.amu_active = false;
@@ -970,6 +1123,30 @@ where
             self.asc.tick(self.speed == EmulatorSpeed::Accurate)?;
         }
 
+        // Built-in Ethernet. In the Macintosh interrupt mode, the interrupt
+        // is wired to the slot $9 line of VIA 2; in the A/UX mode it is a
+        // level 3 interrupt of its own.
+        #[cfg(feature = "ethernet")]
+        let slot9_irq = {
+            let Self {
+                sonic,
+                ram,
+                dma_generation,
+                ..
+            } = self;
+            sonic.tick(
+                native_ticks,
+                ctx.bus_frequency,
+                &mut RamDma {
+                    ram,
+                    dma_generation,
+                },
+            );
+            self.sonic.irq() && self.via1.pb().aux_inten()
+        };
+        #[cfg(not(feature = "ethernet"))]
+        let slot9_irq = false;
+
         // Built-in video. Interrupt is wired to the slot $F line of VIA 2
         self.dafb.tick(native_ticks, ctx)?;
         let video_irq = self.dafb.get_irq();
@@ -977,13 +1154,13 @@ where
 
         // The interrupt of slot $D is on PA4 and the one of slot $E on PA5
         // (Designing Cards and Drivers for the Macintosh Family, 3rd ed.,
-        // table 16-6)
+        // table 16-6). The Ethernet is on PA0, the line of slot $9.
         self.nubus.tick(native_ticks, ctx)?;
-        let slot_irqs = self.nubus.irqs();
+        let slot_irqs = self.nubus.irqs() | u8::from(slot9_irq);
         self.via2.a_in.set_v2irqs(!slot_irqs);
 
-        // An OR gate of the slot and video interrupts makes /SLOTIRQ (same
-        // chapter)
+        // An OR gate of the slot, Ethernet and video interrupts makes
+        // /SLOTIRQ (same chapter)
         self.via2.set_line(
             ViaLine::CA1,
             if video_irq || slot_irqs != 0 {
@@ -1046,12 +1223,18 @@ where
             );
         }
         if !pb.aux_inten() {
+            #[cfg(feature = "ethernet")]
+            let enet_irq = self.sonic.irq();
+            #[cfg(not(feature = "ethernet"))]
+            let enet_irq = false;
             return if self.via1.irq() {
                 Some(6)
             } else if self.asc.irq() {
                 Some(5)
             } else if self.scc.get_irq() {
                 Some(4)
+            } else if enet_irq {
+                Some(3)
             } else if self.via2.irq() {
                 Some(2)
             } else if !pb.soft_irq() {
@@ -1129,7 +1312,11 @@ where
     }
 
     fn inspect_generation(&self) -> u32 {
-        u32::from(self.overlay)
+        #[cfg(feature = "ethernet")]
+        let dma = self.dma_generation.wrapping_mul(2);
+        #[cfg(not(feature = "ethernet"))]
+        let dma = 0;
+        u32::from(self.overlay) | dma
     }
 }
 
@@ -1147,6 +1334,8 @@ where
             dbgprop_nest!("Built-in video (DAFB)", self.dafb),
             dbgprop_nest!("SCSI controller (NCR 53C96)", self.scsi),
             dbgprop_nest!("SWIM", self.swim),
+            #[cfg(feature = "ethernet")]
+            dbgprop_nest!("Ethernet controller (SONIC)", self.sonic),
             dbgprop_nest!("VIA 1 (SY6522)", self.via1),
             dbgprop_nest!("VIA 2 (SY6522)", self.via2),
         ];

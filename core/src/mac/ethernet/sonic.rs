@@ -210,9 +210,14 @@ impl Sonic {
         self.update_rx_enabled();
     }
 
-    /// Reapplies what doesn't survive a state load
+    /// After a state was loaded: tells the port again whether the receiver is
+    /// on, and reopens the link to the host's network, which the state doesn't
+    /// hold
     pub fn after_deserialize(&mut self) {
         self.update_rx_enabled();
+        if let Err(e) = self.port.set_link(self.port.link()) {
+            log::warn!("Ethernet link: {:#}", e);
+        }
     }
 
     /// Tells the port whether the receiver is on, so that the port drops the
@@ -258,6 +263,7 @@ impl Sonic {
     /// Writes a register
     pub fn write(&mut self, reg: usize, val: u16, dma: &mut impl SonicDma) {
         let reg = reg & 0x3F;
+        log::trace!("SONIC: write {:02X} = {:04X}", reg, val);
         let in_reset = self.regs[CR] & CR_RST != 0;
         match reg {
             CR => self.command(val, dma),
@@ -759,6 +765,26 @@ impl Debuggable for Sonic {
         result
     }
 }
+
+const fn fits_quadra700(mac: crate::mac::MacModel) -> bool {
+    matches!(mac, crate::mac::MacModel::Quadra700)
+}
+
+/// The SONIC on the logic board of a Quadra 700
+pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::ModelInfo {
+    model: crate::emulator::devices::DeviceModel::BuiltInSonic,
+    name: "Built-in Ethernet",
+    bus: crate::emulator::devices::BusKind::BuiltIn,
+    fits: fits_quadra700,
+    function: crate::emulator::devices::FunctionKind::Ethernet,
+    fixed: true,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &[],
+    adds_buses: &[],
+    monitors: &[],
+    create: None,
+};
 
 #[cfg(test)]
 mod tests {
