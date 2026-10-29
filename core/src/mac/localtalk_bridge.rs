@@ -200,9 +200,18 @@ impl LocalTalkBridge {
         let server_address = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(server_node));
         let node_address = server_address.clone();
         std::thread::spawn(move || {
-            snow_appletalk::node::Node::new(server_node, 0, thread_rx, thread_tx)
-                .with_shared_address(node_address)
-                .run();
+            snow_appletalk::node::Node::new(
+                server_node,
+                0,
+                thread_rx,
+                thread_tx,
+                None,
+                None,
+                snow_appletalk::afp::MaxVersion::default(),
+                snow_appletalk::afp::AfpSettings::default(),
+            )
+            .with_shared_address(node_address)
+            .run();
         });
 
         Self {
