@@ -15,6 +15,8 @@ pub mod compact;
 pub mod cuda;
 pub mod egret;
 pub mod egret_common;
+#[cfg(feature = "ethernet")]
+pub mod ethernet;
 pub mod iic;
 pub mod localtalk_bridge;
 pub mod machine_bus;

@@ -119,6 +119,9 @@ pub struct EthernetPort {
     /// Subscribed layer 2 multicast groups
     multicast_groups: Vec<[u8; 6]>,
 
+    /// Pass all frames, for adapters that filter by themselves
+    promiscuous: bool,
+
     /// Receive filter statistics
     #[serde(skip)]
     rx_stats: RxFilterStats,
@@ -147,6 +150,7 @@ impl EthernetPort {
             #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
             tap_stats: None,
             multicast_groups: Default::default(),
+            promiscuous: false,
             rx_stats: Default::default(),
             pcap_capture: None,
             pcap_tx: None,
@@ -226,7 +230,7 @@ impl EthernetPort {
         if src == self.mac {
             self.rx_stats.filtered += 1;
             false
-        } else if dest == self.mac {
+        } else if dest == self.mac || self.promiscuous {
             self.rx_stats.unicast += 1;
             true
         } else if dest == [0xFF; 6] {
@@ -260,6 +264,11 @@ impl EthernetPort {
         if let Some(rx) = &self.rx {
             while rx.try_recv().is_ok() {}
         }
+    }
+
+    /// Passes all received frames to the adapter, which filters them
+    pub fn set_promiscuous(&mut self, promiscuous: bool) {
+        self.promiscuous = promiscuous;
     }
 
     /// Subscribes to a layer 2 multicast group
