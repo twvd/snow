@@ -11,6 +11,8 @@
 //! with host file names converted between UTF-8 and MacRoman.
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use crate::ids::{IdTable, ROOT_DIR_ID};
@@ -21,6 +23,10 @@ use unicode_normalization::UnicodeNormalization;
 
 /// AFP commands
 const CMD_CLOSE_VOL: u8 = 2;
+const CMD_CLOSE_FORK: u8 = 4;
+const CMD_GET_FORK_PARMS: u8 = 14;
+const CMD_OPEN_FORK: u8 = 26;
+const CMD_READ: u8 = 27;
 const CMD_GET_SRVR_PARMS: u8 = 16;
 const CMD_GET_VOL_PARMS: u8 = 17;
 const CMD_LOGIN: u8 = 18;
@@ -39,7 +45,8 @@ const ERR_OBJECT_NOT_FOUND: i32 = -5018;
 const ERR_PARAM: i32 = -5019;
 const ERR_CALL_NOT_SUPPORTED: i32 = -5024;
 const ERR_BITMAP: i32 = -5004;
-#[allow(dead_code)] // used by the fork commands once they land
+const ERR_ACCESS_DENIED: i32 = -5000;
+const ERR_VOL_LOCKED: i32 = -5031;
 const ERR_EOF: i32 = -5009;
 const ERR_BAD_ID: i32 = -5039;
 const ERR_ID_NOT_FOUND: i32 = -5034;
@@ -209,6 +216,36 @@ impl Default for AfpSettings {
     }
 }
 
+/// An open fork
+struct Fork {
+    file: File,
+    /// Length of the fork
+    len: u64,
+    /// Offset of the fork data inside the host file (nonzero for
+    /// AppleSingle containers and resource forks)
+    offset: u64,
+    /// The file's wire name and metadata, for FPGetForkParms
+    name: String,
+    meta: Meta,
+    /// The Directory ID of the file's parent directory
+    parent: u32,
+    /// Current marker position (after the last FPRead)
+    #[allow(dead_code)] // advanced by the write commands once they land
+    marker: u64,
+    /// The host path of the file (for the write backends)
+    path: PathBuf,
+    /// The file's ID in the volume's identity table
+    file_id: u32,
+    /// The session that opened the fork (its close takes the fork)
+    session: u8,
+    /// Whether the fork was opened for writing
+    #[allow(dead_code)] // honored by the write commands once they land
+    write: bool,
+    /// Whether this is the resource fork (writes go through the
+    /// metadata backend; the data fork writes through the file)
+    rsrc: bool,
+}
+
 /// AFP protocol module: the server
 pub struct Afp {
     /// Canonicalized host directory exposed as the volume
@@ -230,8 +267,11 @@ pub struct Afp {
     /// requester's offered buffers in bytes): FPRead caps its read at
     /// it. MAX_RESPONSE until the ASP layer records the real value,
     /// so a direct command() call answers like a full window.
-    #[allow(dead_code)] // read by FPRead once the fork commands land
     req_capacity: usize,
+    /// The open forks, by fork reference number
+    forks: HashMap<u16, Fork>,
+    /// The next fork reference number
+    next_fork_ref: u16,
 }
 
 impl Afp {
@@ -264,6 +304,8 @@ impl Afp {
             settings,
             ids: IdTable::new(),
             req_capacity: crate::atp::MAX_RESPONSE,
+            forks: HashMap::new(),
+            next_fork_ref: 1,
         }
     }
 
@@ -327,6 +369,7 @@ impl Afp {
             // FPLogin has no reserved byte after the function in either
             // version
             CMD_LOGIN => self.cmd_login(session, data.get(1..).unwrap_or(&[])),
+            CMD_OPEN_FORK => self.cmd_open_fork(version, session, data.get(1..).unwrap_or(&[])),
             // FPEnumerate in 1.1 carries a FileFlag byte where 2.0 has
             // the reserved byte
             CMD_ENUMERATE if version == AfpVersion::V11 => {
@@ -358,6 +401,15 @@ impl Afp {
                     CMD_GET_VOL_PARMS => self.cmd_get_vol_parms(version, params),
                     CMD_CLOSE_VOL | CMD_LOGOUT => (ok(), Vec::new()),
                     CMD_GET_FILE_DIR_PARMS => self.cmd_get_file_dir_parms(version, params),
+                    CMD_READ => self.cmd_read(params),
+                    CMD_GET_FORK_PARMS => self.cmd_get_fork_parms(params),
+                    CMD_CLOSE_FORK => {
+                        if let Some(fork_ref) = get_u16(params) {
+                            self.forks.remove(&fork_ref);
+                        }
+                        (ok(), Vec::new())
+                    }
+,
                     // The file-ID calls are AFP 2.1 and up
                     CMD_CREATE_ID | CMD_DELETE_ID | CMD_RESOLVE_ID
                         if !matches!(version, AfpVersion::V21) =>
@@ -602,10 +654,11 @@ impl Afp {
         self.req_capacity = usize::from(buffers) * crate::atp::MAX_RESPONSE_DATA;
     }
 
-    /// Close everything a session owns: its negotiated AFP version
-    /// now, its open forks once the fork commands land. FPLogout,
+    /// Close everything a session owns: its open forks (their handles
+    /// die with it) and its negotiated AFP version. FPLogout,
     /// CloseSess and the session-maintenance timeout all land here.
     pub(crate) fn close_session(&mut self, session: u8) {
+        self.forks.retain(|_, fork| fork.session != session);
         self.versions.remove(&session);
     }
 
@@ -1007,6 +1060,256 @@ impl Afp {
         reply.extend_from_slice(&file_params(bitmap, &name, &meta, parent_id, id));
         (ok(), reply)
     }
+
+    /// The attribute bits of a file's open state: DAlreadyOpen when
+    /// a data fork is open, RAlreadyOpen when the resource fork is
+    #[allow(dead_code)] // served once the attributes field lands
+    fn open_attrs(&self, path: &Path) -> u16 {
+        let mut attrs = 0;
+        for fork in self.forks.values() {
+            if fork.path == path {
+                if fork.rsrc {
+                    attrs |= 0x0010;
+                } else {
+                    attrs |= 0x0008;
+                }
+            }
+        }
+        attrs
+    }
+
+    /// FPOpenFork: open the data fork or the resource fork of a file
+    fn cmd_open_fork(
+        &mut self,
+        version: AfpVersion,
+        session: u8,
+        params: &[u8],
+    ) -> (Vec<u8>, Vec<u8>) {
+        let Some(rsrc_data_flag) = params.first().copied() else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(volume_id) = params.get(1..).and_then(get_u16) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        if volume_id != VOLUME_ID {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        }
+        let Some(dir_id) = params.get(3..).and_then(get_u32) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(bitmap) = params.get(7..).and_then(get_u16) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        if bitmap & !FILE_BITMAP_ALLOWED != 0 {
+            return (err(ERR_BITMAP), Vec::new());
+        }
+        // The access mode is 16 bits: bit 0 requests read, bit 1
+        // write (the deny bits are ignored: single client). A write
+        // on a read-only volume is afpVolLocked in 2.x and
+        // afpAccessDenied in 1.1 (the book's rule)
+        let access = params.get(9..).and_then(get_u16).unwrap_or(0);
+        let write = access & 0x0002 != 0;
+        if write && self.settings.read_only {
+            let code = if version == AfpVersion::V11 {
+                ERR_ACCESS_DENIED
+            } else {
+                ERR_VOL_LOCKED
+            };
+            return (err(code), Vec::new());
+        }
+        let Some((path, _)) = params.get(12..).and_then(get_pstring) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+
+        let Some(target) = self.resolve_path(dir_id, &path) else {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        };
+        let Ok(fs_meta) = std::fs::metadata(&target) else {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        };
+        if !fs_meta.is_file() {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        }
+        let meta = self.meta_open(&target);
+        let parent_id = self.parent_id_of(&target);
+        // The desktop database registration lands with the desktop
+        // database commit
+        let fork_name = self.mac_name_of(&target);
+        // The fork: the data fork lives at data_offset inside the host
+        // file (nonzero for AppleSingle); the resource fork lives in
+        // the metadata container. An absent resource fork reads as an
+        // empty fork (a write creates it lazily).
+        let rsrc = rsrc_data_flag & 0x80 != 0;
+        let (file_path, offset, len) = if rsrc {
+            match meta.rsrc_file.clone() {
+                Some(file) => (file, meta.rsrc_offset, u64::from(meta.rsrc_fork_len)),
+                None => (target.clone(), 0, 0),
+            }
+        } else {
+            (target.clone(), meta.data_offset, meta.data_len)
+        };
+        let Ok(file) = open_with_access(&file_path, write) else {
+            return (err(ERR_OBJECT_NOT_FOUND), Vec::new());
+        };
+
+        let fork_ref = self.next_fork_ref;
+        self.next_fork_ref = self.next_fork_ref.wrapping_add(1);
+        self.forks.insert(
+            fork_ref,
+            Fork {
+                file,
+                len,
+                offset,
+                name: fork_name.clone(),
+                meta: meta.clone(),
+                parent: parent_id,
+                marker: 0,
+                path: target.clone(),
+                file_id: self.ids.id_of(&target).unwrap_or(0),
+                session,
+                write,
+                rsrc,
+            },
+        );
+        let mac_name = fork_name;
+        log::debug!(
+            "AFP: opened fork {} on '{}' ({} bytes{}{} at host offset {})",
+            fork_ref,
+            mac_name,
+            len,
+            if rsrc { " of the resource fork" } else { "" },
+            if write { " for writing" } else { "" },
+            offset
+        );
+
+        // The reply: the bitmap, the fork reference number, then the
+        // requested file parameters
+        let mut reply = Vec::new();
+        reply.extend_from_slice(&bitmap.to_be_bytes());
+        reply.extend_from_slice(&fork_ref.to_be_bytes());
+        let file_id = self.ids.id_of(&target).unwrap_or(0);
+        reply.extend_from_slice(&file_params(bitmap, &mac_name, &meta, parent_id, file_id));
+        (ok(), reply)
+    }
+
+    /// FPRead: read data from an open fork
+    fn cmd_read(&mut self, params: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let Some(fork_ref) = get_u16(params) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(offset) = params.get(2..).and_then(get_u32) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(count) = params.get(6..).and_then(get_u32) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(fork) = self.forks.get_mut(&fork_ref) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+
+        let offset = u64::from(offset);
+        // The NewLineMask/NewLineChar pair (a text-mode read,
+        // netatalk's OSRead semantics): a line break is a byte whose
+        // masked bits equal the NewLineChar. The carriage-return
+        // reader also stopping at a line feed (and translating it) is
+        // netatalk's legacy OSRead branch, not the spec — it stays so
+        // text stored with Unix line endings reads as Mac text. An
+        // absent pair (the common case) reads bytes only.
+        let mask = params.get(10).copied().unwrap_or(0);
+        let nlchr = params.get(11).copied().unwrap_or(0);
+        // The read is capped at the response capacity the requester
+        // offered, so the reply fits its buffers without truncation
+        let count = (count as usize).min(self.req_capacity);
+        if offset >= fork.len {
+            return (err(ERR_EOF), Vec::new());
+        }
+        let count = (count as u64).min(fork.len - offset) as usize;
+        if fork
+            .file
+            .seek(SeekFrom::Start(fork.offset + offset))
+            .is_err()
+        {
+            return (err(ERR_EOF), Vec::new());
+        }
+        let mut data = vec![0; count];
+        let mut total = 0;
+        let mut newline_hit = false;
+        while total < count {
+            match fork.file.read(&mut data[total..]) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if mask != 0 {
+                        let window = &data[total..total + n];
+                        let stop = if nlchr == b'\r' {
+                            window
+                                .iter()
+                                .position(|&b| b & mask == b'\r' || b & mask == b'\n')
+                        } else {
+                            window.iter().position(|&b| b & mask == nlchr)
+                        };
+                        if let Some(pos) = stop {
+                            let end = total + pos + 1;
+                            // The 2.0 special case: a carriage-return
+                            // reader gets the line feed translated
+                            if nlchr == b'\r' && data[total + pos] == b'\n' {
+                                data[total + pos] = b'\r';
+                            }
+                            total = end;
+                            newline_hit = true;
+                            break;
+                        }
+                    }
+                    total += n;
+                }
+                Err(_) => break,
+            }
+        }
+        data.truncate(total);
+        fork.marker = offset + total as u64;
+        log::debug!(
+            "AFP: read {} bytes at {} on fork {}",
+            total,
+            offset,
+            fork_ref
+        );
+        if newline_hit {
+            // The line break ended the read: a complete text line
+            (ok(), data)
+        } else if total < count {
+            // The fork ended before the request did: the bytes read so
+            // far go back with afpEOFErr (ch13's FPRead rule)
+            (err(ERR_EOF), data)
+        } else {
+            (ok(), data)
+        }
+    }
+
+    /// FPGetForkParms: the bitmap is the file bitmap; the reply is the
+    /// bitmap copy plus the requested file parameters
+    fn cmd_get_fork_parms(&self, params: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        let Some(fork_ref) = get_u16(params) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let Some(bitmap) = params.get(2..).and_then(get_u16) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        if bitmap & !FILE_BITMAP_ALLOWED != 0 {
+            return (err(ERR_BITMAP), Vec::new());
+        }
+        let Some(fork) = self.forks.get(&fork_ref) else {
+            return (err(ERR_PARAM), Vec::new());
+        };
+        let mut reply = Vec::new();
+        reply.extend_from_slice(&bitmap.to_be_bytes());
+        reply.extend_from_slice(&file_params(
+            bitmap,
+            &fork.name,
+            &fork.meta,
+            fork.parent,
+            fork.file_id,
+        ));
+        (ok(), reply)
+    }
 }
 
 /// The AFP 2.x path name: [path type][Pascal string] (the same shape
@@ -1162,6 +1465,14 @@ fn visible_offspring(dir: &Path, mode: HiddenFiles) -> u16 {
 /// the never value to skip files)
 fn date(value: u32) -> u32 {
     value
+}
+
+/// Open a file with the requested write access
+fn open_with_access(path: &Path, write: bool) -> std::io::Result<File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(write)
+        .open(path)
 }
 
 /// The 4-byte command result for "no error"
@@ -1691,6 +2002,104 @@ mod tests {
         data.extend_from_slice(&id.to_be_bytes());
         data.extend_from_slice(&0x0340u16.to_be_bytes());
         assert_eq!(result_of(server.command(1, &data)).0, ERR_BAD_ID);
+    }
+    #[test]
+    fn test_read_newline_mask_stops_and_translates() {
+        let (mut server, dir) = test_server("nl-mask");
+        std::fs::write(dir.join("text.txt"), b"hello\nworld").unwrap();
+        // [OpenFork][flag data][vol 1][dir 2][bitmap 0x4000][access
+        // read][path type 2]["text.txt"]
+        let mut data = vec![26, 0, 0, 1, 0, 0, 0, 2, 0x02, 0x00, 0, 1, 2, 8];
+        data.extend_from_slice(b"text.txt");
+        let (_, reply) = result_of(server.command(1, &data));
+        let fork_ref = u16::from_be_bytes([reply[2], reply[3]]);
+        // A carriage-return mask reads a text line: the stored line
+        // feed stops the read and comes back translated
+        let mut read = vec![27, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 100, 0xFF, b'\r'];
+        read[2..4].copy_from_slice(&fork_ref.to_be_bytes());
+        let (result, reply) = result_of(server.command(1, &read));
+        assert_eq!(result, 0, "a newline cut is a complete read");
+        assert_eq!(reply, b"hello\r");
+        // The next read continues past the line
+        let mut read = vec![27, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 100, 0xFF, b'\r'];
+        read[2..4].copy_from_slice(&fork_ref.to_be_bytes());
+        let (result, reply) = result_of(server.command(1, &read));
+        assert_eq!(result, 0);
+        assert_eq!(reply, b"world");
+        // A zero mask reads bytes only (the common case)
+        let mut read = vec![27, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 100, 0, 0];
+        read[2..4].copy_from_slice(&fork_ref.to_be_bytes());
+        let (result, reply) = result_of(server.command(1, &read));
+        assert_eq!(result, 0);
+        assert_eq!(reply, b"hello\nworld");
+    }
+
+    #[test]
+    fn test_open_fork_read_spec_layout() {
+        let (mut server, dir) = test_server("open-fork");
+        std::fs::write(dir.join("hello.txt"), b"Hello from the Snow AFP server!").unwrap();
+        // [OpenFork][flag data][vol 1][dir 2][bitmap 0x4000][access
+        // read][path type 2]["hello.txt"]
+        let mut data = vec![26, 0, 0, 1, 0, 0, 0, 2, 0x02, 0x00, 0, 1, 2, 9];
+        data.extend_from_slice(b"hello.txt");
+        let (result, reply) = result_of(server.command(1, &data));
+        assert_eq!(result, 0);
+        assert_eq!(reply[0..2], [0x02, 0x00]); // bitmap
+        let fork_ref = u16::from_be_bytes([reply[2], reply[3]]);
+        // The data fork length follows the fork reference number
+        let len = u32::from_be_bytes(reply[4..8].try_into().unwrap());
+        assert_eq!(len, 31);
+
+        // [Read][0][fork ref][offset 0][count 8][nl mask 0][nl char 0]
+        let mut read = vec![27, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0];
+        read[2..4].copy_from_slice(&fork_ref.to_be_bytes());
+        let (result, reply) = result_of(server.command(1, &read));
+        assert_eq!(result, 0);
+        assert_eq!(reply, b"Hello fr");
+
+        // [GetForkParms][0][fork ref][file bitmap 0x0600]: the data
+        // and resource fork lengths
+        let mut parms = vec![14, 0, 0, 0, 0x06, 0x00];
+        parms[2..4].copy_from_slice(&fork_ref.to_be_bytes());
+        let (result, reply) = result_of(server.command(1, &parms));
+        assert_eq!(result, 0);
+        assert_eq!(reply[0..2], [0x06, 0x00]);
+        assert_eq!(u32::from_be_bytes(reply[2..6].try_into().unwrap()), 31);
+        assert_eq!(u32::from_be_bytes(reply[6..10].try_into().unwrap()), 0);
+
+        // [CloseFork][0][fork ref]
+        let mut close = vec![4, 0, 0, 0];
+        close[2..4].copy_from_slice(&fork_ref.to_be_bytes());
+        let (result, _) = result_of(server.command(1, &close));
+        assert_eq!(result, 0);
+        assert!(server.forks.is_empty());
+    }
+
+    #[test]
+    fn test_read_of_multipacket_length() {
+        // A fork longer than one ATP response packet (574 bytes) reads
+        // back in full; the ATP layer splits the reply into packets
+        let (mut server, dir) = test_server("big-read");
+        let mut content = vec![0u8; 1500];
+        for (i, b) in content.iter_mut().enumerate() {
+            *b = b'0' + (i % 10) as u8;
+        }
+        std::fs::write(dir.join("big.txt"), &content).unwrap();
+        // [OpenFork][flag data][vol 1][dir 2][bitmap 0][access
+        // read][path type 2]["big.txt"]
+        let mut data = vec![26, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 1, 2, 7];
+        data.extend_from_slice(b"big.txt");
+        let (result, reply) = result_of(server.command(1, &data));
+        assert_eq!(result, 0);
+        let fork_ref = u16::from_be_bytes([reply[2], reply[3]]);
+
+        // [Read][0][fork ref][offset 0][count 1500][nl mask 0]
+        let mut read = vec![27, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x05, 0xDC, 0, 0];
+        read[2..4].copy_from_slice(&fork_ref.to_be_bytes());
+        let (result, reply) = result_of(server.command(1, &read));
+        assert_eq!(result, 0);
+        assert_eq!(reply.len(), 1500);
+        assert_eq!(reply, content);
     }
 }
 
