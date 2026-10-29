@@ -111,12 +111,12 @@ fn chk2() {
     // CHK2.L (A0),D0
     let bounds = [0, 0, 0, 1, 0, 0, 0, 9];
     let cpu = run(&[0x04D0, 0x0800], &bounds, |cpu| {
-        cpu.regs.write_d::<Long>(0, 5)
+        cpu.regs.write_d::<Long>(0, 5);
     });
     assert_eq!(cpu.regs.pc, CODE + 4);
 
     let cpu = run(&[0x04D0, 0x0800], &bounds, |cpu| {
-        cpu.regs.write_d::<Long>(0, 10)
+        cpu.regs.write_d::<Long>(0, 10);
     });
     assert_eq!(cpu.regs.pc, CHK_HANDLER);
     assert!(cpu.regs.sr.c());
