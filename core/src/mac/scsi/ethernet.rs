@@ -161,14 +161,13 @@ impl ScsiTarget for ScsiTargetEthernet {
                     return Ok(ScsiCmdResult::DataIn(vec![0; 6]));
                 }
 
-                let mut response = vec![];
-                let mut packet_count = 0;
-                while let Some(packet) = self.port.recv() {
-                    packet_count += 1;
-                    let more = self.port.rx_pending() && packet_count < MAX_PACKETS_PER_READ;
-                    let packet_len = packet.len().max(64);
-                    let frame_len = packet_len + 4; // FCS
-                    let resp_len = 6 + frame_len;
+                // A frame that can never fit the allocation length is dropped
+                // on its own, the others are kept for this or the next READ
+                let mut packets = vec![];
+                while packets.len() < MAX_PACKETS_PER_READ
+                    && let Some(packet) = self.port.recv()
+                {
+                    let resp_len = 6 + packet.len().max(64) + 4;
                     if read_len < resp_len {
                         log::error!(
                             "RX packet too large (is {}, have {}): {:02X?}",
@@ -176,8 +175,20 @@ impl ScsiTarget for ScsiTargetEthernet {
                             read_len,
                             &packet
                         );
-                        return Ok(ScsiCmdResult::Status(STATUS_CHECK_CONDITION));
+                        continue;
                     }
+                    packets.push(packet);
+                }
+                if packets.is_empty() {
+                    return Ok(ScsiCmdResult::DataIn(vec![0; 6]));
+                }
+
+                let mut response = vec![];
+                let count = packets.len();
+                for (i, packet) in packets.into_iter().enumerate() {
+                    let more = i + 1 < count;
+                    let packet_len = packet.len().max(64);
+                    let frame_len = packet_len + 4; // FCS
 
                     let checksum = FCS.checksum(&packet).to_be_bytes();
                     response.push((frame_len >> 8) as u8);
@@ -190,10 +201,6 @@ impl ScsiTarget for ScsiTargetEthernet {
                     // Pad to minimum packet size if needed
                     response.resize(response.len() + (packet_len - packet.len()), 0);
                     response.extend(checksum);
-
-                    if !more {
-                        break;
-                    }
                 }
                 Ok(ScsiCmdResult::DataIn(response))
             }
@@ -422,5 +429,28 @@ mod tests {
         } else {
             panic!("Expected DataIn result");
         }
+    }
+    #[test]
+    fn test_read_drops_only_oversized_packet() {
+        let mut eth = ScsiTargetEthernet::default();
+        let tx = eth.port.connect_test_rx();
+
+        tx.send(vec![0x11; 100]).unwrap();
+        tx.send(vec![0x22; 1000]).unwrap();
+        tx.send(vec![0x33; 100]).unwrap();
+
+        // Room for a 100-byte frame, not for the 1000-byte one
+        let cmd = [0x08, 0, 0, 0x01, 0x00, 0];
+        let ScsiCmdResult::DataIn(data) = eth.specific_cmd(&cmd, None).unwrap() else {
+            panic!("Expected DataIn result");
+        };
+
+        let frame_len = 100 + 4;
+        assert_eq!(data.len(), 2 * (6 + frame_len));
+        assert_eq!(data[5], 0x10);
+        assert_eq!(data[6], 0x11);
+        assert_eq!(data[6 + frame_len + 5], 0);
+        assert_eq!(data[6 + frame_len + 6], 0x33);
+        assert_eq!(eth.port.rx_len(), 0);
     }
 }
