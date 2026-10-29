@@ -269,7 +269,7 @@ impl Swim {
                         // Not always a fault: with the SWIM2, the ROM empties
                         // the FIFO with two dummy reads after clearing it,
                         // then reads the error register to clear this.
-                        debug!("ISM FIFO overrun (CPU reading too fast)");
+                        trace!("ISM FIFO overrun (CPU reading too fast)");
                         self.ism_error.set_overrun(true);
                         Some(0xFF)
                     }
