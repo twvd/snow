@@ -5,6 +5,7 @@ use crate::dialogs::filedialog::SnowFileDialog;
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult, video_rom_card};
 use crate::emulator::EmulatorState;
 use crate::emulator::{EmulatorInitArgs, ScsiTargets};
+use crate::joystick::{JOY_KEYS_HELP, Joystick};
 use crate::keymap::{char_to_keystroke, map_winit_keycode};
 use crate::settings::{AppSettings, CmdKeyMapping, PromptChoice};
 use crate::uniform::{UNIFORM_ACTION, UniformAction};
@@ -206,6 +207,8 @@ pub struct SnowGui {
     cdrom_folder_dialog: SnowFileDialog,
     floppy_dialog: SnowFileDialog,
     iie_disk_dialog: SnowFileDialog,
+    /// The Apple IIe Card's joystick input (None without the card)
+    iie_joystick: Option<Joystick>,
     /// The IIe 5.25" drive the image picker loads into.
     iie_disk_dialog_drive: usize,
     /// The last-loaded IIe 5.25" image paths (for the menu labels).
@@ -440,6 +443,7 @@ impl SnowGui {
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_floppy.clone()),
             iie_disk_image: [None, None],
+            iie_joystick: None,
             iie_disk_dialog_drive: 0,
             iie_disk_dialog: SnowFileDialog::new()
                 .add_filter("Apple II 5.25\" disks", &["dsk", "do", "po", "2mg"])
@@ -833,6 +837,20 @@ impl SnowGui {
                     ui.separator();
                     if ui.button("Programmers key").clicked() {
                         self.emu.progkey();
+                    }
+
+                    if let Some(joy) = &mut self.iie_joystick
+                        && joy.emulation()
+                    {
+                        ui.separator();
+                        let mut on = joy.keys_on();
+                        if ui
+                            .checkbox(&mut on, "Apple IIe joystick keys (Scroll Lock)")
+                            .on_hover_text(JOY_KEYS_HELP)
+                            .changed()
+                        {
+                            joy.set_keys_on(on);
+                        }
                     }
 
                     ui.separator();
@@ -2237,6 +2255,20 @@ impl SnowGui {
                     self.toggle_ff();
                 }
 
+                if let Some(joy) = &mut self.iie_joystick
+                    && joy.emulation()
+                    && ui
+                        .add(egui::Button::selectable(
+                            joy.keys_on(),
+                            egui_material_icons::icons::ICON_SPORTS_ESPORTS,
+                        ))
+                        .on_hover_text(JOY_KEYS_HELP)
+                        .clicked()
+                {
+                    let on = !joy.keys_on();
+                    joy.set_keys_on(on);
+                }
+
                 if ui
                     .add_enabled(
                         !self.emu.is_running(),
@@ -2614,6 +2646,12 @@ impl SnowGui {
                         continue;
                     }
 
+                    if let Some(joy) = &mut self.iie_joystick
+                        && joy.key(kc, state.is_pressed())
+                    {
+                        continue;
+                    }
+
                     if let Some(k) = map_winit_keycode(kc, self.settings.cmd_key_mapping) {
                         self.emu.update_key(k, state.is_pressed());
                         if state.is_pressed() {
@@ -2735,6 +2773,10 @@ impl SnowGui {
             }
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
         }
+
+        self.iie_joystick = args
+            .iie_card
+            .then(|| Joystick::new(args.iie_joystick_emulation));
 
         // Re-synchronize the cached fast-forward states
         self.ff_on = args.start_fastforward;
@@ -3350,6 +3392,12 @@ impl eframe::App for SnowGui {
 
         self.sync_windows(ctx);
         self.poll_winit_events(ctx);
+        if self.emu.is_initialized()
+            && let Some(joy) = &mut self.iie_joystick
+            && let Some(port) = joy.poll()
+        {
+            self.emu.set_iie_game_port(port);
+        }
         self.process_type_clipboard_queue();
         self.uniform_action(UNIFORM_ACTION.take());
 
