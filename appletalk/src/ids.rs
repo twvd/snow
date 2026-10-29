@@ -8,11 +8,6 @@
 //! (FPResolveID). The IDs are in-memory: an on-disk store is a
 //! possible future refinement (see the state notes).
 
-// Removed once the write support lands and every item has a user:
-// until then the AFP core has not arrived and a plain (non-test)
-// clippy build would flag the whole module as dead code
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 

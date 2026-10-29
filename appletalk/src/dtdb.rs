@@ -123,7 +123,6 @@ impl DeskDb {
     /// Drop a file's APPL entry (after a delete or rename); the
     /// bundle icons stay (they are shared between applications of a
     /// creator)
-    #[allow(dead_code)] // called by the write commands once they land
     pub(crate) fn remove_appl(&mut self, target: &Path) {
         self.appls.retain(|a| a.path != target);
     }

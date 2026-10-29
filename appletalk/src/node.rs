@@ -5,21 +5,21 @@
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::afp::{Afp, AfpSettings, MaxVersion};
+use crate::afp::{Afp, AfpSettings, MaxVersion, ScanStatus};
 use crate::asp::Asp;
 use crate::atp::{ATP_SOCKET, ATP_TYPE, Atp};
 use crate::ddp::{DdpShortHeader, build_short, parse_short};
 use crate::link::{DdpHeaderKind, Packet};
 use crate::nbp::{NBP_SOCKET, NBP_TYPE, Nbp, NbpEntity};
 
-#[cfg(feature = "test_module")]
-use crate::test::{TEST_SOCKET, TEST_TYPE, TestModule};
-
 /// The AppleTalk Echo Protocol: socket 4, DDP type 4
 const AEP_SOCKET: u8 = 4;
 const AEP_TYPE: u8 = 4;
 const AEP_ECHO_REQUEST: u8 = 1;
 const AEP_ECHO_REPLY: u8 = 2;
+
+#[cfg(feature = "test_module")]
+use crate::test::{TEST_SOCKET, TEST_TYPE, TestModule};
 
 /// AppleTalk node
 pub struct Node {
@@ -37,8 +37,7 @@ impl Node {
     /// link) and network number (0 on a nonextended network). The AFP
     /// server shares the given directory as a volume (the
     /// SNOW_AFP_ROOT environment variable when unset) under the given
-    /// volume name (default "Snow"), advertising every AFP version up
-    /// to the given maximum.
+    /// volume name (default "Snow").
     #[allow(clippy::too_many_arguments)] // the AFP server's configuration
     pub fn new(
         node: u8,
@@ -48,6 +47,7 @@ impl Node {
         share_root: Option<std::path::PathBuf>,
         volume_name: Option<String>,
         max_version: MaxVersion,
+        scan_status_tx: Option<crossbeam_channel::Sender<ScanStatus>>,
         settings: AfpSettings,
     ) -> Self {
         Self {
@@ -67,12 +67,14 @@ impl Node {
                 }],
             ),
             atp: Atp::new(),
-            asp: Asp::new(Afp::new_with(
-                share_root,
-                volume_name,
-                max_version,
-                settings,
-            )),
+            asp: {
+                let mut afp = Afp::new_with(share_root, volume_name, max_version, settings);
+                if let Some(tx) = scan_status_tx {
+                    afp.set_scan_status_tx(tx);
+                }
+                afp.start_scan();
+                Asp::new(afp)
+            },
         }
     }
 
@@ -223,10 +225,10 @@ mod tests {
             None,
             None,
             MaxVersion::default(),
+            None,
             AfpSettings::default(),
         )
     }
-
     #[test]
     fn test_echo() {
         let (tx, rx) = crossbeam_channel::bounded(16);
@@ -239,6 +241,7 @@ mod tests {
             None,
             None,
             MaxVersion::default(),
+            None,
             AfpSettings::default(),
         );
 
@@ -254,29 +257,6 @@ mod tests {
         assert_eq!(header.src_socket, TEST_SOCKET);
         assert_eq!(header.ddp_type, TEST_TYPE);
         assert_eq!(data, &b"SNT1hello"[..]);
-    }
-
-    #[test]
-    fn test_unknown_socket() {
-        let (tx, rx) = crossbeam_channel::bounded(16);
-        let (reply_tx, reply_rx) = crossbeam_channel::bounded(16);
-        let node = Node::new(
-            0xD7,
-            0,
-            rx,
-            reply_tx,
-            None,
-            None,
-            MaxVersion::default(),
-            AfpSettings::default(),
-        );
-
-        tx.send(request(0x40, b"SNT1hello")).unwrap();
-        drop(tx);
-
-        node.run();
-
-        assert!(reply_rx.try_recv().is_err());
     }
 
     #[test]
@@ -336,6 +316,30 @@ mod tests {
     }
 
     #[test]
+    fn test_unknown_socket() {
+        let (tx, rx) = crossbeam_channel::bounded(16);
+        let (reply_tx, reply_rx) = crossbeam_channel::bounded(16);
+        let node = Node::new(
+            0xD7,
+            0,
+            rx,
+            reply_tx,
+            None,
+            None,
+            MaxVersion::default(),
+            None,
+            AfpSettings::default(),
+        );
+
+        tx.send(request(0x40, b"SNT1hello")).unwrap();
+        drop(tx);
+
+        node.run();
+
+        assert!(reply_rx.try_recv().is_err());
+    }
+
+    #[test]
     fn test_bad_magic() {
         let (tx, rx) = crossbeam_channel::bounded(16);
         let (reply_tx, reply_rx) = crossbeam_channel::bounded(16);
@@ -347,10 +351,11 @@ mod tests {
             None,
             None,
             MaxVersion::default(),
+            None,
             AfpSettings::default(),
         );
 
-        tx.send(request(TEST_SOCKET, b"NOPE")).unwrap();
+        tx.send(request(TEST_SOCKET, b"XXXXhello")).unwrap();
         drop(tx);
 
         node.run();
