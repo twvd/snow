@@ -71,6 +71,25 @@ pub(in crate::cpu_m68k) struct Group0Details {
     pub(in crate::cpu_m68k) ir: Word,
     pub(in crate::cpu_m68k) start_pc: Address,
     pub(in crate::cpu_m68k) size: usize,
+    /// Bytes of a faulted write left to write, right-justified
+    pub(in crate::cpu_m68k) data: Long,
+}
+
+/// 68020/68030: a faulted data cycle that the bus error handler completed,
+/// which it tells RTE by clearing DF in the SSW. The instruction is replayed
+/// and that cycle does not go to the bus: a read takes the data input buffer
+/// of the frame, a write is dropped (M68030UM 8.2.1, 8.2.2).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(in crate::cpu_m68k) struct CompletedDataCycle {
+    /// Address of the instruction to replay
+    pub(in crate::cpu_m68k) pc: Address,
+    pub(in crate::cpu_m68k) function_code: u8,
+    pub(in crate::cpu_m68k) read: bool,
+    pub(in crate::cpu_m68k) address: Address,
+    /// Bytes of the operand left at the faulted cycle
+    pub(in crate::cpu_m68k) size: u32,
+    /// Data input buffer, right-justified
+    pub(in crate::cpu_m68k) data: Long,
 }
 
 /// An entry in the instruction prefetch queue.
@@ -401,6 +420,10 @@ pub struct CpuM68k<
     /// bus fault.
     pub(in crate::cpu_m68k) restart_regs: Option<RestartRegisterFile>,
 
+    /// Faulted data cycle completed by the bus error handler, for the
+    /// replay of the instruction after RTE
+    pub(in crate::cpu_m68k) completed_cycle: Option<CompletedDataCycle>,
+
     /// NMI edge trigger level
     in_nmi: bool,
 }
@@ -447,6 +470,7 @@ where
             icache_lines: core::array::from_fn(|_| Default::default()),
             icache_tags: [ICACHE_TAG_INVALID; ICACHE_LINES],
             restart_regs: None,
+            completed_cycle: None,
             in_nmi: false,
         }
     }
@@ -565,6 +589,7 @@ where
                     address: fetch_addr,
                     // Filled in later
                     start_pc: 0,
+                    data: 0,
                 }));
             }
 
@@ -656,6 +681,7 @@ where
                 address,
                 // ??? is this filled correctly later?
                 start_pc: 0,
+                data: 0,
             })),
         }
     }
@@ -713,6 +739,12 @@ where
         let start_cycles = self.cycles;
         let start_pc = self.regs.pc;
         self.step_start_pc = start_pc;
+
+        // A completed data cycle is for the replay of its instruction only
+        let replay = self.completed_cycle.is_some_and(|c| c.pc == start_pc);
+        if !replay {
+            self.completed_cycle = None;
+        }
         let opcode = match self.fetch() {
             Ok(o) => o,
             Err(e) => {
@@ -760,6 +792,9 @@ where
 
         let instr = self.decode_cache[opcode as usize].clone().unwrap();
         let execute_result = self.execute_instruction(&instr);
+        if replay {
+            self.completed_cycle = None;
+        }
 
         // Write history entry
         // This is done here already in case the instruction caused an
@@ -856,8 +891,14 @@ where
 
         self.prefetch_refill()?;
 
+        // After an RTE that leaves a data cycle completed, the replayed
+        // instruction runs before any trace or interrupt, as it resumes on
+        // the 68030
+        let resume = self.completed_cycle.is_some();
+        let irq_exception = if resume { None } else { irq_exception };
+
         // Check pending trace
-        if trace_exception && !self.step_inhibit_trace {
+        if trace_exception && !self.step_inhibit_trace && !resume {
             self.raise_exception(ExceptionGroup::Group1, VECTOR_TRACE, None)?;
         }
 
@@ -1073,6 +1114,7 @@ where
     ) -> Result<()> {
         let start_cycles = self.cycles;
         let mut saved_sr = self.regs.sr.sr();
+        self.completed_cycle = None;
 
         // Resume in supervisor mode
         self.regs.sr.set_supervisor(true);
@@ -1123,7 +1165,12 @@ where
                             log::error!("Cannot reset registers for stacking a bus error frame");
                         }
 
-                        if self.regs.pc == details.start_pc && self.prefetch.len() == 2 {
+                        // Data read faults only generate the long frame
+                        // (M68030UM 8.2.2)
+                        if self.regs.pc == details.start_pc
+                            && self.prefetch.len() == 2
+                            && !details.read
+                        {
                             // Bus error at instruction boundary
                             *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(32);
                             self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
@@ -1166,7 +1213,7 @@ where
                             // Internal registers
                             self.write_ticks(self.regs.ssp().wrapping_add(0x14), 0u32)?;
                             // Data output buffer
-                            self.write_ticks(self.regs.ssp().wrapping_add(0x18), 0u32)?;
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x18), details.data)?;
                             // Internal registers
                             self.write_ticks(self.regs.ssp().wrapping_add(0x1C), 0u32)?;
                         } else {
@@ -1213,6 +1260,8 @@ where
                             for i in (0x14..=0x5A).step_by(2) {
                                 self.write_ticks(self.regs.ssp().wrapping_add(i), 0u16)?;
                             }
+                            // Data output buffer
+                            self.write_ticks(self.regs.ssp().wrapping_add(0x18), details.data)?;
                         }
                     }
                 }
@@ -2900,6 +2949,7 @@ where
                 // Bus error at instruction boundary
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+                self.read_completed_cycle(ssp, pc, false)?;
                 *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(32);
                 self.set_sr(sr);
                 self.set_pc(pc)?;
@@ -2908,6 +2958,7 @@ where
                 // Bus error during instruction
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+                self.read_completed_cycle(ssp, pc, true)?;
                 *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(92);
                 self.set_sr(sr);
                 self.set_pc(pc)?;
@@ -2923,6 +2974,34 @@ where
         self.prefetch_refill()?;
         self.test_step_out();
 
+        Ok(())
+    }
+
+    /// Reads the SSW of the bus error frame at `ssp` for RTE: a data fault
+    /// that the handler completed (DF cleared) is not rerun when the
+    /// instruction at `pc` is replayed. Only the long frame has a data input
+    /// buffer (M68030UM 8.2.1, 8.2.2).
+    fn read_completed_cycle(&mut self, ssp: Address, pc: Address, long: bool) -> Result<()> {
+        let ssw = Group0Ssw(self.read_ticks(ssp.wrapping_add(0x0A))?);
+        if ssw.df() || ssw.fb() || ssw.fc() {
+            return Ok(());
+        }
+        let data = if long {
+            self.read_ticks(ssp.wrapping_add(0x2C))?
+        } else {
+            0
+        };
+        self.completed_cycle = Some(CompletedDataCycle {
+            pc,
+            function_code: ssw.function_code(),
+            read: ssw.read(),
+            address: self.read_ticks(ssp.wrapping_add(0x10))?,
+            size: match ssw.size() {
+                0 => 4,
+                n => n as u32,
+            },
+            data,
+        });
         Ok(())
     }
 
@@ -3426,6 +3505,7 @@ where
                 address: addr,
                 // Filled in later
                 start_pc: 0,
+                data: 0,
             }));
         }
         Ok(true)
