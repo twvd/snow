@@ -2003,7 +2003,12 @@ impl Tickable for Emulator {
                     }
                     #[cfg(feature = "ethernet")]
                     EmulatorCommand::EthernetSetLink(addr, link) => {
-                        self.ethernet_at(addr, |ethernet| ethernet.set_link(link))??;
+                        if let Err(e) =
+                            self.ethernet_at(addr, |ethernet| ethernet.set_link(link))?
+                        {
+                            self.user_error(&format!("{}: {}", self.slot_label(addr), e));
+                        }
+                        self.status_update()?;
                     }
                     #[cfg(feature = "ethernet")]
                     EmulatorCommand::EthernetStartCapture(addr, filename) => {

@@ -1892,6 +1892,18 @@ impl Emulator {
         }
     }
 
+    /// How messages name a slot, such as "SCSI #3"
+    #[cfg(feature = "ethernet")]
+    pub(super) fn slot_label(&self, addr: SlotAddr) -> String {
+        let Some(bus) = self.bus_list.get(addr.bus) else {
+            return "No such bus".to_owned();
+        };
+        match bus.slots.get(addr.slot) {
+            Some(slot) => format!("{} #{}", bus.id, slot.id),
+            None => format!("{}: no such slot", bus.id),
+        }
+    }
+
     pub(super) fn branch_disk(&mut self, addr: SlotAddr, path: &Path) -> Result<()> {
         self.with_function_at(addr, |f| match f {
             FunctionMut::HardDisk(disk) => disk.branch(path),

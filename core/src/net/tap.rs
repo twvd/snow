@@ -2,7 +2,7 @@
 
 use super::{EthernetPort, PACKET_QUEUE_SIZE};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use crossbeam_channel::TrySendError;
 
 use std::sync::Arc;
@@ -48,10 +48,7 @@ impl EthernetPort {
 
         let dev = match tun::create(&config) {
             Ok(dev) => dev,
-            Err(e) => {
-                log::error!("Failed to open TAP device '{}': {}", tap_name, e);
-                return Ok(());
-            }
+            Err(e) => bail!("Failed to open TAP device '{}': {}", tap_name, e),
         };
 
         log::info!("TAP device '{}' opened successfully", tap_name);
@@ -190,6 +187,7 @@ impl EthernetPort {
 
                 if tx_tap_stop.load(std::sync::atomic::Ordering::Relaxed) {
                     log::info!("TAP bridge terminated (tap_stop)");
+                    return;
                 }
             }
         });

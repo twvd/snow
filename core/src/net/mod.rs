@@ -221,6 +221,9 @@ impl EthernetPort {
             self.tap_stop
                 .store(true, std::sync::atomic::Ordering::Release);
         }
+        // Stays down if the new link fails to start, so that send() does
+        // not retry it on every frame
+        self.link = EthernetLinkType::Down;
 
         match &link {
             EthernetLinkType::Down => {
