@@ -1002,7 +1002,7 @@ impl ModelSelectionDialog {
                      By default I/J/L/M, keypad 8/4/6/2, \
                      the arrows or W/A/S/D move it; X, 2, Left Alt or keypad . is button 0, Z, 1, Left Ctrl or keypad 0 is button 1. \
                      Switch the joystick keys on and off with Scroll Lock, the toolbar or \
-                     the Machine menu.",
+                     the Machine menu, where the keys can also be changed.",
                 );
             } else {
                 ui.label(
