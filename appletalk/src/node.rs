@@ -5,6 +5,7 @@
 
 use crossbeam_channel::{Receiver, Sender};
 
+use crate::atp::{ATP_SOCKET, ATP_TYPE, Atp};
 use crate::ddp::{DdpShortHeader, build_short, parse_short};
 use crate::link::{DdpHeaderKind, Packet};
 use crate::nbp::{NBP_SOCKET, NBP_TYPE, Nbp, NbpEntity};
@@ -18,6 +19,33 @@ const AEP_TYPE: u8 = 4;
 const AEP_ECHO_REQUEST: u8 = 1;
 const AEP_ECHO_REPLY: u8 = 2;
 
+/// Placeholder for the protocol riding on ATP until ASP lands: ATP
+/// requests are dropped, as if no responder were registered
+struct PendingAsp;
+
+impl crate::atp::Responder for PendingAsp {
+    fn respond(
+        &mut self,
+        _req: &crate::atp::IncomingRequest,
+        _user: &[u8],
+        _data: &[u8],
+    ) -> Option<crate::atp::Respond> {
+        log::debug!("ATP: no responder registered, dropping request");
+        None
+    }
+
+    fn tresp(
+        &mut self,
+        _src_socket: u8,
+        _tid: u16,
+        _seq: u8,
+        _eom: bool,
+        _data: &[u8],
+    ) -> Option<crate::atp::TrespOutcome> {
+        None
+    }
+}
+
 /// AppleTalk node
 pub struct Node {
     rx: Receiver<Packet>,
@@ -25,6 +53,7 @@ pub struct Node {
     #[cfg(feature = "test_module")]
     test: TestModule,
     nbp: Nbp,
+    atp: Atp,
 }
 
 impl Node {
@@ -46,10 +75,11 @@ impl Node {
                     object: "Snow".to_string(),
                     entity_type: "AFPServer".to_string(),
                     zone: "*".to_string(),
-                    socket: NBP_SOCKET,
+                    socket: ATP_SOCKET,
                     enumerator: 1,
                 }],
             ),
+            atp: Atp::new(),
         }
     }
 
@@ -82,6 +112,9 @@ impl Node {
         }
         if header.dst_socket == NBP_SOCKET && header.ddp_type == NBP_TYPE {
             return self.nbp.handle(packet, data).map(|p| vec![p]);
+        }
+        if header.dst_socket == ATP_SOCKET && header.ddp_type == ATP_TYPE {
+            return self.atp.handle(packet, data, &mut PendingAsp);
         }
         #[cfg(feature = "test_module")]
         if header.dst_socket == TEST_SOCKET && header.ddp_type == TEST_TYPE {
@@ -158,8 +191,7 @@ impl Node {
     }
 
     /// The periodic housekeeping tick (the node loop's timer source):
-    /// nothing needs it yet — the ATP retransmit-cache purge lands
-    /// with ATP, the tickles and the session timeout with ASP
+    /// nothing needs it yet — the ASP tickles land with ASP
     fn tick(&self) {}
 }
 
@@ -238,8 +270,8 @@ mod tests {
         assert_eq!(reply.datagram[4], NBP_TYPE);
         assert_eq!(reply.datagram[5], (3 << 4) | 1); // LkUp-Reply
         assert_eq!(reply.datagram[6], 7); // same NBP ID
-        // The entity tuple carries the NBP socket
-        assert_eq!(reply.datagram[10], NBP_SOCKET);
+        // The entity tuple carries the ATP socket
+        assert_eq!(reply.datagram[10], ATP_SOCKET);
     }
 
     #[test]
