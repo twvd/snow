@@ -21,6 +21,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::unidisk::{UniDisk, bus_enabled};
 use crate::tickable::Ticks;
 
 /// Tracks in a sector image.
@@ -377,7 +378,7 @@ impl Drive5 {
 ///   write underrun (set on entering the write mode, cleared on the
 ///   underrun and when the IWM goes idle).
 ///
-/// The UniDisk (the external IWM device) is not modelled yet.
+/// The UniDisk 3.5 on the external port is in `unidisk.rs`.
 /// The IWM's read/write mode, following MAME's `m_rw`/`m_active`:
 /// Q7 picks the write mode (set) or the read mode (clear) while the
 /// motor is on; the motor off puts it back to idle.
@@ -588,12 +589,17 @@ impl Iwm {
 }
 
 /// The Disk II controller: the two drives, the drive select, the
-/// phase latch and the IWM registers.
+/// phase latch and the IWM registers, and the UniDisk 3.5 when one
+/// is connected.
 #[derive(Default, Serialize, Deserialize)]
 pub struct DiskII {
     /// The 5.25" drives, in daisy-chain order; `None` is no drive
     /// connected (not an empty drive).
     pub drives: [Option<Drive5>; 2],
+    /// The UniDisk 3.5, first on the external port: the 5.25" drives
+    /// are behind it, and it holds their drive enable off while the
+    /// SmartPort bus is enabled.
+    pub unidisk: Option<UniDisk>,
     /// The selected drive (false = drive 1, true = drive 2).
     pub selected: bool,
     /// The phase latch (4 bits), shared by both drives.
@@ -607,18 +613,23 @@ pub struct DiskII {
 }
 
 impl DiskII {
-    /// A controller with `count` 5.25" drives connected (0 to 2).
-    pub fn new(count: usize) -> Self {
+    /// A controller with `count` 5.25" drives connected (0 to 2),
+    /// behind a UniDisk 3.5 if `unidisk` is set.
+    pub fn new(count: usize, unidisk: bool) -> Self {
         let mut disk = Self::default();
         for drive in disk.drives.iter_mut().take(count) {
             *drive = Some(Drive5::new());
+        }
+        if unidisk {
+            disk.unidisk = Some(UniDisk::new());
         }
         disk
     }
 
     /// Resets the controller and the drives. The drives keep their
     /// disks: the host menu inserts them, rebooting the 65C02 must not
-    /// eject.
+    /// eject.  The UniDisk has its own processor and only restarts on
+    /// a bus reset; it just sees the phase lines go off.
     pub fn reset(&mut self) {
         let mut disk = Self::default();
         for (new, old) in disk.drives.iter_mut().zip(self.drives.iter_mut()) {
@@ -628,6 +639,10 @@ impl DiskII {
                     ..Drive5::new()
                 });
             }
+        }
+        disk.unidisk = self.unidisk.take();
+        if let Some(unidisk) = &mut disk.unidisk {
+            unidisk.set_phases(0);
         }
         *self = disk;
     }
@@ -671,13 +686,25 @@ impl DiskII {
         }
     }
 
-    /// One bit cell: the selected drive's head bit goes to the IWM.
+    /// One bit cell: the read data line goes to the IWM, and a byte
+    /// the IWM finished writing goes to the UniDisk.  While the
+    /// SmartPort bus is enabled the UniDisk owns the read data line;
+    /// otherwise the selected 5.25" drive does.
     fn cell(&mut self) {
-        let bit = match &mut self.drives[self.selected as usize] {
-            Some(drv) => drv.next_bit(),
-            None => false,
+        let bus = bus_enabled(self.phase);
+        let bit = match &mut self.unidisk {
+            Some(unidisk) if bus => unidisk.next_bit(),
+            _ => match &mut self.drives[self.selected as usize] {
+                Some(drv) => drv.next_bit(),
+                None => false,
+            },
         };
-        self.iwm.cell(bit);
+        let sent = self.iwm.cell(bit);
+        if let (Some(byte), Some(unidisk)) = (sent, &mut self.unidisk)
+            && bus
+        {
+            unidisk.receive(byte);
+        }
     }
 
     /// Whether the drive is enabled: the motor switch, or the motor-off
@@ -692,6 +719,9 @@ impl DiskII {
         self.phase = self.phase & !(1 << p) | ((on as u8) << p);
         if let Some(drv) = &mut self.drives[self.selected as usize] {
             drv.set_phase(self.phase);
+        }
+        if let Some(unidisk) = &mut self.unidisk {
+            unidisk.set_phases(self.phase);
         }
     }
 
@@ -712,9 +742,12 @@ impl DiskII {
         // With no drive connected the line reads high, as in MAME's
         // iwm.cpp (`!m_floppy`); whether the card pulls it up is not
         // documented.
-        let sense = match &self.drives[self.selected as usize] {
-            Some(drv) => drv.image.is_some() || self.phase & 0x02 != 0,
-            None => true,
+        // While the SmartPort bus is enabled the UniDisk drives it as
+        // /ACK.
+        let sense = match (&self.unidisk, &self.drives[self.selected as usize]) {
+            (Some(unidisk), _) if bus_enabled(self.phase) => unidisk.ack(),
+            (_, Some(drv)) => drv.image.is_some() || self.phase & 0x02 != 0,
+            (_, None) => true,
         };
         self.iwm.read(motor, sense)
     }
@@ -787,7 +820,7 @@ mod tests {
     #[test]
     fn the_motor_off_delay() {
         let img = vec![0u8; TRACKS * 4096];
-        let mut disk = DiskII::new(1);
+        let mut disk = DiskII::new(1, false);
         disk.insert(0, DskImage::load(&img, DskOrder::Dos));
         disk.tick(100, true);
         disk.tick(500_000, false);
@@ -853,7 +886,7 @@ mod tests {
         for (i, b) in img.iter_mut().take(256).enumerate() {
             *b = i as u8;
         }
-        let mut disk = DiskII::new(1);
+        let mut disk = DiskII::new(1, false);
         disk.insert(0, DskImage::load(&img, DskOrder::Dos));
         let mut runs: Vec<(u8, usize)> = Vec::new();
         for _ in 0..(CELLS * 9) / 8 + 16 {
@@ -901,7 +934,7 @@ mod tests {
     /// send's ready and underrun waits have no time limit.
     #[test]
     fn the_iwm_writes_without_a_drive() {
-        let mut disk = DiskII::new(0);
+        let mut disk = DiskII::new(0, false);
         // Mode $07 (latched, async, immediate off) with the motor off.
         disk.iwm_access(0xC0ED, false, 0, false);
         disk.iwm_access(0xC0EF, true, 0x07, false);
@@ -921,7 +954,7 @@ mod tests {
     /// connected it reads high whatever the phases.
     #[test]
     fn sense_without_drive() {
-        let mut disk = DiskII::new(1);
+        let mut disk = DiskII::new(1, false);
         // Q6 set, Q7 clear: the status register
         disk.iwm_access(0xC0ED, false, 0, false);
         assert_eq!(disk.iwm_read(false) & 0x80, 0, "empty drive");
