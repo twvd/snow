@@ -988,6 +988,32 @@ impl ModelSelectionDialog {
             });
 
             ui.separator();
+            ui.checkbox(
+                &mut self.init_args.iie_joystick_emulation,
+                "Enable controller emulation",
+            );
+            if self.init_args.iie_joystick_emulation {
+                ui.label(
+                    "The IIe has a joystick while a host game controller is connected or the \
+                     joystick keys are on. Otherwise its game port is empty, so games that look \
+                     for a joystick when they start use the keyboard: switch the keys on before \
+                     starting a game that should use them. Switched off, the keys go back to \
+                     the IIe and the joystick stays connected, centred, until the IIe restarts. \
+                     By default I/J/L/M, keypad 8/4/6/2, \
+                     the arrows or W/A/S/D move it; X, 2, Left Alt or keypad . is button 0, Z, 1, Left Ctrl or keypad 0 is button 1. \
+                     Switch the joystick keys on and off with Scroll Lock, the toolbar or \
+                     the Machine menu.",
+                );
+            } else {
+                ui.label(
+                    "The IIe has a joystick only while a host game controller is connected. \
+                     Otherwise its game port is empty, so games that look for a joystick when \
+                     they start use the keyboard.",
+                );
+            }
+            ui.label("Command and Option also press buttons 0 and 1 (Open and Closed Apple).");
+
+            ui.separator();
             egui::Sides::new().show(
                 ui,
                 |_ui| {},
