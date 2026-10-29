@@ -41,7 +41,7 @@ impl ImageType {
             Self::MOOF => &["moof"],
             Self::PFI => &["pfi"],
             Self::PRI => &["pri"],
-            Self::Raw => &["dsk", "raw", "img", "image"],
+            Self::Raw => &["dsk", "raw", "img", "image", "po"],
         }
     }
 
