@@ -210,6 +210,9 @@ pub struct SnowGui {
     iie_disk_dialog_drive: usize,
     /// The last-loaded IIe 5.25" image paths (for the menu labels).
     iie_disk_image: [Option<String>; 2],
+    iie_unidisk_dialog: SnowFileDialog,
+    /// The last-loaded IIe UniDisk 3.5 image path (for the menu label).
+    iie_unidisk_image: Option<String>,
     floppy_dialog_last: Option<DirectoryEntry>,
     floppy_dialog_last_image: Option<FloppyImage>,
     floppy_dialog_last_type: Option<ImageType>,
@@ -440,6 +443,12 @@ impl SnowGui {
             iie_disk_dialog_drive: 0,
             iie_disk_dialog: SnowFileDialog::new()
                 .add_filter("Apple II 5.25\" disks", &["dsk", "do", "po", "2mg"])
+                .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
+                .initial_directory(Self::default_dir())
+                .storage(settings.fd_floppy.clone()),
+            iie_unidisk_image: None,
+            iie_unidisk_dialog: SnowFileDialog::new()
+                .add_filter("Apple II 3.5\" disks", &["po", "2mg"])
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_floppy.clone()),
@@ -905,8 +914,36 @@ impl SnowGui {
                 ui.menu_button("Drives", |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH);
                     self.draw_menu_floppies(ui);
-                    if self.emu.iie_drives_525() > 0 {
+                    if self.emu.iie_has_unidisk() || self.emu.iie_drives_525() > 0 {
                         ui.separator();
+                    }
+                    if self.emu.iie_has_unidisk() {
+                        ui.menu_button(
+                            format!(
+                                "Apple IIe UniDisk 3.5: {}",
+                                self.iie_unidisk_image
+                                    .as_deref()
+                                    .and_then(|p| std::path::Path::new(p).file_name())
+                                    .map_or_else(|| "(ejected)".to_string(), |f| f.to_string_lossy().into())
+                            ),
+                            |ui| {
+                                ui.set_min_width(Self::SUBMENU_WIDTH);
+                                if ui.button("Load image...").clicked() {
+                                    self.iie_unidisk_dialog
+                                        .pick_file(self.settings.native_file_dialogs);
+                                }
+                                if ui
+                                    .add_enabled(
+                                        self.iie_unidisk_image.is_some(),
+                                        egui::Button::new("Eject"),
+                                    )
+                                    .clicked()
+                                {
+                                    self.emu.eject_iie_unidisk();
+                                    self.iie_unidisk_image = None;
+                                }
+                            },
+                        );
                     }
                     for drive in 0..self.emu.iie_drives_525() {
                         ui.menu_button(
@@ -3647,6 +3684,14 @@ impl eframe::App for SnowGui {
             self.emu.load_iie_disk(drive, &path);
         }
         self.ui_active &= *self.iie_disk_dialog.state() != egui_file_dialog::DialogState::Open;
+
+        // Apple IIe UniDisk 3.5 image picker
+        self.iie_unidisk_dialog.update(ctx, frame);
+        if let Some(path) = self.iie_unidisk_dialog.take_picked() {
+            self.iie_unidisk_image = Some(path.to_string_lossy().to_string());
+            self.emu.load_iie_unidisk(&path);
+        }
+        self.ui_active &= *self.iie_unidisk_dialog.state() != egui_file_dialog::DialogState::Open;
 
         // HDD image picker dialog
         self.hdd_dialog.update(ctx, frame);

@@ -26,6 +26,15 @@ evidence level:
 - **[ROM]** the Macintosh LC III ROM, disassembled and booted under
   emulation (its MMU tables read back after boot); **[MAME]** MAME's
   IWM, floppy and LC PDS models.
+- **[GSFW]** *Apple IIGS Firmware Reference*, SmartPort chapter (the
+  SmartPort bus, its packets and protocol diagrams, the UniDisk 3.5
+  calls); **[ATN]** Apple II Technical Notes SmartPort #2, #4, #7,
+  #8 and UniDisk 3.5 #2-#5.
+- **[UD]** the UniDisk 3.5's own firmware (A2M2053, "Liron"), from
+  Eric Smith's annotated disassembly.
+- **[DEV]** device-side SmartPort implementations: FujiNet's
+  `lib/bus/iwm` and SmartportSD; **[BMOW]** Big Mess o' Wires on
+  SmartPort daisy chaining.
 - **[INF]** inferred, consistent with the above; **[OPEN]** unknown.
 
 ## 1. What the card is
@@ -533,8 +542,8 @@ cannot set the flags and the PWRUP slot scan never ends.
   [WP][TIL]
 - The Y-cable splits disk from joystick (a 19-pin disk connector and a
   9-pin game connector). Several drives share the disk connector by
-  daisy-chaining: a UniDisk 3.5 passes through to an Apple 5.25 Drive.
-  [INF]
+  daisy-chaining: a UniDisk 3.5 passes through to an Apple 5.25 Drive
+  (§9.0.2). [INF][GSFW]
 
 ### 9.0 The IWM
 
@@ -590,7 +599,10 @@ cannot set the flags and the PWRUP slot scan never ends.
     cycles per nibble. [FW][MAME][INF]
 - **Sense line**: for a 5.25" drive it is write-protect, **forced high
   while phase 1 is on** (MAME `floppy.cpp`, "phase 1 can force it to
-  1 for drive detection"). For SmartPort it is `/ACK`. [MAME]
+  1 for drive detection"). For SmartPort it is `/ACK`. [MAME][GSFW]
+- The bit-cell clock runs whenever the IWM is enabled, with or
+  without a drive: the send's waits for ready and underrun have no
+  time limit (§9.0.1). [FW][INF]
 
 ### 9.0.1 The UniDisk probe
 
@@ -610,8 +622,120 @@ cannot set the flags and the PWRUP slot scan never ends.
   work even with no device on the bus.
 - With no UniDisk, the send ends with C = 1, and the program stores
   the device count, 0, in `$01` for the host. [LOG][FW]
+- With a UniDisk the INIT is answered and the count is 1 (§9.0.3).
 - The IIe's reset restarts the IWM in mode 0, so the probe's mode `$07`
   does not carry over into the IIe's own disk boot. [LOG][INF]
+### 9.0.2 The SmartPort bus
+
+- **Phase lines** [GSFW][DEV][FW]:
+  - PH1 and PH3 both on **enable** the bus. A Disk II never sets two
+    opposing phases, so 5.25" drives and bus devices keep out of each
+    other's way. While the bus is enabled, PH0 is **REQ** from the
+    IIe.
+  - PH0 and PH2 on, PH1 and PH3 off, **reset** the bus. The card does
+    it for about 80 ms, then all phases off (slot 5 `$CEC1`). Every
+    device forgets its ID; the UniDisk restarts its firmware (its
+    reset code clears the IDs). [UD][INF]
+  - **/ACK** comes back on the sense line (`$C0EE` bit 7).
+- **ENABLE**: each device holds the drive enable it passes down the
+  chain off while PH1 and PH3 are both on, so a 5.25" drive at the end
+  stays deselected during SmartPort traffic [GSFW]. On the card the
+  firmware selects drive 1 (`$C0EA`) and turns the motor on for
+  SmartPort, so the 5.25" drive behind a UniDisk is drive 1 [FW]
+  (the IIGS uses /ENABLE2 instead [GSFW]).
+- **Handshake** [GSFW][UD][FW]:
+  1. The IIe waits for /ACK high, raises REQ and sends a packet.
+  2. The device pulls /ACK low after the end mark; the IIe drops REQ.
+  3. WRITEBLOCK, CONTROL and WRITE then send a data packet the same
+     way: the device releases /ACK when ready for it.
+  4. The device raises /ACK when its response is ready; the IIe
+     raises REQ and the device sends. The IIe waits for this /ACK
+     with no time limit (`$CB19`).
+  5. The device pulls /ACK low after its end mark; the IIe drops REQ
+     and the device releases /ACK, ready for the next command.
+
+  The IIe's waits: /ACK high before sending, 50 polls (`$C9BB`);
+  /ACK low after the underrun, 9 polls (`$CAE0`), so the device must
+  answer within about 100 cycles; up to 30 bytes for the begin mark
+  of a response (`$CB21`). A device that does not take a packet just
+  leaves /ACK high. [FW]
+- **Packet** [GSFW][ATN][UD][FW], every byte with bit 7 set, 32 µs
+  apart (4 µs cells):
+  - Self-sync bytes `FF 3F CF F3 FC FF` (five 10-bit `1111111100`
+    patterns); the UniDisk sends them twice, after an `FF`. [UD]
+  - `C3` begin mark; destination ID (the IIe is `$80`, devices `$81`
+    up in chain order); source ID; type (`$80` command, `$81` status,
+    `$82` data); aux type (`$80`, `$C0` extended); status (the error
+    code); the odd byte count (contents mod 7) and the group count
+    (contents / 7).
+  - The odd bytes, then the groups of 7: each starts with a byte
+    holding the top bits (bit 6 = the first byte's), then the bytes'
+    low 7 bits.
+  - The checksum: the XOR of the 7 header bytes as sent and of the
+    contents, sent as `chk | $AA` then `chk >> 1 | $AA`. Then the `C8`
+    end mark.
+- **Command packet**: 9 bytes, the command and the parameter count,
+  then bytes 2-8 of the caller's parameter list (after the unit
+  number): the buffer pointer, then the status code, control code or
+  3-byte block number; READ and WRITE carry the byte count first and
+  the block (address) at bytes 6-8. [GSFW][ATN][FW]
+- **INIT and IDs**: after the reset the card sends INIT (5) to ID 1,
+  2, ... A device without an ID takes the first and then passes PH3 on
+  to the next device. A response status of 0 means more devices
+  follow; the count stops at a nonzero status, or one less at a send
+  that is not acknowledged (`$CE79`). A device knows it is last by a
+  daisy-chain pin that smart devices ground and that a 5.25" drive
+  leaves high. [GSFW][BMOW][FW]
+  - The last-device status differs between sources: the UniDisk sends
+    `$C0` (status `$40`) [UD], SmartportSD `$FF` and FujiNet `$FF`
+    [DEV]. The card only tests for nonzero. Snow follows the UniDisk.
+
+### 9.0.3 The UniDisk 3.5
+
+Snow models the drive at the packet level (`unidisk.rs`), with what
+its firmware answers [UD], cross-checked with [GSFW] and [ATN]:
+
+- Every response is a **status-type packet** (`$81`), block data
+  included; the card does not check the type. [UD][FW]
+- Each command's parameter count is checked: STATUS 3, READBLOCK 3,
+  WRITEBLOCK 3, FORMAT 1, CONTROL 3, INIT 2, OPEN 1, CLOSE 1, READ 4,
+  WRITE 4; another count gives `$04` (after taking the data packet,
+  if the command has one). Commands past 9
+  give `$01`; OPEN and CLOSE give `$01` (block device). [UD][GSFW]
+- **STATUS** [UD][ATN]:
+  - Code 0: the status byte and the block count (3 bytes). `$E8` with
+    no disk (block device, read, write, format allowed), `$F8` with a
+    disk, `$FC` write-protected. The count is 1600 (800 for a
+    single-sided disk), also with no disk.
+  - Code 3, the DIB (25 bytes): the general status, the name length 8
+    and `DISK 3.5` padded with spaces to 16, type `$01`, subtype `$00`,
+    version `$1000`. The Apple 3.5 Drive also says `DISK 3.5`
+    (subtype `$C0`). [UD][ATN][GSFW]
+  - Code 5, UniDiskStat (8 bytes): the last soft error, retries and
+    the registers after EXECUTE. Codes 1, 2, 4 and past 5: `$21`.
+- **READBLOCK / WRITEBLOCK**: 512 bytes. No disk `$2F`, write-protected
+  `$2B` (writes), block past the end `$2D`; WRITEBLOCK takes its data
+  packet before checking. [UD][GSFW]
+- **READ / WRITE**: whole 524-byte Macintosh blocks, the 12 tag bytes
+  first, for Mac disks (UniDisk 3.5 #4). Snow's images have no tags:
+  they read as zeros and writes drop them. [ATN][UD]
+- **FORMAT** writes all tracks; Snow zeroes the image. [UD][INF]
+- **CONTROL**: 0 reset, 4 eject; 5 EXECUTE, 6 SETADDRESS and 7
+  DOWNLOAD run 65C02 code in the drive's 2 KB RAM; 1-3 and past 7:
+  `$21`. The drive's firmware takes the data packet only for codes
+  1-7 and starts its response at once for 0 and the rest, while the
+  card always sends one: Snow always takes it. EXECUTE, SETADDRESS
+  and DOWNLOAD are refused with `$21` (no drive RAM). [UD][GSFW][FW]
+- **INIT**: a drive without an ID takes the destination ID and
+  answers `$40` (last device); with an ID, INIT to that ID answers 0.
+  Other packets go to a drive without an ID too. [UD]
+- Images: 400K or 800K of 512-byte blocks in the drive's (ProDOS)
+  order, raw or 2IMG (its lock flag write-protects). The IIe's writes
+  stay in memory.
+- [OPEN] The drive's response latency (Snow answers at once), its
+  write-protect and eject switches, and the status after a disk swap
+  (UniDisk 3.5 #4: the block count is that of the last disk read).
+
 - **ProDOS hard disk / Mac 3.5" / AppleShare**: host-side block
   devices behind the slot traps (`$08/$09`), served by the Mac
   drivers (`CNmc` SmartPort etc.). The volumes are partition files,
@@ -870,6 +994,8 @@ only the firmware layout (§4.2) can.
 - The depth relationship in A2 mode and the 13" monitor layout (the
   LC ROM's video driver).
 - How the host reaches the emulated slot 4 mouse (no `$C0Cx` I/O).
+- UniDisk 3.5: the latency of its answers, and code downloaded with
+  CONTROL 5-7 (refused, §9.0.3).
 
 ## 14. Speculation: what the Gemini may inherit from the Mega II
 
@@ -947,6 +1073,18 @@ the card itself. Facts about the Mega II come from the Apple IIGS
   floppy.cpp` (the 5.25" sense line and phase 1); `src/devices/bus/
   nubus/nubus.cpp` and `8lc.cpp` (the LC PDS address mapping);
   `src/lib/formats/ap2_dsk.cpp` (the 16-sector track layout).
+- [GSFW] Apple, *Apple IIGS Firmware Reference* (beta draft
+  10/24/86), chapter 7: <https://brutaldeluxe.fr/documentation/cortland/v2_01_AppleIIGSFirmwareReferenceManual.pdf>
+- [ATN] Apple II Technical Notes, SmartPort #2, #3, #4, #7, #8 and
+  UniDisk 3.5 #1-#5 (Developer CD, `Technical.Notes/SmPt` and `UDsk`).
+- [UD] Eric Smith, annotated disassembly of the UniDisk 3.5 firmware:
+  <https://git.applefritter.com/Apple-2-SW/a2-liron> (`liron.asm`).
+- [DEV] FujiNet firmware, `lib/bus/iwm`:
+  <https://github.com/FujiNetWIFI/fujinet-firmware>; SmartportSD
+  (Robert Justice, Andrea Ottaviani, Katherine Stark):
+  <https://gitlab.com/nyankat/smartportsd>.
+- [BMOW] Big Mess o' Wires, SmartPort daisy chaining (pin 16):
+  <https://www.bigmessowires.com/?p=4941>
 - [ROM] The Macintosh LC III ROM (1993, checksum `ECBBC41C`):
   `SwapMMUMode` variants, the base-address table, MMU templates, and
   the MMU tables built at boot.

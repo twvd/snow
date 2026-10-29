@@ -45,6 +45,11 @@ pub enum EmulatorCommand {
     InsertIieDisk(usize, PathBuf),
     /// Ejects one of the Apple IIe card's 5.25" drives (0 or 1).
     EjectIieDisk(usize),
+    /// Inserts a 400K or 800K ProDOS-order image (raw or 2IMG) into
+    /// the Apple IIe card's UniDisk 3.5.
+    InsertIieUniDisk(PathBuf),
+    /// Ejects the Apple IIe card's UniDisk 3.5.
+    EjectIieUniDisk,
     /// Toggle automatic writeback for a floppy drive.
     /// Parameters: drive id, enabled
     SetFloppyWriteback(usize, bool),
