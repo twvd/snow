@@ -13,7 +13,7 @@ use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::rtc::Rtc;
-use crate::mac::scc::{Scc, SccCh};
+use crate::mac::scc::{RTXC_FREQUENCY, Scc, SccCh};
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::swim::Swim;
 use crate::mac::swim::drive::DriveType;
@@ -203,7 +203,7 @@ where
             via: Via::new(model),
             video: Video::new(renderer),
             audio: AudioState::default(),
-            scc: Scc::new(),
+            scc: Scc::new(RTXC_FREQUENCY),
             swim: Swim::new(&fdds, model.fdd_hd(), BUS_FREQUENCY),
             scsi: ScsiController::new(),
             mouse_ready: false,
@@ -473,11 +473,11 @@ where
                 waits,
                 self,
                 |bus, _, _| {
-                    bus.scc = Scc::new();
+                    bus.scc = Scc::new(RTXC_FREQUENCY);
                     Some(0xFF)
                 },
                 |bus, _, _, _| {
-                    bus.scc = Scc::new();
+                    bus.scc = Scc::new(RTXC_FREQUENCY);
                     Some(())
                 },
             ),
@@ -818,7 +818,7 @@ where
         self.via.rtc = rtc;
         self.overlay = true;
         self.sync_via_pa();
-        self.scc = Scc::new();
+        self.scc = Scc::new(RTXC_FREQUENCY);
 
         // All compact Macs have RESET and HALT tied together
         Ok(true)
@@ -947,6 +947,7 @@ where
 
             self.scsi.tick(ticks, ctx)?;
             self.swim.tick(ticks, ())?;
+            self.scc.tick(ticks, ctx.bus_frequency);
         }
 
         Ok(ticks)
