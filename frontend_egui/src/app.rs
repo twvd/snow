@@ -5,7 +5,7 @@ use crate::dialogs::filedialog::SnowFileDialog;
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult, video_rom_card};
 use crate::emulator::EmulatorState;
 use crate::emulator::{EmulatorInitArgs, ScsiTargets};
-use crate::joystick::{JOY_KEYS_HELP, Joystick};
+use crate::joystick::{JoyBinding, JoyBindings, JoyInput, Joystick, assign, default_bindings};
 use crate::keymap::{char_to_keystroke, map_winit_keycode};
 use crate::settings::{AppSettings, CmdKeyMapping, PromptChoice};
 use crate::uniform::{UNIFORM_ACTION, UniformAction};
@@ -209,6 +209,11 @@ pub struct SnowGui {
     iie_disk_dialog: SnowFileDialog,
     /// The Apple IIe Card's joystick input (None without the card)
     iie_joystick: Option<Joystick>,
+    /// The Apple IIe joystick mapping window is open
+    joy_mapping_open: bool,
+    /// The binding being assigned in the mapping window: the next key or
+    /// controller button pressed goes there
+    joy_capture: Option<(JoyInput, usize)>,
     /// The IIe 5.25" drive the image picker loads into.
     iie_disk_dialog_drive: usize,
     /// The last-loaded IIe 5.25" image paths (for the menu labels).
@@ -444,6 +449,8 @@ impl SnowGui {
                 .storage(settings.fd_floppy.clone()),
             iie_disk_image: [None, None],
             iie_joystick: None,
+            joy_mapping_open: false,
+            joy_capture: None,
             iie_disk_dialog_drive: 0,
             iie_disk_dialog: SnowFileDialog::new()
                 .add_filter("Apple II 5.25\" disks", &["dsk", "do", "po", "2mg"])
@@ -846,11 +853,16 @@ impl SnowGui {
                         let mut on = joy.keys_on();
                         if ui
                             .checkbox(&mut on, "Apple IIe joystick keys (Scroll Lock)")
-                            .on_hover_text(JOY_KEYS_HELP)
+                            .on_hover_text(joy.help())
                             .changed()
                         {
                             joy.set_keys_on(on);
                         }
+                    }
+                    if self.iie_joystick.is_some()
+                        && ui.button("Apple IIe joystick mapping...").clicked()
+                    {
+                        self.joy_mapping_open = true;
                     }
 
                     ui.separator();
@@ -2262,7 +2274,7 @@ impl SnowGui {
                             joy.keys_on(),
                             egui_material_icons::icons::ICON_SPORTS_ESPORTS,
                         ))
-                        .on_hover_text(JOY_KEYS_HELP)
+                        .on_hover_text(joy.help())
                         .clicked()
                 {
                     let on = !joy.keys_on();
@@ -2642,6 +2654,16 @@ impl SnowGui {
                         },
                     ..
                 } => {
+                    if let Some((input, slot)) = self.joy_capture
+                        && state.is_pressed()
+                    {
+                        if kc != egui_winit::winit::keyboard::KeyCode::Escape {
+                            self.assign_joy_binding(input, slot, JoyBinding::Key(kc));
+                        }
+                        self.joy_capture = None;
+                        continue;
+                    }
+
                     if ctx.wants_keyboard_input() {
                         continue;
                     }
@@ -2774,9 +2796,11 @@ impl SnowGui {
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
         }
 
-        self.iie_joystick = args
-            .iie_card
-            .then(|| Joystick::new(args.iie_joystick_emulation));
+        self.iie_joystick = args.iie_card.then(|| {
+            let mut joy = Joystick::new(args.iie_joystick_emulation);
+            joy.set_bindings(self.joy_bindings());
+            joy
+        });
 
         // Re-synchronize the cached fast-forward states
         self.ff_on = args.start_fastforward;
@@ -2820,6 +2844,10 @@ impl SnowGui {
 
         // Re-initialize stuff from newly loaded workspace
         self.load_windows = true;
+        let bindings = self.joy_bindings();
+        if let Some(joy) = &mut self.iie_joystick {
+            joy.set_bindings(bindings);
+        }
         self.framebuffer.scale = self.workspace.viewport_scale;
         self.framebuffer.scaling_algorithm = self.workspace.scaling_algorithm;
         self.framebuffer.shader_enabled = self.workspace.shader_enabled;
@@ -2885,6 +2913,7 @@ impl SnowGui {
     }
 
     fn save_workspace(&mut self, path: &Path) {
+        self.workspace.iie_joystick_bindings = Some(self.joy_bindings());
         self.workspace.viewport_scale = self.framebuffer.scale;
         self.workspace.scaling_algorithm = self.framebuffer.scaling_algorithm;
         self.workspace.shader_enabled = self.framebuffer.shader_enabled;
@@ -2896,6 +2925,88 @@ impl SnowGui {
         }
         if let Err(e) = self.workspace.write_file(path) {
             self.show_error(&format!("Failed to save workspace: {}", e));
+        }
+    }
+
+    /// The Apple IIe joystick bindings: the workspace's, else the
+    /// settings' (a new workspace takes the latest)
+    fn joy_bindings(&self) -> JoyBindings {
+        self.workspace
+            .iie_joystick_bindings
+            .unwrap_or(self.settings.iie_joystick_bindings)
+    }
+
+    /// Sets the joystick bindings in the settings (saved) and in the
+    /// workspace, and passes them on to the joystick
+    fn set_joy_bindings(&mut self, bindings: JoyBindings) {
+        self.settings.iie_joystick_bindings = bindings;
+        self.settings.save();
+        self.workspace.iie_joystick_bindings = Some(bindings);
+        if let Some(joy) = &mut self.iie_joystick {
+            joy.set_bindings(bindings);
+        }
+    }
+
+    /// Binds `binding` to a joystick input
+    fn assign_joy_binding(&mut self, input: JoyInput, slot: usize, binding: JoyBinding) {
+        let mut bindings = self.joy_bindings();
+        assign(&mut bindings, input, slot, binding);
+        self.set_joy_bindings(bindings);
+    }
+
+    /// The Apple IIe joystick mapping window: up to three keys or
+    /// controller buttons per joystick input
+    fn draw_joy_mapping(&mut self, ctx: &egui::Context) {
+        let mut open = self.joy_mapping_open;
+        let mut bindings = self.joy_bindings();
+        let mut changed = false;
+        egui::Window::new("Apple IIe joystick mapping")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(
+                    "Click a choice, then press a key or a controller button \
+                     (Esc cancels). Right-click clears a choice. Any of the choices \
+                     of an input works; a key or button is used once.",
+                );
+                ui.separator();
+                egui::Grid::new("joy_mapping_grid").show(ui, |ui| {
+                    for input in JoyInput::iter() {
+                        ui.label(input.to_string());
+                        for (slot, binding) in bindings[input as usize].iter_mut().enumerate() {
+                            let text = if self.joy_capture == Some((input, slot)) {
+                                "Press a key or button...".to_string()
+                            } else {
+                                binding.map_or("-".to_string(), |b| b.to_string())
+                            };
+                            let resp =
+                                ui.add(egui::Button::new(text).min_size([130.0, 0.0].into()));
+                            if resp.clicked() {
+                                self.joy_capture = Some((input, slot));
+                            }
+                            if resp.secondary_clicked() {
+                                *binding = None;
+                                self.joy_capture = None;
+                                changed = true;
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+                ui.separator();
+                if ui.button("Reset to defaults").clicked() {
+                    bindings = default_bindings();
+                    self.joy_capture = None;
+                    changed = true;
+                }
+            });
+        self.joy_mapping_open = open;
+        if !open {
+            self.joy_capture = None;
+        }
+        if changed {
+            self.set_joy_bindings(bindings);
         }
     }
 
@@ -3398,6 +3509,12 @@ impl eframe::App for SnowGui {
         {
             self.emu.set_iie_game_port(port);
         }
+        if let Some(joy) = &mut self.iie_joystick
+            && let Some(button) = joy.take_pressed_button()
+            && let Some((input, slot)) = self.joy_capture.take()
+        {
+            self.assign_joy_binding(input, slot, JoyBinding::Pad(button));
+        }
         self.process_type_clipboard_queue();
         self.uniform_action(UNIFORM_ACTION.take());
 
@@ -3497,6 +3614,8 @@ impl eframe::App for SnowGui {
             });
         self.error_dialog_open &= error_open;
         self.ui_active &= !self.error_dialog_open;
+
+        self.draw_joy_mapping(ctx);
 
         // Create disk image dialog
         self.create_disk_dialog.update(ctx, frame, &self.settings);

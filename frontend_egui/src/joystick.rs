@@ -7,9 +7,11 @@
 //! priority over the keys.
 
 use egui_winit::winit::keyboard::KeyCode;
-use gilrs::{Axis, Button, GamepadId, Gilrs};
+use gilrs::{Axis, Button, EventType, GamepadId, Gilrs};
+use serde::{Deserialize, Serialize};
 use snow_core::mac::maclc::pds_iie::GamePort;
-use strum::{Display, EnumIter};
+use std::fmt;
+use strum::{Display, EnumIter, IntoEnumIterator};
 
 /// The Apple IIe joystick inputs, in the order of [`JoyBindings`]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Display, EnumIter)]
@@ -25,10 +27,19 @@ pub enum JoyInput {
 }
 
 /// A host key or game controller button that drives a joystick input
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JoyBinding {
     Key(KeyCode),
     Pad(Button),
+}
+
+impl fmt::Display for JoyBinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Key(key) => write!(f, "{:?}", key),
+            Self::Pad(button) => write!(f, "Controller {:?}", button),
+        }
+    }
 }
 
 /// The bindings each joystick input can have; any of them works
@@ -36,6 +47,17 @@ pub const JOY_CHOICES: usize = 5;
 
 /// The bindings of each joystick input, indexed by [`JoyInput`]
 pub type JoyBindings = [[Option<JoyBinding>; JOY_CHOICES]; 6];
+
+/// Binds `binding` to choice `slot` of `input`. A binding is used once:
+/// where it was bound before, it is removed.
+pub fn assign(bindings: &mut JoyBindings, input: JoyInput, slot: usize, binding: JoyBinding) {
+    for b in bindings.iter_mut().flatten() {
+        if *b == Some(binding) {
+            *b = None;
+        }
+    }
+    bindings[input as usize][slot] = Some(binding);
+}
 
 /// The default bindings. Buttons, by column: Z/X, 1/2, Left Ctrl/Alt,
 /// keypad 0/. and the controller's West/East. Directions: I/J/L/M,
@@ -94,11 +116,6 @@ pub fn default_bindings() -> JoyBindings {
 
 /// The key that switches the joystick keys on and off
 const JOY_TOGGLE_KEY: KeyCode = KeyCode::ScrollLock;
-
-/// What the joystick keys are, for the menu and toolbar
-pub const JOY_KEYS_HELP: &str = "Apple IIe joystick keys: arrows or keypad 4/6/8/2 move, \
-Left Ctrl or keypad 0 is button 0, Left Alt or keypad . is button 1. \
-Scroll Lock switches them on and off.";
 
 /// A joystick axis position at rest
 const CENTRE: u8 = 128;
@@ -164,6 +181,8 @@ pub struct Joystick {
     held: [[bool; JOY_CHOICES]; 6],
     /// The game port as last sent to the emulator
     sent: Option<GamePort>,
+    /// The controller button last pressed, for the mapping dialog
+    pressed_button: Option<Button>,
 }
 
 /// Joystick axes (0 to 255) and buttons
@@ -190,7 +209,36 @@ impl Joystick {
             bindings: default_bindings(),
             held: [[false; JOY_CHOICES]; 6],
             sent: None,
+            pressed_button: None,
         }
+    }
+
+    /// Replaces the bindings
+    pub fn set_bindings(&mut self, bindings: JoyBindings) {
+        self.bindings = bindings;
+        self.held = [[false; JOY_CHOICES]; 6];
+    }
+
+    /// The controller button pressed since the last call, if any
+    pub fn take_pressed_button(&mut self) -> Option<Button> {
+        self.pressed_button.take()
+    }
+
+    /// What the joystick keys are, for the menu and toolbar
+    pub fn help(&self) -> String {
+        let mut text = String::from("Apple IIe joystick keys");
+        for input in JoyInput::iter() {
+            let keys: Vec<String> = self.bindings[input as usize]
+                .iter()
+                .flatten()
+                .filter(|b| matches!(b, JoyBinding::Key(_)))
+                .map(|b| b.to_string())
+                .collect();
+            if !keys.is_empty() {
+                text += &format!("\n{}: {}", input, keys.join(", "));
+            }
+        }
+        text + "\nScroll Lock switches them on and off."
     }
 
     /// Whether controller emulation is enabled
@@ -266,6 +314,9 @@ impl Joystick {
         let gilrs = self.gilrs.as_mut()?;
         while let Some(ev) = gilrs.next_event() {
             self.gamepad = Some(ev.id);
+            if let EventType::ButtonPressed(button, _) = ev.event {
+                self.pressed_button = Some(button);
+            }
         }
         // With no controller event yet, take the first connected
         let id = self
@@ -381,6 +432,47 @@ mod tests {
         for (i, b) in all.iter().enumerate() {
             assert!(!all[i + 1..].contains(b), "{:?} bound twice", b);
         }
+    }
+
+    #[test]
+    fn assign_removes_the_older_binding() {
+        let mut b = default_bindings();
+        let south = JoyBinding::Pad(Button::South);
+        assign(&mut b, JoyInput::Button0, 2, south);
+        assert_eq!(b[JoyInput::Button0 as usize][2], Some(south));
+        // Moved to button 1: gone from button 0
+        assign(&mut b, JoyInput::Button1, 0, south);
+        assert_eq!(b[JoyInput::Button0 as usize][2], None);
+        assert_eq!(b[JoyInput::Button1 as usize][0], Some(south));
+        // A key already on Left, bound to Right
+        let left = JoyBinding::Key(KeyCode::ArrowLeft);
+        assign(&mut b, JoyInput::Right, 1, left);
+        assert_eq!(b[JoyInput::Left as usize][2], None);
+        assert_eq!(b[JoyInput::Right as usize][1], Some(left));
+    }
+
+    #[test]
+    fn bindings_round_trip() {
+        let json = serde_json::to_string(&default_bindings()).unwrap();
+        assert!(
+            json.contains("ControlLeft") && json.contains("West"),
+            "{}",
+            json
+        );
+        let back: JoyBindings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, default_bindings());
+    }
+
+    #[test]
+    fn rebound_key() {
+        let mut joy = Joystick::with_gilrs(true, None);
+        let mut b = default_bindings();
+        assign(&mut b, JoyInput::Button0, 0, JoyBinding::Key(KeyCode::KeyQ));
+        joy.set_bindings(b);
+        joy.set_keys_on(true);
+        assert!(!joy.key(KeyCode::KeyX, true), "replaced");
+        assert!(joy.key(KeyCode::KeyQ, true));
+        assert_eq!(joy.poll().unwrap().buttons, [true, false]);
     }
 
     #[test]

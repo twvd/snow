@@ -936,7 +936,8 @@ impl ModelSelectionDialog {
                     "The IIe always has a joystick. By default I/J/L/M, keypad 8/4/6/2, \
                      the arrows or W/A/S/D move it; X, 2, Left Alt or keypad . is button 0, Z, 1, Left Ctrl or keypad 0 is button 1. \
                      Switch the joystick keys on and off with Scroll Lock, the toolbar or \
-                     the Machine menu. A host game controller also works.",
+                     the Machine menu, where the keys can also be changed. A host game \
+                     controller also works.",
                 );
             } else {
                 ui.label("The IIe has a joystick while a host game controller is connected.");
