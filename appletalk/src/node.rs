@@ -5,6 +5,7 @@
 
 use crossbeam_channel::{Receiver, Sender};
 
+use crate::asp::Asp;
 use crate::atp::{ATP_SOCKET, ATP_TYPE, Atp};
 use crate::ddp::{DdpShortHeader, build_short, parse_short};
 use crate::link::{DdpHeaderKind, Packet};
@@ -20,33 +21,6 @@ const AEP_TYPE: u8 = 4;
 const AEP_ECHO_REQUEST: u8 = 1;
 const AEP_ECHO_REPLY: u8 = 2;
 
-/// Placeholder for the protocol riding on ATP until ASP lands: ATP
-/// requests are dropped, as if no responder were registered
-struct PendingAsp;
-
-impl crate::atp::Responder for PendingAsp {
-    fn respond(
-        &mut self,
-        _req: &crate::atp::IncomingRequest,
-        _user: &[u8],
-        _data: &[u8],
-    ) -> Option<crate::atp::Respond> {
-        log::debug!("ATP: no responder registered, dropping request");
-        None
-    }
-
-    fn tresp(
-        &mut self,
-        _src: (u8, u8),
-        _tid: u16,
-        _seq: u8,
-        _eom: bool,
-        _data: &[u8],
-    ) -> Option<crate::atp::TrespOutcome> {
-        None
-    }
-}
-
 /// AppleTalk node
 pub struct Node {
     rx: Receiver<Packet>,
@@ -55,6 +29,7 @@ pub struct Node {
     test: TestModule,
     nbp: Nbp,
     atp: Atp,
+    asp: Asp,
 }
 
 impl Node {
@@ -81,6 +56,7 @@ impl Node {
                 }],
             ),
             atp: Atp::new(),
+            asp: Asp::new(&[]),
         }
     }
 
@@ -97,6 +73,9 @@ impl Node {
     /// Handle one packet, returning the reply packets if any
     pub fn handle(&mut self, packet: &Packet) -> Option<Vec<Packet>> {
         if packet.is_node_started() {
+            if let Some(node) = self.asp.close_node_sessions(packet.node) {
+                self.atp.purge_node(node);
+            }
             return None;
         }
         let DdpHeaderKind::Short = packet.kind else {
@@ -128,7 +107,7 @@ impl Node {
             return self.nbp.handle(packet, data).map(|p| vec![p]);
         }
         if header.dst_socket == ATP_SOCKET && header.ddp_type == ATP_TYPE {
-            return self.atp.handle(packet, data, &mut PendingAsp);
+            return self.atp.handle(packet, data, &mut self.asp);
         }
         #[cfg(feature = "test_module")]
         if header.dst_socket == TEST_SOCKET && header.ddp_type == TEST_TYPE {
@@ -205,8 +184,18 @@ impl Node {
     }
 
     /// The periodic housekeeping tick (the node loop's timer source):
-    /// nothing needs it yet — the ASP tickles land with ASP
-    fn tick(&self) {}
+    /// the ASP tickles
+    fn tick(&mut self) {
+        for packet in self.asp.tick(std::time::Instant::now()) {
+            // A tickle carries no information once its moment has
+            // passed: if the bridge's queue is full (a paused
+            // emulator does not drain it), drop it instead of
+            // blocking the node thread
+            if self.tx.try_send(packet).is_err() {
+                break;
+            }
+        }
+    }
 }
 
 #[cfg(all(test, feature = "test_module"))]
