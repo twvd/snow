@@ -83,13 +83,15 @@ struct Args {
 fn main() -> eframe::Result {
     let args = Args::parse();
 
-    let logger_env = Box::new(
-        env_logger::builder()
-            .filter_level(LevelFilter::Debug)
-            .filter_module("tracing::span", LevelFilter::Off)
-            .filter_module("winit", LevelFilter::Off)
-            .build(),
-    );
+    let mut env_logger = env_logger::builder();
+    env_logger
+        .filter_level(LevelFilter::Debug)
+        .filter_module("tracing::span", LevelFilter::Off)
+        .filter_module("winit", LevelFilter::Off);
+    if let Ok(filters) = std::env::var("RUST_LOG") {
+        env_logger.parse_filters(&filters);
+    }
+    let logger_env = Box::new(env_logger.build());
     let logger_egui = Box::new(
         egui_logger::builder()
             .max_level(LevelFilter::Debug)

@@ -82,6 +82,7 @@ pub struct AppSettings {
     pub fd_workspace: FileDialogStorage,
     pub fd_state: FileDialogStorage,
     pub fd_shared_dir: FileDialogStorage,
+    pub fd_afp_dir: FileDialogStorage,
 
     pub native_file_dialogs: bool,
     pub hide_mode_toasts: bool,
@@ -125,6 +126,7 @@ impl Default for AppSettings {
             fd_workspace: Default::default(),
             fd_state: Default::default(),
             fd_shared_dir: Default::default(),
+            fd_afp_dir: Default::default(),
             native_file_dialogs: false,
             hide_mode_toasts: false,
             fastforward_limit_enabled: false,

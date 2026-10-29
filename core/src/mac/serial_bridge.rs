@@ -17,6 +17,15 @@ use serde::{Deserialize, Serialize};
 
 use super::localtalk_bridge::LocalTalkStatus;
 
+/// The highest AFP version the built-in AppleTalk server advertises
+/// (re-exported from the AppleTalk stack)
+#[cfg(feature = "afp_server")]
+pub use snow_appletalk::afp::MaxVersion as AfpMaxVersion;
+#[cfg(feature = "afp_server")]
+pub use snow_appletalk::afp::{AfpSettings, HiddenFiles as AfpHiddenFiles};
+#[cfg(feature = "afp_server")]
+pub use snow_appletalk::meta::Backend as AfpMetaBackend;
+
 /// Configuration for a serial bridge
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SerialBridgeConfig {
@@ -26,6 +35,24 @@ pub enum SerialBridgeConfig {
     Tcp(u16),
     /// LocalTalk over UDP multicast
     LocalTalk,
+    /// Built-in AppleTalk stack on a private LocalTalk network (no
+    /// external connectivity), serving the given directory as a
+    /// read-only AFP volume (the SNOW_AFP_ROOT environment variable
+    /// when unset) under the given volume name (default "Snow") and
+    /// advertising the given AFP version ceiling. The variant itself
+    /// exists in every build, so a workspace saved with the server on
+    /// deserializes without the afp_server feature too (the fields it
+    /// does not know are ignored).
+    AppleTalk {
+        root: Option<PathBuf>,
+        volume_name: Option<String>,
+        #[cfg(feature = "afp_server")]
+        #[serde(default)]
+        max_version: AfpMaxVersion,
+        #[cfg(feature = "afp_server")]
+        #[serde(default)]
+        settings: snow_appletalk::afp::AfpSettings,
+    },
 }
 
 impl std::fmt::Display for SerialBridgeConfig {
@@ -34,6 +61,7 @@ impl std::fmt::Display for SerialBridgeConfig {
             Self::Pty => write!(f, "PTY"),
             Self::Tcp(port) => write!(f, "TCP:{}", port),
             Self::LocalTalk => write!(f, "LocalTalk"),
+            Self::AppleTalk { .. } => write!(f, "AppleTalk"),
         }
     }
 }
@@ -323,6 +351,12 @@ impl SerialBridge {
                     "LocalTalk should use SccBridge::new() instead",
                 ));
             }
+            SerialBridgeConfig::AppleTalk { .. } => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "AppleTalk should use SccBridge::new() instead",
+                ));
+            }
         };
 
         Ok(Self {
@@ -395,14 +429,32 @@ impl SccBridge {
             SerialBridgeConfig::LocalTalk => Ok(Self::LocalTalk(
                 super::localtalk_bridge::LocalTalkBridge::new()?,
             )),
+            #[cfg(feature = "afp_server")]
+            SerialBridgeConfig::AppleTalk {
+                root,
+                volume_name,
+                max_version,
+                settings,
+            } => Ok(Self::LocalTalk(
+                super::localtalk_bridge::LocalTalkBridge::new_private(
+                    root.clone(),
+                    volume_name.clone(),
+                    *max_version,
+                    *settings,
+                ),
+            )),
             _ => Ok(Self::Serial(SerialBridge::new(config)?)),
         }
     }
 
-    /// Write data from the SCC TX queue to the bridge
-    pub fn write_from_scc(&mut self, data: &[u8]) {
+    /// Write data from the SCC TX queue to the bridge.
+    /// Returns packets to inject into the SCC RX buffer immediately.
+    pub fn write_from_scc(&mut self, data: &[u8]) -> Vec<Vec<u8>> {
         match self {
-            Self::Serial(bridge) => bridge.write_from_scc(data),
+            Self::Serial(bridge) => {
+                bridge.write_from_scc(data);
+                Vec::new()
+            }
             Self::LocalTalk(bridge) => bridge.write_from_scc(data),
         }
     }
@@ -447,13 +499,6 @@ impl SccBridge {
     pub fn set_address_search_mode(&mut self, mode: bool) {
         if let Self::LocalTalk(bridge) = self {
             bridge.set_address_search_mode(mode);
-        }
-    }
-
-    /// Send a complete SDLC frame (LocalTalk only)
-    pub fn send_frame(&mut self, llap: &[u8]) {
-        if let Self::LocalTalk(bridge) = self {
-            bridge.send_frame(llap);
         }
     }
 }

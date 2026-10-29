@@ -4929,6 +4929,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "snow_appletalk"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossbeam-channel",
+ "encoding_rs",
+ "libc",
+ "log",
+ "serde",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "snow_core"
 version = "1.5.0"
 dependencies = [
@@ -4966,6 +4979,7 @@ dependencies = [
  "serde-big-array",
  "serde_json",
  "sha2",
+ "snow_appletalk",
  "snow_floppy",
  "snow_nat",
  "socket2",

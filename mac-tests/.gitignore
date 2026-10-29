@@ -1,0 +1,7 @@
+# Retro68 build products
+*.o
+*.bin
+*.img
+*.dsk
+*.gdb
+._*
