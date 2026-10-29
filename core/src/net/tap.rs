@@ -13,10 +13,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 pub(super) struct BridgeStats {
     pub(super) rx_total: AtomicUsize,
     pub(super) rx_total_bytes: AtomicUsize,
-    pub(super) rx_unicast: AtomicUsize,
-    pub(super) rx_multicast: AtomicUsize,
-    pub(super) rx_broadcast: AtomicUsize,
-    pub(super) rx_dropped_filtered: AtomicUsize,
     pub(super) rx_dropped_too_large: AtomicUsize,
     pub(super) rx_dropped_invalid: AtomicUsize,
     pub(super) rx_dropped_full: AtomicUsize,
@@ -64,8 +60,6 @@ impl EthernetPort {
         let tx_tap_stop = self.tap_stop.clone();
         let tx_stats = tap_stats.clone();
         let rx_stats = tap_stats;
-        let t_mac = self.mac;
-        let t_multicast_groups = Arc::clone(&self.multicast_groups);
 
         // TAP RX -> Emulator RX (Physical -> Virtual)
         std::thread::spawn(move || {
@@ -98,33 +92,12 @@ impl EthernetPort {
                                 continue;
                             }
 
-                            let Some(ethpacket) =
-                                pnet::packet::ethernet::EthernetPacket::new(&buffer)
-                            else {
+                            if pnet::packet::ethernet::EthernetPacket::new(&buffer[..size])
+                                .is_none()
+                            {
                                 log::warn!("Dropped RX invalid packet: {:02X?}", &buffer);
                                 rx_stats.rx_dropped_invalid.fetch_add(1, Ordering::Relaxed);
                                 continue;
-                            };
-
-                            let dest = ethpacket.get_destination();
-                            let src = ethpacket.get_source();
-                            let multicast_sub =
-                                t_multicast_groups.read().unwrap().contains(&dest.octets());
-                            if (dest != t_mac && !dest.is_broadcast() && !multicast_sub)
-                                || src == t_mac
-                            {
-                                // Not for us or echo (filtered)
-                                rx_stats.rx_dropped_filtered.fetch_add(1, Ordering::Relaxed);
-                                continue;
-                            }
-
-                            // Packet accepted
-                            if multicast_sub {
-                                rx_stats.rx_multicast.fetch_add(1, Ordering::Relaxed);
-                            } else if dest.is_broadcast() {
-                                rx_stats.rx_broadcast.fetch_add(1, Ordering::Relaxed);
-                            } else {
-                                rx_stats.rx_unicast.fetch_add(1, Ordering::Relaxed);
                             }
 
                             // Send to emulator

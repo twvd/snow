@@ -12,7 +12,6 @@ mod tap;
 use crate::debuggable::DebuggableProperties;
 use crate::emulator::comm::EthernetCaptureStatus;
 use crate::emulator::devices::{Ethernet, EthernetStatus, replace_status};
-use crate::util::{deserialize_arc_rwlock, serialize_arc_rwlock};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -20,6 +19,11 @@ use serde::{Deserialize, Serialize};
 use snow_nat::NatEngineStats;
 
 use std::path::{Path, PathBuf};
+#[cfg(any(
+    feature = "ethernet_nat",
+    all(feature = "ethernet_tap", target_os = "linux")
+))]
+use std::sync::Arc;
 #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
 use std::sync::atomic::AtomicBool;
 #[cfg(any(
@@ -27,13 +31,21 @@ use std::sync::atomic::AtomicBool;
     all(feature = "ethernet_tap", target_os = "linux")
 ))]
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, RwLock};
 
 use pcap::PcapCaptureState;
 #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
 use tap::BridgeStats;
 
 type BasicPacket = Vec<u8>;
+
+/// Counters of the receive filter
+#[derive(Default)]
+struct RxFilterStats {
+    unicast: usize,
+    multicast: usize,
+    broadcast: usize,
+    filtered: usize,
+}
 
 /// Maximum amount of packets to buffer in the RX/TX queues
 const PACKET_QUEUE_SIZE: usize = 512;
@@ -110,11 +122,11 @@ pub struct EthernetPort {
     tap_stop: Arc<AtomicBool>,
 
     /// Subscribed layer 2 multicast groups
-    #[serde(
-        serialize_with = "serialize_arc_rwlock",
-        deserialize_with = "deserialize_arc_rwlock"
-    )]
-    multicast_groups: Arc<RwLock<Vec<[u8; 6]>>>,
+    multicast_groups: Vec<[u8; 6]>,
+
+    /// Receive filter statistics
+    #[serde(skip)]
+    rx_stats: RxFilterStats,
 
     /// Pcap capture state
     #[serde(skip)]
@@ -139,6 +151,7 @@ impl EthernetPort {
             #[cfg(all(feature = "ethernet_tap", target_os = "linux"))]
             tap_stats: None,
             multicast_groups: Default::default(),
+            rx_stats: Default::default(),
             pcap_capture: None,
             pcap_tx: None,
         }
@@ -193,12 +206,43 @@ impl EthernetPort {
         self.rx.as_ref().is_some_and(|rx| !rx.is_empty())
     }
 
-    /// Takes the next received frame, if any
+    /// Takes the next received frame that passes the receive filter, if any
     pub fn recv(&mut self) -> Option<Vec<u8>> {
-        let packet = self.rx.as_ref()?.try_recv().ok()?;
-        // Capture received packet
-        self.capture_packet(&packet);
-        Some(packet)
+        loop {
+            let packet = self.rx.as_ref()?.try_recv().ok()?;
+            if self.accept(&packet) {
+                // Capture received packet
+                self.capture_packet(&packet);
+                return Some(packet);
+            }
+        }
+    }
+
+    /// Receive filter: frames for our address, broadcasts and subscribed
+    /// multicast groups, never our own frames echoed back
+    fn accept(&mut self, packet: &[u8]) -> bool {
+        if packet.len() < 14 {
+            self.rx_stats.filtered += 1;
+            return false;
+        }
+        let dest: [u8; 6] = packet[0..6].try_into().unwrap();
+        let src: [u8; 6] = packet[6..12].try_into().unwrap();
+        if src == self.mac {
+            self.rx_stats.filtered += 1;
+            false
+        } else if dest == self.mac {
+            self.rx_stats.unicast += 1;
+            true
+        } else if dest == [0xFF; 6] {
+            self.rx_stats.broadcast += 1;
+            true
+        } else if self.multicast_groups.contains(&dest) {
+            self.rx_stats.multicast += 1;
+            true
+        } else {
+            self.rx_stats.filtered += 1;
+            false
+        }
     }
 
     /// Drops all received frames
@@ -210,9 +254,8 @@ impl EthernetPort {
 
     /// Subscribes to a layer 2 multicast group
     pub fn add_multicast(&mut self, mac: [u8; 6]) {
-        let mut groups = self.multicast_groups.write().unwrap();
-        if !groups.contains(&mac) {
-            groups.push(mac);
+        if !self.multicast_groups.contains(&mac) {
+            self.multicast_groups.push(mac);
         }
     }
 
@@ -316,16 +359,23 @@ impl EthernetPort {
             result.push(dbgprop_udec!("RX queue length", rx.len()));
         }
         result.push(dbgprop_group!(
+            "RX filter",
+            vec![
+                dbgprop_udec!("Accepted: unicast", self.rx_stats.unicast),
+                dbgprop_udec!("Accepted: multicast", self.rx_stats.multicast),
+                dbgprop_udec!("Accepted: broadcast", self.rx_stats.broadcast),
+                dbgprop_udec!("Dropped", self.rx_stats.filtered),
+            ]
+        ));
+        result.push(dbgprop_group!(
             "Multicast groups",
-            Vec::from_iter(self.multicast_groups.read().unwrap().iter().map(
-                |mac| dbgprop_string!(
-                    "Member of",
-                    format!(
-                        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-                        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
-                    )
+            Vec::from_iter(self.multicast_groups.iter().map(|mac| dbgprop_string!(
+                "Member of",
+                format!(
+                    "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
                 )
-            ))
+            )))
         ));
         #[cfg(feature = "ethernet_nat")]
         if let Some(stats) = &self.nat_stats {
@@ -400,22 +450,6 @@ impl EthernetPort {
                     dbgprop_udec!(
                         "RX total (bytes)",
                         stats.rx_total_bytes.load(Ordering::Relaxed)
-                    ),
-                    dbgprop_udec!(
-                        "RX accepted: unicast",
-                        stats.rx_unicast.load(Ordering::Relaxed)
-                    ),
-                    dbgprop_udec!(
-                        "RX accepted: multicast",
-                        stats.rx_multicast.load(Ordering::Relaxed)
-                    ),
-                    dbgprop_udec!(
-                        "RX accepted: broadcast",
-                        stats.rx_broadcast.load(Ordering::Relaxed)
-                    ),
-                    dbgprop_udec!(
-                        "RX dropped: filtered",
-                        stats.rx_dropped_filtered.load(Ordering::Relaxed)
                     ),
                     dbgprop_udec!(
                         "RX dropped: too large",

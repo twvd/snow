@@ -429,9 +429,14 @@ mod tests {
         let mut eth = ScsiTargetEthernet::default();
         let tx = eth.port.connect_test_rx();
 
-        tx.send(vec![0x11; 100]).unwrap();
-        tx.send(vec![0x22; 1000]).unwrap();
-        tx.send(vec![0x33; 100]).unwrap();
+        let frame = |len, fill| {
+            let mut f = vec![0xFF; 6];
+            f.resize(len, fill);
+            f
+        };
+        tx.send(frame(100, 0x11)).unwrap();
+        tx.send(frame(1000, 0x22)).unwrap();
+        tx.send(frame(100, 0x33)).unwrap();
 
         // Room for a 100-byte frame, not for the 1000-byte one
         let cmd = [0x08, 0, 0, 0x01, 0x00, 0];
@@ -442,9 +447,9 @@ mod tests {
         let frame_len = 100 + 4;
         assert_eq!(data.len(), 2 * (6 + frame_len));
         assert_eq!(data[5], 0x10);
-        assert_eq!(data[6], 0x11);
+        assert_eq!(data[6 + 6], 0x11);
         assert_eq!(data[6 + frame_len + 5], 0);
-        assert_eq!(data[6 + frame_len + 6], 0x33);
+        assert_eq!(data[6 + frame_len + 6 + 6], 0x33);
         assert_eq!(eth.port.rx_len(), 0);
     }
 }
