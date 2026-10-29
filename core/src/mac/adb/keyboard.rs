@@ -53,8 +53,10 @@ pub struct AdbKeyboard {
 
     event_queue: VecDeque<KeyEvent>,
 
+    /// Keys the guest has been told are down: set as talk register 0
+    /// sends their events, read by talk register 2
     #[serde(with = "BigArray")]
-    keystate: [bool; 256],
+    reported_keys: [bool; 256],
 
     capslock: bool,
 }
@@ -69,7 +71,7 @@ impl AdbKeyboard {
             event_queue: VecDeque::new(),
             address: Self::INITIAL_ADDRESS,
             handler_id: Self::INITIAL_HANDLER_ID,
-            keystate: [false; 256],
+            reported_keys: [false; 256],
             capslock: false,
         }
     }
@@ -81,7 +83,7 @@ impl AdbDevice for AdbKeyboard {
         match event {
             AdbEvent::Key(ke) => self.event_queue.push_back(*ke),
             AdbEvent::ReleaseAll => {
-                for (sc, _) in self.keystate.iter().enumerate().filter(|(_, s)| **s) {
+                for (sc, _) in self.reported_keys.iter().enumerate().filter(|(_, s)| **s) {
                     self.event_queue
                         .push_back(KeyEvent::KeyUp(sc.try_into().unwrap(), Self::KEYMAP));
                 }
@@ -116,7 +118,7 @@ impl AdbDevice for AdbKeyboard {
                     {
                         match ke {
                             KeyEvent::KeyDown(sc, _) => {
-                                self.keystate[sc as usize] = true;
+                                self.reported_keys[sc as usize] = true;
                                 if sc == SC_CAPSLOCK {
                                     // Capslock is a mechanical sticking key
                                     self.capslock = !self.capslock;
@@ -131,7 +133,7 @@ impl AdbDevice for AdbKeyboard {
                                 }
                             }
                             KeyEvent::KeyUp(sc, _) => {
-                                self.keystate[sc as usize] = false;
+                                self.reported_keys[sc as usize] = false;
                                 if sc != SC_CAPSLOCK {
                                     response.push(0x80 | sc);
                                 }
@@ -149,23 +151,26 @@ impl AdbDevice for AdbKeyboard {
                 // The key/modifier bits of register 2 are ACTIVE LOW
                 AdbKeyboardReg2(0xFFFF)
                     // LED state bits (0..2) are host-controlled and active-high
-                    .with_led_numlock(self.keystate[SC_NUMLOCK as usize])
+                    .with_led_numlock(self.reported_keys[SC_NUMLOCK as usize])
                     .with_led_capslock(self.capslock)
-                    .with_led_scrolllock(self.keystate[SC_SCROLLOCK as usize])
-                    .with_numlock(!self.keystate[SC_NUMLOCK as usize])
+                    .with_led_scrolllock(self.reported_keys[SC_SCROLLOCK as usize])
+                    .with_numlock(!self.reported_keys[SC_NUMLOCK as usize])
                     .with_capslock(!self.capslock)
-                    .with_scrolllock(!self.keystate[SC_SCROLLOCK as usize])
-                    .with_cmd(!self.keystate[SC_COMMAND as usize])
+                    .with_scrolllock(!self.reported_keys[SC_SCROLLOCK as usize])
+                    .with_cmd(!self.reported_keys[SC_COMMAND as usize])
                     .with_control(
-                        !(self.keystate[SC_LCTRL as usize] || self.keystate[SC_RCTRL as usize]),
+                        !(self.reported_keys[SC_LCTRL as usize]
+                            || self.reported_keys[SC_RCTRL as usize]),
                     )
                     .with_option(
-                        !(self.keystate[SC_LOPTION as usize] || self.keystate[SC_ROPTION as usize]),
+                        !(self.reported_keys[SC_LOPTION as usize]
+                            || self.reported_keys[SC_ROPTION as usize]),
                     )
                     .with_shift(
-                        !(self.keystate[SC_LSHIFT as usize] || self.keystate[SC_RSHIFT as usize]),
+                        !(self.reported_keys[SC_LSHIFT as usize]
+                            || self.reported_keys[SC_RSHIFT as usize]),
                     )
-                    .with_delete(!self.keystate[SC_DELETE as usize])
+                    .with_delete(!self.reported_keys[SC_DELETE as usize])
                     .to_be_bytes(),
             ),
             3 => AdbDeviceResponse::from_iter(
