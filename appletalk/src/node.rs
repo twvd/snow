@@ -5,6 +5,7 @@
 
 use crossbeam_channel::{Receiver, Sender};
 
+use crate::afp::{Afp, AfpSettings, MaxVersion};
 use crate::asp::Asp;
 use crate::atp::{ATP_SOCKET, ATP_TYPE, Atp};
 use crate::ddp::{DdpShortHeader, build_short, parse_short};
@@ -33,11 +34,22 @@ pub struct Node {
 
 impl Node {
     /// Create a node with the given node ID (its LLAP address on the
-    /// link), network number (0 on a nonextended network) and packet
-    /// channels. The node registers "Snow:AFPServer@*" on the NBP
-    /// socket, the entity the Chooser will show once the AFP server
-    /// exists.
-    pub fn new(node: u8, net: u16, rx: Receiver<Packet>, tx: Sender<Packet>) -> Self {
+    /// link) and network number (0 on a nonextended network). The AFP
+    /// server shares the given directory as a volume (the
+    /// SNOW_AFP_ROOT environment variable when unset) under the given
+    /// volume name (default "Snow"), advertising every AFP version up
+    /// to the given maximum.
+    #[allow(clippy::too_many_arguments)] // the AFP server's configuration
+    pub fn new(
+        node: u8,
+        net: u16,
+        rx: Receiver<Packet>,
+        tx: Sender<Packet>,
+        share_root: Option<std::path::PathBuf>,
+        volume_name: Option<String>,
+        max_version: MaxVersion,
+        settings: AfpSettings,
+    ) -> Self {
         Self {
             rx,
             tx,
@@ -55,7 +67,12 @@ impl Node {
                 }],
             ),
             atp: Atp::new(),
-            asp: Asp::new(&[]),
+            asp: Asp::new(Afp::new_with(
+                share_root,
+                volume_name,
+                max_version,
+                settings,
+            )),
         }
     }
 
@@ -198,14 +215,32 @@ mod tests {
         let (_, rx) = crossbeam_channel::bounded(16);
         let (reply_tx, reply_rx) = crossbeam_channel::bounded(16);
         drop(reply_rx);
-        Node::new(0xD7, 0, rx, reply_tx)
+        Node::new(
+            0xD7,
+            0,
+            rx,
+            reply_tx,
+            None,
+            None,
+            MaxVersion::default(),
+            AfpSettings::default(),
+        )
     }
 
     #[test]
     fn test_echo() {
         let (tx, rx) = crossbeam_channel::bounded(16);
         let (reply_tx, reply_rx) = crossbeam_channel::bounded(16);
-        let node = Node::new(0xD7, 0, rx, reply_tx);
+        let node = Node::new(
+            0xD7,
+            0,
+            rx,
+            reply_tx,
+            None,
+            None,
+            MaxVersion::default(),
+            AfpSettings::default(),
+        );
 
         tx.send(request(TEST_SOCKET, b"SNT1hello")).unwrap();
         drop(tx);
@@ -225,7 +260,16 @@ mod tests {
     fn test_unknown_socket() {
         let (tx, rx) = crossbeam_channel::bounded(16);
         let (reply_tx, reply_rx) = crossbeam_channel::bounded(16);
-        let node = Node::new(0xD7, 0, rx, reply_tx);
+        let node = Node::new(
+            0xD7,
+            0,
+            rx,
+            reply_tx,
+            None,
+            None,
+            MaxVersion::default(),
+            AfpSettings::default(),
+        );
 
         tx.send(request(0x40, b"SNT1hello")).unwrap();
         drop(tx);
@@ -261,10 +305,50 @@ mod tests {
     }
 
     #[test]
+    fn test_asp_session_and_command() {
+        let mut node = node();
+
+        // Open a session on the ATP socket, then send a command
+        let mut payload = vec![0x40 | 0x20, 0x01, 0x12, 0x34, 4, 0x64, 0, 1];
+        let open = Packet {
+            kind: DdpHeaderKind::Short,
+            node: 0x20,
+            datagram: build_short(ATP_SOCKET, 0x30, ATP_TYPE, &payload),
+        };
+        let reply = &node.handle(&open).unwrap()[0];
+        assert_eq!(reply.datagram[3], ATP_SOCKET);
+        assert_eq!(reply.datagram[5], 0x80 | 0x10 | 0x20); // TResp+EOM+XO
+        assert_eq!(reply.datagram[9], ATP_SOCKET); // SSS
+        assert_eq!(reply.datagram[10], 1); // session ID
+
+        // A command on session 1: FPGetSrvrParms returns the volume list
+        payload = vec![0x40 | 0x20, 0x01, 0x12, 0x35, 2, 1, 0, 1, 16, 0];
+        let cmd = Packet {
+            kind: DdpHeaderKind::Short,
+            node: 0x20,
+            datagram: build_short(ATP_SOCKET, 0x30, ATP_TYPE, &payload),
+        };
+        let reply = &node.handle(&cmd).unwrap()[0];
+        assert_eq!(reply.datagram[9..13], [0, 0, 0, 0]); // command result
+        assert_eq!(reply.datagram[17], 1); // one volume
+        assert_eq!(reply.datagram[19], 4); // volume name length
+        assert_eq!(&reply.datagram[20..24], b"Snow");
+    }
+
+    #[test]
     fn test_bad_magic() {
         let (tx, rx) = crossbeam_channel::bounded(16);
         let (reply_tx, reply_rx) = crossbeam_channel::bounded(16);
-        let node = Node::new(0xD7, 0, rx, reply_tx);
+        let node = Node::new(
+            0xD7,
+            0,
+            rx,
+            reply_tx,
+            None,
+            None,
+            MaxVersion::default(),
+            AfpSettings::default(),
+        );
 
         tx.send(request(TEST_SOCKET, b"NOPE")).unwrap();
         drop(tx);

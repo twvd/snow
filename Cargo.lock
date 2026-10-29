@@ -4934,7 +4934,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
+ "encoding_rs",
+ "libc",
  "log",
+ "serde",
+ "unicode-normalization",
 ]
 
 [[package]]
