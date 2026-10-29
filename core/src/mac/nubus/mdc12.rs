@@ -102,7 +102,7 @@ where
             ramdac_ctrl: RamdacCtrlReg(0),
             vblank_irq: false,
             vblank_enable: false,
-            vram: vec![0; 0x1FFFFF],
+            vram: vec![0; 0x20_0000],
             toggle: false,
             vblank_ticks: 0,
             palette: vec![0; 256],
