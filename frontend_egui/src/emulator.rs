@@ -802,6 +802,30 @@ impl EmulatorState {
         sender.send(EmulatorCommand::EjectIieDisk(drive)).unwrap();
     }
 
+    /// Whether a UniDisk 3.5 is connected to the Apple IIe Card.
+    pub fn iie_has_unidisk(&self) -> bool {
+        self.iie_card.is_some_and(|s| s.has_unidisk())
+    }
+
+    /// Loads an 800K (or 400K) ProDOS-order image into the IIe card's
+    /// UniDisk 3.5.
+    pub fn load_iie_unidisk(&self, path: &Path) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender
+            .send(EmulatorCommand::InsertIieUniDisk(path.to_path_buf()))
+            .unwrap();
+    }
+
+    /// Ejects the IIe card's UniDisk 3.5.
+    pub fn eject_iie_unidisk(&self) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender.send(EmulatorCommand::EjectIieUniDisk).unwrap();
+    }
+
     /// Loads the included toolbox floppy.
     pub fn load_toolbox_floppy(&self) -> bool {
         let Some(ref sender) = self.cmdsender else {

@@ -36,6 +36,7 @@ fn iie_disk_device_name(device: IieDiskDevice) -> &'static str {
     match device {
         IieDiskDevice::None => "None",
         IieDiskDevice::Apple525 => "Apple 5.25 Drive",
+        IieDiskDevice::UniDisk35 => "UniDisk 3.5",
     }
 }
 
@@ -890,7 +891,11 @@ impl ModelSelectionDialog {
                 egui::ComboBox::new(egui::Id::new("IIe first drive"), "")
                     .selected_text(iie_disk_device_name(settings.disk_chain[0]))
                     .show_ui(ui, |ui| {
-                        for device in [IieDiskDevice::None, IieDiskDevice::Apple525] {
+                        for device in [
+                            IieDiskDevice::None,
+                            IieDiskDevice::Apple525,
+                            IieDiskDevice::UniDisk35,
+                        ] {
                             ui.selectable_value(
                                 &mut settings.disk_chain[0],
                                 device,

@@ -1143,6 +1143,68 @@ impl Tickable for Emulator {
                             card.eject_disk(drive);
                         }
                     }
+                    EmulatorCommand::InsertIieUniDisk(path) => {
+                        match std::fs::read(&path) {
+                            Ok(bytes) => {
+                                // A 2IMG header carries the lock flag; a
+                                // raw image is the blocks alone
+                                let (data, locked) = if TwoImg::detect(&bytes) {
+                                    match TwoImg::parse(&bytes) {
+                                        Ok(img) => (img.data.to_vec(), img.locked),
+                                        Err(e) => {
+                                            self.user_error(&format!(
+                                                "Cannot read '{}': {}",
+                                                path.display(),
+                                                e
+                                            ));
+                                            continue;
+                                        }
+                                    }
+                                } else {
+                                    (bytes, false)
+                                };
+                                let card = match &mut self.config {
+                                    EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
+                                    EmulatorConfig::MacLCFpu(inner) => inner.bus.iie_card_mut(),
+                                    EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
+                                    EmulatorConfig::MacLCIIFpu(inner) => inner.bus.iie_card_mut(),
+                                    _ => None,
+                                };
+                                match card {
+                                    Some(card) => {
+                                        if let Err(e) = card.insert_unidisk(data, locked) {
+                                            self.user_error(&format!(
+                                                "Cannot insert UniDisk 3.5 image '{}': {}",
+                                                path.display(),
+                                                e
+                                            ));
+                                        }
+                                    }
+                                    None => self.user_error("No Apple IIe Card installed"),
+                                }
+                            }
+                            Err(e) => {
+                                self.user_error(&format!(
+                                    "Cannot read '{}': {}",
+                                    path.display(),
+                                    e
+                                ));
+                            }
+                        }
+                        self.status_update()?;
+                    }
+                    EmulatorCommand::EjectIieUniDisk => {
+                        let card = match &mut self.config {
+                            EmulatorConfig::MacLC(inner) => inner.bus.iie_card_mut(),
+                            EmulatorConfig::MacLCFpu(inner) => inner.bus.iie_card_mut(),
+                            EmulatorConfig::MacLCII(inner) => inner.bus.iie_card_mut(),
+                            EmulatorConfig::MacLCIIFpu(inner) => inner.bus.iie_card_mut(),
+                            _ => None,
+                        };
+                        if let Some(card) = card {
+                            card.eject_unidisk();
+                        }
+                    }
                     EmulatorCommand::InsertFloppyImage(drive, mut img, wp) => {
                         if wp {
                             img.set_force_wp();

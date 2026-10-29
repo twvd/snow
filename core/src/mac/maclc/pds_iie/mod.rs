@@ -87,6 +87,7 @@
 
 pub mod cpu;
 pub mod disk;
+pub mod unidisk;
 
 use std::cell::RefCell;
 
@@ -112,6 +113,8 @@ pub enum IieDiskDevice {
     None,
     /// An Apple 5.25 Drive
     Apple525,
+    /// A UniDisk 3.5
+    UniDisk35,
 }
 
 /// Settings of the Apple IIe Card, chosen with the machine
@@ -122,7 +125,8 @@ pub struct IieCardSettings {
     /// the Option Panel configuration
     pub security_jumper: bool,
     /// The devices on the external disk port, in daisy-chain order.
-    /// The second device plugs into the first.
+    /// A UniDisk 3.5 must come first; the second device plugs into
+    /// the first.
     pub disk_chain: [IieDiskDevice; 2],
 }
 
@@ -136,13 +140,19 @@ impl Default for IieCardSettings {
 }
 
 impl IieCardSettings {
-    /// The number of 5.25" drives on the external disk port, which the
-    /// IIe numbers in chain order.
+    /// The number of 5.25" drives on the external disk port. The IIe
+    /// numbers them in chain order, so with a UniDisk first the 5.25"
+    /// drive behind it is drive 1.
     pub fn drives_525(&self) -> usize {
         self.disk_chain
             .iter()
             .filter(|&&d| d == IieDiskDevice::Apple525)
             .count()
+    }
+
+    /// Whether a UniDisk 3.5 is on the external disk port.
+    pub fn has_unidisk(&self) -> bool {
+        self.disk_chain[0] == IieDiskDevice::UniDisk35
     }
 }
 
@@ -1531,7 +1541,8 @@ impl PdsIIeCard {
     /// firmware and sets control register 2 bit 7 to run it.
     pub fn with_settings(settings: &IieCardSettings) -> Self {
         let cpu = Cpu::new(PdsIIeBus::new(), Variant::M65C02);
-        cpu.bus.state.borrow_mut().disk = DiskII::new(settings.drives_525());
+        cpu.bus.state.borrow_mut().disk =
+            DiskII::new(settings.drives_525(), settings.has_unidisk());
         Self {
             cpu,
             data_out: 0,
@@ -1880,6 +1891,28 @@ impl PdsIIeCard {
     pub fn eject_disk(&mut self, drive: usize) {
         self.cpu.bus.state.borrow_mut().disk.insert(drive, None);
         log::debug!("IIe Card 5.25\" disk ejected from drive {}", drive + 1);
+    }
+
+    /// Inserts a 400K or 800K block image (ProDOS order) into the
+    /// UniDisk 3.5.  Writes from the IIe stay in memory.
+    pub fn insert_unidisk(&mut self, data: Vec<u8>, locked: bool) -> Result<()> {
+        let len = data.len();
+        let mut s = self.cpu.bus.state.borrow_mut();
+        let Some(unidisk) = &mut s.disk.unidisk else {
+            bail!("no UniDisk 3.5 is connected");
+        };
+        if !unidisk.insert(data, locked) {
+            bail!("not a 400K or 800K block image ({} bytes)", len);
+        }
+        log::debug!("IIe Card UniDisk 3.5 disk inserted ({} bytes)", len);
+        Ok(())
+    }
+
+    /// Ejects the UniDisk 3.5's disk.
+    pub fn eject_unidisk(&mut self) {
+        if let Some(unidisk) = &mut self.cpu.bus.state.borrow_mut().disk.unidisk {
+            unidisk.eject();
+        }
     }
 
     /// Loads firmware into a bank through the host path, at the load
@@ -3716,6 +3749,167 @@ mod tests {
             s.ram[MAIN_RAM + 0x0300],
             0xAA,
             "the slot-5 send routine must time out with C=1"
+        );
+    }
+
+    /// Calls a routine of the slot 5 `$C800` firmware with zero page
+    /// values set, like its own callers do, and returns the carry.
+    /// The program selects slot 5's `$C800` image, stores the values,
+    /// calls `routine`, saves P at `$0300` and spins; motor switch
+    /// traps are acked on the way.
+    fn call_slot5(card: &mut PdsIIeCard, zp: &[(u8, u8)], routine: u16) -> bool {
+        let mut prog = vec![0xAD, 0x00, 0xC5];
+        for &(addr, val) in zp {
+            prog.extend_from_slice(&[0xA9, val, 0x85, addr]);
+        }
+        prog.extend_from_slice(&[0x20, routine as u8, (routine >> 8) as u8]);
+        // PHP / PLA / STA $0300 / JMP (spin).
+        let spin = 0x2000 + prog.len() as u16 + 5;
+        prog.extend_from_slice(&[0x08, 0x68, 0x8D, 0x00, 0x03]);
+        prog.extend_from_slice(&[0x4C, spin as u8, (spin >> 8) as u8]);
+        load_program(card, 0x2000, &prog);
+        run_program(card, 0x2000);
+        for _ in 0..2_000_000 {
+            if card.suspended() {
+                card.host_write(0x0C, 1, 0x00).unwrap();
+            }
+            card.tick(16, ()).unwrap();
+            if card.cpu.regs.pc == spin {
+                let s = card.cpu.bus.state.borrow();
+                return s.ram[MAIN_RAM + 0x0300] & 0x01 != 0;
+            }
+        }
+        panic!("the slot 5 routine at {:04X} never returned", routine);
+    }
+
+    /// The card's own slot 5 SmartPort code against the UniDisk: the
+    /// bus reset and INIT loop of `$CE4D`, then READBLOCK, WRITEBLOCK
+    /// and READBLOCK through the `$C9A8` send and the `$CB05` receive.
+    /// The firmware is Apple's and not in the repository: point
+    /// `SNOW_IIE_SLOT5_C8` at the 2 KB slot 5 `$C800` image to run it.
+    #[test]
+    fn the_slot5_firmware_talks_to_the_unidisk() {
+        let Some(path) = std::env::var_os("SNOW_IIE_SLOT5_C8") else {
+            eprintln!("SNOW_IIE_SLOT5_C8 not set, skipping");
+            return;
+        };
+        let c8 = std::fs::read(path).unwrap();
+        let init = [
+            (0x42, 0x05),
+            (0x43, 0x02),
+            (0x54, 0x42),
+            (0x55, 0x00),
+            (0x5A, 0x01),
+            (0x5B, 0x80),
+            (0x4D, 0x09),
+            (0x4E, 0x00),
+        ];
+
+        // Without a UniDisk (a 5.25" drive or nothing on the port) the
+        // INIT send fails: no devices.
+        for chain in [
+            [IieDiskDevice::Apple525, IieDiskDevice::None],
+            [IieDiskDevice::None, IieDiskDevice::None],
+        ] {
+            let settings = IieCardSettings {
+                disk_chain: chain,
+                ..IieCardSettings::default()
+            };
+            let mut card = PdsIIeCard::with_settings(&settings);
+            card.load_firmware(0xC000 + 5 * 0x800, &c8).unwrap();
+            call_slot5(&mut card, &[], 0xCEC1);
+            assert!(
+                call_slot5(&mut card, &init, 0xC9A8),
+                "INIT taken by {:?}",
+                chain
+            );
+        }
+
+        let settings = IieCardSettings {
+            disk_chain: [IieDiskDevice::UniDisk35, IieDiskDevice::Apple525],
+            ..IieCardSettings::default()
+        };
+        let mut card = PdsIIeCard::with_settings(&settings);
+        card.load_firmware(0xC000 + 5 * 0x800, &c8).unwrap();
+        let mut img = vec![0u8; 1600 * 512];
+        for (i, b) in img.iter_mut().enumerate() {
+            *b = (i / 512 + i * 3) as u8;
+        }
+        card.insert_unidisk(img.clone(), false).unwrap();
+
+        // `$CEC1`: the bus reset.  Then INIT for unit 1 ($CE5E–$CE91):
+        // command 5, 2 parameters, from the buffer at $0042, 9 bytes.
+        call_slot5(&mut card, &[], 0xCEC1);
+        assert!(!call_slot5(&mut card, &init, 0xC9A8), "INIT was not taken");
+        assert!(!call_slot5(&mut card, &[], 0xCB05), "no answer to INIT");
+        // The status: nonzero, the last device.
+        assert_ne!(card.cpu.bus.state.borrow().ram[MAIN_RAM + 0x4D], 0);
+        // INIT for unit 2 times out: one device.
+        let mut init2 = init;
+        init2[4] = (0x5A, 0x02);
+        assert!(call_slot5(&mut card, &init2, 0xC9A8), "INIT 2 was taken");
+
+        // READBLOCK 5 into $1000.
+        let readblock = |block: u8| {
+            [
+                (0x42, 0x01),
+                (0x43, 0x03),
+                (0x44, 0x00),
+                (0x45, 0x10),
+                (0x46, block),
+                (0x47, 0x00),
+                (0x48, 0x00),
+                (0x54, 0x42),
+                (0x55, 0x00),
+                (0x5A, 0x01),
+                (0x5B, 0x80),
+                (0x4D, 0x09),
+                (0x4E, 0x00),
+            ]
+        };
+        let receive = [(0x54, 0x00), (0x55, 0x10)];
+        assert!(!call_slot5(&mut card, &readblock(5), 0xC9A8));
+        assert!(!call_slot5(&mut card, &receive, 0xCB05));
+        {
+            let s = card.cpu.bus.state.borrow();
+            assert_eq!(s.ram[MAIN_RAM + 0x4D], 0, "READBLOCK status");
+            assert_eq!(
+                &s.ram[MAIN_RAM + 0x1000..MAIN_RAM + 0x1200],
+                &img[5 * 512..6 * 512]
+            );
+        }
+
+        // WRITEBLOCK 7 from $1000 (block 5's data): the command, the
+        // 512-byte data packet, the status.
+        let mut writeblock = readblock(7);
+        writeblock[0] = (0x42, 0x02);
+        assert!(!call_slot5(&mut card, &writeblock, 0xC9A8));
+        let data = [
+            (0x54, 0x00),
+            (0x55, 0x10),
+            (0x5B, 0x82),
+            (0x4D, 0x00),
+            (0x4E, 0x02),
+        ];
+        assert!(
+            !call_slot5(&mut card, &data, 0xC9A8),
+            "the data packet was not taken"
+        );
+        assert!(!call_slot5(
+            &mut card,
+            &[(0x54, 0x00), (0x55, 0x20)],
+            0xCB05
+        ));
+        assert_eq!(card.cpu.bus.state.borrow().ram[MAIN_RAM + 0x4D], 0);
+
+        // READBLOCK 7 into $1000 again, after clearing it.
+        card.cpu.bus.state.borrow_mut().ram[MAIN_RAM + 0x1000..MAIN_RAM + 0x1200].fill(0);
+        assert!(!call_slot5(&mut card, &readblock(7), 0xC9A8));
+        assert!(!call_slot5(&mut card, &receive, 0xCB05));
+        let s = card.cpu.bus.state.borrow();
+        assert_eq!(
+            &s.ram[MAIN_RAM + 0x1000..MAIN_RAM + 0x1200],
+            &img[5 * 512..6 * 512]
         );
     }
 
