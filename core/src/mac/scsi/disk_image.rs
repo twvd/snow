@@ -63,9 +63,8 @@ impl FileDiskImage {
 
             use std::fs;
 
-            let disk = fs::read(filename)
-                .with_context(|| format!("Failed to open file {}", filename.display()))?;
-            disk
+            fs::read(filename)
+                .with_context(|| format!("Failed to open file {}", filename.display()))?
         };
 
         Ok(Self {
