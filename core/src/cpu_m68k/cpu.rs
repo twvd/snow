@@ -4369,7 +4369,7 @@ where
 
         // The quotient must fit in 32 bits; the operands are left unchanged
         if overflow {
-            debug!("DIV.l overflow");
+            trace!("DIV.l overflow");
             self.regs.sr.set_v(true);
             self.regs.sr.set_c(false);
             return Ok(());
