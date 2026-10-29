@@ -2087,7 +2087,11 @@ impl SnowGui {
             self.afp_advanced_open = true;
         }
         if enabled {
-            ui.label("The volume is read-only: files can be copied off, not onto the server.");
+            if self.workspace.afp_settings.read_only {
+                ui.label("The volume is read-only: files can be copied off, not onto the server.");
+            } else {
+                ui.label("The volume is writable.");
+            }
             ui.separator();
             ui.label("In the guest, make AppleTalk active on the printer port");
             ui.label("and use the Chooser to mount the volume.");
@@ -3580,7 +3584,31 @@ impl eframe::App for SnowGui {
                     );
                     ui.checkbox(&mut s.probe_apple_single, "AppleSingle files");
                     ui.separator();
+                    ui.checkbox(&mut s.read_only, "Read only");
+                    if !s.read_only {
+                        use snow_core::mac::serial_bridge::AfpMetaBackend::*;
+                        ui.colored_label(
+                            egui::Color32::YELLOW,
+                            match s.write_backend {
+                                AppleDouble => {
+                                    "Writes will create .AppleDouble metadata folders in \
+the shared directory."
+                                }
+                                AppleSingle => {
+                                    "Writes convert the files themselves into AppleSingle \
+containers (slower, self-contained)."
+                                }
+                            },
+                        );
+                        ui.label("Metadata format for writes:");
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(&mut s.write_backend, AppleDouble, "AppleDouble");
+                            ui.selectable_value(&mut s.write_backend, AppleSingle, "AppleSingle");
+                        });
+                    }
+                    ui.separator();
                     ui.checkbox(&mut s.wire_debug, "Wire debug logging (hex dumps)");
+                    ui.small("The LLAP/DDP dumps need the afp_debug build; without it this only affects the ATP request log.");
                     changed = self.workspace.afp_settings != self.afp_advanced_snapshot;
                 });
             if open != self.afp_advanced_open {
