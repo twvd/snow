@@ -47,7 +47,7 @@ fn pack_registers() {
 
     // ASCII "12" to packed BCD
     let cpu = run(0x8340, 0x3030u16.wrapping_neg(), |cpu| {
-        cpu.regs.write_d::<Long>(0, 0x3132)
+        cpu.regs.write_d::<Long>(0, 0x3132);
     });
     assert_eq!(cpu.regs.read_d::<Byte>(1), 0x12);
 }
