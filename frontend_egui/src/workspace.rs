@@ -4,6 +4,7 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use crate::emulator::{EmulatorInitArgs, ScsiTarget};
+use crate::joystick::JoyBindings;
 use crate::shader_pipeline::ShaderConfig;
 use crate::util::relativepath::RelativePath;
 use crate::widgets::framebuffer::ScalingAlgorithm;
@@ -306,6 +307,26 @@ pub struct Workspace {
 
     /// Serial bridges per SCC channel (index 0 = Channel A, index 1 = Channel B)
     pub serial_bridges: [Option<SerialBridgeConfig>; 2],
+
+    /// The Apple IIe joystick bindings; None to use those of the settings
+    #[serde(deserialize_with = "deserialize_bindings_lenient")]
+    pub iie_joystick_bindings: Option<JoyBindings>,
+}
+
+/// Custom deserializer for the joystick bindings: None (the settings'
+/// bindings) if they cannot be parsed
+fn deserialize_bindings_lenient<'de, D>(deserializer: D) -> Result<Option<JoyBindings>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_else(|e| {
+        log::warn!(
+            "Invalid Apple IIe joystick bindings in the workspace: {}",
+            e
+        );
+        None
+    }))
 }
 
 impl Default for Workspace {
@@ -343,6 +364,7 @@ impl Default for Workspace {
             shader_configs: Vec::new(),
             ethernet_link_type: WorkspaceEthernetLinkType::default(),
             serial_bridges: [None, None],
+            iie_joystick_bindings: None,
         }
     }
 }
