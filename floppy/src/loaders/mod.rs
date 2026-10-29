@@ -12,6 +12,7 @@ mod moof;
 mod pfi;
 mod pri;
 mod raw;
+mod twoimg;
 
 use std::path::Path;
 
@@ -26,6 +27,7 @@ pub use moof::Moof;
 pub use pfi::PFI;
 pub use pri::PRI;
 pub use raw::RawImage;
+pub use twoimg::TwoImg;
 
 use crate::FloppyImage;
 
