@@ -23,7 +23,7 @@ use snow_core::emulator::comm::{
 use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus};
 use snow_core::emulator::{Emulator, MouseMode};
 use snow_core::keymap::Scancode;
-use snow_core::mac::maclc::pds_iie::IieCardSettings;
+use snow_core::mac::maclc::pds_iie::{GamePort, IieCardSettings};
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
@@ -79,7 +79,7 @@ pub struct EmulatorInitResult {
 }
 
 /// Initialization arguments for the emulator, minus filenames
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct EmulatorInitArgs {
     /// Disable audio, synchronize to video
@@ -119,11 +119,38 @@ pub struct EmulatorInitArgs {
     /// Apple IIe Card settings (used if `iie_card` is set)
     pub iie_card_settings: IieCardSettings,
 
+    /// Apple IIe Card controller emulation: the IIe always has a
+    /// joystick, and host keys can drive it (used if `iie_card` is set;
+    /// on by default)
+    pub iie_joystick_emulation: bool,
+
     /// Selected NuBus video card (if applicable)
     pub video_card: NubusDeviceKind,
 
     /// Overclock
     pub overclock: Option<u64>,
+}
+
+impl Default for EmulatorInitArgs {
+    fn default() -> Self {
+        Self {
+            audio_disabled: Default::default(),
+            monitor: Default::default(),
+            mouse_disabled: Default::default(),
+            mouse_mode: Default::default(),
+            start_fastforward: Default::default(),
+            ram_size: Default::default(),
+            override_fdd_type: Default::default(),
+            pmmu_enabled: Default::default(),
+            fpu_enabled: Default::default(),
+            vram_size: Default::default(),
+            iie_card: Default::default(),
+            iie_card_settings: Default::default(),
+            iie_joystick_emulation: true,
+            video_card: Default::default(),
+            overclock: Default::default(),
+        }
+    }
 }
 
 /// Manages the state of the emulator and feeds input to the GUI
@@ -792,6 +819,14 @@ impl EmulatorState {
         sender
             .send(EmulatorCommand::InsertIieDisk(drive, path.to_path_buf()))
             .unwrap();
+    }
+
+    /// Sets the joystick and buttons on the Apple IIe card's game port.
+    pub fn set_iie_game_port(&self, port: GamePort) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender.send(EmulatorCommand::SetIieGamePort(port)).unwrap();
     }
 
     /// Ejects one of the Apple IIe card's 5.25" drives (0 or 1).
