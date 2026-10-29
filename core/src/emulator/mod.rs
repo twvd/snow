@@ -590,6 +590,10 @@ impl Emulator {
 
         let mut config = load_state_from(f, tmpdir)?;
         config.after_deserialize(renderer);
+        // The keys and buttons held down when the state was saved are not
+        // any more, or we cannot know: release them rather than leave them
+        // stuck.
+        config.input_release_all();
 
         let model = config.model();
 
