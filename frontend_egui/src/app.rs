@@ -2159,6 +2159,10 @@ impl SnowGui {
                     // AFP volume names are at most 27 characters
                     .char_limit(27),
             );
+            // What cannot be a volume name on the wire never gets in
+            self.workspace
+                .afp_volume_name
+                .retain(snow_core::mac::serial_bridge::afp_volume_name_char_ok);
             // The bridge is rebuilt on focus loss and only when the
             // name really changed — not on every keystroke (a rebuild
             // restarts the scan and drops the guest's session)
@@ -2211,7 +2215,11 @@ impl SnowGui {
             self.afp_advanced_open = true;
         }
         if enabled {
-            ui.label("The volume is read-only: files can be copied off, not onto the server.");
+            if self.workspace.afp_settings.read_only {
+                ui.label("The volume is read-only: files can be copied off, not onto the server.");
+            } else {
+                ui.label("The volume is writable.");
+            }
             ui.separator();
             ui.label("In the guest, make AppleTalk active on the printer port");
             ui.label("and use the Chooser to mount the volume.");
@@ -3080,8 +3088,14 @@ impl SnowGui {
             // Bridges given on the command line take precedence over the workspace
             for (idx, ch) in [SccCh::A, SccCh::B].into_iter().enumerate() {
                 if self.pending_serial_bridges[idx].is_none()
-                    && let Some(config) = self.workspace.serial_bridges[idx].clone()
+                    && let Some(mut config) = self.workspace.serial_bridges[idx].clone()
                 {
+                    // The folder as the workspace holds it, relative to
+                    // itself: the workspace may have moved since this saved
+                    #[cfg(feature = "afp_server")]
+                    if let SerialBridgeConfig::AppleTalk { root, .. } = &mut config {
+                        *root = self.workspace.get_afp_shared_dir();
+                    }
                     let _ = self.emu.enable_serial_bridge(ch, config);
                 }
             }
@@ -3898,7 +3912,17 @@ impl eframe::App for SnowGui {
                         "AppleDouble (._ and .AppleDouble)",
                     );
                     ui.separator();
+                    ui.checkbox(&mut s.read_only, "Read only");
+                    if !s.read_only {
+                        ui.colored_label(
+                            egui::Color32::YELLOW,
+                            "Writes will create .AppleDouble metadata folders in \
+the shared directory.",
+                        );
+                    }
+                    ui.separator();
                     ui.checkbox(&mut s.wire_debug, "Wire debug logging (hex dumps)");
+                    ui.small("Logs every LocalTalk frame and AFP command, for protocol diagnosis.");
                     changed = self.workspace.afp_settings != self.afp_advanced_snapshot;
                 });
             if open != self.afp_advanced_open {
