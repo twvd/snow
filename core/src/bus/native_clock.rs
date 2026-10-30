@@ -205,6 +205,11 @@ impl<const C16M: bool> NativeClock<C16M> {
         self.c16m_clockgen = ClockScaler::new(cpu_freq, C16M_FREQUENCY);
     }
 
+    /// Native frequency, in Hz
+    pub fn native_frequency(&self) -> Ticks {
+        self.native_freq
+    }
+
     /// True when the CPU runs faster than the native clock
     pub fn is_overclocking(&self) -> bool {
         self.cpu_freq != self.native_freq
