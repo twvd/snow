@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use either::Either;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -630,7 +630,7 @@ impl Instruction {
         (M68000, 0b0100_0110_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NOT_b),
         (M68000, 0b0100_0110_0100_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NOT_w),
         (M68000, 0b0100_0110_1000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NOT_l),
-        (M68000, 0b0100_1001_1100_0000, 0b1111_1111_1111_1000, InstructionMnemonic::EXTB_l),
+        (M68020, 0b0100_1001_1100_0000, 0b1111_1111_1111_1000, InstructionMnemonic::EXTB_l),
         (M68000, 0b0100_1000_1000_0000, 0b1111_1111_1111_1000, InstructionMnemonic::EXT_w),
         (M68000, 0b0100_1000_1100_0000, 0b1111_1111_1111_1000, InstructionMnemonic::EXT_l),
         (M68000, 0b0100_1000_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::NBCD),
@@ -871,7 +871,7 @@ impl Instruction {
             (0b111, 0b010) => Ok(AddressingMode::PCDisplacement),
             (0b111, 0b011) => Ok(AddressingMode::PCIndex),
             (0b111, 0b100) => Ok(AddressingMode::Immediate),
-            _ => Err(anyhow!("Invalid addressing mode {:03b} {:03b}", mode, xn)),
+            _ => bail!(CpuError::IllegalInstruction),
         }
     }
 
@@ -941,11 +941,11 @@ impl Instruction {
 
     pub fn needs_extword(&self) -> bool {
         matches!(
-            self.get_addr_mode().unwrap(),
-            AddressingMode::IndirectDisplacement
+            self.get_addr_mode(),
+            Ok(AddressingMode::IndirectDisplacement
                 | AddressingMode::IndirectIndex
                 | AddressingMode::PCDisplacement
-                | AddressingMode::PCIndex
+                | AddressingMode::PCIndex)
         ) || matches!(self.mnemonic, InstructionMnemonic::MOVEC_l)
     }
 
@@ -1018,7 +1018,7 @@ impl Instruction {
             0b01000 => Ok((Register::Dn(self.get_op1()), Register::Dn(self.get_op2()))),
             0b01001 => Ok((Register::An(self.get_op1()), Register::An(self.get_op2()))),
             0b10001 => Ok((Register::Dn(self.get_op1()), Register::An(self.get_op2()))),
-            _ => Err(anyhow!("Invalid EXG mode: {0:b}", mode)),
+            _ => bail!(CpuError::IllegalInstruction),
         }
     }
 
@@ -1286,7 +1286,7 @@ impl Instruction {
     pub fn movec_ctrlreg(&self) -> Result<MovecCtrlReg> {
         debug_assert!(self.mnemonic == InstructionMnemonic::MOVEC_l);
         MovecCtrlReg::from_u16(u16::from(self.get_extword()) & 0xFFF)
-            .context("Invalid control register")
+            .ok_or_else(|| anyhow!(CpuError::IllegalInstruction))
     }
 
     /// Displacement for IndirectIndex modes with full extension words
@@ -1300,7 +1300,7 @@ impl Instruction {
 
         // Base displacement size
         match extword.full_displacement_size() {
-            0b00 => bail!("Reserved displacement size?"),
+            0b00 => bail!(CpuError::IllegalInstruction),
             0b01 => Ok(0),
             0b10 => Ok(fetch()? as i16 as i32),
             0b11 => {

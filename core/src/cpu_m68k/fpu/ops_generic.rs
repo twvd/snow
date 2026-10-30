@@ -7,7 +7,7 @@ use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, IrqSource};
 
-use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_FORMAT_ERROR};
+use crate::cpu_m68k::cpu::{CpuError, CpuM68k, ExceptionGroup, VECTOR_FORMAT_ERROR};
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord};
 use crate::cpu_m68k::fpu::math::FloatMath;
@@ -266,10 +266,8 @@ where
                             0x3D => pow10(1024),
                             0x3E => pow10(2048),
                             0x3F => pow10(4096),
-                            _ => bail!(
-                                "Unimplemented FMOVECR offset ${:02X}",
-                                extword.movecr_offset()
-                            ),
+                            // Reserved, and different per mask set (68881UM FMOVECR)
+                            _ => Float::zero(SEMANTICS_EXTENDED, false),
                         };
 
                         // No ALU operation
@@ -290,10 +288,7 @@ where
                         (self.read_fpu_packed(ea)?, FPU_CYCLES_MEM_PACKED)
                     }
                     _ => {
-                        bail!(
-                            "EA to reg unimplemented src spec {:03b}",
-                            extword.src_spec()
-                        );
+                        bail!(CpuError::IllegalInstruction);
                     }
                 };
 
@@ -478,10 +473,7 @@ where
                         self.write_fpu_packed(ea, &self.regs.fpu.fp[fpx].clone(), k)?;
                     }
                     _ => {
-                        bail!(
-                            "Reg to EA unimplemented dest format {:03b}",
-                            extword.dest_fmt()
-                        );
+                        bail!(CpuError::IllegalInstruction);
                     }
                 }
 
@@ -583,10 +575,7 @@ where
                             .write_d(dn, self.regs.fpu.fp[fpx].as_f32().to_bits());
                     }
                     _ => {
-                        bail!(
-                            "Reg to Dn unimplemented dest format {:03b}",
-                            extword.dest_fmt()
-                        );
+                        bail!(CpuError::IllegalInstruction);
                     }
                 }
 
@@ -606,7 +595,7 @@ where
                 self.op_fmovem(instr, extword)?;
             }
             _ => {
-                bail!("Unimplemented sub-operation {:03b}", extword.subop());
+                bail!(CpuError::IllegalInstruction);
             }
         }
 

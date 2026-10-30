@@ -9,6 +9,7 @@ mod interrupt;
 mod movem;
 mod mull;
 mod no_fpu;
+mod opcode_scan;
 mod pack;
 mod pmmu_atc;
 mod privilege_violation;

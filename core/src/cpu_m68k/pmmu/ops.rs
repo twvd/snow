@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::bus::FC_MASK;
-use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_PRIVILEGE_VIOLATION};
+use crate::cpu_m68k::cpu::{CpuError, CpuM68k, ExceptionGroup, VECTOR_PRIVILEGE_VIOLATION};
 use crate::cpu_m68k::instruction::Instruction;
 use crate::cpu_m68k::pmmu::instruction::{Pmove3Extword, PtestExtword};
 use crate::types::{DoubleLong, Long, Word};
@@ -221,7 +221,7 @@ where
             (0b001, false) => {
                 self.regs.pmmu.pcsr.0 = self.read_ea(instr, instr.get_op2())?;
             }
-            _ => bail!("PMOVE3 invalid Preg: {}", extword.preg()),
+            _ => bail!(CpuError::IllegalInstruction),
         }
 
         Ok(())
@@ -275,7 +275,7 @@ where
                 self.regs.pmmu.crp.0 =
                     DoubleLong::from_be_bytes(self.read_ea_sz::<8>(instr, instr.get_op2())?);
             }
-            _ => bail!("PMOVE 68030 invalid Preg: {}", extword.preg()),
+            _ => bail!(CpuError::IllegalInstruction),
         }
 
         if !extword.fd() {
@@ -292,7 +292,7 @@ where
     ) -> Result<()> {
         let extword = PtestExtword(extword);
 
-        let fc = self.decode_pmmu_fc(extword.fc(), "PTEST")?;
+        let fc = self.decode_pmmu_fc(extword.fc())?;
 
         let vaddr = self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
         let result = self.pmmu_translate_lookup::<true>(fc, vaddr, !extword.read());
@@ -322,7 +322,7 @@ where
         // PLOAD extension word is same as PTEST
         let extword = PtestExtword(extword);
 
-        let fc = self.decode_pmmu_fc(extword.fc(), "PLOAD")?;
+        let fc = self.decode_pmmu_fc(extword.fc())?;
         let vaddr = self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
         let writing = !extword.read();
 
@@ -336,7 +336,7 @@ where
     }
 
     /// Decodes the 5-bit FC field used by PTEST and PLOAD
-    fn decode_pmmu_fc(&self, fc_field: u8, op: &str) -> Result<u8> {
+    fn decode_pmmu_fc(&self, fc_field: u8) -> Result<u8> {
         let fc = if fc_field & 0b10000 != 0 {
             fc_field & 0b1111
         } else if fc_field & 0b11000 == 0b01000 {
@@ -346,7 +346,7 @@ where
         } else if fc_field & 0b11111 == 1 {
             self.regs.dfc as u8
         } else {
-            bail!("Invalid FC in {}: {:05b}", op, fc_field);
+            bail!(CpuError::IllegalInstruction);
         };
         Ok(fc & FC_MASK)
     }
