@@ -454,8 +454,7 @@ impl Swim {
         if !self.lstrb && outputs & (1 << 3) != 0 && self.ism_drive_enabled() {
             // Write strobe
             let reg = self.get_selected_drive_reg_u8();
-            let cycles = self.cycles;
-            self.get_selected_drive_mut().write_drive_reg(reg, cycles);
+            self.get_selected_drive_mut().write_drive_reg(reg);
         }
         self.lstrb = outputs & (1 << 3) != 0;
     }
@@ -705,7 +704,7 @@ mod tests {
         let mut swim = Swim::new(&[DriveType::SuperDrive], true, 16_000_000);
         swim.disk_insert(0, FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
-        swim.drives[0].write_drive_reg(DRIVE_MOTOR_ON, 0);
+        swim.drives[0].write_drive_reg(DRIVE_MOTOR_ON);
         swim.drives[0].not_ready = 0;
 
         // Q6 on, then the sequence on the mode register
@@ -897,5 +896,31 @@ mod tests {
 
         swim.write(reg(REG_MODE_ZERO), MODE_DRIVE1);
         assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0x08, 0x08);
+    }
+
+    #[test]
+    fn eject_brief_strobe() {
+        // As the Mac OS driver ejects in ISM mode: motor off, drive left
+        // enabled, LSTRB raised and lowered by two writes
+        let mut swim = swim(0x20);
+        swim.drives[0].write_drive_reg(0b1100);
+        swim.write(reg(REG_MODE_ONE), MODE_DRIVE1);
+        swim.write(reg(REG_PHASES), PHASES_EJECT[0]);
+        swim.write(reg(REG_PHASES), PHASES_EJECT[1]);
+        swim.write(reg(REG_PHASES), PHASES_EJECT[0]);
+        assert!(!swim.drives[0].floppy_inserted);
+    }
+
+    #[test]
+    fn eject_completes_when_disabled() {
+        // The drive is disabled at once after the strobe
+        let mut swim = swim(0x20);
+        swim.write(reg(REG_MODE_ONE), MODE_DRIVE1);
+        swim.write(reg(REG_PHASES), PHASES_EJECT[0]);
+        swim.write(reg(REG_PHASES), PHASES_EJECT[1]);
+        swim.write(reg(REG_MODE_ZERO), MODE_DRIVE1);
+        swim.write(reg(REG_PHASES), PHASES_EJECT[0]);
+        swim.tick(1, ()).unwrap();
+        assert!(!swim.drives[0].floppy_inserted);
     }
 }

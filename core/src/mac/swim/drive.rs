@@ -240,7 +240,6 @@ pub(crate) struct FloppyDrive {
     // While > cycles, the drive is not ready
     // (e.g. stepping, spindle motor changing speed)
     pub(super) not_ready: Ticks,
-    pub(super) ejecting: Option<Ticks>,
 
     /// Amount of flux ticks for current transition (for flux tracks)
     pub(super) flux_ticks: FluxTicks,
@@ -304,7 +303,6 @@ impl FloppyDrive {
 
             stepping: 0,
             not_ready: 0,
-            ejecting: None,
 
             flux_ticks: 0,
             flux_ticks_left: 0,
@@ -458,7 +456,7 @@ impl FloppyDrive {
     }
 
     /// Writes to the currently selected drive register
-    pub(super) fn write_drive_reg(&mut self, regraw: u8, cycles: Ticks) {
+    pub(super) fn write_drive_reg(&mut self, regraw: u8) {
         let reg = DriveWriteReg::from_u8(regraw).unwrap_or(DriveWriteReg::UNKNOWN);
 
         match reg {
@@ -476,8 +474,15 @@ impl FloppyDrive {
                 }
             }
             DriveWriteReg::EJECT => {
+                // "At the rising edge of the LSTRB, EJECT is set to high and
+                // the ejection operation starts", and "The eject operation
+                // will continue to completion even if /ENBL goes high" (800K
+                // drive ERS 669-0452-A, 3.2.4.4 and 2.17.5). The 400K drive
+                // instead needs LSTRB held for 750 ms and drops the eject
+                // when disabled (400K drive spec 699-0285-A, 3.2.8): not
+                // modelled, the Mac 128K and 512K hold it for 0.75 s anyway.
                 if self.floppy_inserted {
-                    self.ejecting = Some(cycles);
+                    self.eject();
                 }
             }
             DriveWriteReg::TRACKUP => {
@@ -647,7 +652,6 @@ impl FloppyDrive {
         info!("Drive {}: disk ejected", self.idx);
         self.switched = true;
         self.floppy_inserted = false;
-        self.ejecting = None;
         self.mfm = self.drive_type.io_mfm();
 
         self.floppy_ejected = Some(Box::new(self.floppy.clone()));

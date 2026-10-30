@@ -119,8 +119,7 @@ impl Swim {
                     }
 
                     let reg = self.get_selected_drive_reg_u8();
-                    let cycles = self.cycles;
-                    self.get_selected_drive_mut().write_drive_reg(reg, cycles);
+                    self.get_selected_drive_mut().write_drive_reg(reg);
                 }
             }
             8 => {
@@ -545,5 +544,21 @@ mod tests {
         assert_eq!(swim.read(Q6H).unwrap() & 0x20, 0x20);
         swim.tick(16_000_000 / 2000 + 1, ()).unwrap();
         assert_eq!(swim.read(Q6H).unwrap() & 0x20, 0x00);
+    }
+
+    #[test]
+    fn eject_brief_strobe() {
+        // As the Mac OS driver ejects in IWM mode: drive enabled, LSTRB
+        // raised and lowered again
+        let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
+        swim.disk_insert(0, FloppyImage::new(FloppyType::Mac800K, ""))
+            .unwrap();
+        swim.read(ENABLE);
+        swim.read(CA0H);
+        swim.read(CA1H);
+        swim.read(CA2H);
+        swim.read(LSTRBH);
+        swim.read(LSTRBL);
+        assert!(!swim.drives[0].floppy_inserted);
     }
 }
