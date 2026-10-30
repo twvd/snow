@@ -28,6 +28,17 @@ pub struct TraceEntry<TA: PrimInt + WrappingAdd, TD: PrimInt> {
     pub cpu_cycle: Ticks,
 }
 
+/// Musashi-style pass/fail test device (the m68k-rs fixture contract).
+///
+/// Memory-mapped at 0x100000..=0x10FFFF: a write to byte +0x00 increments
+/// the fail count and a write to +0x04 increments the pass count. Only
+/// active when the Testbus has one attached, so other tests are unaffected.
+#[derive(Debug, Default)]
+pub struct TestDevice {
+    pub pass_count: u32,
+    pub fail_count: u32,
+}
+
 /// Test bus for a CPU with the data bus `C`
 pub struct Testbus<TA: PrimInt + WrappingAdd + Hash + Debug, TD: PrimInt, C> {
     pub mem: HashMap<TA, TD>,
@@ -43,6 +54,8 @@ pub struct Testbus<TA: PrimInt + WrappingAdd + Hash + Debug, TD: PrimInt, C> {
     /// Address ranges that respond with BERR to any access (test-only
     /// fault injection; the ranges are checked before any byte transfer).
     pub fault_ranges: Vec<RangeInclusive<Address>>,
+    /// Optional pass/fail test device at 0x100000..=0x10FFFF (test-only).
+    pub test_device: Option<TestDevice>,
 }
 
 impl<TA, TD, C> Testbus<TA, TD, C>
@@ -62,6 +75,7 @@ where
             _cpu: PhantomData,
             port_widths: vec![],
             fault_ranges: vec![],
+            test_device: None,
         }
     }
 
@@ -127,6 +141,44 @@ where
             (acc.addr..=end).any(|a| range.contains(&a))
         }) {
             return Ok(BusResponse::BusError);
+        }
+
+        // Musashi-style pass/fail device (0x100000..=0x10FFFF). Writes to
+        // byte +0x00 increment the fail count, +0x04 the pass count, +0x0C
+        // raise an interrupt (value = level), +0x14 writes stdout. Reads
+        // return zero. Byte-granular so a long write split by a narrow port
+        // still lands on the right counter.
+        if let Some(device) = self.test_device.as_mut() {
+            const DEV_BASE: Address = 0x100000;
+            const DEV_END: Address = 0x10FFFF;
+            let start = acc.addr;
+            let end = start.wrapping_add(acc.size.saturating_sub(1));
+            if start <= DEV_END && end >= DEV_BASE {
+                for i in 0..acc.size {
+                    let addr = start.wrapping_add(i);
+                    if (DEV_BASE..=DEV_END).contains(&addr) {
+                        let offset = addr - DEV_BASE;
+                        if acc.write {
+                            let byte = ((acc.data >> (8 * (acc.size - 1 - i))) & 0xFF) as u8;
+                            match offset {
+                                0x00 => device.fail_count += 1,
+                                0x04 => device.pass_count += 1,
+                                // The interrupt register takes the full
+                                // write value as the level, like the
+                                // m68k-rs/Musashi device.
+                                0x0C => self.irq_level = Some((acc.data & 0x7) as u8),
+                                0x14 => print!("{}", byte as char),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                return Ok(BusResponse::Ack {
+                    width: C::WIDTH,
+                    data: 0,
+                    waits: 0,
+                });
+            }
         }
 
         let width = self
