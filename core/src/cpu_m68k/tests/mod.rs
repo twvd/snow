@@ -1,3 +1,4 @@
+mod cacr;
 mod cmp2;
 mod divl;
 mod divs_w;
