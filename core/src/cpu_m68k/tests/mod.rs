@@ -13,6 +13,7 @@ mod m68k_rs_translate;
 mod movem;
 mod mull;
 mod no_fpu;
+mod odd_fetch;
 mod opcode_scan;
 mod pack;
 mod pmmu_atc;
