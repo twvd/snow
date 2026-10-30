@@ -5,7 +5,7 @@ use arpfloat::{Float, RoundingMode, Semantics};
 use crate::bus::{Address, Bus, IrqSource};
 
 use crate::cpu_m68k::CpuM68kType;
-use crate::cpu_m68k::cpu::CpuM68k;
+use crate::cpu_m68k::cpu::{CpuError, CpuM68k};
 use crate::cpu_m68k::fpu::math::FloatMath;
 use crate::cpu_m68k::fpu::ops_generic::FPU_CYCLES_LEN;
 use crate::cpu_m68k::fpu::trig::FloatTrig;
@@ -258,7 +258,7 @@ where
                 )
             }
 
-            _ => bail!("Unimplemented FPU ALU op {:07b}", opmode),
+            _ => bail!(CpuError::IllegalInstruction),
         };
 
         // Flags

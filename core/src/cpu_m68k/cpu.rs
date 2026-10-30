@@ -911,7 +911,19 @@ where
                     }
                 }
                 Some(CpuError::IllegalInstruction) => {
-                    self.raise_illegal_instruction()?;
+                    // Possibly found out past extension words: the frame has
+                    // the address of the instruction
+                    if let Some(regs) = self.restart_regs.take() {
+                        regs.restore(&mut self.regs);
+                    } else {
+                        self.regs.pc = start_pc;
+                    }
+                    // The coprocessor refuses it: line F
+                    if instr.data & 0xF000 == 0xF000 {
+                        self.op_linef(&instr)?;
+                    } else {
+                        self.raise_illegal_instruction()?;
+                    }
                 }
                 _ => {
                     bail!(
