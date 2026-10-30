@@ -84,6 +84,7 @@ where
 
                     // Filled in later
                     start_pc: 0,
+                    data: 0,
                 }));
             }
         }
@@ -161,8 +162,9 @@ where
                 .map_err(|e| match e.downcast_ref() {
                     Some(CpuError::BusError(details)) => {
                         anyhow!(CpuError::BusError(Group0Details {
-                            size: o_len as usize,
+                            size: size as usize,
                             address: laddr,
+                            data: wdata.unwrap_or(0),
                             ..*details
                         }))
                     }
@@ -189,15 +191,18 @@ where
                     self.advance_cycles(std::mem::take(ticks) + stall)?;
                     self.sync_bus()?;
                 }
+                // The 68020+ report the faulted cycle and the bytes of the
+                // operand left (M68030UM 8.2.1)
                 BusResponse::BusError => bail!(CpuError::BusError(Group0Details {
                     function_code: fc,
                     ir: 0,
-                    size: o_len as usize,
+                    size: if CPU_TYPE >= M68020 { size } else { o_len } as usize,
                     instruction: false,
                     read: !write,
-                    address: o_addr,
+                    address: if CPU_TYPE >= M68020 { laddr } else { o_addr },
                     // Filled in later
                     start_pc: 0,
+                    data: wdata.unwrap_or(0),
                 })),
             }
         };
@@ -280,6 +285,11 @@ where
         let mut result: u64 = 0;
         while done < len {
             let laddr = o_addr.wrapping_add(done) & ADDRESS_MASK;
+            if !PHYSICAL && let Some(data) = self.take_completed_cycle(fc, true, laddr, len - done)
+            {
+                result = (result << (8 * (len - done))) | u64::from(low_bytes(data, len - done));
+                break;
+            }
             let (data, n) =
                 self.bus_cycle::<PHYSICAL>(fc, o_addr, len, laddr, len - done, None, &mut ticks)?;
             result = (result << (8 * n)) | u64::from(data);
@@ -287,6 +297,25 @@ where
         }
         self.advance_cycles(ticks)?;
         Ok(result as Long)
+    }
+
+    /// Takes the data cycle completed by the bus error handler if it is the
+    /// one at `laddr` with `size` bytes of the operand left, and returns its
+    /// data input buffer
+    #[inline(always)]
+    fn take_completed_cycle(
+        &mut self,
+        fc: u8,
+        read: bool,
+        laddr: Address,
+        size: u32,
+    ) -> Option<Long> {
+        let c = self.completed_cycle?;
+        if (c.function_code, c.read, c.address, c.size) != (fc, read, laddr, size) {
+            return None;
+        }
+        self.completed_cycle = None;
+        Some(c.data)
     }
 
     /// Reads a data operand of `len` bytes (1-4) and spends ticks (68020+).
@@ -363,6 +392,13 @@ where
         let mut done = 0;
         while done < len {
             let laddr = o_addr.wrapping_add(done) & ADDRESS_MASK;
+            if !PHYSICAL
+                && self
+                    .take_completed_cycle(fc, false, laddr, len - done)
+                    .is_some()
+            {
+                break;
+            }
             let data = low_bytes(value, len - done);
             let (_, n) = self.bus_cycle::<PHYSICAL>(
                 fc,

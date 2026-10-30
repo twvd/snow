@@ -622,6 +622,7 @@ where
             address: vaddr,
             start_pc: 0,
             size: 0,
+            data: 0,
         }))
     }
 
