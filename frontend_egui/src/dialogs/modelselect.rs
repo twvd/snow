@@ -67,6 +67,9 @@ pub struct ModelSelectionDialog {
     // Overclock (only takes effect if overclock is checked and value is valid)
     overclock_text: String,
 
+    // The Apple IIe Card settings dialog is open
+    iie_settings_open: bool,
+
     // Result
     result: Option<ModelSelectionResult>,
 
@@ -137,6 +140,7 @@ impl Default for ModelSelectionDialog {
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
 
             overclock_text: "40".into(),
+            iie_settings_open: false,
 
             result: None,
             disable_rom_validation: false,
@@ -153,6 +157,7 @@ impl ModelSelectionDialog {
         roms_by_card: Vec<(NubusDeviceKind, PathBuf)>,
     ) {
         self.open = true;
+        self.iie_settings_open = false;
         self.last_roms = last_roms;
         self.roms_by_card = roms_by_card;
         self.main_rom_error.clear();
@@ -614,6 +619,12 @@ impl ModelSelectionDialog {
                     ui.end_row();
 
                     ui.checkbox(&mut self.init_args.iie_card, "Install Apple IIe Card");
+                    if ui
+                        .add_enabled(self.init_args.iie_card, egui::Button::new("Settings..."))
+                        .clicked()
+                    {
+                        self.iie_settings_open = true;
+                    }
                     ui.end_row();
                 }
                 if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
@@ -835,6 +846,10 @@ impl ModelSelectionDialog {
             );
         });
 
+        if self.iie_settings_open {
+            self.iie_settings_modal(ctx);
+        }
+
         if last_model != self.selected_model {
             self.do_model_changed();
         }
@@ -842,6 +857,27 @@ impl ModelSelectionDialog {
         if last_validation_disabled != self.disable_rom_validation {
             self.do_validate_roms();
         }
+    }
+
+    /// The Apple IIe Card settings, a dialog over the main one
+    fn iie_settings_modal(&mut self, ctx: &egui::Context) {
+        egui::Modal::new(egui::Id::new("Apple IIe Card settings")).show(ctx, |ui| {
+            ui.style_mut().spacing.item_spacing = egui::Vec2::splat(4.0);
+            ui.set_width(400.0);
+
+            ui.heading("Apple IIe Card settings");
+            ui.separator();
+
+            egui::Sides::new().show(
+                ui,
+                |_ui| {},
+                |ui| {
+                    if ui.button("Close").clicked() {
+                        self.iie_settings_open = false;
+                    }
+                },
+            );
+        });
     }
 
     fn do_validate_roms(&mut self) {
