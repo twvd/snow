@@ -5,6 +5,7 @@ mod format2;
 mod group2_exceptions;
 mod illegal_exception;
 mod interrupt;
+mod movem;
 mod mull;
 mod no_fpu;
 mod pack;
