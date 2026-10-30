@@ -1002,6 +1002,7 @@ where
 
         self.scc = Scc::new();
         self.via.reset();
+        self.swim.reset();
         self.swim.sel = self.via.pa().headsel();
         self.pseudovia.reset();
         self.sound.reset();

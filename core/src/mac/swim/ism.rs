@@ -923,4 +923,24 @@ mod tests {
         swim.tick(1, ()).unwrap();
         assert!(!swim.drives[0].floppy_inserted);
     }
+
+    #[test]
+    fn reset_keeps_disk() {
+        let mut swim = swim(0x20);
+        swim.write(reg(REG_MODE_ONE), MODE_MOTOR | MODE_DRIVE1);
+        swim.write(reg(REG_PHASES), PHASES_EJECT[0]);
+
+        swim.reset();
+        assert_eq!(swim.mode, SwimMode::Iwm);
+        assert!(!swim.lstrb && !swim.ca0 && !swim.ca1 && !swim.ca2);
+        assert!(swim.drives[0].floppy_inserted);
+
+        let mut swim2 = Swim::new_swim2(&[DriveType::SuperDrive], 16_000_000);
+        swim2
+            .disk_insert(0, FloppyImage::new(FloppyType::Mac800K, ""))
+            .unwrap();
+        swim2.reset();
+        assert_eq!(swim2.mode, SwimMode::Ism);
+        assert!(swim2.drives[0].floppy_inserted);
+    }
 }

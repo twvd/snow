@@ -282,6 +282,27 @@ impl Swim {
         swim
     }
 
+    /// Resets the controller, as the system RESET line does: back to the
+    /// power-on mode with all drive control lines low. The drives keep their
+    /// disks.
+    pub fn reset(&mut self) {
+        let base_frequency = self.drives[0].base_frequency;
+        let mut fresh = if self.iwm_available {
+            Self::new(&[], self.ism_available, base_frequency)
+        } else {
+            Self::new_swim2(&[], base_frequency)
+        };
+        std::mem::swap(&mut fresh.drives, &mut self.drives);
+        fresh.cycles = self.cycles;
+        fresh.last_access = self.last_access;
+        fresh.sel = self.sel;
+        fresh.intdrive = self.intdrive;
+        fresh.weak_bit_rng = std::mem::take(&mut self.weak_bit_rng);
+        fresh.dbg_pc = self.dbg_pc;
+        fresh.dbg_break = std::mem::take(&mut self.dbg_break);
+        *self = fresh;
+    }
+
     /// Native ticks an access is held for, called after device_sync(). When
     /// overclocking, the CPU runs the code between two accesses faster than
     /// the real hardware: the accesses are held to be at least
