@@ -57,6 +57,7 @@ impl EthernetPort {
         let (mut reader, mut writer) = dev.split();
 
         let rx_tap_stop = self.tap_stop.clone();
+        let rx_enabled = self.rx_enabled.clone();
         let tx_tap_stop = self.tap_stop.clone();
         let tx_stats = tap_stats.clone();
         let rx_stats = tap_stats;
@@ -97,6 +98,10 @@ impl EthernetPort {
                             {
                                 log::warn!("Dropped RX invalid packet: {:02X?}", &buffer);
                                 rx_stats.rx_dropped_invalid.fetch_add(1, Ordering::Relaxed);
+                                continue;
+                            }
+
+                            if !rx_enabled.load(Ordering::Relaxed) {
                                 continue;
                             }
 
