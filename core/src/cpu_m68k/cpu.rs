@@ -100,6 +100,9 @@ fn prefetch_defer_fault(e: anyhow::Error, fetch_addr: Address) -> Result<Prefetc
     }
 }
 
+/// Supervisor bit of the status register
+const SR_SUPERVISOR: Word = 1 << 13;
+
 /// Reason a PMMU translation failed
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::cpu_m68k) enum PagefaultCause {
@@ -991,6 +994,16 @@ where
         Ok(())
     }
 
+    /// Pushes a four word frame on the active supervisor stack
+    fn push_irq_frame(&mut self, sr: Word, format: Word, vector: Address) -> Result<()> {
+        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8);
+        let ssp = *self.regs.ssp();
+        self.write_ticks(ssp.wrapping_add(0), sr)?;
+        self.write_ticks(ssp.wrapping_add(2), self.regs.pc)?;
+        self.write_ticks(ssp.wrapping_add(6), (format << 12) | (vector as Word))?;
+        Ok(())
+    }
+
     /// Raises an IRQ to be executed next
     fn raise_irq(&mut self, level: u8, vector: Address) -> Result<()> {
         let start_cycles = self.cycles;
@@ -1019,19 +1032,19 @@ where
                 self.write_ticks(self.regs.ssp().wrapping_add(4), self.regs.pc as u16)?;
                 self.write_ticks(self.regs.ssp().wrapping_add(2), (self.regs.pc >> 16) as u16)?;
             }
-            #[allow(clippy::identity_op)]
             _ => {
-                *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8);
                 // 6 cycles idle, interrupt ack, 4 cycles idle
                 self.advance_cycles(6 + 4 + 4)?;
 
-                self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
-                self.write_ticks(self.regs.ssp().wrapping_add(2), (self.regs.pc >> 16) as u16)?;
-                self.write_ticks(self.regs.ssp().wrapping_add(4), self.regs.pc as u16)?;
-                self.write_ticks(
-                    self.regs.ssp().wrapping_add(6),
-                    0b0000_0000_0000_0000u16 | (vector as u16),
-                )?;
+                let master = self.regs.sr.m();
+                self.push_irq_frame(saved_sr, 0, vector)?;
+                if master {
+                    // The frame above is on the master stack. A throwaway copy
+                    // with S set goes on the interrupt stack, which the handler
+                    // runs on (MC68030UM 8.1.9). RTE follows it back.
+                    self.regs.sr.set_m(false);
+                    self.push_irq_frame(saved_sr | SR_SUPERVISOR, 1, vector)?;
+                }
             }
         };
 
