@@ -825,6 +825,7 @@ where
         let Via { adb, rtc, .. } = std::mem::replace(&mut self.via, Via::new(self.model));
         self.via.adb = adb;
         self.via.rtc = rtc;
+        self.swim.reset();
         self.overlay = true;
         self.sync_via_pa();
         self.scc = Scc::new(RTXC_FREQUENCY);
