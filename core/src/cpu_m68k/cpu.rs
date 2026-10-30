@@ -556,21 +556,21 @@ where
     fn prefetch_pump_force(&mut self) -> Result<()> {
         let fetch_addr = self.regs.pc.wrapping_add(4) & ADDRESS_MASK;
 
-        let new_item = if CPU_TYPE >= M68020 && self.regs.cacr.e() {
-            if fetch_addr & 1 != 0 {
-                // Unaligned access through I-cache raises exception
-                bail!(CpuError::AddressError(Group0Details {
-                    function_code: self.fc_program(),
-                    ir: 0,
-                    size: std::mem::size_of::<Word>(),
-                    instruction: true,
-                    read: true,
-                    address: fetch_addr,
-                    // Filled in later
-                    start_pc: 0,
-                }));
-            }
+        // Instruction words are on word boundaries (MC68030UM 7.1, 8.1.3)
+        if CPU_TYPE >= M68020 && fetch_addr & 1 != 0 {
+            bail!(CpuError::AddressError(Group0Details {
+                function_code: self.fc_program(),
+                ir: 0,
+                size: std::mem::size_of::<Word>(),
+                instruction: true,
+                read: true,
+                address: fetch_addr,
+                // Filled in later
+                start_pc: 0,
+            }));
+        }
 
+        let new_item = if CPU_TYPE >= M68020 && self.regs.cacr.e() {
             // We keep the tag full size so we can invalidate easily.
             // Supervisor is used to have FC2 in the tag so invalidation across
             // supervisor<-> user context switches occurs properly.
@@ -762,18 +762,17 @@ where
         }
 
         let instr = self.decode_cache[opcode as usize].clone().unwrap();
-        let execute_result = self.execute_instruction(&instr);
+        // The refill is for the instructions that only set the PC: an address
+        // error of an odd PC is theirs
+        let execute_result = self
+            .execute_instruction(&instr)
+            .and_then(|()| self.prefetch_refill());
 
         // Write history entry
         // This is done here already in case the instruction caused an
         // address error.
         if self.history_enabled {
             let mut entry = std::mem::take(&mut self.history_current);
-
-            // Count prefetch reload towards the instruction
-            if execute_result.is_ok() {
-                self.prefetch_refill()?;
-            }
 
             entry.cycles = self.cycles - start_cycles;
             entry.final_regs = Some(self.regs.clone());
