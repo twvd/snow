@@ -9,6 +9,7 @@ mod illegal_exception;
 mod interrupt;
 mod m68k_rs_atc;
 mod m68k_rs_busfault;
+mod m68k_rs_fixture;
 mod m68k_rs_pmove;
 mod m68k_rs_translate;
 mod movem;
