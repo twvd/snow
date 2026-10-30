@@ -63,3 +63,41 @@ fn generation_wraparound_clears_the_tables() {
     assert_eq!(cpu.pmmu_atc[PMMU_ATC_SRP][KEY], None);
     assert_eq!(cpu.pmmu_atc_lookup(PMMU_ATC_SRP, KEY), None);
 }
+
+/// TT R/W: 1 = read accesses are transparent, 0 = write accesses (MC68030UM
+/// 9.7.3). Translation is on with an invalid root table, so what does not
+/// match faults.
+#[test]
+fn tt_rw_field_selects_the_access() {
+    let mut cpu = testcpu();
+    cpu.regs.pmmu.crp.0 = (0x7FFF_0002u64 << 32) | 0x10000;
+    cpu.regs.pmmu.tc.0 = 0x80C0_4880;
+    cpu.pmmu_cache_ensure();
+
+    // $50xxxxxx, all function codes, R/W = 1, RWM = 0
+    cpu.regs.pmmu.tt[0].0 = 0x5000_8207;
+    assert_eq!(
+        cpu.pmmu_translate(5, 0x5000_1234, false).unwrap(),
+        0x5000_1234
+    );
+    assert!(cpu.pmmu_translate(5, 0x5000_1234, true).is_err());
+
+    // R/W = 0, RWM = 0
+    cpu.regs.pmmu.tt[0].0 = 0x5000_8007;
+    assert!(cpu.pmmu_translate(5, 0x5000_1234, false).is_err());
+    assert_eq!(
+        cpu.pmmu_translate(5, 0x5000_1234, true).unwrap(),
+        0x5000_1234
+    );
+
+    // RWM = 1: both
+    cpu.regs.pmmu.tt[0].0 = 0x5000_8107;
+    assert_eq!(
+        cpu.pmmu_translate(5, 0x5000_1234, false).unwrap(),
+        0x5000_1234
+    );
+    assert_eq!(
+        cpu.pmmu_translate(5, 0x5000_1234, true).unwrap(),
+        0x5000_1234
+    );
+}

@@ -522,7 +522,7 @@ where
                 continue;
             }
             // R/W: rwm=1 means R/W is don't-care, otherwise rw must be ok
-            if !tt.rwm() && writing != tt.rw() {
+            if !tt.rwm() && writing == tt.rw() {
                 continue;
             }
             // Address (top 3 bytes are don't care)

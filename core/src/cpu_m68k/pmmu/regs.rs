@@ -105,7 +105,7 @@ bitfield! {
 
         /// Read/write mask
         pub rwm: bool @ 8,
-        /// Read/write (true = write)
+        /// Read/write (true = read)
         pub rw: bool @ 9,
         /// Caching inhibit
         pub ci: bool @ 10,
