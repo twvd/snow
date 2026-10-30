@@ -276,6 +276,11 @@ pub(crate) struct FloppyDrive {
     /// emulator polls this and clears it after attempting the save.
     #[serde(skip)]
     pub(crate) pending_writeback: bool,
+
+    /// Path to save [`Self::floppy_ejected`] to: set when a disk with unsaved
+    /// writes and writeback armed is ejected
+    #[serde(skip)]
+    pub(crate) eject_writeback: Option<PathBuf>,
 }
 
 impl FloppyDrive {
@@ -319,6 +324,7 @@ impl FloppyDrive {
             image_path: None,
             writeback_enabled: false,
             pending_writeback: false,
+            eject_writeback: None,
         }
     }
 
@@ -662,6 +668,13 @@ impl FloppyDrive {
 
         self.floppy_ejected = Some(Box::new(self.floppy.clone()));
 
+        // The writes since the last save must not be lost with the disk,
+        // whoever ejects it
+        self.eject_writeback = if self.writeback_enabled && self.floppy.is_dirty() {
+            self.image_path.clone()
+        } else {
+            None
+        };
         self.image_path = None;
         self.writeback_enabled = false;
         self.pending_writeback = false;
@@ -773,5 +786,27 @@ mod tests {
         drv.disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
             .unwrap();
         assert!(drv.not_ready > drv.cycles);
+    }
+
+    #[test]
+    fn eject_arms_writeback_of_unsaved_writes() {
+        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        drv.disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
+            .unwrap();
+        drv.image_path = Some(PathBuf::from("disk.img"));
+        drv.writeback_enabled = true;
+
+        // Nothing written: nothing to save
+        drv.eject();
+        assert!(drv.eject_writeback.is_none());
+
+        drv.disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
+            .unwrap();
+        drv.image_path = Some(PathBuf::from("disk.img"));
+        drv.writeback_enabled = true;
+        drv.write_bit(0, true);
+        drv.eject();
+        assert_eq!(drv.eject_writeback, Some(PathBuf::from("disk.img")));
+        assert!(drv.floppy_ejected.is_some());
     }
 }

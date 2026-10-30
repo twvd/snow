@@ -650,6 +650,9 @@ impl Emulator {
     }
 
     fn status_update(&mut self) -> Result<()> {
+        for i in 0..self.config.swim().drives.len() {
+            self.writeback_ejected(i);
+        }
         for (i, drive) in self.config.swim_mut().drives.iter_mut().enumerate() {
             if let Some(img) = drive.take_ejected_image() {
                 self.event_sender
@@ -926,11 +929,43 @@ impl Emulator {
         }
     }
 
+    /// Saves a disk ejected by the guest with unsaved writes back to its
+    /// source file. No-op unless the eject armed it.
+    fn writeback_ejected(&mut self, drive: usize) {
+        let drv = &mut self.config.swim_mut().drives[drive];
+        let Some(path) = drv.eject_writeback.take() else {
+            return;
+        };
+        let Some(img) = drv.floppy_ejected.as_deref() else {
+            return;
+        };
+
+        let result = crate::util::atomic_write(&path, |f| snow_floppy::loaders::save_image(img, f));
+        let display_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        match result {
+            Ok(()) => log::info!(
+                "Floppy #{}: writeback saved ejected disk '{}'",
+                drive + 1,
+                display_name
+            ),
+            Err(e) => self.user_error(&format!(
+                "Floppy #{}: writeback of ejected disk to '{}' failed: {:#}",
+                drive + 1,
+                display_name,
+                e
+            )),
+        }
+    }
+
     /// Drains queued writeback requests across all drives. With `force`,
     /// ignores [`FloppyDrive::pending_writeback`] and saves any dirty drive
     /// that has writeback armed.
     fn flush_pending_writebacks(&mut self, force: bool) {
         for i in 0..self.config.swim().drives.len() {
+            self.writeback_ejected(i);
             let drv = &self.config.swim().drives[i];
             if drv.writeback_enabled && (force || drv.pending_writeback) && drv.floppy.is_dirty() {
                 self.try_writeback(i);
