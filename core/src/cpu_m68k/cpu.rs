@@ -3060,8 +3060,19 @@ where
             Either::Right(MOVEM_REGS.iter())
         };
 
+        // The 68020+ store the addressing register decremented by the size of
+        // one operation, the 68000 as it was (M68000PRM MOVEM)
+        let predec_an = (CPU_TYPE >= M68020
+            && instr.get_addr_mode()? == AddressingMode::IndirectPreDec)
+            .then(|| Register::An(instr.get_op2()));
+        let an_value = T::chop(addr.wrapping_sub(std::mem::size_of::<T>() as Address));
+
         for (_, &reg) in regs.enumerate().filter(|(i, _)| mask & (1 << i) != 0) {
-            let v = self.regs.read::<T>(reg);
+            let v = if predec_an == Some(reg) {
+                an_value
+            } else {
+                self.regs.read::<T>(reg)
+            };
             if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
                 addr = addr.wrapping_sub(std::mem::size_of::<T>() as Address);
                 self.write_ticks_wflip(addr, v)?;
