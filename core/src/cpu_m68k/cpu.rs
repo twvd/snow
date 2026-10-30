@@ -865,13 +865,14 @@ where
         }
 
         // Check pending interrupts
-        // NMI is edge-triggered
+        // Level 7 is taken on a transition to 7 whatever the mask, and on the
+        // normal comparison below a mask of 7 (MC68000UM 6.3.2, MC68030UM 8.1.9)
         if irq_exception != Some(7) {
             self.in_nmi = false;
         }
         let irq_exception_masked = match irq_exception {
             Some(7) => {
-                if !self.in_nmi {
+                if !self.in_nmi || self.regs.sr.int_prio_mask() < 7 {
                     self.in_nmi = true;
                     7
                 } else {

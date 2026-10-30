@@ -503,7 +503,9 @@ fn test_nmi_edge_triggered() {
         "Level 7 held continuously should NOT re-trigger (no transition)"
     );
 
-    // Step 3: Execute RTE, returning to main program
+    // Step 3: Drop the request, execute RTE, returning to main program. With
+    // the request still at 7 the lowered mask would take it again.
+    cpu.bus.irq_level = None;
     cpu.step().unwrap();
     assert_eq!(
         cpu.regs.pc,
@@ -515,8 +517,7 @@ fn test_nmi_edge_triggered() {
         "Stack should be unwound after RTE"
     );
 
-    // Step 4: Drop interrupt level to 0, then execute NOP
-    cpu.bus.irq_level = None;
+    // Step 4: Execute NOP
     cpu.step().unwrap();
     assert_eq!(
         cpu.regs.pc,
@@ -604,4 +605,29 @@ fn test_master_stack_throwaway_frame() {
     assert_eq!(cpu.regs.pc, 0x1002);
     assert_eq!(cpu.regs.sr.sr(), 0x3000);
     assert_eq!((cpu.regs.msp, cpu.regs.isp), (0x3000, 0x2000));
+}
+
+/// A level 7 request held while an instruction lowers the mask is taken again
+/// on the comparison (MC68030UM 8.1.9, "level 7 example")
+#[test]
+fn test_level_7_held_when_mask_lowered() {
+    // Handler: MOVE #$2000,SR ; NOP
+    let mut cpu = testcpu(0x1000, 0x1000, &[0x4e71]);
+    write_long(&mut cpu, 0x7c, 0x400);
+    write_word(&mut cpu, 0x400, 0x46fc);
+    write_word(&mut cpu, 0x402, 0x2000);
+    write_word(&mut cpu, 0x404, 0x4e71);
+    cpu.regs.sr.set_int_prio_mask(0);
+    cpu.bus.irq_level = Some(7);
+
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, 0x400);
+    assert_eq!(cpu.regs.sr.int_prio_mask(), 7);
+    let sp = *cpu.regs.ssp();
+    // The MOVE to SR, then level 7 again right after it
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, 0x400);
+    assert_eq!(cpu.regs.sr.int_prio_mask(), 7);
+    assert_eq!(*cpu.regs.ssp(), sp - 6);
+    assert_eq!(read_long(&cpu, *cpu.regs.ssp() + 2), 0x404);
 }
