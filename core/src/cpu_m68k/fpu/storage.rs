@@ -538,7 +538,7 @@ where
         #[allow(clippy::manual_range_contains)]
         let k = if k <= 0 && k >= -13 {
             let k_abs = (-k) as usize;
-            let round_pos = k_abs + (exp as usize) - 1;
+            let round_pos = k_abs.wrapping_add(exp as usize).wrapping_sub(1);
 
             // Round up if next digit >= 5
             if round_pos < mantissa_digits.len()
@@ -552,7 +552,7 @@ where
             }
 
             // Zero out trailing mantissa digits
-            for digit in mantissa_digits.iter_mut().skip(round_pos + 1) {
+            for digit in mantissa_digits.iter_mut().skip(round_pos.wrapping_add(1)) {
                 *digit = '0';
             }
 

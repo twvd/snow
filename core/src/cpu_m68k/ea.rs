@@ -8,7 +8,7 @@ use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::instruction::MemoryIndirectAction;
 use crate::types::Long;
 
-use super::cpu::CpuM68k;
+use super::cpu::{CpuError, CpuM68k};
 use super::instruction::{AddressingMode, IndexSize, Instruction, Xn};
 use super::{CpuM68kType, CpuSized, M68020, TORDER_HIGHLOW};
 
@@ -88,8 +88,8 @@ where
             }
         };
         let addr = match addrmode {
-            AddressingMode::DataRegister => bail!("calc_ea_addr invalid addressing mode Dn"),
-            AddressingMode::AddressRegister => bail!("calc_ea_addr invalid addressing mode An"),
+            AddressingMode::DataRegister => bail!(CpuError::IllegalInstruction),
+            AddressingMode::AddressRegister => bail!(CpuError::IllegalInstruction),
             AddressingMode::Indirect => self.regs.read_a(ea_in),
             AddressingMode::IndirectPreDec => {
                 self.advance_cycles(2)?; // 2x idle
@@ -183,9 +183,7 @@ where
                 let l = self.fetch_pump()? as u32;
                 (h << 16) | l
             }
-            AddressingMode::Immediate => {
-                bail!("Invalid addressing mode at PC {:08X}", self.regs.pc)
-            }
+            AddressingMode::Immediate => bail!(CpuError::IllegalInstruction),
             AddressingMode::IndirectIndexBase | AddressingMode::PCIndexBase => {
                 // also Memory Indirect modes
                 // TODO cycles?
@@ -420,9 +418,8 @@ where
                 let addr = self.calc_ea_addr_ex::<T, HOLD>(instr, addrmode, ea_in)?;
                 self.write_ticks_order::<T, TORDER>(addr, value)
             }
-            _ => {
-                bail!("Unimplemented addressing mode: {:?}", addrmode)
-            }
+            // Not alterable
+            _ => bail!(CpuError::IllegalInstruction),
         }
     }
 

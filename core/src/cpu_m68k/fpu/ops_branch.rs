@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 use crate::bus::{Address, Bus, IrqSource};
 
 use crate::cpu_m68k::CpuM68kType;
-use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_TRAPV};
+use crate::cpu_m68k::cpu::{CpuError, CpuM68k, ExceptionGroup, VECTOR_TRAPV};
 use crate::cpu_m68k::instruction::Instruction;
 use crate::types::{Byte, Word};
 
@@ -63,7 +63,7 @@ where
             0b010001 => (zero, nan),    // SEQ: Signaling Equal
             0b011110 => (!zero, nan),   // SNE: Signaling Not Equal
 
-            _ => bail!("Unknown Fcc predicate"),
+            _ => bail!(CpuError::IllegalInstruction),
         })
     }
 
