@@ -520,6 +520,12 @@ impl FloppyDrive {
         self.floppy = image;
         self.floppy_inserted = true;
         self.switched = true;
+        self.track_position = 0;
+        if self.motor {
+            // "the disk motor is turned on if a disk is in the drive" (400K
+            // drive spec 699-0285-A, 3.2.7): the new disk spins up
+            self.not_ready = self.cycles + (self.base_frequency / 1000 * 400);
+        }
         Ok(())
     }
 
@@ -750,5 +756,22 @@ mod tests {
 
         // Roughly is good enough..
         assert_eq!(result / 10, DISK_RPM_INNER * 120 / 10);
+    }
+
+    #[test]
+    fn insert_spins_up() {
+        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        drv.disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
+            .unwrap();
+        // MOTORON, then let it spin up
+        drv.write_drive_reg(0b0100);
+        drv.cycles = BASE_FREQUENCY;
+        assert!(drv.not_ready < drv.cycles);
+
+        // The motor stays on across an eject: the next disk spins up
+        drv.eject();
+        drv.disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
+            .unwrap();
+        assert!(drv.not_ready > drv.cycles);
     }
 }
