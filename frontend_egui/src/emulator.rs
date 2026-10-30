@@ -23,6 +23,7 @@ use snow_core::emulator::comm::{
 use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus};
 use snow_core::emulator::{Emulator, MouseMode};
 use snow_core::keymap::Scancode;
+use snow_core::mac::maclc::pds_iie::{GamePort, IieCardSettings};
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
@@ -78,7 +79,7 @@ pub struct EmulatorInitResult {
 }
 
 /// Initialization arguments for the emulator, minus filenames
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct EmulatorInitArgs {
     /// Disable audio, synchronize to video
@@ -112,11 +113,44 @@ pub struct EmulatorInitArgs {
     /// Configured video RAM size or default if None (Macintosh LC only)
     pub vram_size: Option<usize>,
 
+    /// Install the Apple IIe Card in the PDS slot (Macintosh LC family)
+    pub iie_card: bool,
+
+    /// Apple IIe Card settings (used if `iie_card` is set)
+    pub iie_card_settings: IieCardSettings,
+
+    /// Apple IIe Card controller emulation: the IIe always has a
+    /// joystick, and host keys can drive it (used if `iie_card` is set;
+    /// on by default)
+    pub iie_joystick_emulation: bool,
+
     /// Selected NuBus video card (if applicable)
     pub video_card: NubusDeviceKind,
 
     /// Overclock
     pub overclock: Option<u64>,
+}
+
+impl Default for EmulatorInitArgs {
+    fn default() -> Self {
+        Self {
+            audio_disabled: Default::default(),
+            monitor: Default::default(),
+            mouse_disabled: Default::default(),
+            mouse_mode: Default::default(),
+            start_fastforward: Default::default(),
+            ram_size: Default::default(),
+            override_fdd_type: Default::default(),
+            pmmu_enabled: Default::default(),
+            fpu_enabled: Default::default(),
+            vram_size: Default::default(),
+            iie_card: Default::default(),
+            iie_card_settings: Default::default(),
+            iie_joystick_emulation: true,
+            video_card: Default::default(),
+            overclock: Default::default(),
+        }
+    }
 }
 
 /// Manages the state of the emulator and feeds input to the GUI
@@ -142,6 +176,8 @@ pub struct EmulatorState {
     peripheral_debug: DebuggableProperties,
     scc_tx: [VecDeque<u8>; 2],
     mouse_mode: MouseMode,
+    /// The settings of the Apple IIe Card, if the machine has one
+    iie_card: Option<IieCardSettings>,
 
     // Clear these when emulator is de-initialized
     instruction_history_enabled: bool,
@@ -249,6 +285,7 @@ impl EmulatorState {
             args.mouse_mode
         };
         self.mouse_mode = mouse_mode;
+        self.iie_card = args.iie_card.then_some(args.iie_card_settings);
 
         let (mut emulator, frame_recv) = Emulator::new_with_extra(
             rom,
@@ -262,6 +299,7 @@ impl EmulatorState {
             args.fpu_enabled,
             args.vram_size,
             shared_dir,
+            self.iie_card,
         )?;
 
         let cmd = emulator.create_cmd_sender();
@@ -765,6 +803,62 @@ impl EmulatorState {
                 wp,
             ))
             .unwrap();
+    }
+
+    /// The number of 5.25" drives connected to the Apple IIe Card.
+    pub fn iie_drives_525(&self) -> usize {
+        self.iie_card.map_or(0, |s| s.drives_525())
+    }
+
+    /// Loads an Apple II 5.25" DSK image into one of the IIe card's
+    /// drives (0 or 1).
+    pub fn load_iie_disk(&self, drive: usize, path: &Path) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender
+            .send(EmulatorCommand::InsertIieDisk(drive, path.to_path_buf()))
+            .unwrap();
+    }
+
+    /// Sets the joystick and buttons on the Apple IIe card's game port.
+    pub fn set_iie_game_port(&self, port: GamePort) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender.send(EmulatorCommand::SetIieGamePort(port)).unwrap();
+    }
+
+    /// Ejects one of the Apple IIe card's 5.25" drives (0 or 1).
+    pub fn eject_iie_disk(&self, drive: usize) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender.send(EmulatorCommand::EjectIieDisk(drive)).unwrap();
+    }
+
+    /// Whether a UniDisk 3.5 is connected to the Apple IIe Card.
+    pub fn iie_has_unidisk(&self) -> bool {
+        self.iie_card.is_some_and(|s| s.has_unidisk())
+    }
+
+    /// Loads an 800K (or 400K) ProDOS-order image into the IIe card's
+    /// UniDisk 3.5.
+    pub fn load_iie_unidisk(&self, path: &Path) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender
+            .send(EmulatorCommand::InsertIieUniDisk(path.to_path_buf()))
+            .unwrap();
+    }
+
+    /// Ejects the IIe card's UniDisk 3.5.
+    pub fn eject_iie_unidisk(&self) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender.send(EmulatorCommand::EjectIieUniDisk).unwrap();
     }
 
     /// Loads the included toolbox floppy.

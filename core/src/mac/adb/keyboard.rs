@@ -44,6 +44,7 @@ const SC_COMMAND: u8 = 0x37;
 const SC_LOPTION: u8 = 0x3A;
 const SC_ROPTION: u8 = 0x7C;
 const SC_DELETE: u8 = 0x75;
+const SC_POWER: u8 = 0x7F;
 
 /// Apple Desktop Bus-connected keyboard
 #[derive(Serialize, Deserialize)]
@@ -151,6 +152,21 @@ impl AdbDevice for AdbKeyboard {
                 let mut response = AdbDeviceResponse::default();
                 // The events are already in the keyboard's key map
                 for _ in 0..2 {
+                    // The Power key is reported alone, in both bytes:
+                    // $7F7F when pressed, $FFFF when released
+                    if let Some(ke) = self.event_queue.front()
+                        && ke.as_scancode() == SC_POWER
+                    {
+                        if response.is_empty() {
+                            let down = matches!(ke, KeyEvent::KeyDown(..));
+                            self.event_queue.pop_front();
+                            self.reported_keys[SC_POWER as usize] = down;
+                            let code = if down { SC_POWER } else { 0xFF };
+                            response.push(code);
+                            response.push(code);
+                        }
+                        break;
+                    }
                     match self.event_queue.pop_front() {
                         Some(KeyEvent::KeyDown(sc, _)) => {
                             self.reported_keys[sc as usize] = true;
@@ -292,6 +308,18 @@ mod tests {
         kbd.event(&key(false, SC_CAPSLOCK));
         assert_eq!(kbd.talk(0).as_slice(), [0x80 | SC_CAPSLOCK, 0xFF]);
         assert!(reg2(&mut kbd).capslock());
+    }
+
+    #[test]
+    fn power_key_is_reported_alone() {
+        let mut kbd = AdbKeyboard::new();
+        kbd.event(&key(true, 0x00));
+        kbd.event(&key(true, SC_POWER));
+        kbd.event(&key(false, SC_POWER));
+        assert_eq!(kbd.talk(0).as_slice(), &[0x00, 0xFF]);
+        assert_eq!(kbd.talk(0).as_slice(), &[0x7F, 0x7F]);
+        assert_eq!(kbd.talk(0).as_slice(), &[0xFF, 0xFF]);
+        assert!(kbd.talk(0).is_empty());
     }
 
     #[test]

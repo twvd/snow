@@ -9,6 +9,7 @@ use anyhow::{Result, anyhow, bail};
 use eframe::egui;
 use sha2::{Digest, Sha256};
 use snow_core::emulator::MouseMode;
+use snow_core::mac::maclc::pds_iie::IieDiskDevice;
 use snow_core::mac::maclc::video as lc_video;
 use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{MacModel, MacMonitor, NubusDeviceKind};
@@ -27,6 +28,15 @@ pub fn video_rom_card(model: MacModel, video_card: NubusDeviceKind) -> NubusDevi
         NubusDeviceKind::SE30Video
     } else {
         video_card
+    }
+}
+
+/// The name of a device on the Apple IIe Card's external disk port
+fn iie_disk_device_name(device: IieDiskDevice) -> &'static str {
+    match device {
+        IieDiskDevice::None => "None",
+        IieDiskDevice::Apple525 => "Apple 5.25 Drive",
+        IieDiskDevice::UniDisk35 => "UniDisk 3.5",
     }
 }
 
@@ -66,6 +76,9 @@ pub struct ModelSelectionDialog {
 
     // Overclock (only takes effect if overclock is checked and value is valid)
     overclock_text: String,
+
+    // The Apple IIe Card settings dialog is open
+    iie_settings_open: bool,
 
     // Result
     result: Option<ModelSelectionResult>,
@@ -137,6 +150,7 @@ impl Default for ModelSelectionDialog {
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
 
             overclock_text: "40".into(),
+            iie_settings_open: false,
 
             result: None,
             disable_rom_validation: false,
@@ -153,6 +167,7 @@ impl ModelSelectionDialog {
         roms_by_card: Vec<(NubusDeviceKind, PathBuf)>,
     ) {
         self.open = true;
+        self.iie_settings_open = false;
         self.last_roms = last_roms;
         self.roms_by_card = roms_by_card;
         self.main_rom_error.clear();
@@ -612,6 +627,15 @@ impl ModelSelectionDialog {
 
                     ui.checkbox(&mut self.init_args.fpu_enabled, "Enable 68882 FPU");
                     ui.end_row();
+
+                    ui.checkbox(&mut self.init_args.iie_card, "Install Apple IIe Card");
+                    if ui
+                        .add_enabled(self.init_args.iie_card, egui::Button::new("Settings..."))
+                        .clicked()
+                    {
+                        self.iie_settings_open = true;
+                    }
+                    ui.end_row();
                 }
                 if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
                     ui.checkbox(&mut self.init_args.pmmu_enabled, "Enable 68851 PMMU");
@@ -774,6 +798,7 @@ impl ModelSelectionDialog {
                         ) {
                             self.init_args.fpu_enabled = false;
                             self.init_args.vram_size = None;
+                            self.init_args.iie_card = false;
                         }
 
                         self.result = Some(ModelSelectionResult {
@@ -831,6 +856,10 @@ impl ModelSelectionDialog {
             );
         });
 
+        if self.iie_settings_open {
+            self.iie_settings_modal(ctx);
+        }
+
         if last_model != self.selected_model {
             self.do_model_changed();
         }
@@ -838,6 +867,94 @@ impl ModelSelectionDialog {
         if last_validation_disabled != self.disable_rom_validation {
             self.do_validate_roms();
         }
+    }
+
+    /// The Apple IIe Card settings, a dialog over the main one
+    fn iie_settings_modal(&mut self, ctx: &egui::Context) {
+        egui::Modal::new(egui::Id::new("Apple IIe Card settings")).show(ctx, |ui| {
+            ui.style_mut().spacing.item_spacing = egui::Vec2::splat(4.0);
+            ui.set_width(400.0);
+
+            ui.heading("Apple IIe Card settings");
+            ui.separator();
+
+            let settings = &mut self.init_args.iie_card_settings;
+            ui.checkbox(
+                &mut settings.security_jumper,
+                "Lock the Option Panel (J17 jumper)",
+            );
+
+            ui.separator();
+            ui.label("External drives (Y-cable), in daisy-chain order:");
+            egui::Grid::new("iie_drives_grid").show(ui, |ui| {
+                ui.label("First drive:");
+                egui::ComboBox::new(egui::Id::new("IIe first drive"), "")
+                    .selected_text(iie_disk_device_name(settings.disk_chain[0]))
+                    .show_ui(ui, |ui| {
+                        for device in [
+                            IieDiskDevice::None,
+                            IieDiskDevice::Apple525,
+                            IieDiskDevice::UniDisk35,
+                        ] {
+                            ui.selectable_value(
+                                &mut settings.disk_chain[0],
+                                device,
+                                iie_disk_device_name(device),
+                            );
+                        }
+                    });
+                ui.end_row();
+
+                // The second drive plugs into the first
+                if settings.disk_chain[0] == IieDiskDevice::None {
+                    settings.disk_chain[1] = IieDiskDevice::None;
+                }
+                ui.label("Second drive:");
+                ui.add_enabled_ui(settings.disk_chain[0] != IieDiskDevice::None, |ui| {
+                    egui::ComboBox::new(egui::Id::new("IIe second drive"), "")
+                        .selected_text(iie_disk_device_name(settings.disk_chain[1]))
+                        .show_ui(ui, |ui| {
+                            for device in [IieDiskDevice::None, IieDiskDevice::Apple525] {
+                                ui.selectable_value(
+                                    &mut settings.disk_chain[1],
+                                    device,
+                                    iie_disk_device_name(device),
+                                );
+                            }
+                        });
+                });
+                ui.end_row();
+            });
+
+            ui.separator();
+            ui.checkbox(
+                &mut self.init_args.iie_joystick_emulation,
+                "Enable controller emulation",
+            );
+            if self.init_args.iie_joystick_emulation {
+                ui.label(
+                    "The IIe always has a joystick. By default I/J/L/M, keypad 8/4/6/2, \
+                     the arrows or W/A/S/D move it; X, 2, Left Alt or keypad . is button 0, Z, 1, Left Ctrl or keypad 0 is button 1. \
+                     Switch the joystick keys on and off with Scroll Lock, the toolbar or \
+                     the Machine menu, where the keys can also be changed. A host game \
+                     controller also works.",
+                );
+            } else {
+                ui.label("The IIe has a joystick while a host game controller is connected.");
+            }
+            ui.label("Command and Option also press buttons 0 and 1 (Open and Closed Apple).");
+
+            ui.separator();
+            egui::Sides::new().show(
+                ui,
+                |_ui| {},
+                |ui| {
+                    if ui.button("Close").clicked() {
+                        self.iie_settings_open = false;
+                    }
+                },
+            );
+        });
     }
 
     fn do_validate_roms(&mut self) {

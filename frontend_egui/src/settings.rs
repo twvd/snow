@@ -1,3 +1,4 @@
+use crate::joystick::{JoyBindings, default_bindings};
 use anyhow::Result;
 use egui_file_dialog::FileDialogStorage;
 use serde::de::DeserializeOwned;
@@ -50,6 +51,22 @@ where
     }
 
     Ok(out)
+}
+
+/// Custom deserializer for the joystick bindings: the defaults if they
+/// cannot be parsed (e.g. a key unknown to this version)
+fn deserialize_bindings_lenient<'de, D>(deserializer: D) -> Result<JoyBindings, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_else(|e| {
+        log::warn!(
+            "Invalid Apple IIe joystick bindings, using the defaults: {}",
+            e
+        );
+        default_bindings()
+    }))
 }
 
 const MAX_RECENT_WORKSPACES: usize = 10;
@@ -105,6 +122,9 @@ pub struct AppSettings {
     /// If true, resumes execution when the emulator is reset, even when paused
     #[serde(default = "bool_true")]
     pub run_on_reset: bool,
+    /// The host keys and controller buttons of the Apple IIe joystick
+    #[serde(deserialize_with = "deserialize_bindings_lenient")]
+    pub iie_joystick_bindings: JoyBindings,
 }
 
 impl Default for AppSettings {
@@ -138,6 +158,7 @@ impl Default for AppSettings {
             backup_on_writeback: false,
             cmd_key_mapping: CmdKeyMapping::default(),
             run_on_reset: true,
+            iie_joystick_bindings: default_bindings(),
         }
     }
 }

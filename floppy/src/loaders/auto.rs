@@ -3,7 +3,7 @@
 #[cfg(feature = "fluxfox")]
 use crate::loaders::fluxfox::Fluxfox;
 use crate::loaders::{
-    A2Rv2, A2Rv3, Bitfile, Dart, Diskcopy42, FloppyImageLoader, Moof, PFI, PRI, RawImage,
+    A2Rv2, A2Rv3, Bitfile, Dart, Diskcopy42, FloppyImageLoader, Moof, PFI, PRI, RawImage, TwoImg,
 };
 use crate::{FloppyImage, FloppyType};
 
@@ -26,6 +26,7 @@ pub enum ImageType {
     PFI,
     PRI,
     Raw,
+    TwoImg,
 }
 
 impl ImageType {
@@ -41,7 +42,8 @@ impl ImageType {
             Self::MOOF => &["moof"],
             Self::PFI => &["pfi"],
             Self::PRI => &["pri"],
-            Self::Raw => &["dsk", "raw", "img", "image"],
+            Self::Raw => &["dsk", "raw", "img", "image", "po"],
+            Self::TwoImg => &["2mg", "2img"],
         }
     }
 
@@ -67,6 +69,7 @@ impl ImageType {
             Self::PFI => "PCE PFI",
             Self::PRI => "PCE PRI",
             Self::Raw => "Raw image",
+            Self::TwoImg => "Apple II 2IMG",
         }
     }
 }
@@ -107,6 +110,10 @@ impl Autodetect {
         {
             return Ok(ImageType::DART);
         }
+        // Apple II 2IMG
+        if TwoImg::detect(data) {
+            return Ok(ImageType::TwoImg);
+        }
         // Raw image
         if FloppyType::iter().any(|t| t.get_logical_size() == data.len()) {
             return Ok(ImageType::Raw);
@@ -142,6 +149,7 @@ impl FloppyImageLoader for Autodetect {
             ImageType::PFI => PFI::load(data, filename),
             ImageType::PRI => PRI::load(data, filename),
             ImageType::Raw => RawImage::load(data, filename),
+            ImageType::TwoImg => TwoImg::load(data, filename),
 
             ImageType::Fluxfox => {
                 #[cfg(feature = "fluxfox")]

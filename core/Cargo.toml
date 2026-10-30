@@ -10,6 +10,10 @@ built = { version = "0.8.0", features = ["chrono", "git2"] }
 [features]
 # Enables the Daynaport SCSI/Link Ethernet device emulation
 ethernet = ["dep:crc", "dep:binrw"]
+# Enables the Apple IIe Card's debug output (very slow): every card
+# access, the 65C02's own accesses, a trace ring dumped on BRK, and the
+# full instruction stream to the file named by SNOW_IIE_TRACE
+iie-debug = []
 # Enables Ethernet bridging (currently broken!)
 ethernet_raw = ["ethernet", "dep:pnet"]
 # Enables Ethernet over userland NAT
@@ -27,6 +31,8 @@ printer = ["dep:image"]
 mmap = ["dep:fs2", "dep:memmap2"]
 # Enables save state saving and loading
 savestates = ["dep:binrw", "dep:postcard", "dep:zstd"]
+# Builds the 65816 in the Apple IIe Card's 6502-family CPU core (unused by Snow)
+w65816 = []
 
 [lints]
 workspace = true

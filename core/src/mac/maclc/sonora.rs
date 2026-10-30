@@ -4,8 +4,6 @@
 //! the layout of the RAM and of the video RAM, and its video registers for
 //! the mode, the depth and the sense lines of the monitor. The registers
 //! which it shares with the V8 are in `pseudovia`.
-//!
-//! The 560x384 mode of the Apple IIe card is not implemented.
 
 use super::bus::{IO_WAITS, Region};
 use super::video::Mode;
@@ -65,14 +63,28 @@ pub const MONITORS: &[MacMonitor] = &[
 pub const VRAM_SIZES: &[usize] = &[VRAM_SOLDERED, 768 * 1024];
 const VRAM_SOLDERED: usize = 512 * 1024;
 
+/// Start of the PDS slot $E window in 32-bit address space (the
+/// standard NuBus-style slot space alias — LC III developer note)
+pub(super) const PDS_BASE: Address = 0xFE00_0000;
+
 /// Finds what an address selects
 pub(super) fn decode(addr: Address) -> Option<Region> {
     match addr {
         0x0000_0000..=0x3FFF_FFFF => Some(Region::Ram(addr)),
         0x4000_0000..=0x4FFF_FFFF => Some(Region::Rom),
-        0x5000_0000..=0x50FF_FFFF => Some(Region::Io(addr & 0x0F_FFFF)),
+        0x5000_0000..=0x50FB_FFFF => Some(Region::Io(addr & 0x0F_FFFF)),
+        // The PDS is selected only in slot $E space (LC III developer
+        // note, /PDS.AS), not at $50FC 0000: software reaches the IIe
+        // Card there through the MMU, which maps it to $FEE0 0000.
+        // The ROM reads $50FC 0000 right after reset; MAME has a VIA1
+        // mirror there (mirror 0x00FC0000), which does not bus error.
+        0x50FC_0000..=0x50FC_1FFF => Some(Region::Io(addr & 0x1FFF)),
+        0x50FC_2000..=0x50FF_FFFF => Some(Region::Io(addr & 0x0F_FFFF)),
         0x5FFF_FFFC..=0x5FFF_FFFF => Some(Region::CpuId(addr as usize & 3)),
         0x6000_0000..=0x6FFF_FFFF => Some(Region::Vram(addr as usize & 0x0F_FFFF)),
+        // The super slot space and the standard slot space of slot $E
+        0xE000_0000..=0xEFFF_FFFF => Some(Region::IieCard(addr & 0x00FF_FFFF)),
+        0xFE00_0000..=0xFEFF_FFFF => Some(Region::IieCard(addr - PDS_BASE)),
         _ => None,
     }
 }
@@ -182,6 +194,10 @@ impl VideoRegs {
         match self.mode & 0x1F {
             // 12" RGB: 640 x 407 dots at 15.6672 MHz (60.15 Hz)
             0x02 => Some((512, 384, 640 * 407)),
+            // 12" RGB at 560x384, for the Apple IIe card: 704 x 407 dots at
+            // 17.234 MHz, 1.1 times the clock of the 12" mode, so the lines
+            // and the frames are as long
+            0x0A => Some((560, 384, 640 * 407)),
             // 13" RGB: 864 x 525 dots at 30.24 MHz (66.67 Hz)
             0x06 => Some((640, 480, 864 * 525 * 15_667_200 / 30_240_000)),
             // 13" RGB with 400 lines, which leaves room for 16 bpp in 512 KB,
@@ -376,6 +392,13 @@ mod tests {
         assert_eq!((mode.width, mode.height), (640, 400));
         assert_eq!((mode.depth, mode.row_bytes), (4, 1280));
 
+        // 560x384 at 4 bpp
+        video.write(VIDEO_MODE, 0x0A);
+        video.write(VIDEO_DEPTH, 2);
+        let mode = video.video_mode().unwrap();
+        assert_eq!((mode.width, mode.height), (560, 384));
+        assert_eq!((mode.depth, mode.row_bytes), (2, 280));
+
         // Blanked
         video.write(VIDEO_MODE, 0x8D);
         assert!(video.video_mode().is_none());
@@ -390,6 +413,7 @@ mod tests {
             15_667_200 / video.frame_period()
         };
         assert_eq!(frames(0x02), 60);
+        assert_eq!(frames(0x0A), 60);
         assert_eq!(frames(0x06), 66);
         assert_eq!(frames(0x0D), 66);
         assert_eq!(frames(0x01), 75);

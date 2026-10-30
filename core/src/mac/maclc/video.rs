@@ -84,7 +84,7 @@ struct Ramdac {
     /// The depth of the gate array is used for rendering.
     control: u8,
 
-    /// Key colour, for the video overlay of the Apple IIe card
+    /// Key colour register (unused: Mac OS never drives it)
     key: u8,
 }
 
@@ -150,6 +150,11 @@ pub struct Video<TRenderer: Renderer> {
 
     /// Position in the frame, in cycles of C16M scaled by the bus frequency
     frame_clock: Ticks,
+
+    /// Size and depth of the last frame shown, None if blanked, to log the
+    /// mode changes
+    #[serde(skip)]
+    shown: Option<(usize, usize, u8)>,
 }
 
 impl<TRenderer> Video<TRenderer>
@@ -163,6 +168,7 @@ where
             vram: vec![0; vram_size],
             ramdac: Ramdac::new(),
             frame_clock: 0,
+            shown: None,
         }
     }
 
@@ -200,6 +206,12 @@ where
     }
 
     pub fn write_vram(&mut self, idx: usize, val: Byte) {
+        // The pixels the Mac side actually changes, for correlating with
+        // what the Apple IIe Card's screen shows.
+        #[cfg(feature = "iie-debug")]
+        if log::log_enabled!(log::Level::Debug) && self.vram[idx] != val {
+            log::debug!("V8 VRAM write {:05X} <- {:02X}", idx, val);
+        }
         self.vram[idx] = val;
     }
 
@@ -257,6 +269,16 @@ where
     }
 
     pub fn render(&mut self, mode: &Mode) -> Result<()> {
+        let shown = Some((mode.width, mode.height, mode.depth));
+        if shown != self.shown {
+            log::debug!(
+                "Video mode: {}x{} at {} bpp",
+                mode.width,
+                mode.height,
+                1 << mode.depth
+            );
+            self.shown = shown;
+        }
         // We have to move the renderer so we don't upset the borrow checker.
         let mut renderer = self.renderer.take().unwrap();
         self.render_to(renderer.buffer_mut(), mode);
@@ -267,6 +289,9 @@ where
 
     /// Shows a black screen
     pub fn blank(&mut self) -> Result<()> {
+        if self.shown.take().is_some() {
+            log::debug!("Video blanked");
+        }
         let renderer = self.renderer.as_mut().unwrap();
         let buf = renderer.buffer_mut();
         buf.set_size(self.monitor.width(), self.monitor.height());

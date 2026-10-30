@@ -19,6 +19,7 @@ mod consts;
 mod dialogs;
 mod emulator;
 mod helpers;
+mod joystick;
 mod keymap;
 mod settings;
 mod shader_pipeline;

@@ -56,3 +56,11 @@ repository using:
 ```
 cargo test
 ```
+
+The single step tests of the Apple IIe Card's 6502-family CPU are in a
+separate submodule. It is large (about 1 GB), so the command above leaves it
+out and these tests are skipped. To run them, fetch it with:
+
+```
+git submodule update --init --checkout testdata/65x02
+```
