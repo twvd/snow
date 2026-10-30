@@ -887,6 +887,7 @@ where
         self.via1.adb = adb;
         self.via1.rtc = rtc;
 
+        self.swim.reset();
         self.scc = Scc::new(RTXC_FREQUENCY);
         self.via2 = Via2::new(self.model);
         for d in self.nubus_devices.iter_mut().filter_map(|f| f.as_mut()) {

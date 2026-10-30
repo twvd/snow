@@ -718,6 +718,7 @@ where
 
         self.pmgr.reset();
 
+        self.swim.reset();
         self.scc = Scc::new(RTXC_FREQUENCY);
         self.via.reset();
         self.swim.sel = self.via.pb().headsel();
