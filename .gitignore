@@ -8,6 +8,8 @@
 *.rom
 *.uk6
 *.bin
+# Vendored test-fixture ROMs (m68k-rs/Musashi self-checking binaries)
+!core/src/cpu_m68k/tests/fixtures/**/*.bin
 *.dsk
 *.moof
 *.img
