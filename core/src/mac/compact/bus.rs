@@ -204,7 +204,11 @@ where
             video: Video::new(renderer),
             audio: AudioState::default(),
             scc: Scc::new(),
-            swim: Swim::new(&fdds, model.fdd_hd(), BUS_FREQUENCY),
+            swim: Swim::new(
+                &fdds,
+                model.fdd_hd(),
+                BUS_FREQUENCY * swim_ticks_per_tick(model),
+            ),
             scsi: ScsiController::new(),
             mouse_ready: false,
 
@@ -946,7 +950,8 @@ where
             }
 
             self.scsi.tick(ticks, ctx)?;
-            self.swim.tick(ticks, ())?;
+            self.swim
+                .tick(ticks * swim_ticks_per_tick(self.model), ())?;
         }
 
         Ok(ticks)
@@ -1022,6 +1027,12 @@ fn region(model: MacModel, overlay: bool, addr: Address) -> Region {
     } else {
         region_plus(model, overlay, addr)
     }
+}
+
+/// IWM or SWIM ticks per C8M tick: its FCLK is C8M on the Plus (schematic
+/// 050-0159-A) and C16M from the SE on (BOMARC SE schematic)
+fn swim_ticks_per_tick(model: MacModel) -> Ticks {
+    if model <= MacModel::Plus { 1 } else { 2 }
 }
 
 /// 128K, 512K, 512Ke and Plus: the devices are selected from A23-A19 only
