@@ -4302,14 +4302,23 @@ where
 
         self.prefetch_pump()?;
 
-        self.regs.sr.set_v(false);
         self.regs.sr.set_c(false);
         if extword.size() {
-            self.regs.sr.set_n(result & (1 << 63) != 0);
+            self.regs.sr.set_v(false);
+            self.regs.sr.set_n(result < 0);
+            self.regs.sr.set_z(result == 0);
         } else {
-            self.regs.sr.set_n(result & (1 << 31) != 0);
+            // The flags are those of the 32 bit result. V is for a product
+            // that does not fit in it.
+            let low = result as i32;
+            self.regs.sr.set_v(if extword.signed() {
+                result != i64::from(low)
+            } else {
+                result as u64 > u64::from(u32::MAX)
+            });
+            self.regs.sr.set_n(low < 0);
+            self.regs.sr.set_z(low == 0);
         }
-        self.regs.sr.set_z(result == 0);
 
         self.regs.write_d(extword.dl(), result as i32 as Long);
         if extword.size() {
