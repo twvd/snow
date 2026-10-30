@@ -154,8 +154,8 @@ pub struct Swim {
     pub q7: bool,
     pub extdrive: bool,
     pub enable: bool,
-    /// While > cycles, the IWM one-second timer keeps the drive enabled
-    /// after ENABLE went off
+    /// While > cycles, the MotorOn timer keeps the drive enabled after
+    /// ENABLE (IWM) or MotorOn (ISM) went off
     enable_hold: Ticks,
     pub sel: bool,
 
