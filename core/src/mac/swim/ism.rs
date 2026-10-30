@@ -11,7 +11,7 @@ use crate::mac::swim::SwimMode;
 use crate::tickable::Ticks;
 use crate::types::Byte;
 
-use super::Swim;
+use super::{MOTOR_TIMER, Swim};
 
 #[derive(Debug)]
 enum IsmRegister {
@@ -380,6 +380,15 @@ impl Swim {
                     if clr.ism() {
                         self.mode = SwimMode::Iwm;
                     }
+                    if clr.motor() && self.ism_setup.motoron_tmr_enable() {
+                        // "the MotorOn timer which causes the drive enables to
+                        // remain active for about 1/2 second (at 16MHz) after
+                        // the MotorOn bit is disabled" (SWIM Chip User's
+                        // Reference, ISM setup register bit 7). The count is
+                        // not given: 2^23 FCLK periods, as in IWM mode, is
+                        // 0.54 s at 15.6672 MHz.
+                        self.enable_hold = self.cycles + MOTOR_TIMER;
+                    }
 
                     self.ism_mode.0 &= !value;
                 }
@@ -422,9 +431,19 @@ impl Swim {
         }
     }
 
-    /// One of the drive enable lines is asserted
-    fn ism_drive_enabled(&self) -> bool {
-        self.ism_mode.drive1_enable() || self.ism_mode.drive2_enable()
+    /// One of the drive enable lines is asserted.
+    ///
+    /// On the SWIM, mode bit 1 or 2 enables drive 1 or 2 "along with bit 7
+    /// (MotorOn)", and bit 7 "Enables/disables the /ENBL1 and /ENBL2 drive
+    /// enables" (SWIM Chip User's Reference, ISM mode register), as MAME
+    /// also does. The SWIM2 ERS describes bit 7 as only driving the motor
+    /// output ("Motoron ... output port only, most control is through the
+    /// internal register", rev 3.1, poor scan): its drive enables follow
+    /// bits 1 and 2 alone.
+    pub(super) fn ism_drive_enabled(&self) -> bool {
+        let motoron =
+            !self.iwm_available || self.ism_mode.motor() || self.enable_hold > self.cycles;
+        motoron && (self.ism_mode.drive1_enable() || self.ism_mode.drive2_enable())
     }
 
     fn ism_read_phases(&self) -> u8 {
@@ -891,11 +910,41 @@ mod tests {
     #[test]
     fn sense_no_drive_enabled() {
         let mut swim = swim(0x20);
+        swim.write(reg(REG_MODE_ONE), MODE_MOTOR | MODE_DRIVE1);
         swim.write(reg(REG_PHASES), PHASES_MOTOR_ON);
         assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0x08, 0x00);
 
+        // The drive enable bit without MotorOn does not enable the drive
+        swim.write(reg(REG_MODE_ZERO), MODE_MOTOR);
+        assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0x08, 0x08);
+
+        swim.write(reg(REG_MODE_ONE), MODE_MOTOR);
         swim.write(reg(REG_MODE_ZERO), MODE_DRIVE1);
         assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0x08, 0x08);
+    }
+
+    #[test]
+    fn motoron_timer() {
+        // With the MotorOn timer enabled, the drive stays enabled for about
+        // half a second after MotorOn is cleared
+        let mut swim = swim(0xA0);
+        swim.write(reg(REG_MODE_ONE), MODE_MOTOR | MODE_DRIVE1);
+        swim.write(reg(REG_PHASES), PHASES_MOTOR_ON);
+        swim.write(reg(REG_MODE_ZERO), MODE_MOTOR);
+        assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0x08, 0x00);
+        swim.tick((1 << 23) + 1, ()).unwrap();
+        assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0x08, 0x08);
+    }
+
+    #[test]
+    fn swim2_enable_without_motoron() {
+        let mut swim = Swim::new_swim2(&[DriveType::SuperDrive], 16_000_000);
+        swim.disk_insert(0, FloppyImage::new(FloppyType::Mac800K, ""))
+            .unwrap();
+        swim.drives[0].write_drive_reg(DRIVE_MOTOR_ON);
+        swim.write(reg(REG_MODE_ONE), MODE_DRIVE1);
+        swim.write(reg(REG_PHASES), PHASES_MOTOR_ON);
+        assert_eq!(swim.read(reg(REG_HANDSHAKE)).unwrap() & 0x08, 0x00);
     }
 
     #[test]
@@ -904,7 +953,7 @@ mod tests {
         // enabled, LSTRB raised and lowered by two writes
         let mut swim = swim(0x20);
         swim.drives[0].write_drive_reg(0b1100);
-        swim.write(reg(REG_MODE_ONE), MODE_DRIVE1);
+        swim.write(reg(REG_MODE_ONE), MODE_MOTOR | MODE_DRIVE1);
         swim.write(reg(REG_PHASES), PHASES_EJECT[0]);
         swim.write(reg(REG_PHASES), PHASES_EJECT[1]);
         swim.write(reg(REG_PHASES), PHASES_EJECT[0]);
@@ -915,10 +964,10 @@ mod tests {
     fn eject_completes_when_disabled() {
         // The drive is disabled at once after the strobe
         let mut swim = swim(0x20);
-        swim.write(reg(REG_MODE_ONE), MODE_DRIVE1);
+        swim.write(reg(REG_MODE_ONE), MODE_MOTOR | MODE_DRIVE1);
         swim.write(reg(REG_PHASES), PHASES_EJECT[0]);
         swim.write(reg(REG_PHASES), PHASES_EJECT[1]);
-        swim.write(reg(REG_MODE_ZERO), MODE_DRIVE1);
+        swim.write(reg(REG_MODE_ZERO), MODE_MOTOR | MODE_DRIVE1);
         swim.write(reg(REG_PHASES), PHASES_EJECT[0]);
         swim.tick(1, ()).unwrap();
         assert!(!swim.drives[0].floppy_inserted);
