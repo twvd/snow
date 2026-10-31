@@ -25,6 +25,7 @@ use super::save::{RestoredSlot, SavedSlot, SlotState};
 use super::{Emulator, EmulatorConfig, MouseMode};
 use crate::lisa::bus::LisaBus;
 use crate::lisa::profile_sim::ProfileSim;
+use crate::lisa::video::build_prom;
 use crate::mac::maclc::pds_iie::disk::DskOrder;
 use crate::mac::maclc::pds_iie::{IieCardSettings, IieDiskDevice, PdsIIeCard};
 use crate::mac::scc::SccCh;
@@ -751,10 +752,18 @@ impl DeviceSettings for SE30VideoSettings {
     const MODEL: DeviceModel = DeviceModel::SE30Video;
 }
 
-/// The Lisa's video state PROM
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The Lisa's video state PROM, which also holds its serial number
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LisaVideoSettings {
-    pub rom: PathBuf,
+    /// A dump of the PROM. Without, it's built in, from the settings below.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rom: Option<PathBuf>,
+    /// The Screen Kit's monitor instead of the Lisa's own
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub screen_kit: bool,
+    /// The 20 digits of the serial number, in the PROM of the Lisa's own monitor only
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
 }
 impl DeviceSettings for LisaVideoSettings {
     const MODEL: DeviceModel = DeviceModel::LisaVideo;
@@ -1054,7 +1063,7 @@ impl BuildPlan {
                     let settings: DisplayCard824Settings = config.parse()?;
                     (settings.rom, settings.monitor)
                 };
-                self.take_video(slot, device, &rom, monitor, config)?;
+                self.take_video(slot, device, read_rom(&rom)?, monitor, config)?;
                 Ok(false)
             }
             DeviceModel::SE30Video => {
@@ -1062,15 +1071,19 @@ impl BuildPlan {
                     bail!("This machine can't take a {}", device.name());
                 }
                 let rom: SE30VideoSettings = config.parse()?;
-                self.take_video(0xE, device, &rom.rom, None, config)?;
+                self.take_video(0xE, device, read_rom(&rom.rom)?, None, config)?;
                 Ok(false)
             }
             DeviceModel::LisaVideo => {
                 if config.bus != bus_id::BUILT_IN || !fits(BusKind::BuiltIn) {
                     bail!("This machine can't take a {}", device.name());
                 }
-                let rom: LisaVideoSettings = config.parse()?;
-                self.take_video(0, device, &rom.rom, None, config)?;
+                let settings: LisaVideoSettings = config.parse()?;
+                let prom = match &settings.rom {
+                    Some(rom) => read_rom(rom)?,
+                    None => build_prom(settings.screen_kit, settings.serial.as_deref())?,
+                };
+                self.take_video(0, device, prom, None, config)?;
                 Ok(false)
             }
             DeviceModel::AppleIIePdsCard => {
@@ -1114,14 +1127,13 @@ impl BuildPlan {
         &mut self,
         slot: u8,
         device: DeviceModel,
-        rom: &Path,
+        rom: Vec<u8>,
         monitor: Option<MacMonitor>,
         config: &DeviceConfig,
     ) -> Result<()> {
         if self.video.iter().any(|v| v.slot == slot) {
             bail!("This slot already holds a card");
         }
-        let rom = std::fs::read(rom).with_context(|| format!("Cannot read {}", rom.display()))?;
         self.video.push(PlannedVideo {
             slot,
             device,
@@ -1196,6 +1208,10 @@ fn slot_target(bus: &Bus, slot: &Slot) -> SlotTarget {
         BusKind::LisaFdc => SlotTarget::LisaDrive,
         BusKind::LisaParallel => SlotTarget::LisaParallel,
     }
+}
+
+fn read_rom(path: &Path) -> Result<Vec<u8>> {
+    std::fs::read(path).with_context(|| format!("Cannot read {}", path.display()))
 }
 
 fn settings_map(settings: &impl Serialize) -> Map<String, Value> {
@@ -2136,8 +2152,12 @@ impl Emulator {
                     .device_book
                     .cards
                     .iter()
-                    .find(|c| c.bus == bus.id && c.slot == slot.id)?;
-                device(config.known_model()?, config.settings.clone())
+                    .find(|c| c.bus == bus.id && c.slot == slot.id);
+                match config {
+                    Some(config) => device(config.known_model()?, config.settings.clone()),
+                    // What the machine has without being told
+                    None => slot.device.clone(),
+                }
             }
             SlotTarget::IieDrive(i) => device(*self.device_book.iie_chain.get(i)?, Map::new()),
             SlotTarget::Serial(ch) => match self.device_book.serial[ch as usize].as_ref()? {
@@ -2726,6 +2746,88 @@ mod tests {
         let first = emu.find_slot(bus_id::SWIM, "HD20.1").unwrap();
         emu.remove_device(first).unwrap();
         assert_eq!(emu.devices(), [hd20(1, files.0.join("b.img"))]);
+    }
+
+    /// 5 MB, in blocks of 532 bytes
+    const LISA_DISK_SIZE: usize = 9728 * 532;
+
+    fn lisa_disk(model: DeviceModel, media: PathBuf) -> DeviceConfig {
+        DeviceConfig::of_model(
+            bus_id::LISA_PARALLEL,
+            "0",
+            model,
+            &HardDiskSettings {
+                media,
+                read_only: false,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_lisa_floppy_goes_through_the_floppy_function() {
+        let files = TestFiles::new("lisa_floppy");
+        let config = DeviceConfig::existing(
+            bus_id::LISA_FDC,
+            "1",
+            &FloppySettings {
+                media: Some(files.file("disk.image", 800 * 512)),
+                read_only: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            assert_round_trip(MacModel::Lisa25, vec![config.clone()]),
+            vec![config]
+        );
+    }
+
+    #[test]
+    fn the_lisa_video_builds_its_prom() {
+        let kit = LisaVideoSettings {
+            screen_kit: true,
+            ..Default::default()
+        };
+        let config = DeviceConfig::existing(bus_id::BUILT_IN, "0", &kit).unwrap();
+        assert_eq!(
+            assert_round_trip(MacModel::Lisa25, vec![config.clone()]),
+            vec![config.clone()]
+        );
+        let (emu, _) = build(MacModel::Lisa25, vec![config]);
+        assert!(emu.lisa_bus().unwrap().video.is_screen_kit());
+
+        // With nothing said, the Lisa's own monitor, which needs nothing saved
+        let (mut emu, _) = build(MacModel::Lisa25, vec![]);
+        assert!(!emu.lisa_bus().unwrap().video.is_screen_kit());
+        assert_eq!(emu.devices(), vec![]);
+
+        let bad = LisaVideoSettings {
+            serial: Some("123".to_owned()),
+            ..Default::default()
+        };
+        let (_, refused) = build(
+            MacModel::Lisa25,
+            vec![DeviceConfig::existing(bus_id::BUILT_IN, "0", &bad).unwrap()],
+        );
+        assert_eq!(refused.len(), 1);
+    }
+
+    #[cfg(feature = "savestates")]
+    #[test]
+    fn a_save_state_holds_the_lisa_hard_disk() {
+        let files = TestFiles::new("state_lisa");
+        let devices = vec![lisa_disk(
+            DeviceModel::ProFile,
+            files.file("p.image", LISA_DISK_SIZE),
+        )];
+        let (mut emu, refused) = build(MacModel::Lisa25, devices);
+        assert!(refused.is_empty(), "{:?}", refused);
+        let reported = emu.devices();
+        let state = files.0.join("lisa.snows");
+        emu.save_state(&state, None).unwrap();
+        drop(emu);
+        let (mut restored, _) = Emulator::load_state(&state, files.dir("tmp")).unwrap();
+        assert_eq!(restored.devices(), reported);
     }
 
     #[cfg(feature = "savestates")]

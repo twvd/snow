@@ -13,7 +13,8 @@ use eframe::egui;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use snow_core::emulator::devices::{
-    AppleIIePdsCardSettings, DeviceConfig, DeviceModel, DisplayCard824Settings, bus_id,
+    AppleIIePdsCardSettings, DeviceConfig, DeviceModel, DisplayCard824Settings, LisaVideoSettings,
+    bus_id,
 };
 use snow_core::mac::maclc::pds_iie::IieDiskDevice;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
@@ -496,6 +497,14 @@ impl Workspace {
                 Some(model) if config.bus == bus_id::SWIM => {
                     args.override_fdd_type = model.drive_type();
                 }
+                // The PROM file is found with the cards' ROMs
+                _ if self.model.and_then(|mac| config.model_on(mac))
+                    == Some(DeviceModel::LisaVideo) =>
+                {
+                    if let Ok(video) = config.parse::<LisaVideoSettings>() {
+                        args.lisa_video = LisaVideoSettings { rom: None, ..video };
+                    }
+                }
                 _ => (),
             }
         }
@@ -620,12 +629,22 @@ pub fn card_entries(video_cards: &[VideoCardEntry], args: &EmulatorInitArgs) -> 
                 Some(DeviceModel::DisplayCard824.key()),
                 json!({ "rom": card.rom, "monitor": card.monitor }),
             ),
-            NubusDeviceKind::LisaVideo => old_entry(
-                bus_id::BUILT_IN,
-                "0",
-                Some(DeviceModel::LisaVideo.key()),
-                json!({ "rom": card.rom }),
-            ),
+            NubusDeviceKind::LisaVideo => {
+                // Without a PROM file, the PROM is built in from the other settings
+                let video = LisaVideoSettings {
+                    rom: (!card.rom.as_os_str().is_empty()).then(|| card.rom.clone()),
+                    ..args.lisa_video.clone()
+                };
+                if video == LisaVideoSettings::default() {
+                    continue;
+                }
+                old_entry(
+                    bus_id::BUILT_IN,
+                    "0",
+                    Some(DeviceModel::LisaVideo.key()),
+                    json!(video),
+                )
+            }
         });
     }
     if args.pds_card == PdsCardKind::AppleIIe {
@@ -830,6 +849,39 @@ mod tests {
             json!(rom)
         ));
         assert_eq!(ws.video_cards()[0].monitor, Some(MacMonitor::RGB16));
+    }
+
+    #[test]
+    fn the_lisa_video_comes_back_to_the_dialog() {
+        let dir = TestDir::new("lisa");
+        let rom = dir.file("p.rom");
+        let ws = dir.load(&format!(
+            r#"{{"model":"Lisa25","devices":[{{"bus":"Built-in","slot":"0","rom":{},
+                "screen_kit":true,"serial":"12345678901234567890"}}]}}"#,
+            json!(rom)
+        ));
+        let video = &ws.init_args.lisa_video;
+        assert!(video.screen_kit);
+        assert_eq!(video.serial.as_deref(), Some("12345678901234567890"));
+        let cards = ws.video_cards();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].kind, NubusDeviceKind::LisaVideo);
+        assert_eq!(cards[0].rom, rom);
+
+        // And what the dialog chooses goes back the same
+        let entries = card_entries(&cards, &ws.init_args);
+        assert_eq!(entries.len(), 1);
+        let settings = &entries[0].settings;
+        assert_eq!(settings["rom"], json!(rom));
+        assert_eq!(settings["screen_kit"], json!(true));
+        assert_eq!(settings["serial"], json!("12345678901234567890"));
+        // Nothing chosen, nothing to say: no PROM file, the defaults
+        let built_in = VideoCardEntry {
+            rom: PathBuf::new(),
+            ..cards[0].clone()
+        };
+        let args = EmulatorInitArgs::default();
+        assert!(card_entries(&[built_in], &args).is_empty());
     }
 
     #[test]

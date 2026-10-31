@@ -10,7 +10,8 @@ use anyhow::{Result, anyhow, bail};
 use eframe::egui;
 use snow_core::cpu_m68k::M68040;
 use snow_core::emulator::MouseMode;
-use snow_core::emulator::devices::{BusKind, DeviceModel, models_for};
+use snow_core::emulator::devices::{BusKind, DeviceModel, LisaVideoSettings, models_for};
+use snow_core::lisa::video::{DEFAULT_SERIAL, parse_serial};
 use snow_core::mac::maclc::lc_475_bus;
 use snow_core::mac::maclc::pds_iie::IieDiskDevice;
 use snow_core::mac::maclc::video as lc_video;
@@ -81,6 +82,11 @@ impl SlotCard {
         }
     }
 
+    /// The Lisa's video has its PROM built in: a file is optional
+    fn rom_optional(&self) -> bool {
+        self.kind == NubusDeviceKind::LisaVideo
+    }
+
     /// What the card's record calls its ROM
     fn rom_description(&self) -> &'static str {
         card_model(self.kind)
@@ -128,6 +134,9 @@ pub struct ModelSelectionDialog {
     display_rom_required: bool,
     // Last ROM of each kind of card, for a card put in a slot
     card_rom_paths: HashMap<NubusDeviceKind, String>,
+
+    // Lisa: the serial number as typed
+    lisa_serial: String,
 
     // PRAM path
     pram_enabled: bool,
@@ -197,6 +206,7 @@ impl Default for ModelSelectionDialog {
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir),
             display_rom_required: false,
             card_rom_paths: HashMap::new(),
+            lisa_serial: String::new(),
 
             pram_enabled: false,
             pram_dialog: SnowFileDialog::new()
@@ -256,6 +266,7 @@ impl ModelSelectionDialog {
         }
         self.early_800k = init_args.override_fdd_type == Some(DriveType::GCR800KPWM);
         self.init_args = init_args.clone();
+        self.lisa_serial = init_args.lisa_video.serial.clone().unwrap_or_default();
 
         // Recompute model-dependent state (e.g. whether a display ROM is required).
         self.update_display_rom_requirement();
@@ -581,12 +592,12 @@ impl ModelSelectionDialog {
                 }
                 ui.end_row();
 
-                // The SE/30's and the Lisa's video are on the logic board: only their ROM
-                // is asked for
+                // The SE/30's and the Lisa's video are on the logic board, with their ROM
+                // rows here
                 if self.selected_model == MacModel::SE30 {
                     self.video_rom_row(ui, settings, 0xE);
                 } else if self.selected_model.is_lisa() {
-                    self.video_rom_row(ui, settings, 0);
+                    self.lisa_video_rows(ui, settings);
                 }
                 if self.has_peripherals() {
                     ui.label(egui::RichText::from("Select peripherals").strong());
@@ -768,6 +779,9 @@ impl ModelSelectionDialog {
             }
 
             ui.collapsing("Advanced", |ui| {
+                if self.selected_model.is_lisa() {
+                    self.lisa_serial_group(ui);
+                }
                 ui.group(|ui| {
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.pram_enabled, "Persist PRAM");
@@ -893,7 +907,8 @@ impl ModelSelectionDialog {
                 |ui| {
                     let can_proceed = self.main_rom_valid
                         && (!self.display_rom_required || !self.cards.is_empty())
-                        && self.cards.values().all(|c| c.rom_valid);
+                        && self.cards.values().all(|c| c.rom_valid)
+                        && (!self.selected_model.is_lisa() || self.lisa_serial_error().is_none());
 
                     if ui
                         .add_enabled(can_proceed, egui::Button::new("Load and run"))
@@ -957,7 +972,13 @@ impl ModelSelectionDialog {
                                 } else {
                                     None
                                 },
-                                ..self.init_args
+                                lisa_video: LisaVideoSettings {
+                                    rom: None,
+                                    serial: (!self.lisa_serial.is_empty())
+                                        .then(|| self.lisa_serial.clone()),
+                                    ..self.init_args.lisa_video.clone()
+                                },
+                                ..self.init_args.clone()
                             },
                         });
                         self.open = false;
@@ -1046,7 +1067,12 @@ impl ModelSelectionDialog {
         let Some(card) = self.cards.get_mut(&slot) else {
             return;
         };
-        ui.label(format!("    {}", card.rom_description()));
+        let optional = if card.rom_optional() {
+            " (optional)"
+        } else {
+            ""
+        };
+        ui.label(format!("    {}{}", card.rom_description(), optional));
         let mut edited = false;
         ui.horizontal(|ui| {
             edited = ui.text_edit_singleline(&mut card.rom_path).lost_focus();
@@ -1097,6 +1123,67 @@ impl ModelSelectionDialog {
                 }
             });
         ui.end_row();
+    }
+
+    /// The Lisa's video: a PROM file, or the monitor of the PROM built in
+    fn lisa_video_rows(&mut self, ui: &mut egui::Ui, settings: &AppSettings) {
+        const OWN: &str = "Standard Lisa (720x364, 3:2 pixels)";
+        const SCREEN_KIT: &str = "Screen Kit (608x431, square pixels)";
+        self.video_rom_row(ui, settings, 0);
+        let built_in = self.lisa_prom_built_in();
+        let video = &mut self.init_args.lisa_video;
+        ui.label("    Monitor");
+        ui.add_enabled_ui(built_in, |ui| {
+            egui::ComboBox::new(egui::Id::new("Select Lisa monitor"), "")
+                .selected_text(if video.screen_kit { SCREEN_KIT } else { OWN })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut video.screen_kit, false, OWN);
+                    ui.selectable_value(&mut video.screen_kit, true, SCREEN_KIT);
+                });
+        })
+        .response
+        .on_disabled_hover_text("The PROM file is for one monitor");
+        ui.label("");
+        ui.end_row();
+    }
+
+    /// Whether the Lisa's PROM is the one built in: no PROM file
+    fn lisa_prom_built_in(&self) -> bool {
+        self.cards.get(&0).is_none_or(|c| c.rom_path.is_empty())
+    }
+
+    /// The serial number of the Lisa, in the PROM built in
+    fn lisa_serial_group(&mut self, ui: &mut egui::Ui) {
+        let error = self.lisa_serial_error();
+        let enabled = !self.init_args.lisa_video.screen_kit && self.lisa_prom_built_in();
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.label("Serial number:");
+                ui.add_enabled(
+                    enabled,
+                    egui::TextEdit::singleline(&mut self.lisa_serial).hint_text(DEFAULT_SERIAL),
+                )
+                .on_hover_text(
+                    "20 digits. Software installed on a disk only runs with the number it was \
+                     installed under. Not used with a PROM file, which has its own, or the \
+                     Screen Kit, which has none.",
+                );
+                if let Some(error) = error {
+                    ui.label(
+                        egui::RichText::new(egui_material_icons::icons::ICON_ERROR)
+                            .color(egui::Color32::DARK_RED),
+                    )
+                    .on_hover_text(error);
+                }
+            });
+        });
+    }
+
+    fn lisa_serial_error(&self) -> Option<String> {
+        if self.lisa_serial.is_empty() {
+            return None;
+        }
+        parse_serial(&self.lisa_serial).err().map(|e| e.to_string())
     }
 
     /// The Apple IIe Card settings, a dialog over the main one
@@ -1243,9 +1330,13 @@ impl ModelSelectionDialog {
         let Some(card) = self.cards.get(&slot) else {
             return;
         };
-        // No ROM yet: the row shows it
+        // No ROM yet: the row shows it, unless the ROM is optional
         let result = if card.rom_path.is_empty() {
-            Err(None)
+            if card.rom_optional() {
+                Ok(())
+            } else {
+                Err(None)
+            }
         } else {
             self.validate_card_rom(card).map_err(Some)
         };

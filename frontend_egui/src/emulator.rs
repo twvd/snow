@@ -25,8 +25,8 @@ use snow_core::emulator::comm::{
 };
 use snow_core::emulator::devices::{
     Bus, BusKind, CdromSettings, DeviceConfig, DeviceModel, FunctionKind, FunctionStatus,
-    HD20_SLOT, HardDiskSettings, MachineConfig, RefusedDevice, SerialLinkSettings, Slot, SlotAddr,
-    StatusBlock, device_configs, models_for,
+    HD20_SLOT, HardDiskSettings, LisaVideoSettings, MachineConfig, RefusedDevice,
+    SerialLinkSettings, Slot, SlotAddr, StatusBlock, device_configs, models_for,
 };
 use snow_core::emulator::{Emulator, MouseMode};
 use snow_core::keymap::Scancode;
@@ -113,6 +113,10 @@ pub struct EmulatorInitArgs {
     #[serde(skip_serializing)]
     pub video_card_slot: u8,
 
+    /// The Lisa's monitor and serial number. In the devices of a workspace, with the PROM file.
+    #[serde(skip_serializing)]
+    pub lisa_video: LisaVideoSettings,
+
     /// Overclock
     pub overclock: Option<u64>,
 
@@ -138,6 +142,7 @@ impl Default for EmulatorInitArgs {
             iie_joystick_emulation: true,
             video_card: Default::default(),
             video_card_slot: 0x9,
+            lisa_video: Default::default(),
             overclock: Default::default(),
             cache_flush_workaround: Default::default(),
         }
