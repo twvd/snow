@@ -7,7 +7,9 @@ use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, IrqSource};
 
-use crate::cpu_m68k::cpu::{CpuError, CpuM68k, ExceptionGroup, VECTOR_FORMAT_ERROR};
+use crate::cpu_m68k::cpu::{
+    CpuError, CpuM68k, ExceptionGroup, VECTOR_FORMAT_ERROR, VECTOR_PRIVILEGE_VIOLATION,
+};
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord};
 use crate::cpu_m68k::fpu::math::FloatMath;
@@ -40,6 +42,8 @@ where
 {
     /// FNOP
     pub(in crate::cpu_m68k) fn op_fnop(&mut self, _instr: &Instruction) -> Result<()> {
+        self.regs.fpu.used = true;
+
         // Fetch second word (0000)
         self.fetch()?;
 
@@ -50,6 +54,17 @@ where
 
     /// FSAVE
     pub(in crate::cpu_m68k) fn op_fsave(&mut self, instr: &Instruction) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+        if !self.regs.fpu.used {
+            // Null state: nothing since a reset or the restore of a null frame
+            // (MC68881UM 6.4.2.1)
+            self.write_ea_sz(instr, instr.get_op2(), [0u8; 4])?;
+            self.advance_cycles(50)?;
+            return Ok(());
+        }
         // Idle state frame
         match FPU_TYPE {
             FPU_M68881 => {
@@ -72,12 +87,17 @@ where
 
     /// FRESTORE
     pub(in crate::cpu_m68k) fn op_frestore(&mut self, instr: &Instruction) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
         let state = self.read_ea::<Long>(instr, instr.get_op2())?;
         if state & 0xFF000000 == 0 {
             // NULL state frame, reset FPU
             self.regs.fpu = FpuRegisterFile::default();
         } else if state & 0xFF000000 == 0x1F000000 {
             // Idle state frame
+            self.regs.fpu.used = true;
             // We've already read 4 bytes
             self.step_ea_addr = None;
             match FPU_TYPE {
@@ -106,6 +126,8 @@ where
 
     /// FMOVE, ALU operations
     pub(in crate::cpu_m68k) fn op_f000(&mut self, instr: &Instruction) -> Result<()> {
+        self.regs.fpu.used = true;
+
         // Fetch extension word
         let extword = FmoveExtWord(self.fetch_pump()?);
 
