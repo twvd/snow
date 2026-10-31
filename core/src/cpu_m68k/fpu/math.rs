@@ -1,14 +1,36 @@
-use arpfloat::Float;
+use arpfloat::{Float, RoundingMode};
 
-pub trait FloatMath {
+pub trait FloatMath: Sized {
     fn logbase(&self, base: u64) -> Self;
     fn log2(&self) -> Self;
     fn log10(&self) -> Self;
     fn floor(&self) -> Self;
     fn ceil(&self) -> Self;
+    fn remainder_parts(&self, divisor: &Self) -> (Self, u8);
 }
 
 impl FloatMath for Float {
+    /// The exact remainder of magnitudes of a truncating division, as the
+    /// 6888x gets it, a subtraction per bit of the quotient, and the low 7
+    /// bits of the quotient. Both operands must be finite, the divisor not 0.
+    fn remainder_parts(&self, divisor: &Self) -> (Self, u8) {
+        let sem = self.get_semantics().increase_precision(8);
+        let mut rest = self.abs().cast(sem);
+        let divisor = divisor.abs().cast(sem);
+        let mut quotient = 0;
+        if rest >= divisor {
+            for shift in (0..=rest.get_exp() - divisor.get_exp()).rev() {
+                let step = divisor.scale(shift, RoundingMode::Zero);
+                quotient <<= 1;
+                if rest >= step {
+                    rest -= step;
+                    quotient |= 1;
+                }
+            }
+        }
+        (rest, quotient & 0x7F)
+    }
+
     fn logbase(&self, base: u64) -> Self {
         self.log() / Self::from_u64(self.get_semantics(), base).log()
     }

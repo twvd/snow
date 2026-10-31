@@ -301,3 +301,49 @@ fn frestore_of_a_null_frame_goes_back_to_null() {
     assert_eq!(cpu.regs.a[0], 0x3000);
     assert_eq!(read_long(&cpu, 0x3000), 0);
 }
+
+#[test]
+fn fmod_and_frem() {
+    // dest, src, opmode, result, quotient, sign of the quotient
+    for (d, m, opmode, r, q, qs) in [
+        (-10.0, 3.0, 0x21, -1.0, 3, true),
+        (10.0, 3.0, 0x21, 1.0, 3, false),
+        (10.0, 3.0, 0x25, 1.0, 3, false),
+        (11.0, 3.0, 0x25, -1.0, 4, false),
+        (-11.0, 3.0, 0x25, 1.0, 4, true),
+        (5.0, 2.0, 0x25, 1.0, 2, false),
+        (7.0, 2.0, 0x25, -1.0, 4, false),
+        (1.0, 3.0, 0x21, 1.0, 0, false),
+        (2f64.powi(70), 3.0, 0x21, 1.0, 0, false),
+    ] {
+        let mut cpu = testcpu(&fop(0, 1, opmode));
+        cpu.regs.fpu.fp[0] = fp(m);
+        cpu.regs.fpu.fp[1] = fp(d);
+        cpu.step().unwrap();
+        assert_eq!(cpu.regs.fpu.fp[1].as_f64(), r, "{d} {m} {opmode:02X}");
+        assert_eq!(cpu.regs.fpu.fpsr.quotient_s(), qs, "{d} {m} {opmode:02X}");
+        if d.abs() < 1e6 {
+            assert_eq!(cpu.regs.fpu.fpsr.quotient(), q, "{d} {m} {opmode:02X}");
+        }
+    }
+}
+
+#[test]
+fn fmod_large_quotient_low_bits() {
+    // 2^70 / 3 is 0x1555...5 with the low bits 1010101
+    let mut cpu = testcpu(&fop(0, 1, 0x21));
+    cpu.regs.fpu.fp[0] = fp(3.0);
+    cpu.regs.fpu.fp[1] = fp(2f64.powi(70));
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.fpu.fpsr.quotient(), 0x55);
+}
+
+#[test]
+fn fmod_invalid_is_operr() {
+    let mut cpu = testcpu(&fop(0, 1, 0x21));
+    cpu.regs.fpu.fp[0] = fp(0.0);
+    cpu.regs.fpu.fp[1] = fp(1.0);
+    cpu.step().unwrap();
+    assert!(cpu.regs.fpu.fp[1].is_nan());
+    assert!(cpu.regs.fpu.fpsr.exs().operr());
+}
