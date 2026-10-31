@@ -183,12 +183,7 @@ where
     const INT_VBL: u32 = 1 << 0;
     const INT_CURSOR: u32 = 1 << 2;
 
-    pub fn new(
-        renderer: TRenderer,
-        monitor: MacMonitor,
-        kind: DafbKind,
-        vram_size: usize,
-    ) -> Self {
+    pub fn new(renderer: TRenderer, monitor: MacMonitor, kind: DafbKind, vram_size: usize) -> Self {
         Self {
             renderer: Some(renderer),
             monitor,
