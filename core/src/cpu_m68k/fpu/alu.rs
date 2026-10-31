@@ -42,7 +42,8 @@ where
             0b00 => SEMANTICS_EXTENDED,
             0b01 => SEMANTICS_SINGLE,
             0b10 => SEMANTICS_DOUBLE,
-            0b11 => bail!("Undefined rounding precision 11"),
+            // Undefined in the manual, it must not stop the emulator
+            0b11 => SEMANTICS_EXTENDED,
             _ => unreachable!(),
         })
     }
@@ -121,11 +122,13 @@ where
         debug_assert_eq!(source.get_semantics(), SEMANTICS_EXTENDED);
         debug_assert_eq!(dest.get_semantics(), SEMANTICS_EXTENDED);
 
-        // Apply FPCR rounding mode and precision to operands
-        // Operations will automatically use these semantics
+        // The operands are used as they are, only the result gets the rounding
+        // precision of FPCR (MC68881UM 3.5.2). Operations work in extended
+        // precision with the rounding mode of FPCR.
         let sem = self.fpu_rounding_mode_precision()?;
-        let source = &source.cast(sem);
-        let dest = &dest.cast(sem);
+        let ext = SEMANTICS_EXTENDED.with_rm(self.fpu_rounding_mode());
+        let source = &source.cast(ext);
+        let dest = &dest.cast(ext);
 
         // Cycles row (source/destination data type):
         // [FPn to FPn, integer, single, double, extended, packed]
@@ -174,10 +177,20 @@ where
             ),
             // FCMP
             0b0111000 => {
-                let result = dest - source;
+                // Equal infinities and zeros compare as equal, with the sign of
+                // the destination (MC68881UM FCMP)
+                let result = if (dest.is_inf() || dest.is_zero())
+                    && (source.is_inf() || source.is_zero())
+                    && (dest.is_inf() == source.is_inf())
+                    && (dest.is_zero() || dest.is_negative() == source.is_negative())
+                {
+                    Float::zero(ext, dest.is_negative())
+                } else {
+                    dest - source
+                };
                 self.fpu_condition_codes(&result);
                 // TODO flags
-                return Ok((dest.cast(SEMANTICS_EXTENDED), [35, 62, 54, 60, 58, 870]));
+                return Ok((dest.clone(), [35, 62, 54, 60, 58, 870]));
             }
             // FREM - always uses round-to-nearest regardless of FPCR
             0b0100101 => {
@@ -212,7 +225,7 @@ where
             // FTST
             0b0111010 => {
                 self.fpu_condition_codes(source);
-                return Ok((dest.cast(SEMANTICS_EXTENDED), [33, 60, 52, 58, 56, 870]));
+                return Ok((dest.clone(), [33, 60, 52, 58, 56, 870]));
             }
             // FNEG
             0b0011010 => (source.neg(), [35, 62, 54, 60, 58, 872]),
@@ -316,6 +329,8 @@ where
         self.regs.fpu.fpsr.exs_mut().set_inex1(false); // * P
         let excs = self.regs.fpu.fpsr;
         self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
+
+        let result = result.cast(sem);
 
         // Condition codes (3.6.2)
         self.fpu_condition_codes(&result);
