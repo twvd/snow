@@ -691,8 +691,15 @@ impl ScsiController {
         Ok(())
     }
 
+    /// DRQ only occurs in DMA mode (NCR 5380 manual, DRQ pin). A phase
+    /// mismatch prevents the recognition of REQ (manual 8.5), except in a
+    /// send, where the chip leaves the bus: DRQ then lets the pending
+    /// writes complete (as MAME does). A/UX relies on it: it writes its
+    /// CDBs with long words, two bytes past the end of the command.
     pub fn get_drq(&self) -> bool {
-        self.reg_csr.req() || self.set_req.peek()
+        self.reg_mr.dma_mode()
+            && (self.reg_csr.req() || self.set_req.peek())
+            && (self.phase_match() || !self.reg_tcr.assert_io())
     }
 
     pub fn read_dma(&mut self) -> u8 {
@@ -711,34 +718,23 @@ impl ScsiController {
 
         // Pseudo-DMA path: writes to the DMA window auto-pulse ACK, so we
         // advance the REQ/ACK handshake here instead of waiting for an
-        // explicit ICR ACK toggle.
+        // explicit ICR ACK toggle. Until a DMA send is started, the write
+        // only loads the register.
         if self.dma_armed && matches!(self.busphase, ScsiBusPhase::DataOut | ScsiBusPhase::Command)
         {
             self.assert_ack();
             self.deassert_ack();
-            return;
-        }
-
-        // Legacy PIO DataOut path (byte buffered here, ACK handled via ICR).
-        if self.busphase == ScsiBusPhase::DataOut && self.phase_match() {
-            self.responsebuf.push_back(val);
-            self.dataout_len -= 1;
-            if self.dataout_len == 0 {
-                let datavec = Vec::from_iter(self.responsebuf.iter().cloned());
-                if let Err(e) = self.cmd_run(Some(&datavec)) {
-                    log::error!("SCSI command run error: {:#}", e);
-                }
-            }
         }
     }
 
     fn read_datareg(&mut self) -> u8 {
         let val = self.reg_cdr;
-        // I feel this SHOULD BE 'if self.dma_armed', however, during A/UX
-        // drive enumeration at boot, it will run a READ CAPACITY CDB after
-        // which it will enable DMA mode, but NOT arm DMA before starting
-        // to read from the DMA bus region.
-        // Needs more investigation at some point...
+        // A DACK read. The manual has the Start DMA Initiator Receive
+        // write initiate the receive, but the handshake doesn't wait for
+        // it here: in DATA IN, A/UX on the IIcx sets DMA mode, polls DRQ
+        // and reads the handshake area without writing that register
+        // (Mac OS always writes it). A/UX works on real hardware, so the
+        // chip presumably handshakes in DMA mode alone; not verified.
         if self.reg_mr.dma_mode() && self.phase_match() {
             self.assert_ack();
             self.deassert_ack();
@@ -831,7 +827,9 @@ impl BusMember<Address> for ScsiController {
         //}
 
         match reg {
-            NcrReadReg::CDR | NcrReadReg::IDR => Some(self.read_datareg()),
+            // A CPU read (CS) doesn't handshake: that's the ICR ACK or, with
+            // DACK, DMA (read_dma())
+            NcrReadReg::CDR | NcrReadReg::IDR => Some(self.reg_cdr),
             NcrReadReg::MR => Some(self.reg_mr.0),
             NcrReadReg::ICR => Some(self.reg_icr.0),
             NcrReadReg::TCR => Some(self.reg_tcr.0),
@@ -880,8 +878,11 @@ impl BusMember<Address> for ScsiController {
         //);
 
         match reg {
+            // A CPU write (CS) only loads the Output Data Register. The byte
+            // is sent by the ACK handshake (ICR) or, with DACK, by DMA
+            // (write_dma()).
             NcrWriteReg::ODR => {
-                self.write_datareg(val);
+                self.reg_odr = val;
                 self.try_complete_selection();
                 Some(())
             }

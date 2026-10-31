@@ -340,11 +340,20 @@ where
         Some(())
     }
 
+    /// A9 is the controller's DACK: a pseudo-DMA data register read
     fn scsi_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
+        if addr & 0x200 != 0 {
+            return Some(self.scsi.read_dma().into());
+        }
         self.scsi.read(addr).map(u32::from)
     }
 
+    /// A9 is the controller's DACK: a pseudo-DMA data register write
     fn scsi_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
+        if addr & 0x200 != 0 {
+            self.scsi.write_dma(val as Byte);
+            return Some(());
+        }
         self.scsi.write(addr, val as Byte)
     }
 
