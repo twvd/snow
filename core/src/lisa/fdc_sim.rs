@@ -105,6 +105,21 @@ const MASK_UPPER: u8 = 0x08;
 
 /// The controller's main loop goes around every 10 us
 const COMMAND_TICKS: Ticks = 51;
+
+/// 6504 code MacWorks Plus II runs from RAM, to time the 6504 against the CPU:
+/// a loop, then $FF in the gobyte, then waiting for the host to clear it.
+const TIMING_LOOP_CODE: [u8; 15] = [
+    0xA0, 0x00, 0x88, 0xC8, 0x88, 0xD0, 0xFB, 0x88, 0x84, 0x00, 0xA5, 0x00, 0xD0, 0xFC, 0x60,
+];
+const TIMING_LOOP_AT: usize = 0x200;
+/// Its 2315 cycles at DOTCK/10, with the CPU at DOTCK/4
+const TIMING_LOOP_TICKS: Ticks = 5788;
+/// 6504 code MacWorks Plus II runs from RAM at the same place after a disk goes in, to tell
+/// whether the disk is write-protected: ROM 88's drive status call at $1302, then $FF at $08
+/// for a protected disk, 0 otherwise, and 0 at $06
+const WRITE_PROTECT_SENSE_CODE: [u8; 14] = [
+    0x20, 0x02, 0x13, 0xA9, 0x00, 0xAA, 0xB0, 0x01, 0xCA, 0x86, 0x08, 0x85, 0x06, 0x60,
+];
 /// From power on to listening
 const START_TICKS: Ticks = 6_367_200;
 const OPERATION_TICKS: Ticks = 101_875;
@@ -282,6 +297,8 @@ pub struct FdcSim {
     operation: Option<Operation>,
     /// Commands $88 and $89: parked in the ROM
     parked: bool,
+    /// When the timing loop is over
+    timing_loop_done_at: Option<Ticks>,
     /// The lower drive, once the machine has it
     drive: Option<Box<Drive>>,
 }
@@ -312,6 +329,7 @@ impl FdcSim {
             command_at: None,
             operation: None,
             parked: false,
+            timing_loop_done_at: None,
             drive: None,
         };
         fdc.reset();
@@ -417,6 +435,10 @@ impl FdcSim {
         if self.now < self.ready_at {
             return;
         }
+        if self.timing_loop_done_at.is_some_and(|t| self.now >= t) {
+            self.timing_loop_done_at = None;
+            self.ram[GOBYTE] = 0xFF;
+        }
         if self.command_at.is_some_and(|t| self.now >= t) {
             self.command_at = None;
             self.ram[IMALIVE] = self.ram[IMALIVE].wrapping_add(1);
@@ -465,11 +487,31 @@ impl FdcSim {
                     self.reset();
                     return;
                 }
-                log::warn!(
-                    "Call of 6504 code at {:04X} can't run without a 6504: ignored",
-                    target
-                );
-                self.ram[SPEED] = 0;
+                if usize::from(target) == TIMING_LOOP_AT
+                    && self.ram[TIMING_LOOP_AT..TIMING_LOOP_AT + TIMING_LOOP_CODE.len()]
+                        == TIMING_LOOP_CODE
+                {
+                    self.timing_loop_done_at = Some(self.now + TIMING_LOOP_TICKS);
+                    return;
+                }
+                if usize::from(target) == TIMING_LOOP_AT
+                    && self.ram[TIMING_LOOP_AT..TIMING_LOOP_AT + WRITE_PROTECT_SENSE_CODE.len()]
+                        == WRITE_PROTECT_SENSE_CODE
+                {
+                    let protected = self
+                        .drive
+                        .as_ref()
+                        .and_then(|drive| drive.disk.as_ref())
+                        .is_some_and(|d| d.write_protect);
+                    self.ram[0x08] = if protected { 0xFF } else { 0 };
+                    self.ram[0x06] = 0;
+                } else {
+                    log::warn!(
+                        "Call of 6504 code at {:04X} can't run without a 6504: ignored",
+                        target
+                    );
+                    self.ram[SPEED] = 0;
+                }
             }
             GO_CLEAR_IST => {
                 self.ram[IST] &= !mask;
@@ -1002,6 +1044,24 @@ mod tests {
         fdc.attach(SLOT_IDS[0], MadeDevice::LisaFloppy(Box::new(drive)))
             .unwrap();
         fdc
+    }
+
+    #[test]
+    fn macworks_reads_the_write_protect() {
+        for protect in [false, true] {
+            let mut fdc = ready();
+            insert(
+                &mut fdc,
+                LisaDisk::from_image(&vec![0; 800 * SECTOR_SIZE], "wp", protect).unwrap(),
+            );
+            fdc.ram[TIMING_LOOP_AT..TIMING_LOOP_AT + WRITE_PROTECT_SENSE_CODE.len()]
+                .copy_from_slice(&WRITE_PROTECT_SENSE_CODE);
+            fdc.ram[0x08] = 0x55;
+            fdc.ram_write(ADRH, 0x02);
+            go(&mut fdc, GO_CALL, 0x00);
+            assert_eq!(fdc.ram[0x08], if protect { 0xFF } else { 0 });
+            assert_eq!(fdc.ram[0x06], 0);
+        }
     }
 
     fn double_sided_disk() -> LisaDisk {
