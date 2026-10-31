@@ -100,6 +100,9 @@ fn prefetch_defer_fault(e: anyhow::Error, fetch_addr: Address) -> Result<Prefetc
     }
 }
 
+/// Supervisor bit of the status register
+const SR_SUPERVISOR: Word = 1 << 13;
+
 /// Reason a PMMU translation failed
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::cpu_m68k) enum PagefaultCause {
@@ -312,7 +315,7 @@ pub struct CpuM68k<
 
     /// Address of the instruction of this step
     #[serde(skip)]
-    step_start_pc: Address,
+    pub(in crate::cpu_m68k) step_start_pc: Address,
 
     /// External address/data bus
     pub bus: TBus,
@@ -553,21 +556,21 @@ where
     fn prefetch_pump_force(&mut self) -> Result<()> {
         let fetch_addr = self.regs.pc.wrapping_add(4) & ADDRESS_MASK;
 
-        let new_item = if CPU_TYPE >= M68020 && self.regs.cacr.e() {
-            if fetch_addr & 1 != 0 {
-                // Unaligned access through I-cache raises exception
-                bail!(CpuError::AddressError(Group0Details {
-                    function_code: self.fc_program(),
-                    ir: 0,
-                    size: std::mem::size_of::<Word>(),
-                    instruction: true,
-                    read: true,
-                    address: fetch_addr,
-                    // Filled in later
-                    start_pc: 0,
-                }));
-            }
+        // Instruction words are on word boundaries (MC68030UM 7.1, 8.1.3)
+        if CPU_TYPE >= M68020 && fetch_addr & 1 != 0 {
+            bail!(CpuError::AddressError(Group0Details {
+                function_code: self.fc_program(),
+                ir: 0,
+                size: std::mem::size_of::<Word>(),
+                instruction: true,
+                read: true,
+                address: fetch_addr,
+                // Filled in later
+                start_pc: 0,
+            }));
+        }
 
+        let new_item = if CPU_TYPE >= M68020 && self.regs.cacr.e() {
             // We keep the tag full size so we can invalidate easily.
             // Supervisor is used to have FC2 in the tag so invalidation across
             // supervisor<-> user context switches occurs properly.
@@ -759,18 +762,17 @@ where
         }
 
         let instr = self.decode_cache[opcode as usize].clone().unwrap();
-        let execute_result = self.execute_instruction(&instr);
+        // The refill is for the instructions that only set the PC: an address
+        // error of an odd PC is theirs
+        let execute_result = self
+            .execute_instruction(&instr)
+            .and_then(|()| self.prefetch_refill());
 
         // Write history entry
         // This is done here already in case the instruction caused an
         // address error.
         if self.history_enabled {
             let mut entry = std::mem::take(&mut self.history_current);
-
-            // Count prefetch reload towards the instruction
-            if execute_result.is_ok() {
-                self.prefetch_refill()?;
-            }
 
             entry.cycles = self.cycles - start_cycles;
             entry.final_regs = Some(self.regs.clone());
@@ -841,7 +843,19 @@ where
                     }
                 }
                 Some(CpuError::IllegalInstruction) => {
-                    self.raise_illegal_instruction()?;
+                    // Possibly found out past extension words: the frame has
+                    // the address of the instruction
+                    if let Some(regs) = self.restart_regs.take() {
+                        regs.restore(&mut self.regs);
+                    } else {
+                        self.regs.pc = start_pc;
+                    }
+                    // The coprocessor refuses it: line F
+                    if instr.data & 0xF000 == 0xF000 {
+                        self.op_linef(&instr)?;
+                    } else {
+                        self.raise_illegal_instruction()?;
+                    }
                 }
                 _ => {
                     bail!(
@@ -862,13 +876,14 @@ where
         }
 
         // Check pending interrupts
-        // NMI is edge-triggered
+        // Level 7 is taken on a transition to 7 whatever the mask, and on the
+        // normal comparison below a mask of 7 (MC68000UM 6.3.2, MC68030UM 8.1.9)
         if irq_exception != Some(7) {
             self.in_nmi = false;
         }
         let irq_exception_masked = match irq_exception {
             Some(7) => {
-                if !self.in_nmi {
+                if !self.in_nmi || self.regs.sr.int_prio_mask() < 7 {
                     self.in_nmi = true;
                     7
                 } else {
@@ -991,6 +1006,16 @@ where
         Ok(())
     }
 
+    /// Pushes a four word frame on the active supervisor stack
+    fn push_irq_frame(&mut self, sr: Word, format: Word, vector: Address) -> Result<()> {
+        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8);
+        let ssp = *self.regs.ssp();
+        self.write_ticks(ssp.wrapping_add(0), sr)?;
+        self.write_ticks(ssp.wrapping_add(2), self.regs.pc)?;
+        self.write_ticks(ssp.wrapping_add(6), (format << 12) | (vector as Word))?;
+        Ok(())
+    }
+
     /// Raises an IRQ to be executed next
     fn raise_irq(&mut self, level: u8, vector: Address) -> Result<()> {
         let start_cycles = self.cycles;
@@ -1019,19 +1044,19 @@ where
                 self.write_ticks(self.regs.ssp().wrapping_add(4), self.regs.pc as u16)?;
                 self.write_ticks(self.regs.ssp().wrapping_add(2), (self.regs.pc >> 16) as u16)?;
             }
-            #[allow(clippy::identity_op)]
             _ => {
-                *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8);
                 // 6 cycles idle, interrupt ack, 4 cycles idle
                 self.advance_cycles(6 + 4 + 4)?;
 
-                self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
-                self.write_ticks(self.regs.ssp().wrapping_add(2), (self.regs.pc >> 16) as u16)?;
-                self.write_ticks(self.regs.ssp().wrapping_add(4), self.regs.pc as u16)?;
-                self.write_ticks(
-                    self.regs.ssp().wrapping_add(6),
-                    0b0000_0000_0000_0000u16 | (vector as u16),
-                )?;
+                let master = self.regs.sr.m();
+                self.push_irq_frame(saved_sr, 0, vector)?;
+                if master {
+                    // The frame above is on the master stack. A throwaway copy
+                    // with S set goes on the interrupt stack, which the handler
+                    // runs on (MC68030UM 8.1.9). RTE follows it back.
+                    self.regs.sr.set_m(false);
+                    self.push_irq_frame(saved_sr | SR_SUPERVISOR, 1, vector)?;
+                }
             }
         };
 
@@ -2233,8 +2258,9 @@ where
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_DIV_ZERO, None);
         }
 
-        let result = dividend / divisor;
-        let result_rem = dividend % divisor;
+        // $80000000 / -1 doesn't fit, it ends up in the overflow below
+        let result = dividend.wrapping_div(divisor);
+        let result_rem = dividend.wrapping_rem(divisor);
 
         self.regs.sr.set_c(false);
         self.regs.sr.set_z(false);
@@ -2822,12 +2848,14 @@ where
         if halt_asserted {
             // HALT was asserted, so hard-reset the CPU as well.
             self.reset()?;
-        } else if CPU_TYPE == M68020 {
-            // The (external) FPU and PMMU are connected to the RESET line,
-            // so we reset them here.
-            // Not for the models with a CPU with a built-in FPU.
+        } else if CPU_TYPE <= M68030 {
+            // The external FPU is connected to the RESET line, so we reset it
+            // here, and on a 68020 the external PMMU too. Not for the models
+            // with a built-in FPU, and the MMU of the 68030 is in the CPU.
             self.regs.fpu = FpuRegisterFile::default();
-            self.regs.pmmu = PmmuRegisterFile::default();
+            if CPU_TYPE == M68020 {
+                self.regs.pmmu = PmmuRegisterFile::default();
+            }
         }
 
         Ok(())
@@ -3060,8 +3088,19 @@ where
             Either::Right(MOVEM_REGS.iter())
         };
 
+        // The 68020+ store the addressing register decremented by the size of
+        // one operation, the 68000 as it was (M68000PRM MOVEM)
+        let predec_an = (CPU_TYPE >= M68020
+            && instr.get_addr_mode()? == AddressingMode::IndirectPreDec)
+            .then(|| Register::An(instr.get_op2()));
+        let an_value = T::chop(addr.wrapping_sub(std::mem::size_of::<T>() as Address));
+
         for (_, &reg) in regs.enumerate().filter(|(i, _)| mask & (1 << i) != 0) {
-            let v = self.regs.read::<T>(reg);
+            let v = if predec_an == Some(reg) {
+                an_value
+            } else {
+                self.regs.read::<T>(reg)
+            };
             if instr.get_addr_mode()? == AddressingMode::IndirectPreDec {
                 addr = addr.wrapping_sub(std::mem::size_of::<T>() as Address);
                 self.write_ticks_wflip(addr, v)?;
@@ -4302,14 +4341,23 @@ where
 
         self.prefetch_pump()?;
 
-        self.regs.sr.set_v(false);
         self.regs.sr.set_c(false);
         if extword.size() {
-            self.regs.sr.set_n(result & (1 << 63) != 0);
+            self.regs.sr.set_v(false);
+            self.regs.sr.set_n(result < 0);
+            self.regs.sr.set_z(result == 0);
         } else {
-            self.regs.sr.set_n(result & (1 << 31) != 0);
+            // The flags are those of the 32 bit result. V is for a product
+            // that does not fit in it.
+            let low = result as i32;
+            self.regs.sr.set_v(if extword.signed() {
+                result != i64::from(low)
+            } else {
+                result as u64 > u64::from(u32::MAX)
+            });
+            self.regs.sr.set_n(low < 0);
+            self.regs.sr.set_z(low == 0);
         }
-        self.regs.sr.set_z(result == 0);
 
         self.regs.write_d(extword.dl(), result as i32 as Long);
         if extword.size() {

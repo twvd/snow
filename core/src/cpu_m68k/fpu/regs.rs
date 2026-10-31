@@ -133,6 +133,9 @@ pub struct FpuRegisterFile {
     pub fpcr: RegisterFPCR,
     pub fpsr: RegisterFPSR,
     pub fpiar: Address,
+    /// Not in the null state of a reset: FSAVE saves an idle frame
+    #[serde(default)]
+    pub used: bool,
 }
 
 impl FpuRegisterFile {
@@ -172,6 +175,7 @@ impl Default for FpuRegisterFile {
             fpcr: RegisterFPCR(0),
             fpsr: RegisterFPSR(0),
             fpiar: Address::zero(),
+            used: false,
         }
     }
 }

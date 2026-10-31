@@ -3,10 +3,10 @@
 //! Ported with permission from tests written by Howard Price
 
 use crate::bus::Address;
-use crate::bus::access::Bus68000;
+use crate::bus::access::{Bus68000, Bus68020};
 use crate::bus::testbus::Testbus;
 use crate::cpu_m68k::cpu::PrefetchWord;
-use crate::cpu_m68k::{CpuM68000, M68000_ADDRESS_MASK};
+use crate::cpu_m68k::{CpuM68000, CpuM68020Fpu, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK};
 use crate::types::{Long, Word};
 
 type TestCpu = CpuM68000<Testbus<Address, u8, Bus68000>>;
@@ -503,7 +503,9 @@ fn test_nmi_edge_triggered() {
         "Level 7 held continuously should NOT re-trigger (no transition)"
     );
 
-    // Step 3: Execute RTE, returning to main program
+    // Step 3: Drop the request, execute RTE, returning to main program. With
+    // the request still at 7 the lowered mask would take it again.
+    cpu.bus.irq_level = None;
     cpu.step().unwrap();
     assert_eq!(
         cpu.regs.pc,
@@ -515,8 +517,7 @@ fn test_nmi_edge_triggered() {
         "Stack should be unwound after RTE"
     );
 
-    // Step 4: Drop interrupt level to 0, then execute NOP
-    cpu.bus.irq_level = None;
+    // Step 4: Execute NOP
     cpu.step().unwrap();
     assert_eq!(
         cpu.regs.pc,
@@ -558,4 +559,75 @@ fn test_multiple_interrupts_all() {
             }
         }
     }
+}
+
+/// With M set, an interrupt pushes its frame on the master stack and a
+/// throwaway copy on the interrupt stack, and the handler runs on the latter
+/// (MC68030UM 8.1.9, 8.4)
+#[test]
+fn test_master_stack_throwaway_frame() {
+    type Cpu020 = CpuM68020Fpu<Testbus<Address, u8, Bus68020>>;
+    let byte = |cpu: &Cpu020, a: Address| Word::from(*cpu.bus.mem.get(&a).unwrap_or(&0));
+    let word = |cpu: &Cpu020, a: Address| (byte(cpu, a) << 8) | byte(cpu, a + 1);
+
+    let mut cpu = Cpu020::new(Testbus::new(M68020_ADDRESS_MASK));
+    for (a, b) in [
+        (0x64 + 2, 0x04),
+        (0x400, 0x4e),
+        (0x401, 0x73),
+        (0x1000, 0x4e),
+        (0x1001, 0x71),
+    ] {
+        cpu.bus.mem.insert(a, b);
+    }
+    cpu.set_sr(0x3000);
+    cpu.regs.isp = 0x2000;
+    cpu.regs.msp = 0x3000;
+    cpu.set_pc(0x1000).unwrap();
+    cpu.prefetch_refill().unwrap();
+    cpu.bus.irq_level = Some(1);
+    cpu.step().unwrap();
+    cpu.bus.irq_level = None;
+
+    assert_eq!(cpu.regs.pc, 0x400);
+    assert_eq!(cpu.regs.sr.sr(), 0x2100);
+    assert_eq!((cpu.regs.msp, cpu.regs.isp), (0x2FF8, 0x1FF8));
+    // The NOP ran first. SR, PC, format and vector offset of both frames
+    assert_eq!(word(&cpu, 0x2FF8), 0x3000);
+    assert_eq!(word(&cpu, 0x2FFC), 0x1002);
+    assert_eq!(word(&cpu, 0x2FFE), 0x0064);
+    assert_eq!(word(&cpu, 0x1FF8), 0x3000);
+    assert_eq!(word(&cpu, 0x1FFC), 0x1002);
+    assert_eq!(word(&cpu, 0x1FFE), 0x1064);
+
+    // RTE takes the throwaway frame, then the real one
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, 0x1002);
+    assert_eq!(cpu.regs.sr.sr(), 0x3000);
+    assert_eq!((cpu.regs.msp, cpu.regs.isp), (0x3000, 0x2000));
+}
+
+/// A level 7 request held while an instruction lowers the mask is taken again
+/// on the comparison (MC68030UM 8.1.9, "level 7 example")
+#[test]
+fn test_level_7_held_when_mask_lowered() {
+    // Handler: MOVE #$2000,SR ; NOP
+    let mut cpu = testcpu(0x1000, 0x1000, &[0x4e71]);
+    write_long(&mut cpu, 0x7c, 0x400);
+    write_word(&mut cpu, 0x400, 0x46fc);
+    write_word(&mut cpu, 0x402, 0x2000);
+    write_word(&mut cpu, 0x404, 0x4e71);
+    cpu.regs.sr.set_int_prio_mask(0);
+    cpu.bus.irq_level = Some(7);
+
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, 0x400);
+    assert_eq!(cpu.regs.sr.int_prio_mask(), 7);
+    let sp = *cpu.regs.ssp();
+    // The MOVE to SR, then level 7 again right after it
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, 0x400);
+    assert_eq!(cpu.regs.sr.int_prio_mask(), 7);
+    assert_eq!(*cpu.regs.ssp(), sp - 6);
+    assert_eq!(read_long(&cpu, *cpu.regs.ssp() + 2), 0x404);
 }

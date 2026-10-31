@@ -256,6 +256,17 @@ fn test_official_illegal_0x4afc() {
     test_illegal_exception(code, 0x10, "ILLEGAL 0x4AFC");
 }
 
+/// EXTB.L is 68020+ (M68000PRM table A-1)
+#[test]
+fn test_extb_l_is_illegal_on_68000() {
+    #[rustfmt::skip]
+    let code: &[u16] = &[
+        0x49c0, // EXTB.l D0
+        0x4e71, // NOP
+    ];
+    test_illegal_exception(code, 0x10, "EXTB.L on 68000");
+}
+
 #[test]
 fn test_official_illegal_0x4afa() {
     #[rustfmt::skip]

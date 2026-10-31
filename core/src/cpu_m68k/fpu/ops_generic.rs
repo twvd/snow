@@ -7,7 +7,9 @@ use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, IrqSource};
 
-use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_FORMAT_ERROR};
+use crate::cpu_m68k::cpu::{
+    CpuError, CpuM68k, ExceptionGroup, VECTOR_FORMAT_ERROR, VECTOR_PRIVILEGE_VIOLATION,
+};
 use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::fpu::instruction::{FmoveControlReg, FmoveExtWord};
 use crate::cpu_m68k::fpu::math::FloatMath;
@@ -40,6 +42,8 @@ where
 {
     /// FNOP
     pub(in crate::cpu_m68k) fn op_fnop(&mut self, _instr: &Instruction) -> Result<()> {
+        self.regs.fpu.used = true;
+
         // Fetch second word (0000)
         self.fetch()?;
 
@@ -50,6 +54,17 @@ where
 
     /// FSAVE
     pub(in crate::cpu_m68k) fn op_fsave(&mut self, instr: &Instruction) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+        if !self.regs.fpu.used {
+            // Null state: nothing since a reset or the restore of a null frame
+            // (MC68881UM 6.4.2.1)
+            self.write_ea_sz(instr, instr.get_op2(), [0u8; 4])?;
+            self.advance_cycles(50)?;
+            return Ok(());
+        }
         // Idle state frame
         match FPU_TYPE {
             FPU_M68881 => {
@@ -72,12 +87,17 @@ where
 
     /// FRESTORE
     pub(in crate::cpu_m68k) fn op_frestore(&mut self, instr: &Instruction) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
         let state = self.read_ea::<Long>(instr, instr.get_op2())?;
         if state & 0xFF000000 == 0 {
             // NULL state frame, reset FPU
             self.regs.fpu = FpuRegisterFile::default();
         } else if state & 0xFF000000 == 0x1F000000 {
             // Idle state frame
+            self.regs.fpu.used = true;
             // We've already read 4 bytes
             self.step_ea_addr = None;
             match FPU_TYPE {
@@ -106,8 +126,16 @@ where
 
     /// FMOVE, ALU operations
     pub(in crate::cpu_m68k) fn op_f000(&mut self, instr: &Instruction) -> Result<()> {
+        self.regs.fpu.used = true;
+
         // Fetch extension word
         let extword = FmoveExtWord(self.fetch_pump()?);
+
+        // All but the moves of control registers and FMOVEM can raise an
+        // exception, so they leave their address here (MC68881UM FPIAR)
+        if matches!(extword.subop(), 0b000 | 0b010 | 0b011) {
+            self.regs.fpu.fpiar = self.step_start_pc;
+        }
 
         match extword.subop() {
             0b000 => {
@@ -120,40 +148,7 @@ where
                 self.regs.fpu.fp[extword.dst_reg()] = result;
                 self.advance_cycles(cycles[FPU_CYCLES_FPN])?;
             }
-            0b100 => {
-                // From EA to control reg
-                // Supports multiple registers
-                for r in FmoveControlReg::iter() {
-                    if extword.reg() & r.to_u8().unwrap() == 0 {
-                        continue;
-                    }
-                    let value = self.read_ea::<Long>(instr, instr.get_op2())?;
-                    self.regs.write(r.into(), value);
-
-                    // Next read from its own, re-calculated address
-                    self.ea_commit();
-                    self.step_ea_addr = None;
-                }
-
-                self.advance_cycles(29)?;
-            }
-            0b101 => {
-                // From control reg to EA
-                // Supports multiple registers
-                for r in FmoveControlReg::iter() {
-                    if extword.reg() & r.to_u8().unwrap() == 0 {
-                        continue;
-                    }
-                    let value = self.regs.read::<Long>(r.into());
-                    self.write_ea(instr, instr.get_op2(), value)?;
-
-                    // Next write to its own, re-calculated address
-                    self.ea_commit();
-                    self.step_ea_addr = None;
-                }
-
-                self.advance_cycles(29)?;
-            }
+            0b100 | 0b101 => self.op_fmovem_control(instr, extword)?,
             0b010 => {
                 // EA to FPU register, with ALU op
                 let fpx = extword.dst_reg();
@@ -236,6 +231,13 @@ where
                     }
                     0b111 => {
                         // ROM constant (FMOVECR)
+                        // 10^n rounded once from a wider precision, as the
+                        // squarings in powi() lose bits from 10^64 up
+                        let pow10 = |n| {
+                            Float::from_u64(SEMANTICS_EXTENDED.increase_precision(64), 10)
+                                .powi(n)
+                                .cast(SEMANTICS_EXTENDED)
+                        };
                         self.regs.fpu.fp[fpx] = match extword.movecr_offset() {
                             0x00 => Float::pi(SEMANTICS_EXTENDED),
                             0x0B => Float::from_u64(SEMANTICS_EXTENDED, 2).log10(),
@@ -249,24 +251,24 @@ where
                             0x33 => Float::from_i64(SEMANTICS_EXTENDED, 10),
                             0x34 => Float::from_i64(SEMANTICS_EXTENDED, 100),
                             0x35 => Float::from_i64(SEMANTICS_EXTENDED, 10000),
-                            0x36 => Float::one(SEMANTICS_EXTENDED, false).powi(8),
-                            0x37 => Float::one(SEMANTICS_EXTENDED, false).powi(16),
-                            0x38 => Float::one(SEMANTICS_EXTENDED, false).powi(32),
-                            0x39 => Float::one(SEMANTICS_EXTENDED, false).powi(64),
-                            0x3A => Float::one(SEMANTICS_EXTENDED, false).powi(128),
-                            0x3B => Float::one(SEMANTICS_EXTENDED, false).powi(256),
-                            0x3C => Float::one(SEMANTICS_EXTENDED, false).powi(512),
-                            0x3D => Float::one(SEMANTICS_EXTENDED, false).powi(1024),
-                            0x3E => Float::one(SEMANTICS_EXTENDED, false).powi(2048),
-                            0x3F => Float::one(SEMANTICS_EXTENDED, false).powi(4096),
-                            _ => bail!(
-                                "Unimplemented FMOVECR offset ${:02X}",
-                                extword.movecr_offset()
-                            ),
+                            0x36 => pow10(8),
+                            0x37 => pow10(16),
+                            0x38 => pow10(32),
+                            0x39 => pow10(64),
+                            0x3A => pow10(128),
+                            0x3B => pow10(256),
+                            0x3C => pow10(512),
+                            0x3D => pow10(1024),
+                            0x3E => pow10(2048),
+                            0x3F => pow10(4096),
+                            // Reserved, and different per mask set (68881UM FMOVECR)
+                            _ => Float::zero(SEMANTICS_EXTENDED, false),
                         };
 
                         // No ALU operation
                         // Not sure how many cycles this costs, assuming its cheap
+                        let value = self.regs.fpu.fp[fpx].clone();
+                        self.fpu_condition_codes(&value);
                         return Ok(());
                     }
                     0b011 if instr.get_addr_mode()? == AddressingMode::Immediate => {
@@ -283,10 +285,7 @@ where
                         (self.read_fpu_packed(ea)?, FPU_CYCLES_MEM_PACKED)
                     }
                     _ => {
-                        bail!(
-                            "EA to reg unimplemented src spec {:03b}",
-                            extword.src_spec()
-                        );
+                        bail!(CpuError::IllegalInstruction);
                     }
                 };
 
@@ -305,6 +304,7 @@ where
             0b011 if instr.get_addr_mode()? != AddressingMode::DataRegister => {
                 // Register to EA
                 let fpx = extword.src_reg();
+                self.regs.fpu.fpsr.exs_mut().set_operr(false);
                 match extword.dest_fmt() {
                     0b000 => {
                         // Long
@@ -313,22 +313,7 @@ where
                             instr.get_addr_mode()?,
                             instr.get_op2(),
                         )?;
-                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-
-                        let out64 = self.regs.fpu.fp[fpx].to_i64();
-                        let (out, inex) = if out64 > i32::MAX.into() {
-                            // Overflow
-                            (i32::MAX, true)
-                        } else if out64 < i32::MIN.into() {
-                            // Underflow
-                            (i32::MIN, true)
-                        } else {
-                            // We're good
-                            (out64 as i32, false)
-                        };
-                        self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
-                        self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
+                        let out = self.fpu_to_integer(fpx, i32::MIN.into(), i32::MAX.into()) as i32;
 
                         self.advance_cycles(100)?;
                         self.write_ticks(ea, out as Long)?;
@@ -340,22 +325,7 @@ where
                             instr.get_addr_mode()?,
                             instr.get_op2(),
                         )?;
-                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-
-                        let out64 = self.regs.fpu.fp[fpx].to_i64();
-                        let (out, inex) = if out64 > i16::MAX.into() {
-                            // Overflow
-                            (i16::MAX, true)
-                        } else if out64 < i16::MIN.into() {
-                            // Underflow
-                            (i16::MIN, true)
-                        } else {
-                            // We're good
-                            (out64 as i16, false)
-                        };
-                        self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
-                        self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
+                        let out = self.fpu_to_integer(fpx, i16::MIN.into(), i16::MAX.into()) as i16;
 
                         self.advance_cycles(100)?;
                         self.write_ticks(ea, out as Word)?;
@@ -367,22 +337,7 @@ where
                             instr.get_addr_mode()?,
                             instr.get_op2(),
                         )?;
-                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-
-                        let out64 = self.regs.fpu.fp[fpx].to_i64();
-                        let (out, inex) = if out64 > i8::MAX.into() {
-                            // Overflow
-                            (i8::MAX, true)
-                        } else if out64 < i8::MIN.into() {
-                            // Underflow
-                            (i8::MIN, true)
-                        } else {
-                            // We're good
-                            (out64 as i8, false)
-                        };
-                        self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
-                        self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
+                        let out = self.fpu_to_integer(fpx, i8::MIN.into(), i8::MAX.into()) as i8;
 
                         self.advance_cycles(100)?;
                         self.write_ticks(ea, out as Byte)?;
@@ -471,10 +426,7 @@ where
                         self.write_fpu_packed(ea, &self.regs.fpu.fp[fpx].clone(), k)?;
                     }
                     _ => {
-                        bail!(
-                            "Reg to EA unimplemented dest format {:03b}",
-                            extword.dest_fmt()
-                        );
+                        bail!(CpuError::IllegalInstruction);
                     }
                 }
 
@@ -485,7 +437,6 @@ where
                     .fpsr
                     .exs_mut()
                     .set_snan(self.regs.fpu.fp[fpx].is_nan()); // * 1.6.5
-                self.regs.fpu.fpsr.exs_mut().set_operr(false); // for invalid K-factor
 
                 // Condition codes unaffected
             }
@@ -496,69 +447,25 @@ where
                 // subtract five or two clock cycles, respectively."
                 let fpx = extword.src_reg();
                 let dn = instr.get_op2();
+                self.regs.fpu.fpsr.exs_mut().set_operr(false);
                 match extword.dest_fmt() {
                     0b000 => {
                         // Long
-                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-
-                        let out64 = self.regs.fpu.fp[fpx].to_i64();
-                        let (out, inex) = if out64 > i32::MAX.into() {
-                            // Overflow
-                            (i32::MAX, true)
-                        } else if out64 < i32::MIN.into() {
-                            // Underflow
-                            (i32::MIN, true)
-                        } else {
-                            // We're good
-                            (out64 as i32, false)
-                        };
-                        self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
-                        self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
+                        let out = self.fpu_to_integer(fpx, i32::MIN.into(), i32::MAX.into()) as i32;
 
                         self.advance_cycles(100 - 2)?;
                         self.regs.write_d(dn, out as Long);
                     }
                     0b100 => {
                         // Word
-                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-
-                        let out64 = self.regs.fpu.fp[fpx].to_i64();
-                        let (out, inex) = if out64 > i16::MAX.into() {
-                            // Overflow
-                            (i16::MAX, true)
-                        } else if out64 < i16::MIN.into() {
-                            // Underflow
-                            (i16::MIN, true)
-                        } else {
-                            // We're good
-                            (out64 as i16, false)
-                        };
-                        self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
-                        self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
+                        let out = self.fpu_to_integer(fpx, i16::MIN.into(), i16::MAX.into()) as i16;
 
                         self.advance_cycles(100 - 2)?;
                         self.regs.write_d(dn, out as Word);
                     }
                     0b110 => {
                         // Byte
-                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-
-                        let out64 = self.regs.fpu.fp[fpx].to_i64();
-                        let (out, inex) = if out64 > i8::MAX.into() {
-                            // Overflow
-                            (i8::MAX, true)
-                        } else if out64 < i8::MIN.into() {
-                            // Underflow
-                            (i8::MIN, true)
-                        } else {
-                            // We're good
-                            (out64 as i8, false)
-                        };
-                        self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
-                        self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
+                        let out = self.fpu_to_integer(fpx, i8::MIN.into(), i8::MAX.into()) as i8;
 
                         self.advance_cycles(100 - 2)?;
                         self.regs.write_d(dn, out as Byte);
@@ -576,10 +483,7 @@ where
                             .write_d(dn, self.regs.fpu.fp[fpx].as_f32().to_bits());
                     }
                     _ => {
-                        bail!(
-                            "Reg to Dn unimplemented dest format {:03b}",
-                            extword.dest_fmt()
-                        );
+                        bail!(CpuError::IllegalInstruction);
                     }
                 }
 
@@ -590,7 +494,6 @@ where
                     .fpsr
                     .exs_mut()
                     .set_snan(self.regs.fpu.fp[fpx].is_nan()); // * 1.6.5
-                self.regs.fpu.fpsr.exs_mut().set_operr(false); // for invalid K-factor
 
                 // Condition codes unaffected
             }
@@ -599,11 +502,61 @@ where
                 self.op_fmovem(instr, extword)?;
             }
             _ => {
-                bail!("Unimplemented sub-operation {:03b}", extword.subop());
+                bail!(CpuError::IllegalInstruction);
             }
         }
 
         Ok(())
+    }
+
+    /// FMOVEM of the control registers. They are always moved in the same
+    /// order, FPCR first, to increasing addresses whatever the mode (MC68881UM
+    /// FMOVEM): with -(An), An goes down by all of them first.
+    fn op_fmovem_control(&mut self, instr: &Instruction, extword: FmoveExtWord) -> Result<()> {
+        let to_ea = extword.subop() == 0b101;
+        let regs = || FmoveControlReg::iter().filter(|r| extword.reg() & r.to_u8().unwrap() != 0);
+        let mode = instr.get_addr_mode()?;
+
+        if matches!(
+            mode,
+            AddressingMode::DataRegister
+                | AddressingMode::AddressRegister
+                | AddressingMode::Immediate
+        ) {
+            for r in regs() {
+                if to_ea {
+                    let value = self.regs.read::<Long>(r.into());
+                    self.write_ea(instr, instr.get_op2(), value)?;
+                } else {
+                    let value = self.read_ea::<Long>(instr, instr.get_op2())?;
+                    self.regs.write(r.into(), value);
+                }
+            }
+        } else {
+            let mut addr = self.calc_ea_addr_no_mod::<Long>(instr, instr.get_op2())?;
+            let size = 4 * regs().count() as Address;
+            if mode == AddressingMode::IndirectPreDec {
+                addr = addr.wrapping_sub(size);
+            }
+            let base = addr;
+            for r in regs() {
+                if to_ea {
+                    let value = self.regs.read::<Long>(r.into());
+                    self.write_ticks(addr, value)?;
+                } else {
+                    let value = self.read_ticks::<Long>(addr)?;
+                    self.regs.write(r.into(), value);
+                }
+                addr = addr.wrapping_add(4);
+            }
+            match mode {
+                AddressingMode::IndirectPreDec => self.regs.write_a(instr.get_op2(), base),
+                AddressingMode::IndirectPostInc => self.regs.write_a(instr.get_op2(), addr),
+                _ => (),
+            }
+        }
+
+        self.advance_cycles(29)
     }
 
     /// FMOVEM - Multiple FPU register move
