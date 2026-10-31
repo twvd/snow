@@ -9,7 +9,7 @@ use strum::Display;
 
 use super::cpu::CpuError;
 use super::regs::Register;
-use super::{CpuM68kType, CpuSized, M68000, M68010, M68020};
+use super::{CpuM68kType, CpuSized, M68000, M68010, M68020, M68030, M68040};
 
 use crate::bus::Address;
 use crate::types::{Long, Word};
@@ -169,6 +169,12 @@ pub enum InstructionMnemonic {
     ORI_ccr,
     ORI_sr,
     NOP,
+    MOVE16_inc,
+    MOVE16_abs,
+    CINV,
+    CPUSH,
+    PFLUSH040,
+    PTEST040,
     LEA,
     LINEA,
     LINEF,
@@ -367,6 +373,35 @@ pub enum MovecCtrlReg {
     CAAR = 0x802,
     MSP = 0x803,
     ISP = 0x804,
+    // M68040 MMU
+    TC040 = 0x003,
+    ITT0 = 0x004,
+    ITT1 = 0x005,
+    DTT0 = 0x006,
+    DTT1 = 0x007,
+    MMUSR040 = 0x805,
+    SRP040 = 0x807,
+    URP040 = 0x806,
+}
+
+impl MovecCtrlReg {
+    /// Whether the control register exists on the CPU. MOVEC with any other
+    /// register is an illegal instruction.
+    pub fn exists_on(&self, cpu_type: CpuM68kType) -> bool {
+        match self {
+            Self::SFC | Self::DFC | Self::USP | Self::VBR => cpu_type >= M68010,
+            Self::CACR | Self::MSP | Self::ISP => cpu_type >= M68020,
+            Self::CAAR => matches!(cpu_type, M68020 | M68030),
+            Self::TC040
+            | Self::ITT0
+            | Self::ITT1
+            | Self::DTT0
+            | Self::DTT1
+            | Self::MMUSR040
+            | Self::SRP040
+            | Self::URP040 => cpu_type == M68040,
+        }
+    }
 }
 
 #[allow(clippy::from_over_into)]
@@ -391,6 +426,14 @@ impl From<MovecCtrlReg> for Register {
             MovecCtrlReg::CAAR => Self::CAAR,
             MovecCtrlReg::MSP => Self::MSP,
             MovecCtrlReg::ISP => Self::ISP,
+            MovecCtrlReg::TC040 => Self::TC040,
+            MovecCtrlReg::ITT0 => Self::ITT0,
+            MovecCtrlReg::ITT1 => Self::ITT1,
+            MovecCtrlReg::DTT0 => Self::DTT0,
+            MovecCtrlReg::DTT1 => Self::DTT1,
+            MovecCtrlReg::MMUSR040 => Self::MMUSR040,
+            MovecCtrlReg::SRP040 => Self::SRP040,
+            MovecCtrlReg::URP040 => Self::URP040,
         }
     }
 }
@@ -804,15 +847,25 @@ impl Instruction {
         // M68851 PMMU instructions
         (M68020, 0b1111_0000_0000_0000, 0b1111_1111_1100_0000, InstructionMnemonic::POP_000),
 
+        // M68040 instructions
+        // MOVE16 (Ax)+,(Ay)+ must be matched before the absolute address forms
+        (M68040, 0b1111_0110_0010_0000, 0b1111_1111_1111_1000, InstructionMnemonic::MOVE16_inc),
+        (M68040, 0b1111_0110_0000_0000, 0b1111_1111_1110_0000, InstructionMnemonic::MOVE16_abs),
+        (M68040, 0b1111_0100_0000_0000, 0b1111_1111_0010_0000, InstructionMnemonic::CINV),
+        (M68040, 0b1111_0100_0010_0000, 0b1111_1111_0010_0000, InstructionMnemonic::CPUSH),
+        (M68040, 0b1111_0101_0000_0000, 0b1111_1111_1110_0000, InstructionMnemonic::PFLUSH040),
+        (M68040, 0b1111_0101_0100_1000, 0b1111_1111_1101_1000, InstructionMnemonic::PTEST040),
+
         (M68000, 0b1111_0000_0000_0000, 0b1111_0000_0000_0000, InstructionMnemonic::LINEF),
     ];
 
     /// Attempts to decode an instruction.
     pub fn try_decode(cpu_type: CpuM68kType, data: Word) -> Result<Self> {
-        for &(_, val, mask, mnemonic) in Self::DECODE_TABLE
-            .iter()
-            .filter(|(t, _, _, _)| *t <= cpu_type)
-        {
+        for &(_, val, mask, mnemonic) in Self::DECODE_TABLE.iter().filter(|(t, _, _, m)| {
+            // The M68040 has its own MMU instructions, the 68851 and 68030
+            // ones are F-line exceptions (M68040UM 3.7.3)
+            *t <= cpu_type && !(cpu_type >= M68040 && *m == InstructionMnemonic::POP_000)
+        }) {
             if data & mask == val {
                 return Ok(Self {
                     mnemonic,
@@ -1247,6 +1300,12 @@ impl Instruction {
             | InstructionMnemonic::TRAPcc
             | InstructionMnemonic::TRAPcc_w
             | InstructionMnemonic::TRAPcc_l
+            | InstructionMnemonic::MOVE16_inc
+            | InstructionMnemonic::MOVE16_abs
+            | InstructionMnemonic::CINV
+            | InstructionMnemonic::CPUSH
+            | InstructionMnemonic::PFLUSH040
+            | InstructionMnemonic::PTEST040
             | InstructionMnemonic::POP_000
             | InstructionMnemonic::PACK
             | InstructionMnemonic::UNPK => InstructionSize::None,

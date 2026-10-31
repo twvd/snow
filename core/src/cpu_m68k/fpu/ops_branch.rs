@@ -1,11 +1,13 @@
 use crate::cpu_m68k::FpuM68kType;
+use crate::cpu_m68k::cache::CpuCaches;
 use anyhow::{Result, bail};
 
 use crate::bus::{Address, Bus, IrqSource};
 
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_TRAPV};
-use crate::cpu_m68k::instruction::Instruction;
+use crate::cpu_m68k::instruction::{AddressingMode, Instruction};
+use crate::cpu_m68k::timing040;
 use crate::types::{Byte, Word};
 
 impl<
@@ -14,9 +16,11 @@ impl<
     const CPU_TYPE: CpuM68kType,
     const FPU_TYPE: FpuM68kType,
     const PMMU: bool,
-> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU>
+    TCaches,
+> CpuM68k<TBus, ADDRESS_MASK, CPU_TYPE, FPU_TYPE, PMMU, TCaches>
 where
     TBus: Bus<Address, u8> + IrqSource,
+    TCaches: CpuCaches,
 {
     /// Condition test for FBcc/FDBcc
     fn fcc(&self, cc: usize) -> Result<(bool, bool)> {
@@ -82,7 +86,8 @@ where
             lsb as i16 as i32 - 2
         };
 
-        self.advance_cycles(2)?; // idle
+        // Idle cycles (MC68881/MC68882UM Table 8-7: 20 taken, 18 not taken)
+        advance_cycles!(self, all: if L { 12 } else { 14 })?;
 
         let (test, bsun) = self.fcc(instr.get_fcc())?;
         self.regs.fpu.fpsr.exs_mut().set_bsun(bsun);
@@ -96,11 +101,11 @@ where
                 .wrapping_add_signed(displacement)
                 .wrapping_add(2);
             self.set_pc(pc)?;
+            account_040_time!(self, timing040::FBCC_TAKEN);
         } else {
             // Branch not taken
             self.history_current.branch_taken = Some(false);
-
-            self.advance_cycles(2)?; // idle
+            account_040_time!(self, timing040::FBCC_NOT_TAKEN);
         }
         Ok(())
     }
@@ -111,7 +116,21 @@ where
         let (test, bsun) = self.fcc(cc)?;
         self.regs.fpu.fpsr.exs_mut().set_bsun(bsun);
 
+        // Idle cycles (MC68881/MC68882UM Table 8-7: 18 for Dn, 20 for memory and
+        // 22 for (An)+ and -(An), 1 less if the condition is false)
+        advance_cycles!(
+            self,
+            all: match instr.get_addr_mode()? {
+                AddressingMode::DataRegister => 14,
+                AddressingMode::IndirectPostInc | AddressingMode::IndirectPreDec => {
+                    if test { 15 } else { 14 }
+                }
+                _ => 13,
+            },
+        )?;
+
         self.write_ea::<Byte>(instr, instr.get_op2(), if test { 0xFF } else { 0 })?;
+        account_040_time!(self, timing040::FSCC, instr.get_addr_mode()?);
         Ok(())
     }
 
@@ -132,10 +151,17 @@ where
         }
         self.prefetch_pump()?;
 
+        // Idle cycles (MC68881/MC68882UM Table 8-7: 18 not taken, 39 taken, 2 more
+        // for each operand word)
+        // The 68040 manual has no time for a taken FTRAPcc, which takes that of
+        // FTRAPcc not taken and the exception
+        account_040_time!(self, timing040::FTRAPCC);
         if !test {
+            advance_cycles!(self, all: 14)?;
             return Ok(());
         }
 
+        advance_cycles!(self, all: 16)?;
         self.raise_exception(ExceptionGroup::Group2, VECTOR_TRAPV, None)
     }
 
@@ -144,10 +170,20 @@ where
         let cc = usize::from(self.fetch()? & 0b111111);
         let displacement = self.fetch_pump()? as i16 as i32;
 
-        self.advance_cycles(2)?; // idle
+        // Idle cycles (MC68881/MC68882UM Table 8-7: 20 when the condition is true or
+        // the branch taken, 24 when the count expires)
+        advance_cycles!(self, all: 14)?;
 
         let (test, bsun) = self.fcc(cc)?;
         self.regs.fpu.fpsr.exs_mut().set_bsun(bsun);
+        account_040_time!(
+            self,
+            if test {
+                timing040::FDBCC_TRUE
+            } else {
+                timing040::FDBCC_FALSE
+            },
+        );
 
         if !test {
             let dn = self.regs.read_d::<Word>(instr.get_op2()).wrapping_sub(1);
@@ -168,11 +204,10 @@ where
             } else {
                 // Loop terminated
                 self.history_current.branch_taken = Some(false);
-                self.advance_cycles(4)?; // idle
+                advance_cycles!(self, all: 4)?; // idle
             }
         } else {
             self.history_current.branch_taken = Some(false);
-            self.advance_cycles(2)?; // idle
         }
 
         Ok(())

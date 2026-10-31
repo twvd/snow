@@ -23,6 +23,7 @@ fn entry(cpu: &TestCpu, paddr: Address) -> PmmuAtcEntry {
         s: false,
         leaf_desc_addr: 0x1000,
         modified: false,
+        cache: Default::default(),
         generation: cpu.pmmu_atc_generation,
     }
 }
