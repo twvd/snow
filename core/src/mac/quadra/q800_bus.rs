@@ -1482,7 +1482,9 @@ mod tests {
             0xFD00_0000,
             0xFE00_0000,
         ] {
-            let resp = bus.access(BusAccess::<Bus68040>::read(addr, 4, 0)).unwrap();
+            let resp = bus
+                .access(BusAccess::<Bus68040>::read(addr, 4, 0, 0))
+                .unwrap();
             assert!(matches!(resp, BusResponse::BusError), "{addr:08X}");
         }
         assert!(matches!(MAP[0][0xF9], Region::Video));
