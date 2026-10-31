@@ -445,3 +445,13 @@ fn fmovecr_sets_the_condition_codes() {
     assert!(cpu.regs.fpu.fpsr.fpcc_z());
     assert!(!cpu.regs.fpu.fpsr.fpcc_n());
 }
+
+#[test]
+fn reset_instruction_resets_the_fpu() {
+    let mut cpu = testcpu(&[0x4E70]);
+    cpu.regs.fpu.fp[0] = fp(1.0);
+    cpu.regs.fpu.fpcr.0 = 0x10;
+    cpu.step().unwrap();
+    assert!(cpu.regs.fpu.fp[0].is_nan());
+    assert_eq!(cpu.regs.fpu.fpcr.0, 0);
+}
