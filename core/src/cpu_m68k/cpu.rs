@@ -2922,12 +2922,14 @@ where
         if halt_asserted {
             // HALT was asserted, so hard-reset the CPU as well.
             self.reset()?;
-        } else if CPU_TYPE == M68020 {
-            // The (external) FPU and PMMU are connected to the RESET line,
-            // so we reset them here.
-            // Not for the models with a CPU with a built-in FPU.
+        } else if CPU_TYPE <= M68030 {
+            // The external FPU is connected to the RESET line, so we reset it
+            // here, and on a 68020 the external PMMU too. Not for the models
+            // with a built-in FPU, and the MMU of the 68030 is in the CPU.
             self.regs.fpu = FpuRegisterFile::default();
-            self.regs.pmmu = PmmuRegisterFile::default();
+            if CPU_TYPE == M68020 {
+                self.regs.pmmu = PmmuRegisterFile::default();
+            }
         }
 
         Ok(())
