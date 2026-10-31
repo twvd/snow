@@ -1,8 +1,9 @@
 //! Implementation of the Macintosh LC
 
 pub mod bus;
+pub mod primetime;
 mod pseudovia;
 mod sonora;
 mod v8;
-mod via;
+pub(crate) mod via;
 pub mod video;

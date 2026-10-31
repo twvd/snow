@@ -9,6 +9,7 @@ use anyhow::{Result, anyhow, bail};
 use eframe::egui;
 use sha2::{Digest, Sha256};
 use snow_core::emulator::MouseMode;
+use snow_core::mac::maclc::primetime;
 use snow_core::mac::maclc::video as lc_video;
 use snow_core::mac::quadra::dafb;
 use snow_core::mac::swim::drive::DriveType;
@@ -279,7 +280,7 @@ impl ModelSelectionDialog {
 
     fn monitor_selectable(&self) -> bool {
         match self.selected_model {
-            MacModel::Quadra700 => true,
+            MacModel::Quadra700 | MacModel::LC475 => true,
             MacModel::SE30 => false,
             _ => {
                 self.display_rom_required
@@ -562,7 +563,8 @@ impl ModelSelectionDialog {
 
                 // Monitors dropdown
                 if self.monitor_selectable() {
-                    let monitors: Vec<MacMonitor> = if self.selected_model == MacModel::Quadra700 {
+                    let monitors: Vec<MacMonitor> = if matches!(self.selected_model, MacModel::Quadra700 | MacModel::LC475)
+                    {
                         dafb::MONITORS.to_vec()
                     } else {
                         // VGA monitors are only known to work on the LC III
@@ -627,6 +629,37 @@ impl ModelSelectionDialog {
                     ui.end_row();
 
                     ui.checkbox(&mut self.init_args.fpu_enabled, "Enable 68882 FPU");
+                    ui.end_row();
+                }
+                if self.selected_model == MacModel::LC475 {
+                    // The CPU is socketed, and some owners fit a 68040
+                    ui.label("CPU:");
+                    egui::ComboBox::new(egui::Id::new("lc475_cpu"), "")
+                        .selected_text(if self.init_args.fpu_enabled {
+                            "68040"
+                        } else {
+                            "68LC040"
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.init_args.fpu_enabled, false, "68LC040");
+                            ui.selectable_value(&mut self.init_args.fpu_enabled, true, "68040");
+                        });
+                    ui.end_row();
+
+                    ui.label("VRAM size:");
+                    egui::ComboBox::new(egui::Id::new("lc475_vram"), "")
+                        .selected_text(format_ram(
+                            self.init_args.vram_size.unwrap_or(1024 * 1024),
+                        ))
+                        .show_ui(ui, |ui| {
+                            for &sz in primetime::VRAM_SIZES {
+                                ui.selectable_value(
+                                    &mut self.init_args.vram_size,
+                                    Some(sz),
+                                    format_ram(sz),
+                                );
+                            }
+                        });
                     ui.end_row();
                 }
                 if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
@@ -786,7 +819,7 @@ impl ModelSelectionDialog {
                         }
                         if !matches!(
                             self.selected_model,
-                            MacModel::LC | MacModel::LCII | MacModel::LCIII
+                            MacModel::LC | MacModel::LCII | MacModel::LCIII | MacModel::LC475
                         ) {
                             self.init_args.fpu_enabled = false;
                             self.init_args.vram_size = None;

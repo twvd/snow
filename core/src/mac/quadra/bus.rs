@@ -10,7 +10,7 @@ use crate::emulator::{EmuContext, MouseMode};
 use crate::keymap::KeyEvent;
 use crate::mac::adb::{AdbEvent, AdbKeyboard, AdbMouse};
 use crate::mac::macii::via2::Via2;
-use crate::mac::quadra::dafb::Dafb;
+use crate::mac::quadra::dafb::{Dafb, DafbKind};
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::esp::Esp;
@@ -231,7 +231,12 @@ where
             //vpa_sync: false,
             progkey_pressed: LatchingEvent::default(),
 
-            dafb: Dafb::new(renderer, monitor),
+            dafb: Dafb::new(
+                renderer,
+                monitor,
+                DafbKind::Dafb,
+                Dafb::<TRenderer>::VRAM_SIZE,
+            ),
             mouse_mode,
         };
 
