@@ -10,11 +10,15 @@ use anyhow::Result;
 use log::*;
 use serde::{Deserialize, Serialize};
 
+use super::cops_sim::CopsSim;
 use super::mmu::{LisaMmu, Space};
+use super::via::{KeyboardVia, ParallelVia};
 use super::video::LisaVideo;
-use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_word};
-use crate::bus::native_clock::NativeClock;
-use crate::bus::{Address, Bus, InspectRun, InspectableBus, IrqSource, inspect_read_bytes};
+use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_byte_lane, bus_access_word};
+use crate::bus::native_clock::{C8M_PER_VIA, DeviceCycle, NativeClock};
+use crate::bus::{
+    Address, Bus, BusMember, InspectRun, InspectableBus, IrqSource, inspect_read_bytes,
+};
 use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::emulator::MouseMode;
 use crate::emulator::comm::EmulatorSpeed;
@@ -24,6 +28,7 @@ use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::swim::Swim;
+use crate::mac::via_common::{LineState, ViaLine, ViaReg};
 use crate::renderer::{AudioProvider, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
@@ -48,6 +53,12 @@ const RAM_BOARDS_MEET: Address = 0x10_0000;
 /// FC2: supervisor
 const FC_SUPERVISOR: u8 = 1 << 2;
 
+/// With the power off, the CPU stays stalled this long at a time
+const POWERED_OFF_STALL: Ticks = 1024;
+
+/// The keyboard VIA, the parallel port VIA below it
+const VIA_KEYBOARD_BASE: Address = 0xDC00;
+
 /// The range of the populated physical RAM
 fn ram_range(size: usize) -> (Address, Address) {
     let size = size as Address;
@@ -70,6 +81,10 @@ pub struct LisaBus<TRenderer: Renderer> {
     ram_high: Address,
 
     mmu: LisaMmu,
+
+    keyboard_via: KeyboardVia,
+    parallel_via: ParallelVia,
+    cops: CopsSim,
 
     pub(crate) scc: Scc,
     /// Not on the machine: the emulator expects one on every machine
@@ -96,6 +111,11 @@ pub struct LisaBus<TRenderer: Renderer> {
     hard_error: bool,
     /// A15-A20, A6-A14 and access type of the last hard error
     error_address: u16,
+    /// The NMI button, or the key programmed in the COPS
+    nmi: bool,
+
+    /// CPU clocks since the last tick, of the access in progress
+    access_ahead: Ticks,
 
     #[serde(skip, default = "Instant::now")]
     frame_time: Instant,
@@ -123,6 +143,9 @@ where
             ram_low,
             ram_high,
             mmu: LisaMmu::new(),
+            keyboard_via: KeyboardVia::new(),
+            parallel_via: ParallelVia::new(),
+            cops: CopsSim::new(),
             scc: Scc::new(SCC_RTXC_FREQUENCY),
             swim: Swim::new(&[], false, BUS_FREQUENCY),
             scsi: ScsiController::new(),
@@ -136,6 +159,8 @@ where
             bad_parity: None,
             hard_error: false,
             error_address: 0,
+            nmi: false,
+            access_ahead: 0,
             frame_time: Instant::now(),
             frame_clock: 0,
         }
@@ -167,24 +192,34 @@ where
         Ok(())
     }
 
-    pub fn mouse_update_rel(&mut self, _relx: i16, _rely: i16, _button: Option<bool>) {}
+    pub fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) {
+        self.cops.mouse_rel(relx, rely, button);
+    }
 
     pub fn mouse_update_abs(
         &mut self,
-        _x: u16,
-        _y: u16,
+        x: u16,
+        y: u16,
         _rawmouse: (u16, u16),
     ) -> Option<crate::mac::AbsoluteMouse> {
+        self.cops.mouse_abs(x, y);
         None
     }
 
     pub fn set_mouse_mode(&mut self, _mode: MouseMode) {}
 
-    pub fn keyboard_event(&mut self, _ke: KeyEvent) {}
+    pub fn keyboard_event(&mut self, ke: KeyEvent) {
+        self.cops.key_event(ke);
+    }
 
-    pub fn input_release_all(&mut self) {}
+    pub fn input_release_all(&mut self) {
+        self.cops.release_all();
+    }
 
-    pub fn progkey(&mut self) {}
+    /// The NMI button on the back of the machine
+    pub fn progkey(&mut self) {
+        self.nmi = true;
+    }
 
     pub fn video_blank(&mut self) -> Result<()> {
         self.video.blank()
@@ -231,7 +266,11 @@ where
     /// The boot ROM, or the MMU registers with A15 set
     fn special_read(&mut self, addr: Address, len: u32) -> Option<u32> {
         if addr & (1 << 15) != 0 {
-            let serial = if self.video.serial_bit() { 0x8000 } else { 0 };
+            let serial = if self.video.serial_bit(self.access_ahead) {
+                0x8000
+            } else {
+                0
+            };
             return Some(u32::from(self.mmu.read_register(addr) | serial));
         }
         let idx = addr as usize & (self.rom.len() - 1);
@@ -247,6 +286,95 @@ where
             self.mmu.write_register(addr, val as u16);
         }
         Some(())
+    }
+
+    /// Port A of the keyboard VIA, the commands to the COPS, as it is at the COPS
+    /// with undriven lines high
+    fn cops_port(&mut self) -> u8 {
+        let ddra = self.keyboard_via.read(ViaReg::DDRA);
+        self.keyboard_via.pa() | !ddra
+    }
+
+    fn keyboard_via_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
+        let number = addr >> 1;
+        let reg = KeyboardVia::register(number);
+        let val = self.keyboard_via.read(reg);
+        if reg == ViaReg::A {
+            self.cops.acknowledge();
+        }
+        Some(u32::from(val))
+    }
+
+    fn keyboard_via_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
+        let reg = KeyboardVia::register(addr >> 1);
+        self.keyboard_via.write(reg, val as Byte);
+        if reg == ViaReg::A {
+            self.cops.acknowledge();
+        }
+        self.cops
+            .set_keyboard_reset(!self.keyboard_via.pb().not_reset());
+        Some(())
+    }
+
+    fn parallel_via_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
+        let reg = ParallelVia::register(addr >> 3);
+        Some(u32::from(self.parallel_via.read(reg)))
+    }
+
+    fn parallel_via_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
+        let reg = ParallelVia::register(addr >> 3);
+        self.parallel_via.write(reg, val as Byte);
+        Some(())
+    }
+
+    /// The SCC: A/B on A1 and control/data on A2
+    fn scc_read(&mut self, addr: Address, _len: u32) -> Option<u32> {
+        self.scc.read((addr >> 1) & 3).map(u32::from)
+    }
+
+    fn scc_write(&mut self, addr: Address, _len: u32, val: u32) -> Option<()> {
+        self.scc.write((addr >> 1) & 3, val as Byte)
+    }
+
+    /// An access to a VIA is a 68000 VPA cycle, on the lower byte lane, and lasts a
+    /// whole cycle of the E clock.
+    fn via_cycle(&mut self, acc: BusAccess<Bus68000>) -> BusResponse {
+        let w = match self.native_clock.via_sync(&acc, C8M_PER_VIA) {
+            DeviceCycle::Stall(n) => return BusResponse::Stall(n),
+            DeviceCycle::Access(w) => w,
+        };
+        if acc.addr < VIA_KEYBOARD_BASE {
+            bus_access_byte_lane::<2, 1, _, _>(
+                acc,
+                w,
+                self,
+                Self::parallel_via_read,
+                Self::parallel_via_write,
+            )
+        } else {
+            self.keyboard_via.b_in.set_crdy(self.cops.crdy(acc.pending));
+            bus_access_byte_lane::<2, 1, _, _>(
+                acc,
+                w,
+                self,
+                Self::keyboard_via_read,
+                Self::keyboard_via_write,
+            )
+        }
+    }
+
+    fn io_access(&mut self, acc: BusAccess<Bus68000>, waits: Ticks) -> BusResponse {
+        match acc.addr {
+            0xD000..=0xD3FF => bus_access_byte_lane::<2, 1, _, _>(
+                acc,
+                waits,
+                self,
+                Self::scc_read,
+                Self::scc_write,
+            ),
+            0xD800..=0xDFFF => self.via_cycle(acc),
+            _ => bus_access_word(acc, waits, self, Self::io_read, Self::io_write),
+        }
     }
 
     /// A strobe: any access sets or clears a latch, the address tells which
@@ -280,7 +408,8 @@ where
     /// System status: errors, and bits from the video. The error bits are active
     /// low, per the boot ROM. Bit 6 is low with the inverse video option.
     fn status(&self) -> u16 {
-        0xC1 | (if self.hard_error { 0 } else { 1 << 1 }) | self.video.status(&self.ram)
+        0xC1 | (if self.hard_error { 0 } else { 1 << 1 })
+            | self.video.status(&self.ram, self.access_ahead)
     }
 
     /// A 16-bit register: a byte access gets the half on its byte lane
@@ -342,22 +471,27 @@ where
 
     #[inline(always)]
     fn access(&mut self, mut acc: BusAccess<Bus68000>) -> Result<BusResponse> {
+        if !self.cops.power_on() {
+            return Ok(BusResponse::Stall(POWERED_OFF_STALL));
+        }
         let supervisor = acc.fc & FC_SUPERVISOR != 0;
         let Some((space, physical)) = self.mmu.translate(acc.addr, acc.write, supervisor) else {
             return Ok(BusResponse::BusError);
         };
         acc.addr = physical;
+        self.access_ahead = acc.pending;
 
         // Every access waits for its memory slot
         let now = self.native_clock.native_ticks() + acc.pending;
         let waits = (MEMORY_SLOT - now % MEMORY_SLOT) % MEMORY_SLOT;
+        self.access_ahead += waits;
 
         Ok(match space {
             Space::Ram => bus_access_word(acc, waits, self, Self::ram_read, Self::ram_write),
             Space::SpecialIo => {
                 bus_access_word(acc, waits, self, Self::special_read, Self::special_write)
             }
-            Space::Io => bus_access_word(acc, waits, self, Self::io_read, Self::io_write),
+            Space::Io => self.io_access(acc, waits),
         })
     }
 
@@ -367,6 +501,9 @@ where
         }
         self.mmu.reset();
         self.video.reset();
+        self.keyboard_via = KeyboardVia::new();
+        self.parallel_via = ParallelVia::new();
+        self.cops.machine_reset();
         self.soft_error_masked = true;
         self.hard_error_masked = true;
         self.force_bad_parity = false;
@@ -388,6 +525,20 @@ where
                 break;
             }
             cpu -= step.cpu_used;
+            if step.via_tick {
+                self.keyboard_via.tick(1, ())?;
+                self.parallel_via.tick(1, ())?;
+            }
+        }
+
+        let port = self.cops_port();
+        self.cops.tick(ticks, port);
+        if let Some(byte) = self.cops.take_strobe() {
+            self.keyboard_via.a_in = byte;
+            self.keyboard_via.set_line(ViaLine::CA1, LineState::Pulse);
+        }
+        if self.cops.take_nmi() {
+            self.nmi = true;
         }
 
         self.video.tick(ticks, &self.ram)?;
@@ -416,10 +567,16 @@ where
     TRenderer: Renderer,
 {
     fn get_irq(&mut self) -> Option<u8> {
-        if self.hard_error {
+        if self.hard_error || std::mem::take(&mut self.nmi) {
             return Some(7);
         }
-        if self.video.irq() {
+        if self.scc.get_irq() {
+            return Some(6);
+        }
+        if self.keyboard_via.irq() {
+            return Some(2);
+        }
+        if self.video.irq() || self.parallel_via.irq() {
             return Some(1);
         }
         None
@@ -455,6 +612,12 @@ where
     TRenderer: Renderer,
 {
     fn get_debug_properties(&self) -> DebuggableProperties {
-        vec![]
+        use crate::dbgprop_nest;
+        use crate::debuggable::*;
+
+        vec![
+            dbgprop_nest!("Keyboard VIA", self.keyboard_via),
+            dbgprop_nest!("Parallel port VIA", self.parallel_via),
+        ]
     }
 }
