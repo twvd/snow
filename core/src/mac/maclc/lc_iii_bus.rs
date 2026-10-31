@@ -1112,14 +1112,17 @@ mod tests {
             Some(IieCardSettings::default()),
         );
         fn read(bus: &mut LcIIIBus<NullRenderer>, addr: Address) -> u32 {
-            match bus.access(BusAccess::<Bus68020>::read(addr, 1, 0)).unwrap() {
+            match bus
+                .access(BusAccess::<Bus68020>::read(addr, 1, 0, 0))
+                .unwrap()
+            {
                 BusResponse::Ack { data, .. } => data,
                 r => panic!("{addr:08X}: {r:?}"),
             }
         }
 
         let _ = bus
-            .access(BusAccess::<Bus68020>::write(0xFE00_0018, 1, 0x41, 0))
+            .access(BusAccess::<Bus68020>::write(0xFE00_0018, 1, 0x41, 0, 0))
             .unwrap();
         for base in [0xFE00_0000, 0xFEE0_0000, 0xEEE0_0000] {
             assert_eq!(read(&mut bus, base + 0x18), 0xC1, "registers at {base:08X}");
