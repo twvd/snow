@@ -102,6 +102,8 @@ enum Region {
     Io,
     /// Machine identification
     CpuId,
+    /// Expansion slot, as NuBus super slot $E and slot $E
+    Slot,
     /// Built-in video (MEMCjr), slot $9
     Video,
 }
@@ -113,6 +115,7 @@ const fn region(overlay: bool, block: usize) -> Region {
         0x40..=0x4F => Region::Rom,
         0x50..=0x53 => Region::Io,
         0x5F => Region::CpuId,
+        0xE0..=0xEF | 0xFE => Region::Slot,
         0xF9 => Region::Video,
         _ => Region::None,
     }
@@ -637,6 +640,60 @@ where
         bus_access_long(acc, w, self, Self::io_read, Self::io_write)
     }
 
+    /// An access to the expansion slot, on the I/O bus: the slot isn't
+    /// connected to the CPU (Developer Note), and its cards are at most 16 bits
+    /// wide unless they say otherwise (16MASTER is for bus masters). PrimeTime
+    /// makes up to two cycles of a long word.
+    fn slot_cycle(&mut self, acc: BusAccess<Bus68040>) -> BusResponse {
+        let w = match self.native_clock.device16_sync(&acc) {
+            DeviceCycle::Stall(n) => return BusResponse::Stall(n),
+            DeviceCycle::Access(w) => w,
+        };
+        let w = self.native_clock.scale_dev16_waits(w, IO_BUS_WAITS);
+        bus_access_long(acc, w, self, Self::slot_read, Self::slot_write)
+    }
+
+    fn slot_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        let mut val = 0;
+        let mut a = addr;
+        while a < addr + len {
+            // Up to the next 16-bit boundary or the end of the access
+            let step = (2 - (a & 1)).min(addr + len - a);
+            val = (val << (8 * step)) | self.slot_port_read(a & 0xFF_FFFF, step)?;
+            a += step;
+        }
+        Some(val)
+    }
+
+    fn slot_write(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
+        let mut a = addr;
+        while a < addr + len {
+            let step = (2 - (a & 1)).min(addr + len - a);
+            let shift = 8 * (addr + len - a - step);
+            let part = (val >> shift) & ((1 << (8 * step)) - 1);
+            self.slot_port_write(a & 0xFF_FFFF, step, part)?;
+            a += step;
+        }
+        Some(())
+    }
+
+    /// One cycle of a card, with the offset in the slot: without a card
+    /// nothing answers, which is a bus error, as the Slot Manager expects.
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    fn slot_port_read(&mut self, _offset: Address, _len: u32) -> Option<u32> {
+        None
+    }
+
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    fn slot_port_write(&mut self, _offset: Address, _len: u32, _val: u32) -> Option<()> {
+        None
+    }
+
+    /// SLOTE_IRQ from a card (schematic: its own pin on PrimeTime)
+    fn slot_irq(&self) -> bool {
+        false
+    }
+
     /// A pseudo-DMA access to the 53C96. PrimeTime holds the cycle off until
     /// DREQ, then makes one cycle of the 16-bit DMA bus for a word, on D31-D16,
     /// and two for a long, high half first (MAME; no real hardware data). A
@@ -877,6 +934,7 @@ where
             Region::Rom => bus_access_long(acc, waits, self, Self::rom_read, Self::ignore_write),
             Region::Io => self.io_cycle(acc),
             Region::CpuId => bus_access_long(acc, 0, self, Self::cpu_id_read, Self::ignore_write),
+            Region::Slot => self.slot_cycle(acc),
             Region::Video => bus_access_long(acc, waits, self, Self::video_read, Self::video_write),
             Region::None => BusResponse::BusError,
         };
@@ -1026,7 +1084,9 @@ where
 
         self.dafb.tick(native_ticks, ctx)?;
         let video_irq = self.dafb.get_irq();
+        let slot_irq = self.slot_irq();
         self.via2.a_in.set_v2irqvideo(!video_irq);
+        self.via2.a_in.set_v2irq6(!slot_irq);
 
         self.scsi.tick(native_ticks, ctx)?;
 
@@ -1035,7 +1095,7 @@ where
         // drops them while the line is still low, and the flag of the 53C96
         // stays set after its interrupt drops (MAME has them follow the line).
         self.via2
-            .set_line(ViaLine::CA1, (!video_irq).into());
+            .set_line(ViaLine::CA1, (!(video_irq || slot_irq)).into());
         self.via2
             .set_line(ViaLine::CB2, (!self.scsi.get_irq()).into());
 
@@ -1119,5 +1179,64 @@ where
             dbgprop_nest!("VIA 1 (SY6522)", self.via1),
             dbgprop_nest!("VIA 2 (SY6522)", self.via2),
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::renderer::NullRenderer;
+
+    fn bus() -> Lc475Bus<NullRenderer> {
+        Lc475Bus::new(
+            MacModel::LC475,
+            &vec![0; 1024 * 1024],
+            NullRenderer::new(0, 0).unwrap(),
+            MacMonitor::default(),
+            MouseMode::Disabled,
+            Some(4 * 1024 * 1024),
+            None,
+        )
+    }
+
+    #[test]
+    fn empty_slot_is_a_bus_error() {
+        let mut bus = bus();
+        assert_eq!(bus.slot_read(0xFEFF_FFFC, 4), None);
+        assert_eq!(bus.slot_write(0xFEE0_0000, 2, 0), None);
+        assert!(matches!(MAP[0][0xFE], Region::Slot));
+        assert!(matches!(MAP[0][0xE0], Region::Slot));
+        assert!(matches!(MAP[0][0xFD], Region::None));
+    }
+
+    /// The ROM sizes one bank that's a power of two at a time, at the power
+    /// up bases, then moves them together
+    #[test]
+    fn ram_banks() {
+        let mut bus = Lc475Bus::new(
+            MacModel::LC475,
+            &vec![0; 1024 * 1024],
+            NullRenderer::new(0, 0).unwrap(),
+            MacMonitor::default(),
+            MouseMode::Disabled,
+            Some(12 * 1024 * 1024),
+            None,
+        );
+        assert_eq!(bus.ram_index(0x003F_FFFF), Some(0x3F_FFFF));
+        assert_eq!(bus.ram_index(0x0040_0000), None);
+        assert_eq!(bus.ram_index(0x0400_0000), Some(0x40_0000));
+        assert_eq!(bus.ram_index(0x047F_FFFF), Some(0xBF_FFFF));
+        assert_eq!(bus.ram_index(0x0480_0000), None);
+
+        // Bank 1 at 4 MB, through the holding register. The others at the top.
+        bus.io_write_byte(0x5000_E07F, 0);
+        bus.io_write_byte(0x5000_E00B, 4);
+        for reg in [0xE00F, 0xE013, 0xE017] {
+            bus.io_write_byte(0x5000_E07F, 0);
+            bus.io_write_byte(0x5000_0000 + reg, 12);
+        }
+        assert_eq!(bus.ram_index(0x0040_0000), Some(0x40_0000));
+        assert_eq!(bus.ram_index(0x00BF_FFFF), Some(0xBF_FFFF));
+        assert_eq!(bus.ram_index(0x00C0_0000), None);
     }
 }
