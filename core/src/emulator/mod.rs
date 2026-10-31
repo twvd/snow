@@ -624,7 +624,7 @@ impl Emulator {
                 let cpu = CpuM68040::new(MachineBus040::Quadra800(bus), FPU_M68040);
                 EmulatorConfig::Quadra800(Box::new(cpu))
             }
-            MacModel::Lisa25 => {
+            MacModel::Lisa25 | MacModel::Lisa210 => {
                 let bus = LisaBus::new(machine, &devices)?;
                 EmulatorConfig::Lisa(Box::new(CpuM68000::new(bus, FPU_NONE)))
             }
@@ -1538,6 +1538,12 @@ impl Tickable for Emulator {
                                     e
                                 ));
                             }
+                        }
+                        self.status_update()?;
+                    }
+                    EmulatorCommand::HardDiskSetFullSize(bus, slot, full_size) => {
+                        if let Err(e) = self.hard_disk_set_full_size(&bus, &slot, full_size) {
+                            self.user_error(&format!("{}: {:#}", self.slot_label(&bus, &slot), e));
                         }
                         self.status_update()?;
                     }

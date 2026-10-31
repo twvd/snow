@@ -59,6 +59,8 @@ pub enum EmulatorCommand {
     SetFloppyRpmAdjustment(String, String, i32),
     /// Makes the hard disk in a slot carry on from a copy of its image, in this file
     BranchDisk(String, String, PathBuf),
+    /// Sets `HardDiskConfig::full_size` of the hard disk in a slot
+    HardDiskSetFullSize(String, String, bool),
     /// Gives the CD-ROM drive in a slot a folder of disc images
     CdromSetFolder(String, String, PathBuf),
     EthernetSetLink(String, String, EthernetLinkType),

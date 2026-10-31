@@ -180,7 +180,7 @@ impl DeviceOps for ScsiTargetSyQuest {
     }
 
     fn config(&self) -> FunctionConfig {
-        FunctionConfig::HardDisk(HardDiskConfig { media: /* its image file */ })
+        FunctionConfig::HardDisk(HardDiskConfig { media: /* its image file */, ..Default::default() })
     }
 
     fn function(&mut self) -> FunctionMut<'_> {

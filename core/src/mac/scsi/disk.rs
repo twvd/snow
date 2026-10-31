@@ -97,6 +97,7 @@ impl DeviceOps for ScsiTargetDisk {
     fn config(&self) -> FunctionConfig {
         FunctionConfig::HardDisk(HardDiskConfig {
             media: self.status().media,
+            ..Default::default()
         })
     }
 
@@ -421,7 +422,10 @@ mod tests {
         assert_eq!(function(&mut disk).status().media, branch);
         assert_eq!(
             disk.config(),
-            FunctionConfig::HardDisk(HardDiskConfig { media: branch })
+            FunctionConfig::HardDisk(HardDiskConfig {
+                media: branch,
+                ..Default::default()
+            })
         );
     }
 

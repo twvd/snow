@@ -1,6 +1,6 @@
 use crate::dialogs::about::AboutDialog;
 use crate::dialogs::confirm::ConfirmDialog;
-use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
+use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult, lisa_disk_limit_checkbox};
 use crate::dialogs::filedialog::SnowFileDialog;
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult};
 use crate::emulator::{EmulatorInitArgs, ScsiSlot};
@@ -24,7 +24,7 @@ use crate::workspace::{FramebufferMode, Workspace};
 use snow_core::cpu_m68k::bus::InspectView;
 use snow_core::devices::{
     DeviceConfig, DeviceModel, DisplayHandle, FloppyImages, FloppyInfo, FunctionConfig,
-    FunctionStatus, bus_id,
+    FunctionStatus, HardDiskConfig, bus_id,
 };
 use snow_core::emulator::MouseMode;
 use snow_core::emulator::comm::{EmulatorSpeed, UserMessageType};
@@ -259,6 +259,11 @@ pub struct SnowGui {
     /// checkbox starts checked.
     floppy_wp_default: bool,
     floppy_dialog_wp: bool,
+    /// The "Report at most 16 MB" option of a Lisa's empty parallel port: a new disk reports
+    /// at most that. The checkbox of the dialogs that create or load its image starts as the
+    /// option is.
+    lisa_disk_limit_default: bool,
+    lisa_disk_dialog_limit: bool,
     create_disk_dialog: DiskImageDialog,
     record_dialog: SnowFileDialog,
     model_dialog: ModelSelectionDialog,
@@ -506,6 +511,8 @@ impl SnowGui {
             floppy_dialog_last_type: None,
             floppy_wp_default: false,
             floppy_dialog_wp: false,
+            lisa_disk_limit_default: true,
+            lisa_disk_dialog_limit: true,
             workspace_dialog: SnowFileDialog::new()
                 .add_filter("Snow workspace", &["snoww"])
                 .add_save_extension("Snow workspace", "snoww")
@@ -820,11 +827,26 @@ impl SnowGui {
         whole.to_pos2()
     }
 
+    /// Warns of an image larger than a hard disk on the parallel port of a Lisa reports
+    fn warn_lisa_disk_size(&mut self, bus: &str, path: &Path) {
+        if bus != bus_id::LISA_PARALLEL {
+            return;
+        }
+        if let Some(s) = crate::util::mac::lisa_disk_sizecheck(path) {
+            self.toasts.add(
+                Toast::default()
+                    .text(s)
+                    .options(ToastOptions::default())
+                    .kind(ToastKind::Warning),
+            );
+        }
+    }
+
     /// Attaches a hard disk with this image to an empty slot
-    fn attach_hdd(&self, bus: &str, slot: &str, path: &Path) {
+    fn attach_hdd(&self, bus: &str, slot: &str, config: HardDiskConfig) {
         if bus != bus_id::SCSI {
-            self.emu.attach_hdd(bus, slot, path);
-        } else if let Ok(id) = slot.parse() {
+            self.emu.attach_hdd(bus, slot, config);
+        } else if let (Ok(id), Some(path)) = (slot.parse(), &config.media) {
             self.emu.scsi_attach_hdd(id, path);
         }
     }
@@ -842,7 +864,14 @@ impl SnowGui {
             file.write_all(&[0])?;
             file.flush()?;
         }
-        self.attach_hdd(&result.bus, &result.slot, &result.filename);
+        self.attach_hdd(
+            &result.bus,
+            &result.slot,
+            HardDiskConfig {
+                media: Some(result.filename.clone()),
+                full_size: result.limited == Some(false),
+            },
+        );
         Ok(())
     }
 
@@ -897,7 +926,7 @@ impl SnowGui {
                     self.open_model_dialog();
                 }
                 if self.emu.is_initialized() {
-                    if self.emu.get_model() == Some(MacModel::Lisa25)
+                    if self.emu.get_model().is_some_and(MacModel::is_lisa)
                         && ui.button("On-off button").clicked()
                     {
                         self.emu.lisa_on_off_button();
@@ -1850,6 +1879,20 @@ impl SnowGui {
                     |ui| {
                         ui.set_min_width(Self::SUBMENU_WIDTH);
                         self.draw_hard_disk_items(ui, &device.bus, &device.slot, disk, fixed);
+                        // A disk of the Lisa reports at most what the Office System takes
+                        if let FunctionConfig::HardDisk(config) = &device.device.function
+                            && device.bus == bus_id::LISA_PARALLEL
+                        {
+                            ui.separator();
+                            let mut limited = !config.full_size;
+                            if lisa_disk_limit_checkbox(ui, &mut limited).changed() {
+                                self.emu.set_hard_disk_full_size(
+                                    &device.bus,
+                                    &device.slot,
+                                    !limited,
+                                );
+                            }
+                        }
                     },
                 );
             }
@@ -1863,6 +1906,11 @@ impl SnowGui {
                     ),
                     |ui| {
                         ui.set_min_width(Self::SUBMENU_WIDTH + 50.0);
+                        let lisa = bus == bus_id::LISA_PARALLEL;
+                        if lisa {
+                            lisa_disk_limit_checkbox(ui, &mut self.lisa_disk_limit_default);
+                            ui.separator();
+                        }
                         if ui
                             .button(format!("Create new {} image...", info.name))
                             .clicked()
@@ -1871,10 +1919,12 @@ impl SnowGui {
                                 bus,
                                 slot,
                                 label.clone(),
+                                lisa.then_some(self.lisa_disk_limit_default),
                                 &self.workspace_dir(),
                             );
                         }
                         if ui.button(format!("Load {} image...", info.name)).clicked() {
+                            self.lisa_disk_dialog_limit = self.lisa_disk_limit_default;
                             self.hdd_dialog_target = (bus.clone(), slot.clone());
                             self.hdd_dialog.pick_file(self.settings.native_file_dialogs);
                         }
@@ -2112,6 +2162,7 @@ impl SnowGui {
                             bus_id::SCSI,
                             &id.to_string(),
                             format!("SCSI ID #{}", id),
+                            None,
                             &self.workspace_dir(),
                         );
                     }
@@ -4372,10 +4423,15 @@ impl eframe::App for SnowGui {
         // Create disk image dialog
         self.create_disk_dialog.update(ctx, frame, &self.settings);
         self.ui_active &= !self.create_disk_dialog.is_open();
-        if let Some(result) = self.create_disk_dialog.take_result()
-            && let Err(e) = self.try_create_image(&result)
-        {
-            self.show_error(&format!("Failed to create image: {}", e));
+        if let Some(result) = self.create_disk_dialog.take_result() {
+            match self.try_create_image(&result) {
+                Ok(()) => {
+                    if result.limited == Some(true) {
+                        self.warn_lisa_disk_size(&result.bus, &result.filename);
+                    }
+                }
+                Err(e) => self.show_error(&format!("Failed to create image: {}", e)),
+            }
         }
 
         // Model selection/'Load ROM' dialog
@@ -4610,7 +4666,17 @@ impl eframe::App for SnowGui {
         }
 
         // HDD image picker dialog
-        self.hdd_dialog.update(ctx, frame);
+        // To load a disk for the parallel port of a Lisa, it has the size limit checkbox
+        if self.hdd_dialog_target.0 == bus_id::LISA_PARALLEL
+            && matches!(self.hdd_dialog.mode(), DialogMode::PickFile)
+        {
+            self.hdd_dialog
+                .update_with_right_panel_ui(ctx, frame, &mut |ui, _| {
+                    lisa_disk_limit_checkbox(ui, &mut self.lisa_disk_dialog_limit);
+                });
+        } else {
+            self.hdd_dialog.update(ctx, frame);
+        }
         if let Some(path) = self.hdd_dialog.take_picked() {
             match self.hdd_dialog.mode() {
                 DialogMode::PickFile => {
@@ -4622,12 +4688,20 @@ impl eframe::App for SnowGui {
                                 .kind(ToastKind::Warning),
                         );
                     }
-                    let (bus, slot) = &self.hdd_dialog_target;
-                    if self.emu.device_status(bus, slot).is_some() {
+                    let (bus, slot) = self.hdd_dialog_target.clone();
+                    let full_size = bus == bus_id::LISA_PARALLEL && !self.lisa_disk_dialog_limit;
+                    if !full_size {
+                        self.warn_lisa_disk_size(&bus, &path);
+                    }
+                    if self.emu.device_status(&bus, &slot).is_some() {
                         // A disk that takes another image
-                        self.emu.load_hard_disk(bus, slot, &path);
+                        self.emu.load_hard_disk(&bus, &slot, &path);
                     } else {
-                        self.attach_hdd(bus, slot, &path);
+                        let config = HardDiskConfig {
+                            media: Some(path),
+                            full_size,
+                        };
+                        self.attach_hdd(&bus, &slot, config);
                     }
                 }
                 DialogMode::SaveFile => {

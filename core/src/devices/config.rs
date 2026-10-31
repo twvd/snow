@@ -105,6 +105,7 @@ mod tests {
             rom: None,
             function: FunctionConfig::HardDisk(HardDiskConfig {
                 media: Some("a.img".into()),
+                ..Default::default()
             }),
         };
         let json = r#"{"bus":"SCSI","slot":"0","model":"ScsiHardDisk","function":{"HardDisk":{"media":"a.img"}}}"#;
@@ -133,6 +134,7 @@ mod tests {
             rom: Some("disk.rom".into()),
             function: FunctionConfig::HardDisk(HardDiskConfig {
                 media: Some("a.img".into()),
+                ..Default::default()
             }),
         };
         disk.convert_paths(|path| Path::new("/there").join(path));
@@ -141,6 +143,7 @@ mod tests {
             disk.function,
             FunctionConfig::HardDisk(HardDiskConfig {
                 media: Some("/there/a.img".into()),
+                ..Default::default()
             })
         );
 

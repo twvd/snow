@@ -84,6 +84,12 @@ pub trait HardDiskFunction {
     fn load(&mut self, _path: &Path) -> Result<()> {
         bail!("The image of this disk can't be replaced")
     }
+    /// Sets `HardDiskConfig::full_size`, on a disk that has a size limit. Called when the user
+    /// changes it; the guest sees it the next time it asks the disk for its size. Refused by
+    /// default.
+    fn set_full_size(&mut self, _full_size: bool) -> Result<()> {
+        bail!("This disk has no size limit")
+    }
 }
 
 pub trait CdromFunction {
@@ -288,6 +294,11 @@ pub struct HardDiskConfig {
     /// The image file. None: given later, by `load_image()`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub media: Option<PathBuf>,
+    /// The disk reports all of its image, beyond the largest size the software of its machine
+    /// takes. Only a disk with such a limit uses it: a Lisa's ProFile or Widget reports at most
+    /// 30000 blocks, about 16 MB, unless this is set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub full_size: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

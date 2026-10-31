@@ -316,6 +316,7 @@ pub enum DeviceModel {
     Apple525Drive,
     Lisa400KDrive,
     ProFile,
+    Widget,
     LisaVideo,
 }
 
@@ -347,6 +348,7 @@ impl DeviceModel {
             Self::Apple525Drive => &pds_iie::disk::INFO,
             Self::Lisa400KDrive => &lisa::fdc_sim::INFO_400K,
             Self::ProFile => &lisa::profile_sim::INFO_PROFILE,
+            Self::Widget => &lisa::profile_sim::INFO_WIDGET,
             Self::LisaVideo => &lisa::video::INFO,
         }
     }

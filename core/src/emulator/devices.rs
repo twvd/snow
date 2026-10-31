@@ -334,6 +334,18 @@ impl Emulator {
         }
     }
 
+    pub(super) fn hard_disk_set_full_size(
+        &mut self,
+        bus: &str,
+        slot: &str,
+        full_size: bool,
+    ) -> Result<()> {
+        match self.device_function(bus, slot)? {
+            FunctionMut::HardDisk(disk) => disk.set_full_size(full_size),
+            _ => bail!("This device isn't a hard disk"),
+        }
+    }
+
     /// The floppy drive in a slot
     pub(super) fn floppy_in(&mut self, bus: &str, slot: &str) -> Result<&mut dyn FloppyFunction> {
         match self.device_function(bus, slot)? {
@@ -1271,6 +1283,7 @@ mod tests {
             Some(DeviceModel::ScsiHardDisk),
             FunctionConfig::HardDisk(HardDiskConfig {
                 media: Some(dir.0.join("no such image")),
+                ..Default::default()
             }),
         );
         let no_folder = cdrom("3", Some(&dir.0.join("no such folder")));
@@ -1482,7 +1495,7 @@ mod tests {
                 | MacModel::Quadra700 => (MacSuperDrive, 2),
                 MacModel::LCIII | MacModel::LC475 | MacModel::Quadra800 => (MacSuperDrive, 1),
                 // No `SWIM` bus: its floppy controller is its own
-                MacModel::Lisa25 => continue,
+                MacModel::Lisa25 | MacModel::Lisa210 => continue,
             };
             let mut emu = machine(model);
             assert_eq!(floppy_drives(&mut emu), vec![drive; count], "{model}");
@@ -1639,7 +1652,10 @@ mod tests {
         let disk = scsi(
             "0",
             Some(DeviceModel::ScsiHardDisk),
-            FunctionConfig::HardDisk(HardDiskConfig { media: Some(image) }),
+            FunctionConfig::HardDisk(HardDiskConfig {
+                media: Some(image),
+                ..Default::default()
+            }),
         );
         let configs = vec![disk, cdrom("3", Some(&dir.0)), cdrom("5", None)];
         for config in &configs {
@@ -1685,6 +1701,7 @@ mod tests {
             Some(DeviceModel::ScsiHardDisk),
             FunctionConfig::HardDisk(HardDiskConfig {
                 media: Some(image.clone()),
+                ..Default::default()
             }),
         );
         emu.add_device(&disk).unwrap();
@@ -1909,6 +1926,7 @@ mod tests {
             Some(DeviceModel::ScsiHardDisk),
             FunctionConfig::HardDisk(HardDiskConfig {
                 media: Some("no such file".into()),
+                ..Default::default()
             }),
         );
         assert!(emu.add_device(&disk).is_err());
@@ -1969,7 +1987,10 @@ mod tests {
             slot: "0".into(),
             model: Some(model),
             rom: None,
-            function: FunctionConfig::HardDisk(HardDiskConfig { media: Some(media) }),
+            function: FunctionConfig::HardDisk(HardDiskConfig {
+                media: Some(media),
+                ..Default::default()
+            }),
         }
     }
 
@@ -1998,7 +2019,17 @@ mod tests {
         emu.remove_device(bus_id::LISA_PARALLEL, "0").unwrap();
         assert_eq!(emu.devices(), video);
         emu.add_device(&other).unwrap();
-        assert_eq!(emu.devices(), [vec![other], video].concat());
+        assert_eq!(emu.devices(), [vec![other], video.clone()].concat());
+
+        // A disk is made with its size setting, which the list of devices keeps
+        let mut whole = disk.clone();
+        let FunctionConfig::HardDisk(config) = &mut whole.function else {
+            panic!("Not a hard disk");
+        };
+        config.full_size = true;
+        emu.remove_device(bus_id::LISA_PARALLEL, "0").unwrap();
+        emu.add_device(&whole).unwrap();
+        assert_eq!(emu.devices(), [vec![whole], video].concat());
 
         // A ProFile needs its image, and only a Lisa has the port
         let mut none = disk.clone();

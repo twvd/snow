@@ -637,7 +637,10 @@ impl Workspace {
                 OldScsiTarget::None => continue,
                 OldScsiTarget::Disk(path) => (
                     DeviceModel::ScsiHardDisk,
-                    FunctionConfig::HardDisk(HardDiskConfig { media: Some(path) }),
+                    FunctionConfig::HardDisk(HardDiskConfig {
+                        media: Some(path),
+                        ..Default::default()
+                    }),
                 ),
                 OldScsiTarget::Cdrom => (
                     DeviceModel::ScsiCdrom,
@@ -880,7 +883,10 @@ mod tests {
         scsi(
             slot,
             DeviceModel::ScsiHardDisk,
-            FunctionConfig::HardDisk(HardDiskConfig { media: Some(media) }),
+            FunctionConfig::HardDisk(HardDiskConfig {
+                media: Some(media),
+                ..Default::default()
+            }),
         )
     }
 

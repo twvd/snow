@@ -1047,6 +1047,7 @@ impl EmulatorState {
             FunctionInfo::HardDisk,
             FunctionConfig::HardDisk(HardDiskConfig {
                 media: Some(path.to_path_buf()),
+                ..Default::default()
             }),
         );
     }
@@ -1059,7 +1060,7 @@ impl EmulatorState {
     }
 
     /// Attaches a hard disk with this image to an empty slot of a bus other than SCSI
-    pub fn attach_hdd(&self, bus: &str, slot: &str, path: &Path) {
+    pub fn attach_hdd(&self, bus: &str, slot: &str, config: HardDiskConfig) {
         let (Some(sender), Some(info)) = (self.cmdsender.as_ref(), self.hard_disk_model(bus))
         else {
             return;
@@ -1070,9 +1071,7 @@ impl EmulatorState {
                 slot: slot.into(),
                 model: Some(info.model),
                 rom: None,
-                function: FunctionConfig::HardDisk(HardDiskConfig {
-                    media: Some(path.to_path_buf()),
-                }),
+                function: FunctionConfig::HardDisk(config),
             }))
             .unwrap();
     }
@@ -1108,6 +1107,20 @@ impl EmulatorState {
     }
 
     /// Makes the hard disk in a slot carry on from a copy of its image, in this file
+    /// Sets whether the hard disk in a slot reports all of its image
+    pub fn set_hard_disk_full_size(&self, bus: &str, slot: &str, full_size: bool) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender
+            .send(EmulatorCommand::HardDiskSetFullSize(
+                bus.to_string(),
+                slot.to_string(),
+                full_size,
+            ))
+            .unwrap();
+    }
+
     pub fn branch_disk(&self, bus: &str, slot: &str, path: &Path) {
         let Some(ref sender) = self.cmdsender else {
             return;

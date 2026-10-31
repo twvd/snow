@@ -146,6 +146,7 @@ fn main() -> Result<()> {
             rom: None,
             function: FunctionConfig::HardDisk(HardDiskConfig {
                 media: Some(PathBuf::from(path)),
+                ..Default::default()
             }),
         }))?;
     }

@@ -288,6 +288,9 @@ functions:
 ```rust
 pub struct HardDiskConfig {
     pub media: Option<PathBuf>,          // The image file. None: given later, by load_image().
+    pub full_size: bool,                 // Report all of the image, beyond the limit of a disk
+                                         // that has one: a Lisa disk reports at most 30000
+                                         // blocks without it
 }
 
 pub struct CdromConfig {
@@ -490,6 +493,7 @@ DeviceConfig {
     rom: None,
     function: FunctionConfig::HardDisk(HardDiskConfig {
         media: Some("system.img".into()),
+        ..Default::default()
     }),
 }
 
@@ -622,7 +626,10 @@ let disk = DeviceConfig {
     slot: "0".into(),
     model: Some(DeviceModel::ScsiHardDisk),
     rom: None,
-    function: FunctionConfig::HardDisk(HardDiskConfig { media: Some("hd.img".into()) }),
+    function: FunctionConfig::HardDisk(HardDiskConfig {
+        media: Some("hd.img".into()),
+        ..Default::default()
+    }),
 };
 emulator.add_device(&disk)?;                 // Or commands.send(EmulatorCommand::AddDevice(disk))
 emulator.remove_device(bus_id::SCSI, "3")?;  // Or EmulatorCommand::RemoveDevice(..)
