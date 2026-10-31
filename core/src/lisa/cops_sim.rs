@@ -186,6 +186,7 @@ impl CopsSim {
             return;
         }
         self.keyboard_reset = reset;
+        log::debug!("Keyboard reset {} at {}", reset, self.now);
         if reset {
             self.unplug_at = Some(self.now + UNPLUGGED_TICKS);
             self.id_at = None;
@@ -233,6 +234,8 @@ impl CopsSim {
                 && self.strobe.is_none()
                 && let Some(byte) = self.queue.pop_front()
             {
+                #[cfg(feature = "lisa-cops-debug")]
+                log::debug!("COPS sends {:02X} at {}", byte, self.now);
                 self.strobe = Some(byte);
                 self.waiting_ack = true;
                 self.sent = byte;
@@ -258,6 +261,9 @@ impl CopsSim {
     }
 
     fn command(&mut self, cmd: u8) {
+        if cmd & 0x80 == 0 {
+            log::trace!("COPS command {:02X} at {}", cmd, self.now);
+        }
         let n = cmd & 0x0F;
         match cmd >> 4 {
             0 => match cmd {
