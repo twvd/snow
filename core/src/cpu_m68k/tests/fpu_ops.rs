@@ -3,8 +3,10 @@
 use crate::bus::Address;
 use crate::bus::access::Bus68020;
 use crate::bus::testbus::Testbus;
+use crate::cpu_m68k::fpu::SEMANTICS_EXTENDED;
 use crate::cpu_m68k::{CpuM68030Fpu, M68030_ADDRESS_MASK};
 use crate::types::{Long, Word};
+use arpfloat::Float;
 
 type TestCpu = CpuM68030Fpu<Testbus<Address, u8, Bus68020>>;
 
@@ -31,6 +33,15 @@ fn testcpu(code: &[Word]) -> TestCpu {
 fn read_long(cpu: &TestCpu, addr: Address) -> Long {
     let b = |a: Address| Long::from(*cpu.bus.mem.get(&a).unwrap_or(&0));
     (b(addr) << 24) | (b(addr + 1) << 16) | (b(addr + 2) << 8) | b(addr + 3)
+}
+
+fn fp(v: f64) -> Float {
+    Float::from_f64(v).cast(SEMANTICS_EXTENDED)
+}
+
+/// FOP FPs,FPd
+fn fop(src: Word, dst: Word, opmode: Word) -> [Word; 2] {
+    [0xF200, (src << 10) | (dst << 7) | opmode]
 }
 
 #[test]
@@ -72,4 +83,72 @@ fn fmovem_control_save_and_restore() {
     assert_eq!(cpu.regs.fpu.fpcr.0, 0x10);
     assert_eq!(cpu.regs.fpu.fpsr.0, 0x0800_0000);
     assert_eq!(cpu.regs.a[0], 0x3000);
+}
+
+#[test]
+fn fmove_to_long_rounds_with_fpcr() {
+    for (v, fpcr, want) in [
+        (3.5, 0, 4),
+        (2.5, 0, 2),
+        (-2.5, 0, -2),
+        (1.75, 0, 2),
+        (3.5, 0x10, 3),
+        (-3.5, 0x20, -4),
+        (3.2, 0x30, 4),
+    ] {
+        let mut cpu = testcpu(&[0xF200, 0x6000]); // FMOVE.L FP0,D0
+        cpu.regs.fpu.fpcr.0 = fpcr;
+        cpu.regs.fpu.fp[0] = fp(v);
+        cpu.step().unwrap();
+        assert_eq!(cpu.regs.d[0] as i32, want, "{v} {fpcr:02X}");
+        assert!(cpu.regs.fpu.fpsr.exs().inex2());
+        assert!(!cpu.regs.fpu.fpsr.exs().operr());
+    }
+}
+
+#[test]
+fn fmove_to_long_exact_is_not_inexact() {
+    let mut cpu = testcpu(&[0xF200, 0x6000]);
+    cpu.regs.fpu.fp[0] = fp(-5.0);
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.d[0] as i32, -5);
+    assert!(!cpu.regs.fpu.fpsr.exs().inex2());
+}
+
+#[test]
+fn fmove_to_integer_overflow_is_operr() {
+    for (op, v, want) in [
+        (0x6000, 1e12, 0x7FFF_FFFF),
+        (0x6000, -1e12, 0x8000_0000),
+        (0x7000, 1e6, 0x7FFF),
+        (0x7800, -1e6, 0x80),
+    ] {
+        let mut cpu = testcpu(&[0xF200, op]);
+        cpu.regs.fpu.fp[0] = fp(v);
+        cpu.regs.d[0] = 0;
+        cpu.step().unwrap();
+        assert_eq!(cpu.regs.d[0], want, "{op:04X} {v}");
+        assert!(cpu.regs.fpu.fpsr.exs().operr());
+        assert!(!cpu.regs.fpu.fpsr.exs().inex2());
+    }
+}
+
+#[test]
+fn fint_rounds_ties_to_even() {
+    for (v, fpcr, want) in [
+        (2.5, 0, 2.0),
+        (3.5, 0, 4.0),
+        (-2.5, 0, -2.0),
+        (0.5, 0, 0.0),
+        (2.6, 0, 3.0),
+        (2.9, 0x10, 2.0),
+        (2.1, 0x30, 3.0),
+        (-2.1, 0x20, -3.0),
+    ] {
+        let mut cpu = testcpu(&fop(0, 1, 0x01));
+        cpu.regs.fpu.fpcr.0 = fpcr;
+        cpu.regs.fpu.fp[0] = fp(v);
+        cpu.step().unwrap();
+        assert_eq!(cpu.regs.fpu.fp[1].as_f64(), want, "{v} {fpcr:02X}");
+    }
 }

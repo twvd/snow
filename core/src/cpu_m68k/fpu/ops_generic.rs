@@ -274,6 +274,7 @@ where
             0b011 if instr.get_addr_mode()? != AddressingMode::DataRegister => {
                 // Register to EA
                 let fpx = extword.src_reg();
+                self.regs.fpu.fpsr.exs_mut().set_operr(false);
                 match extword.dest_fmt() {
                     0b000 => {
                         // Long
@@ -282,22 +283,7 @@ where
                             instr.get_addr_mode()?,
                             instr.get_op2(),
                         )?;
-                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-
-                        let out64 = self.regs.fpu.fp[fpx].to_i64();
-                        let (out, inex) = if out64 > i32::MAX.into() {
-                            // Overflow
-                            (i32::MAX, true)
-                        } else if out64 < i32::MIN.into() {
-                            // Underflow
-                            (i32::MIN, true)
-                        } else {
-                            // We're good
-                            (out64 as i32, false)
-                        };
-                        self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
-                        self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
+                        let out = self.fpu_to_integer(fpx, i32::MIN.into(), i32::MAX.into()) as i32;
 
                         self.advance_cycles(100)?;
                         self.write_ticks(ea, out as Long)?;
@@ -309,22 +295,7 @@ where
                             instr.get_addr_mode()?,
                             instr.get_op2(),
                         )?;
-                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-
-                        let out64 = self.regs.fpu.fp[fpx].to_i64();
-                        let (out, inex) = if out64 > i16::MAX.into() {
-                            // Overflow
-                            (i16::MAX, true)
-                        } else if out64 < i16::MIN.into() {
-                            // Underflow
-                            (i16::MIN, true)
-                        } else {
-                            // We're good
-                            (out64 as i16, false)
-                        };
-                        self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
-                        self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
+                        let out = self.fpu_to_integer(fpx, i16::MIN.into(), i16::MAX.into()) as i16;
 
                         self.advance_cycles(100)?;
                         self.write_ticks(ea, out as Word)?;
@@ -336,22 +307,7 @@ where
                             instr.get_addr_mode()?,
                             instr.get_op2(),
                         )?;
-                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-
-                        let out64 = self.regs.fpu.fp[fpx].to_i64();
-                        let (out, inex) = if out64 > i8::MAX.into() {
-                            // Overflow
-                            (i8::MAX, true)
-                        } else if out64 < i8::MIN.into() {
-                            // Underflow
-                            (i8::MIN, true)
-                        } else {
-                            // We're good
-                            (out64 as i8, false)
-                        };
-                        self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
-                        self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
+                        let out = self.fpu_to_integer(fpx, i8::MIN.into(), i8::MAX.into()) as i8;
 
                         self.advance_cycles(100)?;
                         self.write_ticks(ea, out as Byte)?;
@@ -451,7 +407,6 @@ where
                     .fpsr
                     .exs_mut()
                     .set_snan(self.regs.fpu.fp[fpx].is_nan()); // * 1.6.5
-                self.regs.fpu.fpsr.exs_mut().set_operr(false); // for invalid K-factor
 
                 // Condition codes unaffected
             }
@@ -462,69 +417,25 @@ where
                 // subtract five or two clock cycles, respectively."
                 let fpx = extword.src_reg();
                 let dn = instr.get_op2();
+                self.regs.fpu.fpsr.exs_mut().set_operr(false);
                 match extword.dest_fmt() {
                     0b000 => {
                         // Long
-                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-
-                        let out64 = self.regs.fpu.fp[fpx].to_i64();
-                        let (out, inex) = if out64 > i32::MAX.into() {
-                            // Overflow
-                            (i32::MAX, true)
-                        } else if out64 < i32::MIN.into() {
-                            // Underflow
-                            (i32::MIN, true)
-                        } else {
-                            // We're good
-                            (out64 as i32, false)
-                        };
-                        self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
-                        self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
+                        let out = self.fpu_to_integer(fpx, i32::MIN.into(), i32::MAX.into()) as i32;
 
                         self.advance_cycles(100 - 2)?;
                         self.regs.write_d(dn, out as Long);
                     }
                     0b100 => {
                         // Word
-                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-
-                        let out64 = self.regs.fpu.fp[fpx].to_i64();
-                        let (out, inex) = if out64 > i16::MAX.into() {
-                            // Overflow
-                            (i16::MAX, true)
-                        } else if out64 < i16::MIN.into() {
-                            // Underflow
-                            (i16::MIN, true)
-                        } else {
-                            // We're good
-                            (out64 as i16, false)
-                        };
-                        self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
-                        self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
+                        let out = self.fpu_to_integer(fpx, i16::MIN.into(), i16::MAX.into()) as i16;
 
                         self.advance_cycles(100 - 2)?;
                         self.regs.write_d(dn, out as Word);
                     }
                     0b110 => {
                         // Byte
-                        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-                        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
-
-                        let out64 = self.regs.fpu.fp[fpx].to_i64();
-                        let (out, inex) = if out64 > i8::MAX.into() {
-                            // Overflow
-                            (i8::MAX, true)
-                        } else if out64 < i8::MIN.into() {
-                            // Underflow
-                            (i8::MIN, true)
-                        } else {
-                            // We're good
-                            (out64 as i8, false)
-                        };
-                        self.regs.fpu.fpsr.exs_mut().set_inex2(inex);
-                        self.regs.fpu.fpsr.exs_mut().set_inex1(inex);
+                        let out = self.fpu_to_integer(fpx, i8::MIN.into(), i8::MAX.into()) as i8;
 
                         self.advance_cycles(100 - 2)?;
                         self.regs.write_d(dn, out as Byte);
@@ -553,7 +464,6 @@ where
                     .fpsr
                     .exs_mut()
                     .set_snan(self.regs.fpu.fp[fpx].is_nan()); // * 1.6.5
-                self.regs.fpu.fpsr.exs_mut().set_operr(false); // for invalid K-factor
 
                 // Condition codes unaffected
             }
