@@ -28,6 +28,7 @@ use crate::debuggable::{Debuggable, DebuggableProperties};
 use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
 use crate::lisa::bus::LisaBus;
+use crate::lisa::video::build_prom;
 use crate::mac::compact::bus::CompactMacBus;
 use crate::mac::machine_bus::{MachineBus020, MachineBus040};
 use crate::mac::macii::bus::MacIIBus;
@@ -644,13 +645,15 @@ impl Emulator {
                 EmulatorConfig::MacLC(Box::new(CpuM68020::new(MachineBus020::LcI(bus), fpu)))
             }
             MacModel::Lisa25 => {
-                let Some(video_prom) = extra_roms.iter().find_map(|p| match p {
+                // Without a dump, the PROM of the Lisa's own monitor
+                let video_prom = match extra_roms.iter().find_map(|p| match p {
                     ExtraROMs::LisaVideoProm(data) => Some(*data),
                     _ => None,
-                }) else {
-                    bail!("Lisa video state PROM required");
+                }) {
+                    Some(prom) => prom.to_vec(),
+                    None => build_prom(false, None)?,
                 };
-                let bus = LisaBus::new(model, rom, video_prom, renderer, mouse_mode, ram_size);
+                let bus = LisaBus::new(model, rom, &video_prom, renderer, mouse_mode, ram_size);
                 EmulatorConfig::Lisa(Box::new(CpuM68000::new(bus, FPU_NONE)))
             }
             MacModel::LCII => {

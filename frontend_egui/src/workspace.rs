@@ -13,7 +13,7 @@ use eframe::egui;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use snow_core::emulator::devices::{
-    AppleIIePdsCardSettings, DeviceConfig, DeviceModel, FunctionKind, bus_id,
+    AppleIIePdsCardSettings, DeviceConfig, DeviceModel, FunctionKind, LisaVideoSettings, bus_id,
 };
 use snow_core::mac::maclc::pds_iie::IieDiskDevice;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
@@ -491,6 +491,14 @@ impl Workspace {
                 Some(model) if config.bus == bus_id::SWIM => {
                     args.override_fdd_type = model.drive_type();
                 }
+                // The PROM file is found with the cards' ROMs
+                _ if self.model.and_then(|mac| config.model_on(mac))
+                    == Some(DeviceModel::LisaVideo) =>
+                {
+                    if let Ok(video) = config.parse::<LisaVideoSettings>() {
+                        args.lisa_video = LisaVideoSettings { rom: None, ..video };
+                    }
+                }
                 _ => (),
             }
         }
@@ -577,14 +585,13 @@ pub fn card_entries(
     let mut entries = vec![];
     if model.is_some_and(MacModel::is_lisa) {
         // The Lisa's own video, with its PROM
-        if let Some(rom) = display_rom {
+        let video = LisaVideoSettings {
+            rom: display_rom.map(Path::to_path_buf),
+            ..args.lisa_video.clone()
+        };
+        if video != LisaVideoSettings::default() {
             let device = DeviceModel::LisaVideo.key();
-            entries.push(old_entry(
-                bus_id::BUILT_IN,
-                "0",
-                Some(device),
-                json!({ "rom": rom }),
-            ));
+            entries.push(old_entry(bus_id::BUILT_IN, "0", Some(device), json!(video)));
         }
     } else if let Some(rom) = display_rom {
         if model == Some(MacModel::SE30) {
@@ -761,6 +768,32 @@ mod tests {
         let ws = dir.load(r#"{"model":"SE30","display_card_rom_path":"v.rom"}"#);
         assert_eq!(entry(&ws, "Built-in", "0").settings["rom"], json!(rom));
         assert_eq!(ws.get_display_card_rom_path(), Some(rom));
+    }
+
+    #[test]
+    fn the_lisa_video_comes_back_to_the_dialog() {
+        let dir = TestDir::new("lisa");
+        let rom = dir.file("p.rom");
+        let ws = dir.load(&format!(
+            r#"{{"model":"Lisa25","devices":[{{"bus":"Built-in","slot":"0","rom":{},
+                "screen_kit":true,"serial":"12345678901234567890"}}]}}"#,
+            json!(rom)
+        ));
+        let video = &ws.init_args.lisa_video;
+        assert!(video.screen_kit);
+        assert_eq!(video.serial.as_deref(), Some("12345678901234567890"));
+        assert_eq!(ws.get_display_card_rom_path(), Some(rom.clone()));
+
+        // And what the dialog chooses goes back the same
+        let entries = card_entries(Some(MacModel::Lisa25), Some(&rom), &ws.init_args);
+        assert_eq!(entries.len(), 1);
+        let settings = &entries[0].settings;
+        assert_eq!(settings["rom"], json!(rom));
+        assert_eq!(settings["screen_kit"], json!(true));
+        assert_eq!(settings["serial"], json!("12345678901234567890"));
+        // Nothing chosen, nothing to say
+        let args = EmulatorInitArgs::default();
+        assert!(card_entries(Some(MacModel::Lisa25), None, &args).is_empty());
     }
 
     #[test]
