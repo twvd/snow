@@ -19,7 +19,7 @@ use strum::IntoEnumIterator;
 
 use crate::bus::{Address, Bus, InspectRun, InspectableBus};
 use crate::cpu_m68k::bus::InspectView;
-use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
+use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry, is_double_fault};
 use crate::cpu_m68k::{
     CpuM68000, CpuM68020, CpuM68030, CpuM68040, FPU_M68040, FPU_M68881, FPU_M68882, FPU_NONE,
 };
@@ -1329,6 +1329,10 @@ impl Emulator {
     }
 
     fn step_failed(&mut self, e: &anyhow::Error) {
+        if matches!(self.config, EmulatorConfig::Lisa(_)) && is_double_fault(e) {
+            self.lisa_halted();
+            return;
+        }
         self.run = false;
         self.user_error(&format!(
             "Emulator halted: Uncaught CPU stepping error at PC {:08X}\nSee log for details",
@@ -1340,6 +1344,22 @@ impl Emulator {
             e
         );
         let _ = self.status_update();
+    }
+
+    /// On the Lisa, CPU halt starts the reset timer. The Office System restarts
+    /// the machine this way: it fills the vector table with -1 and then does a
+    /// CLR.L (-1).
+    fn lisa_halted(&mut self) {
+        let result = match &mut self.config {
+            EmulatorConfig::Lisa(lisa) => lisa.bus.reset(false).map(|_| ()),
+            _ => Ok(()),
+        }
+        .and_then(|()| self.config.cpu_reset())
+        .and_then(|()| self.config.video_blank());
+        if let Err(e) = result {
+            self.run = false;
+            self.user_error(&format!("Cannot reset after CPU halt: {}", e));
+        }
     }
 
     pub fn get_cycles(&self) -> Ticks {
