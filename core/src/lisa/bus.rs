@@ -11,7 +11,7 @@ use anyhow::Result;
 use log::*;
 use serde::{Deserialize, Serialize};
 
-use super::cops_sim::CopsSim;
+use super::cops_sim::{self, CopsSim};
 use super::fdc_sim::FdcSim;
 use super::mmu::{LisaMmu, Space};
 use super::profile_sim::ParallelDevice;
@@ -56,9 +56,6 @@ const RAM_BOARDS_MEET: Address = 0x10_0000;
 
 /// FC2: supervisor
 const FC_SUPERVISOR: u8 = 1 << 2;
-
-/// With the power off, the CPU stays stalled this long at a time
-const POWERED_OFF_STALL: Ticks = 1024;
 
 /// The keyboard VIA, the parallel port VIA below it
 const VIA_KEYBOARD_BASE: Address = 0xDC00;
@@ -473,6 +470,24 @@ impl LisaBus {
         Some(())
     }
 
+    pub fn powered_on(&self) -> bool {
+        self.cops.power_on()
+    }
+
+    pub fn on_off_button(&mut self) {
+        self.cops.power_switch();
+    }
+
+    /// Time passing with the power off: only the COPS runs, on its own power, and it can turn
+    /// the power on again
+    pub fn tick_powered_off(&mut self, time: Duration) {
+        let port = self.cops_port();
+        let loops = (BUS_FREQUENCY as f64 * time.as_secs_f64()) as Ticks / cops_sim::LOOP_TICKS;
+        for _ in 0..loops {
+            self.cops.tick(cops_sim::LOOP_TICKS, port);
+        }
+    }
+
     fn io_access(&mut self, acc: BusAccess<Bus68000>, waits: Ticks) -> BusResponse {
         match acc.addr {
             0xC000..=0xCFFF => bus_access_byte_lane::<2, 1, _, _>(
@@ -595,8 +610,10 @@ impl Bus<Address, Byte> for LisaBus {
 
     #[inline(always)]
     fn access(&mut self, mut acc: BusAccess<Bus68000>) -> Result<BusResponse> {
+        // With the power off, the instruction under way ends on an idle bus, and the emulator
+        // runs no more of them
         if !self.cops.power_on() {
-            return Ok(BusResponse::Stall(POWERED_OFF_STALL));
+            return Ok(BusResponse::ack(2, 0, 0));
         }
         let supervisor = acc.fc & FC_SUPERVISOR != 0;
         let Some((space, physical)) = self.mmu.translate(acc.addr, acc.write, supervisor) else {

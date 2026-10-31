@@ -30,6 +30,8 @@ pub type InputRecording = Vec<(Ticks, EmulatorCommand)>;
 /// A command/event that can be sent to the emulator
 #[derive(Serialize, Deserialize, Clone)]
 pub enum EmulatorCommand {
+    /// The soft power button of a Lisa
+    LisaOnOffButton,
     Quit,
     /// Sets the joystick and buttons on the Apple IIe card's game port.
     SetIieGamePort(GamePort),

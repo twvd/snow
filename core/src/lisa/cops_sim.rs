@@ -12,7 +12,7 @@ use crate::keymap::{KeyEvent, Keymap};
 use crate::tickable::Ticks;
 
 /// One pass through the main loop of the firmware
-const LOOP_TICKS: Ticks = 4096;
+pub(crate) const LOOP_TICKS: Ticks = 4096;
 /// CRDY low, once a loop
 const CRDY_LOW_TICKS: Ticks = 61;
 /// The firmware reads the port this long after CRDY rises
