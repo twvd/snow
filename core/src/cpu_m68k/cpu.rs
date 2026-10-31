@@ -181,13 +181,6 @@ impl FromIterator<PrefetchWord> for PrefetchQueue {
     }
 }
 
-fn prefetch_defer_fault(e: anyhow::Error, fetch_addr: Address) -> Result<PrefetchWord> {
-    match e.downcast_ref::<CpuError>() {
-        Some(CpuError::BusError(_)) => Ok(PrefetchWord::Fault(fetch_addr)),
-        _ => Err(e),
-    }
-}
-
 /// Supervisor bit of the status register
 const SR_SUPERVISOR: Word = 1 << 13;
 
@@ -417,6 +410,8 @@ where
 
     /// Trace exception must be inhibited after this instruction
     step_inhibit_trace: bool,
+    /// Target of the last jump as given, stacked in a 68000 frame with all 32 bits
+    fetch_target: Address,
 
     /// Address of the instruction of this step
     #[serde(skip)]
@@ -647,6 +642,7 @@ where
             step_ea_addr: None,
             step_exception: false,
             step_inhibit_trace: false,
+            fetch_target: 0,
             step_start_pc: 0,
             step_fpu_unimp: false,
             step_fpu_mid: None,
@@ -796,6 +792,18 @@ where
         self.prefetch_pump_force()
     }
 
+    /// A bus error on an instruction fetch. The 68020/68030 only take it if the
+    /// word gets used, the 68000 right away with IR on the instruction doing the
+    /// fetch: the Lisa OS recognizes a jump into an absent segment by that IR.
+    fn prefetch_fault(&self, e: anyhow::Error, fetch_addr: Address) -> Result<PrefetchWord> {
+        match e.downcast_ref::<CpuError>() {
+            Some(CpuError::BusError(_)) if CPU_TYPE != M68000 => {
+                Ok(PrefetchWord::Fault(fetch_addr))
+            }
+            _ => Err(e),
+        }
+    }
+
     /// Pumps a new word into the prefetch queue, regardless of current queue length
     fn prefetch_pump_force(&mut self) -> Result<()> {
         let fetch_addr = self.regs.pc.wrapping_add(4) & ADDRESS_MASK;
@@ -845,13 +853,13 @@ where
                     PrefetchWord::Word((l >> 16) as Word)
                 }
                 Ok(l) => PrefetchWord::Word(l as Word),
-                Err(e) => prefetch_defer_fault(e, fetch_addr)?,
+                Err(e) => self.prefetch_fault(e, fetch_addr)?,
             }
         } else {
             // An instruction cache, if any, is behind the fetch
             match self.read_ticks_program::<Word>(fetch_addr) {
                 Ok(w) => PrefetchWord::Word(w),
-                Err(e) => prefetch_defer_fault(e, fetch_addr)?,
+                Err(e) => self.prefetch_fault(e, fetch_addr)?,
             }
         };
         self.prefetch.push_back(new_item);
@@ -1087,6 +1095,7 @@ where
                     let mut details = *ae;
                     details.ir = self.fault_ir(&instr, &details);
                     details.start_pc = start_pc;
+                    self.set_fault_pc(&instr, &mut details);
 
                     debug!(
                         "Address error: read = {:?}, address = {:08X} PC = {:08X}",
@@ -1103,6 +1112,7 @@ where
                     let mut details = *ae;
                     details.ir = self.fault_ir(&instr, &details);
                     details.start_pc = start_pc;
+                    self.set_fault_pc(&instr, &mut details);
                     if let Err(e) = self.raise_exception(
                         ExceptionGroup::Group0,
                         VECTOR_BUS_ERROR,
@@ -1161,7 +1171,17 @@ where
             },
         };
 
-        self.prefetch_refill()?;
+        if let Err(e) = self.prefetch_refill() {
+            let Some(CpuError::BusError(ae)) = e.downcast_ref::<CpuError>() else {
+                return Err(e);
+            };
+            let mut details = *ae;
+            details.ir = instr.data;
+            details.start_pc = start_pc;
+            self.set_fault_pc(&instr, &mut details);
+            self.raise_exception(ExceptionGroup::Group0, VECTOR_BUS_ERROR, Some(details))?;
+            self.prefetch_refill()?;
+        }
 
         if let Some(wb) = self.wb040.as_mut() {
             // The instruction completed with a faulted write, the access error
@@ -1272,6 +1292,103 @@ where
         Ok(true)
     }
 
+    /// Puts the PC in the state a 68000 group 0 frame stacks it in, which depends
+    /// on how far the microcode got. Measured on the MAME-derived test data. The
+    /// fault handlers of the Lisa OS and Xenix decode the instruction from it.
+    fn set_fault_pc(&mut self, instr: &Instruction, details: &mut Group0Details) {
+        if CPU_TYPE != M68000 {
+            return;
+        }
+        if details.address == self.fetch_target & ADDRESS_MASK {
+            details.address = self.fetch_target;
+        }
+        use InstructionMnemonic as M;
+        let long = details.size == 4;
+        let mode = match instr.mnemonic {
+            M::ADDX_w | M::ADDX_l | M::SUBX_w | M::SUBX_l => None,
+            _ => instr.get_addr_mode().ok(),
+        };
+        let operand = |mode: Option<AddressingMode>, long: bool| match mode {
+            Some(AddressingMode::AbsoluteLong) => 6,
+            Some(AddressingMode::AbsoluteShort) => 4,
+            Some(AddressingMode::IndirectPreDec) if !long => 4,
+            _ => 2,
+        };
+        let advance = match instr.mnemonic {
+            M::JMP | M::RTS | M::RTE | M::RTR | M::Bcc => 2,
+            M::JSR => match mode {
+                Some(AddressingMode::Indirect) => 2,
+                Some(AddressingMode::AbsoluteLong) => 6,
+                _ => 4,
+            },
+            M::DBcc
+            | M::UNLINK
+            | M::CMPM_b
+            | M::CMPM_w
+            | M::CMPM_l
+            | M::ADDX_w
+            | M::ADDX_l
+            | M::SUBX_w
+            | M::SUBX_l => 4,
+            M::BSR => {
+                self.regs.pc = details.address & ADDRESS_MASK;
+                return;
+            }
+            M::MOVEM_mem_w | M::MOVEM_mem_l | M::MOVEM_reg_w | M::MOVEM_reg_l => match mode {
+                Some(AddressingMode::AbsoluteLong) => 10,
+                Some(
+                    AddressingMode::IndirectDisplacement
+                    | AddressingMode::IndirectIndex
+                    | AddressingMode::PCDisplacement
+                    | AddressingMode::PCIndex
+                    | AddressingMode::AbsoluteShort,
+                ) => 8,
+                _ => 6,
+            },
+            M::MOVE_b | M::MOVE_w | M::MOVE_l if !details.read => {
+                let left = instr.get_addr_mode_left().ok();
+                4 + match mode {
+                    Some(AddressingMode::DataRegister | AddressingMode::AddressRegister)
+                        if left == Some(AddressingMode::AbsoluteLong) =>
+                    {
+                        2
+                    }
+                    Some(AddressingMode::AbsoluteLong) => 4,
+                    Some(
+                        AddressingMode::IndirectDisplacement
+                        | AddressingMode::IndirectIndex
+                        | AddressingMode::PCDisplacement
+                        | AddressingMode::PCIndex
+                        | AddressingMode::AbsoluteShort,
+                    ) => 2,
+                    Some(AddressingMode::Immediate) if long => 4,
+                    Some(AddressingMode::Immediate) => 2,
+                    _ => 0,
+                }
+            }
+            M::ADDI_b
+            | M::ADDI_w
+            | M::ADDI_l
+            | M::SUBI_b
+            | M::SUBI_w
+            | M::SUBI_l
+            | M::ANDI_b
+            | M::ANDI_w
+            | M::ANDI_l
+            | M::ORI_b
+            | M::ORI_w
+            | M::ORI_l
+            | M::EORI_b
+            | M::EORI_w
+            | M::EORI_l
+            | M::CMPI_b
+            | M::CMPI_w
+            | M::CMPI_l => operand(mode, long) + if long { 4 } else { 2 },
+            _ => operand(mode, long),
+        };
+        self.regs.pc = details.start_pc.wrapping_add(advance) & ADDRESS_MASK;
+    }
+
     /// The instruction register as stacked in a 68000 group 0 frame
     fn fault_ir(&self, instr: &Instruction, details: &Group0Details) -> Word {
         // MOVE.W to -(An) loads the next word into IR before it writes. Not in
@@ -1289,6 +1406,7 @@ where
 
     /// Sets the program counter and flushes the prefetch queue
     pub fn set_pc(&mut self, pc: Address) -> Result<()> {
+        self.fetch_target = pc;
         self.prefetch.clear();
         self.holding_valid = false;
         self.regs.pc = pc.wrapping_sub(4) & ADDRESS_MASK;
@@ -3130,14 +3248,41 @@ where
     }
 
     /// MOVE
-    fn op_move<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
-        let value: T =
-            self.read_ea_with::<T, false>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-
+    fn set_move_flags<T: CpuSized>(&mut self, value: T) {
         self.regs.sr.set_z(value == T::zero());
         self.regs.sr.set_n(value & T::msb() != T::zero());
         self.regs.sr.set_c(false);
         self.regs.sr.set_v(false);
+    }
+
+    fn op_move<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+        let value: T =
+            self.read_ea_with::<T, false>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+
+        // A 68000 MOVE.L only has its final flags once it has written. What a fault on
+        // the write finds, from the MAME-derived test data, depends on the source and
+        // destination.
+        use AddressingMode as Mode;
+        let long_68000 = CPU_TYPE == M68000 && std::mem::size_of::<T>() == 4;
+        let register_source = matches!(
+            instr.get_addr_mode()?,
+            Mode::DataRegister | Mode::AddressRegister | Mode::Immediate
+        );
+        match (long_68000, register_source, instr.get_addr_mode_left()?) {
+            (true, true, Mode::Indirect | Mode::IndirectPostInc) => (),
+            (true, true, Mode::IndirectDisplacement | Mode::IndirectIndex) => {
+                self.regs.sr.set_z(value == T::zero());
+                self.regs.sr.set_n(value & T::msb() != T::zero());
+            }
+            (true, false, Mode::Indirect | Mode::IndirectPostInc | Mode::AbsoluteLong) => {
+                let low = value.expand() as Word;
+                self.regs.sr.set_z(low == 0);
+                self.regs.sr.set_n(low & 0x8000 != 0);
+                self.regs.sr.set_c(false);
+                self.regs.sr.set_v(false);
+            }
+            _ => self.set_move_flags(value),
+        }
 
         // Clear EA cache to write to the left mode
         self.step_ea_addr = None;
@@ -3195,6 +3340,9 @@ where
             )?,
         }
 
+        if long_68000 {
+            self.set_move_flags(value);
+        }
         account_040_time!(
             self,
             self.exec040_move(instr.get_addr_mode()?, instr.get_addr_mode_left()?),

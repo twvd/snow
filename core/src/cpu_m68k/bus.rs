@@ -790,7 +790,13 @@ where
                     })
                 {
                     // Address errors occur AFTER the first Word was accessed
-                    self.verify_access_physical::<T>(fc, o_addr, false)?;
+                    // A long written high to low faults on the low word first
+                    let fault_addr = if TORDER == TORDER_HIGHLOW {
+                        o_addr.wrapping_add(2)
+                    } else {
+                        o_addr
+                    };
+                    self.verify_access_physical::<T>(fc, fault_addr, false)?;
                 }
             }
         } else {

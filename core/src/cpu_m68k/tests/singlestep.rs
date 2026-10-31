@@ -323,12 +323,6 @@ fn run_testcase(testcase: &Testcase, level: TestLevel) {
     }
 
     for (addr, expected) in testcase.r#final.ram.clone().into_iter() {
-        // TODO inaccuracy - check the rest of the exception stack frames
-        let frame_offset = addr.wrapping_sub(regs_final.isp);
-        if cpu.step_exception && frame_offset < 14 && frame_offset > 1 {
-            continue;
-        }
-
         let actual = *cpu.bus.mem.get(&addr).unwrap_or(&0);
         if actual != expected {
             if actual == 0x04 && expected == 0x00 && addr == 0x07FF {
