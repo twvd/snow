@@ -136,6 +136,9 @@ where
         // There doesn't seem to be an equal difference for ALL operations
         // between the different source/destination types, therefore we just
         // list all the timings for each operation.
+        // Each arithmetic instruction starts its exception status anew
+        self.regs.fpu.fpsr.exs_mut().0 = 0;
+
         let (result, cycles) = match opmode {
             // FMOVE
             0b0000000 => (source.clone(), [33, 60, 52, 58, 56, 870]),
@@ -319,24 +322,73 @@ where
             _ => bail!(CpuError::IllegalInstruction),
         };
 
-        // Flags
-        self.regs.fpu.fpsr.exs_mut().set_bsun(false);
-        self.regs.fpu.fpsr.exs_mut().set_snan(result.is_nan()); // * 1.6.5
-        self.regs.fpu.fpsr.exs_mut().set_operr(false);
-        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
-        self.regs.fpu.fpsr.exs_mut().set_unfl(false); // * X denormalized
-        self.regs.fpu.fpsr.exs_mut().set_inex2(false); // * L, D, X
-        self.regs.fpu.fpsr.exs_mut().set_inex1(false); // * P
-        let excs = self.regs.fpu.fpsr;
-        self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
-
         let result = result.cast(sem);
+        self.fpu_set_status(opmode, source, dest, &result);
 
         // Condition codes (3.6.2)
         self.fpu_condition_codes(&result);
 
         // Cast result back to EXTENDED for storage in FPU registers
         Ok((result.cast(SEMANTICS_EXTENDED), cycles))
+    }
+
+    /// Sets the exception status of an arithmetic instruction and accrues it
+    /// (MC68881UM 6.1). Snow's registers don't keep the payload of a NaN, so a
+    /// signalling NaN can't be told apart and SNAN is never set.
+    fn fpu_set_status(&mut self, opmode: u8, source: &Float, dest: &Float, result: &Float) {
+        let dyadic = matches!(opmode, 0b0100000..=0b0101000);
+        let inputs_nan = source.is_nan() || (dyadic && dest.is_nan());
+        let inputs_inf = source.is_inf() || (dyadic && dest.is_inf());
+        let divide = matches!(opmode, 0b0100000 | 0b0100100);
+        let pole = matches!(
+            opmode,
+            0b0010100 | 0b0010101 | 0b0010110 | 0b0000110 | 0b0001101
+        );
+        let dz = result.is_inf() && !inputs_inf && (divide || pole);
+        let ovfl = result.is_inf() && !inputs_inf && !dz;
+        let unfl = result.is_zero()
+            && matches!(
+                opmode,
+                0b0100011 | 0b0100000 | 0b0100110 | 0b0100111 | 0b0100100
+            )
+            && !inputs_inf
+            && !source.is_zero()
+            && !dest.is_zero();
+
+        let inex2 = ovfl || unfl || Self::fpu_inexact(opmode, source, dest, result);
+        let fpsr = &mut self.regs.fpu.fpsr;
+        fpsr.exs_mut().set_operr(result.is_nan() && !inputs_nan);
+        fpsr.exs_mut().set_dz(dz);
+        fpsr.exs_mut().set_ovfl(ovfl);
+        fpsr.exs_mut().set_unfl(unfl);
+        fpsr.exs_mut().set_inex2(inex2);
+
+        let excs = self.regs.fpu.fpsr;
+        self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
+    }
+
+    /// Tells if `result` is not the exact result of the instruction: compares
+    /// with the operation in a much higher precision for the basic operations,
+    /// and takes the others to be inexact unless the result is not a number.
+    fn fpu_inexact(opmode: u8, source: &Float, dest: &Float, result: &Float) -> bool {
+        if result.is_nan() || result.is_inf() {
+            return false;
+        }
+        let high = SEMANTICS_EXTENDED.increase_precision(256);
+        let (s, d) = (source.cast(high), dest.cast(high));
+        let exact = match opmode {
+            0b0000000 | 0b0011000 | 0b0011010 => s.abs(),
+            0b0100010 => return (&d + &s).abs() != result.cast(high).abs(),
+            0b0101000 => return (&d - &s).abs() != result.cast(high).abs(),
+            0b0100011 => (&d * &s).abs(),
+            0b0100000 if !s.is_zero() => (&d / &s).abs(),
+            0b0000100 => s.sqrt().abs(),
+            // Whole numbers, and FMOD and FREM are exact
+            0b0000001 | 0b0000011 => return result.cast(high) != s,
+            0b0100101 | 0b0100001 | 0b0011110 | 0b0011111 | 0b0100110 => return false,
+            _ => return !result.is_zero(),
+        };
+        result.cast(high).abs() != exact
     }
 
     fn fpu_condition_codes(&mut self, result: &Float) {
