@@ -120,40 +120,7 @@ where
                 self.regs.fpu.fp[extword.dst_reg()] = result;
                 self.advance_cycles(cycles[FPU_CYCLES_FPN])?;
             }
-            0b100 => {
-                // From EA to control reg
-                // Supports multiple registers
-                for r in FmoveControlReg::iter() {
-                    if extword.reg() & r.to_u8().unwrap() == 0 {
-                        continue;
-                    }
-                    let value = self.read_ea::<Long>(instr, instr.get_op2())?;
-                    self.regs.write(r.into(), value);
-
-                    // Next read from its own, re-calculated address
-                    self.ea_commit();
-                    self.step_ea_addr = None;
-                }
-
-                self.advance_cycles(29)?;
-            }
-            0b101 => {
-                // From control reg to EA
-                // Supports multiple registers
-                for r in FmoveControlReg::iter() {
-                    if extword.reg() & r.to_u8().unwrap() == 0 {
-                        continue;
-                    }
-                    let value = self.regs.read::<Long>(r.into());
-                    self.write_ea(instr, instr.get_op2(), value)?;
-
-                    // Next write to its own, re-calculated address
-                    self.ea_commit();
-                    self.step_ea_addr = None;
-                }
-
-                self.advance_cycles(29)?;
-            }
+            0b100 | 0b101 => self.op_fmovem_control(instr, extword)?,
             0b010 => {
                 // EA to FPU register, with ALU op
                 let fpx = extword.dst_reg();
@@ -600,6 +567,56 @@ where
         }
 
         Ok(())
+    }
+
+    /// FMOVEM of the control registers. They are always moved in the same
+    /// order, FPCR first, to increasing addresses whatever the mode (MC68881UM
+    /// FMOVEM): with -(An), An goes down by all of them first.
+    fn op_fmovem_control(&mut self, instr: &Instruction, extword: FmoveExtWord) -> Result<()> {
+        let to_ea = extword.subop() == 0b101;
+        let regs = || FmoveControlReg::iter().filter(|r| extword.reg() & r.to_u8().unwrap() != 0);
+        let mode = instr.get_addr_mode()?;
+
+        if matches!(
+            mode,
+            AddressingMode::DataRegister
+                | AddressingMode::AddressRegister
+                | AddressingMode::Immediate
+        ) {
+            for r in regs() {
+                if to_ea {
+                    let value = self.regs.read::<Long>(r.into());
+                    self.write_ea(instr, instr.get_op2(), value)?;
+                } else {
+                    let value = self.read_ea::<Long>(instr, instr.get_op2())?;
+                    self.regs.write(r.into(), value);
+                }
+            }
+        } else {
+            let mut addr = self.calc_ea_addr_no_mod::<Long>(instr, instr.get_op2())?;
+            let size = 4 * regs().count() as Address;
+            if mode == AddressingMode::IndirectPreDec {
+                addr = addr.wrapping_sub(size);
+            }
+            let base = addr;
+            for r in regs() {
+                if to_ea {
+                    let value = self.regs.read::<Long>(r.into());
+                    self.write_ticks(addr, value)?;
+                } else {
+                    let value = self.read_ticks::<Long>(addr)?;
+                    self.regs.write(r.into(), value);
+                }
+                addr = addr.wrapping_add(4);
+            }
+            match mode {
+                AddressingMode::IndirectPreDec => self.regs.write_a(instr.get_op2(), base),
+                AddressingMode::IndirectPostInc => self.regs.write_a(instr.get_op2(), addr),
+                _ => (),
+            }
+        }
+
+        self.advance_cycles(29)
     }
 
     /// FMOVEM - Multiple FPU register move
