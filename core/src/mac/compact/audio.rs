@@ -51,6 +51,10 @@ impl AudioState {
         Ok(())
     }
 
+    pub fn sink_full(&self) -> bool {
+        self.sink.is_full()
+    }
+
     pub fn is_silent(&self) -> bool {
         self.silent
     }

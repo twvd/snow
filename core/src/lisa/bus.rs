@@ -14,6 +14,7 @@ use super::cops_sim::CopsSim;
 use super::fdc_sim::{FdcSim, LisaDisk, ROM_ID_2_5, ROM_ID_2_10};
 use super::mmu::{LisaMmu, Space};
 use super::profile_sim::ProfileSim;
+use super::speaker::{Speaker, SpeakerInputs};
 use super::via::{KeyboardVia, ParallelVia};
 use super::video::LisaVideo;
 use crate::bus::access::{Bus68000, BusAccess, BusResponse, bus_access_byte_lane, bus_access_word};
@@ -26,12 +27,15 @@ use crate::emulator::MouseMode;
 use crate::emulator::comm::EmulatorSpeed;
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
+use crate::mac::compact::audio::AudioState;
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::controller::ScsiController;
 use crate::mac::swim::Swim;
 use crate::mac::via_common::{LineState, ViaLine, ViaReg};
-use crate::renderer::{AudioProvider, Renderer};
+use crate::renderer::{
+    AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
+};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
@@ -41,8 +45,11 @@ const SCC_RTXC_FREQUENCY: Ticks = 3_686_400;
 /// CPU clock: the 20.37504 MHz dot clock divided by 4
 const BUS_FREQUENCY: Ticks = 5_093_760;
 
-/// The parallel VIA of the 2/10's motherboard runs at DOTCK/16, the CPU at DOTCK/4
+/// The VIAs of the 2/10 run at DOTCK/16, the CPU at DOTCK/4. Its I/O board makes
+/// their clock from CPUCK with two flip-flops (050-4033-C sheet 2).
 const CPU_PER_FAST_VIA: Ticks = 4;
+
+const AUDIO_FREQUENCY: Ticks = 22050;
 
 /// CPU clocks per slot of the memory cycle, which alternates between the CPU
 /// and the video
@@ -132,8 +139,13 @@ pub struct LisaBus<TRenderer: Renderer> {
 
     #[serde(skip, default = "Instant::now")]
     frame_time: Instant,
-    /// CPU clocks towards a tick of the parallel VIA of the 2/10
+    /// CPU clocks towards a tick of the VIAs of the 2/10
     fast_via_clock: Ticks,
+    speaker: Speaker,
+    audio: AudioState,
+    /// Towards the next sample, in units of a CPU clock times the sample rate
+    audio_clock: Ticks,
+    speaker_via_clocks: Ticks,
 }
 
 impl<TRenderer> LisaBus<TRenderer>
@@ -195,6 +207,10 @@ where
             access_ahead: 0,
             frame_time: Instant::now(),
             fast_via_clock: 0,
+            speaker: Speaker::default(),
+            audio: AudioState::default(),
+            audio_clock: 0,
+            speaker_via_clocks: 0,
         }
     }
 
@@ -247,7 +263,40 @@ where
             .set_cpu_frequency(bus_frequency.unwrap_or(BUS_FREQUENCY));
     }
 
-    pub fn set_audio_provider(&mut self, _provider: &mut dyn AudioProvider) -> Result<()> {
+    pub fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> {
+        let sink = provider
+            .create_stream(
+                AUDIO_FREQUENCY as i32,
+                AUDIO_CHANNELS as u8,
+                AUDIO_BUFFER_SAMPLES as u16,
+            )
+            .unwrap_or_else(|_| null_audio_sink());
+        self.audio.set_sink(sink);
+        Ok(())
+    }
+
+    /// Gives the speaker what happened since the last sample. Frames pace the
+    /// emulation, so a sample that doesn't fit is dropped rather than waited for.
+    fn tick_audio(&mut self, cpu_clocks: Ticks, via_clocks: Ticks) -> Result<()> {
+        self.speaker_via_clocks += via_clocks;
+        self.audio_clock += cpu_clocks * AUDIO_FREQUENCY;
+        while self.audio_clock >= BUS_FREQUENCY {
+            self.audio_clock -= BUS_FREQUENCY;
+            let inputs = SpeakerInputs {
+                sr_mode: self.keyboard_via.acr.sr_mode(),
+                sr: self.keyboard_via.sr,
+                t2_latch_low: self.keyboard_via.t2latch.lsb(),
+                volume: self.keyboard_via.pb().volume(),
+            };
+            let sample = self
+                .speaker
+                .sample(std::mem::take(&mut self.speaker_via_clocks), inputs);
+            if matches!(self.speed, EmulatorSpeed::Accurate | EmulatorSpeed::Dynamic)
+                && !self.audio.sink_full()
+            {
+                self.audio.push(sample)?;
+            }
+        }
         Ok(())
     }
 
@@ -685,20 +734,19 @@ where
                 break;
             }
             cpu -= step.cpu_used;
-            if step.via_tick {
-                self.keyboard_via.tick(1, ())?;
-                if self.model != MacModel::Lisa210 {
-                    self.parallel_via.tick(1, ())?;
-                }
-            }
-            if self.model == MacModel::Lisa210 {
+            let via_ticks = if self.model == MacModel::Lisa210 {
                 self.fast_via_clock += step.cpu_used;
                 let via_ticks = self.fast_via_clock / CPU_PER_FAST_VIA;
                 self.fast_via_clock %= CPU_PER_FAST_VIA;
-                if via_ticks > 0 {
-                    self.parallel_via.tick(via_ticks, ())?;
-                }
+                via_ticks
+            } else {
+                Ticks::from(step.via_tick)
+            };
+            if via_ticks > 0 {
+                self.keyboard_via.tick(via_ticks, ())?;
+                self.parallel_via.tick(via_ticks, ())?;
             }
+            self.tick_audio(step.cpu_used, via_ticks)?;
         }
 
         self.fdc.tick(ticks);
