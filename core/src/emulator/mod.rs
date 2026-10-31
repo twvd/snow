@@ -193,6 +193,9 @@ macro_rules! dispatch {
     };
 }
 
+/// How long a Lisa with its power off waits between two looks at its COPS
+const LISA_POWERED_OFF_SLEEP: Duration = Duration::from_millis(50);
+
 /// Low memory globals the absolute mouse mode reads and writes, which are
 /// logical addresses: MTemp, Y coordinate (16 bit, signed)
 const ADDR_MTEMP_Y: Address = 0x0828;
@@ -1360,6 +1363,25 @@ impl Emulator {
         let _ = self.status_update();
     }
 
+    /// A Lisa with its power off runs no instructions: its screen is blank and only its COPS
+    /// runs, which can turn the power on again (a timer). True while the power is off.
+    fn lisa_powered_off(&mut self) -> Result<bool> {
+        let EmulatorConfig::Lisa(lisa) = &mut self.config else {
+            return Ok(false);
+        };
+        if lisa.bus.powered_on() {
+            return Ok(false);
+        }
+        lisa.bus.tick_powered_off(LISA_POWERED_OFF_SLEEP);
+        if lisa.bus.powered_on() {
+            // As the on-off button does with the power off
+            self.config.bus_reset()?;
+            self.config.cpu_reset()?;
+        }
+        self.video_blank()?;
+        Ok(true)
+    }
+
     pub fn get_cycles(&self) -> Ticks {
         self.config.cpu_cycles()
     }
@@ -1413,6 +1435,17 @@ impl Tickable for Emulator {
                         self.flush_pending_writebacks(true);
                         self.video_blank()?;
                         return Ok(0);
+                    }
+                    EmulatorCommand::LisaOnOffButton => {
+                        if let EmulatorConfig::Lisa(lisa) = &mut self.config {
+                            if lisa.bus.powered_on() {
+                                lisa.bus.on_off_button();
+                            } else {
+                                self.config.bus_reset()?;
+                                self.config.cpu_reset()?;
+                                self.video_blank()?;
+                            }
+                        }
                     }
                     EmulatorCommand::SetIieGamePort(port) => {
                         if let Some(card) = self.iie_card() {
@@ -1931,6 +1964,11 @@ impl Tickable for Emulator {
             {
                 self.command_sender.send(c.clone()).unwrap();
                 self.replay_input.pop_front().unwrap();
+            }
+
+            if self.lisa_powered_off()? {
+                thread::sleep(LISA_POWERED_OFF_SLEEP);
+                return Ok(ticks);
             }
 
             // Batch 10000 steps for performance reasons
