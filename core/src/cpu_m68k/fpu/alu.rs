@@ -89,6 +89,40 @@ where
         result
     }
 
+    /// e^x - 1 keeps the precision of small x: done in a higher precision, and
+    /// below 2^-80 the result is x itself in extended precision
+    fn fpu_etoxm1(x: &Float) -> Float {
+        if x.is_nan() || x.is_zero() {
+            return x.clone();
+        }
+        if x.is_inf() {
+            return if x.is_negative() {
+                Float::one(SEMANTICS_EXTENDED, true)
+            } else {
+                x.clone()
+            };
+        }
+        if x.get_exp() < -80 {
+            return x.clone();
+        }
+        let high = SEMANTICS_EXTENDED.increase_precision(128);
+        (Float::e(high).pow(&x.cast(high)) - Float::one(high, false)).cast(SEMANTICS_EXTENDED)
+    }
+
+    /// ln(1 + x) keeps the precision of small x, the same way
+    fn fpu_lognp1(x: &Float) -> Float {
+        if x.is_nan() || x.is_zero() {
+            return x.clone();
+        }
+        if x.get_exp() < -80 && !x.is_inf() {
+            return x.clone();
+        }
+        let high = SEMANTICS_EXTENDED.increase_precision(128);
+        (x.cast(high) + Float::one(high, false))
+            .log()
+            .cast(SEMANTICS_EXTENDED)
+    }
+
     /// Rounds to an integer with the rounding mode of FPCR
     fn fpu_round_integer(&self, value: &Float) -> Float {
         if value.is_nan() || value.is_inf() || value.is_zero() {
@@ -287,10 +321,7 @@ where
             // FLOGN
             0b0010100 => (source.log(), [525, 552, 544, 550, 548, 1352]),
             // FLOGNP1
-            0b0000110 => (
-                (source + Float::one(source.get_semantics(), false)).log(),
-                [571, 598, 590, 596, 594, 1428],
-            ),
+            0b0000110 => (Self::fpu_lognp1(source), [571, 598, 590, 596, 594, 1428]),
             // FLOG2
             0b0010110 => (source.log2(), [581, 608, 600, 606, 604, 1418]),
             // FLOG10
@@ -301,10 +332,7 @@ where
                 [497, 524, 516, 522, 520, 1334],
             ),
             // FETOXM1
-            0b0001000 => (
-                Float::e(SEMANTICS_EXTENDED).pow(source) - 1,
-                [545, 572, 564, 570, 568, 1382],
-            ),
+            0b0001000 => (Self::fpu_etoxm1(source), [545, 572, 564, 570, 568, 1382]),
             // FTWOTOX
             0b0010001 => (
                 Float::from_u64(SEMANTICS_EXTENDED, 2).pow(source),
