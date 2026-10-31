@@ -24,7 +24,7 @@ use super::comm::EmulatorEvent;
 use super::save::{RestoredSlot, SavedSlot, SlotState};
 use super::{Emulator, EmulatorConfig, MouseMode};
 use crate::lisa::bus::LisaBus;
-use crate::lisa::profile_sim::ProfileSim;
+use crate::lisa::profile_sim::{HardDiskKind, ProfileSim};
 use crate::lisa::video::build_prom;
 use crate::mac::maclc::pds_iie::disk::DskOrder;
 use crate::mac::maclc::pds_iie::{IieCardSettings, IieDiskDevice, PdsIIeCard};
@@ -125,6 +125,7 @@ pub enum DeviceModel {
     SerialBridge,
     Lisa400KDrive,
     ProFile,
+    Widget,
     LisaVideo,
 }
 
@@ -227,6 +228,7 @@ pub static MODELS: &[&ModelInfo] = &[
     &crate::mac::serial_bridge::INFO,
     &crate::lisa::fdc_sim::INFO_400K,
     &crate::lisa::profile_sim::INFO_PROFILE,
+    &crate::lisa::profile_sim::INFO_WIDGET,
     &crate::lisa::video::INFO,
 ];
 
@@ -2174,10 +2176,10 @@ impl Emulator {
                 self.lisa_bus()?;
                 device(DeviceModel::Lisa400KDrive, Map::new())
             }
-            SlotTarget::LisaParallel => {
-                self.lisa_bus()?.profile()?;
-                device(DeviceModel::ProFile, Map::new())
-            }
+            SlotTarget::LisaParallel => match self.lisa_bus()?.profile()?.kind() {
+                HardDiskKind::Profile => device(DeviceModel::ProFile, Map::new()),
+                HardDiskKind::Widget => device(DeviceModel::Widget, Map::new()),
+            },
         }
     }
 }
@@ -2288,7 +2290,9 @@ mod tests {
         assert!(slots(MacModel::SE30, bus_id::PDS_LC).is_empty());
         // The Lisa's floppy controller is its own
         assert_eq!(slots(MacModel::Lisa25, bus_id::LISA_FDC), ["1"]);
+        assert_eq!(slots(MacModel::Lisa210, bus_id::LISA_PARALLEL), ["0"]);
         assert!(slots(MacModel::Lisa25, bus_id::SWIM).is_empty());
+        assert!(slots(MacModel::Lisa210, bus_id::SCSI).is_empty());
     }
 
     #[test]
