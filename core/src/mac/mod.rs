@@ -15,6 +15,7 @@ pub mod compact;
 pub mod cuda;
 pub mod egret;
 pub mod egret_common;
+pub mod iic;
 pub mod localtalk_bridge;
 pub mod macii;
 pub mod maclc;
