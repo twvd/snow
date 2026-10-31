@@ -14,7 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::bus::access::{Bus68040, BusAccess, BusResponse, bus_access_long};
-use crate::bus::native_clock::{C16M_FREQUENCY, C16M_PER_VIA, DeviceCycle, NativeClock};
+use crate::bus::native_clock::{C16M_FREQUENCY, DeviceCycle, NativeClock};
 use crate::bus::{Address, Bus, BusMember, InspectableBus, IrqSource};
 use crate::debuggable::Debuggable;
 use crate::emulator::comm::EmulatorSpeed;
@@ -60,12 +60,19 @@ const TICK60_PERIOD: Ticks = 13024;
 
 /// Wait states, in C16M ticks, of an access to a device on the I/O bus, on top
 /// of the bus cycle itself: PrimeTime synchronises the cycle with the I/O bus
-/// clock and its termination back with the CPU clock. Not fitted yet: the same
-/// as the Relayer of the Quadra 700.
-const IO_BUS_WAITS: Ticks = 6;
+/// clock and its termination back with the CPU clock. First fit to BusTiming on
+/// a 25 MHz Quadra 610 (IOSB, as no stock LC 475 has been measured): VIA 2 and
+/// the ISM read in 12 clocks, the 53C96 in 12 and the ASC in 13.
+const IO_BUS_WAITS: Ticks = 5;
 
-/// Extra wait states, in C16M ticks, of an SCC access, for PCLK. Not fitted.
-const SCC_PCLK_WAITS: Ticks = 4;
+/// Extra wait states, in C16M ticks, of an SCC access, for PCLK: the Quadra 610
+/// reads it in 17 clocks. The recovery time between accesses isn't modelled.
+const SCC_PCLK_WAITS: Ticks = 3;
+
+/// C16M ticks from the VIA 1 tick that an access starts on to the CPU's release:
+/// BusTiming holds the CPU 0.76 VIA cycle on a Quadra 610, 0.70 on the LC 475 at
+/// 33 MHz
+const VIA_RELEASE: Ticks = 15;
 
 /// Clock of the RTxCA and RTxCB pins of the SCC, 3.6864 MHz, which the baud
 /// rate generators run from
@@ -594,8 +601,10 @@ where
     /// the CPU bus.
     fn io_cycle(&mut self, acc: BusAccess<Bus68040>) -> BusResponse {
         match acc.addr & Self::IO_MASK {
-            // VIA 1 and VIA 2
-            0x0000_0000..=0x0000_3FFF => self.via_cycle(acc),
+            // VIA 1. VIA 2 has no timers, and doesn't take the VIA clock either:
+            // its reads take the same time at any spacing.
+            0x0000_0000..=0x0000_1FFF => self.via_cycle(acc),
+            0x0000_2000..=0x0000_3FFF => self.io_bus_cycle(acc, 0, false),
             // SCC
             0x0000_C000..=0x0000_DFFF => self.io_bus_cycle(acc, SCC_PCLK_WAITS, false),
             // 53C96 pseudo-DMA
@@ -621,7 +630,7 @@ where
     /// released part way through the VIA cycle. Real LC 475: one VIA cycle back
     /// to back.
     fn via_cycle(&mut self, acc: BusAccess<Bus68040>) -> BusResponse {
-        match self.native_clock.via_sync(&acc, C16M_PER_VIA / 2) {
+        match self.native_clock.via_sync(&acc, VIA_RELEASE) {
             DeviceCycle::Stall(n) => BusResponse::Stall(n),
             DeviceCycle::Access(w) => bus_access_long(acc, w, self, Self::io_read, Self::io_write),
         }
@@ -905,12 +914,15 @@ where
     /// Wait states of the memories on the CPU bus (RAM and ROM, VRAM behind
     /// MEMCjr): for a single cycle or the first long word of a burst, and for
     /// each further long word of a burst. None for the other targets, which
-    /// don't take bursts. Not fitted yet: the estimates of the Quadra 700.
-    fn memory_waits(region: Region, addr: Address) -> Option<(Ticks, Ticks)> {
+    /// don't take bursts. These are the times for 25 MHz: RAM 5-2-2-2 reading and
+    /// 4-2-2-2 writing, ROM 5, the screen in its current row 4-3-3-3 and
+    /// 3-2-2-2, which are the same at 33 MHz, as measured. Real writes are
+    /// posted, which the bus can't express: only their period is right.
+    fn memory_waits(region: Region, addr: Address, write: bool) -> Option<(Ticks, Ticks)> {
         match region {
-            Region::Ram => Some((2, 1)),
+            Region::Ram => Some((3, 1)),
             Region::Rom => Some((3, 3)),
-            Region::Video if (addr & 0xFF_FFFF) < 0x20_0000 => Some((2, 1)),
+            Region::Video if (addr & 0xFF_FFFF) < 0x20_0000 => Some((2, if write { 1 } else { 2 })),
             _ => None,
         }
     }
@@ -934,7 +946,7 @@ where
         }
 
         let region = MAP[usize::from(self.overlay)][block];
-        let memory = Self::memory_waits(region, acc.addr);
+        let memory = Self::memory_waits(region, acc.addr, acc.write);
         let waits = match memory {
             Some((_, next)) if acc.burst && acc.addr & 0xF != 0 => next,
             Some((first, _)) => first,
