@@ -698,6 +698,15 @@ where
     }
 
     /// SLOTE_IRQ from a card (schematic: its own pin on PrimeTime)
+    ///
+    /// The slot interrupts are VIA 2 port A inputs, active low, summed up in
+    /// the CA1 flag, which raises level 2. The ROM's handler ($4088BC56) clears
+    /// that flag, then scans bits 0-6, and its table ($40806F14) gives the slots:
+    /// bits 0-5 are slots $9-$E and bit 6 is slot 0, the built-in video. Only bits
+    /// 5 and 6 exist on this board. A machine with NuBus would wire its slots to
+    /// the bits below 5 the same way, each also feeding CA1. The Developer Note
+    /// confirms bit 5 for /SLOTIRQ. Nothing interrupts through this yet, so
+    /// whether CA1 follows the line or latches is untested on the real thing.
     fn slot_irq(&self) -> bool {
         false
     }
