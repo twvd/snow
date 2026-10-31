@@ -283,6 +283,15 @@ pub const VECTOR_SP: Address = 0x00000000;
 pub const VECTOR_RESET: Address = 0x00000004;
 /// Bus error exception vector
 pub const VECTOR_BUS_ERROR: Address = 0x000008;
+/// Whether a CPU stepping error is a fault in the exception processing of an
+/// earlier one, which halts the CPU
+pub fn is_double_fault(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<CpuError>(),
+        Some(CpuError::AddressError(_) | CpuError::BusError(_))
+    )
+}
+
 /// Address error exception vector
 pub const VECTOR_ADDRESS_ERROR: Address = 0x00000C;
 /// Illegal instruction exception vector
