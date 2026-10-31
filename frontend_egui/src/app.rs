@@ -860,6 +860,11 @@ impl SnowGui {
                     self.open_model_dialog();
                 }
                 if self.emu.is_initialized() {
+                    if self.emu.get_model() == Some(MacModel::Lisa25)
+                        && ui.button("On-off button").clicked()
+                    {
+                        self.emu.lisa_on_off_button();
+                    }
                     if ui.button("Reset").clicked() {
                         self.emu.reset();
                         if self.settings.run_on_reset {

@@ -475,6 +475,14 @@ where
         Some(())
     }
 
+    pub fn powered_on(&self) -> bool {
+        self.cops.power_on()
+    }
+
+    pub fn on_off_button(&mut self) {
+        self.cops.power_switch();
+    }
+
     /// The floppy controller, with its drive
     pub fn fdc(&self) -> &FdcSim {
         &self.fdc

@@ -1722,6 +1722,17 @@ impl Tickable for Emulator {
                         self.config.video_blank()?;
                         return Ok(0);
                     }
+                    EmulatorCommand::LisaOnOffButton => {
+                        if let EmulatorConfig::Lisa(lisa) = &mut self.config {
+                            if lisa.bus.powered_on() {
+                                lisa.bus.on_off_button();
+                            } else {
+                                self.config.bus_reset()?;
+                                self.config.cpu_reset()?;
+                                self.config.video_blank()?;
+                            }
+                        }
+                    }
                     EmulatorCommand::SetIieGamePort(port) => {
                         let card = self.iie_card_mut();
                         if let Some(card) = card {
