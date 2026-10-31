@@ -2988,10 +2988,22 @@ where
         Ok(())
     }
 
+    /// What LINK pushes for the address register `reg`, given the decremented
+    /// stack pointer. A 68LC040 was seen to push the decremented value for LINK
+    /// A7, in the order of the manual's operation (SP - 4 -> SP, An -> (SP)). Up to
+    /// the 68030 this keeps the old value, as in the 68000 data from MAME's microcode.
+    fn link_value(&self, reg: usize, sp: Address) -> Address {
+        if CPU_TYPE >= M68040 && reg == 7 {
+            sp
+        } else {
+            self.regs.read_a(reg)
+        }
+    }
+
     /// LINK.w
     fn op_link_w(&mut self, instr: &Instruction) -> Result<()> {
         let sp = self.regs.read_a::<Address>(7).wrapping_sub(4);
-        let addr = self.regs.read_a::<Address>(instr.get_op2());
+        let addr = self.link_value(instr.get_op2(), sp);
 
         instr.fetch_extword(|| self.fetch_pump())?;
 
@@ -3007,7 +3019,7 @@ where
     /// LINK.l
     fn op_link_l(&mut self, instr: &Instruction) -> Result<()> {
         let sp = self.regs.read_a::<Address>(7).wrapping_sub(4);
-        let addr = self.regs.read_a::<Address>(instr.get_op2());
+        let addr = self.link_value(instr.get_op2(), sp);
 
         let displacement = {
             let msb = self.fetch_pump()? as Long;
