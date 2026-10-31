@@ -315,7 +315,7 @@ pub struct CpuM68k<
 
     /// Address of the instruction of this step
     #[serde(skip)]
-    step_start_pc: Address,
+    pub(in crate::cpu_m68k) step_start_pc: Address,
 
     /// External address/data bus
     pub bus: TBus,

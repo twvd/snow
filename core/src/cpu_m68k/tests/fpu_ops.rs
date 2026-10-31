@@ -411,3 +411,37 @@ fn fetoxm1_flognp1_usual_values() {
         assert!((r - want).abs() < 1e-14, "{opmode:02X} {v} gave {r}");
     }
 }
+
+#[test]
+fn fpiar_has_the_last_instruction_that_can_raise() {
+    // FADD FP0,FP1 ; FMOVE.L #1,FPSR ; FBT
+    let mut cpu = testcpu(&[0xF200, 0x00A2, 0xF23C, 0x8800, 0, 1, 0xF28F, 0x0000]);
+    cpu.regs.fpu.fp[0] = fp(1.0);
+    cpu.regs.fpu.fp[1] = fp(1.0);
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.fpu.fpiar, CODE);
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.fpu.fpiar, CODE);
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.fpu.fpiar, CODE + 12);
+}
+
+#[test]
+fn fpcr_fpsr_unimplemented_bits_read_as_zero() {
+    // FMOVE.L D0,FPCR ; FMOVE.L D0,FPSR
+    let mut cpu = testcpu(&[0xF200, 0x9000, 0xF200, 0x8800]);
+    cpu.regs.d[0] = 0xFFFF_FFFF;
+    cpu.step().unwrap();
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.fpu.fpcr.0, 0x0000_FFF0);
+    assert_eq!(cpu.regs.fpu.fpsr.0, 0x0FFF_FFF8);
+}
+
+#[test]
+fn fmovecr_sets_the_condition_codes() {
+    let mut cpu = testcpu(&[0xF200, 0x5C0F]); // FMOVECR #$0F,FP0
+    cpu.regs.fpu.fpsr.set_fpcc_n(true);
+    cpu.step().unwrap();
+    assert!(cpu.regs.fpu.fpsr.fpcc_z());
+    assert!(!cpu.regs.fpu.fpsr.fpcc_n());
+}
