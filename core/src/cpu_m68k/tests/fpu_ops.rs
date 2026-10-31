@@ -347,3 +347,38 @@ fn fmod_invalid_is_operr() {
     assert!(cpu.regs.fpu.fp[1].is_nan());
     assert!(cpu.regs.fpu.fpsr.exs().operr());
 }
+
+#[test]
+fn fgetman_keeps_the_sign() {
+    for (v, want) in [(-6.0, -1.5), (6.0, 1.5), (1.0, 1.0)] {
+        let mut cpu = testcpu(&fop(0, 1, 0x1F));
+        cpu.regs.fpu.fp[0] = fp(v);
+        cpu.step().unwrap();
+        assert_eq!(cpu.regs.fpu.fp[1].as_f64(), want, "{v}");
+    }
+    let mut cpu = testcpu(&fop(0, 1, 0x1F));
+    cpu.regs.fpu.fp[0] = Float::zero(SEMANTICS_EXTENDED, true);
+    cpu.step().unwrap();
+    assert!(cpu.regs.fpu.fp[1].is_zero() && cpu.regs.fpu.fp[1].is_negative());
+}
+
+#[test]
+fn fgetexp_of_zero_is_zero() {
+    for (v, want) in [(8.0, 3.0), (0.5, -1.0), (0.0, 0.0)] {
+        let mut cpu = testcpu(&fop(0, 1, 0x1E));
+        cpu.regs.fpu.fp[0] = fp(v);
+        cpu.step().unwrap();
+        assert_eq!(cpu.regs.fpu.fp[1].as_f64(), want, "{v}");
+    }
+}
+
+#[test]
+fn fgetexp_fgetman_of_infinity_are_operr() {
+    for opmode in [0x1E, 0x1F] {
+        let mut cpu = testcpu(&fop(0, 1, opmode));
+        cpu.regs.fpu.fp[0] = Float::inf(SEMANTICS_EXTENDED, false);
+        cpu.step().unwrap();
+        assert!(cpu.regs.fpu.fp[1].is_nan());
+        assert!(cpu.regs.fpu.fpsr.exs().operr());
+    }
+}
