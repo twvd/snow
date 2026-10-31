@@ -21,6 +21,7 @@ where
     /// Condition test for FBcc/FDBcc
     fn fcc(&mut self, cc: usize) -> Result<(bool, bool)> {
         self.regs.fpu.used = true;
+        self.regs.fpu.fpiar = self.step_start_pc;
         let nan = self.regs.fpu.fpsr.fpcc_nan();
         let zero = self.regs.fpu.fpsr.fpcc_z();
         let neg = self.regs.fpu.fpsr.fpcc_n();
