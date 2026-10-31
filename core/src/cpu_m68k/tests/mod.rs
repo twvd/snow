@@ -8,6 +8,7 @@ mod fpu040;
 mod group2_exceptions;
 mod illegal_exception;
 mod interrupt;
+mod link;
 mod m68k_rs_atc;
 mod m68k_rs_busfault;
 mod m68k_rs_pmove;
