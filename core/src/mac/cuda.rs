@@ -96,6 +96,7 @@ use serde::{Deserialize, Serialize};
 use crate::debuggable::Debuggable;
 use crate::mac::adb::{AdbDevice, AdbEvent};
 use crate::mac::egret_common::{EgretCommon, McuKind};
+use crate::mac::iic::IicBus;
 use crate::mac::rtc::Rtc;
 use crate::tickable::Ticks;
 
@@ -214,7 +215,15 @@ impl Cuda {
     ///
     /// `tip` and `tack` are the lines from the host (true = asserted).
     /// `shift` clocks a byte through the shift register of the VIA.
-    pub fn tick(&mut self, ticks: Ticks, tip: bool, tack: bool, mut shift: impl FnMut(u8) -> u8) {
+    /// `iic` holds the devices on the IIC bus of the machine.
+    pub fn tick(
+        &mut self,
+        ticks: Ticks,
+        tip: bool,
+        tack: bool,
+        iic: &mut dyn IicBus,
+        mut shift: impl FnMut(u8) -> u8,
+    ) {
         self.common.tick(ticks);
 
         self.state = match self.state {
@@ -257,7 +266,7 @@ impl Cuda {
             },
 
             // The CPU negates TIP at the end of the command packet
-            State::RxWait if !tip => self.command(),
+            State::RxWait if !tip => self.command(iic),
 
             // A change of TACK: the next byte is in the SR
             State::RxWait if tack != self.last_tack => {
@@ -338,7 +347,10 @@ impl Cuda {
 
             // The byte is clocked out
             State::TxShift(_) => {
-                let byte = self.tx.pop_front().or_else(|| self.common.response_next());
+                let byte = self
+                    .tx
+                    .pop_front()
+                    .or_else(|| self.common.response_next_iic(iic));
                 shift(byte.unwrap_or(0xFF));
                 if self.tx.is_empty() && !self.common.response_continues() {
                     State::TxDone
@@ -391,11 +403,11 @@ impl Cuda {
     }
 
     /// End of a command packet
-    fn command(&mut self) -> State {
+    fn command(&mut self, iic: &mut dyn IicBus) -> State {
         if self.rx.is_empty() {
             return State::Idle;
         }
-        self.tx = self.common.command(&self.rx).into();
+        self.tx = self.common.command_iic(&self.rx, iic).into();
         State::TxDelay(RESPONSE_TICKS)
     }
 }
@@ -417,6 +429,7 @@ impl Debuggable for Cuda {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mac::iic::NoIic;
 
     /// Host side of the VIA, written from the sequences of the Linux driver
     #[derive(Default)]
@@ -432,7 +445,7 @@ mod tests {
         fn run(&mut self, ticks: Ticks) {
             for _ in 0..ticks {
                 let (sr, shifted) = (&mut self.sr, &mut self.shifted);
-                self.cuda.tick(1, self.tip, self.tack, |input| {
+                self.cuda.tick(1, self.tip, self.tack, &mut NoIic, |input| {
                     *shifted = true;
                     std::mem::replace(sr, input)
                 });

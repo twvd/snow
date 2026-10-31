@@ -24,6 +24,7 @@ use crate::mac::quadra::dafb::{Dafb, DafbKind};
 use crate::mac::rtc::Rtc;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::esp::Esp;
+use crate::mac::sound::dfac2::Dfac2;
 use crate::mac::sound::v8_sonora::{V8Sound, V8Variant};
 use crate::mac::swim::Swim;
 use crate::mac::via_common::{IRQ_CA2, LineState, ViaLine};
@@ -148,6 +149,8 @@ pub struct Lc475Bus<TRenderer: Renderer> {
     pub(crate) via1: Via,
     pub(crate) via2: Via2,
     pub(crate) cuda: Cuda,
+    /// The only device on the IIC bus of the Cuda (schematic)
+    pub(crate) dfac2: Dfac2,
     pub(crate) scc: Scc,
     pub(crate) sound: V8Sound,
     /// C16M ticks into the current sound sample
@@ -252,6 +255,7 @@ where
             via1: Via::new(model),
             via2: Self::new_via2(model),
             cuda,
+            dfac2: Dfac2::default(),
             scc: Scc::new(SCC_RTXC_FREQUENCY),
             swim: Swim::new(model.fdd_drives(), model.fdd_hd(), C16M_FREQUENCY),
             // MODE pins strapped for a 16-bit DMA bus, as on the Quadra 700
@@ -955,6 +959,7 @@ where
                 .extend(0..(self.ram.len() / RAM_DIRTY_PAGESIZE));
             // The Cuda also goes through its start
             self.cuda.reset();
+            self.dfac2.reset();
         }
 
         self.via1.reset();
@@ -1026,7 +1031,9 @@ where
                 let via = &mut self.via1;
                 // TIP is on PB5, TACK on PB4, both active low
                 self.cuda
-                    .tick(1, !pb.sys_ses(), !pb.via_full(), |b| via.shift_sr(b));
+                    .tick(1, !pb.sys_ses(), !pb.via_full(), &mut self.dfac2, |b| {
+                        via.shift_sr(b)
+                    });
                 self.via1.b_in.set_xcvr_ses(!self.cuda.treq());
 
                 self.tick60_clock += 1;
@@ -1167,6 +1174,7 @@ where
 
         vec![
             dbgprop_nest!("Cuda", self.cuda),
+            dbgprop_nest!("DFAC II", self.dfac2),
             dbgprop_nest!("Sound", self.sound),
             dbgprop_nest!("Built-in video (MEMCjr)", self.dafb),
             dbgprop_nest!("SCSI controller (NCR 53C96)", self.scsi),

@@ -8,6 +8,7 @@ use log::*;
 use serde::{Deserialize, Serialize};
 
 use crate::mac::adb::{AdbDevice, AdbDeviceInstance, AdbEvent};
+use crate::mac::iic::{IicBus, NoIic};
 use crate::mac::rtc::Rtc;
 use crate::tickable::Ticks;
 
@@ -112,17 +113,12 @@ const CUDA_DEVICE_LIST: u16 = 0x000C;
 /// Largest power message mode of the Cuda
 const CUDA_POWER_MESSAGES_MAX: u8 = 4;
 
-/// Bus address, with the read bit clear, of the DFAC II on the IIC bus of the
-/// Cuda, and its number of registers
-const IIC_DFAC2: u8 = 0xDE;
-const DFAC2_REGS: usize = 16;
-
 /// Read which goes on until the host ends it, with the next address
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Reading {
     Ram(u16),
     Pram(u16),
-    Iic(u8),
+    Iic,
 }
 
 /// Which firmware runs. The commands of the Cuda were taken from version 2.37
@@ -177,9 +173,6 @@ pub struct EgretCommon {
     /// Autopoll rate in ms, set by the host of a Cuda
     autopoll_rate: u8,
 
-    /// Registers of the DFAC II, and the one the next access goes to
-    dfac2_regs: [u8; DFAC2_REGS],
-    dfac2_addr: u8,
     /// Time between polls of the ADB devices, from the rate
     autopoll_period: Ticks,
 
@@ -217,8 +210,6 @@ impl EgretCommon {
             pram_extra: [0; PRAM_EXTRA],
             reading: None,
             autopoll_rate: AUTOPOLL_MS,
-            dfac2_regs: [0; DFAC2_REGS],
-            dfac2_addr: 0,
             autopoll_period: Self::autopoll_rate_ticks(AUTOPOLL_MS),
             reset_requested: false,
             cuda_ram: if kind == McuKind::Cuda {
@@ -397,13 +388,18 @@ impl EgretCommon {
     /// Handles a command packet from the host and returns the response packet,
     /// without the attention byte which precedes it.
     pub fn command(&mut self, packet: &[u8]) -> Vec<u8> {
+        self.command_iic(packet, &mut NoIic)
+    }
+
+    /// As command(), for a microcontroller with an IIC bus
+    pub fn command_iic(&mut self, packet: &[u8], iic: &mut dyn IicBus) -> Vec<u8> {
         trace!("Command: {:02X?}", packet);
 
         self.reading = None;
 
         let response = match packet {
             [PACKET_ADB, cmd, data @ ..] => self.adb_command(*cmd, data),
-            [PACKET_PSEUDO, cmd, params @ ..] => self.egret_command(*cmd, params),
+            [PACKET_PSEUDO, cmd, params @ ..] => self.egret_command(*cmd, params, iic),
             [packet_type, cmd, ..] => Self::error(ERROR_PACKET_TYPE, *packet_type, *cmd),
             _ => {
                 warn!("Short packet: {:02X?}", packet);
@@ -426,6 +422,11 @@ impl EgretCommon {
 
     /// Returns the next byte of a response which goes on after the packet
     pub fn response_next(&mut self) -> Option<u8> {
+        self.response_next_iic(&mut NoIic)
+    }
+
+    /// As response_next(), for a microcontroller with an IIC bus
+    pub fn response_next_iic(&mut self, iic: &mut dyn IicBus) -> Option<u8> {
         Some(match self.reading? {
             Reading::Ram(addr) => {
                 self.reading = Some(Reading::Ram(addr.wrapping_add(1)));
@@ -435,7 +436,7 @@ impl EgretCommon {
                 self.reading = Some(Reading::Pram((addr + 1) % self.pram_size()));
                 self.pram_read(addr)
             }
-            Reading::Iic(_) => self.dfac2_read(),
+            Reading::Iic => iic.read(),
         })
     }
 
@@ -518,39 +519,31 @@ impl EgretCommon {
         vec![PACKET_ERROR, code, packet_type, cmd]
     }
 
-    /// A write to the IIC bus: the address of the device, a read flag in bit
-    /// 0, then the data. The DFAC II takes the number of a register first.
-    fn iic_command(&mut self, params: &[u8]) -> Result<Vec<u8>, u8> {
+    /// A transaction on the IIC bus: the address of the device, with a read
+    /// flag in bit 0, then bytes to write, which are sent for a read as well. A
+    /// device which doesn't acknowledge ends it with an error. A read then goes
+    /// on until the host ends it.
+    fn iic_command(&mut self, params: &[u8], iic: &mut dyn IicBus) -> Result<Vec<u8>, u8> {
         let Some((&addr, data)) = params.split_first() else {
             return Err(ERROR_IIC);
         };
-        if addr & !1 != IIC_DFAC2 {
-            debug!("No IIC device at {:02X}", addr);
+        if !iic.start(addr) || !data.iter().all(|&val| iic.write(val)) {
             return Err(ERROR_IIC);
         }
-        if let Some((&reg, data)) = data.split_first() {
-            self.dfac2_addr = reg;
-            for &val in data {
-                debug!("DFAC II register {:02X} = {:02X}", self.dfac2_addr, val);
-                self.dfac2_regs[usize::from(self.dfac2_addr) % DFAC2_REGS] = val;
-                self.dfac2_addr = self.dfac2_addr.wrapping_add(1);
-            }
-        }
         if addr & 1 != 0 {
-            self.reading = Some(Reading::Iic(addr));
+            self.reading = Some(Reading::Iic);
         }
         Ok(vec![])
     }
 
-    fn dfac2_read(&mut self) -> u8 {
-        let val = self.dfac2_regs[usize::from(self.dfac2_addr) % DFAC2_REGS];
-        self.dfac2_addr = self.dfac2_addr.wrapping_add(1);
-        val
-    }
-
     /// Commands which the Cuda handles differently from the Egret. None for
     /// the others.
-    fn cuda_command(&mut self, cmd: u8, params: &[u8]) -> Option<Result<Vec<u8>, u8>> {
+    fn cuda_command(
+        &mut self,
+        cmd: u8,
+        params: &[u8],
+        iic: &mut dyn IicBus,
+    ) -> Option<Result<Vec<u8>, u8>> {
         Some(match cmd {
             // Not in the firmware's table: ROM size, base and header, diagnostics,
             // PRAM size, bus delay, keyboard NMI (always on), post-parse, hang
@@ -617,7 +610,7 @@ impl EgretCommon {
             }),
 
             // Access a device on the IIC bus
-            CMD_IIC => self.iic_command(params),
+            CMD_IIC => self.iic_command(params, iic),
 
             // Allow the machine to wake up (not modelled)
             CMD_WAKE_UP => Self::params(params).map(|[_]| vec![]),
@@ -629,9 +622,9 @@ impl EgretCommon {
         })
     }
 
-    fn egret_command(&mut self, cmd: u8, params: &[u8]) -> Vec<u8> {
+    fn egret_command(&mut self, cmd: u8, params: &[u8], iic: &mut dyn IicBus) -> Vec<u8> {
         let cuda = match self.kind {
-            McuKind::Cuda => self.cuda_command(cmd, params),
+            McuKind::Cuda => self.cuda_command(cmd, params, iic),
             McuKind::Egret => None,
         };
         if let Some(result) = cuda {
@@ -814,6 +807,7 @@ impl EgretCommon {
 mod tests {
     use super::*;
     use crate::mac::adb::{AdbKeyboard, AdbMouse};
+    use crate::mac::sound::dfac2::Dfac2;
     use crate::types::MouseEvent;
 
     const AUTOPOLL_TICKS: Ticks = TICKS_PER_SECOND * AUTOPOLL_MS as Ticks / 1000;
@@ -1172,19 +1166,27 @@ mod tests {
     #[test]
     fn cuda_iic() {
         let mut cuda = EgretCommon::new(McuKind::Cuda);
+        let mut dfac = Dfac2::default();
+        let mut iic = |cuda: &mut EgretCommon, packet: &[u8]| cuda.command_iic(packet, &mut dfac);
 
-        assert_eq!(cuda.command(&[0x01, 0x22]), [0x02, 0x05, 0x01, 0x22]);
-        assert_eq!(cuda.command(&[0x01, 0x22, 0x50]), [0x02, 0x05, 0x01, 0x22]);
-
+        assert_eq!(iic(&mut cuda, &[0x01, 0x22]), [0x02, 0x05, 0x01, 0x22]);
         assert_eq!(
-            cuda.command(&[0x01, 0x22, 0xDE, 0x0C, 0x47, 0x2A]),
+            iic(&mut cuda, &[0x01, 0x22, 0x50]),
+            [0x02, 0x05, 0x01, 0x22]
+        );
+        assert_eq!(
+            iic(&mut cuda, &[0x01, 0x22, 0xDE, 0x0C, 0x47, 0x2A]),
             [0x01, 0x00, 0x22]
         );
         assert!(!cuda.response_continues());
-        assert_eq!(cuda.command(&[0x01, 0x22, 0xDE, 0x0C]), [0x01, 0x00, 0x22]);
-        assert_eq!(cuda.command(&[0x01, 0x22, 0xDF]), [0x01, 0x00, 0x22]);
-        assert_eq!(cuda.response_next(), Some(0x47));
-        assert_eq!(cuda.response_next(), Some(0x2A));
+
+        assert_eq!(
+            iic(&mut cuda, &[0x01, 0x22, 0xDF, 0x0C]),
+            [0x01, 0x00, 0x22]
+        );
+        assert!(cuda.response_continues());
+        assert_eq!(cuda.response_next_iic(&mut dfac), Some(0x47));
+        assert_eq!(cuda.response_next_iic(&mut dfac), Some(0x2A));
     }
 
     #[test]
