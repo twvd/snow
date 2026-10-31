@@ -1,5 +1,6 @@
 mod cmp2;
 mod divl;
+mod divs_w;
 mod fmovem;
 mod format2;
 mod group2_exceptions;

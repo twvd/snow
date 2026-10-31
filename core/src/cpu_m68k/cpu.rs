@@ -2233,8 +2233,9 @@ where
             return self.raise_exception(ExceptionGroup::Group2, VECTOR_DIV_ZERO, None);
         }
 
-        let result = dividend / divisor;
-        let result_rem = dividend % divisor;
+        // $80000000 / -1 doesn't fit, it ends up in the overflow below
+        let result = dividend.wrapping_div(divisor);
+        let result_rem = dividend.wrapping_rem(divisor);
 
         self.regs.sr.set_c(false);
         self.regs.sr.set_z(false);
