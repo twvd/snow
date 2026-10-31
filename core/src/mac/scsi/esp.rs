@@ -447,10 +447,7 @@ impl Esp {
                 self.fifo.clear();
                 self.raise_irq();
             }
-            0x18 => {
-                error!("ESP CHECK: Transfer Pad: {}", self.dbg());
-                self.transfer_pad();
-            }
+            0x18 => self.transfer_pad(),
             0x1A | 0x1B => error!("ESP CHECK: ATN command ${:02X}: {}", cmd, self.dbg()),
 
             // Disconnected state
@@ -707,25 +704,38 @@ impl Esp {
         }
     }
 
-    /// Transfer Pad: like Transfer Information, but without moving real data
+    /// Transfer Pad: discards what the target sends, or sends it what is in
+    /// the FIFO and then null bytes, for as long as the transfer counter says
+    /// (data sheet p.33). The sheet says that the FIFO may contain pad bytes
+    /// after a phase change; they are not modelled, as nothing reads them.
     fn transfer_pad(&mut self) {
         let n = self.tc;
         match self.phase() {
             PHASE_DATA_IN => {
-                for _ in 0..n.min(self.bus.responsebuf.len() as u32) {
-                    self.bus.responsebuf.pop_front();
-                }
+                let discard = n.min(self.bus.responsebuf.len() as u32);
+                self.bus.responsebuf.drain(..discard as usize);
+                self.advance_tc(discard);
                 if self.bus.responsebuf.is_empty() {
                     self.set_phase(PHASE_STATUS);
                 }
             }
             PHASE_DATA_OUT => {
+                let from_fifo = self.fifo.len().min(self.bus.dataout_len);
+                self.dataout_buf.extend(self.fifo.drain(..from_fifo));
+                self.bus.dataout_len -= from_fifo;
+
                 let pad = self.bus.dataout_len.min(n as usize);
+                self.dataout_buf.resize(self.dataout_buf.len() + pad, 0);
                 self.bus.dataout_len -= pad;
+                self.advance_tc(pad as u32);
+
+                if self.bus.dataout_len == 0 {
+                    self.finish_dataout();
+                    return;
+                }
             }
-            _ => (),
+            _ => self.advance_tc(n),
         }
-        self.advance_tc(n);
         self.intr |= INTR_BS;
         self.raise_irq();
     }
@@ -918,5 +928,135 @@ impl Esp {
 
     pub fn fifo_len(&self) -> usize {
         self.fifo.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mac::scsi::disk_image::DiskImage;
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
+
+    const REG_TC_LOW: Address = 0x00;
+    const REG_TC_HIGH: Address = 0x10;
+    const REG_FIFO: Address = 0x20;
+    const REG_CMD: Address = 0x30;
+    const REG_STATUS: Address = 0x40;
+    const REG_INTR: Address = 0x50;
+
+    struct MemDisk(Arc<Mutex<Vec<u8>>>);
+
+    impl DiskImage for MemDisk {
+        fn byte_len(&self) -> usize {
+            self.0.lock().unwrap().len()
+        }
+        fn read_bytes(&self, offset: usize, length: usize) -> Vec<u8> {
+            self.0.lock().unwrap()[offset..offset + length].to_vec()
+        }
+        fn write_bytes(&mut self, offset: usize, data: &[u8]) {
+            self.0.lock().unwrap()[offset..offset + data.len()].copy_from_slice(data);
+        }
+        fn media_bytes(&self) -> Option<&[u8]> {
+            None
+        }
+        fn image_path(&self) -> Option<&Path> {
+            None
+        }
+    }
+
+    /// A 53C96 with a disk of 16 blocks full of $AA at ID 0
+    fn esp_with_disk() -> (Esp, Arc<Mutex<Vec<u8>>>) {
+        let image = Arc::new(Mutex::new(vec![0xAA; 16 * 512]));
+        let mut esp = Esp::new(true);
+        esp.bus_mut()
+            .attach_disk_image_at(Box::new(MemDisk(image.clone())), 0)
+            .unwrap();
+        (esp, image)
+    }
+
+    fn command(esp: &mut Esp, cmd: u8) {
+        esp.write(REG_CMD, cmd).unwrap();
+    }
+
+    /// Selects the disk and sends a CDB, through the FIFO
+    fn select(esp: &mut Esp, cdb: &[u8]) {
+        for b in cdb {
+            esp.write(REG_FIFO, *b).unwrap();
+        }
+        command(esp, 0x41);
+        assert!(esp.get_irq());
+        esp.read(REG_INTR).unwrap();
+    }
+
+    fn set_count(esp: &mut Esp, count: u16) {
+        esp.write(REG_TC_LOW, count as u8).unwrap();
+        esp.write(REG_TC_HIGH, (count >> 8) as u8).unwrap();
+    }
+
+    fn phase(esp: &mut Esp) -> u8 {
+        esp.read(REG_STATUS).unwrap() & STAT_PHASE
+    }
+
+    #[test]
+    fn pad_completes_a_short_write() {
+        let (mut esp, image) = esp_with_disk();
+        // WRITE(10) of block 1
+        select(&mut esp, &[0x2A, 0, 0, 0, 0, 1, 0, 0, 1, 0]);
+        assert_eq!(phase(&mut esp), PHASE_DATA_OUT);
+
+        for b in [1, 2, 3, 4] {
+            esp.write(REG_FIFO, b).unwrap();
+        }
+        set_count(&mut esp, 508);
+        command(&mut esp, 0x98);
+
+        assert_eq!(phase(&mut esp), PHASE_STATUS);
+        assert!(esp.get_irq());
+        assert_eq!(esp.read(REG_INTR).unwrap(), INTR_BS);
+        let image = image.lock().unwrap();
+        assert_eq!(image[512..516], [1, 2, 3, 4]);
+        assert!(image[516..1024].iter().all(|b| *b == 0));
+        assert!(image[..512].iter().all(|b| *b == 0xAA));
+        assert_eq!(image[1024], 0xAA);
+    }
+
+    #[test]
+    fn pad_stops_at_the_transfer_count() {
+        let (mut esp, image) = esp_with_disk();
+        select(&mut esp, &[0x2A, 0, 0, 0, 0, 1, 0, 0, 1, 0]);
+
+        set_count(&mut esp, 100);
+        command(&mut esp, 0x98);
+        assert_eq!(phase(&mut esp), PHASE_DATA_OUT);
+        assert_ne!(esp.read(REG_STATUS).unwrap() & STAT_TC, 0);
+        assert_eq!(esp.read(REG_INTR).unwrap(), INTR_BS);
+        assert_eq!(image.lock().unwrap()[512], 0xAA);
+
+        set_count(&mut esp, 412);
+        command(&mut esp, 0x98);
+        assert_eq!(phase(&mut esp), PHASE_STATUS);
+        assert_eq!(image.lock().unwrap()[512], 0);
+    }
+
+    #[test]
+    fn pad_discards_received_data() {
+        let (mut esp, _image) = esp_with_disk();
+        // READ(10) of 1 block
+        select(&mut esp, &[0x28, 0, 0, 0, 0, 1, 0, 0, 1, 0]);
+        assert_eq!(phase(&mut esp), PHASE_DATA_IN);
+
+        set_count(&mut esp, 100);
+        command(&mut esp, 0x98);
+        assert_eq!(phase(&mut esp), PHASE_DATA_IN);
+        assert_eq!(esp.read(REG_INTR).unwrap(), INTR_BS);
+
+        // A count beyond the data: the target goes on to the status phase
+        // before the count runs out
+        set_count(&mut esp, 1000);
+        command(&mut esp, 0x98);
+        assert_eq!(phase(&mut esp), PHASE_STATUS);
+        assert_eq!(esp.read(REG_STATUS).unwrap() & STAT_TC, 0);
+        assert_eq!(esp.fifo_len(), 0);
     }
 }
