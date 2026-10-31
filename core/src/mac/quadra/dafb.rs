@@ -148,6 +148,13 @@ where
         }
     }
 
+    /// The Turbo SCSI registers are in the discrete DAFB. On MEMCjr the block
+    /// moved to PrimeTime, where the ROM uses other addresses, and what a
+    /// real machine answers at these is not known.
+    const fn has_turbo_scsi(&self) -> bool {
+        matches!(self.kind, DafbKind::Dafb)
+    }
+
     /// Version in PCBR1
     const ANTELOPE_VERSION: u8 = 0x02;
 
@@ -548,13 +555,13 @@ where
             0x80_001C..=0x80_001E => Some(0),
             0x80_001F => Some(self.read_sense()),
             // 'Turbo SCSI' config/handshake
-            0x80_0024 => Some(self.turbo_scsi.be0()),
-            0x80_0025 => Some(self.turbo_scsi.be1()),
+            0x80_0024 if self.has_turbo_scsi() => Some(self.turbo_scsi.be0()),
+            0x80_0025 if self.has_turbo_scsi() => Some(self.turbo_scsi.be1()),
             // Bit 9 is the 53C96 DREQ
-            0x80_0026 => {
+            0x80_0026 if self.has_turbo_scsi() => {
                 Some(Field32((self.turbo_scsi.0 & 0x1FF) | (u32::from(self.scsi_drq) << 9)).be2())
             }
-            0x80_0027 => Some(self.turbo_scsi.be3()),
+            0x80_0027 if self.has_turbo_scsi() => Some(self.turbo_scsi.be3()),
             // Test register
             0x80_002C => Some(self.test.be0()),
             0x80_002D => Some(self.test.be1()),
@@ -669,10 +676,10 @@ where
             0x80_001E => Some(self.sense.set_be2(val)),
             0x80_001F => Some(self.sense.set_be3(val)),
             // Turbo SCSI
-            0x80_0024 => Some(self.turbo_scsi.set_be0(val)),
-            0x80_0025 => Some(self.turbo_scsi.set_be1(val)),
-            0x80_0026 => Some(self.turbo_scsi.set_be2(val)),
-            0x80_0027 => Some(self.turbo_scsi.set_be3(val)),
+            0x80_0024 if self.has_turbo_scsi() => Some(self.turbo_scsi.set_be0(val)),
+            0x80_0025 if self.has_turbo_scsi() => Some(self.turbo_scsi.set_be1(val)),
+            0x80_0026 if self.has_turbo_scsi() => Some(self.turbo_scsi.set_be2(val)),
+            0x80_0027 if self.has_turbo_scsi() => Some(self.turbo_scsi.set_be3(val)),
             // Test register
             0x80_002C => Some(self.test.set_be0(val)),
             0x80_002D => Some(self.test.set_be1(val)),
