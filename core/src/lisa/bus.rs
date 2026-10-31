@@ -34,7 +34,7 @@ use crate::renderer::{AudioProvider, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Byte;
 
-/// SCC baud rate generator clock
+/// The clock the SCC's baud rate generators can run from
 const SCC_RTXC_FREQUENCY: Ticks = 3_686_400;
 
 /// CPU clock: the 20.37504 MHz dot clock divided by 4
@@ -569,6 +569,7 @@ where
         }
 
         self.fdc.tick(ticks);
+        self.scc.tick(ticks, BUS_FREQUENCY);
         self.keyboard_via.b_in.set_fdir(self.fdc.fdir());
         self.parallel_via.b_in.set_disk_diag(self.fdc.diag());
 
