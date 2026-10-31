@@ -1405,8 +1405,10 @@ mod tests {
         let bus = MacIIBus::new(&machine, &[video]);
         std::fs::remove_file(video_rom).unwrap();
         let mut bus = bus.unwrap();
-        let read =
-            |bus: &mut MacIIBus, addr| bus.access(BusAccess::<Bus68020>::read(addr, 4, 0)).unwrap();
+        let read = |bus: &mut MacIIBus, addr| {
+            bus.access(BusAccess::<Bus68020>::read(addr, 4, 0, 0))
+                .unwrap()
+        };
         // An empty slot is a bus error, as the Slot Manager expects
         assert_eq!(read(&mut bus, 0xF900_1234), BusResponse::BusError);
 
