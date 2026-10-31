@@ -32,6 +32,8 @@ pub type InputRecording = Vec<(Ticks, EmulatorCommand)>;
 /// A command/event that can be sent to the emulator
 #[derive(Serialize, Deserialize, Clone)]
 pub enum EmulatorCommand {
+    /// The soft power button of a Lisa
+    LisaOnOffButton,
     Quit,
     /// Hands a device its settings, creating it if its slot is empty
     AddDevice(DeviceConfig),

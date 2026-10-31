@@ -1001,6 +1001,13 @@ impl EmulatorState {
         sender.send(EmulatorCommand::SetIieGamePort(port)).unwrap();
     }
 
+    /// Presses the soft power button of a Lisa
+    pub fn lisa_on_off_button(&self) {
+        if let Some(sender) = &self.cmdsender {
+            sender.send(EmulatorCommand::LisaOnOffButton).unwrap();
+        }
+    }
+
     /// Loads the toolbox floppy in the first free drive
     pub fn load_toolbox_floppy(&self) -> bool {
         let Some(ref sender) = self.cmdsender else {
