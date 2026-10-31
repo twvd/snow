@@ -40,6 +40,9 @@ pub struct Testbus<TA: PrimInt + WrappingAdd + Hash + Debug, TD: PrimInt, C> {
     _cpu: PhantomData<C>,
     /// Port widths for sized accesses, the CPU's data bus width elsewhere
     pub port_widths: Vec<(RangeInclusive<Address>, u32)>,
+    /// Address ranges that respond with BERR to any access (test-only
+    /// fault injection; the ranges are checked before any byte transfer).
+    pub fault_ranges: Vec<RangeInclusive<Address>>,
 }
 
 impl<TA, TD, C> Testbus<TA, TD, C>
@@ -58,6 +61,7 @@ where
             irq_level: None,
             _cpu: PhantomData,
             port_widths: vec![],
+            fault_ranges: vec![],
         }
     }
 
@@ -118,6 +122,13 @@ where
     }
 
     fn access(&mut self, acc: BusAccess<C>) -> Result<BusResponse> {
+        if self.fault_ranges.iter().any(|range| {
+            let end = acc.addr.wrapping_add(acc.size.saturating_sub(1));
+            (acc.addr..=end).any(|a| range.contains(&a))
+        }) {
+            return Ok(BusResponse::BusError);
+        }
+
         let width = self
             .port_widths
             .iter()

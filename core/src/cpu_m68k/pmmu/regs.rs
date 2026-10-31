@@ -105,7 +105,7 @@ bitfield! {
 
         /// Read/write mask
         pub rwm: bool @ 8,
-        /// Read/write (true = write)
+        /// Read/write (true = read)
         pub rw: bool @ 9,
         /// Caching inhibit
         pub ci: bool @ 10,
@@ -133,6 +133,9 @@ bitfield! {
         pub modified: bool @ 9,
         pub gate: bool @ 8,
         pub globally_shared: bool @ 7,
+        /// Transparent access (M68030 MMUSR bit 6): a TT0/TT1 register
+        /// matched the tested address. Only set by PTEST level 0.
+        pub transparent: bool @ 6,
         pub level_number: u8 @ 0..=2,
     }
 }

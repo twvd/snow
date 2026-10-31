@@ -6,13 +6,13 @@ use anyhow::{Result, bail};
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::bus::FC_MASK;
-use crate::cpu_m68k::cpu::{CpuM68k, ExceptionGroup, VECTOR_PRIVILEGE_VIOLATION};
+use crate::cpu_m68k::cpu::{CpuError, CpuM68k, ExceptionGroup, VECTOR_PRIVILEGE_VIOLATION};
 use crate::cpu_m68k::instruction::Instruction;
 use crate::cpu_m68k::pmmu::instruction::{Pmove3Extword, PtestExtword};
 use crate::types::{DoubleLong, Long, Word};
 
 use super::instruction::Pmove1Extword;
-use super::regs::{TcReg, TrTranslationReg};
+use super::regs::{RegisterPSR, TcReg, TrTranslationReg};
 
 impl<
     TBus,
@@ -35,10 +35,11 @@ where
         if extword & 0b1111_1101_1110_0000 == 0b0010_0000_0000_0000 {
             // PLOAD
             self.op_pload(instr, extword)
-        } else if extword & 0b1110_0011_0000_0000 == 0b0010_0000_0000_0000 {
-            // PFLUSH
-            self.pmmu_cache_invalidate();
-            Ok(())
+        } else if extword & 0b1110_0010_0000_0000 == 0b0010_0000_0000_0000 {
+            // PFLUSH / PFLUSHA / PFLUSHS (M68000PRM 6-32..6-34,
+            // MC68851 UM A-6..A-7). Bit 8 is part of the 68851's 4-bit
+            // mask and must not gate the dispatch.
+            self.op_pflush(instr, extword)
         } else if extword == 0b1010_0000_0000_0000 {
             // PFLUSHR
             // TODO specific flush
@@ -290,20 +291,134 @@ where
         instr: &Instruction,
         extword: Word,
     ) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+
         let extword = PtestExtword(extword);
 
         let fc = self.decode_pmmu_fc(extword.fc(), "PTEST")?;
 
         let vaddr = self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
-        let result = self.pmmu_translate_lookup::<true>(fc, vaddr, !extword.read());
-        match result {
-            Ok(_) => {
-                if extword.a_set() {
-                    self.regs.write_a(extword.an(), self.regs.pmmu.last_desc);
-                }
+        let writing = !extword.read();
+
+        if extword.level() == 0 {
+            // M68000PRM 6-62..6-64: level 0 searches the ATC only. With an
+            // address-register operand the MC68030 takes an F-line
+            // unimplemented instruction exception.
+            if extword.a_set() {
+                return self.op_linef(instr);
             }
-            // PTEST never raises: PSR reflects what happened.
-            Err(_) => (),
+
+            let mut psr = RegisterPSR::default();
+            if self.pmmu_tt_match(fc, vaddr, writing) {
+                // M68030UM Table 9-3: T set; the remaining bits are
+                // undefined.
+                psr.set_transparent(true);
+            } else if let Some(entry) = self.pmmu_atc_probe(fc, vaddr) {
+                // Snow's ATC entries carry no bus-error bit, so B stays
+                // clear.
+                if entry.wp {
+                    psr.set_write_protected(true);
+                }
+                if entry.modified {
+                    psr.set_modified(true);
+                }
+            } else {
+                psr.set_invalid(true);
+            }
+            self.regs.pmmu.psr = psr;
+            return Ok(());
+        }
+
+        // Levels 1-7 search the translation tables to the requested level.
+        // PTEST never raises: fault conditions are recorded in the PSR by
+        // the walk itself.
+        match self.pmmu_translate_lookup::<true>(fc, vaddr, writing, extword.level()) {
+            Ok(_) => {}
+            Err(e) => match e.downcast_ref::<CpuError>() {
+                // Fault-type outcomes and bus errors reading descriptors
+                // have already been recorded in the PSR.
+                Some(
+                    CpuError::Pagefault(_) | CpuError::BusError(_) | CpuError::AddressError(_),
+                ) => {}
+                other => log::warn!("PTEST unexpected walk error: {other:?}"),
+            },
+        }
+        // M68000PRM 6-63: if the A bit is set, An is loaded with the
+        // physical address of the last descriptor successfully fetched
+        // during the search, whether or not a valid translation was found.
+        if extword.a_set() {
+            self.regs.write_a(extword.an(), self.regs.pmmu.last_desc);
+        }
+        Ok(())
+    }
+
+    /// PFLUSH / PFLUSHA (M68000PRM 6-32..6-34) and PFLUSHS (MC68851 UM
+    /// A-6..A-7).
+    ///
+    /// Extension word: bits 15-13 = 001, bits 12-10 = MODE, bit 9 = 0,
+    /// MASK, bits 4-0 = FC field. The 68030 mask is 3 bits in 7-5 (bits
+    /// 9-8 zero); the 68851 mask is 4 bits in 8-5.
+    ///
+    /// MODE 001 flushes all entries (PFLUSHA). MODE 100 flushes by function
+    /// code. MODE 110 additionally restricts the flush to the page holding
+    /// the effective address; the EA is the flush key itself and is never
+    /// dereferenced. The 68851 MODEs 101/111 are PFLUSHS, which also flush
+    /// globally shared entries.
+    pub(in crate::cpu_m68k) fn op_pflush(
+        &mut self,
+        instr: &Instruction,
+        extword: Word,
+    ) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            self.advance_cycles(4)?;
+            return self.raise_exception(ExceptionGroup::Group2, VECTOR_PRIVILEGE_VIOLATION, None);
+        }
+
+        // M68000PRM 6-32: on the 68030 bits 9-8 of the extension word must
+        // be zero (the mask is 3 bits in 7-5), so an encoding with bit 8
+        // set is not a valid 68030 form and takes the F-line path. On the
+        // 68851 bit 8 is part of the 4-bit mask (MC68851 UM A-7).
+        if CPU_TYPE >= M68030 && extword & 0b0000_0001_0000_0000 != 0 {
+            return self.op_linef(instr);
+        }
+
+        let mode = (extword >> 10) & 0b111;
+        let mask = if CPU_TYPE < M68030 {
+            // MC68851 UM A-7: 4-bit mask in bits 8-5.
+            ((extword >> 5) & 0b1111) as u8
+        } else {
+            // M68000PRM 6-33: 3-bit mask in bits 7-5.
+            ((extword >> 5) & 0b111) as u8
+        };
+        let fc_field = (extword & 0b11111) as u8;
+
+        match mode {
+            // PFLUSHA: invalidate all entries (mask and FC field are zero).
+            0b001 => self.pmmu_cache_invalidate(),
+            // PFLUSH fc,#mask: flush by function code. Snow's ATC slot for a
+            // page is shared across function codes and there is no per-FC
+            // index, so honouring this precisely would mean scanning every
+            // slot (up to 2^20). The hardware may drop ATC entries at any
+            // time, so a full flush is always legal; do the cheap O(1)
+            // generation bump instead.
+            0b100 => self.pmmu_cache_invalidate(),
+            // PFLUSHS fc,#mask (68851 only): also flushes globally shared
+            // entries. Snow's ATC does not track the SG bit, so a full
+            // flush is the only correct over-flush. The 68030 does not
+            // implement PFLUSHS and takes an F-line emulator exception
+            // instead (M68030UM 9.8).
+            0b101 | 0b111 if CPU_TYPE < M68030 => self.pmmu_cache_invalidate(),
+            // PFLUSH fc,#mask,<ea>: flush by function code and page.
+            0b110 => {
+                let fc = self.decode_pmmu_fc(fc_field, "PFLUSH")?;
+                let vaddr =
+                    self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
+                self.pmmu_flush(fc, mask, vaddr);
+            }
+            _ => return self.op_linef(instr),
         }
         Ok(())
     }
@@ -325,6 +440,12 @@ where
         let fc = self.decode_pmmu_fc(extword.fc(), "PLOAD")?;
         let vaddr = self.calc_ea_addr::<Address>(instr, instr.get_addr_mode()?, instr.get_op2())?;
         let writing = !extword.read();
+
+        // M68030UM 9.8: any existing entry translating this address is
+        // flushed before the search, so a failed walk leaves the address
+        // untranslated rather than served by a stale entry. Mask 0 matches
+        // every function code the shared slot has served.
+        self.pmmu_flush(0, 0, vaddr);
 
         // PLOAD does not affect PSR. The walk inside pmmu_translate may modify PSR
         let saved_psr = self.regs.pmmu.psr;
