@@ -129,7 +129,6 @@ pub struct LisaBus<TRenderer: Renderer> {
 
     #[serde(skip, default = "Instant::now")]
     frame_time: Instant,
-    frame_clock: Ticks,
 }
 
 impl<TRenderer> LisaBus<TRenderer>
@@ -182,7 +181,6 @@ where
             nmi: false,
             access_ahead: 0,
             frame_time: Instant::now(),
-            frame_clock: 0,
         }
     }
 
@@ -192,6 +190,27 @@ where
 
     pub fn model(&self) -> MacModel {
         self.model
+    }
+
+    /// Holds the frame until it is due. With no sound to pace by, this is what
+    /// keeps the speed right in `Accurate` too.
+    fn pace_frame(&mut self) {
+        let max_speed = match self.speed {
+            EmulatorSpeed::Accurate | EmulatorSpeed::Video => 1.0,
+            EmulatorSpeed::FastForward(max_speed) => max_speed,
+            EmulatorSpeed::Dynamic | EmulatorSpeed::Uncapped => return,
+        };
+        let period = self.video.frame_period() as f64 / (BUS_FREQUENCY as f64 * max_speed);
+        // Counted from when the last frame was due, for the error of the sleep
+        // not to add up
+        let due = self.frame_time + Duration::from_secs_f64(period);
+        let now = Instant::now();
+        if now < due {
+            thread::sleep(due - now);
+            self.frame_time = due;
+        } else {
+            self.frame_time = now;
+        }
     }
 
     pub fn get_effective_speed(&self) -> f64 {
@@ -658,21 +677,8 @@ where
             self.nmi = true;
         }
 
-        self.video.tick(ticks, &self.ram)?;
-
-        self.frame_clock += ticks;
-        while self.frame_clock >= BUS_FREQUENCY / 60 {
-            self.frame_clock -= BUS_FREQUENCY / 60;
-
-            // No sound to pace the emulation by
-            if matches!(self.speed, EmulatorSpeed::Accurate | EmulatorSpeed::Video) {
-                let frametime = self.frame_time.elapsed().as_micros() as u64;
-                const DESIRED_FRAMETIME: u64 = 1_000_000 / 60;
-                if frametime < DESIRED_FRAMETIME {
-                    thread::sleep(Duration::from_micros(DESIRED_FRAMETIME - frametime));
-                }
-                self.frame_time = Instant::now();
-            }
+        if self.video.tick(ticks, &self.ram)? {
+            self.pace_frame();
         }
 
         Ok(ticks)
