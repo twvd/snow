@@ -51,6 +51,12 @@ const REG_TEST: Address = 0x80F;
 const FIFO_SIZE: usize = 1022;
 const FIFO_HALF: usize = 510;
 
+/// Same for PrimeTime, measured with ASCTester on a LC 475: the half condition
+/// goes from 513 to 512 samples, and full is about 1024, as on the Apple Sound
+/// Chip
+const PRIMETIME_FIFO_SIZE: usize = 1024;
+const PRIMETIME_FIFO_HALF: usize = 512;
+
 bitfield! {
     /// FIFO status register
     #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -71,6 +77,8 @@ bitfield! {
 pub enum V8Variant {
     V8,
     Sonora,
+    /// Sound of the IOSB, as in PrimeTime
+    PrimeTime,
 }
 
 impl V8Variant {
@@ -79,26 +87,34 @@ impl V8Variant {
         match self {
             Self::V8 => 0xE8,
             Self::Sonora => 0xBC,
+            Self::PrimeTime => 0xBB,
         }
     }
 
     const fn channels(self) -> usize {
         match self {
             Self::V8 => 1,
-            Self::Sonora => 2,
+            Self::Sonora | Self::PrimeTime => 2,
+        }
+    }
+
+    const fn fifo_size(self) -> (usize, usize) {
+        match self {
+            Self::V8 | Self::Sonora => (FIFO_SIZE, FIFO_HALF),
+            Self::PrimeTime => (PRIMETIME_FIFO_SIZE, PRIMETIME_FIFO_HALF),
         }
     }
 
     /// The channels have a block of registers
     const fn channel_regs(self) -> bool {
-        matches!(self, Self::Sonora)
+        matches!(self, Self::Sonora | Self::PrimeTime)
     }
 
     /// Value of the control and FIFO mode registers, which are fixed
     const fn control(self) -> u8 {
         match self {
             Self::V8 => 1,
-            Self::Sonora => 0,
+            Self::Sonora | Self::PrimeTime => 0,
         }
     }
 }
@@ -125,7 +141,7 @@ impl V8Sound {
             kind,
             out: AudioPath::default(),
             channels: (0..kind.channels())
-                .map(|_| Channel::new(FIFO_SIZE, FIFO_HALF))
+                .map(|_| Channel::new(kind.fifo_size().0, kind.fifo_size().1))
                 .collect(),
             volume: 0,
             play_record: 0,
@@ -134,7 +150,7 @@ impl V8Sound {
 
     pub fn reset(&mut self) {
         for channel in &mut self.channels {
-            *channel = Channel::new(FIFO_SIZE, FIFO_HALF);
+            *channel = Channel::new(self.kind.fifo_size().0, self.kind.fifo_size().1);
         }
         self.volume = 0;
         self.play_record = 0;
@@ -153,7 +169,7 @@ impl V8Sound {
             // reads $0E empty, $0A full, $02 above half and $06 half full or
             // less, whether FIFO A, FIFO B or both are filled. A LC 475
             // reads the same.
-            V8Variant::Sonora => FifoStatus(0)
+            V8Variant::Sonora | V8Variant::PrimeTime => FifoStatus(0)
                 .with_fullempty(self.play_record & 1 == 0)
                 .with_half_b(half)
                 .with_fullempty_b(fullempty),
@@ -171,6 +187,9 @@ impl V8Sound {
                 (status.fullempty() && !self.channels[0].irq_disable)
                     || (status.half_b() && !self.channels[1].irq_disable)
             }
+            // A LC 475 has no interrupt at full, only at half empty, and $F29
+            // masks it
+            V8Variant::PrimeTime => status.half_b() && !self.channels[1].irq_disable,
         }
     }
 
@@ -181,8 +200,12 @@ impl V8Sound {
             *sample = channel.fifo.pop();
         }
         if queue_sample {
-            // The first channel goes to both sides
-            self.out.push(samples[0], samples[0])?;
+            if self.kind == V8Variant::PrimeTime {
+                self.out.push(samples[0], samples[1])?;
+            } else {
+                // The first channel goes to both sides
+                self.out.push(samples[0], samples[0])?;
+            }
         }
         Ok(())
     }
@@ -241,6 +264,8 @@ impl BusMember<Address> for V8Sound {
                     }
                 }
             }
+            // ASCTester on a LC 475: only bits 7-5 are stored
+            REG_VOLUME if self.kind == V8Variant::PrimeTime => self.volume = val & 0xE0,
             REG_VOLUME => self.volume = val,
             REG_PLAY_RECORD => self.play_record = val,
             0xF00..=0xF3F if self.kind.channel_regs() => {

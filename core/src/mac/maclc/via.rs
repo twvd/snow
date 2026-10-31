@@ -95,7 +95,12 @@ impl Via {
         core.a_in = RegisterA(model.via1_a_in().0);
         // The session lines to the Egret read as negated while they are not
         // driven, they are assumed to be pulled down.
-        core.b_in = RegisterB(0xFF).with_via_full(false).with_sys_ses(false);
+        // On a Cuda they are active low, so that reads as negated too.
+        core.b_in = if model == MacModel::LC475 {
+            RegisterB(0xFF)
+        } else {
+            RegisterB(0xFF).with_via_full(false).with_sys_ses(false)
+        };
 
         Self { core }
     }

@@ -21,8 +21,8 @@ use crate::bus::{Address, Bus, InspectRun, InspectableBus};
 use crate::cpu_m68k::bus::InspectView;
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use crate::cpu_m68k::{
-    CpuM68000, CpuM68020, CpuM68020Fpu, CpuM68020Fpu68882, CpuM68020Pmmu, CpuM68030, CpuM68030Fpu,
-    CpuM68040Fpu,
+    CpuM68LC040, CpuM68000, CpuM68020, CpuM68020Fpu, CpuM68020Fpu68882, CpuM68020Pmmu, CpuM68030,
+    CpuM68030Fpu, CpuM68040Fpu,
 };
 use crate::debuggable::{Debuggable, DebuggableProperties};
 #[cfg(feature = "savestates")]
@@ -30,6 +30,7 @@ use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
 use crate::mac::compact::bus::CompactMacBus;
 use crate::mac::macii::bus::MacIIBus;
+use crate::mac::maclc::lc_475_bus::Lc475Bus;
 use crate::mac::maclc::lc_i_bus::LcIBus;
 use crate::mac::maclc::lc_iii_bus::LcIIIBus;
 use crate::mac::portable::bus::MacPortableBus;
@@ -124,6 +125,8 @@ macro_rules! dispatch {
                         Self::MacLCIII(inner) => &inner.$($ref_target)*,
                         Self::MacLCIIIFpu(inner) => &inner.$($ref_target)*,
                         Self::Quadra700(inner) => &inner.$($ref_target)*,
+                        Self::LC475(inner) => &inner.$($ref_target)*,
+                        Self::LC475Fpu(inner) => &inner.$($ref_target)*,
                     }
                 }
             )*
@@ -144,6 +147,8 @@ macro_rules! dispatch {
                         Self::MacLCIII(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacLCIIIFpu(inner) => &mut inner.$($mut_ref_target)*,
                         Self::Quadra700(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::LC475(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::LC475Fpu(inner) => &mut inner.$($mut_ref_target)*,
                     }
                 }
             )*
@@ -164,6 +169,8 @@ macro_rules! dispatch {
                         Self::MacLCIII(inner) => inner.$($immut_call_target)*,
                         Self::MacLCIIIFpu(inner) => inner.$($immut_call_target)*,
                         Self::Quadra700(inner) => inner.$($immut_call_target)*,
+                        Self::LC475(inner) => inner.$($immut_call_target)*,
+                        Self::LC475Fpu(inner) => inner.$($immut_call_target)*,
                     }
                 }
             )*
@@ -184,6 +191,8 @@ macro_rules! dispatch {
                         Self::MacLCIII(inner) => inner.$($mut_call_target)*,
                         Self::MacLCIIIFpu(inner) => inner.$($mut_call_target)*,
                         Self::Quadra700(inner) => inner.$($mut_call_target)*,
+                        Self::LC475(inner) => inner.$($mut_call_target)*,
+                        Self::LC475Fpu(inner) => inner.$($mut_call_target)*,
                     }
                 }
             )*
@@ -309,6 +318,10 @@ enum EmulatorConfig {
     MacLCIIIFpu(Box<CpuM68030Fpu<LcIIIBus<ChannelRenderer>>>),
     /// Macintosh Quadra 700 (68040)
     Quadra700(Box<CpuM68040Fpu<Quadra700Bus<ChannelRenderer>>>),
+    /// Macintosh LC 475 (68LC040)
+    LC475(Box<CpuM68LC040<Lc475Bus<ChannelRenderer>>>),
+    /// Macintosh LC 475 with its socketed CPU replaced by a 68040
+    LC475Fpu(Box<CpuM68040Fpu<Lc475Bus<ChannelRenderer>>>),
 }
 
 dispatch! {
@@ -360,6 +373,7 @@ dispatch! {
         fn cpu_reset(&mut self) -> Result<()> { reset() }
 
         fn bus_reset(&mut self) -> Result<bool> { bus.reset(true) }
+        fn bus_take_reset_request(&mut self) -> bool { bus.take_reset_request() }
         fn after_deserialize(&mut self, renderer: ChannelRenderer) -> () { bus.after_deserialize(renderer) }
         fn cpu_inspect_read(&mut self, addr: Address, phys: bool) -> Option<Byte> { inspect_read(addr, phys) }
         fn cpu_inspect_write(&mut self, addr: Address, val: Byte, phys: bool) -> Option<()> { inspect_write(addr, val, phys) }
@@ -700,6 +714,25 @@ impl Emulator {
                 assert_eq!(cpu.get_type(), model.cpu_type());
 
                 EmulatorConfig::Quadra700(cpu)
+            }
+            MacModel::LC475 => {
+                assert!(override_fdd_type.is_none());
+
+                let bus = Lc475Bus::new(
+                    model,
+                    rom,
+                    renderer,
+                    monitor.unwrap_or_default(),
+                    mouse_mode,
+                    ram_size,
+                    vram_size,
+                );
+                // The CPU is socketed, and some owners fit a 68040
+                if fpu_enabled {
+                    EmulatorConfig::LC475Fpu(Box::new(CpuM68040Fpu::new(bus)))
+                } else {
+                    EmulatorConfig::LC475(Box::new(CpuM68LC040::new(bus)))
+                }
             }
         };
 
@@ -1085,6 +1118,12 @@ impl Emulator {
     fn step(&mut self) -> Result<()> {
         let mut stop_break = false;
         self.config.cpu_tick(1)?;
+        if self.config.bus_take_reset_request() {
+            // As for the reset command: the bus first, for the overlay
+            self.config.bus_reset()?;
+            self.config.cpu_reset()?;
+            self.config.video_blank()?;
+        }
 
         // Mac 512K: 0x402154, Mac Plus: 0x418CCC
         //if self.config.swim().drives[0].track == 2 {

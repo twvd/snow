@@ -960,6 +960,10 @@ impl Esp {
         )
     }
 
+    pub fn tc(&self) -> u32 {
+        self.tc
+    }
+
     pub fn fifo_len(&self) -> usize {
         self.fifo.len()
     }

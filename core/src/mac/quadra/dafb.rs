@@ -20,6 +20,15 @@ use crate::renderer::{DisplayBuffer, Renderer};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::Field32;
 
+/// Which chip the frame buffer controller is in
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum DafbKind {
+    /// DAFB of the Quadra 700, with the AC842 RAMDAC
+    Dafb,
+    /// DAFB II cell of MEMCjr, with the Antelope RAMDAC (LC 475)
+    MemcJr,
+}
+
 /// Monitors which the DAFB supports. The 16" RGB monitor doesn't work yet.
 pub const MONITORS: &[MacMonitor] = &[
     MacMonitor::RGB12,
@@ -43,6 +52,9 @@ pub enum Bpp {
     /// 8bpp paletted (256 colors)
     Eight,
 
+    /// 16-bit direct color, x555 ('Thousands' of colors, Antelope)
+    Sixteen,
+
     /// 24-bit direct color ('Millions' of colors)
     TwentyFour,
 }
@@ -65,6 +77,8 @@ pub struct Dafb<TRenderer: Renderer> {
     pub renderer: Option<TRenderer>,
 
     monitor: MacMonitor,
+
+    kind: DafbKind,
 
     pub vram: Vec<u8>,
 
@@ -114,6 +128,8 @@ pub struct Dafb<TRenderer: Renderer> {
     pal_idx: u8,
     /// AC842 RAMDAC pixel bus control register
     pbctrl: u8,
+    /// Second pixel bus control register of the Antelope
+    pcbr1: u8,
 
     vblank_ticks: Ticks,
 }
@@ -122,8 +138,18 @@ impl<TRenderer> Dafb<TRenderer>
 where
     TRenderer: Renderer,
 {
-    const VRAM_SIZE: usize = 0x20_0000;
-    const VERSION: u32 = 1;
+    pub const VRAM_SIZE: usize = 0x20_0000;
+
+    /// Value of the version field of the test register
+    const fn version(&self) -> u32 {
+        match self.kind {
+            DafbKind::Dafb => 1,
+            DafbKind::MemcJr => 3,
+        }
+    }
+
+    /// Version in PCBR1
+    const ANTELOPE_VERSION: u8 = 0x02;
 
     /// Horizontal serration pulse location
     const HSERR: usize = 0;
@@ -150,11 +176,17 @@ where
     const INT_VBL: u32 = 1 << 0;
     const INT_CURSOR: u32 = 1 << 2;
 
-    pub fn new(renderer: TRenderer, monitor: MacMonitor) -> Self {
+    pub fn new(
+        renderer: TRenderer,
+        monitor: MacMonitor,
+        kind: DafbKind,
+        vram_size: usize,
+    ) -> Self {
         Self {
             renderer: Some(renderer),
             monitor,
-            vram: vec![0; Self::VRAM_SIZE],
+            kind,
+            vram: vec![0; vram_size],
 
             base_hi: Field32(0),
             base_lo: Field32(0),
@@ -180,6 +212,7 @@ where
             pal_address: 0,
             pal_idx: 0,
             pbctrl: 0,
+            pcbr1: 0,
 
             vblank_ticks: 0,
         }
@@ -197,6 +230,7 @@ where
         self.int_enable = Field32(0);
         self.int_status = Field32(0);
         self.pbctrl = 0;
+        self.pcbr1 = 0;
         self.pal_idx = 0;
         self.hparams = [Field32(0); 10];
         self.vparams = [Field32(0); 7];
@@ -229,6 +263,10 @@ where
 
     /// Currently configured color depth
     pub fn bpp(&self) -> Bpp {
+        if self.kind == DafbKind::MemcJr && self.pcbr1 & 0xC0 == 0xC0 && self.pbctrl & 0x06 == 0x06
+        {
+            return Bpp::Sixteen;
+        }
         match self.pbctrl & 0x1C {
             0x00 => Bpp::One,
             0x08 => Bpp::Two,
@@ -347,6 +385,7 @@ where
             Bpp::Two => geo.width.div_ceil(4),
             Bpp::Four => geo.width.div_ceil(2),
             Bpp::Eight => geo.width,
+            Bpp::Sixteen => geo.width * 2,
             Bpp::TwentyFour => geo.width * 4,
         };
 
@@ -385,6 +424,16 @@ where
                     for (x, &b) in fb.iter().enumerate().take(geo.width) {
                         let color = self.palette[usize::from(b)];
                         self.write_pixel(buf, out + x, color);
+                    }
+                }
+                Bpp::Sixteen => {
+                    for x in 0..geo.width {
+                        let c = u16::from_be_bytes([fb[x * 2], fb[x * 2 + 1]]);
+                        let expand = |v: u16| ((v & 0x1F) as u8) << 3 | ((v & 0x1F) as u8) >> 2;
+                        buf[(out + x) * 4] = expand(c >> 10);
+                        buf[(out + x) * 4 + 1] = expand(c >> 5);
+                        buf[(out + x) * 4 + 2] = expand(c);
+                        buf[(out + x) * 4 + 3] = 0xFF;
                     }
                 }
                 Bpp::TwentyFour => {
@@ -436,6 +485,12 @@ where
         }
     }
 
+    /// The Antelope has a second register at the address of the first, while
+    /// the palette address is 1 and bits 1-2 of the first are set
+    fn pcbr1_selected(&self) -> bool {
+        self.kind == DafbKind::MemcJr && self.pal_address == 1 && self.pbctrl & 0x06 == 0x06
+    }
+
     /// Reads the addressed component of the addressed palette entry.
     fn palette_read(&mut self) -> u8 {
         let entry = self.palette[usize::from(self.pal_address)];
@@ -457,7 +512,7 @@ where
     fn read(&mut self, addr: Address) -> Option<u8> {
         match addr {
             // VRAM
-            0x00_0000..=0x1F_FFFF => Some(self.vram[addr as usize]),
+            0x00_0000..=0x1F_FFFF => Some(self.vram.get(addr as usize).copied().unwrap_or(0)),
 
             // Framebuffer base, bits 20-9
             0x80_0000 => Some(self.base_hi.be0()),
@@ -503,7 +558,7 @@ where
             // Test register
             0x80_002C => Some(self.test.be0()),
             0x80_002D => Some(self.test.be1()),
-            0x80_002E => Some(Field32((self.test.0 & 0x1FF) | (Self::VERSION << 9)).be2()),
+            0x80_002E => Some(Field32((self.test.0 & 0x1FF) | (self.version() << 9)).be2()),
             0x80_002F => Some(self.test.be3()),
 
             // Interrupt status
@@ -559,6 +614,7 @@ where
             0x80_0213 => Some(self.palette_read()),
             // RAMDAC pixel bus control
             0x80_0220..=0x80_0222 => Some(0),
+            0x80_0223 if self.pcbr1_selected() => Some(self.pcbr1),
             0x80_0223 => Some(self.pbctrl),
 
             0x80_0000..=0x80_03FF => Some(0),
@@ -571,7 +627,9 @@ where
         match addr {
             // VRAM
             0x00_0000..=0x1F_FFFF => {
-                self.vram[addr as usize] = val;
+                if let Some(b) = self.vram.get_mut(addr as usize) {
+                    *b = val;
+                }
                 Some(())
             }
 
@@ -687,6 +745,10 @@ where
             }
             // RAMDAC pixel bus control
             0x80_0220..=0x80_0222 => Some(()),
+            0x80_0223 if self.pcbr1_selected() => {
+                self.pcbr1 = (val & 0xF0) | Self::ANTELOPE_VERSION;
+                Some(())
+            }
             0x80_0223 => {
                 self.pbctrl = val;
                 Some(())
