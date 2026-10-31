@@ -241,13 +241,17 @@ where
                 [80, 99, 91, 97, 95, 907],
             ),
             // FGETEXP
-            0b0011110 => {
-                // No need to remove the bias here as we store FPx registers unbiased
-                (
-                    Float::from_i64(SEMANTICS_EXTENDED, source.get_exp()),
-                    [35, 72, 64, 70, 68, 882],
-                )
-            }
+            0b0011110 => (
+                if source.is_inf() || source.is_nan() {
+                    Float::nan(SEMANTICS_EXTENDED, false)
+                } else if source.is_zero() {
+                    source.clone()
+                } else {
+                    // No need to remove the bias here as we store FPx registers unbiased
+                    Float::from_i64(SEMANTICS_EXTENDED, source.get_exp())
+                },
+                [35, 72, 64, 70, 68, 882],
+            ),
             // FTST
             0b0111010 => {
                 self.fpu_condition_codes(source);
@@ -325,22 +329,23 @@ where
                 [41, 70, 62, 68, 66, 878],
             ),
             // FGETMAN
-            0b0011111 => {
-                (
-                    if source.is_inf() || source.is_nan() {
-                        // Not sure if sign gets cleared here, assuming it does
-                        Float::nan(SEMANTICS_EXTENDED, false)
-                    } else if source.is_zero() {
-                        // Not sure if sign gets cleared here, assuming it does
-                        Float::zero(SEMANTICS_EXTENDED, false)
-                    } else {
-                        // Decompose and recreate float to get a normalized mantissa
-                        let mantissa = source.get_mantissa();
-                        Float::from_parts(SEMANTICS_EXTENDED, false, 0, mantissa)
-                    },
-                    [31, 58, 50, 56, 54, 858],
-                )
-            }
+            0b0011111 => (
+                if source.is_inf() || source.is_nan() {
+                    Float::nan(SEMANTICS_EXTENDED, false)
+                } else if source.is_zero() {
+                    source.clone()
+                } else {
+                    // Decompose and recreate float to get a normalized mantissa,
+                    // with the sign of the source (MC68881UM FGETMAN)
+                    Float::from_parts(
+                        SEMANTICS_EXTENDED,
+                        source.is_negative(),
+                        0,
+                        source.get_mantissa(),
+                    )
+                },
+                [31, 58, 50, 56, 54, 858],
+            ),
 
             _ => bail!(CpuError::IllegalInstruction),
         };
