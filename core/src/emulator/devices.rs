@@ -1479,7 +1479,7 @@ mod tests {
                 | MacModel::Quadra700 => (MacSuperDrive, 2),
                 MacModel::LCIII | MacModel::LC475 | MacModel::Quadra800 => (MacSuperDrive, 1),
                 // No `SWIM` bus: its floppy controller is its own
-                MacModel::Lisa25 => continue,
+                MacModel::Lisa25 | MacModel::Lisa210 => continue,
             };
             let mut emu = machine(model);
             assert_eq!(floppy_drives(&mut emu), vec![drive; count], "{model}");

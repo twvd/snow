@@ -819,6 +819,21 @@ impl SnowGui {
         whole.to_pos2()
     }
 
+    /// Warns of an image larger than a hard disk on the parallel port of a Lisa reports
+    fn warn_lisa_disk_size(&mut self, bus: &str, path: &Path) {
+        if bus != bus_id::LISA_PARALLEL {
+            return;
+        }
+        if let Some(s) = crate::util::mac::lisa_disk_sizecheck(path) {
+            self.toasts.add(
+                Toast::default()
+                    .text(s)
+                    .options(ToastOptions::default())
+                    .kind(ToastKind::Warning),
+            );
+        }
+    }
+
     /// Attaches a hard disk with this image to an empty slot
     fn attach_hdd(&self, bus: &str, slot: &str, path: &Path) {
         if bus != bus_id::SCSI {
@@ -896,7 +911,7 @@ impl SnowGui {
                     self.open_model_dialog();
                 }
                 if self.emu.is_initialized() {
-                    if self.emu.get_model() == Some(MacModel::Lisa25)
+                    if self.emu.get_model().is_some_and(MacModel::is_lisa)
                         && ui.button("On-off button").clicked()
                     {
                         self.emu.lisa_on_off_button();
@@ -4366,10 +4381,11 @@ impl eframe::App for SnowGui {
         // Create disk image dialog
         self.create_disk_dialog.update(ctx, frame, &self.settings);
         self.ui_active &= !self.create_disk_dialog.is_open();
-        if let Some(result) = self.create_disk_dialog.take_result()
-            && let Err(e) = self.try_create_image(&result)
-        {
-            self.show_error(&format!("Failed to create image: {}", e));
+        if let Some(result) = self.create_disk_dialog.take_result() {
+            match self.try_create_image(&result) {
+                Ok(()) => self.warn_lisa_disk_size(&result.bus, &result.filename),
+                Err(e) => self.show_error(&format!("Failed to create image: {}", e)),
+            }
         }
 
         // Model selection/'Load ROM' dialog
@@ -4616,12 +4632,13 @@ impl eframe::App for SnowGui {
                                 .kind(ToastKind::Warning),
                         );
                     }
-                    let (bus, slot) = &self.hdd_dialog_target;
-                    if self.emu.device_status(bus, slot).is_some() {
+                    let (bus, slot) = self.hdd_dialog_target.clone();
+                    self.warn_lisa_disk_size(&bus, &path);
+                    if self.emu.device_status(&bus, &slot).is_some() {
                         // A disk that takes another image
-                        self.emu.load_hard_disk(bus, slot, &path);
+                        self.emu.load_hard_disk(&bus, &slot, &path);
                     } else {
-                        self.attach_hdd(bus, slot, &path);
+                        self.attach_hdd(&bus, &slot, &path);
                     }
                 }
                 DialogMode::SaveFile => {
