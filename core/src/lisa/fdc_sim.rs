@@ -20,11 +20,12 @@ const RAM_SIZE: usize = 1024;
 const GOBYTE: usize = 0x00;
 const COMMAND: usize = 0x01;
 const ADRH: usize = 0x02;
-const DRIVE: usize = 0x03;
-const SIDE: usize = 0x04;
-const SECTOR: usize = 0x05;
-const TRACK: usize = 0x06;
-const SPEED: usize = 0x07;
+const DRIVE: usize = 0x02;
+const SIDE: usize = 0x03;
+const SECTOR: usize = 0x04;
+const TRACK: usize = 0x05;
+const SPEED: usize = 0x06;
+const CONFIRM: usize = 0x07;
 const ERRSTAT: usize = 0x08;
 const DISKID: usize = 0x09;
 const NOSIDES: usize = 0x0A;
@@ -198,7 +199,9 @@ pub struct FdcSim {
 impl FdcSim {
     pub fn new() -> Self {
         let mut fdc = Self {
-            ram: vec![0; RAM_SIZE],
+            // Parameter memory as with a run down battery. All zeroes would pass its
+            // checksum and select the hard disk to boot from.
+            ram: vec![0xFF; RAM_SIZE],
             now: 0,
             ready_at: 0,
             command_at: None,
@@ -304,6 +307,7 @@ impl FdcSim {
         {
             self.operation = None;
             self.ram[ERRSTAT] = op.error;
+            log::debug!("Floppy operation done, status {:02X}", op.error);
             let bits = if op.drive == DRIVE_LOWER {
                 IST_DONE
             } else {
@@ -321,6 +325,16 @@ impl FdcSim {
     fn command(&mut self) {
         let go = self.ram[GOBYTE];
         let mask = self.ram[COMMAND];
+        log::debug!(
+            "Floppy command {:02X} {:02X} drive {:02X} side {} sector {} track {} at {}",
+            go,
+            mask,
+            self.ram[DRIVE],
+            self.ram[SIDE],
+            self.ram[SECTOR],
+            self.ram[TRACK],
+            self.now
+        );
         match go {
             GO_NULL => (),
             GO_RWTS => self.rwts(),
@@ -400,7 +414,7 @@ impl FdcSim {
         {
             return ERR_WRITE_PROTECT;
         }
-        if matches!(op, RWTS_FORMAT | RWTS_FORMAT_TRACK) && self.ram[SPEED] != 0xFF {
+        if matches!(op, RWTS_FORMAT | RWTS_FORMAT_TRACK) && self.ram[CONFIRM] != 0xFF {
             return ERR_BAD_FORMAT;
         }
         ERR_OK
