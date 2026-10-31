@@ -54,6 +54,41 @@ where
             .with_rm(self.fpu_rounding_mode()))
     }
 
+    /// FMOD and FREM: the exact remainder, and in FPSR the sign and low 7 bits
+    /// of the quotient (MC68881UM FMOD, FREM)
+    fn fpu_remainder(&mut self, dest: &Float, source: &Float, nearest: bool) -> Float {
+        self.regs.fpu.fpsr.set_quotient(0);
+        self.regs
+            .fpu
+            .fpsr
+            .set_quotient_s(dest.is_negative() != source.is_negative());
+        if dest.is_nan() || source.is_nan() || dest.is_inf() || source.is_zero() {
+            return Float::nan(SEMANTICS_EXTENDED, false);
+        }
+        if source.is_inf() || dest.is_zero() {
+            return dest.clone();
+        }
+
+        let (mut rest, mut quotient) = dest.remainder_parts(source);
+        let mut negative = dest.is_negative();
+        if nearest {
+            let divisor = source.abs().cast(rest.get_semantics());
+            let twice = rest.scale(1, RoundingMode::Zero);
+            if twice > divisor || (twice == divisor && quotient & 1 != 0) {
+                rest = divisor - rest;
+                quotient = quotient.wrapping_add(1) & 0x7F;
+                negative = !negative;
+            }
+        }
+        self.regs.fpu.fpsr.set_quotient(quotient);
+        if rest.is_zero() {
+            negative = dest.is_negative();
+        }
+        let mut result = rest.cast(SEMANTICS_EXTENDED);
+        result.set_sign(negative);
+        result
+    }
+
     /// Rounds to an integer with the rounding mode of FPCR
     fn fpu_round_integer(&self, value: &Float) -> Float {
         if value.is_nan() || value.is_inf() || value.is_zero() {
@@ -195,28 +230,16 @@ where
                 // TODO flags
                 return Ok((dest.clone(), [35, 62, 54, 60, 58, 870]));
             }
-            // FREM - always uses round-to-nearest regardless of FPCR
-            0b0100101 => {
-                let sem = SEMANTICS_EXTENDED.with_rm(RoundingMode::NearestTiesToEven);
-                let dest = &dest.cast(sem);
-                let source = &source.cast(sem);
-                let quotient = dest / source;
-                let n = quotient.round();
-                self.regs.fpu.fpsr.set_quotient(n.to_i64() as u8);
-                self.regs.fpu.fpsr.set_quotient_s(n.is_negative());
-                (dest - (source * n), [100, 129, 121, 127, 125, 937])
-            }
-            // FMOD - always uses round-toward-zero regardless of FPCR
-            0b0100001 => {
-                let sem = SEMANTICS_EXTENDED.with_rm(RoundingMode::Zero);
-                let dest = &dest.cast(sem);
-                let source = &source.cast(sem);
-                let quotient = dest / source;
-                let n = quotient.trunc();
-                self.regs.fpu.fpsr.set_quotient(n.to_i64() as u8);
-                self.regs.fpu.fpsr.set_quotient_s(n.is_negative());
-                (dest - (source * n), [80, 99, 91, 97, 95, 907])
-            }
+            // FREM, round to nearest whatever FPCR says
+            0b0100101 => (
+                self.fpu_remainder(dest, source, true),
+                [100, 129, 121, 127, 125, 937],
+            ),
+            // FMOD, round to zero whatever FPCR says
+            0b0100001 => (
+                self.fpu_remainder(dest, source, false),
+                [80, 99, 91, 97, 95, 907],
+            ),
             // FGETEXP
             0b0011110 => {
                 // No need to remove the bias here as we store FPx registers unbiased
