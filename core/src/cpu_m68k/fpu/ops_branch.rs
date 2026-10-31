@@ -19,7 +19,8 @@ where
     TBus: Bus<Address, u8> + IrqSource,
 {
     /// Condition test for FBcc/FDBcc
-    fn fcc(&self, cc: usize) -> Result<(bool, bool)> {
+    fn fcc(&mut self, cc: usize) -> Result<(bool, bool)> {
+        self.regs.fpu.used = true;
         let nan = self.regs.fpu.fpsr.fpcc_nan();
         let zero = self.regs.fpu.fpsr.fpcc_z();
         let neg = self.regs.fpu.fpsr.fpcc_n();

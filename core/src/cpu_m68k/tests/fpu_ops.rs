@@ -266,3 +266,38 @@ fn accrued_exceptions_stay() {
     assert!(!cpu.regs.fpu.fpsr.exs().dz());
     assert!(cpu.regs.fpu.fpsr.aexc().dz());
 }
+
+#[test]
+fn fsave_frestore_are_privileged() {
+    for op in [0xF310, 0xF350] {
+        let mut cpu = testcpu(&[op]);
+        cpu.regs.sr.set_supervisor(false);
+        cpu.step().unwrap();
+        assert_eq!(cpu.regs.pc, 0x400, "{op:04X}");
+        assert_eq!(read_long(&cpu, 0x8000 - 6), CODE, "{op:04X}");
+    }
+}
+
+#[test]
+fn fsave_gives_a_null_frame_until_the_fpu_is_used() {
+    // FSAVE -(A0) ; FNOP ; FSAVE -(A0)
+    let mut cpu = testcpu(&[0xF320, 0xF280, 0x0000, 0xF320]);
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.a[0], 0x3000 - 4);
+    assert_eq!(read_long(&cpu, 0x3000 - 4), 0);
+    cpu.step().unwrap();
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.a[0], 0x3000 - 4 - 60);
+    assert_eq!(read_long(&cpu, 0x3000 - 4 - 60), 0x1F38_0000);
+}
+
+#[test]
+fn frestore_of_a_null_frame_goes_back_to_null() {
+    // FNOP ; FRESTORE (A0)+ ; FSAVE -(A0)
+    let mut cpu = testcpu(&[0xF280, 0x0000, 0xF358, 0xF320]);
+    cpu.step().unwrap();
+    cpu.step().unwrap();
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.a[0], 0x3000);
+    assert_eq!(read_long(&cpu, 0x3000), 0);
+}
