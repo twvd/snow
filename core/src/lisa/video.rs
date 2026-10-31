@@ -224,9 +224,14 @@ impl LisaVideo {
         self.interrupt
     }
 
-    /// Advances by CPU clocks
-    pub fn tick(&mut self, ticks: Ticks, ram: &[u8]) -> Result<()> {
-        let frame = self.states.len() as Ticks * CPU_PER_STATE;
+    /// CPU clocks per frame
+    pub fn frame_period(&self) -> Ticks {
+        self.states.len() as Ticks * CPU_PER_STATE
+    }
+
+    /// Advances by CPU clocks, true if a frame ended
+    pub fn tick(&mut self, ticks: Ticks, ram: &[u8]) -> Result<bool> {
+        let frame = self.frame_period();
         let interrupt_clock = self.interrupt_state as Ticks * CPU_PER_STATE;
 
         let before = self.clock;
@@ -237,8 +242,9 @@ impl LisaVideo {
         if self.clock >= frame {
             self.clock %= frame;
             self.render(ram)?;
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
     }
 
     fn render(&mut self, ram: &[u8]) -> Result<()> {
@@ -400,5 +406,18 @@ mod tests {
         video.set_disabled(true);
         assert!(!video.irq());
         assert_eq!(video.status(&ram, 0) & (1 << 2), 1 << 2);
+    }
+
+    #[test]
+    fn tick_reports_end_of_frame() {
+        let mut p = prom();
+        p[3] |= PROM_END_OF_FRAME;
+        let mut video = LisaVideo::new(&p);
+        let ram = vec![0; 1 << 21];
+        let period = video.frame_period();
+        assert!(!video.tick(period - 1, &ram).unwrap());
+        assert!(video.tick(1, &ram).unwrap());
+        assert!(!video.tick(period - 1, &ram).unwrap());
+        assert!(video.tick(period, &ram).unwrap());
     }
 }
