@@ -3,7 +3,9 @@
 use crate::bus::access::{BusAccess, BusResponse, CpuBus};
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::FpuM68kType;
-use crate::cpu_m68k::cpu::{Breakpoint, BusBreakpoint, CpuError, CpuM68k, Group0Details};
+use crate::cpu_m68k::cpu::{
+    Breakpoint, BusBreakpoint, CpuError, CpuM68k, Group0Details, WriteBack040,
+};
 use crate::cpu_m68k::{CpuM68kType, CpuSized, M68000, M68020, TORDER_HIGHLOW, TORDER_LOWHIGH};
 use crate::tickable::Ticks;
 use crate::types::Long;
@@ -76,6 +78,7 @@ where
                     function_code: 0,
                     ir: 0,
                     size: std::mem::size_of::<T>(),
+                    atc_fault: false,
 
                     // TODO instruction bit
                     instruction: false,
@@ -193,6 +196,7 @@ where
                     function_code: fc,
                     ir: 0,
                     size: o_len as usize,
+                    atc_fault: false,
                     instruction: false,
                     read: !write,
                     address: o_addr,
@@ -364,7 +368,7 @@ where
         while done < len {
             let laddr = o_addr.wrapping_add(done) & ADDRESS_MASK;
             let data = low_bytes(value, len - done);
-            let (_, n) = self.bus_cycle::<PHYSICAL>(
+            match self.bus_cycle::<PHYSICAL>(
                 fc,
                 o_addr,
                 len,
@@ -372,8 +376,14 @@ where
                 len - done,
                 Some(data),
                 &mut ticks,
-            )?;
-            done += n;
+            ) {
+                Ok((_, n)) => done += n,
+                Err(e) if !PHYSICAL && self.wb040_defer => {
+                    self.wb040_defer_write(e, o_addr, value, done > 0)?;
+                    break;
+                }
+                Err(e) => return Err(e),
+            }
         }
         self.advance_cycles(ticks)
     }
@@ -448,6 +458,37 @@ where
                 value,
             ),
         }
+    }
+
+    /// M68040: a data write of the instruction faulted. Unless the
+    /// instruction is restarted on faults, the instruction completes and the
+    /// write waits in a write-back slot for the access error handler
+    /// (M68040UM 8.4.6). One write can wait that way, a second fault restarts
+    /// the instruction.
+    fn wb040_defer_write(
+        &mut self,
+        e: anyhow::Error,
+        o_addr: Address,
+        value: Long,
+        second_page: bool,
+    ) -> Result<()> {
+        if self.wb040.is_some() {
+            return Err(e);
+        }
+        let Some(CpuError::BusError(details)) = e.downcast_ref() else {
+            return Err(e);
+        };
+        self.wb040 = Some(WriteBack040 {
+            details: Group0Details {
+                // The fault address is the start of the operand
+                address: o_addr,
+                ..*details
+            },
+            data: value,
+            ma: second_page && details.atc_fault,
+            trace: false,
+        });
+        Ok(())
     }
 
     pub(in crate::cpu_m68k) fn write_ticks_order_physical<T: CpuSized, const TORDER: usize>(

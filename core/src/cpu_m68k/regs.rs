@@ -27,6 +27,15 @@ pub enum Register {
     CACR,
     MSP,
     ISP,
+    // M68040 MMU
+    TC040,
+    ITT0,
+    ITT1,
+    DTT0,
+    DTT1,
+    MMUSR040,
+    SRP040,
+    URP040,
     // FPU
     FPCR,
     FPSR,
@@ -49,6 +58,14 @@ impl std::fmt::Display for Register {
             Self::CACR => write!(f, "CACR"),
             Self::MSP => write!(f, "MSP"),
             Self::ISP => write!(f, "ISP"),
+            Self::TC040 => write!(f, "TC"),
+            Self::ITT0 => write!(f, "ITT0"),
+            Self::ITT1 => write!(f, "ITT1"),
+            Self::DTT0 => write!(f, "DTT0"),
+            Self::DTT1 => write!(f, "DTT1"),
+            Self::MMUSR040 => write!(f, "MMUSR"),
+            Self::SRP040 => write!(f, "SRP"),
+            Self::URP040 => write!(f, "URP"),
             Self::FPCR => write!(f, "FPCR"),
             Self::FPSR => write!(f, "FPSR"),
             Self::FPIAR => write!(f, "FPIAR"),
@@ -202,6 +219,26 @@ pub struct RegisterFile {
 
     /// PMMU registers
     pub pmmu: PmmuRegisterFile,
+
+    /// 68040 MMU registers
+    pub mmu040: Mmu040RegisterFile,
+}
+
+/// 68040 MMU registers
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Mmu040RegisterFile {
+    /// Translation Control
+    pub tc: Long,
+    /// Instruction Transparent Translation 0/1
+    pub itt: [Long; 2],
+    /// Data Transparent Translation 0/1
+    pub dtt: [Long; 2],
+    /// MMU Status
+    pub mmusr: Long,
+    /// Supervisor Root Pointer
+    pub srp: Long,
+    /// User Root Pointer
+    pub urp: Long,
 }
 
 impl RegisterFile {
@@ -387,6 +424,14 @@ impl RegisterFile {
             Register::CACR => self.cacr.0 = value.expand(),
             Register::MSP => self.msp = value.expand(),
             Register::ISP => self.isp = value.expand(),
+            Register::TC040 => self.mmu040.tc = value.expand(),
+            Register::ITT0 => self.mmu040.itt[0] = value.expand(),
+            Register::ITT1 => self.mmu040.itt[1] = value.expand(),
+            Register::DTT0 => self.mmu040.dtt[0] = value.expand(),
+            Register::DTT1 => self.mmu040.dtt[1] = value.expand(),
+            Register::MMUSR040 => self.mmu040.mmusr = value.expand(),
+            Register::SRP040 => self.mmu040.srp = value.expand(),
+            Register::URP040 => self.mmu040.urp = value.expand(),
             Register::FPCR => self.fpu.fpcr.0 = value.expand(),
             Register::FPSR => self.fpu.fpsr.0 = value.expand(),
             Register::FPIAR => self.fpu.fpiar = value.expand(),
@@ -409,6 +454,14 @@ impl RegisterFile {
             Register::CACR => T::chop(self.cacr.0),
             Register::MSP => T::chop(self.msp),
             Register::ISP => T::chop(self.isp),
+            Register::TC040 => T::chop(self.mmu040.tc),
+            Register::ITT0 => T::chop(self.mmu040.itt[0]),
+            Register::ITT1 => T::chop(self.mmu040.itt[1]),
+            Register::DTT0 => T::chop(self.mmu040.dtt[0]),
+            Register::DTT1 => T::chop(self.mmu040.dtt[1]),
+            Register::MMUSR040 => T::chop(self.mmu040.mmusr),
+            Register::SRP040 => T::chop(self.mmu040.srp),
+            Register::URP040 => T::chop(self.mmu040.urp),
             Register::FPCR => T::chop(self.fpu.fpcr.0),
             Register::FPSR => T::chop(self.fpu.fpsr.0),
             Register::FPIAR => T::chop(self.fpu.fpiar),

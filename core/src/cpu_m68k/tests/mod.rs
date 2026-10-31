@@ -1,10 +1,15 @@
+mod access_error040;
 mod cmp2;
 mod divl;
 mod fmovem;
 mod format2;
+mod fpu040;
 mod group2_exceptions;
 mod illegal_exception;
 mod interrupt;
+mod link;
+mod mmu040;
+mod movec;
 mod no_fpu;
 mod pack;
 mod pmmu_atc;
