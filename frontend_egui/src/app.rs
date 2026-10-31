@@ -30,9 +30,9 @@ use snow_core::emulator::devices::{
     SlotAddr, bus_id, models_for,
 };
 use snow_core::emulator::save::{SaveHeader, load_state_header};
-use snow_core::mac::MacModel;
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
+use snow_core::mac::{MacModel, NubusDeviceKind};
 use snow_core::renderer::DisplayHandle;
 use snow_core::tickable::Ticks;
 use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
@@ -3023,7 +3023,10 @@ impl SnowGui {
         if let Some(model) = model {
             self.settings.set_last_rom(model, path);
             for card in self.workspace.video_cards() {
-                self.settings.set_last_card_rom(card.kind, &card.rom);
+                // The Lisa's PROM holds its serial number: only its workspace keeps it
+                if card.kind != NubusDeviceKind::LisaVideo {
+                    self.settings.set_last_card_rom(card.kind, &card.rom);
+                }
             }
         }
     }

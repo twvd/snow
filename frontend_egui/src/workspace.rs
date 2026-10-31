@@ -439,6 +439,13 @@ impl Workspace {
                     rom,
                     monitor: None,
                 }
+            } else if model.is_some_and(MacModel::is_lisa) {
+                VideoCardEntry {
+                    slot: 0,
+                    kind: NubusDeviceKind::LisaVideo,
+                    rom,
+                    monitor: None,
+                }
             } else {
                 VideoCardEntry {
                     slot: self.init_args.video_card_slot,
@@ -613,6 +620,12 @@ pub fn card_entries(video_cards: &[VideoCardEntry], args: &EmulatorInitArgs) -> 
                 Some(DeviceModel::DisplayCard824.key()),
                 json!({ "rom": card.rom, "monitor": card.monitor }),
             ),
+            NubusDeviceKind::LisaVideo => old_entry(
+                bus_id::BUILT_IN,
+                "0",
+                Some(DeviceModel::LisaVideo.key()),
+                json!({ "rom": card.rom }),
+            ),
         });
     }
     if args.pds_card == PdsCardKind::AppleIIe {
@@ -654,6 +667,12 @@ fn video_card(config: &DeviceConfig, mac: MacModel) -> Option<VideoCardEntry> {
         DeviceModel::SE30Video => Some(VideoCardEntry {
             slot: 0xE,
             kind: NubusDeviceKind::SE30Video,
+            rom,
+            monitor: None,
+        }),
+        DeviceModel::LisaVideo => Some(VideoCardEntry {
+            slot: 0,
+            kind: NubusDeviceKind::LisaVideo,
             rom,
             monitor: None,
         }),

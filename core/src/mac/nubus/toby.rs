@@ -338,6 +338,7 @@ pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::
     rom: Some(crate::emulator::devices::RomInfo {
         label: "Macintosh II Video Card ROM",
         digests: &["02261d5b8739352ead945de0fdccd3a364890fb67d75eb5449e4bd19e18c06fc"],
+        varying_bits: 0,
     }),
     path_keys: &["rom"],
     adds_buses: &[],

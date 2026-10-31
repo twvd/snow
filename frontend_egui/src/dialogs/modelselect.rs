@@ -25,6 +25,7 @@ const fn card_model(kind: NubusDeviceKind) -> DeviceModel {
     match kind {
         NubusDeviceKind::Toby => DeviceModel::MacIIVideoCard,
         NubusDeviceKind::SE30Video => DeviceModel::SE30Video,
+        NubusDeviceKind::LisaVideo => DeviceModel::LisaVideo,
         NubusDeviceKind::Mdc12 => DeviceModel::DisplayCard824,
     }
 }
@@ -34,6 +35,7 @@ const fn card_kind(model: DeviceModel) -> NubusDeviceKind {
     match model {
         DeviceModel::MacIIVideoCard => NubusDeviceKind::Toby,
         DeviceModel::SE30Video => NubusDeviceKind::SE30Video,
+        DeviceModel::LisaVideo => NubusDeviceKind::LisaVideo,
         _ => NubusDeviceKind::Mdc12,
     }
 }
@@ -309,8 +311,9 @@ impl ModelSelectionDialog {
         self.do_validate_roms();
     }
 
-    /// The SE/30 has its video, a Mac II gets a card in its first slot, which the user can
-    /// move or take out, and a machine with built-in video keeps the cards its slots take
+    /// The SE/30 and the Lisa have their video, a Mac II gets a card in its first slot, which
+    /// the user can move or take out, and a machine with built-in video keeps the cards its
+    /// slots take
     fn fit_cards(&mut self) {
         let slots = self.selected_model.nubus_slots();
         if self.selected_model == MacModel::SE30 {
@@ -319,9 +322,20 @@ impl ModelSelectionDialog {
             if self.cards.is_empty() {
                 self.put_card(0xE, NubusDeviceKind::SE30Video);
             }
-        } else if self.display_rom_required {
+        } else if self.selected_model.is_lisa() {
             self.cards
-                .retain(|slot, c| slots.contains(slot) && c.kind != NubusDeviceKind::SE30Video);
+                .retain(|_, c| c.kind == NubusDeviceKind::LisaVideo);
+            if self.cards.is_empty() {
+                self.put_card(0, NubusDeviceKind::LisaVideo);
+            }
+        } else if self.display_rom_required {
+            self.cards.retain(|slot, c| {
+                slots.contains(slot)
+                    && !matches!(
+                        c.kind,
+                        NubusDeviceKind::SE30Video | NubusDeviceKind::LisaVideo
+                    )
+            });
             if self.cards.is_empty()
                 && let Some(&slot) = slots.first()
             {
@@ -358,6 +372,7 @@ impl ModelSelectionDialog {
                 | MacModel::MacIIx
                 | MacModel::MacIIcx
                 | MacModel::SE30
+                | MacModel::Lisa25
         );
         if !self.display_rom_required && !self.takes_cards() {
             self.cards.clear();
@@ -566,9 +581,12 @@ impl ModelSelectionDialog {
                 }
                 ui.end_row();
 
-                // The SE/30's video is on the logic board: only its ROM is asked for
+                // The SE/30's and the Lisa's video are on the logic board: only their ROM
+                // is asked for
                 if self.selected_model == MacModel::SE30 {
                     self.video_rom_row(ui, settings, 0xE);
+                } else if self.selected_model.is_lisa() {
+                    self.video_rom_row(ui, settings, 0);
                 }
                 if self.has_peripherals() {
                     ui.label(egui::RichText::from("Select peripherals").strong());
@@ -1234,6 +1252,8 @@ impl ModelSelectionDialog {
         let card = self.cards.get_mut(&slot).unwrap();
         card.rom_valid = result.is_ok();
         card.rom_error = match result {
+            // The Lisa's video is in no slot
+            Err(Some(e)) if card.kind == NubusDeviceKind::LisaVideo => e.to_string(),
             Err(Some(e)) => format!("NuBus slot {:X}: {}", slot, e),
             _ => String::new(),
         };

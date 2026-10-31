@@ -292,6 +292,7 @@ where
                 NubusCard::Toby(Toby::new(cfg.rom, renderer.expect("no renderer")))
             }
             NubusDeviceKind::SE30Video => unreachable!("the SE/30's video isn't a NuBus card"),
+            NubusDeviceKind::LisaVideo => unreachable!("the Lisa's video isn't a NuBus card"),
         };
         self.insert(cfg.slot, card);
     }
