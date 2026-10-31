@@ -12,6 +12,7 @@ use crate::tickable::Ticks;
 
 pub mod adb;
 pub mod compact;
+pub mod cuda;
 pub mod egret;
 pub mod egret_common;
 pub mod localtalk_bridge;
