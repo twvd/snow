@@ -165,6 +165,10 @@ impl AudioPath {
         self.sink = sink;
     }
 
+    pub fn sink_full(&self) -> bool {
+        self.sink.is_full()
+    }
+
     pub fn after_deserialize(&mut self) {
         self.set_sink(null_audio_sink());
     }
