@@ -94,6 +94,18 @@ const RAM_ADB_POLL_SECOND: u16 = 0x00B4;
 const RAM_PRAM: u16 = 0x0100;
 const RAM_PRAM_EXTRA: u16 = 0x00D7;
 
+/// Internal RAM of the Cuda below PRAM, kept as plain memory: the host reads and
+/// writes flags there. Only $A1 is known to be used.
+const CUDA_RAM: u16 = 0x0090;
+const CUDA_RAM_SIZE: usize = 0x70;
+
+/// Flags of the Cuda firmware: bit 3 is set at start, and bit 4 once the clock
+/// has been set, which the battery swap sense command reports. The clock of the
+/// model is always set.
+const CUDA_FLAGS: u16 = 0x00A1;
+const CUDA_FLAGS_RESET: u8 = 0x18;
+const CUDA_FLAG_CLOCK_SET: u8 = 0x10;
+
 /// ADB devices the Cuda firmware polls until told otherwise: addresses 2 and 3
 const CUDA_DEVICE_LIST: u16 = 0x000C;
 
@@ -173,6 +185,9 @@ pub struct EgretCommon {
 
     /// The host has asked for a reset of the whole machine
     reset_requested: bool,
+
+    /// Internal RAM of a Cuda, from CUDA_RAM
+    cuda_ram: Vec<u8>,
 }
 
 impl Default for EgretCommon {
@@ -206,6 +221,13 @@ impl EgretCommon {
             dfac2_addr: 0,
             autopoll_period: Self::autopoll_rate_ticks(AUTOPOLL_MS),
             reset_requested: false,
+            cuda_ram: if kind == McuKind::Cuda {
+                let mut ram = vec![0; CUDA_RAM_SIZE];
+                ram[usize::from(CUDA_FLAGS - CUDA_RAM)] = CUDA_FLAGS_RESET;
+                ram
+            } else {
+                vec![]
+            },
         }
     }
 
@@ -421,6 +443,8 @@ impl EgretCommon {
     fn ram_read(&self, addr: u16) -> u8 {
         if let Some(addr) = self.ram_to_pram(addr) {
             self.pram_read(addr)
+        } else if let Some(&val) = self.cuda_ram_index(addr).and_then(|i| self.cuda_ram.get(i)) {
+            val
         } else {
             warn!("Read of unimplemented memory address {:04X}", addr);
             0
@@ -432,12 +456,20 @@ impl EgretCommon {
             self.pram_write(addr, val);
         } else if matches!(addr, RAM_ADB_POLL_FIRST | RAM_ADB_POLL_SECOND) {
             // Written by the host to work around a defect of the firmware
+        } else if let Some(i) = self.cuda_ram_index(addr) {
+            self.cuda_ram[i] = val;
         } else {
             warn!(
                 "Write to unimplemented memory address {:04X}: {:02X}",
                 addr, val
             );
         }
+    }
+
+    /// Index in the internal RAM of a Cuda. Reads of an Egret find nothing.
+    fn cuda_ram_index(&self, addr: u16) -> Option<usize> {
+        let i = usize::from(addr.checked_sub(CUDA_RAM)?);
+        (i < self.cuda_ram.len()).then_some(i)
     }
 
     fn ram_to_pram(&self, addr: u16) -> Option<u16> {
@@ -544,8 +576,15 @@ impl EgretCommon {
             CMD_WRITE_DFAC => Ok(vec![]),
 
             // Sense a battery swap: the firmware answers $FF until the clock is
-            // set and 0 after. The clock of the model is always set.
-            CMD_BATTERY_SWAP_SENSE => Self::params(params).map(|[]| vec![0]),
+            // set and 0 after, from a flag the host can reach
+            CMD_BATTERY_SWAP_SENSE => Self::params(params).map(|[]| {
+                let flags = self.ram_read(CUDA_FLAGS);
+                vec![if flags & CUDA_FLAG_CLOCK_SET != 0 {
+                    0
+                } else {
+                    0xFF
+                }]
+            }),
 
             // Restart the firmware, which resets the CPU, without a response
             CMD_RESET => Self::params(params).map(|[]| {
@@ -652,6 +691,9 @@ impl EgretCommon {
             }
             CMD_SET_CLOCK => Self::params(params).map(|seconds| {
                 self.rtc.set_seconds(u32::from_be_bytes(seconds));
+                if let Some(i) = self.cuda_ram_index(CUDA_FLAGS) {
+                    self.cuda_ram[i] |= CUDA_FLAG_CLOCK_SET;
+                }
                 vec![]
             }),
 
@@ -1090,6 +1132,20 @@ mod tests {
         cuda.command(&[0x01, 0x11]);
         assert!(cuda.take_reset_request());
         assert!(!cuda.take_reset_request());
+    }
+
+    #[test]
+    fn cuda_flags() {
+        let mut cuda = EgretCommon::new(McuKind::Cuda);
+
+        cuda.command(&[0x01, 0x02, 0x00, 0xA1]);
+        assert_eq!(cuda.response_next(), Some(0x18));
+
+        // The host clears them: the clock counts as not set, until it is
+        cuda.command(&[0x01, 0x08, 0x00, 0xA1, 0x00]);
+        assert_eq!(cuda.command(&[0x01, 0x10]), [0x01, 0x00, 0x10, 0xFF]);
+        cuda.command(&[0x01, 0x09, 0, 0, 0, 0]);
+        assert_eq!(cuda.command(&[0x01, 0x10]), [0x01, 0x00, 0x10, 0x00]);
     }
 
     #[test]

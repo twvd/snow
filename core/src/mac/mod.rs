@@ -83,10 +83,10 @@ pub enum MacModel {
     LCII,
     /// Macintosh LC III
     LCIII,
-    /// Macintosh Quadra 700
-    Quadra700,
     /// Macintosh LC 475
     LC475,
+    /// Macintosh Quadra 700
+    Quadra700,
 }
 
 #[allow(clippy::match_like_matches_macro)]

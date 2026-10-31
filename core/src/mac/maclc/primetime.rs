@@ -828,18 +828,13 @@ where
         }
         self.mouse_ready = true;
 
-        // Report updated mouse coordinates to OS
+        // Report updated mouse coordinates to OS. The current (RawMouse) and
+        // new (MTemp) positions are the same: as on the LC III, the ROM takes
+        // any difference between them for a relative movement.
         self.write_ram(Self::ADDR_MTEMP_X, x);
         self.write_ram(Self::ADDR_MTEMP_Y, y);
-        if self.model >= MacModel::SE {
-            // SE+ needs to see even a small difference between the current (RawMouse)
-            // and new (MTemp) position, otherwise the change is ignored.
-            self.write_ram(Self::ADDR_RAWMOUSE_X, x.wrapping_add_signed(-1));
-            self.write_ram(Self::ADDR_RAWMOUSE_Y, y.wrapping_add_signed(1));
-        } else {
-            self.write_ram(Self::ADDR_RAWMOUSE_X, x);
-            self.write_ram(Self::ADDR_RAWMOUSE_Y, y);
-        }
+        self.write_ram(Self::ADDR_RAWMOUSE_X, x);
+        self.write_ram(Self::ADDR_RAWMOUSE_Y, y);
         self.write_ram(Self::ADDR_CRSRNEW, 1_u8);
     }
 
