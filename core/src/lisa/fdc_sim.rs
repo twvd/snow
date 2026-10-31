@@ -82,7 +82,7 @@ const ERR_NO_DISK: u8 = 0x07;
 const ERR_NOT_ENABLED: u8 = 0x08;
 const ERR_INTERRUPT_PENDING: u8 = 0x09;
 const ERR_BAD_FORMAT: u8 = 0x0A;
-const ERR_WRITE_PROTECT: u8 = 0x20;
+const ERR_WRITE_PROTECT: u8 = 0x14;
 
 /// Interrupt status bits of the lower drive, and of the upper one 4 below
 const IST_INSERTED: u8 = 0x10;
@@ -746,5 +746,15 @@ mod tests {
         let image = vec![0x11; 800 * SECTOR_SIZE];
         let disk = LisaDisk::from_image(&image, "raw", false).unwrap();
         assert_eq!(disk.to_image(), image);
+    }
+
+    #[test]
+    fn write_protected_disk_refuses_writes() {
+        let mut fdc = ready();
+        fdc.insert(LisaDisk::from_image(&vec![0; 800 * SECTOR_SIZE], "wp", true).unwrap());
+        fdc.ram_write(DRIVE, DRIVE_LOWER);
+        fdc.ram[IMSK] |= MASK_LOWER;
+        assert_eq!(fdc.validate(RWTS_READ), ERR_OK);
+        assert_eq!(fdc.validate(RWTS_WRITE), 20);
     }
 }
