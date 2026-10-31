@@ -14,6 +14,8 @@ ethernet = ["dep:crc", "dep:binrw"]
 # access, the 65C02's own accesses, a trace ring dumped on BRK, and the
 # full instruction stream to the file named by SNOW_IIE_TRACE
 iie-debug = []
+# Logs every byte the Lisa's COPS sends: keys, mouse moves and the clock
+lisa-cops-debug = []
 # Enables Ethernet bridging (currently broken!)
 ethernet_raw = ["ethernet", "dep:pnet"]
 # Enables Ethernet over userland NAT
