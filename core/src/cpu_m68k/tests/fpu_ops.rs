@@ -152,3 +152,67 @@ fn fint_rounds_ties_to_even() {
         assert_eq!(cpu.regs.fpu.fp[1].as_f64(), want, "{v} {fpcr:02X}");
     }
 }
+
+#[test]
+fn rounding_precision_applies_to_the_result_only() {
+    let mut cpu = testcpu(&fop(0, 1, 0x22));
+    cpu.regs.fpu.fpcr.0 = 0x40; // single
+    cpu.regs.fpu.fp[0] = fp(1.0 + 2f64.powi(-24));
+    cpu.regs.fpu.fp[1] = fp(2f64.powi(-24));
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.fpu.fp[1].as_f64(), 1.0 + 2f64.powi(-23));
+}
+
+#[test]
+fn fcmp_and_ftst_keep_the_registers() {
+    let v = 1.0 + 2f64.powi(-40);
+    for opmode in [0x38, 0x3A] {
+        let mut cpu = testcpu(&fop(0, 1, opmode));
+        cpu.regs.fpu.fpcr.0 = 0x40;
+        cpu.regs.fpu.fp[0] = fp(1.0);
+        cpu.regs.fpu.fp[1] = fp(v);
+        cpu.step().unwrap();
+        assert_eq!(cpu.regs.fpu.fp[1].as_f64(), v);
+    }
+}
+
+#[test]
+fn fcmp_special_values() {
+    let inf = |s| Float::inf(SEMANTICS_EXTENDED, s);
+    let zero = |s| Float::zero(SEMANTICS_EXTENDED, s);
+    // src, dest, N, Z, NAN
+    for (i, (src, dest, n, z, nan)) in [
+        (inf(false), inf(false), false, true, false),
+        (inf(true), inf(true), true, true, false),
+        (inf(false), inf(true), true, false, false),
+        (inf(true), inf(false), false, false, false),
+        (zero(false), zero(true), true, true, false),
+        (zero(true), zero(false), false, true, false),
+        (fp(1.0), fp(2.0), false, false, false),
+        (fp(2.0), fp(1.0), true, false, false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut cpu = testcpu(&fop(0, 1, 0x38));
+        cpu.regs.fpu.fp[0] = src;
+        cpu.regs.fpu.fp[1] = dest;
+        cpu.step().unwrap();
+        let fpsr = cpu.regs.fpu.fpsr;
+        assert_eq!(
+            (fpsr.fpcc_n(), fpsr.fpcc_z(), fpsr.fpcc_nan()),
+            (n, z, nan),
+            "{i}"
+        );
+    }
+}
+
+#[test]
+fn undefined_precision_does_not_stop() {
+    let mut cpu = testcpu(&fop(0, 1, 0x22));
+    cpu.regs.fpu.fpcr.0 = 0xC0;
+    cpu.regs.fpu.fp[0] = fp(1.0);
+    cpu.regs.fpu.fp[1] = fp(1.0);
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.fpu.fp[1].as_f64(), 2.0);
+}
