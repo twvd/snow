@@ -486,6 +486,7 @@ pub const INFO: crate::emulator::devices::ModelInfo = crate::emulator::devices::
     rom: Some(crate::emulator::devices::RomInfo {
         label: "Display Card 8-24 ROM",
         digests: &["e2e763a6b432c9196f619a9f90107726ab1a84a1d54242fe5f5182bf3c97b238"],
+        varying_bits: 0,
     }),
     path_keys: &["rom"],
     adds_buses: &[],

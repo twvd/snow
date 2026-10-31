@@ -114,6 +114,7 @@ pub enum DeviceModel {
     AppleIIePdsCard,
     LocalTalkAdapter,
     SerialBridge,
+    LisaVideo,
 }
 
 /// One static record per device model, in that device model's source code file. The frontend
@@ -162,6 +163,9 @@ pub struct RomInfo {
     pub label: &'static str,
     /// SHA-256 of each ROM known to work, in hex
     pub digests: &'static [&'static str],
+    /// Bits that differ from one machine to the next, such as a serial number: they're left
+    /// out of the digests
+    pub varying_bits: u8,
 }
 
 impl ModelInfo {
@@ -178,6 +182,7 @@ impl ModelInfo {
         let Some(info) = &self.rom else {
             return false;
         };
+        let rom: Vec<u8> = rom.iter().map(|b| b & !info.varying_bits).collect();
         let digest = hex::encode(Sha256::digest(rom));
         info.digests.contains(&digest.as_str())
     }
@@ -206,6 +211,7 @@ pub static MODELS: &[&ModelInfo] = &[
     &crate::mac::maclc::pds_iie::INFO,
     &crate::mac::localtalk_bridge::INFO,
     &crate::mac::serial_bridge::INFO,
+    &crate::lisa::video::INFO,
 ];
 
 /// What a slot on this kind of bus can take, on this Mac model
@@ -749,6 +755,15 @@ impl DeviceSettings for SE30VideoSettings {
     const MODEL: DeviceModel = DeviceModel::SE30Video;
 }
 
+/// The Lisa's video state PROM
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LisaVideoSettings {
+    pub rom: PathBuf,
+}
+impl DeviceSettings for LisaVideoSettings {
+    const MODEL: DeviceModel = DeviceModel::LisaVideo;
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppleIIePdsCardSettings {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -794,6 +809,15 @@ impl MacModel {
                 id: bus_id::SWIM.to_owned(),
                 title: "Floppy".to_owned(),
                 slots,
+            });
+        }
+
+        if self.is_lisa() {
+            buses.push(Bus {
+                kind: BusKind::BuiltIn,
+                id: bus_id::BUILT_IN.to_owned(),
+                title: "Built-in".to_owned(),
+                slots: vec![Slot::fixed("0", DeviceModel::LisaVideo)],
             });
         }
 
@@ -1021,6 +1045,14 @@ impl BuildPlan {
                 }
                 let rom: SE30VideoSettings = config.parse()?;
                 self.take_video(0xE, device, &rom.rom, config)?;
+                Ok(false)
+            }
+            DeviceModel::LisaVideo => {
+                if config.bus != bus_id::BUILT_IN || !fits(BusKind::BuiltIn) {
+                    bail!("This machine can't take a {}", device.name());
+                }
+                let rom: LisaVideoSettings = config.parse()?;
+                self.take_video(0, device, &rom.rom, config)?;
                 Ok(false)
             }
             DeviceModel::AppleIIePdsCard => {
@@ -1694,6 +1726,7 @@ impl Emulator {
             extra_roms.push(match device {
                 DeviceModel::MacIIVideoCard => ExtraROMs::Toby(rom),
                 DeviceModel::SE30Video => ExtraROMs::SE30Video(rom),
+                DeviceModel::LisaVideo => ExtraROMs::LisaVideoProm(rom),
                 _ => ExtraROMs::MDC12(rom),
             });
         }

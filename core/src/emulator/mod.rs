@@ -27,6 +27,7 @@ use crate::debuggable::{Debuggable, DebuggableProperties};
 #[cfg(feature = "savestates")]
 use crate::emulator::save::{load_state_from, save_state_to};
 use crate::keymap::KeyEvent;
+use crate::lisa::bus::LisaBus;
 use crate::mac::compact::bus::CompactMacBus;
 use crate::mac::machine_bus::{MachineBus020, MachineBus040};
 use crate::mac::macii::bus::MacIIBus;
@@ -129,6 +130,7 @@ macro_rules! dispatch {
                         Self::MacLCIII(inner) => &machine_target!(inner, lc_iii, $($ref_target)*),
                         Self::Quadra700(inner) => &machine_target!(inner, quadra700, $($ref_target)*),
                         Self::LC475(inner) => &machine_target!(inner, lc475, $($ref_target)*),
+                        Self::Lisa(inner) => &inner.$($ref_target)*,
                     }
                 }
             )*
@@ -146,6 +148,7 @@ macro_rules! dispatch {
                         Self::MacLCIII(inner) => &mut machine_target!(inner, lc_iii_mut, $($mut_ref_target)*),
                         Self::Quadra700(inner) => &mut machine_target!(inner, quadra700_mut, $($mut_ref_target)*),
                         Self::LC475(inner) => &mut machine_target!(inner, lc475_mut, $($mut_ref_target)*),
+                        Self::Lisa(inner) => &mut inner.$($mut_ref_target)*,
                     }
                 }
             )*
@@ -163,6 +166,7 @@ macro_rules! dispatch {
                         Self::MacLCIII(inner) => machine_target!(inner, lc_iii, $($immut_call_target)*),
                         Self::Quadra700(inner) => machine_target!(inner, quadra700, $($immut_call_target)*),
                         Self::LC475(inner) => machine_target!(inner, lc475, $($immut_call_target)*),
+                        Self::Lisa(inner) => inner.$($immut_call_target)*,
                     }
                 }
             )*
@@ -180,6 +184,7 @@ macro_rules! dispatch {
                         Self::MacLCIII(inner) => machine_target!(inner, lc_iii_mut, $($mut_call_target)*),
                         Self::Quadra700(inner) => machine_target!(inner, quadra700_mut, $($mut_call_target)*),
                         Self::LC475(inner) => machine_target!(inner, lc475_mut, $($mut_call_target)*),
+                        Self::Lisa(inner) => inner.$($mut_call_target)*,
                     }
                 }
             )*
@@ -299,6 +304,8 @@ enum EmulatorConfig {
     Quadra700(Box<CpuM68040<MachineBus040>>),
     /// Macintosh LC 475: a 68LC040, or a 68040 in its socket
     LC475(Box<CpuM68040<MachineBus040>>),
+    /// Apple Lisa
+    Lisa(Box<CpuM68000<LisaBus<ChannelRenderer>>>),
 }
 
 dispatch! {
@@ -635,6 +642,16 @@ impl Emulator {
                 bus.set_security_jumper(iie_card.is_some_and(|s| s.security_jumper));
                 let fpu = if fpu_enabled { FPU_M68882 } else { FPU_NONE };
                 EmulatorConfig::MacLC(Box::new(CpuM68020::new(MachineBus020::LcI(bus), fpu)))
+            }
+            MacModel::Lisa25 => {
+                let Some(video_prom) = extra_roms.iter().find_map(|p| match p {
+                    ExtraROMs::LisaVideoProm(data) => Some(*data),
+                    _ => None,
+                }) else {
+                    bail!("Lisa video state PROM required");
+                };
+                let bus = LisaBus::new(model, rom, video_prom, renderer, mouse_mode, ram_size);
+                EmulatorConfig::Lisa(Box::new(CpuM68000::new(bus, FPU_NONE)))
             }
             MacModel::LCII => {
                 assert!(override_fdd_type.is_none());

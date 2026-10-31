@@ -81,6 +81,9 @@ pub struct ModelSelectionDialog {
     selected_slot: Option<u8>,
     card_rom_paths: HashMap<NubusDeviceKind, String>,
 
+    // Lisa: the PROM file, which isn't one of a card
+    lisa_prom_path: String,
+
     // PRAM path
     pram_enabled: bool,
     pram_path: String,
@@ -152,6 +155,7 @@ impl Default for ModelSelectionDialog {
             selected_video_card: NubusDeviceKind::default(),
             selected_slot: None,
             card_rom_paths: HashMap::new(),
+            lisa_prom_path: String::new(),
 
             pram_enabled: false,
             pram_dialog: SnowFileDialog::new()
@@ -224,8 +228,12 @@ impl ModelSelectionDialog {
         }
         if let Some(p) = display_rom_path {
             self.display_rom_path = p.to_string_lossy().to_string();
-            self.card_rom_paths
-                .insert(self.rom_card(), self.display_rom_path.clone());
+            if self.selected_model.is_lisa() {
+                self.lisa_prom_path.clone_from(&self.display_rom_path);
+            } else {
+                self.card_rom_paths
+                    .insert(self.rom_card(), self.display_rom_path.clone());
+            }
         }
         self.pram_enabled = pram_path.is_some();
         self.pram_path = pram_path
@@ -267,11 +275,14 @@ impl ModelSelectionDialog {
             self.card_rom_paths
                 .insert(*card, path.to_string_lossy().to_string());
         }
-        self.display_rom_path = self
-            .card_rom_paths
-            .get(&self.rom_card())
-            .cloned()
-            .unwrap_or_default();
+        self.display_rom_path = if self.selected_model.is_lisa() {
+            self.lisa_prom_path.clone()
+        } else {
+            self.card_rom_paths
+                .get(&self.rom_card())
+                .cloned()
+                .unwrap_or_default()
+        };
 
         self.do_validate_roms();
     }
@@ -309,6 +320,7 @@ impl ModelSelectionDialog {
                 | MacModel::MacIIx
                 | MacModel::MacIIcx
                 | MacModel::SE30
+                | MacModel::Lisa25
         );
         if !self.display_rom_required {
             self.display_rom_path.clear();
@@ -325,6 +337,8 @@ impl ModelSelectionDialog {
     fn rom_model(&self) -> Option<DeviceModel> {
         if self.selected_model == MacModel::SE30 {
             Some(DeviceModel::SE30Video)
+        } else if self.selected_model.is_lisa() {
+            Some(DeviceModel::LisaVideo)
         } else {
             self.selected_slot
                 .map(|_| card_model(self.selected_video_card))
@@ -388,6 +402,9 @@ impl ModelSelectionDialog {
         }
 
         self.display_rom_valid = false;
+        if self.selected_model.is_lisa() {
+            self.lisa_prom_path.clone_from(&self.display_rom_path);
+        }
         // No card, so no ROM to check: the dialog says the card is missing
         if self.display_rom_path.is_empty() || self.rom_model().is_none() {
             return Ok(());
@@ -535,7 +552,7 @@ impl ModelSelectionDialog {
 
                 // The SE/30's video, or a row per NuBus slot with the card's own rows
                 // under it
-                if self.selected_model == MacModel::SE30 {
+                if self.selected_model == MacModel::SE30 || self.selected_model.is_lisa() {
                     self.video_rom_row(ui, settings);
                 } else if self.display_rom_required {
                     let mac = self.selected_model;

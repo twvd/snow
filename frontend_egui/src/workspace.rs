@@ -575,7 +575,18 @@ pub fn card_entries(
     args: &EmulatorInitArgs,
 ) -> Vec<DeviceConfig> {
     let mut entries = vec![];
-    if let Some(rom) = display_rom {
+    if model.is_some_and(MacModel::is_lisa) {
+        // The Lisa's own video, with its PROM
+        if let Some(rom) = display_rom {
+            let device = DeviceModel::LisaVideo.key();
+            entries.push(old_entry(
+                bus_id::BUILT_IN,
+                "0",
+                Some(device),
+                json!({ "rom": rom }),
+            ));
+        }
+    } else if let Some(rom) = display_rom {
         if model == Some(MacModel::SE30) {
             entries.push(old_entry(
                 bus_id::BUILT_IN,

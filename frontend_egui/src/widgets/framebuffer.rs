@@ -299,7 +299,8 @@ impl FramebufferWidget {
             | MacModel::SE
             | MacModel::SeFdhd
             | MacModel::Classic
-            | MacModel::SE30 => {
+            | MacModel::SE30
+            | MacModel::Lisa25 => {
                 vec![
                     ShaderConfig::builder(ShaderId::ImageAdjustment)
                         .enabled(false)

@@ -4,6 +4,7 @@ pub mod cpu_m68k;
 pub mod debuggable;
 pub mod emulator;
 pub mod keymap;
+pub mod lisa;
 pub mod mac;
 pub mod renderer;
 pub mod tickable;

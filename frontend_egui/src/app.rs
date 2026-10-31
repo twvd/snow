@@ -2899,7 +2899,10 @@ impl SnowGui {
         // Save to last used ROMs
         if let Some(model) = model {
             self.settings.set_last_rom(model, path);
-            if let Some(dr_path) = self.workspace.get_display_card_rom_path() {
+            // The Lisa's PROM isn't a card's: the workspace has it
+            if let Some(dr_path) = self.workspace.get_display_card_rom_path()
+                && !model.is_lisa()
+            {
                 self.settings
                     .set_last_card_rom(video_rom_card(model, args.video_card), &dr_path);
             }
