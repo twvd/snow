@@ -841,6 +841,12 @@ impl ModelSelectionDialog {
                                 "Use 800K floppy drive on Macintosh 128K/512K",
                             );
                         }
+                        if self.selected_model == MacModel::Lisa210 {
+                            ui.checkbox(
+                                &mut self.early_800k,
+                                "Use an 800K floppy drive, for MacWorks Plus",
+                            );
+                        }
                         ui.checkbox(
                             &mut self.init_args.audio_disabled,
                             "Disable audio (sync to video)",
@@ -982,7 +988,7 @@ impl ModelSelectionDialog {
                                 mouse_disabled: None,
                                 override_fdd_type: if matches!(
                                     self.selected_model,
-                                    MacModel::Early128K | MacModel::Early512K
+                                    MacModel::Early128K | MacModel::Early512K | MacModel::Lisa210
                                 ) && self.early_800k
                                 {
                                     Some(DriveType::GCR800KPWM)

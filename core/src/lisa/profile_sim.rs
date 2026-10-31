@@ -74,6 +74,8 @@ enum Phase {
     MultiRead,
     /// Widget: taking blocks to write
     MultiWrite,
+    /// Widget: all blocks written
+    MultiWriteDone,
     /// Widget: taking the spare table
     SpareData,
 }
@@ -267,15 +269,14 @@ impl ProfileSim {
                 (Some(&CMD_READ), _) if self.incoming.len() >= COMMAND_SIZE => STATE_READ,
                 (Some(&CMD_WRITE), _) if self.incoming.len() >= COMMAND_SIZE => STATE_WRITE,
                 (_, Some(Frame::Multi { write: false, .. })) => STATE_MULTI_READ,
-                (_, Some(Frame::Multi { write: true, .. })) => STATE_MULTI_WRITE,
                 (_, Some(Frame::SpareRead)) => STATE_SPARE_READ,
                 (_, Some(Frame::SpareWrite)) => STATE_SPARE_WRITE,
                 _ => STATE_READY,
             },
             Phase::WriteData | Phase::SpareData => STATE_WRITTEN,
             Phase::MultiRead => STATE_MULTI_READ,
-            Phase::MultiWrite if self.multi_left > 1 => STATE_MULTI_WRITE,
-            Phase::MultiWrite => STATE_MULTI_DONE,
+            Phase::MultiWrite => STATE_MULTI_WRITE,
+            Phase::MultiWriteDone => STATE_MULTI_DONE,
         };
         self.busy_at = Some(self.now + HANDSHAKE_TICKS);
     }
@@ -289,9 +290,8 @@ impl ProfileSim {
         self.outgoing.clear();
         self.outgoing_pos = 0;
         if state == STATE_MULTI_DONE {
-            // The last block, whatever the reply: the driver's is $69
-            self.multi_write_block();
-            release = BLOCK_TICKS;
+            // Whatever the reply: the driver's is $69
+            self.outgoing.extend_from_slice(&[0; STATUS_SIZE]);
         } else if reply == REPLY_OK {
             match (phase, state) {
                 (Phase::Ready, _) => {
@@ -318,20 +318,21 @@ impl ProfileSim {
                     self.multi_read_block();
                     release = BLOCK_TICKS;
                 }
-                (Phase::Command, STATE_MULTI_WRITE) => {
-                    self.start_multi();
-                    self.start_multi_write_data();
-                }
                 (Phase::MultiWrite, _) => {
                     self.multi_write_block();
                     self.multi_left -= 1;
                     self.write_target += 1;
-                    self.start_multi_write_data();
+                    if self.multi_left > 0 {
+                        self.start_multi_write_data();
+                    } else {
+                        self.phase = Phase::MultiWriteDone;
+                    }
                     release = BLOCK_TICKS;
                 }
                 (Phase::Command, STATE_SPARE_READ) => {
                     self.outgoing.extend_from_slice(&[0; STATUS_SIZE]);
                     self.outgoing.extend_from_slice(&self.spare_table);
+                    release = BLOCK_TICKS;
                 }
                 (Phase::Command, STATE_SPARE_WRITE) => {
                     self.incoming.clear();
@@ -343,6 +344,7 @@ impl ProfileSim {
                     }
                     self.incoming.clear();
                     self.outgoing.extend_from_slice(&[0; STATUS_SIZE]);
+                    release = BLOCK_TICKS;
                 }
                 (Phase::Command, STATE_READY) if self.frame() == Some(Frame::ReadState) => {
                     self.outgoing.extend_from_slice(&[0; STATUS_SIZE]);
@@ -534,6 +536,11 @@ impl ProfileSim {
                 };
                 if self.incoming.len() < limit {
                     self.incoming.push(val);
+                }
+                // The data of the first block follows right after the frame
+                if let Some(Frame::Multi { write: true, .. }) = self.frame() {
+                    self.start_multi();
+                    self.start_multi_write_data();
                 }
             }
             Phase::WriteData | Phase::MultiWrite if self.incoming.len() < BLOCK_SIZE => {
@@ -742,11 +749,7 @@ mod tests {
     fn widget_multi_write_stores_label_first() {
         let mut drive = widget(4);
         frame(&mut drive, &[FRAME_MULTI, 1, 2, 0, 0, 1]);
-        handshake(&mut drive, STATE_MULTI_WRITE);
-        for (data, label, state) in [
-            (0xD1, 0xA1, STATE_MULTI_WRITE),
-            (0xD2, 0xA2, STATE_MULTI_DONE),
-        ] {
+        for (data, label) in [(0xD1, 0xA1), (0xD2, 0xA2)] {
             drive.strobe_write(data);
             for _ in 1..DATA_SIZE {
                 drive.strobe_write(0);
@@ -755,19 +758,13 @@ mod tests {
             for _ in 1..LABEL_SIZE {
                 drive.strobe_write(0);
             }
-            drive.set_cmd(true, 0xFF);
-            drive.tick(HANDSHAKE_TICKS);
-            assert_eq!(drive.port(), state);
-            drive.set_cmd(
-                false,
-                if state == STATE_MULTI_DONE {
-                    0x69
-                } else {
-                    REPLY_OK
-                },
-            );
-            drive.tick(BLOCK_TICKS);
+            handshake(&mut drive, STATE_MULTI_WRITE);
         }
+        drive.set_cmd(true, 0xFF);
+        drive.tick(HANDSHAKE_TICKS);
+        assert_eq!(drive.port(), STATE_MULTI_DONE);
+        drive.set_cmd(false, 0x69);
+        drive.tick(BLOCK_TICKS);
         assert_eq!(read_bytes(&mut drive, STATUS_SIZE), [0; STATUS_SIZE]);
         assert_eq!(drive.data[BLOCK_SIZE], 0xA1);
         assert_eq!(drive.data[BLOCK_SIZE + LABEL_SIZE], 0xD1);

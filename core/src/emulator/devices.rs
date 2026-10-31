@@ -126,6 +126,7 @@ pub enum DeviceModel {
     LocalTalkAdapter,
     SerialBridge,
     Lisa400KDrive,
+    Lisa800KDrive,
     ProFile,
     Widget,
     LisaVideo,
@@ -227,6 +228,7 @@ pub static MODELS: &[&ModelInfo] = &[
     &crate::mac::localtalk_bridge::INFO,
     &crate::mac::serial_bridge::INFO,
     &crate::lisa::fdc_sim::INFO_400K,
+    &crate::lisa::fdc_sim::INFO_800K,
     &crate::lisa::profile_sim::INFO_PROFILE,
     &crate::lisa::profile_sim::INFO_WIDGET,
     &crate::lisa::video::INFO,
@@ -1109,9 +1111,13 @@ impl BuildPlan {
                 self.cards.push(config.clone());
                 Ok(false)
             }
-            DeviceModel::Lisa400KDrive => {
+            DeviceModel::Lisa400KDrive | DeviceModel::Lisa800KDrive => {
                 if config.bus != bus_id::LISA_FDC || !fits(BusKind::LisaFdc) {
                     bail!("This machine can't take a {}", device.name());
+                }
+                // The mechanism is the Mac's
+                if device == DeviceModel::Lisa800KDrive {
+                    self.override_drive = Some(DriveType::GCR800K);
                 }
                 Ok(true)
             }
@@ -2172,10 +2178,10 @@ impl Emulator {
                 ),
                 SerialBridgeConfig::LocalTalk => device(DeviceModel::LocalTalkAdapter, Map::new()),
             },
-            SlotTarget::LisaDrive => {
-                self.lisa_bus()?;
-                device(DeviceModel::Lisa400KDrive, Map::new())
-            }
+            SlotTarget::LisaDrive => match self.lisa_bus()?.fdc().double_sided() {
+                true => device(DeviceModel::Lisa800KDrive, Map::new()),
+                false => device(DeviceModel::Lisa400KDrive, Map::new()),
+            },
             SlotTarget::LisaParallel => match self.lisa_bus()?.profile()?.kind() {
                 HardDiskKind::Profile => device(DeviceModel::ProFile, Map::new()),
                 HardDiskKind::Widget => device(DeviceModel::Widget, Map::new()),
@@ -2783,6 +2789,28 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn a_lisa_has_drives_of_its_own() {
+        let files = TestFiles::new("lisa");
+        let drive = DeviceConfig::of_model(
+            bus_id::LISA_FDC,
+            "1",
+            DeviceModel::Lisa800KDrive,
+            &FloppySettings::default(),
+        )
+        .unwrap();
+        let widget = lisa_disk(DeviceModel::Widget, files.file("w.image", LISA_DISK_SIZE));
+        let reported = assert_round_trip(MacModel::Lisa210, vec![drive.clone(), widget.clone()]);
+        assert!(reported.contains(&drive));
+        assert!(reported.contains(&widget));
+
+        // The 2/5 has neither
+        let profile = lisa_disk(DeviceModel::ProFile, files.file("p.image", LISA_DISK_SIZE));
+        let (mut emu, refused) = build(MacModel::Lisa25, vec![drive, widget, profile.clone()]);
+        assert_eq!(refused.len(), 2, "{:?}", refused);
+        assert_eq!(emu.devices(), vec![profile]);
     }
 
     #[test]

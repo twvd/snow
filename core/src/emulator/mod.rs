@@ -653,7 +653,15 @@ impl Emulator {
                     Some(prom) => prom.to_vec(),
                     None => build_prom(false, None)?,
                 };
-                let bus = LisaBus::new(model, rom, &video_prom, renderer, mouse_mode, ram_size);
+                let bus = LisaBus::new(
+                    model,
+                    rom,
+                    &video_prom,
+                    renderer,
+                    mouse_mode,
+                    ram_size,
+                    override_fdd_type == Some(DriveType::GCR800K),
+                );
                 EmulatorConfig::Lisa(Box::new(CpuM68000::new(bus, FPU_NONE)))
             }
             MacModel::LCII => {

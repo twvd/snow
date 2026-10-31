@@ -35,6 +35,7 @@ const MTRON: usize = 0x21;
 const CURTRACK: usize = 0x22;
 const DRVCONN: usize = 0x24;
 const FMTTYPE: usize = 0x25;
+const FMTTYPE_SIDE_BIT: u8 = 0x20;
 const IMALIVE: usize = 0x28;
 const IMSK: usize = 0x2C;
 const OKTOGO: usize = 0x2E;
@@ -89,6 +90,7 @@ const ERR_NOT_ENABLED: u8 = 0x08;
 const ERR_INTERRUPT_PENDING: u8 = 0x09;
 const ERR_BAD_FORMAT: u8 = 0x0A;
 const ERR_WRITE_PROTECT: u8 = 0x14;
+const ERR_READ: u8 = 0x17;
 
 /// Interrupt status bits of the lower drive, and of the upper one 4 below
 const IST_INSERTED: u8 = 0x10;
@@ -132,6 +134,7 @@ pub struct LisaDisk {
     data: Vec<u8>,
     tags: Vec<u8>,
     write_protect: bool,
+    sides: u8,
     /// DiskCopy 4.2 header, none for a raw image
     dc42_header: Option<Vec<u8>>,
     /// Written since the image was loaded
@@ -177,21 +180,39 @@ impl LisaDisk {
             _ => bail!("Not a DiskCopy 4.2 or raw image"),
         };
         let sectors = data.len() / SECTOR_SIZE;
-        if sectors != sectors_before_track(TRACKS) {
-            bail!("A Lisa disk has 800 sectors, this image has {}", sectors);
-        }
+        let sides = if sectors == sectors_before_track(TRACKS) {
+            1
+        } else if sectors == 2 * sectors_before_track(TRACKS) {
+            2
+        } else {
+            bail!(
+                "A Lisa disk has 800 or 1600 sectors, this image has {}",
+                sectors
+            );
+        };
         let mut tags = tags.to_vec();
         tags.resize(sectors * TAG_SIZE, 0);
         Ok(Self {
             data: data.to_vec(),
             tags,
             write_protect,
+            sides,
             dc42_header,
             dirty: false,
             title: title.to_owned(),
             media: None,
             writeback: false,
         })
+    }
+
+    pub fn sides(&self) -> u8 {
+        self.sides
+    }
+
+    /// The first sector of a track and side. Side 1 of a track follows side 0.
+    fn first_sector(&self, track: u8, side: u8) -> usize {
+        sectors_before_track(track) * usize::from(self.sides)
+            + usize::from(side) * usize::from(sectors_on_track(track))
     }
 
     pub fn dirty(&self) -> bool {
@@ -235,6 +256,8 @@ struct Operation {
 #[derive(Serialize, Deserialize)]
 pub struct FdcSim {
     rom_id: u8,
+    /// An 800K drive instead of a 400K one
+    double_sided: bool,
     ram: Vec<u8>,
     now: Ticks,
     /// When the controller is listening after a reset
@@ -251,9 +274,10 @@ pub struct FdcSim {
 }
 
 impl FdcSim {
-    pub fn new(rom_id: u8) -> Self {
+    pub fn new(rom_id: u8, double_sided: bool) -> Self {
         let mut fdc = Self {
             rom_id,
+            double_sided,
             // Parameter memory as with a run down battery. All zeroes would pass its
             // checksum and select the hard disk to boot from.
             ram: vec![0xFF; RAM_SIZE],
@@ -276,9 +300,13 @@ impl FdcSim {
         self.ram[PARAMETER_MEMORY..=0xFF].copy_from_slice(&parameter_memory);
         self.ram[CONSTANTS..CONSTANTS + CONSTANTS_2_5.len()].copy_from_slice(&CONSTANTS_2_5);
         self.ram[CONSTANTS + CONSTANT_ROM_ID] = self.rom_id;
-        self.ram[NOSIDES] = 1;
+        self.ram[NOSIDES] = if self.double_sided { 2 } else { 1 };
         self.ram[DRVCONN] = 0xFF;
-        self.ram[FMTTYPE] = 0x02;
+        self.ram[FMTTYPE] = if self.double_sided {
+            FMTTYPE_SIDE_BIT | 0x02
+        } else {
+            0x02
+        };
         self.ram[DISKID] = 0x02;
         self.ram[CLAMPED] = if self.disk.is_some() { 0xFF } else { 0 };
         self.ready_at = self.now + START_TICKS;
@@ -317,6 +345,15 @@ impl FdcSim {
     /// DSKDIAG: listening
     pub fn diag(&self) -> bool {
         self.now >= self.ready_at
+    }
+
+    /// Whether the drive can take a disk
+    pub fn fits(&self, disk: &LisaDisk) -> bool {
+        self.double_sided || disk.sides < 2
+    }
+
+    pub fn double_sided(&self) -> bool {
+        self.double_sided
     }
 
     pub fn insert(&mut self, disk: LisaDisk) {
@@ -453,8 +490,12 @@ impl FdcSim {
             op,
             RWTS_READ | RWTS_WRITE | RWTS_READ_BRUTE | RWTS_WRITE_BRUTE
         ) {
-            if self.ram[SIDE] != 0 {
-                return ERR_BAD_SIDE;
+            match self.ram[SIDE] {
+                0 => (),
+                1 if !self.double_sided => return ERR_BAD_SIDE,
+                1 if disk.sides < 2 => return ERR_READ,
+                1 => (),
+                _ => return ERR_BAD_SIDE,
             }
             if self.ram[TRACK] >= TRACKS {
                 return ERR_BAD_TRACK;
@@ -501,10 +542,11 @@ impl FdcSim {
     fn perform(&mut self, op: u8) {
         let track = self.ram[TRACK];
         let sector = usize::from(self.ram[SECTOR]);
-        let index = sectors_before_track(track.min(TRACKS - 1)) + sector;
+        let side = self.ram[SIDE].min(1);
         let Some(disk) = self.disk.as_mut() else {
             return;
         };
+        let index = disk.first_sector(track.min(TRACKS - 1), side) + sector;
         match op {
             RWTS_READ | RWTS_READ_BRUTE => {
                 self.ram[CURTRACK] = track;
@@ -531,7 +573,7 @@ impl FdcSim {
             }
             RWTS_FORMAT_TRACK => {
                 let count = usize::from(sectors_on_track(track.min(TRACKS - 1)));
-                let first = sectors_before_track(track.min(TRACKS - 1));
+                let first = disk.first_sector(track.min(TRACKS - 1), side);
                 disk.data[first * SECTOR_SIZE..(first + count) * SECTOR_SIZE].fill(0);
                 disk.tags[first * TAG_SIZE..(first + count) * TAG_SIZE].fill(0);
                 disk.dirty = true;
@@ -572,6 +614,9 @@ impl Floppy for FdcSim {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let mut disk = LisaDisk::from_image(&image, &title, read_only)?;
+        if !self.fits(&disk) {
+            bail!("'{}' is an 800K disk and this drive is 400K", title);
+        }
         disk.media = Some(media.to_path_buf());
         self.insert(disk);
         Ok(())
@@ -606,6 +651,25 @@ pub const INFO_400K: ModelInfo = ModelInfo {
     create: None,
 };
 
+/// The Lisa 2/10 can have one, for MacWorks Plus
+fn fits_800k(mac: MacModel) -> bool {
+    mac == MacModel::Lisa210
+}
+
+pub const INFO_800K: ModelInfo = ModelInfo {
+    model: DeviceModel::Lisa800KDrive,
+    name: "800K drive",
+    bus: BusKind::LisaFdc,
+    fits: fits_800k,
+    function: FunctionKind::Floppy,
+    fixed: true,
+    one_per_bus: false,
+    rom: None,
+    path_keys: &["media"],
+    adds_buses: &[],
+    create: None,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,7 +692,7 @@ mod tests {
     }
 
     fn ready() -> FdcSim {
-        let mut fdc = FdcSim::new(ROM_ID_2_5);
+        let mut fdc = FdcSim::new(ROM_ID_2_5, false);
         fdc.tick(START_TICKS);
         fdc
     }
@@ -642,10 +706,10 @@ mod tests {
 
     #[test]
     fn not_listening_at_first() {
-        let mut fdc = FdcSim::new(ROM_ID_2_5);
+        let mut fdc = FdcSim::new(ROM_ID_2_5, false);
         assert!(!fdc.diag());
         assert_eq!(fdc.ram_read(0x18), 0xA8);
-        assert_eq!(FdcSim::new(ROM_ID_2_10).ram_read(0x18), 0x88);
+        assert_eq!(FdcSim::new(ROM_ID_2_10, false).ram_read(0x18), 0x88);
         fdc.tick(START_TICKS);
         assert!(fdc.diag());
     }
@@ -709,7 +773,7 @@ mod tests {
 
     #[test]
     fn parameter_memory_survives() {
-        let mut fdc = FdcSim::new(ROM_ID_2_5);
+        let mut fdc = FdcSim::new(ROM_ID_2_5, false);
         fdc.ram_write(0xC5, 0x12);
         fdc.ram_write(0x30, 0x34);
         fdc.reset();
@@ -765,5 +829,51 @@ mod tests {
         fdc.ram[IMSK] |= MASK_LOWER;
         assert_eq!(fdc.validate(RWTS_READ), ERR_OK);
         assert_eq!(fdc.validate(RWTS_WRITE), 20);
+    }
+
+    fn double_sided_disk() -> LisaDisk {
+        let mut image = vec![0; 1600 * SECTOR_SIZE];
+        // Track 1 side 0, after the 24 of track 0, then its side 1
+        image[24 * SECTOR_SIZE] = 0x10;
+        image[36 * SECTOR_SIZE] = 0x11;
+        LisaDisk::from_image(&image, "800K", false).unwrap()
+    }
+
+    #[test]
+    fn side_1_of_an_800k_disk() {
+        let mut fdc = FdcSim::new(ROM_ID_2_10, true);
+        assert_eq!(fdc.ram_read(NOSIDES), 2);
+        assert_eq!(fdc.ram_read(FMTTYPE), 0x22);
+        fdc.insert(double_sided_disk());
+        fdc.ram[IMSK] |= MASK_LOWER;
+        fdc.ram_write(DRIVE, DRIVE_LOWER);
+        fdc.ram_write(TRACK, 1);
+        fdc.ram_write(SECTOR, 0);
+        fdc.ram_write(SIDE, 0);
+        fdc.perform(RWTS_READ);
+        assert_eq!(fdc.ram_read(DATA), 0x10);
+        fdc.ram_write(SIDE, 1);
+        assert_eq!(fdc.validate(RWTS_READ), ERR_OK);
+        fdc.perform(RWTS_READ);
+        assert_eq!(fdc.ram_read(DATA), 0x11);
+    }
+
+    #[test]
+    fn drive_and_disk_sides() {
+        let mut fdc = FdcSim::new(ROM_ID_2_10, false);
+        assert!(!fdc.fits(&double_sided_disk()));
+        fdc.insert(disk());
+        fdc.ram[IMSK] |= MASK_LOWER;
+        fdc.ram_write(DRIVE, DRIVE_LOWER);
+        fdc.ram_write(SIDE, 1);
+        assert_eq!(fdc.validate(RWTS_READ), ERR_BAD_SIDE);
+
+        let mut fdc = FdcSim::new(ROM_ID_2_10, true);
+        assert!(fdc.fits(&double_sided_disk()));
+        fdc.insert(disk());
+        fdc.ram[IMSK] |= MASK_LOWER;
+        fdc.ram_write(DRIVE, DRIVE_LOWER);
+        fdc.ram_write(SIDE, 1);
+        assert_eq!(fdc.validate(RWTS_READ), ERR_READ);
     }
 }

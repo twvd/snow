@@ -147,6 +147,7 @@ where
         renderer: TRenderer,
         _mouse_mode: MouseMode,
         ram_size: Option<usize>,
+        double_sided_drive: bool,
     ) -> Self {
         let ram_size = ram_size.unwrap_or_else(|| model.ram_size_default());
         let video = LisaVideo::new(video_prom, renderer);
@@ -166,11 +167,14 @@ where
             keyboard_via: KeyboardVia::new(),
             parallel_via: ParallelVia::new(),
             cops: CopsSim::new(),
-            fdc: FdcSim::new(if model == MacModel::Lisa210 {
-                ROM_ID_2_10
-            } else {
-                ROM_ID_2_5
-            }),
+            fdc: FdcSim::new(
+                if model == MacModel::Lisa210 {
+                    ROM_ID_2_10
+                } else {
+                    ROM_ID_2_5
+                },
+                double_sided_drive,
+            ),
             profile: None,
             profile_not_reset: true,
             profile_not_busy: true,

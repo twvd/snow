@@ -17,6 +17,7 @@ use snow_core::emulator::devices::{
 };
 use snow_core::mac::maclc::pds_iie::IieDiskDevice;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
+use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{MacModel, NubusDeviceKind, PdsCardKind};
 
 /// Custom deserializer that skips invalid shader configs instead of failing entirely
@@ -491,6 +492,10 @@ impl Workspace {
                 Some(model) if config.bus == bus_id::SWIM => {
                     args.override_fdd_type = model.drive_type();
                 }
+                // What the Load ROM dialog's 800K option gives
+                Some(DeviceModel::Lisa800KDrive) => {
+                    args.override_fdd_type = Some(DriveType::GCR800KPWM);
+                }
                 // The PROM file is found with the cards' ROMs
                 _ if self.model.and_then(|mac| config.model_on(mac))
                     == Some(DeviceModel::LisaVideo) =>
@@ -636,7 +641,12 @@ pub fn card_entries(
             ));
         }
     }
-    if let Some(drive) = args
+    if model.is_some_and(MacModel::is_lisa) {
+        if args.override_fdd_type.is_some() {
+            let drive = DeviceModel::Lisa800KDrive.key();
+            entries.push(old_entry(bus_id::LISA_FDC, "1", Some(drive), json!({})));
+        }
+    } else if let Some(drive) = args
         .override_fdd_type
         .and_then(DeviceModel::from_drive_type)
     {
