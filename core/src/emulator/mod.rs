@@ -756,7 +756,15 @@ impl Emulator {
                 };
                 let renderer = ChannelRenderer::new(0, 0)?;
                 receivers.push(renderer.get_receiver());
-                let bus = LisaBus::new(model, rom, &video_prom, renderer, mouse_mode, ram_size);
+                let bus = LisaBus::new(
+                    model,
+                    rom,
+                    &video_prom,
+                    renderer,
+                    mouse_mode,
+                    ram_size,
+                    override_fdd_type == Some(DriveType::GCR800K),
+                );
                 EmulatorConfig::Lisa(Box::new(CpuM68000::new(bus, FPU_NONE)))
             }
             MacModel::LCII => {

@@ -3449,7 +3449,7 @@ impl SnowGui {
     }
 
     fn handle_model_selection_result(&mut self, result: &ModelSelectionResult) {
-        let mut devices = card_entries(&result.video_cards, &result.init_args);
+        let mut devices = card_entries(Some(result.model), &result.video_cards, &result.init_args);
         // What's plugged in stays plugged in, and what couldn't be used gets another chance
         devices.extend(
             self.emu

@@ -18,6 +18,7 @@ use snow_core::emulator::devices::{
 };
 use snow_core::mac::maclc::pds_iie::IieDiskDevice;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
+use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{MacModel, MacMonitor, NubusDeviceKind, PdsCardKind};
 
 /// Custom deserializer that skips invalid shader configs instead of failing entirely
@@ -430,9 +431,9 @@ impl Workspace {
             }
         }
 
+        let model = self.model.or_else(|| self.detect_model());
         let mut video = vec![];
         if let Some(rom) = self.display_card_rom_path.take() {
-            let model = self.model.or_else(|| self.detect_model());
             video.push(if model == Some(MacModel::SE30) {
                 VideoCardEntry {
                     slot: 0xE,
@@ -456,7 +457,8 @@ impl Workspace {
                 }
             });
         }
-        self.devices.extend(card_entries(&video, &self.init_args));
+        self.devices
+            .extend(card_entries(model, &video, &self.init_args));
 
         // The monitor of an 8-24 used to be the machine's
         let monitor = self.init_args.monitor.unwrap_or_default();
@@ -496,6 +498,10 @@ impl Workspace {
                 }
                 Some(model) if config.bus == bus_id::SWIM => {
                     args.override_fdd_type = model.drive_type();
+                }
+                // What the Load ROM dialog's 800K option gives
+                Some(DeviceModel::Lisa800KDrive) => {
+                    args.override_fdd_type = Some(DriveType::GCR800KPWM);
                 }
                 // The PROM file is found with the cards' ROMs
                 _ if self.model.and_then(|mac| config.model_on(mac))
@@ -606,7 +612,11 @@ pub struct VideoCardEntry {
 }
 
 /// The entries for what the Load ROM dialog chooses: the cards, and the kind of floppy drive
-pub fn card_entries(video_cards: &[VideoCardEntry], args: &EmulatorInitArgs) -> Vec<DeviceConfig> {
+pub fn card_entries(
+    model: Option<MacModel>,
+    video_cards: &[VideoCardEntry],
+    args: &EmulatorInitArgs,
+) -> Vec<DeviceConfig> {
     let mut entries = vec![];
     for card in video_cards {
         let slot = format!("{:X}", card.slot);
@@ -669,7 +679,12 @@ pub fn card_entries(video_cards: &[VideoCardEntry], args: &EmulatorInitArgs) -> 
             ));
         }
     }
-    if let Some(drive) = args
+    if model.is_some_and(MacModel::is_lisa) {
+        if args.override_fdd_type.is_some() {
+            let drive = DeviceModel::Lisa800KDrive.key();
+            entries.push(old_entry(bus_id::LISA_FDC, "1", Some(drive), json!({})));
+        }
+    } else if let Some(drive) = args
         .override_fdd_type
         .and_then(DeviceModel::from_drive_type)
     {
@@ -869,7 +884,7 @@ mod tests {
         assert_eq!(cards[0].rom, rom);
 
         // And what the dialog chooses goes back the same
-        let entries = card_entries(&cards, &ws.init_args);
+        let entries = card_entries(Some(MacModel::Lisa25), &cards, &ws.init_args);
         assert_eq!(entries.len(), 1);
         let settings = &entries[0].settings;
         assert_eq!(settings["rom"], json!(rom));
@@ -881,7 +896,7 @@ mod tests {
             ..cards[0].clone()
         };
         let args = EmulatorInitArgs::default();
-        assert!(card_entries(&[built_in], &args).is_empty());
+        assert!(card_entries(Some(MacModel::Lisa25), &[built_in], &args).is_empty());
     }
 
     #[test]
