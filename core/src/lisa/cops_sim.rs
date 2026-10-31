@@ -86,6 +86,8 @@ pub struct CopsSim {
     mouse_button: bool,
     mouse_abs: Option<(u16, u16)>,
 
+    /// Command $02, until the port is free
+    clock_read_pending: bool,
     /// Mode command bits
     clock_mode: u8,
     digit_pointer: usize,
@@ -120,6 +122,7 @@ impl CopsSim {
             mouse_y: 0,
             mouse_button: false,
             mouse_abs: None,
+            clock_read_pending: false,
             clock_mode: 0b0101,
             digit_pointer: 0,
             digits,
@@ -198,6 +201,16 @@ impl CopsSim {
         if self.now >= self.next_sample {
             self.next_sample += LOOP_TICKS;
             self.command(port);
+            // Only when nothing else is going out
+            if self.clock_read_pending
+                && self.port_on
+                && self.queue.is_empty()
+                && !self.waiting_ack
+                && self.strobe.is_none()
+            {
+                self.clock_read_pending = false;
+                self.send_clock();
+            }
             if self.port_on
                 && !self.waiting_ack
                 && self.strobe.is_none()
@@ -233,7 +246,7 @@ impl CopsSim {
             0 => match cmd {
                 0 => self.port_on = true,
                 1 => self.port_on = false,
-                2 => self.send_clock(),
+                2 => self.clock_read_pending = true,
                 _ => (),
             },
             1 => {
