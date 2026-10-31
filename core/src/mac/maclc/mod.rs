@@ -1,7 +1,7 @@
 //! Implementation of the Macintosh LC
 
 pub mod bus;
-pub mod primetime;
+pub mod primetime_iosb;
 mod pseudovia;
 mod sonora;
 mod v8;

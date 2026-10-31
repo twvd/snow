@@ -5,6 +5,10 @@
 //! CPU bus to the I/O bus, where the 53C96 and the SCC are. MEMCjr holds the
 //! memory timing and the video, which is DAFB compatible. A Cuda has ADB, the
 //! clock and PRAM.
+//!
+//! IOSB (Quadra 800, Centris 650, 610) looks very close to PrimeTime, and
+//! PrimeTime II (LC 630, Quadra 630) is more or less PrimeTime with ATA, so this
+//! is where those are expected to start from. Only PrimeTime is here for now.
 
 use std::thread;
 use std::time::{Duration, Instant};
