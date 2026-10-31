@@ -823,16 +823,12 @@ where
         }
         self.mouse_ready = true;
 
-        // Report updated mouse coordinates to OS
+        // Report updated mouse coordinates to OS. The current (RawMouse) and
+        // new (MTemp) positions are the same: as on the LC III, the ROM takes
+        // any difference between them for a relative movement.
         Some(AbsoluteMouse {
             mtemp: (x, y),
-            rawmouse: if self.model >= MacModel::SE {
-                // SE+ needs to see even a small difference between the current (RawMouse)
-                // and new (MTemp) position, otherwise the change is ignored.
-                (x.wrapping_add_signed(-1), y.wrapping_add_signed(1))
-            } else {
-                (x, y)
-            },
+            rawmouse: (x, y),
         })
     }
 
