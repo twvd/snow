@@ -216,3 +216,53 @@ fn undefined_precision_does_not_stop() {
     cpu.step().unwrap();
     assert_eq!(cpu.regs.fpu.fp[1].as_f64(), 2.0);
 }
+
+#[test]
+fn exception_status_of_arithmetic() {
+    // src, dest, opmode, DZ, OPERR, OVFL, INEX2
+    // About 1e3000, its square overflows
+    let big = (0..9).fold(fp(1e300), |v, _| v * fp(1e300));
+    for (i, (src, dest, opmode, dz, operr, ovfl, inex2)) in [
+        (fp(0.0), fp(1.0), 0x20, true, false, false, false),
+        (fp(0.0), fp(0.0), 0x20, false, true, false, false),
+        (fp(3.0), fp(1.0), 0x20, false, false, false, true),
+        (fp(2.0), fp(1.0), 0x20, false, false, false, false),
+        (fp(-1.0), fp(0.0), 0x04, false, true, false, false),
+        (fp(4.0), fp(0.0), 0x04, false, false, false, false),
+        (fp(2.0), fp(0.0), 0x04, false, false, false, true),
+        (fp(0.5), fp(0.25), 0x22, false, false, false, false),
+        (fp(1.0), fp(2f64.powi(-70)), 0x22, false, false, false, true),
+        (big.clone(), big, 0x23, false, false, true, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut cpu = testcpu(&fop(0, 1, opmode));
+        cpu.regs.fpu.fp[0] = src;
+        cpu.regs.fpu.fp[1] = dest;
+        cpu.step().unwrap();
+        let e = cpu.regs.fpu.fpsr.exs();
+        assert_eq!(
+            (e.dz(), e.operr(), e.ovfl(), e.inex2()),
+            (dz, operr, ovfl, inex2),
+            "{i}"
+        );
+        let a = cpu.regs.fpu.fpsr.aexc();
+        assert_eq!(a.dz(), dz, "{i}");
+        assert_eq!(a.iop(), operr, "{i}");
+    }
+}
+
+#[test]
+fn accrued_exceptions_stay() {
+    // FDIV FP0,FP1 by zero, then FADD FP2,FP3 exact
+    let mut cpu = testcpu(&[0xF200, 0x00A0, 0xF200, 0x09A2]);
+    cpu.regs.fpu.fp[0] = fp(0.0);
+    cpu.regs.fpu.fp[1] = fp(1.0);
+    cpu.regs.fpu.fp[2] = fp(1.0);
+    cpu.regs.fpu.fp[3] = fp(1.0);
+    cpu.step().unwrap();
+    cpu.step().unwrap();
+    assert!(!cpu.regs.fpu.fpsr.exs().dz());
+    assert!(cpu.regs.fpu.fpsr.aexc().dz());
+}
