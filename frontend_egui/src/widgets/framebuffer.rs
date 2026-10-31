@@ -85,9 +85,20 @@ impl FramebufferWidget {
         core::array::from_fn(|i| self.display_size[i].into())
     }
 
+    /// Height of a pixel relative to its width. A hack for now: only the display
+    /// of the Lisa has this size, and its pixels are 3:2 (hardware manual, 1981).
+    fn pixel_aspect(&self) -> f32 {
+        if self.display_size == [720, 364] {
+            1.5
+        } else {
+            1.0
+        }
+    }
+
     pub fn display_size_max_scaled(&self) -> egui::Vec2 {
+        let aspect = [1.0, self.pixel_aspect()];
         egui::Vec2::from(core::array::from_fn(|i| {
-            f32::from(self.display_size[i]) * self.scale
+            f32::from(self.display_size[i]) * self.scale * aspect[i]
         }))
     }
 
@@ -96,7 +107,7 @@ impl FramebufferWidget {
     }
 
     pub fn max_height(&self) -> f32 {
-        f32::from(self.display_size[1]) * self.scale
+        f32::from(self.display_size[1]) * self.scale * self.pixel_aspect()
     }
 
     pub fn connect_receiver(&mut self, recv: Arc<std::sync::Mutex<Option<DisplayBuffer>>>) {
@@ -130,6 +141,8 @@ impl FramebufferWidget {
             self.trigger_crt_shader(ui);
         }
 
+        let pixel_aspect = self.pixel_aspect();
+
         // Choose which texture to display
         // Only use shader output if at least one shader pass is enabled
         let any_shader_enabled = self.shader_configs.iter().any(|c| c.enabled);
@@ -142,7 +155,7 @@ impl FramebufferWidget {
                 &mut self.viewport_texture
             };
 
-        let size = display_texture.size_vec2();
+        let size = display_texture.size_vec2() * Vec2::new(1.0, pixel_aspect);
         let sized_texture = egui::load::SizedTexture::new(display_texture, size);
         let size = if fullscreen {
             ui.available_size()
