@@ -101,6 +101,15 @@ const MASK_UPPER: u8 = 0x08;
 
 /// The controller's main loop goes around every 10 us
 const COMMAND_TICKS: Ticks = 51;
+
+/// 6504 code MacWorks Plus II runs from RAM, to time the 6504 against the CPU:
+/// a loop, then $FF in the gobyte, then waiting for the host to clear it.
+const TIMING_LOOP_CODE: [u8; 15] = [
+    0xA0, 0x00, 0x88, 0xC8, 0x88, 0xD0, 0xFB, 0x88, 0x84, 0x00, 0xA5, 0x00, 0xD0, 0xFC, 0x60,
+];
+const TIMING_LOOP_AT: usize = 0x200;
+/// Its 2315 cycles at DOTCK/10, with the CPU at DOTCK/4
+const TIMING_LOOP_TICKS: Ticks = 5788;
 /// From power on to listening
 const START_TICKS: Ticks = 6_367_200;
 const OPERATION_TICKS: Ticks = 101_875;
@@ -267,6 +276,8 @@ pub struct FdcSim {
     operation: Option<Operation>,
     /// Commands $88 and $89: parked in the ROM
     parked: bool,
+    /// When the timing loop is over
+    timing_loop_done_at: Option<Ticks>,
     disk: Option<LisaDisk>,
     /// A disk came out
     /// Out of the drive, for the emulator to write back
@@ -286,6 +297,7 @@ impl FdcSim {
             command_at: None,
             operation: None,
             parked: false,
+            timing_loop_done_at: None,
             disk: None,
             ejected: None,
         };
@@ -390,6 +402,10 @@ impl FdcSim {
         if self.now < self.ready_at {
             return;
         }
+        if self.timing_loop_done_at.is_some_and(|t| self.now >= t) {
+            self.timing_loop_done_at = None;
+            self.ram[GOBYTE] = 0xFF;
+        }
         if self.command_at.is_some_and(|t| self.now >= t) {
             self.command_at = None;
             self.ram[IMALIVE] = self.ram[IMALIVE].wrapping_add(1);
@@ -436,6 +452,13 @@ impl FdcSim {
                 let target = u16::from_be_bytes([self.ram[ADRH], self.ram[COMMAND]]);
                 if target == 0x1FFB {
                     self.reset();
+                    return;
+                }
+                if usize::from(target) == TIMING_LOOP_AT
+                    && self.ram[TIMING_LOOP_AT..TIMING_LOOP_AT + TIMING_LOOP_CODE.len()]
+                        == TIMING_LOOP_CODE
+                {
+                    self.timing_loop_done_at = Some(self.now + TIMING_LOOP_TICKS);
                     return;
                 }
                 log::warn!(
