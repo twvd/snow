@@ -131,6 +131,12 @@ where
         // Fetch extension word
         let extword = FmoveExtWord(self.fetch_pump()?);
 
+        // All but the moves of control registers and FMOVEM can raise an
+        // exception, so they leave their address here (MC68881UM FPIAR)
+        if matches!(extword.subop(), 0b000 | 0b010 | 0b011) {
+            self.regs.fpu.fpiar = self.step_start_pc;
+        }
+
         match extword.subop() {
             0b000 => {
                 // Data reg to data reg, with ALU
@@ -261,6 +267,8 @@ where
 
                         // No ALU operation
                         // Not sure how many cycles this costs, assuming its cheap
+                        let value = self.regs.fpu.fp[fpx].clone();
+                        self.fpu_condition_codes(&value);
                         return Ok(());
                     }
                     0b011 if instr.get_addr_mode()? == AddressingMode::Immediate => {

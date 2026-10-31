@@ -384,8 +384,9 @@ impl RegisterFile {
             Register::CACR => self.cacr.0 = value.expand(),
             Register::MSP => self.msp = value.expand(),
             Register::ISP => self.isp = value.expand(),
-            Register::FPCR => self.fpu.fpcr.0 = value.expand(),
-            Register::FPSR => self.fpu.fpsr.0 = value.expand(),
+            // Unimplemented bits read as zero (MC68881UM FPCR, FPSR)
+            Register::FPCR => self.fpu.fpcr.0 = value.expand() & 0x0000_FFF0,
+            Register::FPSR => self.fpu.fpsr.0 = value.expand() & 0x0FFF_FFF8,
             Register::FPIAR => self.fpu.fpiar = value.expand(),
         }
     }

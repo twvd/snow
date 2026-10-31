@@ -447,7 +447,7 @@ where
         result.cast(high).abs() != exact
     }
 
-    fn fpu_condition_codes(&mut self, result: &Float) {
+    pub(in crate::cpu_m68k) fn fpu_condition_codes(&mut self, result: &Float) {
         self.regs.fpu.fpsr.set_fpcc_nan(result.is_nan());
         self.regs.fpu.fpsr.set_fpcc_i(result.is_inf());
         self.regs.fpu.fpsr.set_fpcc_n(result.is_negative());
