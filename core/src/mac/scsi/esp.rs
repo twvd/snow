@@ -99,6 +99,13 @@ pub struct Esp {
     /// Interrupt status register
     intr: u8,
 
+    /// An interrupt that hasn't been serviced when a command was written, as
+    /// (interrupt status, sequence step). The registers show it until the host
+    /// reads the interrupt register. Meanwhile, `intr` and `seq` belong to the
+    /// command, whose own interrupt is stacked behind this one (data sheet
+    /// p.14).
+    first_irq: Option<(u8, u8)>,
+
     /// Sequence step register
     seq: u8,
 
@@ -149,6 +156,7 @@ impl Esp {
             cmd: 0,
             stat: 0,
             intr: 0,
+            first_irq: None,
             seq: 0,
             bus_id: 0,
             // Host ID 7 after reset
@@ -181,7 +189,7 @@ impl Esp {
     }
 
     pub fn get_irq(&self) -> bool {
-        self.stat & STAT_INT != 0
+        self.stat & STAT_INT != 0 || self.first_irq.is_some()
     }
 
     /// DREQ, only asserted during a DMA command (data sheet p.10)
@@ -345,6 +353,7 @@ impl Esp {
         self.cmd = 0;
         self.stat = 0;
         self.intr = 0;
+        self.first_irq = None;
         self.seq = 0;
         self.cfg1 &= 0b111;
         self.cfg2 = 0;
@@ -389,6 +398,42 @@ impl Esp {
         if self.tc == 0 {
             self.stat |= STAT_TC;
         }
+    }
+
+    /// A command is about to run: an interrupt which is still pending stays in
+    /// front of the one the command may raise. A third one merges with the
+    /// second, as the chip has room for two commands.
+    fn stack_interrupt(&mut self) {
+        if self.stat & STAT_INT != 0 && self.first_irq.is_none() {
+            self.first_irq = Some((self.intr, self.seq));
+            self.intr = 0;
+            self.stat &= !STAT_INT;
+        }
+    }
+
+    /// The sequence step the host sees
+    fn visible_seq(&self) -> u8 {
+        self.first_irq.map_or(self.seq, |(_, seq)| seq)
+    }
+
+    /// Reading the interrupt register while the interrupt is asserted clears
+    /// it, the status bits but TC and the phase, and the sequence step (data
+    /// sheet p.16, p.32). With a stacked interrupt, the registers change to
+    /// describe it instead (p.14).
+    fn read_interrupt(&mut self) -> u8 {
+        if let Some((intr, _)) = self.first_irq.take() {
+            if self.stat & STAT_INT == 0 && !self.selecting {
+                self.seq = SEQ_0;
+            }
+            return intr;
+        }
+        let val = self.intr;
+        if self.get_irq() {
+            self.intr = 0;
+            self.stat &= STAT_TC | STAT_PHASE;
+            self.seq = SEQ_0;
+        }
+        val
     }
 
     /// Executes a command written to the command register
@@ -774,22 +819,11 @@ impl BusMember<Address> for Esp {
             0x1 => (self.tc >> 8) as u8,
             0x2 => self.fifo_pop(),
             0x3 => self.cmd,
-            0x4 => self.stat,
-            0x5 => {
-                // Reading the interrupt register while the interrupt is
-                // asserted clears it, the status bits but TC and the phase,
-                // and the sequence step (data sheet p.16, p.32)
-                let val = self.intr;
-                if self.get_irq() {
-                    self.intr = 0;
-                    self.stat &= STAT_TC | STAT_PHASE;
-                    self.seq = SEQ_0;
-                }
-                val
-            }
-            0x6 => self.seq,
+            0x4 => self.stat | if self.get_irq() { STAT_INT } else { 0 },
+            0x5 => self.read_interrupt(),
+            0x6 => self.visible_seq(),
             // FIFO flags, with a copy of the sequence step on top (p.23)
-            0x7 => self.fifo.len() as u8 | (self.seq << 5),
+            0x7 => self.fifo.len() as u8 | (self.visible_seq() << 5),
             0x8 => self.cfg1,
             0xB => self.cfg2,
             0xC => self.cfg3,
@@ -821,13 +855,16 @@ impl BusMember<Address> for Esp {
                 }
             }
             0x3 => {
-                if self.get_irq() {
+                // Reset chip and reset bus execute at once, the others should
+                // wait for the command before them (p.14)
+                if self.dma_xfer && !matches!(val & !CMD_DMA, 0x02 | 0x03) {
                     error!(
-                        "ESP CHECK: command ${:02X} written with an interrupt pending: {}",
+                        "ESP CHECK: command ${:02X} written during a DMA transfer: {}",
                         val,
                         self.dbg()
                     );
                 }
+                self.stack_interrupt();
                 self.cmd = val;
                 self.run_command(val);
             }
@@ -996,6 +1033,43 @@ mod tests {
 
     fn phase(esp: &mut Esp) -> u8 {
         esp.read(REG_STATUS).unwrap() & STAT_PHASE
+    }
+
+    #[test]
+    fn second_interrupt_stacks_behind_the_first() {
+        let mut esp = Esp::new(true);
+        // Disable selection: function complete
+        command(&mut esp, 0x45);
+        // Reset SCSI bus, without servicing the first interrupt
+        command(&mut esp, 0x03);
+        assert_ne!(esp.read(REG_STATUS).unwrap() & STAT_INT, 0);
+        assert_eq!(esp.read(REG_INTR).unwrap(), INTR_FC);
+        assert!(esp.get_irq());
+        assert_ne!(esp.read(REG_STATUS).unwrap() & STAT_INT, 0);
+        assert_eq!(esp.read(REG_INTR).unwrap(), INTR_RST);
+        assert!(!esp.get_irq());
+        assert_eq!(esp.read(REG_STATUS).unwrap() & STAT_INT, 0);
+    }
+
+    #[test]
+    fn command_without_interrupt_leaves_the_pending_one() {
+        let mut esp = Esp::new(true);
+        command(&mut esp, 0x45);
+        // Flush FIFO, no interrupt of its own
+        command(&mut esp, 0x01);
+        assert!(esp.get_irq());
+        assert_eq!(esp.read(REG_INTR).unwrap(), INTR_FC);
+        assert!(!esp.get_irq());
+        assert_eq!(esp.read(REG_INTR).unwrap(), 0);
+    }
+
+    #[test]
+    fn chip_reset_clears_a_pending_interrupt() {
+        let mut esp = Esp::new(true);
+        command(&mut esp, 0x45);
+        command(&mut esp, 0x02);
+        assert!(!esp.get_irq());
+        assert_eq!(esp.read(REG_INTR).unwrap(), 0);
     }
 
     #[test]
