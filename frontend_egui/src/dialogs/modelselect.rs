@@ -325,6 +325,7 @@ impl ModelSelectionDialog {
                 | MacModel::MacIIcx
                 | MacModel::SE30
                 | MacModel::Lisa25
+                | MacModel::Lisa210
         );
         if !self.display_rom_required {
             self.display_rom_path.clear();

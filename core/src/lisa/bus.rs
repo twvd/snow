@@ -11,7 +11,7 @@ use log::*;
 use serde::{Deserialize, Serialize};
 
 use super::cops_sim::CopsSim;
-use super::fdc_sim::{FdcSim, LisaDisk};
+use super::fdc_sim::{FdcSim, LisaDisk, ROM_ID_2_5, ROM_ID_2_10};
 use super::mmu::{LisaMmu, Space};
 use super::profile_sim::ProfileSim;
 use super::via::{KeyboardVia, ParallelVia};
@@ -40,6 +40,9 @@ const SCC_RTXC_FREQUENCY: Ticks = 3_686_400;
 
 /// CPU clock: the 20.37504 MHz dot clock divided by 4
 const BUS_FREQUENCY: Ticks = 5_093_760;
+
+/// The parallel VIA of the 2/10's motherboard runs at DOTCK/16, the CPU at DOTCK/4
+const CPU_PER_FAST_VIA: Ticks = 4;
 
 /// CPU clocks per slot of the memory cycle, which alternates between the CPU
 /// and the video
@@ -129,6 +132,8 @@ pub struct LisaBus<TRenderer: Renderer> {
 
     #[serde(skip, default = "Instant::now")]
     frame_time: Instant,
+    /// CPU clocks towards a tick of the parallel VIA of the 2/10
+    fast_via_clock: Ticks,
 }
 
 impl<TRenderer> LisaBus<TRenderer>
@@ -161,7 +166,11 @@ where
             keyboard_via: KeyboardVia::new(),
             parallel_via: ParallelVia::new(),
             cops: CopsSim::new(),
-            fdc: FdcSim::new(),
+            fdc: FdcSim::new(if model == MacModel::Lisa210 {
+                ROM_ID_2_10
+            } else {
+                ROM_ID_2_5
+            }),
             profile: None,
             profile_not_reset: true,
             profile_not_busy: true,
@@ -181,6 +190,7 @@ where
             nmi: false,
             access_ahead: 0,
             frame_time: Instant::now(),
+            fast_via_clock: 0,
         }
     }
 
@@ -667,7 +677,17 @@ where
             cpu -= step.cpu_used;
             if step.via_tick {
                 self.keyboard_via.tick(1, ())?;
-                self.parallel_via.tick(1, ())?;
+                if self.model != MacModel::Lisa210 {
+                    self.parallel_via.tick(1, ())?;
+                }
+            }
+            if self.model == MacModel::Lisa210 {
+                self.fast_via_clock += step.cpu_used;
+                let via_ticks = self.fast_via_clock / CPU_PER_FAST_VIA;
+                self.fast_via_clock %= CPU_PER_FAST_VIA;
+                if via_ticks > 0 {
+                    self.parallel_via.tick(via_ticks, ())?;
+                }
             }
         }
 

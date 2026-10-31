@@ -43,6 +43,12 @@ const PARAMETER_MEMORY: usize = 0xC0;
 const TAG: usize = 0x1F4;
 const DATA: usize = 0x200;
 
+/// Where the ROM id is in the constants
+const CONSTANT_ROM_ID: usize = 8;
+/// ROM id of the 2/5. The ROM of the 2/10 only differs by this.
+pub const ROM_ID_2_5: u8 = 0xA8;
+pub const ROM_ID_2_10: u8 = 0x88;
+
 /// Default constants, from the ROM of the 2/5. The one at $18 is the ROM id.
 const CONSTANTS_2_5: [u8; 13] = [
     0xD5, 0xC0, 0xA7, 0x89, 0x64, 0x1E, 0x04, 0x09, 0xA8, 0x64, 0x02, 0x82, 0x4F,
@@ -228,6 +234,7 @@ struct Operation {
 
 #[derive(Serialize, Deserialize)]
 pub struct FdcSim {
+    rom_id: u8,
     ram: Vec<u8>,
     now: Ticks,
     /// When the controller is listening after a reset
@@ -244,8 +251,9 @@ pub struct FdcSim {
 }
 
 impl FdcSim {
-    pub fn new() -> Self {
+    pub fn new(rom_id: u8) -> Self {
         let mut fdc = Self {
+            rom_id,
             // Parameter memory as with a run down battery. All zeroes would pass its
             // checksum and select the hard disk to boot from.
             ram: vec![0xFF; RAM_SIZE],
@@ -267,6 +275,7 @@ impl FdcSim {
         self.ram.fill(0);
         self.ram[PARAMETER_MEMORY..=0xFF].copy_from_slice(&parameter_memory);
         self.ram[CONSTANTS..CONSTANTS + CONSTANTS_2_5.len()].copy_from_slice(&CONSTANTS_2_5);
+        self.ram[CONSTANTS + CONSTANT_ROM_ID] = self.rom_id;
         self.ram[NOSIDES] = 1;
         self.ram[DRVCONN] = 0xFF;
         self.ram[FMTTYPE] = 0x02;
@@ -619,7 +628,7 @@ mod tests {
     }
 
     fn ready() -> FdcSim {
-        let mut fdc = FdcSim::new();
+        let mut fdc = FdcSim::new(ROM_ID_2_5);
         fdc.tick(START_TICKS);
         fdc
     }
@@ -633,9 +642,10 @@ mod tests {
 
     #[test]
     fn not_listening_at_first() {
-        let mut fdc = FdcSim::new();
+        let mut fdc = FdcSim::new(ROM_ID_2_5);
         assert!(!fdc.diag());
         assert_eq!(fdc.ram_read(0x18), 0xA8);
+        assert_eq!(FdcSim::new(ROM_ID_2_10).ram_read(0x18), 0x88);
         fdc.tick(START_TICKS);
         assert!(fdc.diag());
     }
@@ -699,7 +709,7 @@ mod tests {
 
     #[test]
     fn parameter_memory_survives() {
-        let mut fdc = FdcSim::new();
+        let mut fdc = FdcSim::new(ROM_ID_2_5);
         fdc.ram_write(0xC5, 0x12);
         fdc.ram_write(0x30, 0x34);
         fdc.reset();
