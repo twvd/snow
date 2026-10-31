@@ -368,7 +368,6 @@ where
             AddressingMode::Immediate => self.fetch_immediate::<T>()?,
             AddressingMode::Indirect
             | AddressingMode::IndirectDisplacement
-            | AddressingMode::PCDisplacement
             | AddressingMode::AbsoluteShort
             | AddressingMode::AbsoluteLong => {
                 let addr = self.calc_ea_addr_ex::<T, HOLD>(instr, addrmode, ea_in)?;
@@ -382,12 +381,15 @@ where
                 let addr = self.calc_ea_addr_ex::<T, HOLD>(instr, addrmode, ea_in)?;
                 self.read_ticks(addr)?
             }
-            AddressingMode::IndirectIndexBase
-            | AddressingMode::IndirectIndex
+            AddressingMode::IndirectIndexBase | AddressingMode::IndirectIndex => {
+                let addr = self.calc_ea_addr_ex::<T, HOLD>(instr, addrmode, ea_in)?;
+                self.read_ticks(addr)?
+            }
+            AddressingMode::PCDisplacement
             | AddressingMode::PCIndexBase
             | AddressingMode::PCIndex => {
                 let addr = self.calc_ea_addr_ex::<T, HOLD>(instr, addrmode, ea_in)?;
-                self.read_ticks(addr)?
+                self.read_ticks_pc_relative(addr)?
             }
         };
 
