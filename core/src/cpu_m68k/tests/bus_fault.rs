@@ -3,6 +3,7 @@
 use crate::bus::Address;
 use crate::bus::access::Bus68000;
 use crate::bus::testbus::Testbus;
+use crate::cpu_m68k::cpu::is_double_fault;
 use crate::cpu_m68k::{CpuM68000, FPU_NONE, M68000_ADDRESS_MASK};
 use crate::types::Word;
 
@@ -133,4 +134,16 @@ fn data_write() {
     assert_eq!(frame.ssw & 0x1F, FC_USER_DATA);
     assert_eq!(frame.address, ABSENT);
     assert_in_handler(&mut cpu);
+}
+
+/// The Lisa Office System halts the CPU this way to restart the machine
+#[test]
+fn odd_address_with_odd_vector_is_a_double_fault() {
+    // CLR.L (A4)
+    let mut cpu = testcpu(&[0x4294]);
+    cpu.regs.a[4] = 0xFFFF_FFFF;
+    write_word(&mut cpu, 0x000C, 0xFFFF);
+    write_word(&mut cpu, 0x000E, 0xFFFF);
+    let error = cpu.step().unwrap_err();
+    assert!(is_double_fault(&error));
 }
