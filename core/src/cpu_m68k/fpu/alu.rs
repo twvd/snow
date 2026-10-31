@@ -53,6 +53,65 @@ where
             .with_rm(self.fpu_rounding_mode()))
     }
 
+    /// Rounds to an integer with the rounding mode of FPCR
+    fn fpu_round_integer(&self, value: &Float) -> Float {
+        if value.is_nan() || value.is_inf() || value.is_zero() {
+            return value.clone();
+        }
+        let rounded = match self.fpu_rounding_mode() {
+            RoundingMode::Zero => value.trunc(),
+            RoundingMode::Negative => value.floor(),
+            RoundingMode::Positive => value.ceil(),
+            _ => {
+                let trunc = value.trunc();
+                let one = Float::one(trunc.get_semantics(), value.is_negative());
+                let half = Float::one(trunc.get_semantics(), false).scale(-1, RoundingMode::Zero);
+                let rest = (value - &trunc).abs();
+                let odd = (&trunc / Float::from_u64(trunc.get_semantics(), 2)).trunc()
+                    * Float::from_u64(trunc.get_semantics(), 2)
+                    != trunc;
+                if rest > half || (rest == half && odd) {
+                    trunc + one
+                } else {
+                    trunc
+                }
+            }
+        };
+        // A zero keeps the sign of what it comes from
+        if rounded.is_zero() {
+            Float::zero(rounded.get_semantics(), value.is_negative())
+        } else {
+            rounded
+        }
+    }
+
+    /// FMOVE of FPn to an integer between `min` and `max`: rounds with the
+    /// rounding mode of FPCR. Inexact sets INEX2. Not fitting sets OPERR and gives
+    /// the largest integer of that sign (MC68881UM 6.1.3).
+    pub(in crate::cpu_m68k) fn fpu_to_integer(&mut self, fpx: usize, min: i64, max: i64) -> i64 {
+        let value = self.regs.fpu.fp[fpx].clone();
+        self.regs.fpu.fpsr.exs_mut().set_ovfl(false);
+        self.regs.fpu.fpsr.exs_mut().set_unfl(false);
+        self.regs.fpu.fpsr.exs_mut().set_inex1(false);
+        self.regs.fpu.fpsr.exs_mut().set_inex2(false);
+
+        let rounded = self.fpu_round_integer(&value);
+        let sem = rounded.get_semantics();
+        let out = if value.is_nan() || rounded > Float::from_i64(sem, max) {
+            self.regs.fpu.fpsr.exs_mut().set_operr(true);
+            max
+        } else if rounded < Float::from_i64(sem, min) {
+            self.regs.fpu.fpsr.exs_mut().set_operr(true);
+            min
+        } else {
+            self.regs.fpu.fpsr.exs_mut().set_inex2(rounded != value);
+            rounded.to_i64()
+        };
+        let excs = self.regs.fpu.fpsr;
+        self.regs.fpu.fpsr.aexc_mut().accrue(&excs.exs());
+        out
+    }
+
     pub(in crate::cpu_m68k) fn fpu_alu_op(
         &mut self,
         opmode: u8,
@@ -104,21 +163,7 @@ where
                 (dest / source, [69, 98, 90, 96, 94, 936])
             }
             // FINT
-            0b0000001 => {
-                let sem = self.fpu_rounding_mode_precision()?;
-                let casted = source.cast(sem);
-
-                // Round to integer based on rounding mode
-                let rounded = match self.fpu_rounding_mode() {
-                    RoundingMode::NearestTiesToEven => casted.round(),
-                    RoundingMode::Zero => casted.trunc(),
-                    RoundingMode::Negative => casted.floor(),
-                    RoundingMode::Positive => casted.ceil(),
-                    RoundingMode::None | RoundingMode::NearestTiesToAway => unreachable!(),
-                };
-
-                (rounded.cast(SEMANTICS_EXTENDED), [65, 92, 74, 80, 78, 892])
-            }
+            0b0000001 => (self.fpu_round_integer(source), [65, 92, 74, 80, 78, 892]),
             // FINTRZ
             0b0000011 => (
                 source
