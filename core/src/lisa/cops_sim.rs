@@ -200,7 +200,9 @@ impl CopsSim {
         }
         if self.now >= self.next_sample {
             self.next_sample += LOOP_TICKS;
-            self.command(port);
+            if self.power_on {
+                self.command(port);
+            }
             // Only when nothing else is going out
             if self.clock_read_pending
                 && self.port_on
@@ -600,6 +602,10 @@ mod tests {
         let mut cops = CopsSim::new();
         cops.command(0x21);
         assert!(!cops.power_on());
+        // The VIA stays as it was: no second power off
+        let now = cops.now;
+        cops.tick(SAMPLE_TICKS, 0x20);
+        assert!(cops.now > now && !cops.power_on());
         cops.machine_reset();
         assert!(cops.power_on());
     }
