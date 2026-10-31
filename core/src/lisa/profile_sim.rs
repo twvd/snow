@@ -334,7 +334,11 @@ impl ProfileSim {
                     self.phase = Phase::WriteData;
                 }
                 (Phase::WriteData, _) => {
-                    self.write_block();
+                    match self.kind {
+                        HardDiskKind::Profile => self.write_block(),
+                        // Data first, as a single read sends it
+                        HardDiskKind::Widget => self.multi_write_block(),
+                    }
                     release = BLOCK_TICKS;
                 }
                 (Phase::Command, STATE_MULTI_READ) | (Phase::MultiRead, _) => {
@@ -508,8 +512,16 @@ impl ProfileSim {
             self.outgoing.extend_from_slice(&device_block);
         } else if block < self.block_count() {
             self.outgoing.extend_from_slice(&[0; STATUS_SIZE]);
-            self.outgoing
-                .extend_from_slice(&self.data[block * BLOCK_SIZE..(block + 1) * BLOCK_SIZE]);
+            let stored = &self.data[block * BLOCK_SIZE..(block + 1) * BLOCK_SIZE];
+            match self.kind {
+                HardDiskKind::Profile => self.outgoing.extend_from_slice(stored),
+                // Data first here too: the boot ROM takes the first 20 bytes for
+                // a label, and finds the file id it wants in the boot block's data
+                HardDiskKind::Widget => {
+                    self.outgoing.extend_from_slice(&stored[LABEL_SIZE..]);
+                    self.outgoing.extend_from_slice(&stored[..LABEL_SIZE]);
+                }
+            }
         } else {
             log::warn!("ProFile read past the end: block {:06X}", block);
             self.outgoing
@@ -872,6 +884,38 @@ mod tests {
         let block = &bytes[STATUS_SIZE..];
         assert_eq!(&block[..9], b"Widget-10");
         assert_eq!(block[14], 1);
+    }
+
+    /// What the boot ROM relies on to find the boot block
+    #[test]
+    fn widget_single_read_sends_data_first() {
+        let mut drive = widget(4);
+        drive.data[LABEL_SIZE + 4] = 0xAA;
+        drive.data[LABEL_SIZE + 5] = 0xAA;
+        command(&mut drive, CMD_READ, 0);
+        handshake(&mut drive, STATE_READ);
+        let bytes = read_bytes(&mut drive, STATUS_SIZE + BLOCK_SIZE);
+        assert_eq!(&bytes[STATUS_SIZE + 4..STATUS_SIZE + 6], [0xAA, 0xAA]);
+    }
+
+    /// The Office System reads back what it wrote, when it initializes a disk
+    #[test]
+    fn widget_single_write_reads_back() {
+        let mut drive = widget(4);
+        command(&mut drive, CMD_WRITE, 1);
+        handshake(&mut drive, STATE_WRITE);
+        let sent: Vec<u8> = (0..BLOCK_SIZE).map(|i| i as u8).collect();
+        for &b in &sent {
+            drive.strobe_write(b);
+        }
+        handshake(&mut drive, STATE_WRITTEN);
+        assert_eq!(read_bytes(&mut drive, STATUS_SIZE), [0; STATUS_SIZE]);
+        // Stored label first
+        assert_eq!(drive.data[BLOCK_SIZE], sent[DATA_SIZE]);
+        command(&mut drive, CMD_READ, 1);
+        handshake(&mut drive, STATE_READ);
+        let bytes = read_bytes(&mut drive, STATUS_SIZE + BLOCK_SIZE);
+        assert_eq!(bytes[STATUS_SIZE..], sent);
     }
 
     #[test]
