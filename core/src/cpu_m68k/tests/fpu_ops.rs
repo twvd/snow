@@ -382,3 +382,32 @@ fn fgetexp_fgetman_of_infinity_are_operr() {
         assert!(cpu.regs.fpu.fpsr.exs().operr());
     }
 }
+
+#[test]
+fn fetoxm1_flognp1_keep_small_values() {
+    for (opmode, v) in [(0x08, 1e-20), (0x06, 1e-20), (0x08, 1e-30), (0x06, -1e-30)] {
+        let mut cpu = testcpu(&fop(0, 1, opmode));
+        cpu.regs.fpu.fp[0] = fp(v);
+        cpu.step().unwrap();
+        let r = cpu.regs.fpu.fp[1].as_f64();
+        assert!(
+            (r - v).abs() <= v.abs() * 1e-15,
+            "{opmode:02X} {v} gave {r}"
+        );
+    }
+}
+
+#[test]
+fn fetoxm1_flognp1_usual_values() {
+    for (opmode, v, want) in [
+        (0x08, 1.0, std::f64::consts::E - 1.0),
+        (0x06, 1.0, std::f64::consts::LN_2),
+        (0x08, -1.0, 1.0 / std::f64::consts::E - 1.0),
+    ] {
+        let mut cpu = testcpu(&fop(0, 1, opmode));
+        cpu.regs.fpu.fp[0] = fp(v);
+        cpu.step().unwrap();
+        let r = cpu.regs.fpu.fp[1].as_f64();
+        assert!((r - want).abs() < 1e-14, "{opmode:02X} {v} gave {r}");
+    }
+}
