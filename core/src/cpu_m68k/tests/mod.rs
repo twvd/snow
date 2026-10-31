@@ -4,6 +4,7 @@ mod divl;
 mod divs_w;
 mod fmovem;
 mod format2;
+mod fpu_ops;
 mod group2_exceptions;
 mod illegal_exception;
 mod interrupt;
