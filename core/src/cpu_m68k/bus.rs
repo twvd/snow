@@ -311,6 +311,20 @@ where
         self.read_ticks_generic::<T>(AccessKind::Fetch, self.fc_program(), vaddr)
     }
 
+    /// Reads a PC-relative operand from the bus and spends ticks.
+    /// Program space on the 68000, from the MAME-derived test data. The 68020/68030
+    /// stay on the data FC: 68030UM 6.1.2 has these references in the data cache.
+    pub(in crate::cpu_m68k) fn read_ticks_pc_relative<T: CpuSized>(
+        &mut self,
+        vaddr: Address,
+    ) -> Result<T> {
+        if CPU_TYPE == M68000 {
+            self.read_ticks_program(vaddr)
+        } else {
+            self.read_ticks(vaddr)
+        }
+    }
+
     /// Reads a value from the bus and spends ticks.
     /// Physical address version
     #[inline(never)]
@@ -776,7 +790,7 @@ where
                     })
                 {
                     // Address errors occur AFTER the first Word was accessed
-                    self.verify_access_physical::<T>(fc, o_addr, true)?;
+                    self.verify_access_physical::<T>(fc, o_addr, false)?;
                 }
             }
         } else {

@@ -1085,7 +1085,7 @@ where
             Err(e) => match e.downcast_ref() {
                 Some(CpuError::AddressError(ae)) => {
                     let mut details = *ae;
-                    details.ir = instr.data;
+                    details.ir = self.fault_ir(&instr, &details);
                     details.start_pc = start_pc;
 
                     debug!(
@@ -1101,7 +1101,7 @@ where
                 }
                 Some(CpuError::BusError(ae)) => {
                     let mut details = *ae;
-                    details.ir = instr.data;
+                    details.ir = self.fault_ir(&instr, &details);
                     details.start_pc = start_pc;
                     if let Err(e) = self.raise_exception(
                         ExceptionGroup::Group0,
@@ -1270,6 +1270,21 @@ where
             self.sync_bus()?;
         }
         Ok(true)
+    }
+
+    /// The instruction register as stacked in a 68000 group 0 frame
+    fn fault_ir(&self, instr: &Instruction, details: &Group0Details) -> Word {
+        // MOVE.W to -(An) loads the next word into IR before it writes. Not in
+        // the manuals, from the MAME-derived test data.
+        if CPU_TYPE == M68000
+            && !details.read
+            && instr.mnemonic == InstructionMnemonic::MOVE_w
+            && instr.get_addr_mode_left().ok() == Some(AddressingMode::IndirectPreDec)
+            && let Some(next) = self.prefetch.front()
+        {
+            return next.word();
+        }
+        instr.data
     }
 
     /// Sets the program counter and flushes the prefetch queue
@@ -1631,11 +1646,14 @@ where
                         )?;
                         self.write_ticks(self.regs.ssp().wrapping_add(6), details.ir)?;
                         self.write_ticks(self.regs.ssp().wrapping_add(4), details.address as u16)?;
-                        // Function code (3), I/N (1), R/W (1)
-                        // TODO I/N, function code..
+                        // Bits 15-5 are undefined in the manual, the MAME-derived test
+                        // data has the upper bits of IR there. I/N stays 0: a fault
+                        // during group 0/1 exception processing doesn't stack a frame.
                         self.write_ticks(
                             self.regs.ssp().wrapping_add(0),
-                            if details.read { 1_u16 << 4 } else { 0_u16 },
+                            (details.ir & 0xFFE0)
+                                | (u16::from(details.read) << 4)
+                                | u16::from(details.function_code),
                         )?;
                         self.write_ticks(
                             self.regs.ssp().wrapping_add(2),
@@ -3953,6 +3971,10 @@ where
 
     /// MOVEM memory to register
     fn op_movem_reg<T: CpuSized>(&mut self, instr: &Instruction) -> Result<()> {
+        let pc_relative = matches!(
+            instr.get_addr_mode()?,
+            AddressingMode::PCDisplacement | AddressingMode::PCIndex
+        );
         let mask = self.fetch_pump()?;
         let mut addr = self.calc_ea_addr_no_mod::<T>(instr, instr.get_op2())?;
 
@@ -3967,7 +3989,11 @@ where
                 addr = addr.wrapping_sub(std::mem::size_of::<T>() as Address);
             }
 
-            let v = self.read_ticks::<T>(addr)?;
+            let v = if pc_relative {
+                self.read_ticks_pc_relative::<T>(addr)?
+            } else {
+                self.read_ticks::<T>(addr)?
+            };
             self.regs.write(reg, v.expand_signed().cast_unsigned());
 
             if instr.get_addr_mode()? != AddressingMode::IndirectPreDec {
@@ -3983,7 +4009,11 @@ where
 
         // Discarded read
         if CPU_TYPE == M68000 {
-            self.read_ticks::<Word>(addr)?;
+            if pc_relative {
+                self.read_ticks_pc_relative::<Word>(addr)?;
+            } else {
+                self.read_ticks::<Word>(addr)?;
+            }
         }
 
         // Update the EA An register with the final address on predec/postinc
