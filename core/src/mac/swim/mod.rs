@@ -32,6 +32,10 @@ use crate::types::LatchingEvent;
 /// before the drive has answered.
 const OVERCLOCK_ACCESS_INTERVAL_NS: Ticks = 1500;
 
+/// The motor timer: "/ENBLx will be held active for 2^23 +/- 100 FCLK
+/// periods" (SWIM Chip User's Reference, IWM mode register bit 2)
+const MOTOR_TIMER: Ticks = 1 << 23;
+
 /// Source of randomness for floppy analogue noise
 ///
 /// Unseeded, this draws from the thread RNG. Once seeded, it produces a
@@ -139,8 +143,6 @@ pub struct Swim {
     bit_cycles: Ticks,
     mode: SwimMode,
 
-    /// OVERCLOCK_ACCESS_INTERVAL_NS in native ticks
-    access_interval: Ticks,
     /// Native time of the last access by an overclocked CPU, after its hold
     last_access: Ticks,
 
@@ -152,6 +154,9 @@ pub struct Swim {
     pub q7: bool,
     pub extdrive: bool,
     pub enable: bool,
+    /// While > cycles, the MotorOn timer keeps the drive enabled after
+    /// ENABLE (IWM) or MotorOn (ISM) went off
+    enable_hold: Ticks,
     pub sel: bool,
 
     /// Internal drive select for SE
@@ -193,6 +198,7 @@ pub struct Swim {
 }
 
 impl Swim {
+    /// The controller is ticked at `base_frequency`, which is its FCLK
     pub fn new(drives: &[DriveType], ism_available: bool, base_frequency: Ticks) -> Self {
         Self {
             drives: core::array::from_fn(|i| {
@@ -210,8 +216,6 @@ impl Swim {
             // SWIM boots in IWM mode
             mode: Default::default(),
 
-            access_interval: (base_frequency * OVERCLOCK_ACCESS_INTERVAL_NS)
-                .div_ceil(1_000_000_000),
             last_access: 0,
 
             ca0: false,
@@ -252,6 +256,7 @@ impl Swim {
             ism_write_prev_bit: false,
 
             enable: false,
+            enable_hold: 0,
             dbg_pc: 0,
             dbg_break: LatchingEvent::default(),
         }
@@ -277,6 +282,27 @@ impl Swim {
         swim
     }
 
+    /// Resets the controller, as the system RESET line does: back to the
+    /// power-on mode with all drive control lines low. The drives keep their
+    /// disks.
+    pub fn reset(&mut self) {
+        let base_frequency = self.drives[0].base_frequency;
+        let mut fresh = if self.iwm_available {
+            Self::new(&[], self.ism_available, base_frequency)
+        } else {
+            Self::new_swim2(&[], base_frequency)
+        };
+        std::mem::swap(&mut fresh.drives, &mut self.drives);
+        fresh.cycles = self.cycles;
+        fresh.last_access = self.last_access;
+        fresh.sel = self.sel;
+        fresh.intdrive = self.intdrive;
+        fresh.weak_bit_rng = std::mem::take(&mut self.weak_bit_rng);
+        fresh.dbg_pc = self.dbg_pc;
+        fresh.dbg_break = std::mem::take(&mut self.dbg_break);
+        *self = fresh;
+    }
+
     /// Native ticks an access is held for, called after device_sync(). When
     /// overclocking, the CPU runs the code between two accesses faster than
     /// the real hardware: the accesses are held to be at least
@@ -288,7 +314,9 @@ impl Swim {
         }
         // After device_sync(), the clock is up to date when overclocking
         let now = clock.native_ticks();
-        let hold = (self.last_access + self.access_interval).saturating_sub(now);
+        let interval =
+            (clock.native_frequency() * OVERCLOCK_ACCESS_INTERVAL_NS).div_ceil(1_000_000_000);
+        let hold = (self.last_access + interval).saturating_sub(now);
         self.last_access = now + hold;
         hold
     }
@@ -406,23 +434,6 @@ impl Tickable for Swim {
         self.cycles += ticks;
         for drv in &mut self.drives {
             drv.cycles = self.cycles;
-        }
-
-        if self.get_selected_drive().ejecting.is_some() && self.lstrb {
-            let Some(eject_ticks) = self.get_selected_drive().ejecting else {
-                unreachable!()
-            };
-            if eject_ticks < self.cycles {
-                self.get_selected_drive_mut().eject();
-            }
-        } else if !self.lstrb
-            && let Some(eject_ticks) = self.get_selected_drive().ejecting
-        {
-            log::debug!(
-                "Eject strobe too short ({} cycles)",
-                eject_ticks - self.cycles
-            );
-            self.get_selected_drive_mut().ejecting = None;
         }
 
         if self.get_selected_drive().is_running() {

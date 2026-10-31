@@ -7,7 +7,7 @@ use proc_bitfield::bitfield;
 use serde::{Deserialize, Serialize};
 use snow_floppy::{TrackLength, TrackType};
 
-use super::{FluxTransitionTime, Swim, SwimMode};
+use super::{FluxTransitionTime, MOTOR_TIMER, Swim, SwimMode};
 use crate::bus::Address;
 use crate::tickable::Ticks;
 use crate::types::Byte;
@@ -90,6 +90,12 @@ bitfield! {
 }
 
 impl Swim {
+    /// The MOTOR-ON state: ENABLE is on, or the one-second timer still holds
+    /// it. It enables the selected drive, and selects the registers.
+    pub(super) fn iwm_drive_enabled(&self) -> bool {
+        self.enable || self.enable_hold > self.cycles
+    }
+
     /// A memory-mapped I/O address was accessed
     pub(super) fn iwm_access(&mut self, offset: Address) {
         match (offset >> 9) & 0x0F {
@@ -102,16 +108,32 @@ impl Swim {
             6 => self.lstrb = false,
             7 => {
                 // The drive latches its control register on the rising edge of LSTRB,
-                // so touching LSTRBH while it is already high does nothing
+                // so touching LSTRBH while it is already high does nothing.
+                // "For any communication with the drive, the /ENBL line must
+                // be low" (Apple 400K drive spec 699-0285 and 800K drive ERS
+                // 669-0452, section 3.1).
                 if !self.lstrb {
                     self.lstrb = true;
+                    if !self.iwm_drive_enabled() {
+                        return;
+                    }
 
                     let reg = self.get_selected_drive_reg_u8();
-                    let cycles = self.cycles;
-                    self.get_selected_drive_mut().write_drive_reg(reg, cycles);
+                    self.get_selected_drive_mut().write_drive_reg(reg);
                 }
             }
             8 => {
+                if self.enable && !self.iwm_mode.onesec() {
+                    // The IWM patent (US 4,742,448) gives "one-half
+                    // millisecond" for the timer when the LATCH mode bit is
+                    // set.
+                    let hold = if self.iwm_mode.latch() {
+                        self.drives[0].base_frequency / 2000
+                    } else {
+                        MOTOR_TIMER
+                    };
+                    self.enable_hold = self.cycles + hold;
+                }
                 self.enable = false;
             }
             9 => {
@@ -138,7 +160,7 @@ impl Swim {
         let val = match (self.q6, self.q7) {
             (false, false) => {
                 // Data register
-                if !self.enable {
+                if !self.iwm_drive_enabled() {
                     0xFF
                 } else {
                     std::mem::replace(&mut self.datareg, 0)
@@ -151,7 +173,7 @@ impl Swim {
                     .read_sense(self.get_selected_drive_reg_u8());
                 self.iwm_status.set_sense(sense);
                 self.iwm_status.set_mode_low(self.iwm_mode.mode_low());
-                self.iwm_status.set_enable(self.enable);
+                self.iwm_status.set_enable(self.iwm_drive_enabled());
 
                 // Reading status clears the shifter
                 // (used in copy protections)
@@ -182,7 +204,7 @@ impl Swim {
         // UDS/LDS are not connected to IWM, so ignore the lower address bit here.
         self.iwm_access(addr);
 
-        match (self.q6, self.q7, self.enable) {
+        match (self.q6, self.q7, self.iwm_drive_enabled()) {
             (true, true, false) => {
                 // Write MODE
                 if self.ism_available && ISM_SWITCH_PATTERN[self.ism_switch_ctr] == value {
@@ -397,11 +419,16 @@ mod tests {
     use super::*;
     use crate::bus::BusMember;
     use crate::mac::swim::drive::DriveType;
+    use crate::tickable::Tickable;
+    use snow_floppy::{FloppyImage, FloppyType};
 
     const CA0L: Address = 0 << 9;
     const CA0H: Address = 1 << 9;
     const LSTRBL: Address = 6 << 9;
     const LSTRBH: Address = 7 << 9;
+    const CA1H: Address = 3 << 9;
+    const CA2H: Address = 5 << 9;
+    const DISABLE: Address = 8 << 9;
     const ENABLE: Address = 9 << 9;
 
     #[test]
@@ -426,5 +453,112 @@ mod tests {
         swim.read(LSTRBH);
         swim.read(LSTRBL);
         assert_eq!(swim.drives[0].track, start + 2);
+    }
+
+    #[test]
+    fn strobe_ignored_without_enable() {
+        const Q6L: Address = 12 << 9;
+        const Q6H: Address = 13 << 9;
+        const Q7L: Address = 14 << 9;
+        const MODE: Address = 15 << 9;
+
+        let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
+        swim.disk_insert(0, FloppyImage::new(FloppyType::Mac800K, ""))
+            .unwrap();
+        // Mode $17, as Mac OS sets it: one-second timer disabled
+        swim.read(Q6H);
+        swim.write(MODE, 0x17);
+        swim.read(Q6L);
+        swim.read(Q7L);
+
+        // EJECT (CA2..0 high, SEL low) strobed with the drive disabled
+        swim.read(DISABLE);
+        swim.read(CA0H);
+        swim.read(CA1H);
+        swim.read(CA2H);
+        swim.read(LSTRBH);
+        swim.tick(1, ()).unwrap();
+        swim.read(LSTRBL);
+        swim.tick(1, ()).unwrap();
+        assert!(swim.drives[0].floppy_inserted);
+
+        // The same strobe with the drive enabled ejects
+        swim.read(ENABLE);
+        swim.read(LSTRBH);
+        swim.tick(1, ()).unwrap();
+        swim.read(LSTRBL);
+        swim.tick(1, ()).unwrap();
+        assert!(!swim.drives[0].floppy_inserted);
+    }
+
+    #[test]
+    fn enable_held_by_timer() {
+        let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
+        swim.disk_insert(0, FloppyImage::new(FloppyType::Mac800K, ""))
+            .unwrap();
+
+        // Mode 0, as after a reset: the drive stays enabled for 2^23 FCLK
+        // periods after ENABLE goes off
+        swim.read(ENABLE);
+        swim.read(DISABLE);
+        swim.read(CA0H);
+        swim.read(CA1H);
+        swim.read(CA2H);
+        swim.tick((1 << 23) + 1, ()).unwrap();
+        swim.read(LSTRBH);
+        swim.tick(1, ()).unwrap();
+        swim.read(LSTRBL);
+        swim.tick(1, ()).unwrap();
+        assert!(swim.drives[0].floppy_inserted);
+
+        swim.read(ENABLE);
+        swim.read(DISABLE);
+        swim.read(LSTRBH);
+        swim.tick(1, ()).unwrap();
+        swim.read(LSTRBL);
+        swim.tick(1, ()).unwrap();
+        assert!(!swim.drives[0].floppy_inserted);
+    }
+
+    #[test]
+    fn motor_on_held_by_timer() {
+        const Q6H: Address = 13 << 9;
+        const Q7L: Address = 14 << 9;
+        const MODE: Address = 15 << 9;
+
+        // Status register: MOTOR-ON (bit 5) stays set until the timer
+        // has counted down
+        let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
+        swim.read(ENABLE);
+        swim.read(DISABLE);
+        swim.read(Q7L);
+        assert_eq!(swim.read(Q6H).unwrap() & 0x20, 0x20);
+        swim.tick((1 << 23) + 1, ()).unwrap();
+        assert_eq!(swim.read(Q6H).unwrap() & 0x20, 0x00);
+
+        // With LATCH set, the timer runs for half a millisecond
+        swim.write(MODE, 0x01);
+        swim.read(Q7L);
+        swim.read(ENABLE);
+        swim.read(DISABLE);
+        assert_eq!(swim.read(Q6H).unwrap() & 0x20, 0x20);
+        swim.tick(16_000_000 / 2000 + 1, ()).unwrap();
+        assert_eq!(swim.read(Q6H).unwrap() & 0x20, 0x00);
+    }
+
+    #[test]
+    fn eject_brief_strobe() {
+        // As the Mac OS driver ejects in IWM mode: drive enabled, LSTRB
+        // raised and lowered again
+        let mut swim = Swim::new(&[DriveType::GCR800K], false, 16_000_000);
+        swim.disk_insert(0, FloppyImage::new(FloppyType::Mac800K, ""))
+            .unwrap();
+        swim.read(ENABLE);
+        swim.read(CA0H);
+        swim.read(CA1H);
+        swim.read(CA2H);
+        swim.read(LSTRBH);
+        swim.read(LSTRBL);
+        assert!(!swim.drives[0].floppy_inserted);
     }
 }

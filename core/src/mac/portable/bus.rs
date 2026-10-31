@@ -709,6 +709,7 @@ where
 
         self.pmgr.reset();
 
+        self.swim.reset();
         self.scc = Scc::new();
         self.via.reset();
         self.swim.sel = self.via.pb().headsel();

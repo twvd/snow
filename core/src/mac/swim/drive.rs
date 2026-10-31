@@ -240,7 +240,6 @@ pub(crate) struct FloppyDrive {
     // While > cycles, the drive is not ready
     // (e.g. stepping, spindle motor changing speed)
     pub(super) not_ready: Ticks,
-    pub(super) ejecting: Option<Ticks>,
 
     /// Amount of flux ticks for current transition (for flux tracks)
     pub(super) flux_ticks: FluxTicks,
@@ -277,6 +276,11 @@ pub(crate) struct FloppyDrive {
     /// emulator polls this and clears it after attempting the save.
     #[serde(skip)]
     pub(crate) pending_writeback: bool,
+
+    /// Path to save [`Self::floppy_ejected`] to: set when a disk with unsaved
+    /// writes and writeback armed is ejected
+    #[serde(skip)]
+    pub(crate) eject_writeback: Option<PathBuf>,
 }
 
 impl FloppyDrive {
@@ -304,7 +308,6 @@ impl FloppyDrive {
 
             stepping: 0,
             not_ready: 0,
-            ejecting: None,
 
             flux_ticks: 0,
             flux_ticks_left: 0,
@@ -321,6 +324,7 @@ impl FloppyDrive {
             image_path: None,
             writeback_enabled: false,
             pending_writeback: false,
+            eject_writeback: None,
         }
     }
 
@@ -458,7 +462,7 @@ impl FloppyDrive {
     }
 
     /// Writes to the currently selected drive register
-    pub(super) fn write_drive_reg(&mut self, regraw: u8, cycles: Ticks) {
+    pub(super) fn write_drive_reg(&mut self, regraw: u8) {
         let reg = DriveWriteReg::from_u8(regraw).unwrap_or(DriveWriteReg::UNKNOWN);
 
         match reg {
@@ -476,8 +480,15 @@ impl FloppyDrive {
                 }
             }
             DriveWriteReg::EJECT => {
+                // "At the rising edge of the LSTRB, EJECT is set to high and
+                // the ejection operation starts", and "The eject operation
+                // will continue to completion even if /ENBL goes high" (800K
+                // drive ERS 669-0452-A, 3.2.4.4 and 2.17.5). The 400K drive
+                // instead needs LSTRB held for 750 ms and drops the eject
+                // when disabled (400K drive spec 699-0285-A, 3.2.8): not
+                // modelled, the Mac 128K and 512K hold it for 0.75 s anyway.
                 if self.floppy_inserted {
-                    self.ejecting = Some(cycles);
+                    self.eject();
                 }
             }
             DriveWriteReg::TRACKUP => {
@@ -515,6 +526,12 @@ impl FloppyDrive {
         self.floppy = image;
         self.floppy_inserted = true;
         self.switched = true;
+        self.track_position = 0;
+        if self.motor {
+            // "the disk motor is turned on if a disk is in the drive" (400K
+            // drive spec 699-0285-A, 3.2.7): the new disk spins up
+            self.not_ready = self.cycles + (self.base_frequency / 1000 * 400);
+        }
         Ok(())
     }
 
@@ -647,11 +664,17 @@ impl FloppyDrive {
         info!("Drive {}: disk ejected", self.idx);
         self.switched = true;
         self.floppy_inserted = false;
-        self.ejecting = None;
         self.mfm = self.drive_type.io_mfm();
 
         self.floppy_ejected = Some(Box::new(self.floppy.clone()));
 
+        // The writes since the last save must not be lost with the disk,
+        // whoever ejects it
+        self.eject_writeback = if self.writeback_enabled && self.floppy.is_dirty() {
+            self.image_path.clone()
+        } else {
+            None
+        };
         self.image_path = None;
         self.writeback_enabled = false;
         self.pending_writeback = false;
@@ -746,5 +769,44 @@ mod tests {
 
         // Roughly is good enough..
         assert_eq!(result / 10, DISK_RPM_INNER * 120 / 10);
+    }
+
+    #[test]
+    fn insert_spins_up() {
+        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        drv.disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
+            .unwrap();
+        // MOTORON, then let it spin up
+        drv.write_drive_reg(0b0100);
+        drv.cycles = BASE_FREQUENCY;
+        assert!(drv.not_ready < drv.cycles);
+
+        // The motor stays on across an eject: the next disk spins up
+        drv.eject();
+        drv.disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
+            .unwrap();
+        assert!(drv.not_ready > drv.cycles);
+    }
+
+    #[test]
+    fn eject_arms_writeback_of_unsaved_writes() {
+        let mut drv = FloppyDrive::new(0, DriveType::GCR800K, BASE_FREQUENCY);
+        drv.disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
+            .unwrap();
+        drv.image_path = Some(PathBuf::from("disk.img"));
+        drv.writeback_enabled = true;
+
+        // Nothing written: nothing to save
+        drv.eject();
+        assert!(drv.eject_writeback.is_none());
+
+        drv.disk_insert(FloppyImage::new(FloppyType::Mac800K, ""))
+            .unwrap();
+        drv.image_path = Some(PathBuf::from("disk.img"));
+        drv.writeback_enabled = true;
+        drv.write_bit(0, true);
+        drv.eject();
+        assert_eq!(drv.eject_writeback, Some(PathBuf::from("disk.img")));
+        assert!(drv.floppy_ejected.is_some());
     }
 }
