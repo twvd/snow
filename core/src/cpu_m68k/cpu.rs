@@ -454,8 +454,8 @@ pub struct CpuM68k<
     /// Current prefetch queue
     pub prefetch: PrefetchQueue,
 
-    /// 68020/030 cache holding register: the second word of the last
-    /// aligned long word fetched
+    /// 68020/030 cache holding register, or the rest of the 68040 prefetch:
+    /// the second word of the last aligned long word fetched
     #[serde(skip)]
     holding: Word,
 
@@ -757,12 +757,18 @@ where
         // they keep the second one in the cache holding register for the next
         // fetch, with the I-cache enabled or not (MC68020UM 8.1.1, MC68030UM
         // 11.2.2). set_pc() invalidates it.
-        let holding = CPU_TYPE == M68020 || CPU_TYPE == M68030;
+        // The 68040 also prefetches long words (MC68040UM 7.3), its hits take
+        // no time of their own.
+        let holding = CPU_TYPE >= M68020;
         let new_item = if holding && self.holding_valid && fetch_addr & 3 == 2 {
             #[cfg(debug_assertions)]
             assert_eq!(self.holding_addr, fetch_addr);
             self.holding_valid = false;
-            self.advance_cycles(FETCH_HIT_TICKS)?;
+            if CPU_TYPE >= M68040 {
+                self.write_credit = 0;
+            } else {
+                self.advance_cycles(FETCH_HIT_TICKS)?;
+            }
             PrefetchWord::Word(self.holding)
         } else if holding {
             match self.read_ticks_program::<Long>(fetch_addr & !3) {
