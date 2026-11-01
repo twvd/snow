@@ -895,7 +895,16 @@ where
             )?;
         }
 
-        // Test breakpoint on next PC location
+        if !self.breakpoints.is_empty() {
+            self.test_pc_breakpoints();
+        }
+
+        Ok(())
+    }
+
+    /// Tests the breakpoints on the next PC location
+    #[cold]
+    fn test_pc_breakpoints(&mut self) {
         if self
             .breakpoints
             .contains(&Breakpoint::Execution(self.regs.pc))
@@ -910,8 +919,6 @@ where
             self.breakpoint_hit.set();
             self.clear_breakpoint(Breakpoint::StepOver(self.regs.pc));
         }
-
-        Ok(())
     }
 
     /// Tests if we should stop due to 'step out' debugger action
