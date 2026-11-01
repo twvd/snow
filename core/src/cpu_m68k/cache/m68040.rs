@@ -248,6 +248,31 @@ impl Caches040 {
 
 impl CpuCaches for Caches040 {
     #[inline(always)]
+    fn phys_write_hit(
+        &mut self,
+        cacr: RegisterCACR,
+        fc: u8,
+        paddr: Address,
+        size: u32,
+        data: Long,
+    ) -> bool {
+        if fc == FC_CPU_SPACE || !cacr.de() {
+            return false;
+        }
+        let cache = &mut self.dcache;
+        let Some(way) = cache.find(paddr) else {
+            return false;
+        };
+        cache.count();
+        let set = Cache040::set(paddr);
+        let entry = Cache040::entry(paddr);
+        let shift = 8 * (4 - paddr % 4 - size);
+        cache.update(set, way, entry, shift, size, low_bytes(data, size));
+        cache.dirty[set][way] |= 1 << entry;
+        true
+    }
+
+    #[inline(always)]
     fn phys_read_hit(
         &mut self,
         cacr: RegisterCACR,
