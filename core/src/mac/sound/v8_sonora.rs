@@ -15,7 +15,8 @@
 //! left and the second fully right. The Sound Manager writes mono sounds to
 //! both FIFOs, so they play in full.
 //!
-//! Sound input is not implemented.
+//! Sound input is not implemented, except that PrimeTime records silence: FIFO
+//! A is read by the CPU and fills at the record rate, as on the EASC.
 //!
 //! The last sample played is held when a FIFO is empty, so that the output
 //! does not jump when a sound starts or ends.
@@ -51,6 +52,18 @@ const REG_TEST: Address = 0x80F;
 const FIFO_SIZE: usize = 1022;
 const FIFO_HALF: usize = 510;
 
+/// Same for PrimeTime, measured with ASCTester on a LC 475: the half condition
+/// goes from 513 to 512 samples, and full is about 1024, as on the Apple Sound
+/// Chip
+const PRIMETIME_FIFO_SIZE: usize = 1024;
+const PRIMETIME_FIFO_HALF: usize = 512;
+
+/// Output samples per recorded sample, in 512ths (as on the EASC) at 22 kHz and
+/// 11 kHz, selected by bit 1 of the play and record register
+const RECORD_PERIOD_22K: u32 = 507;
+const RECORD_PERIOD_11K: u32 = 1015;
+const RECORD_STEP: u32 = 512;
+
 bitfield! {
     /// FIFO status register
     #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -71,6 +84,8 @@ bitfield! {
 pub enum V8Variant {
     V8,
     Sonora,
+    /// Sound of the IOSB, as in PrimeTime
+    PrimeTime,
 }
 
 impl V8Variant {
@@ -79,26 +94,34 @@ impl V8Variant {
         match self {
             Self::V8 => 0xE8,
             Self::Sonora => 0xBC,
+            Self::PrimeTime => 0xBB,
         }
     }
 
     const fn channels(self) -> usize {
         match self {
             Self::V8 => 1,
-            Self::Sonora => 2,
+            Self::Sonora | Self::PrimeTime => 2,
+        }
+    }
+
+    const fn fifo_size(self) -> (usize, usize) {
+        match self {
+            Self::V8 | Self::Sonora => (FIFO_SIZE, FIFO_HALF),
+            Self::PrimeTime => (PRIMETIME_FIFO_SIZE, PRIMETIME_FIFO_HALF),
         }
     }
 
     /// The channels have a block of registers
     const fn channel_regs(self) -> bool {
-        matches!(self, Self::Sonora)
+        matches!(self, Self::Sonora | Self::PrimeTime)
     }
 
     /// Value of the control and FIFO mode registers, which are fixed
     const fn control(self) -> u8 {
         match self {
             Self::V8 => 1,
-            Self::Sonora => 0,
+            Self::Sonora | Self::PrimeTime => 0,
         }
     }
 }
@@ -117,6 +140,9 @@ pub struct V8Sound {
 
     /// Play and record register, for the sound input
     play_record: u8,
+
+    /// Towards the next recorded sample
+    record_clock: u32,
 }
 
 impl V8Sound {
@@ -125,19 +151,21 @@ impl V8Sound {
             kind,
             out: AudioPath::default(),
             channels: (0..kind.channels())
-                .map(|_| Channel::new(FIFO_SIZE, FIFO_HALF))
+                .map(|_| Channel::new(kind.fifo_size().0, kind.fifo_size().1))
                 .collect(),
             volume: 0,
             play_record: 0,
+            record_clock: 0,
         }
     }
 
     pub fn reset(&mut self) {
         for channel in &mut self.channels {
-            *channel = Channel::new(FIFO_SIZE, FIFO_HALF);
+            *channel = Channel::new(self.kind.fifo_size().0, self.kind.fifo_size().1);
         }
         self.volume = 0;
         self.play_record = 0;
+        self.record_clock = 0;
         self.out.reset();
     }
 
@@ -153,7 +181,7 @@ impl V8Sound {
             // reads $0E empty, $0A full, $02 above half and $06 half full or
             // less, whether FIFO A, FIFO B or both are filled. A LC 475
             // reads the same.
-            V8Variant::Sonora => FifoStatus(0)
+            V8Variant::Sonora | V8Variant::PrimeTime => FifoStatus(0)
                 .with_fullempty(self.play_record & 1 == 0)
                 .with_half_b(half)
                 .with_fullempty_b(fullempty),
@@ -171,18 +199,56 @@ impl V8Sound {
                 (status.fullempty() && !self.channels[0].irq_disable)
                     || (status.half_b() && !self.channels[1].irq_disable)
             }
+            // A LC 475 has no interrupt at full, only at half empty, and $F29
+            // masks it
+            // While recording, FIFO A is the other way around, as on the EASC
+            V8Variant::PrimeTime => {
+                let [a, b] = [&self.channels[0], &self.channels[1]];
+                let a_irq = self.recording() && !a.half() && !a.irq_disable;
+                a_irq || (status.half_b() && !b.irq_disable)
+            }
+        }
+    }
+
+    /// PrimeTime is recording: FIFO A goes to the CPU
+    fn recording(&self) -> bool {
+        self.kind == V8Variant::PrimeTime && self.play_record & 1 != 0
+    }
+
+    /// Records samples of silence into FIFO A as they are due. Dropped when the
+    /// FIFO is full.
+    fn record(&mut self) {
+        let period = if self.play_record & 2 != 0 {
+            RECORD_PERIOD_22K
+        } else {
+            RECORD_PERIOD_11K
+        };
+        self.record_clock += RECORD_STEP;
+        while self.record_clock >= period {
+            self.record_clock -= period;
+            self.channels[0].fifo.push(0x80);
         }
     }
 
     /// Plays a sample, at the sample rate
     pub fn tick(&mut self, queue_sample: bool) -> Result<()> {
         let mut samples = [0; 2];
-        for (sample, channel) in samples.iter_mut().zip(&mut self.channels) {
+        let recording = self.recording();
+        if recording {
+            self.record();
+            samples[0] = 0x80;
+        }
+        let playing = usize::from(recording);
+        for (sample, channel) in samples.iter_mut().zip(&mut self.channels).skip(playing) {
             *sample = channel.fifo.pop();
         }
         if queue_sample {
-            // The first channel goes to both sides
-            self.out.push(samples[0], samples[0])?;
+            if self.kind == V8Variant::PrimeTime {
+                self.out.push(samples[0], samples[1])?;
+            } else {
+                // The first channel goes to both sides
+                self.out.push(samples[0], samples[0])?;
+            }
         }
         Ok(())
     }
@@ -206,6 +272,7 @@ impl V8Sound {
 impl BusMember<Address> for V8Sound {
     fn read(&mut self, addr: Address) -> Option<Byte> {
         match addr {
+            0x000..=0x3FF if self.recording() => Some(self.channels[0].fifo.pop()),
             // What a read of the FIFO returns is not known
             0x000..=0x7FF => Some(0),
             REG_VERSION => Some(self.kind.version()),
@@ -241,6 +308,8 @@ impl BusMember<Address> for V8Sound {
                     }
                 }
             }
+            // ASCTester on a LC 475: only bits 7-5 are stored
+            REG_VOLUME if self.kind == V8Variant::PrimeTime => self.volume = val & 0xE0,
             REG_VOLUME => self.volume = val,
             REG_PLAY_RECORD => self.play_record = val,
             0xF00..=0xF3F if self.kind.channel_regs() => {
@@ -399,6 +468,30 @@ mod tests {
 
         sound.write(REG_FIFO_MODE, 0x80);
         assert_eq!(sound.read(REG_FIFO_STATUS), Some(0x0E));
+    }
+
+    #[test]
+    fn primetime_records_silence() {
+        let mut sound = V8Sound::new(V8Variant::PrimeTime);
+        assert_eq!(sound.read(REG_VERSION), Some(0xBB));
+        assert!(sound.irq());
+
+        // Record at 22 kHz: FIFO A fills and has an interrupt above half
+        sound.write(REG_PLAY_RECORD, 3);
+        assert_eq!(sound.read(REG_FIFO_STATUS).unwrap() & 2, 0);
+        sound.write(0xF29, 1);
+        assert!(!sound.irq());
+        for _ in 0..600 {
+            sound.tick(false).unwrap();
+        }
+        assert!(sound.irq());
+        assert_eq!(sound.read(0x000), Some(0x80));
+
+        // And doesn't go past full
+        for _ in 0..2000 {
+            sound.tick(false).unwrap();
+        }
+        assert_eq!(sound.channels[0].fifo.len(), PRIMETIME_FIFO_SIZE);
     }
 
     #[test]

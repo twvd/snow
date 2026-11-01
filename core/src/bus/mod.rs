@@ -32,6 +32,11 @@ pub trait Bus<TA: PrimInt + WrappingAdd, TD: PrimInt>: Tickable {
     /// in turn should hard-reset the CPU itself.
     fn reset(&mut self, hard: bool) -> Result<bool>;
 
+    /// Returns whether a device has asked for a reset of the whole machine
+    fn take_reset_request(&mut self) -> bool {
+        false
+    }
+
     fn cpu_tick(&mut self, _ticks: Ticks) -> Result<()> {
         Ok(())
     }

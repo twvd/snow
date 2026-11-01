@@ -2,6 +2,7 @@ pub mod asc;
 pub mod audiopath;
 pub mod cdxa;
 pub mod channel;
+pub mod dfac2;
 pub mod easc;
 pub mod fifo;
 pub mod rate_converter;

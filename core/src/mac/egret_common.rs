@@ -8,6 +8,7 @@ use log::*;
 use serde::{Deserialize, Serialize};
 
 use crate::mac::adb::{AdbDevice, AdbDeviceInstance, AdbEvent};
+use crate::mac::iic::{IicBus, NoIic};
 use crate::mac::rtc::Rtc;
 use crate::tickable::Ticks;
 
@@ -25,6 +26,7 @@ const ERROR_PACKET_TYPE: u8 = 1;
 const ERROR_COMMAND: u8 = 2;
 const ERROR_PARAMS: u8 = 3;
 const ERROR_ADDRESS: u8 = 4;
+const ERROR_IIC: u8 = 5;
 
 /// Flags of the ADB response packet
 const ADB_FLAG_SRQ: u8 = 1 << 0;
@@ -49,8 +51,10 @@ const CMD_MONOSTABLE_RESET: u8 = 0x0D;
 const CMD_WRITE_DFAC: u8 = 0x0E;
 const CMD_DIAGNOSTICS: u8 = 0x0F;
 const CMD_CONTROL_PANEL_ENABLE: u8 = 0x10;
+const CMD_BATTERY_SWAP_SENSE: u8 = 0x10;
 const CMD_RESET: u8 = 0x11;
 const CMD_VPP: u8 = 0x12;
+const CMD_SET_IPL: u8 = 0x12;
 const CMD_FILE_SERVER: u8 = 0x13;
 const CMD_SET_AUTOPOLL_RATE: u8 = 0x14;
 const CMD_PRAM_SIZE: u8 = 0x15;
@@ -64,14 +68,19 @@ const CMD_KEYBOARD_NMI: u8 = 0x1C;
 const CMD_KEYBOARD_POST_PARSE: u8 = 0x1D;
 const CMD_SET_HANG_THRESHOLD: u8 = 0x1E;
 const CMD_GET_HANG_THRESHOLD: u8 = 0x1F;
+const CMD_SET_POWER_MESSAGES: u8 = 0x21;
+const CMD_IIC: u8 = 0x22;
+const CMD_WAKE_UP: u8 = 0x23;
+const CMD_TIMER_TICKLE: u8 = 0x24;
 
 /// Frequency of the VIA clock, which the model is run from. The Egret has
 /// its own 32.768 kHz crystal.
 pub const TICKS_PER_SECOND: Ticks = 783_360;
 
 /// Time between polls of the ADB devices. The rate is a setting of the
-/// Egret, of which the default value has not been verified.
-const AUTOPOLL_TICKS: Ticks = TICKS_PER_SECOND * 11 / 1000;
+/// Egret, of which the default value has not been verified. The Cuda firmware
+/// starts with this same value.
+const AUTOPOLL_MS: u8 = 11;
 
 /// PRAM has 8 bytes more than the 256 of the clock chip of older models
 const PRAM_EXTRA: usize = 8;
@@ -86,15 +95,46 @@ const RAM_ADB_POLL_SECOND: u16 = 0x00B4;
 const RAM_PRAM: u16 = 0x0100;
 const RAM_PRAM_EXTRA: u16 = 0x00D7;
 
+/// Internal RAM of the Cuda below PRAM, kept as plain memory: the host reads and
+/// writes flags there. Only $A1 is known to be used.
+const CUDA_RAM: u16 = 0x0090;
+const CUDA_RAM_SIZE: usize = 0x70;
+
+/// Flags of the Cuda firmware: bit 3 is set at start, and bit 4 once the clock
+/// has been set, which the battery swap sense command reports. The clock of the
+/// model is always set.
+const CUDA_FLAGS: u16 = 0x00A1;
+const CUDA_FLAGS_RESET: u8 = 0x18;
+const CUDA_FLAG_CLOCK_SET: u8 = 0x10;
+
+/// ADB devices the Cuda firmware polls until told otherwise: addresses 2 and 3
+const CUDA_DEVICE_LIST: u16 = 0x000C;
+
+/// Largest power message mode of the Cuda
+const CUDA_POWER_MESSAGES_MAX: u8 = 4;
+
 /// Read which goes on until the host ends it, with the next address
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Reading {
     Ram(u16),
     Pram(u16),
+    Iic,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+/// Which firmware runs. The commands of the Cuda were taken from version 2.37
+/// (341S0788): it drops those of the Egret which report on the firmware and
+/// its settings, and adds power and IIC commands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum McuKind {
+    #[default]
+    Egret,
+    Cuda,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct EgretCommon {
+    kind: McuKind,
+
     adb_devices: Vec<AdbDeviceInstance>,
 
     /// ADB devices are polled without a command from the host
@@ -129,9 +169,76 @@ pub struct EgretCommon {
 
     /// Read in progress
     reading: Option<Reading>,
+
+    /// Autopoll rate in ms, set by the host of a Cuda
+    autopoll_rate: u8,
+
+    /// Time between polls of the ADB devices, from the rate
+    autopoll_period: Ticks,
+
+    /// The host has asked for a reset of the whole machine
+    reset_requested: bool,
+
+    /// Internal RAM of a Cuda, from CUDA_RAM
+    cuda_ram: Vec<u8>,
+}
+
+impl Default for EgretCommon {
+    fn default() -> Self {
+        Self::new(McuKind::Egret)
+    }
 }
 
 impl EgretCommon {
+    pub fn new(kind: McuKind) -> Self {
+        Self {
+            kind,
+            adb_devices: vec![],
+            autopoll: false,
+            autopoll_ticks: 0,
+            adb_device_list: if kind == McuKind::Cuda {
+                CUDA_DEVICE_LIST
+            } else {
+                0
+            },
+            one_sec_mode: 0,
+            second_ticks: 0,
+            tick_pending: false,
+            tick_time: false,
+            keyboard_nmi: false,
+            rtc: Rtc::default(),
+            pram_extra: [0; PRAM_EXTRA],
+            reading: None,
+            autopoll_rate: AUTOPOLL_MS,
+            autopoll_period: Self::autopoll_rate_ticks(AUTOPOLL_MS),
+            reset_requested: false,
+            cuda_ram: if kind == McuKind::Cuda {
+                let mut ram = vec![0; CUDA_RAM_SIZE];
+                ram[usize::from(CUDA_FLAGS - CUDA_RAM)] = CUDA_FLAGS_RESET;
+                ram
+            } else {
+                vec![]
+            },
+        }
+    }
+
+    /// Returns whether the host has asked for a reset of the whole machine
+    pub fn take_reset_request(&mut self) -> bool {
+        std::mem::take(&mut self.reset_requested)
+    }
+
+    /// Turns autopoll and the one second packets off
+    pub fn warm_start(&mut self) {
+        self.autopoll = false;
+        self.one_sec_mode = 0;
+    }
+
+    /// A rate of 0 is taken as 1 ms, so the model doesn't poll on every tick
+    const fn autopoll_rate_ticks(rate: u8) -> Ticks {
+        let rate = if rate == 0 { 1 } else { rate as Ticks };
+        TICKS_PER_SECOND * rate / 1000
+    }
+
     /// Advances by a number of VIA clock cycles
     pub fn tick(&mut self, ticks: Ticks) {
         self.autopoll_ticks += ticks;
@@ -239,7 +346,7 @@ impl EgretCommon {
     /// The Egret polls the last device which had data and those which
     /// request service. Here the devices are only polled when they have data.
     fn adb_autopoll(&mut self) -> Option<Vec<u8>> {
-        if !self.autopoll || self.autopoll_ticks < AUTOPOLL_TICKS {
+        if !self.autopoll || self.autopoll_ticks < self.autopoll_period {
             return None;
         }
         self.autopoll_ticks = 0;
@@ -281,13 +388,18 @@ impl EgretCommon {
     /// Handles a command packet from the host and returns the response packet,
     /// without the attention byte which precedes it.
     pub fn command(&mut self, packet: &[u8]) -> Vec<u8> {
+        self.command_iic(packet, &mut NoIic)
+    }
+
+    /// As command(), for a microcontroller with an IIC bus
+    pub fn command_iic(&mut self, packet: &[u8], iic: &mut dyn IicBus) -> Vec<u8> {
         trace!("Command: {:02X?}", packet);
 
         self.reading = None;
 
         let response = match packet {
             [PACKET_ADB, cmd, data @ ..] => self.adb_command(*cmd, data),
-            [PACKET_PSEUDO, cmd, params @ ..] => self.egret_command(*cmd, params),
+            [PACKET_PSEUDO, cmd, params @ ..] => self.egret_command(*cmd, params, iic),
             [packet_type, cmd, ..] => Self::error(ERROR_PACKET_TYPE, *packet_type, *cmd),
             _ => {
                 warn!("Short packet: {:02X?}", packet);
@@ -310,22 +422,30 @@ impl EgretCommon {
 
     /// Returns the next byte of a response which goes on after the packet
     pub fn response_next(&mut self) -> Option<u8> {
+        self.response_next_iic(&mut NoIic)
+    }
+
+    /// As response_next(), for a microcontroller with an IIC bus
+    pub fn response_next_iic(&mut self, iic: &mut dyn IicBus) -> Option<u8> {
         Some(match self.reading? {
             Reading::Ram(addr) => {
                 self.reading = Some(Reading::Ram(addr.wrapping_add(1)));
                 self.ram_read(addr)
             }
             Reading::Pram(addr) => {
-                self.reading = Some(Reading::Pram((addr + 1) % PRAM_SIZE));
+                self.reading = Some(Reading::Pram((addr + 1) % self.pram_size()));
                 self.pram_read(addr)
             }
+            Reading::Iic => iic.read(),
         })
     }
 
     /// Reads the memory of the microcontroller, of which only PRAM is modelled
     fn ram_read(&self, addr: u16) -> u8 {
-        if let Some(addr) = Self::ram_to_pram(addr) {
+        if let Some(addr) = self.ram_to_pram(addr) {
             self.pram_read(addr)
+        } else if let Some(&val) = self.cuda_ram_index(addr).and_then(|i| self.cuda_ram.get(i)) {
+            val
         } else {
             warn!("Read of unimplemented memory address {:04X}", addr);
             0
@@ -333,10 +453,12 @@ impl EgretCommon {
     }
 
     fn ram_write(&mut self, addr: u16, val: u8) {
-        if let Some(addr) = Self::ram_to_pram(addr) {
+        if let Some(addr) = self.ram_to_pram(addr) {
             self.pram_write(addr, val);
         } else if matches!(addr, RAM_ADB_POLL_FIRST | RAM_ADB_POLL_SECOND) {
             // Written by the host to work around a defect of the firmware
+        } else if let Some(i) = self.cuda_ram_index(addr) {
+            self.cuda_ram[i] = val;
         } else {
             warn!(
                 "Write to unimplemented memory address {:04X}: {:02X}",
@@ -345,12 +467,28 @@ impl EgretCommon {
         }
     }
 
-    fn ram_to_pram(addr: u16) -> Option<u16> {
+    /// Index in the internal RAM of a Cuda. Reads of an Egret find nothing.
+    fn cuda_ram_index(&self, addr: u16) -> Option<usize> {
+        let i = usize::from(addr.checked_sub(CUDA_RAM)?);
+        (i < self.cuda_ram.len()).then_some(i)
+    }
+
+    fn ram_to_pram(&self, addr: u16) -> Option<u16> {
         const EXTRA_END: u16 = RAM_PRAM_EXTRA + PRAM_EXTRA as u16;
         match addr {
             RAM_PRAM..=0x01FF => Some(addr - RAM_PRAM),
-            RAM_PRAM_EXTRA..EXTRA_END => Some(addr - RAM_PRAM_EXTRA + 256),
+            RAM_PRAM_EXTRA..EXTRA_END if self.kind == McuKind::Egret => {
+                Some(addr - RAM_PRAM_EXTRA + 256)
+            }
             _ => None,
+        }
+    }
+
+    /// The PRAM of the Cuda has no bytes beyond those of the clock chip
+    const fn pram_size(&self) -> u16 {
+        match self.kind {
+            McuKind::Egret => PRAM_SIZE,
+            McuKind::Cuda => 256,
         }
     }
 
@@ -361,9 +499,9 @@ impl EgretCommon {
         }
     }
 
-    fn pram_addr(addr: [u8; 2]) -> Result<u16, u8> {
+    fn pram_addr(&self, addr: [u8; 2]) -> Result<u16, u8> {
         let addr = u16::from_be_bytes(addr);
-        if addr < PRAM_SIZE {
+        if addr < self.pram_size() {
             Ok(addr)
         } else {
             Err(ERROR_ADDRESS)
@@ -381,12 +519,125 @@ impl EgretCommon {
         vec![PACKET_ERROR, code, packet_type, cmd]
     }
 
-    fn egret_command(&mut self, cmd: u8, params: &[u8]) -> Vec<u8> {
+    /// A transaction on the IIC bus: the address of the device, with a read
+    /// flag in bit 0, then bytes to write, which are sent for a read as well. A
+    /// device which doesn't acknowledge ends it with an error. A read then goes
+    /// on until the host ends it.
+    fn iic_command(&mut self, params: &[u8], iic: &mut dyn IicBus) -> Result<Vec<u8>, u8> {
+        let Some((&addr, data)) = params.split_first() else {
+            return Err(ERROR_IIC);
+        };
+        if !iic.start(addr) || !data.iter().all(|&val| iic.write(val)) {
+            return Err(ERROR_IIC);
+        }
+        if addr & 1 != 0 {
+            self.reading = Some(Reading::Iic);
+        }
+        Ok(vec![])
+    }
+
+    /// Commands which the Cuda handles differently from the Egret. None for
+    /// the others.
+    fn cuda_command(
+        &mut self,
+        cmd: u8,
+        params: &[u8],
+        iic: &mut dyn IicBus,
+    ) -> Option<Result<Vec<u8>, u8>> {
+        Some(match cmd {
+            // Not in the firmware's table: ROM size, base and header, diagnostics,
+            // PRAM size, bus delay, keyboard NMI (always on), post-parse, hang
+            // threshold
+            CMD_ROM_SIZE
+            | CMD_ROM_BASE
+            | CMD_ROM_HEADER
+            | CMD_DIAGNOSTICS
+            | CMD_PRAM_SIZE
+            | CMD_SET_BUS_DELAY
+            | CMD_GET_BUS_DELAY
+            | CMD_KEYBOARD_NMI
+            | CMD_KEYBOARD_POST_PARSE
+            | CMD_SET_HANG_THRESHOLD
+            | CMD_GET_HANG_THRESHOLD => Err(ERROR_COMMAND),
+
+            // Set when the machine turns on, which only soft power uses. Stored
+            // by the firmware, not modelled.
+            CMD_SET_POWER_UP_TIME => Self::params::<4>(params).map(|_| vec![]),
+
+            // Write to an old style DFAC: the firmware shifts out any number of
+            // bytes. The DFAC II is on the IIC bus, so this goes nowhere.
+            CMD_WRITE_DFAC => Ok(vec![]),
+
+            // Sense a battery swap: the firmware answers $FF until the clock is
+            // set and 0 after, from a flag the host can reach
+            CMD_BATTERY_SWAP_SENSE => Self::params(params).map(|[]| {
+                let flags = self.ram_read(CUDA_FLAGS);
+                vec![if flags & CUDA_FLAG_CLOCK_SET != 0 {
+                    0
+                } else {
+                    0xFF
+                }]
+            }),
+
+            // Restart the firmware, which resets the CPU, without a response
+            CMD_RESET => Self::params(params).map(|[]| {
+                self.reset_requested = true;
+                vec![]
+            }),
+
+            // Choose how the NMI is driven (not modelled)
+            CMD_SET_IPL => Self::params(params).map(|[_]| vec![]),
+
+            // Turn on when AC power comes back (not modelled)
+            CMD_FILE_SERVER => Self::params(params).map(|[_]| vec![]),
+
+            // Set or get the autopoll rate, in ms
+            CMD_SET_AUTOPOLL_RATE => Self::params(params).map(|[rate]| {
+                self.autopoll_rate = rate;
+                self.autopoll_period = Self::autopoll_rate_ticks(rate);
+                vec![]
+            }),
+            CMD_GET_AUTOPOLL_RATE => Self::params(params).map(|[]| vec![self.autopoll_rate]),
+
+            // Choose whether presses of the power key are reported (no such
+            // key in the model)
+            CMD_SET_POWER_MESSAGES => Self::params(params).and_then(|[mode]| {
+                if mode <= CUDA_POWER_MESSAGES_MAX {
+                    Ok(vec![])
+                } else {
+                    Err(ERROR_COMMAND)
+                }
+            }),
+
+            // Access a device on the IIC bus
+            CMD_IIC => self.iic_command(params, iic),
+
+            // Allow the machine to wake up (not modelled)
+            CMD_WAKE_UP => Self::params(params).map(|[_]| vec![]),
+
+            // Restart the shutdown timer of the host (not modelled)
+            CMD_TIMER_TICKLE => Self::params(params).map(|[_]| vec![]),
+
+            _ => return None,
+        })
+    }
+
+    fn egret_command(&mut self, cmd: u8, params: &[u8], iic: &mut dyn IicBus) -> Vec<u8> {
+        let cuda = match self.kind {
+            McuKind::Cuda => self.cuda_command(cmd, params, iic),
+            McuKind::Egret => None,
+        };
+        if let Some(result) = cuda {
+            return match result {
+                Ok(data) => [&[PACKET_PSEUDO, 0, cmd], data.as_slice()].concat(),
+                Err(code) => Self::error(code, PACKET_PSEUDO, cmd),
+            };
+        }
+
         let result = match cmd {
             // Warm start: turn autopoll and the one second packets off
             CMD_WARM_START => Self::params(params).map(|[]| {
-                self.autopoll = false;
-                self.one_sec_mode = 0;
+                self.warm_start();
                 vec![]
             }),
 
@@ -433,6 +684,9 @@ impl EgretCommon {
             }
             CMD_SET_CLOCK => Self::params(params).map(|seconds| {
                 self.rtc.set_seconds(u32::from_be_bytes(seconds));
+                if let Some(i) = self.cuda_ram_index(CUDA_FLAGS) {
+                    self.cuda_ram[i] |= CUDA_FLAG_CLOCK_SET;
+                }
                 vec![]
             }),
 
@@ -445,14 +699,14 @@ impl EgretCommon {
 
             // Access the parameter RAM
             CMD_READ_PRAM => Self::params(params).and_then(|addr| {
-                self.reading = Some(Reading::Pram(Self::pram_addr(addr)?));
+                self.reading = Some(Reading::Pram(self.pram_addr(addr)?));
                 Ok(vec![])
             }),
             CMD_WRITE_PRAM => match *params {
-                [hi, lo, ref data @ ..] => Self::pram_addr([hi, lo]).map(|mut addr| {
+                [hi, lo, ref data @ ..] => self.pram_addr([hi, lo]).map(|mut addr| {
                     for &val in data {
                         self.pram_write(addr, val);
-                        addr = (addr + 1) % PRAM_SIZE;
+                        addr = (addr + 1) % self.pram_size();
                     }
                     vec![]
                 }),
@@ -553,7 +807,10 @@ impl EgretCommon {
 mod tests {
     use super::*;
     use crate::mac::adb::{AdbKeyboard, AdbMouse};
+    use crate::mac::sound::dfac2::Dfac2;
     use crate::types::MouseEvent;
+
+    const AUTOPOLL_TICKS: Ticks = TICKS_PER_SECOND * AUTOPOLL_MS as Ticks / 1000;
 
     #[test]
     fn autopoll() {
@@ -837,6 +1094,99 @@ mod tests {
         );
         assert_eq!(egret.command(&[0x01, 0x13, 0x01]), [0x02, 0x02, 0x01, 0x13]);
         assert_eq!(egret.command(&[0x01, 0x13]), [0x02, 0x03, 0x01, 0x13]);
+    }
+
+    #[test]
+    fn cuda_commands() {
+        let mut cuda = EgretCommon::new(McuKind::Cuda);
+
+        // Dropped from the Egret
+        for cmd in [
+            0x04, 0x05, 0x06, 0x0F, 0x15, 0x17, 0x18, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x25,
+        ] {
+            assert_eq!(cuda.command(&[0x01, cmd]), [0x02, 0x02, 0x01, cmd]);
+        }
+
+        assert_eq!(cuda.command(&[0x01, 0x10]), [0x01, 0x00, 0x10, 0x00]);
+        assert_eq!(cuda.command(&[0x01, 0x0B, 0, 0, 0, 0]), [0x01, 0x00, 0x0B]);
+        assert_eq!(cuda.command(&[0x01, 0x13, 0x01]), [0x01, 0x00, 0x13]);
+        assert_eq!(cuda.command(&[0x01, 0x23, 0x01]), [0x01, 0x00, 0x23]);
+        assert_eq!(cuda.command(&[0x01, 0x24, 0x10]), [0x01, 0x00, 0x24]);
+        assert_eq!(cuda.command(&[0x01, 0x21, 0x04]), [0x01, 0x00, 0x21]);
+        assert_eq!(cuda.command(&[0x01, 0x21, 0x05]), [0x02, 0x02, 0x01, 0x21]);
+        assert_eq!(cuda.command(&[0x01, 0x0E]), [0x01, 0x00, 0x0E]);
+
+        assert_eq!(cuda.command(&[0x01, 0x16]), [0x01, 0x00, 0x16, 0x0B]);
+        assert_eq!(cuda.command(&[0x01, 0x14, 0x20]), [0x01, 0x00, 0x14]);
+        assert_eq!(cuda.command(&[0x01, 0x16]), [0x01, 0x00, 0x16, 0x20]);
+
+        assert_eq!(cuda.command(&[0x01, 0x1A]), [0x01, 0x00, 0x1A, 0x00, 0x0C]);
+
+        assert!(!cuda.take_reset_request());
+        cuda.command(&[0x01, 0x11]);
+        assert!(cuda.take_reset_request());
+        assert!(!cuda.take_reset_request());
+    }
+
+    #[test]
+    fn cuda_flags() {
+        let mut cuda = EgretCommon::new(McuKind::Cuda);
+
+        cuda.command(&[0x01, 0x02, 0x00, 0xA1]);
+        assert_eq!(cuda.response_next(), Some(0x18));
+
+        // The host clears them: the clock counts as not set, until it is
+        cuda.command(&[0x01, 0x08, 0x00, 0xA1, 0x00]);
+        assert_eq!(cuda.command(&[0x01, 0x10]), [0x01, 0x00, 0x10, 0xFF]);
+        cuda.command(&[0x01, 0x09, 0, 0, 0, 0]);
+        assert_eq!(cuda.command(&[0x01, 0x10]), [0x01, 0x00, 0x10, 0x00]);
+    }
+
+    #[test]
+    fn cuda_pram() {
+        let mut cuda = EgretCommon::new(McuKind::Cuda);
+
+        // 256 bytes, the address wraps around in them
+        assert_eq!(
+            cuda.command(&[0x01, 0x0C, 0x00, 0xFF, 0x12, 0x34]),
+            [0x01, 0x00, 0x0C]
+        );
+        assert_eq!(cuda.rtc.pram_read(0xFF), 0x12);
+        assert_eq!(cuda.rtc.pram_read(0x00), 0x34);
+        assert_eq!(
+            cuda.command(&[0x01, 0x07, 0x01, 0x00]),
+            [0x02, 0x04, 0x01, 0x07]
+        );
+        assert_eq!(
+            cuda.command(&[0x01, 0x0C, 0x01, 0x00, 0xFF]),
+            [0x02, 0x04, 0x01, 0x0C]
+        );
+    }
+
+    #[test]
+    fn cuda_iic() {
+        let mut cuda = EgretCommon::new(McuKind::Cuda);
+        let mut dfac = Dfac2::default();
+        let mut iic = |cuda: &mut EgretCommon, packet: &[u8]| cuda.command_iic(packet, &mut dfac);
+
+        assert_eq!(iic(&mut cuda, &[0x01, 0x22]), [0x02, 0x05, 0x01, 0x22]);
+        assert_eq!(
+            iic(&mut cuda, &[0x01, 0x22, 0x50]),
+            [0x02, 0x05, 0x01, 0x22]
+        );
+        assert_eq!(
+            iic(&mut cuda, &[0x01, 0x22, 0xDE, 0x0C, 0x47, 0x2A]),
+            [0x01, 0x00, 0x22]
+        );
+        assert!(!cuda.response_continues());
+
+        assert_eq!(
+            iic(&mut cuda, &[0x01, 0x22, 0xDF, 0x0C]),
+            [0x01, 0x00, 0x22]
+        );
+        assert!(cuda.response_continues());
+        assert_eq!(cuda.response_next_iic(&mut dfac), Some(0x47));
+        assert_eq!(cuda.response_next_iic(&mut dfac), Some(0x2A));
     }
 
     #[test]

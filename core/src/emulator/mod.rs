@@ -20,7 +20,8 @@ use strum::IntoEnumIterator;
 use crate::bus::{Address, Bus, InspectableBus};
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use crate::cpu_m68k::{
-    CpuM68000, CpuM68020, CpuM68020Fpu, CpuM68020Fpu68882, CpuM68020Pmmu, CpuM68030, CpuM68030Fpu,
+    CpuM68LC040, CpuM68000, CpuM68020, CpuM68020Fpu, CpuM68020Fpu68882, CpuM68020Pmmu, CpuM68030,
+    CpuM68030Fpu, CpuM68040Fpu,
 };
 use crate::debuggable::{Debuggable, DebuggableProperties};
 #[cfg(feature = "savestates")]
@@ -29,7 +30,9 @@ use crate::keymap::KeyEvent;
 use crate::mac::compact::bus::{CompactMacBus, RAM_DIRTY_PAGESIZE};
 use crate::mac::macii::bus::MacIIBus;
 use crate::mac::maclc::bus::MacLCBus;
+use crate::mac::maclc::primetime_iosb::Lc475Bus;
 use crate::mac::portable::bus::MacPortableBus;
+use crate::mac::quadra::bus::Quadra700Bus;
 use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
 use crate::mac::serial_bridge::{SccBridge, SerialBridgeStatus};
@@ -49,7 +52,7 @@ use std::fmt;
 use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::emulator::comm::{EmulatorSpeed, UserMessageType};
 use crate::mac::rtc::Rtc;
-use crate::mac::scsi::controller::ScsiController;
+use crate::mac::scsi::bus::ScsiBus;
 use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::swim::Swim;
 use comm::{
@@ -116,6 +119,9 @@ macro_rules! dispatch {
                         Self::MacLCFpu(inner) => &inner.$($ref_target)*,
                         Self::MacLCII(inner) => &inner.$($ref_target)*,
                         Self::MacLCIIFpu(inner) => &inner.$($ref_target)*,
+                        Self::Quadra700(inner) => &inner.$($ref_target)*,
+                        Self::LC475(inner) => &inner.$($ref_target)*,
+                        Self::LC475Fpu(inner) => &inner.$($ref_target)*,
                     }
                 }
             )*
@@ -133,6 +139,9 @@ macro_rules! dispatch {
                         Self::MacLCFpu(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacLCII(inner) => &mut inner.$($mut_ref_target)*,
                         Self::MacLCIIFpu(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::Quadra700(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::LC475(inner) => &mut inner.$($mut_ref_target)*,
+                        Self::LC475Fpu(inner) => &mut inner.$($mut_ref_target)*,
                     }
                 }
             )*
@@ -150,6 +159,9 @@ macro_rules! dispatch {
                         Self::MacLCFpu(inner) => inner.$($immut_call_target)*,
                         Self::MacLCII(inner) => inner.$($immut_call_target)*,
                         Self::MacLCIIFpu(inner) => inner.$($immut_call_target)*,
+                        Self::Quadra700(inner) => inner.$($immut_call_target)*,
+                        Self::LC475(inner) => inner.$($immut_call_target)*,
+                        Self::LC475Fpu(inner) => inner.$($immut_call_target)*,
                     }
                 }
             )*
@@ -167,12 +179,19 @@ macro_rules! dispatch {
                         Self::MacLCFpu(inner) => inner.$($mut_call_target)*,
                         Self::MacLCII(inner) => inner.$($mut_call_target)*,
                         Self::MacLCIIFpu(inner) => inner.$($mut_call_target)*,
+                        Self::Quadra700(inner) => inner.$($mut_call_target)*,
+                        Self::LC475(inner) => inner.$($mut_call_target)*,
+                        Self::LC475Fpu(inner) => inner.$($mut_call_target)*,
                     }
                 }
             )*
         }
     };
 }
+
+/// Low memory globals the absolute mouse mode reads and writes: MTemp and
+/// RawMouse, CrsrNew
+const MOUSE_GLOBALS: [(Address, Address); 2] = [(0x0828, 8), (0x08CE, 1)];
 
 /// Emulator config. Basically an abstraction on top of the CPU for multiple different model groups
 /// that provides access to the inner components by the emulator runner through dynamic dispatch.
@@ -196,12 +215,17 @@ enum EmulatorConfig {
     MacLCII(Box<CpuM68030<MacLCBus<ChannelRenderer>>>),
     /// Macintosh LC II and LC III with an FPU
     MacLCIIFpu(Box<CpuM68030Fpu<MacLCBus<ChannelRenderer>>>),
+    /// Macintosh Quadra 700 (68040)
+    Quadra700(Box<CpuM68040Fpu<Quadra700Bus<ChannelRenderer>>>),
+    /// Macintosh LC 475 (68LC040)
+    LC475(Box<CpuM68LC040<Lc475Bus<ChannelRenderer>>>),
+    /// Macintosh LC 475 with its socketed CPU replaced by a 68040
+    LC475Fpu(Box<CpuM68040Fpu<Lc475Bus<ChannelRenderer>>>),
 }
 
 dispatch! {
     immutable_refs {
         fn swim(&self) -> &Swim { bus.swim }
-        fn scsi(&self) -> &ScsiController { bus.scsi }
         fn scc(&self) -> &Scc { bus.scc }
         fn cpu_regs(&self) -> &RegisterFile { regs }
         fn ram(&self) -> &[u8] { bus.ram }
@@ -210,7 +234,6 @@ dispatch! {
 
     mutable_refs {
         fn swim_mut(&mut self) -> &mut Swim { bus.swim }
-        fn scsi_mut(&mut self) -> &mut ScsiController { bus.scsi }
         fn scc_mut(&mut self) -> &mut Scc { bus.scc }
         fn cpu_regs_mut(&mut self) -> &mut RegisterFile { regs }
         fn ram_mut(&mut self) -> &mut [u8] { bus.ram }
@@ -218,6 +241,7 @@ dispatch! {
     }
 
     immutable_calls {
+        fn scsi(&self) -> &ScsiBus { bus.scsi.bus() }
         fn model(&self) -> MacModel { bus.model() }
         fn cpu_has_pmmu(&self) -> bool { has_pmmu() }
         fn cpu_cycles(&self) -> Ticks { cycles }
@@ -229,6 +253,7 @@ dispatch! {
     }
 
     mutable_calls {
+        fn scsi_mut(&mut self) -> &mut ScsiBus { bus.scsi.bus_mut() }
         fn set_speed(&mut self, speed: EmulatorSpeed) -> () { bus.set_speed(speed) }
         fn set_overclock(&mut self, bus_frequency: Option<u64>) -> () { bus.set_overclock(bus_frequency) }
         fn set_audio_provider(&mut self, provider: &mut dyn AudioProvider) -> Result<()> { bus.set_audio_provider(provider) }
@@ -247,7 +272,9 @@ dispatch! {
         fn cpu_reset(&mut self) -> Result<()> { reset() }
 
         fn bus_reset(&mut self) -> Result<bool> { bus.reset(true) }
+        fn bus_take_reset_request(&mut self) -> bool { bus.take_reset_request() }
         fn after_deserialize(&mut self, renderer: ChannelRenderer) -> () { bus.after_deserialize(renderer) }
+        fn cpu_host_flush(&mut self, paddr: Address, len: Address, write: bool) -> () { host_flush(paddr, len, write) }
         fn bus_inspect_read(&mut self, addr: Address) -> Option<Byte> { bus.inspect_read(addr) }
         fn bus_inspect_write(&mut self, addr: Address, val: Byte) -> Option<()> { bus.inspect_write(addr, val) }
 
@@ -539,6 +566,49 @@ impl Emulator {
                     EmulatorConfig::MacLCII(Box::new(CpuM68030::new(bus)))
                 }
             }
+            MacModel::Quadra700 => {
+                assert!(override_fdd_type.is_none());
+
+                // Find extension ROM if present
+                let extension_rom = extra_roms.iter().find_map(|p| match p {
+                    ExtraROMs::ExtensionROM(data) => Some(*data),
+                    _ => None,
+                });
+
+                // Initialize bus and CPU
+                let bus = Quadra700Bus::new(
+                    model,
+                    rom,
+                    extension_rom,
+                    renderer,
+                    monitor.unwrap_or_default(),
+                    mouse_mode,
+                    ram_size,
+                );
+                let cpu = Box::new(CpuM68040Fpu::new(bus));
+                assert_eq!(cpu.get_type(), model.cpu_type());
+
+                EmulatorConfig::Quadra700(cpu)
+            }
+            MacModel::LC475 => {
+                assert!(override_fdd_type.is_none());
+
+                let bus = Lc475Bus::new(
+                    model,
+                    rom,
+                    renderer,
+                    monitor.unwrap_or_default(),
+                    mouse_mode,
+                    ram_size,
+                    vram_size,
+                );
+                // The CPU is socketed, and some owners fit a 68040
+                if fpu_enabled {
+                    EmulatorConfig::LC475Fpu(Box::new(CpuM68040Fpu::new(bus)))
+                } else {
+                    EmulatorConfig::LC475(Box::new(CpuM68LC040::new(bus)))
+                }
+            }
         };
 
         config.scsi_mut().set_shared_dir(shared_dir);
@@ -772,6 +842,7 @@ impl Emulator {
     }
 
     fn disassemble(&mut self, addr: Address, len: usize) -> Result<()> {
+        self.config.cpu_host_flush(addr, len as Address, false);
         let ops = (addr..)
             .take(len)
             .flat_map(|addr| self.config.bus_inspect_read(addr))
@@ -787,6 +858,12 @@ impl Emulator {
     fn step(&mut self) -> Result<()> {
         let mut stop_break = false;
         self.config.cpu_tick(1)?;
+        if self.config.bus_take_reset_request() {
+            // As for the reset command: the bus first, for the overlay
+            self.config.bus_reset()?;
+            self.config.cpu_reset()?;
+            self.config.video_blank()?;
+        }
 
         // Mac 512K: 0x402154, Mac Plus: 0x418CCC
         //if self.config.swim().drives[0].track == 2 {
@@ -1028,6 +1105,9 @@ impl Tickable for Emulator {
                             r.push((cycles, cmd));
                         }
 
+                        for (addr, len) in MOUSE_GLOBALS {
+                            self.config.cpu_host_flush(addr, len, true);
+                        }
                         self.config.mouse_update_abs(x, y);
                     }
                     EmulatorCommand::SetMouseMode(mode) => {
@@ -1252,6 +1332,8 @@ impl Tickable for Emulator {
                         self.status_update()?;
                     }
                     EmulatorCommand::BusInspectWrite(start, data) => {
+                        self.config
+                            .cpu_host_flush(start, data.len() as Address, true);
                         for (i, d) in data.into_iter().enumerate() {
                             let addr = start.wrapping_add(i as Address);
                             if self.config.bus_inspect_write(addr, d).is_none() {

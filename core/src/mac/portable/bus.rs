@@ -251,7 +251,7 @@ where
             .unwrap_or_else(|_| null_audio_sink());
         self.asc.set_sink(sink);
 
-        self.scsi.set_audio_provider(provider)
+        self.scsi.bus_mut().set_audio_provider(provider)
     }
 
     /// Makes the ROM skip its memory test
@@ -701,11 +701,7 @@ where
             }
         };
 
-        Ok(BusResponse::Ack {
-            width: 2,
-            data,
-            waits,
-        })
+        Ok(BusResponse::ack(2, data, waits))
     }
 
     fn reset(&mut self, hard: bool) -> Result<bool> {

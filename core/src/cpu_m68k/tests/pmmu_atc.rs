@@ -24,6 +24,7 @@ fn entry(cpu: &TestCpu, paddr: Address) -> PmmuAtcEntry {
         leaf_desc_addr: 0x1000,
         modified: false,
         fc_mask: 0,
+        cache: Default::default(),
         generation: cpu.pmmu_atc_generation,
     }
 }
@@ -77,7 +78,7 @@ fn tt_rw_field_selects_the_access() {
     // $50xxxxxx, all function codes, R/W = 1, RWM = 0
     cpu.regs.pmmu.tt[0].0 = 0x5000_8207;
     assert_eq!(
-        cpu.pmmu_translate(5, 0x5000_1234, false).unwrap(),
+        cpu.pmmu_translate(5, 0x5000_1234, false).unwrap().paddr,
         0x5000_1234
     );
     assert!(cpu.pmmu_translate(5, 0x5000_1234, true).is_err());
@@ -86,18 +87,18 @@ fn tt_rw_field_selects_the_access() {
     cpu.regs.pmmu.tt[0].0 = 0x5000_8007;
     assert!(cpu.pmmu_translate(5, 0x5000_1234, false).is_err());
     assert_eq!(
-        cpu.pmmu_translate(5, 0x5000_1234, true).unwrap(),
+        cpu.pmmu_translate(5, 0x5000_1234, true).unwrap().paddr,
         0x5000_1234
     );
 
     // RWM = 1: both
     cpu.regs.pmmu.tt[0].0 = 0x5000_8107;
     assert_eq!(
-        cpu.pmmu_translate(5, 0x5000_1234, false).unwrap(),
+        cpu.pmmu_translate(5, 0x5000_1234, false).unwrap().paddr,
         0x5000_1234
     );
     assert_eq!(
-        cpu.pmmu_translate(5, 0x5000_1234, true).unwrap(),
+        cpu.pmmu_translate(5, 0x5000_1234, true).unwrap().paddr,
         0x5000_1234
     );
 }
