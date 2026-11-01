@@ -3,17 +3,17 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-use crate::emulator::{EmulatorInitArgs, ScsiTarget};
+use crate::emulator::{EmulatorInitArgs, SavedDevice};
 use crate::shader_pipeline::ShaderConfig;
 use crate::util::relativepath::RelativePath;
 use crate::widgets::framebuffer::ScalingAlgorithm;
 use anyhow::{Context, Result};
 use eframe::egui;
 use serde::{Deserialize, Deserializer, Serialize};
+use snow_core::emulator::ports::NewDevice;
 use snow_core::mac::MacModel;
 #[cfg(feature = "ethernet")]
 use snow_core::mac::scsi::ethernet::EthernetLinkType;
-use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
 
 /// Custom deserializer that skips invalid shader configs instead of failing entirely
@@ -47,7 +47,7 @@ pub enum FramebufferMode {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub enum WorkspaceScsiTarget {
+pub enum WorkspaceDeviceKind {
     #[default]
     None,
     Disk(RelativePath),
@@ -61,87 +61,56 @@ pub enum WorkspaceScsiTarget {
     Printer,
 }
 
-impl TryFrom<ScsiTarget> for WorkspaceScsiTarget {
-    type Error = ();
+/// A device and the port it's in
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WorkspaceDevice {
+    family: String,
+    id: String,
+    device: WorkspaceDeviceKind,
+}
 
-    fn try_from(value: ScsiTarget) -> std::result::Result<Self, Self::Error> {
-        Ok(match value.target_type.ok_or(())? {
-            ScsiTargetType::Disk => {
-                Self::Disk(RelativePath::from_absolute(&value.image_path.ok_or(())?))
+impl WorkspaceDevice {
+    fn from_saved(saved: &SavedDevice) -> Self {
+        let device = match &saved.device {
+            NewDevice::HardDisk(p) => WorkspaceDeviceKind::Disk(RelativePath::from_absolute(p)),
+            NewDevice::CdromDrive => WorkspaceDeviceKind::Cdrom,
+            NewDevice::CdromFolder(p) => {
+                WorkspaceDeviceKind::CdromFolder(RelativePath::from_absolute(p))
             }
-            ScsiTargetType::Cdrom => match value.cdrom_folder {
-                Some(dir) => Self::CdromFolder(RelativePath::from_absolute(&dir)),
-                None => Self::Cdrom,
-            },
             #[cfg(feature = "ethernet")]
-            ScsiTargetType::Ethernet => Self::Ethernet,
+            NewDevice::Ethernet => WorkspaceDeviceKind::Ethernet,
             #[cfg(feature = "printer")]
-            ScsiTargetType::Printer => Self::Printer,
-        })
-    }
-}
-
-impl TryFrom<Option<ScsiTarget>> for WorkspaceScsiTarget {
-    type Error = ();
-
-    fn try_from(value: Option<ScsiTarget>) -> std::result::Result<Self, Self::Error> {
-        match value {
-            None => Ok(Self::None),
-            Some(v) => Self::try_from(v),
+            NewDevice::Printer(_) => WorkspaceDeviceKind::Printer,
+        };
+        Self {
+            family: saved.family.clone(),
+            id: saved.id.clone(),
+            device,
         }
     }
-}
 
-// The opposite is not infallible
-#[allow(clippy::from_over_into)]
-impl Into<ScsiTarget> for WorkspaceScsiTarget {
-    fn into(self) -> ScsiTarget {
-        match self {
-            Self::None => ScsiTarget {
-                target_type: None,
-                image_path: None,
-                cdrom_folder: None,
-            },
-            Self::Cdrom => ScsiTarget {
-                target_type: Some(ScsiTargetType::Cdrom),
-                image_path: None,
-                cdrom_folder: None,
-            },
-            Self::CdromFolder(p) => ScsiTarget {
-                target_type: Some(ScsiTargetType::Cdrom),
-                image_path: None,
-                cdrom_folder: Some(p.get_absolute()),
-            },
-            Self::Disk(p) => ScsiTarget {
-                target_type: Some(ScsiTargetType::Disk),
-                image_path: Some(p.get_absolute()),
-                cdrom_folder: None,
-            },
+    fn to_saved(&self) -> Option<SavedDevice> {
+        let device = match &self.device {
+            WorkspaceDeviceKind::None => return None,
+            WorkspaceDeviceKind::Disk(p) => NewDevice::HardDisk(p.get_absolute()),
+            WorkspaceDeviceKind::Cdrom => NewDevice::CdromDrive,
+            WorkspaceDeviceKind::CdromFolder(p) => NewDevice::CdromFolder(p.get_absolute()),
             #[cfg(feature = "ethernet")]
-            Self::Ethernet => ScsiTarget {
-                target_type: Some(ScsiTargetType::Ethernet),
-                image_path: None,
-                cdrom_folder: None,
-            },
+            WorkspaceDeviceKind::Ethernet => NewDevice::Ethernet,
             #[cfg(not(feature = "ethernet"))]
-            Self::Ethernet => ScsiTarget {
-                target_type: None,
-                image_path: None,
-                cdrom_folder: None,
-            },
+            WorkspaceDeviceKind::Ethernet => return None,
             #[cfg(feature = "printer")]
-            Self::Printer => ScsiTarget {
-                target_type: Some(ScsiTargetType::Printer),
-                image_path: None,
-                cdrom_folder: None,
-            },
+            WorkspaceDeviceKind::Printer => {
+                NewDevice::Printer(crate::emulator::EmulatorState::printer_output_dir())
+            }
             #[cfg(not(feature = "printer"))]
-            Self::Printer => ScsiTarget {
-                target_type: None,
-                image_path: None,
-                cdrom_folder: None,
-            },
-        }
+            WorkspaceDeviceKind::Printer => return None,
+        };
+        Some(SavedDevice {
+            family: self.family.clone(),
+            id: self.id.clone(),
+            device,
+        })
     }
 }
 
@@ -259,8 +228,12 @@ pub struct Workspace {
     #[serde(skip_serializing)]
     disks: [Option<RelativePath>; 7],
 
-    /// Configured SCSI targets
-    scsi_targets: [WorkspaceScsiTarget; 7],
+    /// Deprecated; now devices
+    #[serde(skip_serializing)]
+    scsi_targets: [WorkspaceDeviceKind; 7],
+
+    /// Devices in the machine's ports
+    devices: Vec<WorkspaceDevice>,
 
     /// Window positions
     windows: HashMap<String, [f32; 4]>,
@@ -331,6 +304,7 @@ impl Default for Workspace {
             extension_rom_path: None,
             disks: Default::default(),
             scsi_targets: Default::default(),
+            devices: Vec::new(),
             windows: HashMap::new(),
             init_args: EmulatorInitArgs::default(),
             model: None,
@@ -396,15 +370,19 @@ impl Workspace {
         if let Some(p) = result.shared_dir.as_mut() {
             p.after_deserialize(parent)?;
         }
-        for d in &mut result.scsi_targets {
+        for d in result
+            .scsi_targets
+            .iter_mut()
+            .chain(result.devices.iter_mut().map(|d| &mut d.device))
+        {
             match d {
-                WorkspaceScsiTarget::Disk(p) | WorkspaceScsiTarget::CdromFolder(p) => {
+                WorkspaceDeviceKind::Disk(p) | WorkspaceDeviceKind::CdromFolder(p) => {
                     p.after_deserialize(parent)?;
                 }
-                WorkspaceScsiTarget::None
-                | WorkspaceScsiTarget::Cdrom
-                | WorkspaceScsiTarget::Ethernet
-                | WorkspaceScsiTarget::Printer => (),
+                WorkspaceDeviceKind::None
+                | WorkspaceDeviceKind::Cdrom
+                | WorkspaceDeviceKind::Ethernet
+                | WorkspaceDeviceKind::Printer => (),
             }
         }
         for (i, d) in result.disks.iter_mut().enumerate() {
@@ -412,10 +390,21 @@ impl Workspace {
                 p.after_deserialize(parent)?;
 
                 // Migrate
-                result.scsi_targets[i] = WorkspaceScsiTarget::Disk(p.clone());
+                result.scsi_targets[i] = WorkspaceDeviceKind::Disk(p.clone());
             }
         }
         result.disks = core::array::from_fn(|_| None);
+
+        for (i, d) in result.scsi_targets.iter().enumerate() {
+            if !matches!(d, WorkspaceDeviceKind::None) {
+                result.devices.push(WorkspaceDevice {
+                    family: "SCSI".to_owned(),
+                    id: i.to_string(),
+                    device: d.clone(),
+                });
+            }
+        }
+        result.scsi_targets = Default::default();
 
         for p in &mut result.floppy_images {
             p.after_deserialize(parent)?;
@@ -460,16 +449,16 @@ impl Workspace {
         if let Some(p) = self.shared_dir.as_mut() {
             p.before_serialize(parent)?;
         }
-        // disks is deprecated
-        for d in &mut self.scsi_targets {
+        // disks and scsi_targets are deprecated
+        for d in self.devices.iter_mut().map(|d| &mut d.device) {
             match d {
-                WorkspaceScsiTarget::Disk(p) | WorkspaceScsiTarget::CdromFolder(p) => {
+                WorkspaceDeviceKind::Disk(p) | WorkspaceDeviceKind::CdromFolder(p) => {
                     p.before_serialize(parent)?;
                 }
-                WorkspaceScsiTarget::None
-                | WorkspaceScsiTarget::Cdrom
-                | WorkspaceScsiTarget::Ethernet
-                | WorkspaceScsiTarget::Printer => (),
+                WorkspaceDeviceKind::None
+                | WorkspaceDeviceKind::Cdrom
+                | WorkspaceDeviceKind::Ethernet
+                | WorkspaceDeviceKind::Printer => (),
             }
         }
         for p in &mut self.floppy_images {
@@ -480,12 +469,15 @@ impl Workspace {
         Ok(serde_json::to_writer_pretty(file, self)?)
     }
 
-    pub fn scsi_targets(&self) -> [ScsiTarget; 7] {
-        core::array::from_fn(|i| self.scsi_targets[i].clone().into())
+    pub fn saved_devices(&self) -> Vec<SavedDevice> {
+        self.devices
+            .iter()
+            .filter_map(WorkspaceDevice::to_saved)
+            .collect()
     }
 
-    pub fn set_scsi_target(&mut self, id: usize, target: impl Into<ScsiTarget>) {
-        self.scsi_targets[id] = target.into().try_into().unwrap_or_default();
+    pub fn set_saved_devices(&mut self, saved: &[SavedDevice]) {
+        self.devices = saved.iter().map(WorkspaceDevice::from_saved).collect();
     }
 
     pub fn set_rom_path(&mut self, p: &Path) {
@@ -566,5 +558,44 @@ impl Workspace {
     /// Clears all persisted window locations
     pub fn reset_windows(&mut self) {
         self.windows.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_scsi_targets_become_devices() {
+        let dir = std::env::temp_dir().join(format!("snow_ws_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = std::fs::canonicalize(dir).unwrap();
+        let image = dir.join("a.img");
+        std::fs::write(&image, []).unwrap();
+        let path = dir.join("old.snoww");
+        std::fs::write(
+            &path,
+            r#"{"scsi_targets":[{"Disk":"a.img"},"None","Cdrom","None","None","None","Ethernet"]}"#,
+        )
+        .unwrap();
+
+        let check = |workspace: &Workspace| {
+            let saved = workspace.saved_devices();
+            assert_eq!(saved[0].family, "SCSI");
+            assert_eq!(saved[0].id, "0");
+            assert!(matches!(&saved[0].device, NewDevice::HardDisk(p) if p == &image));
+            assert_eq!(saved[1].id, "2");
+            assert!(matches!(saved[1].device, NewDevice::CdromDrive));
+            assert_eq!(saved[2].id, "6");
+        };
+        let mut workspace = Workspace::from_file(&path).unwrap();
+        check(&workspace);
+
+        // Written back as devices, and read again the same
+        let path = dir.join("new.snoww");
+        workspace.write_file(&path).unwrap();
+        check(&Workspace::from_file(&path).unwrap());
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -82,10 +82,14 @@ fn main() -> Result<()> {
             secondary_fn.extension().unwrap().to_string_lossy()
         ));
 
-        cmd.send(EmulatorCommand::InsertFloppy(0, floppy_fn, false))?;
+        cmd.send(EmulatorCommand::InsertFloppy(
+            emulator.floppy_addr(0).unwrap(),
+            floppy_fn,
+            false,
+        ))?;
         if secondary_fn.exists() {
             cmd.send(EmulatorCommand::InsertFloppy(
-                1,
+                emulator.floppy_addr(1).unwrap(),
                 secondary_fn.to_string_lossy().to_string(),
                 false,
             ))?;

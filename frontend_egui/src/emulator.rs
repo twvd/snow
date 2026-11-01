@@ -18,16 +18,17 @@ use snow_core::cpu_m68k::disassembler::{Disassembler, DisassemblyEntry};
 use snow_core::cpu_m68k::regs::{Register, RegisterFile};
 use snow_core::debuggable::DebuggableProperties;
 use snow_core::emulator::comm::{
-    Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus, ScsiTargetStatus,
-    UserMessageType,
+    Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, UserMessageType,
 };
 use snow_core::emulator::comm::{
     EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus, MemoryNotifierRange,
 };
+use snow_core::emulator::ports::{
+    Device, DevicePort, DiskKind, DiskPort, FloppyPort, NewDevice, PortAddr, PortList, PortOffer,
+};
 use snow_core::emulator::{Emulator, MouseMode};
 use snow_core::keymap::Scancode;
 use snow_core::mac::scc::SccCh;
-use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use snow_core::mac::swim::drive::DriveType;
 use snow_core::mac::{ExtraROMs, MacModel, MacMonitor, NubusDeviceKind};
@@ -44,35 +45,12 @@ use std::thread::JoinHandle;
 use std::{env, fs, thread};
 
 pub type DisassemblyListing = Vec<DisassemblyEntry>;
-pub type ScsiTargets = [ScsiTarget; 7];
-pub struct ScsiTarget {
-    pub target_type: Option<ScsiTargetType>,
-    pub image_path: Option<PathBuf>,
-    /// Toolbox-managed image folder for a folder-backed CD-ROM, if any.
-    pub cdrom_folder: Option<PathBuf>,
-}
-
-impl From<ScsiTargetStatus> for ScsiTarget {
-    fn from(value: ScsiTargetStatus) -> Self {
-        Self {
-            target_type: Some(value.target_type),
-            image_path: value.image,
-            cdrom_folder: value.cdrom_folder,
-        }
-    }
-}
-
-impl From<Option<ScsiTargetStatus>> for ScsiTarget {
-    fn from(value: Option<ScsiTargetStatus>) -> Self {
-        match value {
-            None => Self {
-                target_type: None,
-                image_path: None,
-                cdrom_folder: None,
-            },
-            Some(v) => v.into(),
-        }
-    }
+/// A device to put back in its port when a machine starts
+#[derive(Clone)]
+pub struct SavedDevice {
+    pub family: String,
+    pub id: String,
+    pub device: NewDevice,
 }
 
 /// Results of initializing the emulator, includes channels
@@ -144,7 +122,7 @@ pub struct EmulatorState {
     disasm_address: Address,
     disasm_code: DisassemblyListing,
     messages: VecDeque<(UserMessageType, String)>,
-    pub last_images: [RefCell<Option<Box<FloppyImage>>>; 3],
+    pub last_images: RefCell<HashMap<PortAddr, Box<FloppyImage>>>,
     /// Memory notifiers as the emulator has them, or will when there is one
     memory_notifiers: HashMap<u32, MemoryNotifierRange>,
     /// Received memory notifications: id, address, contents
@@ -183,7 +161,7 @@ impl EmulatorState {
         filename: &Path,
         display_rom_path: Option<&Path>,
         extension_rom_path: Option<&Path>,
-        scsi_targets: Option<ScsiTargets>,
+        saved_devices: Option<Vec<SavedDevice>>,
         pram: Option<&Path>,
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
@@ -205,7 +183,7 @@ impl EmulatorState {
             &rom,
             display_rom.as_deref(),
             extension_rom.as_deref(),
-            scsi_targets,
+            saved_devices,
             pram,
             args,
             model,
@@ -221,7 +199,7 @@ impl EmulatorState {
         rom: &[u8],
         display_rom: Option<&[u8]>,
         extension_rom: Option<&[u8]>,
-        scsi_targets: Option<ScsiTargets>,
+        saved_devices: Option<Vec<SavedDevice>>,
         pram: Option<&Path>,
         args: &EmulatorInitArgs,
         model: Option<MacModel>,
@@ -289,81 +267,14 @@ impl EmulatorState {
 
         cmd.send(EmulatorCommand::SetOverclock(args.overclock))?;
 
-        if model.has_scsi() {
-            for id in 0..7 {
-                let Some(ref targets) = scsi_targets else {
-                    break;
-                };
-                match &targets[id] {
-                    ScsiTarget {
-                        target_type: Some(ScsiTargetType::Disk),
-                        image_path: Some(filename),
-                        ..
-                    } => match emulator.load_hdd_image(filename, id) {
-                        Ok(_) => {
-                            info!(
-                                "SCSI ID #{}: loaded image file {}",
-                                id,
-                                filename.to_string_lossy()
-                            );
-                        }
-                        Err(e) => {
-                            error!("SCSI ID #{}: image load failed: {}", id, e);
-                        }
-                    },
-                    ScsiTarget {
-                        target_type: Some(ScsiTargetType::Disk),
-                        image_path: None,
-                        ..
-                    } => {
-                        // Invalid, ignore
-                        log::error!("SCSI ID #{} is a hard drive but no image was specified", id);
-                    }
-                    ScsiTarget {
-                        target_type: Some(ScsiTargetType::Cdrom),
-                        cdrom_folder: Some(dir),
-                        ..
-                    } => {
-                        if let Err(e) = emulator.attach_cdrom_folder(id, dir.clone()) {
-                            error!(
-                                "SCSI ID #{}: Toolbox managed CD-ROM folder attach failed: {}",
-                                id, e
-                            );
-                        } else {
-                            info!(
-                                "SCSI ID #{}: attached Toolbox managed CD-ROM folder {}",
-                                id,
-                                dir.to_string_lossy()
-                            );
-                        }
-                    }
-                    ScsiTarget {
-                        target_type: Some(ScsiTargetType::Cdrom),
-                        ..
-                    } => {
-                        emulator.attach_cdrom(id);
-                    }
-                    #[cfg(feature = "ethernet")]
-                    ScsiTarget {
-                        target_type: Some(ScsiTargetType::Ethernet),
-                        ..
-                    } => {
-                        emulator.attach_ethernet(id);
-                    }
-                    #[cfg(feature = "printer")]
-                    ScsiTarget {
-                        target_type: Some(ScsiTargetType::Printer),
-                        ..
-                    } => {
-                        let output_dir = dirs::desktop_dir()
-                            .or_else(|| std::env::current_dir().ok())
-                            .unwrap_or_default();
-                        emulator.attach_printer(id, output_dir);
-                    }
-                    ScsiTarget {
-                        target_type: None, ..
-                    } => (),
-                };
+        for saved in saved_devices.iter().flatten() {
+            let Some(addr) = emulator.find_port(&saved.family, &saved.id) else {
+                log::warn!("No port {} #{} on this machine", saved.family, saved.id);
+                continue;
+            };
+            match emulator.add_device(addr, saved.device.clone()) {
+                Ok(()) => info!("{} #{}: device added", saved.family, saved.id),
+                Err(e) => error!("{} #{}: {:#}", saved.family, saved.id, e),
             }
         }
 
@@ -592,16 +503,18 @@ impl EmulatorState {
                 EmulatorEvent::Status(s) => {
                     self.status = Some(*s);
                 }
-                EmulatorEvent::FloppyEjected(idx, img) => {
+                EmulatorEvent::FloppyEjected(addr, img) => {
                     self.messages.push_back((
                         UserMessageType::Notice,
-                        format!("Floppy #{} ejected ({})", idx + 1, img.get_title()),
+                        format!("{} ejected ({})", self.port_label(addr), img.get_title()),
                     ));
-                    *self.last_images[idx].borrow_mut() = Some(img);
+                    self.last_images.borrow_mut().insert(addr, img);
                 }
-                EmulatorEvent::ScsiMediaEjected(id) => {
-                    self.messages
-                        .push_back((UserMessageType::Notice, format!("CD-ROM #{} ejected", id)));
+                EmulatorEvent::MediaEjected(addr) => {
+                    self.messages.push_back((
+                        UserMessageType::Notice,
+                        format!("{}: media ejected", self.port_label(addr)),
+                    ));
                 }
                 EmulatorEvent::UserMessage(t, s) => self.messages.push_back((t, s)),
                 EmulatorEvent::MemoryNotify { id, addr, data } => {
@@ -736,31 +649,100 @@ impl EmulatorState {
             .unwrap();
     }
 
-    /// Returns a reference to floppy drive status for the requested drive.
-    pub fn get_fdd_status(&self, drive: usize) -> Option<&FddStatus> {
-        let status = self.status.as_ref()?;
-        if status.fdd.len() < drive {
-            return None;
-        }
-        if !status.fdd[drive].present {
-            return None;
-        }
-        Some(&status.fdd[drive])
+    /// The machine's ports, by family
+    pub fn ports(&self) -> &[PortList] {
+        self.status.as_ref().map_or(&[], |s| &s.ports)
     }
 
-    /// Gets a reference to the active SCSI target array.
-    pub fn get_scsi_target_status(&self) -> Option<&[Option<ScsiTargetStatus>]> {
-        let status = self.status.as_ref()?;
-        if !status.model.has_scsi() {
-            return None;
-        }
-        Some(&status.scsi)
+    fn port(&self, addr: PortAddr) -> Option<&DevicePort> {
+        self.ports().get(addr.list)?.ports.get(addr.port)
     }
 
-    /// Gets a copy of SCSI targets and loaded media
-    pub fn get_scsi_targets(&self) -> Option<ScsiTargets> {
-        let status = self.get_scsi_target_status()?;
-        Some(core::array::from_fn(|id| status[id].clone().into()))
+    /// How the user knows a port
+    pub fn port_label(&self, addr: PortAddr) -> String {
+        self.ports().get(addr.list).map_or_else(String::new, |l| {
+            l.ports
+                .get(addr.port)
+                .map_or_else(String::new, |p| p.label(&l.family))
+        })
+    }
+
+    /// All ports, with their addresses
+    fn all_ports(&self) -> impl Iterator<Item = (PortAddr, &DevicePort)> {
+        self.ports().iter().enumerate().flat_map(|(list, l)| {
+            l.ports
+                .iter()
+                .enumerate()
+                .map(move |(port, p)| (PortAddr { list, port }, p))
+        })
+    }
+
+    /// The floppy drives
+    pub fn floppy_ports(&self) -> Vec<(PortAddr, FloppyPort)> {
+        self.all_ports()
+            .filter_map(|(addr, p)| match &p.device {
+                Some(Device::Floppy(f)) => Some((addr, f.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The disks, with their addresses
+    pub fn disk_ports(&self) -> Vec<(PortAddr, DiskPort)> {
+        self.all_ports()
+            .filter_map(|(addr, p)| match &p.device {
+                Some(Device::Disk(d)) => Some((addr, d.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The Ethernet controllers
+    #[cfg(feature = "ethernet")]
+    pub fn ethernet_ports(&self) -> Vec<(PortAddr, snow_core::emulator::ports::EthernetPort)> {
+        self.all_ports()
+            .filter_map(|(addr, p)| match &p.device {
+                Some(Device::Ethernet(e)) => Some((addr, e.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The devices in the machine, for starting it again the same way
+    pub fn saved_devices(&self) -> Vec<SavedDevice> {
+        self.ports()
+            .iter()
+            .flat_map(|l| {
+                l.ports.iter().filter(|p| p.hotswap).filter_map(|p| {
+                    let device = match p.device.as_ref()? {
+                        Device::Floppy(_) => return None,
+                        Device::Disk(d) if d.kind == DiskKind::HardDisk => {
+                            NewDevice::HardDisk(d.image.clone()?)
+                        }
+                        Device::Disk(d) => match &d.folder {
+                            Some(dir) => NewDevice::CdromFolder(dir.clone()),
+                            None => NewDevice::CdromDrive,
+                        },
+                        #[cfg(feature = "ethernet")]
+                        Device::Ethernet(_) => NewDevice::Ethernet,
+                        #[cfg(feature = "printer")]
+                        Device::Printer => NewDevice::Printer(Self::printer_output_dir()),
+                    };
+                    Some(SavedDevice {
+                        family: l.family.clone(),
+                        id: p.id.clone(),
+                        device,
+                    })
+                })
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "printer")]
+    pub fn printer_output_dir() -> PathBuf {
+        dirs::desktop_dir()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default()
     }
 
     /// Returns `true` if the emulator has been instansiated and loaded with a ROM.
@@ -778,14 +760,14 @@ impl EmulatorState {
     }
 
     /// Loads a floppy image from the specified path.
-    pub fn load_floppy(&self, driveidx: usize, path: &Path, wp: bool) {
+    pub fn load_floppy(&self, addr: PortAddr, path: &Path, wp: bool) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
             .send(EmulatorCommand::InsertFloppy(
-                driveidx,
+                addr,
                 path.to_string_lossy().to_string(),
                 wp,
             ))
@@ -799,8 +781,8 @@ impl EmulatorState {
         };
 
         // Find a free floppy drive
-        for (i, d) in (0..3).filter_map(|i| self.get_fdd_status(i).map(|d| (i, d))) {
-            if d.present && d.ejected {
+        for (i, d) in self.floppy_ports() {
+            if d.ejected {
                 sender
                     .send(EmulatorCommand::InsertFloppyImage(
                         i,
@@ -821,29 +803,29 @@ impl EmulatorState {
     }
 
     /// Reloads last ejected floppy
-    pub fn reload_floppy(&self, driveidx: usize) {
+    pub fn reload_floppy(&self, addr: PortAddr) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
             .send(EmulatorCommand::InsertFloppyImage(
-                driveidx,
-                self.last_images[driveidx].borrow_mut().take().unwrap(),
+                addr,
+                self.last_images.borrow_mut().remove(&addr).unwrap(),
                 false,
             ))
             .unwrap();
     }
 
     /// Inserts a blank floppy
-    pub fn insert_blank_floppy(&self, driveidx: usize, t: FloppyType) {
+    pub fn insert_blank_floppy(&self, addr: PortAddr, t: FloppyType) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
             .send(EmulatorCommand::InsertFloppyImage(
-                driveidx,
+                addr,
                 Box::new(FloppyImage::new(t, "Blank")),
                 false,
             ))
@@ -851,141 +833,83 @@ impl EmulatorState {
     }
 
     /// Saves a floppy image to the specified path.
-    pub fn save_floppy(&self, driveidx: usize, path: &Path) {
+    pub fn save_floppy(&self, addr: PortAddr, path: &Path) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
-            .send(EmulatorCommand::SaveFloppy(driveidx, path.to_path_buf()))
+            .send(EmulatorCommand::SaveFloppy(addr, path.to_path_buf()))
             .unwrap();
     }
 
     /// Toggles automatic writeback of a floppy drive's image to its source file.
-    pub fn set_floppy_writeback(&self, driveidx: usize, enabled: bool) {
+    pub fn set_floppy_writeback(&self, addr: PortAddr, enabled: bool) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
-            .send(EmulatorCommand::SetFloppyWriteback(driveidx, enabled))
+            .send(EmulatorCommand::SetFloppyWriteback(addr, enabled))
             .unwrap();
     }
 
-    /// Loads a SCSI HDD image from the specified path.
-    pub fn scsi_attach_hdd(&self, id: usize, path: &Path) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-
-        sender
-            .send(EmulatorCommand::ScsiAttachHdd(id, path.to_path_buf()))
-            .unwrap();
+    fn send(&self, cmd: EmulatorCommand) {
+        if let Some(sender) = &self.cmdsender {
+            sender.send(cmd).unwrap();
+        }
     }
 
-    /// Loads a SCSI HDD image from the specified path into the first free SCSI slot
-    pub fn scsi_attach_hdd_firstfree(&self, path: &Path) -> bool {
-        let Some(targets) = self.status.as_ref().map(|s| s.scsi.as_ref()) else {
+    /// Puts a device in a port
+    pub fn add_device(&self, addr: PortAddr, device: NewDevice) {
+        self.send(EmulatorCommand::AddDevice(addr, device));
+    }
+
+    /// Attaches a hard disk to the first free port that takes one
+    pub fn attach_hard_disk_firstfree(&self, path: &Path) -> bool {
+        let free = self
+            .all_ports()
+            .find(|(_, p)| p.device.is_none() && p.can_take(PortOffer::HardDisk));
+        let Some((addr, _)) = free else {
             return false;
         };
-
-        // Find first free SCSI slot
-        let Some((id, _)) = targets.iter().enumerate().find(|(_, t)| t.is_none()) else {
-            return false;
-        };
-
-        self.scsi_attach_hdd(id, path);
+        self.add_device(addr, NewDevice::HardDisk(path.to_path_buf()));
         true
     }
 
-    /// Branches off a SCSI HDD image to the specified path.
-    pub fn scsi_branch_hdd(&self, id: usize, path: &Path) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-
-        sender
-            .send(EmulatorCommand::ScsiBranchHdd(id, path.to_path_buf()))
-            .unwrap();
+    /// Branches off a disk image to the specified path.
+    pub fn branch_disk(&self, addr: PortAddr, path: &Path) {
+        self.send(EmulatorCommand::BranchDisk(addr, path.to_path_buf()));
     }
 
-    /// Attaches a CD-ROM drive at the given ID
-    pub fn scsi_attach_cdrom(&self, id: usize) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-
-        sender.send(EmulatorCommand::ScsiAttachCdrom(id)).unwrap();
-    }
-
-    /// Attaches a folder-backed ("Toolbox managed") CD-ROM drive at the given ID.
-    /// The folder's images are swappable by the guest via the BlueSCSI Toolbox
-    /// CD commands.
-    pub fn scsi_attach_cdrom_folder(&self, id: usize, path: PathBuf) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-
-        sender
-            .send(EmulatorCommand::ScsiAttachCdromFolder(id, path))
-            .unwrap();
-    }
-
-    /// Loads CD-ROM media into the specified SCSI target
-    /// Attaches a CD-ROM drive if one is not there
-    pub fn scsi_load_cdrom(&self, id: usize, path: &Path) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-
-        if let Some(status) = self.status.as_ref()
-            && !matches!(
-                status.scsi[id],
-                Some(ScsiTargetStatus {
-                    target_type: ScsiTargetType::Cdrom,
-                    ..
-                })
-            )
-        {
-            self.scsi_attach_cdrom(id);
+    /// Loads CD-ROM media in a port. Attaches a CD-ROM drive if one is not there.
+    pub fn load_cdrom(&self, addr: PortAddr, path: &Path) {
+        if self.port(addr).is_some_and(|p| p.device.is_none()) {
+            self.add_device(addr, NewDevice::CdromDrive);
         }
-        sender
-            .send(EmulatorCommand::ScsiLoadMedia(id, path.to_path_buf()))
-            .unwrap();
+        self.send(EmulatorCommand::LoadMedia(addr, path.to_path_buf()));
     }
 
-    /// Loads CD-ROM media into the first free SCSI CD-ROM drive
-    pub fn scsi_load_cdrom_firstfree(&self, path: &Path) -> bool {
-        let Some(targets) = self.status.as_ref().map(|s| s.scsi.as_ref()) else {
+    /// Loads CD-ROM media into the first free CD-ROM drive
+    pub fn load_cdrom_firstfree(&self, path: &Path) -> bool {
+        let free = self
+            .disk_ports()
+            .into_iter()
+            .find(|(_, d)| d.kind == DiskKind::Cdrom && d.image.is_none());
+        let Some((addr, _)) = free else {
             return false;
         };
-
-        // Find free CD-ROM drive
-        for (i, t) in targets.iter().enumerate() {
-            let Some(t) = t else {
-                continue;
-            };
-            if t.target_type == ScsiTargetType::Cdrom && t.image.is_none() {
-                self.scsi_load_cdrom(i, path);
-                return true;
-            }
-        }
-        false
+        self.load_cdrom(addr, path);
+        true
     }
 
-    /// Detach a target from a SCSI ID
-    pub fn scsi_detach_target(&mut self, id: usize) {
-        self.cmdsender
-            .as_ref()
-            .unwrap()
-            .send(EmulatorCommand::DetachScsiTarget(id))
-            .unwrap();
+    /// Takes the device out of a port
+    pub fn remove_device(&mut self, addr: PortAddr) {
+        let label = self.port_label(addr);
+        self.send(EmulatorCommand::RemoveDevice(addr));
         self.messages.push_back((
             UserMessageType::Notice,
-            format!(
-                "SCSI device at #{} detached. System should be restarted.",
-                id
-            ),
+            format!("Device at {} detached. System should be restarted.", label),
         ));
     }
 
@@ -1108,11 +1032,11 @@ impl EmulatorState {
         self.messages.pop_front()
     }
 
-    pub fn force_eject(&self, driveidx: usize) {
+    pub fn force_eject(&self, addr: PortAddr) {
         self.cmdsender
             .as_ref()
             .unwrap()
-            .send(EmulatorCommand::EjectFloppy(driveidx))
+            .send(EmulatorCommand::EjectFloppy(addr))
             .unwrap();
     }
 
@@ -1358,7 +1282,7 @@ impl EmulatorState {
         self.debug_framebuffers = v;
     }
 
-    pub fn set_floppy_rpm_adjustment(&self, drive: usize, adjustment: i32) {
+    pub fn set_floppy_rpm_adjustment(&self, drive: PortAddr, adjustment: i32) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
@@ -1390,32 +1314,11 @@ impl EmulatorState {
     }
 
     #[cfg(feature = "ethernet")]
-    pub fn scsi_attach_ethernet(&self, id: usize) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-
-        sender
-            .send(EmulatorCommand::ScsiAttachEthernet(id))
-            .unwrap();
-    }
-
-    #[cfg(feature = "printer")]
-    pub fn scsi_attach_printer(&self, id: usize) {
-        let Some(ref sender) = self.cmdsender else {
-            return;
-        };
-
-        let output_dir = dirs::desktop_dir()
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_default();
-        sender
-            .send(EmulatorCommand::ScsiAttachPrinter(id, output_dir))
-            .unwrap();
-    }
-
-    #[cfg(feature = "ethernet")]
-    pub fn set_eth_link(&self, id: usize, link: snow_core::mac::scsi::ethernet::EthernetLinkType) {
+    pub fn set_eth_link(
+        &self,
+        id: PortAddr,
+        link: snow_core::mac::scsi::ethernet::EthernetLinkType,
+    ) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
@@ -1426,27 +1329,27 @@ impl EmulatorState {
     }
 
     #[cfg(feature = "ethernet")]
-    pub fn start_ethernet_capture<P: AsRef<std::path::Path>>(&self, scsi_id: usize, filename: P) {
+    pub fn start_ethernet_capture<P: AsRef<std::path::Path>>(&self, addr: PortAddr, filename: P) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
             .send(EmulatorCommand::EthernetStartCapture(
-                scsi_id,
+                addr,
                 filename.as_ref().to_path_buf(),
             ))
             .unwrap();
     }
 
     #[cfg(feature = "ethernet")]
-    pub fn stop_ethernet_capture(&self, scsi_id: usize) {
+    pub fn stop_ethernet_capture(&self, addr: PortAddr) {
         let Some(ref sender) = self.cmdsender else {
             return;
         };
 
         sender
-            .send(EmulatorCommand::EthernetStopCapture(scsi_id))
+            .send(EmulatorCommand::EthernetStopCapture(addr))
             .unwrap();
     }
 

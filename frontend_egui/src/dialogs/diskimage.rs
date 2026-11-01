@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
+use snow_core::emulator::ports::PortAddr;
 
 use crate::{dialogs::filedialog::SnowFileDialog, settings::AppSettings};
 
@@ -10,7 +11,8 @@ pub struct DiskImageDialog {
     open: bool,
     current_fn: String,
     current_size: f64,
-    scsi_id: usize,
+    port: PortAddr,
+    port_label: String,
 
     browse_dialog: SnowFileDialog,
     result: Option<DiskImageDialogResult>,
@@ -19,7 +21,7 @@ pub struct DiskImageDialog {
 pub struct DiskImageDialogResult {
     pub filename: PathBuf,
     pub size: usize,
-    pub scsi_id: usize,
+    pub port: PortAddr,
 }
 
 impl DiskImageDialog {
@@ -58,9 +60,9 @@ impl DiskImageDialog {
 
             ui.separator();
             ui.label(format!(
-                "{} The new disk will be attached at SCSI ID #{}.",
+                "{} The new disk will be attached at {}.",
                 egui_material_icons::icons::ICON_INFO,
-                self.scsi_id
+                self.port_label
             ));
             ui.label("Machine should be reset after attaching new drives!");
             ui.separator();
@@ -75,7 +77,7 @@ impl DiskImageDialog {
                         self.result = Some(DiskImageDialogResult {
                             filename: PathBuf::from(&self.current_fn),
                             size,
-                            scsi_id: self.scsi_id,
+                            port: self.port,
                         });
                         self.open = false;
                     }
@@ -87,10 +89,11 @@ impl DiskImageDialog {
         });
     }
 
-    pub fn open(&mut self, scsi_id: usize, initial_path: &Path) {
-        let filename = format!("hdd{}.img", scsi_id);
+    pub fn open(&mut self, port: PortAddr, port_label: String, initial_path: &Path) {
+        let filename = format!("hdd{}.img", port.port);
         let full_path = initial_path.join(&filename);
-        self.scsi_id = scsi_id;
+        self.port = port;
+        self.port_label = port_label;
         self.open = true;
         self.current_fn = full_path.to_string_lossy().into();
         self.current_size = 20.0;

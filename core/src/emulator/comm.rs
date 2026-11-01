@@ -11,12 +11,12 @@ use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::debuggable::DebuggableProperties;
 use crate::emulator::MouseMode;
+use crate::emulator::ports::{NewDevice, PortAddr, PortList};
 use crate::keymap::KeyEvent;
 use crate::mac::MacModel;
 use crate::mac::scc::SccCh;
 #[cfg(feature = "ethernet")]
 use crate::mac::scsi::ethernet::EthernetLinkType;
-use crate::mac::scsi::target::ScsiTargetType;
 use crate::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use crate::tickable::Ticks;
 
@@ -32,36 +32,32 @@ pub type InputRecording = Vec<(Ticks, EmulatorCommand)>;
 #[derive(Serialize, Deserialize, Clone)]
 pub enum EmulatorCommand {
     Quit,
+    /// Puts a device in a port
+    AddDevice(PortAddr, NewDevice),
+    /// Takes the device out of a port
+    RemoveDevice(PortAddr),
     /// Inserts a floppy image, passing the image as boxed object.
-    /// Parameters: drive id, image, write-protect
-    InsertFloppy(usize, String, bool),
+    /// Parameters: port, image, write-protect
+    InsertFloppy(PortAddr, String, bool),
     /// Inserts a floppy image, passing the image as boxed object.
-    /// Parameters: drive id, image, write-protect
+    /// Parameters: port, image, write-protect
     #[serde(skip)]
-    InsertFloppyImage(usize, Box<FloppyImage>, bool),
-    SaveFloppy(usize, PathBuf),
-    EjectFloppy(usize),
+    InsertFloppyImage(PortAddr, Box<FloppyImage>, bool),
+    SaveFloppy(PortAddr, PathBuf),
+    EjectFloppy(PortAddr),
     /// Toggle automatic writeback for a floppy drive.
-    /// Parameters: drive id, enabled
-    SetFloppyWriteback(usize, bool),
-    ScsiAttachHdd(usize, PathBuf),
-    ScsiBranchHdd(usize, PathBuf),
-    ScsiAttachCdrom(usize),
-    /// Attach a folder-backed ("Toolbox managed") CD-ROM drive whose images are
-    /// swappable by the guest via the BlueSCSI Toolbox CD commands.
-    ScsiAttachCdromFolder(usize, PathBuf),
-    ScsiLoadMedia(usize, PathBuf),
+    /// Parameters: port, enabled
+    SetFloppyWriteback(PortAddr, bool),
+    /// Branches the image of a disk off to a new file
+    BranchDisk(PortAddr, PathBuf),
+    /// Loads media in a drive
+    LoadMedia(PortAddr, PathBuf),
     #[cfg(feature = "ethernet")]
-    ScsiAttachEthernet(usize),
-    #[cfg(feature = "printer")]
-    ScsiAttachPrinter(usize, std::path::PathBuf),
+    EthernetSetLink(PortAddr, EthernetLinkType),
     #[cfg(feature = "ethernet")]
-    EthernetSetLink(usize, EthernetLinkType),
+    EthernetStartCapture(PortAddr, PathBuf),
     #[cfg(feature = "ethernet")]
-    EthernetStartCapture(usize, PathBuf),
-    #[cfg(feature = "ethernet")]
-    EthernetStopCapture(usize),
-    DetachScsiTarget(usize),
+    EthernetStopCapture(PortAddr),
     MouseUpdateAbsolute {
         x: u16,
         y: u16,
@@ -124,7 +120,7 @@ pub enum EmulatorCommand {
     #[cfg(feature = "savestates")]
     SaveState(PathBuf, Option<Vec<u8>>),
     SetDebugFramebuffers(bool),
-    SetFloppyRpmAdjustment(usize, i32),
+    SetFloppyRpmAdjustment(PortAddr, i32),
     /// Seeds the floppy noise (weak bits) RNG for deterministic behaviour.
     /// `None` reverts to non-deterministic randomness.
     SetFloppyWeakBitsSeed(Option<u64>),
@@ -159,14 +155,13 @@ pub struct EmulatorStatus {
     pub breakpoints: Vec<Breakpoint>,
     pub cycles: Ticks,
 
-    pub fdd: [FddStatus; 3],
+    pub ports: Vec<PortList>,
     pub model: MacModel,
     pub has_pmmu: bool,
     pub speed: EmulatorSpeed,
     /// Size of the RAM
     pub ram_size: usize,
     pub effective_speed: f64,
-    pub scsi: [Option<ScsiTargetStatus>; 7],
 }
 
 #[cfg(feature = "ethernet")]
@@ -176,36 +171,6 @@ pub struct EthernetCaptureStatus {
     pub filename: Option<PathBuf>,
     pub packet_count: usize,
     pub error: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ScsiTargetStatus {
-    pub target_type: ScsiTargetType,
-    pub image: Option<PathBuf>,
-    /// Toolbox-managed image folder for a folder-backed CD-ROM, if any.
-    pub cdrom_folder: Option<PathBuf>,
-    pub capacity: Option<usize>,
-    #[cfg(feature = "ethernet")]
-    pub link_type: Option<EthernetLinkType>,
-    #[cfg(feature = "ethernet")]
-    pub capture_status: Option<EthernetCaptureStatus>,
-}
-
-#[derive(Debug, Clone)]
-pub struct FddStatus {
-    pub present: bool,
-    pub ejected: bool,
-    pub motor: bool,
-    pub writing: bool,
-    pub track: usize,
-    pub image_title: String,
-    pub dirty: bool,
-    pub drive_type: crate::mac::swim::drive::DriveType,
-    /// True if the loaded image's source format supports writeback and was
-    /// loaded from a file on disk (i.e. writeback is possible).
-    pub writeback_supported: bool,
-    /// True if writeback is currently armed for this drive.
-    pub writeback_enabled: bool,
 }
 
 /// A friendly message ready for display to a user
@@ -233,8 +198,8 @@ pub struct MemoryNotifierRange {
 pub enum EmulatorEvent {
     Status(Box<EmulatorStatus>),
     UserMessage(UserMessageType, String),
-    FloppyEjected(usize, Box<FloppyImage>),
-    ScsiMediaEjected(usize),
+    FloppyEjected(PortAddr, Box<FloppyImage>),
+    MediaEjected(PortAddr),
     /// What a notifier's range holds, when it has changed. None for what can't
     /// be read.
     MemoryNotify {
