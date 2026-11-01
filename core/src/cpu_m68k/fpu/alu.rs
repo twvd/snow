@@ -209,6 +209,9 @@ where
             _ => (opmode, self.fpu_rounding_mode_precision()?),
         };
         let ext = SEMANTICS_EXTENDED.with_rm(self.fpu_rounding_mode());
+        // The transcendental functions run in the default mode, as only their
+        // final result gets the rounding mode (MC68881UM 4.5.5.2)
+        let near = &source.cast(SEMANTICS_EXTENDED);
         let source = &source.cast(ext);
         let dest = &dest.cast(ext);
 
@@ -277,10 +280,10 @@ where
                 return Ok(dest.cast(SEMANTICS_EXTENDED));
             }
             opmode::FNEG => source.neg(),
-            opmode::FACOS => source.acos(),
-            opmode::FCOS => source.cos(),
-            opmode::FATAN => source.atan(),
-            opmode::FSIN => source.sin(),
+            opmode::FACOS => near.acos(),
+            opmode::FCOS => near.cos(),
+            opmode::FATAN => near.atan(),
+            opmode::FSIN => near.sin(),
             opmode::FSINCOS..=opmode::FSINCOS_LAST => {
                 let fpc = usize::from(opmode & 0b111);
 
@@ -289,24 +292,24 @@ where
                 //
                 // So we store the cosine result first, which will be overwritten by the sine
                 // result later if destination registers are the same.
-                self.regs.fpu.fp[fpc] = source.cos().cast(SEMANTICS_EXTENDED);
+                self.regs.fpu.fp[fpc] = near.cos();
 
-                source.sin()
+                near.sin()
             }
-            opmode::FASIN => source.asin(),
-            opmode::FTAN => source.tan(),
-            opmode::FLOGN => source.log(),
-            opmode::FLOGNP1 => Self::fpu_lognp1(source),
-            opmode::FLOG2 => source.log2(),
-            opmode::FLOG10 => source.log10(),
-            opmode::FETOX => Float::e(SEMANTICS_EXTENDED).pow(source),
-            opmode::FETOXM1 => Self::fpu_etoxm1(source),
-            opmode::FTWOTOX => Float::from_u64(SEMANTICS_EXTENDED, 2).pow(source),
-            opmode::FTENTOX => Float::from_u64(SEMANTICS_EXTENDED, 10).pow(source),
-            opmode::FSINH => source.sinh(),
-            opmode::FCOSH => source.cosh(),
-            opmode::FTANH => source.tanh(),
-            opmode::FATANH => source.atanh(),
+            opmode::FASIN => near.asin(),
+            opmode::FTAN => near.tan(),
+            opmode::FLOGN => near.log(),
+            opmode::FLOGNP1 => Self::fpu_lognp1(near),
+            opmode::FLOG2 => near.log2(),
+            opmode::FLOG10 => near.log10(),
+            opmode::FETOX => Float::e(SEMANTICS_EXTENDED).pow(near),
+            opmode::FETOXM1 => Self::fpu_etoxm1(near),
+            opmode::FTWOTOX => Float::from_u64(SEMANTICS_EXTENDED, 2).pow(near),
+            opmode::FTENTOX => Float::from_u64(SEMANTICS_EXTENDED, 10).pow(near),
+            opmode::FSINH => near.sinh(),
+            opmode::FCOSH => near.cosh(),
+            opmode::FTANH => near.tanh(),
+            opmode::FATANH => near.atanh(),
             opmode::FSCALE => dest.scale(source.trunc().to_i64(), dest.get_rounding_mode()),
             opmode::FGETMAN => {
                 if source.is_inf() || source.is_nan() {
