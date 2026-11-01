@@ -22,6 +22,7 @@ use scsi::bus::ScsiBus;
 pub mod adb;
 pub mod compact;
 pub mod cuda;
+pub mod declrom;
 pub mod dma;
 pub mod egret;
 pub mod egret_common;
