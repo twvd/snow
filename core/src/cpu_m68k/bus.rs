@@ -92,6 +92,7 @@ where
 
     /// Reads a value from the bus and spends ticks.
     /// Virtual address version, data FC
+    #[inline(never)]
     pub(in crate::cpu_m68k) fn read_ticks<T: CpuSized>(&mut self, vaddr: Address) -> Result<T> {
         self.read_ticks_generic::<T, false>(self.fc_data(), vaddr)
     }
@@ -107,6 +108,7 @@ where
 
     /// Reads a value from the bus and spends ticks.
     /// Physical address version
+    #[inline(never)]
     pub(in crate::cpu_m68k) fn read_ticks_physical<T: CpuSized>(
         &mut self,
         o_paddr: Address,
@@ -291,6 +293,7 @@ where
 
     /// Reads a data operand of `len` bytes (1-4) and spends ticks (68020+).
     /// Virtual address version, data FC
+    #[inline(never)]
     pub(in crate::cpu_m68k) fn read_ticks_len(&mut self, vaddr: Address, len: u32) -> Result<Long> {
         self.read_operand::<false>(self.fc_data(), vaddr, len)
     }
@@ -380,6 +383,7 @@ where
 
     /// Writes the low `len` bytes (1-4) of `value` as a data operand and
     /// spends ticks (68020+). Virtual address version, data FC
+    #[inline(never)]
     pub(in crate::cpu_m68k) fn write_ticks_len(
         &mut self,
         vaddr: Address,
@@ -402,6 +406,7 @@ where
 
     /// Writes a value to the bus (big endian) and spends ticks.
     /// Virtual address version, data FC
+    #[inline(never)]
     pub(in crate::cpu_m68k) fn write_ticks<T: CpuSized>(
         &mut self,
         vaddr: Address,
@@ -412,6 +417,7 @@ where
 
     /// Writes a value to the bus (big endian) and spends ticks.
     /// Virtual address version
+    #[inline(never)]
     pub(in crate::cpu_m68k) fn write_ticks_order<T: CpuSized, const TORDER: usize>(
         &mut self,
         vaddr: Address,
@@ -450,6 +456,7 @@ where
         }
     }
 
+    #[inline(never)]
     pub(in crate::cpu_m68k) fn write_ticks_order_physical<T: CpuSized, const TORDER: usize>(
         &mut self,
         o_paddr: Address,
