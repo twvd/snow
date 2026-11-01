@@ -10,7 +10,8 @@ use crate::types::Long;
 
 use super::cpu::CpuM68k;
 use super::instruction::{AddressingMode, IndexSize, Instruction, Xn};
-use super::{CpuM68kType, CpuSized, M68020, TORDER_HIGHLOW};
+use super::timing040::FullEa040;
+use super::{CpuM68kType, CpuSized, M68020, M68040, TORDER_HIGHLOW};
 
 impl<
     TBus,
@@ -90,12 +91,16 @@ where
         let addr = match addrmode {
             AddressingMode::DataRegister => bail!("calc_ea_addr invalid addressing mode Dn"),
             AddressingMode::AddressRegister => bail!("calc_ea_addr invalid addressing mode An"),
-            AddressingMode::Indirect => self.regs.read_a(ea_in),
+            AddressingMode::Indirect => {
+                advance_cycles!(self, m68000: 0, others: 1)?;
+                self.regs.read_a(ea_in)
+            }
             AddressingMode::IndirectPreDec => {
-                self.advance_cycles(2)?; // 2x idle
+                advance_cycles!(self, all: 2)?; // 2x idle
                 self.regs.read_a_predec::<Address>(ea_in, SZ)
             }
             AddressingMode::IndirectPostInc => {
+                advance_cycles!(self, m68000: 0, others: 1)?;
                 let addr = self.regs.read_a::<Address>(ea_in);
                 let inc_addr = if ea_in == 7 {
                     // Minimum of 2 for A7
@@ -117,7 +122,7 @@ where
                 Address::from(addr.wrapping_add_signed(displacement))
             }
             AddressingMode::IndirectIndex => {
-                self.advance_cycles(2)?; // 2x idle
+                advance_cycles!(self, all: 2)?; // 2x idle
                 instr.fetch_extword(|| self.fetch_pump())?;
 
                 let extword = instr.get_extword();
@@ -152,7 +157,7 @@ where
                 Address::from(addr.wrapping_add_signed(displacement))
             }
             AddressingMode::PCIndex => {
-                self.advance_cycles(2)?; // 2x idle
+                advance_cycles!(self, all: 2)?; // 2x idle
                 instr.fetch_extword(|| self.fetch_pump())?;
                 let extword = instr.get_extword();
                 if extword.is_full() && CPU_TYPE >= M68020 {
@@ -188,7 +193,6 @@ where
             }
             AddressingMode::IndirectIndexBase | AddressingMode::PCIndexBase => {
                 // also Memory Indirect modes
-                // TODO cycles?
                 debug_assert!(instr.has_extword());
                 let extword = instr.get_extword();
 
@@ -212,8 +216,33 @@ where
                 };
                 let disp_addr = addr.wrapping_add_signed(displacement);
                 let pre_addr = disp_addr.wrapping_add(index.wrapping_mul(u32::from(scale)));
+                let indirect = extword.full_memindirectmode()?;
+                if CPU_TYPE == M68040 {
+                    self.record_ea040(FullEa040::new(
+                        &extword,
+                        indirect,
+                        addrmode == AddressingMode::PCIndexBase,
+                    ));
+                }
 
-                match extword.full_memindirectmode()? {
+                // The brief format path took 2 idle cycles already. The fetch EA tables
+                // (MC68020UM 8.2.1, MC68030UM 11.6.1) give 2 more for a 32-bit base
+                // displacement and for memory indirection, and 2 less for a 32-bit
+                // outer displacement.
+                let mut idle = 0;
+                if extword.full_displacement_size() == 0b11 {
+                    idle += 2;
+                }
+                match indirect {
+                    MemoryIndirectAction::None => (),
+                    MemoryIndirectAction::PreIndexLong
+                    | MemoryIndirectAction::PostIndexLong
+                    | MemoryIndirectAction::Long => (),
+                    _ => idle += 2,
+                }
+                advance_cycles!(self, all: idle)?;
+
+                match indirect {
                     MemoryIndirectAction::None => {
                         // Address Register Indirect with Index (Base Displacement) Mode
                         pre_addr
@@ -433,9 +462,13 @@ where
         ea_in: usize,
         value: [u8; SZ],
     ) -> Result<()> {
+        // Only the 68020+ FPU and PMMU instructions use this, with multiples of 4 bytes,
+        // which go over the bus as long words
+        debug_assert_eq!(SZ % 4, 0);
         let ea = self.calc_ea_addr_sz::<SZ>(instr, instr.get_addr_mode()?, ea_in)?;
-        for (i, b) in value.into_iter().enumerate() {
-            self.write_ticks(ea.wrapping_add(i as Address), b)?;
+        for (i, l) in value.chunks_exact(4).enumerate() {
+            let l = Long::from_be_bytes([l[0], l[1], l[2], l[3]]);
+            self.write_ticks(ea.wrapping_add(4 * i as Address), l)?;
         }
 
         Ok(())
@@ -447,11 +480,14 @@ where
         instr: &Instruction,
         ea_in: usize,
     ) -> Result<[u8; SZ]> {
+        // As write_ea_sz()
+        debug_assert_eq!(SZ % 4, 0);
         let ea = self.calc_ea_addr_sz::<SZ>(instr, instr.get_addr_mode()?, ea_in)?;
         let mut v = ArrayVec::<u8, SZ>::new();
 
-        for i in 0..SZ {
-            v.push(self.read_ticks(ea.wrapping_add(i as Address))?);
+        for i in 0..SZ / 4 {
+            let l: Long = self.read_ticks(ea.wrapping_add(4 * i as Address))?;
+            v.extend(l.to_be_bytes());
         }
 
         Ok(v.into_inner().unwrap())

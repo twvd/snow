@@ -1,6 +1,10 @@
+//! 68851 PMMU / 68030 MMU translation logic
+//! 68040 MMU in mmu040.rs
+
 use crate::bus::{Address, Bus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::FpuM68kType;
+use crate::cpu_m68k::M68040;
 use crate::cpu_m68k::cpu::{CpuError, CpuM68k, Group0Details, HistoryEntry, PagefaultCause};
 use crate::cpu_m68k::pmmu::regs::{PmmuPageDescriptorType, RegisterPSR, RootPointerReg};
 use crate::types::Long;
@@ -230,13 +234,18 @@ where
 {
     /// Enlarges ATC size if needed by configuration
     pub(in crate::cpu_m68k) fn pmmu_cache_ensure(&mut self) {
-        if !self.regs.pmmu.tc.enable() {
-            return;
-        }
-
-        let cache_size =
+        let cache_size = if CPU_TYPE == M68040 {
+            if !self.mmu040_enabled() {
+                return;
+            }
+            (Address::MAX >> self.mmu040_page_shift()) as usize + 1
+        } else {
+            if !self.regs.pmmu.tc.enable() {
+                return;
+            }
             (Address::MAX >> (self.regs.pmmu.tc.is() + self.regs.pmmu.tc.ps() as Address)) as usize
-                + 1;
+                + 1
+        };
         if self.pmmu_atc.iter().map(|atc| atc.len()).min().unwrap() < cache_size {
             log::debug!("Expanding cache size: {}", cache_size);
             self.pmmu_atc
@@ -384,6 +393,7 @@ where
         // successfully fetched descriptor).
         self.regs.pmmu.last_desc = entry_addr;
 
+        advance_cycles!(self, m68000: 0, m68020: 2, m68030: 3)?;
         let child_dt = PmmuPageDescriptorType::from_u32(entry_word & 0b11).unwrap();
         match child_dt {
             PmmuPageDescriptorType::Invalid => {
@@ -411,6 +421,7 @@ where
                 // Set U on the table descriptor we just walked through
                 if mutate && !entry.u() {
                     self.write_ticks_physical::<Long>(entry_addr, entry_word | (1 << 3))?;
+                    advance_cycles!(self, m68030: 2)?;
                 }
                 self.pmmu_fetch_table(
                     vaddr << ti,
@@ -457,6 +468,7 @@ where
         let entry_word2 = self.read_ticks_physical::<Long>(entry_addr + 4)?;
         // Record the last descriptor only once fetched successfully.
         self.regs.pmmu.last_desc = entry_addr;
+        advance_cycles!(self, m68000: 0, m68020: 2, m68030: 3)?;
 
         let child_dt = PmmuPageDescriptorType::from_u32(entry_word1 & 0b11).unwrap();
         match child_dt {
@@ -487,6 +499,7 @@ where
                     .with_lsl(entry_word2);
                 if mutate && !entry.u() {
                     self.write_ticks_physical::<Long>(entry_addr, entry_word1 | (1 << 3))?;
+                    advance_cycles!(self, m68030: 2)?;
                 }
                 self.pmmu_fetch_table(
                     vaddr << ti,
@@ -594,6 +607,10 @@ where
             return Ok(vaddr);
         }
 
+        if CPU_TYPE == M68040 {
+            return self.mmu040_translate(fc, vaddr, writing);
+        }
+
         // Transparent translation runs even when TC.E=0; TT regions are
         // identity-mapped and bypass the page tables and the ATC.
         if self.pmmu_tt_match(fc, vaddr, writing) {
@@ -672,7 +689,7 @@ where
     }
 
     /// Records a page-fault history entry if history recording is enabled.
-    fn pmmu_record_pagefault(&mut self, vaddr: Address, writing: bool) {
+    pub(in crate::cpu_m68k) fn pmmu_record_pagefault(&mut self, vaddr: Address, writing: bool) {
         if self.history_enabled {
             self.history.push_back(HistoryEntry::Pagefault {
                 address: vaddr,
@@ -705,7 +722,11 @@ where
     }
 
     /// Builds the Group-0 BusError stack frame error value for a page fault.
-    fn pmmu_pagefault_to_buserror(fc: u8, vaddr: Address, writing: bool) -> anyhow::Error {
+    pub(in crate::cpu_m68k) fn pmmu_pagefault_to_buserror(
+        fc: u8,
+        vaddr: Address,
+        writing: bool,
+    ) -> anyhow::Error {
         anyhow!(CpuError::BusError(Group0Details {
             function_code: fc,
             ir: 0,
@@ -714,6 +735,7 @@ where
             address: vaddr,
             start_pc: 0,
             size: 0,
+            atc_fault: true,
         }))
     }
 
@@ -729,6 +751,11 @@ where
         level: u8,
     ) -> Result<(Address, bool, bool, Address, bool)> {
         let rootptr = self.pmmu_rootptr(fc);
+
+        // Table search: about 20 cycles on the 68851 (MC68851UM 11.2, given as the
+        // 68020 time) and 23 on the 68030 (MC68030UM 11.7), then some for each
+        // descriptor
+        advance_cycles!(self, m68000: 0, m68020: 20, m68030: 23)?;
 
         if PTEST {
             self.regs.pmmu.psr = RegisterPSR::default();
