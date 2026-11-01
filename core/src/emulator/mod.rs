@@ -1011,6 +1011,16 @@ impl Emulator {
     /// Sets a path to persist the PRAM in. If the file exists, it is loaded. Otherwise, an empty
     /// file is created. The PRAM file is continuously updated.
     pub fn persist_pram(&mut self, pram_path: &Path) {
+        if let EmulatorConfig::Lisa(lisa) = &mut self.config {
+            if let Err(e) = lisa.bus.persist_parameter_memory(pram_path) {
+                self.user_error(&format!(
+                    "Cannot use parameter memory file '{}', changes will not be saved: {}",
+                    pram_path.display(),
+                    e
+                ));
+            }
+            return;
+        }
         self.config.rtc_mut().load_pram(pram_path);
     }
 
@@ -1053,6 +1063,11 @@ impl Emulator {
                 path.display(),
                 e
             ));
+        }
+        if let EmulatorConfig::Lisa(lisa) = &mut self.config
+            && let Err(e) = lisa.bus.save_parameter_memory()
+        {
+            self.user_error(&format!("Cannot write parameter memory file: {}", e));
         }
         for i in 0..self.config.swim().drives.len() {
             self.writeback_ejected(i);
