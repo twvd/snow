@@ -35,7 +35,9 @@ use crate::mac::scc::Scc;
 use crate::mac::scsi::target::ScsiTargetEvent;
 use crate::mac::serial_bridge::{SccBridge, SerialBridgeStatus};
 use crate::mac::swim::drive::DriveType;
-use crate::mac::{ExtraROMs, MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind};
+use crate::mac::{
+    AbsoluteMouse, ExtraROMs, MacModel, MacMonitor, NubusCardConfig, NubusDeviceKind,
+};
 use crate::renderer::AudioProvider;
 use crate::renderer::channel::ChannelRenderer;
 use crate::renderer::{DisplayBuffer, Renderer};
@@ -175,6 +177,18 @@ macro_rules! dispatch {
     };
 }
 
+/// Low memory globals the absolute mouse mode reads and writes, which are
+/// logical addresses: MTemp, Y coordinate (16 bit, signed)
+const ADDR_MTEMP_Y: Address = 0x0828;
+/// MTemp, X coordinate (16 bit, signed)
+const ADDR_MTEMP_X: Address = 0x082A;
+/// RawMouse, Y coordinate (16 bit, signed)
+const ADDR_RAWMOUSE_Y: Address = 0x082C;
+/// RawMouse, X coordinate (16 bit, signed)
+const ADDR_RAWMOUSE_X: Address = 0x082E;
+/// CrsrNew
+const ADDR_CRSRNEW: Address = 0x08CE;
+
 /// Least time between two looks at the memory notifiers while running. Debugging
 /// mostly happens stopped, where each step or stop looks at them regardless.
 const MEMORY_NOTIFY_INTERVAL: Duration = Duration::from_millis(200);
@@ -300,7 +314,7 @@ dispatch! {
         fn cpu_inspect_take_watch_hit(&mut self) -> bool { inspect_take_watch_hit() }
 
         fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) -> () { bus.mouse_update_rel(relx, rely, button) }
-        fn mouse_update_abs(&mut self, x: u16, y: u16) -> () { bus.mouse_update_abs(x, y) }
+        fn mouse_update_abs(&mut self, x: u16, y: u16, rawmouse: (u16, u16)) -> Option<AbsoluteMouse> { bus.mouse_update_abs(x, y, rawmouse) }
         fn set_mouse_mode(&mut self, mode: MouseMode) -> () { bus.set_mouse_mode(mode) }
         fn keyboard_event(&mut self, ke: KeyEvent) -> () { bus.keyboard_event(ke) }
         fn input_release_all(&mut self) -> () { bus.input_release_all() }
@@ -930,6 +944,30 @@ impl Emulator {
         Ok(())
     }
 
+    /// Reports a new position of the mouse in absolute mode to the OS, in its
+    /// low memory globals. If they have no translation at the moment, this
+    /// position is skipped.
+    fn mouse_update_abs(&mut self, x: u16, y: u16) {
+        let (Some(old_x), Some(old_y)) = (
+            self.config.cpu_inspect_read_word(ADDR_RAWMOUSE_X, false),
+            self.config.cpu_inspect_read_word(ADDR_RAWMOUSE_Y, false),
+        ) else {
+            return;
+        };
+        let Some(mouse) = self.config.mouse_update_abs(x, y, (old_x, old_y)) else {
+            return;
+        };
+        self.config
+            .cpu_inspect_write_word(ADDR_MTEMP_X, mouse.mtemp.0, false);
+        self.config
+            .cpu_inspect_write_word(ADDR_MTEMP_Y, mouse.mtemp.1, false);
+        self.config
+            .cpu_inspect_write_word(ADDR_RAWMOUSE_X, mouse.rawmouse.0, false);
+        self.config
+            .cpu_inspect_write_word(ADDR_RAWMOUSE_Y, mouse.rawmouse.1, false);
+        self.config.cpu_inspect_write(ADDR_CRSRNEW, 1, false);
+    }
+
     fn disassemble(&mut self, addr: Address, len: usize) -> Result<()> {
         let ops = (addr..)
             .take(len)
@@ -1219,7 +1257,7 @@ impl Tickable for Emulator {
                             r.push((cycles, cmd));
                         }
 
-                        self.config.mouse_update_abs(x, y);
+                        self.mouse_update_abs(x, y);
                     }
                     EmulatorCommand::SetMouseMode(mode) => {
                         log::info!("Mouse mode: {:?}", mode);

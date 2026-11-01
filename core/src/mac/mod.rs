@@ -32,6 +32,14 @@ pub mod via_common;
 /// Warm start signature: the ROM skips its memory test when it finds it
 pub const WARM_START_SIGNATURE: (Address, u32) = (0x000CFC, 0x574C5343);
 
+/// What the low memory globals of the OS should hold for a new position of
+/// the mouse in absolute mode, each as (X, Y)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AbsoluteMouse {
+    pub mtemp: (u16, u16),
+    pub rawmouse: (u16, u16),
+}
+
 /// Differentiation of Macintosh models and their features
 #[derive(
     Debug,

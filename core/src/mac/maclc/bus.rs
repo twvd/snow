@@ -25,7 +25,7 @@ use crate::mac::scsi::controller::ScsiController;
 use crate::mac::sound::v8_sonora::{V8Sound, V8Variant};
 use crate::mac::swim::Swim;
 use crate::mac::via_common::{LineState, ViaLine};
-use crate::mac::{MacModel, MacMonitor, WARM_START_SIGNATURE};
+use crate::mac::{AbsoluteMouse, MacModel, MacMonitor, WARM_START_SIGNATURE};
 use crate::renderer::{
     AUDIO_BUFFER_SAMPLES, AUDIO_CHANNELS, AudioProvider, Renderer, null_audio_sink,
 };
@@ -186,17 +186,6 @@ where
 {
     /// Value to return on open bus
     const OPENBUS: u8 = 0xFF;
-
-    /// MTemp address, Y coordinate (16 bit, signed)
-    const ADDR_MTEMP_Y: Address = 0x0828;
-    /// MTemp address, X coordinate (16 bit, signed)
-    const ADDR_MTEMP_X: Address = 0x082A;
-    /// RawMouse address, Y coordinate (16 bit, signed)
-    const ADDR_RAWMOUSE_Y: Address = 0x082C;
-    /// RawMouse address, X coordinate (16 bit, signed)
-    const ADDR_RAWMOUSE_X: Address = 0x082E;
-    /// CrsrNew address
-    const ADDR_CRSRNEW: Address = 0x08CE;
 
     pub fn new(
         model: MacModel,
@@ -825,19 +814,6 @@ where
         }
     }
 
-    /// Reads a 16-bit value from RAM at an address of the CPU
-    fn read_ram16(&self, addr: Address) -> u16 {
-        let byte = |addr| self.ram_index(addr).map_or(0, |idx| self.ram[idx]);
-        u16::from_be_bytes([byte(addr), byte(addr + 1)])
-    }
-
-    /// Writes bytes to RAM at an address of the CPU
-    fn write_ram(&mut self, addr: Address, val: &[u8]) {
-        for (addr, &b) in (addr..).zip(val) {
-            self.write_ram_byte(addr, b);
-        }
-    }
-
     /// Offset in the RAM of the byte at physical address `addr`, if it is in RAM
     fn inspect_ram_offset(&self, addr: Address) -> Option<usize> {
         match self.decode(addr)? {
@@ -847,30 +823,33 @@ where
         }
     }
 
-    /// Updates the mouse position (absolute coordinates)
-    pub fn mouse_update_abs(&mut self, x: u16, y: u16) {
+    /// Updates the mouse position in absolute mode, given the current value
+    /// of RawMouse. Returns what the low memory globals of the OS should hold
+    /// for it, if they should change.
+    pub fn mouse_update_abs(
+        &mut self,
+        x: u16,
+        y: u16,
+        rawmouse: (u16, u16),
+    ) -> Option<AbsoluteMouse> {
         if self.mouse_mode != MouseMode::Absolute {
-            return;
+            return None;
         }
 
-        let old_x = self.read_ram16(Self::ADDR_RAWMOUSE_X);
-        let old_y = self.read_ram16(Self::ADDR_RAWMOUSE_Y);
-
-        if !self.mouse_ready && (old_x != 15 || old_y != 15) {
+        if !self.mouse_ready && rawmouse != (15, 15) {
             // Wait until the boot process has initialized the mouse position so we don't
             // interfere with the memory test.
-            return;
+            return None;
         }
         self.mouse_ready = true;
 
         // Report updated mouse coordinates to OS. The current (RawMouse) and
         // new (MTemp) positions are the same, as the LC III ROM takes any
         // difference between them for a relative movement.
-        self.write_ram(Self::ADDR_MTEMP_X, &x.to_be_bytes());
-        self.write_ram(Self::ADDR_MTEMP_Y, &y.to_be_bytes());
-        self.write_ram(Self::ADDR_RAWMOUSE_X, &x.to_be_bytes());
-        self.write_ram(Self::ADDR_RAWMOUSE_Y, &y.to_be_bytes());
-        self.write_ram(Self::ADDR_CRSRNEW, &[1]);
+        Some(AbsoluteMouse {
+            mtemp: (x, y),
+            rawmouse: (x, y),
+        })
     }
 
     /// Configures emulator speed
