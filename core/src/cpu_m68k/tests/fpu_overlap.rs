@@ -1,0 +1,190 @@
+//! Overlap of the FPU arithmetic operations with the CPU, 68020 + 68881
+
+use crate::bus::Address;
+use crate::bus::access::Bus68020;
+use crate::bus::testbus::Testbus;
+use crate::cpu_m68k::{CpuM68020Fpu, CpuM68030Fpu, M68020_ADDRESS_MASK, M68030_ADDRESS_MASK};
+use crate::tickable::Ticks;
+use crate::types::Word;
+
+type TestCpu = CpuM68020Fpu<Testbus<Address, u8, Bus68020>>;
+
+const INITIAL_PC: Address = 0x1000;
+const HANDLER_ADDR: Address = 0x2000;
+
+#[rustfmt::skip]
+const CODE: &[Word] = &[
+    0xF200, 0x0422, // FADD.X FP1,FP0
+    0x7001,         // MOVEQ #1,D0
+    0xF200, 0x0422, // FADD.X FP1,FP0
+    0x4E71, 0x4E71, // NOP, NOP
+];
+
+fn write_word(cpu: &mut TestCpu, addr: Address, value: Word) {
+    cpu.bus.mem.insert(addr, (value >> 8) as u8);
+    cpu.bus.mem.insert(addr + 1, value as u8);
+}
+
+fn testcpu() -> TestCpu {
+    let mut cpu = TestCpu::new(Testbus::new(M68020_ADDRESS_MASK));
+    for (i, &word) in CODE.iter().enumerate() {
+        write_word(&mut cpu, INITIAL_PC + i as Address * 2, word);
+    }
+    write_word(&mut cpu, HANDLER_ADDR, 0x4E73); // RTE
+    // Level 3 autovector
+    write_word(&mut cpu, 0x6C, (HANDLER_ADDR >> 16) as Word);
+    write_word(&mut cpu, 0x6E, HANDLER_ADDR as Word);
+
+    cpu.regs.isp = 0x800;
+    cpu.regs.sr.set_supervisor(true);
+    cpu.regs.sr.set_int_prio_mask(0);
+    cpu.set_pc(INITIAL_PC).unwrap();
+    cpu.prefetch_refill().unwrap();
+    cpu
+}
+
+#[test]
+fn test_overlap() {
+    let mut cpu = testcpu();
+
+    // FADD FPn: 51 clocks on the 68881, of which the CPU waits 3, and the
+    // prefetch refill (2 clocks from the cache holding register) already
+    // overlaps
+    cpu.step().unwrap();
+    let busy = cpu.fpu_free_at - cpu.cycles;
+    assert_eq!(busy, 51 - 3 - 2);
+
+    // The MOVEQ runs while the FPU is busy
+    let start = cpu.cycles;
+    cpu.step().unwrap();
+    assert!(cpu.cycles - start < busy);
+
+    // The next FADD waits for the first one
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, INITIAL_PC + 10);
+    assert!(cpu.cycles >= start + busy);
+}
+
+fn read_word(cpu: &TestCpu, addr: Address) -> Word {
+    (Word::from(cpu.bus.mem[&addr]) << 8) | Word::from(cpu.bus.mem[&(addr + 1)])
+}
+
+fn read_long(cpu: &TestCpu, addr: Address) -> Address {
+    (Address::from(read_word(cpu, addr)) << 16) | Address::from(read_word(cpu, addr + 2))
+}
+
+/// Checks that the interrupt was taken during the second FADD with a
+/// mid-instruction frame, and that the FADD runs after the RTE
+fn check_mid_instruction_irq(cpu: &mut TestCpu) {
+    assert_eq!(cpu.regs.pc, HANDLER_ADDR);
+    let sp = 0x800 - 20;
+    assert_eq!(cpu.regs.isp, sp);
+    // Format $9, level 3 autovector
+    assert_eq!(read_word(cpu, sp + 6), 0x9000 | 0x6C);
+    // scanPC past the command word, and the address of the instruction
+    assert_eq!(read_long(cpu, sp + 2), INITIAL_PC + 10);
+    assert_eq!(read_long(cpu, sp + 8), INITIAL_PC + 6);
+
+    cpu.bus.irq_level = None;
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, INITIAL_PC + 6);
+    assert_eq!(cpu.regs.isp, 0x800);
+    cpu.step().unwrap();
+    assert_eq!(cpu.regs.pc, INITIAL_PC + 10);
+}
+
+#[test]
+fn test_interrupt_while_busy() {
+    let mut cpu = testcpu();
+    cpu.step().unwrap();
+    cpu.step().unwrap();
+
+    // An interrupt while the FPU is busy is taken while the second FADD waits
+    cpu.bus.irq_level = Some(3);
+    cpu.step().unwrap();
+    check_mid_instruction_irq(&mut cpu);
+}
+
+#[test]
+fn test_interrupt_during_wait() {
+    let mut cpu = testcpu();
+    cpu.step().unwrap();
+    cpu.step().unwrap();
+
+    // The interrupt comes after the second FADD started to wait
+    let start = cpu.cycles;
+    assert!(cpu.fpu_free_at > start + 8);
+    cpu.bus.irq_level = Some(3);
+    cpu.bus.irq_from = start + 8;
+    cpu.step().unwrap();
+    assert!(cpu.cycles > start + 8);
+    check_mid_instruction_irq(&mut cpu);
+}
+
+#[test]
+fn test_68882_head() {
+    type TestCpu030 = CpuM68030Fpu<Testbus<Address, u8, Bus68020>>;
+
+    let mut cpu = TestCpu030::new(Testbus::new(M68030_ADDRESS_MASK));
+    #[rustfmt::skip]
+    let code: &[Word] = &[
+        0xF200, 0x0422, // FADD.X FP1,FP0
+        0xF200, 0x0422, // FADD.X FP1,FP0
+        0x4E71, 0x4E71, // NOP, NOP
+    ];
+    for (i, &word) in code.iter().enumerate() {
+        let addr = INITIAL_PC + i as Address * 2;
+        cpu.bus.mem.insert(addr, (word >> 8) as u8);
+        cpu.bus.mem.insert(addr + 1, word as u8);
+    }
+    cpu.regs.isp = 0x800;
+    cpu.regs.sr.set_supervisor(true);
+    cpu.regs.sr.set_int_prio_mask(7);
+    cpu.set_pc(INITIAL_PC).unwrap();
+    cpu.prefetch_refill().unwrap();
+
+    // The second FADD starts its head of 17 clocks before the first ends
+    cpu.step().unwrap();
+    let first_end = cpu.fpu_free_at;
+    cpu.step().unwrap();
+    // FADD FPn on the 68882: 56 clocks, after the prefetch bus cycle (3 clocks,
+    // the cache is off) that takes its extension word
+    assert_eq!(cpu.fpu_free_at, first_end - 17 + 3 + 56);
+}
+
+/// Runs FMUL.X FP1,FP0 and then `code` on a 68030 + 68882, and returns the time
+/// at which the second instruction ends
+fn fmove_after_fmul(code: &[Word]) -> Ticks {
+    type TestCpu030 = CpuM68030Fpu<Testbus<Address, u8, Bus68020>>;
+
+    let mut cpu = TestCpu030::new(Testbus::new(M68030_ADDRESS_MASK));
+    let words = [&[0xF200, 0x0423], code, &[0x4E71, 0x4E71]].concat();
+    for (i, &word) in words.iter().enumerate() {
+        let addr = INITIAL_PC + i as Address * 2;
+        cpu.bus.mem.insert(addr, (word >> 8) as u8);
+        cpu.bus.mem.insert(addr + 1, word as u8);
+    }
+    cpu.regs.isp = 0x800;
+    cpu.regs.write_a::<Address>(0, 0x3000);
+    cpu.regs.sr.set_supervisor(true);
+    cpu.regs.sr.set_int_prio_mask(7);
+    cpu.set_pc(INITIAL_PC).unwrap();
+    cpu.prefetch_refill().unwrap();
+
+    cpu.step().unwrap();
+    cpu.step().unwrap();
+    cpu.cycles
+}
+
+#[test]
+fn test_68882_fmove_heads() {
+    // FMOVE.X FP2,FP3: a head of 21 clocks, 10 if it uses the register that the
+    // FMUL writes
+    let free = fmove_after_fmul(&[0xF200, 0x0980]);
+    assert_eq!(fmove_after_fmul(&[0xF200, 0x0800]), free + 21 - 10);
+    assert_eq!(fmove_after_fmul(&[0xF200, 0x0180]), free + 21 - 10);
+
+    // FMOVE.X FP2,(A0): a head of 50 clocks, none if FP0 is the source
+    let free = fmove_after_fmul(&[0xF210, 0x6900]);
+    assert_eq!(fmove_after_fmul(&[0xF210, 0x6800]), free + 50);
+}
