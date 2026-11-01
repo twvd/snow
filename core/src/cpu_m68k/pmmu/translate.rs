@@ -1,12 +1,13 @@
 //! Address translation: the parts shared by the 68851 and 68030 MMU
 //! (mmu851.rs) and the 68040 one (mmu040.rs)
 
-use crate::bus::{Address, Bus, IrqSource};
+use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::M68040;
 use crate::cpu_m68k::cache::CpuCaches;
 use crate::cpu_m68k::cpu::{CpuError, CpuM68k, Group0Details, HistoryEntry};
+use crate::types::{Byte, Long};
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -327,6 +328,45 @@ where
         } else {
             self.mmu851_translate(fc, vaddr, writing)
         }
+    }
+
+    /// Translates a logical address for the host, the way an access would be
+    /// translated but without any trace of it: nothing goes into the ATC, the
+    /// U and M bits of the descriptors stay as they are, and it takes no CPU
+    /// time. Protection is ignored, since the host isn't bound by it. Returns
+    /// None if the address has no translation or the tables can't be read.
+    pub fn inspect_translate(&mut self, fc: u8, vaddr: Address, writing: bool) -> Option<Address>
+    where
+        TBus: InspectableBus<Address, Byte>,
+    {
+        if !PMMU {
+            return Some(vaddr);
+        }
+
+        if CPU_TYPE == M68040 {
+            self.mmu040_inspect_translate(fc, vaddr)
+        } else {
+            self.mmu851_inspect_translate(fc, vaddr, writing)
+        }
+    }
+
+    /// Reads a long word of a translation table where a table search would
+    /// read it from, for inspect_translate(): the 68040 searches the tables
+    /// through its data cache, the others on the bus.
+    pub(in crate::cpu_m68k) fn pmmu_inspect_descriptor(&mut self, addr: Address) -> Option<Long>
+    where
+        TBus: InspectableBus<Address, Byte>,
+    {
+        let mut long = 0;
+        for i in 0..4 {
+            let addr = addr.wrapping_add(i);
+            let byte = match self.caches.inspect_phys_read(self.regs.cacr, addr) {
+                Some(byte) => byte,
+                None => self.bus.inspect_read(addr)?,
+            };
+            long = (long << 8) | Long::from(byte);
+        }
+        Some(long)
     }
 
     /// Records a page-fault history entry if history recording is enabled.

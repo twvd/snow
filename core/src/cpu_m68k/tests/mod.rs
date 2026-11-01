@@ -10,6 +10,7 @@ mod fpu_ops;
 mod fpu_overlap;
 mod group2_exceptions;
 mod illegal_exception;
+mod inspect;
 mod interrupt;
 mod link;
 mod m68k_rs_atc;

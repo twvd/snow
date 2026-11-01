@@ -1,7 +1,7 @@
 //! 68851 PMMU, and the 68030 MMU which is a subset of it with transparent
 //! translation registers added
 
-use crate::bus::{Address, Bus, IrqSource};
+use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::FpuM68kType;
 use crate::cpu_m68k::cache::CpuCaches;
@@ -10,7 +10,7 @@ use crate::cpu_m68k::pmmu::regs::{PmmuPageDescriptorType, RegisterPSR, RootPoint
 use crate::cpu_m68k::pmmu::translate::{
     CacheMode, PMMU_ATC_SRP, PMMU_ATC_URP, PmmuAtcEntry, Translation,
 };
-use crate::types::Long;
+use crate::types::{Byte, Long};
 
 use anyhow::{Result, anyhow, bail};
 use arrayvec::ArrayVec;
@@ -563,6 +563,111 @@ where
         Ok(Translation { paddr, cache })
     }
 
+    /// Physical address from the page address of the descriptor that ended a
+    /// table walk, which used `used_bits` of the logical address
+    fn pmmu_walk_paddr(&self, page_addr: Address, vaddr: Address, used_bits: Address) -> Address {
+        let mask = 0xFFFFFFFFu32.unbounded_shr(used_bits);
+        let page_mask = (1u32 << self.regs.pmmu.tc.ps()) - 1;
+        // M68030UM 9.5.3.1 and 9-22: the physical address is the sum of the
+        // descriptor's page-address field and the offset, at page
+        // granularity. Field bits below the page size (A_{PS-1}..A_8) are
+        // unused, so both terms are masked with !page_mask and the in-page
+        // offset comes straight from the logical address. This also keeps a
+        // table walk and a later ATC hit on the same page in agreement.
+        // Guest-controlled page tables make the sum overflow, so wrap like
+        // the hardware's 32-bit address adder (a plain + would panic in
+        // test/debug builds).
+        (page_addr & !page_mask).wrapping_add(vaddr & mask & !page_mask) | (vaddr & page_mask)
+    }
+
+    /// See CpuM68k::inspect_translate()
+    pub(in crate::cpu_m68k) fn mmu851_inspect_translate(
+        &mut self,
+        fc: u8,
+        vaddr: Address,
+        writing: bool,
+    ) -> Option<Address>
+    where
+        TBus: InspectableBus<Address, Byte>,
+    {
+        if self.pmmu_tt_match(fc, vaddr, writing).is_some() || !self.regs.pmmu.tc.enable() {
+            return Some(vaddr);
+        }
+
+        let atc = self.pmmu_atc_tableidx(fc);
+        if let Some(entry) = self.pmmu_atc_lookup(atc, self.pmmu_atc_key(vaddr)) {
+            let page_mask = (1u32 << self.regs.pmmu.tc.ps()) - 1;
+            return Some(entry.paddr | (vaddr & page_mask));
+        }
+        self.mmu851_inspect_walk(fc, vaddr)
+    }
+
+    /// Walks the page tables for one address as pmmu_translate_lookup() does,
+    /// without setting any U bit, updating any MMU register or taking time
+    fn mmu851_inspect_walk(&mut self, fc: u8, vaddr: Address) -> Option<Address>
+    where
+        TBus: InspectableBus<Address, Byte>,
+    {
+        let rootptr = self.pmmu_rootptr(fc);
+        let tc = self.regs.pmmu.tc;
+
+        let mut table_addr = rootptr.table_addr() << 4;
+        let mut dt = PmmuPageDescriptorType::from_u8(rootptr.dt()).unwrap();
+        let mut limit = Some((rootptr.limit(), rootptr.lu()));
+        let mut used_bits = tc.is() as Address;
+        let mut bits = vaddr << tc.is();
+
+        for ti in [tc.tia(), tc.tib(), tc.tic(), tc.tid()] {
+            let ti = Address::from(ti);
+            if ti == 0 {
+                return None;
+            }
+            used_bits += ti;
+            let idx = bits >> (32 - ti);
+            bits <<= ti;
+            Self::pmmu_check_limit(idx, limit).ok()?;
+
+            let (word, page_addr, next_table, next_limit) = match dt {
+                PmmuPageDescriptorType::Valid4b => {
+                    let word = self.pmmu_inspect_descriptor(table_addr.wrapping_add(idx * 4))?;
+                    (
+                        word,
+                        PmmuShortPageDescriptor(word).page_addr() << 8,
+                        PmmuShortTableDescriptor(word).table_addr() << 4,
+                        None,
+                    )
+                }
+                PmmuPageDescriptorType::Valid8b => {
+                    let addr = table_addr.wrapping_add(idx * 8);
+                    let word1 = self.pmmu_inspect_descriptor(addr)?;
+                    let word2 = self.pmmu_inspect_descriptor(addr.wrapping_add(4))?;
+                    let page = PmmuLongPageDescriptor(0).with_msl(word1).with_lsl(word2);
+                    let table = PmmuLongTableDescriptor(0).with_msl(word1).with_lsl(word2);
+                    (
+                        word1,
+                        page.page_addr() << 8,
+                        table.table_addr() << 4,
+                        Some((table.limit(), table.lu())),
+                    )
+                }
+                _ => return None,
+            };
+
+            dt = PmmuPageDescriptorType::from_u32(word & 0b11).unwrap();
+            match dt {
+                PmmuPageDescriptorType::Invalid => return None,
+                PmmuPageDescriptorType::PageDescriptor => {
+                    return Some(self.pmmu_walk_paddr(page_addr, vaddr, used_bits));
+                }
+                PmmuPageDescriptorType::Valid4b | PmmuPageDescriptorType::Valid8b => {
+                    table_addr = next_table;
+                    limit = next_limit;
+                }
+            }
+        }
+        None
+    }
+
     /// Set PSR for a failure during ATC lookup
     fn pmmu_record_atc_fault(
         &mut self,
@@ -751,19 +856,7 @@ where
             modified = true;
         }
 
-        let mask = 0xFFFFFFFFu32.unbounded_shr(used_bits);
-        let page_mask = (1u32 << self.regs.pmmu.tc.ps()) - 1;
-        // M68030UM 9.5.3.1 and 9-22: the physical address is the sum of the
-        // descriptor's page-address field and the offset, at page
-        // granularity. Field bits below the page size (A_{PS-1}..A_8) are
-        // unused, so both terms are masked with !page_mask and the in-page
-        // offset comes straight from the logical address. This also keeps a
-        // table walk and a later ATC hit on the same page in agreement.
-        // Guest-controlled page tables make the sum overflow, so wrap like
-        // the hardware's 32-bit address adder (a plain + would panic in
-        // test/debug builds).
-        let paddr =
-            (page_addr & !page_mask).wrapping_add(vaddr & mask & !page_mask) | (vaddr & page_mask);
+        let paddr = self.pmmu_walk_paddr(page_addr, vaddr, used_bits);
 
         if PTEST {
             // M68030UM Table 9-3: report conditions encountered during the

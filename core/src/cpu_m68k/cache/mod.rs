@@ -25,7 +25,7 @@ use crate::cpu_m68k::cpu::HistoryEntryInstruction;
 use crate::cpu_m68k::pmmu::translate::Translation;
 use crate::cpu_m68k::regs::RegisterCACR;
 use crate::tickable::Ticks;
-use crate::types::Long;
+use crate::types::{Byte, Long};
 
 /// CPU cycles of a 68020/030 prefetch that hits in the instruction cache or
 /// the cache holding register. The manuals give no delay for a hit
@@ -171,6 +171,13 @@ pub trait CpuCaches: Default {
         TBus: Bus<Address, u8> + IrqSource,
     {
         bus.line_access(&acc.fault, tr.paddr, wline)
+    }
+
+    /// Returns the byte at physical address `paddr` if caches tagged with
+    /// physical addresses would serve a data read of it, for the host. This
+    /// changes nothing in the caches and takes no CPU time.
+    fn inspect_phys_read(&self, _cacr: RegisterCACR, _paddr: Address) -> Option<Byte> {
+        None
     }
 
     /// Hardware reset

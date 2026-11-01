@@ -18,7 +18,7 @@ use crate::cpu_m68k::cache::{CacheScope, CacheSelect, CpuCaches};
 use crate::cpu_m68k::cpu::HistoryEntryInstruction;
 use crate::cpu_m68k::pmmu::translate::{CacheMode, Translation};
 use crate::cpu_m68k::regs::RegisterCACR;
-use crate::types::Long;
+use crate::types::{Byte, Long};
 
 /// Number of sets
 const SETS: usize = 64;
@@ -425,6 +425,15 @@ impl CpuCaches for Caches040 {
             Self::invalidate_cache(bus, &mut self.dcache, paddr, mask, push)?;
         }
         Ok(())
+    }
+
+    fn inspect_phys_read(&self, cacr: RegisterCACR, paddr: Address) -> Option<Byte> {
+        if !cacr.de() {
+            return None;
+        }
+        let way = self.dcache.find(paddr)?;
+        let long = self.dcache.data[Cache040::set(paddr)][way][Cache040::entry(paddr)];
+        Some(long.to_be_bytes()[paddr as usize % 4])
     }
 
     fn reset(&mut self) {

@@ -5,16 +5,16 @@
 //! which hooks into the PMMU logic.
 //! Sorry if this is messy/hard to follow
 
-use crate::bus::{Address, Bus, IrqSource};
+use crate::bus::{Address, Bus, InspectableBus, IrqSource};
 use crate::cpu_m68k::cache::CpuCaches;
 use crate::cpu_m68k::cpu::{CpuError, CpuM68k, PagefaultCause};
 use crate::cpu_m68k::pmmu::translate::{
     CacheMode, PMMU_ATC_SRP, PMMU_ATC_URP, PmmuAtcEntry, Translation,
 };
 use crate::cpu_m68k::{CpuM68kType, FpuM68kType, M68040};
-use crate::types::Long;
+use crate::types::{Byte, Long};
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 
 const DESC_TYPE: Long = 0b11;
 const DESC_TYPE_INVALID: Long = 0;
@@ -36,6 +36,10 @@ const MMUSR_R: Long = 1 << 0;
 
 const TT_ENABLE: Long = 1 << 15;
 const TT_WP: Long = 1 << 2;
+
+/// Result of a table walk: physical address, write protected, supervisor only,
+/// address of the leaf descriptor, modified, cache mode
+type Walk040 = (Address, bool, bool, Address, bool, CacheMode);
 
 /// Cache mode (CM) field of page descriptors and TT registers
 const CM_MASK: Long = 0b11 << 5;
@@ -126,15 +130,16 @@ where
         Ok(desc)
     }
 
-    /// Walks the page tables for one address.
-    ///
-    /// Try to keep return type in sync with pmmu_translate_lookup
-    pub(in crate::cpu_m68k) fn mmu040_translate_lookup(
+    /// Walks the page tables for one address, reading descriptors with `read`,
+    /// which gets the address of a descriptor and the resident bits of its type.
+    /// Returns None if the address has no translation.
+    #[inline(always)]
+    fn mmu040_walk(
         &mut self,
         fc: u8,
         vaddr: Address,
-    ) -> Result<(Address, bool, bool, Address, bool, CacheMode)> {
-        // TODO change return tuple to struct
+        mut read: impl FnMut(&mut Self, Address, Long) -> Result<Long>,
+    ) -> Result<Option<Walk040>> {
         debug_assert_eq!(CPU_TYPE, M68040);
 
         let root_ptr = if fc & (1 << 2) != 0 {
@@ -145,16 +150,16 @@ where
 
         // Level 1: root table (128 entries)
         let root_addr = root_ptr.wrapping_add(((vaddr >> 25) & 0x7F) * 4);
-        let root_desc = self.mmu040_read_descriptor(root_addr, DESC_UDT_RESIDENT)?;
+        let root_desc = read(self, root_addr, DESC_UDT_RESIDENT)?;
         if root_desc & DESC_UDT_RESIDENT == 0 {
-            bail!(CpuError::Pagefault(PagefaultCause::Invalid));
+            return Ok(None);
         }
 
         // Level 2: pointer table (128 entries, 512 byte aligned)
         let ptr_addr = (root_desc & !0x1FF).wrapping_add(((vaddr >> 18) & 0x7F) * 4);
-        let ptr_desc = self.mmu040_read_descriptor(ptr_addr, DESC_UDT_RESIDENT)?;
+        let ptr_desc = read(self, ptr_addr, DESC_UDT_RESIDENT)?;
         if ptr_desc & DESC_UDT_RESIDENT == 0 {
-            bail!(CpuError::Pagefault(PagefaultCause::Invalid));
+            return Ok(None);
         }
 
         // Level 3: page table (64 entries for 4KB pages, 32 for 8KB)
@@ -165,33 +170,48 @@ where
         };
         let page_idx = (vaddr >> page_shift) & if page_shift == 13 { 0x1F } else { 0x3F };
         let mut leaf_addr = (ptr_desc & table_mask).wrapping_add(page_idx * 4);
-        let mut leaf_desc = self.mmu040_read_descriptor(leaf_addr, DESC_PDT_RESIDENT)?;
+        let mut leaf_desc = read(self, leaf_addr, DESC_PDT_RESIDENT)?;
 
         // A leaf descriptor may point at another descriptor. Exactly one level
         // of indirection is allowed; anything deeper is invalid.
         if leaf_desc & DESC_TYPE == DESC_TYPE_INDIRECT {
             leaf_addr = leaf_desc & !DESC_TYPE;
-            leaf_desc = self.mmu040_read_descriptor(leaf_addr, DESC_PDT_RESIDENT)?;
+            leaf_desc = read(self, leaf_addr, DESC_PDT_RESIDENT)?;
             if leaf_desc & DESC_TYPE == DESC_TYPE_INDIRECT {
-                bail!(CpuError::Pagefault(PagefaultCause::Invalid));
+                return Ok(None);
             }
         }
         if leaf_desc & DESC_TYPE == DESC_TYPE_INVALID {
-            bail!(CpuError::Pagefault(PagefaultCause::Invalid));
+            return Ok(None);
         }
 
         // Write protection is inherited from every level of the walk
         let wp = (root_desc | ptr_desc | leaf_desc) & DESC_WP != 0;
         let page_mask = (1 << page_shift) - 1;
 
-        Ok((
+        Ok(Some((
             (leaf_desc & !page_mask) | (vaddr & page_mask),
             wp,
             leaf_desc & DESC_S != 0,
             leaf_addr,
             leaf_desc & DESC_M != 0,
             cache_mode(leaf_desc),
-        ))
+        )))
+    }
+
+    /// Walks the page tables for one address.
+    ///
+    /// Try to keep return type in sync with pmmu_translate_lookup
+    pub(in crate::cpu_m68k) fn mmu040_translate_lookup(
+        &mut self,
+        fc: u8,
+        vaddr: Address,
+    ) -> Result<Walk040> {
+        // TODO change return tuple to struct
+        let Some(walk) = self.mmu040_walk(fc, vaddr, Self::mmu040_read_descriptor)? else {
+            bail!(CpuError::Pagefault(PagefaultCause::Invalid));
+        };
+        Ok(walk)
     }
 
     pub(in crate::cpu_m68k) fn mmu040_ptest(&mut self, fc: u8, vaddr: Address) -> Result<()> {
@@ -330,5 +350,43 @@ where
         });
 
         Ok(Translation { paddr, cache })
+    }
+
+    /// See CpuM68k::inspect_translate()
+    pub(in crate::cpu_m68k) fn mmu040_inspect_translate(
+        &mut self,
+        fc: u8,
+        vaddr: Address,
+    ) -> Option<Address>
+    where
+        TBus: InspectableBus<Address, Byte>,
+    {
+        if self.mmu040_tt_match(fc, vaddr).is_some() || !self.mmu040_enabled() {
+            return Some(vaddr);
+        }
+
+        let atc = if fc & (1 << 2) != 0 {
+            PMMU_ATC_SRP
+        } else {
+            PMMU_ATC_URP
+        };
+        let page_shift = self.mmu040_page_shift();
+        if let Some(entry) = self.pmmu_atc_lookup(atc, (vaddr >> page_shift) as usize) {
+            return Some(entry.paddr | (vaddr & ((1 << page_shift) - 1)));
+        }
+        self.mmu040_inspect_walk(fc, vaddr)
+    }
+
+    /// Walks the page tables for one address as mmu040_translate_lookup()
+    /// does, without setting any U bit
+    fn mmu040_inspect_walk(&mut self, fc: u8, vaddr: Address) -> Option<Address>
+    where
+        TBus: InspectableBus<Address, Byte>,
+    {
+        let walk = self.mmu040_walk(fc, vaddr, |cpu, addr, _| {
+            cpu.pmmu_inspect_descriptor(addr)
+                .ok_or_else(|| anyhow!("Translation table can't be read"))
+        });
+        walk.ok().flatten().map(|(paddr, ..)| paddr)
     }
 }

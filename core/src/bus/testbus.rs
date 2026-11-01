@@ -2,7 +2,7 @@ use anyhow::Result;
 use num_traits::{PrimInt, WrappingAdd};
 
 use super::access::CpuBus;
-use super::{Address, Bus, IrqSource};
+use super::{Address, Bus, InspectableBus, IrqSource};
 use crate::bus::access::{BusAccess, BusResponse};
 use crate::tickable::{Tickable, Ticks};
 
@@ -207,6 +207,23 @@ where
     fn cpu_tick(&mut self, ticks: Ticks) -> Result<()> {
         self.cpu_cycles += ticks;
         Ok(())
+    }
+}
+
+impl<C> InspectableBus<Address, u8> for Testbus<Address, u8, C> {
+    fn inspect_read(&mut self, addr: Address) -> Option<u8> {
+        if self.fault_ranges.iter().any(|range| range.contains(&addr)) {
+            return None;
+        }
+        Some(self.mem.get(&addr).copied().unwrap_or(0))
+    }
+
+    fn inspect_write(&mut self, addr: Address, val: u8) -> Option<()> {
+        if self.fault_ranges.iter().any(|range| range.contains(&addr)) {
+            return None;
+        }
+        self.mem.insert(addr, val);
+        Some(())
     }
 }
 
