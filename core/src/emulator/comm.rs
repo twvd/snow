@@ -91,7 +91,6 @@ pub enum EmulatorCommand {
     /// Reads the text of the guest's clipboard: answered by
     /// [`EmulatorEvent::ScrapText`]
     ReadScrapText,
-    Disassemble(Address, usize),
     KeyEvent(KeyEvent),
     ReleaseAllInputs,
     CpuSetPC(u32),
@@ -218,7 +217,6 @@ pub struct MemoryNotifierRange {
 #[derive(strum::Display)]
 pub enum EmulatorEvent {
     Status(Box<EmulatorStatus>),
-    NextCode((Address, Vec<u8>)),
     UserMessage(UserMessageType, String),
     FloppyEjected(usize, Box<FloppyImage>),
     ScsiMediaEjected(usize),

@@ -303,7 +303,6 @@ dispatch! {
 
         fn bus_reset(&mut self) -> Result<bool> { bus.reset(true) }
         fn after_deserialize(&mut self, renderer: ChannelRenderer) -> () { bus.after_deserialize(renderer) }
-        fn bus_inspect_read(&mut self, addr: Address) -> Option<Byte> { bus.inspect_read(addr) }
         fn bus_inspect_write(&mut self, addr: Address, val: Byte) -> Option<()> { bus.inspect_write(addr, val) }
         fn cpu_inspect_read(&mut self, addr: Address, phys: bool) -> Option<Byte> { inspect_read(addr, phys) }
         fn cpu_inspect_write(&mut self, addr: Address, val: Byte, phys: bool) -> Option<()> { inspect_write(addr, val, phys) }
@@ -812,9 +811,6 @@ impl Emulator {
                 effective_speed: self.config.effective_speed(),
             })))?;
 
-        // Next code stream for disassembly listing
-        self.disassemble(self.config.cpu_regs().pc, 200)?;
-
         // Memory contents
         for page in self.config.ram_dirty() {
             let r = (page * RAM_DIRTY_PAGESIZE)..((page + 1) * RAM_DIRTY_PAGESIZE);
@@ -966,18 +962,6 @@ impl Emulator {
         self.config
             .cpu_inspect_write_word(ADDR_RAWMOUSE_Y, mouse.rawmouse.1, false);
         self.config.cpu_inspect_write(ADDR_CRSRNEW, 1, false);
-    }
-
-    fn disassemble(&mut self, addr: Address, len: usize) -> Result<()> {
-        let ops = (addr..)
-            .take(len)
-            .flat_map(|addr| self.config.bus_inspect_read(addr))
-            .collect::<Vec<_>>();
-
-        self.event_sender
-            .send(EmulatorEvent::NextCode((addr, ops)))?;
-
-        Ok(())
     }
 
     /// Steps the emulator by one instruction.
@@ -1525,11 +1509,6 @@ impl Tickable for Emulator {
                             config.cpu_inspect_read(addr, false)
                         });
                         self.event_sender.send(EmulatorEvent::ScrapText(text))?;
-                    }
-                    EmulatorCommand::Disassemble(addr, len) => {
-                        self.disassemble(addr, len)?;
-                        // Skip status update which would reset the disassembly view
-                        return Ok(ticks);
                     }
                     EmulatorCommand::KeyEvent(e) => {
                         if let Some(r) = self.record_input.as_mut() {

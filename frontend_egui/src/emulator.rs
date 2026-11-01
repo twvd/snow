@@ -121,6 +121,8 @@ pub struct EmulatorInitArgs {
     pub overclock: Option<u64>,
 }
 
+/// Id of the memory notifier of the disassembly
+pub const NOTIFIER_DISASSEMBLY: u32 = 0;
 /// First id of the memory notifiers of the watchpoints
 pub const NOTIFIER_WATCHPOINTS: u32 = 2;
 
@@ -586,11 +588,6 @@ impl EmulatorState {
                 EmulatorEvent::Status(s) => {
                     self.status = Some(*s);
                 }
-                EmulatorEvent::NextCode((address, code)) => {
-                    self.disasm_address = address;
-                    self.disasm_code =
-                        Vec::from_iter(Disassembler::from(&mut code.into_iter(), address));
-                }
                 EmulatorEvent::FloppyEjected(idx, img) => {
                     self.messages.push_back((
                         UserMessageType::Notice,
@@ -607,7 +604,13 @@ impl EmulatorState {
                     self.ram_update.push_back(update);
                 }
                 EmulatorEvent::MemoryNotify { id, addr, data } => {
-                    self.memory_notifications.push_back((id, addr, data));
+                    if id == NOTIFIER_DISASSEMBLY {
+                        let mut code = data.into_iter().map_while(|b| b);
+                        self.disasm_address = addr;
+                        self.disasm_code = Vec::from_iter(Disassembler::from(&mut code, addr));
+                    } else {
+                        self.memory_notifications.push_back((id, addr, data));
+                    }
                 }
                 EmulatorEvent::ScrapText(text) => self.scrap_text = Some(text),
                 EmulatorEvent::RecordedInput(i) => {

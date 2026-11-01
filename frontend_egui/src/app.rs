@@ -4,7 +4,7 @@ use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
 use crate::dialogs::filedialog::SnowFileDialog;
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult, video_rom_card};
 use crate::emulator::{EmulatorInitArgs, ScsiTargets};
-use crate::emulator::{EmulatorState, NOTIFIER_WATCHPOINTS};
+use crate::emulator::{EmulatorState, NOTIFIER_DISASSEMBLY, NOTIFIER_WATCHPOINTS};
 use crate::keymap::{char_to_keystroke, map_winit_keycode};
 use crate::settings::{AppSettings, CmdKeyMapping, PromptChoice};
 use crate::uniform::{UNIFORM_ACTION, UniformAction};
@@ -19,7 +19,9 @@ use crate::widgets::systrap_history::SystrapHistoryWidget;
 use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::{FramebufferMode, Workspace};
+use snow_core::cpu_m68k::bus::InspectView;
 use snow_core::emulator::MouseMode;
+use snow_core::emulator::comm::MemoryNotifierRange;
 use snow_core::emulator::comm::{EmulatorSpeed, UserMessageType};
 use snow_core::emulator::save::{SaveHeader, load_state_header};
 use snow_core::mac::MacModel;
@@ -113,6 +115,9 @@ enum PendingConfirm {
         wp: bool,
     },
 }
+
+/// Bytes of the disassembly listing from the PC on
+const DISASSEMBLY_LENGTH: u32 = 200;
 
 #[derive(Clone)]
 struct Snowflake {
@@ -1471,6 +1476,10 @@ impl SnowGui {
                 ui.checkbox(
                     &mut self.workspace.disassembly_labels,
                     "Show labels in disassembly",
+                );
+                ui.checkbox(
+                    &mut self.workspace.disassembly_physical,
+                    "Physical addresses in disassembly",
                 );
                 ui.checkbox(
                     &mut self.workspace.instruction_history_open,
@@ -2885,6 +2894,19 @@ impl SnowGui {
     /// Tells the emulator what memory the open windows are looking at
     fn update_memory_notifiers(&mut self) {
         let visible = self.emu.is_initialized() && !self.is_ui_hidden();
+        self.emu.set_memory_notifier(
+            NOTIFIER_DISASSEMBLY,
+            (visible && self.workspace.disassembly_open).then_some(MemoryNotifierRange {
+                addr: 0,
+                len: DISASSEMBLY_LENGTH,
+                view: if self.workspace.disassembly_physical {
+                    InspectView::Physical
+                } else {
+                    InspectView::Program
+                },
+                follow_pc: true,
+            }),
+        );
         let watchpoints_open = visible && self.workspace.watchpoints_open;
         for (id, range) in self.watchpoints.ranges() {
             self.emu

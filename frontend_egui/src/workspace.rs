@@ -282,6 +282,8 @@ pub struct Workspace {
 
     /// Show labels in disassembly
     pub disassembly_labels: bool,
+    /// The disassembly looks at the PC as a physical address
+    pub disassembly_physical: bool,
 
     /// Floppy disk images to auto-insert on workspace load
     floppy_images: Vec<RelativePath>,
@@ -336,6 +338,7 @@ impl Default for Workspace {
             pause_on_state_load: false,
             shared_dir: None,
             disassembly_labels: true,
+            disassembly_physical: false,
             floppy_images: Vec::new(),
             custom_datetime: None,
             framebuffer_mode: FramebufferMode::default(),
