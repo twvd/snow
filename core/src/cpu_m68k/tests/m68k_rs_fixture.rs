@@ -30,8 +30,8 @@ use crate::bus::access::{Bus68000, Bus68020};
 use crate::bus::testbus::{TestDevice, Testbus};
 use crate::cpu_m68k::disassembler::Disassembler;
 use crate::cpu_m68k::{
-    CpuM68000, CpuM68020Fpu, CpuM68030Fpu, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK,
-    M68030_ADDRESS_MASK,
+    CpuM68000, CpuM68020Fpu, CpuM68030Fpu, CpuM68040Fpu, M68000_ADDRESS_MASK, M68020_ADDRESS_MASK,
+    M68030_ADDRESS_MASK, M68040_ADDRESS_MASK,
 };
 
 /// 32-bit data bus (68020/68030).
@@ -132,6 +132,7 @@ macro_rules! run_fixture {
 run_fixture!(run_fixture_000, CpuM68000<TestBus16>, M68000_ADDRESS_MASK);
 run_fixture!(run_fixture_020, CpuM68020Fpu<TestBus>, M68020_ADDRESS_MASK);
 run_fixture!(run_fixture_030, CpuM68030Fpu<TestBus>, M68030_ADDRESS_MASK);
+run_fixture!(run_fixture_040, CpuM68040Fpu<TestBus>, M68040_ADDRESS_MASK);
 
 /// The fixture signalled pass at least once and never failed.
 fn assert_passed(name: &str, (pass, fail): (u32, u32)) {
@@ -464,3 +465,44 @@ musashi_000!(musashi_000_subq, "fixtures/musashi/mc68000/subq.bin");
 musashi_000!(musashi_000_subx, "fixtures/musashi/mc68000/subx.bin");
 musashi_000!(musashi_000_swap, "fixtures/musashi/mc68000/swap.bin");
 musashi_000!(musashi_000_trapv, "fixtures/musashi/mc68000/trapv.bin");
+
+/// Motorola's integer test of its M68060 Software Package: 64-bit multiply and
+/// divide, CMP2/CHK2, MOVEP, effective addresses, CAS and CAS2. On the 68060 these
+/// are emulated, the 68020 to the 68040 have them in hardware. See
+/// `fixtures/README.md`.
+mod motorola_itest {
+    use super::*;
+
+    /// `stub.s` assembled, followed by the image of `itest.sa`
+    fn program() -> Vec<u8> {
+        let mut program = include_bytes!("fixtures/motorola/stub.bin").to_vec();
+        for line in include_str!("fixtures/motorola/itest.sa").lines() {
+            let Some(values) = line.trim().strip_prefix("dc.l") else {
+                continue;
+            };
+            for value in values.split(',') {
+                let value = u32::from_str_radix(value.trim().trim_start_matches('$'), 16);
+                program.extend(value.unwrap().to_be_bytes());
+            }
+        }
+        program
+    }
+
+    #[test]
+    fn m68020() {
+        let mut cpu = CpuM68020Fpu::<TestBus>::new(TestBus::new(M68020_ADDRESS_MASK));
+        assert_passed("itest", run_fixture_020(&mut cpu, &program()));
+    }
+
+    #[test]
+    fn m68030() {
+        let mut cpu = CpuM68030Fpu::<TestBus>::new(TestBus::new(M68030_ADDRESS_MASK));
+        assert_passed("itest", run_fixture_030(&mut cpu, &program()));
+    }
+
+    #[test]
+    fn m68040() {
+        let mut cpu = CpuM68040Fpu::<TestBus>::new(TestBus::new(M68040_ADDRESS_MASK));
+        assert_passed("itest", run_fixture_040(&mut cpu, &program()));
+    }
+}
