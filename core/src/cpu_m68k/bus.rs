@@ -10,7 +10,9 @@ use crate::cpu_m68k::cpu::{
 use crate::cpu_m68k::pmmu::translate::{
     CacheMode, LAST_TRANSLATION_FETCH, LAST_TRANSLATION_READ, LAST_TRANSLATION_WRITE, Translation,
 };
-use crate::cpu_m68k::{CpuM68kType, CpuSized, M68000, M68020, TORDER_HIGHLOW, TORDER_LOWHIGH};
+use crate::cpu_m68k::{
+    CpuM68kType, CpuSized, M68000, M68020, M68040, TORDER_HIGHLOW, TORDER_LOWHIGH,
+};
 use crate::tickable::Ticks;
 use crate::types::Long;
 use crate::types::Word;
@@ -245,6 +247,9 @@ where
         if kind != AccessKind::Fetch && !self.breakpoints.is_empty() {
             return None;
         }
+        if CPU_TYPE >= M68040 {
+            return self.phys_read_hit(kind, fc, laddr, size);
+        }
         self.caches.read_hit(
             self.regs.cacr,
             kind,
@@ -254,6 +259,40 @@ where
             ticks,
             &mut self.history_current,
         )
+    }
+
+    /// read_hit() for physically tagged caches: with the last translation
+    /// made in the page, as translate() would use
+    #[inline(always)]
+    fn phys_read_hit(
+        &mut self,
+        kind: AccessKind,
+        fc: u8,
+        laddr: Address,
+        size: u32,
+    ) -> Option<(Long, u32)> {
+        if kind == AccessKind::Physical || !PMMU {
+            return None;
+        }
+        let slot = if kind == AccessKind::Fetch {
+            LAST_TRANSLATION_FETCH
+        } else {
+            LAST_TRANSLATION_READ
+        };
+        let tr = self.last_translation_find(slot, fc, laddr)?;
+        if tr.cache == CacheMode::Inhibited {
+            return None;
+        }
+        let res = self.caches.phys_read_hit(
+            self.regs.cacr,
+            kind == AccessKind::Fetch,
+            fc,
+            tr.paddr,
+            size,
+            &mut self.history_current,
+        )?;
+        self.write_credit = 0;
+        Some(res)
     }
 
     /// cpu_access() past the caches' read hits

@@ -15,6 +15,7 @@ use crate::cpu_m68k::CpuM68kType;
 use crate::cpu_m68k::bus::{AccessKind, CpuAccess, low_bytes};
 use crate::cpu_m68k::bus_transaction::{BusTransaction, FaultInfo};
 use crate::cpu_m68k::cache::{CacheScope, CacheSelect, CpuCaches};
+use crate::cpu_m68k::cpu::HistoryEntryInstruction;
 use crate::cpu_m68k::pmmu::translate::{CacheMode, Translation};
 use crate::cpu_m68k::regs::RegisterCACR;
 use crate::types::{Byte, Long};
@@ -81,6 +82,7 @@ impl Cache040 {
     }
 
     /// The line holding `paddr`, if any
+    #[inline(always)]
     fn find(&self, paddr: Address) -> Option<usize> {
         let tag = Self::tag(paddr);
         self.tags[Self::set(paddr)].iter().position(|&t| t == tag)
@@ -245,6 +247,41 @@ impl Caches040 {
 }
 
 impl CpuCaches for Caches040 {
+    #[inline(always)]
+    fn phys_read_hit(
+        &mut self,
+        cacr: RegisterCACR,
+        fetch: bool,
+        fc: u8,
+        paddr: Address,
+        size: u32,
+        history: &mut HistoryEntryInstruction,
+    ) -> Option<(Long, u32)> {
+        let cache = if fetch {
+            if !cacr.ie() {
+                return None;
+            }
+            &mut self.icache
+        } else {
+            if fc == FC_CPU_SPACE || !cacr.de() {
+                return None;
+            }
+            &mut self.dcache
+        };
+        let way = cache.find(paddr)?;
+        if fetch {
+            cache.count_fetch(paddr);
+            history.icache_hit = true;
+        } else {
+            cache.count();
+        }
+        let offset = paddr % 4;
+        let len = size.min(4 - offset);
+        let shift = 8 * (4 - offset - len);
+        let long = cache.data[Cache040::set(paddr)][way][Cache040::entry(paddr)];
+        Some((low_bytes(long >> shift, len), len))
+    }
+
     #[inline(always)]
     fn access<TBus, const CPU_TYPE: CpuM68kType>(
         &mut self,
