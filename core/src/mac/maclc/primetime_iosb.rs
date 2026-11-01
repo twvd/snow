@@ -93,6 +93,37 @@ const BOARD_RAM: usize = 4 * 1024 * 1024;
 const RAM_BANKS: usize = 5;
 const RAM_BANK_RESET: u16 = 64;
 
+/// Registers of MEMCjr, one every 4 bytes, and the one of RAM bank 0
+const MEMCJR_REGS: usize = 16;
+const MEMCJR_BANK0: usize = 1;
+/// Their values at power up
+const MEMCJR_RESET: [u16; MEMCJR_REGS] = [
+    // Version and features
+    0x420,
+    // RAM banks
+    0,
+    RAM_BANK_RESET,
+    2 * RAM_BANK_RESET,
+    3 * RAM_BANK_RESET,
+    4 * RAM_BANK_RESET,
+    // RAM banks 5 to 9, which don't exist
+    0xFFF,
+    0xFFF,
+    0xFFF,
+    0xFFF,
+    0xFFF,
+    // Top of the RAM, in MB
+    0x3FF,
+    // Configuration
+    0x0DF,
+    // Refresh interval
+    129,
+    // Test
+    0,
+    // Current refresh count, not modelled
+    0,
+];
+
 /// RAM decode granularity, and number of such blocks in the RAM space
 const RAM_BLOCK_SHIFT: u32 = 20;
 const RAM_BLOCKS: usize = 1024;
@@ -181,11 +212,13 @@ pub struct Lc475Bus<TRenderer: Renderer> {
     /// the 53C96 accesses
     primetime_regs: Vec<u8>,
     /// Upper 6 bits of a 12-bit register, which MEMCjr moves 6 bits at a time:
-    /// those of the RAM banks here, and of the video
-    video_holding: u8,
-    /// RAM bank registers of MEMCjr: base in MB in bits 9-0. The ROM sets bit
-    /// 10 on a bank whose size isn't a power of two; its meaning isn't known.
-    ram_banks: [u16; RAM_BANKS],
+    /// those of its own registers and of the video
+    memcjr_holding: u8,
+    /// Registers of MEMCjr, only stored apart from the base of the RAM banks,
+    /// in MB in bits 9-0. Bit 10 of a bank is its DRAM addressing mode, which
+    /// the ROM sets on a bank whose size isn't a power of two. All memory has
+    /// a single mode here, and the timing doesn't follow the configuration.
+    memcjr_regs: [u16; MEMCJR_REGS],
     /// Offset in `ram` of each block of the RAM space, as the banks decode it
     ram_map: Vec<u32>,
 
@@ -275,8 +308,8 @@ where
             scsi_dma_done: 0,
             scsi_dma_result: 0,
             primetime_regs: vec![0; PRIMETIME_REGS_SIZE],
-            video_holding: 0,
-            ram_banks: Self::RAM_BANKS_RESET,
+            memcjr_holding: 0,
+            memcjr_regs: MEMCJR_RESET,
             ram_map: vec![RAM_BLOCK_NONE; RAM_BLOCKS],
             sound: V8Sound::new(V8Variant::PrimeTime),
             sound_clock: 0,
@@ -304,13 +337,10 @@ where
         bus
     }
 
-    const RAM_BANKS_RESET: [u16; RAM_BANKS] = [
-        0,
-        RAM_BANK_RESET,
-        2 * RAM_BANK_RESET,
-        3 * RAM_BANK_RESET,
-        4 * RAM_BANK_RESET,
-    ];
+    /// First MB of a bank in the RAM space
+    fn ram_bank_base(&self, bank: usize) -> usize {
+        usize::from(self.memcjr_regs[MEMCJR_BANK0 + bank] & 0x3FF)
+    }
 
     /// Size and offset in `ram` of a bank
     fn ram_bank(&self, bank: usize) -> (usize, usize) {
@@ -328,10 +358,10 @@ where
         for block in 0..RAM_BLOCKS {
             let bank = (0..RAM_BANKS)
                 .rev()
-                .find(|&b| usize::from(self.ram_banks[b] & 0x3FF) <= block);
+                .find(|&b| self.ram_bank_base(b) <= block);
             self.ram_map[block] = bank.map_or(RAM_BLOCK_NONE, |bank| {
                 let (size, offset) = self.ram_bank(bank);
-                let inside = (block - usize::from(self.ram_banks[bank] & 0x3FF)) << RAM_BLOCK_SHIFT;
+                let inside = (block - self.ram_bank_base(bank)) << RAM_BLOCK_SHIFT;
                 if inside < size {
                     (offset + inside) as u32
                 } else {
@@ -478,20 +508,32 @@ where
         (addr & 0xFF_FFFF) >= 0x80_0000 && (addr & 0xFF_FFFF) < 0x80_0200
     }
 
+    /// The holding register also answers among the video registers
+    const fn video_holding(addr: Address) -> bool {
+        addr & 0xFF_FEFF == 0x80_007C
+    }
+
     fn video_read(&mut self, addr: Address, len: u32) -> Option<u32> {
+        if Self::video_holding(addr) && len == 4 {
+            return Some(u32::from(self.memcjr_holding));
+        }
         let val = (addr..addr + len).try_fold(0, |v, a| {
             Some((v << 8) | u32::from(self.dafb.read(a & 0xFF_FFFF)?))
         })?;
         if Self::video_held(addr) && len == 4 {
-            self.video_holding = ((val >> 6) & 0x3F) as u8;
+            self.memcjr_holding = ((val >> 6) & 0x3F) as u8;
             return Some(val & 0x3F);
         }
         Some(val)
     }
 
     fn video_write(&mut self, addr: Address, len: u32, val: u32) -> Option<()> {
+        if Self::video_holding(addr) && len == 4 {
+            self.memcjr_holding = (val & 0x3F) as u8;
+            return Some(());
+        }
         let val = if Self::video_held(addr) && len == 4 {
-            (val & 0x3F) | (u32::from(std::mem::take(&mut self.video_holding)) << 6)
+            (val & 0x3F) | (u32::from(std::mem::take(&mut self.memcjr_holding)) << 6)
         } else {
             val
         };
@@ -522,13 +564,12 @@ where
             0x0000_2000..=0x0000_3FFF => Some(Self::dev_read(addr, self.via2.read(addr))),
             // SCC
             0x0000_C000..=0x0000_DFFF => Some(Self::dev_read(addr, self.scc.read(addr >> 1))),
-            // MEMCjr: only the holding register does something known
-            0x0000_E07F => Some(self.video_holding),
-            // A read of the low bits of a RAM bank moves its upper bits to
-            // the holding register
-            0x0000_E007 | 0x0000_E00B | 0x0000_E00F | 0x0000_E013 | 0x0000_E017 => {
-                let reg = self.ram_banks[Self::ram_bank_reg(addr)];
-                self.video_holding = ((reg >> 6) & 0x3F) as u8;
+            // MEMCjr: it drives 6 bits, and a read of a register moves the
+            // upper bits to the holding register
+            0x0000_E07F => Some(self.memcjr_holding),
+            reg @ 0x0000_E000..=0x0000_E03F if reg & 3 == 3 => {
+                let reg = self.memcjr_regs[Self::memcjr_reg(addr)];
+                self.memcjr_holding = ((reg >> 6) & 0x3F) as u8;
                 Some((reg & 0x3F) as u8)
             }
             0x0000_E000..=0x0000_FFFF => Some(0),
@@ -556,15 +597,13 @@ where
             0x0000_2000..=0x0000_3FFF => Self::dev_write(addr, val, self.via2.write(addr, val)),
             // SCC
             0x0000_C000..=0x0000_DFFF => Self::dev_write(addr, val, self.scc.write(addr >> 1, val)),
-            // MEMCjr: only the holding register does something known
+            // MEMCjr
             0x0000_E07F => {
-                self.video_holding = val & 0x3F;
+                self.memcjr_holding = val & 0x3F;
                 Some(())
             }
-            0x0000_E007 | 0x0000_E00B | 0x0000_E00F | 0x0000_E013 | 0x0000_E017 => {
-                let holding = u16::from(std::mem::take(&mut self.video_holding));
-                self.ram_banks[Self::ram_bank_reg(addr)] = (holding << 6) | u16::from(val & 0x3F);
-                self.ram_map_update();
+            reg @ 0x0000_E000..=0x0000_E03F if reg & 3 == 3 => {
+                self.memcjr_write(Self::memcjr_reg(addr), val);
                 Some(())
             }
             0x0000_E000..=0x0000_FFFF => Some(()),
@@ -585,9 +624,28 @@ where
         }
     }
 
-    /// Number of the RAM bank of a MEMCjr register
-    fn ram_bank_reg(addr: Address) -> usize {
-        ((addr & Self::IO_MASK) as usize - 0xE004) / 4
+    /// Number of a MEMCjr register
+    fn memcjr_reg(addr: Address) -> usize {
+        ((addr & Self::IO_MASK) as usize - 0xE000) / 4
+    }
+
+    /// A write of a MEMCjr register, whose upper bits come from the holding
+    /// register
+    fn memcjr_write(&mut self, reg: usize, val: Byte) {
+        let holding = u16::from(std::mem::take(&mut self.memcjr_holding));
+        let val = (holding << 6) | u16::from(val & 0x3F);
+        match reg {
+            // Bank 0 always starts at 0
+            MEMCJR_BANK0 => self.memcjr_regs[reg] = val & !0x3FF,
+            // The other RAM banks
+            2..=5 => {
+                self.memcjr_regs[reg] = val;
+                self.ram_map_update();
+            }
+            // Read only
+            0 | 6..=10 | 15 => (),
+            _ => self.memcjr_regs[reg] = val,
+        }
     }
 
     /// Index of a PrimeTime register byte: the registers are 16 bits wide, one
@@ -997,8 +1055,8 @@ where
         self.scsi_dma_stalled = false;
         self.scsi_dma_done = 0;
         self.primetime_regs.fill(0);
-        self.video_holding = 0;
-        self.ram_banks = Self::RAM_BANKS_RESET;
+        self.memcjr_holding = 0;
+        self.memcjr_regs = MEMCJR_RESET;
         self.ram_map_update();
 
         self.mouse_ready = false;
@@ -1266,5 +1324,30 @@ mod tests {
         assert_eq!(bus.ram_index(0x0040_0000), Some(0x40_0000));
         assert_eq!(bus.ram_index(0x00BF_FFFF), Some(0xBF_FFFF));
         assert_eq!(bus.ram_index(0x00C0_0000), None);
+    }
+
+    #[test]
+    fn memcjr_registers() {
+        let mut bus = bus();
+        // Refresh interval, through the holding register, also at the video
+        bus.io_write_byte(0x5000_E07F, 0x05);
+        bus.io_write_byte(0x5000_E037, 0x2B);
+        assert_eq!(bus.io_read_byte(0x5000_E037), Some(0x2B));
+        assert_eq!(bus.video_read(0xF980_007C, 4), Some(0x05));
+        assert_eq!(bus.video_read(0xF980_017C, 4), Some(0x05));
+
+        // Read only: the version, a bank that doesn't exist
+        for reg in [0xE003, 0xE01B] {
+            let old = bus.io_read_byte(0x5000_0000 + reg);
+            bus.io_write_byte(0x5000_0000 + reg, 0x11);
+            assert_eq!(bus.io_read_byte(0x5000_0000 + reg), old);
+        }
+        assert_eq!(bus.io_read_byte(0x5000_E01B), Some(0x3F));
+
+        // Bank 0 keeps its base and takes the addressing mode
+        bus.io_write_byte(0x5000_E07F, 0x10);
+        bus.io_write_byte(0x5000_E007, 0x3F);
+        assert_eq!(bus.io_read_byte(0x5000_E007), Some(0));
+        assert_eq!(bus.io_read_byte(0x5000_E07F), Some(0x10));
     }
 }
