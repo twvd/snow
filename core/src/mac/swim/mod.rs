@@ -139,9 +139,11 @@ pub struct Swim {
     bit_cycles: Ticks,
     mode: SwimMode,
 
-    /// OVERCLOCK_ACCESS_INTERVAL_NS in native ticks
+    /// OVERCLOCK_ACCESS_INTERVAL_NS in ticks of the base frequency (native or
+    /// C16M ticks)
     access_interval: Ticks,
-    /// Native time of the last access by an overclocked CPU, after its hold
+    /// Time of the last access by an overclocked CPU, after its hold, in the
+    /// same ticks
     last_access: Ticks,
 
     pub ca0: bool,
@@ -287,7 +289,20 @@ impl Swim {
             return 0;
         }
         // After device_sync(), the clock is up to date when overclocking
-        let now = clock.native_ticks();
+        self.hold_at(clock.native_ticks())
+    }
+
+    /// The same as hold(), for a SWIM clocked by C16M: C16M ticks an access
+    /// is held for, called after device16_sync()
+    pub fn hold16(&mut self, clock: &NativeClock) -> Ticks {
+        if !clock.is_overclocking() {
+            return 0;
+        }
+        // After device16_sync(), the clock is up to date
+        self.hold_at(clock.c16m_ticks())
+    }
+
+    fn hold_at(&mut self, now: Ticks) -> Ticks {
         let hold = (self.last_access + self.access_interval).saturating_sub(now);
         self.last_access = now + hold;
         hold

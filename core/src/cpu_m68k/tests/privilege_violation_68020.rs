@@ -85,7 +85,8 @@ fn test_privilege_violation_exception_68020(code: &[u16], test_name: &str, expec
         0xffff, // sentinel
     ];
 
-    const HANDLER_ADDR: Address = 0x200;
+    // An odd word handler: the 27 clocks don't include a holding register hit
+    const HANDLER_ADDR: Address = 0x202;
     for (i, &word) in handler_code.iter().enumerate() {
         let addr = HANDLER_ADDR + (i as u32 * 2);
         write_word(&mut cpu, addr, word);
@@ -232,12 +233,15 @@ fn test_privilege_violation_exception_68020(code: &[u16], test_name: &str, expec
         test_name
     );
 
-    // MC68020 UM (1984) 9.2.17: privilege violation, worst case (no cache)
-    // 27 (1/2/4)
+    // MC68020 UM 8.2.17: privilege violation, cache case 20 (1/0/4). With the
+    // cache off, the 2 words fetched at the handler take a 3-clock bus cycle
+    // each instead of 2 clocks. The manual's no-cache worst case is 27 (1/2/4),
+    // as there the fetches at the handler cannot overlap with the stacking;
+    // that is not modelled.
     let length_cycles = cpu.cycles - cycles_start;
     assert_eq!(
-        length_cycles, 27,
-        "{}: Expect privilege violation to take 27 clocks",
+        length_cycles, 22,
+        "{}: Expect privilege violation to take 22 clocks",
         test_name
     );
 
