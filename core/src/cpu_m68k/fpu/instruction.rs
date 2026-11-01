@@ -24,6 +24,141 @@ impl From<FmoveControlReg> for Register {
     }
 }
 
+/// Opmodes of the FPU ALU operations
+pub(in crate::cpu_m68k) mod opmode {
+    /// Amount of distinct opmodes (7 bits)
+    pub(in crate::cpu_m68k) const COUNT: usize = 128;
+
+    macro_rules! opmodes {
+        ($($name:ident = $value:expr, $mnemonic:literal;)*) => {
+            $(pub(in crate::cpu_m68k) const $name: u8 = $value;)*
+
+            /// Mnemonic of an ALU opmode, for the disassembler
+            pub(in crate::cpu_m68k) fn mnemonic(opmode: u8) -> &'static str {
+                match opmode {
+                    $($name => $mnemonic,)*
+                    FSINCOS..=FSINCOS_LAST => "FSINCOS",
+                    _ => "F???",
+                }
+            }
+        };
+    }
+
+    /// FSINCOS, the low 3 bits are the cosine destination register
+    pub(in crate::cpu_m68k) const FSINCOS: u8 = 0b0110000;
+    pub(in crate::cpu_m68k) const FSINCOS_LAST: u8 = 0b0110111;
+
+    opmodes! {
+        FMOVE   = 0b0000000, "FMOVE";
+        FINT    = 0b0000001, "FINT";
+        FSINH   = 0b0000010, "FSINH";
+        FINTRZ  = 0b0000011, "FINTRZ";
+        FSQRT   = 0b0000100, "FSQRT";
+        FLOGNP1 = 0b0000110, "FLOGNP1";
+        FETOXM1 = 0b0001000, "FETOXM1";
+        FTANH   = 0b0001001, "FTANH";
+        FATAN   = 0b0001010, "FATAN";
+        FASIN   = 0b0001100, "FASIN";
+        FATANH  = 0b0001101, "FATANH";
+        FSIN    = 0b0001110, "FSIN";
+        FTAN    = 0b0001111, "FTAN";
+        FETOX   = 0b0010000, "FETOX";
+        FTWOTOX = 0b0010001, "FTWOTOX";
+        FTENTOX = 0b0010010, "FTENTOX";
+        FLOGN   = 0b0010100, "FLOGN";
+        FLOG10  = 0b0010101, "FLOG10";
+        FLOG2   = 0b0010110, "FLOG2";
+        FABS    = 0b0011000, "FABS";
+        FCOSH   = 0b0011001, "FCOSH";
+        FNEG    = 0b0011010, "FNEG";
+        FACOS   = 0b0011100, "FACOS";
+        FCOS    = 0b0011101, "FCOS";
+        FGETEXP = 0b0011110, "FGETEXP";
+        FGETMAN = 0b0011111, "FGETMAN";
+        FDIV    = 0b0100000, "FDIV";
+        FMOD    = 0b0100001, "FMOD";
+        FADD    = 0b0100010, "FADD";
+        FMUL    = 0b0100011, "FMUL";
+        FSGLDIV = 0b0100100, "FSGLDIV";
+        FREM    = 0b0100101, "FREM";
+        FSCALE  = 0b0100110, "FSCALE";
+        FSGLMUL = 0b0100111, "FSGLMUL";
+        FSUB    = 0b0101000, "FSUB";
+        FCMP    = 0b0111000, "FCMP";
+        FTST    = 0b0111010, "FTST";
+
+        // MC68040 only, rounded to single or double precision
+        FSMOVE  = 0b1000000, "FSMOVE";
+        FSSQRT  = 0b1000001, "FSSQRT";
+        FDMOVE  = 0b1000100, "FDMOVE";
+        FDSQRT  = 0b1000101, "FDSQRT";
+        FSABS   = 0b1011000, "FSABS";
+        FSNEG   = 0b1011010, "FSNEG";
+        FDABS   = 0b1011100, "FDABS";
+        FDNEG   = 0b1011110, "FDNEG";
+        FSDIV   = 0b1100000, "FSDIV";
+        FSADD   = 0b1100010, "FSADD";
+        FSMUL   = 0b1100011, "FSMUL";
+        FDDIV   = 0b1100100, "FDDIV";
+        FDADD   = 0b1100110, "FDADD";
+        FDMUL   = 0b1100111, "FDMUL";
+        FSSUB   = 0b1101000, "FSSUB";
+        FDSUB   = 0b1101100, "FDSUB";
+    }
+
+    /// Tests if the MC68040 runs `opmode` in hardware: the others take the
+    /// unimplemented floating-point instruction exception (MC68040UM
+    /// table 9-10)
+    pub(in crate::cpu_m68k) const fn implemented_040(opmode: u8) -> bool {
+        !matches!(
+            opmode,
+            FINT | FSINH
+                | FINTRZ
+                | FLOGNP1
+                | FETOXM1
+                | FTANH
+                | FATAN
+                | FASIN
+                | FATANH
+                | FSIN
+                | FTAN
+                | FETOX
+                | FTWOTOX
+                | FTENTOX
+                | FLOGN
+                | FLOG10
+                | FLOG2
+                | FCOSH
+                | FACOS
+                | FCOS
+                | FGETEXP
+                | FGETMAN
+                | FMOD
+                | FREM
+                | FSCALE
+                | FSINCOS..=FSINCOS_LAST
+        )
+    }
+
+    /// For the single and double precision rounded opmodes of the MC68040:
+    /// the operation and whether it rounds to double precision
+    pub(in crate::cpu_m68k) fn rounded(opmode: u8) -> Option<(u8, bool)> {
+        let double = opmode & 0b0000100 != 0;
+        let op = match opmode {
+            FSMOVE | FDMOVE => FMOVE,
+            FSSQRT | FDSQRT => FSQRT,
+            FSABS | FDABS => FABS,
+            FSNEG | FDNEG => FNEG,
+            FSDIV | FDDIV => FDIV,
+            FSADD | FDADD => FADD,
+            FSMUL | FDMUL => FMUL,
+            FSSUB | FDSUB => FSUB,
+            _ => return None,
+        };
+        Some((op, double))
+    }
+}
+
 bitfield! {
     /// FMOVE extension word
     #[derive(Clone, Copy, PartialEq, Eq, Default)]

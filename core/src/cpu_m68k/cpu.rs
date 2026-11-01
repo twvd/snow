@@ -1,7 +1,7 @@
 use crate::cpu_m68k::FpuM68kType;
 use std::collections::VecDeque;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use arrayvec::ArrayVec;
 use either::Either;
 use log::*;
@@ -16,7 +16,10 @@ use crate::cpu_m68k::fpu::regs::FpuRegisterFile;
 use crate::cpu_m68k::pmmu::regs::PmmuRegisterFile;
 use crate::cpu_m68k::pmmu::translate::atc_generation_default;
 use crate::cpu_m68k::regs::RegisterCACR;
-use crate::cpu_m68k::{M68000_SR_MASK, M68020_CACR_MASK, M68030, M68030_CACR_MASK};
+use crate::cpu_m68k::{
+    M68000_SR_MASK, M68020_CACR_MASK, M68030, M68030_CACR_MASK, M68040, M68040_CACR_MASK,
+    M68040_SR_MASK,
+};
 use crate::tickable::{Tickable, Ticks};
 use crate::types::{Byte, LatchingEvent, Long, Word};
 
@@ -71,6 +74,20 @@ pub(in crate::cpu_m68k) struct Group0Details {
     pub(in crate::cpu_m68k) ir: Word,
     pub(in crate::cpu_m68k) start_pc: Address,
     pub(in crate::cpu_m68k) size: usize,
+    /// M68040 only (MMU page fault)
+    pub(in crate::cpu_m68k) atc_fault: bool,
+}
+
+/// M68040: a faulted data write waiting in a write-back slot for the access
+/// error handler to complete it (M68040UM 8.4.6)
+#[derive(Debug, Clone, Copy)]
+pub(in crate::cpu_m68k) struct WriteBack040 {
+    pub(in crate::cpu_m68k) details: Group0Details,
+    pub(in crate::cpu_m68k) data: Long,
+    /// The fault is in the second page of a misaligned write
+    pub(in crate::cpu_m68k) ma: bool,
+    /// A trace exception is pending for the instruction
+    pub(in crate::cpu_m68k) trace: bool,
 }
 
 /// An entry in the instruction prefetch queue.
@@ -232,6 +249,35 @@ bitfield! {
     }
 }
 
+bitfield! {
+    /// M68040 access error stack frame Special Status Word
+    #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+    pub struct Ssw040(pub Word): Debug, FromStorage, IntoStorage, DerefStorage {
+        /// Transfer modifier (function code)
+        pub tm: u8 @ 0..=2,
+        /// Transfer type (0 = normal)
+        pub tt: u8 @ 3..=4,
+        /// Transfer size (0 = long, 1 = byte, 2 = word, 3 = line)
+        pub size: u8 @ 5..=6,
+        /// Read (1) / write (0)
+        pub rw: bool @ 8,
+        /// Locked transfer
+        pub lk: bool @ 9,
+        /// Fault from the ATC rather than from the bus
+        pub atc: bool @ 10,
+        /// Misaligned access
+        pub ma: bool @ 11,
+        /// Continuation: MOVEM
+        pub cm: bool @ 12,
+        /// Continuation: trace
+        pub ct: bool @ 13,
+        /// Continuation: unimplemented floating point
+        pub cu: bool @ 14,
+        /// Continuation: floating point post-instruction
+        pub cp: bool @ 15,
+    }
+}
+
 // Exception vectors
 /// Stack pointer initialization
 pub const VECTOR_SP: Address = 0x00000000;
@@ -381,6 +427,11 @@ pub struct CpuM68k<
     #[serde(skip)]
     step_start_pc: Address,
 
+    /// The F-line exception raised this step is the MC68040 unimplemented
+    /// floating-point instruction exception
+    #[serde(skip)]
+    pub(in crate::cpu_m68k) step_fpu_unimp: bool,
+
     /// External address/data bus
     pub bus: TBus,
 
@@ -468,6 +519,15 @@ pub struct CpuM68k<
     /// bus fault.
     pub(in crate::cpu_m68k) restart_regs: Option<RestartRegisterFile>,
 
+    /// M68040: data writes of the current instruction may fault into a
+    /// write-back slot instead of aborting the instruction
+    #[serde(skip)]
+    pub(in crate::cpu_m68k) wb040_defer: bool,
+
+    /// M68040: faulted write of the current instruction
+    #[serde(skip)]
+    pub(in crate::cpu_m68k) wb040: Option<WriteBack040>,
+
     /// NMI edge trigger level
     in_nmi: bool,
 }
@@ -486,7 +546,7 @@ where
     pub const HISTORY_SIZE: usize = 10000;
 
     pub fn new(bus: TBus) -> Self {
-        assert!([M68000, M68020, M68030].contains(&CPU_TYPE));
+        assert!([M68000, M68020, M68030, M68040].contains(&CPU_TYPE));
 
         Self {
             bus,
@@ -498,6 +558,7 @@ where
             step_exception: false,
             step_inhibit_trace: false,
             step_start_pc: 0,
+            step_fpu_unimp: false,
             step_ea_load: None,
             decode_cache: empty_decode_cache(),
             trace_mask: false,
@@ -514,6 +575,8 @@ where
             icache_lines: core::array::from_fn(|_| Default::default()),
             icache_tags: [ICACHE_TAG_INVALID; ICACHE_LINES],
             restart_regs: None,
+            wb040_defer: false,
+            wb040: None,
             in_nmi: false,
         }
     }
@@ -627,6 +690,7 @@ where
                     function_code: self.fc_program(),
                     ir: 0,
                     size: std::mem::size_of::<Word>(),
+                    atc_fault: false,
                     instruction: true,
                     read: true,
                     address: fetch_addr,
@@ -718,6 +782,7 @@ where
                 function_code: self.fc_program(),
                 ir: 0,
                 size: std::mem::size_of::<Word>(),
+                atc_fault: false,
                 instruction: true,
                 read: true,
                 address,
@@ -826,7 +891,26 @@ where
         }
 
         let instr = self.decode_cache[opcode as usize].clone().unwrap();
+        // The M68040 restarts MOVEM and MOVE16, and faults the read-modify-write
+        // instructions on their read (M68040UM 8.4.6)
+        self.wb040_defer = CPU_TYPE == M68040
+            && !matches!(
+                instr.mnemonic,
+                InstructionMnemonic::MOVEM_mem_w
+                    | InstructionMnemonic::MOVEM_mem_l
+                    | InstructionMnemonic::MOVE16_inc
+                    | InstructionMnemonic::MOVE16_abs
+                    | InstructionMnemonic::TAS
+                    | InstructionMnemonic::CAS_b
+                    | InstructionMnemonic::CAS_w
+                    | InstructionMnemonic::CAS_l
+            );
         let execute_result = self.execute_instruction(&instr);
+        self.wb040_defer = false;
+        if execute_result.is_err() {
+            // The instruction restarts and writes again
+            self.wb040 = None;
+        }
 
         // Write history entry
         // This is done here already in case the instruction caused an
@@ -922,6 +1006,16 @@ where
         };
 
         self.prefetch_refill()?;
+
+        if let Some(wb) = self.wb040.as_mut() {
+            // The instruction completed with a faulted write, the access error
+            // returns after it and carries the pending trace.
+            wb.trace = trace_exception && !self.step_inhibit_trace;
+            let mut details = wb.details;
+            details.ir = instr.data;
+            details.start_pc = start_pc;
+            self.raise_exception(ExceptionGroup::Group0, VECTOR_BUS_ERROR, Some(details))?;
+        }
 
         // Check pending trace
         if trace_exception && !self.step_inhibit_trace {
@@ -1031,6 +1125,7 @@ where
             M68000 => sr & M68000_SR_MASK,
             M68020 => sr & M68020_SR_MASK,
             M68030 => sr & M68030_SR_MASK,
+            M68040 => sr & M68040_SR_MASK,
             _ => unreachable!(),
         });
     }
@@ -1148,6 +1243,9 @@ where
         let start_cycles = self.cycles;
         let mut saved_sr = self.regs.sr.sr();
 
+        // Stacking faults are not deferred
+        self.wb040_defer = false;
+
         // Resume in supervisor mode
         self.regs.sr.set_supervisor(true);
         self.regs.sr.set_trace(false);
@@ -1166,6 +1264,128 @@ where
                 let details = details.expect("Address error details not passed");
 
                 match CPU_TYPE {
+                    M68040 if vector == VECTOR_ADDRESS_ERROR => {
+                        if let Some(regs) = self.restart_regs.take() {
+                            saved_sr = regs.sr.sr();
+                            regs.restore(&mut self.regs);
+                            self.regs.sr.set_supervisor(true);
+                            self.regs.sr.set_trace(false);
+                        } else {
+                            log::error!(
+                                "Cannot reset registers for stacking an address error frame"
+                            );
+                        }
+
+                        // Six word stack frame (format $2) with the address,
+                        // bit 0 cleared (M68040UM 8.4.6.7)
+                        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(12);
+                        let ssp = *self.regs.ssp();
+                        self.write_ticks(ssp.wrapping_add(0), saved_sr)?;
+                        self.write_ticks(ssp.wrapping_add(2), details.start_pc)?;
+                        self.write_ticks(
+                            ssp.wrapping_add(6),
+                            0b0010_0000_0000_0000 | (vector as u16),
+                        )?;
+                        self.write_ticks(ssp.wrapping_add(8), details.address & !1)?;
+                    }
+                    M68040 => {
+                        // A faulted write of a completed instruction waits in a
+                        // write-back slot for the handler, which returns after
+                        // the instruction. Other faults restart the instruction.
+                        let wb = self.wb040.take();
+                        let pc = if wb.is_some() {
+                            self.regs.pc
+                        } else {
+                            if let Some(regs) = self.restart_regs.take() {
+                                saved_sr = regs.sr.sr();
+                                regs.restore(&mut self.regs);
+                                self.regs.sr.set_supervisor(true);
+                                self.regs.sr.set_trace(false);
+                            } else {
+                                log::error!(
+                                    "Cannot reset registers for stacking an access error frame"
+                                );
+                            }
+                            details.start_pc
+                        };
+                        let trace = wb.is_some_and(|wb| wb.trace);
+                        let size: u16 = match details.size {
+                            1 => 0b01,
+                            2 => 0b10,
+                            16 => 0b11,
+                            // Long, and the default when the size is
+                            // not known (MMU faults)
+                            _ => 0b00,
+                        };
+
+                        // Access error stack frame (format $7), M68040UM 8.4.6.
+                        *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(0x3C);
+                        let ssp = *self.regs.ssp();
+
+                        self.write_ticks(ssp.wrapping_add(0x00), saved_sr)?;
+                        self.write_ticks(ssp.wrapping_add(0x02), pc)?;
+                        self.write_ticks(
+                            ssp.wrapping_add(0x06),
+                            0b0111_0000_0000_0000 | (vector as u16),
+                        )?;
+                        // Effective address: the traced instruction with a
+                        // pending trace, else the faulted access
+                        self.write_ticks(
+                            ssp.wrapping_add(0x08),
+                            if trace {
+                                details.start_pc
+                            } else {
+                                details.address
+                            },
+                        )?;
+                        // Special status word
+                        self.write_ticks(
+                            ssp.wrapping_add(0x0C),
+                            *Ssw040::default()
+                                .with_tm(details.function_code)
+                                // A 16-byte operand is a MOVE16 line transfer,
+                                // except a cache push, which reports as a write
+                                // with TM=0, TT=0 (MC68040UM 8.4.6)
+                                .with_tt(u8::from(details.size == 16 && details.function_code != 0))
+                                .with_rw(details.read)
+                                .with_atc(details.atc_fault)
+                                .with_ma(wb.is_some_and(|wb| wb.ma))
+                                .with_ct(trace)
+                                .with_size(size as u8),
+                        )?;
+
+                        // Write-back slots, WB3 to WB1: status, address, data.
+                        // WB2 holds a write the MMU faulted (register aligned
+                        // data), WB1 one faulted on the bus (data on its byte
+                        // lanes, M68040UM table 8-5).
+                        let mut slots = [(0u16, 0u32, 0u32); 3];
+                        if let Some(wb) = wb {
+                            let status = 0x80 | (size << 5) | u16::from(details.function_code);
+                            slots[if details.atc_fault { 1 } else { 2 }] = (
+                                status,
+                                details.address,
+                                if details.atc_fault {
+                                    wb.data
+                                } else {
+                                    (wb.data << (32 - 8 * details.size as u32))
+                                        .rotate_right(8 * (details.address & 3))
+                                },
+                            );
+                        }
+                        for (i, &(status, _, _)) in slots.iter().enumerate() {
+                            self.write_ticks(ssp.wrapping_add(0x0E + 2 * i as Address), status)?;
+                        }
+                        // Fault address
+                        self.write_ticks(ssp.wrapping_add(0x14), details.address)?;
+                        for (i, &(_, addr, data)) in slots.iter().enumerate() {
+                            self.write_ticks(ssp.wrapping_add(0x18 + 8 * i as Address), addr)?;
+                            self.write_ticks(ssp.wrapping_add(0x1C + 8 * i as Address), data)?;
+                        }
+                        // Push data, long words 1 to 3
+                        for offset in (0x30..0x3C).step_by(4) {
+                            self.write_ticks(ssp.wrapping_add(offset), 0u32)?;
+                        }
+                    }
                     M68000 => {
                         *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(14);
                         self.write_ticks(self.regs.ssp().wrapping_add(12), self.regs.pc as u16)?;
@@ -1298,23 +1518,28 @@ where
                 //);
 
                 let pc = self.regs.pc;
-                match CPU_TYPE {
-                    M68000 => {
+                // The address of the six word frame (format $2): of the
+                // instruction that caused the exception (M68030UM table 8-6,
+                // M68040UM 8.4.3), or the calculated effective address for an
+                // unimplemented floating-point instruction (M68040UM 9.6.1).
+                // TRAPcc and cpTRAPcc share the TRAPV vector, CHK2 the CHK one.
+                let fpu_unimp = std::mem::take(&mut self.step_fpu_unimp);
+                let six_word = match vector {
+                    _ if CPU_TYPE < M68020 => None,
+                    VECTOR_DIV_ZERO | VECTOR_CHK | VECTOR_TRAPV | VECTOR_TRACE => {
+                        Some(self.step_start_pc)
+                    }
+                    VECTOR_LINEF if fpu_unimp => Some(self.step_ea_addr.unwrap_or(0)),
+                    _ => None,
+                };
+                match (CPU_TYPE, six_word) {
+                    (M68000, _) => {
                         *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(6);
                         self.write_ticks(self.regs.ssp().wrapping_add(4), pc as u16)?;
                         self.write_ticks(self.regs.ssp().wrapping_add(0), saved_sr)?;
                         self.write_ticks(self.regs.ssp().wrapping_add(2), (pc >> 16) as u16)?;
                     }
-                    M68020..
-                        if matches!(
-                            vector,
-                            VECTOR_DIV_ZERO | VECTOR_CHK | VECTOR_TRAPV | VECTOR_TRACE
-                        ) =>
-                    {
-                        // Six word frame (format $2) with the address of the
-                        // instruction that caused the exception (M68030UM
-                        // table 8-6, M68040UM 8.4.3). TRAPcc and cpTRAPcc share
-                        // the TRAPV vector, CHK2 the CHK one.
+                    (_, Some(address)) => {
                         *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(12);
                         let ssp = *self.regs.ssp();
                         self.write_ticks(ssp.wrapping_add(0), saved_sr)?;
@@ -1323,7 +1548,7 @@ where
                             ssp.wrapping_add(6),
                             0b0010_0000_0000_0000 | (vector as u16),
                         )?;
-                        self.write_ticks(ssp.wrapping_add(8), self.step_start_pc)?;
+                        self.write_ticks(ssp.wrapping_add(8), address)?;
                     }
                     _ => {
                         *self.regs.ssp_mut() = self.regs.ssp().wrapping_sub(8);
@@ -1459,6 +1684,11 @@ where
             InstructionMnemonic::DIVU_w => self.op_divu(instr),
             InstructionMnemonic::DIVS_w => self.op_divs(instr),
             InstructionMnemonic::NOP => Ok(()),
+            InstructionMnemonic::MOVE16_inc => self.op_move16_inc(instr),
+            InstructionMnemonic::MOVE16_abs => self.op_move16_abs(instr),
+            InstructionMnemonic::CINV | InstructionMnemonic::CPUSH => self.op_cxxx(instr),
+            InstructionMnemonic::PFLUSH040 => self.op_pflush040(),
+            InstructionMnemonic::PTEST040 => self.op_ptest040(instr),
             InstructionMnemonic::SWAP => self.op_swap(instr),
             InstructionMnemonic::TRAP => self.op_trap(instr),
             InstructionMnemonic::BTST_imm => self.op_bit::<true>(instr, None),
@@ -2833,10 +3063,22 @@ where
         Ok(())
     }
 
+    /// What LINK pushes for the address register `reg`, given the decremented
+    /// stack pointer. A 68LC040 was seen to push the decremented value for LINK
+    /// A7, in the order of the manual's operation (SP - 4 -> SP, An -> (SP)). Up to
+    /// the 68030 this keeps the old value, as in the 68000 data from MAME's microcode.
+    fn link_value(&self, reg: usize, sp: Address) -> Address {
+        if CPU_TYPE >= M68040 && reg == 7 {
+            sp
+        } else {
+            self.regs.read_a(reg)
+        }
+    }
+
     /// LINK.w
     fn op_link_w(&mut self, instr: &Instruction) -> Result<()> {
         let sp = self.regs.read_a::<Address>(7).wrapping_sub(4);
-        let addr = self.regs.read_a::<Address>(instr.get_op2());
+        let addr = self.link_value(instr.get_op2(), sp);
 
         instr.fetch_extword(|| self.fetch_pump())?;
 
@@ -2852,7 +3094,7 @@ where
     /// LINK.l
     fn op_link_l(&mut self, instr: &Instruction) -> Result<()> {
         let sp = self.regs.read_a::<Address>(7).wrapping_sub(4);
-        let addr = self.regs.read_a::<Address>(instr.get_op2());
+        let addr = self.link_value(instr.get_op2(), sp);
 
         let displacement = {
             let msb = self.fetch_pump()? as Long;
@@ -2984,6 +3226,42 @@ where
                 let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
                 let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
                 *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(92);
+                self.set_sr(sr);
+                self.set_pc(pc)?;
+            }
+            0b0111
+                if CPU_TYPE >= M68040 && Ssw040(self.read_ticks(ssp.wrapping_add(0x0C))?).ct() =>
+            {
+                // M68040 access error with a pending trace: the frame becomes
+                // the format $2 frame of the trace exception (M68040UM 8.4.6.2)
+                let sr = self.read_ticks::<Word>(ssp.wrapping_add(0))?;
+                let pc = self.read_ticks::<Long>(ssp.wrapping_add(2))?;
+                let ea = self.read_ticks::<Long>(ssp.wrapping_add(8))?;
+                let ssp = ssp.wrapping_add(0x30);
+                *self.regs.ssp_mut() = ssp;
+                self.write_ticks(ssp.wrapping_add(0), sr)?;
+                self.write_ticks(ssp.wrapping_add(2), pc)?;
+                self.write_ticks(
+                    ssp.wrapping_add(6),
+                    0b0010_0000_0000_0000 | VECTOR_TRACE as u16,
+                )?;
+                self.write_ticks(ssp.wrapping_add(8), ea)?;
+                let new_pc = self.read_ticks::<Long>(self.regs.vbr.wrapping_add(VECTOR_TRACE))?;
+                self.set_pc(new_pc)?;
+            }
+            0b0011 if CPU_TYPE >= M68040 => {
+                // M68040 floating-point post-instruction, six words (M68040UM 8.4.4)
+                let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
+                let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(12);
+                self.set_sr(sr);
+                self.set_pc(pc)?;
+            }
+            0b0111 if CPU_TYPE >= M68040 => {
+                // M68040 access error
+                let sr = self.read_ticks::<Word>(self.regs.ssp().wrapping_add(0))?;
+                let pc = self.read_ticks(self.regs.ssp().wrapping_add(2))?;
+                *self.regs.ssp_mut() = self.regs.ssp().wrapping_add(0x3C);
                 self.set_sr(sr);
                 self.set_pc(pc)?;
             }
@@ -3444,6 +3722,124 @@ where
         Ok(())
     }
 
+    /// Transfers one 16-byte line from one physical address to another (MOVE16)
+    fn move16_transfer(&mut self, src: Address, dest: Address) -> Result<()> {
+        // The low four address bits are ignored: the transfer is always of an
+        // aligned 16-byte line.
+        let (src_line, dest_line) = (src & !0xF, dest & !0xF);
+
+        // The whole line is read before any of it is written
+        let mut line = [0; 4];
+        for (i, value) in line.iter_mut().enumerate() {
+            *value = self
+                .read_ticks::<Long>(src_line.wrapping_add(4 * i as Address))
+                .map_err(|e| Self::move16_fault(e, src))?;
+        }
+        for (i, &value) in line.iter().enumerate() {
+            self.write_ticks::<Long>(dest_line.wrapping_add(4 * i as Address), value)
+                .map_err(|e| Self::move16_fault(e, dest))?;
+        }
+
+        Ok(())
+    }
+
+    /// A MOVE16 access faults as a whole line, at the address the
+    /// instruction gave (M68040UM 8.4.6.4)
+    fn move16_fault(e: anyhow::Error, addr: Address) -> anyhow::Error {
+        match e.downcast_ref() {
+            Some(CpuError::BusError(details)) => anyhow!(CpuError::BusError(Group0Details {
+                size: 16,
+                address: addr,
+                ..*details
+            })),
+            _ => e,
+        }
+    }
+
+    /// MOVE16 (Ax)+,(Ay)+
+    fn op_move16_inc(&mut self, instr: &Instruction) -> Result<()> {
+        instr.fetch_extword(|| self.fetch())?;
+
+        let ax = instr.get_op2();
+        let ay = usize::from((u16::from(instr.get_extword()) >> 12) & 0b111);
+        let src = self.regs.read_a::<Address>(ax);
+        let dest = self.regs.read_a::<Address>(ay);
+
+        self.prefetch_pump()?;
+        self.move16_transfer(src, dest)?;
+
+        // Both registers are incremented by 16, but if they are the same
+        // register it is only incremented once.
+        self.regs.write_a(ax, src.wrapping_add(16));
+        if ax != ay {
+            self.regs.write_a(ay, dest.wrapping_add(16));
+        }
+
+        Ok(())
+    }
+
+    /// MOVE16 (absolute modes)
+    fn op_move16_abs(&mut self, instr: &Instruction) -> Result<()> {
+        let to_absolute = instr.data & (1 << 3) == 0;
+        let postinc = instr.data & (1 << 4) == 0;
+
+        let an = instr.get_op2();
+        let anaddr = self.regs.read_a::<Address>(an);
+        let absaddr = ((self.fetch_pump()? as Address) << 16) | self.fetch_pump()? as Address;
+
+        self.prefetch_pump()?;
+        if to_absolute {
+            self.move16_transfer(anaddr, absaddr)?;
+        } else {
+            self.move16_transfer(absaddr, anaddr)?;
+        }
+
+        if postinc {
+            self.regs.write_a(an, anaddr.wrapping_add(16));
+        }
+
+        Ok(())
+    }
+
+    /// CINV/CPUSH
+    fn op_cxxx(&mut self, instr: &Instruction) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            return self.raise_privilege_violation();
+        }
+
+        // Cache field: 01 = data, 10 = instruction, 11 = both
+        if instr.data & (1 << 7) != 0 {
+            self.icache_tags.fill(ICACHE_TAG_INVALID);
+        }
+        // TODO data cache
+
+        Ok(())
+    }
+
+    /// PFLUSH/PFLUSHN/PFLUSHA/PFLUSHAN (M68040)
+    fn op_pflush040(&mut self) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            return self.raise_privilege_violation();
+        }
+
+        // Just conservatively flush the entire ATC
+        // TODO targetted flushing (I dont think it matters on the Mac)
+        self.pmmu_cache_invalidate();
+        Ok(())
+    }
+
+    /// PTESTR/PTESTW (M68040)
+    fn op_ptest040(&mut self, instr: &Instruction) -> Result<()> {
+        if !self.regs.sr.supervisor() {
+            return self.raise_privilege_violation();
+        }
+
+        // The address space to search comes from DFC, the address from An.
+        let fc = (self.regs.dfc & 0b111) as u8;
+        let vaddr = self.regs.read_a::<Address>(instr.get_op2());
+        self.mmu040_ptest(fc, vaddr)
+    }
+
     /// MOVEC
     fn op_movec(&mut self, instr: &Instruction) -> Result<()> {
         // Bus access and cycles are an approximation based on UM/PRM
@@ -3455,19 +3851,25 @@ where
             return self.raise_privilege_violation();
         }
 
+        let ctrlreg = match instr.movec_ctrlreg() {
+            Ok(reg) if reg.exists_on(CPU_TYPE) => reg,
+            _ => return self.raise_illegal_instruction(),
+        };
+
         if instr.movec_ctrl_to_gen() {
-            let val = self.regs.read::<Long>(instr.movec_ctrlreg()?.into());
+            let val = self.regs.read::<Long>(ctrlreg.into());
             self.regs.write(instr.movec_reg(), val);
             self.advance_cycles(4)?;
         } else {
             let val = self.regs.read::<Long>(instr.movec_reg());
-            let destreg: Register = instr.movec_ctrlreg()?.into();
+            let destreg: Register = ctrlreg.into();
 
             if destreg == Register::CACR {
                 // Cache operations
                 let mask = match CPU_TYPE {
                     M68020 => M68020_CACR_MASK,
                     M68030 => M68030_CACR_MASK,
+                    M68040 => M68040_CACR_MASK,
                     _ => unreachable!(),
                 };
                 let val = RegisterCACR(val);
@@ -3489,6 +3891,16 @@ where
                     .write(destreg, val.with_c(false).with_ce(false).0 & mask);
             } else {
                 self.regs.write(destreg, val);
+
+                if CPU_TYPE >= M68040
+                    && matches!(
+                        destreg,
+                        Register::TC040 | Register::SRP040 | Register::URP040
+                    )
+                {
+                    self.pmmu_cache_invalidate();
+                    self.pmmu_cache_ensure();
+                }
             }
             self.advance_cycles(2)?;
         }
@@ -3510,6 +3922,7 @@ where
                 instruction: false,
                 read,
                 address: addr,
+                atc_fault: false,
                 // Filled in later
                 start_pc: 0,
             }));
