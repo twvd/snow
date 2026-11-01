@@ -996,12 +996,10 @@ where
         if addr >= 0x80_0000 {
             return None;
         }
-        self.end_overlay(addr, false);
         let val = match self.map[usize::from(self.overlay)][(addr >> MAP_BLOCK_SHIFT) as usize] {
             Region::Ram | Region::RamOverlay => self.ram_read(addr, 1),
             Region::Rom => self.rom_read(addr, 1),
             Region::OpenBus => self.openbus_read(addr, 1),
-            Region::Scsi => self.scsi_read(addr, 1),
             _ => None,
         };
         val.map(|v| v as Byte)
@@ -1012,12 +1010,10 @@ where
         if addr >= 0x80_0000 {
             return None;
         }
-        self.end_overlay(addr, true);
         let val = val.into();
         match self.map[usize::from(self.overlay)][(addr >> MAP_BLOCK_SHIFT) as usize] {
             Region::Ram => self.ram_write(addr, 1, val),
             Region::RamOverlay => self.ram_write_overlay(addr, 1, val),
-            Region::Scsi => self.scsi_write(addr, 1, val),
             _ => None,
         }
     }

@@ -859,7 +859,6 @@ where
         if addr >= 0x00F0_0000 {
             return None;
         }
-        self.end_overlay(addr);
         self.read_byte(self.region(addr), addr)
     }
 
@@ -867,7 +866,6 @@ where
         if addr >= 0x00F0_0000 {
             return None;
         }
-        self.end_overlay(addr);
         self.write_byte(self.region(addr), addr, val)
     }
 }
