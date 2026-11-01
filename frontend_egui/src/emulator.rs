@@ -28,7 +28,7 @@ use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::{SerialBridgeConfig, SerialBridgeStatus};
 use snow_core::mac::swim::drive::DriveType;
-use snow_core::mac::{ExtraROMs, MacModel, MacMonitor, NubusDeviceKind};
+use snow_core::mac::{ExtraROMs, MacModel, MacMonitor, NubusDeviceKind, PdsCardKind};
 use snow_core::renderer::DisplayBuffer;
 use snow_core::tickable::{Tickable, Ticks};
 use snow_core::types::LatchingEvent;
@@ -113,15 +113,15 @@ pub struct EmulatorInitArgs {
     /// Configured video RAM size or default if None (Macintosh LC only)
     pub vram_size: Option<usize>,
 
-    /// Install the Apple IIe Card in the PDS slot (Macintosh LC family)
-    pub iie_card: bool,
+    /// Card in the PDS slot (Macintosh LC family)
+    pub pds_card: PdsCardKind,
 
-    /// Apple IIe Card settings (used if `iie_card` is set)
+    /// Apple IIe Card settings (used if it is in the PDS slot)
     pub iie_card_settings: IieCardSettings,
 
     /// Apple IIe Card controller emulation: the IIe always has a
-    /// joystick, and host keys can drive it (used if `iie_card` is set;
-    /// on by default)
+    /// joystick, and host keys can drive it (used if it is in the PDS
+    /// slot; on by default)
     pub iie_joystick_emulation: bool,
 
     /// Selected NuBus video card (if applicable)
@@ -144,7 +144,7 @@ impl Default for EmulatorInitArgs {
             pmmu_enabled: Default::default(),
             fpu_enabled: Default::default(),
             vram_size: Default::default(),
-            iie_card: Default::default(),
+            pds_card: Default::default(),
             iie_card_settings: Default::default(),
             iie_joystick_emulation: true,
             video_card: Default::default(),
@@ -285,7 +285,7 @@ impl EmulatorState {
             args.mouse_mode
         };
         self.mouse_mode = mouse_mode;
-        self.iie_card = args.iie_card.then_some(args.iie_card_settings);
+        self.iie_card = (args.pds_card == PdsCardKind::AppleIIe).then_some(args.iie_card_settings);
 
         let (mut emulator, frame_recv) = Emulator::new_with_extra(
             rom,

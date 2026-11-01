@@ -12,7 +12,7 @@ use snow_core::emulator::MouseMode;
 use snow_core::mac::maclc::pds_iie::IieDiskDevice;
 use snow_core::mac::maclc::video as lc_video;
 use snow_core::mac::swim::drive::DriveType;
-use snow_core::mac::{MacModel, MacMonitor, NubusDeviceKind};
+use snow_core::mac::{MacModel, MacMonitor, NubusDeviceKind, PdsCardKind};
 use strum::IntoEnumIterator;
 
 /// Video cards selectable for NuBus-equipped models.
@@ -626,15 +626,45 @@ impl ModelSelectionDialog {
                     ui.end_row();
 
                     ui.checkbox(&mut self.init_args.fpu_enabled, "Enable 68882 FPU");
+                    // The LC and LC II have no FPU socket on the board, a 68882
+                    // can only sit on a card in their one PDS slot
+                    if self.init_args.fpu_enabled
+                        && self.init_args.pds_card != PdsCardKind::None
+                        && matches!(self.selected_model, MacModel::LC | MacModel::LCII)
+                    {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} A real Mac LC cannot have a 68882 with this card installed",
+                                egui_material_icons::icons::ICON_WARNING
+                            ))
+                            .color(ui.visuals().warn_fg_color),
+                        );
+                    }
                     ui.end_row();
 
-                    ui.checkbox(&mut self.init_args.iie_card, "Install Apple IIe Card");
-                    if ui
-                        .add_enabled(self.init_args.iie_card, egui::Button::new("Settings..."))
-                        .clicked()
-                    {
-                        self.iie_settings_open = true;
-                    }
+                    ui.label("PDS Slot");
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::new(egui::Id::new("Select PDS card"), "")
+                            .selected_text(format!("{}", self.init_args.pds_card))
+                            .show_ui(ui, |ui| {
+                                for card in PdsCardKind::iter() {
+                                    ui.selectable_value(
+                                        &mut self.init_args.pds_card,
+                                        card,
+                                        card.to_string(),
+                                    );
+                                }
+                            });
+                        if ui
+                            .add_enabled(
+                                self.init_args.pds_card == PdsCardKind::AppleIIe,
+                                egui::Button::new("Settings..."),
+                            )
+                            .clicked()
+                        {
+                            self.iie_settings_open = true;
+                        }
+                    });
                     ui.end_row();
                 }
                 if matches!(self.selected_model, MacModel::MacII | MacModel::MacIIFDHD) {
@@ -798,7 +828,7 @@ impl ModelSelectionDialog {
                         ) {
                             self.init_args.fpu_enabled = false;
                             self.init_args.vram_size = None;
-                            self.init_args.iie_card = false;
+                            self.init_args.pds_card = PdsCardKind::None;
                         }
 
                         self.result = Some(ModelSelectionResult {

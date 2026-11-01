@@ -24,10 +24,10 @@ use snow_core::bus::Address;
 use snow_core::emulator::MouseMode;
 use snow_core::emulator::comm::{EmulatorSpeed, UserMessageType};
 use snow_core::emulator::save::{SaveHeader, load_state_header};
-use snow_core::mac::MacModel;
 use snow_core::mac::scc::SccCh;
 use snow_core::mac::scsi::target::ScsiTargetType;
 use snow_core::mac::serial_bridge::SerialBridgeConfig;
+use snow_core::mac::{MacModel, PdsCardKind};
 use snow_floppy::loaders::{FloppyImageLoader, FloppyImageSaver, ImageType};
 use snow_floppy::{Floppy, FloppyImage, FloppyType, OriginalTrackType};
 
@@ -2796,7 +2796,7 @@ impl SnowGui {
             Err(e) => self.show_error(&format!("Failed to load ROM file: {}", e)),
         }
 
-        self.iie_joystick = args.iie_card.then(|| {
+        self.iie_joystick = (args.pds_card == PdsCardKind::AppleIIe).then(|| {
             let mut joy = Joystick::new(args.iie_joystick_emulation);
             joy.set_bindings(self.joy_bindings());
             joy
