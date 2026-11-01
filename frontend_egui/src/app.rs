@@ -2896,8 +2896,14 @@ impl SnowGui {
     }
 
     /// Copies text from the emulated Mac's clipboard to the host clipboard.
-    fn copy_from_emulator(&mut self) {
-        match crate::util::mac::read_scrap_text(self.memory.get_memory()) {
+    fn copy_from_emulator(&self) {
+        self.emu.read_scrap_text();
+    }
+
+    /// Puts what the emulator found on the emulated Mac's clipboard on the host
+    /// clipboard.
+    fn finish_copy_from_emulator(&mut self, scrap_text: Option<String>) {
+        match scrap_text {
             Some(text) if !text.is_empty() => {
                 match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(&text)) {
                     Ok(_) => {
@@ -3346,6 +3352,9 @@ impl eframe::App for SnowGui {
             }
             while let Some((addr, data, size)) = self.emu.take_mem_update() {
                 self.memory.update_memory(addr, &data, size);
+            }
+            if let Some(scrap_text) = self.emu.take_scrap_text() {
+                self.finish_copy_from_emulator(scrap_text);
             }
             while let Some((id, addr, data)) = self.emu.take_memory_notification() {
                 if id >= NOTIFIER_WATCHPOINTS {

@@ -88,6 +88,9 @@ pub enum EmulatorCommand {
     /// Sets or replaces the notifier with this id, see [`MemoryNotifierRange`]
     MemoryNotifierSet(u32, MemoryNotifierRange),
     MemoryNotifierRemove(u32),
+    /// Reads the text of the guest's clipboard: answered by
+    /// [`EmulatorEvent::ScrapText`]
+    ReadScrapText,
     Disassemble(Address, usize),
     KeyEvent(KeyEvent),
     ReleaseAllInputs,
@@ -227,6 +230,8 @@ pub enum EmulatorEvent {
         addr: Address,
         data: Vec<Option<u8>>,
     },
+    /// The text of the guest's clipboard, if it has any
+    ScrapText(Option<String>),
     RecordedInput(InputRecording),
     InstructionHistory(Vec<HistoryEntry>),
     PeripheralDebug(DebuggableProperties),

@@ -1519,6 +1519,13 @@ impl Tickable for Emulator {
                         self.memory_notifiers.remove(&id);
                         self.memory_notifiers_watch();
                     }
+                    EmulatorCommand::ReadScrapText => {
+                        let config = &mut self.config;
+                        let text = crate::util::mac::read_scrap_text(|addr| {
+                            config.cpu_inspect_read(addr, false)
+                        });
+                        self.event_sender.send(EmulatorEvent::ScrapText(text))?;
+                    }
                     EmulatorCommand::Disassemble(addr, len) => {
                         self.disassemble(addr, len)?;
                         // Skip status update which would reset the disassembly view

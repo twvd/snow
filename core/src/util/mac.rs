@@ -1,5 +1,7 @@
 //! Macintosh text encoding helpers.
 
+use crate::bus::Address;
+
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use unicode_normalization::UnicodeNormalization;
@@ -14,6 +16,66 @@ pub fn macroman_to_utf8(bytes: &[u8]) -> String {
             _ => MACROMAN_HIGH[(byte - 0x80) as usize],
         })
         .collect()
+}
+
+/// Reads the TEXT scrap of the Classic Mac OS Scrap Manager.
+///
+/// `read` reads a byte of memory at a logical address. Returns `None` if the
+/// scrap is not in memory, empty, or contains no TEXT entry, or if it can't be
+/// read.
+pub fn read_scrap_text(mut read: impl FnMut(Address) -> Option<u8>) -> Option<String> {
+    fn read_u32(read: &mut impl FnMut(Address) -> Option<u8>, addr: Address) -> Option<u32> {
+        let mut value = 0;
+        for i in 0..4 {
+            value = (value << 8) | u32::from(read(addr.wrapping_add(i))?);
+        }
+        Some(value)
+    }
+
+    // scrapState: negative means scrap is on disk, not in RAM
+    if read_u32(&mut read, 0x096A)? & 0x8000_0000 != 0 {
+        return None;
+    }
+
+    let scrap_size = read_u32(&mut read, 0x0960)?;
+    if scrap_size == 0 || scrap_size > 1024 * 1024 {
+        return None;
+    }
+
+    let handle = read_u32(&mut read, 0x0964)?;
+    if handle == 0 {
+        return None;
+    }
+
+    // Dereference Handle: handle - master pointer - scrap data
+    let master_ptr = read_u32(&mut read, handle)?;
+    if master_ptr == 0 {
+        return None;
+    }
+
+    // Walk scrap entries looking for 'TEXT'
+    let mut offset = 0;
+    while offset + 8 <= scrap_size {
+        let addr = master_ptr.wrapping_add(offset);
+        let type_code = read_u32(&mut read, addr)?;
+        let data_len = read_u32(&mut read, addr.wrapping_add(4))?;
+        if data_len > scrap_size - offset - 8 {
+            return None;
+        }
+
+        if type_code == u32::from_be_bytes(*b"TEXT") {
+            let data_addr = addr.wrapping_add(8);
+            let mut text = Vec::with_capacity(data_len as usize);
+            for i in 0..data_len {
+                text.push(read(data_addr.wrapping_add(i))?);
+            }
+            return Some(macroman_to_utf8(&text));
+        }
+
+        // Next entry: 4 (type) + 4 (length) + data padded to even
+        offset += 8 + ((data_len + 1) & !1);
+    }
+    None
 }
 
 /// Converts a UTF-8 string into MacRoman bytes, replacing unsupported
@@ -59,3 +121,57 @@ const MACROMAN_HIGH: [char; 128] = [
     '\u{F8FF}', '\u{00D2}', '\u{00DA}', '\u{00DB}', '\u{00D9}', '\u{0131}', '\u{02C6}', '\u{02DC}',
     '\u{00AF}', '\u{02D8}', '\u{02D9}', '\u{02DA}', '\u{00B8}', '\u{02DD}', '\u{02DB}', '\u{02C7}',
 ];
+
+#[cfg(test)]
+mod scrap_tests {
+    use super::read_scrap_text;
+    use std::collections::HashMap;
+
+    fn put(mem: &mut HashMap<u32, u8>, addr: u32, bytes: &[u8]) {
+        for (i, &b) in bytes.iter().enumerate() {
+            mem.insert(addr + i as u32, b);
+        }
+    }
+
+    /// Memory with a scrap of a PICT entry of 3 bytes and a TEXT entry
+    fn memory() -> HashMap<u32, u8> {
+        let mut mem = HashMap::new();
+        put(&mut mem, 0x0960, &[0, 0, 0, 25]);
+        put(&mut mem, 0x0964, &0x1000_u32.to_be_bytes());
+        put(&mut mem, 0x096A, &[0, 0, 0, 0]);
+        put(&mut mem, 0x1000, &0x2000_u32.to_be_bytes());
+        put(&mut mem, 0x2000, b"PICT\0\0\0\x03abc\0");
+        put(&mut mem, 0x200C, b"TEXT\0\0\0\x05Hel\rx");
+        mem
+    }
+
+    fn scrap(mem: &HashMap<u32, u8>) -> Option<String> {
+        read_scrap_text(|addr| mem.get(&addr).copied())
+    }
+
+    #[test]
+    fn finds_the_text_entry() {
+        assert_eq!(scrap(&memory()).as_deref(), Some("Hel\nx"));
+    }
+
+    #[test]
+    fn scrap_on_disk() {
+        let mut mem = memory();
+        put(&mut mem, 0x096A, &[0xFF, 0xFF]);
+        assert_eq!(scrap(&mem), None);
+    }
+
+    #[test]
+    fn unreadable_text() {
+        let mut mem = memory();
+        mem.remove(&0x2015);
+        assert_eq!(scrap(&mem), None);
+    }
+
+    #[test]
+    fn no_text_entry() {
+        let mut mem = memory();
+        put(&mut mem, 0x200C, b"STYL");
+        assert_eq!(scrap(&mem), None);
+    }
+}

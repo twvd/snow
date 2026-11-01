@@ -145,6 +145,8 @@ pub struct EmulatorState {
     memory_notifiers: HashMap<u32, MemoryNotifierRange>,
     /// Received memory notifications: id, address, contents
     memory_notifications: VecDeque<(u32, Address, Vec<Option<u8>>)>,
+    /// The answer to the last read of the guest's clipboard
+    scrap_text: Option<Option<String>>,
     record_input_path: Option<PathBuf>,
     instruction_history: Vec<HistoryEntry>,
     systrap_history: Vec<SystrapHistoryEntry>,
@@ -607,6 +609,7 @@ impl EmulatorState {
                 EmulatorEvent::MemoryNotify { id, addr, data } => {
                     self.memory_notifications.push_back((id, addr, data));
                 }
+                EmulatorEvent::ScrapText(text) => self.scrap_text = Some(text),
                 EmulatorEvent::RecordedInput(i) => {
                     if let Err(e) = std::fs::write(
                         self.record_input_path.take().unwrap(),
@@ -1144,6 +1147,20 @@ impl EmulatorState {
         sender
             .send(EmulatorCommand::InspectWrite { addr, data, phys })
             .unwrap();
+    }
+
+    /// Asks for the text of the guest's clipboard, see take_scrap_text()
+    pub fn read_scrap_text(&self) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender.send(EmulatorCommand::ReadScrapText).unwrap();
+    }
+
+    /// The answer to read_scrap_text() when it has arrived, with the text if
+    /// there is any
+    pub fn take_scrap_text(&mut self) -> Option<Option<String>> {
+        self.scrap_text.take()
     }
 
     pub fn write_bus(&self, addr: Address, value: u8) {
