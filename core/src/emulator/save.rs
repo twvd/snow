@@ -110,6 +110,15 @@ pub(super) fn save_state_to<W: std::io::Write + std::io::Seek>(
         }
     }
 
+    // HD20 images follow, their sizes are in the serialized config
+    for dcd in &config.swim().dcds {
+        let Some(data) = dcd.savestate_img_data() else {
+            bail!("HD20 image cannot be saved in a save state");
+        };
+        data.write(&mut compressor)?;
+        END_OF_CHUNK.write(&mut compressor)?;
+    }
+
     Ok(())
 }
 
@@ -133,7 +142,7 @@ pub(super) fn load_state_from<R: std::io::Read + std::io::Seek, P: AsRef<std::pa
     // TODO remove static buffer once postcard supports it, tracking issue:
     // https://github.com/jamesmunns/postcard/issues/162
     let mut buf = [0; 1024];
-    let (config, (mut decompressor, _)) =
+    let (mut config, (mut decompressor, _)) =
         postcard::from_io::<EmulatorConfig, _>((decompressor, &mut buf))?;
 
     let mut eofcbuf = [0; END_OF_CHUNK.len()];
@@ -174,6 +183,28 @@ pub(super) fn load_state_from<R: std::io::Read + std::io::Seek, P: AsRef<std::pa
             state,
             media: Some(filename),
         });
+    }
+
+    for (idx, dcd) in config.swim_mut().dcds.iter_mut().enumerate() {
+        let mut filename = tmpdir.as_ref().to_path_buf();
+        filename.push(format!(
+            "snow_state_{}_hd20_{}.img",
+            std::process::id(),
+            idx
+        ));
+        {
+            let mut outfile = File::create(&filename)?;
+            let mut img_reader = decompressor.take(dcd.savestate_img_len() as u64);
+            std::io::copy(&mut img_reader, &mut outfile)?;
+            decompressor = img_reader.into_inner();
+        }
+        dcd.after_deserialize(&filename)?;
+
+        let mut eofcbuf = [0; END_OF_CHUNK.len()];
+        decompressor.read_exact(&mut eofcbuf)?;
+        if eofcbuf != END_OF_CHUNK {
+            bail!("Expected end of chunk but did not find it");
+        }
     }
 
     #[allow(clippy::unbuffered_bytes)]
