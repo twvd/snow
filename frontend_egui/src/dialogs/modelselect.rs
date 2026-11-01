@@ -15,7 +15,7 @@ use snow_core::mac::maclc::pds_iie::IieDiskDevice;
 use snow_core::mac::maclc::video as lc_video;
 use snow_core::mac::quadra::dafb;
 use snow_core::mac::swim::drive::DriveType;
-use snow_core::mac::{MacModel, MacMonitor, NubusDeviceKind};
+use snow_core::mac::{MacModel, MacMonitor, NubusDeviceKind, PdsCardKind};
 use strum::IntoEnumIterator;
 
 /// Video cards selectable for NuBus-equipped models.
@@ -644,16 +644,23 @@ impl ModelSelectionDialog {
                     ui.end_row();
 
                     ui.checkbox(&mut self.init_args.fpu_enabled, "Enable 68882 FPU");
-                    ui.end_row();
-
-                    ui.checkbox(&mut self.init_args.iie_card, "Install Apple IIe Card");
-                    if ui
-                        .add_enabled(self.init_args.iie_card, egui::Button::new("Settings..."))
-                        .clicked()
+                    // The LC and LC II have no FPU socket on the board, a 68882
+                    // can only sit on a card in their one PDS slot
+                    if self.init_args.fpu_enabled
+                        && self.init_args.pds_card != PdsCardKind::None
+                        && matches!(self.selected_model, MacModel::LC | MacModel::LCII)
                     {
-                        self.iie_settings_open = true;
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} A real Mac LC cannot have a 68882 with this card installed",
+                                egui_material_icons::icons::ICON_WARNING
+                            ))
+                            .color(ui.visuals().warn_fg_color),
+                        );
                     }
                     ui.end_row();
+
+                    self.pds_slot_row(ui);
                 }
                 if self.selected_model == MacModel::LC475 {
                     // The CPU is socketed, and some owners fit a 68040
@@ -859,7 +866,7 @@ impl ModelSelectionDialog {
                         ) {
                             self.init_args.fpu_enabled = false;
                             self.init_args.vram_size = None;
-                            self.init_args.iie_card = false;
+                            self.init_args.pds_card = PdsCardKind::None;
                         }
 
                         self.result = Some(ModelSelectionResult {
@@ -931,6 +938,30 @@ impl ModelSelectionDialog {
     }
 
     /// The Apple IIe Card settings, a dialog over the main one
+    /// The grid row choosing the card in the PDS slot
+    fn pds_slot_row(&mut self, ui: &mut egui::Ui) {
+        ui.label("PDS Slot");
+        ui.horizontal(|ui| {
+            egui::ComboBox::new(egui::Id::new("Select PDS card"), "")
+                .selected_text(format!("{}", self.init_args.pds_card))
+                .show_ui(ui, |ui| {
+                    for card in PdsCardKind::iter() {
+                        ui.selectable_value(&mut self.init_args.pds_card, card, card.to_string());
+                    }
+                });
+            if ui
+                .add_enabled(
+                    self.init_args.pds_card == PdsCardKind::AppleIIe,
+                    egui::Button::new("Settings..."),
+                )
+                .clicked()
+            {
+                self.iie_settings_open = true;
+            }
+        });
+        ui.end_row();
+    }
+
     fn iie_settings_modal(&mut self, ctx: &egui::Context) {
         egui::Modal::new(egui::Id::new("Apple IIe Card settings")).show(ctx, |ui| {
             ui.style_mut().spacing.item_spacing = egui::Vec2::splat(4.0);
