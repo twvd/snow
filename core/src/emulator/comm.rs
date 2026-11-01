@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::bus::Address;
+use crate::cpu_m68k::bus::InspectView;
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use crate::cpu_m68k::regs::{Register, RegisterFile};
 use crate::debuggable::DebuggableProperties;
@@ -78,6 +79,15 @@ pub enum EmulatorCommand {
     StepOver,
     ToggleBreakpoint(Breakpoint),
     BusInspectWrite(Address, Vec<u8>),
+    /// Writes memory, at physical addresses if `phys`, else logical ones
+    InspectWrite {
+        addr: Address,
+        data: Vec<u8>,
+        phys: bool,
+    },
+    /// Sets or replaces the notifier with this id, see [`MemoryNotifierRange`]
+    MemoryNotifierSet(u32, MemoryNotifierRange),
+    MemoryNotifierRemove(u32),
     Disassemble(Address, usize),
     KeyEvent(KeyEvent),
     ReleaseAllInputs,
@@ -190,6 +200,17 @@ pub enum UserMessageType {
     Error,
 }
 
+/// A range of memory that the frontend wants to be told about when what it holds
+/// changes
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemoryNotifierRange {
+    pub addr: Address,
+    pub len: u32,
+    pub view: InspectView,
+    /// Starts at the PC, not at `addr`. Moves with the status updates.
+    pub follow_pc: bool,
+}
+
 /// A status message/event received from the emulator
 #[derive(strum::Display)]
 pub enum EmulatorEvent {
@@ -199,6 +220,13 @@ pub enum EmulatorEvent {
     FloppyEjected(usize, Box<FloppyImage>),
     ScsiMediaEjected(usize),
     Memory((Address, Vec<u8>, usize)),
+    /// What a notifier's range holds, when it has changed. None for what can't
+    /// be read.
+    MemoryNotify {
+        id: u32,
+        addr: Address,
+        data: Vec<Option<u8>>,
+    },
     RecordedInput(InputRecording),
     InstructionHistory(Vec<HistoryEntry>),
     PeripheralDebug(DebuggableProperties),

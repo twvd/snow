@@ -6,7 +6,7 @@ pub mod save;
 use serde::{Deserialize, Serialize};
 use snow_floppy::Floppy;
 use snow_floppy::loaders::{Autodetect, FloppyImageLoader, FloppyImageSaver, Moof};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 #[cfg(feature = "savestates")]
 use std::fs::File;
 #[cfg(feature = "savestates")]
@@ -17,7 +17,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 use strum::IntoEnumIterator;
 
-use crate::bus::{Address, Bus, InspectableBus};
+use crate::bus::{Address, Bus, InspectRun, InspectableBus};
+use crate::cpu_m68k::bus::InspectView;
 use crate::cpu_m68k::cpu::{HistoryEntry, SystrapHistoryEntry};
 use crate::cpu_m68k::{
     CpuM68000, CpuM68020, CpuM68020Fpu, CpuM68020Fpu68882, CpuM68020Pmmu, CpuM68030, CpuM68030Fpu,
@@ -54,7 +55,7 @@ use crate::mac::scsi::disk_image::DiskImage;
 use crate::mac::swim::Swim;
 use comm::{
     Breakpoint, EmulatorCommand, EmulatorCommandSender, EmulatorEvent, EmulatorEventReceiver,
-    EmulatorStatus, FddStatus, InputRecording, ScsiTargetStatus,
+    EmulatorStatus, FddStatus, InputRecording, MemoryNotifierRange, ScsiTargetStatus,
 };
 
 /// Mouse emulation mode
@@ -174,6 +175,44 @@ macro_rules! dispatch {
     };
 }
 
+/// Least time between two looks at the memory notifiers while running. Debugging
+/// mostly happens stopped, where each step or stop looks at them regardless.
+const MEMORY_NOTIFY_INTERVAL: Duration = Duration::from_millis(200);
+
+/// A range of memory the frontend wants to be told about
+struct MemoryNotifier {
+    range: MemoryNotifierRange,
+    /// What was last sent: nothing yet if None
+    last: Option<(Address, Vec<Option<u8>>)>,
+}
+
+/// What can change memory views without a write to memory: translations, the
+/// current mode, the map of physical addresses
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct MemoryMapState {
+    mmu_generation: u32,
+    bus_generation: u32,
+    supervisor: bool,
+}
+
+/// Reads `len` bytes from `addr` on with `read`, a run at a time, None for holes
+fn read_memory_range(
+    addr: Address,
+    len: usize,
+    mut read: impl FnMut(Address, &mut [u8]) -> InspectRun,
+) -> Vec<Option<u8>> {
+    let mut data = Vec::with_capacity(len);
+    let mut buf = vec![0; len];
+    while data.len() < len {
+        let at = addr.wrapping_add(data.len() as Address);
+        match read(at, &mut buf[..len - data.len()]) {
+            InspectRun::Data(n) => data.extend(buf[..n].iter().map(|&b| Some(b))),
+            InspectRun::Hole(n) => data.resize(data.len() + n, None),
+        }
+    }
+    data
+}
+
 /// Emulator config. Basically an abstraction on top of the CPU for multiple different model groups
 /// that provides access to the inner components by the emulator runner through dynamic dispatch.
 #[derive(Serialize, Deserialize)]
@@ -222,6 +261,8 @@ dispatch! {
         fn cpu_has_pmmu(&self) -> bool { has_pmmu() }
         fn cpu_cycles(&self) -> Ticks { cycles }
         fn cpu_breakpoints(&self) -> &[Breakpoint] { breakpoints() }
+        fn cpu_mmu_generation(&self) -> u32 { mmu_generation() }
+        fn bus_inspect_generation(&self) -> u32 { bus.inspect_generation() }
         fn cpu_get_step_over(&self) -> Option<Address> { get_step_over() }
         fn speed(&self) -> EmulatorSpeed { bus.speed }
         fn effective_speed(&self) -> f64 { bus.get_effective_speed() }
@@ -250,6 +291,13 @@ dispatch! {
         fn after_deserialize(&mut self, renderer: ChannelRenderer) -> () { bus.after_deserialize(renderer) }
         fn bus_inspect_read(&mut self, addr: Address) -> Option<Byte> { bus.inspect_read(addr) }
         fn bus_inspect_write(&mut self, addr: Address, val: Byte) -> Option<()> { bus.inspect_write(addr, val) }
+        fn cpu_inspect_read(&mut self, addr: Address, phys: bool) -> Option<Byte> { inspect_read(addr, phys) }
+        fn cpu_inspect_write(&mut self, addr: Address, val: Byte, phys: bool) -> Option<()> { inspect_write(addr, val, phys) }
+        fn cpu_inspect_read_word(&mut self, addr: Address, phys: bool) -> Option<u16> { inspect_read_word(addr, phys) }
+        fn cpu_inspect_write_word(&mut self, addr: Address, val: u16, phys: bool) -> Option<()> { inspect_write_word(addr, val, phys) }
+        fn cpu_inspect_read_bulk(&mut self, addr: Address, view: InspectView, out: &mut [Byte]) -> InspectRun { inspect_read_bulk(addr, view, out) }
+        fn cpu_inspect_watch(&mut self, ranges: &[(Address, u32, InspectView)]) -> () { inspect_watch(ranges) }
+        fn cpu_inspect_take_watch_hit(&mut self) -> bool { inspect_take_watch_hit() }
 
         fn mouse_update_rel(&mut self, relx: i16, rely: i16, button: Option<bool>) -> () { bus.mouse_update_rel(relx, rely, button) }
         fn mouse_update_abs(&mut self, x: u16, y: u16) -> () { bus.mouse_update_abs(x, y) }
@@ -285,6 +333,12 @@ pub struct Emulator {
     /// Serial bridges for SCC channels (index 0 = Channel A, index 1 = Channel B)
     serial_bridges: [Option<SccBridge>; 2],
     audio_provider: Option<Arc<Mutex<dyn AudioProvider>>>,
+    /// Ranges of memory the frontend wants to be told about, by id
+    memory_notifiers: BTreeMap<u32, MemoryNotifier>,
+    /// Map state the watched ranges were set for
+    memory_map_state: Option<MemoryMapState>,
+    /// Last look at the memory notifiers
+    memory_notify_time: Instant,
 }
 
 impl Emulator {
@@ -558,6 +612,9 @@ impl Emulator {
             peripheral_debug: false,
             serial_bridges: [None, None],
             audio_provider: None,
+            memory_notifiers: BTreeMap::new(),
+            memory_map_state: None,
+            memory_notify_time: Instant::now(),
         };
         emu.status_update()?;
 
@@ -611,6 +668,9 @@ impl Emulator {
             peripheral_debug: false,
             serial_bridges: [None, None],
             audio_provider: None,
+            memory_notifiers: BTreeMap::new(),
+            memory_map_state: None,
+            memory_notify_time: Instant::now(),
         };
         emu.status_update()?;
 
@@ -752,6 +812,21 @@ impl Emulator {
         }
         self.config.ram_dirty_mut().clear();
 
+        // Memory notifiers. A stopped machine gets all of them looked at, so that
+        // whatever happened without a notice, such as changes in the page tables
+        // with no flush, shows up. While running, memory_notifiers_tick() handles
+        // changes, and only what follows the PC moves here.
+        if !self.memory_notifiers.is_empty() {
+            self.memory_notifiers_set_watch();
+            if self.run {
+                self.memory_notifiers_send(true)?;
+            } else {
+                self.memory_map_state = Some(self.memory_map_state());
+                self.config.cpu_inspect_take_watch_hit();
+                self.memory_notifiers_send(false)?;
+            }
+        }
+
         // Instruction history
         if let Some(history) = self.config.cpu_read_history() {
             self.event_sender
@@ -771,6 +846,87 @@ impl Emulator {
             ))?;
         }
 
+        Ok(())
+    }
+
+    /// What can change memory views now, without a write to memory
+    fn memory_map_state(&self) -> MemoryMapState {
+        MemoryMapState {
+            mmu_generation: self.config.cpu_mmu_generation(),
+            bus_generation: self.config.bus_inspect_generation(),
+            supervisor: self.config.cpu_regs().sr.supervisor(),
+        }
+    }
+
+    /// Where a notifier's range starts now
+    fn memory_range_addr(&self, range: &MemoryNotifierRange) -> Address {
+        if range.follow_pc {
+            self.config.cpu_regs().pc
+        } else {
+            range.addr
+        }
+    }
+
+    /// Tells the CPU what to watch for the notifiers, as things stand
+    fn memory_notifiers_watch(&mut self) {
+        self.memory_map_state = Some(self.memory_map_state());
+        self.memory_notifiers_set_watch();
+    }
+
+    /// Gives the CPU the ranges of the notifiers to watch
+    fn memory_notifiers_set_watch(&mut self) {
+        let ranges: Vec<_> = self
+            .memory_notifiers
+            .values()
+            .map(|n| (self.memory_range_addr(&n.range), n.range.len, n.range.view))
+            .collect();
+        self.config.cpu_inspect_watch(&ranges);
+    }
+
+    /// Reads the ranges of the notifiers, or only those that follow the PC, and
+    /// sends those that changed
+    fn memory_notifiers_send(&mut self, only_follow_pc: bool) -> Result<()> {
+        let mut notifiers = std::mem::take(&mut self.memory_notifiers);
+        for (&id, notifier) in &mut notifiers {
+            let range = notifier.range;
+            if only_follow_pc && !range.follow_pc {
+                continue;
+            }
+            let addr = self.memory_range_addr(&range);
+            let config = &mut self.config;
+            let data = read_memory_range(addr, range.len as usize, |at, out| {
+                config.cpu_inspect_read_bulk(at, range.view, out)
+            });
+            if notifier
+                .last
+                .as_ref()
+                .is_none_or(|(a, d)| *a != addr || *d != data)
+            {
+                self.event_sender.send(EmulatorEvent::MemoryNotify {
+                    id,
+                    addr,
+                    data: data.clone(),
+                })?;
+                notifier.last = Some((addr, data));
+            }
+        }
+        self.memory_notifiers = notifiers;
+        Ok(())
+    }
+
+    /// Looks if any notifier needs to be told something, while running
+    fn memory_notifiers_tick(&mut self) -> Result<()> {
+        if self.memory_notify_time.elapsed() < MEMORY_NOTIFY_INTERVAL {
+            return Ok(());
+        }
+        self.memory_notify_time = Instant::now();
+        let map_changed = self.memory_map_state != Some(self.memory_map_state());
+        if map_changed {
+            self.memory_notifiers_watch();
+        }
+        if self.config.cpu_inspect_take_watch_hit() || map_changed {
+            self.memory_notifiers_send(false)?;
+        }
         Ok(())
     }
 
@@ -1298,6 +1454,33 @@ impl Tickable for Emulator {
                         }
                         self.status_update()?;
                     }
+                    EmulatorCommand::InspectWrite { addr, data, phys } => {
+                        for (i, d) in data.into_iter().enumerate() {
+                            let addr = addr.wrapping_add(i as Address);
+                            if self.config.cpu_inspect_write(addr, d, phys).is_none() {
+                                self.user_error(&format!(
+                                    "Could not write to address {:08X}",
+                                    addr
+                                ));
+                            }
+                        }
+                        self.status_update()?;
+                    }
+                    EmulatorCommand::MemoryNotifierSet(id, range) => {
+                        let last = self
+                            .memory_notifiers
+                            .remove(&id)
+                            .filter(|n| n.range == range)
+                            .and_then(|n| n.last);
+                        self.memory_notifiers
+                            .insert(id, MemoryNotifier { range, last });
+                        self.memory_notifiers_watch();
+                        self.memory_notifiers_send(false)?;
+                    }
+                    EmulatorCommand::MemoryNotifierRemove(id) => {
+                        self.memory_notifiers.remove(&id);
+                        self.memory_notifiers_watch();
+                    }
                     EmulatorCommand::Disassemble(addr, len) => {
                         self.disassemble(addr, len)?;
                         // Skip status update which would reset the disassembly view
@@ -1495,6 +1678,10 @@ impl Tickable for Emulator {
             }
         }
 
+        if !self.memory_notifiers.is_empty() && self.run {
+            self.memory_notifiers_tick()?;
+        }
+
         if self.run {
             if self.last_update.elapsed() > Duration::from_millis(500) {
                 self.last_update = Instant::now();
@@ -1631,5 +1818,44 @@ impl Tickable for Emulator {
         }
 
         Ok(ticks)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InspectRun, read_memory_range};
+
+    /// Memory with holes at the addresses in `holes`, in runs of at most 16
+    /// bytes, holding the low byte of the address in units of 16 bytes
+    fn test_read(addr: u32, out: &mut [u8], holes: std::ops::Range<u32>) -> InspectRun {
+        if holes.contains(&addr) {
+            return InspectRun::Hole(out.len().min((holes.end - addr) as usize));
+        }
+        let mut n = out.len().min(16 - (addr % 16) as usize);
+        if addr < holes.start {
+            n = n.min((holes.start - addr) as usize);
+        }
+        for (i, b) in out[..n].iter_mut().enumerate() {
+            *b = ((addr as usize + i) / 16) as u8;
+        }
+        InspectRun::Data(n)
+    }
+
+    #[test]
+    fn read_range_with_a_hole() {
+        let data = read_memory_range(14, 8, |at, out| test_read(at, out, 18..20));
+        assert_eq!(
+            data,
+            [
+                Some(0),
+                Some(0),
+                Some(1),
+                Some(1),
+                None,
+                None,
+                Some(1),
+                Some(1)
+            ]
+        );
     }
 }

@@ -592,6 +592,7 @@ impl EmulatorState {
                 EmulatorEvent::Memory(update) => {
                     self.ram_update.push_back(update);
                 }
+                EmulatorEvent::MemoryNotify { .. } => (),
                 EmulatorEvent::RecordedInput(i) => {
                     if let Err(e) = std::fs::write(
                         self.record_input_path.take().unwrap(),
