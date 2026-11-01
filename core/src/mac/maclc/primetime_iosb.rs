@@ -124,6 +124,10 @@ const MEMCJR_RESET: [u16; MEMCJR_REGS] = [
     0,
 ];
 
+/// RAM refresh: every 15.6 us, keeping the RAM busy for 6 clocks
+const RAM_REFRESH_PERIOD: Ticks = 390;
+const RAM_REFRESH_WAITS: Ticks = 6;
+
 /// RAM decode granularity, and number of such blocks in the RAM space
 const RAM_BLOCK_SHIFT: u32 = 20;
 const RAM_BLOCKS: usize = 1024;
@@ -219,6 +223,8 @@ pub struct Lc475Bus<TRenderer: Renderer> {
     /// the ROM sets on a bank whose size isn't a power of two. All memory has
     /// a single mode here, and the timing doesn't follow the configuration.
     memcjr_regs: [u16; MEMCJR_REGS],
+    /// Native tick of the next RAM refresh
+    next_refresh: Ticks,
     /// Row of the VRAM that was accessed last
     vram_row: Address,
     /// Offset in `ram` of each block of the RAM space, as the banks decode it
@@ -312,6 +318,7 @@ where
             primetime_regs: vec![0; PRIMETIME_REGS_SIZE],
             memcjr_holding: 0,
             memcjr_regs: MEMCJR_RESET,
+            next_refresh: 0,
             vram_row: 0,
             ram_map: vec![RAM_BLOCK_NONE; RAM_BLOCKS],
             sound: V8Sound::new(V8Variant::PrimeTime),
@@ -993,6 +1000,15 @@ impl<TRenderer> Lc475Bus<TRenderer>
 where
     TRenderer: Renderer,
 {
+    /// Catches up with the RAM refreshes, nearly always a single one. Returns
+    /// how long an access at this time waits for the last.
+    #[cold]
+    fn ram_refresh(&mut self, now: Ticks) -> Ticks {
+        let late = (now - self.next_refresh) % RAM_REFRESH_PERIOD;
+        self.next_refresh = now - late + RAM_REFRESH_PERIOD;
+        RAM_REFRESH_WAITS.saturating_sub(late)
+    }
+
     /// Further wait states of an access to the VRAM which opens another row.
     /// A row is 1 KB. Each of the two banks really has its own, and the screen
     /// refresh transfers close them too.
@@ -1035,7 +1051,16 @@ where
         };
 
         let mut resp = match region {
-            Region::Ram => bus_access_long(acc, waits, self, Self::ram_read, Self::ram_write),
+            Region::Ram => {
+                let now = self.native_clock.native_ticks() + acc.pending;
+                let waits = waits
+                    + if now >= self.next_refresh {
+                        self.ram_refresh(now)
+                    } else {
+                        0
+                    };
+                bus_access_long(acc, waits, self, Self::ram_read, Self::ram_write)
+            }
             Region::Rom => bus_access_long(acc, waits, self, Self::rom_read, Self::ignore_write),
             Region::Io => self.io_cycle(acc),
             Region::CpuId => bus_access_long(acc, 0, self, Self::cpu_id_read, Self::ignore_write),
