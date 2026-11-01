@@ -3,8 +3,8 @@ use crate::dialogs::confirm::ConfirmDialog;
 use crate::dialogs::diskimage::{DiskImageDialog, DiskImageDialogResult};
 use crate::dialogs::filedialog::SnowFileDialog;
 use crate::dialogs::modelselect::{ModelSelectionDialog, ModelSelectionResult, video_rom_card};
-use crate::emulator::EmulatorState;
 use crate::emulator::{EmulatorInitArgs, ScsiTargets};
+use crate::emulator::{EmulatorState, NOTIFIER_WATCHPOINTS};
 use crate::keymap::{char_to_keystroke, map_winit_keycode};
 use crate::settings::{AppSettings, CmdKeyMapping, PromptChoice};
 use crate::uniform::{UNIFORM_ACTION, UniformAction};
@@ -19,7 +19,6 @@ use crate::widgets::systrap_history::SystrapHistoryWidget;
 use crate::widgets::terminal::TerminalWidget;
 use crate::widgets::watchpoints::WatchpointsWidget;
 use crate::workspace::{FramebufferMode, Workspace};
-use snow_core::bus::Address;
 use snow_core::emulator::MouseMode;
 use snow_core::emulator::comm::{EmulatorSpeed, UserMessageType};
 use snow_core::emulator::save::{SaveHeader, load_state_header};
@@ -2883,6 +2882,19 @@ impl SnowGui {
         self.type_clipboard_delay = 0;
     }
 
+    /// Tells the emulator what memory the open windows are looking at
+    fn update_memory_notifiers(&mut self) {
+        let visible = self.emu.is_initialized() && !self.is_ui_hidden();
+        let watchpoints_open = visible && self.workspace.watchpoints_open;
+        for (id, range) in self.watchpoints.ranges() {
+            self.emu
+                .set_memory_notifier(id, watchpoints_open.then_some(range));
+        }
+        for id in self.watchpoints.take_removed() {
+            self.emu.set_memory_notifier(id, None);
+        }
+    }
+
     /// Copies text from the emulated Mac's clipboard to the host clipboard.
     fn copy_from_emulator(&mut self) {
         match crate::util::mac::read_scrap_text(self.memory.get_memory()) {
@@ -2952,7 +2964,8 @@ impl SnowGui {
             UniformAction::None => (),
             UniformAction::AddressWatch(a, t) => {
                 self.workspace.watchpoints_open = true;
-                self.watchpoints.add_watchpoint(a, t, format!("{:08X}", a));
+                self.watchpoints
+                    .add_watchpoint(a, false, t, format!("{:08X}", a));
             }
             UniformAction::Breakpoint(breakpoint) => {
                 self.workspace.breakpoints_open = true;
@@ -3333,6 +3346,12 @@ impl eframe::App for SnowGui {
             }
             while let Some((addr, data, size)) = self.emu.take_mem_update() {
                 self.memory.update_memory(addr, &data, size);
+            }
+            while let Some((id, addr, data)) = self.emu.take_memory_notification() {
+                if id >= NOTIFIER_WATCHPOINTS {
+                    self.watchpoints
+                        .update_memory(id, addr, &data, self.emu.get_cycles());
+                }
             }
         }
 
@@ -3935,6 +3954,7 @@ impl eframe::App for SnowGui {
             self.draw_snowflakes(ui);
 
             // Debugger views
+            self.update_memory_notifiers();
             if self.emu.is_initialized() && !self.is_ui_hidden() {
                 persistent_window!(self, "Disassembly")
                     .resizable([true, true])
@@ -3988,14 +4008,14 @@ impl eframe::App for SnowGui {
                     .resizable([true, true])
                     .open(&mut self.workspace.watchpoints_open)
                     .show(ctx, |ui| {
-                        self.watchpoints
-                            .draw(ui, self.memory.get_memory(), self.emu.get_cycles());
+                        self.watchpoints.draw(ui, self.emu.get_cycles());
                     });
                 if let Some(edited_value) = self.watchpoints.take_edited() {
-                    for (offset, &byte) in edited_value.data.iter().enumerate() {
-                        self.emu
-                            .write_bus(edited_value.address.wrapping_add(offset as Address), byte);
-                    }
+                    self.emu.write_memory(
+                        edited_value.address,
+                        edited_value.data,
+                        edited_value.physical,
+                    );
                 }
 
                 persistent_window_s!(self, "Instruction history", [800.0, 300.0])

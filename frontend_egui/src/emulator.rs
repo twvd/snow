@@ -20,7 +20,9 @@ use snow_core::emulator::comm::{
     Breakpoint, EmulatorCommand, EmulatorEvent, EmulatorSpeed, FddStatus, ScsiTargetStatus,
     UserMessageType,
 };
-use snow_core::emulator::comm::{EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus};
+use snow_core::emulator::comm::{
+    EmulatorCommandSender, EmulatorEventReceiver, EmulatorStatus, MemoryNotifierRange,
+};
 use snow_core::emulator::{Emulator, MouseMode};
 use snow_core::keymap::Scancode;
 use snow_core::mac::scc::SccCh;
@@ -34,7 +36,7 @@ use snow_core::types::LatchingEvent;
 use snow_floppy::loaders::FloppyImageLoader;
 use snow_floppy::{Floppy, FloppyImage, FloppyType};
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -119,6 +121,9 @@ pub struct EmulatorInitArgs {
     pub overclock: Option<u64>,
 }
 
+/// First id of the memory notifiers of the watchpoints
+pub const NOTIFIER_WATCHPOINTS: u32 = 2;
+
 /// Manages the state of the emulator and feeds input to the GUI
 #[derive(Default)]
 pub struct EmulatorState {
@@ -136,6 +141,10 @@ pub struct EmulatorState {
     messages: VecDeque<(UserMessageType, String)>,
     pub last_images: [RefCell<Option<Box<FloppyImage>>>; 3],
     ram_update: VecDeque<(Address, Vec<u8>, usize)>,
+    /// Memory notifiers as the emulator has them, or will when there is one
+    memory_notifiers: HashMap<u32, MemoryNotifierRange>,
+    /// Received memory notifications: id, address, contents
+    memory_notifications: VecDeque<(u32, Address, Vec<Option<u8>>)>,
     record_input_path: Option<PathBuf>,
     instruction_history: Vec<HistoryEntry>,
     systrap_history: Vec<SystrapHistoryEntry>,
@@ -432,6 +441,9 @@ impl EmulatorState {
             }
         });
 
+        for (&id, &range) in &self.memory_notifiers {
+            cmd.send(EmulatorCommand::MemoryNotifierSet(id, range))?;
+        }
         self.cmdsender = Some(cmd);
         self.emuthread = Some(emuthread);
 
@@ -592,7 +604,9 @@ impl EmulatorState {
                 EmulatorEvent::Memory(update) => {
                     self.ram_update.push_back(update);
                 }
-                EmulatorEvent::MemoryNotify { .. } => (),
+                EmulatorEvent::MemoryNotify { id, addr, data } => {
+                    self.memory_notifications.push_back((id, addr, data));
+                }
                 EmulatorEvent::RecordedInput(i) => {
                     if let Err(e) = std::fs::write(
                         self.record_input_path.take().unwrap(),
@@ -1094,6 +1108,42 @@ impl EmulatorState {
 
     pub fn take_mem_update(&mut self) -> Option<(Address, Vec<u8>, usize)> {
         self.ram_update.pop_front()
+    }
+
+    /// Sets, or with None removes, a memory notifier. This only does something
+    /// if that changes it.
+    pub fn set_memory_notifier(&mut self, id: u32, range: Option<MemoryNotifierRange>) {
+        let cmd = match range {
+            Some(range) => {
+                if self.memory_notifiers.insert(id, range) == Some(range) {
+                    return;
+                }
+                EmulatorCommand::MemoryNotifierSet(id, range)
+            }
+            None => {
+                if self.memory_notifiers.remove(&id).is_none() {
+                    return;
+                }
+                EmulatorCommand::MemoryNotifierRemove(id)
+            }
+        };
+        if let Some(ref sender) = self.cmdsender {
+            sender.send(cmd).unwrap();
+        }
+    }
+
+    pub fn take_memory_notification(&mut self) -> Option<(u32, Address, Vec<Option<u8>>)> {
+        self.memory_notifications.pop_front()
+    }
+
+    /// Writes memory, at physical addresses if `phys`, else logical ones
+    pub fn write_memory(&self, addr: Address, data: Vec<u8>, phys: bool) {
+        let Some(ref sender) = self.cmdsender else {
+            return;
+        };
+        sender
+            .send(EmulatorCommand::InspectWrite { addr, data, phys })
+            .unwrap();
     }
 
     pub fn write_bus(&self, addr: Address, value: u8) {

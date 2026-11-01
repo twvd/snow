@@ -1,5 +1,8 @@
 use crate::consts::GLOBALS;
+use crate::emulator::NOTIFIER_WATCHPOINTS;
 use eframe::egui;
+use snow_core::cpu_m68k::bus::InspectView;
+use snow_core::emulator::comm::MemoryNotifierRange;
 use snow_core::{bus::Address, tickable::Ticks};
 use std::time::{Duration, Instant};
 
@@ -67,8 +70,12 @@ impl std::fmt::Display for WatchpointType {
 /// Represents a single watchpoint
 #[derive(Debug, Clone)]
 pub struct Watchpoint {
+    /// Identifies the watchpoint for the emulator
+    id: u32,
     /// Memory address to watch
     address: Address,
+    /// The address is physical, else logical
+    physical: bool,
     /// Type of data to watch
     data_type: WatchpointType,
     /// User description
@@ -84,9 +91,17 @@ pub struct Watchpoint {
 }
 
 impl Watchpoint {
-    pub fn new(address: Address, data_type: WatchpointType, description: String) -> Self {
+    pub fn new(
+        id: u32,
+        address: Address,
+        physical: bool,
+        data_type: WatchpointType,
+        description: String,
+    ) -> Self {
         Self {
+            id,
             address,
+            physical,
             data_type,
             description,
             current_value: "Unknown".to_string(),
@@ -96,39 +111,36 @@ impl Watchpoint {
         }
     }
 
-    /// Update the watchpoint with new memory data
-    pub fn update(&mut self, memory: &[u8], current_cycles: Ticks) -> bool {
+    /// The range of memory this watches
+    fn range(&self) -> MemoryNotifierRange {
+        MemoryNotifierRange {
+            addr: self.address,
+            len: self.data_type.size_bytes() as u32,
+            view: if self.physical {
+                InspectView::Physical
+            } else {
+                InspectView::Virtual
+            },
+            follow_pc: false,
+        }
+    }
+
+    /// Update the watchpoint with what memory at its address holds, None for
+    /// what can't be read
+    pub fn update(&mut self, memory: &[Option<u8>], current_cycles: Ticks) -> bool {
         let size = self.data_type.size_bytes();
-        if (self.address as usize + size) > memory.len() {
+        if memory.len() < size {
             return false;
         }
 
         let new_value = match self.data_type {
-            WatchpointType::U8 => {
-                let value = memory[self.address as usize];
-                format!("0x{:02X} ({})", value, value)
-            }
-            WatchpointType::U16 => {
-                let value = u16::from_be_bytes([
-                    memory[self.address as usize],
-                    memory[self.address as usize + 1],
-                ]);
-                format!("0x{:04X} ({})", value, value)
-            }
-            WatchpointType::U32 => {
-                let value = u32::from_be_bytes([
-                    memory[self.address as usize],
-                    memory[self.address as usize + 1],
-                    memory[self.address as usize + 2],
-                    memory[self.address as usize + 3],
-                ]);
-                format!("0x{:08X} ({})", value, value)
-            }
-            WatchpointType::String(len) => {
-                let end = std::cmp::min(self.address as usize + len, memory.len());
-                let bytes = &memory[self.address as usize..end];
+            WatchpointType::String(_) => {
                 let mut string_value = String::new();
-                for &byte in bytes {
+                for &byte in &memory[..size] {
+                    let Some(byte) = byte else {
+                        string_value.push('x');
+                        break;
+                    };
                     if byte == 0 {
                         break;
                     }
@@ -139,6 +151,24 @@ impl Watchpoint {
                     }
                 }
                 format!("\"{}\"", string_value)
+            }
+            _ if memory[..size].iter().any(Option::is_none) => "x".to_string(),
+            WatchpointType::U8 => {
+                let value = memory[0].unwrap_or(0);
+                format!("0x{:02X} ({})", value, value)
+            }
+            WatchpointType::U16 => {
+                let value = u16::from_be_bytes([memory[0].unwrap_or(0), memory[1].unwrap_or(0)]);
+                format!("0x{:04X} ({})", value, value)
+            }
+            WatchpointType::U32 => {
+                let value = u32::from_be_bytes([
+                    memory[0].unwrap_or(0),
+                    memory[1].unwrap_or(0),
+                    memory[2].unwrap_or(0),
+                    memory[3].unwrap_or(0),
+                ]);
+                format!("0x{:08X} ({})", value, value)
             }
         };
 
@@ -167,6 +197,7 @@ enum EditingField {
 #[derive(Debug, Clone)]
 pub struct EditedValue {
     pub address: Address,
+    pub physical: bool,
     pub data: Vec<u8>,
 }
 
@@ -181,7 +212,13 @@ struct EditingState {
 /// Widget for managing and displaying watchpoints
 pub struct WatchpointsWidget {
     watchpoints: Vec<Watchpoint>,
+    /// Id of the next watchpoint
+    next_id: u32,
+    /// Ids of removed watchpoints, for the emulator to forget
+    removed: Vec<u32>,
     address_input: String,
+    /// The address of the watchpoint to add is physical, else logical
+    physical_input: bool,
     description_input: String,
     string_length_input: String,
     selected_type: WatchpointType,
@@ -196,7 +233,10 @@ impl Default for WatchpointsWidget {
     fn default() -> Self {
         Self {
             watchpoints: vec![],
+            next_id: NOTIFIER_WATCHPOINTS,
+            removed: vec![],
             address_input: "".to_string(),
+            physical_input: false,
             description_input: "".to_string(),
             string_length_input: "16".to_string(),
             selected_type: WatchpointType::U8,
@@ -218,16 +258,39 @@ impl WatchpointsWidget {
     pub fn add_watchpoint(
         &mut self,
         address: Address,
+        physical: bool,
         data_type: WatchpointType,
         description: String,
     ) {
-        let watchpoint = Watchpoint::new(address, data_type, description);
+        let id = self.next_id;
+        self.next_id += 1;
+        let watchpoint = Watchpoint::new(id, address, physical, data_type, description);
         self.watchpoints.push(watchpoint);
     }
 
-    /// Update watchpoints with new memory data
-    pub fn update_watchpoints(&mut self, memory: &[u8], current_cycles: Ticks) {
-        for watchpoint in &mut self.watchpoints {
+    /// The ranges of memory the watchpoints watch, by notifier id
+    pub fn ranges(&self) -> impl Iterator<Item = (u32, MemoryNotifierRange)> + '_ {
+        self.watchpoints.iter().map(|w| (w.id, w.range()))
+    }
+
+    /// Takes the notifier ids of the watchpoints removed since the last time
+    pub fn take_removed(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.removed)
+    }
+
+    /// Update a watchpoint with what memory holds at an address
+    pub fn update_memory(
+        &mut self,
+        id: u32,
+        addr: Address,
+        memory: &[Option<u8>],
+        current_cycles: Ticks,
+    ) {
+        if let Some(watchpoint) = self
+            .watchpoints
+            .iter_mut()
+            .find(|w| w.id == id && w.address == addr)
+        {
             watchpoint.update(memory, current_cycles);
         }
     }
@@ -238,7 +301,7 @@ impl WatchpointsWidget {
             return;
         }
 
-        self.watchpoints.remove(index);
+        self.removed.push(self.watchpoints.remove(index).id);
 
         // Clear editing state if we're editing the removed watchpoint
         let Some(ref mut editing) = self.editing else {
@@ -386,6 +449,7 @@ impl WatchpointsWidget {
                     // Store the edited value for the main app to process
                     self.edited = Some(EditedValue {
                         address: watchpoint.address,
+                        physical: watchpoint.physical,
                         data,
                     });
                 }
@@ -393,16 +457,14 @@ impl WatchpointsWidget {
         }
     }
 
-    pub fn draw(&mut self, ui: &mut egui::Ui, memory: &[u8], current_cycles: Ticks) {
-        // Update all watchpoints with current memory data
-        self.update_watchpoints(memory, current_cycles);
-
+    pub fn draw(&mut self, ui: &mut egui::Ui, current_cycles: Ticks) {
         ui.vertical(|ui| {
             // Add new watchpoint controls
             ui.collapsing("Add watchpoint", |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Address (hex):");
                     ui.text_edit_singleline(&mut self.address_input);
+                    ui.checkbox(&mut self.physical_input, "Physical");
                 });
 
                 ui.horizontal(|ui| {
@@ -452,6 +514,7 @@ impl WatchpointsWidget {
                 {
                     self.add_watchpoint(
                         address,
+                        self.physical_input,
                         self.selected_type,
                         self.description_input.clone(),
                     );
@@ -490,7 +553,7 @@ impl WatchpointsWidget {
                         let Some(global) = self.globals_input_idx.map(|i| &GLOBALS[i]) else {
                             unreachable!()
                         };
-                        self.add_watchpoint(global.1, global.2, global.0.to_string());
+                        self.add_watchpoint(global.1, false, global.2, global.0.to_string());
                         self.globals_input.clear();
                         self.globals_input_idx = None;
                     }
@@ -520,6 +583,7 @@ impl WatchpointsWidget {
                 .auto_shrink(false)
                 .column(Column::exact(24.0)) // Delete button
                 .column(Column::exact(80.0)) // Address
+                .column(Column::exact(60.0)) // Physical
                 .column(Column::exact(80.0)) // Type
                 .column(Column::exact(180.0)) // Description
                 .column(Column::exact(200.0)) // Value
@@ -529,6 +593,9 @@ impl WatchpointsWidget {
                     header.col(|_| {}); // Empty header for delete button
                     header.col(|ui| {
                         ui.label(egui::RichText::new("Address").strong());
+                    });
+                    header.col(|ui| {
+                        ui.label(egui::RichText::new("Physical").strong());
                     });
                     header.col(|ui| {
                         ui.label(egui::RichText::new("Type").strong());
@@ -581,6 +648,14 @@ impl WatchpointsWidget {
                                 );
                                 if response.clicked() {
                                     self.start_editing(i, EditingField::Address);
+                                }
+                            });
+
+                            // Physical or logical address
+                            row.col(|ui| {
+                                let mut physical = watchpoint.physical;
+                                if ui.checkbox(&mut physical, "").changed() {
+                                    self.watchpoints[i].physical = physical;
                                 }
                             });
 
