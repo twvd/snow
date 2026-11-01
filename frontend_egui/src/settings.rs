@@ -96,6 +96,8 @@ pub struct AppSettings {
     #[serde(default = "bool_true")]
     pub mouse_capture: bool,
     pub writeback_mode: PromptChoice,
+    /// Show the device ports few people use on a machine
+    pub show_all_device_ports: bool,
     pub convert_to_moof_mode: PromptChoice,
     /// When true, copy the loaded image to a timestamped sibling file
     /// just before writeback is enabled for it.
@@ -134,6 +136,7 @@ impl Default for AppSettings {
             relative_mouse_speed: 1.0,
             mouse_capture: true,
             writeback_mode: PromptChoice::default(),
+            show_all_device_ports: false,
             convert_to_moof_mode: PromptChoice::default(),
             backup_on_writeback: false,
             cmd_key_mapping: CmdKeyMapping::default(),

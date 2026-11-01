@@ -51,6 +51,7 @@ pub enum WorkspaceDeviceKind {
     #[default]
     None,
     Disk(RelativePath),
+    ReadOnlyDisk(RelativePath),
     Cdrom,
     /// Folder-backed ("Toolbox managed") CD-ROM: the guest swaps between the
     /// images in this folder via the BlueSCSI Toolbox CD commands.
@@ -73,6 +74,9 @@ impl WorkspaceDevice {
     fn from_saved(saved: &SavedDevice) -> Self {
         let device = match &saved.device {
             NewDevice::HardDisk(p) => WorkspaceDeviceKind::Disk(RelativePath::from_absolute(p)),
+            NewDevice::ReadOnlyHardDisk(p) => {
+                WorkspaceDeviceKind::ReadOnlyDisk(RelativePath::from_absolute(p))
+            }
             NewDevice::CdromDrive => WorkspaceDeviceKind::Cdrom,
             NewDevice::CdromFolder(p) => {
                 WorkspaceDeviceKind::CdromFolder(RelativePath::from_absolute(p))
@@ -93,6 +97,7 @@ impl WorkspaceDevice {
         let device = match &self.device {
             WorkspaceDeviceKind::None => return None,
             WorkspaceDeviceKind::Disk(p) => NewDevice::HardDisk(p.get_absolute()),
+            WorkspaceDeviceKind::ReadOnlyDisk(p) => NewDevice::ReadOnlyHardDisk(p.get_absolute()),
             WorkspaceDeviceKind::Cdrom => NewDevice::CdromDrive,
             WorkspaceDeviceKind::CdromFolder(p) => NewDevice::CdromFolder(p.get_absolute()),
             #[cfg(feature = "ethernet")]
@@ -376,7 +381,9 @@ impl Workspace {
             .chain(result.devices.iter_mut().map(|d| &mut d.device))
         {
             match d {
-                WorkspaceDeviceKind::Disk(p) | WorkspaceDeviceKind::CdromFolder(p) => {
+                WorkspaceDeviceKind::Disk(p)
+                | WorkspaceDeviceKind::ReadOnlyDisk(p)
+                | WorkspaceDeviceKind::CdromFolder(p) => {
                     p.after_deserialize(parent)?;
                 }
                 WorkspaceDeviceKind::None
@@ -452,7 +459,9 @@ impl Workspace {
         // disks and scsi_targets are deprecated
         for d in self.devices.iter_mut().map(|d| &mut d.device) {
             match d {
-                WorkspaceDeviceKind::Disk(p) | WorkspaceDeviceKind::CdromFolder(p) => {
+                WorkspaceDeviceKind::Disk(p)
+                | WorkspaceDeviceKind::ReadOnlyDisk(p)
+                | WorkspaceDeviceKind::CdromFolder(p) => {
                     p.before_serialize(parent)?;
                 }
                 WorkspaceDeviceKind::None

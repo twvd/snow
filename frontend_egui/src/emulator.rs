@@ -687,6 +687,16 @@ impl EmulatorState {
             .collect()
     }
 
+    /// The ports with a CD-ROM drive
+    pub fn cdrom_ports(&self) -> Vec<(PortAddr, DevicePort)> {
+        self.all_ports()
+            .filter(
+                |(_, p)| matches!(&p.device, Some(Device::Disk(d)) if d.kind == DiskKind::Cdrom),
+            )
+            .map(|(addr, p)| (addr, p.clone()))
+            .collect()
+    }
+
     /// The disks, with their addresses
     pub fn disk_ports(&self) -> Vec<(PortAddr, DiskPort)> {
         self.all_ports()
@@ -717,7 +727,12 @@ impl EmulatorState {
                     let device = match p.device.as_ref()? {
                         Device::Floppy(_) => return None,
                         Device::Disk(d) if d.kind == DiskKind::HardDisk => {
-                            NewDevice::HardDisk(d.image.clone()?)
+                            let image = d.image.clone()?;
+                            if d.writable {
+                                NewDevice::HardDisk(image)
+                            } else {
+                                NewDevice::ReadOnlyHardDisk(image)
+                            }
                         }
                         Device::Disk(d) => match &d.folder {
                             Some(dir) => NewDevice::CdromFolder(dir.clone()),

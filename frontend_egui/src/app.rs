@@ -210,6 +210,8 @@ pub struct SnowGui {
     workspace_dialog: SnowFileDialog,
     hdd_dialog: SnowFileDialog,
     hdd_dialog_idx: PortAddr,
+    hdd_dialog_read_only: bool,
+    hdd_dialog_sanity_check: bool,
     cdrom_dialog: SnowFileDialog,
     cdrom_dialog_idx: PortAddr,
     cdrom_files_dialog: SnowFileDialog,
@@ -411,13 +413,15 @@ impl SnowGui {
             disassembly: DisassemblyWidget::new(),
 
             hdd_dialog: SnowFileDialog::new()
-                .add_filter("HDD images", &["img", "hda"])
+                .add_filter("HDD images", &["img", "hda", "dsk", "hfv"])
                 .add_save_extension("Device image", "img")
                 .default_save_extension("Device image")
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
                 .initial_directory(Self::default_dir())
                 .storage(settings.fd_hdd),
             hdd_dialog_idx: PortAddr::default(),
+            hdd_dialog_read_only: false,
+            hdd_dialog_sanity_check: true,
             cdrom_dialog: SnowFileDialog::new()
                 .add_filter("CD-ROM images", &["iso", "toast", "cue"])
                 .opening_mode(egui_file_dialog::OpeningMode::LastVisitedDir)
@@ -1044,6 +1048,16 @@ impl SnowGui {
                 }
                 if ui
                     .checkbox(
+                        &mut self.settings.show_all_device_ports,
+                        "Show all device ports",
+                    )
+                    .on_hover_text("Also show the ports few people use on this machine, like HD20")
+                    .clicked()
+                {
+                    self.settings.save();
+                }
+                if ui
+                    .checkbox(
                         &mut self.settings.hide_mode_toasts,
                         "Hide fullscreen/zen mode toasts",
                     )
@@ -1520,30 +1534,45 @@ impl SnowGui {
     fn draw_menu_devices(&mut self, ui: &mut egui::Ui) {
         // Needs cloning for the later borrow to call the dialogs
         let lists = self.emu.ports().to_vec();
+        let mut first = true;
         for (list_idx, list) in lists.iter().enumerate() {
-            if list_idx > 0 {
+            if list.hidden_by_default
+                && !self.settings.show_all_device_ports
+                && list.ports.iter().all(|p| p.device.is_none())
+            {
+                continue;
+            }
+            if !first {
                 ui.separator();
             }
+            first = false;
             for (port_idx, port) in list.ports.iter().enumerate() {
+                if port.device.is_none() && port.offers.is_empty() {
+                    continue;
+                }
                 let addr = PortAddr {
                     list: list_idx,
                     port: port_idx,
                 };
                 self.draw_port_menu(ui, addr, port, &port.label(&list.family), true);
             }
-            let removable: Vec<_> = (0..list.ports.len())
-                .filter(|&port| list.ports[port].hotswap && list.ports[port].device.is_some())
-                .collect();
             if list.ports.iter().any(|p| p.hotswap) {
                 ui.separator();
                 if ui
                     .add_enabled(
-                        !removable.is_empty(),
+                        list.ports.iter().any(|p| p.hotswap && p.device.is_some()),
                         egui::Button::new(format!("Detach all {} devices", list.family)),
                     )
                     .clicked()
                 {
-                    for port in removable {
+                    // From the last: taking one out of a chain moves up the ones behind it
+                    for (port, _) in list
+                        .ports
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .filter(|(_, p)| p.hotswap && p.device.is_some())
+                    {
                         self.emu.remove_device(PortAddr {
                             list: list_idx,
                             port,
@@ -1569,16 +1598,19 @@ impl SnowGui {
                     ui.menu_button(
                         format!(
                             "{} {}: HDD {} ({:0.2}MB)",
-                            egui_material_icons::icons::ICON_HARD_DRIVE_2,
+                            if target.writable {
+                                egui_material_icons::icons::ICON_HARD_DRIVE_2
+                            } else {
+                                egui_material_icons::icons::ICON_LOCK
+                            },
                             label,
                             target
                                 .image
                                 .as_ref()
-                                .unwrap()
-                                .file_name()
+                                .and_then(|p| p.file_name())
                                 .unwrap_or_default()
                                 .to_string_lossy(),
-                            target.capacity.unwrap() / 1024 / 1024
+                            target.capacity.unwrap_or_default() / 1024 / 1024
                         ),
                         |ui| {
                             ui.set_min_width(Self::SUBMENU_WIDTH);
@@ -1848,9 +1880,13 @@ impl SnowGui {
                 ),
                 |ui| {
                     ui.set_min_width(Self::SUBMENU_WIDTH + 50.0);
+                    if let Some(hint) = &port.hint {
+                        ui.weak(hint);
+                        ui.separator();
+                    }
                     for offer in &port.offers {
                         ui.add_enabled_ui(port.can_take(*offer), |ui| match offer {
-                            PortOffer::HardDisk => {
+                            PortOffer::NewHardDisk => {
                                 if ui.button("Create new HDD image...").clicked() {
                                     self.create_disk_dialog.open(
                                         id,
@@ -1858,13 +1894,25 @@ impl SnowGui {
                                         &self.workspace_dir(),
                                     );
                                 }
+                            }
+                            PortOffer::HardDisk => {
                                 if ui.button("Load HDD disk image...").clicked() {
                                     self.hdd_dialog_idx = id;
+                                    self.hdd_dialog_read_only = false;
+                                    self.hdd_dialog_sanity_check = !port.takes_volume_images;
                                     self.hdd_dialog.pick_file(self.settings.native_file_dialogs);
                                 }
-                                ui.separator();
+                            }
+                            PortOffer::ReadOnlyHardDisk => {
+                                if ui.button("Load HDD disk image (read-only)...").clicked() {
+                                    self.hdd_dialog_idx = id;
+                                    self.hdd_dialog_read_only = true;
+                                    self.hdd_dialog_sanity_check = !port.takes_volume_images;
+                                    self.hdd_dialog.pick_file(self.settings.native_file_dialogs);
+                                }
                             }
                             PortOffer::CdromDrive => {
+                                ui.separator();
                                 if ui.button("Attach CD-ROM drive (with image)...").clicked() {
                                     self.cdrom_dialog_idx = id;
                                     self.cdrom_dialog
@@ -1887,10 +1935,10 @@ impl SnowGui {
                                     self.cdrom_folder_dialog
                                         .pick_directory(self.settings.native_file_dialogs);
                                 }
-                                ui.separator();
                             }
                             #[cfg(feature = "ethernet")]
                             PortOffer::Ethernet => {
+                                ui.separator();
                                 if ui.button("Attach Ethernet controller").clicked() {
                                     self.emu.add_device(id, NewDevice::Ethernet);
                                 }
@@ -3686,7 +3734,9 @@ impl eframe::App for SnowGui {
         if let Some(path) = self.hdd_dialog.take_picked() {
             match self.hdd_dialog.mode() {
                 DialogMode::PickFile => {
-                    if let Some(s) = crate::util::mac::hdd_sanitycheck(&path) {
+                    if self.hdd_dialog_sanity_check
+                        && let Some(s) = crate::util::mac::hdd_sanitycheck(&path)
+                    {
                         self.toasts.add(
                             Toast::default()
                                 .text(s)
@@ -3694,8 +3744,12 @@ impl eframe::App for SnowGui {
                                 .kind(ToastKind::Warning),
                         );
                     }
-                    self.emu
-                        .add_device(self.hdd_dialog_idx, NewDevice::HardDisk(path));
+                    let device = if self.hdd_dialog_read_only {
+                        NewDevice::ReadOnlyHardDisk(path)
+                    } else {
+                        NewDevice::HardDisk(path)
+                    };
+                    self.emu.add_device(self.hdd_dialog_idx, device);
                 }
                 DialogMode::SaveFile => {
                     self.emu.branch_disk(self.hdd_dialog_idx, &path);
@@ -3993,19 +4047,9 @@ impl eframe::App for SnowGui {
                         }
                         ui.separator();
                         self.draw_menu_floppies(ui);
-                        for (addr, disk) in self.emu.disk_ports() {
-                            if disk.kind == DiskKind::Cdrom {
-                                let label = self.emu.port_label(addr);
-                                let port = DevicePort {
-                                    id: String::new(),
-                                    name: None,
-                                    hotswap: false,
-                                    offers: vec![],
-                                    blocked: vec![],
-                                    device: Some(Device::Disk(disk)),
-                                };
-                                self.draw_port_menu(ui, addr, &port, &label, false);
-                            }
+                        for (addr, port) in self.emu.cdrom_ports() {
+                            let label = self.emu.port_label(addr);
+                            self.draw_port_menu(ui, addr, &port, &label, false);
                         }
                         ui.separator();
                         let mut ff = self.ff_on;

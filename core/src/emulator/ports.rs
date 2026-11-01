@@ -12,9 +12,12 @@ use serde::{Deserialize, Serialize};
 use snow_floppy::Floppy;
 
 use super::Emulator;
+use crate::mac::MacModel;
 #[cfg(feature = "ethernet")]
 use crate::mac::scsi::ethernet::EthernetLinkType;
 use crate::mac::scsi::target::ScsiTargetType;
+use crate::mac::swim::MAX_DCDS;
+use crate::mac::swim::dcd::{DCD_BLOCKSIZE, DcdDevice};
 
 #[cfg(feature = "ethernet")]
 use super::comm::EthernetCaptureStatus;
@@ -31,6 +34,9 @@ pub struct PortList {
     /// Shown to the user. With a port's ID, it also identifies the port in a workspace.
     pub family: String,
     pub ports: Vec<DevicePort>,
+    /// Most users of this machine don't want this in their menus. It still shows when it has
+    /// a device in it, or if the user wants it to.
+    pub hidden_by_default: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +50,10 @@ pub struct DevicePort {
     pub offers: Vec<PortOffer>,
     /// Those of the offers that are unavailable right now
     pub blocked: Vec<PortOffer>,
+    /// Something the user should know before using this port
+    pub hint: Option<String>,
+    /// Hard disk images can be of a volume, without a partition map
+    pub takes_volume_images: bool,
     pub device: Option<Device>,
 }
 
@@ -65,8 +75,12 @@ impl DevicePort {
 /// Something the frontend can offer to put in a port
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PortOffer {
-    /// Attaching a hard disk image, or one just created
+    /// Creating a hard disk image and attaching it
+    NewHardDisk,
+    /// Attaching a hard disk image
     HardDisk,
+    /// Attaching a hard disk image the guest can't change
+    ReadOnlyHardDisk,
     CdromDrive,
     /// Replacing whatever CD-ROM drive is there by a folder of images
     CdromFolder,
@@ -80,6 +94,7 @@ pub enum PortOffer {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NewDevice {
     HardDisk(PathBuf),
+    ReadOnlyHardDisk(PathBuf),
     CdromDrive,
     CdromFolder(PathBuf),
     #[cfg(feature = "ethernet")]
@@ -93,6 +108,7 @@ impl NewDevice {
     const fn offer(&self) -> PortOffer {
         match self {
             Self::HardDisk(_) => PortOffer::HardDisk,
+            Self::ReadOnlyHardDisk(_) => PortOffer::ReadOnlyHardDisk,
             Self::CdromDrive => PortOffer::CdromDrive,
             Self::CdromFolder(_) => PortOffer::CdromFolder,
             #[cfg(feature = "ethernet")]
@@ -144,6 +160,7 @@ pub struct DiskPort {
     pub capacity: Option<usize>,
     /// The image can be branched off to another file
     pub can_branch: bool,
+    pub writable: bool,
 }
 
 #[cfg(feature = "ethernet")]
@@ -158,6 +175,7 @@ pub struct EthernetPort {
 pub(super) enum PortTarget {
     Floppy(usize),
     Scsi(usize),
+    Hd20(usize),
 }
 
 impl Emulator {
@@ -173,6 +191,11 @@ impl Emulator {
         if self.model.has_scsi() {
             lists.push(("SCSI", (0..7).map(PortTarget::Scsi).collect()));
         }
+        // Behind the floppy drives on the same connector, but not in their way: a chain of up
+        // to four, and the external drive answers after the last one.
+        if self.config.swim().drives.iter().any(|d| d.is_present()) {
+            lists.push(("HD20", (0..MAX_DCDS).map(PortTarget::Hd20).collect()));
+        }
         lists
     }
 
@@ -182,6 +205,14 @@ impl Emulator {
             .map(|(family, targets)| PortList {
                 family: family.to_owned(),
                 ports: targets.into_iter().map(|t| self.device_port(t)).collect(),
+                hidden_by_default: family == "HD20"
+                    && !matches!(
+                        self.model,
+                        MacModel::Early128K
+                            | MacModel::Early512K
+                            | MacModel::Early512Ke
+                            | MacModel::Plus
+                    ),
             })
             .collect()
     }
@@ -240,6 +271,8 @@ impl Emulator {
                 hotswap: false,
                 offers: vec![],
                 blocked: vec![],
+                hint: None,
+                takes_volume_images: false,
                 device: Some(Device::Floppy(self.floppy_port(i))),
             },
             PortTarget::Scsi(i) => DevicePort {
@@ -248,7 +281,23 @@ impl Emulator {
                 hotswap: true,
                 offers: self.scsi_offers(i),
                 blocked: self.scsi_blocked(),
+                hint: None,
+                takes_volume_images: false,
                 device: self.scsi_device(i),
+            },
+            PortTarget::Hd20(i) => DevicePort {
+                id: (i + 1).to_string(),
+                name: None,
+                hotswap: true,
+                offers: vec![
+                    PortOffer::NewHardDisk,
+                    PortOffer::HardDisk,
+                    PortOffer::ReadOnlyHardDisk,
+                ],
+                blocked: self.hd20_blocked(i),
+                hint: Some(self.hd20_hint().to_owned()),
+                takes_volume_images: true,
+                device: self.hd20_device(i),
             },
         }
     }
@@ -275,6 +324,7 @@ impl Emulator {
             None => {
                 #[allow(unused_mut)]
                 let mut offers = vec![
+                    PortOffer::NewHardDisk,
                     PortOffer::HardDisk,
                     PortOffer::CdromDrive,
                     PortOffer::CdromFolder,
@@ -320,6 +370,7 @@ impl Emulator {
                 folder: None,
                 capacity: scsi.get_disk_capacity(id),
                 can_branch: true,
+                writable: true,
             }),
             ScsiTargetType::Cdrom => Device::Disk(DiskPort {
                 kind: DiskKind::Cdrom,
@@ -327,6 +378,7 @@ impl Emulator {
                 folder: scsi.get_cdrom_folder(id).map(Path::to_path_buf),
                 capacity: scsi.get_disk_capacity(id),
                 can_branch: false,
+                writable: false,
             }),
             #[cfg(feature = "ethernet")]
             ScsiTargetType::Ethernet => {
@@ -339,6 +391,58 @@ impl Emulator {
             #[cfg(feature = "printer")]
             ScsiTargetType::Printer => Device::Printer,
         })
+    }
+
+    /// A chain has no gaps: only the next free place takes a disk.
+    fn hd20_blocked(&self, i: usize) -> Vec<PortOffer> {
+        if i == self.config.swim().dcds.len() {
+            vec![]
+        } else {
+            vec![
+                PortOffer::NewHardDisk,
+                PortOffer::HardDisk,
+                PortOffer::ReadOnlyHardDisk,
+            ]
+        }
+    }
+
+    /// Which ROMs have the driver is in docs/HD20.md. Only the ones known not to are named.
+    fn hd20_hint(&self) -> &'static str {
+        match self.model {
+            MacModel::Early128K => "This Mac doesn't have enough RAM to load the HD20 INIT.",
+            MacModel::Early512K => {
+                "This Mac needs the HD20 INIT from a boot floppy. It looks for HD20s when it \
+                 starts up."
+            }
+            MacModel::MacII
+            | MacModel::MacIIFDHD
+            | MacModel::MacIIx
+            | MacModel::MacIIcx
+            | MacModel::SE30 => {
+                "This Mac's ROM has no HD20 driver, it needs Apple's MacIIHD20 INIT. It looks \
+                 for HD20s when it starts up."
+            }
+            _ => "The Mac looks for HD20s when it starts up.",
+        }
+    }
+
+    fn hd20_device(&self, i: usize) -> Option<Device> {
+        let dcd = self.config.swim().dcds.get(i)?;
+        Some(Device::Disk(DiskPort {
+            kind: DiskKind::HardDisk,
+            image: dcd.image_path().map(Path::to_path_buf),
+            folder: None,
+            capacity: Some(dcd.blocks() * DCD_BLOCKSIZE),
+            can_branch: false,
+            writable: dcd.writable(),
+        }))
+    }
+
+    /// Attaches an HD20 at the end of the chain
+    fn attach_hd20(&mut self, path: &Path, writable: bool) -> Result<()> {
+        let dcd = DcdDevice::open(path, writable)?;
+        self.config.swim_mut().attach_dcd(dcd)?;
+        Ok(())
     }
 
     /// Puts a device in a port
@@ -366,6 +470,14 @@ impl Emulator {
                 self.attach_printer(id, output_dir);
                 Ok(())
             }
+            (PortTarget::Scsi(_), NewDevice::ReadOnlyHardDisk(_)) => {
+                unreachable!("SCSI ports don't offer this")
+            }
+            (PortTarget::Hd20(_), NewDevice::HardDisk(path)) => self.attach_hd20(&path, true),
+            (PortTarget::Hd20(_), NewDevice::ReadOnlyHardDisk(path)) => {
+                self.attach_hd20(&path, false)
+            }
+            (PortTarget::Hd20(_), _) => unreachable!("HD20 ports offer hard disks only"),
             (PortTarget::Floppy(_), _) => unreachable!("floppy ports offer nothing"),
         }
     }
@@ -378,6 +490,9 @@ impl Emulator {
         }
         match target {
             PortTarget::Scsi(id) => self.config.scsi_mut().detach_target(id),
+            PortTarget::Hd20(i) => {
+                self.config.swim_mut().detach_dcd(i)?;
+            }
             PortTarget::Floppy(_) => unreachable!("floppy ports are fixed"),
         }
         Ok(())
