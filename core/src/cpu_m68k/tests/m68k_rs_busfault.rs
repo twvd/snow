@@ -4,10 +4,6 @@
 //! resumable frame, and the RTE continuation protocol (DF set reruns the
 //! instruction; DF clear completes the data cycle from the frame buffers).
 //!
-//! The DF-cleared vectors are `#[ignore]`d: Snow does not model the
-//! fault-completion half of the protocol (data input/output buffer supply),
-//! replaying the whole instruction instead, which is safe for RAM targets.
-//!
 //! Portions derived from m68k-rs (https://github.com/benletchford/m68k-rs),
 //! Copyright (c) 2026 Ben Letchford, used under the MIT License:
 //!
@@ -212,7 +208,6 @@ fn rte_with_df_set_restarts_the_faulted_access() {
 ///
 /// Ignored: Snow does not model fault completion through the frame buffers.
 #[test]
-#[ignore = "Snow replays the whole instruction on a format-$B RTE; the DF-cleared data-input-buffer completion path is not modeled"]
 fn rte_with_df_cleared_supplies_the_data_input_buffer() {
     let mut cpu = user_mode_030_with_table(0);
 
@@ -246,7 +241,6 @@ fn rte_with_df_cleared_supplies_the_data_input_buffer() {
 ///
 /// Ignored: Snow does not model write absorption through the DOB.
 #[test]
-#[ignore = "Snow replays the whole instruction on a format-$B RTE; the DF-cleared write-absorption path (data output buffer) is not modeled"]
 fn rte_with_df_cleared_absorbs_the_faulted_write() {
     let mut cpu = user_mode_030_with_table(0);
 

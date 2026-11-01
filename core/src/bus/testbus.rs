@@ -122,19 +122,21 @@ where
     }
 
     fn access(&mut self, acc: BusAccess<C>) -> Result<BusResponse> {
-        if self.fault_ranges.iter().any(|range| {
-            let end = acc.addr.wrapping_add(acc.size.saturating_sub(1));
-            (acc.addr..=end).any(|a| range.contains(&a))
-        }) {
-            return Ok(BusResponse::BusError);
-        }
-
         let width = self
             .port_widths
             .iter()
             .find(|(r, _)| r.contains(&acc.addr))
             .map_or(C::WIDTH, |&(_, w)| w);
         let len = (width - acc.addr % width).min(acc.size);
+
+        // A fault range answers a cycle that transfers any of its bytes: up
+        // to the end of the port, the rest of the operand is another cycle
+        if self.fault_ranges.iter().any(|range| {
+            let end = acc.addr.wrapping_add(len - 1);
+            (acc.addr..=end).any(|a| range.contains(&a))
+        }) {
+            return Ok(BusResponse::BusError);
+        }
         let mut data = 0;
         for i in 0..len {
             let addr = TA::from(acc.addr.wrapping_add(i)).unwrap();
