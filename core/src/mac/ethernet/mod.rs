@@ -2,6 +2,7 @@
 
 pub mod appl_lc_sonic;
 pub mod appl_nb_sonic_tp;
+pub mod dayna_si30;
 pub mod sonic;
 
 /// A byte of the MAC address PROM: bytes 0-5 are the bytes of the address

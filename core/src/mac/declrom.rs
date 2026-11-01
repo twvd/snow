@@ -47,6 +47,9 @@ pub enum Entry {
     Data(u8, Vec<u8>),
     /// A list elsewhere in the ROM, which the entry points to
     List(u8, Vec<Self>),
+    /// Points to a byte of the ROM chip outside the declaration data, such as
+    /// a MAC address (with `DeclRom::build_chip()` only)
+    ChipByte(u8, usize),
 }
 
 impl Entry {
@@ -104,6 +107,8 @@ struct Layout {
     rom: Vec<u8>,
     /// Entry to patch: its address, its id, and what it points to
     pending: Vec<(usize, u8, Pending)>,
+    /// Entries pointing to chip bytes: their address, id and chip byte
+    chip_bytes: Vec<(usize, u8, usize)>,
 }
 
 enum Pending {
@@ -131,6 +136,7 @@ impl Layout {
                 }
                 Entry::Data(id, data) => self.pending.push((at, id, Pending::Data(data))),
                 Entry::List(id, list) => self.pending.push((at, id, Pending::List(list))),
+                Entry::ChipByte(id, byte) => self.chip_bytes.push((at, id, byte)),
             }
         }
         self.put_long(start + 4 * count, 0xFF00_0000);
@@ -161,9 +167,16 @@ impl Layout {
 impl DeclRom {
     /// The ROM image
     pub fn build(self) -> Vec<u8> {
+        self.build_chip(0)
+    }
+
+    /// The image of a ROM chip of `size` bytes with the declaration data at
+    /// its top, and zeroes below
+    pub fn build_chip(self, size: usize) -> Vec<u8> {
         let mut layout = Layout {
             rom: vec![],
             pending: vec![],
+            chip_bytes: vec![],
         };
         let directory = self
             .resources
@@ -184,9 +197,17 @@ impl DeclRom {
         rom[fb + 13] = FORMAT_APPLE;
         rom[fb + 14..fb + 18].copy_from_slice(&TEST_PATTERN.to_be_bytes());
         rom[fb + 19] = (self.byte_lanes & 0x0F) | (!self.byte_lanes << 4);
+        let below = size.saturating_sub(rom.len());
+        for (at, id, byte) in layout.chip_bytes {
+            assert!(byte < below);
+            let offset = (byte as i64 - (below + at) as i64) as u32 & 0xFF_FFFF;
+            rom[at..at + 4].copy_from_slice(&((u32::from(id) << 24) | offset).to_be_bytes());
+        }
         let crc = checksum(&rom);
         rom[fb + 8..fb + 12].copy_from_slice(&crc.to_be_bytes());
-        rom
+        let mut chip = vec![0; below];
+        chip.extend(rom);
+        chip
     }
 }
 
@@ -328,6 +349,28 @@ mod tests {
         let t = target(at, entry);
         assert_eq!(rom[t..t + 8], [0, 4, 0, 1, 0, 0, 0x01, 0x19]);
         assert_eq!(enet[2], (id::RSRC_HW_DEV_ID, enet[2].1, 0x0800_0001));
+    }
+
+    #[test]
+    fn entry_to_a_chip_byte() {
+        let chip = DeclRom {
+            resources: vec![SResource {
+                id: 0x80,
+                entries: vec![Entry::ChipByte(0x80, 4)],
+            }],
+            rev_level: 1,
+            byte_lanes: 0b1111,
+        }
+        .build_chip(0x100);
+        assert_eq!(chip.len(), 0x100);
+        let fb = chip.len() - FORMAT_BLOCK;
+        let len = long(&chip, fb + 4) as usize;
+        assert!(valid(&chip[chip.len() - len..]));
+        let dir = target(fb, long(&chip, fb));
+        let rsrc = list(&chip, dir)[0];
+        let (id, at, entry) = list(&chip, target(rsrc.1, rsrc.2))[0];
+        assert_eq!(id, 0x80);
+        assert_eq!(target(at, entry), 4);
     }
 
     #[test]
