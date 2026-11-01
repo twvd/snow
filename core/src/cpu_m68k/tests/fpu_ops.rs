@@ -455,3 +455,32 @@ fn reset_instruction_resets_the_fpu() {
     assert!(cpu.regs.fpu.fp[0].is_nan());
     assert_eq!(cpu.regs.fpu.fpcr.0, 0);
 }
+
+#[test]
+fn transcendental_functions_in_every_rounding_mode() {
+    // Only the final result gets the rounding mode (MC68881UM 4.5.5.2)
+    const OPMODES: [Word; 19] = [
+        0b0001110, 0b0001111, 0b0001100, 0b0011100, 0b0001010, 0b0000010, 0b0011001, 0b0001001,
+        0b0001101, 0b0010000, 0b0001000, 0b0010001, 0b0010010, 0b0010100, 0b0000110, 0b0010101,
+        0b0010110, 0b0011110, 0b0011111,
+    ];
+    for rnd in 0..4 {
+        for opmode in OPMODES {
+            let mut cpu = testcpu(&fop(1, 0, opmode));
+            cpu.regs.fpu.fpcr.set_rnd(rnd);
+            cpu.regs.fpu.fp[1] = fp(0.25);
+            cpu.step().unwrap();
+            assert!(
+                !cpu.regs.fpu.fp[0].is_nan(),
+                "opmode {opmode:07b} mode {rnd}"
+            );
+        }
+        // FSINCOS FP1,FP2:FP0
+        let mut cpu = testcpu(&fop(1, 0, 0b0110010));
+        cpu.regs.fpu.fpcr.set_rnd(rnd);
+        cpu.regs.fpu.fp[1] = fp(0.25);
+        cpu.step().unwrap();
+        assert!(!cpu.regs.fpu.fp[0].is_nan());
+        assert!(!cpu.regs.fpu.fp[2].is_nan());
+    }
+}
