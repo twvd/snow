@@ -12,6 +12,7 @@ use std::fmt::Display;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use super::mac_prom_byte;
 use super::sonic::{Sonic, SonicDma};
 use crate::bus::Address;
 use crate::debuggable::{Debuggable, DebuggableProperties};
@@ -63,21 +64,6 @@ impl SonicDma for CardRam<'_> {
         if let Some(a) = ram_offset(addr) {
             self.0[a] = val;
         }
-    }
-}
-
-/// A byte of the MAC address PROM: the bytes of the address with their bits
-/// reversed, then a check byte which makes the eight bytes XOR to $FF.
-///
-/// MAME swaps the nibbles and reverses only the low one, which reads back
-/// right only for bytes below $10, such as Apple's 08:00:07: Apple's .ENET
-/// driver (in the declaration ROM 341-0470 of the LC card, which also drives
-/// the Quadras) reverses all eight bits of each byte it reads.
-fn prom_byte(mac: [u8; 6], index: usize) -> u8 {
-    match index {
-        0..=5 => mac[index].reverse_bits(),
-        7 => !mac.iter().fold(0, |x, &b| x ^ b.reverse_bits()),
-        _ => 0,
     }
 }
 
@@ -206,7 +192,7 @@ impl NubusSlot for ApplNbSonicTp {
             // The MAC address PROM is on byte lanes 1 and 3
             let mac = self.sonic.port().mac();
             let index = (word & 0xF) as usize / 2;
-            (u32::from(prom_byte(mac, index)) << 16) | u32::from(prom_byte(mac, index + 1))
+            (u32::from(mac_prom_byte(mac, index)) << 16) | u32::from(mac_prom_byte(mac, index + 1))
         } else {
             // The declaration ROM is on byte lane 1
             u32::from(self.read_rom(word + 1)?) << 16
@@ -330,7 +316,7 @@ mod tests {
             .collect();
         // The address bytes with their bits reversed: 08 -> 10, 00 -> 00, 07 -> E0
         assert_eq!(bytes[..3], [0x10, 0x00, 0xE0]);
-        assert_eq!(bytes[3], prom_byte(mac, 3));
+        assert_eq!(bytes[3], mac_prom_byte(mac, 3));
         assert_eq!(bytes[6], 0);
         assert_eq!(bytes[..6].iter().fold(bytes[7], |x, &b| x ^ b), 0xFF);
     }
