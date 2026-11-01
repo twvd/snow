@@ -557,6 +557,56 @@ where
         len: u32,
         value: Long,
     ) -> Result<()> {
+        if CPU_TYPE >= M68040
+            && (fault.o_addr & 3) + len <= 4
+            && self.phys_write_hit(kind, fault.fc, fault.o_addr & ADDRESS_MASK, len, value)
+        {
+            return Ok(());
+        }
+        self.write_operand_slow(kind, fault, len, value)
+    }
+
+    /// A write to a copyback page that hits in physically tagged caches,
+    /// with the last write translation made in the page, as translate()
+    /// would use. Returns false when the write has to go through
+    /// write_operand_slow().
+    #[inline(always)]
+    fn phys_write_hit(
+        &mut self,
+        kind: AccessKind,
+        fc: u8,
+        laddr: Address,
+        size: u32,
+        value: Long,
+    ) -> bool {
+        if kind == AccessKind::Physical || !PMMU || !self.breakpoints.is_empty() {
+            return false;
+        }
+        let Some(tr) = self.last_translation_find(LAST_TRANSLATION_WRITE, fc, laddr) else {
+            return false;
+        };
+        if tr.cache != CacheMode::CopyBack {
+            return false;
+        }
+        if !self
+            .caches
+            .phys_write_hit(self.regs.cacr, fc, tr.paddr, size, value)
+        {
+            return false;
+        }
+        self.write_credit = 0;
+        true
+    }
+
+    /// write_operand() past the cache hits
+    #[inline(always)]
+    fn write_operand_slow(
+        &mut self,
+        kind: AccessKind,
+        fault: FaultInfo,
+        len: u32,
+        value: Long,
+    ) -> Result<()> {
         let mut ticks = 0;
         let mut done = 0;
         while done < len {

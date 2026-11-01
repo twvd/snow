@@ -116,6 +116,22 @@ pub trait CpuCaches: Default {
         None
     }
 
+    /// Runs a write of the low `size` bytes (within a long word) of `data`
+    /// at physical address `paddr` of a copyback page in caches tagged with
+    /// physical addresses, if it hits: as access() would. Returns false
+    /// when the access has to run with access().
+    #[inline(always)]
+    fn phys_write_hit(
+        &mut self,
+        _cacr: RegisterCACR,
+        _fc: u8,
+        _paddr: Address,
+        _size: u32,
+        _data: Long,
+    ) -> bool {
+        false
+    }
+
     /// MOVEC to CACR: runs the cache operations the value asks for (clear,
     /// clear entry) and returns the value to keep in CACR
     fn write_cacr(&mut self, val: Long, _caar: Address) -> Long {
